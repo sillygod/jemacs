@@ -1,0 +1,36 @@
+* Exercism
+
+** Why I write Exercism
+   
+This is the first plugin I write for emacs. Why I decide to write this? One of the reason is I want to practice the emacs lisp and the other is I want to reduce the redundant steps when I want to solve some exercises on the Exercism.
+
+I usually go to the exercism website, copy the command and than paste it on the terminal. Then, I start to open my emacs, find the file and open it! After I solve the problem, I have to run a command to submit my solution. Oh, I feel I can not move my fingers. So I want to write some emacs lisp to make these steps streamlining.
+
+** I still want to implement although I find there is package called exercism..
+   
+I think is outdated. Lots of function are not worked today
+
+* Features
+  
+  - quick open workspace for exercism
+  - submit solution without leave emacs
+  - other function need to wait for the apis be pulic...
+    
+* Questions
+
+** defgroup
+** defcusom
+
+https://www.gnu.org/software/emacs/manual/html_node/elisp/Customization-Types.html
+** when to use autoload
+** why define a minor mode
+
+* Reference
+
+  - [[http://www.modernemacs.com/][an blog with some elisp thought]]
+  - http://www.modernemacs.com/post/prettify-mode/
+  - https://github.com/canweriotnow/exercism-emacs/blob/master/exercism.el
+
+* Footnotes
+
+look up how to use org's footnotes function

@@ -1,0 +1,34 @@
+#+TITLE: myemacs layer
+# Document tags are separated with "|" char
+# The example below contains 2 tags: "layer" and "web service"
+# Avaliable tags are listed in <spacemacs_root>/.ci/spacedoc-cfg.edn
+# under ":spacetools.spacedoc.config/valid-tags" section.
+#+TAGS: layer|web service
+
+# The maximum height of the logo should be 200 pixels.
+[[img/myemacs.png]]
+
+# TOC links should be GitHub style anchors.
+* Table of Contents                                        :TOC_4_gh:noexport:
+- [[#description][Description]]
+  - [[#features][Features:]]
+- [[#install][Install]]
+
+* Description
+
+This is an my self write layer to customize the spacemacs to make it as my own editor.
+
+** Features:
+  - Exercism submit
+  - hey-god
+
+* Install
+To use this configuration layer, add it to your =~/.spacemacs=. You will need to
+add =myemacs= to the existing =dotspacemacs-configuration-layers= list in this
+file.
+
+# Use GitHub URLs if you wish to link a Spacemacs documentation file or its heading.
+# Examples:
+# [[https://github.com/syl20bnr/spacemacs/blob/master/doc/VIMUSERS.org#sessions]]
+# [[https://github.com/syl20bnr/spacemacs/blob/master/layers/%2Bfun/emoji/README.org][Link to Emoji layer README.org]]
+# If space-doc-mode is enabled, Spacemacs will open a local copy of the linked file.
