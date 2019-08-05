@@ -1,3 +1,4 @@
+;; Currently, put some misc helper functions here
 
 (defun hey-god (question)
   "Reduce distraction when you search the answer for the question."
@@ -9,3 +10,6 @@
                      buffer-name
                      "*Messages*")
       (pop-to-buffer buffer-name))))
+
+;; defun a function to open a temp panel to show to result of base64 decode
+;; (base64-decode-string "jife")
