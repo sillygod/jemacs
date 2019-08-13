@@ -14,6 +14,9 @@ I think is outdated. Lots of function are not worked today
   
   - quick open workspace for exercism
   - submit solution without leave emacs
+  - quick download exercism
+  https://github.com/exercism/cli/issues/718
+  
   - other function need to wait for the apis be pulic...
     
 * Questions

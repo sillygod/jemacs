@@ -52,8 +52,7 @@ output"
 
 ;; auto enable the minor mode when the buffer path is in the
 ;; exercism's workspace
-;; here, we can't use the auto-mode-list. I think that's for
-;; major mode
+;; here, we can't use the auto-mode-list. I think that's for major mode
 ;; ex.
 ;; (when exercism-auto-enable
 ;;   (add-to-list 'auto-mode-alist
@@ -84,24 +83,62 @@ buffer with specific files."
   (block nil
     (let ((buffer-name "*Exercism*")
           (current-file (buffer-file-name (get-buffer (buffer-name)))))
-    (if (buffer-modified-p)
-        (unless
-            (y-or-n-p "Buffer is modified since last saved. Do you want to submit it?")
+      (if (buffer-modified-p)
+          (unless
+              (y-or-n-p "Buffer is modified since last saved. Do you want to submit it?")
             (return))
-      (with-output-to-temp-buffer buffer-name
-        (print (exercism--command-run "submit" current-file)))
-      (pop-to-buffer buffer-name)))))
+        (with-output-to-temp-buffer buffer-name
+          (print (exercism--command-run "submit" current-file)))
+        (pop-to-buffer buffer-name)))))
 
 ;; the following functions need to scrap the web content unless exercism.io provide
 ;; apis
 
 ;;;###autoload
 (defun exercism-download()
+  (interactive)
+  (let ((question (aref (tabulated-list-get-entry) 0))
+        (buffer-name "*Exercism--download*"))
+    (with-output-to-temp-buffer buffer-name
+      (print (exercism--command-run "download" "-t" "" "-e" question)))
+    (pop-to-buffer buffer-name)))
+
+
+;;;###autoload
+;; process buffer content vs string
+;; this one says buffer-string only return the narrowed content
+;; https://emacs.stackexchange.com/questions/696/get-content-of-a-buffer
+;; still need to figure out how to use...
+(defun exercism-explore-track(track-name)
+  (interactive)
+  (with-current-buffer (url-retrieve-synchronously (concat "https://exercism.io/tracks/" track-name "/exercises"))
+    ;; re-search-forward
+    (prog1
+        (buffer-string)
+      (kill-buffer)))
   )
 
 ;;;###autoload
-(defun exercism-explore-track()
-  )
+(defun exercism-explore-track-cmd(track-name)
+  (interactive "sEnter the language: ")
+  (let ((columns [((concat track-name " exercises") 200)])
+        (rows (mapcar (lambda (x)
+                        `(nil [, x]))
+                      (split-string
+                       (shell-command-to-string
+                        (format
+                         "curl -Ls https://exercism.io/tracks/%s/exercises | grep \"/tracks/%s/exercises/\" | awk '{print $3}' | cut -d/ -f5 | cut -d\\\" -f1"
+                         track-name
+                         track-name))
+                       "\n"
+                       t))))
+
+    (switch-to-buffer "*temp*")
+    (setq tabulated-list-format columns)
+    (setq tabulated-list-entries rows)
+    (tabulated-list-init-header)
+    (tabulated-list-print)))
+
 
 ;;;###autoload
 (defun exercism-see-solution()

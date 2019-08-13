@@ -1,6 +1,7 @@
 (defconst configs-packages
   '(
     evil
+    python
     go))
 
 (defun configs/post-init-evil ()
@@ -16,3 +17,9 @@
 
 (defun configs/post-init-go ()
   (evil-define-key 'normal go-mode-map (kbd "g i") 'lsp-find-implementation))
+
+(defun configs/post-init-python ()
+  (add-hook 'before-save-hook
+            (lambda ()
+              (when (eq major-mode 'python-mode)
+                python-format-on-save spacemacs/python-format-buffer))))
