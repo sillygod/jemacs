@@ -32,13 +32,16 @@
   "Set the user defined path as exercism executable path by default. We\
 will use the result from command which if the user does not set it.")
 
-(defun exercism--command-run (command &optional arg)
+(defun exercism--command-run (command &rest args)
   "execute the command with exercism cli and its response as a string\
 output"
-  (if (zerop (length *exercism-exec*))
-      (error "the executable of exercism is not found")
-    (shell-command-to-string
-     (string-join (mapcar #'prin1-to-string (list *exercism-exec* command arg)) " "))))
+  (let ((cmd (list *exercism-exec* command)))
+    (if (zerop (length *exercism-exec*))
+        (error "the executable of exercism is not found")
+      (progn
+        (setcdr (last cmd) args)
+        (shell-command-to-string
+         (string-join (mapcar #'prin1-to-string cmd) " "))))))
 
 ;; define the minor mode
 ;; the keymap give it nil here, we will set the key binding
@@ -100,7 +103,7 @@ buffer with specific files."
   (let ((question (aref (tabulated-list-get-entry) 0))
         (buffer-name "*Exercism--download*"))
     (with-output-to-temp-buffer buffer-name
-      (print (exercism--command-run "download" "-t" "" "-e" question)))
+      (print (exercism--command-run "download" "-t" exercism--track-name "-e" question)))
     (pop-to-buffer buffer-name)))
 
 
@@ -111,18 +114,21 @@ buffer with specific files."
 ;; still need to figure out how to use...
 (defun exercism-explore-track(track-name)
   (interactive)
+  (setq exercism--track-name track-name)
   (with-current-buffer (url-retrieve-synchronously (concat "https://exercism.io/tracks/" track-name "/exercises"))
     ;; re-search-forward
     (prog1
         (buffer-string)
-      (kill-buffer)))
-  )
+      (kill-buffer))))
 
 ;;;###autoload
 (defun exercism-explore-track-cmd(track-name)
   (interactive "sEnter the language: ")
-  (let ((columns [((concat track-name " exercises") 200)])
-        (rows (mapcar (lambda (x)
+  (setq exercism--track-name track-name)
+  ;; I don't know why I can symbol in the columns
+  (let* ((title "exercise")
+         (columns [("exercise" 200)])
+         (rows (mapcar (lambda (x)
                         `(nil [, x]))
                       (split-string
                        (shell-command-to-string

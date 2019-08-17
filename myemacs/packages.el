@@ -32,6 +32,9 @@
 
 (defconst myemacs-packages
   '(
+    (elisp-demos :location (recipe :repo "xuchunyang/elisp-demos"
+                                   :fetcher github
+                                   :files ("*.el" "*.org")))
     (exercism :location local))
   "The list of Lisp packages required by the myemacs layer.
 
@@ -69,3 +72,10 @@ Each entry is either:
   (use-package exercism
     ;; :defer t
     ))
+
+(defun myemacs/init-elisp-demos ()
+  (use-package elisp-demos
+    :config
+    (progn
+      (advice-add 'describe-function-1
+                  :after #'elisp-demos-advice-describe-function-1))))

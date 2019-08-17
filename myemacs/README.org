@@ -19,8 +19,9 @@
 This is an my self write layer to customize the spacemacs to make it as my own editor.
 
 ** Features:
-  - Exercism submit
+  - Exercism submit, explore, download
   - hey-god
+  - enhance describe function with package elisp-demos
 
 * Install
 To use this configuration layer, add it to your =~/.spacemacs=. You will need to

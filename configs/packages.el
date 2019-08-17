@@ -22,4 +22,4 @@
   (add-hook 'before-save-hook
             (lambda ()
               (when (eq major-mode 'python-mode)
-                python-format-on-save spacemacs/python-format-buffer))))
+                (spacemacs/python-format-buffer)))))
