@@ -21,6 +21,9 @@
     :group 'exercism
     :type 'boolean))
 
+;; For more detail about type, you can see this 
+;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Simple-Types.html#Simple-Types
+
 ;; define some global var here
 
 (setq exercism-mode-map (make-sparse-keymap))

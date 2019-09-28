@@ -9,10 +9,13 @@ git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
 #+end_src
 
 * Description
+  
+This is an enhancement of my workflow using emacs
 
 * Personal configuration
 
-todo..
+Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
+consider to import https://github.com/dzop/emacs-jupyter?
 
 * Reference
 

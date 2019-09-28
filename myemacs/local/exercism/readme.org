@@ -19,21 +19,9 @@ I think is outdated. Lots of function are not worked today
   
   - other function need to wait for the apis be pulic...
     
-* Questions
-
-** defgroup
-** defcusom
-
-https://www.gnu.org/software/emacs/manual/html_node/elisp/Customization-Types.html
-** when to use autoload
-** why define a minor mode
-
-* Reference
+* References
 
   - [[http://www.modernemacs.com/][an blog with some elisp thought]]
   - http://www.modernemacs.com/post/prettify-mode/
   - https://github.com/canweriotnow/exercism-emacs/blob/master/exercism.el
 
-* Footnotes
-
-look up how to use org's footnotes function
