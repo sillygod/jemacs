@@ -3,14 +3,18 @@
 Let's start to customize your emacs
 
 * Install
+  
+Clone this repo to the =~/.emacs.d/private=
 
 #+begin_src shell
 git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
 #+end_src
 
+or you can create a soft link to the folder.
+
 * Description
   
-This is an enhancement of my workflow using emacs
+This is an enhancement of my workflow with emacs
 
 * Personal configuration
 

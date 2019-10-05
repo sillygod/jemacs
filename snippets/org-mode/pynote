@@ -1,0 +1,39 @@
+#key : pynote
+#name : Python Notebook
+#contributor : Jing <sillygod@livemail.tw>
+# --
+#+TITLE: $1
+#+DESCRIPTION: $2
+#+PROPERTY: header-args:python :session py3.6
+#+PROPERTY: header-args :results output
+#+PROPERTY: header-args+ :exports both
+
+
+* Setup Eval Env
+
+#+begin_src elisp :session py3.6 :results silent :exports none
+(pyvenv-activate "~/miniconda2/envs/py3.6")
+#+end_src
+
+#+RESULTS:
+
+#+begin_src python :exports none
+import sys
+print(sys.version)
+#+end_src
+
+#+RESULTS:
+: 3.6.4 |Anaconda, Inc.| (default, Jan 16 2018, 12:04:33)
+: [GCC 4.2.1 Compatible Clang 4.0.1 (tags/RELEASE_401/final)]
+
+* ${3:Start your new section here}
+* File Local Varaibles
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:
+
+# ;;; -*- org-confirm-babel-evaluate: nil; -*-
+# Note it seems that need to put this to the end of file...
+# ok! the above two way can customize the variable in this local file
+# and we can set the global shared property!
+
