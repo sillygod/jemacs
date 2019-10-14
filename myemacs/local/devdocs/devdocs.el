@@ -1,6 +1,8 @@
 ;; devdocs.el --- Quick doc search on devdocs.io -*- lexical-binding: t; -*-
 ;; To use, type M-x devdocs-look-up
 
+;; you can M-x custom-group and input "emcas" to see the all groups
+;; https://www.gnu.org/software/emacs/manual/html_node/emacs/Customization-Groups.html#Customization-Groups
 (defgroup devdocs nil
   "Search doc by devdocs."
   :group 'external)
@@ -13,7 +15,7 @@
   :type 'string
   :group 'devdocs)
 
-
+;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Customization-Types.html#Customization-Types
 (defcustom devdocs-alist
   '((c-mode . "c")
     (c++-mode . "c++")

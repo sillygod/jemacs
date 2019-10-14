@@ -10,7 +10,7 @@ Clone this repo to the =~/.emacs.d/private=
 git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
 #+end_src
 
-or you can create a soft link to the folder.
+or you can clone to other position and then create a soft link to the directory.
 
 * Description
   
@@ -19,9 +19,10 @@ This is an enhancement of my workflow with emacs
 * Personal configuration
 
 Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
-consider to import https://github.com/dzop/emacs-jupyter?
 
 * Reference
+  
+Here are some tutorials.
 
 - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
 - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
