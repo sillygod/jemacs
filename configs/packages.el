@@ -2,7 +2,7 @@
   '(
     evil
     python
-    go))
+    go-mode))
 
 (defun configs/post-init-evil ()
   ;; the spacemacs use the evil-escape pacakge to acheive the 'evil-force-normal-state'
@@ -12,11 +12,12 @@
   (setq-default evil-escape-delay 0.1))
 
 
-(defun configs/pre-init-go ()
+(defun configs/post-init-go-mode ()
   (setq go-format-before-save t))
 
-(defun configs/post-init-go ()
-  (evil-define-key 'normal go-mode-map (kbd "g i") 'lsp-find-implementation))
+(defun configs/post-init-go-mode ()
+  (evil-define-key 'normal go-mode-map (kbd "g i") 'lsp-find-implementation)
+  (evil-define-key 'normal go-mode-map (kbd "g d") 'lsp-find-definition))
 
 (defun configs/post-init-python ()
   (add-hook 'before-save-hook

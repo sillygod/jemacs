@@ -1,6 +1,6 @@
-#key : <pynote
-#name : Python Notebook
-#contributor : Jing <sillygod@livemail.tw>
+# key : <pynote
+# name : Python Notebook
+# contributor : Jing <sillygod@livemail.tw>
 # --
 #+TITLE: $1
 #+DESCRIPTION: $2
@@ -9,7 +9,7 @@
 #+PROPERTY: header-args+ :exports both
 
 
-* Setup Eval Env
+* Setup Eval Env    :noexport:
 
 #+begin_src elisp :session py3.6 :results silent :exports none
 (pyvenv-activate "~/miniconda2/envs/py3.6")
@@ -27,9 +27,10 @@ print(sys.version)
 : [GCC 4.2.1 Compatible Clang 4.0.1 (tags/RELEASE_401/final)]
 
 * ${3:Start your new section here}
-* File Local Varaibles
+* File Local Varaibles    :noexport:
 # Local Variables:
 # org-confirm-babel-evaluate: nil
+# org-export-babel-evaluate: nil
 # End:
 
 # ;;; -*- org-confirm-babel-evaluate: nil; -*-
