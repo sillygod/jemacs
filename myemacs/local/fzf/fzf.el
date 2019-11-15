@@ -1,5 +1,6 @@
 ;; fzf.el --- Combine fzf's search function -*- lexical-binding: t; -*-
-;;
+;; use the term.el to open the command line interface
+;; We can combine with helm or ivy's interface but we don't consider them currently.
 
 (require 'subr-x)
 
@@ -30,5 +31,6 @@
 
 
 
+;; async-shell-command
 
 (provide 'fzf)

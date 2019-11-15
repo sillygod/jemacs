@@ -6,7 +6,7 @@
 #+TAGS: layer|misc
 
 # The maximum height of the logo should be 200 pixels.
-[[img/myemacs.png]]
+[[imgs/myemacs.png]]
 
 # TOC links should be GitHub style anchors.
 * Table of Contents                                        :TOC_4_gh:noexport:
