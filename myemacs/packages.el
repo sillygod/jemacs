@@ -35,6 +35,8 @@
     (elisp-demos :location (recipe :repo "xuchunyang/elisp-demos"
                                    :fetcher github
                                    :files ("*.el" "*.org")))
+    (company-tabnine)
+    (hideshow)
     (exercism :location local)
     (devdocs :location local))
   "The list of Lisp packages required by the myemacs layer.
@@ -66,6 +68,23 @@ Each entry is either:
 
 
 ;;; packages.el ends here
+
+(defun myemacs/init-company-tabnine ()
+  (use-package company-tabnine
+    :ensure t
+    ))
+
+(defun myemacs/post-init-company-tabnine()
+  (with-eval-after-load 'company
+    (add-to-list 'company-backends #'company-tabnine)
+    (setq company-show-numbers t)
+    (setq company-idle-delay 0)))
+
+;;; set up the hideshow mode
+
+(defun myemacs/init-hideshow()
+  (use-package hideshow
+    :hook ((prog-mode . hs-minor-mode))))
 
 ;;; my exercism package
 

@@ -1,6 +1,6 @@
 * Customize your spacemacs
 
-Let's start to customize your emacs
+Let's start to customize your spacemacs
 
 * Install
   
@@ -27,3 +27,4 @@ Here are some tutorials.
 - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
 - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
 - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
+- https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow 
