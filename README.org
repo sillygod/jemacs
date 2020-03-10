@@ -10,7 +10,7 @@ Clone this repo to the =~/.emacs.d/private=
 git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
 #+end_src
 
-or you can clone to other position and then create a soft link to the directory.
+or you can clone to other directory and then create a soft link to the directory.
 
 * Description
   
@@ -27,4 +27,5 @@ Here are some tutorials.
 - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
 - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
 - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
-- https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow 
+- https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
+- https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode

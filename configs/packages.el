@@ -3,8 +3,8 @@
     evil
     python
     conda
-    dap-go
     dap-mode
+    diff-hl
     go-mode))
 
 (defun configs/post-init-evil ()
@@ -14,9 +14,7 @@
   (setq-default evil-escape-unordered-key-sequence t)
   (setq-default evil-escape-delay 0.1))
 
-
 (defun configs/post-init-go-mode ()
-  (use-package dap-go)
   (setq go-format-before-save t))
 
 (defun configs/post-init-go-mode ()
@@ -26,6 +24,14 @@
 
 (defun configs/pre-init-dap-mode ()
   (add-to-list 'spacemacs--dap-supported-modes 'go-mode))
+
+(defun configs/pre-init-diff-hl ()
+  (let* ((height (frame-char-height))
+         (width 2)
+         (ones (1- (expt 2 width)))
+         (bits (make-vector height ones)))
+    (define-fringe-bitmap 'my-diff-hl-bitmap bits height width))
+  (setq diff-hl-fringe-bmp-function (lambda (type pos) 'my-diff-hl-bitmap)))
 
 (defun configs/post-init-python ()
   ;;   (add-hook 'before-save-hook
