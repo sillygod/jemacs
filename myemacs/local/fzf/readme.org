@@ -13,3 +13,5 @@ To intergrate fzf's search function into emacs.
 | #<window 132 on readme.org> | #<window 209> | #<window 208 on *Process List*> | #<window 161 on fzf.el> | #<window 190 on *ielm*> |
 
 Well, I don't know if there is anyway to bring the invisible window to the front
+
+https://github.com/bling/fzf.el/blob/master/fzf.el
