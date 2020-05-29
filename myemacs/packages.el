@@ -35,8 +35,13 @@
     (elisp-demos :location (recipe :repo "xuchunyang/elisp-demos"
                                    :fetcher github
                                    :files ("*.el" "*.org")))
+
+    (org-roam :location (recipe :repo "org-roam/org-roam" :fetcher github :branch "master"))
+    (org-roam-server)
+    (org)
     (company-tabnine)
     (hideshow)
+    (ob-mermaid)
     (exercism :location local)
     (devdocs :location local))
   "The list of Lisp packages required by the myemacs layer.
@@ -68,6 +73,38 @@ Each entry is either:
 
 
 ;;; packages.el ends here
+
+(defun myemacs/init-org-roam()
+  (use-package org-roma
+    :after org
+    :hook
+    ((org-mode . org-roam-mode)
+     (after-init . org-roam--build-cache-async) ;; optional
+     )
+    :custom
+    (org-roam-directory "~/Dropbox/myorgs/to_be_architecter")
+    :config
+    (require 'org-roam-protocol)
+    :init
+    (progn
+      (spacemacs/declare-prefix "ar" "org-roam")
+      (spacemacs/set-leader-keys
+       "arl" 'org-roam
+       "arf" 'org-roam-find-file
+       "arg" 'org-roam-show-graph))))
+
+(defun myemacs/init-org-roam-server()
+  (use-package org-roam-server
+    :custom
+    (org-roam-server-port 9487)
+    :ensure t))
+
+(defun myemacs/post-init-org()
+  (spacemacs|use-package-add-hook org
+    :post-config (add-to-list 'org-babel-load-languages '(mermaid . t))))
+
+(defun myemacs/init-ob-mermaid ()
+  (use-package ob-mermaid))
 
 (defun myemacs/init-company-tabnine ()
   (use-package company-tabnine
