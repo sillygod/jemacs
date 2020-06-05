@@ -75,7 +75,7 @@ Each entry is either:
 ;;; packages.el ends here
 
 (defun myemacs/init-org-roam()
-  (use-package org-roma
+  (use-package org-roam
     :after org
     :hook
     ((org-mode . org-roam-mode)
