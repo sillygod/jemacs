@@ -10,7 +10,8 @@ Clone this repo to the =~/.emacs.d/private=
 git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
 #+end_src
 
-or you can clone to other directory and then create a soft link to the directory.
+or you can clone to other directory and then create a soft link to the directory. 
+Choose the way you like
 
 * Description
   

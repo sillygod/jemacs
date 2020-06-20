@@ -39,6 +39,7 @@
     (org-roam :location (recipe :repo "org-roam/org-roam" :fetcher github :branch "master"))
     (org-roam-server)
     (org)
+    (org-noter)
     (company-tabnine)
     (hideshow)
     (ob-mermaid)
@@ -90,8 +91,25 @@ Each entry is either:
       (spacemacs/declare-prefix "ar" "org-roam")
       (spacemacs/set-leader-keys
        "arl" 'org-roam
+       "ari" 'org-roam-insert
        "arf" 'org-roam-find-file
        "arg" 'org-roam-show-graph))))
+
+(defun myemacs/init-org-noter()
+  (use-package org-noter
+    :after org
+    :config
+    (setq org-noter-always-create-frame nil
+          org-noter-insert-note-no-questions t
+          org-noter-separate-notes-from-heading t
+          org-noter-auto-save-last-location t)
+
+    (defun org-noter-init-pdf-view()
+      (pdf-view-fit-page-to-window)
+      (pdf-view-auto-slice-minor-mode)
+      (run-at-time "0.5 sec" nil #'org-noter))
+
+    (add-hook 'pdf-view-mode-hook 'org-noter-init-pdf-view)))
 
 (defun myemacs/init-org-roam-server()
   (use-package org-roam-server

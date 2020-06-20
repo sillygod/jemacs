@@ -36,6 +36,7 @@ Powered by the howdoi"
   (base64-decode-string (decode-coding-string content 'utf-8)))
 
 (defun now ()
+  "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info"
   (interactive)
   (message (format-time-string "%Y-%m-%d %H:%m %z")))
 
@@ -56,3 +57,17 @@ Powered by the howdoi"
   (save-excursion
     (end-of-line)
     (hs-toggle-hiding)))
+
+(require 'tramp)
+;; try to make the tramp to be compatible with the gcloud ssh
+(add-to-list 'tramp-methods
+             '("gcssh"
+               (tramp-login-program "gcloud compute ssh")
+               (tramp-login-args (("%h")))
+               (tramp-async-args (("-q")))
+               (tramp-remote-shell "/bin/sh")
+               (tramp-remote-shell-args ("-c"))
+               (tramp-gw-args (("-o" "GlobalKnownHostsFile=/dev/null")
+                               ("-o" "UserKnownHostsFile=/dev/null")
+                               ("-o" "StrictHostKeyChecking=no")))
+               (tramp-default-port 22)))
