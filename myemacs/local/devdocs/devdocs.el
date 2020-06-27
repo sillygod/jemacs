@@ -1,14 +1,14 @@
 ;; devdocs.el --- Quick doc search on devdocs.io -*- lexical-binding: t; -*-
-;; To use, type M-x devdocs-look-up
+;; To use, type M-x devdocs-search
 
-;; you can M-x custom-group and input "emcas" to see the all groups
+;; you can M-x custom-group and input "emaca" to see the all groups
 ;; https://www.gnu.org/software/emacs/manual/html_node/emacs/Customization-Groups.html#Customization-Groups
 (defgroup devdocs nil
   "Search doc by devdocs."
   :group 'external)
 
-;; Emacs' groups has the hierarchy concept so the above define a group named
-;; devdocs and is a child of external group
+;; Emacs' groups has the hierarchy concept so the above define a group named devdocs
+;; and is a child of external group
 
 (defcustom devdocs-url "https://devdocs.io"
   "the url of devdocs.io"

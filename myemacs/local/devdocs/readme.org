@@ -1,6 +1,6 @@
 * Devdocs
 
-To provide a quick documentation look up feature for emacs. =devdocs-look-up= will open the browser and show the search result on the devdocs.io.
+To provide a quick documentation look up feature for emacs. =devdocs-search= will open the browser and show the search result on the devdocs.io.
 
 * References
   

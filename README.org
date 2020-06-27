@@ -1,32 +1,70 @@
 * Customize your spacemacs
 
-Let's start to customize your spacemacs
+  Let's start to customize your spacemacs
 
 * Install
   
-Clone this repo to the =~/.emacs.d/private=
+  Clone this repo to the =~/.emacs.d/private=
 
-#+begin_src shell
-git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
-#+end_src
+  #+begin_src shell
+    git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
+  #+end_src
 
-or you can clone to other directory and then create a soft link to the directory. 
-Choose the way you like
+  or you can clone to other directory and then create a soft link to the directory. 
+  Choose the way you like
 
 * Description
   
-This is an enhancement of my workflow with emacs
+  This is an enhancement of my workflow with emacs
 
 * Personal configuration
 
-Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
+  Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
+
+* Notes
+ 
+** Advice vs Hook 
+   https://www.emacswiki.org/emacs/AdviceVsHooks
+  
+** defcustom vs defvar
+   Defcustom provide a more user-friendly customization with the built-in function =customize=.
+   
+** define-derived-mode
+   We can define the major mode by this function.
+   
+** call-process
+   What's the difference from the =shell-command=. =start-process= is aync.
+   
+   This will be freezed because the process will not stop.
+   #+BEGIN_SRC emacs-lisp
+     (let ((buffer "*test-git*"))
+       (call-process "ping" nil buffer nil "-t" "google.com")
+       (switch-to-buffer buffer))
+   #+END_SRC
+
+   
+   This will be ok.
+   #+BEGIN_SRC emacs-lisp
+     (let ((buffer "*test-git*"))
+       (start-process "git" buffer "ping" "-t" "google.com")
+       (switch-to-buffer buffer))
+   #+END_SRC
+
+   #+RESULTS:
+   : #<buffer *test-git*>
+
+** define transient function
+   https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
 
 * Reference
   
-Here are some tutorials.
+  Here are some tutorials.
 
-- [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
-- [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
-- https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
-- https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
-- https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
+  - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
+  - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
+  - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
+  - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
+  - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
+  - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
+
+
