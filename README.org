@@ -61,10 +61,9 @@
   Here are some tutorials.
 
   - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
+  - https://github.com/alhassy/emacs.d/blob/master/README.org
   - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
   - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
   - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
-
-
