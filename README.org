@@ -36,17 +36,17 @@
    What's the difference from the =shell-command=. =start-process= is aync.
    
    This will be freezed because the process will not stop.
-   #+BEGIN_SRC emacs-lisp
+   #+BEGIN_SRC elisp
      (let ((buffer "*test-git*"))
-       (call-process "ping" nil buffer nil "-t" "google.com")
+       (call-process "ping" nil buffer nil "google.com")
        (switch-to-buffer buffer))
    #+END_SRC
 
    
    This will be ok.
-   #+BEGIN_SRC emacs-lisp
+   #+BEGIN_SRC elisp
      (let ((buffer "*test-git*"))
-       (start-process "git" buffer "ping" "-t" "google.com")
+       (start-process "git" buffer "ping" "google.com")
        (switch-to-buffer buffer))
    #+END_SRC
 
@@ -54,7 +54,89 @@
    : #<buffer *test-git*>
 
 ** define transient function
-   https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
+   ref: https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
+
+*** basic transient 
+   #+begin_src elisp
+     (defun just-echo ()
+       (interactive)
+       (message "hello"))
+
+     (define-transient-command test-transient ()
+       "This is the doc"
+       ["Action"
+        ("a" "Action a" just-echo)
+        ("s" "Action a" just-echo)
+        ("d" "Action a" just-echo)])
+
+     (test-transient)
+   #+end_src
+
+   #+RESULTS:
+   | transient--resume-which-key-mode |
+
+*** transient with switches
+    
+    #+begin_src elisp
+      (defun just-echo (&optional args)
+        (interactive (list (transient-args 'test-transient)))
+        (message "args: %s" args))
+
+      (define-transient-command test-transient ()
+        "This is the doc"
+        ["Arguments"
+         ("-s" "Switch" "--switch")
+         ("-a" "Annotate" "--annotate")]
+        ["Action"
+         ("a" "Action a" just-echo)
+         ("s" "Action a" just-echo)
+         ("d" "Action a" just-echo)])
+
+      (test-transient)
+    #+end_src
+
+    #+RESULTS:
+    | transient--resume-which-key-mode |
+    
+*** transient with params
+    
+    #+begin_src elisp
+      (defun just-echo (&optional args)
+        (interactive (list (transient-args 'test-transient)))
+        (message "args: %s" args))
+
+      (define-infix-argument test-transient:--message ()
+        :description "Messages"
+        :class 'transient-option
+        :shortarg "-m"
+        :argument "--message=")
+
+      (define-transient-command test-transient ()
+        "This is the doc"
+        ["Arguments"
+         ("-s" "Switch" "--switch")
+         ("-a" "Annotate" "--annotate")
+         (test-transient:--message)]
+        ["Action"
+         ("a" "Action a" just-echo)
+         ("s" "Action a" just-echo)
+         ("d" "Action a" just-echo)])
+
+      (test-transient)
+
+    #+end_src 
+
+    #+RESULTS:
+    | transient--resume-which-key-mode |
+
+** how to define a keymap for a certain mode
+   
+   #+begin_src elisp
+     ;; example
+     (defvar xx-mode-map
+       (let ((map (make-sparse-keymap)))
+         (define-key map (kbd "l") 'kubernete-transient) map))
+   #+end_src
 
 * Reference
   
@@ -67,3 +149,6 @@
   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
   - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
+  - https://github.com/xiongtx/eros (interesting plugins)
+  - https://endlessparentheses.com/
+  - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
