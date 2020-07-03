@@ -79,9 +79,7 @@ Each entry is either:
   (use-package org-roam
     :after org
     :hook
-    ((org-mode . org-roam-mode)
-     (after-init . org-roam--build-cache-async) ;; optional
-     )
+    ((org-mode . org-roam-mode))
     :custom
     (org-roam-directory "~/Dropbox/myorgs/to_be_architecter")
     :config
@@ -93,7 +91,7 @@ Each entry is either:
        "arl" 'org-roam
        "ari" 'org-roam-insert
        "arf" 'org-roam-find-file
-       "arg" 'org-roam-show-graph))))
+       "arg" 'org-roam-graph))))
 
 (defun myemacs/init-org-noter()
   (use-package org-noter
@@ -109,6 +107,11 @@ Each entry is either:
       (pdf-view-auto-slice-minor-mode)
       (run-at-time "0.5 sec" nil #'org-noter))
 
+    (defun org-noter-init-epub-view()
+      "what the fuck"
+      ())
+
+    (add-hook 'nov-mode-hook 'org-noter-init-epub-view)
     (add-hook 'pdf-view-mode-hook 'org-noter-init-pdf-view)))
 
 (defun myemacs/init-org-roam-server()
