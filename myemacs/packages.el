@@ -40,7 +40,9 @@
     (org-roam-server)
     (org)
     (org-noter)
+    (ox-reveal)
     (company-tabnine)
+    (gomacro-mode)
     (hideshow)
     (ob-mermaid)
     (exercism :location local)
@@ -75,6 +77,10 @@ Each entry is either:
 
 ;;; packages.el ends here
 
+(defun myemacs/init-gomacro-mode()
+  (use-package gomacro-mode
+    :hook (go-mode . gomacro-mode)))
+
 (defun myemacs/init-org-roam()
   (use-package org-roam
     :after org
@@ -92,6 +98,10 @@ Each entry is either:
        "ari" 'org-roam-insert
        "arf" 'org-roam-find-file
        "arg" 'org-roam-graph))))
+
+(defun myemacs/init-ox-reveal ()
+  (use-package ox-reveal
+    :after org))
 
 (defun myemacs/init-org-noter()
   (use-package org-noter

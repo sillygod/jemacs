@@ -1,0 +1,14 @@
+# key : gotestsuite
+# name : Go test suite
+# contributor: Jing <sillygod@livemail.tw>
+# --
+type ${1:NameTestSuite} struct {
+    suite.Suite
+}
+
+func (suite *$1) SetupSuite() {
+
+}
+
+func (suite *$1) TearDownSuite() {
+}

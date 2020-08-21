@@ -35,10 +35,16 @@ Powered by the howdoi"
   (interactive)
   (base64-decode-string (decode-coding-string content 'utf-8)))
 
+(defun copy-region-and-urlencode (start end)
+  (interactive "r")
+  (let ((x (url-hexify-string
+            (buffer-substring start end))))
+  (kill-new x)))
+
 (defun now ()
   "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info"
   (interactive)
-  (message (format-time-string "%Y-%m-%d %H:%m %z")))
+  (message "now: %s \n timestamp: %s" (format-time-string "%Y-%m-%d %H:%m %z") (format-time-string "%s")))
 
 (defun myemacs-change-tag (old new)
   (when (member old (org-get-tags))

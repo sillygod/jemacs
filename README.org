@@ -152,3 +152,4 @@
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://endlessparentheses.com/
   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
+  - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
