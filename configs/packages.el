@@ -3,6 +3,7 @@
     evil
     python
     conda
+    dired
     dap-mode
     diff-hl
     go-mode))
@@ -13,6 +14,10 @@
   (setq-default evil-escape-key-sequence "jk")
   (setq-default evil-escape-unordered-key-sequence t)
   (setq-default evil-escape-delay 0.1))
+
+(defun configs/post-init-dired ()
+  "make the dired buffer auto refresh"
+  (setq dired-auto-revert-buffer t))
 
 (defun configs/post-init-go-mode ()
   (setq go-format-before-save t))
