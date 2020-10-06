@@ -1,0 +1,37 @@
+* Start to build my own emacs
+  
+** things needed to be done or enahnced
+
+   - [X] set up auto complete package
+   - [X] set the position for loading snippet
+   - [X] make counsel-find-file with under cursor ability
+   - [X] evil, evil org
+   - [X] add pretty wrap for org mode
+   - [X] yaml-mode, json-mode, go-mode, python-mode
+   - [X] add jump window by number function
+   - [ ] add package =perspective=
+   - [ ] add python virtualenv detector
+   - [ ] key alias =,= as =SPC m=
+   - [ ] shortcut for org mode like: org-open-at-point, =, ,= to quick check
+   - [ ] to check why my config will not auto add timestamp after making a toto item complete
+   - [ ] font customization
+   - [ ] make cursor move to the lsp-help window when open it
+   - [ ] manage this config by literate programming way
+   - [ ] to understand the source code of some implementation from =spacemacs=
+   - [ ] what does the =command= in the use-package do
+   - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
+  
+  #+begin_src bash
+    emacs -Q --load init.el
+  #+end_src
+
+  reference: https://www.youtube.com/watch?v=xaZMwNELaJY
+
+
+* Reference
+
+   - https://www.youtube.com/watch?v=74zOY-vgkyw&list=WL&index=32&t=486s (custom emacs from scratch)
+   - https://gist.github.com/yaodong/532e5b31781724ea2566503edcc498c3 (build your own spacemacs)
+   - https://github.com/daviwil/dotfiles 
+   - https://ladicle.com/post/config/ 
+   - [[https://sam217pa.github.io/2016/09/02/how-to-build-your-own-spacemacs/][how to build your own spacemacs]]

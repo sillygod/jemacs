@@ -139,29 +139,23 @@
          (define-key map (kbd "l") 'kubernete-transient) map))
    #+end_src
    
-* Start to build my own emacs
-  
-  reference: https://www.youtube.com/watch?v=xaZMwNELaJY
 
 * Reference
-  
-  Here are some tutorials.
-  I put some notes on the =spacemacs_tips.org=
 
-  - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
-  - https://github.com/alhassy/emacs.d/blob/master/README.org
-  - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
-  - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
-  - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
-  - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
-  - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
-  - https://github.com/xiongtx/eros (interesting plugins)
-  - https://endlessparentheses.com/
-  - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
-  - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
-  - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
-  - https://www.youtube.com/watch?v=74zOY-vgkyw&list=WL&index=32&t=486s (custom emacs from scratch)
-  - https://gist.github.com/yaodong/532e5b31781724ea2566503edcc498c3 (build your own spacemacs)
-  - [[https://sam217pa.github.io/2016/09/02/how-to-build-your-own-spacemacs/][how to build your own spacemacs]]
+ Here are some tutorials.
+ I put some notes on the =spacemacs_tips.org=
 
-    
+   - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
+   - https://github.com/alhassy/emacs.d/blob/master/README.org
+   - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
+   - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
+   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
+   - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
+   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
+   - https://github.com/xiongtx/eros (interesting plugins)
+   - https://endlessparentheses.com/
+   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
+   - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
+   - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
+
+     
