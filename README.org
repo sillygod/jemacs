@@ -139,7 +139,6 @@
          (define-key map (kbd "l") 'kubernete-transient) map))
    #+end_src
    
-
 * Reference
 
  Here are some tutorials.

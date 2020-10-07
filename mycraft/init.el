@@ -59,6 +59,8 @@
 (setq use-package-always-ensure t)
 
 
+;; -- UI related
+
 (use-package doom-themes
   :init (load-theme 'doom-one t))
 
@@ -68,12 +70,24 @@
 (use-package highlight-parentheses
   :hook (prog-mode . highlight-parentheses-mode))
 
+(use-package hl-todo
+  :defer t
+  :hook
+  (text-mode . hl-todo-mode)
+  (prog-mode . hl-todo-mode))
+
+;; need some customization here.
+(use-package diff-hl
+  :config
+  (global-diff-hl-mode)
+  :defer t)
+
 (use-package perspective
   :config
   (persp-mode))
 
-(use-package nginx-mode
-  :defer t)
+
+
 
 (use-package which-key
   :diminish which-key-mode
@@ -86,24 +100,70 @@
   :init (doom-modeline-mode 1)
   :custom ((doom-modeline-height 15)))
 
+;; ----------------------------------------------------------------
+
+
+(use-package nginx-mode
+  :defer t)
+
+(use-package docker
+  :defer t)
+  
+(use-package docker-tramp
+  :defer t)
+
+(use-package dockerfile-mode
+  :defer t)
 
 (use-package swiper
   :ensure t
   :bind (("C-s" . swiper))
   )
 
+;; TODO: search why there should append a suffix ='= for the mod
+(use-package jinja2-mode
+  :defer t
+  :mode ("\\.j2\\'" . jinja2-mode))
+
+(use-package js2-mode
+  :after (rainbow-delimiters)
+  :defer t
+  :hook
+  (rainbow-delimiters-mode . js2-mode-hook)
+  :config
+  (setq js2-mode-show-parse-errors nil)
+  (setq js2-mode-show-strict-warnings nil)
+  (js2-minor-mode))
+
 ;; some customize functions
+
+(defun kill-this-buffer (&optional arg)
+  "Kill the current buffer.
+ARG is an universal arg which will kill the window as well.
+If the universal prefix argument is used then kill also the window."
+  (interactive "P")
+  (if (window-minibuffer-p)
+      (abort-recursive-edit)
+    (if (equal '(4) arg)
+        (kill-buffer-and-window)
+      (kill-buffer))))
+
 
 (defun evil-smart-doc-lookup ()
   "Run documentation lookup command specific to the major mode.
 Use command bound to `SPC m h h` if defined, otherwise fall back
 to `evil-lookup'"
   (interactive)
-  (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
-    (print (key-binding (kbd (concat "SPC" " mhh"))))
-    (if (commandp binding)
-	(call-interactively binding)
-      (evil-lookup))))
+  ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
+  (when (fboundp 'lsp-describe-thing-at-point)
+    (lsp-describe-thing-at-point)
+    (eivl-lookup)))
+
+  ;; (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
+  ;;   (print (key-binding (kbd (concat "SPC" " mhh"))))
+  ;;   (if (commandp binding)
+  ;; 	(call-interactively binding)
+  ;;     (evil-lookup))))
 
 
 (defun comment-or-uncomment-lines (&optional arg)
@@ -120,6 +180,10 @@ to `evil-lookup'"
     ((eq major-mode 'org-mode) 'counsel-org-goto)
     (t 'counsel-imenu))))
 
+(defun avy-jump-url ()
+  "Use avy to go to url in the buffer."
+  (interactive)
+  (avy-jump "https?://"))
 
 (defun load-yasnippet ()
   "Ensure yasnippet is enbled."
@@ -214,6 +278,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   (define-key evil-normal-state-map (kbd "K") 'evil-smart-doc-lookup)
   (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup)
 
+  (with-eval-after-load 'org
+    ;; define key open-thing-at-point with enter
+    )
 
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
@@ -226,11 +293,15 @@ If the error list is visible, hide it.  Otherwise, show it."
     :keymaps 'override
     :prefix "SPC m")
 
+  ;; keybinding for go-mode
+
   (my-local-leader-def
     :states '(normal visual emacs)
     :keymaps 'go-mode-map
-    "" '(:keymap lsp-command-map :which-key "major mode")
-    "e" '((lambda () (message "hi")) :which-key "gomacro"))
+    "" '(:keymap lsp-command-map)
+    "e" '(gomacro-run :which-key "gomacro"))
+
+  ;; TODO: change the prefix of +lsp
 
   ;; the following one doesn't work
   ;; (general-create-definer alias-local-def
@@ -268,7 +339,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (my-leader-keys
     "SPC" 'counsel-M-x
     "/" 'counsel-projectile-rg
-    "v" 'er/expand-region)
+    "v" 'er/expand-region
+    "?" 'counsel-descbinds)
 
   ;; which-key-replacement-alist
   ;; change the content of the above variable
@@ -294,6 +366,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (my-leader-keys
     "j" '(:ignore t :which-key "jump")
     "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
+    "ju" '(avy-jump-url :which-key "goto url")
+    "jl" '(avy-goto-line :which-key "goto line")
     "ji" '(counsel-jump-in-buffer :which-key "imenu"))
 
   (my-leader-keys
@@ -303,6 +377,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   (my-leader-keys
     "b" '(:ignore t :which-key "buffer")
     "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
+    "bd" '(kill-this-buffer :which-key "kill-buffer")
     "bB" '(counsel-switch-buffer :which-key "list-buffer")
     "bn" '(next-buffer :which-key "next-buffer")
     "bp" '(previous-buffer :which-key "previous-buffer"))
@@ -317,7 +392,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "i" '(:ignore t :which-key "insert")
-    "i s" '(ivy-yas :which-key "snippets"))
+    "is" '(ivy-yas :which-key "snippets"))
 
   (my-leader-keys
     "p" '(:ignore t :which-key "project")
@@ -481,7 +556,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; package-refresh-contents
 (use-package vterm)
 
-(use-package avy)
+(use-package avy
+  :config
+  (setq avy-background t))
 
 ;; company-mode setup
 
@@ -527,10 +604,19 @@ If the error list is visible, hide it.  Otherwise, show it."
   (when (listp flycheck-global-modes)
     (add-to-list 'flycheck-global-modes 'yaml-mode)))
 
+(use-package gomacro-mode
+  :hook (go-mode . gomacro-mode))
+
+(use-package company-tabnine
+  :config
+  (with-eval-after-load 'company
+    (add-to-list 'company-backends #'company-tabnine)
+    (setq company-show-numbers t)
+    (setq company-idle-delay 0.05)))
 
 (use-package lsp-mode
   :init
-  (setq lsp-keymap-prefix "SPC m")
+  (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
   :hook
   (go-mode . lsp)
   (lsp-mode . lsp-enable-which-key-integration)
@@ -557,6 +643,8 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; by default, you need to press M-RET to add a
 ;; auto-numbering list
+;; this will has some agenda mode binding..
+;; TODO: find a way to remove?
 (use-package evil-org
   :ensure t
   :after org
