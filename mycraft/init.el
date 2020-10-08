@@ -3,9 +3,18 @@
 ;;; Commentary:
 
 ;;; Code:
+
+
+;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
+
+;;  goto-address-prog-mode
+(fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
+(setq column-number-mode t)
 (setq make-backup-files nil)
-(setq org-startup-truncated nil)
+
+;; this can make cursor in the help window at first when poping up a help window
+(setq help-window-select t)
 (setf epa-pinentry-mode 'loopback)
 (setq epa-file-encrypt-to '("sillygod"))
 
@@ -19,6 +28,8 @@
 (tool-bar-mode -1)
 (menu-bar-mode -1)
 (set-fringe-mode 5)
+
+(toggle-frame-maximized)
 
 ;; https://github.com/tonsky/FiraCode
 ;; optional font
@@ -58,8 +69,13 @@
 
 (setq use-package-always-ensure t)
 
+;; enable link in comments can be click
+(add-hook 'prog-mode-hook 'goto-address-prog-mode)
+(add-hook 'before-save-hook 'delete-trailing-whitespace)
 
 ;; -- UI related
+
+(add-hook 'prog-mode-hook 'hl-line-mode)
 
 (use-package doom-themes
   :init (load-theme 'doom-one t))
@@ -87,8 +103,6 @@
   (persp-mode))
 
 
-
-
 (use-package which-key
   :diminish which-key-mode
   :init
@@ -108,7 +122,7 @@
 
 (use-package docker
   :defer t)
-  
+
 (use-package docker-tramp
   :defer t)
 
@@ -128,14 +142,25 @@
 (use-package js2-mode
   :after (rainbow-delimiters)
   :defer t
-  :hook
-  (rainbow-delimiters-mode . js2-mode-hook)
   :config
   (setq js2-mode-show-parse-errors nil)
   (setq js2-mode-show-strict-warnings nil)
   (js2-minor-mode))
 
 ;; some customize functions
+(defvar go-run-command "go run")
+(defvar go-run-args ""
+  "Additional arguments to by supplied to `go run` during runtime.")
+
+
+(defun go-run-main ()
+  (interactive)
+  (shell-command
+   (format (concat go-run-command " %s %s")
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           go-run-args)))
+
 
 (defun kill-this-buffer (&optional arg)
   "Kill the current buffer.
@@ -206,7 +231,6 @@ If the error list is visible, hide it.  Otherwise, show it."
     (flycheck-list-errors)))
 
 
-
 (defun toggle-maximize-buffer ()
   "Maximize buffer."
   (interactive)
@@ -250,48 +274,70 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   ;; keysmaps override is to make general-define-key to be global scope
   ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
-  
+
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
 
+  (message "DEBUG: !! general init")
+
   (general-create-definer my-leader-keys
-    :states '(normal insert visual motion emacs)
+    :states '(normal visual motion emacs)
     :keymaps 'override
-    :non-normal-prefix "C-S-SPC"
-    :prefix leader-key
-    :global-prefix "C-SPC")
+    :prefix leader-key)
 
-  ;;  (general-create-definer my-local-leader-def
-  ;;    ;; :prefix my-local-leader
-  ;;    :states '(normal visual emacs)
-  ;;    :prefix "SPC m")
-  ;; I find another way to mimic the major leader key
+  (general-create-definer my-local-leader-def
+    :states '(normal visual emacs)
+    :keymaps 'override
+    :prefix major-mode-leader-key)
 
+  (general-create-definer my-local-leader-def-alias
+    :states '(normal visual emacs)
+    :keymaps 'override
+    :prefix ",")
 
   ;; TODO: create an alias =,= -> =SPC m=
   ;; (evil-define-key 'normal lsp-mode-map (kbd "SPC m") lsp-command-map)
   ;; maybe I can extract the key-map, rearrange it and assign
 
-  ;; (evil-define-key 'normal evil-normal-state-map (kbd "K") 'evil-smart-doc-lookup)
-  ;; why this will work?
-
   (define-key evil-normal-state-map (kbd "K") 'evil-smart-doc-lookup)
   (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup)
 
+  ;; unbind some keybinding in the package 'evil-org
+  (with-eval-after-load 'evil-org
+
+    (evil-define-key 'motion org-agenda-mode-map (kbd "sc") nil)
+    (evil-define-key 'motion org-agenda-mode-map (kbd "sr") nil)
+    (evil-define-key 'motion org-agenda-mode-map (kbd "se") nil)
+    (evil-define-key 'motion org-agenda-mode-map (kbd "st") nil)
+    (evil-define-key 'motion org-agenda-mode-map (kbd "s^") nil)
+    (evil-define-key 'motion org-agenda-mode-map (kbd "ss") nil)
+
+    (evil-define-key 'motion org-agenda-mode-map (kbd "s") 'org-save-all-org-buffers))
+
   (with-eval-after-load 'org
     ;; define key open-thing-at-point with enter
-    )
+    (evil-define-key 'normal org-mode-map (kbd "<return>") 'org-open-at-point)
+    (evil-define-key 'normal prog-mode-map (kbd "<return>") 'org-open-at-point))
+
+
+  ;; this is how spacemacs change the keybinding when edit org source code block
+  ;; (with-eval-after-load 'org-src
+  ;;   (spacemacs/set-leader-keys-for-minor-mode 'org-src-mode
+  ;;     dotspacemacs-major-mode-leader-key 'org-edit-src-exit
+  ;;     "c" 'org-edit-src-exit
+  ;;     "a" 'org-edit-src-abort
+  ;;     "k" 'org-edit-src-abort))
+
 
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
     (kbd "g e") 'copy-region-and-urlencode)
 
 
-  (general-create-definer my-local-leader-def
-    ;; :prefix my-local-leader
-    :states '(normal visual emacs)
-    :keymaps 'override
-    :prefix "SPC m")
+
+  (defun my-define-major-keys (&rest ARGS)
+    ;; mapcar two definer with those key definitions)
+   )
 
   ;; keybinding for go-mode
 
@@ -299,6 +345,8 @@ If the error list is visible, hide it.  Otherwise, show it."
     :states '(normal visual emacs)
     :keymaps 'go-mode-map
     "" '(:keymap lsp-command-map)
+    "x" '(:ignore t :which-key "execute")
+    "xx" '(go-run-main :which-key "go run")
     "e" '(gomacro-run :which-key "gomacro"))
 
   ;; TODO: change the prefix of +lsp
@@ -310,13 +358,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;;   :wrapping my-local-leader-def
   ;;   :prefix ",")
 
-  ;; (general-define-key
-  ;;  :prefix "SPC m"
-  ;;  :states '(normal visual emacs)
-  ;;  :keymaps 'go-mode-map
-  ;;  "" '(:ignore t :which-key "major mode")
-  ;;  "a" 'org-store-link)
-
   (my-local-leader-def
     :states '(normal visual emacs)
     :keymaps 'emacs-lisp-mode-map
@@ -325,12 +366,16 @@ If the error list is visible, hide it.  Otherwise, show it."
     "eb" '(eval-buffer :which-key "eval buffer")
     "er" '(eval-region :which-key "eval region"))
 
-
   (my-local-leader-def
     :states '(normal visual emacs)
     :keymaps 'org-mode-map
     "" '(:ignore t :which-key "major mode")
-    "y" 'org-store-link)
+    "a" 'org-agenda
+    "," 'org-ctrl-c-ctrl-c
+    "'" 'org-edit-special
+    "s" '(:ignore t :which-key "schedule")
+    "ss" '(org-schedule :which-key "org-schedule")
+    "sd" '(org-deadline :which-key "org-deadline"))
 
   ;; (my-leader-keys
   ;;   "m" '(:ignore t :which-key "major mode")
@@ -433,7 +478,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package hydra)
 
 ;; what's the difference between hydra and transient
-(defhydra hydra-text-scale (:timeout 6)
+(defhydra hydra-text-scale (:timeout 8)
   "scale text"
   ("j" text-scale-increase "+")
   ("k" text-scale-decrease "-")
@@ -470,7 +515,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   :init
   (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
 
-
+(use-package evil-surround
+  :ensure t
+  :config
+  (global-evil-surround-mode 1))
 
 (use-package all-the-icons)
 
@@ -540,6 +588,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   :ensure org-plus-contrib
   :pin org)
 
+(use-package ox-reveal
+  :after org)
+
 (use-package org-superstar
   :hook (org-mode . org-superstar-mode))
 
@@ -564,19 +615,11 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (use-package company
   :config
-  (setq company-minimum-prefix-length 1)
-  (setq company-idle-delay 0.01)
+  (setq company-minimum-prefix-length 2)
+  (setq company-idle-delay 0.02)
   (define-key company-active-map (kbd "RET") 'company-complete-selection)
   (global-company-mode))
 
-
-;; (add-hook 'emacs-lisp-mode-hook
-;; 	    (lambda ()
-;; 	      (add-to-list (make-local-variable 'company-backends)
-;;			   '(company-elisp))))
-
-
-;;
 
 (use-package expand-region)
 
@@ -585,6 +628,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package go-mode
   :config
   (progn
+    (setq gofmt-command "goimports")
     (add-hook 'before-save-hook 'gofmt-before-save)))
 
 (use-package flycheck
@@ -612,7 +656,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   (with-eval-after-load 'company
     (add-to-list 'company-backends #'company-tabnine)
     (setq company-show-numbers t)
-    (setq company-idle-delay 0.05)))
+    (setq company-idle-delay 0.1)))
 
 (use-package lsp-mode
   :init
@@ -620,7 +664,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   :hook
   (go-mode . lsp)
   (lsp-mode . lsp-enable-which-key-integration)
-  (python-mode . lsp))
+  (python-mode . lsp)
+  (js-mode . lsp))
 
 (use-package lsp-python-ms
   :after
@@ -672,6 +717,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   ;; TODO: why my config will not auto add timestamp after making a toto item complete
   ;; customize this variable to read all lisp file under a certain directory
+
+  (setq org-log-done 'time)
+  (setq org-startup-truncated nil)
+  (setq org-startup-with-inline-images t)
   (setq org-startup-with-inline-images t)
   (setq-default org-default-notes-file
 		"~/Dropbox/myorgs/todo.org")
@@ -686,7 +735,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; In order to find the org files recursively
   (setq org-agenda-files (directory-files-recursively "~/Dropbox/myorgs/" "\\.org$"))
 
-  ;; to config the org refile 
+  ;; to config the org refile
   (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))
   (setq org-refile-use-outline-path 'file)
   (setq org-outline-path-complete-in-steps nil)

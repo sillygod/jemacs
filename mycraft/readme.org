@@ -1,10 +1,10 @@
 * Configurations
 
   A literal programming for my own emacs configs.
-  
-  
+
+
 * Start to build my own emacs
-  
+
 ** things needed to be done or enahnced
 
    - [X] set up auto complete package
@@ -18,16 +18,19 @@
    - [X] add package =perspective=
    - [X] complete avy dim background overlay
    - [X] git diff highlight
-   - [ ] config the project layout
-   - [ ] key alias =,= as =SPC m=
-   - [ ] shortcut for org mode like: org-open-at-point, =, ,= to quick check
-   - [ ] make cursor move to the lsp-help window when open it
-   - [ ] to check why my config will not auto add timestamp after making a toto item complete
+   - [X] make cursor move to the lsp-help window when open it
+   - [X] transfer yes or no -> y or n
+   - [X] key alias =,=, org-schedule
+   - [X] shortcut for org mode like: org-open-at-point, =, ,= to quick check
+   - [X] to check why my config will not auto add timestamp after making a toto item complete
+   - [ ] custom keybinding for key =i= and =esc= (different edit mode. emacs-state and evil-normal-state)
+   - [ ] add some good org extensions org-download, org-reveal, etc.
    - [ ] font customization
-   - [ ] flycheck hint
+   - [ ] config the project layout
+   - [ ] change the look of flycheck hint
 
 ** program relavant config
-   
+
    - [ ] add python virtualenv detector
    - [ ] emacs-lisp, lisp configuration
    - [ ] javascript lsp, eval
@@ -35,11 +38,11 @@
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 
 ** some questions
-   
+
    - [ ] to understand the source code of some implementation from =spacemacs=
    - [ ] what does the =command= in the use-package do
 
-     
+
   #+begin_src bash
     emacs -Q --load init.el
   #+end_src
@@ -49,13 +52,21 @@
 ** transient-state seems to be spaceamcs's own implementation
    https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137
 
-   
+
+** helpful
+
+   #+begin_quote
+   you can search for Emacs functions within Emacs by typing M-x apropos, then typing your query. In this case, M-x apropos <RET> whitespace <RET> provides a list of functions relating to whitespace.
+   #+end_quote
+
+*** introspec the keybinding in the emacs
+    https://emacs.stackexchange.com/questions/653/how-can-i-find-out-in-which-keymap-a-key-is-bound
+
 * Reference
 
    - https://www.youtube.com/watch?v=74zOY-vgkyw&list=WL&index=32&t=486s (custom emacs from scratch)
    - https://gist.github.com/yaodong/532e5b31781724ea2566503edcc498c3 (build your own spacemacs)
-   - https://github.com/daviwil/dotfiles 
-   - https://ladicle.com/post/config/ 
+   - https://github.com/daviwil/dotfiles
+   - https://ladicle.com/post/config/
    - [[https://sam217pa.github.io/2016/09/02/how-to-build-your-own-spacemacs/][how to build your own spacemacs]]
    - https://github.com/lccambiaghi/.doom.d
-     
