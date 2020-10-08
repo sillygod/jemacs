@@ -23,10 +23,11 @@
    - [X] key alias =,=, org-schedule
    - [X] shortcut for org mode like: org-open-at-point, =, ,= to quick check
    - [X] to check why my config will not auto add timestamp after making a toto item complete
+   - [X] resolve projectile fine file performance issue
    - [ ] custom keybinding for key =i= and =esc= (different edit mode. emacs-state and evil-normal-state)
    - [ ] add some good org extensions org-download, org-reveal, etc.
    - [ ] font customization
-   - [ ] config the project layout
+   - [ ] config the project layout with perspective
    - [ ] change the look of flycheck hint
 
 ** program relavant config
@@ -35,6 +36,7 @@
    - [ ] emacs-lisp, lisp configuration
    - [ ] javascript lsp, eval
    - [ ] manage this config by literate programming way
+   - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 
 ** some questions
@@ -51,7 +53,6 @@
 
 ** transient-state seems to be spaceamcs's own implementation
    https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137
-
 
 ** helpful
 

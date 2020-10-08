@@ -20,7 +20,11 @@
 
 ;; https://stackoverflow.com/questions/6411121/how-to-make-emacs-use-my-bashrc-file
 ;; in order to make the shell to load source file
-(setq shell-command-switch "-ic")
+;; this will cause a side effect to slow down projectile-project-file
+;; projectile-dir-files-alien
+;; issue: https://github.com/syl20bnr/spacemacs/issues/4207
+;; (setq shell-file-name "/bin/bash")
+(setq shell-command-switch "-c")
 
 
 ;; minimize some ui interface
@@ -544,6 +548,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (ivy-mode 1)
   (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
+  (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
+  (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil))
 
 ;; check-paren check whether there are lacks of the parentheses' pairs
@@ -564,10 +570,8 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 
 (use-package projectile
-  :ensure t
   :custom ((projectile-completion-system 'ivy))
   :config
-  (define-key projectile-mode-map (kbd "s-p") 'projectile-command-map)
   (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
   (projectile-mode +1))
 
@@ -616,10 +620,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package company
   :config
   (setq company-minimum-prefix-length 2)
-  (setq company-idle-delay 0.02)
+  (setq company-idle-delay 0.1)
   (define-key company-active-map (kbd "RET") 'company-complete-selection)
   (global-company-mode))
-
 
 (use-package expand-region)
 
@@ -655,6 +658,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (with-eval-after-load 'company
     (add-to-list 'company-backends #'company-tabnine)
+    (setq company-tabnine-always-trigger nil)
     (setq company-show-numbers t)
     (setq company-idle-delay 0.1)))
 
@@ -674,12 +678,13 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq lsp-python-ms-auto-install-server t))
 
 
-(use-package lsp-ui
-  :after flycheck
-  :commands lsp-ui-mode
-  :config
-  (setq lsp-ui-doc-enable nil)
-  (setq lsp-ui-sideline-enable nil))
+;; disable lsp-ui
+;; (use-package lsp-ui
+;;   :after flycheck
+;;   :commands lsp-ui-mode
+;;   :config
+;;   (setq lsp-ui-doc-enable nil)
+;;   (setq lsp-ui-sideline-enable nil))
 
 (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
 (use-package dap-mode)
