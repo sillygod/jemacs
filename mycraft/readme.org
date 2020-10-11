@@ -7,41 +7,26 @@
 
 ** things needed to be done or enahnced
 
-   - [X] set up auto complete package
-   - [X] set the position for loading snippet
-   - [X] make counsel-find-file with under cursor ability
-   - [X] evil, evil org
-   - [X] add pretty wrap for org mode
-   - [X] yaml-mode, json-mode, go-mode, python-mode
-   - [X] add jump window by number function
-   - [X] add docker mode, vterm (a better terminal mode)
-   - [X] add package =perspective=
-   - [X] complete avy dim background overlay
-   - [X] git diff highlight
-   - [X] make cursor move to the lsp-help window when open it
-   - [X] transfer yes or no -> y or n
-   - [X] key alias =,=, org-schedule
-   - [X] shortcut for org mode like: org-open-at-point, =, ,= to quick check
-   - [X] to check why my config will not auto add timestamp after making a toto item complete
-   - [X] resolve projectile fine file performance issue
+   - [X] font customization
+   - [X] customize the web-mode's tab's behavior
+   - [ ] add a alias key prefix for =SPC m=
    - [ ] custom keybinding for key =i= and =esc= (different edit mode. emacs-state and evil-normal-state)
-   - [ ] add some good org extensions org-download, org-reveal, etc.
-   - [ ] font customization
-   - [ ] config the project layout with perspective
+   - [ ] code completion with preselect effect
    - [ ] change the look of flycheck hint
+   - [ ] think a way to profiling setup
 
 ** program relavant config
 
-   - [ ] add python virtualenv detector
-   - [ ] emacs-lisp, lisp configuration
-   - [ ] javascript lsp, eval
+   - [X] add python virtualenv detector
+   - [X] javascript lsp, eval
+   - [ ] emacs-lisp, lisp configuration (lispy?)
    - [ ] manage this config by literate programming way
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 
 ** some questions
 
-   - [ ] to understand the source code of some implementation from =spacemacs=
+   - [X] to understand the source code of some implementation from =spacemacs=
    - [ ] what does the =command= in the use-package do
 
 
@@ -50,6 +35,8 @@
   #+end_src
 
   reference: https://www.youtube.com/watch?v=xaZMwNELaJY
+
+** use =esup= to profiling the emacs start up time
 
 ** transient-state seems to be spaceamcs's own implementation
    https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137
@@ -65,9 +52,7 @@
 
 * Reference
 
-   - https://www.youtube.com/watch?v=74zOY-vgkyw&list=WL&index=32&t=486s (custom emacs from scratch)
-   - https://gist.github.com/yaodong/532e5b31781724ea2566503edcc498c3 (build your own spacemacs)
    - https://github.com/daviwil/dotfiles
-   - https://ladicle.com/post/config/
-   - [[https://sam217pa.github.io/2016/09/02/how-to-build-your-own-spacemacs/][how to build your own spacemacs]]
    - https://github.com/lccambiaghi/.doom.d
+   - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
+   - https://github.com/raxod502/radian/tree/develop/emacs

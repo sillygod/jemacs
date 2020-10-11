@@ -4,14 +4,28 @@
 
 ;;; Code:
 
-
 ;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
 
-;;  goto-address-prog-mode
+;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
+(setq gc-cons-threshold 64000000)
+(add-hook 'after-init-hook #'(lambda ()
+                               ;; restore after startup
+                               (setq gc-cons-threshold 800000)))
+
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
+(setq inhibit-compacting-font-caches t) ;; for all-the-cion slow issue
 (setq column-number-mode t)
 (setq make-backup-files nil)
+(setq indent-tabs-mode nil)
+
+(defvar default-font-size 150)
+(set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 150 :weight 'regular)
+
+(when (string= system-type "darwin")
+  "In macos, ls doesn't support --dired option"
+  (setq dired-use-ls-dired nil))
 
 ;; this can make cursor in the help window at first when poping up a help window
 (setq help-window-select t)
@@ -24,6 +38,7 @@
 ;; projectile-dir-files-alien
 ;; issue: https://github.com/syl20bnr/spacemacs/issues/4207
 ;; (setq shell-file-name "/bin/bash")
+;; (setq shell-command-switch "-ic")
 (setq shell-command-switch "-c")
 
 
@@ -69,6 +84,7 @@
 (unless (package-installed-p 'use-package)
   (package-install 'use-package))
 
+
 (require 'use-package)
 
 (setq use-package-always-ensure t)
@@ -76,6 +92,15 @@
 ;; enable link in comments can be click
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
 (add-hook 'before-save-hook 'delete-trailing-whitespace)
+
+;; profiling
+(use-package esup
+  :init
+  (setq esup-depth 0)
+  :ensure t
+  ;; To use MELPA Stable use ":pin mepla-stable",
+  :pin melpa
+  :commands (esup))
 
 ;; -- UI related
 
@@ -116,7 +141,7 @@
 (use-package doom-modeline
   :ensure t
   :init (doom-modeline-mode 1)
-  :custom ((doom-modeline-height 15)))
+  :custom ((doom-modeline-height 13)))
 
 ;; ----------------------------------------------------------------
 
@@ -133,10 +158,17 @@
 (use-package dockerfile-mode
   :defer t)
 
-(use-package swiper
-  :ensure t
-  :bind (("C-s" . swiper))
-  )
+(use-package emmet-mode
+  :defer t
+  :hook
+  (html-mode . emmet-mode)
+  (web-mode . emmet-mode))
+
+(use-package web-mode
+  :defer t
+  :mode
+  (("\\.html\\'"       . web-mode)))
+
 
 ;; TODO: search why there should append a suffix ='= for the mod
 (use-package jinja2-mode
@@ -157,6 +189,20 @@
   "Additional arguments to by supplied to `go run` during runtime.")
 
 
+(defun my-emmet-expand ()
+  (interactive)
+  (unless (if (bound-and-true-p yas-minor-mode)
+              (call-interactively 'emmet-expand-yas)
+            (call-interactively 'emmet-expand-line))
+    (indent-for-tab-command)))
+
+
+;; TODO: implement this one
+(defun python-run-main ()
+  (interactive)
+
+  )
+
 (defun go-run-main ()
   (interactive)
   (shell-command
@@ -176,6 +222,27 @@ If the universal prefix argument is used then kill also the window."
     (if (equal '(4) arg)
         (kill-buffer-and-window)
       (kill-buffer))))
+
+
+(defun copy-file-path ()
+  "Copy and show the file path of the current buffer."
+  (interactive)
+  (if-let (file-path (get-file-path))
+      (progn
+        (kill-new file-path)
+        (message "%s" file-path))
+    (message "WARNING: Current buffer is not attached to a file!")))
+
+
+(defun get-file-path ()
+  "Retrieve the file path of the current buffer.
+
+Returns:
+  - A string containing the file path in case of success.
+  - `nil' in case the current buffer does not have a directory."
+  (when-let (file-path (buffer-file-name))
+    (file-truename file-path)))
+
 
 
 (defun evil-smart-doc-lookup ()
@@ -208,6 +275,13 @@ to `evil-lookup'"
    (cond
     ((eq major-mode 'org-mode) 'counsel-org-goto)
     (t 'counsel-imenu))))
+
+(defun new-terminal ()
+  "New a terminal in project root or the current directory."
+  (interactive)
+  (if (projectile-project-p)
+      (projectile-run-vterm)
+    (vterm)))
 
 (defun avy-jump-url ()
   "Use avy to go to url in the buffer."
@@ -246,23 +320,38 @@ If the error list is visible, hide it.  Otherwise, show it."
 	(window-configuration-to-register ?_)
 	(delete-other-windows)))))
 
-(use-package yasnippet
+;; temporarily decide to use this package to auto balance the parens
+(use-package smartparens
+  :defer t
   :config
+  (require 'smartparens-config)
+  (add-hook 'js-mode-hook 'smartparens-mode)
+  (add-hook 'go-mode-hook 'smartparens-mode)
+  (add-hook 'html-mode-hook 'smartparens-mode)
+  (add-hook 'python-mode-hook 'smartparens-mode)
+  (add-hook 'emacs-lisp-mode 'smartparens-mode))
+
+(use-package yasnippet
+  :defer 2
+  :config
+  (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
   (yas-global-mode 1)
   (yas-minor-mode 1)
-  (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets"))
+  ;; (yas-reload-all) ;; need to rebuild the snippets
+  )
 
 (use-package yasnippet-snippets
+  :defer t
   :after yasnippet)
 
 (use-package ivy-yasnippet
+  :defer t
   :after yaanippet)
 
 (use-package winum
   :config
   (winum-mode))
 
-;; TODO: check what does remap do
 (use-package helpful
   :custom
   (counsel-describe-function-function #'helpful-callable)
@@ -274,30 +363,42 @@ If the error list is visible, hide it.  Otherwise, show it."
   ([remap describe-key] . helpful-key))
 
 (use-package general
-  :after (evil dired expand-region lsp-mode go-mode)
+  :after (evil)
+  ;; :after (evil dired expand-region go-mode lsp-mode)
   :config
   ;; keysmaps override is to make general-define-key to be global scope
   ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
 
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
+  (defconst emacs-state-leader-key "M-m")
+  (defconst emacs-state-leader-key "M-m m")
 
   (message "DEBUG: !! general init")
 
+  (general-create-definer my-leader-keys-emacs-state
+    :state '(emacs)
+    :keymaps 'override
+    :prefix emacs-state-leader-key)
+
   (general-create-definer my-leader-keys
-    :states '(normal visual motion emacs)
+    :states '(normal visual motion)
     :keymaps 'override
     :prefix leader-key)
 
   (general-create-definer my-local-leader-def
-    :states '(normal visual emacs)
+    :states '(normal visual motion)
     :keymaps 'override
     :prefix major-mode-leader-key)
 
   (general-create-definer my-local-leader-def-alias
-    :states '(normal visual emacs)
+    :states '(normal visual motion)
     :keymaps 'override
     :prefix ",")
+
+  (defun my-define-major-keys (&rest ARGS)
+    ;; mapcar two definer with those key definitions)
+   )
 
   ;; TODO: create an alias =,= -> =SPC m=
   ;; (evil-define-key 'normal lsp-mode-map (kbd "SPC m") lsp-command-map)
@@ -305,6 +406,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (define-key evil-normal-state-map (kbd "K") 'evil-smart-doc-lookup)
   (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup)
+
+
+  (with-eval-after-load 'emmet-mode
+    (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
 
   ;; unbind some keybinding in the package 'evil-org
   (with-eval-after-load 'evil-org
@@ -337,49 +442,53 @@ If the error list is visible, hide it.  Otherwise, show it."
     (kbd "g y") 'copy-region-and-base64-decode
     (kbd "g e") 'copy-region-and-urlencode)
 
+  ;; TODO: maybe I can define my own hydra?
+  (evil-define-key 'normal 'evil-motion-state-map
+    (kbd "*") 'swiper-thing-at-point)
 
-
-  (defun my-define-major-keys (&rest ARGS)
-    ;; mapcar two definer with those key definitions)
-   )
 
   ;; keybinding for go-mode
+  (with-eval-after-load 'lsp-mode
 
-  (my-local-leader-def
-    :states '(normal visual emacs)
-    :keymaps 'go-mode-map
-    "" '(:keymap lsp-command-map)
-    "x" '(:ignore t :which-key "execute")
-    "xx" '(go-run-main :which-key "go run")
-    "e" '(gomacro-run :which-key "gomacro"))
+    (my-local-leader-def
+      :keymaps 'go-mode-map
+      "" '(:keymap lsp-command-map)
+      "x" '(:ignore t :which-key "execute")
+      "xx" '(go-run-main :which-key "go run")
+      "d" '(dap-hydra :which-key "debug")
+      "e" '(gomacro-run :which-key "gomacro"))
 
-  ;; TODO: change the prefix of +lsp
+    ;; TODO: change the prefix of +lsp use which-key alist
+    (my-local-leader-def
+      :keymaps 'python-mode-map
+      "" '(:keymap lsp-command-map)
+      "x" '(:ignore t :which-key "execute")
+      "xx" '(python-run-main :which-key "python run")
+      "d" '(dap-hydra :which-key "debug"))
 
-  ;; the following one doesn't work
-  ;; (general-create-definer alias-local-def
-  ;;   :states '(normal visual emacs)
-  ;;   :keymaps 'override
-  ;;   :wrapping my-local-leader-def
-  ;;   :prefix ",")
+    (my-local-leader-def
+      :keymaps 'emacs-lisp-mode-map
+      "" '(:ignore t :which-key "major mode")
+      "e" '(:ignore t :which-key "eval")
+      "ef" '(eval-defun :which-key "eval defun")
+      "eb" '(eval-buffer :which-key "eval buffer")
+      "er" '(eval-region :which-key "eval region"))
 
-  (my-local-leader-def
-    :states '(normal visual emacs)
-    :keymaps 'emacs-lisp-mode-map
-    "" '(:ignore t :which-key "major mode")
-    "e" '(:ignore t :which-key "eval")
-    "eb" '(eval-buffer :which-key "eval buffer")
-    "er" '(eval-region :which-key "eval region"))
+    )
 
-  (my-local-leader-def
-    :states '(normal visual emacs)
-    :keymaps 'org-mode-map
-    "" '(:ignore t :which-key "major mode")
-    "a" 'org-agenda
-    "," 'org-ctrl-c-ctrl-c
-    "'" 'org-edit-special
-    "s" '(:ignore t :which-key "schedule")
-    "ss" '(org-schedule :which-key "org-schedule")
-    "sd" '(org-deadline :which-key "org-deadline"))
+  (with-eval-after-load 'org
+    (my-local-leader-def
+      :keymaps 'org-mode-map
+      "" '(:ignore t :which-key "major mode")
+      "a" 'org-agenda
+      "," 'org-ctrl-c-ctrl-c
+      "'" 'org-edit-special
+      "s" '(:ignore t :which-key "schedule")
+      "ss" '(org-schedule :which-key "org-schedule")
+      "sd" '(org-deadline :which-key "org-deadline")
+
+      "j" '(:ignore t :which-key "journals")
+      "jn" '(org-journal-new-entry :which-key "new entry")))
 
   ;; (my-leader-keys
   ;;   "m" '(:ignore t :which-key "major mode")
@@ -389,6 +498,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "SPC" 'counsel-M-x
     "/" 'counsel-projectile-rg
     "v" 'er/expand-region
+    "'" 'new-terminal
     "?" 'counsel-descbinds)
 
   ;; which-key-replacement-alist
@@ -421,6 +531,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "r" '(:ignore t :which-key "resume/register")
+    "rk" '(counsel-yank-pop :which-key "kill ring")
     "rl" '(ivy-resume :which-key "ivy-resume"))
 
   (my-leader-keys
@@ -439,9 +550,14 @@ If the error list is visible, hide it.  Otherwise, show it."
     "e" '(:ignore t :which-key "errors")
     "el" '(toggle-flycheck-error-list :which-key "comment or uncomment"))
 
+
   (my-leader-keys
     "i" '(:ignore t :which-key "insert")
     "is" '(ivy-yas :which-key "snippets"))
+
+  (my-leader-keys
+    "l" '(:ignore t :which-key "layout")
+    "ll" '(persp-switch :which-key "switch layout"))
 
   (my-leader-keys
     "p" '(:ignore t :which-key "project")
@@ -450,6 +566,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "s" '(:ignore t :which-key "search")
+    "sc" '(evil-ex-nohighlight :which-key "clear hightlight")
     "ss" '(swiper :which-key "swiper"))
 
   (my-leader-keys
@@ -476,6 +593,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "f" '(:ignore t :which-key "files")
+    "fy" '(copy-file-path :which-key "copy file path")
     "ff" '(counsel-find-file :which-key "find file")))
 
 
@@ -493,6 +611,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; optional
 
 (use-package evil
+  :defer 1
   :init
   (setq evil-want-integration t)
   (setq evil-want-keybinding nil)
@@ -509,17 +628,26 @@ If the error list is visible, hide it.  Otherwise, show it."
   (evil-set-initial-state 'messages-buffer-mode 'normal)
   (evil-set-initial-state 'dashboard-mode 'normal))
 
+;; make =%= to be able to jump to and back the tag
+(use-package evil-matchit
+  :defer t
+  :after evil
+  :config
+  (global-evil-matchit-mode 1))
+
 (use-package evil-collection
   :after evil
   :config
   (evil-collection-init))
 
 (use-package evil-nerd-commenter
+  :after evil
   :commands evilnc-comment-operator
   :init
   (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
 
 (use-package evil-surround
+  :after evil
   :ensure t
   :config
   (global-evil-surround-mode 1))
@@ -549,10 +677,19 @@ If the error list is visible, hide it.  Otherwise, show it."
   (ivy-mode 1)
   (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
   (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
-  (setq ivy-dynamic-exhibit-delay-ms 250)
+  ;; (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil))
 
-;; check-paren check whether there are lacks of the parentheses' pairs
+;; After siwper, counsel search, ivy-occur (C-c C-o) to get the candidate in another buffer
+;; Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
+;; use multiple-cursor may be helpful.
+;; Finally, Ctrl-c Ctrl-c to commit change
+(use-package swiper
+  :ensure t
+  :bind (("C-s" . swiper))
+  )
+
+;; check-paren checks whether there are lacks of the parentheses' pairs
 (use-package counsel
   :ensure t
   :bind (("M-x" . counsel-M-x)
@@ -565,41 +702,56 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 
 (use-package ivy-rich
+  :after (ivy)
   :init
   (ivy-rich-mode 1))
 
 
 (use-package projectile
+  :defer 1
   :custom ((projectile-completion-system 'ivy))
   :config
   (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
   (projectile-mode +1))
 
 (use-package counsel-projectile
+  :after projectile
+  :defer 1
   :config (counsel-projectile-mode))
 
 
 (use-package magit
+  :defer 2
   :custom
   (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
 
 (use-package evil-magit
+  :defer 2
   :after magit)
 
 ;; the following is org's setup
 ;; we can check the org's version by the command =org-version=
 (use-package org
+  :defer t
   :ensure org-plus-contrib
   :pin org)
 
+(use-package org-download
+  :defer t)
+
+(use-package org-journal
+    :defer t)
+
 (use-package ox-reveal
+  :defer t
   :after org)
 
 (use-package org-superstar
   :hook (org-mode . org-superstar-mode))
 
 (defun org-mode-visual-fill ()
-  (setq visual-fill-column-width 100)
+  "A beautiful word wrap effect."
+  (setq visual-fill-column-width 110)
   (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
   (global-visual-line-mode 1)
   (visual-fill-column-mode 1))
@@ -609,9 +761,16 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; Failed to install vterm: https://melpa.org/packages/vterm-20200926.1215.tar: Not found
 ;; package-refresh-contents
-(use-package vterm)
+(use-package vterm
+  :defer t
+  :config
+  (add-hook 'vterm-mode-hook (lambda ()
+			       (evil-emacs-state)
+			       (vterm-send-string "source ~/.bash_profile")
+			       (vterm-send-return))))
 
 (use-package avy
+  :defer t
   :config
   (setq avy-background t))
 
@@ -629,6 +788,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; lsp configuation
 
 (use-package go-mode
+  :defer 2
   :config
   (progn
     (setq gofmt-command "goimports")
@@ -638,7 +798,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   :ensure t
   :init (global-flycheck-mode))
 
-(use-package json-mode)
+(use-package json-mode
+  :defer t)
 
 ;; TODO: Do I need to config the company backend?
 (use-package yaml-mode
@@ -654,13 +815,32 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package gomacro-mode
   :hook (go-mode . gomacro-mode))
 
-(use-package company-tabnine
-  :config
-  (with-eval-after-load 'company
-    (add-to-list 'company-backends #'company-tabnine)
-    (setq company-tabnine-always-trigger nil)
-    (setq company-show-numbers t)
-    (setq company-idle-delay 0.1)))
+;; NOTE: temporarily disable this because it consumes lots of cpu
+;; (use-package company-tabnine
+;;   :config
+;;   (with-eval-after-load 'company
+;;     (add-to-list 'company-backends #'company-tabnine)
+;;     (setq company-tabnine-always-trigger nil)
+;;     (setq company-show-numbers t)
+;;     (setq company-idle-delay 0.1)))
+
+;; set up python dev tools
+
+(use-package python-pytest
+  :defer t
+  :custom
+  (python-pytest-confirm t))
+
+(use-package poetry
+  :defer t)
+
+(use-package pyvenv
+  :defer t)
+
+(use-package pyimport
+  :defer t)
+
+;; ---
 
 (use-package lsp-mode
   :init
@@ -687,14 +867,21 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;;   (setq lsp-ui-sideline-enable nil))
 
 (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
-(use-package dap-mode)
+(use-package dap-mode
+  :defer t
+  :config
+  ;; pip install "ptvsd>=4.2"
+  (require 'dap-python)
+  (require 'dap-go)
+  ;; dap-go-setup
+  (add-hook 'dap-stopped-hook
+	    (lambda (arg) (call-interactively #'dap-hydra)))
+  )
 
 ;; -----------------------------
 
-;; by default, you need to press M-RET to add a
-;; auto-numbering list
+;; by default, you need to press M-RET to add a auto-numbering list
 ;; this will has some agenda mode binding..
-;; TODO: find a way to remove?
 (use-package evil-org
   :ensure t
   :after org
@@ -720,9 +907,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; I use the visual-column instead
   ;; (add-hook 'org-mode-hook 'toggle-word-wrap)
 
-  ;; TODO: why my config will not auto add timestamp after making a toto item complete
-  ;; customize this variable to read all lisp file under a certain directory
-
+  ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
   (setq org-startup-with-inline-images t)
