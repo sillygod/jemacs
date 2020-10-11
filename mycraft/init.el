@@ -47,8 +47,7 @@
 (tool-bar-mode -1)
 (menu-bar-mode -1)
 (set-fringe-mode 5)
-
-(toggle-frame-maximized)
+(add-to-list 'default-frame-alist '(fullscreen . maximized))
 
 ;; https://github.com/tonsky/FiraCode
 ;; optional font
@@ -187,6 +186,25 @@
 (defvar go-run-command "go run")
 (defvar go-run-args ""
   "Additional arguments to by supplied to `go run` during runtime.")
+
+(defun my-shrink-window (delta)
+  "Shrink-window."
+  (interactive "p")
+  (shrink-window delta))
+
+(defun my-shrink-window-horizontally (delta)
+  "Shrink-window."
+  (interactive "p")
+  (shrink-window delta t))
+
+
+(defun my-enlarge-window (delta)
+  (interactive "p")
+  (enlarge-window delta))
+
+(defun my-enlarge-window-horizontally (delta)
+  (interactive "p")
+  (enlarge-window delta t))
 
 
 (defun my-emmet-expand ()
@@ -589,7 +607,15 @@ If the error list is visible, hide it.  Otherwise, show it."
     "wk" '(evil-window-up :which-key "go to window up")
     "wj" '(evil-window-down :which-key "go to window down")
     "w/" '(evil-window-vsplit :which-key "split vertically")
-    "w-" '(evil-window-split :which-key "split horizontally"))
+    "w-" '(evil-window-split :which-key "split horizontally")
+
+    "w[" '(my-shrink-window-horizontally :which-key "shrink h")
+    "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
+    "w{" '(my-shrink-window :which-key: "shrink v")
+    "w}" '(my-enlarge-window :which-key: "enlarge v")
+
+    "wF" '(make-frame :which-key "make frame")
+    "wo" '(other-frame :which-key "other frame"))
 
   (my-leader-keys
     "f" '(:ignore t :which-key "files")
@@ -630,7 +656,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; make =%= to be able to jump to and back the tag
 (use-package evil-matchit
-  :defer t
   :after evil
   :config
   (global-evil-matchit-mode 1))
@@ -640,6 +665,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (evil-collection-init))
 
+(use-package multiple-cursors
+  :defer t
+  :after evil)
+
 (use-package evil-nerd-commenter
   :after evil
   :commands evilnc-comment-operator
@@ -648,7 +677,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (use-package evil-surround
   :after evil
-  :ensure t
   :config
   (global-evil-surround-mode 1))
 
