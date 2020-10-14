@@ -2,18 +2,13 @@
 
   A literal programming for my own emacs configs.
 
-
 * Start to build my own emacs
 
 ** things needed to be done or enahnced
 
-   - [X] font customization
-   - [X] customize the web-mode's tab's behavior
    - [ ] add a alias key prefix for =SPC m=
-   - [ ] custom keybinding for key =i= and =esc= (different edit mode. emacs-state and evil-normal-state)
-   - [ ] code completion with preselect effect
    - [ ] change the look of flycheck hint
-   - [ ] think a way to profiling setup
+   - [ ] It's time to check whether there is anything needed to be improved for the workflow
 
 ** program relavant config
 
@@ -27,6 +22,7 @@
 ** some questions
 
    - [X] to understand the source code of some implementation from =spacemacs=
+   - [ ] what is =featurep=
    - [ ] what does the =command= in the use-package do
 
 
@@ -56,3 +52,4 @@
    - https://github.com/lccambiaghi/.doom.d
    - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
    - https://github.com/raxod502/radian/tree/develop/emacs
+   - https://github.com/clemera/objed (interesting..)

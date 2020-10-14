@@ -14,7 +14,7 @@
 
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
-(setq inhibit-compacting-font-caches t) ;; for all-the-cion slow issue
+(setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
 (setq column-number-mode t)
 (setq make-backup-files nil)
 (setq indent-tabs-mode nil)
@@ -103,10 +103,20 @@
 
 ;; -- UI related
 
+
+(set-face-attribute 'link nil :foreground "#3f7c8f")
+;; (set-face-attribute 'hl-line nil :foreground "#72ba89")
 (add-hook 'prog-mode-hook 'hl-line-mode)
 
 (use-package doom-themes
-  :init (load-theme 'doom-one t))
+  :config
+  (load-theme 'doom-one t)
+  (doom-themes-org-config)
+
+  (with-eval-after-load 'org
+    ;; change some ui
+    (set-face-attribute 'org-link nil :foreground "#3f7c8f")
+    (set-face-attribute 'org-level-2 nil :foreground "#bf8228")))
 
 (use-package rainbow-delimiters
   :hook (prog-mode . rainbow-delimiters-mode))
@@ -186,6 +196,111 @@
 (defvar go-run-command "go run")
 (defvar go-run-args ""
   "Additional arguments to by supplied to `go run` during runtime.")
+
+(defun rotate-windows-forward (count)
+  "Rotate each window forwards.
+A negative prefix argument rotates each window backwards.
+Dedicated (locked) windows are left untouched."
+  (interactive "p")
+  (let* ((non-dedicated-windows (cl-remove-if 'window-dedicated-p (window-list)))
+         (states (mapcar #'window-state-get non-dedicated-windows))
+         (num-windows (length non-dedicated-windows))
+         (step (+ num-windows count)))
+    (if (< num-windows 2)
+        (error "You can't rotate a single window!")
+      (dotimes (i num-windows)
+        (window-state-put
+         (elt states i)
+         (elt non-dedicated-windows (% (+ step i) num-windows)))))))
+
+
+;; Borrow project search function from the projectile
+(defun my-counsel-projectile-rg (&optional options)
+  "Search the current project with rg and search under certarn directory
+if it's not in a project.
+
+OPTIONS, if non-nil, is a string containing additional options to
+be passed to rg. It is read from the minibuffer if the function
+is called with a prefix argument."
+  (interactive)
+  ;; change this to read a directory path
+  (let* ((search-directory (if (projectile-project-p)
+			       (projectile-project-root)
+			     (read-directory-name "Start from directory: ")))
+	 (ivy--actions-list (copy-sequence ivy--actions-list))
+	 (ignored
+	  (mapconcat (lambda (i)
+		       (concat "--glob !" (shell-quote-argument i)))
+		     (append
+		      (projectile--globally-ignored-file-suffixes-glob)
+		      (projectile-ignored-files-rel)
+		      (projectile-ignored-directories-rel))
+		     " "))
+	 (counsel-rg-base-command
+	  (let ((counsel-ag-command counsel-rg-base-command))
+	    (counsel--format-ag-command ignored "%s"))))
+    (ivy-add-actions
+     'counsel-rg
+     counsel-projectile-rg-extra-actions)
+    (counsel-rg (eval counsel-projectile-rg-initial-input)
+		search-directory
+		options
+		(projectile-prepend-project-name
+		 (concat (car (if (listp counsel-rg-base-command)
+				  counsel-rg-base-command
+				(split-string counsel-rg-base-command)))
+			 ": ")))))
+
+(defun my-find-dotfile ()
+  "Edit the `dotfile', in the current window."
+  (interactive)
+  (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
+
+
+(defun hey-god (question)
+  "Reduce distraction when you search the answer for the question.
+Powered by the howdoi"
+  (interactive "sAsk the god, you'll get it: ")
+  (let ((buffer-name "*God's reply*")
+        (exectuable-name "howdoi"))
+    (with-output-to-temp-buffer buffer-name
+      (shell-command (concat exectuable-name " " question)
+                     buffer-name
+                     "*Messages*")
+      (pop-to-buffer buffer-name))))
+
+(defun copy-region-and-base64-decode (start end)
+  (interactive "r")
+  (let ((x (base64-decode-string
+           (decode-coding-string
+            (buffer-substring start end) 'utf-8))))
+    (kill-new x)))
+
+(defun my-encode-region-base64 (start end)
+  (interactive "r")
+  (let ((content (buffer-substring-no-properties start end)))
+    (when (use-region-p)
+      (delete-region start end)
+      (insert (base64-encode-string (encode-coding-string content 'utf-8))))))
+
+(defun my-decode-region-base64 (start end)
+  (interactive "r")
+  (let ((content (buffer-substring-no-properties start end)))
+    (when (use-region-p)
+      (delete-region start end)
+      (insert (base64-decode-string (decode-coding-string content 'utf-8))))))
+
+(defun copy-region-and-urlencode (start end)
+  (interactive "r")
+  (let ((x (url-hexify-string
+            (buffer-substring start end))))
+  (kill-new x)))
+
+(defun now ()
+  "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
+  (interactive)
+  (message "now: %s \n timestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
+
 
 (defun my-shrink-window (delta)
   "Shrink-window."
@@ -338,7 +453,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 	(window-configuration-to-register ?_)
 	(delete-other-windows)))))
 
-;; temporarily decide to use this package to auto balance the parens
+;; Decide to use this package to auto balance the parens
 (use-package smartparens
   :defer t
   :config
@@ -347,15 +462,18 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-hook 'go-mode-hook 'smartparens-mode)
   (add-hook 'html-mode-hook 'smartparens-mode)
   (add-hook 'python-mode-hook 'smartparens-mode)
-  (add-hook 'emacs-lisp-mode 'smartparens-mode))
+  (add-hook 'emacs-lisp-mode-hook 'smartparens-mode))
 
+
+;; TODO: find a way to replace the hardcode path
 (use-package yasnippet
   :defer 2
   :config
   (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
   (yas-global-mode 1)
   (yas-minor-mode 1)
-  ;; (yas-reload-all) ;; need to rebuild the snippets
+  ;; (yas-reload-all)
+  ;; need to rebuild the snippets, This will be trigger when enable yas-xx-mode
   )
 
 (use-package yasnippet-snippets
@@ -390,12 +508,12 @@ If the error list is visible, hide it.  Otherwise, show it."
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
   (defconst emacs-state-leader-key "M-m")
-  (defconst emacs-state-leader-key "M-m m")
+  (defconst emacs-state-major-mode-leader-key "M-m m")
 
   (message "DEBUG: !! general init")
 
   (general-create-definer my-leader-keys-emacs-state
-    :state '(emacs)
+    :states '(emacs)
     :keymaps 'override
     :prefix emacs-state-leader-key)
 
@@ -403,6 +521,11 @@ If the error list is visible, hide it.  Otherwise, show it."
     :states '(normal visual motion)
     :keymaps 'override
     :prefix leader-key)
+
+  (general-create-definer my-local-leader-keys-emacs-state
+    :states '(emacs)
+    :keymaps 'override
+    :prefix emacs-state-major-mode-leader-key)
 
   (general-create-definer my-local-leader-def
     :states '(normal visual motion)
@@ -422,8 +545,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; (evil-define-key 'normal lsp-mode-map (kbd "SPC m") lsp-command-map)
   ;; maybe I can extract the key-map, rearrange it and assign
 
-  (define-key evil-normal-state-map (kbd "K") 'evil-smart-doc-lookup)
-  (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup)
 
 
   (with-eval-after-load 'emmet-mode
@@ -442,6 +563,8 @@ If the error list is visible, hide it.  Otherwise, show it."
     (evil-define-key 'motion org-agenda-mode-map (kbd "s") 'org-save-all-org-buffers))
 
   (with-eval-after-load 'org
+
+
     ;; define key open-thing-at-point with enter
     (evil-define-key 'normal org-mode-map (kbd "<return>") 'org-open-at-point)
     (evil-define-key 'normal prog-mode-map (kbd "<return>") 'org-open-at-point))
@@ -455,6 +578,11 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;;     "a" 'org-edit-src-abort
   ;;     "k" 'org-edit-src-abort))
 
+  (with-eval-after-load 'with-editor
+    (evil-define-key 'normal with-editor-mode-map
+      (kbd ", ,") 'with-editor-finish
+      (kbd ", k") 'with-editor-cancel))
+
 
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
@@ -464,35 +592,61 @@ If the error list is visible, hide it.  Otherwise, show it."
   (evil-define-key 'normal 'evil-motion-state-map
     (kbd "*") 'swiper-thing-at-point)
 
-
   ;; keybinding for go-mode
   (with-eval-after-load 'lsp-mode
 
-    (my-local-leader-def
-      :keymaps 'go-mode-map
-      "" '(:keymap lsp-command-map)
-      "x" '(:ignore t :which-key "execute")
-      "xx" '(go-run-main :which-key "go run")
-      "d" '(dap-hydra :which-key "debug")
-      "e" '(gomacro-run :which-key "gomacro"))
+    (with-eval-after-load 'go-mode
+      (my-local-leader-def
+	:keymaps 'go-mode-map
+	"" '(:keymap lsp-command-map  :which-key "major mode")
+	"=" '(:ignore t :which-key "format")
+        "a" '(:ignore t :which-key "code actions")
+	"b" '(:ignore t :which-key "backend")
+	"F" '(:ignore t :which-key "folder")
+	"g" '(:ignore t :which-key "goto")
+	"G" '(:ignore t :wihch-key "peek")
+	"h" '(:ignore t :which-key "help")
+	"r" '(:ignore t :which-key "refactor")
+	"T" '(:ignore t :which-key "toggle")
+	;; lsp keybinding
 
-    ;; TODO: change the prefix of +lsp use which-key alist
-    (my-local-leader-def
-      :keymaps 'python-mode-map
-      "" '(:keymap lsp-command-map)
-      "x" '(:ignore t :which-key "execute")
-      "xx" '(python-run-main :which-key "python run")
-      "d" '(dap-hydra :which-key "debug"))
+	"x" '(:ignore t :which-key "execute")
+	"xx" '(go-run-main :which-key "go run")
+	"d" '(dap-hydra :which-key "debug")
+	"e" '(gomacro-run :which-key "gomacro"))
 
+
+      (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+
+    (with-eval-after-load 'python
+      (my-local-leader-def
+	:states '(normal visual motion)
+	:keymaps 'python-mode-map
+	"" '(:keymap lsp-command-map  :which-key "major mode")
+	"=" '(:ignore t :which-key "format")
+        "a" '(:ignore t :which-key "code actions")
+	"b" '(:ignore t :which-key "backend")
+	"F" '(:ignore t :which-key "folder")
+	"g" '(:ignore t :which-key "goto")
+	"G" '(:ignore t :wihch-key "peek")
+	"h" '(:ignore t :which-key "help")
+	"r" '(:ignore t :which-key "refactor")
+	"T" '(:ignore t :which-key "toggle")
+	;; lsp keybinding
+
+	"x" '(:ignore t :which-key "execute")
+	"xx" '(python-run-main :which-key "python run")
+	"d" '(dap-hydra :which-key "debug")))
+    )
+
+  (with-eval-after-load 'elisp-mode
     (my-local-leader-def
       :keymaps 'emacs-lisp-mode-map
       "" '(:ignore t :which-key "major mode")
       "e" '(:ignore t :which-key "eval")
       "ef" '(eval-defun :which-key "eval defun")
       "eb" '(eval-buffer :which-key "eval buffer")
-      "er" '(eval-region :which-key "eval region"))
-
-    )
+      "er" '(eval-region :which-key "eval region")))
 
   (with-eval-after-load 'org
     (my-local-leader-def
@@ -508,14 +662,12 @@ If the error list is visible, hide it.  Otherwise, show it."
       "j" '(:ignore t :which-key "journals")
       "jn" '(org-journal-new-entry :which-key "new entry")))
 
-  ;; (my-leader-keys
-  ;;   "m" '(:ignore t :which-key "major mode")
-  ;;   "my" 'org-store-link)
 
   (my-leader-keys
     "SPC" 'counsel-M-x
-    "/" 'counsel-projectile-rg
+    "/" 'my-counsel-projectile-rg
     "v" 'er/expand-region
+    "u" 'universal-argument
     "'" 'new-terminal
     "?" 'counsel-descbinds)
 
@@ -584,7 +736,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "s" '(:ignore t :which-key "search")
-    "sc" '(evil-ex-nohighlight :which-key "clear hightlight")
+    "sc" '(evil-ex-nohighlight :which-key "clear highlight")
     "ss" '(swiper :which-key "swiper"))
 
   (my-leader-keys
@@ -605,7 +757,14 @@ If the error list is visible, hide it.  Otherwise, show it."
     "wh" '(evil-window-left :which-key "go to window left")
     "wl" '(evil-window-right :which-key "go to window right")
     "wk" '(evil-window-up :which-key "go to window up")
+    "wr" '(rotate-windows-forward :which-key "rotate window")
     "wj" '(evil-window-down :which-key "go to window down")
+    "wL" '(evil-window-move-far-right :which-key "move window to right side")
+    "wH" '(evil-window-move-far-left :which-key "move window to left side")
+    "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
+    "wK" '(evil-window-move-very-top :which-key "move window to top side")
+
+
     "w/" '(evil-window-vsplit :which-key "split vertically")
     "w-" '(evil-window-split :which-key "split horizontally")
 
@@ -618,7 +777,17 @@ If the error list is visible, hide it.  Otherwise, show it."
     "wo" '(other-frame :which-key "other frame"))
 
   (my-leader-keys
+    "x" '(:ignore t :which-key "texts")
+    "xc" '(count-words-region :which-key "count-words-region")
+
+    "xb" '(:ignore t :which-key "base64")
+    "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
+    "xbd" '(my-decode-region-base64 :which-key "base64-decode-region"))
+
+  (my-leader-keys
     "f" '(:ignore t :which-key "files")
+    "fe" '(:ignore t :which-key "emacs")
+    "fed" '(my-find-dotfile :which-key "open config dotfile")
     "fy" '(copy-file-path :which-key "copy file path")
     "ff" '(counsel-find-file :which-key "find file")))
 
@@ -654,6 +823,16 @@ If the error list is visible, hide it.  Otherwise, show it."
   (evil-set-initial-state 'messages-buffer-mode 'normal)
   (evil-set-initial-state 'dashboard-mode 'normal))
 
+(use-package vimish-fold
+  :defer t
+  :after evil)
+
+(use-package evil-vimish-fold
+  :defer t
+  :after vimish-fold
+  :hook (prog-mode . evil-vimish-fold-mode))
+
+
 ;; make =%= to be able to jump to and back the tag
 (use-package evil-matchit
   :after evil
@@ -663,6 +842,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package evil-collection
   :after evil
   :config
+  (setq evil-collection-company-use-tng nil)
   (evil-collection-init))
 
 (use-package multiple-cursors
@@ -680,7 +860,15 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (global-evil-surround-mode 1))
 
+;; M-x all-the-icons-install-fonts
 (use-package all-the-icons)
+
+;; TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
+(use-package elisp-slime-nav
+  :defer t
+  :config
+  (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
+    (add-hook hook 'elisp-slime-nav-mode)))
 
 ;; what does ensure do?
 ;; The :ensure keyword causes the package(s) to be installed automatically if not already present on your system
@@ -803,13 +991,19 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq avy-background t))
 
 ;; company-mode setup
+;; "<return>" is the Return key while emacs runs in a graphical user interface.
+;; "RET" is the Return key while emacs runs in a terminal. ...
+;; But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
 
 (use-package company
   :config
   (setq company-minimum-prefix-length 2)
   (setq company-idle-delay 0.1)
-  (define-key company-active-map (kbd "RET") 'company-complete-selection)
-  (global-company-mode))
+  ;; In evil-collection, it adjust the key binding for the company-mode
+  ;; NOTE: Furthermore, it also disable the pre-select behavior when
+  ;; showing the completion candidates.
+  (define-key company-active-map (kbd "<return>") 'company-complete-selection)
+  (global-company-mode 1))
 
 (use-package expand-region)
 
@@ -829,7 +1023,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package json-mode
   :defer t)
 
-;; TODO: Do I need to config the company backend?
 (use-package yaml-mode
   :after (lsp-mode flycheck)
   :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
@@ -872,10 +1065,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (use-package lsp-mode
   :init
-  (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
+  ;; (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
   :hook
   (go-mode . lsp)
-  (lsp-mode . lsp-enable-which-key-integration)
+  ;; (lsp-mode . lsp-enable-which-key-integration)
   (python-mode . lsp)
   (js-mode . lsp))
 
@@ -938,6 +1131,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
+  (setq org-startup-folded t)
   (setq org-startup-with-inline-images t)
   (setq org-startup-with-inline-images t)
   (setq-default org-default-notes-file
