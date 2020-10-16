@@ -20,7 +20,8 @@
 (setq indent-tabs-mode nil)
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
 
-(toggle-word-wrap 0)
+(setq ffap-machine-p-known 'reject)
+;; avoid ffap-guesser freeze when find-file-thing-at-point with something like url
 
 
 ;; https://github.com/tonsky/FiraCode
@@ -52,10 +53,15 @@
 
 ;; minimize some ui interface
 (scroll-bar-mode -1)
-(tool-bar-mode -1)
 (menu-bar-mode -1)
 (set-fringe-mode 5)
+
+;; (tool-bar-mode -1)
+(add-to-list 'default-frame-alist '(tool-bar-lines . 0))
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
+
+;; disable word-wrap
+(toggle-word-wrap 0)
 
 
 ;; The following variable can decide where the
@@ -99,12 +105,11 @@
 
 ;; profiling
 (use-package esup
+  :defer t
   :init
   (setq esup-depth 0)
-  :ensure t
   ;; To use MELPA Stable use ":pin mepla-stable",
-  :pin melpa
-  :commands (esup))
+  :pin melpa)
 
 ;; -- UI related
 
@@ -114,6 +119,8 @@
 
 ;; (set-face-attribute 'hl-line nil :foreground "#72ba89")
 (add-hook 'prog-mode-hook 'hl-line-mode)
+(with-eval-after-load 'jinja2-mode
+  (add-hook 'jinja2-mode-hook 'hl-line-mode))
 
 (use-package doom-themes
   :config
@@ -144,6 +151,8 @@
   :defer 1)
 
 (use-package perspective
+  :defer t
+  :commands (persp-switch)
   :config
   (persp-mode))
 
@@ -838,7 +847,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "e" '(:ignore t :which-key "errors")
-    "el" '(toggle-flycheck-error-list :which-key "comment or uncomment"))
+    "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
 
 
   (my-leader-keys
@@ -921,7 +930,8 @@ If the error list is visible, hide it.  Otherwise, show it."
     "ff" '(counsel-find-file :which-key "find file")))
 
 
-(use-package hydra)
+(use-package hydra
+  :defer t)
 
 ;; what's the difference between hydra and transient
 (defhydra hydra-text-scale (:timeout 8)
@@ -1034,6 +1044,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   (ivy-mode 1)
   (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
   (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
+  (setq ivy-use-selectable-prompt t)
+  ;; NOTE: make the candidate you typed selectable
+  ;; This is useful when you call =counsel-find-file=. Ex. You can choose the bar.yml when there is a candidate named barfar.yml
+
   ;; (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil))
 
@@ -1148,7 +1162,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (define-key company-active-map (kbd "<return>") 'company-complete-selection)
   (global-company-mode 1))
 
-(use-package expand-region)
+(use-package expand-region
+  :defer t)
 
 ;; lsp configuation
 
@@ -1160,8 +1175,10 @@ If the error list is visible, hide it.  Otherwise, show it."
     (add-hook 'before-save-hook 'gofmt-before-save)))
 
 (use-package flycheck
-  :ensure t
-  :init (global-flycheck-mode))
+  :commands (flycheck-mode)
+  :init
+  (add-hook 'prog-mode-hook 'flycheck-mode)
+  (setq flycheck-highlighting-mode 'lines))
 
 (use-package json-mode
   :defer t)
