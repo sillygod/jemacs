@@ -18,10 +18,18 @@
 (setq column-number-mode t)
 (setq make-backup-files nil)
 (setq indent-tabs-mode nil)
+(setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
 
-(defvar default-font-size 150)
+(toggle-word-wrap 0)
+
+
+;; https://github.com/tonsky/FiraCode
+;; optional font
+;; TODO: search what does fixed-pitch mean?
+(defvar default-font-size 140)
 (set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
-(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 150 :weight 'regular)
+(set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
 
 (when (string= system-type "darwin")
   "In macos, ls doesn't support --dired option"
@@ -49,9 +57,6 @@
 (set-fringe-mode 5)
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
 
-;; https://github.com/tonsky/FiraCode
-;; optional font
-;; TODO: need a font customization
 
 ;; The following variable can decide where the
 ;; packages to be installed.
@@ -88,7 +93,7 @@
 
 (setq use-package-always-ensure t)
 
-;; enable link in comments can be click
+;; enable link in comments can be click and hightlight it
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
 (add-hook 'before-save-hook 'delete-trailing-whitespace)
 
@@ -104,7 +109,9 @@
 ;; -- UI related
 
 
-(set-face-attribute 'link nil :foreground "#3f7c8f")
+(with-eval-after-load 'goto-addr
+  (set-face-attribute 'link nil :foreground "#3f7c8f"))
+
 ;; (set-face-attribute 'hl-line nil :foreground "#72ba89")
 (add-hook 'prog-mode-hook 'hl-line-mode)
 
@@ -134,7 +141,7 @@
 (use-package diff-hl
   :config
   (global-diff-hl-mode)
-  :defer t)
+  :defer 1)
 
 (use-package perspective
   :config
@@ -148,12 +155,16 @@
   (which-key-mode 1))
 
 (use-package doom-modeline
-  :ensure t
-  :init (doom-modeline-mode 1)
-  :custom ((doom-modeline-height 13)))
+  :init
+  (doom-modeline-mode 1)
+  (setq all-the-icons-scale-factor 1.1)
+  :custom ((doom-modeline-persp-name nil)
+	   (doom-modeline-height 12)))
 
 ;; ----------------------------------------------------------------
 
+(use-package uuidgen
+:defer t)
 
 (use-package nginx-mode
   :defer t)
@@ -196,6 +207,105 @@
 (defvar go-run-command "go run")
 (defvar go-run-args ""
   "Additional arguments to by supplied to `go run` during runtime.")
+
+(defvar python-run-command "python run")
+(defvar python-run-args "")
+
+
+;; TODO rewrite this
+(defun rename-current-buffer-file (&optional arg)
+  "Rename the current buffer and the file it is visiting.
+If the buffer isn't visiting a file, ask if it should
+be saved to a file, or just renamed.
+
+If called without a prefix argument, the prompt is
+initialized with the current directory instead of filename."
+  (interactive "P")
+  (let* ((old-short-name (buffer-name))
+         (old-filename (buffer-file-name)))
+    (if (and old-filename (file-exists-p old-filename))
+        ;; the buffer is visiting a file
+        (let* ((old-dir (file-name-directory old-filename))
+               (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
+               (new-dir (file-name-directory new-name))
+               (new-short-name (file-name-nondirectory new-name))
+               (file-moved-p (not (string-equal new-dir old-dir)))
+               (file-renamed-p (not (string-equal new-short-name old-short-name))))
+          (cond ((get-buffer new-name)
+                 (error "A buffer named '%s' already exists!" new-name))
+                ((string-equal new-name old-filename)
+                 (spacemacs/show-hide-helm-or-ivy-prompt-msg
+                  "Rename failed! Same new and old name" 1.5)
+                 (spacemacs/rename-current-buffer-file))
+                (t
+                 (let ((old-directory (file-name-directory new-name)))
+                   (when (and (not (file-exists-p old-directory))
+                              (yes-or-no-p
+                               (format "Create directory '%s'?" old-directory)))
+                     (make-directory old-directory t)))
+                 (rename-file old-filename new-name 1)
+                 (rename-buffer new-name)
+                 (set-visited-file-name new-name)
+                 (set-buffer-modified-p nil)
+                 (when (fboundp 'recentf-add-file)
+                   (recentf-add-file new-name)
+                   (recentf-remove-if-non-kept old-filename))
+                 (when (and (configuration-layer/package-used-p 'projectile)
+                            (projectile-project-p))
+                   (call-interactively #'projectile-invalidate-cache))
+                 (message (cond ((and file-moved-p file-renamed-p)
+                                 (concat "File Moved & Renamed\n"
+                                         "From: " old-filename "\n"
+                                         "To:   " new-name))
+                                (file-moved-p
+                                 (concat "File Moved\n"
+                                         "From: " old-filename "\n"
+                                         "To:   " new-name))
+                                (file-renamed-p
+                                 (concat "File Renamed\n"
+                                         "From: " old-short-name "\n"
+                                         "To:   " new-short-name)))))))
+      ;; the buffer is not visiting a file
+      (let ((key))
+        (while (not (memq key '(?s ?r)))
+          (setq key (read-key (propertize
+                               (format
+                                (concat "Buffer '%s' is not visiting a file: "
+                                        "[s]ave to file or [r]ename buffer?")
+                                old-short-name)
+                               'face 'minibuffer-prompt)))
+          (cond ((eq key ?s)            ; save to file
+                 ;; this allows for saving a new empty (unmodified) buffer
+                 (unless (buffer-modified-p) (set-buffer-modified-p t))
+                 (save-buffer))
+                ((eq key ?r)            ; rename buffer
+                 (let ((new-buffer-name (read-string "New buffer name: ")))
+                   (while (get-buffer new-buffer-name)
+                     ;; ask to rename again, if the new buffer name exists
+                     (if (yes-or-no-p
+                          (format (concat "A buffer named '%s' already exists: "
+                                          "Rename again?")
+                                  new-buffer-name))
+                         (setq new-buffer-name (read-string "New buffer name: "))
+                       (keyboard-quit)))
+                   (rename-buffer new-buffer-name)
+                   (message (concat "Buffer Renamed\n"
+                                    "From: " old-short-name "\n"
+                                    "To:   " new-buffer-name))))
+                ;; ?\a = C-g, ?\e = Esc and C-[
+                ((memq key '(?\a ?\e)) (keyboard-quit))))))))
+
+(defun new-empty-buffer ()
+  "Create a new buffer called: untitled."
+  (interactive)
+  (let ((newbuf (generate-new-buffer "untitled")))
+
+    ;; Prompt to save on `save-some-buffers' with positive PRED
+    (with-current-buffer newbuf
+      (setq-local buffer-offer-save t))
+    ;; pass non-nil force-same-window to prevent `switch-to-buffer' from
+    ;; displaying buffer in another window
+    (switch-to-buffer newbuf nil 'force-same-window)))
 
 (defun rotate-windows-forward (count)
   "Rotate each window forwards.
@@ -333,8 +443,11 @@ Powered by the howdoi"
 ;; TODO: implement this one
 (defun python-run-main ()
   (interactive)
-
-  )
+  (shell-command
+   (format (concat python-run-command " %s %s")
+	   (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+				     (buffer-file-name (buffer-base-buffer))))
+	   python-run-args)))
 
 (defun go-run-main ()
   (interactive)
@@ -454,16 +567,20 @@ If the error list is visible, hide it.  Otherwise, show it."
 	(delete-other-windows)))))
 
 ;; Decide to use this package to auto balance the parens
+;; NOTE: we should put this in the :init
+;; if we put this in the :config, it will perform add these hook after
+;; lazy-loading. That means we will not get it auto turn on when we enter one of the following program mode
+;; :init before trigger
+;; :config after trigger
 (use-package smartparens
-  :defer t
-  :config
+  :commands (smartparens-mode)
+  :init
   (require 'smartparens-config)
-  (add-hook 'js-mode-hook 'smartparens-mode)
-  (add-hook 'go-mode-hook 'smartparens-mode)
-  (add-hook 'html-mode-hook 'smartparens-mode)
-  (add-hook 'python-mode-hook 'smartparens-mode)
-  (add-hook 'emacs-lisp-mode-hook 'smartparens-mode))
-
+  (add-hook 'js-mode-hook #'smartparens-mode)
+  (add-hook 'go-mode-hook #'smartparens-mode)
+  (add-hook 'html-mode-hook #'smartparens-mode)
+  (add-hook 'python-mode-hook #'smartparens-mode)
+  (add-hook 'emacs-lisp-mode-hook #'smartparens-mode))
 
 ;; TODO: find a way to replace the hardcode path
 (use-package yasnippet
@@ -620,7 +737,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 
     (with-eval-after-load 'python
       (my-local-leader-def
-	:states '(normal visual motion)
 	:keymaps 'python-mode-map
 	"" '(:keymap lsp-command-map  :which-key "major mode")
 	"=" '(:ignore t :which-key "format")
@@ -658,6 +774,9 @@ If the error list is visible, hide it.  Otherwise, show it."
       "s" '(:ignore t :which-key "schedule")
       "ss" '(org-schedule :which-key "org-schedule")
       "sd" '(org-deadline :which-key "org-deadline")
+      "st" '(org-time-stamp :which-key "org-time-stamp")
+
+      ;; TODO: consider to add insert related key binding?
 
       "j" '(:ignore t :which-key "journals")
       "jn" '(org-journal-new-entry :which-key "new entry")))
@@ -690,18 +809,18 @@ If the error list is visible, hide it.  Otherwise, show it."
           ("\\11..9" . "select window 1..9"))
         which-key-replacement-alist)
 
-
-
   (my-leader-keys
     "j" '(:ignore t :which-key "jump")
     "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
     "ju" '(avy-jump-url :which-key "goto url")
     "jl" '(avy-goto-line :which-key "goto line")
-    "ji" '(counsel-jump-in-buffer :which-key "imenu"))
+    "ji" '(counsel-jump-in-buffer :which-key "imenu")
+    "j(" '(check-parens :which-key "check-parens"))
 
   (my-leader-keys
     "r" '(:ignore t :which-key "resume/register")
     "rk" '(counsel-yank-pop :which-key "kill ring")
+    "re" '(counsel-evil-registers :which-key "evil register")
     "rl" '(ivy-resume :which-key "ivy-resume"))
 
   (my-leader-keys
@@ -710,7 +829,8 @@ If the error list is visible, hide it.  Otherwise, show it."
     "bd" '(kill-this-buffer :which-key "kill-buffer")
     "bB" '(counsel-switch-buffer :which-key "list-buffer")
     "bn" '(next-buffer :which-key "next-buffer")
-    "bp" '(previous-buffer :which-key "previous-buffer"))
+    "bp" '(previous-buffer :which-key "previous-buffer")
+    "bN" '(new-empty-buffer :which-key "new empty buffer"))
 
   (my-leader-keys
     "c" '(:ignore t :which-key "comment/compile")
@@ -730,6 +850,11 @@ If the error list is visible, hide it.  Otherwise, show it."
     "ll" '(persp-switch :which-key "switch layout"))
 
   (my-leader-keys
+    "n" '(:ignore t :which-key "narrow")
+    "nf" '(narrow-to-defun :which-key "narrow to defun")
+    "nw" '(widen :which-key "widen"))
+
+  (my-leader-keys
     "p" '(:ignore t :which-key "project")
     "pp" '(counsel-projectile-switch-project :which-key "switch project")
     "pf" '(counsel-projectile-find-file :which-key "find-file"))
@@ -741,6 +866,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "g" '(:ignore t :which-key "git")
+    "gb" '(:ignore t :which-key "blame")
+    "gbl" '(git-messenger:popup-message  :which-key "this line")
+    "gbb" '(magit-blame-addition  :which-key "this buffer")
     "gs" '(magit-status :which-key "magit status"))
 
 
@@ -789,6 +917,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "fe" '(:ignore t :which-key "emacs")
     "fed" '(my-find-dotfile :which-key "open config dotfile")
     "fy" '(copy-file-path :which-key "copy file path")
+    "fs" '(save-buffer :which-key "save file")
     "ff" '(counsel-find-file :which-key "find file")))
 
 
@@ -862,6 +991,18 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; M-x all-the-icons-install-fonts
 (use-package all-the-icons)
+
+(use-package git-messenger
+  :defer t
+  :init
+  (setq git-messenger:show-detail t)
+  (setq git-messenger:use-magit-popup t))
+
+;; TODO: research what to config
+(use-package slime
+  :defer t
+  :init
+  (setq inferior-lisp-program "sbcl"))
 
 ;; TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
 (use-package elisp-slime-nav
@@ -967,7 +1108,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (defun org-mode-visual-fill ()
   "A beautiful word wrap effect."
-  (setq visual-fill-column-width 110)
+  (setq visual-fill-column-width 130)
+  ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
+  ;; maybe, I can remove this package?
   (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
   (global-visual-line-mode 1)
   (visual-fill-column-mode 1))
@@ -1047,6 +1190,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; set up python dev tools
 
+(with-eval-after-load 'python
+  (setq python-shell-interpreter "ipython"))
+
 (use-package python-pytest
   :defer t
   :custom
@@ -1056,7 +1202,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t)
 
 (use-package pyvenv
-  :defer t)
+  :commands (pyvenv-mode)
+  :init
+  (add-hook 'python-mode-hook #'pyvenv-mode))
 
 (use-package pyimport
   :defer t)
@@ -1127,6 +1275,18 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; (set-face-font 'org-table " ")
   ;; I use the visual-column instead
   ;; (add-hook 'org-mode-hook 'toggle-word-wrap)
+
+  ;; Set faces for heading levels
+  (dolist (face '((org-document-title . 1.2)
+		  (org-level-1 . 1.2)
+                  (org-level-2 . 1.1)
+                  (org-level-3 . 1.05)
+                  (org-level-4 . 1.0)
+                  (org-level-5 . 1.1)
+                  (org-level-6 . 1.1)
+                  (org-level-7 . 1.1)
+                  (org-level-8 . 1.1)))
+    (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
 
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)

@@ -4,20 +4,26 @@
 
 * Start to build my own emacs
 
+  Wow almost complete :)
+
 ** things needed to be done or enahnced
 
    - [ ] add a alias key prefix for =SPC m=
    - [ ] change the look of flycheck hint
    - [ ] It's time to check whether there is anything needed to be improved for the workflow
+   - [ ] add rename file function
+   - [ ] understand the lisp macro
+   - [ ] diminish persp workspace in the modeline
 
 ** program relavant config
 
    - [X] add python virtualenv detector
    - [X] javascript lsp, eval
-   - [ ] emacs-lisp, lisp configuration (lispy?)
-   - [ ] manage this config by literate programming way
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
+   - [ ] emacs-lisp, lisp configuration (lispy?)
+   - [ ] refactor my config when the line number is above 2000
+   - [ ] manage this config by literate programming way
 
 ** some questions
 
@@ -35,7 +41,8 @@
 ** use =esup= to profiling the emacs start up time
 
 ** transient-state seems to be spaceamcs's own implementation
-   https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137
+
+   [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137][source code link]]
 
 ** helpful
 
@@ -48,6 +55,7 @@
 
 * Reference
 
+   - http://ergoemacs.org/emacs/emacs.html
    - https://github.com/daviwil/dotfiles
    - https://github.com/lccambiaghi/.doom.d
    - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
