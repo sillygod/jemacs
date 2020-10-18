@@ -8,21 +8,18 @@
 
 ** things needed to be done or enahnced
 
-   - [X] change the look of flycheck hint
-   - [X] add restclient and ob-restclient
-   - [ ] test restclient work or not
+   - [ ] add run test and intergrate them into which-key bindings
    - [ ] add rename file function
-   - [ ] add a alias key prefix for =SPC m=
    - [ ] add google dictionary function
    - [ ] diminish persp workspace in the modeline
-   - [ ] understand the lisp macro
+   - [ ] fullscreen mode (shorcut)
+   - [ ] adopt darkroom package?
 
 ** program relavant config
 
    - [ ] emacs-lisp, lisp configuration (lispy?)
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
-   - [ ] refactor my config when the line number is above 2000
    - [ ] manage this config by literate programming way
 
 ** better to have
@@ -30,12 +27,14 @@
    - [ ] a startup dashboard
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
+   - [ ] https://github.com/quelpa/quelpa need this?
+   - [ ] window management https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup
 
 ** some questions
 
    - [X] to understand the source code of some implementation from =spacemacs=
    - [X] what does the =command= in the use-package do (make the command to be autoloaded)
-   - [ ] what is =featurep=
+   - [X] what is =featurep=
 
 
   #+begin_src bash
@@ -45,6 +44,8 @@
   reference: https://www.youtube.com/watch?v=xaZMwNELaJY
 
 ** use =esup= to profiling the emacs start up time
+
+** toggle-debug-on-error help to debug
 
 ** transient-state seems to be spaceamcs's own implementation
 

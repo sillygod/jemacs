@@ -9,8 +9,8 @@
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
-                               ;; restore after startup
-                               (setq gc-cons-threshold 800000)))
+			       ;; restore after startup
+			       (setq gc-cons-threshold 800000)))
 
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
@@ -101,6 +101,8 @@
 
 (setq use-package-always-ensure t)
 
+(push "~/Desktop/spacemacs-private/myemacs/local" load-path)
+
 ;; enable link in comments can be click and hightlight it
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
 (add-hook 'before-save-hook 'delete-trailing-whitespace)
@@ -135,8 +137,8 @@
   (with-eval-after-load 'org
     ;; change some ui
     (set-face-attribute 'org-link nil :foreground "#3f7c8f")
-    (set-face-attribute 'org-level-2 nil :foreground "#bf8228")
-    (set-face-attribute 'org-level-3 nil :foreground "#49ae49")
+    (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
+    (set-face-attribute 'org-level-3 nil :foreground "#219e57")
     (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
     (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
     (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
@@ -147,6 +149,11 @@
 (use-package highlight-parentheses
   :hook (prog-mode . highlight-parentheses-mode))
 
+;; TODO: to figure out a way to enable load local package.
+(use-package devdocs
+  :defer t
+  :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
+
 (use-package hl-todo
   :defer t
   :hook
@@ -155,6 +162,9 @@
 
 ;; need some customization here.
 (use-package diff-hl
+  :hook
+  ;; (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
+  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
   :config
   (global-diff-hl-mode)
   :defer 1)
@@ -178,12 +188,14 @@
   ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
   (doom-modeline-mode 1)
   (setq all-the-icons-scale-factor 1.1)
-  :custom ((doom-modeline-height 12)))
+  :custom
+  (doom-modeline-height 12)
+  (doom-modeline-persp-name nil))
 
 ;; ----------------------------------------------------------------
 
 (use-package uuidgen
-:defer t)
+  :defer t)
 
 (use-package nginx-mode
   :defer t)
@@ -230,6 +242,7 @@
 (defvar python-run-command "python run")
 (defvar python-run-args "")
 
+;; (setq lexical-binding t)
 
 ;; TODO rewrite this
 (defun rename-current-buffer-file (&optional arg)
@@ -241,78 +254,86 @@ If called without a prefix argument, the prompt is
 initialized with the current directory instead of filename."
   (interactive "P")
   (let* ((old-short-name (buffer-name))
-         (old-filename (buffer-file-name)))
+	 (old-filename (buffer-file-name)))
     (if (and old-filename (file-exists-p old-filename))
-        ;; the buffer is visiting a file
-        (let* ((old-dir (file-name-directory old-filename))
-               (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
-               (new-dir (file-name-directory new-name))
-               (new-short-name (file-name-nondirectory new-name))
-               (file-moved-p (not (string-equal new-dir old-dir)))
-               (file-renamed-p (not (string-equal new-short-name old-short-name))))
-          (cond ((get-buffer new-name)
-                 (error "A buffer named '%s' already exists!" new-name))
-                ((string-equal new-name old-filename)
-                 (spacemacs/show-hide-helm-or-ivy-prompt-msg
-                  "Rename failed! Same new and old name" 1.5)
-                 (spacemacs/rename-current-buffer-file))
-                (t
-                 (let ((old-directory (file-name-directory new-name)))
-                   (when (and (not (file-exists-p old-directory))
-                              (yes-or-no-p
-                               (format "Create directory '%s'?" old-directory)))
-                     (make-directory old-directory t)))
-                 (rename-file old-filename new-name 1)
-                 (rename-buffer new-name)
-                 (set-visited-file-name new-name)
-                 (set-buffer-modified-p nil)
-                 (when (fboundp 'recentf-add-file)
-                   (recentf-add-file new-name)
-                   (recentf-remove-if-non-kept old-filename))
-                 (when (and (configuration-layer/package-used-p 'projectile)
-                            (projectile-project-p))
-                   (call-interactively #'projectile-invalidate-cache))
-                 (message (cond ((and file-moved-p file-renamed-p)
-                                 (concat "File Moved & Renamed\n"
-                                         "From: " old-filename "\n"
-                                         "To:   " new-name))
-                                (file-moved-p
-                                 (concat "File Moved\n"
-                                         "From: " old-filename "\n"
-                                         "To:   " new-name))
-                                (file-renamed-p
-                                 (concat "File Renamed\n"
-                                         "From: " old-short-name "\n"
-                                         "To:   " new-short-name)))))))
+	;; the buffer is visiting a file
+	(let* ((old-dir (file-name-directory old-filename))
+	       (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
+	       (new-dir (file-name-directory new-name))
+	       (new-short-name (file-name-nondirectory new-name))
+	       (file-moved-p (not (string-equal new-dir old-dir)))
+	       (file-renamed-p (not (string-equal new-short-name old-short-name))))
+	  (cond ((get-buffer new-name)
+		 (error "A buffer named '%s' already exists!" new-name))
+		((string-equal new-name old-filename)
+		 (spacemacs/show-hide-helm-or-ivy-prompt-msg
+		  "Rename failed! Same new and old name" 1.5)
+		 (rename-current-buffer-file))
+		(t
+		 (let ((old-directory (file-name-directory new-name)))
+		   (when (and (not (file-exists-p old-directory))
+			      (yes-or-no-p
+			       (format "Create directory '%s'?" old-directory)))
+		     (make-directory old-directory t)))
+		 (rename-file old-filename new-name 1)
+		 (rename-buffer new-name)
+		 (set-visited-file-name new-name)
+		 (set-buffer-modified-p nil)
+		 (when (fboundp 'recentf-add-file)
+		   (recentf-add-file new-name)
+		   (recentf-remove-if-non-kept old-filename))
+		 (when (and (configuration-layer/package-used-p 'projectile)
+			    (projectile-project-p))
+		   (call-interactively #'projectile-invalidate-cache))
+		 (message (cond ((and file-moved-p file-renamed-p)
+				 (concat "File Moved & Renamed\n"
+					 "From: " old-filename "\n"
+					 "To:   " new-name))
+				(file-moved-p
+				 (concat "File Moved\n"
+					 "From: " old-filename "\n"
+					 "To:   " new-name))
+				(file-renamed-p
+				 (concat "File Renamed\n"
+					 "From: " old-short-name "\n"
+					 "To:   " new-short-name)))))))
       ;; the buffer is not visiting a file
       (let ((key))
-        (while (not (memq key '(?s ?r)))
-          (setq key (read-key (propertize
-                               (format
-                                (concat "Buffer '%s' is not visiting a file: "
-                                        "[s]ave to file or [r]ename buffer?")
-                                old-short-name)
-                               'face 'minibuffer-prompt)))
-          (cond ((eq key ?s)            ; save to file
-                 ;; this allows for saving a new empty (unmodified) buffer
-                 (unless (buffer-modified-p) (set-buffer-modified-p t))
-                 (save-buffer))
-                ((eq key ?r)            ; rename buffer
-                 (let ((new-buffer-name (read-string "New buffer name: ")))
-                   (while (get-buffer new-buffer-name)
-                     ;; ask to rename again, if the new buffer name exists
-                     (if (yes-or-no-p
-                          (format (concat "A buffer named '%s' already exists: "
-                                          "Rename again?")
-                                  new-buffer-name))
-                         (setq new-buffer-name (read-string "New buffer name: "))
-                       (keyboard-quit)))
-                   (rename-buffer new-buffer-name)
-                   (message (concat "Buffer Renamed\n"
-                                    "From: " old-short-name "\n"
-                                    "To:   " new-buffer-name))))
-                ;; ?\a = C-g, ?\e = Esc and C-[
-                ((memq key '(?\a ?\e)) (keyboard-quit))))))))
+	(while (not (memq key '(?s ?r)))
+	  (setq key (read-key (propertize
+			       (format
+				(concat "Buffer '%s' is not visiting a file: "
+					"[s]ave to file or [r]ename buffer?")
+				old-short-name)
+			       'face 'minibuffer-prompt)))
+	  (cond ((eq key ?s)            ; save to file
+		 ;; this allows for saving a new empty (unmodified) buffer
+		 (unless (buffer-modified-p) (set-buffer-modified-p t))
+		 (save-buffer))
+		((eq key ?r)            ; rename buffer
+		 (let ((new-buffer-name (read-string "New buffer name: ")))
+		   (while (get-buffer new-buffer-name)
+		     ;; ask to rename again, if the new buffer name exists
+		     (if (yes-or-no-p
+			  (format (concat "A buffer named '%s' already exists: "
+					  "Rename again?")
+				  new-buffer-name))
+			 (setq new-buffer-name (read-string "New buffer name: "))
+		       (keyboard-quit)))
+		   (rename-buffer new-buffer-name)
+		   (message (concat "Buffer Renamed\n"
+				    "From: " old-short-name "\n"
+				    "To:   " new-buffer-name))))
+		;; ?\a = C-g, ?\e = Esc and C-[
+		((memq key '(?\a ?\e)) (keyboard-quit))))))))
+
+(defun org-file-show-headings (org-file)
+  (interactive)
+  (find-file (expand-file-name org-file))
+  (counsel-org-goto)
+  (org-overview)
+  (org-show-subtree)
+  (forward-line))
 
 (defun new-empty-buffer ()
   "Create a new buffer called: untitled."
@@ -332,15 +353,15 @@ A negative prefix argument rotates each window backwards.
 Dedicated (locked) windows are left untouched."
   (interactive "p")
   (let* ((non-dedicated-windows (cl-remove-if 'window-dedicated-p (window-list)))
-         (states (mapcar #'window-state-get non-dedicated-windows))
-         (num-windows (length non-dedicated-windows))
-         (step (+ num-windows count)))
+	 (states (mapcar #'window-state-get non-dedicated-windows))
+	 (num-windows (length non-dedicated-windows))
+	 (step (+ num-windows count)))
     (if (< num-windows 2)
-        (error "You can't rotate a single window!")
+	(error "You can't rotate a single window!")
       (dotimes (i num-windows)
-        (window-state-put
-         (elt states i)
-         (elt non-dedicated-windows (% (+ step i) num-windows)))))))
+	(window-state-put
+	 (elt states i)
+	 (elt non-dedicated-windows (% (+ step i) num-windows)))))))
 
 
 ;; Borrow project search function from the projectile
@@ -391,18 +412,18 @@ is called with a prefix argument."
 Powered by the howdoi"
   (interactive "sAsk the god, you'll get it: ")
   (let ((buffer-name "*God's reply*")
-        (exectuable-name "howdoi"))
+	(exectuable-name "howdoi"))
     (with-output-to-temp-buffer buffer-name
       (shell-command (concat exectuable-name " " question)
-                     buffer-name
-                     "*Messages*")
+		     buffer-name
+		     "*Messages*")
       (pop-to-buffer buffer-name))))
 
 (defun copy-region-and-base64-decode (start end)
   (interactive "r")
   (let ((x (base64-decode-string
-           (decode-coding-string
-            (buffer-substring start end) 'utf-8))))
+	    (decode-coding-string
+	     (buffer-substring start end) 'utf-8))))
     (kill-new x)))
 
 (defun my-encode-region-base64 (start end)
@@ -422,8 +443,8 @@ Powered by the howdoi"
 (defun copy-region-and-urlencode (start end)
   (interactive "r")
   (let ((x (url-hexify-string
-            (buffer-substring start end))))
-  (kill-new x)))
+	    (buffer-substring start end))))
+    (kill-new x)))
 
 (defun now ()
   "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
@@ -454,12 +475,11 @@ Powered by the howdoi"
 (defun my-emmet-expand ()
   (interactive)
   (unless (if (bound-and-true-p yas-minor-mode)
-              (call-interactively 'emmet-expand-yas)
-            (call-interactively 'emmet-expand-line))
+	      (call-interactively 'emmet-expand-yas)
+	    (call-interactively 'emmet-expand-line))
     (indent-for-tab-command)))
 
 
-;; TODO: implement this one
 (defun python-run-main ()
   (interactive)
   (shell-command
@@ -472,9 +492,9 @@ Powered by the howdoi"
   (interactive)
   (shell-command
    (format (concat go-run-command " %s %s")
-           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
-                                     (buffer-file-name (buffer-base-buffer))))
-           go-run-args)))
+	   (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+				     (buffer-file-name (buffer-base-buffer))))
+	   go-run-args)))
 
 
 (defun kill-this-buffer (&optional arg)
@@ -485,8 +505,33 @@ If the universal prefix argument is used then kill also the window."
   (if (window-minibuffer-p)
       (abort-recursive-edit)
     (if (equal '(4) arg)
-        (kill-buffer-and-window)
+	(kill-buffer-and-window)
       (kill-buffer))))
+
+(defun define-leader-key-global (&rest MAPS)
+  (let ((get-props (lambda () (list
+			       my-leader-def-prop
+			       my-leader-def-emacs-state-prop))))
+    (dolist (prop (funcall get-props))
+      (apply 'general-define-key
+	     :states (plist-get prop ':states)
+	     :prefix (symbol-value (plist-get prop ':key))
+	     :keymaps 'override
+	     MAPS))))
+
+(defun define-leader-key-map-for (mode-map &rest MAPS)
+  "Define the leader key map for the specify mode."
+  ;; TODO: to understand the difference between '(1) (list 1)
+  (let ((get-props (lambda () (list
+			       my-local-leader-def-emacs-state-prop
+			       my-local-leader-def-prop
+			       my-local-leader-def-alias-prop))))
+    (dolist (prop (funcall get-props))
+      (apply 'general-define-key
+	     :states (plist-get prop ':states)
+	     :prefix (symbol-value (plist-get prop ':key))
+	     :keymaps mode-map
+	     MAPS))))
 
 
 (defun copy-file-path ()
@@ -494,8 +539,8 @@ If the universal prefix argument is used then kill also the window."
   (interactive)
   (if-let (file-path (get-file-path))
       (progn
-        (kill-new file-path)
-        (message "%s" file-path))
+	(kill-new file-path)
+	(message "%s" file-path))
     (message "WARNING: Current buffer is not attached to a file!")))
 
 
@@ -520,18 +565,17 @@ to `evil-lookup'"
     (lsp-describe-thing-at-point)
     (eivl-lookup)))
 
-  ;; (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
-  ;;   (print (key-binding (kbd (concat "SPC" " mhh"))))
-  ;;   (if (commandp binding)
-  ;; 	(call-interactively binding)
-  ;;     (evil-lookup))))
+;; (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
+;;   (print (key-binding (kbd (concat "SPC" " mhh"))))
+;;   (if (commandp binding)
+;; 	(call-interactively binding)
+;;     (evil-lookup))))
 
 
 (defun comment-or-uncomment-lines (&optional arg)
   (interactive "p")
   (let ((evilnc-invert-comment-line-by-line nil))
     (evilnc-comment-or-uncomment-lines arg)))
-
 
 (defun counsel-jump-in-buffer ()
   "Jump in buffer with `counsel-imenu' or `counsel-org-goto' if in 'org-mode'."
@@ -635,52 +679,36 @@ If the error list is visible, hide it.  Otherwise, show it."
   ([remap describe-key] . helpful-key))
 
 (use-package general
-  :after (evil)
-  ;; :after (evil dired expand-region go-mode lsp-mode)
-  :config
-  ;; keysmaps override is to make general-define-key to be global scope
-  ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
-
+  :init
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
+  (defconst major-mode-leader-key-shortcut ",")
   (defconst emacs-state-leader-key "M-m")
   (defconst emacs-state-major-mode-leader-key "M-m m")
 
+  (setq my-leader-def-prop
+	'(:key leader-key :states '(normal visual motion)))
+
+  (setq my-leader-def-emacs-state-prop
+	'(:key emacs-state-leader-key :state '(emacs)))
+
+  ;; below are for major mode
+  (setq my-local-leader-def-prop
+	'(:key major-mode-leader-key :states '(normal visual motion)))
+
+  (setq my-local-leader-def-alias-prop
+	'(:key major-mode-leader-key-shortcut :states '(normal visual motion)))
+
+  (setq my-local-leader-def-emacs-state-prop
+	'(:key emacs-state-major-mode-leader-key :states '(emacs)))
+
+  :after (evil)
+  ;; :after (evil dired expand-region go-mode lsp-mode)
+  :config
+
+  ;; NOTE: keysmaps override is to make general-define-key to be global scope
+  ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
   (message "DEBUG: !! general init")
-
-  (general-create-definer my-leader-keys-emacs-state
-    :states '(emacs)
-    :keymaps 'override
-    :prefix emacs-state-leader-key)
-
-  (general-create-definer my-leader-keys
-    :states '(normal visual motion)
-    :keymaps 'override
-    :prefix leader-key)
-
-  (general-create-definer my-local-leader-keys-emacs-state
-    :states '(emacs)
-    :keymaps 'override
-    :prefix emacs-state-major-mode-leader-key)
-
-  (general-create-definer my-local-leader-def
-    :states '(normal visual motion)
-    :keymaps 'override
-    :prefix major-mode-leader-key)
-
-  (general-create-definer my-local-leader-def-alias
-    :states '(normal visual motion)
-    :keymaps 'override
-    :prefix ",")
-
-  (defun my-define-major-keys (&rest ARGS)
-    ;; mapcar two definer with those key definitions)
-   )
-
-  ;; TODO: create an alias =,= -> =SPC m=
-  ;; (evil-define-key 'normal lsp-mode-map (kbd "SPC m") lsp-command-map)
-  ;; maybe I can extract the key-map, rearrange it and assign
-
 
   (with-eval-after-load 'emmet-mode
     (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
@@ -699,25 +727,21 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (with-eval-after-load 'org
 
-
     ;; define key open-thing-at-point with enter
     (evil-define-key 'normal org-mode-map (kbd "<return>") 'org-open-at-point)
     (evil-define-key 'normal prog-mode-map (kbd "<return>") 'org-open-at-point))
 
 
-  ;; this is how spacemacs change the keybinding when edit org source code block
-  ;; (with-eval-after-load 'org-src
-  ;;   (spacemacs/set-leader-keys-for-minor-mode 'org-src-mode
-  ;;     dotspacemacs-major-mode-leader-key 'org-edit-src-exit
-  ;;     "c" 'org-edit-src-exit
-  ;;     "a" 'org-edit-src-abort
-  ;;     "k" 'org-edit-src-abort))
+  ;; add shortcuts for org src edit mode
+  (with-eval-after-load 'org-src
+    (evil-define-key 'normal org-src-mode-map
+      (kbd ", ,") 'org-edit-src-exit
+      (kbd ", k") 'org-edit-src-abort))
 
   (with-eval-after-load 'with-editor
     (evil-define-key 'normal with-editor-mode-map
       (kbd ", ,") 'with-editor-finish
       (kbd ", k") 'with-editor-cancel))
-
 
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
@@ -731,15 +755,15 @@ If the error list is visible, hide it.  Otherwise, show it."
   (with-eval-after-load 'lsp-mode
 
     (with-eval-after-load 'go-mode
-      (my-local-leader-def
-	:keymaps 'go-mode-map
+
+      (define-leader-key-map-for 'go-mode-map
 	"" '(:keymap lsp-command-map  :which-key "major mode")
 	"=" '(:ignore t :which-key "format")
-        "a" '(:ignore t :which-key "code actions")
+	"a" '(:ignore t :which-key "code actions")
 	"b" '(:ignore t :which-key "backend")
 	"F" '(:ignore t :which-key "folder")
 	"g" '(:ignore t :which-key "goto")
-	"G" '(:ignore t :wihch-key "peek")
+	"G" '(:ignore t :which-key "peek")
 	"h" '(:ignore t :which-key "help")
 	"r" '(:ignore t :which-key "refactor")
 	"T" '(:ignore t :which-key "toggle")
@@ -750,19 +774,18 @@ If the error list is visible, hide it.  Otherwise, show it."
 	"d" '(dap-hydra :which-key "debug")
 	"e" '(gomacro-run :which-key "gomacro"))
 
-
       (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'python
-      (my-local-leader-def
-	:keymaps 'python-mode-map
+
+      (define-leader-key-map-for 'python-mode-map
 	"" '(:keymap lsp-command-map  :which-key "major mode")
 	"=" '(:ignore t :which-key "format")
-        "a" '(:ignore t :which-key "code actions")
+	"a" '(:ignore t :which-key "code actions")
 	"b" '(:ignore t :which-key "backend")
 	"F" '(:ignore t :which-key "folder")
 	"g" '(:ignore t :which-key "goto")
-	"G" '(:ignore t :wihch-key "peek")
+	"G" '(:ignore t :which-key "peek")
 	"h" '(:ignore t :which-key "help")
 	"r" '(:ignore t :which-key "refactor")
 	"T" '(:ignore t :which-key "toggle")
@@ -774,8 +797,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     )
 
   (with-eval-after-load 'elisp-mode
-    (my-local-leader-def
-      :keymaps 'emacs-lisp-mode-map
+    (define-leader-key-map-for 'emacs-lisp-mode-map
       "" '(:ignore t :which-key "major mode")
       "e" '(:ignore t :which-key "eval")
       "ef" '(eval-defun :which-key "eval defun")
@@ -783,8 +805,7 @@ If the error list is visible, hide it.  Otherwise, show it."
       "er" '(eval-region :which-key "eval region")))
 
   (with-eval-after-load 'org
-    (my-local-leader-def
-      :keymaps 'org-mode-map
+    (define-leader-key-map-for 'org-mode-map
       "" '(:ignore t :which-key "major mode")
       "a" 'org-agenda
       "," 'org-ctrl-c-ctrl-c
@@ -792,6 +813,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
       "i" '(:ignore t :which-key "insert")
       "il" '(org-insert-link :which-key "insert link")
+
 
       "s" '(:ignore t :which-key "schedule")
       "ss" '(org-schedule :which-key "org-schedule")
@@ -802,7 +824,7 @@ If the error list is visible, hide it.  Otherwise, show it."
       "jn" '(org-journal-new-entry :which-key "new entry")))
 
 
-  (my-leader-keys
+  (define-leader-key-global
     "SPC" 'counsel-M-x
     "/" 'my-counsel-projectile-rg
     "v" 'er/expand-region
@@ -812,7 +834,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   ;; which-key-replacement-alist
   ;; change the content of the above variable
-  (my-leader-keys
+  (define-leader-key-global
     "1" 'winum-select-window-1
     "2" '(winum-select-window-2 :which-key t)
     "3" '(winum-select-window-3 :which-key t)
@@ -826,10 +848,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; need to find a way to add which-key hints
   ;; for the following window selection
   (push '(("\\(.*\\)1" . "winum-select-window-1") .
-          ("\\11..9" . "select window 1..9"))
-        which-key-replacement-alist)
+	  ("\\11..9" . "select window 1..9"))
+	which-key-replacement-alist)
 
-  (my-leader-keys
+  (define-leader-key-global
     "j" '(:ignore t :which-key "jump")
     "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
     "ju" '(avy-jump-url :which-key "goto url")
@@ -837,13 +859,21 @@ If the error list is visible, hide it.  Otherwise, show it."
     "ji" '(counsel-jump-in-buffer :which-key "imenu")
     "j(" '(check-parens :which-key "check-parens"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "r" '(:ignore t :which-key "resume/register")
     "rk" '(counsel-yank-pop :which-key "kill ring")
     "re" '(counsel-evil-registers :which-key "evil register")
     "rl" '(ivy-resume :which-key "ivy-resume"))
 
-  (my-leader-keys
+  (define-leader-key-global
+    "a" '(:ignore t :which-key "applications")
+
+    "ao" '(:ignore t :which-key "org")
+    "aog" '(:ignore t :which-key "goto")
+    "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
+    "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
+
+  (define-leader-key-global
     "b" '(:ignore t :which-key "buffer")
     "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
     "bd" '(kill-this-buffer :which-key "kill-buffer")
@@ -852,39 +882,39 @@ If the error list is visible, hide it.  Otherwise, show it."
     "bp" '(previous-buffer :which-key "previous-buffer")
     "bN" '(new-empty-buffer :which-key "new empty buffer"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "c" '(:ignore t :which-key "comment/compile")
     "cl" '(comment-or-uncomment-lines :which-key "comment or uncomment"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "e" '(:ignore t :which-key "errors")
     "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
 
 
-  (my-leader-keys
+  (define-leader-key-global
     "i" '(:ignore t :which-key "insert")
     "is" '(ivy-yas :which-key "snippets"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "l" '(:ignore t :which-key "layout")
     "ll" '(persp-switch :which-key "switch layout"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "n" '(:ignore t :which-key "narrow")
     "nf" '(narrow-to-defun :which-key "narrow to defun")
     "nw" '(widen :which-key "widen"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "p" '(:ignore t :which-key "project")
     "pp" '(counsel-projectile-switch-project :which-key "switch project")
     "pf" '(counsel-projectile-find-file :which-key "find-file"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "s" '(:ignore t :which-key "search")
     "sc" '(evil-ex-nohighlight :which-key "clear highlight")
     "ss" '(swiper :which-key "swiper"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "g" '(:ignore t :which-key "git")
     "gi" '(magit-init :which-key "gagit init")
     "gb" '(:ignore t :which-key "blame")
@@ -893,14 +923,14 @@ If the error list is visible, hide it.  Otherwise, show it."
     "gs" '(magit-status :which-key "magit status"))
 
 
-  (my-leader-keys
+  (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
     "tt" '(counsel-load-theme :which-key "choose theme")
     "tr" '(rainbow-mode :which-key "rainbow-mode")
     ;; NOTE: in the future, I can implement a list of mode to be toggle on
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "w" '(:ignore t :which-key "windows")
     "wm" '(toggle-maximize-buffer :which-key "window maximized")
     "wM" '(toggle-frame-maximized :which-key "frame maximized")
@@ -927,7 +957,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "wF" '(make-frame :which-key "make frame")
     "wo" '(other-frame :which-key "other frame"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "x" '(:ignore t :which-key "texts")
     "xc" '(count-words-region :which-key "count-words-region")
 
@@ -935,7 +965,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
     "xbd" '(my-decode-region-base64 :which-key "base64-decode-region"))
 
-  (my-leader-keys
+  (define-leader-key-global
     "f" '(:ignore t :which-key "files")
     "fe" '(:ignore t :which-key "emacs")
     "fed" '(my-find-dotfile :which-key "open config dotfile")
@@ -1137,7 +1167,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t)
 
 (use-package org-journal
-    :defer t)
+  :defer t)
 
 (use-package ox-reveal
   :defer t
@@ -1193,6 +1223,14 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; lsp configuation
 
+(use-package rust-mode
+  :defer t
+  :mode "\\.rs\\'"
+  :init (setq rust-format-on-save t))
+
+(use-package cargo
+  :defer t)
+
 (use-package go-mode
   :defer 2
   :config
@@ -1206,6 +1244,11 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package systemd
   ;; ISSUE: Company backend ’t’ could not be initialized
   :defer t)
+
+
+(use-package lispy
+  :hook ((emacs-lisp-mode . lispy-mode)
+         (scheme-mode . lispy-mode)))
 
 (use-package flycheck
   :commands (flycheck-mode)
@@ -1264,6 +1307,8 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (use-package lsp-mode
   :init
+  (setq lsp-completion-provider :capf) ;; the official recommends use this
+  ;; run =company-diag= to check what the company-backen is being used.
   ;; (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
   :hook
   (go-mode . lsp)
@@ -1303,7 +1348,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; by default, you need to press M-RET to add a auto-numbering list
 ;; this will has some agenda mode binding..
 (use-package evil-org
-  :ensure t
   :after org
   :config
   (add-hook 'org-mode-hook 'evil-org-mode)
@@ -1330,20 +1374,20 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; Set faces for heading levels
   (dolist (face '((org-document-title . 1.2)
 		  (org-level-1 . 1.2)
-                  (org-level-2 . 1.1)
-                  (org-level-3 . 1.05)
-                  (org-level-4 . 1.0)
-                  (org-level-5 . 1.1)
-                  (org-level-6 . 1.1)
-                  (org-level-7 . 1.1)
-                  (org-level-8 . 1.1)))
+		  (org-level-2 . 1.1)
+		  (org-level-3 . 1.05)
+		  (org-level-4 . 1.0)
+		  (org-level-5 . 1.1)
+		  (org-level-6 . 1.1)
+		  (org-level-7 . 1.1)
+		  (org-level-8 . 1.1)))
     (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
 
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
   (setq org-startup-folded t)
-  (setq org-startup-with-inline-images t)
+  (setq org-ellipsis " ▾")
   (setq org-startup-with-inline-images t)
   (setq-default org-default-notes-file
 		"~/Dropbox/myorgs/todo.org")
