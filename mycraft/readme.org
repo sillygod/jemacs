@@ -8,28 +8,32 @@
 
 ** things needed to be done or enahnced
 
-   - [ ] add a alias key prefix for =SPC m=
-   - [ ] change the look of flycheck hint
-   - [ ] It's time to check whether there is anything needed to be improved for the workflow
+   - [X] change the look of flycheck hint
    - [ ] add rename file function
-   - [ ] understand the lisp macro
+   - [ ] add a alias key prefix for =SPC m=
+   - [ ] add google dictionary function
    - [ ] diminish persp workspace in the modeline
+   - [ ] understand the lisp macro
 
 ** program relavant config
 
-   - [X] add python virtualenv detector
-   - [X] javascript lsp, eval
+   - [ ] emacs-lisp, lisp configuration (lispy?)
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
-   - [ ] emacs-lisp, lisp configuration (lispy?)
    - [ ] refactor my config when the line number is above 2000
    - [ ] manage this config by literate programming way
+
+** better to have
+
+   - [ ] a startup dashboard
+   - [ ] interactive sql mode
+   - [ ] spacemacs' org-doc-view mode?
 
 ** some questions
 
    - [X] to understand the source code of some implementation from =spacemacs=
+   - [X] what does the =command= in the use-package do (make the command to be autoloaded)
    - [ ] what is =featurep=
-   - [ ] what does the =command= in the use-package do
 
 
   #+begin_src bash

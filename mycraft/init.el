@@ -50,14 +50,16 @@
 ;; (setq shell-command-switch "-ic")
 (setq shell-command-switch "-c")
 
-
 ;; minimize some ui interface
 (scroll-bar-mode -1)
-(menu-bar-mode -1)
-(set-fringe-mode 5)
 
+;; (menu-bar-mode -1)
+(add-to-list 'default-frame-alist '(menu-bar-lines . 0))
 ;; (tool-bar-mode -1)
 (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
+;; (set-fringe-mode 5)
+(add-to-list 'default-frame-alist '(left-fringe . 5))
+(add-to-list 'default-frame-alist '(right-fringe . 5))
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
 
 ;; disable word-wrap
@@ -113,7 +115,6 @@
 
 ;; -- UI related
 
-
 (with-eval-after-load 'goto-addr
   (set-face-attribute 'link nil :foreground "#3f7c8f"))
 
@@ -121,6 +122,10 @@
 (add-hook 'prog-mode-hook 'hl-line-mode)
 (with-eval-after-load 'jinja2-mode
   (add-hook 'jinja2-mode-hook 'hl-line-mode))
+
+
+(use-package rainbow-mode
+  :defer t)
 
 (use-package doom-themes
   :config
@@ -130,7 +135,11 @@
   (with-eval-after-load 'org
     ;; change some ui
     (set-face-attribute 'org-link nil :foreground "#3f7c8f")
-    (set-face-attribute 'org-level-2 nil :foreground "#bf8228")))
+    (set-face-attribute 'org-level-2 nil :foreground "#bf8228")
+    (set-face-attribute 'org-level-3 nil :foreground "#49ae49")
+    (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
+    (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
+    (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
 
 (use-package rainbow-delimiters
   :hook (prog-mode . rainbow-delimiters-mode))
@@ -151,6 +160,7 @@
   :defer 1)
 
 (use-package perspective
+  :diminish persp-mode
   :defer t
   :commands (persp-switch)
   :config
@@ -165,10 +175,10 @@
 
 (use-package doom-modeline
   :init
+  ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
   (doom-modeline-mode 1)
   (setq all-the-icons-scale-factor 1.1)
-  :custom ((doom-modeline-persp-name nil)
-	   (doom-modeline-height 12)))
+  :custom ((doom-modeline-height 12)))
 
 ;; ----------------------------------------------------------------
 
@@ -418,7 +428,7 @@ Powered by the howdoi"
 (defun now ()
   "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
   (interactive)
-  (message "now: %s \n timestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
+  (message "now: %s \ntimestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
 
 
 (defun my-shrink-window (delta)
@@ -672,7 +682,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; maybe I can extract the key-map, rearrange it and assign
 
 
-
   (with-eval-after-load 'emmet-mode
     (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
 
@@ -780,12 +789,14 @@ If the error list is visible, hide it.  Otherwise, show it."
       "a" 'org-agenda
       "," 'org-ctrl-c-ctrl-c
       "'" 'org-edit-special
+
+      "i" '(:ignore t :which-key "insert")
+      "il" '(org-insert-link :which-key "insert link")
+
       "s" '(:ignore t :which-key "schedule")
       "ss" '(org-schedule :which-key "org-schedule")
       "sd" '(org-deadline :which-key "org-deadline")
       "st" '(org-time-stamp :which-key "org-time-stamp")
-
-      ;; TODO: consider to add insert related key binding?
 
       "j" '(:ignore t :which-key "journals")
       "jn" '(org-journal-new-entry :which-key "new entry")))
@@ -875,6 +886,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (my-leader-keys
     "g" '(:ignore t :which-key "git")
+    "gi" '(magit-init :which-key "gagit init")
     "gb" '(:ignore t :which-key "blame")
     "gbl" '(git-messenger:popup-message  :which-key "this line")
     "gbb" '(magit-blame-addition  :which-key "this buffer")
@@ -884,6 +896,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (my-leader-keys
     "t"  '(:ignore t :which-key "toggles")
     "tt" '(counsel-load-theme :which-key "choose theme")
+    "tr" '(rainbow-mode :which-key "rainbow-mode")
+    ;; NOTE: in the future, I can implement a list of mode to be toggle on
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
   (my-leader-keys
@@ -1017,7 +1031,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
 (use-package elisp-slime-nav
   :defer t
-  :config
+  :init
   (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
     (add-hook hook 'elisp-slime-nav-mode)))
 
@@ -1033,6 +1047,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 	      ("C-l" . ivy-alt-done)
 	      ("C-j" . ivy-next-line)
 	      ("C-k" . ivy-previous-line)
+	      ("C-u" . ivy-backward-kill-word)
 	      :map ivy-switch-buffer-map
 	      ("C-k" . ivy-previous-line)
 	      ("C-l" . ivy-done)
@@ -1056,7 +1071,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; use multiple-cursor may be helpful.
 ;; Finally, Ctrl-c Ctrl-c to commit change
 (use-package swiper
-  :ensure t
   :bind (("C-s" . swiper))
   )
 
@@ -1174,11 +1188,19 @@ If the error list is visible, hide it.  Otherwise, show it."
     (setq gofmt-command "goimports")
     (add-hook 'before-save-hook 'gofmt-before-save)))
 
+(use-package protobuf-mode
+  :defer t)
+
+(use-package systemd
+  ;; ISSUE: Company backend ’t’ could not be initialized
+  :defer t)
+
 (use-package flycheck
   :commands (flycheck-mode)
   :init
   (add-hook 'prog-mode-hook 'flycheck-mode)
-  (setq flycheck-highlighting-mode 'lines))
+  (setq flycheck-highlighting-mode 'lines)
+  (setq flycheck-indication-mode 'nil))
 
 (use-package json-mode
   :defer t)
@@ -1363,6 +1385,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (setq org-todo-keyword-faces
 	'(("TODO" . "#dc752f")
+	  ("IN PROGRESS" . "#33eecc")
 	  ("NO_NEWS" . "#cdb7b5")
 	  ("ABANDON" . "#f2241f")
 	  ("OFFERGET" . "#4f97d7")))
