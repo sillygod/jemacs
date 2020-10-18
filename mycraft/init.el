@@ -150,7 +150,7 @@
 (use-package hl-todo
   :defer t
   :hook
-  (text-mode . hl-todo-mode)
+  ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
   (prog-mode . hl-todo-mode))
 
 ;; need some customization here.
@@ -998,6 +998,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq evil-collection-company-use-tng nil)
   (evil-collection-init))
 
+;; NOTE: it will save the command behavior applied on the multiple cursor
+;; to a file named .mc-lists.el. By default, it's path is =~/.emacs.d/.mc-lists.el=
 (use-package multiple-cursors
   :defer t
   :after evil)
@@ -1070,6 +1072,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
 ;; use multiple-cursor may be helpful.
 ;; Finally, Ctrl-c Ctrl-c to commit change
+;; there are some key binding in the swiper-map
 (use-package swiper
   :bind (("C-s" . swiper))
   )
@@ -1120,6 +1123,15 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t
   :ensure org-plus-contrib
   :pin org)
+
+
+(use-package restclient
+  :defer t)
+
+(use-package ob-restclient
+  :defer t
+  :after (org restclient)
+  :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
 (use-package org-download
   :defer t)

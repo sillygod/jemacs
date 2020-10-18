@@ -9,6 +9,8 @@
 ** things needed to be done or enahnced
 
    - [X] change the look of flycheck hint
+   - [X] add restclient and ob-restclient
+   - [ ] test restclient work or not
    - [ ] add rename file function
    - [ ] add a alias key prefix for =SPC m=
    - [ ] add google dictionary function
