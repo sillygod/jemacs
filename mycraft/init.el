@@ -9,16 +9,25 @@
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
-			       ;; restore after startup
-			       (setq gc-cons-threshold 800000)))
+                               ;; restore after startup
+                               (setq gc-cons-threshold 800000)))
 
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
 (setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
 (setq column-number-mode t)
 (setq make-backup-files nil)
-(setq indent-tabs-mode nil)
+(setq-default indent-tabs-mode nil)
+
+;; NOTE: wow if you use setq here, it will not works
+;; to research why
+(setq-default tab-width 4)
+
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
+
+(setq dired-dwim-target t)
+;; make dired auto guess the path to rename
+;; ex. open two buffer with dired mode
 
 (setq ffap-machine-p-known 'reject)
 ;; avoid ffap-guesser freeze when find-file-thing-at-point with something like url
@@ -68,7 +77,9 @@
 
 ;; The following variable can decide where the
 ;; packages to be installed.
-(setq package-user-dir "~/.mycraft.d/elpa")
+(defconst my-home-dir "~/.mycraft.d/")
+(setq package-user-dir (concat my-home-dir "elpa"))
+(setq mc/list-file (concat my-home-dir "mc-lists.el"))
 
 
 ;; Initialize package sources
@@ -80,8 +91,8 @@
 (require 'package)
 
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
-			 ("org" . "https://orgmode.org/elpa/")
-			 ("elpa" . "https://elpa.gnu.org/packages/")))
+                         ("org" . "https://orgmode.org/elpa/")
+                         ("elpa" . "https://elpa.gnu.org/packages/")))
 
 
 
@@ -101,11 +112,60 @@
 
 (setq use-package-always-ensure t)
 
-(push "~/Desktop/spacemacs-private/myemacs/local" load-path)
+(push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
 
 ;; enable link in comments can be click and hightlight it
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
+(add-hook 'prog-mode-hook '(lambda () (setq indent-tabs-mode nil)))
 (add-hook 'before-save-hook 'delete-trailing-whitespace)
+
+(add-hook 'dired-mode-hook 'auto-revert-mode)
+
+
+;; TODO refactor this auto switch input method function into another file.
+(defcustom im-exec "/usr/local/bin/im-select"
+  :type 'string)
+
+(defvar default-im "com.apple.keylayout.ABC"
+  "Default English input method.")
+
+(defvar prev-im (substring (shell-command-to-string im-exec) 0 -1))
+
+(defun im-use-eng ()
+  "Switch to english input method."
+  (interactive)
+  (cond ((eq system-type "darwin")
+         (call-process-shell-command (concat im-exec " " default-im)))))
+
+(defun im-remember ()
+  "Remember the input method being used in insert mode."
+  (interactive)
+  (cond ((eq system-type "darwin")
+         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))))
+
+(defun im-use-prev ()
+  (interactive)
+  (cond ((eq system-type "darwin")
+         (if prev-im
+             (call-process-shell-command (concat im-exec " " prev-im))
+           (call-process-shell-command (concat im-exec " " default-im))))))
+
+(add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+(add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+(add-hook 'evil-insert-state-exit-hook 'im-remember)
+(add-hook 'evil-emacs-state-entry-hook 'im-use-eng)
+
+;; ---
+
+
+
+;; By default, you will not go back to the original window layout when you
+;; exit the ediff mode
+(use-package winner
+  :commands (winner-undo)
+  :config
+  (add-hook 'ediff-quit-hook 'winner-undo))
+
 
 ;; profiling
 (use-package esup
@@ -122,8 +182,10 @@
 
 ;; (set-face-attribute 'hl-line nil :foreground "#72ba89")
 (add-hook 'prog-mode-hook 'hl-line-mode)
-(with-eval-after-load 'jinja2-mode
-  (add-hook 'jinja2-mode-hook 'hl-line-mode))
+(add-hook 'text-mode-hook 'hl-line-mode)
+;; jinja2 is the child of text-mode
+;; (with-eval-after-load 'jinja2-mode
+;;   (add-hook 'jinja2-mode-hook 'hl-line-mode))
 
 
 (use-package rainbow-mode
@@ -162,12 +224,13 @@
 
 ;; need some customization here.
 (use-package diff-hl
-  :hook
+  :defer 1
+  :init
   ;; (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
+  ;; I've check this. It seems setting post-refresh-hook is enough
   (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
   :config
-  (global-diff-hl-mode)
-  :defer 1)
+  (global-diff-hl-mode))
 
 (use-package perspective
   :diminish persp-mode
@@ -222,8 +285,12 @@
 
 
 ;; TODO: search why there should append a suffix ='= for the mod
+;; the :config will be run after trigger autoload function
 (use-package jinja2-mode
   :defer t
+  :init
+  (add-hook 'jinja2-mode-hook '(lambda ()
+                                 (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
 
 (use-package js2-mode
@@ -244,6 +311,37 @@
 
 ;; (setq lexical-binding t)
 
+(defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
+  "Show a MSG at the helm or ivy prompt for SEC.
+With Helm, remember the path, then restore it after SEC.
+With Ivy, the path isn't editable, just remove the MSG after SEC."
+  (run-at-time
+   0 nil
+   #'(lambda (msg sec)
+       (let* ((prev-prompt-contents
+               (buffer-substring (line-beginning-position)
+                                 (line-end-position)))
+              (prev-prompt-contents-p
+               (not (string= prev-prompt-contents "")))
+              (helmp (fboundp 'helm-mode)))
+         (when prev-prompt-contents-p
+           (delete-region (line-beginning-position)
+                          (line-end-position)))
+         (insert (propertize msg 'face 'warning))
+         ;; stop checking for candidates
+         ;; and update the helm prompt
+         (when helmp (helm-suspend-update t))
+         (sit-for sec)
+         (delete-region (line-beginning-position)
+                        (line-end-position))
+         (when prev-prompt-contents-p
+           (insert prev-prompt-contents)
+           ;; start checking for candidates
+           ;; and update the helm prompt
+           (when helmp (helm-suspend-update nil)))))
+   msg sec))
+
+
 ;; TODO rewrite this
 (defun rename-current-buffer-file (&optional arg)
   "Rename the current buffer and the file it is visiting.
@@ -254,86 +352,93 @@ If called without a prefix argument, the prompt is
 initialized with the current directory instead of filename."
   (interactive "P")
   (let* ((old-short-name (buffer-name))
-	 (old-filename (buffer-file-name)))
+         (old-filename (buffer-file-name)))
     (if (and old-filename (file-exists-p old-filename))
-	;; the buffer is visiting a file
-	(let* ((old-dir (file-name-directory old-filename))
-	       (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
-	       (new-dir (file-name-directory new-name))
-	       (new-short-name (file-name-nondirectory new-name))
-	       (file-moved-p (not (string-equal new-dir old-dir)))
-	       (file-renamed-p (not (string-equal new-short-name old-short-name))))
-	  (cond ((get-buffer new-name)
-		 (error "A buffer named '%s' already exists!" new-name))
-		((string-equal new-name old-filename)
-		 (spacemacs/show-hide-helm-or-ivy-prompt-msg
-		  "Rename failed! Same new and old name" 1.5)
-		 (rename-current-buffer-file))
-		(t
-		 (let ((old-directory (file-name-directory new-name)))
-		   (when (and (not (file-exists-p old-directory))
-			      (yes-or-no-p
-			       (format "Create directory '%s'?" old-directory)))
-		     (make-directory old-directory t)))
-		 (rename-file old-filename new-name 1)
-		 (rename-buffer new-name)
-		 (set-visited-file-name new-name)
-		 (set-buffer-modified-p nil)
-		 (when (fboundp 'recentf-add-file)
-		   (recentf-add-file new-name)
-		   (recentf-remove-if-non-kept old-filename))
-		 (when (and (configuration-layer/package-used-p 'projectile)
-			    (projectile-project-p))
-		   (call-interactively #'projectile-invalidate-cache))
-		 (message (cond ((and file-moved-p file-renamed-p)
-				 (concat "File Moved & Renamed\n"
-					 "From: " old-filename "\n"
-					 "To:   " new-name))
-				(file-moved-p
-				 (concat "File Moved\n"
-					 "From: " old-filename "\n"
-					 "To:   " new-name))
-				(file-renamed-p
-				 (concat "File Renamed\n"
-					 "From: " old-short-name "\n"
-					 "To:   " new-short-name)))))))
+        ;; the buffer is visiting a file
+        (let* ((old-dir (file-name-directory old-filename))
+               (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
+               (new-dir (file-name-directory new-name))
+               (new-short-name (file-name-nondirectory new-name))
+               (file-moved-p (not (string-equal new-dir old-dir)))
+               (file-renamed-p (not (string-equal new-short-name old-short-name))))
+          (cond ((get-buffer new-name)
+                 (error "A buffer named '%s' already exists!" new-name))
+                ((string-equal new-name old-filename)
+                 (spacemacs/show-hide-helm-or-ivy-prompt-msg
+                  "Rename failed! Same new and old name" 1.5)
+                 (rename-current-buffer-file))
+                (t
+                 (let ((old-directory (file-name-directory new-name)))
+                   (when (and (not (file-exists-p old-directory))
+                              (yes-or-no-p
+                               (format "Create directory '%s'?" old-directory)))
+                     (make-directory old-directory t)))
+                 (rename-file old-filename new-name 1)
+                 (rename-buffer new-name)
+                 (set-visited-file-name new-name)
+                 (set-buffer-modified-p nil)
+                 (when (fboundp 'recentf-add-file)
+                   (recentf-add-file new-name)
+                   (recentf-remove-if-non-kept old-filename))
+                 (when (and (configuration-layer/package-used-p 'projectile)
+                            (projectile-project-p))
+                   (call-interactively #'projectile-invalidate-cache))
+                 (message (cond ((and file-moved-p file-renamed-p)
+                                 (concat "File Moved & Renamed\n"
+                                         "From: " old-filename "\n"
+                                         "To:   " new-name))
+                                (file-moved-p
+                                 (concat "File Moved\n"
+                                         "From: " old-filename "\n"
+                                         "To:   " new-name))
+                                (file-renamed-p
+                                 (concat "File Renamed\n"
+                                         "From: " old-short-name "\n"
+                                         "To:   " new-short-name)))))))
       ;; the buffer is not visiting a file
       (let ((key))
-	(while (not (memq key '(?s ?r)))
-	  (setq key (read-key (propertize
-			       (format
-				(concat "Buffer '%s' is not visiting a file: "
-					"[s]ave to file or [r]ename buffer?")
-				old-short-name)
-			       'face 'minibuffer-prompt)))
-	  (cond ((eq key ?s)            ; save to file
-		 ;; this allows for saving a new empty (unmodified) buffer
-		 (unless (buffer-modified-p) (set-buffer-modified-p t))
-		 (save-buffer))
-		((eq key ?r)            ; rename buffer
-		 (let ((new-buffer-name (read-string "New buffer name: ")))
-		   (while (get-buffer new-buffer-name)
-		     ;; ask to rename again, if the new buffer name exists
-		     (if (yes-or-no-p
-			  (format (concat "A buffer named '%s' already exists: "
-					  "Rename again?")
-				  new-buffer-name))
-			 (setq new-buffer-name (read-string "New buffer name: "))
-		       (keyboard-quit)))
-		   (rename-buffer new-buffer-name)
-		   (message (concat "Buffer Renamed\n"
-				    "From: " old-short-name "\n"
-				    "To:   " new-buffer-name))))
-		;; ?\a = C-g, ?\e = Esc and C-[
-		((memq key '(?\a ?\e)) (keyboard-quit))))))))
+        (while (not (memq key '(?s ?r)))
+          (setq key (read-key (propertize
+                               (format
+                                (concat "Buffer '%s' is not visiting a file: "
+                                        "[s]ave to file or [r]ename buffer?")
+                                old-short-name)
+                               'face 'minibuffer-prompt)))
+          (cond ((eq key ?s)            ; save to file
+                 ;; this allows for saving a new empty (unmodified) buffer
+                 (unless (buffer-modified-p) (set-buffer-modified-p t))
+                 (save-buffer))
+                ((eq key ?r)            ; rename buffer
+                 (let ((new-buffer-name (read-string "New buffer name: ")))
+                   (while (get-buffer new-buffer-name)
+                     ;; ask to rename again, if the new buffer name exists
+                     (if (yes-or-no-p
+                          (format (concat "A buffer named '%s' already exists: "
+                                          "Rename again?")
+                                  new-buffer-name))
+                         (setq new-buffer-name (read-string "New buffer name: "))
+                       (keyboard-quit)))
+                   (rename-buffer new-buffer-name)
+                   (message (concat "Buffer Renamed\n"
+                                    "From: " old-short-name "\n"
+                                    "To:   " new-buffer-name))))
+                ;; ?\a = C-g, ?\e = Esc and C-[
+                ((memq key '(?\a ?\e)) (keyboard-quit))))))))
 
 (defun org-file-show-headings (org-file)
   (interactive)
   (find-file (expand-file-name org-file))
   (counsel-org-goto)
   (org-overview)
+  (org-reveal)
   (org-show-subtree)
   (forward-line))
+
+(defun buffer-untabify ()
+  "Transfer all tab to spaces."
+  (interactive)
+  (mark-whole-buffer)
+  (untabify (region-beginning) (region-end)))
 
 (defun new-empty-buffer ()
   "Create a new buffer called: untitled."
@@ -353,15 +458,15 @@ A negative prefix argument rotates each window backwards.
 Dedicated (locked) windows are left untouched."
   (interactive "p")
   (let* ((non-dedicated-windows (cl-remove-if 'window-dedicated-p (window-list)))
-	 (states (mapcar #'window-state-get non-dedicated-windows))
-	 (num-windows (length non-dedicated-windows))
-	 (step (+ num-windows count)))
+         (states (mapcar #'window-state-get non-dedicated-windows))
+         (num-windows (length non-dedicated-windows))
+         (step (+ num-windows count)))
     (if (< num-windows 2)
-	(error "You can't rotate a single window!")
+        (error "You can't rotate a single window!")
       (dotimes (i num-windows)
-	(window-state-put
-	 (elt states i)
-	 (elt non-dedicated-windows (% (+ step i) num-windows)))))))
+        (window-state-put
+         (elt states i)
+         (elt non-dedicated-windows (% (+ step i) num-windows)))))))
 
 
 ;; Borrow project search function from the projectile
@@ -375,31 +480,31 @@ is called with a prefix argument."
   (interactive)
   ;; change this to read a directory path
   (let* ((search-directory (if (projectile-project-p)
-			       (projectile-project-root)
-			     (read-directory-name "Start from directory: ")))
-	 (ivy--actions-list (copy-sequence ivy--actions-list))
-	 (ignored
-	  (mapconcat (lambda (i)
-		       (concat "--glob !" (shell-quote-argument i)))
-		     (append
-		      (projectile--globally-ignored-file-suffixes-glob)
-		      (projectile-ignored-files-rel)
-		      (projectile-ignored-directories-rel))
-		     " "))
-	 (counsel-rg-base-command
-	  (let ((counsel-ag-command counsel-rg-base-command))
-	    (counsel--format-ag-command ignored "%s"))))
+                               (projectile-project-root)
+                             (read-directory-name "Start from directory: ")))
+         (ivy--actions-list (copy-sequence ivy--actions-list))
+         (ignored
+          (mapconcat (lambda (i)
+                       (concat "--glob !" (shell-quote-argument i)))
+                     (append
+                      (projectile--globally-ignored-file-suffixes-glob)
+                      (projectile-ignored-files-rel)
+                      (projectile-ignored-directories-rel))
+                     " "))
+         (counsel-rg-base-command
+          (let ((counsel-ag-command counsel-rg-base-command))
+            (counsel--format-ag-command ignored "%s"))))
     (ivy-add-actions
      'counsel-rg
      counsel-projectile-rg-extra-actions)
     (counsel-rg (eval counsel-projectile-rg-initial-input)
-		search-directory
-		options
-		(projectile-prepend-project-name
-		 (concat (car (if (listp counsel-rg-base-command)
-				  counsel-rg-base-command
-				(split-string counsel-rg-base-command)))
-			 ": ")))))
+                search-directory
+                options
+                (projectile-prepend-project-name
+                 (concat (car (if (listp counsel-rg-base-command)
+                                  counsel-rg-base-command
+                                (split-string counsel-rg-base-command)))
+                         ": ")))))
 
 (defun my-find-dotfile ()
   "Edit the `dotfile', in the current window."
@@ -412,18 +517,18 @@ is called with a prefix argument."
 Powered by the howdoi"
   (interactive "sAsk the god, you'll get it: ")
   (let ((buffer-name "*God's reply*")
-	(exectuable-name "howdoi"))
+        (exectuable-name "howdoi"))
     (with-output-to-temp-buffer buffer-name
       (shell-command (concat exectuable-name " " question)
-		     buffer-name
-		     "*Messages*")
+                     buffer-name
+                     "*Messages*")
       (pop-to-buffer buffer-name))))
 
 (defun copy-region-and-base64-decode (start end)
   (interactive "r")
   (let ((x (base64-decode-string
-	    (decode-coding-string
-	     (buffer-substring start end) 'utf-8))))
+            (decode-coding-string
+             (buffer-substring start end) 'utf-8))))
     (kill-new x)))
 
 (defun my-encode-region-base64 (start end)
@@ -443,7 +548,7 @@ Powered by the howdoi"
 (defun copy-region-and-urlencode (start end)
   (interactive "r")
   (let ((x (url-hexify-string
-	    (buffer-substring start end))))
+            (buffer-substring start end))))
     (kill-new x)))
 
 (defun now ()
@@ -475,8 +580,8 @@ Powered by the howdoi"
 (defun my-emmet-expand ()
   (interactive)
   (unless (if (bound-and-true-p yas-minor-mode)
-	      (call-interactively 'emmet-expand-yas)
-	    (call-interactively 'emmet-expand-line))
+              (call-interactively 'emmet-expand-yas)
+            (call-interactively 'emmet-expand-line))
     (indent-for-tab-command)))
 
 
@@ -484,17 +589,17 @@ Powered by the howdoi"
   (interactive)
   (shell-command
    (format (concat python-run-command " %s %s")
-	   (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
-				     (buffer-file-name (buffer-base-buffer))))
-	   python-run-args)))
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           python-run-args)))
 
 (defun go-run-main ()
   (interactive)
   (shell-command
    (format (concat go-run-command " %s %s")
-	   (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
-				     (buffer-file-name (buffer-base-buffer))))
-	   go-run-args)))
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           go-run-args)))
 
 
 (defun kill-this-buffer (&optional arg)
@@ -505,33 +610,33 @@ If the universal prefix argument is used then kill also the window."
   (if (window-minibuffer-p)
       (abort-recursive-edit)
     (if (equal '(4) arg)
-	(kill-buffer-and-window)
+        (kill-buffer-and-window)
       (kill-buffer))))
 
 (defun define-leader-key-global (&rest MAPS)
   (let ((get-props (lambda () (list
-			       my-leader-def-prop
-			       my-leader-def-emacs-state-prop))))
+                               my-leader-def-prop
+                               my-leader-def-emacs-state-prop))))
     (dolist (prop (funcall get-props))
       (apply 'general-define-key
-	     :states (plist-get prop ':states)
-	     :prefix (symbol-value (plist-get prop ':key))
-	     :keymaps 'override
-	     MAPS))))
+             :states (plist-get prop ':states)
+             :prefix (symbol-value (plist-get prop ':key))
+             :keymaps 'override
+             MAPS))))
 
 (defun define-leader-key-map-for (mode-map &rest MAPS)
   "Define the leader key map for the specify mode."
   ;; TODO: to understand the difference between '(1) (list 1)
   (let ((get-props (lambda () (list
-			       my-local-leader-def-emacs-state-prop
-			       my-local-leader-def-prop
-			       my-local-leader-def-alias-prop))))
+                               my-local-leader-def-emacs-state-prop
+                               my-local-leader-def-prop
+                               my-local-leader-def-alias-prop))))
     (dolist (prop (funcall get-props))
       (apply 'general-define-key
-	     :states (plist-get prop ':states)
-	     :prefix (symbol-value (plist-get prop ':key))
-	     :keymaps mode-map
-	     MAPS))))
+             :states (plist-get prop ':states)
+             :prefix (symbol-value (plist-get prop ':key))
+             :keymaps mode-map
+             MAPS))))
 
 
 (defun copy-file-path ()
@@ -539,8 +644,8 @@ If the universal prefix argument is used then kill also the window."
   (interactive)
   (if-let (file-path (get-file-path))
       (progn
-	(kill-new file-path)
-	(message "%s" file-path))
+        (kill-new file-path)
+        (message "%s" file-path))
     (message "WARNING: Current buffer is not attached to a file!")))
 
 
@@ -563,12 +668,12 @@ to `evil-lookup'"
   ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
   (when (fboundp 'lsp-describe-thing-at-point)
     (lsp-describe-thing-at-point)
-    (eivl-lookup)))
+    (evil-lookup)))
 
 ;; (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
 ;;   (print (key-binding (kbd (concat "SPC" " mhh"))))
 ;;   (if (commandp binding)
-;; 	(call-interactively binding)
+;;      (call-interactively binding)
 ;;     (evil-lookup))))
 
 
@@ -623,11 +728,11 @@ If the error list is visible, hide it.  Otherwise, show it."
   (interactive)
   (save-excursion
     (if (and (= 1 (length (window-list)))
-	     (assoc ?_ register-alist))
-	(jump-to-register ?_)
+             (assoc ?_ register-alist))
+        (jump-to-register ?_)
       (progn
-	(window-configuration-to-register ?_)
-	(delete-other-windows)))))
+        (window-configuration-to-register ?_)
+        (delete-other-windows)))))
 
 ;; Decide to use this package to auto balance the parens
 ;; NOTE: we should put this in the :init
@@ -687,20 +792,20 @@ If the error list is visible, hide it.  Otherwise, show it."
   (defconst emacs-state-major-mode-leader-key "M-m m")
 
   (setq my-leader-def-prop
-	'(:key leader-key :states '(normal visual motion)))
+        '(:key leader-key :states '(normal visual motion)))
 
   (setq my-leader-def-emacs-state-prop
-	'(:key emacs-state-leader-key :state '(emacs)))
+        '(:key emacs-state-leader-key :state '(emacs)))
 
   ;; below are for major mode
   (setq my-local-leader-def-prop
-	'(:key major-mode-leader-key :states '(normal visual motion)))
+        '(:key major-mode-leader-key :states '(normal visual motion)))
 
   (setq my-local-leader-def-alias-prop
-	'(:key major-mode-leader-key-shortcut :states '(normal visual motion)))
+        '(:key major-mode-leader-key-shortcut :states '(normal visual motion)))
 
   (setq my-local-leader-def-emacs-state-prop
-	'(:key emacs-state-major-mode-leader-key :states '(emacs)))
+        '(:key emacs-state-major-mode-leader-key :states '(emacs)))
 
   :after (evil)
   ;; :after (evil dired expand-region go-mode lsp-mode)
@@ -757,43 +862,43 @@ If the error list is visible, hide it.  Otherwise, show it."
     (with-eval-after-load 'go-mode
 
       (define-leader-key-map-for 'go-mode-map
-	"" '(:keymap lsp-command-map  :which-key "major mode")
-	"=" '(:ignore t :which-key "format")
-	"a" '(:ignore t :which-key "code actions")
-	"b" '(:ignore t :which-key "backend")
-	"F" '(:ignore t :which-key "folder")
-	"g" '(:ignore t :which-key "goto")
-	"G" '(:ignore t :which-key "peek")
-	"h" '(:ignore t :which-key "help")
-	"r" '(:ignore t :which-key "refactor")
-	"T" '(:ignore t :which-key "toggle")
-	;; lsp keybinding
+        "" '(:keymap lsp-command-map  :which-key "major mode")
+        "=" '(:ignore t :which-key "format")
+        "a" '(:ignore t :which-key "code actions")
+        "b" '(:ignore t :which-key "backend")
+        "F" '(:ignore t :which-key "folder")
+        "g" '(:ignore t :which-key "goto")
+        "G" '(:ignore t :which-key "peek")
+        "h" '(:ignore t :which-key "help")
+        "r" '(:ignore t :which-key "refactor")
+        "T" '(:ignore t :which-key "toggle")
+        ;; lsp keybinding
 
-	"x" '(:ignore t :which-key "execute")
-	"xx" '(go-run-main :which-key "go run")
-	"d" '(dap-hydra :which-key "debug")
-	"e" '(gomacro-run :which-key "gomacro"))
+        "x" '(:ignore t :which-key "execute")
+        "xx" '(go-run-main :which-key "go run")
+        "d" '(dap-hydra :which-key "debug")
+        "e" '(gomacro-run :which-key "gomacro"))
 
       (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'python
 
       (define-leader-key-map-for 'python-mode-map
-	"" '(:keymap lsp-command-map  :which-key "major mode")
-	"=" '(:ignore t :which-key "format")
-	"a" '(:ignore t :which-key "code actions")
-	"b" '(:ignore t :which-key "backend")
-	"F" '(:ignore t :which-key "folder")
-	"g" '(:ignore t :which-key "goto")
-	"G" '(:ignore t :which-key "peek")
-	"h" '(:ignore t :which-key "help")
-	"r" '(:ignore t :which-key "refactor")
-	"T" '(:ignore t :which-key "toggle")
-	;; lsp keybinding
+        "" '(:keymap lsp-command-map  :which-key "major mode")
+        "=" '(:ignore t :which-key "format")
+        "a" '(:ignore t :which-key "code actions")
+        "b" '(:ignore t :which-key "backend")
+        "F" '(:ignore t :which-key "folder")
+        "g" '(:ignore t :which-key "goto")
+        "G" '(:ignore t :which-key "peek")
+        "h" '(:ignore t :which-key "help")
+        "r" '(:ignore t :which-key "refactor")
+        "T" '(:ignore t :which-key "toggle")
+        ;; lsp keybinding
 
-	"x" '(:ignore t :which-key "execute")
-	"xx" '(python-run-main :which-key "python run")
-	"d" '(dap-hydra :which-key "debug")))
+        "x" '(:ignore t :which-key "execute")
+        "xx" '(python-run-main :which-key "python run")
+        "d" '(dap-hydra :which-key "debug")))
     )
 
   (with-eval-after-load 'elisp-mode
@@ -848,8 +953,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; need to find a way to add which-key hints
   ;; for the following window selection
   (push '(("\\(.*\\)1" . "winum-select-window-1") .
-	  ("\\11..9" . "select window 1..9"))
-	which-key-replacement-alist)
+          ("\\11..9" . "select window 1..9"))
+        which-key-replacement-alist)
 
   (define-leader-key-global
     "j" '(:ignore t :which-key "jump")
@@ -927,6 +1032,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "t"  '(:ignore t :which-key "toggles")
     "tt" '(counsel-load-theme :which-key "choose theme")
     "tr" '(rainbow-mode :which-key "rainbow-mode")
+    "tw" '(whitespace-mode :which-key "whitespace-mode")
     ;; NOTE: in the future, I can implement a list of mode to be toggle on
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
@@ -1025,6 +1131,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package evil-collection
   :after evil
   :config
+  (delete 'wgrep evil-collection-mode-list)
   (setq evil-collection-company-use-tng nil)
   (evil-collection-init))
 
@@ -1033,6 +1140,34 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package multiple-cursors
   :defer t
   :after evil)
+
+;; Current disable this. Consider to combine with multiple-cursor
+;; to know how to add whitelist command by default
+;; (use-package evil-mc
+;;   :commands (evil-mc-make-cursor-here
+;;              evil-mc-make-all-cursors
+;;              evil-mc-undo-all-cursors
+;;              evil-mc-pause-cursors
+;;              evil-mc-resume-cursors
+;;              evil-mc-make-and-goto-first-cursor
+;;              evil-mc-make-and-goto-last-cursor
+;;              evil-mc-make-cursor-in-visual-selection-beg
+;;              evil-mc-make-cursor-in-visual-selection-end
+;;              evil-mc-make-cursor-move-next-line
+;;              evil-mc-make-cursor-move-prev-line
+;;              evil-mc-make-cursor-at-pos
+;;              evil-mc-has-cursors-p
+;;              evil-mc-make-and-goto-next-cursor
+;;              evil-mc-skip-and-goto-next-cursor
+;;              evil-mc-make-and-goto-prev-cursor
+;;              evil-mc-skip-and-goto-prev-cursor
+;;              evil-mc-make-and-goto-next-match
+;;              evil-mc-skip-and-goto-next-match
+;;              evil-mc-skip-and-goto-next-match
+;;              evil-mc-make-and-goto-prev-match
+;;              evil-mc-skip-and-goto-prev-match)
+;;   :config
+;;   (global-evil-mc-mode 1))
 
 (use-package evil-nerd-commenter
   :after evil
@@ -1071,22 +1206,34 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; The :ensure keyword causes the package(s) to be installed automatically if not already present on your system
 ;; this setting will globally enable ensure (setq use-package-always-ensure t)
 
+(use-package wgrep
+  :after evil
+  :commands
+  (wgrep-finish-edit
+   wgrep-finish-edit
+   wgrep-abort-changes
+   wgrep-abort-changes)
+  :init
+  (evil-define-key 'normal wgrep-mode-map (kbd "<escape>") 'wgrep-exit)
+  (evil-define-key 'normal wgrep-mode-map (kbd ", ,") 'wgrep-finish-edit)
+  (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
+
 (use-package ivy
   :ensure t
   :diminish
   :bind (:map ivy-minibuffer-map
-	      ("TAB" . ivy-alt-done)
-	      ("C-l" . ivy-alt-done)
-	      ("C-j" . ivy-next-line)
-	      ("C-k" . ivy-previous-line)
-	      ("C-u" . ivy-backward-kill-word)
-	      :map ivy-switch-buffer-map
-	      ("C-k" . ivy-previous-line)
-	      ("C-l" . ivy-done)
-	      ("C-d" . ivy-switch-buffer-kill)
-	      :map ivy-reverse-i-search-map
-	      ("C-k" . ivy-previous-line)
-	      ("C-d" . ivy-reverse-i-search-kill))
+              ("TAB" . ivy-alt-done)
+              ("C-l" . ivy-alt-done)
+              ("C-j" . ivy-next-line)
+              ("C-k" . ivy-previous-line)
+              ("C-u" . ivy-backward-kill-word)
+              :map ivy-switch-buffer-map
+              ("C-k" . ivy-previous-line)
+              ("C-l" . ivy-done)
+              ("C-d" . ivy-switch-buffer-kill)
+              :map ivy-reverse-i-search-map
+              ("C-k" . ivy-previous-line)
+              ("C-d" . ivy-reverse-i-search-kill))
   :config
   (ivy-mode 1)
   (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
@@ -1111,10 +1258,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package counsel
   :ensure t
   :bind (("M-x" . counsel-M-x)
-	 ("C-x b" . counsel-ibuffer)
-	 ("C-x C-f" . counsel-find-file)
-	 :map minibuffer-local-map
-	 ("C-r" . 'counsel-minibuffer-history))
+         ("C-x b" . counsel-ibuffer)
+         ("C-x C-f" . counsel-find-file)
+         :map minibuffer-local-map
+         ("C-r" . 'counsel-minibuffer-history))
   :config
   (setq counsel-find-file-at-point t))
 
@@ -1194,9 +1341,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t
   :config
   (add-hook 'vterm-mode-hook (lambda ()
-			       (evil-emacs-state)
-			       (vterm-send-string "source ~/.bash_profile")
-			       (vterm-send-return))))
+                               (evil-emacs-state)
+                               (vterm-send-string "source ~/.bash_profile")
+                               (vterm-send-return))))
 
 (use-package avy
   :defer t
@@ -1245,15 +1392,17 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; ISSUE: Company backend ’t’ could not be initialized
   :defer t)
 
-
+;; NOTE: check the iedit mode is install by this package or not
 (use-package lispy
-  :hook ((emacs-lisp-mode . lispy-mode)
+  :hook ((common-lisp-mode . lispy-mode)
+         (emacs-lisp-mode . lispy-mode)
          (scheme-mode . lispy-mode)))
 
 (use-package flycheck
   :commands (flycheck-mode)
   :init
   (add-hook 'prog-mode-hook 'flycheck-mode)
+  (add-hook 'text-mode-hook 'flycheck-mode)
   (setq flycheck-highlighting-mode 'lines)
   (setq flycheck-indication-mode 'nil))
 
@@ -1263,9 +1412,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package yaml-mode
   :after (lsp-mode flycheck)
   :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
-	 ("Procfile\\'" . yaml-mode))
+         ("Procfile\\'" . yaml-mode))
   :init
-  (add-hook 'yaml-mode-hook #'lsp)
+  (add-hook 'yaml-mode-hook 'lsp)
   :config
   (when (listp flycheck-global-modes)
     (add-to-list 'flycheck-global-modes 'yaml-mode)))
@@ -1314,6 +1463,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   (go-mode . lsp)
   ;; (lsp-mode . lsp-enable-which-key-integration)
   (python-mode . lsp)
+  (rust-mode . lsp)
   (js-mode . lsp))
 
 (use-package lsp-python-ms
@@ -1340,7 +1490,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   (require 'dap-go)
   ;; dap-go-setup
   (add-hook 'dap-stopped-hook
-	    (lambda (arg) (call-interactively #'dap-hydra)))
+            (lambda (arg) (call-interactively #'dap-hydra)))
   )
 
 ;; -----------------------------
@@ -1352,8 +1502,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (add-hook 'org-mode-hook 'evil-org-mode)
   (add-hook 'evil-org-mode-hook
-	    (lambda ()
-	      (evil-org-set-key-theme)))
+            (lambda ()
+              (evil-org-set-key-theme)))
   (require 'evil-org-agenda)
   (evil-org-agenda-set-keys))
 
@@ -1373,24 +1523,24 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   ;; Set faces for heading levels
   (dolist (face '((org-document-title . 1.2)
-		  (org-level-1 . 1.2)
-		  (org-level-2 . 1.1)
-		  (org-level-3 . 1.05)
-		  (org-level-4 . 1.0)
-		  (org-level-5 . 1.1)
-		  (org-level-6 . 1.1)
-		  (org-level-7 . 1.1)
-		  (org-level-8 . 1.1)))
+                  (org-level-1 . 1.2)
+                  (org-level-2 . 1.1)
+                  (org-level-3 . 1.05)
+                  (org-level-4 . 1.0)
+                  (org-level-5 . 1.1)
+                  (org-level-6 . 1.1)
+                  (org-level-7 . 1.1)
+                  (org-level-8 . 1.1)))
     (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
 
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
   (setq org-startup-folded t)
-  (setq org-ellipsis " ▾")
+  ;; (setq org-ellipsis " ▾")
   (setq org-startup-with-inline-images t)
   (setq-default org-default-notes-file
-		"~/Dropbox/myorgs/todo.org")
+                "~/Dropbox/myorgs/todo.org")
 
   (setq org-download-screenshot-method "screencapture -i %s")
   (setq-default org-download-image-dir "./img")
@@ -1413,19 +1563,19 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; cool! some functions need to be enable
   ;; like <s press tab to complete org structure
   (setq org-modules '(ol-w3m
-		      ol-bbdb
-		      ol-bibtex
-		      ol-docview
-		      ol-gnus
-		      ol-info
-		      ol-irc
-		      ol-mhe
-		      ol-rmail
-		      ol-eww
-		      org-habit
-		      ol-git-link
-		      org-protocol
-		      org-tempo))
+                      ol-bbdb
+                      ol-bibtex
+                      ol-docview
+                      ol-gnus
+                      ol-info
+                      ol-irc
+                      ol-mhe
+                      ol-rmail
+                      ol-eww
+                      org-habit
+                      ol-git-link
+                      org-protocol
+                      org-tempo))
 
   ;; customize the bullet symbol
   (custom-set-variables '(org-bullets-bullet-list (quote ("❐" "○" "﹅" "▶"))))
@@ -1437,47 +1587,47 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq org-capture-templates nil)
 
   (setq org-todo-keywords
-	'((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
+        '((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
 
   (setq org-todo-keyword-faces
-	'(("TODO" . "#dc752f")
-	  ("IN PROGRESS" . "#33eecc")
-	  ("NO_NEWS" . "#cdb7b5")
-	  ("ABANDON" . "#f2241f")
-	  ("OFFERGET" . "#4f97d7")))
+        '(("TODO" . "#dc752f")
+          ("IN PROGRESS" . "#33eecc")
+          ("NO_NEWS" . "#cdb7b5")
+          ("ABANDON" . "#f2241f")
+          ("OFFERGET" . "#4f97d7")))
 
 
   ;; in order to group the templates we need to add the key-description
   ;; pair first or it will not work
   (add-to-list 'org-capture-templates '("i" "Inbox"))
   (add-to-list 'org-capture-templates
-	       '("im" "Misc Inbox" entry
-		 (file+headline "~/Dropbox/myorgs/inbox.org" "Misc")
-		 "** %^{title} %?\n %(current-kill 0)\n\n"))
+               '("im" "Misc Inbox" entry
+                 (file+headline "~/Dropbox/myorgs/inbox.org" "Misc")
+                 "** %^{title} %?\n %(current-kill 0)\n\n"))
 
   (add-to-list 'org-capture-templates '("b" "Bookmarks"))
   (add-to-list 'org-capture-templates
-	       '("bb" "Blogs bookmarks" entry
-		 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Blogs")
-		 "** %^{title} %?\n %(current-kill 0)\n\n"))
+               '("bb" "Blogs bookmarks" entry
+                 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Blogs")
+                 "** %^{title} %?\n %(current-kill 0)\n\n"))
   (add-to-list 'org-capture-templates
-	       '("bs" "Speeches bookmarks" checkitem
-		 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Speeches")
-		 "- [ ] [[%(current-kill 0)][%^{link description}]]\n"))
+               '("bs" "Speeches bookmarks" checkitem
+                 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Speeches")
+                 "- [ ] [[%(current-kill 0)][%^{link description}]]\n"))
 
   (add-to-list 'org-capture-templates '("t" "Todos"))
   (add-to-list 'org-capture-templates
-	       '("td" "a one day todo" entry
-		 (file+headline "~/Dropbox/myorgs/todo.org" "一天內可以解決的事項")
-		 "** TODO %^{title} %?\n SCHEDULED: %^t\n%? "))
+               '("td" "a one day todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "一天內可以解決的事項")
+                 "** TODO %^{title} %?\n SCHEDULED: %^t\n%? "))
   (add-to-list 'org-capture-templates
-	       '("tw" "a week todo" entry
-		 (file+headline "~/Dropbox/myorgs/todo.org" "一週內可以解決的事項")
-		 "** TODO %^{title} %?\n SCHEDULED: %t\n"))
+               '("tw" "a week todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "一週內可以解決的事項")
+                 "** TODO %^{title} %?\n SCHEDULED: %t\n"))
   (add-to-list 'org-capture-templates
-	       '("tl" "a longterm todo" entry
-		 (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
-		 "** TODO %^{title} %?\n SCHEDULED: %t\n")))
+               '("tl" "a longterm todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
+                 "** TODO %^{title} %?\n SCHEDULED: %t\n")))
 
 (custom-set-variables
  ;; custom-set-variables was added by Custom.

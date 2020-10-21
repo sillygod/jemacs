@@ -1,7 +1,9 @@
 ;; devdocs.el --- Quick doc search on devdocs.io -*- lexical-binding: t; -*-
 ;; To use, type M-x devdocs-search
 
-;; you can M-x custom-group and input "emaca" to see the all groups
+(require 'subr-x)
+
+;; you can M-x customize-group and input "emacs" to see the all groups
 ;; https://www.gnu.org/software/emacs/manual/html_node/emacs/Customization-Groups.html#Customization-Groups
 (defgroup devdocs nil
   "Search doc by devdocs."
@@ -26,13 +28,13 @@
     (js2-mode . "javascript")
     (python-mode . "python")
     (php-mode . "php"))
-  "major-mode maps to documentation on devdocs.io"
+  "'major-mode' maps to documentation on devdocs.io."
   :type '(repeat (cons (symbol :tag "major mode")
                        (string :tag "devdocs doc")))
   :group 'devdocs)
 
 (defun devdocs--get-search-target ()
-  "Get the search content from the region or thing-at-point"
+  "Get the search content from the region or 'thing-at-point'."
   (let ((document (cdr (assoc major-mode devdocs-alist)))
         (query (if (use-region-p)
                    (buffer-substring (region-beginning) (region-end))
@@ -55,3 +57,4 @@
 
 
 (provide 'devdocs)
+;;; devdocs ends here
