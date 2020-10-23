@@ -46,6 +46,9 @@
 
 ** use =esup= to profiling the emacs start up time
 
+** use =what-cursor-position= to see the detail font-face under the cursor
+   run this with universal args can get a more detail info.
+
 ** toggle-debug-on-error help to debug
 
 ** transient-state seems to be spaceamcs's own implementation

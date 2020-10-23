@@ -1,3 +1,7 @@
+;;; mycraft  --- Summary  -*- lexical-binding: t; -*-
+
+;;; Copyright (C) 2020 mycraft maintainers
+;;; Author: Jing
 ;;; package --- mycraft
 ;;; Summary:
 ;;; Commentary:
@@ -7,6 +11,7 @@
 ;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
 
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
+(setq debug-on-error t) ;; temporarily for debug usage
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
@@ -77,10 +82,10 @@
 
 ;; The following variable can decide where the
 ;; packages to be installed.
-(defconst my-home-dir "~/.mycraft.d/")
-(setq package-user-dir (concat my-home-dir "elpa"))
-(setq mc/list-file (concat my-home-dir "mc-lists.el"))
-
+(defconst my-home-dir "~/.mycraft.d")
+(setq user-emacs-directory my-home-dir)
+(setq package-user-dir (concat my-home-dir "/" "elpa"))
+(setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
 
 ;; Initialize package sources
 ;; Note: sometimes you may encouter an expired key when
@@ -88,6 +93,7 @@
 ;; There are many ways to do it. One of them is call list-package
 ;; Or delete the entire folder =elpa= make the emacs to redownload
 ;; all packages.
+(require 'subr-x)
 (require 'package)
 
 (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -124,39 +130,39 @@
 
 ;; TODO refactor this auto switch input method function into another file.
 (defcustom im-exec "/usr/local/bin/im-select"
+  "The im executable binary path."
   :type 'string)
 
 (defvar default-im "com.apple.keylayout.ABC"
   "Default English input method.")
 
-(defvar prev-im (substring (shell-command-to-string im-exec) 0 -1))
 
 (defun im-use-eng ()
   "Switch to english input method."
   (interactive)
-  (cond ((eq system-type "darwin")
-         (call-process-shell-command (concat im-exec " " default-im)))))
+  (cond ((string= system-type "darwin")
+           (call-process-shell-command (concat im-exec " " default-im)))))
 
 (defun im-remember ()
   "Remember the input method being used in insert mode."
   (interactive)
-  (cond ((eq system-type "darwin")
+  (unless (boundp 'prev-im)
+    (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
+  (cond ((string= system-type "darwin")
          (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))))
 
 (defun im-use-prev ()
+  "Change the input method to the previous one we remembered."
   (interactive)
-  (cond ((eq system-type "darwin")
+  (unless (boundp 'prev-im)
+    (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
+  (cond ((string= system-type "darwin")
          (if prev-im
              (call-process-shell-command (concat im-exec " " prev-im))
            (call-process-shell-command (concat im-exec " " default-im))))))
 
-(add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-(add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-(add-hook 'evil-insert-state-exit-hook 'im-remember)
-(add-hook 'evil-emacs-state-entry-hook 'im-use-eng)
 
 ;; ---
-
 
 
 ;; By default, you will not go back to the original window layout when you
@@ -214,6 +220,7 @@
 ;; TODO: to figure out a way to enable load local package.
 (use-package devdocs
   :defer t
+  :commands (devdocs-search)
   :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
 
 (use-package hl-todo
@@ -281,7 +288,7 @@
 (use-package web-mode
   :defer t
   :mode
-  (("\\.html\\'"       . web-mode)))
+  (("\\.html\\'" . web-mode)))
 
 
 ;; TODO: search why there should append a suffix ='= for the mod
@@ -424,6 +431,14 @@ initialized with the current directory instead of filename."
                                     "To:   " new-buffer-name))))
                 ;; ?\a = C-g, ?\e = Esc and C-[
                 ((memq key '(?\a ?\e)) (keyboard-quit))))))))
+
+
+(defun switch-to-minibuffer-window ()
+  "Switch to minibuffer window (if active)."
+  (interactive)
+  (when (active-minibuffer-window)
+    (select-window (active-minibuffer-window))))
+
 
 (defun org-file-show-headings (org-file)
   (interactive)
@@ -631,12 +646,57 @@ If the universal prefix argument is used then kill also the window."
                                my-local-leader-def-emacs-state-prop
                                my-local-leader-def-prop
                                my-local-leader-def-alias-prop))))
+
+    ;; TODO: use evil-define-key instead. I don't know why
+    ;; it will cause overwrite key binding on other mode
+    ;; when binding with lsp-command-map (maybe, it is not a
+    ;; normal keymap)
+    ;; (which-key-add-major-mode-key-based-replacements mode key desc)
+
+    ;; key desc binding
+
     (dolist (prop (funcall get-props))
-      (apply 'general-define-key
-             :states (plist-get prop ':states)
-             :prefix (symbol-value (plist-get prop ':key))
-             :keymaps mode-map
-             MAPS))))
+
+      (cl-loop
+       for (key desc binding)
+       on MAPS by #'cdddr
+       do
+
+       (let ((mode (intern (string-remove-suffix "-map" (symbol-name mode-map))))
+             (shortcut-key (concat (symbol-value (plist-get prop ':key)) key))
+             (shortcut (kbd (concat (symbol-value (plist-get prop ':key)) key)))
+             (sts (plist-get prop ':states)))
+
+         (if (not (equal binding 'lsp-command-map))
+             (apply 'general-define-key
+                    :states sts
+                    :prefix (symbol-value (plist-get prop ':key))
+                    :keymaps mode-map
+                    (if (equal binding nil)
+                        (progn
+                          (message "really!!")
+                          (list key (list :ignore t :which-key desc)))
+                      (list key (list binding :which-key desc))))
+
+           ;; (define-key python-mode-map (kbd "SPC m") lsp-command-map)
+           ;; NOTE: what the fuck evil-define-key can't used symbol of mode-map ...
+           ;; (evil-define-key 'normal python-mode-map (kbd "SPC m") lsp-command-map)
+           ;; (evil-define-key 'normal go-mode-map (kbd "SPC m") lsp-command-map)
+
+           ;; if using the lexcial binding, we need to add a wrap to
+           ;; bind the varaibles
+           ((lambda (sts kmap keybinding func)
+              (message "evil this fucking thing!!")
+              (print kmap)
+              (print sts)
+              (print keybinding)
+              (print func)
+              (evil-define-key sts kmap keybinding func))
+            sts mode-map
+            (kbd (symbol-value (plist-get prop ':key)))
+            binding)
+
+           ))))))
 
 
 (defun copy-file-path ()
@@ -657,7 +717,6 @@ Returns:
   - `nil' in case the current buffer does not have a directory."
   (when-let (file-path (buffer-file-name))
     (file-truename file-path)))
-
 
 
 (defun evil-smart-doc-lookup ()
@@ -690,12 +749,27 @@ to `evil-lookup'"
     ((eq major-mode 'org-mode) 'counsel-org-goto)
     (t 'counsel-imenu))))
 
+
+(defun project-run-vterm (&optional arg)
+  "Invoke `vterm' in the project's root.
+
+Switch to the project specific term buffer if it already exists.
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
+  (let* ((project (projectile-ensure-project (projectile-project-root)))
+         (buffer (projectile-generate-process-name "vterm" arg)))
+    (unless (buffer-live-p (get-buffer buffer))
+      (unless (require 'vterm nil 'noerror)
+        (error "Package 'vterm' is not available"))
+      (projectile-with-default-dir project
+        (vterm-other-window buffer)))))
+
 (defun new-terminal ()
   "New a terminal in project root or the current directory."
   (interactive)
   (if (projectile-project-p)
-      (projectile-run-vterm)
-    (vterm)))
+      (project-run-vterm)
+    (vterm-other-window)))
 
 (defun avy-jump-url ()
   "Use avy to go to url in the buffer."
@@ -734,6 +808,7 @@ If the error list is visible, hide it.  Otherwise, show it."
         (window-configuration-to-register ?_)
         (delete-other-windows)))))
 
+
 ;; Decide to use this package to auto balance the parens
 ;; NOTE: we should put this in the :init
 ;; if we put this in the :config, it will perform add these hook after
@@ -752,7 +827,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; TODO: find a way to replace the hardcode path
 (use-package yasnippet
-  :defer 2
+  :defer 1
   :config
   (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
   (yas-global-mode 1)
@@ -792,20 +867,21 @@ If the error list is visible, hide it.  Otherwise, show it."
   (defconst emacs-state-major-mode-leader-key "M-m m")
 
   (setq my-leader-def-prop
-        '(:key leader-key :states '(normal visual motion)))
+        '(:key leader-key :states (normal visual motion)))
 
   (setq my-leader-def-emacs-state-prop
-        '(:key emacs-state-leader-key :state '(emacs)))
+        '(:key emacs-state-leader-key :state (emacs)))
 
   ;; below are for major mode
   (setq my-local-leader-def-prop
-        '(:key major-mode-leader-key :states '(normal visual motion)))
+        '(:key major-mode-leader-key :states (normal visual motion)))
 
   (setq my-local-leader-def-alias-prop
-        '(:key major-mode-leader-key-shortcut :states '(normal visual motion)))
+        '(:key major-mode-leader-key-shortcut :states (normal visual motion)))
 
   (setq my-local-leader-def-emacs-state-prop
-        '(:key emacs-state-major-mode-leader-key :states '(emacs)))
+        '(:key emacs-state-major-mode-leader-key :states (emacs)))
+  ;; NOTE: '() the element inside will be symbol
 
   :after (evil)
   ;; :after (evil dired expand-region go-mode lsp-mode)
@@ -862,71 +938,73 @@ If the error list is visible, hide it.  Otherwise, show it."
     (with-eval-after-load 'go-mode
 
       (define-leader-key-map-for 'go-mode-map
-        "" '(:keymap lsp-command-map  :which-key "major mode")
-        "=" '(:ignore t :which-key "format")
-        "a" '(:ignore t :which-key "code actions")
-        "b" '(:ignore t :which-key "backend")
-        "F" '(:ignore t :which-key "folder")
-        "g" '(:ignore t :which-key "goto")
-        "G" '(:ignore t :which-key "peek")
-        "h" '(:ignore t :which-key "help")
-        "r" '(:ignore t :which-key "refactor")
-        "T" '(:ignore t :which-key "toggle")
+        "" "major mode" 'lsp-command-map
+        "=" "format" nil
+        "a" "code actions" nil
+        "b" "backend" nil
+        "F" "folder" nil
+        "g" "goto" nil
+        "G" "peek" nil
+        "h" "help" nil
+        "r" "refactor" nil
+        "s" "sessions" nil
+        "T" "toggle" nil
         ;; lsp keybinding
 
-        "x" '(:ignore t :which-key "execute")
-        "xx" '(go-run-main :which-key "go run")
-        "d" '(dap-hydra :which-key "debug")
-        "e" '(gomacro-run :which-key "gomacro"))
+        "x" "execute" nil
+        "xx" "go run" 'go-run-main
+        "d" "debug" 'dap-hydra
+        "e" "gomacro" 'gomacro-run)
+
 
       (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'python
 
       (define-leader-key-map-for 'python-mode-map
-        "" '(:keymap lsp-command-map  :which-key "major mode")
-        "=" '(:ignore t :which-key "format")
-        "a" '(:ignore t :which-key "code actions")
-        "b" '(:ignore t :which-key "backend")
-        "F" '(:ignore t :which-key "folder")
-        "g" '(:ignore t :which-key "goto")
-        "G" '(:ignore t :which-key "peek")
-        "h" '(:ignore t :which-key "help")
-        "r" '(:ignore t :which-key "refactor")
-        "T" '(:ignore t :which-key "toggle")
+        "" "major mode" 'lsp-command-map
+        "=" "format" nil
+        "a" "code actions" nil
+        "b" "backend" nil
+        "F" "folder" nil
+        "g" "goto" nil
+        "G" "peek" nil
+        "h" "help" nil
+        "r" "refactor" nil
+        "T" "toggle" nil
         ;; lsp keybinding
 
-        "x" '(:ignore t :which-key "execute")
-        "xx" '(python-run-main :which-key "python run")
-        "d" '(dap-hydra :which-key "debug")))
+        "x" "execute" nil
+        "xx" "python run" 'python-run-main
+        "d" "debug" 'dap-hydra))
     )
 
   (with-eval-after-load 'elisp-mode
     (define-leader-key-map-for 'emacs-lisp-mode-map
-      "" '(:ignore t :which-key "major mode")
-      "e" '(:ignore t :which-key "eval")
-      "ef" '(eval-defun :which-key "eval defun")
-      "eb" '(eval-buffer :which-key "eval buffer")
-      "er" '(eval-region :which-key "eval region")))
+      "" "major mode" nil
+      "e" "eval" nil
+      "ef" "eval defun" 'eval-defun
+      "eb" "eval buffer" 'eval-buffer
+      "er" "eval region" 'eval-region ))
 
   (with-eval-after-load 'org
     (define-leader-key-map-for 'org-mode-map
-      "" '(:ignore t :which-key "major mode")
-      "a" 'org-agenda
-      "," 'org-ctrl-c-ctrl-c
-      "'" 'org-edit-special
+      "" "major mode" nil
 
-      "i" '(:ignore t :which-key "insert")
-      "il" '(org-insert-link :which-key "insert link")
+      "a" "org-agenda" 'org-agenda
+      "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
+      "'" "org-edit-special" 'org-edit-special
 
+      "i" "insert" nil
+      "il" "insert link" 'org-insert-link
 
-      "s" '(:ignore t :which-key "schedule")
-      "ss" '(org-schedule :which-key "org-schedule")
-      "sd" '(org-deadline :which-key "org-deadline")
-      "st" '(org-time-stamp :which-key "org-time-stamp")
+      "s" "schedule" nil
+      "ss" "org-schedule" 'org-schedule
+      "sd" "org-deadline" 'org-deadline
+      "st" "org-time-stamp" 'org-time-stamp
 
-      "j" '(:ignore t :which-key "journals")
-      "jn" '(org-journal-new-entry :which-key "new entry")))
+      "j" "journals" nil
+      "jn" "new entry" 'org-journal-new-entry))
 
 
   (define-leader-key-global
@@ -983,6 +1061,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
     "bd" '(kill-this-buffer :which-key "kill-buffer")
     "bB" '(counsel-switch-buffer :which-key "list-buffer")
+    "bi" '(ibuffer :which-key "ibuffer")
     "bn" '(next-buffer :which-key "next-buffer")
     "bp" '(previous-buffer :which-key "previous-buffer")
     "bN" '(new-empty-buffer :which-key "new empty buffer"))
@@ -1017,7 +1096,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (define-leader-key-global
     "s" '(:ignore t :which-key "search")
     "sc" '(evil-ex-nohighlight :which-key "clear highlight")
-    "ss" '(swiper :which-key "swiper"))
+    "ss" '(swiper :which-key "swiper")
+    "sS" '(swiper-all :which-key "swiper-all"))
 
   (define-leader-key-global
     "g" '(:ignore t :which-key "git")
@@ -1038,6 +1118,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (define-leader-key-global
     "w" '(:ignore t :which-key "windows")
+    "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
     "wm" '(toggle-maximize-buffer :which-key "window maximized")
     "wM" '(toggle-frame-maximized :which-key "frame maximized")
     "wd" '(delete-window :which-key "delete window")
@@ -1110,7 +1191,12 @@ If the error list is visible, hide it.  Otherwise, show it."
   (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
   (evil-set-initial-state 'messages-buffer-mode 'normal)
-  (evil-set-initial-state 'dashboard-mode 'normal))
+  (evil-set-initial-state 'dashboard-mode 'normal)
+
+  (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+  (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+  (add-hook 'evil-insert-state-exit-hook 'im-remember)
+  (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
 
 (use-package vimish-fold
   :defer t
@@ -1132,6 +1218,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   :after evil
   :config
   (delete 'wgrep evil-collection-mode-list)
+  (delete 'vterm evil-collection-mode-list)
+  (delete 'ivy evil-collection-mode-list)
+  ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
   (evil-collection-init))
 
@@ -1311,6 +1400,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
 (use-package org-download
+  :commands
+  (org-download-screenshot
+   org-download-clipboard)
   :defer t)
 
 (use-package org-journal
@@ -1339,7 +1431,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; package-refresh-contents
 (use-package vterm
   :defer t
+  :init
+  (setq vterm-always-compile-module t)
   :config
+  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
   (add-hook 'vterm-mode-hook (lambda ()
                                (evil-emacs-state)
                                (vterm-send-string "source ~/.bash_profile")
@@ -1410,14 +1505,15 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t)
 
 (use-package yaml-mode
-  :after (lsp-mode flycheck)
+  :defer t
   :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
          ("Procfile\\'" . yaml-mode))
   :init
   (add-hook 'yaml-mode-hook 'lsp)
   :config
-  (when (listp flycheck-global-modes)
-    (add-to-list 'flycheck-global-modes 'yaml-mode)))
+  (with-eval-after-load 'flycheck
+    (when (listp flycheck-global-modes)
+      (add-to-list 'flycheck-global-modes 'yaml-mode))))
 
 (use-package gomacro-mode
   :hook (go-mode . gomacro-mode))
