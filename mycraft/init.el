@@ -11,7 +11,7 @@
 ;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
 
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
-(setq debug-on-error t) ;; temporarily for debug usage
+;; (setq debug-on-error t) ;; temporarily for debug usage
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
@@ -129,13 +129,13 @@
 
 
 ;; TODO refactor this auto switch input method function into another file.
+;; need to install the package im-select
 (defcustom im-exec "/usr/local/bin/im-select"
   "The im executable binary path."
   :type 'string)
 
 (defvar default-im "com.apple.keylayout.ABC"
   "Default English input method.")
-
 
 (defun im-use-eng ()
   "Switch to english input method."
@@ -160,7 +160,6 @@
          (if prev-im
              (call-process-shell-command (concat im-exec " " prev-im))
            (call-process-shell-command (concat im-exec " " default-im))))))
-
 
 ;; ---
 
@@ -313,7 +312,7 @@
 (defvar go-run-args ""
   "Additional arguments to by supplied to `go run` during runtime.")
 
-(defvar python-run-command "python run")
+(defvar python-run-command "python")
 (defvar python-run-args "")
 
 ;; (setq lexical-binding t)
@@ -432,6 +431,54 @@ initialized with the current directory instead of filename."
                 ;; ?\a = C-g, ?\e = Esc and C-[
                 ((memq key '(?\a ?\e)) (keyboard-quit))))))))
 
+(defun lsp-keybinding ()
+  "Return the keybinding for lsp functions."
+  (list "=" "format" nil
+    "==" "lsp-format-buffer" 'lsp-format-buffer
+    "=r" "lsp-format-region" 'lsp-format-region
+
+    "a" "code actions" nil
+    "aa" "lsp-execute-code-action" 'lsp-execute-code-action
+    "al" "lsp-avy-lens" 'lsp-avy-lens
+    "ah" "lsp-document-highlight" 'lsp-document-highlight
+
+    "F" "folder" nil
+    "Fa" "lsp-workspace-folders-add" 'lsp-workspace-folders-add
+    "Fr" "lsp-workspace-folders-remove " 'lsp-workspace-folders-remove
+    "Fb" "lsp-workspace-blacklist-remove" 'lsp-workspace-blacklist-remove
+
+    "g" "goto" nil
+    "gg" "lsp-find-definition" 'lsp-find-definition
+    "gr" "lsp-find-references" 'lsp-find-references
+    "gi" "lsp-find-implementation" 'lsp-find-implementation
+    "gt" "lsp-find-type-definition" 'lsp-find-type-definition
+    "gd" "lsp-find-declaration" 'lsp-find-declaration
+    "ga" "xref-find-apropos" 'xref-find-apropos
+
+    "G" "peek" nil
+    "Gg" "lsp-ui-peek-find-definitions" 'lsp-ui-peek-find-definitions
+    "Gr" "lsp-ui-peek-find-references" 'lsp-ui-peek-find-references
+    "Gi" "lsp-ui-peek-find-implementatio" 'lsp-ui-peek-find-implementation
+    "Gs" "lsp-ui-peek-find-workspace-symbol" 'lsp-ui-peek-find-workspace-symbol
+
+
+    "h" "help" nil
+    "hh" "lsp-describe-thing-at-point" 'lsp-describe-thing-at-point
+    "hs" "lsp-signature-activate" 'lsp-signature-activate
+    "hg" "lsp-ui-doc-glance" 'lsp-ui-doc-glance
+
+    "r" "refactor" nil
+    "rr" "lsp-rename" 'lsp-rename
+    "ro" "lsp-organize-imports" 'lsp-organize-imports
+
+
+    "T" "toggle" nil
+    "Tl" "lsp-lens-mode" 'lsp-lens-mode
+    "TL" "lsp-toggle-trace-io" 'lsp-toggle-trace-io
+    "Th" "lsp-toggle-symbol-highlight" 'lsp-toggle-symbol-highlight
+    "TS" "lsp-ui-sideline-mode" 'lsp-ui-sideline-mode
+    "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
+    "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
 
 (defun switch-to-minibuffer-window ()
   "Switch to minibuffer window (if active)."
@@ -673,9 +720,7 @@ If the universal prefix argument is used then kill also the window."
                     :prefix (symbol-value (plist-get prop ':key))
                     :keymaps mode-map
                     (if (equal binding nil)
-                        (progn
-                          (message "really!!")
-                          (list key (list :ignore t :which-key desc)))
+                          (list key (list :ignore t :which-key desc))
                       (list key (list binding :which-key desc))))
 
            ;; (define-key python-mode-map (kbd "SPC m") lsp-command-map)
@@ -884,7 +929,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; NOTE: '() the element inside will be symbol
 
   :after (evil)
-  ;; :after (evil dired expand-region go-mode lsp-mode)
   :config
 
   ;; NOTE: keysmaps override is to make general-define-key to be global scope
@@ -896,15 +940,19 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   ;; unbind some keybinding in the package 'evil-org
   (with-eval-after-load 'evil-org
+    ;;  org-agenda-redo
+    ;;  make org agenda enter the motion state
+    ;;  I don't the original state
+    (evil-set-initial-state 'org-agenda-mode 'motion)
 
-    (evil-define-key 'motion org-agenda-mode-map (kbd "sc") nil)
-    (evil-define-key 'motion org-agenda-mode-map (kbd "sr") nil)
-    (evil-define-key 'motion org-agenda-mode-map (kbd "se") nil)
-    (evil-define-key 'motion org-agenda-mode-map (kbd "st") nil)
-    (evil-define-key 'motion org-agenda-mode-map (kbd "s^") nil)
-    (evil-define-key 'motion org-agenda-mode-map (kbd "ss") nil)
-
-    (evil-define-key 'motion org-agenda-mode-map (kbd "s") 'org-save-all-org-buffers))
+    (evil-define-key 'motion org-agenda-mode-map
+      (kbd "j") 'org-agenda-next-line
+      "t" 'org-agenda-todo
+      "I" 'org-agenda-clock-in ; Original binding
+      "O" 'org-agenda-clock-out ; Original binding
+      (kbd "<return>") 'org-agenda-goto
+      (kbd "k") 'org-agenda-previous-line
+      (kbd "s") 'org-save-all-org-buffers))
 
   (with-eval-after-load 'org
 
@@ -937,20 +985,11 @@ If the error list is visible, hide it.  Otherwise, show it."
 
     (with-eval-after-load 'go-mode
 
-      (define-leader-key-map-for 'go-mode-map
-        "" "major mode" 'lsp-command-map
-        "=" "format" nil
-        "a" "code actions" nil
-        "b" "backend" nil
-        "F" "folder" nil
-        "g" "goto" nil
-        "G" "peek" nil
-        "h" "help" nil
-        "r" "refactor" nil
-        "s" "sessions" nil
-        "T" "toggle" nil
-        ;; lsp keybinding
+      (apply 'define-leader-key-map-for 'go-mode-map
+             (lsp-keybinding))
 
+      (define-leader-key-map-for 'go-mode-map
+        "" "major mode" nil
         "x" "execute" nil
         "xx" "go run" 'go-run-main
         "d" "debug" 'dap-hydra
@@ -960,23 +999,15 @@ If the error list is visible, hide it.  Otherwise, show it."
       (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'python
+      (apply 'define-leader-key-map-for 'python-mode-map
+            (lsp-keybinding))
 
-      (define-leader-key-map-for 'python-mode-map
-        "" "major mode" 'lsp-command-map
-        "=" "format" nil
-        "a" "code actions" nil
-        "b" "backend" nil
-        "F" "folder" nil
-        "g" "goto" nil
-        "G" "peek" nil
-        "h" "help" nil
-        "r" "refactor" nil
-        "T" "toggle" nil
-        ;; lsp keybinding
-
-        "x" "execute" nil
-        "xx" "python run" 'python-run-main
-        "d" "debug" 'dap-hydra))
+      (apply 'define-leader-key-map-for
+             (list 'python-mode-map
+                   "" "major mode" 'nil
+                   "x" "execute" nil
+                   "xx" "python run" 'python-run-main
+                   "d" "debug" 'dap-hydra)))
     )
 
   (with-eval-after-load 'elisp-mode
@@ -1002,6 +1033,13 @@ If the error list is visible, hide it.  Otherwise, show it."
       "ss" "org-schedule" 'org-schedule
       "sd" "org-deadline" 'org-deadline
       "st" "org-time-stamp" 'org-time-stamp
+
+      "d" "org-download" nil
+      "dc" "from clipboard" 'org-download-clipboard
+      "ds" "from screenshot" 'org-download-screenshot
+
+      "t" "toggles" nil
+      "ti" "inline image" 'org-toggle-inline-images
 
       "j" "journals" nil
       "jn" "new entry" 'org-journal-new-entry))
@@ -1219,6 +1257,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   :config
   (delete 'wgrep evil-collection-mode-list)
   (delete 'vterm evil-collection-mode-list)
+  (delete 'lispy evil-collection-mode-list)
   (delete 'ivy evil-collection-mode-list)
   ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
@@ -1227,8 +1266,15 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; NOTE: it will save the command behavior applied on the multiple cursor
 ;; to a file named .mc-lists.el. By default, it's path is =~/.emacs.d/.mc-lists.el=
 (use-package multiple-cursors
-  :defer t
-  :after evil)
+  :commands
+  (mc/edit-lines
+   mc/mark-all-like-this
+   mc/mark-next-like-this
+   mc/mark-previous-like-this)
+  :config
+  (global-set-key (kbd "C-S-a") 'mc/edit-lines)
+  (global-set-key (kbd "C->") 'mc/mark-next-like-this)
+  (global-set-key (kbd "C-<") 'mc/mark-previous-like-this))
 
 ;; Current disable this. Consider to combine with multiple-cursor
 ;; to know how to add whitelist command by default
@@ -1460,6 +1506,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   (define-key company-active-map (kbd "<return>") 'company-complete-selection)
   (global-company-mode 1))
 
+;; NOTE: This is too slow
+;; (use-package company-box
+;;   :hook (company-mode . company-box-mode))
+
 (use-package expand-region
   :defer t)
 
@@ -1557,10 +1607,14 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
   :hook
   (go-mode . lsp)
-  ;; (lsp-mode . lsp-enable-which-key-integration)
+  (lsp-mode . '(lambda () (lsp-headerline-breadcrumb-mode)))
+  ;; add breadcrumb to hint current position
   (python-mode . lsp)
   (rust-mode . lsp)
-  (js-mode . lsp))
+  (js-mode . lsp)
+  :config
+  (setq lsp-lens-enable)
+  (setq lsp-headerline-breadcrumb-segments '(path-up-to-project file symbols)))
 
 (use-package lsp-python-ms
   :after
@@ -1600,8 +1654,10 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-hook 'evil-org-mode-hook
             (lambda ()
               (evil-org-set-key-theme)))
-  (require 'evil-org-agenda)
-  (evil-org-agenda-set-keys))
+  ;; disable org agenda key binding
+  ;; (require 'evil-org-agenda)
+  ;; (evil-org-agenda-set-keys)
+  )
 
 (with-eval-after-load 'org
   (org-babel-do-load-languages
@@ -1632,6 +1688,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
+  (setq org-image-actual-width nil)
   (setq org-startup-folded t)
   ;; (setq org-ellipsis " ▾")
   (setq org-startup-with-inline-images t)

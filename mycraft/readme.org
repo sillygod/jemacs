@@ -12,13 +12,10 @@
    - [ ] add run test and intergrate them into which-key bindings
    - [ ] add rename file function
    - [ ] add google dictionary function
-   - [ ] diminish persp workspace in the modeline
-   - [ ] fullscreen mode (shorcut)
    - [ ] adopt darkroom package?
 
 ** program relavant config
 
-   - [ ] emacs-lisp, lisp configuration (lispy?)
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
    - [ ] manage this config by literate programming way
@@ -84,3 +81,4 @@
    - https://github.com/raxod502/radian/tree/develop/emacs
    - https://github.com/daipeihust/im-select (combine this with evil mode)
    - https://github.com/clemera/objed (interesting..)
+   - https://protesilaos.com/dotemacs/
