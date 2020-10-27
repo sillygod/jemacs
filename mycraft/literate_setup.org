@@ -1,0 +1,2 @@
+#+title: Mycraft emacs' literate programming configuration
+#+DESCRIPTION: In other words, you write a document that describes your program, and that document is also the source code for the program being described.

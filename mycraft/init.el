@@ -1,15 +1,12 @@
-;;; mycraft  --- Summary  -*- lexical-binding: t; -*-
-
+;;; mycraft --- Summary  -*- lexical-binding: t; -*-
 ;;; Copyright (C) 2020 mycraft maintainers
 ;;; Author: Jing
 ;;; package --- mycraft
-;;; Summary:
 ;;; Commentary:
 
 ;;; Code:
 
 ;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
-
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
 ;; (setq debug-on-error t) ;; temporarily for debug usage
 (setq gc-cons-threshold 64000000)
@@ -35,7 +32,7 @@
 ;; ex. open two buffer with dired mode
 
 (setq ffap-machine-p-known 'reject)
-;; avoid ffap-guesser freeze when find-file-thing-at-point with something like url
+;; NOTE: avoid ffap-guesser freeze when find-file-thing-at-point with something like url
 
 
 ;; https://github.com/tonsky/FiraCode
@@ -43,8 +40,18 @@
 ;; TODO: search what does fixed-pitch mean?
 (defvar default-font-size 140)
 (set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'default nil :background "#292b2e")
 (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
 (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
+
+(defun system-is-mac! ()
+  (eq system-type 'darwin))
+
+(defun system-is-linux! ()
+  (eq system-type 'gnu/linux))
+
+(defun system-is-windows ()
+  (eq system-type 'windows-nt))
 
 (when (string= system-type "darwin")
   "In macos, ls doesn't support --dired option"
@@ -52,7 +59,7 @@
 
 ;; this can make cursor in the help window at first when poping up a help window
 (setq help-window-select t)
-(setf epa-pinentry-mode 'loopback)
+(setq epg-pinentry-mode 'loopback)
 (setq epa-file-encrypt-to '("sillygod"))
 
 ;; https://stackoverflow.com/questions/6411121/how-to-make-emacs-use-my-bashrc-file
@@ -216,7 +223,6 @@
 (use-package highlight-parentheses
   :hook (prog-mode . highlight-parentheses-mode))
 
-;; TODO: to figure out a way to enable load local package.
 (use-package devdocs
   :defer t
   :commands (devdocs-search)
@@ -263,6 +269,13 @@
 
 ;; ----------------------------------------------------------------
 
+;; dictionary packages
+(use-package define-word
+  :defer t)
+
+(use-package powerthesaurus
+  :defer t)
+
 (use-package uuidgen
   :defer t)
 
@@ -308,6 +321,8 @@
   (js2-minor-mode))
 
 ;; some customize functions
+(defvar go-test-command "go test")
+
 (defvar go-run-command "go run")
 (defvar go-run-args ""
   "Additional arguments to by supplied to `go run` during runtime.")
@@ -1029,6 +1044,13 @@ If the error list is visible, hide it.  Otherwise, show it."
       "i" "insert" nil
       "il" "insert link" 'org-insert-link
 
+      "e" "export" nil
+      "ee" "org-export-dispatch" 'org-export-dispatch
+
+      "n" "narrow" nil
+      "ns" "narrow subtree" 'org-narrow-to-subtree
+      "nN" "widen" 'widen
+
       "s" "schedule" nil
       "ss" "org-schedule" 'org-schedule
       "sd" "org-deadline" 'org-deadline
@@ -1039,6 +1061,7 @@ If the error list is visible, hide it.  Otherwise, show it."
       "ds" "from screenshot" 'org-download-screenshot
 
       "t" "toggles" nil
+      "tl" "link display" 'org-toggle-link-display
       "ti" "inline image" 'org-toggle-inline-images
 
       "j" "journals" nil
@@ -1092,6 +1115,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "ao" '(:ignore t :which-key "org")
     "aog" '(:ignore t :which-key "goto")
     "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
+    "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
     "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
 
   (define-leader-key-global
@@ -1148,10 +1172,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
-    "tt" '(counsel-load-theme :which-key "choose theme")
-    "tr" '(rainbow-mode :which-key "rainbow-mode")
-    "tw" '(whitespace-mode :which-key "whitespace-mode")
-    ;; NOTE: in the future, I can implement a list of mode to be toggle on
+    "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
   (define-leader-key-global
@@ -1180,7 +1201,8 @@ If the error list is visible, hide it.  Otherwise, show it."
     "w}" '(my-enlarge-window :which-key: "enlarge v")
 
     "wF" '(make-frame :which-key "make frame")
-    "wo" '(other-frame :which-key "other frame"))
+    "wo" '(other-frame :which-key "other frame")
+    "w." '(window-operate/body :which-key "window transient"))
 
   (define-leader-key-global
     "x" '(:ignore t :which-key "texts")
@@ -1202,13 +1224,27 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package hydra
   :defer t)
 
-;; what's the difference between hydra and transient
+(defhydra window-operate ()
+  "window operation"
+  ("[" my-shrink-window-horizontally "shrink (h)")
+  ("]" my-enlarge-window-horizontally "enlarge (h)")
+  ("{" my-shrink-window "shrink (v)")
+  ("}" my-enlarge-window "enlarge (v)")
+  ("=" balance-windows "balance"))
+
 (defhydra hydra-text-scale (:timeout 8)
   "scale text"
   ("j" text-scale-increase "+")
   ("k" text-scale-decrease "-")
   ("0" ((lambda (inc) (text-scale-adjust inc)) 0) "reset")
   ("<escape>" nil "finished" :exit t))
+
+(defhydra hydra-mode-toggle ()
+  "toggle mode"
+  ("r" rainbow-mode "rainbow mode")
+  ("w" whitespace-mode "whitespace-mode")
+  ("t" counsel-load-theme "toggle theme")
+  ("f" flyspell-mode "check spell"))
 
 ;; https://github.com/emacs-evil/evil-collection
 ;; optional
@@ -1265,44 +1301,18 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; NOTE: it will save the command behavior applied on the multiple cursor
 ;; to a file named .mc-lists.el. By default, it's path is =~/.emacs.d/.mc-lists.el=
+;; I customize the storing path already.
+;; Research how evil-mc customize the multiple-cursor
 (use-package multiple-cursors
+  :init
+  (global-set-key (kbd "C-S-a") 'mc/edit-lines)
+  (global-set-key (kbd "<C-S-right>") 'mc/mark-next-like-this)
+  (global-set-key (kbd "<C-S-left>") 'mc/mark-previous-like-this)
   :commands
   (mc/edit-lines
    mc/mark-all-like-this
    mc/mark-next-like-this
-   mc/mark-previous-like-this)
-  :config
-  (global-set-key (kbd "C-S-a") 'mc/edit-lines)
-  (global-set-key (kbd "C->") 'mc/mark-next-like-this)
-  (global-set-key (kbd "C-<") 'mc/mark-previous-like-this))
-
-;; Current disable this. Consider to combine with multiple-cursor
-;; to know how to add whitelist command by default
-;; (use-package evil-mc
-;;   :commands (evil-mc-make-cursor-here
-;;              evil-mc-make-all-cursors
-;;              evil-mc-undo-all-cursors
-;;              evil-mc-pause-cursors
-;;              evil-mc-resume-cursors
-;;              evil-mc-make-and-goto-first-cursor
-;;              evil-mc-make-and-goto-last-cursor
-;;              evil-mc-make-cursor-in-visual-selection-beg
-;;              evil-mc-make-cursor-in-visual-selection-end
-;;              evil-mc-make-cursor-move-next-line
-;;              evil-mc-make-cursor-move-prev-line
-;;              evil-mc-make-cursor-at-pos
-;;              evil-mc-has-cursors-p
-;;              evil-mc-make-and-goto-next-cursor
-;;              evil-mc-skip-and-goto-next-cursor
-;;              evil-mc-make-and-goto-prev-cursor
-;;              evil-mc-skip-and-goto-prev-cursor
-;;              evil-mc-make-and-goto-next-match
-;;              evil-mc-skip-and-goto-next-match
-;;              evil-mc-skip-and-goto-next-match
-;;              evil-mc-make-and-goto-prev-match
-;;              evil-mc-skip-and-goto-prev-match)
-;;   :config
-;;   (global-evil-mc-mode 1))
+   mc/mark-previous-like-this))
 
 (use-package evil-nerd-commenter
   :after evil
@@ -1380,7 +1390,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil))
 
-;; After siwper, counsel search, ivy-occur (C-c C-o) to get the candidate in another buffer
+;; After swiper, counsel search, ivy-occur (C-c C-o) to get the candidate in another buffer
 ;; Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
 ;; use multiple-cursor may be helpful.
 ;; Finally, Ctrl-c Ctrl-c to commit change
@@ -1398,8 +1408,12 @@ If the error list is visible, hide it.  Otherwise, show it."
          :map minibuffer-local-map
          ("C-r" . 'counsel-minibuffer-history))
   :config
+  (setq counsel-search-engine 'google)
   (setq counsel-find-file-at-point t))
 
+;; counsel-search will use the package request with this function
+(use-package request
+  :defer t)
 
 (use-package ivy-rich
   :after (ivy)
@@ -1418,7 +1432,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   :after projectile
   :defer 1
   :config (counsel-projectile-mode))
-
 
 (use-package magit
   :defer 2
@@ -1455,7 +1468,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   :defer t)
 
 (use-package ox-reveal
-  :defer t
   :after org)
 
 (use-package org-superstar
@@ -1463,7 +1475,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (defun org-mode-visual-fill ()
   "A beautiful word wrap effect."
-  (setq visual-fill-column-width 130)
+  (setq visual-fill-column-width 150)
   ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
   ;; maybe, I can remove this package?
   (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
@@ -1506,10 +1518,6 @@ If the error list is visible, hide it.  Otherwise, show it."
   (define-key company-active-map (kbd "<return>") 'company-complete-selection)
   (global-company-mode 1))
 
-;; NOTE: This is too slow
-;; (use-package company-box
-;;   :hook (company-mode . company-box-mode))
-
 (use-package expand-region
   :defer t)
 
@@ -1537,8 +1545,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; ISSUE: Company backend ’t’ could not be initialized
   :defer t)
 
-;; NOTE: check the iedit mode is install by this package or not
 (use-package lispy
+  :init
+  (setq lispy-key-theme '(special c-digits))
   :hook ((common-lisp-mode . lispy-mode)
          (emacs-lisp-mode . lispy-mode)
          (scheme-mode . lispy-mode)))
@@ -1605,16 +1614,17 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq lsp-completion-provider :capf) ;; the official recommends use this
   ;; run =company-diag= to check what the company-backen is being used.
   ;; (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
+  :commands
+  (lsp)
   :hook
   (go-mode . lsp)
-  (lsp-mode . '(lambda () (lsp-headerline-breadcrumb-mode)))
+  ;; (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
   ;; add breadcrumb to hint current position
   (python-mode . lsp)
   (rust-mode . lsp)
   (js-mode . lsp)
   :config
-  (setq lsp-lens-enable)
-  (setq lsp-headerline-breadcrumb-segments '(path-up-to-project file symbols)))
+  (setq lsp-lens-enable t))
 
 (use-package lsp-python-ms
   :after
@@ -1632,6 +1642,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;;   (setq lsp-ui-sideline-enable nil))
 
 (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
+
 (use-package dap-mode
   :defer t
   :config

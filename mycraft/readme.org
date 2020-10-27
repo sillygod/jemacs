@@ -2,13 +2,22 @@
 
   A literal programming for my own emacs configs.
 
+** prerequisite
+
+   #+begin_src sh
+     curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
+     brew install ispell
+   #+end_src
+
 * Start to build my own emacs
 
   Wow almost complete :)
 
+
 ** things needed to be done or enahnced
 
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
+   - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] add run test and intergrate them into which-key bindings
    - [ ] add rename file function
    - [ ] add google dictionary function
@@ -16,9 +25,9 @@
 
 ** program relavant config
 
+   - [ ] manage this config by literate programming way
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
-   - [ ] manage this config by literate programming way
 
 ** better to have
 
@@ -36,7 +45,8 @@
 
 
   #+begin_src bash
-    emacs -Q --load init.el
+    emacs -Q --load init.el or
+    /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
   #+end_src
 
   reference: https://www.youtube.com/watch?v=xaZMwNELaJY
@@ -72,6 +82,21 @@
         lispy-mode-map)
    #+end_src
 
+** some commands
+
+*** list-colors-display
+*** (load file nil (not init-file-debug))
+    =load= will load repeatly when you call multiple times but =require= will only do once.
+*** set vs setf vs setq
+
+    #+begin_src emacs-lisp
+      (set ls '(1 2 3 4)) => Error - ls has no value
+      (set 'ls '(1 2 3 4)) => OK
+      (setq ls '(1 2 3 4)) => OK - make ls to (quote ls) and then have the usual set
+      (setf ls '(1 2 3 4)) => OK - same as setq so far BUT
+      (setf (car ls) 10) => Makes ls '(10 2 3 4) - not duplicated by setq/set
+    #+end_src
+
 * Reference
 
    - http://ergoemacs.org/emacs/emacs.html
@@ -81,4 +106,8 @@
    - https://github.com/raxod502/radian/tree/develop/emacs
    - https://github.com/daipeihust/im-select (combine this with evil mode)
    - https://github.com/clemera/objed (interesting..)
+   - https://github.com/p3r7/awesome-elisp
    - https://protesilaos.com/dotemacs/
+   - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
+   - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
+   - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
