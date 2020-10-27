@@ -17,6 +17,8 @@
 ** things needed to be done or enahnced
 
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
+   - [ ] why persp doesn't persist when reeval the buffer
+   - [ ] compare different version of emacs on mac osx
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] add run test and intergrate them into which-key bindings
    - [ ] add rename file function

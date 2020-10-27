@@ -6,6 +6,9 @@
 
 ;;; Code:
 
+;; I've put the variable in the beginning of the file
+;; so it's no need to wirte (setq lexical-binding t)
+
 ;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
 ;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
 ;; (setq debug-on-error t) ;; temporarily for debug usage
@@ -71,9 +74,17 @@
 ;; (setq shell-command-switch "-ic")
 (setq shell-command-switch "-c")
 
-;; minimize some ui interface
-(scroll-bar-mode -1)
+;; activate natural title bar when the gui system is based on cocoa
+(when (eq (window-system) 'ns)
+  (setq mac-command-modifier 'meta)
+  ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
+  (setq frame-resize-pixelwise t)
+  ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
+  (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
 
+;; minimize some ui interface
+;; (scroll-bar-mode -1)
+(add-to-list 'default-frame-alist '(vertical-scroll-bars))
 ;; (menu-bar-mode -1)
 (add-to-list 'default-frame-alist '(menu-bar-lines . 0))
 ;; (tool-bar-mode -1)
@@ -84,7 +95,8 @@
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
 
 ;; disable word-wrap
-(toggle-word-wrap 0)
+(setq word-wrap 0)
+;; (toggle-word-wrap 0)
 
 
 ;; The following variable can decide where the
@@ -148,7 +160,7 @@
   "Switch to english input method."
   (interactive)
   (cond ((string= system-type "darwin")
-           (call-process-shell-command (concat im-exec " " default-im)))))
+         (call-process-shell-command (concat im-exec " " default-im)))))
 
 (defun im-remember ()
   "Remember the input method being used in insert mode."
@@ -174,10 +186,9 @@
 ;; By default, you will not go back to the original window layout when you
 ;; exit the ediff mode
 (use-package winner
-  :commands (winner-undo)
-  :config
-  (add-hook 'ediff-quit-hook 'winner-undo))
-
+  :init
+  (add-hook 'ediff-quit-hook 'winner-undo)
+  :commands (winner-undo))
 
 ;; profiling
 (use-package esup
@@ -276,6 +287,11 @@
 (use-package powerthesaurus
   :defer t)
 
+;; read boooks
+(use-package nov
+  :defer t
+  :mode ("\\.epub\\'" . nov-mode))
+
 (use-package uuidgen
   :defer t)
 
@@ -330,8 +346,7 @@
 (defvar python-run-command "python")
 (defvar python-run-args "")
 
-;; (setq lexical-binding t)
-
+;; TODO: rewrite this
 (defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
   "Show a MSG at the helm or ivy prompt for SEC.
 With Helm, remember the path, then restore it after SEC.
@@ -361,6 +376,29 @@ With Ivy, the path isn't editable, just remove the MSG after SEC."
            ;; and update the helm prompt
            (when helmp (helm-suspend-update nil)))))
    msg sec))
+
+(defun google-search-action (x)
+  "Search for X."
+  (xwidget-webkit-browse-url
+   (concat
+    (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
+    (url-hexify-string x))))
+
+
+(defun google-search ()
+  "Counsel-search with xwidget open url."
+  (interactive)
+  (require 'request)
+  (require 'json)
+  (ivy-read "search: " #'counsel-search-function
+            :action #'google-search-action
+            :dynamic-collection t
+            :caller 'google-search))
+
+(defun open-with-xwidget ()
+  "Open file with xwidget browse url."
+  (interactive)
+  )
 
 
 ;; TODO rewrite this
@@ -449,51 +487,51 @@ initialized with the current directory instead of filename."
 (defun lsp-keybinding ()
   "Return the keybinding for lsp functions."
   (list "=" "format" nil
-    "==" "lsp-format-buffer" 'lsp-format-buffer
-    "=r" "lsp-format-region" 'lsp-format-region
+        "==" "lsp-format-buffer" 'lsp-format-buffer
+        "=r" "lsp-format-region" 'lsp-format-region
 
-    "a" "code actions" nil
-    "aa" "lsp-execute-code-action" 'lsp-execute-code-action
-    "al" "lsp-avy-lens" 'lsp-avy-lens
-    "ah" "lsp-document-highlight" 'lsp-document-highlight
+        "a" "code actions" nil
+        "aa" "lsp-execute-code-action" 'lsp-execute-code-action
+        "al" "lsp-avy-lens" 'lsp-avy-lens
+        "ah" "lsp-document-highlight" 'lsp-document-highlight
 
-    "F" "folder" nil
-    "Fa" "lsp-workspace-folders-add" 'lsp-workspace-folders-add
-    "Fr" "lsp-workspace-folders-remove " 'lsp-workspace-folders-remove
-    "Fb" "lsp-workspace-blacklist-remove" 'lsp-workspace-blacklist-remove
+        "F" "folder" nil
+        "Fa" "lsp-workspace-folders-add" 'lsp-workspace-folders-add
+        "Fr" "lsp-workspace-folders-remove " 'lsp-workspace-folders-remove
+        "Fb" "lsp-workspace-blacklist-remove" 'lsp-workspace-blacklist-remove
 
-    "g" "goto" nil
-    "gg" "lsp-find-definition" 'lsp-find-definition
-    "gr" "lsp-find-references" 'lsp-find-references
-    "gi" "lsp-find-implementation" 'lsp-find-implementation
-    "gt" "lsp-find-type-definition" 'lsp-find-type-definition
-    "gd" "lsp-find-declaration" 'lsp-find-declaration
-    "ga" "xref-find-apropos" 'xref-find-apropos
+        "g" "goto" nil
+        "gg" "lsp-find-definition" 'lsp-find-definition
+        "gr" "lsp-find-references" 'lsp-find-references
+        "gi" "lsp-find-implementation" 'lsp-find-implementation
+        "gt" "lsp-find-type-definition" 'lsp-find-type-definition
+        "gd" "lsp-find-declaration" 'lsp-find-declaration
+        "ga" "xref-find-apropos" 'xref-find-apropos
 
-    "G" "peek" nil
-    "Gg" "lsp-ui-peek-find-definitions" 'lsp-ui-peek-find-definitions
-    "Gr" "lsp-ui-peek-find-references" 'lsp-ui-peek-find-references
-    "Gi" "lsp-ui-peek-find-implementatio" 'lsp-ui-peek-find-implementation
-    "Gs" "lsp-ui-peek-find-workspace-symbol" 'lsp-ui-peek-find-workspace-symbol
-
-
-    "h" "help" nil
-    "hh" "lsp-describe-thing-at-point" 'lsp-describe-thing-at-point
-    "hs" "lsp-signature-activate" 'lsp-signature-activate
-    "hg" "lsp-ui-doc-glance" 'lsp-ui-doc-glance
-
-    "r" "refactor" nil
-    "rr" "lsp-rename" 'lsp-rename
-    "ro" "lsp-organize-imports" 'lsp-organize-imports
+        "G" "peek" nil
+        "Gg" "lsp-ui-peek-find-definitions" 'lsp-ui-peek-find-definitions
+        "Gr" "lsp-ui-peek-find-references" 'lsp-ui-peek-find-references
+        "Gi" "lsp-ui-peek-find-implementatio" 'lsp-ui-peek-find-implementation
+        "Gs" "lsp-ui-peek-find-workspace-symbol" 'lsp-ui-peek-find-workspace-symbol
 
 
-    "T" "toggle" nil
-    "Tl" "lsp-lens-mode" 'lsp-lens-mode
-    "TL" "lsp-toggle-trace-io" 'lsp-toggle-trace-io
-    "Th" "lsp-toggle-symbol-highlight" 'lsp-toggle-symbol-highlight
-    "TS" "lsp-ui-sideline-mode" 'lsp-ui-sideline-mode
-    "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
-    "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
+        "h" "help" nil
+        "hh" "lsp-describe-thing-at-point" 'lsp-describe-thing-at-point
+        "hs" "lsp-signature-activate" 'lsp-signature-activate
+        "hg" "lsp-ui-doc-glance" 'lsp-ui-doc-glance
+
+        "r" "refactor" nil
+        "rr" "lsp-rename" 'lsp-rename
+        "ro" "lsp-organize-imports" 'lsp-organize-imports
+
+
+        "T" "toggle" nil
+        "Tl" "lsp-lens-mode" 'lsp-lens-mode
+        "TL" "lsp-toggle-trace-io" 'lsp-toggle-trace-io
+        "Th" "lsp-toggle-symbol-highlight" 'lsp-toggle-symbol-highlight
+        "TS" "lsp-ui-sideline-mode" 'lsp-ui-sideline-mode
+        "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
+        "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
 
 (defun switch-to-minibuffer-window ()
   "Switch to minibuffer window (if active)."
@@ -735,7 +773,7 @@ If the universal prefix argument is used then kill also the window."
                     :prefix (symbol-value (plist-get prop ':key))
                     :keymaps mode-map
                     (if (equal binding nil)
-                          (list key (list :ignore t :which-key desc))
+                        (list key (list :ignore t :which-key desc))
                       (list key (list binding :which-key desc))))
 
            ;; (define-key python-mode-map (kbd "SPC m") lsp-command-map)
@@ -959,6 +997,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     ;;  make org agenda enter the motion state
     ;;  I don't the original state
     (evil-set-initial-state 'org-agenda-mode 'motion)
+    ;; TODO: research about this evilified-state-evilify-map
 
     (evil-define-key 'motion org-agenda-mode-map
       (kbd "j") 'org-agenda-next-line
@@ -1015,7 +1054,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
     (with-eval-after-load 'python
       (apply 'define-leader-key-map-for 'python-mode-map
-            (lsp-keybinding))
+             (lsp-keybinding))
 
       (apply 'define-leader-key-map-for
              (list 'python-mode-map
@@ -1111,6 +1150,10 @@ If the error list is visible, hide it.  Otherwise, show it."
 
   (define-leader-key-global
     "a" '(:ignore t :which-key "applications")
+
+    "al" '(:ignore t :which-key "lookup/dictionary")
+    "ald" '(define-word :which-key "lookup definition")
+    "alg" '(google-search :which-key "google search")
 
     "ao" '(:ignore t :which-key "org")
     "aog" '(:ignore t :which-key "goto")
@@ -1406,6 +1449,7 @@ If the error list is visible, hide it.  Otherwise, show it."
          ("C-x b" . counsel-ibuffer)
          ("C-x C-f" . counsel-find-file)
          :map minibuffer-local-map
+         ("C-w" . 'ivy-backward-kill-word)
          ("C-r" . 'counsel-minibuffer-history))
   :config
   (setq counsel-search-engine 'google)
@@ -1624,7 +1668,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (rust-mode . lsp)
   (js-mode . lsp)
   :config
-  (setq lsp-lens-enable t))
+  ;; turn off lens mode
+  (setq lsp-lens-enable nil))
 
 (use-package lsp-python-ms
   :after
@@ -1695,6 +1740,16 @@ If the error list is visible, hide it.  Otherwise, show it."
                   (org-level-7 . 1.1)
                   (org-level-8 . 1.1)))
     (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
+
+  ;; NOTE:
+  ;; (setq org-format-latex-options
+  ;;        (list :foreground 'default
+  ;;              :background 'default
+  ;;              :scale 1.5
+  ;;              :html-foreground "Black"
+  ;;              :html-background "Transparent"
+  ;;              :html-scale 1.0
+  ;;              :matchers '("begin" "$1" "$" "$$" "\\(" "\\[")))
 
   ;; this will make org-shift to auto add timestamp after making a toto item complete
   (setq org-log-done 'time)
