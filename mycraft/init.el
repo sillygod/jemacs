@@ -17,6 +17,16 @@
                                ;; restore after startup
                                (setq gc-cons-threshold 800000)))
 
+;; https://github.com/tonsky/FiraCode
+;; optional font
+;; TODO: search what does fixed-pitch mean?
+(defvar default-font-size 140)
+(set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'default nil :background "#292b2e")
+(set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
+
+
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 (setq inhibit-startup-message t)
 (setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
@@ -28,6 +38,9 @@
 ;; to research why
 (setq-default tab-width 4)
 
+(setq frame-title-format "") ;; to disable show buffer name in the title bar
+;; (force-mode-line-update) to update the frame title
+
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
 
 (setq dired-dwim-target t)
@@ -37,15 +50,6 @@
 (setq ffap-machine-p-known 'reject)
 ;; NOTE: avoid ffap-guesser freeze when find-file-thing-at-point with something like url
 
-
-;; https://github.com/tonsky/FiraCode
-;; optional font
-;; TODO: search what does fixed-pitch mean?
-(defvar default-font-size 140)
-(set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
-(set-face-attribute 'default nil :background "#292b2e")
-(set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
-(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
 
 (defun system-is-mac! ()
   (eq system-type 'darwin))
@@ -80,6 +84,7 @@
   ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
   (setq frame-resize-pixelwise t)
   ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
+  (setq ns-use-proxy-icon nil) ;; disable show icon in the title bar
   (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
 
 ;; minimize some ui interface
@@ -281,6 +286,7 @@
 ;; ----------------------------------------------------------------
 
 ;; dictionary packages
+;; there two package are not usable right now.
 (use-package define-word
   :defer t)
 
@@ -321,11 +327,13 @@
 
 ;; TODO: search why there should append a suffix ='= for the mod
 ;; the :config will be run after trigger autoload function
+;; change the tab behavior of jinja2 mode by =indent-line-function
 (use-package jinja2-mode
   :defer t
   :init
-  (add-hook 'jinja2-mode-hook '(lambda ()
-                                 (set (make-local-variable 'indent-line-function) 'insert-tab)))
+  (add-hook 'jinja2-mode-hook
+            '(lambda ()
+               (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
 
 (use-package js2-mode
@@ -378,11 +386,12 @@ With Ivy, the path isn't editable, just remove the MSG after SEC."
    msg sec))
 
 (defun google-search-action (x)
-  "Search for X."
+  "Search for X.
+force to make new session without using the original session."
   (xwidget-webkit-browse-url
    (concat
     (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
-    (url-hexify-string x))))
+    (url-hexify-string x)) t))
 
 
 (defun google-search ()
@@ -792,9 +801,7 @@ If the universal prefix argument is used then kill also the window."
               (evil-define-key sts kmap keybinding func))
             sts mode-map
             (kbd (symbol-value (plist-get prop ':key)))
-            binding)
-
-           ))))))
+            binding)))))))
 
 
 (defun copy-file-path ()
@@ -930,8 +937,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
   (yas-global-mode 1)
   (yas-minor-mode 1)
-  ;; (yas-reload-all)
-  ;; need to rebuild the snippets, This will be trigger when enable yas-xx-mode
+  ;; (yas-reload-all) to rebuild the snippets, This will be trigger when enable yas-xx-mode
   )
 
 (use-package yasnippet-snippets
@@ -1286,7 +1292,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   "toggle mode"
   ("r" rainbow-mode "rainbow mode")
   ("w" whitespace-mode "whitespace-mode")
-  ("t" counsel-load-theme "toggle theme")
+  ("t" counsel-load-theme "theme")
+  ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
 
 ;; https://github.com/emacs-evil/evil-collection
@@ -1315,15 +1322,15 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-hook 'evil-insert-state-exit-hook 'im-remember)
   (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
 
+
+;; create arbitrary fold not like other package auto detect the program language
 (use-package vimish-fold
-  :defer t
-  :after evil)
+  :after evil
+  :hook (prog-mode .vimish-fold))
 
 (use-package evil-vimish-fold
-  :defer t
   :after vimish-fold
   :hook (prog-mode . evil-vimish-fold-mode))
-
 
 ;; make =%= to be able to jump to and back the tag
 (use-package evil-matchit
@@ -1371,13 +1378,13 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; M-x all-the-icons-install-fonts
 (use-package all-the-icons)
 
+;; ENHANCE: adjust the pop ui
 (use-package git-messenger
   :defer t
   :init
   (setq git-messenger:show-detail t)
   (setq git-messenger:use-magit-popup t))
 
-;; TODO: research what to config
 (use-package slime
   :defer t
   :init
@@ -1390,7 +1397,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
     (add-hook hook 'elisp-slime-nav-mode)))
 
-;; what does ensure do?
+(use-package org-ql
+  :defer t)
+
 ;; The :ensure keyword causes the package(s) to be installed automatically if not already present on your system
 ;; this setting will globally enable ensure (setq use-package-always-ensure t)
 
@@ -1444,7 +1453,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 ;; check-paren checks whether there are lacks of the parentheses' pairs
 (use-package counsel
-  :ensure t
   :bind (("M-x" . counsel-M-x)
          ("C-x b" . counsel-ibuffer)
          ("C-x C-f" . counsel-find-file)
@@ -1452,7 +1460,6 @@ If the error list is visible, hide it.  Otherwise, show it."
          ("C-w" . 'ivy-backward-kill-word)
          ("C-r" . 'counsel-minibuffer-history))
   :config
-  (setq counsel-search-engine 'google)
   (setq counsel-find-file-at-point t))
 
 ;; counsel-search will use the package request with this function
@@ -1755,6 +1762,8 @@ If the error list is visible, hide it.  Otherwise, show it."
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
   (setq org-image-actual-width nil)
+  (setq org-agenda-use-tag-inheritance nil)
+
   (setq org-startup-folded t)
   ;; (setq org-ellipsis " ▾")
   (setq org-startup-with-inline-images t)
@@ -1847,19 +1856,3 @@ If the error list is visible, hide it.  Otherwise, show it."
                '("tl" "a longterm todo" entry
                  (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
                  "** TODO %^{title} %?\n SCHEDULED: %t\n")))
-
-(custom-set-variables
- ;; custom-set-variables was added by Custom.
- ;; If you edit it by hand, you could mess it up, so be careful.
- ;; Your init file should contain only one such instance.
- ;; If there is more than one, they won't work right.
- '(custom-safe-themes
-   '("8d7684de9abb5a770fbfd72a14506d6b4add9a7d30942c6285f020d41d76e0fa" default))
- '(package-selected-packages
-   '(evil-org ivy-yasnippet org-plus-contrib evil-magit magit projectile hydra general ivy doom-modeline use-package)))
-(custom-set-faces
- ;; custom-set-faces was added by Custom.
- ;; If you edit it by hand, you could mess it up, so be careful.
- ;; Your init file should contain only one such instance.
- ;; If there is more than one, they won't work right.
- )

@@ -49,6 +49,8 @@
   #+begin_src bash
     emacs -Q --load init.el or
     /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
+    /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
+
   #+end_src
 
   reference: https://www.youtube.com/watch?v=xaZMwNELaJY
