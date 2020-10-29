@@ -33,6 +33,7 @@
 (setq column-number-mode t)
 (setq make-backup-files nil)
 (setq-default indent-tabs-mode nil)
+(setq xwidget-webkit-enable-plugins t)
 
 ;; NOTE: wow if you use setq here, it will not works
 ;; to research why
@@ -100,9 +101,10 @@
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
 
 ;; disable word-wrap
-(setq word-wrap 0)
+(setq word-wrap nil)
 ;; (toggle-word-wrap 0)
 
+(global-auto-revert-mode t)
 
 ;; The following variable can decide where the
 ;; packages to be installed.
@@ -399,15 +401,35 @@ force to make new session without using the original session."
   (interactive)
   (require 'request)
   (require 'json)
-  (ivy-read "search: " #'counsel-search-function
-            :action #'google-search-action
-            :dynamic-collection t
-            :caller 'google-search))
+  (let ((counsel-search-engine 'google))
+    (ivy-read "search: "
+              #'counsel-search-function
+              :action #'google-search-action
+              :dynamic-collection t
+              :caller 'google-search)))
 
-(defun open-with-xwidget ()
-  "Open file with xwidget browse url."
-  (interactive)
-  )
+(defun open-with-xwidget-action (x)
+  (xwidget-webkit-browse-url
+   (url-encode-url (concat
+                    "file://"
+                    (expand-file-name x ivy--directory))) t))
+
+
+;; this is based on the counsel.el
+(with-eval-after-load 'counsel
+  (defun open-with-xwidget (&optional initial-input)
+    "Open file with xwidget browse url."
+    (interactive)
+    (counsel--find-file-1 "Find file: "
+                          initial-input
+                          #'open-with-xwidget-action
+                          'open-with-xwidget))
+
+  ;; how to customize the tab behavior
+  ;; add the open-with-xwidget in the alt-done alist
+  (ivy-configure 'open-with-xwidget
+    :parent 'read-file-name-internal
+    :occur #'counsel-find-file-occur))
 
 
 ;; TODO rewrite this
@@ -1160,6 +1182,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "al" '(:ignore t :which-key "lookup/dictionary")
     "ald" '(define-word :which-key "lookup definition")
     "alg" '(google-search :which-key "google search")
+    "alx" '(open-with-xwidget :which-key "open with xwidget")
 
     "ao" '(:ignore t :which-key "org")
     "aog" '(:ignore t :which-key "goto")
@@ -1240,6 +1263,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
     "wK" '(evil-window-move-very-top :which-key "move window to top side")
 
+    "wg" '(switch-to-minibuffer-window :which-key "go to minibuffer")
 
     "w/" '(evil-window-vsplit :which-key "split vertically")
     "w-" '(evil-window-split :which-key "split horizontally")
@@ -1326,7 +1350,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 ;; create arbitrary fold not like other package auto detect the program language
 (use-package vimish-fold
   :after evil
-  :hook (prog-mode .vimish-fold))
+  :hook (prog-mode . vimish-fold-mode))
 
 (use-package evil-vimish-fold
   :after vimish-fold
@@ -1356,11 +1380,13 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package multiple-cursors
   :init
   (global-set-key (kbd "C-S-a") 'mc/edit-lines)
+  (global-set-key (kbd "C-S-<down-mouse-1>") 'mc/add-cursor-on-click)
   (global-set-key (kbd "<C-S-right>") 'mc/mark-next-like-this)
   (global-set-key (kbd "<C-S-left>") 'mc/mark-previous-like-this)
   :commands
   (mc/edit-lines
    mc/mark-all-like-this
+   mc/add-cursor-on-click
    mc/mark-next-like-this
    mc/mark-previous-like-this))
 

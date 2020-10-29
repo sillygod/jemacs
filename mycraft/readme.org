@@ -7,6 +7,7 @@
    #+begin_src sh
      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
      brew install ispell
+     brew install pngpast
    #+end_src
 
 * Start to build my own emacs
@@ -16,13 +17,13 @@
 
 ** things needed to be done or enahnced
 
+   - [X] compare different version of emacs on mac osx
+   - [X] add google dictionary function
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] why persp doesn't persist when reeval the buffer
-   - [ ] compare different version of emacs on mac osx
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] add run test and intergrate them into which-key bindings
    - [ ] add rename file function
-   - [ ] add google dictionary function
    - [ ] adopt darkroom package?
 
 ** program relavant config
@@ -36,6 +37,7 @@
    - [ ] a startup dashboard
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
+   - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
    - [ ] window management https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup
 
