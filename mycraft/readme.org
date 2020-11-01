@@ -91,6 +91,9 @@
 ** some commands
 
 *** list-colors-display
+    這樣就可以知道當前所有的face，這樣要客製化會比較容易
+
+*** list-faces-display
 *** (load file nil (not init-file-debug))
     =load= will load repeatly when you call multiple times but =require= will only do once.
 *** set vs setf vs setq
@@ -103,8 +106,15 @@
       (setf (car ls) 10) => Makes ls '(10 2 3 4) - not duplicated by setq/set
     #+end_src
 
+*** disable theme
+    #+begin_src elisp
+      (disable-theme)
+    #+end_src
+
 * Reference
 
+   - https://github.com/wbolster/emacs-direnv
+   - autothemer
    - http://ergoemacs.org/emacs/emacs.html
    - https://github.com/daviwil/dotfiles
    - https://github.com/lccambiaghi/.doom.d

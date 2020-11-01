@@ -264,7 +264,6 @@
 
 (use-package perspective
   :diminish persp-mode
-  :defer t
   :commands (persp-switch)
   :config
   (persp-mode))
@@ -386,6 +385,16 @@ With Ivy, the path isn't editable, just remove the MSG after SEC."
            ;; and update the helm prompt
            (when helmp (helm-suspend-update nil)))))
    msg sec))
+
+
+;; TODO: implement this one
+(defun my-run-python ()
+  "Use vterm to run python shell instead.
+Furthermore, using ipython instead if it's installed."
+  (if (featurep 'poetry)
+    (vterm-send-string (poetry-virtualenv-path))
+    (vterm-send-string "python"))
+  (vterm-send-return))
 
 (defun google-search-action (x)
   "Search for X.
@@ -1087,6 +1096,8 @@ If the error list is visible, hide it.  Otherwise, show it."
       (apply 'define-leader-key-map-for
              (list 'python-mode-map
                    "" "major mode" 'nil
+
+                   "t" "tests" 'python-pytest-dispatch
                    "x" "execute" nil
                    "xx" "python run" 'python-run-main
                    "d" "debug" 'dap-hydra)))
@@ -1319,6 +1330,7 @@ If the error list is visible, hide it.  Otherwise, show it."
   ("t" counsel-load-theme "theme")
   ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
+
 
 ;; https://github.com/emacs-evil/evil-collection
 ;; optional
@@ -1682,7 +1694,9 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-hook 'python-mode-hook #'pyvenv-mode))
 
 (use-package pyimport
-  :defer t)
+  :defer t
+  :init
+  (add-hook 'before-save-hook 'pyimport-remove-unused))
 
 ;; ---
 
