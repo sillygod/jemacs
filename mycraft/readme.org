@@ -17,12 +17,10 @@
 
 ** things needed to be done or enahnced
 
-   - [X] compare different version of emacs on mac osx
-   - [X] add google dictionary function
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] why persp doesn't persist when reeval the buffer
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
-   - [ ] add run test and intergrate them into which-key bindings
+   - [ ] add run test and intergrate them into hydra bindings for go mode
    - [ ] add rename file function
    - [ ] adopt darkroom package?
 
@@ -113,6 +111,7 @@
 
 * Reference
 
+   - https://leanpub.com/lit-config/read
    - https://github.com/wbolster/emacs-direnv
    - autothemer
    - http://ergoemacs.org/emacs/emacs.html

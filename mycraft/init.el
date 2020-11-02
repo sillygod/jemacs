@@ -5,13 +5,6 @@
 ;;; Commentary:
 
 ;;; Code:
-
-;; I've put the variable in the beginning of the file
-;; so it's no need to wirte (setq lexical-binding t)
-
-;; https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el
-;; tips for optimization https://github.com/nilcons/emacs-use-package-fast
-;; (setq debug-on-error t) ;; temporarily for debug usage
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
@@ -391,6 +384,11 @@ With Ivy, the path isn't editable, just remove the MSG after SEC."
 (defun my-run-python ()
   "Use vterm to run python shell instead.
 Furthermore, using ipython instead if it's installed."
+  (interactive)
+
+  ;; create a vterm buffer with python shell
+  ;; maybe, I can reference from the python-inferior-mode
+
   (if (featurep 'poetry)
     (vterm-send-string (poetry-virtualenv-path))
     (vterm-send-string "python"))
@@ -1199,6 +1197,7 @@ If the error list is visible, hide it.  Otherwise, show it."
     "aog" '(:ignore t :which-key "goto")
     "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
     "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
+    "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
     "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
 
   (define-leader-key-global

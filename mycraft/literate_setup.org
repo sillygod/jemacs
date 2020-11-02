@@ -1,2 +1,716 @@
 #+title: Mycraft emacs' literate programming configuration
-#+DESCRIPTION: In other words, you write a document that describes your program, and that document is also the source code for the program being described.
+#+PROPERTY: header-args:emacs-lisp :tangle ./setup.el :mkdirp yes
+#+DESCRIPTION: In other words, you write a document that describes your program and that document is also the source code for the program being described.
+
+* Progress
+  start from function lsp-keybinding
+* Setup
+
+  Put =-*- lexical-binding: t; -*-= in the beginning of the file. This way, we don't need to call =(setq lexical-binding t)=.
+
+  [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el][spacemacs config source code]]
+  tips for optimization https://github.com/nilcons/emacs-use-package-fast
+
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
+
+    ;;; Code:
+
+    ;; (setq debug-on-error t) ;; temporarily for debug usage
+
+  #+end_src
+
+** grow the garbage collection threshold when initialize
+   this will make it high performance because of lower gc times.
+
+   #+begin_src emacs-lisp
+     (setq gc-cons-threshold 64000000)
+     (add-hook 'after-init-hook #'(lambda ()
+                                    ;; restore after startup
+                                    (setq gc-cons-threshold 800000)))
+   #+end_src
+
+** set up config home directory
+   #+begin_src emacs-lisp
+     (defconst my-home-dir "~/.mycraft.d")
+     (setq user-emacs-directory my-home-dir)
+   #+end_src
+
+** set up wher the packages to be installed
+   #+begin_src emacs-lisp
+     (setq package-user-dir (concat my-home-dir "/" "elpa"))
+     (setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
+   #+end_src
+
+* Font setup
+
+  #+begin_src emacs-lisp
+    (defvar default-font-size 140)
+    (set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
+    (set-face-attribute 'default nil :background "#292b2e")
+    (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
+  #+end_src
+
+* UI adjustment
+
+  #+begin_src emacs-lisp
+    (setq frame-title-format "") ;; to disable show buffer name in the title bar
+    ;; (force-mode-line-update) to update the frame title
+    (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
+  #+end_src
+
+** make curosr in the help window at first when poping up a help window
+
+   #+begin_src emacs-lisp
+     (setq help-window-select t)
+   #+end_src
+
+** setup for ns gui system
+   #+begin_src emacs-lisp
+     (when (eq (window-system) 'ns)
+       (setq mac-command-modifier 'meta)
+       ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
+       (setq frame-resize-pixelwise t)
+       ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
+       (setq ns-use-proxy-icon nil) ;; disable show icon in the title bar
+       (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
+   #+end_src
+
+** minimize ui interface
+
+   We can adjust the ui by setting the =default-frame-alist=. The following settings are found in the source code.
+
+   | function             | frame-alist                            |
+   | ----                 | ----                                   |
+   | (scroll-bar-mode -1) | '(vertical-scroll-bars)                |
+   | (menu-bar-mode -1)   | '(menu-bar-lines . 0)                  |
+   | (tool-bar-mode -1)   | '(tool-bar-lines . 0)                  |
+   | (set-fringe-mode 5)  | '(left-fringe . 5) '(right-fringe . 5) |
+   | toggle-fullscreen    | '(fullscreen . maximized)              |
+
+
+   #+begin_src emacs-lisp
+     (add-to-list 'default-frame-alist '(vertical-scroll-bars))
+     (add-to-list 'default-frame-alist '(menu-bar-lines . 0))
+     (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
+     (add-to-list 'default-frame-alist '(left-fringe . 5))
+     (add-to-list 'default-frame-alist '(right-fringe . 5))
+     (add-to-list 'default-frame-alist '(fullscreen . maximized))
+   #+end_src
+
+** change comment highlight color
+
+   #+begin_src emacs-lisp
+     (with-eval-after-load 'goto-addr
+       (set-face-attribute 'link nil :foreground "#3f7c8f"))
+   #+end_src
+
+** enable highlight current line
+   jinja2 is the child of text-mode
+
+   so it's no need to set up for jinja2 mode again.
+   (with-eval-after-load 'jinja2-mode
+   (add-hook 'jinja2-mode-hook 'hl-line-mode))
+
+   #+begin_src emacs-lisp
+     (add-hook 'prog-mode-hook 'hl-line-mode)
+     (add-hook 'text-mode-hook 'hl-line-mode)
+   #+end_src
+
+* Misc Behaviro setup
+
+** simplify the prompt =yes or no= to =y or n=
+
+   #+begin_src emacs-lisp
+     (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
+   #+end_src
+
+** show startup message and make all-the-icon not to impact performance
+   #+begin_src emacs-lisp
+     (setq inhibit-startup-message t)
+     (setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
+   #+end_src
+
+** show column number in the modeline
+
+   #+begin_src emacs-lisp
+     (setq column-number-mode t)
+   #+end_src
+
+** disable backup file and disable tabs (always using space)
+   #+begin_src emacs-lisp
+     (setq make-backup-files nil)
+     (setq-default indent-tabs-mode nil)
+     (setq xwidget-webkit-enable-plugins t)
+   #+end_src
+
+** set default indent width
+
+   NOTE: If you use setq here, it will not works. To research why
+
+   #+begin_src emacs-lisp
+     (setq-default tab-width 4)
+   #+end_src
+
+** make dired auto guess the path to rename
+
+   When opening two buffer with dired mode, you will get pre-defined path for renaming.
+
+   #+begin_src emacs-lisp
+     (setq dired-dwim-target t)
+   #+end_src
+
+** avoid ffap-guesser freeze when find-file-thing-at-point
+
+   This will happend when find-file under a url-like thing. It can disable ping the target url to avoid
+   freezing.
+
+   #+begin_src emacs-lisp
+     (setq ffap-machine-p-known 'reject)
+   #+end_src
+
+** setup gpg
+
+   #+begin_src emacs-lisp
+     (setq epg-pinentry-mode 'loopback)
+     (setq epa-file-encrypt-to '("sillygod"))
+   #+end_src
+
+** customize shell prompt way
+
+   https://stackoverflow.com/questions/6411121/how-to-make-emacs-use-my-bashrc-file
+   in order to make the shell to load source file
+   this will cause a side effect to slow down projectile-project-file
+   projectile-dir-files-alien
+   issue: https://github.com/syl20bnr/spacemacs/issues/4207
+   (setq shell-file-name "/bin/bash")
+   (setq shell-command-switch "-ic")
+
+   #+begin_src emacs-lisp
+     (setq shell-command-switch "-c")
+   #+end_src
+
+** disable word wrap
+   (toggle-word-wrap 0)
+
+   #+begin_src emacs-lisp
+     (setq word-wrap nil)
+   #+end_src
+
+** auto revert mode
+   auto refresh when moving file or rename file in dired mode
+   #+begin_example
+   (global-auto-revert-mode t)
+   #+end_example
+
+* Self defined helper functions
+
+** detect system
+
+  #+begin_src emacs-lisp
+    (defun system-is-mac! ()
+      (eq system-type 'darwin))
+
+    (defun system-is-linux! ()
+      (eq system-type 'gnu/linux))
+
+    (defun system-is-windows ()
+      (eq system-type 'windows-nt))
+  #+end_src
+
+** switch input method for evil mode
+
+   *need to install the package im-select*
+   TODO refactor this auto switch input method function into another file.
+
+   #+begin_src emacs-lisp
+     (defcustom im-exec "/usr/local/bin/im-select"
+       "The im executable binary path."
+       :type 'string)
+
+     (defvar default-im "com.apple.keylayout.ABC"
+       "Default English input method.")
+
+     (defun im-use-eng ()
+       "Switch to english input method."
+       (interactive)
+       (cond ((string= system-type "darwin")
+              (call-process-shell-command (concat im-exec " " default-im)))))
+
+     (defun im-remember ()
+       "Remember the input method being used in insert mode."
+       (interactive)
+       (unless (boundp 'prev-im)
+         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
+       (cond ((string= system-type "darwin")
+              (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))))
+
+     (defun im-use-prev ()
+       "Change the input method to the previous one we remembered."
+       (interactive)
+       (unless (boundp 'prev-im)
+         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
+       (cond ((string= system-type "darwin")
+              (if prev-im
+                  (call-process-shell-command (concat im-exec " " prev-im))
+                (call-process-shell-command (concat im-exec " " default-im))))))
+   #+end_src
+
+** util helper
+   #+begin_src emacs-lisp
+     ;; TODO: rewrite this
+     (defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
+       "Show a MSG at the helm or ivy prompt for SEC.
+          With Helm, remember the path, then restore it after SEC.
+          With Ivy, the path isn't editable, just remove the MSG after SEC."
+       (run-at-time
+        0 nil
+        #'(lambda (msg sec)
+            (let* ((prev-prompt-contents
+                    (buffer-substring (line-beginning-position)
+                                      (line-end-position)))
+                   (prev-prompt-contents-p
+                    (not (string= prev-prompt-contents "")))
+                   (helmp (fboundp 'helm-mode)))
+              (when prev-prompt-contents-p
+                (delete-region (line-beginning-position)
+                               (line-end-position)))
+              (insert (propertize msg 'face 'warning))
+              ;; stop checking for candidates
+              ;; and update the helm prompt
+              (when helmp (helm-suspend-update t))
+              (sit-for sec)
+              (delete-region (line-beginning-position)
+                             (line-end-position))
+              (when prev-prompt-contents-p
+                (insert prev-prompt-contents)
+                ;; start checking for candidates
+                ;; and update the helm prompt
+                (when helmp (helm-suspend-update nil)))))
+        msg sec))
+
+     ;; TODO rewrite this
+     (defun rename-current-buffer-file (&optional arg)
+       "Rename the current buffer and the file it is visiting.
+     If the buffer isn't visiting a file, ask if it should
+     be saved to a file, or just renamed.
+
+     If called without a prefix argument, the prompt is
+     initialized with the current directory instead of filename."
+       (interactive "P")
+       (let* ((old-short-name (buffer-name))
+              (old-filename (buffer-file-name)))
+         (if (and old-filename (file-exists-p old-filename))
+             ;; the buffer is visiting a file
+             (let* ((old-dir (file-name-directory old-filename))
+                    (new-name (read-file-name "New name: " (if arg old-dir old-filename)))
+                    (new-dir (file-name-directory new-name))
+                    (new-short-name (file-name-nondirectory new-name))
+                    (file-moved-p (not (string-equal new-dir old-dir)))
+                    (file-renamed-p (not (string-equal new-short-name old-short-name))))
+               (cond ((get-buffer new-name)
+                      (error "A buffer named '%s' already exists!" new-name))
+                     ((string-equal new-name old-filename)
+                      (spacemacs/show-hide-helm-or-ivy-prompt-msg
+                       "Rename failed! Same new and old name" 1.5)
+                      (rename-current-buffer-file))
+                     (t
+                      (let ((old-directory (file-name-directory new-name)))
+                        (when (and (not (file-exists-p old-directory))
+                                   (yes-or-no-p
+                                    (format "Create directory '%s'?" old-directory)))
+                          (make-directory old-directory t)))
+                      (rename-file old-filename new-name 1)
+                      (rename-buffer new-name)
+                      (set-visited-file-name new-name)
+                      (set-buffer-modified-p nil)
+                      (when (fboundp 'recentf-add-file)
+                        (recentf-add-file new-name)
+                        (recentf-remove-if-non-kept old-filename))
+                      (when (and (configuration-layer/package-used-p 'projectile)
+                                 (projectile-project-p))
+                        (call-interactively #'projectile-invalidate-cache))
+                      (message (cond ((and file-moved-p file-renamed-p)
+                                      (concat "File Moved & Renamed\n"
+                                              "From: " old-filename "\n"
+                                              "To:   " new-name))
+                                     (file-moved-p
+                                      (concat "File Moved\n"
+                                              "From: " old-filename "\n"
+                                              "To:   " new-name))
+                                     (file-renamed-p
+                                      (concat "File Renamed\n"
+                                              "From: " old-short-name "\n"
+                                              "To:   " new-short-name)))))))
+           ;; the buffer is not visiting a file
+           (let ((key))
+             (while (not (memq key '(?s ?r)))
+               (setq key (read-key (propertize
+                                    (format
+                                     (concat "Buffer '%s' is not visiting a file: "
+                                             "[s]ave to file or [r]ename buffer?")
+                                     old-short-name)
+                                    'face 'minibuffer-prompt)))
+               (cond ((eq key ?s)            ; save to file
+                      ;; this allows for saving a new empty (unmodified) buffer
+                      (unless (buffer-modified-p) (set-buffer-modified-p t))
+                      (save-buffer))
+                     ((eq key ?r)            ; rename buffer
+                      (let ((new-buffer-name (read-string "New buffer name: ")))
+                        (while (get-buffer new-buffer-name)
+                          ;; ask to rename again, if the new buffer name exists
+                          (if (yes-or-no-p
+                               (format (concat "A buffer named '%s' already exists: "
+                                               "Rename again?")
+                                       new-buffer-name))
+                              (setq new-buffer-name (read-string "New buffer name: "))
+                            (keyboard-quit)))
+                        (rename-buffer new-buffer-name)
+                        (message (concat "Buffer Renamed\n"
+                                         "From: " old-short-name "\n"
+                                         "To:   " new-buffer-name))))
+                     ;; ?\a = C-g, ?\e = Esc and C-[
+                     ((memq key '(?\a ?\e)) (keyboard-quit))))))))
+
+   #+end_src
+
+** xwidget relevant functions
+   #+begin_src emacs-lisp
+     (defun google-search-action (x)
+       "Search for X.
+          force to make new session without using the original session."
+       (xwidget-webkit-browse-url
+        (concat
+         (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
+         (url-hexify-string x)) t))
+
+
+     (defun google-search ()
+       "Counsel-search with xwidget open url."
+       (interactive)
+       (require 'request)
+       (require 'json)
+       (let ((counsel-search-engine 'google))
+         (ivy-read "search: "
+                   #'counsel-search-function
+                   :action #'google-search-action
+                   :dynamic-collection t
+                   :caller 'google-search)))
+
+     (defun open-with-xwidget-action (x)
+       (xwidget-webkit-browse-url
+        (url-encode-url (concat
+                         "file://"
+                         (expand-file-name x ivy--directory))) t))
+
+     (with-eval-after-load 'counsel
+       (defun open-with-xwidget (&optional initial-input)
+         "Open file with xwidget browse url."
+         (interactive)
+         (counsel--find-file-1 "Find file: "
+                               initial-input
+                               #'open-with-xwidget-action
+                               'open-with-xwidget))
+
+       ;; how to customize the tab behavior
+       ;; add the open-with-xwidget in the alt-done alist
+       (ivy-configure 'open-with-xwidget
+         :parent 'read-file-name-internal
+         :occur #'counsel-find-file-occur))
+   #+end_src
+** python relevant
+   #+begin_src emacs-lisp
+     (defvar python-run-command "python")
+     (defvar python-run-args "")
+
+     ;; TODO: implement this one
+     (defun my-run-python ()
+       "Use vterm to run python shell instead.
+     Furthermore, using ipython instead if it's installed."
+       (interactive)
+
+       ;; create a vterm buffer with python shell
+       ;; maybe, I can reference from the python-inferior-mode
+
+       (if (featurep 'poetry)
+           (vterm-send-string (poetry-virtualenv-path))
+         (vterm-send-string "python"))
+       (vterm-send-return))
+
+   #+end_src
+** golang relevant helper
+   #+begin_src emacs-lisp
+     (defvar go-test-command "go test")
+
+     (defvar go-run-command "go run")
+     (defvar go-run-args ""
+       "Additional arguments to by supplied to `go run` during runtime.")
+   #+end_src
+
+* Initialize packages and setup hook
+
+  Initialize package sources
+  Note: sometimes you may encouter an expired key when
+  downloading package. You need to fresh it.
+  There are many ways to do it. One of them is call list-package
+  Or delete the entire folder =elpa= make the emacs to redownload
+  all packages.
+
+** set up use-package
+   #+begin_src emacs-lisp
+     (require 'subr-x)
+     (require 'package)
+     (setq package-archives '(("melpa" . "https://melpa.org/packages/")
+                              ("org" . "https://orgmode.org/elpa/")
+                              ("elpa" . "https://elpa.gnu.org/packages/")))
+
+     (package-initialize)
+     (unless package-archive-contents
+       (package-refresh-contents))
+
+     ;; Initialize use-package on non-Linux platforms
+     (unless (package-installed-p 'use-package)
+       (package-install 'use-package))
+
+     (require 'use-package)
+
+     (setq use-package-always-ensure t)
+   #+end_src
+
+** add additional load-path for use-package
+   #+begin_src emacs-lisp
+     (push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
+   #+end_src
+
+** enable link in the comments can be click and highlight
+   #+begin_src emacs-lisp
+     (add-hook 'prog-mode-hook 'goto-address-prog-mode)
+   #+end_src
+
+** ensure program mode use space instead of tab
+
+   #+begin_src emacs-lisp
+     (add-hook 'prog-mode-hook '(lambda () (setq indent-tabs-mode nil)))
+   #+end_src
+
+** delete trailing space when saving files
+   #+begin_src emacs-lisp
+     (add-hook 'before-save-hook 'delete-trailing-whitespace)
+   #+end_src
+
+** ensure auto refresh buffer for dired mode
+   #+begin_src emacs-lisp
+     (add-hook 'dired-mode-hook 'auto-revert-mode)
+   #+end_src
+
+** winner mode
+   By default, you will not go back to the original window layout when you exit the ediff mode
+
+   #+begin_src emacs-lisp
+     (use-package winner
+       :init
+       (add-hook 'ediff-quit-hook 'winner-undo)
+       :commands (winner-undo))
+   #+end_src
+
+** esup
+   a profiling tool for evaludating the performance of emacs' startup
+   #+begin_src emacs-lisp
+     (use-package esup
+       :defer t
+       :init
+       (setq esup-depth 0)
+       ;; To use MELPA Stable use ":pin mepla-stable",
+       :pin melpa)
+   #+end_src
+
+** rainbow-mode
+   #+begin_src emacs-lisp
+     (use-package rainbow-mode
+       :defer t)
+   #+end_src
+
+** rainbow-delimiters
+   make parenthesis colorful and easier to distinguish
+   #+begin_src emacs-lisp
+     (use-package rainbow-delimiters
+       :hook (prog-mode . rainbow-delimiters-mode))
+   #+end_src
+
+** highlight parentheses
+   hightlight the current parentesis' scope
+
+   #+begin_src emacs-lisp
+     (use-package highlight-parentheses
+       :hook (prog-mode . highlight-parentheses-mode))
+   #+end_src
+
+** doom-themes
+   #+begin_src emacs-lisp
+     (use-package doom-themes
+       :config
+       (load-theme 'doom-one t)
+       (doom-themes-org-config)
+
+       (with-eval-after-load 'org
+         ;; change some ui
+         (set-face-attribute 'org-link nil :foreground "#3f7c8f")
+         (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
+         (set-face-attribute 'org-level-3 nil :foreground "#219e57")
+         (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
+         (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
+         (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
+   #+end_src
+
+** doom modeline
+   #+begin_src emacs-lisp
+     (use-package doom-modeline
+       :init
+       ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
+       (doom-modeline-mode 1)
+       (setq all-the-icons-scale-factor 1.1)
+       :custom
+       (doom-modeline-height 12)
+       (doom-modeline-persp-name nil))
+   #+end_src
+
+** devdocs
+   #+begin_src emacs-lisp
+     (use-package devdocs
+       :defer t
+       :commands (devdocs-search)
+       :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
+
+   #+end_src
+
+** hl-todo mode
+   #+begin_src emacs-lisp
+     (use-package hl-todo
+       :defer t
+       :hook
+       ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
+       (prog-mode . hl-todo-mode))
+   #+end_src
+
+** diff-hl
+
+   I've check this. It seems setting post-refresh-hook is enough
+   (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
+
+   #+begin_src emacs-lisp
+     (use-package diff-hl
+       :defer 1
+       :init
+       (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
+       :config
+       (global-diff-hl-mode))
+   #+end_src
+
+** perspective mode
+   a workspace manager
+   #+begin_src emacs-lisp
+     (use-package perspective
+       :diminish persp-mode
+       :commands (persp-switch)
+       :config
+       (persp-mode))
+   #+end_src
+
+** which key mode
+   #+begin_src emacs-lisp
+     (use-package which-key
+       :diminish which-key-mode
+       :init
+       (setq which-key-idle-delay 0.05)
+       (which-key-mode 1))
+   #+end_src
+
+** dictonary relevant packages
+   there two package are not usable right now.
+   #+begin_src emacs-lisp
+     (use-package define-word
+       :defer t)
+
+     (use-package powerthesaurus
+       :defer t)
+   #+end_src
+
+** ebook reader
+   #+begin_src emacs-lisp
+     (use-package nov
+       :defer t
+       :mode ("\\.epub\\'" . nov-mode))
+   #+end_src
+
+** uuidgen
+   #+begin_src emacs-lisp
+     (use-package uuidgen
+       :defer t)
+   #+end_src
+
+** docker
+   #+begin_src emacs-lisp
+     (use-package docker
+       :defer t)
+
+     (use-package docker-tramp
+       :defer t)
+
+     (use-package dockerfile-mode
+       :defer t)
+   #+end_src
+
+** nginx
+   #+begin_src emacs-lisp
+     (use-package nginx-mode
+       :defer t)
+   #+end_src
+
+** jinja2-mode
+   to research why there should append a suffix ='= for the mod
+   the :config will be run after trigger autoload function
+   change the tab behavior of jinja2 mode by =indent-line-function
+
+   #+begin_src emacs-lisp
+     (use-package jinja2-mode
+       :defer t
+       :init
+       (add-hook 'jinja2-mode-hook
+                 '(lambda ()
+                    (set (make-local-variable 'indent-line-function) 'insert-tab)))
+       :mode ("\\.j2\\'" . jinja2-mode))
+
+   #+end_src
+
+** frontend development
+   #+begin_src emacs-lisp
+     (use-package emmet-mode
+       :defer t
+       :hook
+       (html-mode . emmet-mode)
+       (web-mode . emmet-mode))
+
+     (use-package web-mode
+       :defer t
+       :mode
+       (("\\.html\\'" . web-mode)))
+
+     (use-package js2-mode
+       :after (rainbow-delimiters)
+       :defer t
+       :config
+       (setq js2-mode-show-parse-errors nil)
+       (setq js2-mode-show-strict-warnings nil)
+       (js2-minor-mode))
+   #+end_src
+
+* Some key binding
+  prevent prompting in minibuffer, just quit the command
+  #+begin_src emacs-lisp
+    (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
+  #+end_src
