@@ -5,45 +5,78 @@
 ;;; Commentary:
 
 ;;; Code:
+
+;; (setq debug-on-error t) ;; temporarily for debug usage
+
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
                                (setq gc-cons-threshold 800000)))
 
-;; https://github.com/tonsky/FiraCode
-;; optional font
-;; TODO: search what does fixed-pitch mean?
+(defconst my-home-dir "~/.mycraft.d")
+(setq user-emacs-directory my-home-dir)
+
+(setq package-user-dir (concat my-home-dir "/" "elpa"))
+(setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
+
 (defvar default-font-size 140)
 (set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
 (set-face-attribute 'default nil :background "#292b2e")
 (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
 (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
 
-
-(fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
-(setq inhibit-startup-message t)
-(setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
-(setq column-number-mode t)
-(setq make-backup-files nil)
-(setq-default indent-tabs-mode nil)
-(setq xwidget-webkit-enable-plugins t)
-
-;; NOTE: wow if you use setq here, it will not works
-;; to research why
-(setq-default tab-width 4)
-
 (setq frame-title-format "") ;; to disable show buffer name in the title bar
 ;; (force-mode-line-update) to update the frame title
-
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
 
+(setq help-window-select t)
+
+(when (eq (window-system) 'ns)
+  (setq mac-command-modifier 'meta)
+  ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
+  (setq frame-resize-pixelwise t)
+  ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
+  (setq ns-use-proxy-icon nil) ;; disable show icon in the title bar
+  (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
+
+(add-to-list 'default-frame-alist '(vertical-scroll-bars))
+(add-to-list 'default-frame-alist '(menu-bar-lines . 0))
+(add-to-list 'default-frame-alist '(tool-bar-lines . 0))
+(add-to-list 'default-frame-alist '(left-fringe . 5))
+(add-to-list 'default-frame-alist '(right-fringe . 5))
+(add-to-list 'default-frame-alist '(fullscreen . maximized))
+
+(with-eval-after-load 'goto-addr
+  (set-face-attribute 'link nil :foreground "#3f7c8f"))
+
+(add-hook 'prog-mode-hook 'hl-line-mode)
+(add-hook 'text-mode-hook 'hl-line-mode)
+
+(fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
+
+(setq inhibit-startup-message t)
+(setq inhibit-compacting-font-caches t) ;; for all-the-icon slow issue
+
+(setq column-number-mode t)
+
+(setq make-backup-files nil)
+(setq-default indent-tabs-mode nil)
+(setq xwidget-webkit-enable-plugins t) ;; what does this impact?
+
+(setq-default tab-width 4)
+
 (setq dired-dwim-target t)
-;; make dired auto guess the path to rename
-;; ex. open two buffer with dired mode
 
 (setq ffap-machine-p-known 'reject)
-;; NOTE: avoid ffap-guesser freeze when find-file-thing-at-point with something like url
 
+(setq epg-pinentry-mode 'loopback)
+(setq epa-file-encrypt-to '("sillygod"))
+
+(setq shell-command-switch "-c")
+
+(setq word-wrap nil)
+
+(global-auto-revert-mode t)
 
 (defun system-is-mac! ()
   (eq system-type 'darwin))
@@ -54,101 +87,6 @@
 (defun system-is-windows ()
   (eq system-type 'windows-nt))
 
-(when (string= system-type "darwin")
-  "In macos, ls doesn't support --dired option"
-  (setq dired-use-ls-dired nil))
-
-;; this can make cursor in the help window at first when poping up a help window
-(setq help-window-select t)
-(setq epg-pinentry-mode 'loopback)
-(setq epa-file-encrypt-to '("sillygod"))
-
-;; https://stackoverflow.com/questions/6411121/how-to-make-emacs-use-my-bashrc-file
-;; in order to make the shell to load source file
-;; this will cause a side effect to slow down projectile-project-file
-;; projectile-dir-files-alien
-;; issue: https://github.com/syl20bnr/spacemacs/issues/4207
-;; (setq shell-file-name "/bin/bash")
-;; (setq shell-command-switch "-ic")
-(setq shell-command-switch "-c")
-
-;; activate natural title bar when the gui system is based on cocoa
-(when (eq (window-system) 'ns)
-  (setq mac-command-modifier 'meta)
-  ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
-  (setq frame-resize-pixelwise t)
-  ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
-  (setq ns-use-proxy-icon nil) ;; disable show icon in the title bar
-  (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
-
-;; minimize some ui interface
-;; (scroll-bar-mode -1)
-(add-to-list 'default-frame-alist '(vertical-scroll-bars))
-;; (menu-bar-mode -1)
-(add-to-list 'default-frame-alist '(menu-bar-lines . 0))
-;; (tool-bar-mode -1)
-(add-to-list 'default-frame-alist '(tool-bar-lines . 0))
-;; (set-fringe-mode 5)
-(add-to-list 'default-frame-alist '(left-fringe . 5))
-(add-to-list 'default-frame-alist '(right-fringe . 5))
-(add-to-list 'default-frame-alist '(fullscreen . maximized))
-
-;; disable word-wrap
-(setq word-wrap nil)
-;; (toggle-word-wrap 0)
-
-(global-auto-revert-mode t)
-
-;; The following variable can decide where the
-;; packages to be installed.
-(defconst my-home-dir "~/.mycraft.d")
-(setq user-emacs-directory my-home-dir)
-(setq package-user-dir (concat my-home-dir "/" "elpa"))
-(setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
-
-;; Initialize package sources
-;; Note: sometimes you may encouter an expired key when
-;; downloading package. You need to fresh it.
-;; There are many ways to do it. One of them is call list-package
-;; Or delete the entire folder =elpa= make the emacs to redownload
-;; all packages.
-(require 'subr-x)
-(require 'package)
-
-(setq package-archives '(("melpa" . "https://melpa.org/packages/")
-                         ("org" . "https://orgmode.org/elpa/")
-                         ("elpa" . "https://elpa.gnu.org/packages/")))
-
-
-
-;; prevent prompting in minibuffer, just quit the command
-(global-set-key (kbd "<escape>") 'keyboard-escape-quit)
-
-(package-initialize)
-(unless package-archive-contents
-  (package-refresh-contents))
-
-;; Initialize use-package on non-Linux platforms
-(unless (package-installed-p 'use-package)
-  (package-install 'use-package))
-
-
-(require 'use-package)
-
-(setq use-package-always-ensure t)
-
-(push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
-
-;; enable link in comments can be click and hightlight it
-(add-hook 'prog-mode-hook 'goto-address-prog-mode)
-(add-hook 'prog-mode-hook '(lambda () (setq indent-tabs-mode nil)))
-(add-hook 'before-save-hook 'delete-trailing-whitespace)
-
-(add-hook 'dired-mode-hook 'auto-revert-mode)
-
-
-;; TODO refactor this auto switch input method function into another file.
-;; need to install the package im-select
 (defcustom im-exec "/usr/local/bin/im-select"
   "The im executable binary path."
   :type 'string)
@@ -180,179 +118,11 @@
              (call-process-shell-command (concat im-exec " " prev-im))
            (call-process-shell-command (concat im-exec " " default-im))))))
 
-;; ---
-
-
-;; By default, you will not go back to the original window layout when you
-;; exit the ediff mode
-(use-package winner
-  :init
-  (add-hook 'ediff-quit-hook 'winner-undo)
-  :commands (winner-undo))
-
-;; profiling
-(use-package esup
-  :defer t
-  :init
-  (setq esup-depth 0)
-  ;; To use MELPA Stable use ":pin mepla-stable",
-  :pin melpa)
-
-;; -- UI related
-
-(with-eval-after-load 'goto-addr
-  (set-face-attribute 'link nil :foreground "#3f7c8f"))
-
-;; (set-face-attribute 'hl-line nil :foreground "#72ba89")
-(add-hook 'prog-mode-hook 'hl-line-mode)
-(add-hook 'text-mode-hook 'hl-line-mode)
-;; jinja2 is the child of text-mode
-;; (with-eval-after-load 'jinja2-mode
-;;   (add-hook 'jinja2-mode-hook 'hl-line-mode))
-
-
-(use-package rainbow-mode
-  :defer t)
-
-(use-package doom-themes
-  :config
-  (load-theme 'doom-one t)
-  (doom-themes-org-config)
-
-  (with-eval-after-load 'org
-    ;; change some ui
-    (set-face-attribute 'org-link nil :foreground "#3f7c8f")
-    (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
-    (set-face-attribute 'org-level-3 nil :foreground "#219e57")
-    (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
-    (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
-    (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
-
-(use-package rainbow-delimiters
-  :hook (prog-mode . rainbow-delimiters-mode))
-
-(use-package highlight-parentheses
-  :hook (prog-mode . highlight-parentheses-mode))
-
-(use-package devdocs
-  :defer t
-  :commands (devdocs-search)
-  :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
-
-(use-package hl-todo
-  :defer t
-  :hook
-  ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
-  (prog-mode . hl-todo-mode))
-
-;; need some customization here.
-(use-package diff-hl
-  :defer 1
-  :init
-  ;; (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
-  ;; I've check this. It seems setting post-refresh-hook is enough
-  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
-  :config
-  (global-diff-hl-mode))
-
-(use-package perspective
-  :diminish persp-mode
-  :commands (persp-switch)
-  :config
-  (persp-mode))
-
-
-(use-package which-key
-  :diminish which-key-mode
-  :init
-  (setq which-key-idle-delay 0.05)
-  (which-key-mode 1))
-
-(use-package doom-modeline
-  :init
-  ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
-  (doom-modeline-mode 1)
-  (setq all-the-icons-scale-factor 1.1)
-  :custom
-  (doom-modeline-height 12)
-  (doom-modeline-persp-name nil))
-
-;; ----------------------------------------------------------------
-
-;; dictionary packages
-;; there two package are not usable right now.
-(use-package define-word
-  :defer t)
-
-(use-package powerthesaurus
-  :defer t)
-
-;; read boooks
-(use-package nov
-  :defer t
-  :mode ("\\.epub\\'" . nov-mode))
-
-(use-package uuidgen
-  :defer t)
-
-(use-package nginx-mode
-  :defer t)
-
-(use-package docker
-  :defer t)
-
-(use-package docker-tramp
-  :defer t)
-
-(use-package dockerfile-mode
-  :defer t)
-
-(use-package emmet-mode
-  :defer t
-  :hook
-  (html-mode . emmet-mode)
-  (web-mode . emmet-mode))
-
-(use-package web-mode
-  :defer t
-  :mode
-  (("\\.html\\'" . web-mode)))
-
-
-;; TODO: search why there should append a suffix ='= for the mod
-;; the :config will be run after trigger autoload function
-;; change the tab behavior of jinja2 mode by =indent-line-function
-(use-package jinja2-mode
-  :defer t
-  :init
-  (add-hook 'jinja2-mode-hook
-            '(lambda ()
-               (set (make-local-variable 'indent-line-function) 'insert-tab)))
-  :mode ("\\.j2\\'" . jinja2-mode))
-
-(use-package js2-mode
-  :after (rainbow-delimiters)
-  :defer t
-  :config
-  (setq js2-mode-show-parse-errors nil)
-  (setq js2-mode-show-strict-warnings nil)
-  (js2-minor-mode))
-
-;; some customize functions
-(defvar go-test-command "go test")
-
-(defvar go-run-command "go run")
-(defvar go-run-args ""
-  "Additional arguments to by supplied to `go run` during runtime.")
-
-(defvar python-run-command "python")
-(defvar python-run-args "")
-
 ;; TODO: rewrite this
 (defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
   "Show a MSG at the helm or ivy prompt for SEC.
-With Helm, remember the path, then restore it after SEC.
-With Ivy, the path isn't editable, just remove the MSG after SEC."
+     With Helm, remember the path, then restore it after SEC.
+     With Ivy, the path isn't editable, just remove the MSG after SEC."
   (run-at-time
    0 nil
    #'(lambda (msg sec)
@@ -378,66 +148,6 @@ With Ivy, the path isn't editable, just remove the MSG after SEC."
            ;; and update the helm prompt
            (when helmp (helm-suspend-update nil)))))
    msg sec))
-
-
-;; TODO: implement this one
-(defun my-run-python ()
-  "Use vterm to run python shell instead.
-Furthermore, using ipython instead if it's installed."
-  (interactive)
-
-  ;; create a vterm buffer with python shell
-  ;; maybe, I can reference from the python-inferior-mode
-
-  (if (featurep 'poetry)
-    (vterm-send-string (poetry-virtualenv-path))
-    (vterm-send-string "python"))
-  (vterm-send-return))
-
-(defun google-search-action (x)
-  "Search for X.
-force to make new session without using the original session."
-  (xwidget-webkit-browse-url
-   (concat
-    (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
-    (url-hexify-string x)) t))
-
-
-(defun google-search ()
-  "Counsel-search with xwidget open url."
-  (interactive)
-  (require 'request)
-  (require 'json)
-  (let ((counsel-search-engine 'google))
-    (ivy-read "search: "
-              #'counsel-search-function
-              :action #'google-search-action
-              :dynamic-collection t
-              :caller 'google-search)))
-
-(defun open-with-xwidget-action (x)
-  (xwidget-webkit-browse-url
-   (url-encode-url (concat
-                    "file://"
-                    (expand-file-name x ivy--directory))) t))
-
-
-;; this is based on the counsel.el
-(with-eval-after-load 'counsel
-  (defun open-with-xwidget (&optional initial-input)
-    "Open file with xwidget browse url."
-    (interactive)
-    (counsel--find-file-1 "Find file: "
-                          initial-input
-                          #'open-with-xwidget-action
-                          'open-with-xwidget))
-
-  ;; how to customize the tab behavior
-  ;; add the open-with-xwidget in the alt-done alist
-  (ivy-configure 'open-with-xwidget
-    :parent 'read-file-name-internal
-    :occur #'counsel-find-file-occur))
-
 
 ;; TODO rewrite this
 (defun rename-current-buffer-file (&optional arg)
@@ -522,6 +232,69 @@ initialized with the current directory instead of filename."
                 ;; ?\a = C-g, ?\e = Esc and C-[
                 ((memq key '(?\a ?\e)) (keyboard-quit))))))))
 
+(defun copy-region-and-base64-decode (start end)
+  (interactive "r")
+  (let ((x (base64-decode-string
+            (decode-coding-string
+             (buffer-substring start end) 'utf-8))))
+    (kill-new x)))
+
+(defun my-encode-region-base64 (start end)
+  (interactive "r")
+  (let ((content (buffer-substring-no-properties start end)))
+    (when (use-region-p)
+      (delete-region start end)
+      (insert (base64-encode-string (encode-coding-string content 'utf-8))))))
+
+(defun my-decode-region-base64 (start end)
+  (interactive "r")
+  (let ((content (buffer-substring-no-properties start end)))
+    (when (use-region-p)
+      (delete-region start end)
+      (insert (base64-decode-string (decode-coding-string content 'utf-8))))))
+
+(defun copy-region-and-urlencode (start end)
+  (interactive "r")
+  (let ((x (url-hexify-string
+            (buffer-substring start end))))
+    (kill-new x)))
+
+(defun hey-god (question)
+  "Reduce distraction when you search the answer for the question.
+               Powered by the howdoi"
+  (interactive "sAsk the god, you'll get it: ")
+  (let ((buffer-name "*God's reply*")
+        (exectuable-name "howdoi"))
+    (with-output-to-temp-buffer buffer-name
+      (shell-command (concat exectuable-name " " question)
+                     buffer-name
+                     "*Messages*")
+      (pop-to-buffer buffer-name))))
+
+(defun now ()
+  "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
+  (interactive)
+  (message "now: %s \ntimestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
+
+(defun evil-smart-doc-lookup ()
+  "Run documentation lookup command specific to the major mode.
+     Use command bound to `SPC m h h` if defined, otherwise fall back
+     to `evil-lookup'"
+  (interactive)
+  ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
+  (when (fboundp 'lsp-describe-thing-at-point)
+    (lsp-describe-thing-at-point)
+    (evil-lookup)))
+
+(defun org-mode-visual-fill ()
+  "A beautiful word wrap effect."
+  (setq visual-fill-column-width 150)
+  ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
+  ;; maybe, I can remove this package?
+  (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
+  (global-visual-line-mode 1)
+  (visual-fill-column-mode 1))
+
 (defun lsp-keybinding ()
   "Return the keybinding for lsp functions."
   (list "=" "format" nil
@@ -571,12 +344,77 @@ initialized with the current directory instead of filename."
         "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
         "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
 
+(defun define-leader-key-global (&rest MAPS)
+  (let ((get-props (lambda () (list
+                               my-leader-def-prop
+                               my-leader-def-emacs-state-prop))))
+    (dolist (prop (funcall get-props))
+      (apply 'general-define-key
+             :states (plist-get prop ':states)
+             :prefix (symbol-value (plist-get prop ':key))
+             :keymaps 'override
+             MAPS))))
+
+(defun define-leader-key-map-for (mode-map &rest MAPS)
+  "Define the leader key map for the specify mode.
+key desc binding."
+  (let ((get-props (lambda () (list
+                               my-local-leader-def-emacs-state-prop
+                               my-local-leader-def-prop
+                               my-local-leader-def-alias-prop))))
+
+
+    (dolist (prop (funcall get-props))
+
+      (cl-loop
+       for (key desc binding)
+       on MAPS by #'cdddr
+       do
+
+       (let ((mode (intern (string-remove-suffix "-map" (symbol-name mode-map))))
+             (shortcut-key (concat (symbol-value (plist-get prop ':key)) key))
+             (shortcut (kbd (concat (symbol-value (plist-get prop ':key)) key)))
+             (sts (plist-get prop ':states)))
+
+         (if (not (equal binding 'lsp-command-map))
+             (apply 'general-define-key
+                    :states sts
+                    :prefix (symbol-value (plist-get prop ':key))
+                    :keymaps mode-map
+                    (if (equal binding nil)
+                        (list key (list :ignore t :which-key desc))
+                      (list key (list binding :which-key desc))))
+
+
+           ;; if using the lexcial binding, we need to add a wrap to
+           ;; bind the varaibles
+           ((lambda (sts kmap keybinding func)
+              (message "evil this fucking thing!!")
+              (print kmap)
+              (print sts)
+              (print keybinding)
+              (print func)
+              (evil-define-key sts kmap keybinding func))
+            sts mode-map
+            (kbd (symbol-value (plist-get prop ':key)))
+            binding)))))))
+
 (defun switch-to-minibuffer-window ()
   "Switch to minibuffer window (if active)."
   (interactive)
   (when (active-minibuffer-window)
     (select-window (active-minibuffer-window))))
 
+(defun toggle-maximize-buffer ()
+  "Maximize buffer."
+  (interactive)
+  (save-excursion
+    (if (and (= 1 (length (window-list)))
+             (assoc ?_ register-alist))
+        (jump-to-register ?_)
+      (progn
+        (window-configuration-to-register ?_)
+        (delete-other-windows)))))
 
 (defun org-file-show-headings (org-file)
   (interactive)
@@ -607,8 +445,8 @@ initialized with the current directory instead of filename."
 
 (defun rotate-windows-forward (count)
   "Rotate each window forwards.
-A negative prefix argument rotates each window backwards.
-Dedicated (locked) windows are left untouched."
+                    A negative prefix argument rotates each window backwards.
+                    Dedicated (locked) windows are left untouched."
   (interactive "p")
   (let* ((non-dedicated-windows (cl-remove-if 'window-dedicated-p (window-list)))
          (states (mapcar #'window-state-get non-dedicated-windows))
@@ -620,94 +458,6 @@ Dedicated (locked) windows are left untouched."
         (window-state-put
          (elt states i)
          (elt non-dedicated-windows (% (+ step i) num-windows)))))))
-
-
-;; Borrow project search function from the projectile
-(defun my-counsel-projectile-rg (&optional options)
-  "Search the current project with rg and search under certarn directory
-if it's not in a project.
-
-OPTIONS, if non-nil, is a string containing additional options to
-be passed to rg. It is read from the minibuffer if the function
-is called with a prefix argument."
-  (interactive)
-  ;; change this to read a directory path
-  (let* ((search-directory (if (projectile-project-p)
-                               (projectile-project-root)
-                             (read-directory-name "Start from directory: ")))
-         (ivy--actions-list (copy-sequence ivy--actions-list))
-         (ignored
-          (mapconcat (lambda (i)
-                       (concat "--glob !" (shell-quote-argument i)))
-                     (append
-                      (projectile--globally-ignored-file-suffixes-glob)
-                      (projectile-ignored-files-rel)
-                      (projectile-ignored-directories-rel))
-                     " "))
-         (counsel-rg-base-command
-          (let ((counsel-ag-command counsel-rg-base-command))
-            (counsel--format-ag-command ignored "%s"))))
-    (ivy-add-actions
-     'counsel-rg
-     counsel-projectile-rg-extra-actions)
-    (counsel-rg (eval counsel-projectile-rg-initial-input)
-                search-directory
-                options
-                (projectile-prepend-project-name
-                 (concat (car (if (listp counsel-rg-base-command)
-                                  counsel-rg-base-command
-                                (split-string counsel-rg-base-command)))
-                         ": ")))))
-
-(defun my-find-dotfile ()
-  "Edit the `dotfile', in the current window."
-  (interactive)
-  (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
-
-
-(defun hey-god (question)
-  "Reduce distraction when you search the answer for the question.
-Powered by the howdoi"
-  (interactive "sAsk the god, you'll get it: ")
-  (let ((buffer-name "*God's reply*")
-        (exectuable-name "howdoi"))
-    (with-output-to-temp-buffer buffer-name
-      (shell-command (concat exectuable-name " " question)
-                     buffer-name
-                     "*Messages*")
-      (pop-to-buffer buffer-name))))
-
-(defun copy-region-and-base64-decode (start end)
-  (interactive "r")
-  (let ((x (base64-decode-string
-            (decode-coding-string
-             (buffer-substring start end) 'utf-8))))
-    (kill-new x)))
-
-(defun my-encode-region-base64 (start end)
-  (interactive "r")
-  (let ((content (buffer-substring-no-properties start end)))
-    (when (use-region-p)
-      (delete-region start end)
-      (insert (base64-encode-string (encode-coding-string content 'utf-8))))))
-
-(defun my-decode-region-base64 (start end)
-  (interactive "r")
-  (let ((content (buffer-substring-no-properties start end)))
-    (when (use-region-p)
-      (delete-region start end)
-      (insert (base64-decode-string (decode-coding-string content 'utf-8))))))
-
-(defun copy-region-and-urlencode (start end)
-  (interactive "r")
-  (let ((x (url-hexify-string
-            (buffer-substring start end))))
-    (kill-new x)))
-
-(defun now ()
-  "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
-  (interactive)
-  (message "now: %s \ntimestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
 
 
 (defun my-shrink-window (delta)
@@ -729,109 +479,16 @@ Powered by the howdoi"
   (interactive "p")
   (enlarge-window delta t))
 
-
-(defun my-emmet-expand ()
-  (interactive)
-  (unless (if (bound-and-true-p yas-minor-mode)
-              (call-interactively 'emmet-expand-yas)
-            (call-interactively 'emmet-expand-line))
-    (indent-for-tab-command)))
-
-
-(defun python-run-main ()
-  (interactive)
-  (shell-command
-   (format (concat python-run-command " %s %s")
-           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
-                                     (buffer-file-name (buffer-base-buffer))))
-           python-run-args)))
-
-(defun go-run-main ()
-  (interactive)
-  (shell-command
-   (format (concat go-run-command " %s %s")
-           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
-                                     (buffer-file-name (buffer-base-buffer))))
-           go-run-args)))
-
-
 (defun kill-this-buffer (&optional arg)
   "Kill the current buffer.
-ARG is an universal arg which will kill the window as well.
-If the universal prefix argument is used then kill also the window."
+          ARG is an universal arg which will kill the window as well.
+          If the universal prefix argument is used then kill also the window."
   (interactive "P")
   (if (window-minibuffer-p)
       (abort-recursive-edit)
     (if (equal '(4) arg)
         (kill-buffer-and-window)
       (kill-buffer))))
-
-(defun define-leader-key-global (&rest MAPS)
-  (let ((get-props (lambda () (list
-                               my-leader-def-prop
-                               my-leader-def-emacs-state-prop))))
-    (dolist (prop (funcall get-props))
-      (apply 'general-define-key
-             :states (plist-get prop ':states)
-             :prefix (symbol-value (plist-get prop ':key))
-             :keymaps 'override
-             MAPS))))
-
-(defun define-leader-key-map-for (mode-map &rest MAPS)
-  "Define the leader key map for the specify mode."
-  ;; TODO: to understand the difference between '(1) (list 1)
-  (let ((get-props (lambda () (list
-                               my-local-leader-def-emacs-state-prop
-                               my-local-leader-def-prop
-                               my-local-leader-def-alias-prop))))
-
-    ;; TODO: use evil-define-key instead. I don't know why
-    ;; it will cause overwrite key binding on other mode
-    ;; when binding with lsp-command-map (maybe, it is not a
-    ;; normal keymap)
-    ;; (which-key-add-major-mode-key-based-replacements mode key desc)
-
-    ;; key desc binding
-
-    (dolist (prop (funcall get-props))
-
-      (cl-loop
-       for (key desc binding)
-       on MAPS by #'cdddr
-       do
-
-       (let ((mode (intern (string-remove-suffix "-map" (symbol-name mode-map))))
-             (shortcut-key (concat (symbol-value (plist-get prop ':key)) key))
-             (shortcut (kbd (concat (symbol-value (plist-get prop ':key)) key)))
-             (sts (plist-get prop ':states)))
-
-         (if (not (equal binding 'lsp-command-map))
-             (apply 'general-define-key
-                    :states sts
-                    :prefix (symbol-value (plist-get prop ':key))
-                    :keymaps mode-map
-                    (if (equal binding nil)
-                        (list key (list :ignore t :which-key desc))
-                      (list key (list binding :which-key desc))))
-
-           ;; (define-key python-mode-map (kbd "SPC m") lsp-command-map)
-           ;; NOTE: what the fuck evil-define-key can't used symbol of mode-map ...
-           ;; (evil-define-key 'normal python-mode-map (kbd "SPC m") lsp-command-map)
-           ;; (evil-define-key 'normal go-mode-map (kbd "SPC m") lsp-command-map)
-
-           ;; if using the lexcial binding, we need to add a wrap to
-           ;; bind the varaibles
-           ((lambda (sts kmap keybinding func)
-              (message "evil this fucking thing!!")
-              (print kmap)
-              (print sts)
-              (print keybinding)
-              (print func)
-              (evil-define-key sts kmap keybinding func))
-            sts mode-map
-            (kbd (symbol-value (plist-get prop ':key)))
-            binding)))))))
-
 
 (defun copy-file-path ()
   "Copy and show the file path of the current buffer."
@@ -842,7 +499,6 @@ If the universal prefix argument is used then kill also the window."
         (message "%s" file-path))
     (message "WARNING: Current buffer is not attached to a file!")))
 
-
 (defun get-file-path ()
   "Retrieve the file path of the current buffer.
 
@@ -852,23 +508,20 @@ Returns:
   (when-let (file-path (buffer-file-name))
     (file-truename file-path)))
 
-
-(defun evil-smart-doc-lookup ()
-  "Run documentation lookup command specific to the major mode.
-Use command bound to `SPC m h h` if defined, otherwise fall back
-to `evil-lookup'"
+(defun my-emmet-expand ()
   (interactive)
-  ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
-  (when (fboundp 'lsp-describe-thing-at-point)
-    (lsp-describe-thing-at-point)
-    (evil-lookup)))
+  (unless (if (bound-and-true-p yas-minor-mode)
+              (call-interactively 'emmet-expand-yas)
+            (call-interactively 'emmet-expand-line))
+    (indent-for-tab-command)))
 
-;; (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
-;;   (print (key-binding (kbd (concat "SPC" " mhh"))))
-;;   (if (commandp binding)
-;;      (call-interactively binding)
-;;     (evil-lookup))))
-
+(defun toggle-flycheck-error-list ()
+  "Toggle flycheck's error list window.
+If the error list is visible, hide it.  Otherwise, show it."
+  (interactive)
+  (-if-let (window (flycheck-get-error-list-window))
+      (quit-window nil window)
+    (flycheck-list-errors)))
 
 (defun comment-or-uncomment-lines (&optional arg)
   (interactive "p")
@@ -882,7 +535,6 @@ to `evil-lookup'"
    (cond
     ((eq major-mode 'org-mode) 'counsel-org-goto)
     (t 'counsel-imenu))))
-
 
 (defun project-run-vterm (&optional arg)
   "Invoke `vterm' in the project's root.
@@ -922,33 +574,267 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (require 'ivy-yasnippet)
   (call-interactively 'ivy-yasnippet))
 
-(defun toggle-flycheck-error-list ()
-  "Toggle flycheck's error list window.
-If the error list is visible, hide it.  Otherwise, show it."
+(defun google-search-action (x)
+  "Search for X.
+     force to make new session without using the original session."
+  (xwidget-webkit-browse-url
+   (concat
+    (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
+    (url-hexify-string x)) t))
+
+
+(defun google-search ()
+  "Counsel-search with xwidget open url."
   (interactive)
-  (-if-let (window (flycheck-get-error-list-window))
-      (quit-window nil window)
-    (flycheck-list-errors)))
+  (require 'request)
+  (require 'json)
+  (let ((counsel-search-engine 'google))
+    (ivy-read "search: "
+              #'counsel-search-function
+              :action #'google-search-action
+              :dynamic-collection t
+              :caller 'google-search)))
 
+(defun open-with-xwidget-action (x)
+  (xwidget-webkit-browse-url
+   (url-encode-url (concat
+                    "file://"
+                    (expand-file-name x ivy--directory))) t))
 
-(defun toggle-maximize-buffer ()
-  "Maximize buffer."
+(with-eval-after-load 'counsel
+  (defun open-with-xwidget (&optional initial-input)
+    "Open file with xwidget browse url."
+    (interactive)
+    (counsel--find-file-1 "Find file: "
+                          initial-input
+                          #'open-with-xwidget-action
+                          'open-with-xwidget))
+
+  ;; how to customize the tab behavior
+  ;; add the open-with-xwidget in the alt-done alist
+  (ivy-configure 'open-with-xwidget
+    :parent 'read-file-name-internal
+    :occur #'counsel-find-file-occur))
+
+(defun my-counsel-projectile-rg (&optional options)
+  "Search the current project with rg and search under certarn directory
+     if it's not in a project.
+
+     OPTIONS, if non-nil, is a string containing additional options to
+     be passed to rg. It is read from the minibuffer if the function
+     is called with a prefix argument."
   (interactive)
-  (save-excursion
-    (if (and (= 1 (length (window-list)))
-             (assoc ?_ register-alist))
-        (jump-to-register ?_)
-      (progn
-        (window-configuration-to-register ?_)
-        (delete-other-windows)))))
+  ;; change this to read a directory path
+  (let* ((search-directory (if (projectile-project-p)
+                               (projectile-project-root)
+                             (read-directory-name "Start from directory: ")))
+         (ivy--actions-list (copy-sequence ivy--actions-list))
+         (ignored
+          (mapconcat (lambda (i)
+                       (concat "--glob !" (shell-quote-argument i)))
+                     (append
+                      (projectile--globally-ignored-file-suffixes-glob)
+                      (projectile-ignored-files-rel)
+                      (projectile-ignored-directories-rel))
+                     " "))
+         (counsel-rg-base-command
+          (let ((counsel-ag-command counsel-rg-base-command))
+            (counsel--format-ag-command ignored "%s"))))
+    (ivy-add-actions
+     'counsel-rg
+     counsel-projectile-rg-extra-actions)
+    (counsel-rg (eval counsel-projectile-rg-initial-input)
+                search-directory
+                options
+                (projectile-prepend-project-name
+                 (concat (car (if (listp counsel-rg-base-command)
+                                  counsel-rg-base-command
+                                (split-string counsel-rg-base-command)))
+                         ": ")))))
 
+(defun my-find-dotfile ()
+  "Edit the `dotfile', in the current window."
+  (interactive)
+  (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
 
-;; Decide to use this package to auto balance the parens
-;; NOTE: we should put this in the :init
-;; if we put this in the :config, it will perform add these hook after
-;; lazy-loading. That means we will not get it auto turn on when we enter one of the following program mode
-;; :init before trigger
-;; :config after trigger
+(defvar python-run-command "python")
+(defvar python-run-args "")
+
+;; TODO: implement this one
+(defun my-run-python ()
+  "Use vterm to run python shell instead.
+     Furthermore, using ipython instead if it's installed."
+  (interactive)
+
+  ;; create a vterm buffer with python shell
+  ;; maybe, I can reference from the python-inferior-mode
+
+  (if (featurep 'poetry)
+      (vterm-send-string (poetry-virtualenv-path))
+    (vterm-send-string "python"))
+  (vterm-send-return))
+
+(defun python-run-main ()
+  (interactive)
+  (shell-command
+   (format (concat python-run-command " %s %s")
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           python-run-args)))
+
+(defvar go-test-command "go test")
+
+(defvar go-run-command "go run")
+(defvar go-run-args ""
+  "Additional arguments to by supplied to `go run` during runtime.")
+
+(defun go-run-main ()
+  (interactive)
+  (shell-command
+   (format (concat go-run-command " %s %s")
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           go-run-args)))
+
+(require 'subr-x)
+(require 'package)
+(setq package-archives '(("melpa" . "https://melpa.org/packages/")
+                         ("org" . "https://orgmode.org/elpa/")
+                         ("elpa" . "https://elpa.gnu.org/packages/")))
+
+(package-initialize)
+(unless package-archive-contents
+  (package-refresh-contents))
+
+;; Initialize use-package on non-Linux platforms
+(unless (package-installed-p 'use-package)
+  (package-install 'use-package))
+
+(require 'use-package)
+
+(setq use-package-always-ensure t)
+
+(push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
+
+(add-hook 'prog-mode-hook 'goto-address-prog-mode)
+
+(add-hook 'prog-mode-hook '(lambda () (setq indent-tabs-mode nil)))
+
+(add-hook 'before-save-hook 'delete-trailing-whitespace)
+
+(add-hook 'dired-mode-hook 'auto-revert-mode)
+
+(use-package winner
+  :init
+  (add-hook 'ediff-quit-hook 'winner-undo)
+  :commands (winner-undo))
+
+(use-package esup
+  :defer t
+  :init
+  (setq esup-depth 0)
+  ;; To use MELPA Stable use ":pin mepla-stable",
+  :pin melpa)
+
+(use-package diminish :defer t)
+
+(use-package rainbow-mode
+  :defer t)
+
+(use-package rainbow-delimiters
+  :hook (prog-mode . rainbow-delimiters-mode))
+
+(use-package highlight-parentheses
+  :hook (prog-mode . highlight-parentheses-mode))
+
+(use-package doom-themes
+  :config
+  (load-theme 'doom-one t)
+  (doom-themes-org-config)
+
+  (with-eval-after-load 'org
+    ;; change some ui
+    (set-face-attribute 'org-link nil :foreground "#3f7c8f")
+    (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
+    (set-face-attribute 'org-level-3 nil :foreground "#219e57")
+    (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
+    (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
+    (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
+
+(use-package doom-modeline
+  :init
+  ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
+  (doom-modeline-mode 1)
+  (setq all-the-icons-scale-factor 1.1)
+  :custom
+  (doom-modeline-height 12)
+  (doom-modeline-persp-name nil))
+
+(use-package all-the-icons)
+
+(use-package devdocs
+  :defer t
+  :commands (devdocs-search)
+  :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
+
+(use-package hl-todo
+  :defer t
+  :hook
+  ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
+  (prog-mode . hl-todo-mode))
+
+(use-package diff-hl
+  :defer 1
+  :init
+  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
+  :config
+  (global-diff-hl-mode))
+
+(use-package perspective
+  :diminish persp-mode
+  :commands (persp-switch)
+  :config
+  (persp-mode))
+
+(use-package which-key
+  :diminish which-key-mode
+  :init
+  (setq which-key-idle-delay 0.05)
+  (which-key-mode 1))
+
+(use-package define-word
+  :defer t)
+
+(use-package powerthesaurus
+  :defer t)
+
+(use-package nov
+  :defer t
+  :mode ("\\.epub\\'" . nov-mode))
+
+(use-package uuidgen
+  :defer t)
+
+(use-package docker
+  :defer t)
+
+(use-package docker-tramp
+  :defer t)
+
+(use-package dockerfile-mode
+  :defer t)
+
+(use-package nginx-mode
+  :defer t)
+
+(use-package jinja2-mode
+  :defer t
+  :init
+  (add-hook 'jinja2-mode-hook
+            '(lambda ()
+               (set (make-local-variable 'indent-line-function) 'insert-tab)))
+  :mode ("\\.j2\\'" . jinja2-mode))
+
 (use-package smartparens
   :commands (smartparens-mode)
   :init
@@ -959,15 +845,12 @@ If the error list is visible, hide it.  Otherwise, show it."
   (add-hook 'python-mode-hook #'smartparens-mode)
   (add-hook 'emacs-lisp-mode-hook #'smartparens-mode))
 
-;; TODO: find a way to replace the hardcode path
 (use-package yasnippet
   :defer 1
   :config
   (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
   (yas-global-mode 1)
-  (yas-minor-mode 1)
-  ;; (yas-reload-all) to rebuild the snippets, This will be trigger when enable yas-xx-mode
-  )
+  (yas-minor-mode 1))
 
 (use-package yasnippet-snippets
   :defer t
@@ -976,10 +859,6 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package ivy-yasnippet
   :defer t
   :after yaanippet)
-
-(use-package winum
-  :config
-  (winum-mode))
 
 (use-package helpful
   :custom
@@ -990,6 +869,328 @@ If the error list is visible, hide it.  Otherwise, show it."
   ([remap describe-command] . helpful-command)
   ([remap describe-variable] . counsel-describe-variable)
   ([remap describe-key] . helpful-key))
+
+(use-package expand-region
+  :defer t)
+
+(use-package winum
+  :config
+  (winum-mode))
+
+(use-package systemd
+  :defer t)
+
+(use-package emmet-mode
+  :defer t
+  :hook
+  (html-mode . emmet-mode)
+  (web-mode . emmet-mode))
+
+(use-package web-mode
+  :defer t
+  :mode
+  (("\\.html\\'" . web-mode)))
+
+(use-package js2-mode
+  :after (rainbow-delimiters)
+  :defer t
+  :config
+  (setq js2-mode-show-parse-errors nil)
+  (setq js2-mode-show-strict-warnings nil)
+  (js2-minor-mode))
+
+(use-package flycheck
+  :commands (flycheck-mode)
+  :init
+  (add-hook 'prog-mode-hook 'flycheck-mode)
+  (add-hook 'text-mode-hook 'flycheck-mode)
+  (setq flycheck-highlighting-mode 'lines)
+  (setq flycheck-indication-mode 'nil))
+
+(use-package json-mode
+  :defer t)
+
+(use-package yaml-mode
+  :defer t
+  :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
+         ("Procfile\\'" . yaml-mode))
+  :init
+  (add-hook 'yaml-mode-hook 'lsp)
+  :config
+  (with-eval-after-load 'flycheck
+    (when (listp flycheck-global-modes)
+      (add-to-list 'flycheck-global-modes 'yaml-mode))))
+
+(use-package slime
+  :defer t
+  :init
+  (setq inferior-lisp-program "sbcl"))
+
+(use-package elisp-slime-nav
+  :defer t
+  :init
+  (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
+    (add-hook hook 'elisp-slime-nav-mode)))
+
+(use-package lispy
+  :init
+  (setq lispy-key-theme '(special c-digits))
+  :hook ((common-lisp-mode . lispy-mode)
+         (emacs-lisp-mode . lispy-mode)
+         (scheme-mode . lispy-mode)))
+
+(use-package rust-mode
+  :defer t
+  :mode "\\.rs\\'"
+  :init (setq rust-format-on-save t))
+
+(use-package cargo
+  :defer t)
+
+(use-package go-mode
+  :defer 2
+  :config
+  (progn
+    (setq gofmt-command "goimports")
+    (add-hook 'before-save-hook 'gofmt-before-save)))
+
+(use-package protobuf-mode
+  :defer t)
+
+(use-package gomacro-mode
+  :hook (go-mode . gomacro-mode))
+
+(with-eval-after-load 'python
+  (setq python-shell-interpreter "ipython"))
+
+(use-package python-pytest
+  :defer t
+  :custom
+  (python-pytest-confirm t))
+
+(use-package poetry
+  :defer t)
+
+(use-package pyvenv
+  :commands (pyvenv-mode)
+  :init
+  (add-hook 'python-mode-hook #'pyvenv-mode))
+
+(use-package pyimport
+  :defer t
+  :init
+  (add-hook 'before-save-hook 'pyimport-remove-unused))
+
+(use-package lsp-mode
+  :init
+  (setq lsp-completion-provider :capf) ;; the official recommends use this
+  :commands
+  (lsp)
+  :hook
+  (go-mode . lsp)
+  ;; (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
+  ;; add breadcrumb to hint current position
+  (python-mode . lsp)
+  (rust-mode . lsp)
+  (js-mode . lsp)
+  :config
+  ;; turn off lens mode
+  (setq lsp-lens-enable nil))
+
+(use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
+
+(use-package dap-mode
+  :defer t
+  :config
+  ;; pip install "ptvsd>=4.2"
+  (require 'dap-python)
+  (require 'dap-go)
+  ;; dap-go-setup
+  (add-hook 'dap-stopped-hook
+            (lambda (arg) (call-interactively #'dap-hydra))))
+
+(use-package lsp-python-ms
+  :after
+  (lsp-mode)
+  :init
+  (setq lsp-python-ms-auto-install-server t))
+
+(use-package ivy
+  :ensure t
+  :diminish
+  :bind (:map ivy-minibuffer-map
+              ("TAB" . ivy-alt-done)
+              ("C-l" . ivy-alt-done)
+              ("C-j" . ivy-next-line)
+              ("C-k" . ivy-previous-line)
+              ("C-u" . ivy-backward-kill-word)
+              :map ivy-switch-buffer-map
+              ("C-k" . ivy-previous-line)
+              ("C-l" . ivy-done)
+              ("C-d" . ivy-switch-buffer-kill)
+              :map ivy-reverse-i-search-map
+              ("C-k" . ivy-previous-line)
+              ("C-d" . ivy-reverse-i-search-kill))
+  :config
+  (ivy-mode 1)
+  (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
+  (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
+  (setq ivy-use-selectable-prompt t)
+  ;; NOTE: make the candidate you typed selectable
+  ;; This is useful when you call =counsel-find-file=. Ex. You can choose the bar.yml when there is a candidate named barfar.yml
+
+  ;; (setq ivy-dynamic-exhibit-delay-ms 250)
+  (setq ivy-initial-inputs-alist nil))
+
+(use-package ivy-rich
+  :after (ivy)
+  :init
+  (ivy-rich-mode 1))
+
+(use-package swiper
+  :bind (("C-s" . swiper)))
+
+(use-package counsel
+  :bind (("M-x" . counsel-M-x)
+         ("C-x b" . counsel-ibuffer)
+         ("C-x C-f" . counsel-find-file)
+         :map minibuffer-local-map
+         ("C-w" . 'ivy-backward-kill-word)
+         ("C-r" . 'counsel-minibuffer-history))
+  :config
+  (setq counsel-find-file-at-point t))
+
+;; counsel-search will use the package request with this function
+(use-package request
+  :defer t)
+
+(use-package projectile
+  :defer 1
+  :custom ((projectile-completion-system 'ivy))
+  :config
+  (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
+  (projectile-mode +1))
+
+(use-package counsel-projectile
+  :after projectile
+  :defer 1
+  :config (counsel-projectile-mode))
+
+(use-package avy
+  :defer t
+  :config
+  (setq avy-background t))
+
+(use-package vterm
+  :defer t
+  :init
+  (setq vterm-always-compile-module t)
+  :config
+  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
+  (add-hook 'vterm-mode-hook (lambda ()
+                               (evil-emacs-state)
+                               (vterm-send-string "source ~/.bash_profile")
+                               (vterm-send-return))))
+
+(use-package evil
+  :defer 1
+  :init
+  (setq evil-want-integration t)
+  (setq evil-want-keybinding nil)
+  (setq evil-want-C-u-scroll t)
+  (setq evil-want-C-i-jump nil)
+  :config
+  (evil-mode 1)
+  (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
+  ;; Use visual line motions even outside of visual-line-mode buffers
+
+  (evil-global-set-key 'motion "j" 'evil-next-visual-line)
+  (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
+
+  (evil-set-initial-state 'messages-buffer-mode 'normal)
+  (evil-set-initial-state 'dashboard-mode 'normal)
+
+  (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+  (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+  (add-hook 'evil-insert-state-exit-hook 'im-remember)
+  (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
+
+;; make =%= to be able to jump to and back the tag
+(use-package evil-matchit
+  :after evil
+  :config
+  (global-evil-matchit-mode 1))
+
+(use-package evil-collection
+  :after evil
+  :config
+  (delete 'wgrep evil-collection-mode-list)
+  (delete 'vterm evil-collection-mode-list)
+  (delete 'lispy evil-collection-mode-list)
+  (delete 'ivy evil-collection-mode-list)
+  ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
+  (setq evil-collection-company-use-tng nil)
+  (evil-collection-init))
+
+(use-package evil-nerd-commenter
+       :after evil
+       :commands evilnc-comment-operator
+       :init
+       (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
+
+(use-package evil-surround
+  :after evil
+  :config
+  (global-evil-surround-mode 1))
+
+(use-package wgrep
+  :after evil
+  :commands
+  (wgrep-finish-edit
+   wgrep-finish-edit
+   wgrep-abort-changes
+   wgrep-abort-changes)
+  :init
+  (evil-define-key 'normal wgrep-mode-map (kbd "<escape>") 'wgrep-exit)
+  (evil-define-key 'normal wgrep-mode-map (kbd ", ,") 'wgrep-finish-edit)
+  (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
+
+;; create arbitrary fold not like other package auto detect the program language
+(use-package vimish-fold
+  :after evil
+  :hook (prog-mode . vimish-fold-mode))
+
+(use-package evil-vimish-fold
+  :after vimish-fold
+  :hook (prog-mode . evil-vimish-fold-mode))
+
+(use-package multiple-cursors
+  :init
+  (global-set-key (kbd "C-S-a") 'mc/edit-lines)
+  (global-set-key (kbd "C-S-<down-mouse-1>") 'mc/add-cursor-on-click)
+  (global-set-key (kbd "<C-S-right>") 'mc/mark-next-like-this)
+  (global-set-key (kbd "<C-S-left>") 'mc/mark-previous-like-this)
+  :commands
+  (mc/edit-lines
+   mc/mark-all-like-this
+   mc/add-cursor-on-click
+   mc/mark-next-like-this
+   mc/mark-previous-like-this))
+
+(use-package git-messenger
+  :defer t
+  :init
+  (setq git-messenger:show-detail t)
+  (setq git-messenger:use-magit-popup t))
+
+(use-package magit
+  :defer 2
+  :custom
+  (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
+
+(use-package evil-magit
+  :defer 2
+  :after magit)
 
 (use-package general
   :init
@@ -1303,7 +1504,6 @@ If the error list is visible, hide it.  Otherwise, show it."
     "fs" '(save-buffer :which-key "save file")
     "ff" '(counsel-find-file :which-key "find file")))
 
-
 (use-package hydra
   :defer t)
 
@@ -1330,221 +1530,23 @@ If the error list is visible, hide it.  Otherwise, show it."
   ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
 
-
-;; https://github.com/emacs-evil/evil-collection
-;; optional
-
-(use-package evil
-  :defer 1
-  :init
-  (setq evil-want-integration t)
-  (setq evil-want-keybinding nil)
-  (setq evil-want-C-u-scroll t)
-  (setq evil-want-C-i-jump nil)
+(use-package company
   :config
-  (evil-mode 1)
-  (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
-  ;; Use visual line motions even outside of visual-line-mode buffers
-
-  (evil-global-set-key 'motion "j" 'evil-next-visual-line)
-  (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
-
-  (evil-set-initial-state 'messages-buffer-mode 'normal)
-  (evil-set-initial-state 'dashboard-mode 'normal)
-
-  (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-  (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-  (add-hook 'evil-insert-state-exit-hook 'im-remember)
-  (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
-
-
-;; create arbitrary fold not like other package auto detect the program language
-(use-package vimish-fold
-  :after evil
-  :hook (prog-mode . vimish-fold-mode))
-
-(use-package evil-vimish-fold
-  :after vimish-fold
-  :hook (prog-mode . evil-vimish-fold-mode))
-
-;; make =%= to be able to jump to and back the tag
-(use-package evil-matchit
-  :after evil
-  :config
-  (global-evil-matchit-mode 1))
-
-(use-package evil-collection
-  :after evil
-  :config
-  (delete 'wgrep evil-collection-mode-list)
-  (delete 'vterm evil-collection-mode-list)
-  (delete 'lispy evil-collection-mode-list)
-  (delete 'ivy evil-collection-mode-list)
-  ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
-  (setq evil-collection-company-use-tng nil)
-  (evil-collection-init))
-
-;; NOTE: it will save the command behavior applied on the multiple cursor
-;; to a file named .mc-lists.el. By default, it's path is =~/.emacs.d/.mc-lists.el=
-;; I customize the storing path already.
-;; Research how evil-mc customize the multiple-cursor
-(use-package multiple-cursors
-  :init
-  (global-set-key (kbd "C-S-a") 'mc/edit-lines)
-  (global-set-key (kbd "C-S-<down-mouse-1>") 'mc/add-cursor-on-click)
-  (global-set-key (kbd "<C-S-right>") 'mc/mark-next-like-this)
-  (global-set-key (kbd "<C-S-left>") 'mc/mark-previous-like-this)
-  :commands
-  (mc/edit-lines
-   mc/mark-all-like-this
-   mc/add-cursor-on-click
-   mc/mark-next-like-this
-   mc/mark-previous-like-this))
-
-(use-package evil-nerd-commenter
-  :after evil
-  :commands evilnc-comment-operator
-  :init
-  (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
-
-(use-package evil-surround
-  :after evil
-  :config
-  (global-evil-surround-mode 1))
-
-;; M-x all-the-icons-install-fonts
-(use-package all-the-icons)
-
-;; ENHANCE: adjust the pop ui
-(use-package git-messenger
-  :defer t
-  :init
-  (setq git-messenger:show-detail t)
-  (setq git-messenger:use-magit-popup t))
-
-(use-package slime
-  :defer t
-  :init
-  (setq inferior-lisp-program "sbcl"))
-
-;; TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
-(use-package elisp-slime-nav
-  :defer t
-  :init
-  (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
-    (add-hook hook 'elisp-slime-nav-mode)))
+  (setq company-minimum-prefix-length 2)
+  (setq company-idle-delay 0.1)
+  ;; In evil-collection, it adjust the key binding for the company-mode
+  ;; NOTE: Furthermore, it also disable the pre-select behavior when
+  ;; showing the completion candidates.
+  (define-key company-active-map (kbd "<return>") 'company-complete-selection)
+  (global-company-mode 1))
 
 (use-package org-ql
   :defer t)
 
-;; The :ensure keyword causes the package(s) to be installed automatically if not already present on your system
-;; this setting will globally enable ensure (setq use-package-always-ensure t)
-
-(use-package wgrep
-  :after evil
-  :commands
-  (wgrep-finish-edit
-   wgrep-finish-edit
-   wgrep-abort-changes
-   wgrep-abort-changes)
-  :init
-  (evil-define-key 'normal wgrep-mode-map (kbd "<escape>") 'wgrep-exit)
-  (evil-define-key 'normal wgrep-mode-map (kbd ", ,") 'wgrep-finish-edit)
-  (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
-
-(use-package ivy
-  :ensure t
-  :diminish
-  :bind (:map ivy-minibuffer-map
-              ("TAB" . ivy-alt-done)
-              ("C-l" . ivy-alt-done)
-              ("C-j" . ivy-next-line)
-              ("C-k" . ivy-previous-line)
-              ("C-u" . ivy-backward-kill-word)
-              :map ivy-switch-buffer-map
-              ("C-k" . ivy-previous-line)
-              ("C-l" . ivy-done)
-              ("C-d" . ivy-switch-buffer-kill)
-              :map ivy-reverse-i-search-map
-              ("C-k" . ivy-previous-line)
-              ("C-d" . ivy-reverse-i-search-kill))
-  :config
-  (ivy-mode 1)
-  (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
-  (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
-  (setq ivy-use-selectable-prompt t)
-  ;; NOTE: make the candidate you typed selectable
-  ;; This is useful when you call =counsel-find-file=. Ex. You can choose the bar.yml when there is a candidate named barfar.yml
-
-  ;; (setq ivy-dynamic-exhibit-delay-ms 250)
-  (setq ivy-initial-inputs-alist nil))
-
-;; After swiper, counsel search, ivy-occur (C-c C-o) to get the candidate in another buffer
-;; Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
-;; use multiple-cursor may be helpful.
-;; Finally, Ctrl-c Ctrl-c to commit change
-;; there are some key binding in the swiper-map
-(use-package swiper
-  :bind (("C-s" . swiper))
-  )
-
-;; check-paren checks whether there are lacks of the parentheses' pairs
-(use-package counsel
-  :bind (("M-x" . counsel-M-x)
-         ("C-x b" . counsel-ibuffer)
-         ("C-x C-f" . counsel-find-file)
-         :map minibuffer-local-map
-         ("C-w" . 'ivy-backward-kill-word)
-         ("C-r" . 'counsel-minibuffer-history))
-  :config
-  (setq counsel-find-file-at-point t))
-
-;; counsel-search will use the package request with this function
-(use-package request
-  :defer t)
-
-(use-package ivy-rich
-  :after (ivy)
-  :init
-  (ivy-rich-mode 1))
-
-
-(use-package projectile
-  :defer 1
-  :custom ((projectile-completion-system 'ivy))
-  :config
-  (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
-  (projectile-mode +1))
-
-(use-package counsel-projectile
-  :after projectile
-  :defer 1
-  :config (counsel-projectile-mode))
-
-(use-package magit
-  :defer 2
-  :custom
-  (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
-
-(use-package evil-magit
-  :defer 2
-  :after magit)
-
-;; the following is org's setup
-;; we can check the org's version by the command =org-version=
 (use-package org
   :defer t
   :ensure org-plus-contrib
   :pin org)
-
-
-(use-package restclient
-  :defer t)
-
-(use-package ob-restclient
-  :defer t
-  :after (org restclient)
-  :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
 (use-package org-download
   :commands
@@ -1561,194 +1563,9 @@ If the error list is visible, hide it.  Otherwise, show it."
 (use-package org-superstar
   :hook (org-mode . org-superstar-mode))
 
-(defun org-mode-visual-fill ()
-  "A beautiful word wrap effect."
-  (setq visual-fill-column-width 150)
-  ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
-  ;; maybe, I can remove this package?
-  (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
-  (global-visual-line-mode 1)
-  (visual-fill-column-mode 1))
-
 (use-package visual-fill-column
   :hook (org-mode . org-mode-visual-fill))
 
-;; Failed to install vterm: https://melpa.org/packages/vterm-20200926.1215.tar: Not found
-;; package-refresh-contents
-(use-package vterm
-  :defer t
-  :init
-  (setq vterm-always-compile-module t)
-  :config
-  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
-  (add-hook 'vterm-mode-hook (lambda ()
-                               (evil-emacs-state)
-                               (vterm-send-string "source ~/.bash_profile")
-                               (vterm-send-return))))
-
-(use-package avy
-  :defer t
-  :config
-  (setq avy-background t))
-
-;; company-mode setup
-;; "<return>" is the Return key while emacs runs in a graphical user interface.
-;; "RET" is the Return key while emacs runs in a terminal. ...
-;; But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
-
-(use-package company
-  :config
-  (setq company-minimum-prefix-length 2)
-  (setq company-idle-delay 0.1)
-  ;; In evil-collection, it adjust the key binding for the company-mode
-  ;; NOTE: Furthermore, it also disable the pre-select behavior when
-  ;; showing the completion candidates.
-  (define-key company-active-map (kbd "<return>") 'company-complete-selection)
-  (global-company-mode 1))
-
-(use-package expand-region
-  :defer t)
-
-;; lsp configuation
-
-(use-package rust-mode
-  :defer t
-  :mode "\\.rs\\'"
-  :init (setq rust-format-on-save t))
-
-(use-package cargo
-  :defer t)
-
-(use-package go-mode
-  :defer 2
-  :config
-  (progn
-    (setq gofmt-command "goimports")
-    (add-hook 'before-save-hook 'gofmt-before-save)))
-
-(use-package protobuf-mode
-  :defer t)
-
-(use-package systemd
-  ;; ISSUE: Company backend ’t’ could not be initialized
-  :defer t)
-
-(use-package lispy
-  :init
-  (setq lispy-key-theme '(special c-digits))
-  :hook ((common-lisp-mode . lispy-mode)
-         (emacs-lisp-mode . lispy-mode)
-         (scheme-mode . lispy-mode)))
-
-(use-package flycheck
-  :commands (flycheck-mode)
-  :init
-  (add-hook 'prog-mode-hook 'flycheck-mode)
-  (add-hook 'text-mode-hook 'flycheck-mode)
-  (setq flycheck-highlighting-mode 'lines)
-  (setq flycheck-indication-mode 'nil))
-
-(use-package json-mode
-  :defer t)
-
-(use-package yaml-mode
-  :defer t
-  :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
-         ("Procfile\\'" . yaml-mode))
-  :init
-  (add-hook 'yaml-mode-hook 'lsp)
-  :config
-  (with-eval-after-load 'flycheck
-    (when (listp flycheck-global-modes)
-      (add-to-list 'flycheck-global-modes 'yaml-mode))))
-
-(use-package gomacro-mode
-  :hook (go-mode . gomacro-mode))
-
-;; NOTE: temporarily disable this because it consumes lots of cpu
-;; (use-package company-tabnine
-;;   :config
-;;   (with-eval-after-load 'company
-;;     (add-to-list 'company-backends #'company-tabnine)
-;;     (setq company-tabnine-always-trigger nil)
-;;     (setq company-show-numbers t)
-;;     (setq company-idle-delay 0.1)))
-
-;; set up python dev tools
-
-(with-eval-after-load 'python
-  (setq python-shell-interpreter "ipython"))
-
-(use-package python-pytest
-  :defer t
-  :custom
-  (python-pytest-confirm t))
-
-(use-package poetry
-  :defer t)
-
-(use-package pyvenv
-  :commands (pyvenv-mode)
-  :init
-  (add-hook 'python-mode-hook #'pyvenv-mode))
-
-(use-package pyimport
-  :defer t
-  :init
-  (add-hook 'before-save-hook 'pyimport-remove-unused))
-
-;; ---
-
-(use-package lsp-mode
-  :init
-  (setq lsp-completion-provider :capf) ;; the official recommends use this
-  ;; run =company-diag= to check what the company-backen is being used.
-  ;; (setq lsp-keymap-prefix "SPC m") ;; this will only affect the display info of whichkey.
-  :commands
-  (lsp)
-  :hook
-  (go-mode . lsp)
-  ;; (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
-  ;; add breadcrumb to hint current position
-  (python-mode . lsp)
-  (rust-mode . lsp)
-  (js-mode . lsp)
-  :config
-  ;; turn off lens mode
-  (setq lsp-lens-enable nil))
-
-(use-package lsp-python-ms
-  :after
-  (lsp-mode)
-  :init
-  (setq lsp-python-ms-auto-install-server t))
-
-
-;; disable lsp-ui
-;; (use-package lsp-ui
-;;   :after flycheck
-;;   :commands lsp-ui-mode
-;;   :config
-;;   (setq lsp-ui-doc-enable nil)
-;;   (setq lsp-ui-sideline-enable nil))
-
-(use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
-
-(use-package dap-mode
-  :defer t
-  :config
-  ;; pip install "ptvsd>=4.2"
-  (require 'dap-python)
-  (require 'dap-go)
-  ;; dap-go-setup
-  (add-hook 'dap-stopped-hook
-            (lambda (arg) (call-interactively #'dap-hydra)))
-  )
-
-;; -----------------------------
-
-;; by default, you need to press M-RET to add a auto-numbering list
-;; this will has some agenda mode binding..
 (use-package evil-org
   :after org
   :config
@@ -1760,6 +1577,14 @@ If the error list is visible, hide it.  Otherwise, show it."
   ;; (require 'evil-org-agenda)
   ;; (evil-org-agenda-set-keys)
   )
+
+(use-package restclient
+  :defer t)
+
+(use-package ob-restclient
+  :defer t
+  :after (org restclient)
+  :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
 (with-eval-after-load 'org
   (org-babel-do-load-languages
@@ -1895,3 +1720,5 @@ If the error list is visible, hide it.  Otherwise, show it."
                '("tl" "a longterm todo" entry
                  (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
                  "** TODO %^{title} %?\n SCHEDULED: %t\n")))
+
+(global-set-key (kbd "<escape>") 'keyboard-escape-quit)

@@ -1,9 +1,12 @@
-#+title: Mycraft emacs' literate programming configuration
-#+PROPERTY: header-args:emacs-lisp :tangle ./setup.el :mkdirp yes
+#+TITLE: Mycraft emacs' literate programming configuration
+#+PROPERTY: header-args:emacs-lisp :tangle ./init.el :mkdirp yes
 #+DESCRIPTION: In other words, you write a document that describes your program and that document is also the source code for the program being described.
 
-* Progress
-  start from function  my-shrink-window
+* What is this
+
+  It's a documentation of my emacs config and is also a emacs lisp code for my emacs setup.
+  This is powered by the =emacs-babel-tangle=. To generate the [[file:init.el][init.el]]. just run this command.
+
 * Setup
 
   Put =-*- lexical-binding: t; -*-= in the beginning of the file. This way, we don't need to call =(setq lexical-binding t)=.
@@ -46,7 +49,7 @@
      (setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
    #+end_src
 
-* Font setup
+* Font setup & config background color
 
   #+begin_src emacs-lisp
     (defvar default-font-size 140)
@@ -111,11 +114,14 @@
    #+end_src
 
 ** enable highlight current line
-   jinja2 is the child of text-mode
+   enable for prog-mode and text-mode
 
-   so it's no need to set up for jinja2 mode again.
-   (with-eval-after-load 'jinja2-mode
-   (add-hook 'jinja2-mode-hook 'hl-line-mode))
+   jinja2 is the child of text-mode so it's no need to set up for this again.
+
+   #+begin_src emacs-lisp :tangle no
+     (with-eval-after-load 'jinja2-mode
+       (add-hook 'jinja2-mode-hook 'hl-line-mode))
+   #+end_src
 
    #+begin_src emacs-lisp
      (add-hook 'prog-mode-hook 'hl-line-mode)
@@ -155,7 +161,7 @@
    #+begin_src emacs-lisp
      (setq make-backup-files nil)
      (setq-default indent-tabs-mode nil)
-     (setq xwidget-webkit-enable-plugins t)
+     (setq xwidget-webkit-enable-plugins t) ;; what does this impact?
    #+end_src
 
 ** set default indent width
@@ -205,21 +211,23 @@
    #+end_src
 
 ** disable word wrap
-   (toggle-word-wrap 0)
+   inspect the source of =(toggle-word-wrap 0)= and find set =word-wrap= to nil can
+   achieve this function.
 
    #+begin_src emacs-lisp
      (setq word-wrap nil)
    #+end_src
 
 ** auto revert mode
-   auto refresh when moving file or rename file in dired mode
-   #+begin_example
-   (global-auto-revert-mode t)
-   #+end_example
+   auto refresh when moving file or rename file in dired mode, reread buffer when the file is changed.
+
+   #+begin_src emacs-lisp
+     (global-auto-revert-mode t)
+   #+end_src
 
 * Self defined helper functions
 
-** detect system
+** an helper to detect os
 
   #+begin_src emacs-lisp
     (defun system-is-mac! ()
@@ -234,8 +242,8 @@
 
 ** switch input method for evil mode
 
-   *need to install the package im-select*
-   TODO refactor this auto switch input method function into another file.
+   *need to install the package [[https://github.com/daipeihust/im-select][im-select]]*
+   TODO: refactor this auto switch input method function into another file.
 
    #+begin_src emacs-lisp
      (defcustom im-exec "/usr/local/bin/im-select"
@@ -536,22 +544,27 @@
    when binding with lsp-command-map (maybe, it is not a
    normal keymap)
 
-   NOTE: evil-define-key can't used symbol of mode-map ...
+   NOTE: evil-define-key can't used symbol of mode-map. It's different from the general.el
 
    ex.
-   (evil-define-key 'normal python-mode-map (kbd "SPC m") lsp-command-map)
-   (evil-define-key 'normal go-mode-map (kbd "SPC m") lsp-command-map)
+   #+begin_src emacs-lisp :tangle no
+     (evil-define-key 'normal python-mode-map (kbd "SPC m") lsp-command-map)
+     (evil-define-key 'normal go-mode-map (kbd "SPC m") lsp-command-map)
+   #+end_src
+
+
+   still have no idea how =(which-key-add-major-mode-key-based-replacements mode key desc)=
+   works?
 
    #+begin_src emacs-lisp
      (defun define-leader-key-map-for (mode-map &rest MAPS)
-       "Define the leader key map for the specify mode."
+       "Define the leader key map for the specify mode.
+     key desc binding."
        (let ((get-props (lambda () (list
                                     my-local-leader-def-emacs-state-prop
                                     my-local-leader-def-prop
                                     my-local-leader-def-alias-prop))))
 
-         ;; (which-key-add-major-mode-key-based-replacements mode key desc)
-         ;; key desc binding
 
          (dolist (prop (funcall get-props))
 
@@ -827,6 +840,17 @@
          :parent 'read-file-name-internal
          :occur #'counsel-find-file-occur))
    #+end_src
+
+** auto tangle literate config
+   #+begin_src emacs-lisp :tangle no
+     (defun my-tangle-literate-config ()
+       "Auto call org-babel-tangle when saving the literate_setup.org"
+       (when (string-equal (buffer-file-name) (expand-file-name "~/Desktop/spacemacs-private/mycraft/literate_setup.org"))
+
+         (org-babel-tangle nil)))
+
+     (add-hook 'after-save-hook #'my-tangle-literate-config)
+   #+end_src
 ** search relevant functions
    #+begin_src emacs-lisp
      (defun my-counsel-projectile-rg (&optional options)
@@ -919,14 +943,13 @@
   Initialize package sources
   Note: sometimes you may encouter an expired key when
   downloading package. You need to fresh it.
-  There are many ways to do it. One of them is call list-package
-  Or delete the entire folder =elpa= make the emacs to redownload
-  all packages.
+  There are many ways to do it. One of them is call =list-package=
+  Or delete the entire folder =elpa= make the emacs to redownload all packages.
 
 ** set up use-package
    The =:ensure= keyword causes the package(s) to be installed automatically
    if not already present on your system.
-   this setting will globally enable ensure (setq use-package-always-ensure t)
+   =(setq use-package-always-ensure t)= will globally enable ensure to t.
 
    #+begin_src emacs-lisp
      (require 'subr-x)
@@ -995,6 +1018,11 @@
        :pin melpa)
    #+end_src
 
+** diminish
+   #+begin_src emacs-lisp
+     (use-package diminish :defer t)
+   #+end_src
+
 ** rainbow-mode
    #+begin_src emacs-lisp
      (use-package rainbow-mode
@@ -1009,7 +1037,7 @@
    #+end_src
 
 ** highlight parentheses
-   hightlight the current parentesis' scope
+   hightlight the current parenthesis' scope
 
    #+begin_src emacs-lisp
      (use-package highlight-parentheses
