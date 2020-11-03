@@ -14,30 +14,29 @@
 
   Wow almost complete :)
 
-
 ** things needed to be done or enahnced
 
-   - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
-   - [ ] why persp doesn't persist when reeval the buffer
-   - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] add run test and intergrate them into hydra bindings for go mode
    - [ ] add rename file function
-   - [ ] adopt darkroom package?
+   - [ ] implement my own run-python-shell
+   - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
 
 ** program relavant config
 
-   - [ ] manage this config by literate programming way
    - [ ] ssh remote better ux https://github.com/jixiuf/vterm-toggle
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 
 ** better to have
 
    - [ ] a startup dashboard
+   - [ ] to persist persp when reeval the buffer or creating a new frame
+   - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
    - [ ] window management https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup
+   - [ ] adopt darkroom package?
 
 ** some questions
 
@@ -45,15 +44,11 @@
    - [X] what does the =command= in the use-package do (make the command to be autoloaded)
    - [X] what is =featurep=
 
-
   #+begin_src bash
     emacs -Q --load init.el or
     /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
     /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
-
   #+end_src
-
-  reference: https://www.youtube.com/watch?v=xaZMwNELaJY
 
 ** use =esup= to profiling the emacs start up time
 
@@ -122,6 +117,7 @@
    - https://github.com/daipeihust/im-select (combine this with evil mode)
    - https://github.com/clemera/objed (interesting..)
    - https://github.com/p3r7/awesome-elisp
+   - https://github.com/sulami/literate-calc-mode.el
    - https://protesilaos.com/dotemacs/
    - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
    - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)

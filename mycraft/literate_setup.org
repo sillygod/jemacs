@@ -1084,6 +1084,9 @@
    #+end_src
 
 ** devdocs
+
+   search thing under point [[https://devdocs.io/][devdocs]]
+
    #+begin_src emacs-lisp
      (use-package devdocs
        :defer t
@@ -1103,8 +1106,11 @@
 
 ** diff-hl
 
-   I've check this. It seems setting post-refresh-hook is enough
-   (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh)
+   I've check this. It seems to set =magit-post-refresh-hook= is enough.
+
+   #+begin_src emacs-lisp :tangle no
+     (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh) ;; no need
+   #+end_src
 
    #+begin_src emacs-lisp
      (use-package diff-hl
@@ -1126,6 +1132,7 @@
    #+end_src
 
 ** which key mode
+   a friendly key shortcut hint.
    #+begin_src emacs-lisp
      (use-package which-key
        :diminish which-key-mode
@@ -1178,7 +1185,7 @@
 ** jinja2-mode
    to research why there should append a suffix ='= for the mod
    the :config will be run after trigger autoload function
-   change the tab behavior of jinja2 mode by =indent-line-function
+   change the tab behavior of jinja2 mode by =indent-line-function=
 
    #+begin_src emacs-lisp
      (use-package jinja2-mode
@@ -1194,11 +1201,12 @@
 ** smartparens
 
    Decide to use this package to auto balance the parens
-   NOTE: we should put this in the :init
-   if we put this in the :config, it will perform add these hook after
-   lazy-loading. That means we will not get it auto turn on when we enter one of the following program mode
-   :init before trigger
-   :config after trigger
+   NOTE: we should put hook in the =:init=
+   If we put this in the =:config=, it will perform add these hook after lazy-loading.
+   That means we will not get it auto turn on when we enter one of the following program mode
+
+   =:init= before trigger
+   =:config= after trigger
 
    #+begin_src emacs-lisp
      (use-package smartparens
@@ -1266,7 +1274,7 @@
 
 ** systemd
 
-   ISSUE: Company backend ’t’ could not be initialized
+   encounter an *issue: Company backend ’t’ could not be initialized*
    #+begin_src emacs-lisp
      (use-package systemd
        :defer t)
@@ -1325,6 +1333,7 @@
 ** common lisp or emacs lisp
 
    TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
+
    #+begin_src emacs-lisp
      (use-package slime
        :defer t
@@ -1440,15 +1449,27 @@
        (setq lsp-python-ms-auto-install-server t))
    #+end_src
 
-   currently, disable lsp-ui
-   (use-package lsp-ui
-   :after flycheck
-   :commands lsp-ui-mode
-   :config
-   (setq lsp-ui-doc-enable nil)
-   (setq lsp-ui-sideline-enable nil))
+   currently, disable =lsp-ui=
+
+   #+begin_src emacs-lisp :tangle no
+     (use-package lsp-ui
+       :after flycheck
+       :commands lsp-ui-mode
+       :config
+       (setq lsp-ui-doc-enable nil)
+       (setq lsp-ui-sideline-enable nil))
+   #+end_src
 
 ** ivy & swiper & counsel
+
+    =(setq ivy-use-selectable-prompt t)=
+    to make the candidate you typed selectable. This is useful when you call =counsel-find-file=.
+    Ex. You can choose the bar.yml when there is a candidate named barfar.yml
+
+    =(setq ivy-initial-inputs-alist nil)=
+    let the input in the ivy-minibuffer empty when opening the it.
+
+
    #+begin_src emacs-lisp
      (use-package ivy
        :ensure t
@@ -1471,9 +1492,6 @@
        (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
        (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
        (setq ivy-use-selectable-prompt t)
-       ;; NOTE: make the candidate you typed selectable
-       ;; This is useful when you call =counsel-find-file=. Ex. You can choose the bar.yml when there is a candidate named barfar.yml
-
        ;; (setq ivy-dynamic-exhibit-delay-ms 250)
        (setq ivy-initial-inputs-alist nil))
 
@@ -1483,10 +1501,11 @@
        (ivy-rich-mode 1))
    #+end_src
 
-   After swiper, counsel search, ivy-occur (C-c C-o) to get the candidate in another buffer
+   After calling =swiper=, =counsel search=, ivy-occur (C-c C-o) will get all the candidates in another buffer.
    Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
-   use multiple-cursor may be helpful.
-   Finally, Ctrl-c Ctrl-c to commit change
+
+   Use =multiple-cursor= may be helpful here.
+   Finally, =Ctrl-c Ctrl-c= to commit change
    there are some key binding in the swiper-map
 
    #+begin_src emacs-lisp
@@ -1583,10 +1602,10 @@
        (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
    #+end_src
 
-   evil collection provides some pre-defined evil key binding for other-modes.
+   evil-matchit  make =%= to be able to jump to and back the tag
+   evil-collection provides some pre-defined evil key binding for other-modes.
 
    #+begin_src emacs-lisp
-     ;; make =%= to be able to jump to and back the tag
      (use-package evil-matchit
        :after evil
        :config
@@ -1818,6 +1837,9 @@
            "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
            "'" "org-edit-special" 'org-edit-special
 
+           "b" "babel" nil
+           "bt" "tangle" 'org-babel-tangle
+
            "i" "insert" nil
            "il" "insert link" 'org-insert-link
 
@@ -2037,9 +2059,12 @@
 
 ** company
    company-mode setup
+
+   #+begin_notes
    "<return>" is the Return key while emacs runs in a graphical user interface.
    "RET" is the Return key while emacs runs in a terminal. ...
    But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
+   #+end_notes
 
    #+begin_src emacs-lisp
      (use-package company
@@ -2053,23 +2078,21 @@
        (global-company-mode 1))
    #+end_src
 
-   NOTE: temporarily disable this because it consumes lots of cpu
-   (use-package company-tabnine
-   :config
-   (with-eval-after-load 'company
-   (add-to-list 'company-backends #'company-tabnine)
-   (setq company-tabnine-always-trigger nil)
-   (setq company-show-numbers t)
-   (setq company-idle-delay 0.1)))
+   NOTE: temporarily disable =company-tabnine= because it consumes lots of cpu.
+
+   #+begin_src emacs-lisp :tangle no
+     (use-package company-tabnine
+       :config
+       (with-eval-after-load 'company
+         (add-to-list 'company-backends #'company-tabnine)
+         (setq company-tabnine-always-trigger nil)
+         (setq company-show-numbers t)
+         (setq company-idle-delay 0.1)))
+   #+end_src
 
 ** org
 
    we can check the org's version by the command =org-version=
-
-   evil-org
-
-   by default, you need to press M-RET to add a auto-numbering list
-   this will has some agenda mode binding..
 
    #+begin_src emacs-lisp
      (use-package org-ql
@@ -2098,17 +2121,30 @@
      (use-package visual-fill-column
        :hook (org-mode . org-mode-visual-fill))
 
+
+   #+end_src
+
+*** evil-org
+
+   By default, you need to press M-RET to add a auto-numbering list
+   this will has some agenda mode binding..
+
+   If you want the key binding for org-agenda-mode, add the following settings.
+
+   #+begin_src emacs-lisp :tangle no
+     (require 'evil-org-agenda)
+     (evil-org-agenda-set-keys)
+   #+end_src
+
+
+   #+begin_src emacs-lisp
      (use-package evil-org
        :after org
        :config
        (add-hook 'org-mode-hook 'evil-org-mode)
        (add-hook 'evil-org-mode-hook
                  (lambda ()
-                   (evil-org-set-key-theme)))
-       ;; disable org agenda key binding
-       ;; (require 'evil-org-agenda)
-       ;; (evil-org-agenda-set-keys)
-       )
+                   (evil-org-set-key-theme))))
    #+end_src
 
 *** restclient
@@ -2261,6 +2297,7 @@
     #+end_src
 
 * Some key binding
+
   prevent prompting in minibuffer, just quit the command
   #+begin_src emacs-lisp
     (global-set-key (kbd "<escape>") 'keyboard-escape-quit)

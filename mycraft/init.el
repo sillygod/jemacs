@@ -1036,9 +1036,6 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
   (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
   (setq ivy-use-selectable-prompt t)
-  ;; NOTE: make the candidate you typed selectable
-  ;; This is useful when you call =counsel-find-file=. Ex. You can choose the bar.yml when there is a candidate named barfar.yml
-
   ;; (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil))
 
@@ -1115,7 +1112,6 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (add-hook 'evil-insert-state-exit-hook 'im-remember)
   (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
 
-;; make =%= to be able to jump to and back the tag
 (use-package evil-matchit
   :after evil
   :config
@@ -1317,6 +1313,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
       "a" "org-agenda" 'org-agenda
       "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
       "'" "org-edit-special" 'org-edit-special
+
+      "b" "babel" nil
+      "bt" "tangle" 'org-babel-tangle
 
       "i" "insert" nil
       "il" "insert link" 'org-insert-link
@@ -1572,11 +1571,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (add-hook 'org-mode-hook 'evil-org-mode)
   (add-hook 'evil-org-mode-hook
             (lambda ()
-              (evil-org-set-key-theme)))
-  ;; disable org agenda key binding
-  ;; (require 'evil-org-agenda)
-  ;; (evil-org-agenda-set-keys)
-  )
+              (evil-org-set-key-theme))))
 
 (use-package restclient
   :defer t)
