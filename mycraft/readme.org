@@ -111,6 +111,7 @@
    - autothemer
    - http://ergoemacs.org/emacs/emacs.html
    - https://github.com/daviwil/dotfiles
+   - https://laptrinhx.com/evil-emacs-configuration-1977138996/
    - https://github.com/lccambiaghi/.doom.d
    - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
    - https://github.com/raxod502/radian/tree/develop/emacs

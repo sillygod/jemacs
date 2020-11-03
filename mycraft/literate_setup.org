@@ -6,6 +6,7 @@
 
   It's a documentation of my emacs config and is also a emacs lisp code for my emacs setup.
   This is powered by the =emacs-babel-tangle=. To generate the [[file:init.el][init.el]]. just run this command.
+  Thanks for the awesome [[https://github.com/syl20bnr/spacemacs][spacemacs]]. I borrow some util function from it :)
 
 * Setup
 
@@ -65,6 +66,8 @@
     (setq frame-title-format "") ;; to disable show buffer name in the title bar
     ;; (force-mode-line-update) to update the frame title
     (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
+    (setq scroll-preserve-screen-position t)
+    (setq auto-window-vscroll nil)
   #+end_src
 
 ** make curosr in the help window at first when poping up a help window
@@ -428,17 +431,20 @@
 
 ** misc
 
-   (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
-   (print (key-binding (kbd (concat "SPC" " mhh"))))
-   (if (commandp binding)
-   (call-interactively binding)
-   (evil-lookup))))
+   Note:
+   #+begin_src emacs-lisp :tangle no
+     (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
+       (print (key-binding (kbd (concat "SPC" " mhh"))))
+       (if (commandp binding)
+           (call-interactively binding)
+         (evil-lookup)))
+   #+end_src
 
 
    #+begin_src emacs-lisp
      (defun hey-god (question)
        "Reduce distraction when you search the answer for the question.
-                    Powered by the howdoi"
+                         Powered by the howdoi"
        (interactive "sAsk the god, you'll get it: ")
        (let ((buffer-name "*God's reply*")
              (exectuable-name "howdoi"))
@@ -449,28 +455,24 @@
            (pop-to-buffer buffer-name))))
 
      (defun now ()
-       "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
+       "Get the current time, In the future this will show a temp buffer
+     with unix format, human readable and the weather info."
        (interactive)
        (message "now: %s \ntimestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
 
      (defun evil-smart-doc-lookup ()
        "Run documentation lookup command specific to the major mode.
-          Use command bound to `SPC m h h` if defined, otherwise fall back
-          to `evil-lookup'"
+               Use command bound to `SPC m h h` if defined, otherwise fall back
+               to `evil-lookup'"
        (interactive)
-       ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
        (when (fboundp 'lsp-describe-thing-at-point)
          (lsp-describe-thing-at-point)
          (evil-lookup)))
 
      (defun org-mode-visual-fill ()
        "A beautiful word wrap effect."
-       (setq visual-fill-column-width 150)
-       ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
-       ;; maybe, I can remove this package?
        (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
-       (global-visual-line-mode 1)
-       (visual-fill-column-mode 1))
+       (global-visual-line-mode 1))
    #+end_src
 
 ** lsp-keybinding
@@ -1978,6 +1980,7 @@
        (define-leader-key-global
          "t"  '(:ignore t :which-key "toggles")
          "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+         "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
          "ts" '(hydra-text-scale/body :which-key "scale text"))
 
        (define-leader-key-global
@@ -2119,8 +2122,10 @@
        :hook (org-mode . org-superstar-mode))
 
      (use-package visual-fill-column
+       :init
+       (setq visual-fill-column-width 150)
+       (setq visual-fill-column-center-text t)
        :hook (org-mode . org-mode-visual-fill))
-
 
    #+end_src
 

@@ -28,6 +28,8 @@
 (setq frame-title-format "") ;; to disable show buffer name in the title bar
 ;; (force-mode-line-update) to update the frame title
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
+(setq scroll-preserve-screen-position t)
+(setq auto-window-vscroll nil)
 
 (setq help-window-select t)
 
@@ -261,7 +263,7 @@ initialized with the current directory instead of filename."
 
 (defun hey-god (question)
   "Reduce distraction when you search the answer for the question.
-               Powered by the howdoi"
+                    Powered by the howdoi"
   (interactive "sAsk the god, you'll get it: ")
   (let ((buffer-name "*God's reply*")
         (exectuable-name "howdoi"))
@@ -272,28 +274,24 @@ initialized with the current directory instead of filename."
       (pop-to-buffer buffer-name))))
 
 (defun now ()
-  "Get the current time, In the future this will show a temp buffer with unix format, human readable and the weather info."
+  "Get the current time, In the future this will show a temp buffer
+with unix format, human readable and the weather info."
   (interactive)
   (message "now: %s \ntimestamp: %s" (format-time-string "%Y-%m-%d %H:%m:%S %z") (format-time-string "%s")))
 
 (defun evil-smart-doc-lookup ()
   "Run documentation lookup command specific to the major mode.
-     Use command bound to `SPC m h h` if defined, otherwise fall back
-     to `evil-lookup'"
+          Use command bound to `SPC m h h` if defined, otherwise fall back
+          to `evil-lookup'"
   (interactive)
-  ;; (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
   (when (fboundp 'lsp-describe-thing-at-point)
     (lsp-describe-thing-at-point)
     (evil-lookup)))
 
 (defun org-mode-visual-fill ()
   "A beautiful word wrap effect."
-  (setq visual-fill-column-width 150)
-  ;; TODO: research implement a hook to dynamic change the visual-fill-column-with
-  ;; maybe, I can remove this package?
   (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
-  (global-visual-line-mode 1)
-  (visual-fill-column-mode 1))
+  (global-visual-line-mode 1))
 
 (defun lsp-keybinding ()
   "Return the keybinding for lsp functions."
@@ -1455,6 +1453,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
     "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+    "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
   (define-leader-key-global
@@ -1563,6 +1562,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   :hook (org-mode . org-superstar-mode))
 
 (use-package visual-fill-column
+  :init
+  (setq visual-fill-column-width 150)
+  (setq visual-fill-column-center-text t)
   :hook (org-mode . org-mode-visual-fill))
 
 (use-package evil-org
