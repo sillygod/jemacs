@@ -17,9 +17,10 @@
 ** things needed to be done or enahnced
 
    - [ ] add run test and intergrate them into hydra bindings for go mode
-   - [ ] add rename file function
    - [ ] implement my own run-python-shell
+   - [ ] code folding problem (hideshow?)
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
+   - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
 
 ** program relavant config
 
@@ -35,8 +36,8 @@
    - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
-   - [ ] window management https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup
    - [ ] adopt darkroom package?
+   - [ ] https://github.com/plexus/lesser-evil/blob/main/init.el (consider to use =straight= to replace =use-package=)
 
 ** some questions
 
@@ -44,45 +45,15 @@
    - [X] what does the =command= in the use-package do (make the command to be autoloaded)
    - [X] what is =featurep=
 
-  #+begin_src bash
-    emacs -Q --load init.el or
-    /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
-    /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
-  #+end_src
-
-** use =esup= to profiling the emacs start up time
-
-** use =what-cursor-position= to see the detail font-face under the cursor
-   run this with universal args can get a more detail info.
-
-** toggle-debug-on-error help to debug
-
-** transient-state seems to be spaceamcs's own implementation
-
-   [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137][source code link]]
-
-** helpful
-
-   #+begin_quote
-   you can search for Emacs functions within Emacs by typing M-x apropos, then typing your query. In this case, M-x apropos <RET> whitespace <RET> provides a list of functions relating to whitespace.
-   #+end_quote
-
-*** introspec the keybinding in the emacs
-    https://emacs.stackexchange.com/questions/653/how-can-i-find-out-in-which-keymap-a-key-is-bound
-
-** evil-collection
-
-   Oh~ We can overwrite the original keymap by changing the kemap of the mode
-
-   ex.
-   #+begin_src elisp
-     (setcdr
-        (assq 'lispy-mode minor-mode-map-alist)
-        lispy-mode-map)
+   #+begin_src bash
+     emacs -Q --load init.el or
+     /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
+     /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
    #+end_src
 
-** some commands
+* Notes
 
+** some commands
 *** list-colors-display
     這樣就可以知道當前所有的face，這樣要客製化會比較容易
 
@@ -104,22 +75,188 @@
       (disable-theme)
     #+end_src
 
+*** font-lock vs overlay
+
+    https://github.com/wolray/symbol-overlay
+
+*** normal-mode
+    this can apply the local varaibles of the file or its directory.
+
+*** add-file-local-variable
+    generate the code for file local varaibles
+
+** use =esup= to profiling the emacs start up time
+** use =what-cursor-position= to see the detail font-face under the cursor
+   run this with universal args can get a more detail info.
+
+** toggle-debug-on-error help to debug
+** transient-state seems to be spaceamcs's own implementation
+   behind the scene is =hydra=
+   [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137][source code link]]
+
+** helpful
+
+   #+begin_quote
+   you can search for Emacs functions within Emacs by typing M-x apropos, then typing your query. In this case, M-x apropos <RET> whitespace <RET> provides a list of functions relating to whitespace.
+   #+end_quote
+
+*** introspec the keybinding in the emacs
+    https://emacs.stackexchange.com/questions/653/how-can-i-find-out-in-which-keymap-a-key-is-bound
+
+** evil-collection
+
+   Oh~ We can overwrite the original keymap by changing the kemap of the mode
+
+   ex.
+   #+begin_src elisp
+     (setcdr
+      (assq 'lispy-mode minor-mode-map-alist)
+      lispy-mode-map)
+   #+end_src
+
+** Advice vs Hook
+   https://www.emacswiki.org/emacs/AdviceVsHooks
+
+** defcustom vs defvar
+   Defcustom provide a more user-friendly customization with the built-in function =customize=.
+
+** define-derived-mode
+   We can define the major mode by this function.
+
+** call-process
+   What's the difference from the =shell-command=. =start-process= is aync.
+
+   This will be freezed because the process will not stop.
+   #+BEGIN_SRC elisp
+     (let ((buffer "*test-git*"))
+       (call-process "ping" nil buffer nil "google.com")
+       (switch-to-buffer buffer))
+   #+END_SRC
+
+
+   This will be ok.
+   #+BEGIN_SRC elisp
+     (let ((buffer "*test-git*"))
+       (start-process "git" buffer "ping" "google.com")
+       (switch-to-buffer buffer))
+   #+END_SRC
+
+   #+RESULTS:
+   : #<buffer *test-git*>
+
+** define transient function
+   ref: https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
+
+*** basic transient
+    #+begin_src elisp
+      (defun just-echo ()
+        (interactive)
+        (message "hello"))
+
+      (define-transient-command test-transient ()
+        "This is the doc"
+        ["Action"
+         ("a" "Action a" just-echo)
+         ("s" "Action a" just-echo)
+         ("d" "Action a" just-echo)])
+
+      (test-transient)
+    #+end_src
+
+    #+RESULTS:
+    | transient--resume-which-key-mode |
+
+*** transient with switches
+
+    #+begin_src elisp
+      (defun just-echo (&optional args)
+        (interactive (list (transient-args 'test-transient)))
+        (message "args: %s" args))
+
+      (define-transient-command test-transient ()
+        "This is the doc"
+        ["Arguments"
+         ("-s" "Switch" "--switch")
+         ("-a" "Annotate" "--annotate")]
+        ["Action"
+         ("a" "Action a" just-echo)
+         ("s" "Action a" just-echo)
+         ("d" "Action a" just-echo)])
+
+      (test-transient)
+    #+end_src
+
+    #+RESULTS:
+    | transient--resume-which-key-mode |
+
+*** transient with params
+
+    #+begin_src elisp
+      (defun just-echo (&optional args)
+        (interactive (list (transient-args 'test-transient)))
+        (message "args: %s" args))
+
+      (define-infix-argument test-transient:--message ()
+        :description "Messages"
+        :class 'transient-option
+        :shortarg "-m"
+        :argument "--message=")
+
+      (define-transient-command test-transient ()
+        "This is the doc"
+        ["Arguments"
+         ("-s" "Switch" "--switch")
+         ("-a" "Annotate" "--annotate")
+         (test-transient:--message)]
+        ["Action"
+         ("a" "Action a" just-echo)
+         ("s" "Action a" just-echo)
+         ("d" "Action a" just-echo)])
+
+      (test-transient)
+
+    #+end_src
+
+    #+RESULTS:
+    | transient--resume-which-key-mode |
+
+** how to define a keymap for a certain mode
+
+   #+begin_src elisp
+     ;; example
+     (defvar xx-mode-map
+       (let ((map (make-sparse-keymap)))
+         (define-key map (kbd "l") 'kubernete-transient) map))
+   #+end_src
+
 * Reference
 
-   - https://leanpub.com/lit-config/read
-   - https://github.com/wbolster/emacs-direnv
-   - autothemer
-   - http://ergoemacs.org/emacs/emacs.html
+** dotfiles
+
+   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
    - https://github.com/daviwil/dotfiles
    - https://laptrinhx.com/evil-emacs-configuration-1977138996/
    - https://github.com/lccambiaghi/.doom.d
    - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
    - https://github.com/raxod502/radian/tree/develop/emacs
-   - https://github.com/daipeihust/im-select (combine this with evil mode)
-   - https://github.com/clemera/objed (interesting..)
    - https://github.com/p3r7/awesome-elisp
-   - https://github.com/sulami/literate-calc-mode.el
    - https://protesilaos.com/dotemacs/
+   - https://github.com/alhassy/emacs.d/blob/master/README.org
+
+** literate programming
+
    - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
    - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
    - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
+
+
+** misc
+
+   - https://github.com/sulami/literate-calc-mode.el
+   - https://github.com/clemera/objed (interesting..)
+   - https://github.com/daipeihust/im-select (combine this with evil mode)
+   - https://leanpub.com/lit-config/read
+   - https://github.com/wbolster/emacs-direnv
+   - http://ergoemacs.org/emacs/emacs.html
+   - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
+   - autothemer

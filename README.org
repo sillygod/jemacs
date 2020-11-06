@@ -1,6 +1,9 @@
-* Customize your spacemacs
+* Customize your emacs (spacemacs is abandoned)
 
-  Let's start to customize your spacemacs. Note the directory =mycraft= is an experimental of crafting self-spacemacs.
+  Let's start to customize your emacs(+spacemacs+). Note the directory =mycraft= is an experimental of crafting self-spacemacs and that's what
+  I am focusing on.
+
+  Note: some directories are still preserved because I am not completely transfer all the functions and workflows from the =spacemacs=.
 
 * Install
 
@@ -10,148 +13,24 @@
     git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
   #+end_src
 
-  or you can clone to other directory and then create a soft link to the directory.
-  Choose the way you like
+  Or you can clone to other directory and then create a soft link to the directory.
+  Choose the way you like!
 
 * Description
 
-  This is an enhancement of my workflow with emacs
+  A minimum configuration to mimic the spacemacs' ux.
 
 * Personal configuration
 
   Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
 
-* Notes
-
-** Advice vs Hook
-   https://www.emacswiki.org/emacs/AdviceVsHooks
-
-** defcustom vs defvar
-   Defcustom provide a more user-friendly customization with the built-in function =customize=.
-
-** define-derived-mode
-   We can define the major mode by this function.
-
-** call-process
-   What's the difference from the =shell-command=. =start-process= is aync.
-
-   This will be freezed because the process will not stop.
-   #+BEGIN_SRC elisp
-     (let ((buffer "*test-git*"))
-       (call-process "ping" nil buffer nil "google.com")
-       (switch-to-buffer buffer))
-   #+END_SRC
-
-
-   This will be ok.
-   #+BEGIN_SRC elisp
-     (let ((buffer "*test-git*"))
-       (start-process "git" buffer "ping" "google.com")
-       (switch-to-buffer buffer))
-   #+END_SRC
-
-   #+RESULTS:
-   : #<buffer *test-git*>
-
-** define transient function
-   ref: https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
-
-*** basic transient
-   #+begin_src elisp
-     (defun just-echo ()
-       (interactive)
-       (message "hello"))
-
-     (define-transient-command test-transient ()
-       "This is the doc"
-       ["Action"
-        ("a" "Action a" just-echo)
-        ("s" "Action a" just-echo)
-        ("d" "Action a" just-echo)])
-
-     (test-transient)
-   #+end_src
-
-   #+RESULTS:
-   | transient--resume-which-key-mode |
-
-*** transient with switches
-
-    #+begin_src elisp
-      (defun just-echo (&optional args)
-        (interactive (list (transient-args 'test-transient)))
-        (message "args: %s" args))
-
-      (define-transient-command test-transient ()
-        "This is the doc"
-        ["Arguments"
-         ("-s" "Switch" "--switch")
-         ("-a" "Annotate" "--annotate")]
-        ["Action"
-         ("a" "Action a" just-echo)
-         ("s" "Action a" just-echo)
-         ("d" "Action a" just-echo)])
-
-      (test-transient)
-    #+end_src
-
-    #+RESULTS:
-    | transient--resume-which-key-mode |
-
-*** transient with params
-
-    #+begin_src elisp
-      (defun just-echo (&optional args)
-        (interactive (list (transient-args 'test-transient)))
-        (message "args: %s" args))
-
-      (define-infix-argument test-transient:--message ()
-        :description "Messages"
-        :class 'transient-option
-        :shortarg "-m"
-        :argument "--message=")
-
-      (define-transient-command test-transient ()
-        "This is the doc"
-        ["Arguments"
-         ("-s" "Switch" "--switch")
-         ("-a" "Annotate" "--annotate")
-         (test-transient:--message)]
-        ["Action"
-         ("a" "Action a" just-echo)
-         ("s" "Action a" just-echo)
-         ("d" "Action a" just-echo)])
-
-      (test-transient)
-
-    #+end_src
-
-    #+RESULTS:
-    | transient--resume-which-key-mode |
-
-** how to define a keymap for a certain mode
-
-   #+begin_src elisp
-     ;; example
-     (defvar xx-mode-map
-       (let ((map (make-sparse-keymap)))
-         (define-key map (kbd "l") 'kubernete-transient) map))
-   #+end_src
-
 * Reference
 
- Here are some tutorials.
- I put some notes on the =spacemacs_tips.org=
+ Here are some tutorials. In addition, I put some notes on the =spacemacs_tips.org=
 
-   - [[http://www.modernemacs.com/post/migrate-layers/][a blog mention about spacemacs layer]]
-   - https://github.com/alhassy/emacs.d/blob/master/README.org
-   - [[http://spacemacs.org/doc/QUICK_START.html][official intro about layer]]
-   - https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
-   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
    - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
    - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
    - https://github.com/xiongtx/eros (interesting plugins)
    - https://endlessparentheses.com/
    - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
-   - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
    - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]

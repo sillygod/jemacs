@@ -92,7 +92,7 @@
    We can adjust the ui by setting the =default-frame-alist=. The following settings are found in the source code.
 
    | function             | frame-alist                            |
-   | ----                 | ----                                   |
+   |----------------------+----------------------------------------|
    | (scroll-bar-mode -1) | '(vertical-scroll-bars)                |
    | (menu-bar-mode -1)   | '(menu-bar-lines . 0)                  |
    | (tool-bar-mode -1)   | '(tool-bar-lines . 0)                  |
@@ -232,16 +232,16 @@
 
 ** an helper to detect os
 
-  #+begin_src emacs-lisp
-    (defun system-is-mac! ()
-      (eq system-type 'darwin))
+   #+begin_src emacs-lisp
+     (defun system-is-mac! ()
+       (eq system-type 'darwin))
 
-    (defun system-is-linux! ()
-      (eq system-type 'gnu/linux))
+     (defun system-is-linux! ()
+       (eq system-type 'gnu/linux))
 
-    (defun system-is-windows ()
-      (eq system-type 'windows-nt))
-  #+end_src
+     (defun system-is-windows ()
+       (eq system-type 'windows-nt))
+   #+end_src
 
 ** switch input method for evil mode
 
@@ -283,8 +283,8 @@
 
 ** util helper to be completed
    #+begin_src emacs-lisp
-     ;; TODO: rewrite this
-     (defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
+     ;; NOTE: borrow from spacemacs
+     (defun show-hide-helm-or-ivy-prompt-msg (msg sec)
        "Show a MSG at the helm or ivy prompt for SEC.
           With Helm, remember the path, then restore it after SEC.
           With Ivy, the path isn't editable, just remove the MSG after SEC."
@@ -295,15 +295,13 @@
                     (buffer-substring (line-beginning-position)
                                       (line-end-position)))
                    (prev-prompt-contents-p
-                    (not (string= prev-prompt-contents "")))
-                   (helmp (fboundp 'helm-mode)))
+                    (not (string= prev-prompt-contents ""))))
               (when prev-prompt-contents-p
                 (delete-region (line-beginning-position)
                                (line-end-position)))
               (insert (propertize msg 'face 'warning))
               ;; stop checking for candidates
               ;; and update the helm prompt
-              (when helmp (helm-suspend-update t))
               (sit-for sec)
               (delete-region (line-beginning-position)
                              (line-end-position))
@@ -311,10 +309,10 @@
                 (insert prev-prompt-contents)
                 ;; start checking for candidates
                 ;; and update the helm prompt
-                (when helmp (helm-suspend-update nil)))))
+                )))
         msg sec))
 
-     ;; TODO rewrite this
+     ;; NOTE: borrow from spacemacs
      (defun rename-current-buffer-file (&optional arg)
        "Rename the current buffer and the file it is visiting.
      If the buffer isn't visiting a file, ask if it should
@@ -336,7 +334,7 @@
                (cond ((get-buffer new-name)
                       (error "A buffer named '%s' already exists!" new-name))
                      ((string-equal new-name old-filename)
-                      (spacemacs/show-hide-helm-or-ivy-prompt-msg
+                      (show-hide-helm-or-ivy-prompt-msg
                        "Rename failed! Same new and old name" 1.5)
                       (rename-current-buffer-file))
                      (t
@@ -352,7 +350,7 @@
                       (when (fboundp 'recentf-add-file)
                         (recentf-add-file new-name)
                         (recentf-remove-if-non-kept old-filename))
-                      (when (and (configuration-layer/package-used-p 'projectile)
+                      (when (and (featurep 'projectile)
                                  (projectile-project-p))
                         (call-interactively #'projectile-invalidate-cache))
                       (message (cond ((and file-moved-p file-renamed-p)
@@ -396,7 +394,6 @@
                                          "To:   " new-buffer-name))))
                      ;; ?\a = C-g, ?\e = Esc and C-[
                      ((memq key '(?\a ?\e)) (keyboard-quit))))))))
-
    #+end_src
 
 ** text encoding decoding
@@ -705,7 +702,7 @@
              (kill-new file-path)
              (message "%s" file-path))
          (message "WARNING: Current buffer is not attached to a file!")))
-  #+end_src
+   #+end_src
 
 ** file manipulation
    #+begin_src emacs-lisp
@@ -854,6 +851,15 @@
      (add-hook 'after-save-hook #'my-tangle-literate-config)
    #+end_src
 ** search relevant functions
+
+   TODO: to understand the implmentation of counsel-projectile-rg
+
+   #+begin_src emacs-lisp
+     (when (= (prefix-numeric-value current-prefix-arg) 4)
+       (setq current-prefix-arg '(16)))
+   #+end_src
+
+
    #+begin_src emacs-lisp
      (defun my-counsel-projectile-rg (&optional options)
        "Search the current project with rg and search under certarn directory
@@ -878,11 +884,16 @@
                           " "))
               (counsel-rg-base-command
                (let ((counsel-ag-command counsel-rg-base-command))
-                 (counsel--format-ag-command ignored "%s"))))
+                 (counsel--format-ag-command ignored "%s")))
+              (initial-input (when (use-region-p) (buffer-substring (region-beginning) (region-end)))))
          (ivy-add-actions
           'counsel-rg
           counsel-projectile-rg-extra-actions)
-         (counsel-rg (eval counsel-projectile-rg-initial-input)
+
+         (when (= (prefix-numeric-value current-prefix-arg) 4)
+           (setq current-prefix-arg '(16)))
+
+         (counsel-rg initial-input
                      search-directory
                      options
                      (projectile-prepend-project-name
@@ -1098,12 +1109,25 @@
    #+end_src
 
 ** hl-todo mode
+
+   TODO: https://github.com/coldnew/coldnew-emacs#highlight-fixme-todo
+
    #+begin_src emacs-lisp
      (use-package hl-todo
        :defer t
        :hook
        ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
-       (prog-mode . hl-todo-mode))
+       (prog-mode . hl-todo-mode)
+       :config
+       (setq hl-todo-highlight-punctuation ":")
+       (setq hl-todo-keyword-faces
+             `(
+               ("TODO" warning bold)
+               ("FIXME" error bold)
+               ("HACK" font-lock-constant-face bold)
+               ("NOTE" success bold)
+               ("BUG" error bold)
+               ("DEPRECATED" font-lock-doc-face bold))))
    #+end_src
 
 ** diff-hl
@@ -1153,6 +1177,16 @@
        :defer t)
    #+end_src
 
+** notification
+
+   #+begin_src emacs-lisp
+     (use-package alert
+       :commands alert
+       :config
+       (if (system-is-mac!)
+           (setq alert-default-style 'osx-notifier)))
+   #+end_src
+
 ** ebook reader
    #+begin_src emacs-lisp
      (use-package nov
@@ -1182,6 +1216,13 @@
    #+begin_src emacs-lisp
      (use-package nginx-mode
        :defer t)
+   #+end_src
+
+** conf-mode
+   #+begin_src emacs-lisp
+     (use-package conf-mode
+       :defer t
+       :mode ("poetry\\.lock" . conf-toml-mode))
    #+end_src
 
 ** jinja2-mode
@@ -1264,6 +1305,8 @@
 
    #+begin_src emacs-lisp
      (use-package expand-region
+       :commands
+       (er--expand-region-1)
        :defer t)
    #+end_src
 
@@ -1413,6 +1456,12 @@
    run =company-diag= to check what the company-backen is being used.
    =(setq lsp-keymap-prefix "SPC m")= this will only affect the display info of whichkey.
 
+
+   If you want a breadcrumb to hint current position, add the following setting.
+   #+begin_src emacs-lisp :tangle no
+     (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
+   #+end_src
+
    #+begin_src emacs-lisp
      (use-package lsp-mode
        :init
@@ -1421,8 +1470,6 @@
        (lsp)
        :hook
        (go-mode . lsp)
-       ;; (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
-       ;; add breadcrumb to hint current position
        (python-mode . lsp)
        (rust-mode . lsp)
        (js-mode . lsp)
@@ -1464,12 +1511,12 @@
 
 ** ivy & swiper & counsel
 
-    =(setq ivy-use-selectable-prompt t)=
-    to make the candidate you typed selectable. This is useful when you call =counsel-find-file=.
-    Ex. You can choose the bar.yml when there is a candidate named barfar.yml
+   =(setq ivy-use-selectable-prompt t)=
+   to make the candidate you typed selectable. This is useful when you call =counsel-find-file=.
+   Ex. You can choose the bar.yml when there is a candidate named barfar.yml
 
-    =(setq ivy-initial-inputs-alist nil)=
-    let the input in the ivy-minibuffer empty when opening the it.
+   =(setq ivy-initial-inputs-alist nil)=
+   let the input in the ivy-minibuffer empty when opening the it.
 
 
    #+begin_src emacs-lisp
@@ -1576,6 +1623,16 @@
                                     (vterm-send-return))))
    #+end_src
 
+** ediff
+
+   #+begin_src emacs-lisp
+     (use-package ediff
+       :defer t
+       :init
+       (setq ediff-window-setup-function 'ediff-setup-windows-plain)
+       (setq ediff-split-window-function 'split-window-horizontally))
+   #+end_src
+
 ** evil
    it's evil! provide you vim-like ux in emacs.
 
@@ -1629,10 +1686,10 @@
 
    #+begin_src emacs-lisp
      (use-package evil-nerd-commenter
-            :after evil
-            :commands evilnc-comment-operator
-            :init
-            (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
+       :after evil
+       :commands evilnc-comment-operator
+       :init
+       (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
 
      (use-package evil-surround
        :after evil
@@ -1655,9 +1712,22 @@
        (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
    #+end_src
 
-** vimish fold
+** code folding
+
    #+begin_src emacs-lisp
-     ;; create arbitrary fold not like other package auto detect the program language
+     (use-package hideshow
+       :commands
+       (hs-toggle-hiding
+        hs-hide-block
+        hs-hide-level
+        hs-show-all
+        hs-hide-all))
+   #+end_src
+
+
+   create arbitrary fold not like other package auto detect the program language
+
+   #+begin_src emacs-lisp
      (use-package vimish-fold
        :after evil
        :hook (prog-mode . vimish-fold-mode))
@@ -1687,6 +1757,11 @@
         mc/mark-previous-like-this))
    #+end_src
 
+   #+begin_src emacs-lisp
+     (use-package iedit
+       :defer t)
+   #+end_src
+
 ** git version control
 
    ENHANCE: adjust the pop ui
@@ -1706,6 +1781,15 @@
        :defer 2
        :after magit)
 
+   #+end_src
+
+** auto-highlight-symbol
+
+   TODO: need to customize this one.
+
+   #+begin_src emacs-lisp
+     (use-package auto-highlight-symbol
+       :defer t)
    #+end_src
 
 ** general
@@ -1786,10 +1870,6 @@
        (evil-define-key 'visual 'global
          (kbd "g y") 'copy-region-and-base64-decode
          (kbd "g e") 'copy-region-and-urlencode)
-
-       ;; TODO: maybe I can define my own hydra?
-       (evil-define-key 'normal 'evil-motion-state-map
-         (kbd "*") 'swiper-thing-at-point)
 
        ;; keybinding for go-mode
        (with-eval-after-load 'lsp-mode
@@ -2004,6 +2084,7 @@
          "w/" '(evil-window-vsplit :which-key "split vertically")
          "w-" '(evil-window-split :which-key "split horizontally")
 
+         "w=" '(balance-windows :which-key "balance")
          "w[" '(my-shrink-window-horizontally :which-key "shrink h")
          "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
          "w{" '(my-shrink-window :which-key: "shrink v")
@@ -2027,38 +2108,103 @@
          "fed" '(my-find-dotfile :which-key "open config dotfile")
          "fy" '(copy-file-path :which-key "copy file path")
          "fs" '(save-buffer :which-key "save file")
+         "fr" '(rename-current-buffer-file :which-key "rename file")
          "ff" '(counsel-find-file :which-key "find file")))
    #+end_src
 
 ** hydra
-   #+begin_src emacs-lisp
-     (use-package hydra
-       :defer t)
 
-     (defhydra window-operate ()
-       "window operation"
-       ("[" my-shrink-window-horizontally "shrink (h)")
-       ("]" my-enlarge-window-horizontally "enlarge (h)")
-       ("{" my-shrink-window "shrink (v)")
-       ("}" my-enlarge-window "enlarge (v)")
-       ("=" balance-windows "balance"))
+*** hydra doc rule
 
-     (defhydra hydra-text-scale (:timeout 8)
-       "scale text"
-       ("j" text-scale-increase "+")
-       ("k" text-scale-decrease "-")
-       ("0" ((lambda (inc) (text-scale-adjust inc)) 0) "reset")
-       ("<escape>" nil "finished" :exit t))
+    it seems need to add =\n= at the beginning and end of docstring.
+    TODO: to understand the hydra's doc rule.
 
-     (defhydra hydra-mode-toggle ()
-       "toggle mode"
-       ("r" rainbow-mode "rainbow mode")
-       ("w" whitespace-mode "whitespace-mode")
-       ("t" counsel-load-theme "theme")
-       ("v" visual-line-mode "visual line mode")
-       ("f" flyspell-mode "check spell"))
+    #+begin_example
+      ^Resize^
+      ^^^^────
+      _[_ : a
+      _]_ : b
+      _{_ : c
+      _}_ : d
+      _=_ : f
+    #+end_example
 
-   #+end_src
+*** hydra motion
+
+    #+begin_src emacs-lisp
+      (use-package hydra
+        :defer t)
+
+      (defhydra window-operate ()
+        "
+      Window management :)
+      ^Resize^           ^select^
+      ────^^^^────       ────^^^^────
+      [_[_] : shrink h    [_h_]: left
+      [_]_] : enlarge h   [_l_]: right
+      [_{_] : shrink v    [_k_]: up
+      [_}_] : enlarge v   [_j_]: down
+      [_=_] : balance     [_1_.._9_]: window 1..9
+      "
+        ("[" my-shrink-window-horizontally nil)
+        ("]" my-enlarge-window-horizontally nil)
+        ("{" my-shrink-window nil)
+        ("}" my-enlarge-window nil)
+        ("=" balance-windows nil)
+        ("h" evil-window-left nil)
+        ("l" evil-window-right nil)
+        ("k" evil-window-up nil)
+        ("j" evil-window-down nil)
+        ("1" winum-select-window-1 nil)
+        ("2" winum-select-window-2 nil)
+        ("3" winum-select-window-3 nil)
+        ("4" winum-select-window-4 nil)
+        ("5" winum-select-window-5 nil)
+        ("6" winum-select-window-6 nil)
+        ("7" winum-select-window-7 nil)
+        ("8" winum-select-window-8 nil)
+        ("9" winum-select-window-9 nil))
+
+      (defhydra hydra-text-scale (:timeout 8)
+        "scale text"
+        ("j" text-scale-increase "+")
+        ("k" text-scale-decrease "-")
+        ("0" ((lambda (inc) (text-scale-adjust inc)) 0) "reset")
+        ("<escape>" nil "finished" :exit t))
+
+      (defhydra hydra-mode-toggle ()
+        "toggle mode"
+        ("r" rainbow-mode "rainbow mode")
+        ("w" whitespace-mode "whitespace-mode")
+        ("t" counsel-load-theme "theme")
+        ("v" visual-line-mode "visual line mode")
+        ("f" flyspell-mode "check spell"))
+
+    #+end_src
+
+    Originally, evil defines key =*= in motion-state with =evil-search-forward=
+
+    #+begin_src emacs-lisp
+      (defhydra mark-operation ()
+        "\nSwift knife
+      _v_: expand  _-_: contract
+      _s_: swiper _/_: counsel-projectile-rg
+      "
+        ("v" er/expand-region nil)
+        ("-" er/contract-region nil)
+        ;; counsel-projectile-rg-initial-input
+        ("s" swiper-thing-at-point nil)
+        ("/" my-counsel-projectile-rg nil))
+
+      (defun wrap-mark-operation()
+        (interactive)
+        (er--expand-region-1)
+        (mark-operation/body))
+
+      (with-eval-after-load 'evil
+        (evil-define-key 'normal 'evil-motion-state-map
+          (kbd "*") 'wrap-mark-operation))
+    #+end_src
 
 ** company
    company-mode setup
@@ -2131,26 +2277,26 @@
 
 *** evil-org
 
-   By default, you need to press M-RET to add a auto-numbering list
-   this will has some agenda mode binding..
+    By default, you need to press M-RET to add a auto-numbering list
+    this will has some agenda mode binding..
 
-   If you want the key binding for org-agenda-mode, add the following settings.
+    If you want the key binding for org-agenda-mode, add the following settings.
 
-   #+begin_src emacs-lisp :tangle no
-     (require 'evil-org-agenda)
-     (evil-org-agenda-set-keys)
-   #+end_src
+    #+begin_src emacs-lisp :tangle no
+      (require 'evil-org-agenda)
+      (evil-org-agenda-set-keys)
+    #+end_src
 
 
-   #+begin_src emacs-lisp
-     (use-package evil-org
-       :after org
-       :config
-       (add-hook 'org-mode-hook 'evil-org-mode)
-       (add-hook 'evil-org-mode-hook
-                 (lambda ()
-                   (evil-org-set-key-theme))))
-   #+end_src
+    #+begin_src emacs-lisp
+      (use-package evil-org
+        :after org
+        :config
+        (add-hook 'org-mode-hook 'evil-org-mode)
+        (add-hook 'evil-org-mode-hook
+                  (lambda ()
+                    (evil-org-set-key-theme))))
+    #+end_src
 
 *** restclient
     #+begin_src emacs-lisp
@@ -2164,6 +2310,14 @@
     #+end_src
 
 *** org configuration
+
+    example settings for org-agenda-files
+    #+begin_example
+    (setq org-agenda-files (file-expand-wildcards "~/Dropbox/myorgs/*.org"))
+    (setq org-agenda-files (directory-files-recursively "~/Dropbox/myorgs/" "\\.org$"))
+    #+end_example
+
+
     #+begin_src emacs-lisp
       (with-eval-after-load 'org
         (org-babel-do-load-languages
@@ -2173,6 +2327,10 @@
            (dot . t)
            (sql . t)
            (python . t)))
+
+        (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
+        (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
+        (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
         ;; set org table's font
         ;; (set-face-font 'org-table " ")
@@ -2205,6 +2363,7 @@
         (setq org-log-done 'time)
         (setq org-startup-truncated nil)
         (setq org-image-actual-width nil)
+        (setq org-src-window-setup 'current-window) ;; org-edit-src without prompting window
         (setq org-agenda-use-tag-inheritance nil)
 
         (setq org-startup-folded t)
@@ -2215,13 +2374,13 @@
 
         (setq org-download-screenshot-method "screencapture -i %s")
         (setq-default org-download-image-dir "./img")
+        (setq org-download-image-org-width 300)
+
         (setq org-journal-dir "~/Dropbox/myorgs/journal/")
         (setq org-journal-file-type 'weekly)
         (setq org-journal-file-format "%Y-%m-%W.org")
 
-        ;; (setq org-agenda-files (file-expand-wildcards "~/Dropbox/myorgs/*.org"))
-        ;; In order to find the org files recursively
-        (setq org-agenda-files (directory-files-recursively "~/Dropbox/myorgs/" "\\.org$"))
+        (setq org-agenda-files (split-string (shell-command-to-string "find ~/Dropbox/myorgs -type f | grep '.*.org$' | grep -E -v 'presentation/|journal/'") "\n" t))
 
         ;; to config the org refile
         (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))
@@ -2306,6 +2465,8 @@
   prevent prompting in minibuffer, just quit the command
   #+begin_src emacs-lisp
     (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
+    (with-eval-after-load 'evil
+      (evil-define-key 'emacs 'global (kbd "M-w") 'window-operate/body))
   #+end_src
 
 * Tips

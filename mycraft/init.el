@@ -120,8 +120,8 @@
              (call-process-shell-command (concat im-exec " " prev-im))
            (call-process-shell-command (concat im-exec " " default-im))))))
 
-;; TODO: rewrite this
-(defun spacemacs/show-hide-helm-or-ivy-prompt-msg (msg sec)
+;; NOTE: borrow from spacemacs
+(defun show-hide-helm-or-ivy-prompt-msg (msg sec)
   "Show a MSG at the helm or ivy prompt for SEC.
      With Helm, remember the path, then restore it after SEC.
      With Ivy, the path isn't editable, just remove the MSG after SEC."
@@ -132,15 +132,13 @@
                (buffer-substring (line-beginning-position)
                                  (line-end-position)))
               (prev-prompt-contents-p
-               (not (string= prev-prompt-contents "")))
-              (helmp (fboundp 'helm-mode)))
+               (not (string= prev-prompt-contents ""))))
          (when prev-prompt-contents-p
            (delete-region (line-beginning-position)
                           (line-end-position)))
          (insert (propertize msg 'face 'warning))
          ;; stop checking for candidates
          ;; and update the helm prompt
-         (when helmp (helm-suspend-update t))
          (sit-for sec)
          (delete-region (line-beginning-position)
                         (line-end-position))
@@ -148,10 +146,10 @@
            (insert prev-prompt-contents)
            ;; start checking for candidates
            ;; and update the helm prompt
-           (when helmp (helm-suspend-update nil)))))
+           )))
    msg sec))
 
-;; TODO rewrite this
+;; NOTE: borrow from spacemacs
 (defun rename-current-buffer-file (&optional arg)
   "Rename the current buffer and the file it is visiting.
 If the buffer isn't visiting a file, ask if it should
@@ -173,7 +171,7 @@ initialized with the current directory instead of filename."
           (cond ((get-buffer new-name)
                  (error "A buffer named '%s' already exists!" new-name))
                 ((string-equal new-name old-filename)
-                 (spacemacs/show-hide-helm-or-ivy-prompt-msg
+                 (show-hide-helm-or-ivy-prompt-msg
                   "Rename failed! Same new and old name" 1.5)
                  (rename-current-buffer-file))
                 (t
@@ -189,7 +187,7 @@ initialized with the current directory instead of filename."
                  (when (fboundp 'recentf-add-file)
                    (recentf-add-file new-name)
                    (recentf-remove-if-non-kept old-filename))
-                 (when (and (configuration-layer/package-used-p 'projectile)
+                 (when (and (featurep 'projectile)
                             (projectile-project-p))
                    (call-interactively #'projectile-invalidate-cache))
                  (message (cond ((and file-moved-p file-renamed-p)
@@ -614,6 +612,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     :parent 'read-file-name-internal
     :occur #'counsel-find-file-occur))
 
+(when (= (prefix-numeric-value current-prefix-arg) 4)
+  (setq current-prefix-arg '(16)))
+
 (defun my-counsel-projectile-rg (&optional options)
   "Search the current project with rg and search under certarn directory
      if it's not in a project.
@@ -637,11 +638,16 @@ Use a prefix argument ARG to indicate creation of a new process instead."
                      " "))
          (counsel-rg-base-command
           (let ((counsel-ag-command counsel-rg-base-command))
-            (counsel--format-ag-command ignored "%s"))))
+            (counsel--format-ag-command ignored "%s")))
+         (initial-input (when (use-region-p) (buffer-substring (region-beginning) (region-end)))))
     (ivy-add-actions
      'counsel-rg
      counsel-projectile-rg-extra-actions)
-    (counsel-rg (eval counsel-projectile-rg-initial-input)
+
+    (when (= (prefix-numeric-value current-prefix-arg) 4)
+      (setq current-prefix-arg '(16)))
+
+    (counsel-rg initial-input
                 search-directory
                 options
                 (projectile-prepend-project-name
@@ -779,7 +785,17 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   :defer t
   :hook
   ;; (text-mode . hl-todo-mode) text-mode is the parent of org-mode
-  (prog-mode . hl-todo-mode))
+  (prog-mode . hl-todo-mode)
+  :config
+  (setq hl-todo-highlight-punctuation ":")
+  (setq hl-todo-keyword-faces
+        `(
+          ("TODO" warning bold)
+          ("FIXME" error bold)
+          ("HACK" font-lock-constant-face bold)
+          ("NOTE" success bold)
+          ("BUG" error bold)
+          ("DEPRECATED" font-lock-doc-face bold))))
 
 (use-package diff-hl
   :defer 1
@@ -825,6 +841,10 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 (use-package nginx-mode
   :defer t)
 
+(use-package conf-mode
+  :defer t
+  :mode ("poetry\\.lock" . conf-toml-mode))
+
 (use-package jinja2-mode
   :defer t
   :init
@@ -869,6 +889,8 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   ([remap describe-key] . helpful-key))
 
 (use-package expand-region
+  :commands
+  (er--expand-region-1)
   :defer t)
 
 (use-package winum
@@ -986,8 +1008,6 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (lsp)
   :hook
   (go-mode . lsp)
-  ;; (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
-  ;; add breadcrumb to hint current position
   (python-mode . lsp)
   (rust-mode . lsp)
   (js-mode . lsp)
@@ -1087,6 +1107,12 @@ Use a prefix argument ARG to indicate creation of a new process instead."
                                (vterm-send-string "source ~/.bash_profile")
                                (vterm-send-return))))
 
+(use-package ediff
+  :defer t
+  :init
+  (setq ediff-window-setup-function 'ediff-setup-windows-plain)
+  (setq ediff-split-window-function 'split-window-horizontally))
+
 (use-package evil
   :defer 1
   :init
@@ -1127,10 +1153,10 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (evil-collection-init))
 
 (use-package evil-nerd-commenter
-       :after evil
-       :commands evilnc-comment-operator
-       :init
-       (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
+  :after evil
+  :commands evilnc-comment-operator
+  :init
+  (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
 
 (use-package evil-surround
   :after evil
@@ -1149,7 +1175,14 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (evil-define-key 'normal wgrep-mode-map (kbd ", ,") 'wgrep-finish-edit)
   (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
 
-;; create arbitrary fold not like other package auto detect the program language
+(use-package hideshow
+  :commands
+  (hs-toggle-hiding
+   hs-hide-block
+   hs-hide-level
+   hs-show-all
+   hs-hide-all))
+
 (use-package vimish-fold
   :after evil
   :hook (prog-mode . vimish-fold-mode))
@@ -1171,6 +1204,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
    mc/mark-next-like-this
    mc/mark-previous-like-this))
 
+(use-package iedit
+  :defer t)
+
 (use-package git-messenger
   :defer t
   :init
@@ -1185,6 +1221,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 (use-package evil-magit
   :defer 2
   :after magit)
+
+(use-package auto-highlight-symbol
+  :defer t)
 
 (use-package general
   :init
@@ -1259,10 +1298,6 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
     (kbd "g e") 'copy-region-and-urlencode)
-
-  ;; TODO: maybe I can define my own hydra?
-  (evil-define-key 'normal 'evil-motion-state-map
-    (kbd "*") 'swiper-thing-at-point)
 
   ;; keybinding for go-mode
   (with-eval-after-load 'lsp-mode
@@ -1477,6 +1512,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     "w/" '(evil-window-vsplit :which-key "split vertically")
     "w-" '(evil-window-split :which-key "split horizontally")
 
+    "w=" '(balance-windows :which-key "balance")
     "w[" '(my-shrink-window-horizontally :which-key "shrink h")
     "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
     "w{" '(my-shrink-window :which-key: "shrink v")
@@ -1500,18 +1536,41 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     "fed" '(my-find-dotfile :which-key "open config dotfile")
     "fy" '(copy-file-path :which-key "copy file path")
     "fs" '(save-buffer :which-key "save file")
+    "fr" '(rename-current-buffer-file :which-key "rename file")
     "ff" '(counsel-find-file :which-key "find file")))
 
 (use-package hydra
   :defer t)
 
 (defhydra window-operate ()
-  "window operation"
-  ("[" my-shrink-window-horizontally "shrink (h)")
-  ("]" my-enlarge-window-horizontally "enlarge (h)")
-  ("{" my-shrink-window "shrink (v)")
-  ("}" my-enlarge-window "enlarge (v)")
-  ("=" balance-windows "balance"))
+  "
+Window management :)
+^Resize^           ^select^
+────^^^^────       ────^^^^────
+[_[_] : shrink h    [_h_]: left
+[_]_] : enlarge h   [_l_]: right
+[_{_] : shrink v    [_k_]: up
+[_}_] : enlarge v   [_j_]: down
+[_=_] : balance     [_1_.._9_]: window 1..9
+"
+  ("[" my-shrink-window-horizontally nil)
+  ("]" my-enlarge-window-horizontally nil)
+  ("{" my-shrink-window nil)
+  ("}" my-enlarge-window nil)
+  ("=" balance-windows nil)
+  ("h" evil-window-left nil)
+  ("l" evil-window-right nil)
+  ("k" evil-window-up nil)
+  ("j" evil-window-down nil)
+  ("1" winum-select-window-1 nil)
+  ("2" winum-select-window-2 nil)
+  ("3" winum-select-window-3 nil)
+  ("4" winum-select-window-4 nil)
+  ("5" winum-select-window-5 nil)
+  ("6" winum-select-window-6 nil)
+  ("7" winum-select-window-7 nil)
+  ("8" winum-select-window-8 nil)
+  ("9" winum-select-window-9 nil))
 
 (defhydra hydra-text-scale (:timeout 8)
   "scale text"
@@ -1527,6 +1586,26 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   ("t" counsel-load-theme "theme")
   ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
+
+(defhydra mark-operation ()
+  "\nSwift knife
+_v_: expand  _-_: contract
+_s_: swiper _/_: counsel-projectile-rg
+"
+  ("v" er/expand-region nil)
+  ("-" er/contract-region nil)
+  ;; counsel-projectile-rg-initial-input
+  ("s" swiper-thing-at-point nil)
+  ("/" my-counsel-projectile-rg nil))
+
+(defun wrap-mark-operation()
+  (interactive)
+  (er--expand-region-1)
+  (mark-operation/body))
+
+(with-eval-after-load 'evil
+  (evil-define-key 'normal 'evil-motion-state-map
+    (kbd "*") 'wrap-mark-operation))
 
 (use-package company
   :config
@@ -1592,6 +1671,10 @@ Use a prefix argument ARG to indicate creation of a new process instead."
      (sql . t)
      (python . t)))
 
+  (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
+  (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
+  (add-to-list 'org-structure-template-alist '("sp" . "src python"))
+
   ;; set org table's font
   ;; (set-face-font 'org-table " ")
   ;; I use the visual-column instead
@@ -1623,6 +1706,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (setq org-log-done 'time)
   (setq org-startup-truncated nil)
   (setq org-image-actual-width nil)
+  (setq org-src-window-setup 'current-window) ;; org-edit-src without prompting window
   (setq org-agenda-use-tag-inheritance nil)
 
   (setq org-startup-folded t)
@@ -1633,13 +1717,13 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 
   (setq org-download-screenshot-method "screencapture -i %s")
   (setq-default org-download-image-dir "./img")
+  (setq org-download-image-org-width 300)
+
   (setq org-journal-dir "~/Dropbox/myorgs/journal/")
   (setq org-journal-file-type 'weekly)
   (setq org-journal-file-format "%Y-%m-%W.org")
 
-  ;; (setq org-agenda-files (file-expand-wildcards "~/Dropbox/myorgs/*.org"))
-  ;; In order to find the org files recursively
-  (setq org-agenda-files (directory-files-recursively "~/Dropbox/myorgs/" "\\.org$"))
+  (setq org-agenda-files (split-string (shell-command-to-string "find ~/Dropbox/myorgs -type f | grep '.*.org$' | grep -E -v 'presentation/|journal/'") "\n" t))
 
   ;; to config the org refile
   (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))
@@ -1719,3 +1803,5 @@ Use a prefix argument ARG to indicate creation of a new process instead."
                  "** TODO %^{title} %?\n SCHEDULED: %t\n")))
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
+(with-eval-after-load 'evil
+  (evil-define-key 'emacs 'global (kbd "M-w") 'window-operate/body))
