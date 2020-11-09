@@ -69,6 +69,10 @@
 
 (setq dired-dwim-target t)
 
+(setq wdired-allow-to-change-permissions t)
+
+(setq delete-by-moving-to-trash t)
+
 (setq ffap-machine-p-known 'reject)
 
 (setq epg-pinentry-mode 'loopback)
@@ -88,6 +92,16 @@
 
 (defun system-is-windows ()
   (eq system-type 'windows-nt))
+
+(defmacro measure-time (&rest body)
+  `(let ((time (current-time)))
+     ,@body
+     (message "%.06f s" (float-time (time-since time)))))
+
+(defun measure-org-babel-tangle ()
+  "A simple wrap to measure org-babel-tangle."
+  (interactive)
+  (measure-time (org-babel-tangle)))
 
 (defcustom im-exec "/usr/local/bin/im-select"
   "The im executable binary path."
@@ -733,6 +747,11 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (add-hook 'ediff-quit-hook 'winner-undo)
   :commands (winner-undo))
 
+(use-package all-the-icons-dired
+  :hook (dired-mode . all-the-icons-dired-mode)
+  :config
+  (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
+
 (use-package esup
   :defer t
   :init
@@ -821,6 +840,12 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 
 (use-package powerthesaurus
   :defer t)
+
+(use-package alert
+  :commands alert
+  :config
+  (if (system-is-mac!)
+      (setq alert-default-style 'osx-notifier)))
 
 (use-package nov
   :defer t
@@ -1535,6 +1560,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     "fe" '(:ignore t :which-key "emacs")
     "fed" '(my-find-dotfile :which-key "open config dotfile")
     "fy" '(copy-file-path :which-key "copy file path")
+    "fd" '(dired-jump :which-key "dired")
     "fs" '(save-buffer :which-key "save file")
     "fr" '(rename-current-buffer-file :which-key "rename file")
     "ff" '(counsel-find-file :which-key "find file")))
@@ -1646,6 +1672,13 @@ _s_: swiper _/_: counsel-projectile-rg
   (setq visual-fill-column-center-text t)
   :hook (org-mode . org-mode-visual-fill))
 
+(use-package toc-org
+  :defer t
+  :init
+  (add-hook 'org-mode-hook 'toc-org-mode)
+  (add-hook 'markdown-mode-hook 'toc-org-mode)
+  :commands (toc-org-insert-toc))
+
 (use-package evil-org
   :after org
   :config
@@ -1735,6 +1768,7 @@ _s_: swiper _/_: counsel-projectile-rg
 
   ;; cool! some functions need to be enable
   ;; like <s press tab to complete org structure
+  ;; these variables can be found in the source code of org.el
   (setq org-modules '(ol-w3m
                       ol-bbdb
                       ol-bibtex

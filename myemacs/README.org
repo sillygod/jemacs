@@ -17,6 +17,7 @@
 * Description
 
 This is an my self write layer to customize the spacemacs to make it as my own editor.
+Note. this will be abandoned and all functions will be transfered to =mycraft=
 
 ** Features:
   - Exercism submit, explore, download

@@ -2,6 +2,113 @@
 #+PROPERTY: header-args:emacs-lisp :tangle ./init.el :mkdirp yes
 #+DESCRIPTION: In other words, you write a document that describes your program and that document is also the source code for the program being described.
 
+* Table of Contents :TOC:
+- [[#what-is-this][What is this]]
+- [[#setup][Setup]]
+  - [[#grow-the-garbage-collection-threshold-when-initialize][grow the garbage collection threshold when initialize]]
+  - [[#set-up-config-home-directory][set up config home directory]]
+  - [[#set-up-wher-the-packages-to-be-installed][set up wher the packages to be installed]]
+- [[#font-setup--config-background-color][Font setup & config background color]]
+- [[#ui-adjustment][UI adjustment]]
+  - [[#make-curosr-in-the-help-window-at-first-when-poping-up-a-help-window][make curosr in the help window at first when poping up a help window]]
+  - [[#setup-for-ns-gui-system][setup for ns gui system]]
+  - [[#minimize-ui-interface][minimize ui interface]]
+  - [[#change-comment-highlight-color][change comment highlight color]]
+  - [[#enable-highlight-current-line][enable highlight current line]]
+- [[#misc-behaviro-setup][Misc Behaviro setup]]
+  - [[#simplify-the-prompt-yes-or-no-to-y-or-n][simplify the prompt =yes or no= to =y or n=]]
+  - [[#show-startup-message-and-make-all-the-icon-not-to-impact-performance][show startup message and make all-the-icon not to impact performance]]
+  - [[#show-column-number-in-the-modeline][show column number in the modeline]]
+  - [[#disable-backup-file-and-disable-tabs-always-using-space][disable backup file and disable tabs (always using space)]]
+  - [[#set-default-indent-width][set default indent width]]
+  - [[#some-settings-for-dired-mode][some settings for dired mode]]
+  - [[#avoid-ffap-guesser-freeze-when-find-file-thing-at-point][avoid ffap-guesser freeze when find-file-thing-at-point]]
+  - [[#setup-gpg][setup gpg]]
+  - [[#customize-shell-prompt-way][customize shell prompt way]]
+  - [[#disable-word-wrap][disable word wrap]]
+  - [[#auto-revert-mode][auto revert mode]]
+- [[#self-defined-helper-functions][Self defined helper functions]]
+  - [[#an-helper-to-detect-os][an helper to detect os]]
+  - [[#a-macro-function-helps-measuring-time-consuming][a macro function helps measuring time consuming]]
+  - [[#switch-input-method-for-evil-mode][switch input method for evil mode]]
+  - [[#util-helper-to-be-completed][util helper to be completed]]
+  - [[#text-encoding-decoding][text encoding decoding]]
+  - [[#misc][misc]]
+  - [[#lsp-keybinding][lsp-keybinding]]
+  - [[#lsp-define-key-helper][lsp define key helper]]
+  - [[#buffer-window-manipulation][buffer, window manipulation]]
+  - [[#file-manipulation][file manipulation]]
+  - [[#emmet][emmet]]
+  - [[#flycheck][flycheck]]
+  - [[#project-jump--comment][project jump & comment]]
+  - [[#snippet][snippet]]
+  - [[#xwidget-relevant-functions][xwidget relevant functions]]
+  - [[#auto-tangle-literate-config][auto tangle literate config]]
+  - [[#search-relevant-functions][search relevant functions]]
+  - [[#python-relevant][python relevant]]
+  - [[#golang-relevant-helper][golang relevant helper]]
+- [[#initialize-packages-and-setup-hook][Initialize packages and setup hook]]
+  - [[#set-up-use-package][set up use-package]]
+  - [[#add-additional-load-path-for-use-package][add additional load-path for use-package]]
+  - [[#enable-link-in-the-comments-can-be-click-and-highlight][enable link in the comments can be click and highlight]]
+  - [[#ensure-program-mode-use-space-instead-of-tab][ensure program mode use space instead of tab]]
+  - [[#delete-trailing-space-when-saving-files][delete trailing space when saving files]]
+  - [[#ensure-auto-refresh-buffer-for-dired-mode][ensure auto refresh buffer for dired mode]]
+  - [[#winner-mode][winner mode]]
+  - [[#dired][dired]]
+  - [[#esup][esup]]
+  - [[#diminish][diminish]]
+  - [[#rainbow-mode][rainbow-mode]]
+  - [[#rainbow-delimiters][rainbow-delimiters]]
+  - [[#highlight-parentheses][highlight parentheses]]
+  - [[#doom-themes][doom-themes]]
+  - [[#doom-modeline][doom modeline]]
+  - [[#all-the-icons][all-the-icons]]
+  - [[#devdocs][devdocs]]
+  - [[#hl-todo-mode][hl-todo mode]]
+  - [[#diff-hl][diff-hl]]
+  - [[#perspective-mode][perspective mode]]
+  - [[#which-key-mode][which key mode]]
+  - [[#dictonary-relevant-packages][dictonary relevant packages]]
+  - [[#notification][notification]]
+  - [[#ebook-reader][ebook reader]]
+  - [[#uuidgen][uuidgen]]
+  - [[#docker][docker]]
+  - [[#nginx][nginx]]
+  - [[#conf-mode][conf-mode]]
+  - [[#jinja2-mode][jinja2-mode]]
+  - [[#smartparens][smartparens]]
+  - [[#yasnippet][yasnippet]]
+  - [[#helpful][helpful]]
+  - [[#expand-region][expand-region]]
+  - [[#winum][winum]]
+  - [[#systemd][systemd]]
+  - [[#frontend-development][frontend development]]
+  - [[#flycheck-mode][flycheck mode]]
+  - [[#json-mode--yaml-mode][json-mode & yaml-mode]]
+  - [[#common-lisp-or-emacs-lisp][common lisp or emacs lisp]]
+  - [[#rust-mode][rust mode]]
+  - [[#go-mode][go mode]]
+  - [[#python-mode][python mode]]
+  - [[#lsp-mode][lsp mode]]
+  - [[#ivy--swiper--counsel][ivy & swiper & counsel]]
+  - [[#projectile][projectile]]
+  - [[#avy][avy]]
+  - [[#vterm][vterm]]
+  - [[#ediff][ediff]]
+  - [[#evil][evil]]
+  - [[#wgrep-mode][wgrep mode]]
+  - [[#code-folding][code folding]]
+  - [[#multiple-cursors][multiple-cursors]]
+  - [[#git-version-control][git version control]]
+  - [[#auto-highlight-symbol][auto-highlight-symbol]]
+  - [[#general][general]]
+  - [[#hydra][hydra]]
+  - [[#company][company]]
+  - [[#org][org]]
+- [[#some-key-binding][Some key binding]]
+- [[#tips][Tips]]
+
 * What is this
 
   It's a documentation of my emacs config and is also a emacs lisp code for my emacs setup.
@@ -61,6 +168,8 @@
   #+end_src
 
 * UI adjustment
+
+  =custom-theme-directory=
 
   #+begin_src emacs-lisp
     (setq frame-title-format "") ;; to disable show buffer name in the title bar
@@ -175,13 +284,29 @@
      (setq-default tab-width 4)
    #+end_src
 
-** make dired auto guess the path to rename
+** some settings for dired mode
 
+   Make dired auto guess the path to rename
    When opening two buffer with dired mode, you will get pre-defined path for renaming.
 
    #+begin_src emacs-lisp
      (setq dired-dwim-target t)
    #+end_src
+
+   Enable edit file's permissions in the wdired-mode
+
+   #+begin_src emacs-lisp
+     (setq wdired-allow-to-change-permissions t)
+   #+end_src
+
+   Make deleting the files in the dired by moving to trash instead of deleting directly.
+
+   #+begin_src emacs-lisp
+     (setq delete-by-moving-to-trash t)
+   #+end_src
+
+   If you want to extend the support compress method for dired mode, you can customize =dired-compress-files-alist= variable.
+   press =Z= to uncompress
 
 ** avoid ffap-guesser freeze when find-file-thing-at-point
 
@@ -241,6 +366,20 @@
 
      (defun system-is-windows ()
        (eq system-type 'windows-nt))
+   #+end_src
+
+** a macro function helps measuring time consuming
+   #+begin_src emacs-lisp
+     (defmacro measure-time (&rest body)
+       `(let ((time (current-time)))
+          ,@body
+          (message "%.06f s" (float-time (time-since time)))))
+
+     (defun measure-org-babel-tangle ()
+       "A simple wrap to measure org-babel-tangle."
+       (interactive)
+       (measure-time (org-babel-tangle)))
+
    #+end_src
 
 ** switch input method for evil mode
@@ -1018,6 +1157,17 @@
        :init
        (add-hook 'ediff-quit-hook 'winner-undo)
        :commands (winner-undo))
+   #+end_src
+
+** dired
+
+   pres =S-RET= will perform dired-find-file-other-window
+
+   #+begin_src emacs-lisp
+     (use-package all-the-icons-dired
+       :hook (dired-mode . all-the-icons-dired-mode)
+       :config
+       (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
    #+end_src
 
 ** esup
@@ -2107,6 +2257,7 @@
          "fe" '(:ignore t :which-key "emacs")
          "fed" '(my-find-dotfile :which-key "open config dotfile")
          "fy" '(copy-file-path :which-key "copy file path")
+         "fd" '(dired-jump :which-key "dired")
          "fs" '(save-buffer :which-key "save file")
          "fr" '(rename-current-buffer-file :which-key "rename file")
          "ff" '(counsel-find-file :which-key "find file")))
@@ -2275,6 +2426,16 @@
 
    #+end_src
 
+*** toc-org
+    #+begin_src emacs-lisp
+      (use-package toc-org
+        :defer t
+        :init
+        (add-hook 'org-mode-hook 'toc-org-mode)
+        (add-hook 'markdown-mode-hook 'toc-org-mode)
+        :commands (toc-org-insert-toc))
+    #+end_src
+
 *** evil-org
 
     By default, you need to press M-RET to add a auto-numbering list
@@ -2392,6 +2553,7 @@
 
         ;; cool! some functions need to be enable
         ;; like <s press tab to complete org structure
+        ;; these variables can be found in the source code of org.el
         (setq org-modules '(ol-w3m
                             ol-bbdb
                             ol-bibtex
