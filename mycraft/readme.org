@@ -242,6 +242,7 @@
    - https://github.com/p3r7/awesome-elisp
    - https://protesilaos.com/dotemacs/
    - https://github.com/alhassy/emacs.d/blob/master/README.org
+   - https://github.com/angrybacon/dotemacs/blob/master/dotemacs.org
 
 ** literate programming
 

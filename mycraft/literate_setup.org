@@ -27,12 +27,14 @@
   - [[#customize-shell-prompt-way][customize shell prompt way]]
   - [[#disable-word-wrap][disable word wrap]]
   - [[#auto-revert-mode][auto revert mode]]
+  - [[#turn-on-global-visual-line-mode][turn on global visual-line-mode]]
 - [[#self-defined-helper-functions][Self defined helper functions]]
   - [[#an-helper-to-detect-os][an helper to detect os]]
   - [[#a-macro-function-helps-measuring-time-consuming][a macro function helps measuring time consuming]]
   - [[#switch-input-method-for-evil-mode][switch input method for evil mode]]
   - [[#util-helper-to-be-completed][util helper to be completed]]
   - [[#text-encoding-decoding][text encoding decoding]]
+  - [[#org-insert-toc][org-insert-toc]]
   - [[#misc][misc]]
   - [[#lsp-keybinding][lsp-keybinding]]
   - [[#lsp-define-key-helper][lsp define key helper]]
@@ -45,6 +47,7 @@
   - [[#xwidget-relevant-functions][xwidget relevant functions]]
   - [[#auto-tangle-literate-config][auto tangle literate config]]
   - [[#search-relevant-functions][search relevant functions]]
+  - [[#yaml-indent-function][yaml indent function]]
   - [[#python-relevant][python relevant]]
   - [[#golang-relevant-helper][golang relevant helper]]
 - [[#initialize-packages-and-setup-hook][Initialize packages and setup hook]]
@@ -353,6 +356,12 @@
      (global-auto-revert-mode t)
    #+end_src
 
+** turn on global visual-line-mode
+
+   #+begin_src emacs-lisp
+     (global-visual-line-mode 1)
+   #+end_src
+
 * Self defined helper functions
 
 ** an helper to detect os
@@ -565,6 +574,18 @@
          (kill-new x)))
    #+end_src
 
+** org-insert-toc
+   FUTURE: maybe we can enhance this with prompting like org-insert-link
+   #+begin_src emacs-lisp
+     (defun org-insert-toc ()
+       "Insert table of content for org mode."
+       (interactive)
+       (beginning-of-line)
+       (insert "*" " " ":TOC:")
+       (backward-char 5)
+       (evil-insert-state))
+   #+end_src
+
 ** misc
 
    Note:
@@ -607,8 +628,7 @@
 
      (defun org-mode-visual-fill ()
        "A beautiful word wrap effect."
-       (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
-       (global-visual-line-mode 1))
+       (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust))
    #+end_src
 
 ** lsp-keybinding
@@ -1045,6 +1065,25 @@
        "Edit the `dotfile', in the current window."
        (interactive)
        (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
+   #+end_src
+** yaml indent function
+   #+begin_src emacs-lisp
+     (defun my-yaml-indent-line ()
+       "Indent the current line.
+     The first time this command is used, the line will be indented to the
+     maximum sensible indentation.  Each immediately subsequent usage will
+     back-dent the line by `yaml-indent-offset' spaces.  On reaching column
+     0, it will cycle back to the maximum sensible indentation."
+       (interactive "*")
+       (let ((ci (current-indentation))
+             (cc (current-column))
+             (need (yaml-compute-indentation)))
+         (save-excursion
+           (beginning-of-line)
+           (delete-horizontal-space)
+           (if (and (equal last-command this-command) (/= ci 0))
+               (indent-to (* (/ (- ci 1) yaml-indent-offset) yaml-indent-offset))
+             (indent-to need)))))
    #+end_src
 ** python relevant
    #+begin_src emacs-lisp
@@ -1509,6 +1548,9 @@
    #+end_src
 
 ** json-mode & yaml-mode
+
+   use =make-local-variable= to set buffer local variable.
+
    #+begin_src emacs-lisp
      (use-package json-mode
        :defer t)
@@ -1519,7 +1561,13 @@
               ("Procfile\\'" . yaml-mode))
        :init
        (add-hook 'yaml-mode-hook 'lsp)
+       (add-hook 'yaml-mode-hook '(lambda ()
+                                    (set (make-local-variable 'tab-width) 2)
+                                    (set (make-local-variable 'evil-shift-width) 2)
+                                    (set (make-local-variable 'indent-line-function) 'my-yaml-indent-line)))
        :config
+       ;; (with-eval-after-load 'evil
+       ;;   (evil-define-key 'normal yaml-mode-map (kbd "=") 'yaml-indent-line))
        (with-eval-after-load 'flycheck
          (when (listp flycheck-global-modes)
            (add-to-list 'flycheck-global-modes 'yaml-mode))))
@@ -1546,7 +1594,10 @@
        (setq lispy-key-theme '(special c-digits))
        :hook ((common-lisp-mode . lispy-mode)
               (emacs-lisp-mode . lispy-mode)
-              (scheme-mode . lispy-mode)))
+              (scheme-mode . lispy-mode))
+       :config
+       (with-eval-after-load 'evil-matchit
+         (define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)))
    #+end_src
 
 ** rust mode
@@ -1771,6 +1822,11 @@
                                     (evil-emacs-state)
                                     (vterm-send-string "source ~/.bash_profile")
                                     (vterm-send-return))))
+   #+end_src
+
+   #+begin_src emacs-lisp
+     (use-package vterm-toggle
+       :defer t)
    #+end_src
 
 ** ediff
@@ -2074,6 +2130,7 @@
 
            "i" "insert" nil
            "il" "insert link" 'org-insert-link
+           "it" "insert toc" 'org-insert-toc
 
            "e" "export" nil
            "ee" "org-export-dispatch" 'org-export-dispatch

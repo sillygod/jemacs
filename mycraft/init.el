@@ -84,6 +84,8 @@
 
 (global-auto-revert-mode t)
 
+(global-visual-line-mode 1)
+
 (defun system-is-mac! ()
   (eq system-type 'darwin))
 
@@ -273,6 +275,14 @@ initialized with the current directory instead of filename."
             (buffer-substring start end))))
     (kill-new x)))
 
+(defun org-insert-toc ()
+  "Insert table of content for org mode."
+  (interactive)
+  (beginning-of-line)
+  (insert "*" " " ":TOC:")
+  (backward-char 5)
+  (evil-insert-state))
+
 (defun hey-god (question)
   "Reduce distraction when you search the answer for the question.
                     Powered by the howdoi"
@@ -302,8 +312,7 @@ with unix format, human readable and the weather info."
 
 (defun org-mode-visual-fill ()
   "A beautiful word wrap effect."
-  (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust)
-  (global-visual-line-mode 1))
+  (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust))
 
 (defun lsp-keybinding ()
   "Return the keybinding for lsp functions."
@@ -675,6 +684,23 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (interactive)
   (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
 
+(defun my-yaml-indent-line ()
+  "Indent the current line.
+The first time this command is used, the line will be indented to the
+maximum sensible indentation.  Each immediately subsequent usage will
+back-dent the line by `yaml-indent-offset' spaces.  On reaching column
+0, it will cycle back to the maximum sensible indentation."
+  (interactive "*")
+  (let ((ci (current-indentation))
+        (cc (current-column))
+        (need (yaml-compute-indentation)))
+    (save-excursion
+      (beginning-of-line)
+      (delete-horizontal-space)
+      (if (and (equal last-command this-command) (/= ci 0))
+          (indent-to (* (/ (- ci 1) yaml-indent-offset) yaml-indent-offset))
+        (indent-to need)))))
+
 (defvar python-run-command "python")
 (defvar python-run-args "")
 
@@ -961,7 +987,13 @@ Use a prefix argument ARG to indicate creation of a new process instead."
          ("Procfile\\'" . yaml-mode))
   :init
   (add-hook 'yaml-mode-hook 'lsp)
+  (add-hook 'yaml-mode-hook '(lambda ()
+                               (set (make-local-variable 'tab-width) 2)
+                               (set (make-local-variable 'evil-shift-width) 2)
+                               (set (make-local-variable 'indent-line-function) 'my-yaml-indent-line)))
   :config
+  ;; (with-eval-after-load 'evil
+  ;;   (evil-define-key 'normal yaml-mode-map (kbd "=") 'yaml-indent-line))
   (with-eval-after-load 'flycheck
     (when (listp flycheck-global-modes)
       (add-to-list 'flycheck-global-modes 'yaml-mode))))
@@ -982,7 +1014,10 @@ Use a prefix argument ARG to indicate creation of a new process instead."
   (setq lispy-key-theme '(special c-digits))
   :hook ((common-lisp-mode . lispy-mode)
          (emacs-lisp-mode . lispy-mode)
-         (scheme-mode . lispy-mode)))
+         (scheme-mode . lispy-mode))
+  :config
+  (with-eval-after-load 'evil-matchit
+    (define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)))
 
 (use-package rust-mode
   :defer t
@@ -1131,6 +1166,9 @@ Use a prefix argument ARG to indicate creation of a new process instead."
                                (evil-emacs-state)
                                (vterm-send-string "source ~/.bash_profile")
                                (vterm-send-return))))
+
+(use-package vterm-toggle
+  :defer t)
 
 (use-package ediff
   :defer t
@@ -1377,6 +1415,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 
       "i" "insert" nil
       "il" "insert link" 'org-insert-link
+      "it" "insert toc" 'org-insert-toc
 
       "e" "export" nil
       "ee" "org-export-dispatch" 'org-export-dispatch
