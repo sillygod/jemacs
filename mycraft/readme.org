@@ -30,7 +30,6 @@
 ** better to have
 
    - [ ] a startup dashboard
-   - [ ] to persist persp when reeval the buffer or creating a new frame
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
@@ -84,6 +83,10 @@
 
 *** add-file-local-variable
     generate the code for file local varaibles
+
+*** elp-instrument-function, elp-results
+    add the function you want to instrument.
+    Run the functino you want to profiling then run =elp-results= to get the result.
 
 ** use =esup= to profiling the emacs start up time
 ** use =what-cursor-position= to see the detail font-face under the cursor
@@ -249,7 +252,7 @@
    - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
    - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
    - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
-
+   - https://soliloquium.zealmaker.com/fastpages/orgmode/2020/04/27/blogging-with-orgmode-and-fastpages
 
 ** misc
 

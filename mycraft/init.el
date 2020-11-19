@@ -100,10 +100,32 @@
      ,@body
      (message "%.06f s" (float-time (time-since time)))))
 
+
+;; TODO: find a way to handle this better
+(add-hook 'org-babel-pre-tangle-hook '(lambda ()
+                                        (setq-default evil-normal-state-entry-hook nil)
+                                        (setq-default evil-insert-state-entry-hook nil)
+                                        (setq-default evil-insert-state-exit-hook nil)
+                                        (setq-default evil-emacs-state-entry-hook nil)))
+
+
+(add-hook 'org-babel-post-tangle-hook '(lambda ()
+                                         (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+                                         (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+                                         (add-hook 'evil-insert-state-exit-hook 'im-remember)
+                                         (add-hook 'evil-emacs-state-entry-hook 'im-use-eng)))
+
 (defun measure-org-babel-tangle ()
   "A simple wrap to measure org-babel-tangle."
   (interactive)
-  (measure-time (org-babel-tangle)))
+  (when (fboundp 'profiler-stop)
+    (profiler-stop))
+  (profiler-start 'cpu+mem)
+  (setq temp emacs-lisp-mode-hook)
+  (setq-default emacs-lisp-mode-hook nil)
+  (measure-time (org-babel-tangle))
+  (setq-default emacs-lisp-mode-hook temp)
+  (profiler-report))
 
 (defcustom im-exec "/usr/local/bin/im-select"
   "The im executable binary path."
@@ -247,6 +269,26 @@ initialized with the current directory instead of filename."
                                     "To:   " new-buffer-name))))
                 ;; ?\a = C-g, ?\e = Esc and C-[
                 ((memq key '(?\a ?\e)) (keyboard-quit))))))))
+
+(defun docker-container-vterm (container &optional read-shell)
+  "Open `shell' in CONTAINER.  When READ-SHELL is not nil, ask the user for it."
+  (interactive (list
+                (docker-container-read-name)
+                current-prefix-arg))
+  (let* ((shell-file-name (docker-container--read-shell read-shell))
+         (container-address (format "docker:%s:/" container))
+         (file-prefix (let ((prefix (file-remote-p default-directory)))
+                        (if prefix
+                            (format "%s|" (s-chop-suffix ":" prefix))
+                          "/")))
+         (default-directory (format "%s%s" file-prefix container-address)))
+    (vterm-toggle-cd)))
+
+;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
+
+(with-eval-after-load 'evil
+  (with-eval-after-load 'docker-container
+    (evil-define-key 'normal docker-container-mode-map (kbd "b") 'docker-container-vterm)))
 
 (defun copy-region-and-base64-decode (start end)
   (interactive "r")
@@ -663,6 +705,10 @@ Use a prefix argument ARG to indicate creation of a new process instead."
           (let ((counsel-ag-command counsel-rg-base-command))
             (counsel--format-ag-command ignored "%s")))
          (initial-input (when (use-region-p) (buffer-substring (region-beginning) (region-end)))))
+
+    (when (region-active-p)
+          (deactivate-mark))
+
     (ivy-add-actions
      'counsel-rg
      counsel-projectile-rg-extra-actions)
@@ -1017,7 +1063,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
          (scheme-mode . lispy-mode))
   :config
   (with-eval-after-load 'evil-matchit
-    (define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)))
+    (lispy-define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)))
 
 (use-package rust-mode
   :defer t
@@ -1061,9 +1107,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (add-hook 'before-save-hook 'pyimport-remove-unused))
 
+(use-package cython-mode
+  :defer t)
+
 (use-package lsp-mode
   :init
   (setq lsp-completion-provider :capf) ;; the official recommends use this
+  (setq lsp-enable-symbol-highlighting nil)
   :commands
   (lsp)
   :hook
@@ -1129,7 +1179,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :bind (("M-x" . counsel-M-x)
          ("C-x b" . counsel-ibuffer)
          ("C-x C-f" . counsel-find-file)
-         :map minibuffer-local-map
+         :map ivy-minibuffer-map
          ("C-w" . 'ivy-backward-kill-word)
          ("C-r" . 'counsel-minibuffer-history))
   :config
@@ -1160,12 +1210,10 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t
   :init
   (setq vterm-always-compile-module t)
+  (with-eval-after-load 'evil
+    (evil-set-initial-state 'vterm-mode 'emacs))
   :config
-  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
-  (add-hook 'vterm-mode-hook (lambda ()
-                               (evil-emacs-state)
-                               (vterm-send-string "source ~/.bash_profile")
-                               (vterm-send-return))))
+  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape))
 
 (use-package vterm-toggle
   :defer t)
@@ -1213,6 +1261,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (delete 'ivy evil-collection-mode-list)
   ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
+  (add-hook 'evil-collection-setup-hook '(lambda (_mode mode-keymaps &rest _rest)
+                                           (when (eq _mode 'docker)
+                                           (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
   (evil-collection-init))
 
 (use-package evil-nerd-commenter
@@ -1268,7 +1319,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
    mc/mark-previous-like-this))
 
 (use-package iedit
-  :defer t)
+  :defer t
+  :config
+  (define-key iedit-occurrence-keymap-default (kbd "<escape>") 'iedit-quit))
 
 (use-package git-messenger
   :defer t
@@ -1286,7 +1339,15 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :after magit)
 
 (use-package auto-highlight-symbol
-  :defer t)
+  :commands
+  (ahs-forward
+   ahs-unhighlight
+   ahs-change-range
+   ahs-change-range-internal
+   ahs-dropdown-list-p
+   ash-backward)
+  :config
+  (add-to-list 'ahs-plugin-bod-modes 'python-mode))
 
 (use-package general
   :init
@@ -1485,6 +1546,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (define-leader-key-global
     "a" '(:ignore t :which-key "applications")
 
+    "ad" '(docker t :which-key "docker")
+
     "al" '(:ignore t :which-key "lookup/dictionary")
     "ald" '(define-word :which-key "lookup definition")
     "alg" '(google-search :which-key "google search")
@@ -1610,19 +1673,21 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (defhydra window-operate ()
   "
 Window management :)
-^Resize^           ^select^
-────^^^^────       ────^^^^────
-[_[_] : shrink h    [_h_]: left
-[_]_] : enlarge h   [_l_]: right
-[_{_] : shrink v    [_k_]: up
-[_}_] : enlarge v   [_j_]: down
-[_=_] : balance     [_1_.._9_]: window 1..9
+^Resize^               ^select^
+────^^^^────           ────^^^^────
+[_[_] : shrink h        [_h_]: left
+[_]_] : enlarge h       [_l_]: right
+[_{_] : shrink v        [_k_]: up
+[_}_] : enlarge v       [_j_]: down
+[_=_] : balance         [_1_.._9_]: window 1..9
+[_m_] : window maximize
 "
   ("[" my-shrink-window-horizontally nil)
   ("]" my-enlarge-window-horizontally nil)
   ("{" my-shrink-window nil)
   ("}" my-enlarge-window nil)
   ("=" balance-windows nil)
+  ("m" toggle-maximize-buffer nil)
   ("h" evil-window-left nil)
   ("l" evil-window-right nil)
   ("k" evil-window-up nil)
@@ -1652,20 +1717,119 @@ Window management :)
   ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
 
+(setq ahs-default-range 'ahs-range-whole-buffer)
+
+(defun my-ahs-highlight-p ()
+  "Ruturn Non-nil if symbols can be highlighted."
+  (interactive)
+  (let* ((beg (if (region-active-p) (region-beginning) (overlay-start ahs-current-overlay)))
+         (end (if (region-active-p) (region-end) (overlay-end ahs-current-overlay)))
+         (face (get-text-property beg 'face))
+         (symbol (buffer-substring beg end)))
+
+    (when (and (boundp 'ahs-highlighted)
+               ahs-highlighted)
+      (ahs-unhighlight t))
+    (when (and symbol
+               (not (ahs-dropdown-list-p))
+               (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
+               (not (ahs-symbol-p ahs-exclude symbol t))
+               (ahs-symbol-p ahs-include symbol))
+      (list symbol beg end))))
+
+(defun my-ahs-search-symbol (symbol search-range)
+  "Search `SYMBOL' in `SEARCH-RANGE'."
+  (save-excursion
+    (let ((case-fold-search ahs-case-fold-search)
+          ;; (regexp (concat "\\_<\\(" (regexp-quote symbol) "\\)\\_>" ))
+          (regexp (regexp-quote symbol))
+          (beg (car search-range))
+          (end (cdr search-range)))
+      (goto-char end)
+      (while (re-search-backward regexp beg t)
+        (let* ((symbol-beg (match-beginning 0))
+               (symbol-end (match-end 0))
+               (tprop (text-properties-at symbol-beg))
+               (face (cadr (memq 'face tprop)))
+               (fontified (cadr (memq 'fontified tprop))))
+          (unless (or face fontified)
+            (setq ahs-need-fontify t))
+          (push (list symbol-beg
+                      symbol-end
+                      face fontified) ahs-search-work))))))
+
+(advice-add 'ahs-search-symbol :override #'my-ahs-search-symbol)
+
+(defun expand-and-highlight-region ()
+  (interactive)
+  (er--expand-region-1)
+  (highlight-region))
+
+(defun contract-and-highlight-region ()
+  (interactive)
+  (call-interactively 'er/contract-region)
+  (highlight-region))
+
+
+(defun highlight-region ()
+  (interactive)
+  (let ((hh (my-ahs-highlight-p)))
+    (unless ahs-current-range
+      (ahs-change-range-internal ahs-default-range))
+    (when hh
+      (ahs-highlight (nth 0 hh)
+                     (nth 1 hh)
+                     (nth 2 hh)))))
+
 (defhydra mark-operation ()
-  "\nSwift knife
-_v_: expand  _-_: contract
-_s_: swiper _/_: counsel-projectile-rg
+  "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
+
+ ^match^                    ^Search^                     ^edit^
+────^^^^────              ────^^^^────                 ────^^^^────
+_v_: expand               _s_: swiper                  _e_: iedit
+_-_: contract             _/_: counsel-projectile-rg   _h_: highlight
+_r_: range
+_n_: next
+_N_: prev
 "
-  ("v" er/expand-region nil)
-  ("-" er/contract-region nil)
+  ("v" expand-and-highlight-region nil)
+  ("-" contract-and-highlight-region nil)
   ;; counsel-projectile-rg-initial-input
   ("s" swiper-thing-at-point nil)
-  ("/" my-counsel-projectile-rg nil))
+  ("/" my-counsel-projectile-rg nil)
+  ("e" iedit-mode nil)
+  ("h" highlight-region nil)
+  ("r" my-change-range nil)
+  ("n" my-ahs-forward nil)
+  ("N" my-ahs-backward nil))
+
+(defun my-change-range ()
+  (interactive)
+  (setq range (ahs-runnable-plugins t))
+  (ahs-change-range-internal range)
+  (highlight-region))
+
+(defun my-ahs-forward ()
+  (interactive)
+  (when (region-active-p)
+    (deactivate-mark))
+  (ahs-forward))
+
+(defun my-ahs-backward ()
+  (interactive)
+  (when (region-active-p)
+    (deactivate-mark))
+  (ahs-backward))
+
+(with-eval-after-load 'auto-highlight-symbol
+  (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
+  (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
+  (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
 
 (defun wrap-mark-operation()
   (interactive)
   (er--expand-region-1)
+  (highlight-region)
   (mark-operation/body))
 
 (with-eval-after-load 'evil
@@ -1710,6 +1874,9 @@ _s_: swiper _/_: counsel-projectile-rg
   (setq visual-fill-column-width 150)
   (setq visual-fill-column-center-text t)
   :hook (org-mode . org-mode-visual-fill))
+
+(use-package htmlize
+  :defer t)
 
 (use-package toc-org
   :defer t
