@@ -6,7 +6,7 @@
 
 ;;; Code:
 
-;; (setq debug-on-error t) ;; temporarily for debug usage
+;; (toggle-debug-on-error) temporarily for debug usage
 
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
@@ -66,6 +66,10 @@
 (setq xwidget-webkit-enable-plugins t) ;; what does this impact?
 
 (setq-default tab-width 4)
+
+(when (string= system-type "darwin")
+  "In macos, ls doesn't support --dired option"
+  (setq dired-use-ls-dired nil))
 
 (setq dired-dwim-target t)
 
@@ -286,10 +290,6 @@ initialized with the current directory instead of filename."
 
 ;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
 
-(with-eval-after-load 'evil
-  (with-eval-after-load 'docker-container
-    (evil-define-key 'normal docker-container-mode-map (kbd "b") 'docker-container-vterm)))
-
 (defun copy-region-and-base64-decode (start end)
   (interactive "r")
   (let ((x (base64-decode-string
@@ -345,12 +345,14 @@ with unix format, human readable and the weather info."
 
 (defun evil-smart-doc-lookup ()
   "Run documentation lookup command specific to the major mode.
-          Use command bound to `SPC m h h` if defined, otherwise fall back
-          to `evil-lookup'"
+Use command bound to `SPC m h h` if defined, otherwise fall back
+to `evil-lookup'"
   (interactive)
-  (when (fboundp 'lsp-describe-thing-at-point)
-    (lsp-describe-thing-at-point)
-    (evil-lookup)))
+  (let ((binding (key-binding (kbd (concat "SPC" " mhh")))))
+
+    (if (commandp binding)
+        (call-interactively binding)
+      (evil-lookup))))
 
 (defun org-mode-visual-fill ()
   "A beautiful word wrap effect."
@@ -938,6 +940,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (use-package nginx-mode
   :defer t)
 
+(use-package jsonnet-mode
+  :defer t)
+
 (use-package conf-mode
   :defer t
   :mode ("poetry\\.lock" . conf-toml-mode))
@@ -949,6 +954,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
             '(lambda ()
                (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
+
+(use-package racket-mode
+  :defer t)
 
 (use-package smartparens
   :commands (smartparens-mode)
@@ -1063,7 +1071,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
          (scheme-mode . lispy-mode))
   :config
   (with-eval-after-load 'evil-matchit
-    (lispy-define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)))
+    (lispy-define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)
+    (lispy-define-key lispy-mode-map (kbd "x") 'lispy-kill)))
 
 (use-package rust-mode
   :defer t
@@ -1108,6 +1117,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (add-hook 'before-save-hook 'pyimport-remove-unused))
 
 (use-package cython-mode
+  :defer t)
+
+(use-package dumb-jump
+  :init
+  (setq dumb-jump-selector 'ivy)
   :defer t)
 
 (use-package lsp-mode
@@ -1179,6 +1193,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :bind (("M-x" . counsel-M-x)
          ("C-x b" . counsel-ibuffer)
          ("C-x C-f" . counsel-find-file)
+         :map minibuffer-local-map
+         ("C-w" . 'ivy-backward-kill-word)
          :map ivy-minibuffer-map
          ("C-w" . 'ivy-backward-kill-word)
          ("C-r" . 'counsel-minibuffer-history))
@@ -1259,6 +1275,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (delete 'vterm evil-collection-mode-list)
   (delete 'lispy evil-collection-mode-list)
   (delete 'ivy evil-collection-mode-list)
+  (delete 'view evil-collection-mode-list)
   ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
   (add-hook 'evil-collection-setup-hook '(lambda (_mode mode-keymaps &rest _rest)
@@ -1319,7 +1336,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
    mc/mark-previous-like-this))
 
 (use-package iedit
-  :defer t
+  :commands
+  (iedit-restrict-region)
   :config
   (define-key iedit-occurrence-keymap-default (kbd "<escape>") 'iedit-quit))
 
@@ -1422,6 +1440,14 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (evil-define-key 'visual 'global
     (kbd "g y") 'copy-region-and-base64-decode
     (kbd "g e") 'copy-region-and-urlencode)
+
+
+  ;; keybinding for racket-mode
+  (with-eval-after-load 'racket-mode
+    (define-leader-key-map-for 'racket-mode
+      "" "major mode" nil
+      "x" "execute" nil
+      "xx" "racket run" 'racket-run))
 
   ;; keybinding for go-mode
   (with-eval-after-load 'lsp-mode
@@ -1557,6 +1583,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "aog" '(:ignore t :which-key "goto")
     "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
     "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
+    "aogw" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/works/unnotech.org")) :which-key "work note")
     "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
     "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
 
@@ -1568,7 +1595,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "bi" '(ibuffer :which-key "ibuffer")
     "bn" '(next-buffer :which-key "next-buffer")
     "bp" '(previous-buffer :which-key "previous-buffer")
-    "bN" '(new-empty-buffer :which-key "new empty buffer"))
+    "bN" '(new-empty-buffer :which-key "new empty buffer")
+    "b." '(buffer-operate/body :which-key "buffer transient"))
 
   (define-leader-key-global
     "c" '(:ignore t :which-key "comment/compile")
@@ -1611,6 +1639,12 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "gbb" '(magit-blame-addition  :which-key "this buffer")
     "gs" '(magit-status :which-key "magit status"))
 
+  (define-leader-key-global
+    "k" '(:ignore t :which-key "kmacro")
+    "ks" '(kmacro-start-macro-or-insert-counter :which-key "start macro/insert counter")
+    "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
+    "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
+    "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
 
   (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
@@ -1619,8 +1653,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
   (define-leader-key-global
-    "w" '(:ignore t :which-key "windows")
+    "w" '(:ignore t :which0-key "windows")
     "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
+    "ww" '(other-window :which-key "other-window")
     "wm" '(toggle-maximize-buffer :which-key "window maximized")
     "wM" '(toggle-frame-maximized :which-key "frame maximized")
     "wd" '(delete-window :which-key "delete window")
@@ -1701,6 +1736,25 @@ Window management :)
   ("7" winum-select-window-7 nil)
   ("8" winum-select-window-8 nil)
   ("9" winum-select-window-9 nil))
+
+(defhydra buffer-operate ()
+  "
+buffer management :)
+^Move^                              ^action^
+────^^^^────                      ────^^^^────
+[_n_] : next buffer                [_d_] : delete
+[_p_] : prev buffer
+[_b_] : project buffers
+[_B_] : buffers list
+[_o_] : other window
+"
+
+  ("n" next-buffer nil)
+  ("p" previous-buffer nil)
+  ("b" counsel-projectile-switch-to-buffer nil)
+  ("B" counsel-switch-buffer nil)
+  ("o" other-window nil)
+  ("d" kill-this-buffer nil))
 
 (defhydra hydra-text-scale (:timeout 8)
   "scale text"
@@ -1797,17 +1851,28 @@ _N_: prev
   ;; counsel-projectile-rg-initial-input
   ("s" swiper-thing-at-point nil)
   ("/" my-counsel-projectile-rg nil)
-  ("e" iedit-mode nil)
+  ("e" my-iedit-mode nil)
   ("h" highlight-region nil)
   ("r" my-change-range nil)
   ("n" my-ahs-forward nil)
   ("N" my-ahs-backward nil))
 
+(defun my-iedit-mode ()
+  (interactive)
+  (call-interactively 'iedit-mode)
+  (iedit-restrict-region
+   (ahs-current-plugin-prop 'start)
+   (ahs-current-plugin-prop 'end)))
+
 (defun my-change-range ()
   (interactive)
   (setq range (ahs-runnable-plugins t))
   (ahs-change-range-internal range)
-  (highlight-region))
+  (if ahs-current-overlay
+      (highlight-region))
+  (iedit-restrict-region
+   (ahs-current-plugin-prop 'start)
+   (ahs-current-plugin-prop 'end)))
 
 (defun my-ahs-forward ()
   (interactive)
@@ -1826,14 +1891,15 @@ _N_: prev
   (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
   (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
 
-(defun wrap-mark-operation()
+(defun wrap-mark-operation ()
   (interactive)
-  (er--expand-region-1)
+  (unless (region-active-p)
+    (er--expand-region-1))
   (highlight-region)
   (mark-operation/body))
 
 (with-eval-after-load 'evil
-  (evil-define-key 'normal 'evil-motion-state-map
+  (evil-define-key '(normal motion) 'evil-motion-state-map
     (kbd "*") 'wrap-mark-operation))
 
 (use-package company
@@ -2044,4 +2110,5 @@ _N_: prev
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
 (with-eval-after-load 'evil
+  (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-operate/body)
   (evil-define-key 'emacs 'global (kbd "M-w") 'window-operate/body))
