@@ -34,6 +34,7 @@
   - [[#switch-input-method-for-evil-mode][switch input method for evil mode]]
   - [[#util-helper-to-be-completed][util helper to be completed]]
   - [[#my-customize-docker-shell-with-vterm][my customize docker shell with vterm]]
+  - [[#start-a-new-emacs-instance][start a new emacs instance]]
   - [[#text-encoding-decoding][text encoding decoding]]
   - [[#org-insert-toc][org-insert-toc]]
   - [[#misc][misc]]
@@ -92,6 +93,8 @@
   - [[#frontend-development][frontend development]]
   - [[#flycheck-mode][flycheck mode]]
   - [[#json-mode--yaml-mode][json-mode & yaml-mode]]
+  - [[#cmake][cmake]]
+  - [[#lua][lua]]
   - [[#common-lisp-or-emacs-lisp][common lisp or emacs lisp]]
   - [[#rust-mode][rust mode]]
   - [[#go-mode][go mode]]
@@ -436,29 +439,38 @@
      (defvar default-im "com.apple.keylayout.ABC"
        "Default English input method.")
 
+     (defvar prev-im ""
+       "previous input method.")
+
+     (defvar current-im ""
+       "Current input method.")
+
      (defun im-use-eng ()
        "Switch to english input method."
        (interactive)
-       (cond ((string= system-type "darwin")
-              (call-process-shell-command (concat im-exec " " default-im)))))
+       (cond ((and (string= system-type "darwin")
+                   (not (string= current-im default-im)))
+                (call-process-shell-command (concat im-exec " " default-im))
+                (setq current-im default-im))))
 
      (defun im-remember ()
        "Remember the input method being used in insert mode."
        (interactive)
-       (unless (boundp 'prev-im)
-         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
        (cond ((string= system-type "darwin")
-              (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))))
+              (setq prev-im (substring (shell-command-to-string im-exec) 0 -1))
+              (setq current-im prev-im))))
 
      (defun im-use-prev ()
        "Change the input method to the previous one we remembered."
        (interactive)
-       (unless (boundp 'prev-im)
-         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
        (cond ((string= system-type "darwin")
               (if prev-im
-                  (call-process-shell-command (concat im-exec " " prev-im))
-                (call-process-shell-command (concat im-exec " " default-im))))))
+                  (progn
+                    (call-process-shell-command (concat im-exec " " prev-im))
+                    (setq current-im prev-im))
+                (progn
+                  (call-process-shell-command (concat im-exec " " default-im))
+                  (setq current-im default-im))))))
    #+end_src
 
 ** util helper to be completed
@@ -595,6 +607,23 @@
 
      ;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
 
+   #+end_src
+
+** start a new emacs instance
+   #+begin_src emacs-lisp
+     (defun restart-emacs-procedure ()
+       (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@27/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
+
+
+     (defun restart-emacs ()
+       "Kill the original instance and start a new emacs instance.
+     However, have no idea how to get the original instance' starting command args
+     sys.args?"
+       ;; TODO: lookup the sys.args
+       (interactive)
+       (add-to-list 'kill-emacs-hook #'restart-emacs-procedure)
+       (print kill-emacs-hook)
+       (save-buffers-kill-emacs))
    #+end_src
 
 ** text encoding decoding
@@ -979,7 +1008,8 @@
            (unless (require 'vterm nil 'noerror)
              (error "Package 'vterm' is not available"))
            (projectile-with-default-dir project
-             (vterm-other-window buffer)))))
+             (vterm-other-window buffer)))
+         (pop-to-buffer buffer)))
 
      (defun new-terminal ()
        "New a terminal in project root or the current directory."
@@ -1066,13 +1096,7 @@
    #+end_src
 ** search relevant functions
 
-   TODO: to understand the implmentation of counsel-projectile-rg
-
-   #+begin_src emacs-lisp
-     (when (= (prefix-numeric-value current-prefix-arg) 4)
-       (setq current-prefix-arg '(16)))
-   #+end_src
-
+   My customize search function
 
    #+begin_src emacs-lisp
      (defun my-counsel-projectile-rg (&optional options)
@@ -1099,10 +1123,15 @@
               (counsel-rg-base-command
                (let ((counsel-ag-command counsel-rg-base-command))
                  (counsel--format-ag-command ignored "%s")))
-              (initial-input (when (use-region-p) (buffer-substring (region-beginning) (region-end)))))
+              (initial-input (cond
+                              ((use-region-p) (buffer-substring (region-beginning) (region-end)))
+                              ((and (boundp 'ahs-current-overlay)
+                                    (not (eq ahs-current-overlay nil))) (buffer-substring (overlay-start ahs-current-overlay)
+                                    (overlay-end ahs-current-overlay)))
+                              (t nil))))
 
          (when (region-active-p)
-               (deactivate-mark))
+           (deactivate-mark))
 
          (ivy-add-actions
           'counsel-rg
@@ -1306,6 +1335,10 @@
    #+end_src
 
 ** doom-themes
+
+   To install the following font for the alignment issue in org-table.
+   https://github.com/be5invis/Sarasa-Gothic
+
    #+begin_src emacs-lisp
      (use-package doom-themes
        :config
@@ -1317,6 +1350,7 @@
          (set-face-attribute 'org-link nil :foreground "#3f7c8f")
          (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
          (set-face-attribute 'org-level-3 nil :foreground "#219e57")
+         (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
          (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
          (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
          (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
@@ -1651,6 +1685,20 @@
            (add-to-list 'flycheck-global-modes 'yaml-mode))))
    #+end_src
 
+** cmake
+   #+begin_src emacs-lisp
+     (use-package cmake-mode
+       :defer t
+       :mode (("CMakeLists\\.txt\\'" . cmake-mode) ("\\.cmake\\'" . cmake-mode)))
+   #+end_src
+
+** lua
+   #+begin_src emacs-lisp
+     (use-package lua-mode
+       :mode ("\\.lua\\'" . lua-mode)
+       :defer t)
+   #+end_src
+
 ** common lisp or emacs lisp
 
    TODO: maybe I neeed the better go to definition function like the spacemacs's implementation
@@ -1771,9 +1819,15 @@
        (python-mode . lsp)
        (rust-mode . lsp)
        (js-mode . lsp)
+       (c-mode . lsp)
+       (c++-mode . lsp)
        :config
        ;; turn off lens mode
-       (setq lsp-lens-enable nil))
+       (setq lsp-lens-enable nil)
+       (setq lsp-enable-folding nil)
+       (setq lsp-enable-snippet nil)
+       (setq lsp-enable-imenu nil)
+       (setq lsp-enable-links nil))
 
      (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
 
@@ -2206,9 +2260,10 @@
            "x" "execute" nil
            "xx" "racket run" 'racket-run))
 
-       ;; keybinding for go-mode
+       ;; lsp keybindings for some major modes
        (with-eval-after-load 'lsp-mode
 
+         ;; keybinding for go-mode
          (with-eval-after-load 'go-mode
 
            (apply 'define-leader-key-map-for 'go-mode-map
@@ -2224,6 +2279,7 @@
 
            (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
+         ;; keybinding for python-mode
          (with-eval-after-load 'python
            (apply 'define-leader-key-map-for 'python-mode-map
                   (lsp-keybinding))
@@ -2236,6 +2292,11 @@
                         "x" "execute" nil
                         "xx" "python run" 'python-run-main
                         "d" "debug" 'dap-hydra)))
+
+         ;; keybinding fro c, c++ mode
+         (with-eval-after-load 'cc-mode
+           (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
+           (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding)))
          )
 
        (with-eval-after-load 'elisp-mode
@@ -2370,7 +2431,8 @@
 
        (define-leader-key-global
          "l" '(:ignore t :which-key "layout")
-         "ll" '(persp-switch :which-key "switch layout"))
+         "ll" '(persp-switch :which-key "switch layout")
+         "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
 
        (define-leader-key-global
          "n" '(:ignore t :which-key "narrow")
@@ -2402,6 +2464,11 @@
          "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
          "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
          "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
+
+       (define-leader-key-global
+         "q" '(:ignore t :which-key "quit")
+         "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
+         "qr" '(restart-emacs :which-key "restart"))
 
        (define-leader-key-global
          "t"  '(:ignore t :which-key "toggles")
@@ -2625,18 +2692,19 @@
       (defhydra mark-operation ()
         "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
 
-       ^match^                    ^Search^                     ^edit^
-      ────^^^^────              ────^^^^────                 ────^^^^────
-      _v_: expand               _s_: swiper                  _e_: iedit
-      _-_: contract             _/_: counsel-projectile-rg   _h_: highlight
-      _r_: range
-      _n_: next
-      _N_: prev
+       ^match^                    ^Search^                      ^edit^
+      ────^^^^────              ────^^^^────                   ────^^^^────
+      [_v_]: expand             [_s_]: swiper                  [_e_]: iedit
+      [_-_]: contract           [_/_]: counsel-projectile-rg   [_h_]: highlight
+      [_r_]: range                                             [_S_]: change surround
+      [_n_]: next
+      [_N_]: prev
       "
         ("v" expand-and-highlight-region nil)
         ("-" contract-and-highlight-region nil)
         ;; counsel-projectile-rg-initial-input
         ("s" swiper-thing-at-point nil)
+        ("S" evil-surround-region nil)
         ("/" my-counsel-projectile-rg nil)
         ("e" my-iedit-mode nil)
         ("h" highlight-region nil)
@@ -2676,6 +2744,7 @@
       (with-eval-after-load 'auto-highlight-symbol
         (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
         (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
+        (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-counsel-projectile-rg)
         (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
 
       (defun wrap-mark-operation ()

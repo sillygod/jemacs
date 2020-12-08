@@ -138,29 +138,38 @@
 (defvar default-im "com.apple.keylayout.ABC"
   "Default English input method.")
 
+(defvar prev-im ""
+  "previous input method.")
+
+(defvar current-im ""
+  "Current input method.")
+
 (defun im-use-eng ()
   "Switch to english input method."
   (interactive)
-  (cond ((string= system-type "darwin")
-         (call-process-shell-command (concat im-exec " " default-im)))))
+  (cond ((and (string= system-type "darwin")
+              (not (string= current-im default-im)))
+           (call-process-shell-command (concat im-exec " " default-im))
+           (setq current-im default-im))))
 
 (defun im-remember ()
   "Remember the input method being used in insert mode."
   (interactive)
-  (unless (boundp 'prev-im)
-    (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
   (cond ((string= system-type "darwin")
-         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))))
+         (setq prev-im (substring (shell-command-to-string im-exec) 0 -1))
+         (setq current-im prev-im))))
 
 (defun im-use-prev ()
   "Change the input method to the previous one we remembered."
   (interactive)
-  (unless (boundp 'prev-im)
-    (setq prev-im (substring (shell-command-to-string im-exec) 0 -1)))
   (cond ((string= system-type "darwin")
          (if prev-im
-             (call-process-shell-command (concat im-exec " " prev-im))
-           (call-process-shell-command (concat im-exec " " default-im))))))
+             (progn
+               (call-process-shell-command (concat im-exec " " prev-im))
+               (setq current-im prev-im))
+           (progn
+             (call-process-shell-command (concat im-exec " " default-im))
+             (setq current-im default-im))))))
 
 ;; NOTE: borrow from spacemacs
 (defun show-hide-helm-or-ivy-prompt-msg (msg sec)
@@ -289,6 +298,20 @@ initialized with the current directory instead of filename."
     (vterm-toggle-cd)))
 
 ;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
+
+(defun restart-emacs-procedure ()
+  (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@27/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
+
+
+(defun restart-emacs ()
+  "Kill the original instance and start a new emacs instance.
+However, have no idea how to get the original instance' starting command args
+sys.args?"
+  ;; TODO: lookup the sys.args
+  (interactive)
+  (add-to-list 'kill-emacs-hook #'restart-emacs-procedure)
+  (print kill-emacs-hook)
+  (save-buffers-kill-emacs))
 
 (defun copy-region-and-base64-decode (start end)
   (interactive "r")
@@ -611,7 +634,8 @@ Use a prefix argument ARG to indicate creation of a new process instead."
       (unless (require 'vterm nil 'noerror)
         (error "Package 'vterm' is not available"))
       (projectile-with-default-dir project
-        (vterm-other-window buffer)))))
+        (vterm-other-window buffer)))
+    (pop-to-buffer buffer)))
 
 (defun new-terminal ()
   "New a terminal in project root or the current directory."
@@ -679,9 +703,6 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     :parent 'read-file-name-internal
     :occur #'counsel-find-file-occur))
 
-(when (= (prefix-numeric-value current-prefix-arg) 4)
-  (setq current-prefix-arg '(16)))
-
 (defun my-counsel-projectile-rg (&optional options)
   "Search the current project with rg and search under certarn directory
      if it's not in a project.
@@ -706,10 +727,15 @@ Use a prefix argument ARG to indicate creation of a new process instead."
          (counsel-rg-base-command
           (let ((counsel-ag-command counsel-rg-base-command))
             (counsel--format-ag-command ignored "%s")))
-         (initial-input (when (use-region-p) (buffer-substring (region-beginning) (region-end)))))
+         (initial-input (cond
+                         ((use-region-p) (buffer-substring (region-beginning) (region-end)))
+                         ((and (boundp 'ahs-current-overlay)
+                               (not (eq ahs-current-overlay nil))) (buffer-substring (overlay-start ahs-current-overlay)
+                               (overlay-end ahs-current-overlay)))
+                         (t nil))))
 
     (when (region-active-p)
-          (deactivate-mark))
+      (deactivate-mark))
 
     (ivy-add-actions
      'counsel-rg
@@ -854,6 +880,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     (set-face-attribute 'org-link nil :foreground "#3f7c8f")
     (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
     (set-face-attribute 'org-level-3 nil :foreground "#219e57")
+    (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
     (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
     (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
     (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
@@ -1052,6 +1079,14 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     (when (listp flycheck-global-modes)
       (add-to-list 'flycheck-global-modes 'yaml-mode))))
 
+(use-package cmake-mode
+  :defer t
+  :mode (("CMakeLists\\.txt\\'" . cmake-mode) ("\\.cmake\\'" . cmake-mode)))
+
+(use-package lua-mode
+  :mode ("\\.lua\\'" . lua-mode)
+  :defer t)
+
 (use-package slime
   :defer t
   :init
@@ -1135,9 +1170,15 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (python-mode . lsp)
   (rust-mode . lsp)
   (js-mode . lsp)
+  (c-mode . lsp)
+  (c++-mode . lsp)
   :config
   ;; turn off lens mode
-  (setq lsp-lens-enable nil))
+  (setq lsp-lens-enable nil)
+  (setq lsp-enable-folding nil)
+  (setq lsp-enable-snippet nil)
+  (setq lsp-enable-imenu nil)
+  (setq lsp-enable-links nil))
 
 (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
 
@@ -1449,9 +1490,10 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
       "x" "execute" nil
       "xx" "racket run" 'racket-run))
 
-  ;; keybinding for go-mode
+  ;; lsp keybindings for some major modes
   (with-eval-after-load 'lsp-mode
 
+    ;; keybinding for go-mode
     (with-eval-after-load 'go-mode
 
       (apply 'define-leader-key-map-for 'go-mode-map
@@ -1467,6 +1509,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
       (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
+    ;; keybinding for python-mode
     (with-eval-after-load 'python
       (apply 'define-leader-key-map-for 'python-mode-map
              (lsp-keybinding))
@@ -1479,6 +1522,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                    "x" "execute" nil
                    "xx" "python run" 'python-run-main
                    "d" "debug" 'dap-hydra)))
+
+    ;; keybinding fro c, c++ mode
+    (with-eval-after-load 'cc-mode
+      (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
+      (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding)))
     )
 
   (with-eval-after-load 'elisp-mode
@@ -1613,7 +1661,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
   (define-leader-key-global
     "l" '(:ignore t :which-key "layout")
-    "ll" '(persp-switch :which-key "switch layout"))
+    "ll" '(persp-switch :which-key "switch layout")
+    "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
 
   (define-leader-key-global
     "n" '(:ignore t :which-key "narrow")
@@ -1645,6 +1694,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
     "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
     "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
+
+  (define-leader-key-global
+    "q" '(:ignore t :which-key "quit")
+    "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
+    "qr" '(restart-emacs :which-key "restart"))
 
   (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
@@ -1838,18 +1892,19 @@ buffer management :)
 (defhydra mark-operation ()
   "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
 
- ^match^                    ^Search^                     ^edit^
-────^^^^────              ────^^^^────                 ────^^^^────
-_v_: expand               _s_: swiper                  _e_: iedit
-_-_: contract             _/_: counsel-projectile-rg   _h_: highlight
-_r_: range
-_n_: next
-_N_: prev
+ ^match^                    ^Search^                      ^edit^
+────^^^^────              ────^^^^────                   ────^^^^────
+[_v_]: expand             [_s_]: swiper                  [_e_]: iedit
+[_-_]: contract           [_/_]: counsel-projectile-rg   [_h_]: highlight
+[_r_]: range                                             [_S_]: change surround
+[_n_]: next
+[_N_]: prev
 "
   ("v" expand-and-highlight-region nil)
   ("-" contract-and-highlight-region nil)
   ;; counsel-projectile-rg-initial-input
   ("s" swiper-thing-at-point nil)
+  ("S" evil-surround-region nil)
   ("/" my-counsel-projectile-rg nil)
   ("e" my-iedit-mode nil)
   ("h" highlight-region nil)
@@ -1889,6 +1944,7 @@ _N_: prev
 (with-eval-after-load 'auto-highlight-symbol
   (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
   (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
+  (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-counsel-projectile-rg)
   (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
 
 (defun wrap-mark-operation ()

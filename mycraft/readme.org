@@ -22,6 +22,9 @@
 ** bugs needed to be fixed
 
    - [ ] how to copy in the xwidget mode with evil yank
+   - [ ] how to make certain file variables are safe
+   - [ ] https://github.com/MaskRay/ccls/wiki/Project-Setup
+   - [ ] find why counsel-projectile-switch-project is slow
 
 ** things needed to be done or enahnced
 
@@ -251,6 +254,12 @@
      (defvar xx-mode-map
        (let ((map (make-sparse-keymap)))
          (define-key map (kbd "l") 'kubernete-transient) map))
+   #+end_src
+
+** something
+   #+begin_src emacs-lisp
+     (with-selected-window (next-window)
+       (org-element-parse-buffer))
    #+end_src
 
 * Reference
