@@ -21,10 +21,10 @@
 
 ** bugs needed to be fixed
 
-   - [ ] how to copy in the xwidget mode with evil yank
    - [ ] how to make certain file variables are safe
-   - [ ] https://github.com/MaskRay/ccls/wiki/Project-Setup
+   - [ ] https://clangd.llvm.org/installation.html#project-setup
    - [ ] find why counsel-projectile-switch-project is slow
+   - [ ] how to copy in the xwidget mode with evil yank
 
 ** things needed to be done or enahnced
 

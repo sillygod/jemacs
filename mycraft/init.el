@@ -901,6 +901,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :commands (devdocs-search)
   :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
 
+(use-package devdocs
+  :defer t
+  :commands (devdocs-search)
+  :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+
 (use-package hl-todo
   :defer t
   :hook
@@ -1078,6 +1083,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (with-eval-after-load 'flycheck
     (when (listp flycheck-global-modes)
       (add-to-list 'flycheck-global-modes 'yaml-mode))))
+
+(use-package json-snatcher
+  :defer t)
 
 (use-package cmake-mode
   :defer t
@@ -1523,6 +1531,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                    "xx" "python run" 'python-run-main
                    "d" "debug" 'dap-hydra)))
 
+    (with-eval-after-load 'json-mode
+      (define-leader-key-map-for 'json-mode-map
+        "" "major mode" nil
+        "l"  "lookup" nil
+        "ll" "snatch path" 'jsons-print-path
+        "lj" "jq" 'counsel-jq))
+
     ;; keybinding fro c, c++ mode
     (with-eval-after-load 'cc-mode
       (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
@@ -1889,6 +1904,24 @@ buffer management :)
                      (nth 1 hh)
                      (nth 2 hh)))))
 
+
+(defun evil-surround-region-utils (operation)
+  ;; TODO: implement this one
+  (interactive (evil-surround-interactive-setup))
+  ;; (cond
+  ;;  ((eq operation 'change)
+  ;;   (call-interactively 'evil-surround-change))
+  ;;  ((eq operation 'delete)
+  ;;   (call-interactively 'evil-surround-delete))
+  ;;  (t
+  ;;   (evil-surround-setup-surround-line-operators)
+  ;;   (evil-surround-call-with-repeat 'evil-surround-region))))
+
+  (if (region-active-p)
+      (evil-surround-setup-surround-line-operators)
+    (evil-surround-call-with-repeat 'evil-surround-region)))
+
+
 (defhydra mark-operation ()
   "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
 
@@ -1896,7 +1929,7 @@ buffer management :)
 ────^^^^────              ────^^^^────                   ────^^^^────
 [_v_]: expand             [_s_]: swiper                  [_e_]: iedit
 [_-_]: contract           [_/_]: counsel-projectile-rg   [_h_]: highlight
-[_r_]: range                                             [_S_]: change surround
+[_r_]: range                                             [_c_]: change surround
 [_n_]: next
 [_N_]: prev
 "
@@ -1904,7 +1937,7 @@ buffer management :)
   ("-" contract-and-highlight-region nil)
   ;; counsel-projectile-rg-initial-input
   ("s" swiper-thing-at-point nil)
-  ("S" evil-surround-region nil)
+  ("c" evil-surround-region nil)
   ("/" my-counsel-projectile-rg nil)
   ("e" my-iedit-mode nil)
   ("h" highlight-region nil)
