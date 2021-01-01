@@ -21,9 +21,8 @@
 
 ** bugs needed to be fixed
 
-   - [ ] how to make certain file variables are safe
-   - [ ] https://clangd.llvm.org/installation.html#project-setup
    - [ ] find why counsel-projectile-switch-project is slow
+   - [ ] add re builder mode shorcuts
    - [ ] how to copy in the xwidget mode with evil yank
 
 ** things needed to be done or enahnced
@@ -294,3 +293,4 @@
    - http://ergoemacs.org/emacs/emacs.html
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
    - autothemer
+   - https://www.gnu.org/software/hyperbole/#summary

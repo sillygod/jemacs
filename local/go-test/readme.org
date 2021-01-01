@@ -1,0 +1,17 @@
+* Notes
+
+So what will happend after calling =re-search-backward=?
+It seems that we need to call =match-string-no-properties= to get the result.
+
+match-string-no-properties this will return the result of last search (not limited to
+regular expression search)
+
+#+begin_src go
+  func TestHelloWorld(t *testing.T) {
+      fmt.Println("hi")
+  }
+#+end_src
+
+
+* An interactive regexp builder
+  https://www.masteringemacs.org/article/re-builder-interactive-regexp-builder

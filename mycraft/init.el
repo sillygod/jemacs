@@ -901,10 +901,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :commands (devdocs-search)
   :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
 
-(use-package devdocs
+(use-package counsel-jq-yq
   :defer t
-  :commands (devdocs-search)
   :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+
+(use-package go-test
+  :defer t
+  :load-path "~/Desktop/spacemacs-private/local/go-test")
 
 (use-package hl-todo
   :defer t
@@ -1228,7 +1231,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
   (setq ivy-use-selectable-prompt t)
   ;; (setq ivy-dynamic-exhibit-delay-ms 250)
-  (setq ivy-initial-inputs-alist nil))
+  (setq ivy-initial-inputs-alist nil)
+  (with-eval-after-load 'evil
+    (evil-define-key 'normal ivy-occur-grep-mode-map (kbd "i") 'ivy-wgrep-change-to-wgrep-mode)))
 
 (use-package ivy-rich
   :after (ivy)
@@ -1677,6 +1682,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (define-leader-key-global
     "l" '(:ignore t :which-key "layout")
     "ll" '(persp-switch :which-key "switch layout")
+    "lr" '(persp-rename :which-key "rename layout")
+    "ld" '(persp-kill :which-key "delete layout")
     "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
 
   (define-leader-key-global
@@ -1855,7 +1862,8 @@ buffer management :)
       (ahs-unhighlight t))
     (when (and symbol
                (not (ahs-dropdown-list-p))
-               (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
+               ;; (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
+               ;; disable skip highlight for some font-face
                (not (ahs-symbol-p ahs-exclude symbol t))
                (ahs-symbol-p ahs-include symbol))
       (list symbol beg end))))
@@ -1881,6 +1889,26 @@ buffer management :)
                       symbol-end
                       face fontified) ahs-search-work))))))
 
+
+(defun my-ahs-light-up ()
+  "Light up symbols."
+  (cl-loop for symbol in ahs-search-work
+
+           for beg = (nth 0 symbol)
+           for end = (nth 1 symbol)
+           for face = (or (nth 2 symbol)
+                          (get-text-property beg 'face))
+           for face = (ahs-add-overlay-face beg face)
+
+           do (let ((overlay (make-overlay beg end nil nil t)))
+                (overlay-put overlay 'ahs-symbol t)
+                (overlay-put overlay 'face
+                             (if (ahs-face-p face 'ahs-definition-face-list)
+                                 ahs-definition-face
+                               ahs-face))
+                (push overlay ahs-overlay-list))))
+
+(advice-add 'ahs-light-up :override #'my-ahs-light-up)
 (advice-add 'ahs-search-symbol :override #'my-ahs-search-symbol)
 
 (defun expand-and-highlight-region ()
@@ -2033,6 +2061,9 @@ buffer management :)
 (use-package htmlize
   :defer t)
 
+(use-package ob-async
+  :defer t)
+
 (use-package toc-org
   :defer t
   :init
@@ -2068,6 +2099,10 @@ buffer management :)
   (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
   (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
   (add-to-list 'org-structure-template-alist '("sp" . "src python"))
+
+  (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
+                                             (org-confirm-babel-evaluate)
+                                             (org-export-babel-evaluate)))
 
   ;; set org table's font
   ;; (set-face-font 'org-table " ")
