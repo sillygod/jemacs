@@ -2431,6 +2431,7 @@
          "alx" '(open-with-xwidget :which-key "open with xwidget")
 
          "ao" '(:ignore t :which-key "org")
+         "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
          "aog" '(:ignore t :which-key "goto")
          "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
          "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
@@ -2592,12 +2593,12 @@
       (defhydra window-operate ()
         "
       Window management :)
-      ^Resize^               ^select^
-      ────^^^^────           ────^^^^────
-      [_[_] : shrink h        [_h_]: left
-      [_]_] : enlarge h       [_l_]: right
-      [_{_] : shrink v        [_k_]: up
-      [_}_] : enlarge v       [_j_]: down
+      ^Resize^               ^select^                          ^Move^          ^Action^
+      ^───────────────^      ^──────── ^                       ^────────^      ^────────^
+      [_[_] : shrink h        [_h_]: left                      [_H_]: left       [_/_]: split vertically
+      [_]_] : enlarge h       [_l_]: right                     [_L_]: right      [_-_]: split horizontally
+      [_{_] : shrink v        [_k_]: up                        [_K_]: up         [_d_]: delete window
+      [_}_] : enlarge v       [_j_]: down                      [_J_]: down
       [_=_] : balance         [_1_.._9_]: window 1..9
       [_m_] : window maximize
       "
@@ -2606,11 +2607,19 @@
         ("{" my-shrink-window nil)
         ("}" my-enlarge-window nil)
         ("=" balance-windows nil)
+        ("d" delete-window nil)
         ("m" toggle-maximize-buffer nil)
         ("h" evil-window-left nil)
         ("l" evil-window-right nil)
         ("k" evil-window-up nil)
         ("j" evil-window-down nil)
+        ("L" evil-window-move-far-right nil)
+        ("H" evil-window-move-far-left nil)
+        ("J" evil-window-move-very-bottom nil)
+        ("K" evil-window-move-very-top nil)
+        ("/" evil-window-vsplit nil)
+        ("-" evil-window-split nil)
+
         ("1" winum-select-window-1 nil)
         ("2" winum-select-window-2 nil)
         ("3" winum-select-window-3 nil)
@@ -2620,6 +2629,14 @@
         ("7" winum-select-window-7 nil)
         ("8" winum-select-window-8 nil)
         ("9" winum-select-window-9 nil))
+
+      (defhydra hydra-org-roam (:exit t :idle 0.8)
+        "Launcher for `org-roam'."
+        ("i" org-roam-insert "insert")
+        ("f" ora-org-roam-find-file "find-file")
+        ("v" org-roam-buffer-activate "backlinks")
+        ("t" ora-roam-todo "todo"))
+
 
       (defhydra buffer-operate ()
         "
@@ -2909,6 +2926,58 @@
     #+begin_src emacs-lisp
       (use-package htmlize
         :defer t)
+    #+end_src
+
+*** org-roam
+
+    This requires =sqlite3=. Ensure it's installed.
+
+    Remember to run =org-roam-db-build-cache= at first time.
+
+    #+begin_src emacs-lisp
+      (use-package org-roam
+        :diminish org-roam-mode
+        :after org
+        :config
+        (setq org-roam-directory "/Users/jing/Dropbox/myorgs/to_be_architecter")
+        (setq org-roam-buffer-position 'bottom)
+        (setq org-roam-completion-system 'ivy)
+        (with-eval-after-load 'org
+          (org-roam-mode)))
+
+
+      (with-eval-after-load 'counsel
+        (defun org-roam-todo ()
+          "An ad-hoc agenda for `org-roam'."
+          (interactive)
+          (let* ((regex "^\\* TODO")
+                 (b (get-buffer (concat "*ivy-occur counsel-rg \"" regex "\"*"))))
+            (if b
+                (progn
+                  (switch-to-buffer b)
+                  (ivy-occur-revert-buffer))
+              (setq unread-command-events (listify-key-sequence (kbd "C-c C-o M->")))
+              (counsel-rg regex org-roam-directory "--sort modified")))))
+
+
+      (defun ora-org-roam-find-file-action (x)
+        (if (consp x)
+            (let ((file-path (plist-get (cdr x) :path)))
+              (org-roam--find-file file-path))
+          (let* ((title-with-tags x)
+                 (org-roam-capture--info
+                  `((title . ,title-with-tags)
+                    (slug . ,(funcall org-roam-title-to-slug-function title-with-tags))))
+                 (org-roam-capture--context 'title))
+            (setq org-roam-capture-additional-template-props (list :finalize 'find-file))
+            (org-roam-capture--capture))))
+
+      (defun ora-org-roam-find-file ()
+        (interactive)
+        (unless org-roam-mode (org-roam-mode))
+        (ivy-read "File: " (org-roam--get-title-path-completions)
+                  :action #'ora-org-roam-find-file-action
+                  :caller 'ora-org-roam-find-file))
     #+end_src
 
 *** ob-async
