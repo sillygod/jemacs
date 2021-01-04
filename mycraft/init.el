@@ -877,7 +877,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
   (with-eval-after-load 'org
     ;; change some ui
-    (set-face-attribute 'org-link nil :foreground "#3f7c8f")
+    (set-face-attribute 'org-link nil :font "Sarasa Mono SC" :foreground "#3f7c8f")
     (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
     (set-face-attribute 'org-level-3 nil :foreground "#219e57")
     (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
@@ -1546,8 +1546,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     ;; keybinding fro c, c++ mode
     (with-eval-after-load 'cc-mode
       (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
-      (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding)))
-    )
+      (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding))))
 
   (with-eval-after-load 'elisp-mode
     (define-leader-key-map-for 'emacs-lisp-mode-map
@@ -1822,7 +1821,7 @@ Window management :)
   ("8" winum-select-window-8 nil)
   ("9" winum-select-window-9 nil))
 
-(defhydra hydra-org-roam (:exit t :idle 0.8)
+(defhydra hydra-org-roam ()
   "Launcher for `org-roam'."
   ("i" org-roam-insert "insert")
   ("f" ora-org-roam-find-file "find-file")
@@ -1863,6 +1862,16 @@ buffer management :)
   ("t" counsel-load-theme "theme")
   ("v" visual-line-mode "visual line mode")
   ("f" flyspell-mode "check spell"))
+
+(defhydra hydra-table-mode ()
+  "table-mode edit shortcut"
+  ("+" table-insert-row-column "insert row column")
+  ("-" table-split-cell-vertically "cell split horizontally")
+  ("/" table-split-cell-horizontally "cell split vertically")
+  ("<" table-narrow-cell "narrow cell")
+  (">" table-widen-cell "widen cell")
+  ("{" table-shorten-cell "shorten cell")
+  ("}" table-heighten-cell "heighten cell"))
 
 (setq ahs-default-range 'ahs-range-whole-buffer)
 
@@ -2149,6 +2158,60 @@ buffer management :)
   :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
 (with-eval-after-load 'org
+  (defcustom org-html-tableel-org "no"
+    "Export table.el cells as org code if set to \"t\" or \"yes\".
+This is the default and can be changed per section with export option:
+#+OPTIONS: HTML_TABLEEL_ORG: t"
+    :type '(choice (const "no") (const "yes"))
+    :group 'org-html)
+
+  (eval-after-load 'ox-html
+    '(eval ;;< Avoid eager macro expansion before ox-html is loaded.
+      '(cl-pushnew
+        (list
+         :html-tableel-org
+         "HTML_TABLEEL_ORG" ;; keyword
+         "HTML_TABLEEL_ORG" ;; option for #+OPTIONS: line
+         org-html-tableel-org ;; default value for the property
+         t ;; handling of multiple keywords for the same property. (Replace old value with new one.)
+         )
+        (org-export-backend-options (org-export-get-backend 'html)))))
+
+  (setq org-html-format-table-no-css nil)
+  (setq org-html-table-data-tags '("<td>" . "</td>"))
+  (setq org-html-table-header-tags  '("<th>" . "</th>"))
+  (setq org-html-table-align-individual-fields nil)
+  (defvar org-element-all-elements) ;; defined in "org-element"
+  (defun table-generate-orghtml-cell-contents (dest-buffer language cell info)
+    "Generate and insert source cell contents of a CELL into DEST-BUFFER.
+LANGUAGE must be 'orghtml."
+    (cl-assert (eq language 'html) nil
+               "Table cells with org content only working with html export")
+    (let* ((cell-contents (extract-rectangle (car cell) (cdr cell)))
+           (string (with-temp-buffer
+                     (table--insert-rectangle cell-contents)
+                     (table--remove-cell-properties (point-min) (point-max))
+                     (goto-char (point-min))
+                     (buffer-substring (point-min) (point-max)))))
+      (with-current-buffer dest-buffer
+        (let ((beg (point)))
+          (insert (org-export-string-as string 'html t info))
+          (indent-rigidly beg (point) 6)))))
+
+  (defun org-orghtml-table--table.el-table (fun table info)
+    "Format table.el TABLE into HTML.
+This is an advice for `org-html-table--table.el-table' as FUN.
+INFO is a plist used as a communication channel."
+    (if (assoc-string (plist-get info :html-tableel-org) '("t" "yes"))
+        (cl-letf (((symbol-function 'table--generate-source-cell-contents)
+                   (lambda (dest-buffer language cell)
+                     (table-generate-orghtml-cell-contents dest-buffer language cell info))))
+          (funcall fun table info))
+      (funcall fun table info)))
+
+  (advice-add #'org-html-table--table.el-table :around #'org-orghtml-table--table.el-table))
+
+(with-eval-after-load 'org
   (org-babel-do-load-languages
    'org-babel-load-languages
    '((emacs-lisp . t)
@@ -2297,3 +2360,14 @@ buffer management :)
 (with-eval-after-load 'evil
   (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-operate/body)
   (evil-define-key 'emacs 'global (kbd "M-w") 'window-operate/body))
+
+
+(use-package table
+  :config
+  (unless table-cell-map
+    (table--make-cell-map))
+  (define-key table-cell-map (kbd "<return>") '*table--cell-newline-and-indent)
+  (with-eval-after-load 'evil
+    (evil-define-key 'normal table-cell-map (kbd "x") '*table--cell-delete-char)
+    (evil-define-key 'normal table-cell-map (kbd "p") '*table--cell-yank)
+    (evil-define-key 'normal table-cell-map (kbd ".") 'hydra-table-mode/body)))

@@ -21,6 +21,7 @@
 
 ** bugs needed to be fixed
 
+   - [ ] make table mode can be exported as org element
    - [ ] find why counsel-projectile-switch-project is slow
    - [ ] add re builder mode shorcuts
    - [ ] how to copy in the xwidget mode with evil yank
