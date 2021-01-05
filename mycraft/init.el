@@ -2198,6 +2198,24 @@ LANGUAGE must be 'orghtml."
           (insert (org-export-string-as string 'html t info))
           (indent-rigidly beg (point) 6)))))
 
+  (defun my-org-html-table--table.el-table (table _info)
+    "Format table.el tables into HTML.
+INFO is a plist used as a communication channel."
+    (when (eq (org-element-property :type table) 'table.el)
+      (require 'table)
+      (let ((outbuf (with-current-buffer
+                        (get-buffer-create "*org-export-table*")
+                      (erase-buffer) (current-buffer))))
+        (with-temp-buffer
+          (insert (org-element-property :value table))
+          (goto-char 1)
+          (re-search-forward "^[ \t]*|[^|]" nil t)
+          (table-recognize-region (point-min) (point-max) 1)
+          (table-generate-source 'html outbuf))
+        (with-current-buffer outbuf
+          (prog1 (org-trim (buffer-string))
+            (kill-buffer))))))
+
   (defun org-orghtml-table--table.el-table (fun table info)
     "Format table.el TABLE into HTML.
 This is an advice for `org-html-table--table.el-table' as FUN.
@@ -2209,7 +2227,8 @@ INFO is a plist used as a communication channel."
           (funcall fun table info))
       (funcall fun table info)))
 
-  (advice-add #'org-html-table--table.el-table :around #'org-orghtml-table--table.el-table))
+  (advice-add 'org-html-table--table.el-table :override #'my-org-html-table--table.el-table)
+  (advice-add #'my-org-html-table--table.el-table :around #'org-orghtml-table--table.el-table))
 
 (with-eval-after-load 'org
   (org-babel-do-load-languages

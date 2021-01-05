@@ -2674,7 +2674,9 @@
 
       (defhydra hydra-table-mode ()
         "table-mode edit shortcut"
-        ("+" table-insert-row-column "insert row column")
+        ("+" table-insert-row-column "insert new row/column")
+        ("*" table-span-cell "merge cell")
+        (":" table-justify "align cell")
         ("-" table-split-cell-vertically "cell split horizontally")
         ("/" table-split-cell-horizontally "cell split vertically")
         ("<" table-narrow-cell "narrow cell")
@@ -3078,6 +3080,24 @@
                 (insert (org-export-string-as string 'html t info))
                 (indent-rigidly beg (point) 6)))))
 
+        (defun my-org-html-table--table.el-table (table _info)
+          "Format table.el tables into HTML.
+      INFO is a plist used as a communication channel."
+          (when (eq (org-element-property :type table) 'table.el)
+            (require 'table)
+            (let ((outbuf (with-current-buffer
+                              (get-buffer-create "*org-export-table*")
+                            (erase-buffer) (current-buffer))))
+              (with-temp-buffer
+                (insert (org-element-property :value table))
+                (goto-char 1)
+                (re-search-forward "^[ \t]*|[^|]" nil t)
+                (table-recognize-region (point-min) (point-max) 1)
+                (table-generate-source 'html outbuf))
+              (with-current-buffer outbuf
+                (prog1 (org-trim (buffer-string))
+                  (kill-buffer))))))
+
         (defun org-orghtml-table--table.el-table (fun table info)
           "Format table.el TABLE into HTML.
       This is an advice for `org-html-table--table.el-table' as FUN.
@@ -3089,7 +3109,8 @@
                 (funcall fun table info))
             (funcall fun table info)))
 
-        (advice-add #'org-html-table--table.el-table :around #'org-orghtml-table--table.el-table))
+        (advice-add 'org-html-table--table.el-table :override #'my-org-html-table--table.el-table)
+        (advice-add #'my-org-html-table--table.el-table :around #'org-orghtml-table--table.el-table))
     #+end_src
 
 *** org configuration
@@ -3266,6 +3287,7 @@
       (with-eval-after-load 'evil
         (evil-define-key 'normal table-cell-map (kbd "x") '*table--cell-delete-char)
         (evil-define-key 'normal table-cell-map (kbd "p") '*table--cell-yank)
+        (evil-define-key 'normal table-cell-map (kbd "d") '*table--cell-delete-region)
         (evil-define-key 'normal table-cell-map (kbd ".") 'hydra-table-mode/body)))
 
   #+end_src
