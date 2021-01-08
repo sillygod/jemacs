@@ -1849,6 +1849,7 @@
        :config
        ;; turn off lens mode
        (setq lsp-lens-enable nil)
+       (setq lsp-headerline-breadcrumb-enable nil)
        (setq lsp-enable-folding nil)
        (setq lsp-enable-snippet nil)
        (setq lsp-enable-imenu nil)
@@ -3182,7 +3183,7 @@
 
         (setq org-download-screenshot-method "screencapture -i %s")
         (setq-default org-download-image-dir "./img")
-        (setq org-download-image-org-width 300)
+        (setq org-download-image-org-width 500)
 
         (setq org-journal-dir "~/Dropbox/myorgs/journal/")
         (setq org-journal-file-type 'weekly)

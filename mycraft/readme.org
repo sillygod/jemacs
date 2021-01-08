@@ -21,7 +21,7 @@
 
 ** bugs needed to be fixed
 
-   - [ ] make table mode can be exported as org element
+   - [X] make table mode can be exported as org element
    - [ ] find why counsel-projectile-switch-project is slow
    - [ ] add re builder mode shorcuts
    - [ ] how to copy in the xwidget mode with evil yank
@@ -260,6 +260,12 @@
    #+begin_src emacs-lisp
      (with-selected-window (next-window)
        (org-element-parse-buffer))
+   #+end_src
+
+** to see the visualization of git history
+
+   #+begin_src sh
+     docker run --rm -p 8080:80 --name envisaged -v /Users/jing/Desktop/spacemacs-private/:/visualization/git_repo:ro -e GOURCE_TITLE="spacemacs private" utensils/envisaged
    #+end_src
 
 * Reference

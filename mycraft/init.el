@@ -1186,6 +1186,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :config
   ;; turn off lens mode
   (setq lsp-lens-enable nil)
+  (setq lsp-headerline-breadcrumb-enable nil)
   (setq lsp-enable-folding nil)
   (setq lsp-enable-snippet nil)
   (setq lsp-enable-imenu nil)
@@ -1865,7 +1866,9 @@ buffer management :)
 
 (defhydra hydra-table-mode ()
   "table-mode edit shortcut"
-  ("+" table-insert-row-column "insert row column")
+  ("+" table-insert-row-column "insert new row/column")
+  ("*" table-span-cell "merge cell")
+  (":" table-justify "align cell")
   ("-" table-split-cell-vertically "cell split horizontally")
   ("/" table-split-cell-horizontally "cell split vertically")
   ("<" table-narrow-cell "narrow cell")
@@ -2177,10 +2180,6 @@ This is the default and can be changed per section with export option:
          )
         (org-export-backend-options (org-export-get-backend 'html)))))
 
-  (setq org-html-format-table-no-css nil)
-  (setq org-html-table-data-tags '("<td>" . "</td>"))
-  (setq org-html-table-header-tags  '("<th>" . "</th>"))
-  (setq org-html-table-align-individual-fields nil)
   (defvar org-element-all-elements) ;; defined in "org-element"
   (defun table-generate-orghtml-cell-contents (dest-buffer language cell info)
     "Generate and insert source cell contents of a CELL into DEST-BUFFER.
@@ -2389,4 +2388,5 @@ INFO is a plist used as a communication channel."
   (with-eval-after-load 'evil
     (evil-define-key 'normal table-cell-map (kbd "x") '*table--cell-delete-char)
     (evil-define-key 'normal table-cell-map (kbd "p") '*table--cell-yank)
+    (evil-define-key 'normal table-cell-map (kbd "d") '*table--cell-delete-region)
     (evil-define-key 'normal table-cell-map (kbd ".") 'hydra-table-mode/body)))
