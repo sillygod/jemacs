@@ -61,7 +61,7 @@ example: go test -timeout 30s -run ^TestNslookup$ gop/jcert/pkg/domain"
         (re-search-backward
          "^func[ ]+\\(([[:alnum:]]*?[ ]?[*]?\\([[:alnum:]]+\\))[ ]+\\)?\\(Test[[:alnum:]_]+\\)(.*)")
         (let ((test-func-name (match-string-no-properties 2)))
-          (if (not (equal test-func-name ""))
+          (if (not (equal test-func-name nil))
               ;; (match-string-no-properties 2) => HandlerProvisionTestSuite
               (progn
                 ;; start to search where the func be called.
@@ -87,12 +87,14 @@ example: go test -timeout 30s -run ^TestNslookup$ gop/jcert/pkg/domain"
     (message "Must be in a _test.go file to run tests.")))
 
 
+;;;###autoload
 (defun go-run-packages-tests ()
   "Run the package's test files."
   (interactive)
   (go-run-tests ""))
 
 
+;;;###autoload
 (defun go-packages-gopkgs ()
     "Return a list of all go packages."
     (sort (process-lines "gopkgs") #'string<))

@@ -24,6 +24,7 @@
    - [X] make table mode can be exported as org element
    - [ ] find why counsel-projectile-switch-project is slow
    - [ ] add re builder mode shorcuts
+   - [ ] a better go to definition handler
    - [ ] how to copy in the xwidget mode with evil yank
 
 ** things needed to be done or enahnced
@@ -31,7 +32,7 @@
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] add run test and intergrate them into transient for go mode
    - [ ] implement my own run-python-shell
-   - [ ] code folding problem (hideshow?)
+   - [ ] code folding problem (hideshow?) (lsp?)
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
 
@@ -41,7 +42,7 @@
 
 ** better to have
 
-   - [ ] a startup dashboard
+   - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
@@ -111,6 +112,12 @@
 *** elp-instrument-function, elp-results
     add the function you want to instrument.
     Run the functino you want to profiling then run =elp-results= to get the result.
+
+** autoload
+
+   It seems will start to work when calling =package-initialized= so when using =use-package= for local package it will not generate =xxx-autoloads.el=
+
+   This needs more operation to make the autload working.
 
 ** use =esup= to profiling the emacs start up time
 ** use =what-cursor-position= to see the detail font-face under the cursor
@@ -273,6 +280,7 @@
 ** dotfiles
 
    - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
+   - https://github.com/mpereira/.emacs.d#a-fast-non-projectile-based-project-file-finder
    - https://github.com/daviwil/dotfiles
    - https://laptrinhx.com/evil-emacs-configuration-1977138996/
    - https://github.com/lccambiaghi/.doom.d

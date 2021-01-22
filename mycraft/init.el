@@ -348,6 +348,11 @@ sys.args?"
   (backward-char 5)
   (evil-insert-state))
 
+(defun create-journal-to (dest)
+  "~/Dropbox/myorgs/stock/journal"
+  (let ((org-journal-dir dest))
+    (call-interactively 'org-journal-new-entry)))
+
 (defun hey-god (question)
   "Reduce distraction when you search the answer for the question.
                     Powered by the howdoi"
@@ -903,11 +908,17 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
 (use-package counsel-jq-yq
   :defer t
-  :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+  :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+  :init
+  (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+  (load-library "counsel-jq-yq-autoloads"))
 
 (use-package go-test
   :defer t
-  :load-path "~/Desktop/spacemacs-private/local/go-test")
+  :load-path "~/Desktop/spacemacs-private/local/go-test"
+  :init
+  (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
+  (load-library "go-test-autoloads"))
 
 (use-package hl-todo
   :defer t
@@ -1117,8 +1128,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
          (scheme-mode . lispy-mode))
   :config
   (with-eval-after-load 'evil-matchit
-    (lispy-define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)
-    (lispy-define-key lispy-mode-map (kbd "x") 'lispy-kill)))
+    (lispy-define-key lispy-mode-map (kbd "%") 'lispy-different)
+    (lispy-define-key lispy-mode-map (kbd "d") 'lispy-kill)))
 
 (use-package rust-mode
   :defer t
@@ -1593,7 +1604,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
       "ti" "inline image" 'org-toggle-inline-images
 
       "j" "journals" nil
-      "jn" "new entry" 'org-journal-new-entry))
+      "jn" "new entry" 'org-journal-new-entry
+      "js" "new stock entry" '(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
 
 
   (define-leader-key-global
@@ -2288,7 +2300,7 @@ INFO is a plist used as a communication channel."
 
   (setq org-download-screenshot-method "screencapture -i %s")
   (setq-default org-download-image-dir "./img")
-  (setq org-download-image-org-width 300)
+  (setq org-download-image-org-width 500)
 
   (setq org-journal-dir "~/Dropbox/myorgs/journal/")
   (setq org-journal-file-type 'weekly)

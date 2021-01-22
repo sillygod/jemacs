@@ -37,6 +37,7 @@
   - [[#start-a-new-emacs-instance][start a new emacs instance]]
   - [[#text-encoding-decoding][text encoding decoding]]
   - [[#org-insert-toc][org-insert-toc]]
+  - [[#org-journal-stock][org journal stock]]
   - [[#misc][misc]]
   - [[#lsp-keybinding][lsp-keybinding]]
   - [[#lsp-define-key-helper][lsp define key helper]]
@@ -668,6 +669,14 @@
        (insert "*" " " ":TOC:")
        (backward-char 5)
        (evil-insert-state))
+   #+end_src
+
+** org journal stock
+   #+begin_src emacs-lisp
+     (defun create-journal-to (dest)
+       "~/Dropbox/myorgs/stock/journal"
+       (let ((org-journal-dir dest))
+         (call-interactively 'org-journal-new-entry)))
    #+end_src
 
 ** misc
@@ -1398,14 +1407,20 @@
    #+begin_src emacs-lisp
      (use-package counsel-jq-yq
        :defer t
-       :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+       :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+       :init
+       (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+       (load-library "counsel-jq-yq-autoloads"))
    #+end_src
 
 ** go-test
    #+begin_src emacs-lisp
      (use-package go-test
        :defer t
-       :load-path "~/Desktop/spacemacs-private/local/go-test")
+       :load-path "~/Desktop/spacemacs-private/local/go-test"
+       :init
+       (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
+       (load-library "go-test-autoloads"))
    #+end_src
 
 ** hl-todo mode
@@ -1748,8 +1763,9 @@
               (scheme-mode . lispy-mode))
        :config
        (with-eval-after-load 'evil-matchit
-         (lispy-define-key lispy-mode-map (kbd "%") 'evilmi-jump-items)
-         (lispy-define-key lispy-mode-map (kbd "x") 'lispy-kill)))
+         (lispy-define-key lispy-mode-map (kbd "%") 'lispy-different)
+         (lispy-define-key lispy-mode-map (kbd "d") 'lispy-kill)))
+
    #+end_src
 
 ** rust mode
@@ -2377,7 +2393,8 @@
            "ti" "inline image" 'org-toggle-inline-images
 
            "j" "journals" nil
-           "jn" "new entry" 'org-journal-new-entry))
+           "jn" "new entry" 'org-journal-new-entry
+           "js" "new stock entry" '(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
 
 
        (define-leader-key-global
