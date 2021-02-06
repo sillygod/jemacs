@@ -1884,12 +1884,23 @@
                  (lambda (arg) (call-interactively #'dap-hydra))))
    #+end_src
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (use-package lsp-python-ms
        :after
        (lsp-mode)
        :init
        (setq lsp-python-ms-auto-install-server t))
+   #+end_src
+
+   in the beginning, you may need to install the pyright server manually
+   commands: lsp install server: pyright
+
+   #+begin_src emacs-lisp
+     (use-package lsp-pyright
+       :hook (python-mode . (lambda ()
+                              (require 'lsp-pyright)
+                              (lsp))))
+
    #+end_src
 
    currently, disable =lsp-ui=
@@ -3154,6 +3165,7 @@
         (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
         (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
+        (setq org-export-backends '(ascii html icalendar latex odt md))
         (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
                                                    (org-confirm-babel-evaluate)
                                                    (org-export-babel-evaluate)))
