@@ -1215,11 +1215,10 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (add-hook 'dap-stopped-hook
             (lambda (arg) (call-interactively #'dap-hydra))))
 
-(use-package lsp-python-ms
-  :after
-  (lsp-mode)
-  :init
-  (setq lsp-python-ms-auto-install-server t))
+(use-package lsp-pyright
+  :hook (python-mode . (lambda ()
+                         (require 'lsp-pyright)
+                         (lsp))))
 
 (use-package ivy
   :ensure t
@@ -1405,7 +1404,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :commands
   (iedit-restrict-region)
   :config
-  (define-key iedit-occurrence-keymap-default (kbd "<escape>") 'iedit-quit))
+  (define-key iedit-occurrence-keymap-default
+    (kbd "<escape>") '(lambda () (interactive) (iedit-mode -1))))
 
 (use-package git-messenger
   :defer t
@@ -1546,7 +1546,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                    "t" "tests" 'python-pytest-dispatch
                    "x" "execute" nil
                    "xx" "python run" 'python-run-main
-                   "d" "debug" 'dap-hydra)))
+                   "d" "debug" 'dap-hydra))
+      (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'json-mode
       (define-leader-key-map-for 'json-mode-map
@@ -2254,6 +2255,7 @@ INFO is a plist used as a communication channel."
   (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
   (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
+  (setq org-export-backends '(ascii html icalendar latex odt md))
   (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
                                              (org-confirm-babel-evaluate)
                                              (org-export-babel-evaluate)))

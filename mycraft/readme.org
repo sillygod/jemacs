@@ -3,6 +3,7 @@
   A literal programming for my own emacs configs.
 
 ** prerequisite
+
 *** some util tools
    #+begin_src sh
      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
@@ -22,9 +23,10 @@
 ** bugs needed to be fixed
 
    - [X] make table mode can be exported as org element
+   - [ ] a better go to definition handler
    - [ ] find why counsel-projectile-switch-project is slow
    - [ ] add re builder mode shorcuts
-   - [ ] a better go to definition handler
+   - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
    - [ ] how to copy in the xwidget mode with evil yank
 
 ** things needed to be done or enahnced
@@ -301,6 +303,7 @@
 ** misc
 
    - https://github.com/sulami/literate-calc-mode.el
+   - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
    - https://github.com/clemera/objed (interesting..)
    - https://github.com/daipeihust/im-select (combine this with evil mode)
    - https://leanpub.com/lit-config/read

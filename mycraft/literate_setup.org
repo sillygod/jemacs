@@ -2187,7 +2187,8 @@
        :commands
        (iedit-restrict-region)
        :config
-       (define-key iedit-occurrence-keymap-default (kbd "<escape>") 'iedit-quit))
+       (define-key iedit-occurrence-keymap-default
+         (kbd "<escape>") '(lambda () (interactive) (iedit-mode -1))))
    #+end_src
 
 ** git version control
@@ -2346,7 +2347,8 @@
                         "t" "tests" 'python-pytest-dispatch
                         "x" "execute" nil
                         "xx" "python run" 'python-run-main
-                        "d" "debug" 'dap-hydra)))
+                        "d" "debug" 'dap-hydra))
+           (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
          (with-eval-after-load 'json-mode
            (define-leader-key-map-for 'json-mode-map
