@@ -14,6 +14,7 @@
 
    #+begin_src sh
      brew install emacs-plus@27 --HEAD --with-xwidgets --with-modern-sexy-v2-icon
+     brew install emacs-plus@28 --with-xwidgets --with-modern-black-dragon-icon --with-native-comp
    #+end_src
 
 * Start to build my own emacs
@@ -31,12 +32,13 @@
 
 ** things needed to be done or enahnced
 
+   - [X] add run test for go mode
    - [ ] check devdocs' functionality and pop-up with window-frame
-   - [ ] add run test and intergrate them into transient for go mode
    - [ ] implement my own run-python-shell
    - [ ] code folding problem (hideshow?) (lsp?)
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
+   - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
 
 ** program relavant config
 

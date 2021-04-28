@@ -15,7 +15,7 @@ Counsel interface for jq." t nil)
 (autoload 'counsel-yq "counsel-jq-yq" "\
 Counsel interface for yq." t nil)
 
-(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "counsel-jq-yq" '("counsel-jq-")))
+(if (fboundp 'register-definition-prefixes) (register-definition-prefixes "counsel-jq-yq" '("counsel-")))
 
 ;;;***
 

@@ -106,18 +106,18 @@
 
 
 ;; TODO: find a way to handle this better
-(add-hook 'org-babel-pre-tangle-hook '(lambda ()
-                                        (setq-default evil-normal-state-entry-hook nil)
-                                        (setq-default evil-insert-state-entry-hook nil)
-                                        (setq-default evil-insert-state-exit-hook nil)
-                                        (setq-default evil-emacs-state-entry-hook nil)))
+(add-hook 'org-babel-pre-tangle-hook #'(lambda ()
+                                         (setq-default evil-normal-state-entry-hook nil)
+                                         (setq-default evil-insert-state-entry-hook nil)
+                                         (setq-default evil-insert-state-exit-hook nil)
+                                         (setq-default evil-emacs-state-entry-hook nil)))
 
 
-(add-hook 'org-babel-post-tangle-hook '(lambda ()
-                                         (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-                                         (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-                                         (add-hook 'evil-insert-state-exit-hook 'im-remember)
-                                         (add-hook 'evil-emacs-state-entry-hook 'im-use-eng)))
+(add-hook 'org-babel-post-tangle-hook #'(lambda ()
+                                          (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+                                          (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+                                          (add-hook 'evil-insert-state-exit-hook 'im-remember)
+                                          (add-hook 'evil-emacs-state-entry-hook 'im-use-eng)))
 
 (defun measure-org-babel-tangle ()
   "A simple wrap to measure org-babel-tangle."
@@ -300,7 +300,7 @@ initialized with the current directory instead of filename."
 ;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
 
 (defun restart-emacs-procedure ()
-  (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@27/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
+  (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@28/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
 
 
 (defun restart-emacs ()
@@ -841,7 +841,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
 
-(add-hook 'prog-mode-hook '(lambda () (setq indent-tabs-mode nil)))
+(add-hook 'prog-mode-hook #'(lambda () (setq indent-tabs-mode nil)))
 
 (add-hook 'before-save-hook 'delete-trailing-whitespace)
 
@@ -997,7 +997,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t
   :init
   (add-hook 'jinja2-mode-hook
-            '(lambda ()
+            #'(lambda ()
                (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
 
@@ -1087,7 +1087,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
          ("Procfile\\'" . yaml-mode))
   :init
   (add-hook 'yaml-mode-hook 'lsp)
-  (add-hook 'yaml-mode-hook '(lambda ()
+  (add-hook 'yaml-mode-hook #'(lambda ()
                                (set (make-local-variable 'tab-width) 2)
                                (set (make-local-variable 'evil-shift-width) 2)
                                (set (make-local-variable 'indent-line-function) 'my-yaml-indent-line)))
@@ -1244,7 +1244,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   ;; (setq ivy-dynamic-exhibit-delay-ms 250)
   (setq ivy-initial-inputs-alist nil)
   (with-eval-after-load 'evil
-    (evil-define-key 'normal ivy-occur-grep-mode-map (kbd "i") 'ivy-wgrep-change-to-wgrep-mode)))
+    (define-key ivy-occur-grep-mode-map (kbd "w") nil)
+    (evil-define-key 'normal ivy-occur-grep-mode-map
+      (kbd "i")
+      #'(lambda ()
+          (interactive)
+          (ivy-wgrep-change-to-wgrep-mode)
+          (evil-insert-state)))))
 
 (use-package ivy-rich
   :after (ivy)
@@ -1343,7 +1349,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (delete 'view evil-collection-mode-list)
   ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
-  (add-hook 'evil-collection-setup-hook '(lambda (_mode mode-keymaps &rest _rest)
+  (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
                                            (when (eq _mode 'docker)
                                            (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
   (evil-collection-init))
@@ -1405,7 +1411,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (iedit-restrict-region)
   :config
   (define-key iedit-occurrence-keymap-default
-    (kbd "<escape>") '(lambda () (interactive) (iedit-mode -1))))
+    (kbd "<escape>") #'(lambda () (interactive) (iedit-mode -1))))
 
 (use-package git-messenger
   :defer t
@@ -1418,7 +1424,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :custom
   (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
 
-(use-package evil-magit
+(use-package forge
   :defer 2
   :after magit)
 
@@ -1556,6 +1562,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
         "ll" "snatch path" 'jsons-print-path
         "lj" "jq" 'counsel-jq))
 
+
+    (with-eval-after-load 'yaml-mode
+      (define-leader-key-map-for 'yaml-mode-map
+        "" "major mode" nil
+        "l" "lookup" nil
+        "ly" "yq" 'counsel-yq))
+
     ;; keybinding fro c, c++ mode
     (with-eval-after-load 'cc-mode
       (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
@@ -1606,7 +1619,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
       "j" "journals" nil
       "jn" "new entry" 'org-journal-new-entry
-      "js" "new stock entry" '(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
+      "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
 
 
   (define-leader-key-global
@@ -1818,6 +1831,7 @@ Window management :)
   ("l" evil-window-right nil)
   ("k" evil-window-up nil)
   ("j" evil-window-down nil)
+  ("r" rotate-windows-forward nil)
   ("L" evil-window-move-far-right nil)
   ("H" evil-window-move-far-left nil)
   ("J" evil-window-move-very-bottom nil)
@@ -2065,6 +2079,7 @@ buffer management :)
   :config
   (setq company-minimum-prefix-length 2)
   (setq company-idle-delay 0.1)
+  (setq company-format-margin-function 'company-vscode-dark-icons-margin)
   ;; In evil-collection, it adjust the key binding for the company-mode
   ;; NOTE: Furthermore, it also disable the pre-select behavior when
   ;; showing the completion candidates.
