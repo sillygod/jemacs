@@ -8,6 +8,8 @@
 
 ;; (toggle-debug-on-error) temporarily for debug usage
 
+(toggle-debug-on-error)
+(setq debug-on-message t)
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
@@ -30,8 +32,11 @@
 (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
 (setq scroll-preserve-screen-position t)
 (setq auto-window-vscroll nil)
+(setq warning-minimum-level :error) ;; to supress the pop-up window of warning message
 
 (setq help-window-select t)
+
+(setq ring-bell-function 'ignore)
 
 (when (eq (window-system) 'ns)
   (setq mac-command-modifier 'meta)
@@ -300,14 +305,20 @@ initialized with the current directory instead of filename."
 ;; (vterm-other-window (buffer-name (docker-generate-new-buffer "vterm" default-directory)))
 
 (defun restart-emacs-procedure ()
-  (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@28/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
+  (call-process "bash"
+                nil
+                nil
+                nil
+                "-c"
+                (concat
+                 (elt command-line-args 0)
+                 " -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &")))
 
 
 (defun restart-emacs ()
   "Kill the original instance and start a new emacs instance.
 However, have no idea how to get the original instance' starting command args
 sys.args?"
-  ;; TODO: lookup the sys.args
   (interactive)
   (add-to-list 'kill-emacs-hook #'restart-emacs-procedure)
   (print kill-emacs-hook)
@@ -616,8 +627,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (defun comment-or-uncomment-lines (&optional arg)
   (interactive "p")
-  (let ((evilnc-invert-comment-line-by-line nil))
-    (evilnc-comment-or-uncomment-lines arg)))
+    (evilnc-comment-or-uncomment-lines arg))
 
 (defun counsel-jump-in-buffer ()
   "Jump in buffer with `counsel-imenu' or `counsel-org-goto' if in 'org-mode'."
@@ -855,6 +865,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (use-package all-the-icons-dired
   :hook (dired-mode . all-the-icons-dired-mode)
   :config
+  (setq all-the-icons-dired-monochrome nil)
   (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
 
 (use-package esup
@@ -900,6 +911,12 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (doom-modeline-persp-name nil))
 
 (use-package all-the-icons)
+
+(use-package polymode
+  :defer t)
+
+(use-package poly-ansible
+  :defer t)
 
 (use-package devdocs
   :defer t
@@ -2128,6 +2145,20 @@ buffer management :)
   (with-eval-after-load 'org
     (org-roam-mode)))
 
+
+(use-package org-roam-server
+  :config
+  (setq org-roam-server-host "127.0.0.1"
+        org-roam-server-port 8123
+        org-roam-server-authenticate nil
+        org-roam-server-export-inline-images t
+        org-roam-server-serve-files nil
+        org-roam-server-served-file-extensions '("pdf" "mp4" "ogv")
+        org-roam-server-network-poll t
+        org-roam-server-network-arrows nil
+        org-roam-server-network-label-truncate t
+        org-roam-server-network-label-truncate-length 60
+        org-roam-server-network-label-wrap-length 20))
 
 (with-eval-after-load 'counsel
   (defun org-roam-todo ()

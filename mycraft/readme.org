@@ -24,25 +24,26 @@
 ** bugs needed to be fixed
 
    - [X] make table mode can be exported as org element
-   - [ ] a better go to definition handler
    - [ ] find why counsel-projectile-switch-project is slow
-   - [ ] add re builder mode shorcuts
-   - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
-   - [ ] how to copy in the xwidget mode with evil yank
 
 ** things needed to be done or enahnced
 
    - [X] add run test for go mode
+   - [ ] add continuous integration for this emacs literate programming setup
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] implement my own run-python-shell
    - [ ] code folding problem (hideshow?) (lsp?)
    - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
+   - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
 
 ** program relavant config
 
-   to be continued...
+   - [ ] implement a function that lsp auto reload when poetry venv toggle
+   - [ ] a better go to definition handler
+   - [ ] how to copy in the xwidget mode with evil yank
+   - [ ] add re builder mode shorcuts
 
 ** better to have
 
@@ -126,6 +127,8 @@
 ** use =esup= to profiling the emacs start up time
 ** use =what-cursor-position= to see the detail font-face under the cursor
    run this with universal args can get a more detail info.
+** ivy-minibuffer-map
+   =M-o= can let you copy the text in minibuffer
 
 ** toggle-debug-on-error help to debug
 ** transient-state seems to be spaceamcs's own implementation
@@ -314,3 +317,4 @@
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
    - autothemer
    - https://www.gnu.org/software/hyperbole/#summary
+   - https://www.deepl.com/translator (dictionary)

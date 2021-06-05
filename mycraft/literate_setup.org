@@ -11,6 +11,7 @@
 - [[#font-setup--config-background-color][Font setup & config background color]]
 - [[#ui-adjustment][UI adjustment]]
   - [[#make-curosr-in-the-help-window-at-first-when-poping-up-a-help-window][make curosr in the help window at first when poping up a help window]]
+  - [[#disable-beep-when-moving-beyond-the-window][disable beep when moving beyond the window]]
   - [[#setup-for-ns-gui-system][setup for ns gui system]]
   - [[#minimize-ui-interface][minimize ui interface]]
   - [[#change-comment-highlight-color][change comment highlight color]]
@@ -32,7 +33,7 @@
   - [[#an-helper-to-detect-os][an helper to detect os]]
   - [[#a-macro-function-helps-measuring-time-consuming][a macro function helps measuring time consuming]]
   - [[#switch-input-method-for-evil-mode][switch input method for evil mode]]
-  - [[#util-helper-to-be-completed][util helper to be completed]]
+  - [[#util-helpers-to-be-completed][util helpers to be completed]]
   - [[#my-customize-docker-shell-with-vterm][my customize docker shell with vterm]]
   - [[#start-a-new-emacs-instance][start a new emacs instance]]
   - [[#text-encoding-decoding][text encoding decoding]]
@@ -70,6 +71,7 @@
   - [[#doom-themes][doom-themes]]
   - [[#doom-modeline][doom modeline]]
   - [[#all-the-icons][all-the-icons]]
+  - [[#polymode][polymode]]
   - [[#devdocs][devdocs]]
   - [[#counsel-jq-yq][counsel-jq-yq]]
   - [[#go-test][go-test]]
@@ -124,8 +126,8 @@
 
 * What is this
 
-  It's a documentation of my emacs config and is also a emacs lisp code for my emacs setup.
-  This is powered by the =emacs-babel-tangle=. To generate the [[file:init.el][init.el]]. just run this command.
+  It's a documentation of my emacs configs and is also a emacs lisp code for my emacs setup.
+  This is powered by the =emacs-babel-tangle=. To generate the [[file:init.el][init.el]]. just run it.
   Thanks for the awesome [[https://github.com/syl20bnr/spacemacs][spacemacs]]. I borrow some util function from it :)
 
 * Setup
@@ -190,12 +192,18 @@
     (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
     (setq scroll-preserve-screen-position t)
     (setq auto-window-vscroll nil)
+    (setq warning-minimum-level :error) ;; to supress the pop-up window of warning message
   #+end_src
 
 ** make curosr in the help window at first when poping up a help window
 
    #+begin_src emacs-lisp
      (setq help-window-select t)
+   #+end_src
+
+** disable beep when moving beyond the window
+   #+begin_src emacs-lisp
+     (setq ring-bell-function 'ignore)
    #+end_src
 
 ** setup for ns gui system
@@ -476,7 +484,7 @@
                   (setq current-im default-im))))))
    #+end_src
 
-** util helper to be completed
+** util helpers to be completed
    #+begin_src emacs-lisp
      ;; NOTE: borrow from spacemacs
      (defun show-hide-helm-or-ivy-prompt-msg (msg sec)
@@ -613,16 +621,26 @@
    #+end_src
 
 ** start a new emacs instance
+   https://www.gnu.org/software/emacs/manual/html_node/elisp/Command_002dLine-Arguments.html#index-command_002dline_002dargs
+   how to get the argv
+
    #+begin_src emacs-lisp
+
      (defun restart-emacs-procedure ()
-       (call-process "bash" nil nil nil "-c" "/usr/local/opt/emacs-plus@28/bin/emacs -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &"))
+       (call-process "bash"
+                     nil
+                     nil
+                     nil
+                     "-c"
+                     (concat
+                      (elt command-line-args 0)
+                      " -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &")))
 
 
      (defun restart-emacs ()
        "Kill the original instance and start a new emacs instance.
      However, have no idea how to get the original instance' starting command args
      sys.args?"
-       ;; TODO: lookup the sys.args
        (interactive)
        (add-to-list 'kill-emacs-hook #'restart-emacs-procedure)
        (print kill-emacs-hook)
@@ -996,8 +1014,7 @@
    #+begin_src emacs-lisp
      (defun comment-or-uncomment-lines (&optional arg)
        (interactive "p")
-       (let ((evilnc-invert-comment-line-by-line nil))
-         (evilnc-comment-or-uncomment-lines arg)))
+         (evilnc-comment-or-uncomment-lines arg))
 
      (defun counsel-jump-in-buffer ()
        "Jump in buffer with `counsel-imenu' or `counsel-org-goto' if in 'org-mode'."
@@ -1305,6 +1322,7 @@
      (use-package all-the-icons-dired
        :hook (dired-mode . all-the-icons-dired-mode)
        :config
+       (setq all-the-icons-dired-monochrome nil)
        (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
    #+end_src
 
@@ -1388,6 +1406,18 @@
 
    #+begin_src emacs-lisp
      (use-package all-the-icons)
+   #+end_src
+
+** polymode
+
+   https://polymode.github.io/installation/
+
+   #+begin_src emacs-lisp
+     (use-package polymode
+       :defer t)
+
+     (use-package poly-ansible
+       :defer t)
    #+end_src
 
 ** devdocs
@@ -3001,6 +3031,20 @@
         (with-eval-after-load 'org
           (org-roam-mode)))
 
+
+      (use-package org-roam-server
+        :config
+        (setq org-roam-server-host "127.0.0.1"
+              org-roam-server-port 8123
+              org-roam-server-authenticate nil
+              org-roam-server-export-inline-images t
+              org-roam-server-serve-files nil
+              org-roam-server-served-file-extensions '("pdf" "mp4" "ogv")
+              org-roam-server-network-poll t
+              org-roam-server-network-arrows nil
+              org-roam-server-network-label-truncate t
+              org-roam-server-network-label-truncate-length 60
+              org-roam-server-network-label-wrap-length 20))
 
       (with-eval-after-load 'counsel
         (defun org-roam-todo ()
