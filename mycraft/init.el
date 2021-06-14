@@ -152,8 +152,8 @@
   (interactive)
   (cond ((and (string= system-type "darwin")
               (not (string= current-im default-im)))
-           (call-process-shell-command (concat im-exec " " default-im))
-           (setq current-im default-im))))
+         (call-process-shell-command (concat im-exec " " default-im))
+         (setq current-im default-im))))
 
 (defun im-remember ()
   "Remember the input method being used in insert mode."
@@ -625,7 +625,7 @@ If the error list is visible, hide it.  Otherwise, show it."
 
 (defun comment-or-uncomment-lines (&optional arg)
   (interactive "p")
-    (evilnc-comment-or-uncomment-lines arg))
+  (evilnc-comment-or-uncomment-lines arg))
 
 (defun counsel-jump-in-buffer ()
   "Jump in buffer with `counsel-imenu' or `counsel-org-goto' if in 'org-mode'."
@@ -830,13 +830,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (setq straight-check-for-modifications nil)
 (defvar bootstrap-version)
 (let ((bootstrap-file
-      (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
+       (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
       (bootstrap-version 5))
   (unless (file-exists-p bootstrap-file)
     (with-current-buffer
         (url-retrieve-synchronously
-        "https://raw.githubusercontent.com/raxod502/straight.el/develop/install.el"
-        'silent 'inhibit-cookies)
+         "https://raw.githubusercontent.com/raxod502/straight.el/develop/install.el"
+         'silent 'inhibit-cookies)
       (goto-char (point-max))
       (eval-print-last-sexp)))
   (load bootstrap-file nil 'nomessage))
@@ -906,7 +906,6 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
 
 (use-package doom-modeline
-  :defer 0
   :config
   ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
   (doom-modeline-mode 1)
@@ -932,18 +931,19 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (use-package counsel-jq-yq
   :defer 1
   :straight (
-    :local-repo "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-  )
+             :local-repo "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+             )
   ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
   :config
   ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
-  (load-library "counsel-jq-yq-autoloads"))
+  ;; (load-library "counsel-jq-yq-autoloads"))
+  )
 
 (use-package go-test
   :defer 1
   :straight (
-    :local-repo "~/Desktop/spacemacs-private/local/go-test"
-  )
+             :local-repo "~/Desktop/spacemacs-private/local/go-test"
+             )
   ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
   :config
   ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
@@ -1028,7 +1028,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (add-hook 'jinja2-mode-hook
             #'(lambda ()
-               (set (make-local-variable 'indent-line-function) 'insert-tab)))
+                (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
 
 (use-package racket-mode
@@ -1049,7 +1049,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer 1
   :config
   (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
-  (yas-global-mode 1)
+  ;; (yas-global-mode 1)
   (yas-minor-mode 1))
 
 (use-package yasnippet-snippets
@@ -1120,9 +1120,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (add-hook 'yaml-mode-hook 'lsp)
   (add-hook 'yaml-mode-hook #'(lambda ()
-                               (set (make-local-variable 'tab-width) 2)
-                               (set (make-local-variable 'evil-shift-width) 2)
-                               (set (make-local-variable 'indent-line-function) 'my-yaml-indent-line)))
+                                (set (make-local-variable 'tab-width) 2)
+                                (set (make-local-variable 'evil-shift-width) 2)
+                                (set (make-local-variable 'indent-line-function) 'my-yaml-indent-line)))
   :config
   ;; (with-eval-after-load 'evil
   ;;   (evil-define-key 'normal yaml-mode-map (kbd "=") 'yaml-indent-line))
@@ -1346,13 +1346,12 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (setq ediff-split-window-function 'split-window-horizontally))
 
 (use-package evil
-  :defer 1
-  :init
+  :defer 0
+  :config
   (setq evil-want-integration t)
   (setq evil-want-keybinding nil)
   (setq evil-want-C-u-scroll t)
   (setq evil-want-C-i-jump nil)
-  :config
   (evil-mode 1)
   (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
   ;; Use visual line motions even outside of visual-line-mode buffers
@@ -1384,8 +1383,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
   (setq evil-collection-company-use-tng nil)
   (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
-                                           (when (eq _mode 'docker)
-                                           (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
+                                            (when (eq _mode 'docker)
+                                              (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
   (evil-collection-init))
 
 (use-package evil-nerd-commenter
@@ -1474,7 +1473,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (add-to-list 'ahs-plugin-bod-modes 'python-mode))
 
 (use-package general
-  :after which-key
+  :after (which-key evil)
   :config
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
@@ -1498,9 +1497,6 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (setq my-local-leader-def-emacs-state-prop
         '(:key emacs-state-major-mode-leader-key :states (emacs)))
   ;; NOTE: '() the element inside will be symbol
-
-  :after (evil)
-  :config
 
   ;; NOTE: keysmaps override is to make general-define-key to be global scope
   ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
@@ -1838,7 +1834,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "fd" '(dired-jump :which-key "dired")
     "fs" '(save-buffer :which-key "save file")
     "fr" '(rename-current-buffer-file :which-key "rename file")
-    "ff" '(counsel-find-file :which-key "find file")))
+    "ff" '(counsel-find-file :which-key "find file"))
+
+  (message "DEBUG: !! complete general setting"))
 
 (use-package hydra
   :defer t)
@@ -2322,6 +2320,11 @@ INFO is a plist used as a communication channel."
 
   ;; to produce font-face for org quote block
   (setq org-fontify-quote-and-verse-blocks t)
+
+  (setq org-adapt-indentation t) ;; use indent-line-function to
+  ;; see the indentation function used by org-mode
+  ;; check the doc of org-indent-line, know how indent works
+
   (set-face-attribute 'org-block nil :background "#202021")
   (set-face-attribute 'org-quote nil :background "#202021")
 

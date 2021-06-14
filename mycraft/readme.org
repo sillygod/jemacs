@@ -5,17 +5,17 @@
 ** prerequisite
 
 *** some util tools
-   #+begin_src sh
-     curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
-     brew install ispell pngpaste
-   #+end_src
+    #+begin_src sh
+      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
+      brew install ispell pngpaste
+    #+end_src
 
 *** install emacs-plus
 
-   #+begin_src sh
-     brew install emacs-plus@27 --HEAD --with-xwidgets --with-modern-sexy-v2-icon
-     brew install emacs-plus@28 --with-xwidgets --with-modern-papirus-icon --with-native-comp
-   #+end_src
+    #+begin_src sh
+      brew install emacs-plus@27 --HEAD --with-xwidgets --with-modern-sexy-v2-icon
+      brew install emacs-plus@28 --with-xwidgets --with-modern-papirus-icon --with-native-comp
+    #+end_src
 
 * Start to build my own emacs
 
@@ -54,7 +54,6 @@
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
    - [ ] adopt darkroom package?
-   - [ ] https://github.com/plexus/lesser-evil/blob/main/init.el (consider to use =straight= to replace =use-package=)
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 
@@ -64,11 +63,11 @@
    - [X] what does the =command= in the use-package do (make the command to be autoloaded)
    - [X] what is =featurep=
 
-   #+begin_src bash
-     emacs -Q --load init.el or
-     /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
-     /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
-   #+end_src
+     #+begin_src bash
+       emacs -Q --load init.el or
+       /usr/local/opt/emacs-head@27/bin/emacs -Q --load init.el # a xwidget support version
+       /usr/local/opt/emacs-plus@27/bin/emacs -Q --load init.el # very similar with emacs-head
+     #+end_src
 
 * Notes
 
@@ -101,7 +100,7 @@
 
     #+begin_src elisp :tangle no
       (defun hi
-      "you see `evil-lookup'")
+          "you see `evil-lookup'")
     #+end_src
 
 *** font-lock vs overlay
