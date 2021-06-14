@@ -8,14 +8,14 @@
   - [[#grow-the-garbage-collection-threshold-when-initialize][grow the garbage collection threshold when initialize]]
   - [[#set-up-config-home-directory][set up config home directory]]
   - [[#set-up-wher-the-packages-to-be-installed][set up wher the packages to be installed]]
-- [[#font-setup--config-background-color][Font setup & config background color]]
 - [[#ui-adjustment][UI adjustment]]
   - [[#make-curosr-in-the-help-window-at-first-when-poping-up-a-help-window][make curosr in the help window at first when poping up a help window]]
   - [[#disable-beep-when-moving-beyond-the-window][disable beep when moving beyond the window]]
   - [[#setup-for-ns-gui-system][setup for ns gui system]]
   - [[#minimize-ui-interface][minimize ui interface]]
-  - [[#change-comment-highlight-color][change comment highlight color]]
+  - [[#change-comment-highlight-and-org-block-color][change comment highlight and org-block color]]
   - [[#enable-highlight-current-line][enable highlight current line]]
+- [[#font-setup--config-background-color][Font setup & config background color]]
 - [[#misc-behaviro-setup][Misc Behaviro setup]]
   - [[#simplify-the-prompt-yes-or-no-to-y-or-n][simplify the prompt =yes or no= to =y or n=]]
   - [[#show-startup-message-and-make-all-the-icon-not-to-impact-performance][show startup message and make all-the-icon not to impact performance]]
@@ -56,6 +56,7 @@
   - [[#golang-relevant-helper][golang relevant helper]]
 - [[#initialize-packages-and-setup-hook][Initialize packages and setup hook]]
   - [[#set-up-use-package][set up use-package]]
+  - [[#try-out-straightel][try out straight.el]]
   - [[#add-additional-load-path-for-use-package][add additional load-path for use-package]]
   - [[#enable-link-in-the-comments-can-be-click-and-highlight][enable link in the comments can be click and highlight]]
   - [[#ensure-program-mode-use-space-instead-of-tab][ensure program mode use space instead of tab]]
@@ -65,6 +66,7 @@
   - [[#dired][dired]]
   - [[#esup][esup]]
   - [[#diminish][diminish]]
+  - [[#command-log-mode][command-log-mode]]
   - [[#rainbow-mode][rainbow-mode]]
   - [[#rainbow-delimiters][rainbow-delimiters]]
   - [[#highlight-parentheses][highlight parentheses]]
@@ -137,6 +139,9 @@
   [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bdistributions/spacemacs-base/config.el][spacemacs config source code]]
   tips for optimization https://github.com/nilcons/emacs-use-package-fast
 
+  https://www.gnu.org/software/emacs/manual/html_node/eintr/debug_002don_002dentry.html
+  another debug way
+
   #+begin_src emacs-lisp
     ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
     ;;; Copyright (C) 2020 mycraft maintainers
@@ -171,16 +176,6 @@
      (setq package-user-dir (concat my-home-dir "/" "elpa"))
      (setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
    #+end_src
-
-* Font setup & config background color
-
-  #+begin_src emacs-lisp
-    (defvar default-font-size 140)
-    (set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
-    (set-face-attribute 'default nil :background "#292b2e")
-    (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
-    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
-  #+end_src
 
 * UI adjustment
 
@@ -237,9 +232,11 @@
      (add-to-list 'default-frame-alist '(left-fringe . 5))
      (add-to-list 'default-frame-alist '(right-fringe . 5))
      (add-to-list 'default-frame-alist '(fullscreen . maximized))
+     (add-to-list 'default-frame-alist '(background-color . "#292b2e"))
+     (add-to-list 'default-frame-alist '(font . "Source Code Pro-14"))
    #+end_src
 
-** change comment highlight color
+** change comment highlight and org-block color
 
    #+begin_src emacs-lisp
      (with-eval-after-load 'goto-addr
@@ -260,6 +257,14 @@
      (add-hook 'prog-mode-hook 'hl-line-mode)
      (add-hook 'text-mode-hook 'hl-line-mode)
    #+end_src
+
+* Font setup & config background color
+
+  #+begin_src emacs-lisp
+    (setq default-font-size 140)
+    (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
+  #+end_src
 
 * Misc Behaviro setup
 
@@ -1258,7 +1263,7 @@
    if not already present on your system.
    =(setq use-package-always-ensure t)= will globally enable ensure to t.
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (require 'subr-x)
      (require 'package)
      (setq package-archives '(("melpa" . "https://melpa.org/packages/")
@@ -1276,6 +1281,35 @@
      (require 'use-package)
 
      (setq use-package-always-ensure t)
+     ;;(setq use-package-verbose t)
+     ;; this can show the package loaded info
+   #+end_src
+
+** try out straight.el
+
+   #+begin_src emacs-lisp
+     (setq straight-check-for-modifications nil)
+     (defvar bootstrap-version)
+     (let ((bootstrap-file
+           (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
+           (bootstrap-version 5))
+       (unless (file-exists-p bootstrap-file)
+         (with-current-buffer
+             (url-retrieve-synchronously
+             "https://raw.githubusercontent.com/raxod502/straight.el/develop/install.el"
+             'silent 'inhibit-cookies)
+           (goto-char (point-max))
+           (eval-print-last-sexp)))
+       (load bootstrap-file nil 'nomessage))
+
+     ;; Always use straight to install on systems other than Linux
+     (setq straight-use-package-by-default (not (eq system-type 'gnu/linux)))
+
+     ;; Use straight.el for use-package expressions
+     (straight-use-package 'use-package)
+
+     ;; Load the helper package for commands like `straight-x-clean-unused-repos'
+     (require 'straight-x)
    #+end_src
 
 ** add additional load-path for use-package
@@ -1332,14 +1366,19 @@
      (use-package esup
        :defer t
        :init
-       (setq esup-depth 0)
-       ;; To use MELPA Stable use ":pin mepla-stable",
-       :pin melpa)
+       (setq esup-depth 0))
    #+end_src
 
 ** diminish
    #+begin_src emacs-lisp
      (use-package diminish :defer t)
+   #+end_src
+
+** command-log-mode
+   this will log the keys you press in another buffer
+   #+begin_src emacs-lisp
+     (use-package command-log-mode
+       :commands command-log-mode)
    #+end_src
 
 ** rainbow-mode
@@ -1370,7 +1409,7 @@
 
    #+begin_src emacs-lisp
      (use-package doom-themes
-       :config
+       :init
        (load-theme 'doom-one t)
        (doom-themes-org-config)
 
@@ -1389,7 +1428,8 @@
 ** doom modeline
    #+begin_src emacs-lisp
      (use-package doom-modeline
-       :init
+       :defer 0
+       :config
        ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
        (doom-modeline-mode 1)
        (setq all-the-icons-scale-factor 1.1)
@@ -1405,7 +1445,8 @@
    =M-x all-the-icons-install-fonts=
 
    #+begin_src emacs-lisp
-     (use-package all-the-icons)
+     (use-package all-the-icons
+       :defer 0)
    #+end_src
 
 ** polymode
@@ -1436,20 +1477,26 @@
 
    #+begin_src emacs-lisp
      (use-package counsel-jq-yq
-       :defer t
-       :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-       :init
-       (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+       :defer 1
+       :straight (
+         :local-repo "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+       )
+       ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+       :config
+       ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
        (load-library "counsel-jq-yq-autoloads"))
    #+end_src
 
 ** go-test
    #+begin_src emacs-lisp
      (use-package go-test
-       :defer t
-       :load-path "~/Desktop/spacemacs-private/local/go-test"
-       :init
-       (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
+       :defer 1
+       :straight (
+         :local-repo "~/Desktop/spacemacs-private/local/go-test"
+       )
+       ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
+       :config
+       ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
        (load-library "go-test-autoloads"))
    #+end_src
 
@@ -1506,8 +1553,9 @@
    a friendly key shortcut hint.
    #+begin_src emacs-lisp
      (use-package which-key
+       :defer 0
        :diminish which-key-mode
-       :init
+       :config
        (setq which-key-idle-delay 0.05)
        (which-key-mode 1))
    #+end_src
@@ -1617,8 +1665,9 @@
 
    #+begin_src emacs-lisp
      (use-package smartparens
+       :defer 0
        :commands (smartparens-mode)
-       :init
+       :config
        (require 'smartparens-config)
        (add-hook 'js-mode-hook #'smartparens-mode)
        (add-hook 'go-mode-hook #'smartparens-mode)
@@ -1677,6 +1726,7 @@
 ** winum
    #+begin_src emacs-lisp
      (use-package winum
+       :defer 0
        :config
        (winum-mode))
    #+end_src
@@ -1927,6 +1977,8 @@
 
    #+begin_src emacs-lisp
      (use-package lsp-pyright
+       :defer t
+       :custom ((lsp-pyright-multi-root nil))
        :hook (python-mode . (lambda ()
                               (require 'lsp-pyright)
                               (lsp))))
@@ -2271,7 +2323,8 @@
 
    #+begin_src emacs-lisp
      (use-package general
-       :init
+       :after which-key
+       :config
        (defconst leader-key "SPC")
        (defconst major-mode-leader-key "SPC m")
        (defconst major-mode-leader-key-shortcut ",")
@@ -2882,7 +2935,7 @@
         ("s" swiper-thing-at-point nil)
         ("c" evil-surround-region nil)
         ("/" my-counsel-projectile-rg nil)
-        ("e" my-iedit-mode nil)
+        ("e" my-iedit-mode nil :exit t)
         ("h" highlight-region nil)
         ("r" my-change-range nil)
         ("n" my-ahs-forward nil)
@@ -2946,6 +2999,7 @@
 
    #+begin_src emacs-lisp
      (use-package company
+       :defer 0
        :config
        (setq company-minimum-prefix-length 2)
        (setq company-idle-delay 0.1)
@@ -2979,8 +3033,7 @@
 
      (use-package org
        :defer t
-       :ensure org-plus-contrib
-       :pin org)
+       :ensure org-plus-contrib)
 
      (use-package org-download
        :commands
@@ -3033,6 +3086,7 @@
 
 
       (use-package org-roam-server
+        :defer t
         :config
         (setq org-roam-server-host "127.0.0.1"
               org-roam-server-port 8123
@@ -3225,6 +3279,11 @@
         (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
         (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
+        ;; to produce font-face for org quote block
+        (setq org-fontify-quote-and-verse-blocks t)
+        (set-face-attribute 'org-block nil :background "#202021")
+        (set-face-attribute 'org-quote nil :background "#202021")
+
         (setq org-export-backends '(ascii html icalendar latex odt md))
         (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
                                                    (org-confirm-babel-evaluate)
@@ -3370,6 +3429,7 @@
 
 
     (use-package table
+      :defer 0
       :config
       (unless table-cell-map
         (table--make-cell-map))

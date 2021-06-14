@@ -8,8 +8,6 @@
 
 ;; (toggle-debug-on-error) temporarily for debug usage
 
-(toggle-debug-on-error)
-(setq debug-on-message t)
 (setq gc-cons-threshold 64000000)
 (add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
@@ -20,12 +18,6 @@
 
 (setq package-user-dir (concat my-home-dir "/" "elpa"))
 (setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
-
-(defvar default-font-size 140)
-(set-face-attribute 'default nil :font "Source Code Pro" :height default-font-size)
-(set-face-attribute 'default nil :background "#292b2e")
-(set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
-(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
 
 (setq frame-title-format "") ;; to disable show buffer name in the title bar
 ;; (force-mode-line-update) to update the frame title
@@ -52,12 +44,18 @@
 (add-to-list 'default-frame-alist '(left-fringe . 5))
 (add-to-list 'default-frame-alist '(right-fringe . 5))
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
+(add-to-list 'default-frame-alist '(background-color . "#292b2e"))
+(add-to-list 'default-frame-alist '(font . "Source Code Pro-14"))
 
 (with-eval-after-load 'goto-addr
   (set-face-attribute 'link nil :foreground "#3f7c8f"))
 
 (add-hook 'prog-mode-hook 'hl-line-mode)
 (add-hook 'text-mode-hook 'hl-line-mode)
+
+(setq default-font-size 140)
+(set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+(set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
 
 (fset 'yes-or-no-p 'y-or-n-p) ;; to simplify the yes or no input
 
@@ -829,23 +827,28 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                                      (buffer-file-name (buffer-base-buffer))))
            go-run-args)))
 
-(require 'subr-x)
-(require 'package)
-(setq package-archives '(("melpa" . "https://melpa.org/packages/")
-                         ("org" . "https://orgmode.org/elpa/")
-                         ("elpa" . "https://elpa.gnu.org/packages/")))
+(setq straight-check-for-modifications nil)
+(defvar bootstrap-version)
+(let ((bootstrap-file
+      (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
+      (bootstrap-version 5))
+  (unless (file-exists-p bootstrap-file)
+    (with-current-buffer
+        (url-retrieve-synchronously
+        "https://raw.githubusercontent.com/raxod502/straight.el/develop/install.el"
+        'silent 'inhibit-cookies)
+      (goto-char (point-max))
+      (eval-print-last-sexp)))
+  (load bootstrap-file nil 'nomessage))
 
-(package-initialize)
-(unless package-archive-contents
-  (package-refresh-contents))
+;; Always use straight to install on systems other than Linux
+(setq straight-use-package-by-default (not (eq system-type 'gnu/linux)))
 
-;; Initialize use-package on non-Linux platforms
-(unless (package-installed-p 'use-package)
-  (package-install 'use-package))
+;; Use straight.el for use-package expressions
+(straight-use-package 'use-package)
 
-(require 'use-package)
-
-(setq use-package-always-ensure t)
+;; Load the helper package for commands like `straight-x-clean-unused-repos'
+(require 'straight-x)
 
 (push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
 
@@ -871,11 +874,12 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (use-package esup
   :defer t
   :init
-  (setq esup-depth 0)
-  ;; To use MELPA Stable use ":pin mepla-stable",
-  :pin melpa)
+  (setq esup-depth 0))
 
 (use-package diminish :defer t)
+
+(use-package command-log-mode
+  :commands command-log-mode)
 
 (use-package rainbow-mode
   :defer t)
@@ -887,7 +891,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :hook (prog-mode . highlight-parentheses-mode))
 
 (use-package doom-themes
-  :config
+  :init
   (load-theme 'doom-one t)
   (doom-themes-org-config)
 
@@ -902,7 +906,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
 
 (use-package doom-modeline
-  :init
+  :defer 0
+  :config
   ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
   (doom-modeline-mode 1)
   (setq all-the-icons-scale-factor 1.1)
@@ -910,7 +915,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (doom-modeline-height 12)
   (doom-modeline-persp-name nil))
 
-(use-package all-the-icons)
+(use-package all-the-icons
+  :defer 0)
 
 (use-package polymode
   :defer t)
@@ -924,17 +930,23 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
 
 (use-package counsel-jq-yq
-  :defer t
-  :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-  :init
-  (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
+  :defer 1
+  :straight (
+    :local-repo "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+  )
+  ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
+  :config
+  ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
   (load-library "counsel-jq-yq-autoloads"))
 
 (use-package go-test
-  :defer t
-  :load-path "~/Desktop/spacemacs-private/local/go-test"
-  :init
-  (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
+  :defer 1
+  :straight (
+    :local-repo "~/Desktop/spacemacs-private/local/go-test"
+  )
+  ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
+  :config
+  ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
   (load-library "go-test-autoloads"))
 
 (use-package hl-todo
@@ -967,8 +979,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (persp-mode))
 
 (use-package which-key
+  :defer 0
   :diminish which-key-mode
-  :init
+  :config
   (setq which-key-idle-delay 0.05)
   (which-key-mode 1))
 
@@ -1022,8 +1035,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t)
 
 (use-package smartparens
+  :defer 0
   :commands (smartparens-mode)
-  :init
+  :config
   (require 'smartparens-config)
   (add-hook 'js-mode-hook #'smartparens-mode)
   (add-hook 'go-mode-hook #'smartparens-mode)
@@ -1062,6 +1076,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t)
 
 (use-package winum
+  :defer 0
   :config
   (winum-mode))
 
@@ -1233,6 +1248,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
             (lambda (arg) (call-interactively #'dap-hydra))))
 
 (use-package lsp-pyright
+  :defer t
+  :custom ((lsp-pyright-multi-root nil))
   :hook (python-mode . (lambda ()
                          (require 'lsp-pyright)
                          (lsp))))
@@ -1457,7 +1474,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (add-to-list 'ahs-plugin-bod-modes 'python-mode))
 
 (use-package general
-  :init
+  :after which-key
+  :config
   (defconst leader-key "SPC")
   (defconst major-mode-leader-key "SPC m")
   (defconst major-mode-leader-key-shortcut ",")
@@ -2040,7 +2058,7 @@ buffer management :)
   ("s" swiper-thing-at-point nil)
   ("c" evil-surround-region nil)
   ("/" my-counsel-projectile-rg nil)
-  ("e" my-iedit-mode nil)
+  ("e" my-iedit-mode nil :exit t)
   ("h" highlight-region nil)
   ("r" my-change-range nil)
   ("n" my-ahs-forward nil)
@@ -2093,6 +2111,7 @@ buffer management :)
     (kbd "*") 'wrap-mark-operation))
 
 (use-package company
+  :defer 0
   :config
   (setq company-minimum-prefix-length 2)
   (setq company-idle-delay 0.1)
@@ -2108,8 +2127,7 @@ buffer management :)
 
 (use-package org
   :defer t
-  :ensure org-plus-contrib
-  :pin org)
+  :ensure org-plus-contrib)
 
 (use-package org-download
   :commands
@@ -2147,6 +2165,7 @@ buffer management :)
 
 
 (use-package org-roam-server
+  :defer t
   :config
   (setq org-roam-server-host "127.0.0.1"
         org-roam-server-port 8123
@@ -2301,6 +2320,11 @@ INFO is a plist used as a communication channel."
   (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
   (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
+  ;; to produce font-face for org quote block
+  (setq org-fontify-quote-and-verse-blocks t)
+  (set-face-attribute 'org-block nil :background "#202021")
+  (set-face-attribute 'org-quote nil :background "#202021")
+
   (setq org-export-backends '(ascii html icalendar latex odt md))
   (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
                                              (org-confirm-babel-evaluate)
@@ -2441,6 +2465,7 @@ INFO is a plist used as a communication channel."
 
 
 (use-package table
+  :defer 0
   :config
   (unless table-cell-map
     (table--make-cell-map))

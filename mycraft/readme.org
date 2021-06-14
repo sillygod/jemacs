@@ -14,7 +14,7 @@
 
    #+begin_src sh
      brew install emacs-plus@27 --HEAD --with-xwidgets --with-modern-sexy-v2-icon
-     brew install emacs-plus@28 --with-xwidgets --with-modern-black-dragon-icon --with-native-comp
+     brew install emacs-plus@28 --with-xwidgets --with-modern-papirus-icon --with-native-comp
    #+end_src
 
 * Start to build my own emacs
@@ -127,6 +127,7 @@
 ** use =esup= to profiling the emacs start up time
 ** use =what-cursor-position= to see the detail font-face under the cursor
    run this with universal args can get a more detail info.
+** describe-face to know the detail properties of font-face
 ** ivy-minibuffer-map
    =M-o= can let you copy the text in minibuffer
 
