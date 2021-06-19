@@ -716,6 +716,15 @@ Use a prefix argument ARG to indicate creation of a new process instead."
     :parent 'read-file-name-internal
     :occur #'counsel-find-file-occur))
 
+(defun send-text-and-move-to-projectile-vterm ()
+  (interactive)
+  (when (region-active-p)
+    ;; get the mark content
+    (let ((content (buffer-substring (region-beginning) (region-end))))
+      (new-terminal)
+      (deactivate-mark)
+      (vterm-send-string content))))
+
 (defun my-counsel-projectile-rg (&optional options)
   "Search the current project with rg and search under certarn directory
      if it's not in a project.
@@ -1217,6 +1226,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (setq lsp-completion-provider :capf) ;; the official recommends use this
   (setq lsp-enable-symbol-highlighting nil)
+  (setq read-process-output-max (* 1024 1024))
+  ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
   :commands
   (lsp)
   :hook
@@ -1355,6 +1366,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (evil-mode 1)
   (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
   ;; Use visual line motions even outside of visual-line-mode buffers
+  (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
+  (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
+
 
   (evil-global-set-key 'motion "j" 'evil-next-visual-line)
   (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
@@ -1824,7 +1838,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
     "xb" '(:ignore t :which-key "base64")
     "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
-    "xbd" '(my-decode-region-base64 :which-key "base64-decode-region"))
+    "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
+
+    "xs" '(send-text-and-move-to-projectile-vterm :which-key "send content to and focus on vterm"))
 
   (define-leader-key-global
     "f" '(:ignore t :which-key "files")
@@ -2042,11 +2058,11 @@ buffer management :)
 (defhydra mark-operation ()
   "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
 
- ^match^                    ^Search^                      ^edit^
-────^^^^────              ────^^^^────                   ────^^^^────
-[_v_]: expand             [_s_]: swiper                  [_e_]: iedit
+^match^                   ^Search^                       ^edit^                        ^operation^
+^^^─────────────────────────────────────────────────────────────────────────────────────────────────────────
+[_v_]: expand             [_s_]: swiper                  [_e_]: iedit                  [_t_]: send to vterm
 [_-_]: contract           [_/_]: counsel-projectile-rg   [_h_]: highlight
-[_r_]: range                                             [_c_]: change surround
+[_r_]: range              ^ ^                            [_c_]: change surround
 [_n_]: next
 [_N_]: prev
 "
@@ -2059,6 +2075,7 @@ buffer management :)
   ("e" my-iedit-mode nil :exit t)
   ("h" highlight-region nil)
   ("r" my-change-range nil)
+  ("t" send-text-and-move-to-projectile-vterm nil :exit t)
   ("n" my-ahs-forward nil)
   ("N" my-ahs-backward nil))
 
