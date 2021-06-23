@@ -9,9 +9,36 @@
 ;; (toggle-debug-on-error) temporarily for debug usage
 
 (setq gc-cons-threshold 64000000)
-(add-hook 'after-init-hook #'(lambda ()
+;;(add-hook 'after-init-hook #'(lambda ()
                                ;; restore after startup
-                               (setq gc-cons-threshold 800000)))
+;;                               (setq gc-cons-threshold 800000)))
+
+(defun do-something (process signal)
+  (when (memq (process-status process) '(exit signal))
+    (let* ((buf (process-buffer process))
+           (content (with-current-buffer buf
+                      (buffer-substring-no-properties (point-min) (point-max))))
+           (path-from-shell (replace-regexp-in-string
+                             "[ \t\n]*" ""
+                             content)))
+
+      (setenv "PATH" path-from-shell)
+      (setq exec-path (split-string path-from-shell path-separator)))
+
+    (shell-command-sentinel process signal)))
+
+
+(add-hook 'emacs-startup-hook
+          #'(lambda ()
+
+              (let* ((display-buffer-alist '(("*my async shell command*" display-buffer-no-window)))
+                     (output-buffer (generate-new-buffer "*my async shell command*"))
+                     (proc (progn
+                             (async-shell-command "$SHELL --login -c 'echo $PATH'" output-buffer)
+                             (get-buffer-process output-buffer))))
+                (if (process-live-p proc)
+                    (set-process-sentinel proc #'do-something)
+                  (message "No process running.")))))
 
 (defconst my-home-dir "~/.mycraft.d")
 (setq user-emacs-directory my-home-dir)
@@ -44,8 +71,8 @@
 (add-to-list 'default-frame-alist '(left-fringe . 5))
 (add-to-list 'default-frame-alist '(right-fringe . 5))
 (add-to-list 'default-frame-alist '(fullscreen . maximized))
-(add-to-list 'default-frame-alist '(background-color . "#292b2e"))
-(add-to-list 'default-frame-alist '(font . "Source Code Pro-14"))
+;; (add-to-list 'default-frame-alist '(background-color . "#292b2e")) ;; this will be overwrite by doom-themes
+(add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
 
 (with-eval-after-load 'goto-addr
   (set-face-attribute 'link nil :foreground "#3f7c8f"))
@@ -885,6 +912,10 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (setq esup-depth 0))
 
+(use-package svg-lib
+  :defer 1
+  :straight (svg-lib :type git :host github :files ("*.el") :repo "rougier/svg-lib"))
+
 (use-package diminish :defer t)
 
 (use-package command-log-mode
@@ -903,6 +934,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (load-theme 'doom-one t)
   (doom-themes-org-config)
+  (set-face-attribute 'default nil :background "#292b2e")
 
   (with-eval-after-load 'org
     ;; change some ui
@@ -1226,6 +1258,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :init
   (setq lsp-completion-provider :capf) ;; the official recommends use this
   (setq lsp-enable-symbol-highlighting nil)
+  (setq lsp-signature-render-documentation nil)
   (setq read-process-output-max (* 1024 1024))
   ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
   :commands

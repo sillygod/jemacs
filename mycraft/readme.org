@@ -23,7 +23,7 @@
 ** bugs needed to be fixed
 
    - [X] make table mode can be exported as org element
-   - [ ] find why counsel-projectile-switch-project is slow
+   - [ ] find why counsel-projectile-switch-project is slow (fuzzy search the files after choosing the project)
 
 ** things needed to be done or enahnced
 
