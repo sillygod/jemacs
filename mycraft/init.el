@@ -975,20 +975,23 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
              :local-repo "~/Desktop/spacemacs-private/local/counsel-jq-yq"
              )
   ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-  :config
+  ;; :config
   ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
   ;; (load-library "counsel-jq-yq-autoloads"))
   )
 
-(use-package go-test
+(use-package gotests
   :defer 1
   :straight (
-             :local-repo "~/Desktop/spacemacs-private/local/go-test"
+             :local-repo "~/Desktop/spacemacs-private/local/gotests"
              )
+  ;; the file with suffix -test will be treated as tests files by default
+  ;; which will function as package files.
   ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
-  :config
+  ;; :config
   ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
-  (load-library "go-test-autoloads"))
+  ;; (load-library "go-test-autoloads")
+  )
 
 (use-package hl-todo
   :defer t
@@ -1071,6 +1074,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
             #'(lambda ()
                 (set (make-local-variable 'indent-line-function) 'insert-tab)))
   :mode ("\\.j2\\'" . jinja2-mode))
+
+(use-package make-mode
+  :defer t
+  :init
+  (add-hook 'makefile-mode-hook
+            #'(lambda ()
+                (setq-local indent-tabs-mode t))))
 
 (use-package racket-mode
   :defer t)
@@ -1391,9 +1401,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
 (use-package evil
   :defer 0
+  :init
+  (setq evil-want-keybinding nil) ;; this will cause some evil keybinding
+  ;; of other modes not working when it's set to true
   :config
   (setq evil-want-integration t)
-  (setq evil-want-keybinding nil)
   (setq evil-want-C-u-scroll t)
   (setq evil-want-C-i-jump nil)
   (evil-mode 1)
@@ -1517,6 +1529,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
    ahs-dropdown-list-p
    ash-backward)
   :config
+  (setq ahs-case-fold-search nil)
   (add-to-list 'ahs-plugin-bod-modes 'python-mode))
 
 (use-package general

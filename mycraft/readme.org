@@ -28,7 +28,9 @@
 ** things needed to be done or enahnced
 
    - [X] add run test for go mode
-   - [ ] add continuous integration for this emacs literate programming setup
+   - [ ] wirte a hydra for iedit mode
+   - [ ] toggle window maximum should be memorized with projectile
+   - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] implement my own run-python-shell
    - [ ] code folding problem (hideshow?) (lsp?)
@@ -280,6 +282,15 @@
      docker run --rm -p 8080:80 --name envisaged -v /Users/jing/Desktop/spacemacs-private/:/visualization/git_repo:ro -e GOURCE_TITLE="spacemacs private" utensils/envisaged
    #+end_src
 
+** display buffer with customize position and width
+
+   - display-buffer-fallback-function
+
+   #+begin_src emacs-lisp
+     (display-buffer "*scratch*"
+                     '(display-buffer-in-side-window . ((side . right))))
+   #+end_src
+
 * Reference
 
 ** dotfiles
@@ -302,6 +313,7 @@
    - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
    - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
    - https://soliloquium.zealmaker.com/fastpages/orgmode/2020/04/27/blogging-with-orgmode-and-fastpages
+   - https://leanpub.com/lit-config/read#leanpub-auto-multiple-config-files-per-org-file
 
 ** misc
 

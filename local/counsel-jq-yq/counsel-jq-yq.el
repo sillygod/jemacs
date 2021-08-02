@@ -77,7 +77,7 @@ ya '' file "
   (when (get-buffer "*yq*")
     (with-current-buffer "*yq*"
       (erase-buffer)))
-  (counsel-yq-yaml input)
+  (counsel-yq-yaml (concat input " | ... comments=\"\""))
   (split-string
    (with-current-buffer "*yq*"
      (buffer-string)) "\n"))

@@ -101,6 +101,6 @@ example: go test -timeout 30s -run ^TestNslookup$ gop/jcert/pkg/domain"
 
 
 
-(provide 'go-test)
+(provide 'gotests)
 
-;;; go-test.el ends here
+;;; gotests.el ends here
