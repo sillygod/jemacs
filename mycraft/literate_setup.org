@@ -2163,6 +2163,7 @@
        :custom ((projectile-completion-system 'ivy))
        :config
        (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
+       (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
        (projectile-mode +1))
 
      (use-package counsel-projectile
@@ -2240,6 +2241,7 @@
        ;; Use visual line motions even outside of visual-line-mode buffers
        (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
        (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
+       (evil-define-key 'normal prog-mode-map (kbd "g h") 'flycheck-display-error-at-point)
 
 
        (evil-global-set-key 'motion "j" 'evil-next-visual-line)
@@ -2376,7 +2378,13 @@
      (use-package magit
        :defer 2
        :custom
-       (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
+       ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
+        (magit-repository-directories
+         '(("~/Desktop/data_platform" . 1)
+           ("~/Desktop/cdp-cache" . 1)
+           ("~/Desktop/ansible-playground" . 1)
+           ("~/Desktop/go-playground" . 1)
+           ("~/Desktop/spacemacs-private" . 1)))))
 
      (use-package forge
        :defer 2
@@ -2407,373 +2415,374 @@
    provide a spacemacs leader like ux.
 
    #+begin_src emacs-lisp
-          (use-package general
-            :after (which-key evil)
-            :config
-            (defconst leader-key "SPC")
-            (defconst major-mode-leader-key "SPC m")
-            (defconst major-mode-leader-key-shortcut ",")
-            (defconst emacs-state-leader-key "M-m")
-            (defconst emacs-state-major-mode-leader-key "M-m m")
-
-            (setq my-leader-def-prop
-                  '(:key leader-key :states (normal visual motion)))
-
-            (setq my-leader-def-emacs-state-prop
-                  '(:key emacs-state-leader-key :state (emacs)))
-
-            ;; below are for major mode
-            (setq my-local-leader-def-prop
-                  '(:key major-mode-leader-key :states (normal visual motion)))
-
-            (setq my-local-leader-def-alias-prop
-                  '(:key major-mode-leader-key-shortcut :states (normal visual motion)))
-
-            (setq my-local-leader-def-emacs-state-prop
-                  '(:key emacs-state-major-mode-leader-key :states (emacs)))
-            ;; NOTE: '() the element inside will be symbol
-
-            ;; NOTE: keysmaps override is to make general-define-key to be global scope
-            ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
-            (message "DEBUG: !! general init")
-
-            (with-eval-after-load 'emmet-mode
-              (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
-
-            ;; unbind some keybinding in the package 'evil-org
-            (with-eval-after-load 'evil-org
-              ;;  org-agenda-redo
-              ;;  make org agenda enter the motion state
-              ;;  I don't the original state
-              (evil-set-initial-state 'org-agenda-mode 'motion)
-              ;; TODO: research about this evilified-state-evilify-map
-
-              (evil-define-key 'motion org-agenda-mode-map
-                (kbd "j") 'org-agenda-next-line
-                "t" 'org-agenda-todo
-                "I" 'org-agenda-clock-in ; Original binding
-                "O" 'org-agenda-clock-out ; Original binding
-                (kbd "<return>") 'org-agenda-goto
-                (kbd "k") 'org-agenda-previous-line
-                (kbd "s") 'org-save-all-org-buffers))
-
-            (with-eval-after-load 'org
-
-              ;; define key open-thing-at-point with enter
-              (evil-define-key 'normal org-mode-map (kbd "<return>") 'org-open-at-point)
-              (evil-define-key 'normal prog-mode-map (kbd "<return>") 'org-open-at-point))
-
-
-            ;; add shortcuts for org src edit mode
-            (with-eval-after-load 'org-src
-              (evil-define-key 'normal org-src-mode-map
-                (kbd ", ,") 'org-edit-src-exit
-                (kbd ", k") 'org-edit-src-abort))
-
-            (with-eval-after-load 'with-editor
-              (evil-define-key 'normal with-editor-mode-map
-                (kbd ", ,") 'with-editor-finish
-                (kbd ", k") 'with-editor-cancel))
-
-            (evil-define-key 'visual 'global
-              (kbd "g y") 'copy-region-and-base64-decode
-              (kbd "g e") 'copy-region-and-urlencode)
-
-
-            ;; keybinding for racket-mode
-            (with-eval-after-load 'racket-mode
-              (define-leader-key-map-for 'racket-mode
-                "" "major mode" nil
-                "x" "execute" nil
-                "xx" "racket run" 'racket-run))
-
-            ;; lsp keybindings for some major modes
-            (with-eval-after-load 'lsp-mode
-
-              ;; keybinding for go-mode
-              (with-eval-after-load 'go-mode
-
-                (apply 'define-leader-key-map-for 'go-mode-map
-                       (lsp-keybinding))
-
-                (define-leader-key-map-for 'go-mode-map
-                  "" "major mode" nil
-                  "x" "execute" nil
-                  "xx" "go run" 'go-run-main
-                  "d" "debug" 'dap-hydra
-                  "e" "gomacro" 'gomacro-run)
-
-
-                (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
-
-              ;; keybinding for python-mode
-              (with-eval-after-load 'python
-                (apply 'define-leader-key-map-for 'python-mode-map
-                       (lsp-keybinding))
-
-                (apply 'define-leader-key-map-for
-                       (list 'python-mode-map
-                             "" "major mode" 'nil
-
-                             "t" "tests" 'python-pytest-dispatch
-                             "x" "execute" nil
-                             "xx" "python run" 'python-run-main
-                             "d" "debug" 'dap-hydra))
-                (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
-
-              (with-eval-after-load 'json-mode
-                (define-leader-key-map-for 'json-mode-map
-                  "" "major mode" nil
-                  "l"  "lookup" nil
-                  "ll" "snatch path" 'jsons-print-path
-                  "lj" "jq" 'counsel-jq))
-
-
-              (with-eval-after-load 'yaml-mode
-                (define-leader-key-map-for 'yaml-mode-map
-                  "" "major mode" nil
-                  "l" "lookup" nil
-                  "ly" "yq" 'counsel-yq))
-
-              ;; keybinding fro c, c++ mode
-              (with-eval-after-load 'cc-mode
-                (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
-                (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding))))
-
-            (with-eval-after-load 'elisp-mode
-              (define-leader-key-map-for 'emacs-lisp-mode-map
-                "" "major mode" nil
-                "e" "eval" nil
-                "ef" "eval defun" 'eval-defun
-                "eb" "eval buffer" 'eval-buffer
-                "er" "eval region" 'eval-region ))
-
-            (with-eval-after-load 'org
-              (define-leader-key-map-for 'org-mode-map
-                "" "major mode" nil
-
-                "a" "org-agenda" 'org-agenda
-                "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
-                "'" "org-edit-special" 'org-edit-special
-
-                "b" "babel" nil
-                "bt" "tangle" 'org-babel-tangle
-
-                "i" "insert" nil
-                "il" "insert link" 'org-insert-link
-                "it" "insert toc" 'org-insert-toc
-
-                "e" "export" nil
-                "ee" "org-export-dispatch" 'org-export-dispatch
-
-                "n" "narrow" nil
-                "ns" "narrow subtree" 'org-narrow-to-subtree
-                "nN" "widen" 'widen
-
-                "s" "schedule" nil
-                "ss" "org-schedule" 'org-schedule
-                "sd" "org-deadline" 'org-deadline
-                "st" "org-time-stamp" 'org-time-stamp
-
-                "d" "org-download" nil
-                "dc" "from clipboard" 'org-download-clipboard
-                "ds" "from screenshot" 'org-download-screenshot
-
-                "t" "toggles" nil
-                "tl" "link display" 'org-toggle-link-display
-                "ti" "inline image" 'org-toggle-inline-images
-
-                "j" "journals" nil
-                "jn" "new entry" 'org-journal-new-entry
-                "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
-
-
-            (define-leader-key-global
-              "SPC" 'counsel-M-x
-              "/" 'my-counsel-projectile-rg
-              "v" 'er/expand-region
-              "u" 'universal-argument
-              "'" 'new-terminal
-              "?" 'counsel-descbinds)
-
-            ;; which-key-replacement-alist
-            ;; change the content of the above variable
-            (define-leader-key-global
-              "1" 'winum-select-window-1
-              "2" '(winum-select-window-2 :which-key t)
-              "3" '(winum-select-window-3 :which-key t)
-              "4" '(winum-select-window-4 :which-key t)
-              "5" '(winum-select-window-5 :which-key t)
-              "6" '(winum-select-window-6 :which-key t)
-              "7" '(winum-select-window-7 :which-key t)
-              "8" '(winum-select-window-8 :which-key t)
-              "9" '(winum-select-window-9 :which-key t))
-
-            ;; need to find a way to add which-key hints
-            ;; for the following window selection
-            (push '(("\\(.*\\)1" . "winum-select-window-1") .
-                    ("\\11..9" . "select window 1..9"))
-                  which-key-replacement-alist)
-
-            (define-leader-key-global
-              "j" '(:ignore t :which-key "jump")
-              "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
-              "ju" '(avy-jump-url :which-key "goto url")
-              "jl" '(avy-goto-line :which-key "goto line")
-              "ji" '(counsel-jump-in-buffer :which-key "imenu")
-              "j(" '(check-parens :which-key "check-parens"))
-
-            (define-leader-key-global
-              "r" '(:ignore t :which-key "resume/register")
-              "rk" '(counsel-yank-pop :which-key "kill ring")
-              "re" '(counsel-evil-registers :which-key "evil register")
-              "rl" '(ivy-resume :which-key "ivy-resume"))
-
-            (define-leader-key-global
-              "a" '(:ignore t :which-key "applications")
-
-              "ad" '(docker t :which-key "docker")
-
-              "al" '(:ignore t :which-key "lookup/dictionary")
-              "ald" '(define-word :which-key "lookup definition")
-              "alg" '(google-search :which-key "google search")
-              "alx" '(open-with-xwidget :which-key "open with xwidget")
-
-              "ao" '(:ignore t :which-key "org")
-              "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
-              "aog" '(:ignore t :which-key "goto")
-              "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
-              "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
-              "aogw" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/works/unnotech.org")) :which-key "work note")
-              "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
-              "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
-
-            (define-leader-key-global
-              "b" '(:ignore t :which-key "buffer")
-              "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
-              "bd" '(kill-this-buffer :which-key "kill-buffer")
-              "bB" '(counsel-switch-buffer :which-key "list-buffer")
-              "bi" '(ibuffer :which-key "ibuffer")
-              "bn" '(next-buffer :which-key "next-buffer")
-              "bp" '(previous-buffer :which-key "previous-buffer")
-              "bN" '(new-empty-buffer :which-key "new empty buffer")
-              "b." '(buffer-operate/body :which-key "buffer transient"))
-
-            (define-leader-key-global
-              "c" '(:ignore t :which-key "comment/compile")
-              "cl" '(comment-or-uncomment-lines :which-key "comment or uncomment"))
-
-            (define-leader-key-global
-              "e" '(:ignore t :which-key "errors")
-              "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
-
-
-            (define-leader-key-global
-              "i" '(:ignore t :which-key "insert")
-              "is" '(ivy-yas :which-key "snippets"))
-
-            (define-leader-key-global
-              "l" '(:ignore t :which-key "layout")
-              "ll" '(persp-switch :which-key "switch layout")
-              "lr" '(persp-rename :which-key "rename layout")
-              "ld" '(persp-kill :which-key "delete layout")
-              "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
-
-            (define-leader-key-global
-              "n" '(:ignore t :which-key "narrow")
-              "nf" '(narrow-to-defun :which-key "narrow to defun")
-              "nw" '(widen :which-key "widen"))
-
-            (define-leader-key-global
-              "p" '(:ignore t :which-key "project")
-              "pp" '(counsel-projectile-switch-project :which-key "switch project")
-              "pf" '(counsel-projectile-find-file :which-key "find-file"))
-
-            (define-leader-key-global
-              "s" '(:ignore t :which-key "search")
-              "sc" '(evil-ex-nohighlight :which-key "clear highlight")
-              "ss" '(swiper :which-key "swiper")
-              "sS" '(swiper-all :which-key "swiper-all"))
-
-            (define-leader-key-global
-              "g" '(:ignore t :which-key "git")
-              "gi" '(magit-init :which-key "gagit init")
-              "gb" '(:ignore t :which-key "blame")
-              "gbl" '(git-messenger:popup-message  :which-key "this line")
-              "gbb" '(magit-blame-addition  :which-key "this buffer")
-              "gs" '(magit-status :which-key "magit status"))
-
-            (define-leader-key-global
-              "k" '(:ignore t :which-key "kmacro")
-              "ks" '(kmacro-start-macro-or-insert-counter :which-key "start macro/insert counter")
-              "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
-              "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
-              "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
-
-            (define-leader-key-global
-              "q" '(:ignore t :which-key "quit")
-              "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
-              "qr" '(restart-emacs :which-key "restart"))
-
-            (define-leader-key-global
-              "t"  '(:ignore t :which-key "toggles")
-              "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
-              "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
-              "ts" '(hydra-text-scale/body :which-key "scale text"))
-
-            (define-leader-key-global
-              "w" '(:ignore t :which0-key "windows")
-              "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
-              "ww" '(other-window :which-key "other-window")
-              "wm" '(toggle-maximize-buffer :which-key "window maximized")
-              "wM" '(toggle-frame-maximized :which-key "frame maximized")
-              "wd" '(delete-window :which-key "delete window")
-              "wh" '(evil-window-left :which-key "go to window left")
-              "wl" '(evil-window-right :which-key "go to window right")
-              "wk" '(evil-window-up :which-key "go to window up")
-              "wr" '(rotate-windows-forward :which-key "rotate window")
-              "wj" '(evil-window-down :which-key "go to window down")
-              "wL" '(evil-window-move-far-right :which-key "move window to right side")
-              "wH" '(evil-window-move-far-left :which-key "move window to left side")
-              "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
-              "wK" '(evil-window-move-very-top :which-key "move window to top side")
-
-              "wg" '(switch-to-minibuffer-window :which-key "go to minibuffer")
-
-              "w/" '(evil-window-vsplit :which-key "split vertically")
-              "w-" '(evil-window-split :which-key "split horizontally")
-
-              "w=" '(balance-windows :which-key "balance")
-              "w[" '(my-shrink-window-horizontally :which-key "shrink h")
-              "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
-              "w{" '(my-shrink-window :which-key: "shrink v")
-              "w}" '(my-enlarge-window :which-key: "enlarge v")
-
-              "wF" '(make-frame :which-key "make frame")
-              "wo" '(other-frame :which-key "other frame")
-              "w." '(window-operate/body :which-key "window transient"))
-
-            (define-leader-key-global
-              "x" '(:ignore t :which-key "texts")
-              "xc" '(count-words-region :which-key "count-words-region")
-
-              "xb" '(:ignore t :which-key "base64")
-              "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
-              "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
-
-              "xs" '(send-text-and-move-to-projectile-vterm :which-key "send content to and focus on vterm"))
-
-            (define-leader-key-global
-              "f" '(:ignore t :which-key "files")
-              "fe" '(:ignore t :which-key "emacs")
-              "fed" '(my-find-dotfile :which-key "open config dotfile")
-              "fy" '(copy-file-path :which-key "copy file path")
-              "fd" '(dired-jump :which-key "dired")
-              "fs" '(save-buffer :which-key "save file")
-              "fr" '(rename-current-buffer-file :which-key "rename file")
-              "ff" '(counsel-find-file :which-key "find file"))
-
-            (message "DEBUG: !! complete general setting"))
+     (use-package general
+       :after (which-key evil)
+       :config
+       (defconst leader-key "SPC")
+       (defconst major-mode-leader-key "SPC m")
+       (defconst major-mode-leader-key-shortcut ",")
+       (defconst emacs-state-leader-key "M-m")
+       (defconst emacs-state-major-mode-leader-key "M-m m")
+
+       (setq my-leader-def-prop
+             '(:key leader-key :states (normal visual motion)))
+
+       (setq my-leader-def-emacs-state-prop
+             '(:key emacs-state-leader-key :state (emacs)))
+
+       ;; below are for major mode
+       (setq my-local-leader-def-prop
+             '(:key major-mode-leader-key :states (normal visual motion)))
+
+       (setq my-local-leader-def-alias-prop
+             '(:key major-mode-leader-key-shortcut :states (normal visual motion)))
+
+       (setq my-local-leader-def-emacs-state-prop
+             '(:key emacs-state-major-mode-leader-key :states (emacs)))
+       ;; NOTE: '() the element inside will be symbol
+
+       ;; NOTE: keysmaps override is to make general-define-key to be global scope
+       ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
+       (message "DEBUG: !! general init")
+
+       (with-eval-after-load 'emmet-mode
+         (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
+
+       ;; unbind some keybinding in the package 'evil-org
+       (with-eval-after-load 'evil-org
+         ;;  org-agenda-redo
+         ;;  make org agenda enter the motion state
+         ;;  I don't the original state
+         (evil-set-initial-state 'org-agenda-mode 'motion)
+         ;; TODO: research about this evilified-state-evilify-map
+
+         (evil-define-key 'motion org-agenda-mode-map
+           (kbd "j") 'org-agenda-next-line
+           "t" 'org-agenda-todo
+           "I" 'org-agenda-clock-in ; Original binding
+           "O" 'org-agenda-clock-out ; Original binding
+           (kbd "<return>") 'org-agenda-goto
+           (kbd "k") 'org-agenda-previous-line
+           (kbd "s") 'org-save-all-org-buffers))
+
+       (with-eval-after-load 'org
+
+         ;; define key open-thing-at-point with enter
+         (evil-define-key 'normal org-mode-map (kbd "<return>") 'org-open-at-point)
+         (evil-define-key 'normal prog-mode-map (kbd "<return>") 'org-open-at-point))
+
+
+       ;; add shortcuts for org src edit mode
+       (with-eval-after-load 'org-src
+         (evil-define-key 'normal org-src-mode-map
+           (kbd ", ,") 'org-edit-src-exit
+           (kbd ", k") 'org-edit-src-abort))
+
+       (with-eval-after-load 'with-editor
+         (evil-define-key 'normal with-editor-mode-map
+           (kbd ", ,") 'with-editor-finish
+           (kbd ", k") 'with-editor-cancel))
+
+       (evil-define-key 'visual 'global
+         (kbd "g y") 'copy-region-and-base64-decode
+         (kbd "g e") 'copy-region-and-urlencode)
+
+
+       ;; keybinding for racket-mode
+       (with-eval-after-load 'racket-mode
+         (define-leader-key-map-for 'racket-mode
+           "" "major mode" nil
+           "x" "execute" nil
+           "xx" "racket run" 'racket-run))
+
+       ;; lsp keybindings for some major modes
+       (with-eval-after-load 'lsp-mode
+
+         ;; keybinding for go-mode
+         (with-eval-after-load 'go-mode
+
+           (apply 'define-leader-key-map-for 'go-mode-map
+                  (lsp-keybinding))
+
+           (define-leader-key-map-for 'go-mode-map
+             "" "major mode" nil
+             "x" "execute" nil
+             "xx" "go run" 'go-run-main
+             "d" "debug" 'dap-hydra
+             "e" "gomacro" 'gomacro-run)
+
+
+           (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+
+         ;; keybinding for python-mode
+         (with-eval-after-load 'python
+           (apply 'define-leader-key-map-for 'python-mode-map
+                  (lsp-keybinding))
+
+           (apply 'define-leader-key-map-for
+                  (list 'python-mode-map
+                        "" "major mode" 'nil
+
+                        "t" "tests" 'python-pytest-dispatch
+                        "x" "execute" nil
+                        "xx" "python run" 'python-run-main
+                        "d" "debug" 'dap-hydra))
+           (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+
+         (with-eval-after-load 'json-mode
+           (define-leader-key-map-for 'json-mode-map
+             "" "major mode" nil
+             "l"  "lookup" nil
+             "ll" "snatch path" 'jsons-print-path
+             "lj" "jq" 'counsel-jq))
+
+
+         (with-eval-after-load 'yaml-mode
+           (define-leader-key-map-for 'yaml-mode-map
+             "" "major mode" nil
+             "l" "lookup" nil
+             "ly" "yq" 'counsel-yq))
+
+         ;; keybinding fro c, c++ mode
+         (with-eval-after-load 'cc-mode
+           (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
+           (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding))))
+
+       (with-eval-after-load 'elisp-mode
+         (define-leader-key-map-for 'emacs-lisp-mode-map
+           "" "major mode" nil
+           "e" "eval" nil
+           "ef" "eval defun" 'eval-defun
+           "eb" "eval buffer" 'eval-buffer
+           "er" "eval region" 'eval-region ))
+
+       (with-eval-after-load 'org
+         (define-leader-key-map-for 'org-mode-map
+           "" "major mode" nil
+
+           "a" "org-agenda" 'org-agenda
+           "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
+           "'" "org-edit-special" 'org-edit-special
+
+           "b" "babel" nil
+           "bt" "tangle" 'org-babel-tangle
+
+           "i" "insert" nil
+           "il" "insert link" 'org-insert-link
+           "it" "insert toc" 'org-insert-toc
+
+           "e" "export" nil
+           "ee" "org-export-dispatch" 'org-export-dispatch
+
+           "n" "narrow" nil
+           "ns" "narrow subtree" 'org-narrow-to-subtree
+           "nN" "widen" 'widen
+
+           "s" "schedule" nil
+           "ss" "org-schedule" 'org-schedule
+           "sd" "org-deadline" 'org-deadline
+           "st" "org-time-stamp" 'org-time-stamp
+
+           "d" "org-download" nil
+           "dc" "from clipboard" 'org-download-clipboard
+           "ds" "from screenshot" 'org-download-screenshot
+
+           "t" "toggles" nil
+           "tl" "link display" 'org-toggle-link-display
+           "ti" "inline image" 'org-toggle-inline-images
+
+           "j" "journals" nil
+           "jn" "new entry" 'org-journal-new-entry
+           "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
+
+
+       (define-leader-key-global
+         "SPC" 'counsel-M-x
+         "/" 'my-counsel-projectile-rg
+         "v" 'er/expand-region
+         "u" 'universal-argument
+         "'" 'new-terminal
+         "?" 'counsel-descbinds)
+
+       ;; which-key-replacement-alist
+       ;; change the content of the above variable
+       (define-leader-key-global
+         "1" 'winum-select-window-1
+         "2" '(winum-select-window-2 :which-key t)
+         "3" '(winum-select-window-3 :which-key t)
+         "4" '(winum-select-window-4 :which-key t)
+         "5" '(winum-select-window-5 :which-key t)
+         "6" '(winum-select-window-6 :which-key t)
+         "7" '(winum-select-window-7 :which-key t)
+         "8" '(winum-select-window-8 :which-key t)
+         "9" '(winum-select-window-9 :which-key t))
+
+       ;; need to find a way to add which-key hints
+       ;; for the following window selection
+       (push '(("\\(.*\\)1" . "winum-select-window-1") .
+               ("\\11..9" . "select window 1..9"))
+             which-key-replacement-alist)
+
+       (define-leader-key-global
+         "j" '(:ignore t :which-key "jump")
+         "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
+         "ju" '(avy-jump-url :which-key "goto url")
+         "jl" '(avy-goto-line :which-key "goto line")
+         "ji" '(counsel-jump-in-buffer :which-key "imenu")
+         "j(" '(check-parens :which-key "check-parens"))
+
+       (define-leader-key-global
+         "r" '(:ignore t :which-key "resume/register")
+         "rk" '(counsel-yank-pop :which-key "kill ring")
+         "re" '(counsel-evil-registers :which-key "evil register")
+         "rl" '(ivy-resume :which-key "ivy-resume"))
+
+       (define-leader-key-global
+         "a" '(:ignore t :which-key "applications")
+
+         "ad" '(docker t :which-key "docker")
+
+         "al" '(:ignore t :which-key "lookup/dictionary")
+         "ald" '(define-word :which-key "lookup definition")
+         "alg" '(google-search :which-key "google search")
+         "alx" '(open-with-xwidget :which-key "open with xwidget")
+
+         "ao" '(:ignore t :which-key "org")
+         "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
+         "aog" '(:ignore t :which-key "goto")
+         "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
+         "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
+         "aogw" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/works/unnotech.org")) :which-key "work note")
+         "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
+         "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
+
+       (define-leader-key-global
+         "b" '(:ignore t :which-key "buffer")
+         "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
+         "bd" '(kill-this-buffer :which-key "kill-buffer")
+         "bB" '(counsel-switch-buffer :which-key "list-buffer")
+         "bi" '(ibuffer :which-key "ibuffer")
+         "bn" '(next-buffer :which-key "next-buffer")
+         "bp" '(previous-buffer :which-key "previous-buffer")
+         "bN" '(new-empty-buffer :which-key "new empty buffer")
+         "b." '(buffer-operate/body :which-key "buffer transient"))
+
+       (define-leader-key-global
+         "c" '(:ignore t :which-key "comment/compile")
+         "cl" '(comment-or-uncomment-lines :which-key "comment or uncomment"))
+
+       (define-leader-key-global
+         "e" '(:ignore t :which-key "errors")
+         "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
+
+
+       (define-leader-key-global
+         "i" '(:ignore t :which-key "insert")
+         "is" '(ivy-yas :which-key "snippets"))
+
+       (define-leader-key-global
+         "l" '(:ignore t :which-key "layout")
+         "ll" '(persp-switch :which-key "switch layout")
+         "lr" '(persp-rename :which-key "rename layout")
+         "ld" '(persp-kill :which-key "delete layout")
+         "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
+
+       (define-leader-key-global
+         "n" '(:ignore t :which-key "narrow")
+         "nf" '(narrow-to-defun :which-key "narrow to defun")
+         "nw" '(widen :which-key "widen"))
+
+       (define-leader-key-global
+         "p" '(:ignore t :which-key "project")
+         "pp" '(counsel-projectile-switch-project :which-key "switch project")
+         "pf" '(counsel-projectile-find-file :which-key "find-file"))
+
+       (define-leader-key-global
+         "s" '(:ignore t :which-key "search")
+         "sc" '(evil-ex-nohighlight :which-key "clear highlight")
+         "ss" '(swiper :which-key "swiper")
+         "sS" '(swiper-all :which-key "swiper-all"))
+
+       (define-leader-key-global
+         "g" '(:ignore t :which-key "git")
+         "gi" '(magit-init :which-key "gagit init")
+         "gb" '(:ignore t :which-key "blame")
+         "gl" '(magit-list-repositories :which-key "magit list repos")
+         "gbl" '(git-messenger:popup-message  :which-key "this line")
+         "gbb" '(magit-blame-addition  :which-key "this buffer")
+         "gs" '(magit-status :which-key "magit status"))
+
+       (define-leader-key-global
+         "k" '(:ignore t :which-key "kmacro")
+         "ks" '(kmacro-start-macro-or-insert-counter :which-key "start macro/insert counter")
+         "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
+         "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
+         "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
+
+       (define-leader-key-global
+         "q" '(:ignore t :which-key "quit")
+         "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
+         "qr" '(restart-emacs :which-key "restart"))
+
+       (define-leader-key-global
+         "t"  '(:ignore t :which-key "toggles")
+         "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+         "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
+         "ts" '(hydra-text-scale/body :which-key "scale text"))
+
+       (define-leader-key-global
+         "w" '(:ignore t :which0-key "windows")
+         "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
+         "ww" '(other-window :which-key "other-window")
+         "wm" '(toggle-maximize-buffer :which-key "window maximized")
+         "wM" '(toggle-frame-maximized :which-key "frame maximized")
+         "wd" '(delete-window :which-key "delete window")
+         "wh" '(evil-window-left :which-key "go to window left")
+         "wl" '(evil-window-right :which-key "go to window right")
+         "wk" '(evil-window-up :which-key "go to window up")
+         "wr" '(rotate-windows-forward :which-key "rotate window")
+         "wj" '(evil-window-down :which-key "go to window down")
+         "wL" '(evil-window-move-far-right :which-key "move window to right side")
+         "wH" '(evil-window-move-far-left :which-key "move window to left side")
+         "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
+         "wK" '(evil-window-move-very-top :which-key "move window to top side")
+
+         "wg" '(switch-to-minibuffer-window :which-key "go to minibuffer")
+
+         "w/" '(evil-window-vsplit :which-key "split vertically")
+         "w-" '(evil-window-split :which-key "split horizontally")
+
+         "w=" '(balance-windows :which-key "balance")
+         "w[" '(my-shrink-window-horizontally :which-key "shrink h")
+         "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
+         "w{" '(my-shrink-window :which-key: "shrink v")
+         "w}" '(my-enlarge-window :which-key: "enlarge v")
+
+         "wF" '(make-frame :which-key "make frame")
+         "wo" '(other-frame :which-key "other frame")
+         "w." '(window-operate/body :which-key "window transient"))
+
+       (define-leader-key-global
+         "x" '(:ignore t :which-key "texts")
+         "xc" '(count-words-region :which-key "count-words-region")
+
+         "xb" '(:ignore t :which-key "base64")
+         "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
+         "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
+
+         "xs" '(send-text-and-move-to-projectile-vterm :which-key "send content to and focus on vterm"))
+
+       (define-leader-key-global
+         "f" '(:ignore t :which-key "files")
+         "fe" '(:ignore t :which-key "emacs")
+         "fed" '(my-find-dotfile :which-key "open config dotfile")
+         "fy" '(copy-file-path :which-key "copy file path")
+         "fd" '(dired-jump :which-key "dired")
+         "fs" '(save-buffer :which-key "save file")
+         "fr" '(rename-current-buffer-file :which-key "rename file")
+         "ff" '(counsel-find-file :which-key "find file"))
+
+       (message "DEBUG: !! complete general setting"))
    #+end_src
 
 ** hydra
@@ -3122,6 +3131,11 @@
        :defer t
        :ensure org-plus-contrib)
 
+     (use-package org-tree-slide
+       :defer t
+       :custom
+       (org-image-actual-iwth nil))
+
      (use-package org-download
        :commands
        (org-download-screenshot
@@ -3136,6 +3150,28 @@
 
      (use-package org-superstar
        :hook (org-mode . org-superstar-mode))
+
+     (defun presentation-setup ()
+       ;; Scale the text.  The next line is for basic scaling:
+       (with-eval-after-load 'face-remap
+         (setq text-scale-mode-amount 3)
+         (text-scale-mode 1)))
+
+     (defun presentation-end ()
+       ;; Show the mode line again
+       (setq text-scale-mode-amount 0)
+       (text-scale-mode 0))
+
+
+     (use-package org-tree-slide
+       :defer t
+       :hook ((org-tree-slide-play . presentation-setup)
+              (org-tree-slide-stop . presentation-end))
+       :custom
+       (org-tree-slide-slide-in-effect t)
+       (org-tree-slide-header t)
+       (org-tree-slide-breadcrumbs " > ")
+       (org-image-actual-iwth nil))
 
      (use-package visual-fill-column
        :init

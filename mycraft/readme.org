@@ -29,6 +29,7 @@
 
    - [X] add run test for go mode
    - [ ] wirte a hydra for iedit mode
+   - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
    - [ ] toggle window maximum should be memorized with projectile
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
    - [ ] check devdocs' functionality and pop-up with window-frame

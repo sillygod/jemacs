@@ -1369,6 +1369,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :custom ((projectile-completion-system 'ivy))
   :config
   (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
+  (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
   (projectile-mode +1))
 
 (use-package counsel-projectile
@@ -1413,6 +1414,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   ;; Use visual line motions even outside of visual-line-mode buffers
   (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
   (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
+  (evil-define-key 'normal prog-mode-map (kbd "g h") 'flycheck-display-error-at-point)
 
 
   (evil-global-set-key 'motion "j" 'evil-next-visual-line)
@@ -1514,7 +1516,13 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (use-package magit
   :defer 2
   :custom
-  (magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1))
+  ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
+   (magit-repository-directories
+    '(("~/Desktop/data_platform" . 1)
+      ("~/Desktop/cdp-cache" . 1)
+      ("~/Desktop/ansible-playground" . 1)
+      ("~/Desktop/go-playground" . 1)
+      ("~/Desktop/spacemacs-private" . 1)))))
 
 (use-package forge
   :defer 2
@@ -1824,6 +1832,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "g" '(:ignore t :which-key "git")
     "gi" '(magit-init :which-key "gagit init")
     "gb" '(:ignore t :which-key "blame")
+    "gl" '(magit-list-repositories :which-key "magit list repos")
     "gbl" '(git-messenger:popup-message  :which-key "this line")
     "gbb" '(magit-blame-addition  :which-key "this buffer")
     "gs" '(magit-status :which-key "magit status"))
@@ -2190,6 +2199,11 @@ buffer management :)
   :defer t
   :ensure org-plus-contrib)
 
+(use-package org-tree-slide
+  :defer t
+  :custom
+  (org-image-actual-iwth nil))
+
 (use-package org-download
   :commands
   (org-download-screenshot
@@ -2204,6 +2218,28 @@ buffer management :)
 
 (use-package org-superstar
   :hook (org-mode . org-superstar-mode))
+
+(defun presentation-setup ()
+  ;; Scale the text.  The next line is for basic scaling:
+  (with-eval-after-load 'face-remap
+    (setq text-scale-mode-amount 3)
+    (text-scale-mode 1)))
+
+(defun presentation-end ()
+  ;; Show the mode line again
+  (setq text-scale-mode-amount 0)
+  (text-scale-mode 0))
+
+
+(use-package org-tree-slide
+  :defer t
+  :hook ((org-tree-slide-play . presentation-setup)
+         (org-tree-slide-stop . presentation-end))
+  :custom
+  (org-tree-slide-slide-in-effect t)
+  (org-tree-slide-header t)
+  (org-tree-slide-breadcrumbs " > ")
+  (org-image-actual-iwth nil))
 
 (use-package visual-fill-column
   :init
