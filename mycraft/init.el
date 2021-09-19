@@ -1386,6 +1386,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t
   :init
   (setq vterm-always-compile-module t)
+  (setq vterm-timer-delay 0.05)
   (with-eval-after-load 'evil
     (evil-set-initial-state 'vterm-mode 'emacs))
   :config
@@ -1703,6 +1704,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
       "ns" "narrow subtree" 'org-narrow-to-subtree
       "nN" "widen" 'widen
 
+      "r" "org roam hydra" 'hydra-org-roam/body
+
       "s" "schedule" nil
       "ss" "org-schedule" 'org-schedule
       "sd" "org-deadline" 'org-deadline
@@ -1915,8 +1918,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 (defhydra window-operate ()
   "
 Window management :)
-^Resize^               ^select^                          ^Move^          ^Action^
-^───────────────^      ^──────── ^                       ^────────^      ^────────^
+^Resize^                ^select^                         ^Move^          ^Action^
+^───────────────^       ^────────^                       ^────────^      ^────────^
 [_[_] : shrink h        [_h_]: left                      [_H_]: left       [_/_]: split vertically
 [_]_] : enlarge h       [_l_]: right                     [_L_]: right      [_-_]: split horizontally
 [_{_] : shrink v        [_k_]: up                        [_K_]: up         [_d_]: delete window
@@ -1955,18 +1958,18 @@ Window management :)
 
 (defhydra hydra-org-roam ()
   "Launcher for `org-roam'."
-  ("i" org-roam-insert "insert")
-  ("f" ora-org-roam-find-file "find-file")
-  ("v" org-roam-buffer-activate "backlinks")
+  ("i" org-roam-node-insert "insert")
+  ("f" org-roam-node-find "find file")
+  ("l" org-roam-buffer-toggle "back link buffer")
   ("t" ora-roam-todo "todo"))
 
 
 (defhydra buffer-operate ()
   "
 buffer management :)
-^Move^                              ^action^
-────^^^^────                      ────^^^^────
-[_n_] : next buffer                [_d_] : delete
+^Move^                         ^action^
+^────────^                     ^───────^
+[_n_] : next buffer            [_d_] : delete
 [_p_] : prev buffer
 [_b_] : project buffers
 [_B_] : buffers list
@@ -2253,28 +2256,22 @@ buffer management :)
 (use-package org-roam
   :diminish org-roam-mode
   :after org
+  :init
+  (setq org-roam-v2-ack t)
   :config
   (setq org-roam-directory "/Users/jing/Dropbox/myorgs/to_be_architecter")
-  (setq org-roam-buffer-position 'bottom)
-  (setq org-roam-completion-system 'ivy)
-  (with-eval-after-load 'org
-    (org-roam-mode)))
+  (org-roam-db-autosync-enable))
 
 
-(use-package org-roam-server
-  :defer t
-  :config
-  (setq org-roam-server-host "127.0.0.1"
-        org-roam-server-port 8123
-        org-roam-server-authenticate nil
-        org-roam-server-export-inline-images t
-        org-roam-server-serve-files nil
-        org-roam-server-served-file-extensions '("pdf" "mp4" "ogv")
-        org-roam-server-network-poll t
-        org-roam-server-network-arrows nil
-        org-roam-server-network-label-truncate t
-        org-roam-server-network-label-truncate-length 60
-        org-roam-server-network-label-wrap-length 20))
+(use-package org-roam-ui
+  :straight
+    (:host github :repo "org-roam/org-roam-ui" :branch "main" :files ("*.el" "out"))
+    :after org-roam
+    :config
+    (setq org-roam-ui-sync-theme t
+          org-roam-ui-follow t
+          org-roam-ui-update-on-save t
+          org-roam-ui-open-on-start nil))
 
 (with-eval-after-load 'counsel
   (defun org-roam-todo ()
@@ -2420,6 +2417,9 @@ INFO is a plist used as a communication channel."
   ;; to produce font-face for org quote block
   (setq org-fontify-quote-and-verse-blocks t)
 
+  (setq org-hide-emphasis-markers t)
+  ;; hide the empasis syntax ex. *hi* -> bold hi
+
   (setq org-adapt-indentation t) ;; use indent-line-function to
   ;; see the indentation function used by org-mode
   ;; check the doc of org-indent-line, know how indent works
@@ -2438,15 +2438,15 @@ INFO is a plist used as a communication channel."
   ;; (add-hook 'org-mode-hook 'toggle-word-wrap)
 
   ;; Set faces for heading levels
-  (dolist (face '((org-document-title . 1.2)
-                  (org-level-1 . 1.2)
-                  (org-level-2 . 1.1)
-                  (org-level-3 . 1.05)
-                  (org-level-4 . 1.0)
-                  (org-level-5 . 1.1)
-                  (org-level-6 . 1.1)
-                  (org-level-7 . 1.1)
-                  (org-level-8 . 1.1)))
+  (dolist (face '((org-document-title . 1.5)
+                  (org-level-1 . 1.3)
+                  (org-level-2 . 1.2)
+                  (org-level-3 . 1.15)
+                  (org-level-4 . 1)
+                  (org-level-5 . 1)
+                  (org-level-6 . 1)
+                  (org-level-7 . 1)
+                  (org-level-8 . 1)))
     (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
 
   ;; NOTE:
