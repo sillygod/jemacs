@@ -20,11 +20,6 @@
 
   Wow almost complete :)
 
-** bugs needed to be fixed
-
-   - [X] make table mode can be exported as org element
-   - [ ] find why counsel-projectile-switch-project is slow (fuzzy search the files after choosing the project)
-
 ** things needed to be done or enahnced
 
    - [X] add run test for go mode
@@ -52,6 +47,7 @@
    - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] interactive sql mode
+   - [ ] org roam v2 helper (create sub node)
    - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
@@ -290,6 +286,15 @@
    #+begin_src emacs-lisp
      (display-buffer "*scratch*"
                      '(display-buffer-in-side-window . ((side . right))))
+   #+end_src
+
+   #+begin_src emacs-lisp
+     (add-to-list 'display-buffer-alist
+                  '("\\*org-roam\\*"
+                    (display-buffer-in-direction)
+                    (direction . right)
+                    (window-width . 0.33)
+                    (window-height . fit-window-to-buffer)))
    #+end_src
 
 * Reference

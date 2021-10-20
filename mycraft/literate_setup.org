@@ -300,7 +300,7 @@
   #+begin_src emacs-lisp
     (setq default-font-size 140)
     (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
-    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height 140 :weight 'regular)
+    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height default-font-size :weight 'regular)
   #+end_src
 
 * Misc Behaviro setup
@@ -1310,6 +1310,16 @@
        (org-roam-dailies--capture (current-time) goto)
        (org-roam-dailies-capture-today t))
 
+     (defun reload-dir-locals ()
+       (interactive)
+       (hack-dir-local-variables-non-file-buffer))
+
+     (defun my-refresh-org-roam-db-cache ()
+       (interactive)
+       (reload-dir-locals)
+       (org-roam-db-clear-all)
+       (org-roam-db-sync))
+
      (defun org-roam-ui-open ()
        (interactive)
        (let ((org-roam-ui-browser-function (if (equal current-prefix-arg '(4))
@@ -1492,7 +1502,7 @@
 
        (with-eval-after-load 'org
          ;; change some ui
-         (set-face-attribute 'org-link nil :font "Sarasa Mono SC" :foreground "#3f7c8f")
+         (set-face-attribute 'org-link nil :font "Sarasa Mono SC" :height default-font-size :foreground "#3f7c8f")
          (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
          (set-face-attribute 'org-level-3 nil :foreground "#219e57")
          (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
@@ -2719,7 +2729,7 @@
 
        (define-leader-key-global
          "p" '(:ignore t :which-key "project")
-         "pp" '(counsel-projectile-switch-project :which-key "switch project")
+         "pp" '((lambda () (interactive) (counsel-projectile-switch-project 2)) :which-key "switch project")
          "pf" '(counsel-projectile-find-file :which-key "find-file"))
 
        (define-leader-key-global
@@ -2880,12 +2890,13 @@
 
       (defhydra hydra-org-roam ()
         "Launcher for `org-roam'."
+        ("c" org-id-get-create "create node")
         ("i" org-roam-node-insert "insert")
         ("f" org-roam-node-find "find file")
         ("d" org-roam-dailies-goto-today "dailies")
         ("l" org-roam-buffer-toggle "back link buffer")
         ("g" org-roam-ui-open "graph")
-        ("r" org-roam-db-sync "db refresh")
+        ("r" my-refresh-org-roam-db-cache "db refresh")
         ("t" ora-roam-todo "todo"))
 
 
@@ -3158,7 +3169,26 @@
 
      (use-package org
        :defer t
-       :ensure org-plus-contrib)
+       :init
+       ;; cool! some functions need to be enable
+       ;; like <s press tab to complete org structure (org-tempo)
+       ;; these variables can be found in the source code of org.el
+       (setq org-modules '(ol-w3m
+                           ol-bbdb
+                           ol-bibtex
+                           ol-docview
+                           ol-gnus
+                           ol-info
+                           ol-irc
+                           ol-mhe
+                           ol-rmail
+                           ol-eww
+                           org-habit
+                           ol-git-link
+                           org-protocol
+                           org-tempo))
+
+       :ensure org-contrib)
 
      (use-package org-tree-slide
        :defer t
@@ -3239,6 +3269,10 @@
                  "* %<%H:%M> %?"
                  :target (file+head "%<%Y-%m-%d>.org"
                                     "#+title: %<%Y-%m-%d>\n"))))
+        (setq org-roam-capture-templates
+              `(("d" "default" plain "%?" :target
+                (file+head "${slug}.org" "#+title: ${title}\n")
+                :unnarrowed t)))
         (setq org-roam-directory "/Users/jing/Dropbox/myorgs/to_be_architecter")
         (setq org-roam-dailies-directory "journal/")
         (org-roam-db-autosync-enable))
@@ -3521,23 +3555,6 @@
                     ;; to allow creating a new heading when performing the org refile
                     (setq org-refile-allow-creating-parent-nodes 'confirm)
 
-                    ;; cool! some functions need to be enable
-                    ;; like <s press tab to complete org structure
-                    ;; these variables can be found in the source code of org.el
-                    (setq org-modules '(ol-w3m
-                                        ol-bbdb
-                                        ol-bibtex
-                                        ol-docview
-                                        ol-gnus
-                                        ol-info
-                                        ol-irc
-                                        ol-mhe
-                                        ol-rmail
-                                        ol-eww
-                                        org-habit
-                                        ol-git-link
-                                        org-protocol
-                                        org-tempo))
 
                     ;; customize the bullet symbol
                     (custom-set-variables '(org-bullets-bullet-list '("❐" "○" "﹅" "▶")))
