@@ -376,6 +376,42 @@ sys.args?"
             (buffer-substring start end))))
     (kill-new x)))
 
+(defvar pair-list nil) ;; a property list
+
+(defun iterate-org-level (&optional input)
+  (interactive)
+  ;; we need to escape the space in the property
+  ;; ex. (setq a '(:abc\ cde 1))
+  (require 'epa-file)
+  (with-temp-buffer
+    (epa-file-insert-file-contents "~/Dropbox/myorgs/management/learning.org.gpg")
+    (setq pair-list nil)
+    (cl-loop for i from 0
+             for ele in (org-element-parse-buffer 'headline)
+             when (and (> i 0) (not (equal ele nil)))
+             do (let* ((prop (plist-get ele 'headline))
+                       (domain (plist-get prop :DOMAIN))
+                       (title (plist-get prop :title))
+                       (pass (plist-get prop :SECRET)))
+
+                  (setq pair-list (plist-put pair-list (intern (message ":%s--%s" title domain)) pass))))
+    (cl-loop for i from 0 for ele in pair-list
+             when (cl-evenp i) collect ele)))
+
+
+(defun get-se-action (x)
+  (kill-new
+   (base64-decode-string
+    (decode-coding-string
+     (plist-get pair-list (intern x)) 'utf-8)))
+  (message "success"))
+
+(defun get-secret ()
+  (interactive)
+  (ivy-read "choose: " (iterate-org-level)
+            :action #'get-se-action
+            :caller 'get-secret))
+
 (defun org-insert-toc ()
   "Insert table of content for org mode."
   (interactive)
@@ -752,6 +788,12 @@ Use a prefix argument ARG to indicate creation of a new process instead."
       (deactivate-mark)
       (vterm-send-string content))))
 
+(defun vterm-perform-last-command ()
+  (interactive)
+  (new-terminal)
+  (vterm-send-up)
+  (vterm-send-return))
+
 (defun my-counsel-projectile-rg (&optional options)
   "Search the current project with rg and search under certarn directory
      if it's not in a project.
@@ -826,6 +868,11 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
 (defvar python-run-command "python")
 (defvar python-run-args "")
+
+(defun workon-virtual-env-and-lsp ()
+  (interactive)
+  (poetry-venv-workon)
+  (lsp-restart-workspace))
 
 ;; TODO: implement this one
 (defun my-run-python ()
@@ -1679,8 +1726,9 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                    "t" "tests" 'python-pytest-dispatch
                    "x" "execute" nil
                    "xx" "python run" 'python-run-main
+                   "v" "workon env" 'workon-virtual-env-and-lsp
                    "d" "debug" 'dap-hydra))
-      (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+      (evil-define-key 'normal python-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
     (with-eval-after-load 'json-mode
       (define-leader-key-map-for 'json-mode-map
@@ -1757,6 +1805,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "v" 'er/expand-region
     "u" 'universal-argument
     "'" 'new-terminal
+    "TAB" 'vterm-perform-last-command
     "?" 'counsel-descbinds)
 
   ;; which-key-replacement-alist
@@ -1780,7 +1829,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
   (define-leader-key-global
     "j" '(:ignore t :which-key "jump")
-    "jw" '(avy-goto-char-2 :which-key "avy goto ch2")
+    "jw" '(avy-goto-char-timer :which-key "avy goto words")
     "ju" '(avy-jump-url :which-key "goto url")
     "jl" '(avy-goto-line :which-key "goto line")
     "ji" '(counsel-jump-in-buffer :which-key "imenu")
@@ -1854,7 +1903,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
   (define-leader-key-global
     "s" '(:ignore t :which-key "search")
-    "sc" '(evil-ex-nohighlight :which-key "clear highlight")
+    "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
     "ss" '(swiper :which-key "swiper")
     "sS" '(swiper-all :which-key "swiper-all"))
 
@@ -1886,7 +1935,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
   (define-leader-key-global
-    "w" '(:ignore t :which0-key "windows")
+    "w" '(:ignore t :which-key "windows")
     "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
     "ww" '(other-window :which-key "other-window")
     "wm" '(toggle-maximize-buffer :which-key "window maximized")
@@ -2052,9 +2101,7 @@ buffer management :)
          (face (get-text-property beg 'face))
          (symbol (buffer-substring beg end)))
 
-    (when (and (boundp 'ahs-highlighted)
-               ahs-highlighted)
-      (ahs-unhighlight t))
+    (ahs-unhighlight t)
     (when (and symbol
                (not (ahs-dropdown-list-p))
                ;; (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
@@ -2085,7 +2132,7 @@ buffer management :)
                       face fontified) ahs-search-work))))))
 
 
-(defun my-ahs-light-up ()
+(defun my-ahs-light-up (current)
   "Light up symbols."
   (cl-loop for symbol in ahs-search-work
 
@@ -2097,13 +2144,16 @@ buffer management :)
 
            do (let ((overlay (make-overlay beg end nil nil t)))
                 (overlay-put overlay 'ahs-symbol t)
+                (overlay-put overlay 'window (selected-window))
                 (overlay-put overlay 'face
                              (if (ahs-face-p face 'ahs-definition-face-list)
-                                 ahs-definition-face
-                               ahs-face))
+                                 (if current ahs-definition-face
+                                   ahs-definition-face-unfocused)
+                               (if current ahs-face ahs-face-unfocused)))
                 (push overlay ahs-overlay-list))))
 
 (advice-add 'ahs-light-up :override #'my-ahs-light-up)
+(advice-add 'ahs-highlight-p :override #'my-ahs-highlight-p)
 (advice-add 'ahs-search-symbol :override #'my-ahs-search-symbol)
 
 (defun expand-and-highlight-region ()
@@ -2321,7 +2371,7 @@ buffer management :)
         `(("d" "default" plain "%?" :target
           (file+head "${slug}.org" "#+title: ${title}\n")
           :unnarrowed t)))
-  (setq org-roam-directory "/Users/jing/Dropbox/myorgs/to_be_architecter")
+  (setq org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_and_online_courses")
   (setq org-roam-dailies-directory "journal/")
   (org-roam-db-autosync-enable))
 
@@ -2493,18 +2543,16 @@ INFO is a plist used as a communication channel."
   (setq org-export-backends '(ascii html icalendar latex odt md))
   (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
                                              (org-confirm-babel-evaluate)
-                                             (eval progn
-                                                   (when
-                                                       (and (not (equal buffer-file-name nil))
-                                                            (equal
-                                                             (string-match
-                                                              (regexp-quote org-roam-directory)
-                                                              (regexp-quote buffer-file-name))
-                                                             nil))
-                                                     (setq org-roam-directory
-                                                           (expand-file-name "."))
-                                                     (setq org-roam-db-location
-                                                           (expand-file-name "./org-roam.db"))))
+                                             (eval . (progn
+                                                       (when
+                                                           (and (not (equal buffer-file-name nil))
+                                                                (equal
+                                                                 (string-match
+                                                                  (regexp-quote org-roam-directory)
+                                                                  (regexp-quote buffer-file-name))
+                                                                 nil))
+                                                         (setq org-roam-directory (locate-dominating-file default-directory ".dir-locals.el"))
+                                                         (setq org-roam-db-location (concat org-roam-directory "org-roam.db")))))
                                              (org-export-babel-evaluate)))
 
               ;; set org table's font
@@ -2635,3 +2683,13 @@ INFO is a plist used as a communication channel."
     (evil-define-key 'normal table-cell-map (kbd "p") '*table--cell-yank)
     (evil-define-key 'normal table-cell-map (kbd "d") '*table--cell-delete-region)
     (evil-define-key 'normal table-cell-map (kbd ".") 'hydra-table-mode/body)))
+
+(use-package ielm
+  :defer t
+  :after evil
+  :init
+  (evil-define-key 'insert interior-emacs-lisp-mode-map (kbd "M-RET") #'ielm-return)
+  (evil-define-key 'insert interior-emacs-lisp-mode-map (kbd "RET") #'electric-newline-and-maybe-indent)
+  (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<up>") #'previous-line)
+  (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<down>") #'next-line)
+  (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "M-<up>") #'comint-previous-input))
