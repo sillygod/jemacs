@@ -23,6 +23,7 @@
 ** things needed to be done or enahnced
 
    - [X] add run test for go mode
+   - [ ] doom modeline is so slow after updating (cause flashing with which-key, auto highlight)
    - [ ] wirte a hydra for iedit mode
    - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
    - [ ] toggle window maximum should be memorized with projectile (https://oremacs.com/2016/06/27/ivy-push-view/)

@@ -383,6 +383,7 @@ sys.args?"
   ;; we need to escape the space in the property
   ;; ex. (setq a '(:abc\ cde 1))
   (require 'epa-file)
+  (require 'org-element)
   (with-temp-buffer
     (epa-file-insert-file-contents "~/Dropbox/myorgs/management/learning.org.gpg")
     (setq pair-list nil)
@@ -925,7 +926,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (org-roam-db-clear-all)
   (org-roam-db-sync))
 
-(defun org-roam-ui-open ()
+(defun my-org-roam-ui-open ()
   (interactive)
   (let ((org-roam-ui-browser-function (if (equal current-prefix-arg '(4))
                                           #'browse-url
@@ -1455,7 +1456,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :defer t
   :init
   (setq vterm-always-compile-module t)
-  (setq vterm-timer-delay 0.05)
+  (setq vterm-timer-delay 0.01)
   (with-eval-after-load 'evil
     (evil-set-initial-state 'vterm-mode 'emacs))
   :config
@@ -1602,6 +1603,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :commands
   (ahs-forward
    ahs-unhighlight
+   ahs-unhighlight-all
    ahs-change-range
    ahs-change-range-internal
    ahs-dropdown-list-p
@@ -2040,7 +2042,7 @@ Window management :)
   ("f" org-roam-node-find "find file")
   ("d" org-roam-dailies-goto-today "dailies")
   ("l" org-roam-buffer-toggle "back link buffer")
-  ("g" org-roam-ui-open "graph")
+  ("g" my-org-roam-ui-open "graph")
   ("r" my-refresh-org-roam-db-cache "db refresh")
   ("t" ora-roam-todo "todo"))
 
@@ -2205,7 +2207,10 @@ buffer management :)
 [_r_]: range              ^ ^                            [_c_]: change surround
 [_n_]: next
 [_N_]: prev
+[_<escape>_]: quit
 "
+
+  ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all)) nil :exit t)
   ("v" expand-and-highlight-region nil)
   ("-" contract-and-highlight-region nil)
   ;; counsel-projectile-rg-initial-input
@@ -2221,6 +2226,7 @@ buffer management :)
 
 (defun my-iedit-mode ()
   (interactive)
+  (ahs-unhighlight-all)
   (call-interactively 'iedit-mode)
   (iedit-restrict-region
    (ahs-current-plugin-prop 'start)
