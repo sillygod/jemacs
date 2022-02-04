@@ -1486,6 +1486,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
   (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
   (evil-define-key 'normal prog-mode-map (kbd "g h") 'flycheck-display-error-at-point)
+  (evil-define-key 'normal prog-mode-map (kbd "U") 'undo-redo)
 
 
   (evil-global-set-key 'motion "j" 'evil-next-visual-line)
@@ -1856,11 +1857,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
     "ao" '(:ignore t :which-key "org")
     "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
     "aog" '(:ignore t :which-key "goto")
-    "aoge" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/english/english_practice.org")) :which-key "english note")
-    "aogb" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/books/books.org")) :which-key "book note")
-    "aogw" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/works/unnotech.org")) :which-key "work note")
     "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
-    "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/todo.org")) :which-key "todo note"))
+    "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
 
   (define-leader-key-global
     "b" '(:ignore t :which-key "buffer")
@@ -2044,7 +2042,7 @@ Window management :)
   ("l" org-roam-buffer-toggle "back link buffer")
   ("g" my-org-roam-ui-open "graph")
   ("r" my-refresh-org-roam-db-cache "db refresh")
-  ("t" ora-roam-todo "todo"))
+  ("t" org-roam-tag-add "add tag"))
 
 
 (defhydra buffer-operate ()
@@ -2210,7 +2208,7 @@ buffer management :)
 [_<escape>_]: quit
 "
 
-  ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all)) nil :exit t)
+  ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all t)) nil :exit t)
   ("v" expand-and-highlight-region nil)
   ("-" contract-and-highlight-region nil)
   ;; counsel-projectile-rg-initial-input
@@ -2367,7 +2365,6 @@ buffer management :)
   :init
   (setq org-roam-v2-ack t)
   :config
-  (setq org-roam-dailies-directory "/Users/jing/Dropbox/myorgs/journal")
   (setq org-roam-dailies-capture-templates
         `(("d" "default" entry
            "* %<%H:%M> %?"
@@ -2377,7 +2374,7 @@ buffer management :)
         `(("d" "default" plain "%?" :target
           (file+head "${slug}.org" "#+title: ${title}\n")
           :unnarrowed t)))
-  (setq org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_and_online_courses")
+  (setq org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming")
   (setq org-roam-dailies-directory "journal/")
   (org-roam-db-autosync-enable))
 
