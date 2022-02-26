@@ -1,0 +1,4 @@
+
+* beautify
+
+  To design a nice UI for org-mode

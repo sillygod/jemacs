@@ -1,0 +1,5 @@
+* My experimental packages
+
+
+* tips
+  toggle-debug-on-error is a not bad helper fuction when developing package

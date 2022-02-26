@@ -1086,9 +1086,34 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :config
   (global-diff-hl-mode))
 
+(use-package so-long
+  :defer 1
+  :config
+  (global-so-long-mode 1))
+
+(use-package rime
+  :defer 1
+  :straight (rime :type git
+                  :host github
+                  :repo "DogLooksGood/emacs-rime"
+                  :files ("*.el" "Makefile" "lib.c"))
+  :custom
+  (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
+  (rime-user-data-dir "/Users/jing/Library/Rime/")
+  (rime-inline-ascii-trigger 'shift-l)
+  (default-input-method "rime")
+  (rime-show-candidate 'posframe)
+
+  :config
+  (setq rime-translate-keybindings
+        '("C-f" "C-b" "C-n" "C-p" "C-g" "<left>" "<return>" "TAB" "<tab>" "<right>" "<up>" "<down>" "<prior>" "<next>" "<delete>"))
+  (define-key rime-active-mode-map (kbd "C-'") 'rime-inline-ascii))
+
 (use-package perspective
   :diminish persp-mode
   :commands (persp-switch)
+  :custom
+  (persp-modestring-short t)
   :config
   (persp-mode))
 
@@ -1229,7 +1254,10 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (add-hook 'prog-mode-hook 'flycheck-mode)
   (add-hook 'text-mode-hook 'flycheck-mode)
   (setq flycheck-highlighting-mode 'lines)
-  (setq flycheck-indication-mode 'nil))
+  (setq flycheck-indication-mode '())
+  :config
+  (add-hook 'org-src-mode-hook #'(lambda ()
+                                  (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
 
 (use-package json-mode
   :defer t)
@@ -1931,6 +1959,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   (define-leader-key-global
     "t"  '(:ignore t :which-key "toggles")
     "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+    "ti" '(toggle-input-method :which-key "toggle input method")
     "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
     "ts" '(hydra-text-scale/body :which-key "scale text"))
 
@@ -2365,15 +2394,17 @@ buffer management :)
   :init
   (setq org-roam-v2-ack t)
   :config
+  (setq org-roam-node-display-template (concat
+                                        "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
   (setq org-roam-dailies-capture-templates
         `(("d" "default" entry
            "* %<%H:%M> %?"
            :target (file+head "%<%Y-%m-%d>.org"
-                              "#+title: %<%Y-%m-%d>\n"))))
+                              "#+title: %<%Y-%m-%d>\n#+filetags: :daily:"))))
   (setq org-roam-capture-templates
         `(("d" "default" plain "%?" :target
-          (file+head "${slug}.org" "#+title: ${title}\n")
-          :unnarrowed t)))
+           (file+head "${slug}.org" "#+title: ${title}\n")
+           :unnarrowed t)))
   (setq org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming")
   (setq org-roam-dailies-directory "journal/")
   (org-roam-db-autosync-enable))
@@ -2529,6 +2560,9 @@ INFO is a plist used as a communication channel."
   (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
   (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
   (add-to-list 'org-structure-template-alist '("sp" . "src python"))
+
+
+  (keymap-unset org-mode-map "C-'" t)
 
   ;; to produce font-face for org quote block
   (setq org-fontify-quote-and-verse-blocks t)
