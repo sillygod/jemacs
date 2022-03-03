@@ -2313,6 +2313,9 @@ buffer management :)
 (use-package org-ql
   :defer t)
 
+(use-package org-drill
+  :defer t)
+
 (use-package org
   :defer t
   :init

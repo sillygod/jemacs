@@ -3279,10 +3279,15 @@
 
 ** org
 
+   https://orgmode.org/worg/org-contrib/org-drill.html
+
    we can check the org's version by the command =org-version=
 
    #+begin_src emacs-lisp
      (use-package org-ql
+       :defer t)
+
+     (use-package org-drill
        :defer t)
 
      (use-package org
