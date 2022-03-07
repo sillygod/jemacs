@@ -1,4 +1,4 @@
-* Customize your emacs (spacemacs is abandoned)
+* Customize your emacs (+spacemacs is abandoned+)
 
   Let's start to customize your emacs(+spacemacs+). Note the directory =mycraft= is an experimental of crafting self-spacemacs and that's what
   I am focusing on.

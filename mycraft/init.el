@@ -2337,6 +2337,39 @@ buffer management :)
                       org-protocol
                       org-tempo))
 
+
+  (setq-default safe-local-variable-values
+                '((org-reveal-ignore-speaker-notes . (lambda (x) t))
+                  (org-confirm-babel-evaluate . (lambda (x) t))
+                  (eval . (progn
+                            (when
+                                (and (not (equal buffer-file-name nil))
+                                     (equal
+                                      (string-match
+                                       (regexp-quote org-roam-directory)
+                                       (regexp-quote buffer-file-name))
+                                      nil))
+                              (setq org-roam-directory (locate-dominating-file default-directory ".dir-locals.el"))
+                              (setq org-roam-db-location (concat org-roam-directory "org-roam.db")))))
+                  (org-export-babel-evaluate . (lambda (x) t))))
+  :config
+  (keymap-unset org-mode-map "C-'" t)
+  (setq org-export-backends '(ascii html icalendar latex odt md))
+
+  ;; this will make org-shift to auto add timestamp after making a toto item complete
+  (setq org-log-done 'time)
+  (setq org-startup-truncated nil)
+  (setq org-image-actual-width nil)
+  (setq org-src-window-setup 'current-window) ;; org-edit-src without prompting window
+  (setq org-agenda-use-tag-inheritance nil)
+
+  (setq org-startup-folded t)
+  ;; (setq org-ellipsis " ▾")
+  (setq org-startup-with-inline-images t)
+  (setq-default org-default-notes-file
+                "~/Dropbox/myorgs/todo.org")
+
+
   :ensure org-contrib)
 
 (use-package org-tree-slide
@@ -2394,6 +2427,9 @@ buffer management :)
   :straight
   (:host github :repo "org-roam/org-roam" :files (:defaults "extensions/*"))
   :after org
+  :custom
+  (org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming")
+  (org-roam-db-location (concat org-roam-directory "org-roam.db"))
   :init
   (setq org-roam-v2-ack t)
   :config
@@ -2408,7 +2444,6 @@ buffer management :)
         `(("d" "default" plain "%?" :target
            (file+head "${slug}.org" "#+title: ${title}\n")
            :unnarrowed t)))
-  (setq org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming")
   (setq org-roam-dailies-directory "journal/")
   (org-roam-db-autosync-enable))
 
@@ -2580,131 +2615,105 @@ INFO is a plist used as a communication channel."
   (set-face-attribute 'org-block nil :background "#202021")
   (set-face-attribute 'org-quote nil :background "#202021")
 
-  (setq org-export-backends '(ascii html icalendar latex odt md))
-  (setq-default safe-local-variable-values '((org-reveal-ignore-speaker-notes)
-                                             (org-confirm-babel-evaluate)
-                                             (eval . (progn
-                                                       (when
-                                                           (and (not (equal buffer-file-name nil))
-                                                                (equal
-                                                                 (string-match
-                                                                  (regexp-quote org-roam-directory)
-                                                                  (regexp-quote buffer-file-name))
-                                                                 nil))
-                                                         (setq org-roam-directory (locate-dominating-file default-directory ".dir-locals.el"))
-                                                         (setq org-roam-db-location (concat org-roam-directory "org-roam.db")))))
-                                             (org-export-babel-evaluate)))
 
-              ;; set org table's font
-              ;; (set-face-font 'org-table " ")
-              ;; I use the visual-column instead
-              ;; (add-hook 'org-mode-hook 'toggle-word-wrap)
+  ;; set org table's font
+  ;; (set-face-font 'org-table " ")
+  ;; I use the visual-column instead
+  ;; (add-hook 'org-mode-hook 'toggle-word-wrap)
 
-              ;; Set faces for heading levels
-              (dolist (face '((org-document-title . 1.5)
-                              (org-level-1 . 1.3)
-                              (org-level-2 . 1.2)
-                              (org-level-3 . 1.15)
-                              (org-level-4 . 1.1)
-                              (org-level-5 . 1.0)
-                              (org-level-6 . 1.0)
-                              (org-level-7 . 1.0)
-                              (org-level-8 . 1.0)))
-                (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
+  ;; Set faces for heading levels
+  (dolist (face '((org-document-title . 1.5)
+                  (org-level-1 . 1.3)
+                  (org-level-2 . 1.2)
+                  (org-level-3 . 1.15)
+                  (org-level-4 . 1.1)
+                  (org-level-5 . 1.0)
+                  (org-level-6 . 1.0)
+                  (org-level-7 . 1.0)
+                  (org-level-8 . 1.0)))
+    (set-face-attribute (car face) nil :font "Source Code Pro" :weight 'regular :height (cdr face)))
 
-              ;; NOTE:
-              ;; (setq org-format-latex-options
-              ;;        (list :foreground 'default
-              ;;              :background 'default
-              ;;              :scale 1.5
-              ;;              :html-foreground "Black"
-              ;;              :html-background "Transparent"
-              ;;              :html-scale 1.0
-              ;;              :matchers '("begin" "$1" "$" "$$" "\\(" "\\[")))
-
-              ;; this will make org-shift to auto add timestamp after making a toto item complete
-              (setq org-log-done 'time)
-              (setq org-startup-truncated nil)
-              (setq org-image-actual-width nil)
-              (setq org-src-window-setup 'current-window) ;; org-edit-src without prompting window
-              (setq org-agenda-use-tag-inheritance nil)
-
-              (setq org-startup-folded t)
-              ;; (setq org-ellipsis " ▾")
-              (setq org-startup-with-inline-images t)
-              (setq-default org-default-notes-file
-                            "~/Dropbox/myorgs/todo.org")
-
-              (setq org-download-screenshot-method "screencapture -i %s")
-              (setq-default org-download-image-dir "./img")
-              (setq org-download-image-org-width 500)
-
-              (setq org-journal-dir "~/Dropbox/myorgs/journal/")
-              (setq org-journal-file-type 'weekly)
-              (setq org-journal-file-format "%Y-%m-%W.org")
-
-              (setq org-agenda-files (split-string (shell-command-to-string "find ~/Dropbox/myorgs -type f | grep '.*.org$' | grep -E -v 'presentation/|journal/'") "\n" t))
-
-              ;; to config the org refile
-              (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))
-              (setq org-refile-use-outline-path 'file)
-              (setq org-outline-path-complete-in-steps nil)
-
-              ;; to allow creating a new heading when performing the org refile
-              (setq org-refile-allow-creating-parent-nodes 'confirm)
+  ;; NOTE:
+  ;; (setq org-format-latex-options
+  ;;        (list :foreground 'default
+  ;;              :background 'default
+  ;;              :scale 1.5
+  ;;              :html-foreground "Black"
+  ;;              :html-background "Transparent"
+  ;;              :html-scale 1.0
+  ;;              :matchers '("begin" "$1" "$" "$$" "\\(" "\\[")))
 
 
-              ;; customize the bullet symbol
-              (custom-set-variables '(org-bullets-bullet-list '("❐" "○" "﹅" "▶")))
-              (setq org-superstar-headline-bullets-list '("❐" "○" "✎" "⚈"))
-              (setq org-hide-leading-stars t)
+  (setq org-download-screenshot-method "screencapture -i %s")
+  (setq-default org-download-image-dir "./img")
+  (setq org-download-image-org-width 500)
 
-              ;; to customize the org-capture template and clear the template before
-              ;; we add the template in the list.
-              (setq org-capture-templates nil)
+  (setq org-journal-dir "~/Dropbox/myorgs/journal/")
+  (setq org-journal-file-type 'weekly)
+  (setq org-journal-file-format "%Y-%m-%W.org")
 
-              (setq org-todo-keywords
-                    '((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
+  (setq org-agenda-files (split-string (shell-command-to-string "find ~/Dropbox/myorgs -type f | grep '.*.org$' | grep -E -v 'presentation/|journal/'") "\n" t))
 
-              (setq org-todo-keyword-faces
-                    '(("TODO" . "#dc752f")
-                      ("IN PROGRESS" . "#33eecc")
-                      ("NO_NEWS" . "#cdb7b5")
-                      ("ABANDON" . "#f2241f")
-                      ("OFFERGET" . "#4f97d7")))
+  ;; to config the org refile
+  (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))
+  (setq org-refile-use-outline-path 'file)
+  (setq org-outline-path-complete-in-steps nil)
+
+  ;; to allow creating a new heading when performing the org refile
+  (setq org-refile-allow-creating-parent-nodes 'confirm)
 
 
-              ;; in order to group the templates we need to add the key-description
-              ;; pair first or it will not work
-              (add-to-list 'org-capture-templates '("i" "Inbox"))
-              (add-to-list 'org-capture-templates
-                           '("im" "Misc Inbox" entry
-                             (file+headline "~/Dropbox/myorgs/inbox.org" "Misc")
-                             "** %^{title} %?\n %(current-kill 0)\n\n"))
+  ;; customize the bullet symbol
+  (custom-set-variables '(org-bullets-bullet-list '("❐" "○" "﹅" "▶")))
+  (setq org-superstar-headline-bullets-list '("❐" "○" "✎" "⚈"))
+  (setq org-hide-leading-stars t)
 
-              (add-to-list 'org-capture-templates '("b" "Bookmarks"))
-              (add-to-list 'org-capture-templates
-                           '("bb" "Blogs bookmarks" entry
-                             (file+headline "~/Dropbox/myorgs/bookmarks.org" "Blogs")
-                             "** %^{title} %?\n %(current-kill 0)\n\n"))
-              (add-to-list 'org-capture-templates
-                           '("bs" "Speeches bookmarks" checkitem
-                             (file+headline "~/Dropbox/myorgs/bookmarks.org" "Speeches")
-                             "- [ ] [[%(current-kill 0)][%^{link description}]]\n"))
+  ;; to customize the org-capture template and clear the template before
+  ;; we add the template in the list.
+  (setq org-capture-templates nil)
 
-              (add-to-list 'org-capture-templates '("t" "Todos"))
-              (add-to-list 'org-capture-templates
-                           '("td" "a one day todo" entry
-                             (file+headline "~/Dropbox/myorgs/todo.org" "一天內可以解決的事項")
-                             "** TODO %^{title} %?\n SCHEDULED: %^t\n%? "))
-              (add-to-list 'org-capture-templates
-                           '("tw" "a week todo" entry
-                             (file+headline "~/Dropbox/myorgs/todo.org" "一週內可以解決的事項")
-                             "** TODO %^{title} %?\n SCHEDULED: %t\n"))
-              (add-to-list 'org-capture-templates
-                           '("tl" "a longterm todo" entry
-                             (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
-                             "** TODO %^{title} %?\n SCHEDULED: %t\n")))
+  (setq org-todo-keywords
+        '((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
+
+  (setq org-todo-keyword-faces
+        '(("TODO" . "#dc752f")
+          ("IN PROGRESS" . "#33eecc")
+          ("NO_NEWS" . "#cdb7b5")
+          ("ABANDON" . "#f2241f")
+          ("OFFERGET" . "#4f97d7")))
+
+
+  ;; in order to group the templates we need to add the key-description
+  ;; pair first or it will not work
+  (add-to-list 'org-capture-templates '("i" "Inbox"))
+  (add-to-list 'org-capture-templates
+               '("im" "Misc Inbox" entry
+                 (file+headline "~/Dropbox/myorgs/inbox.org" "Misc")
+                 "** %^{title} %?\n %(current-kill 0)\n\n"))
+
+  (add-to-list 'org-capture-templates '("b" "Bookmarks"))
+  (add-to-list 'org-capture-templates
+               '("bb" "Blogs bookmarks" entry
+                 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Blogs")
+                 "** %^{title} %?\n %(current-kill 0)\n\n"))
+  (add-to-list 'org-capture-templates
+               '("bs" "Speeches bookmarks" checkitem
+                 (file+headline "~/Dropbox/myorgs/bookmarks.org" "Speeches")
+                 "- [ ] [[%(current-kill 0)][%^{link description}]]\n"))
+
+  (add-to-list 'org-capture-templates '("t" "Todos"))
+  (add-to-list 'org-capture-templates
+               '("td" "a one day todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "一天內可以解決的事項")
+                 "** TODO %^{title} %?\n SCHEDULED: %^t\n%? "))
+  (add-to-list 'org-capture-templates
+               '("tw" "a week todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "一週內可以解決的事項")
+                 "** TODO %^{title} %?\n SCHEDULED: %t\n"))
+  (add-to-list 'org-capture-templates
+               '("tl" "a longterm todo" entry
+                 (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
+                 "** TODO %^{title} %?\n SCHEDULED: %t\n")))
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
 (with-eval-after-load 'evil
