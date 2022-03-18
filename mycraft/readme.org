@@ -13,8 +13,15 @@
 *** install emacs-plus
 
     #+begin_src sh
-      brew install emacs-plus@28 --with-xwidgets --with-modern-papirus-icon --with-native-comp
+      brew install emacs-plus@29 --with-xwidgets --with-modern-papirus-icon --with-native-comp
     #+end_src
+
+*** spawn the emacs
+
+    #+begin_src bash
+      emacs -Q --load init.el
+    #+end_src
+
 
 * Start to build my own emacs
 
@@ -50,7 +57,6 @@
    - [ ] tree sitter (https://emacs-tree-sitter.github.io/)
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] interactive sql mode
-   - [ ] org roam v2 helper (create sub node)
    - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
@@ -64,211 +70,8 @@
    - [X] what does the =command= in the use-package do (make the command to be autoloaded)
    - [X] what is =featurep=
 
-     #+begin_src bash
-       emacs -Q --load init.el or
-       /usr/local/opt/emacs-plus@28/bin/emacs -Q --load init.el # very similar with emacs-head
-     #+end_src
 
 * Notes
-
-** some commands
-*** list-colors-display
-    這樣就可以知道當前所有的face，這樣要客製化會比較容易
-
-*** list-faces-display
-*** (load file nil (not init-file-debug))
-    =load= will load repeatly when you call multiple times but =require= will only do once.
-*** set vs setf vs setq vs setq-default
-
-    Setq-default is globally set a variable( which is the default for buffer variable).
-
-    #+begin_src emacs-lisp
-      (set ls '(1 2 3 4)) => Error - ls has no value
-      (set 'ls '(1 2 3 4)) => OK
-      (setq ls '(1 2 3 4)) => OK - make ls to (quote ls) and then have the usual set
-      (setf ls '(1 2 3 4)) => OK - same as setq so far BUT
-      (setf (car ls) 10) => Makes ls '(10 2 3 4) - not duplicated by setq/set
-    #+end_src
-
-*** disable theme
-    #+begin_src elisp
-      (disable-theme)
-    #+end_src
-
-*** quote the func in the doc string will make it clickable in the documentation
-    =`[functation name]'=
-
-    #+begin_src elisp :tangle no
-      (defun hi
-          "you see `evil-lookup'")
-    #+end_src
-
-*** font-lock vs overlay
-
-    https://github.com/wolray/symbol-overlay
-
-*** normal-mode
-    this can apply the local varaibles of the file or its directory.
-
-*** add-file-local-variable
-    generate the code for file local varaibles
-
-*** elp-instrument-function, elp-results
-    add the function you want to instrument.
-    Run the functino you want to profiling then run =elp-results= to get the result.
-
-** autoload
-
-   It seems will start to work when calling =package-initialized= so when using =use-package= for local package it will not generate =xxx-autoloads.el=
-
-   This needs more operation to make the autload working.
-
-** use =esup= to profiling the emacs start up time
-** use =what-cursor-position= to see the detail font-face under the cursor
-   run this with universal args can get a more detail info.
-** describe-face to know the detail properties of font-face
-** ivy-minibuffer-map
-   =M-o= can let you copy the text in minibuffer
-
-** toggle-debug-on-error help to debug
-** transient-state seems to be spaceamcs's own implementation
-   behind the scene is =hydra=
-   [[https://github.com/syl20bnr/spacemacs/blob/c7a103a772d808101d7635ec10f292ab9202d9ee/layers/%2Bspacemacs/spacemacs-completion/packages.el#L137][source code link]]
-
-** helpful
-
-   #+begin_quote
-   you can search for Emacs functions within Emacs by typing M-x apropos, then typing your query. In this case, M-x apropos <RET> whitespace <RET> provides a list of functions relating to whitespace.
-   #+end_quote
-
-*** introspec the keybinding in the emacs
-    https://emacs.stackexchange.com/questions/653/how-can-i-find-out-in-which-keymap-a-key-is-bound
-
-** evil-collection
-
-   Oh~ We can overwrite the original keymap by changing the kemap of the mode
-
-   ex.
-   #+begin_src elisp
-     (setcdr
-      (assq 'lispy-mode minor-mode-map-alist)
-      lispy-mode-map)
-   #+end_src
-
-** Advice vs Hook
-   https://www.emacswiki.org/emacs/AdviceVsHooks
-
-** defcustom vs defvar
-   Defcustom provide a more user-friendly customization with the built-in function =customize=.
-
-** define-derived-mode
-   We can define the major mode by this function.
-
-** call-process
-   What's the difference from the =shell-command=. =start-process= is aync.
-
-   This will be freezed because the process will not stop.
-   #+BEGIN_SRC elisp
-     (let ((buffer "*test-git*"))
-       (call-process "ping" nil buffer nil "google.com")
-       (switch-to-buffer buffer))
-   #+END_SRC
-
-
-   This will be ok.
-   #+BEGIN_SRC elisp
-     (let ((buffer "*test-git*"))
-       (start-process "git" buffer "ping" "google.com")
-       (switch-to-buffer buffer))
-   #+END_SRC
-
-   #+RESULTS:
-   : #<buffer *test-git*>
-
-** define transient function
-   ref: https://www.youtube.com/watch?v=w3krYEeqnyk&feature=youtu.be
-
-*** basic transient
-    #+begin_src elisp
-      (defun just-echo ()
-        (interactive)
-        (message "hello"))
-
-      (define-transient-command test-transient ()
-        "This is the doc"
-        ["Action"
-         ("a" "Action a" just-echo)
-         ("s" "Action a" just-echo)
-         ("d" "Action a" just-echo)])
-
-      (test-transient)
-    #+end_src
-
-    #+RESULTS:
-    | transient--resume-which-key-mode |
-
-*** transient with switches
-
-    #+begin_src elisp
-      (defun just-echo (&optional args)
-        (interactive (list (transient-args 'test-transient)))
-        (message "args: %s" args))
-
-      (define-transient-command test-transient ()
-        "This is the doc"
-        ["Arguments"
-         ("-s" "Switch" "--switch")
-         ("-a" "Annotate" "--annotate")]
-        ["Action"
-         ("a" "Action a" just-echo)
-         ("s" "Action a" just-echo)
-         ("d" "Action a" just-echo)])
-
-      (test-transient)
-    #+end_src
-
-    #+RESULTS:
-    | transient--resume-which-key-mode |
-
-*** transient with params
-
-    #+begin_src elisp
-      (defun just-echo (&optional args)
-        (interactive (list (transient-args 'test-transient)))
-        (message "args: %s" args))
-
-      (define-infix-argument test-transient:--message ()
-        :description "Messages"
-        :class 'transient-option
-        :shortarg "-m"
-        :argument "--message=")
-
-      (define-transient-command test-transient ()
-        "This is the doc"
-        ["Arguments"
-         ("-s" "Switch" "--switch")
-         ("-a" "Annotate" "--annotate")
-         (test-transient:--message)]
-        ["Action"
-         ("a" "Action a" just-echo)
-         ("s" "Action a" just-echo)
-         ("d" "Action a" just-echo)])
-
-      (test-transient)
-
-    #+end_src
-
-    #+RESULTS:
-    | transient--resume-which-key-mode |
-
-** how to define a keymap for a certain mode
-
-   #+begin_src elisp
-     ;; example
-     (defvar xx-mode-map
-       (let ((map (make-sparse-keymap)))
-         (define-key map (kbd "l") 'kubernete-transient) map))
-   #+end_src
 
 ** something
    #+begin_src emacs-lisp
@@ -280,24 +83,6 @@
 
    #+begin_src sh
      docker run --rm -p 8080:80 --name envisaged -v /Users/jing/Desktop/spacemacs-private/:/visualization/git_repo:ro -e GOURCE_TITLE="spacemacs private" utensils/envisaged
-   #+end_src
-
-** display buffer with customize position and width
-
-   - display-buffer-fallback-function
-
-   #+begin_src emacs-lisp
-     (display-buffer "*scratch*"
-                     '(display-buffer-in-side-window . ((side . right))))
-   #+end_src
-
-   #+begin_src emacs-lisp
-     (add-to-list 'display-buffer-alist
-                  '("\\*org-roam\\*"
-                    (display-buffer-in-direction)
-                    (direction . right)
-                    (window-width . 0.33)
-                    (window-height . fit-window-to-buffer)))
    #+end_src
 
 * Reference
@@ -316,6 +101,7 @@
    - https://github.com/alhassy/emacs.d/blob/master/README.org
    - https://github.com/angrybacon/dotemacs/blob/master/dotemacs.org
    - https://github.com/hungyiloo/doom-emacs-conf/tree/master/autoload (簡單版的可以參考)
+   - https://github.com/condy0919/.emacs.d
 
 ** literate programming
 
@@ -338,3 +124,7 @@
    - autothemer
    - https://www.gnu.org/software/hyperbole/#summary
    - https://www.deepl.com/translator (dictionary)
+
+** start to rewrite configs
+   https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
+   https://www.youtube.com/watch?v=uB8McDsRyXY

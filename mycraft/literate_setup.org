@@ -1736,7 +1736,7 @@
        :config
        (setq rime-translate-keybindings
              '("C-f" "C-b" "C-n" "C-p" "C-g" "<left>" "<return>" "TAB" "<tab>" "<right>" "<up>" "<down>" "<prior>" "<next>" "<delete>"))
-       (define-key rime-active-mode-map (kbd "C-'") 'rime-inline-ascii))
+       (define-key rime-mode-map (kbd "C-'") 'rime-inline-ascii))
    #+end_src
 
 ** perspective mode
@@ -3642,8 +3642,6 @@
         (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
         (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
-
-        (keymap-unset org-mode-map "C-'" t)
 
         ;; to produce font-face for org quote block
         (setq org-fontify-quote-and-verse-blocks t)

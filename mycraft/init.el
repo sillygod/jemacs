@@ -911,6 +911,19 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                                      (buffer-file-name (buffer-base-buffer))))
            go-run-args)))
 
+
+;; gopkgs
+;; go-outline
+;; gotests
+;; gomodifytags
+;; impl
+;; goplay
+;; dlv
+;; staticcheck
+;; gopls
+;; write a helper for upgrade these tools
+;; reinstall all the tools found in the golang's bin directory?
+
 (defun org-roam-dailies-capture-and-goto-today (&optional goto)
   (interactive)
   (org-roam-dailies--capture (current-time) goto)
@@ -1107,7 +1120,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :config
   (setq rime-translate-keybindings
         '("C-f" "C-b" "C-n" "C-p" "C-g" "<left>" "<return>" "TAB" "<tab>" "<right>" "<up>" "<down>" "<prior>" "<next>" "<delete>"))
-  (define-key rime-active-mode-map (kbd "C-'") 'rime-inline-ascii))
+  (define-key rime-mode-map (kbd "C-'") 'rime-inline-ascii))
 
 (use-package perspective
   :diminish persp-mode
@@ -2599,8 +2612,6 @@ INFO is a plist used as a communication channel."
   (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
   (add-to-list 'org-structure-template-alist '("sp" . "src python"))
 
-
-  (keymap-unset org-mode-map "C-'" t)
 
   ;; to produce font-face for org quote block
   (setq org-fontify-quote-and-verse-blocks t)
