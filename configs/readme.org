@@ -1,3 +1,0 @@
-* Configs
-
-I consider to put some configuration in this layer. However, I don't know it is good thing to do this. I will think it more deep.

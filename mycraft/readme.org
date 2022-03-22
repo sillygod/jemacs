@@ -30,14 +30,14 @@
 ** things needed to be done or enahnced
 
    - [X] add run test for go mode
-   - [ ] doom modeline is so slow after updating (cause flashing with which-key, auto highlight)
+   - [X] doom modeline is so slow after updating (cause flashing with which-key, auto highlight)
    - [ ] wirte a hydra for iedit mode
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
    - [ ] toggle window maximum should be memorized with projectile (https://oremacs.com/2016/06/27/ivy-push-view/)
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] implement my own run-python-shell
-   - [ ] code folding problem (hideshow?) (lsp?)
+   - [ ] code folding problem (hideshow?) (lsp?) (https://github.com/junyi-hou/tree-sitter-fold/blob/main/tree-sitter-fold.el) tree sitter based
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
@@ -46,7 +46,7 @@
 
 ** program relavant config
 
-   - [ ] implement a function that lsp auto reload when poetry venv toggle
+   - [ ] https://karthinks.com/software/fifteen-ways-to-use-embark/ [embark vertico usage]
    - [ ] a better go to definition handler
    - [ ] how to copy in the xwidget mode with evil yank
    - [ ] add re builder mode shorcuts

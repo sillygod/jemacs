@@ -3,26 +3,17 @@
   Let's start to customize your emacs(+spacemacs+). Note the directory =mycraft= is an experimental of crafting self-spacemacs and that's what
   I am focusing on.
 
-  Note: some directories are still preserved because I am not completely transfer all the functions and workflows from the =spacemacs=.
+  +Note: some directories are still preserved because I am not completely transfer all the functions and workflows from the =spacemacs=.+
 
 * Install
 
-  Clone this repo to the =~/.emacs.d/private=
-
   #+begin_src shell
-    git clone https://github.com/sillygod/spacemacs-private.git ~/.emacs.d/private
+    git clone https://github.com/sillygod/spacemacs-private.git
   #+end_src
-
-  Or you can clone to other directory and then create a soft link to the directory.
-  Choose the way you like!
 
 * Description
 
-  A minimum configuration to mimic the spacemacs' ux.
-
-* Personal configuration
-
-  Currently, I preffer put configuration in the file =.spacemacs= instead of using my =config= layer.
+  An experimental emacs setup for my workflow and trying to make it flexible to be easily shaped for others people.
 
 * Reference
 

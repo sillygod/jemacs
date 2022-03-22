@@ -16,6 +16,7 @@
   - [[#minimize-ui-interface][minimize ui interface]]
   - [[#change-comment-highlight-and-org-block-color][change comment highlight and org-block color]]
   - [[#enable-highlight-current-line][enable highlight current line]]
+  - [[#pulse-mode][pulse mode]]
 - [[#font-setup--config-background-color][Font setup & config background color]]
 - [[#misc-behaviro-setup][Misc Behaviro setup]]
   - [[#simplify-the-prompt-yes-or-no-to-y-or-n][simplify the prompt =yes or no= to =y or n=]]
@@ -46,6 +47,7 @@
   - [[#lsp-define-key-helper][lsp define key helper]]
   - [[#buffer-window-manipulation][buffer, window manipulation]]
   - [[#file-manipulation][file manipulation]]
+  - [[#get-pull-request-url-from-magit-process-buffer][get pull request url from magit process buffer]]
   - [[#emmet][emmet]]
   - [[#flycheck][flycheck]]
   - [[#project-jump--comment][project jump & comment]]
@@ -298,6 +300,22 @@
    #+begin_src emacs-lisp
      (add-hook 'prog-mode-hook 'hl-line-mode)
      (add-hook 'text-mode-hook 'hl-line-mode)
+   #+end_src
+
+** pulse mode
+
+   https://karthinks.com/software/batteries-included-with-emacs/
+   #+begin_src emacs-lisp
+
+     (defun pulse-line (&rest _)
+       "Pulse the current line."
+       (pulse-momentary-highlight-one-line (point)))
+
+     (dolist (command '(windmove-do-window-select
+                        winum-select-window-by-number))
+       (advice-add command :after #'pulse-line))
+
+
    #+end_src
 
 * Font setup & config background color
@@ -1078,6 +1096,23 @@
 
    #+end_src
 
+** get pull request url from magit process buffer
+
+   #+begin_src emacs-lisp
+     (defun get-pull-request-uri ()
+       (interactive)
+       (save-excursion
+         (with-current-buffer (magit-process-buffer t)
+           (goto-char (point-max))
+           (re-search-backward "^remote:\s*\\(https?://.*\\)+?$")
+           ;; it seems that match-string-no-properties will get nothing if
+           ;; you switch buffer after re-search-backward
+           (let ((uri (match-string-no-properties 1)))
+             (message "copy pull request: %s to clipboard" uri)
+             (kill-new uri)))))
+
+   #+end_src
+
 ** emmet
    #+begin_src emacs-lisp
      (defun my-emmet-expand ()
@@ -1467,7 +1502,7 @@
    #+end_src
 
 ** add additional load-path for use-package
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
    #+end_src
 
@@ -1630,8 +1665,8 @@
    #+begin_src emacs-lisp
      (use-package devdocs
        :defer t
-       :commands (devdocs-search)
-       :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
+       :straight (
+                  :local-repo "~/Desktop/spacemacs-private/local/devdocs"))
 
    #+end_src
 
@@ -2160,6 +2195,7 @@
        :hook
        (go-mode . lsp)
        (python-mode . lsp)
+       (lua-mode . lsp)
        (rust-mode . lsp)
        (js-mode . lsp)
        (c-mode . lsp)
