@@ -1,23 +1,83 @@
-* Customize your emacs (+spacemacs is abandoned+)
+[[imgs/myemacs.png]
 
-  Let's start to customize your emacs(+spacemacs+). Note the directory =mycraft= is an experimental of crafting self-spacemacs and that's what
-  I am focusing on.
+* What is this
 
-  +Note: some directories are still preserved because I am not completely transfer all the functions and workflows from the =spacemacs=.+
+  This is a literal programming for my own emacs configs and is an experimental emacs setup for my workflow.
+  Furthermore, if I can, I will trying to make it flexible to be easily shaped for others people.
 
-* Install
+* Installation
+
+
+** prerequisite
+
+   the following steps are for mac osx
+
+*** some util tools
+    #+begin_src sh
+      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
+      brew install ispell pngpaste ripgrep
+    #+end_src
+
+*** install emacs-plus
+
+    #+begin_src sh
+      brew install emacs-plus@29 --with-xwidgets --with-modern-papirus-icon --with-native-comp
+    #+end_src
+
+*** spawn the emacs
+
+    #+begin_src bash
+      emacs -Q --load init.el
+    #+end_src
+
+** clone the repo
 
   #+begin_src shell
-    git clone https://github.com/sillygod/spacemacs-private.git
+    git clone https://github.com/sillygod/jemacs.git
   #+end_src
 
-* Description
+* Run in docker
+* Start to build my own emacs
 
-  An experimental emacs setup for my workflow and trying to make it flexible to be easily shaped for others people.
+** things needed to be done or enahnced
+
+   - [X] add run test for go mode
+   - [X] doom modeline is so slow after updating (cause flashing with which-key, auto highlight)
+   - [ ] wirte a hydra for iedit mode
+   - [ ] https://github.com/wbolster/emacs-python-coverage
+   - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
+   - [ ] toggle window maximum should be memorized with projectile (https://oremacs.com/2016/06/27/ivy-push-view/)
+   - [ ] check devdocs' functionality and pop-up with window-frame
+   - [ ] implement my own run-python-shell
+   - [ ] code folding problem (hideshow?) (lsp?) (https://github.com/junyi-hou/tree-sitter-fold/blob/main/tree-sitter-fold.el) tree sitter based
+   - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
+   - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
+   - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
+   - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
+   - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
+
+** program relavant config
+
+   - [ ] https://karthinks.com/software/fifteen-ways-to-use-embark/ [embark vertico usage]
+   - [ ] a better go to definition handler
+   - [ ] how to copy in the xwidget mode with evil yank
+   - [ ] add re builder mode shorcuts
+
+** better to have
+
+   - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
+   - [ ] tree sitter (https://emacs-tree-sitter.github.io/)
+   - [ ] add lookup function like doom emacs (which is based on counsel-search)
+   - [ ] interactive sql mode
+   - [ ] spacemacs' org-doc-view mode?
+   - [ ] https://github.com/osener/emacs-webkit-color-picker
+   - [ ] https://github.com/quelpa/quelpa need this?
+   - [ ] adopt darkroom package?
+   - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
+   - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
+   - [ ] research the doom emacs boostrap flow https://github.com/SystemCrafters/rational-emacs
 
 * Reference
-
- Here are some tutorials. In addition, I put some notes on the =spacemacs_tips.org=
 
    - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
    - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
@@ -25,3 +85,53 @@
    - https://endlessparentheses.com/
    - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
    - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
+
+** dotfiles
+
+   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
+   - https://github.com/mpereira/.emacs.d#a-fast-non-projectile-based-project-file-finder
+   - https://github.com/daviwil/dotfiles
+   - https://laptrinhx.com/evil-emacs-configuration-1977138996/
+   - https://github.com/lccambiaghi/.doom.d
+   - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
+   - https://github.com/raxod502/radian/tree/develop/emacs
+   - https://github.com/p3r7/awesome-elisp
+   - https://protesilaos.com/dotemacs/
+   - https://github.com/alhassy/emacs.d/blob/master/README.org
+   - https://github.com/angrybacon/dotemacs/blob/master/dotemacs.org
+   - https://github.com/hungyiloo/doom-emacs-conf/tree/master/autoload (簡單版的可以參考)
+   - https://github.com/condy0919/.emacs.d
+
+** literate programming
+
+   - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
+   - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
+   - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
+   - https://soliloquium.zealmaker.com/fastpages/orgmode/2020/04/27/blogging-with-orgmode-and-fastpages
+   - https://leanpub.com/lit-config/read#leanpub-auto-multiple-config-files-per-org-file
+
+** misc
+
+   - https://github.com/sulami/literate-calc-mode.el
+   - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
+   - https://github.com/clemera/objed (interesting..)
+   - https://github.com/daipeihust/im-select (combine this with evil mode)
+   - https://leanpub.com/lit-config/read
+   - https://github.com/wbolster/emacs-direnv
+   - http://ergoemacs.org/emacs/emacs.html
+   - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
+   - autothemer
+   - https://www.gnu.org/software/hyperbole/#summary
+   - https://www.deepl.com/translator (dictionary)
+
+** to see the visualization of git history
+
+   #+begin_src sh
+     docker run --rm -p 8080:80 --name envisaged -v /Users/jing/Desktop/jemacs/:/visualization/git_repo:ro -e GOURCE_TITLE="jemacs" utensils/envisaged
+   #+end_src
+** start to rewrite configs
+   https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
+   https://www.youtube.com/watch?v=uB8McDsRyXY
+
+   I think this guy reference this from the system crafter
+   https://github.com/braineo/fate-emacs/blob/master/modules/fate-python.el

@@ -1,0 +1,59 @@
+* K8s
+
+  k8s is a emacs major mode to get a correct syntax highlight for helm files and provides some helper functions
+
+
+* polymode
+
+** define a hostmode
+
+   #+begin_src emacs-lisp
+   (define-hostmode poly-python-hostmode :mode 'python-mode)
+   #+end_src
+
+   :mode => to replace the default major mode
+
+** define a innermode
+
+   #+begin_src emacs-lisp
+     (define-innermode poly-sql-expr-python-innermode
+     :mode
+     :head-matcher
+     :tail-matcher
+     :head-mode
+     :tail-mode
+     )
+   #+end_src
+
+
+   =head-matcher= and =tail-matcher= tell where the major mode begins and ends.
+
+   head-mode to indicates the matched part belonging to specify mode
+   tail-mode to indicates the matched part belonging to specify mode
+
+   ex. for some template languages
+
+   #+begin_quote
+   {{ => not a sql syntax
+      select * from song;
+   }} => not a sql syntax
+   #+end_quote
+
+
+** define-polymode
+
+   to bind =hostmode= and a list of =innermode= all together.
+
+   #+begin_src emacs-lisp
+     (define-polymode poly-python-sql-mode
+                      :hostmode 'poly-python-hostmode
+                      :innermodes '(poly-sql-expr-python-innermode)
+                      (...))
+   #+end_src
+
+* References
+
+- https://gitlab.com/mavit/poly-ansible/-/blob/main/poly-ansible.el
+- https://www.masteringemacs.org/article/polymode-multiple-major-modes-how-to-use-sql-python-in-one-buffer
+- https://gist.github.com/grafov/10985431
+- https://github.com/TxGVNN/emacs-k8s-mode
