@@ -1,0 +1,4 @@
+#+TITLE: Init.el
+#+PROPERTY: header-args:emacs-lisp :tangle ./init.el :mkdirp yes
+
+todo design this one..

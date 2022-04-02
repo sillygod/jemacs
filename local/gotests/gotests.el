@@ -49,7 +49,6 @@ package name or sth else."
                      nil
                      (lambda (n) go-test-buffer-name) nil))
 
-
 ;;;###autoload
 (defun go-run-test-current-function ()
   "Run the test which current the cursor on.

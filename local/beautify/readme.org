@@ -2,3 +2,7 @@
 * beautify
 
   To design a nice UI for org-mode
+
+
+  what the fuck.. someone has the same thought like me.
+  https://github.com/minad/org-modern

@@ -80,6 +80,14 @@
 (add-hook 'prog-mode-hook 'hl-line-mode)
 (add-hook 'text-mode-hook 'hl-line-mode)
 
+(defun pulse-line (&rest _)
+  "Pulse the current line."
+  (pulse-momentary-highlight-one-line (point)))
+
+(dolist (command '(windmove-do-window-select
+                   winum-select-window-by-number))
+  (advice-add command :after #'pulse-line))
+
 (setq default-font-size 140)
 (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
 (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height default-font-size :weight 'regular)
@@ -672,6 +680,18 @@ Returns:
   (when-let (file-path (buffer-file-name))
     (file-truename file-path)))
 
+(defun get-pull-request-uri ()
+  (interactive)
+  (save-excursion
+    (with-current-buffer (magit-process-buffer t)
+      (goto-char (point-max))
+      (re-search-backward "^remote:\s*\\(https?://.*\\)+?$")
+      ;; it seems that match-string-no-properties will get nothing if
+      ;; you switch buffer after re-search-backward
+      (let ((uri (match-string-no-properties 1)))
+        (message "copy pull request: %s to clipboard" uri)
+        (kill-new uri)))))
+
 (defun my-emmet-expand ()
   (interactive)
   (unless (if (bound-and-true-p yas-minor-mode)
@@ -969,8 +989,6 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 ;; Load the helper package for commands like `straight-x-clean-unused-repos'
 (require 'straight-x)
 
-(push (expand-file-name "~/Desktop/spacemacs-private/myemacs/local") load-path)
-
 (add-hook 'prog-mode-hook 'goto-address-prog-mode)
 
 (add-hook 'prog-mode-hook #'(lambda () (setq indent-tabs-mode nil)))
@@ -1049,8 +1067,8 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
 
 (use-package devdocs
   :defer t
-  :commands (devdocs-search)
-  :load-path "~/Desktop/spacemacs-private/myemacs/local/devdocs")
+  :straight (
+             :local-repo "~/Desktop/spacemacs-private/local/devdocs"))
 
 (use-package counsel-jq-yq
   :defer 1
@@ -1387,6 +1405,7 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
   :hook
   (go-mode . lsp)
   (python-mode . lsp)
+  (lua-mode . lsp)
   (rust-mode . lsp)
   (js-mode . lsp)
   (c-mode . lsp)
