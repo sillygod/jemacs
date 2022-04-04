@@ -1,0 +1,80 @@
+#+TITLE: jemacs-package.el
+#+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-package.el :mkdirp yes
+
+
+* package setup
+
+  Initialize package sources
+  Note: sometimes you may encouter an expired key when
+  downloading package. You need to fresh it.
+  There are many ways to do it. One of them is call =list-package=
+  Or delete the entire folder =elpa= make the emacs to redownload all packages.
+
+** setup
+   #+begin_src emacs-lisp
+     ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+     ;;; Copyright (C) 2020 mycraft maintainers
+     ;;; Author: Jing
+     ;;; package --- mycraft
+     ;;; Commentary:
+
+     ;;; Code:
+
+
+   #+end_src
+
+
+** set up use-package
+   The =:ensure= keyword causes the package(s) to be installed automatically
+   if not already present on your system.
+   =(setq use-package-always-ensure t)= will globally enable ensure to t.
+
+   #+begin_src emacs-lisp :tangle no
+     (require 'subr-x)
+     (require 'cl)
+     (require 'package)
+     (setq package-archives '(("melpa" . "https://melpa.org/packages/")
+                              ("org" . "https://orgmode.org/elpa/")
+                              ("elpa" . "https://elpa.gnu.org/packages/")))
+
+     (package-initialize)
+     (unless package-archive-contents
+       (package-refresh-contents))
+
+     ;; Initialize use-package on non-Linux platforms
+     (unless (package-installed-p 'use-package)
+       (package-install 'use-package))
+
+     (require 'use-package)
+
+     (setq use-package-always-ensure t)
+     ;;(setq use-package-verbose t)
+     ;; this can show the package loaded info
+   #+end_src
+
+** try out straight.el
+
+   #+begin_src emacs-lisp
+     (setq straight-check-for-modifications nil)
+     (defvar bootstrap-version)
+     (let ((bootstrap-file
+            (expand-file-name "straight/repos/straight.el/bootstrap.el" user-emacs-directory))
+           (bootstrap-version 5))
+       (unless (file-exists-p bootstrap-file)
+         (with-current-buffer
+             (url-retrieve-synchronously
+              "https://raw.githubusercontent.com/raxod502/straight.el/develop/install.el"
+              'silent 'inhibit-cookies)
+           (goto-char (point-max))
+           (eval-print-last-sexp)))
+       (load bootstrap-file nil 'nomessage))
+
+     ;; Always use straight to install on systems other than Linux
+     (setq straight-use-package-by-default (not (eq system-type 'gnu/linux)))
+
+     ;; Use straight.el for use-package expressions
+     (straight-use-package 'use-package)
+
+     ;; Load the helper package for commands like `straight-x-clean-unused-repos'
+     (require 'straight-x)
+   #+end_src

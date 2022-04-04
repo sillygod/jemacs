@@ -37,6 +37,15 @@
   #+end_src
 
 * Run in docker
+* 考慮 emacs server, client mode
+  https://github.com/tecosaur/emacs-everywhere
+  https://github.com/bling/fzf.el
+  https://github.com/jeremy-compostella/pdfgrep
+
+  查一下 org-roam 怎麼增加 auto complete nodes
+  查一下萬一node撞名要怎麼辦
+  https://austinhenley.com/blog/solvingunknownproblems.html
+
 * Start to build my own emacs
 
 ** things needed to be done or enahnced
@@ -68,6 +77,7 @@
    - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] tree sitter (https://emacs-tree-sitter.github.io/)
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
+   - [ ] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
    - [ ] interactive sql mode
    - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
@@ -135,3 +145,11 @@
 
    I think this guy reference this from the system crafter
    https://github.com/braineo/fate-emacs/blob/master/modules/fate-python.el
+
+** Tips
+   if you don't want some block to be exported, then you can add =:tangle no= onto src clock
+
+   ex.
+   #+begin_src emacs-lisp :tangle no
+     (message "hi")
+   #+end_src

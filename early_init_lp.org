@@ -14,24 +14,24 @@
 
 * start crafting
 
- Put =-*- lexical-binding: t; -*-= in the beginning of the file. This way, we don't need to call =(setq lexical-binding t)=.
- tips for optimization https://github.com/nilcons/emacs-use-package-fast
+  Put =-*- lexical-binding: t; -*-= in the beginning of the file. This way, we don't need to call =(setq lexical-binding t)=.
+  tips for optimization https://github.com/nilcons/emacs-use-package-fast
 
- https://www.gnu.org/software/emacs/manual/html_node/eintr/debug_002don_002dentry.html
- another debug way
+  https://www.gnu.org/software/emacs/manual/html_node/eintr/debug_002don_002dentry.html
+  another debug way
 
- #+begin_src emacs-lisp
-   ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
-   ;;; Copyright (C) 2020 mycraft maintainers
-   ;;; Author: Jing
-   ;;; package --- mycraft
-   ;;; Commentary:
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
 
-   ;;; Code:
+    ;;; Code:
 
-   ;; (toggle-debug-on-error) temporarily for debug usage
+    ;; (toggle-debug-on-error) temporarily for debug usage
 
- #+end_src
+  #+end_src
 
 * grow the garbage collection threshold when initialize
   this will make it high performance because of lower gc times.
@@ -39,162 +39,64 @@
   #+begin_src emacs-lisp
     (setq gc-cons-threshold 64000000)
     ;;(add-hook 'after-init-hook #'(lambda ()
-                                   ;; restore after startup
+    ;; restore after startup
     ;;                               (setq gc-cons-threshold 800000)))
   #+end_src
 
 * prevent redisplay before setup the ui
 
   #+begin_src emacs-lisp
-  (setq-default inhibit-redisplay t
-                inhibit-message t)
-  (add-hook 'window-setup-hook
-            (lambda ()
-              (setq-default inhibit-redisplay nil
-                            inhibit-message nil)
-              (redisplay)))
+    (setq-default inhibit-redisplay t
+                  inhibit-message t)
+    (add-hook 'window-setup-hook
+              (lambda ()
+                (setq-default inhibit-redisplay nil
+                              inhibit-message nil)
+                (redisplay)))
   #+end_src
 
-* make exec-path is matched from the shell's PATH
+* disable package enable at startup and some misc settings
 
   #+begin_src emacs-lisp
-    (defun do-something (process signal)
-      (when (memq (process-status process) '(exit signal))
-        (let* ((buf (process-buffer process))
-               (content (with-current-buffer buf
-                          (buffer-substring-no-properties (point-min) (point-max))))
-               (path-from-shell (replace-regexp-in-string
-                                 "[ \t\n]*" ""
-                                 content)))
-
-          (setenv "PATH" path-from-shell)
-          (setq exec-path (split-string path-from-shell path-separator)))
-
-        (shell-command-sentinel process signal)))
-
-
-    (add-hook 'emacs-startup-hook
-              #'(lambda ()
-
-                  (let* ((display-buffer-alist '(("*my async shell command*" display-buffer-no-window)))
-                         (output-buffer (generate-new-buffer "*my async shell command*"))
-                         (proc (progn
-                                 (async-shell-command "$SHELL --login -c 'echo $PATH'" output-buffer)
-                                 (get-buffer-process output-buffer))))
-                    (if (process-live-p proc)
-                        (set-process-sentinel proc #'do-something)
-                      (message "No process running.")))))
-
-  #+end_src
-
-* set up config home directory
-  #+begin_src emacs-lisp
-    (defconst my-home-dir "~/.mycraft.d")
-    (setq user-emacs-directory my-home-dir)
-  #+end_src
-
-* set up wher the packages to be installed
-  #+begin_src emacs-lisp
-    (setq package-user-dir (concat my-home-dir "/" "elpa"))
-    (setq mc/list-file (concat my-home-dir "/" "mc-lists.el"))
+    (setq package-enable-at-startup nil)
+    (setq load-prefer-newer noninteractive)
   #+end_src
 
 * UI adjustment
 
-  =custom-theme-directory=
+  *minimize ui interface*
+
+  We can adjust the ui by setting the =default-frame-alist=. The following settings are found in the source code.
+
+  | function             | frame-alist                            |
+  |----------------------+----------------------------------------|
+  | (scroll-bar-mode -1) | '(vertical-scroll-bars)                |
+  | (menu-bar-mode -1)   | '(menu-bar-lines . 0)                  |
+  | (tool-bar-mode -1)   | '(tool-bar-lines . 0)                  |
+  | (set-fringe-mode 5)  | '(left-fringe . 5) '(right-fringe . 5) |
+  | toggle-fullscreen    | '(fullscreen . maximized)              |
+
 
   #+begin_src emacs-lisp
-    (setq frame-title-format "") ;; to disable show buffer name in the title bar
-    ;; (force-mode-line-update) to update the frame title
-    (setq scroll-conservatively 101) ;; to prevent recenter when cursor moves out of screen
-    (setq scroll-preserve-screen-position t)
-    (setq auto-window-vscroll nil)
-    (setq warning-minimum-level :error) ;; to supress the pop-up window of warning message
+    (add-to-list 'default-frame-alist '(vertical-scroll-bars))
+    (add-to-list 'default-frame-alist '(menu-bar-lines . 0))
+    (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
+    (add-to-list 'default-frame-alist '(left-fringe . 5))
+    (add-to-list 'default-frame-alist '(right-fringe . 5))
+    (add-to-list 'default-frame-alist '(fullscreen . maximized))
+    ;; (add-to-list 'default-frame-alist '(background-color . "#292b2e")) ;; this will be overwrite by doom-themes
+    (add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
   #+end_src
 
-** make curosr in the help window at first when poping up a help window
 
-   #+begin_src emacs-lisp
-     (setq help-window-select t)
-   #+end_src
+* Font setup & config background color
 
-** disable beep when moving beyond the window
-   #+begin_src emacs-lisp
-     (setq ring-bell-function 'ignore)
-   #+end_src
+  #+begin_src emacs-lisp
+    (setq default-font-size 140)
+    (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
+    (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height default-font-size :weight 'regular)
+  #+end_src
 
-** setup for ns gui system
-   #+begin_src emacs-lisp
-     (when (eq (window-system) 'ns)
-       (setq mac-command-modifier 'meta)
-       ;; force to set command key to meta. In other emacs varaint like emacs-plus, the key is defined to =super=
-       (setq frame-resize-pixelwise t)
-       ;; make sure full maximized frame. It will not occupied the full screen in cocoa version.
-       (setq ns-use-proxy-icon nil) ;; disable show icon in the title bar
-       (add-to-list 'default-frame-alist '(ns-transparent-titlebar . t)))
-   #+end_src
-
-** minimize ui interface
-
-   We can adjust the ui by setting the =default-frame-alist=. The following settings are found in the source code.
-
-   | function             | frame-alist                            |
-   |----------------------+----------------------------------------|
-   | (scroll-bar-mode -1) | '(vertical-scroll-bars)                |
-   | (menu-bar-mode -1)   | '(menu-bar-lines . 0)                  |
-   | (tool-bar-mode -1)   | '(tool-bar-lines . 0)                  |
-   | (set-fringe-mode 5)  | '(left-fringe . 5) '(right-fringe . 5) |
-   | toggle-fullscreen    | '(fullscreen . maximized)              |
-
-
-   #+begin_src emacs-lisp
-     (add-to-list 'default-frame-alist '(vertical-scroll-bars))
-     (add-to-list 'default-frame-alist '(menu-bar-lines . 0))
-     (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
-     (add-to-list 'default-frame-alist '(left-fringe . 5))
-     (add-to-list 'default-frame-alist '(right-fringe . 5))
-     (add-to-list 'default-frame-alist '(fullscreen . maximized))
-     ;; (add-to-list 'default-frame-alist '(background-color . "#292b2e")) ;; this will be overwrite by doom-themes
-     (add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
-   #+end_src
-
-** change comment highlight and org-block color
-
-   #+begin_src emacs-lisp
-     (with-eval-after-load 'goto-addr
-       (set-face-attribute 'link nil :foreground "#3f7c8f"))
-   #+end_src
-
-** enable highlight current line
-   enable for prog-mode and text-mode
-
-   jinja2 is the child of text-mode so it's no need to set up for this again.
-
-   #+begin_src emacs-lisp :tangle no
-     (with-eval-after-load 'jinja2-mode
-       (add-hook 'jinja2-mode-hook 'hl-line-mode))
-   #+end_src
-
-   #+begin_src emacs-lisp
-     (add-hook 'prog-mode-hook 'hl-line-mode)
-     (add-hook 'text-mode-hook 'hl-line-mode)
-   #+end_src
-
-** pulse mode
-
-   https://karthinks.com/software/batteries-included-with-emacs/
-   #+begin_src emacs-lisp
-
-     (defun pulse-line (&rest _)
-       "Pulse the current line."
-       (pulse-momentary-highlight-one-line (point)))
-
-     (dolist (command '(windmove-do-window-select
-                        winum-select-window-by-number))
-       (advice-add command :after #'pulse-line))
-
-
-   #+end_src
 
 * Reference
   https://www.masteringemacs.org/article/whats-new-in-emacs-27-1
