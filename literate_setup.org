@@ -1527,6 +1527,7 @@
      (add-hook 'dired-mode-hook 'auto-revert-mode)
    #+end_src
 
+
 ** winner mode
    By default, you will not go back to the original window layout when you exit the ediff mode
 
@@ -2518,7 +2519,7 @@
 
    create arbitrary fold not like other package auto detect the program language
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (use-package vimish-fold
        :after evil
        :hook (prog-mode . vimish-fold-mode))
