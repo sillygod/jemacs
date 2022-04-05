@@ -1,5 +1,5 @@
 #+TITLE: unarrange.el
-#+PROPERTY: header-args:emacs-lisp :tangle ./unarrange.el :mkdirp yes
+#+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-unarrange.el :mkdirp yes
 
 * setup
 
@@ -2280,3 +2280,10 @@
                       (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
                       "** TODO %^{title} %?\n SCHEDULED: %t\n")))
    #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide jemacs-unarrange)
+    ;;; jemacs-unarrange.el ends here
+  #+end_src

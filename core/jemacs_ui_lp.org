@@ -86,3 +86,10 @@ org-babel-load-file ?
 
 
   #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-ui)
+    ;;; jemacs-ui.el ends here
+  #+end_src

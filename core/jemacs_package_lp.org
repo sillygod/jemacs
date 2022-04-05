@@ -23,7 +23,6 @@
 
    #+end_src
 
-
 ** set up use-package
    The =:ensure= keyword causes the package(s) to be installed automatically
    if not already present on your system.
@@ -78,3 +77,11 @@
      ;; Load the helper package for commands like `straight-x-clean-unused-repos'
      (require 'straight-x)
    #+end_src
+
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-package)
+    ;;; jemacs-package.el ends here
+  #+end_src

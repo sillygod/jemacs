@@ -1,3 +1,14 @@
 .credentials
 .elc
 .DS_Store
+
+
+.cache/
+.dap-breakpoints
+.extension/
+.lsp-session-v1
+org-roam.db
+nov-places
+bookmarks
+elpa/
+librime/
