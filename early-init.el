@@ -24,6 +24,19 @@
 (setq package-enable-at-startup nil)
 (setq load-prefer-newer noninteractive)
 
+(defvar home-dir (file-name-directory load-file-name))
+(setq user-emacs-directory (expand-file-name "emacs-home" home-dir))
+(unless (file-exists-p user-emacs-directory)
+  (mkdir user-emacs-directory t))
+
+(when (boundp 'native-comp-eln-load-path)
+  (setcar native-comp-eln-load-path (expand-file-name "eln-cache/" user-emacs-directory)))
+
+(defvar jemacs-config-file (expand-file-name "config.el" home-dir))
+(defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
+(when (file-exists-p jemacs-config-file)
+  (load jemacs-config-file nil 'nomessage))
+
 (add-to-list 'default-frame-alist '(vertical-scroll-bars))
 (add-to-list 'default-frame-alist '(menu-bar-lines . 0))
 (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
@@ -33,6 +46,6 @@
 ;; (add-to-list 'default-frame-alist '(background-color . "#292b2e")) ;; this will be overwrite by doom-themes
 (add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
 
-(setq default-font-size 140)
+(defvar default-font-size 140)
 (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
 (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height default-font-size :weight 'regular)

@@ -62,6 +62,22 @@
     (setq load-prefer-newer noninteractive)
   #+end_src
 
+* set up config home directory and loading custom settings
+  #+begin_src emacs-lisp
+    (defvar home-dir (file-name-directory load-file-name))
+    (setq user-emacs-directory (expand-file-name "emacs-home" home-dir))
+    (unless (file-exists-p user-emacs-directory)
+      (mkdir user-emacs-directory t))
+
+    (when (boundp 'native-comp-eln-load-path)
+      (setcar native-comp-eln-load-path (expand-file-name "eln-cache/" user-emacs-directory)))
+
+    (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
+    (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
+    (when (file-exists-p jemacs-config-file)
+      (load jemacs-config-file nil 'nomessage))
+  #+end_src
+
 * UI adjustment
 
   *minimize ui interface*
@@ -88,15 +104,13 @@
     (add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
   #+end_src
 
-
 * Font setup & config background color
 
   #+begin_src emacs-lisp
-    (setq default-font-size 140)
+    (defvar default-font-size 140)
     (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
     (set-face-attribute 'variable-pitch nil :font "Source Code Pro" :height default-font-size :weight 'regular)
   #+end_src
-
 
 * Reference
   https://www.masteringemacs.org/article/whats-new-in-emacs-27-1
