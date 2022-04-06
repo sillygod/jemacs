@@ -887,3 +887,6 @@ back-dent the line by `yaml-indent-offset' spaces.  On reaching column
                                           #'browse-url
                                         #'xwidget-webkit-browse-url)))
     (orui-open)))
+
+(provide 'jemacs-core)
+;;; jemacs-core.el ends here

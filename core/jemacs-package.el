@@ -28,3 +28,6 @@
 
 ;; Load the helper package for commands like `straight-x-clean-unused-repos'
 (require 'straight-x)
+
+(provide 'jemacs-package)
+;;; jemacs-package.el ends here

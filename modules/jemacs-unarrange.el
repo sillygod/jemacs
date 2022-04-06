@@ -1745,3 +1745,6 @@ INFO is a plist used as a communication channel."
                '("tl" "a longterm todo" entry
                  (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
                  "** TODO %^{title} %?\n SCHEDULED: %t\n")))
+
+(provide jemacs-unarrange)
+;;; jemacs-unarrange.el ends here

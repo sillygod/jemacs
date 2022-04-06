@@ -33,22 +33,19 @@
                     (set-process-sentinel proc #'do-something)
                   (message "No process running.")))))
 
-(setq user-emacs-directory "~/.mycraft.d")
-(defvar jemacs-config-file (expand-file-name "config.el" user-emacs-directory))
-(defvar jemacs-settings-file (expand-file-name "settings.el" user-emacs-directory))
-
-(when (file-exists-p jemacs-config-file)
-  (load jemacs-config-file nil 'nomessage))
-
 (setq package-user-dir (concat user-emacs-directory "/" "elpa"))
 (setq mc/list-file (concat user-emacs-directory "/" "mc-lists.el"))
+(setq auto-save-list-file-prefix
+      (concat
+       (expand-file-name "auto-save-list" user-emacs-directory)
+       "/.saves-"))
 
-(add-to-list 'load-path (expand-file-name "modules/" user-emacs-directory))
-(add-to-list 'load-path (expand-file-name "core/" user-emacs-directory))
+(add-to-list 'load-path (expand-file-name "modules/" home-dir))
+(add-to-list 'load-path (expand-file-name "core/" home-dir))
 
-(require 'ui)
-(require 'package)
-(require 'core)
+(require 'jemacs-ui)
+(require 'jemacs-package)
+(require 'jemacs-core)
 
 (when (file-exists-p jemacs-settings-file)
   (load jemacs-settings-file nil 'nomessage))

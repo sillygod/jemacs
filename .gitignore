@@ -1,3 +1,10 @@
 .credentials
 .elc
 .DS_Store
+
+emacs-home/
+org-roam.db
+nov-places
+bookmarks
+elpa/
+librime/

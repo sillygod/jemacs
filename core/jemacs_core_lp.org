@@ -1147,3 +1147,10 @@
                                              #'xwidget-webkit-browse-url)))
          (orui-open)))
    #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-core)
+    ;;; jemacs-core.el ends here
+  #+end_src

@@ -38,3 +38,6 @@
 (dolist (command '(windmove-do-window-select
                    winum-select-window-by-number))
   (advice-add command :after #'pulse-line))
+
+(provide 'jemacs-ui)
+;;; jemacs-ui.el ends here
