@@ -139,6 +139,7 @@
                   :files ("*.el" "Makefile" "lib.c"))
   :custom
   (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
+  (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@29/include/")
   (rime-user-data-dir "/Users/jing/Library/Rime/")
   (rime-inline-ascii-trigger 'shift-l)
   (default-input-method "rime")
@@ -452,6 +453,7 @@
   :diminish
   :bind (:map ivy-minibuffer-map
               ("TAB" . ivy-alt-done)
+              ("<escape>" . keyboard-escape-quit)
               ("C-l" . ivy-alt-done)
               ("C-j" . ivy-next-line)
               ("C-k" . ivy-previous-line)
@@ -613,6 +615,7 @@
   (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
 
 (use-package hideshow
+  :hook (prog-mode . hs-minor-mode)
   :commands
   (hs-toggle-hiding
    hs-hide-block
@@ -1746,5 +1749,5 @@ INFO is a plist used as a communication channel."
                  (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
                  "** TODO %^{title} %?\n SCHEDULED: %t\n")))
 
-(provide jemacs-unarrange)
+(provide 'jemacs-unarrange)
 ;;; jemacs-unarrange.el ends here

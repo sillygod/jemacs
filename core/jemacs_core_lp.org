@@ -160,7 +160,6 @@
      (add-hook 'dired-mode-hook 'auto-revert-mode)
    #+end_src
 
-
 * Self defined helper functions
 
 ** an helper to detect os
@@ -409,7 +408,7 @@
                      "-c"
                      (concat
                       (elt command-line-args 0)
-                      " -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &")))
+                      " &")))
 
 
      (defun restart-emacs ()
@@ -1039,7 +1038,7 @@
      (defun my-find-dotfile ()
        "Edit the `dotfile', in the current window."
        (interactive)
-       (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
+       (find-file-existing (expand-file-name "settings.el" home-dir)))
    #+end_src
 ** yaml indent function
    #+begin_src emacs-lisp

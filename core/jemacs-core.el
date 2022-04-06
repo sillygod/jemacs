@@ -267,7 +267,7 @@ initialized with the current directory instead of filename."
                 "-c"
                 (concat
                  (elt command-line-args 0)
-                 " -Q --load /Users/jing/Desktop/spacemacs-private/mycraft/init.el &")))
+                 " &")))
 
 
 (defun restart-emacs ()
@@ -790,7 +790,7 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 (defun my-find-dotfile ()
   "Edit the `dotfile', in the current window."
   (interactive)
-  (find-file-existing "~/Desktop/spacemacs-private/mycraft/init.el"))
+  (find-file-existing (expand-file-name "settings.el" home-dir)))
 
 (defun my-yaml-indent-line ()
   "Indent the current line.
