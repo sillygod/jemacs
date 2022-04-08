@@ -40,34 +40,6 @@
 (use-package highlight-parentheses
   :hook (prog-mode . highlight-parentheses-mode))
 
-(use-package doom-themes
-  :init
-  (load-theme 'doom-one t)
-  (doom-themes-org-config)
-  (set-face-attribute 'default nil :background "#292b2e")
-
-  (with-eval-after-load 'org
-    ;; change some ui
-    (set-face-attribute 'org-link nil :font "Sarasa Mono SC" :height default-font-size :foreground "#3f7c8f")
-    (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
-    (set-face-attribute 'org-level-3 nil :foreground "#219e57")
-    (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
-    (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
-    (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
-    (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
-
-(use-package doom-modeline
-  :config
-  ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
-  (doom-modeline-mode 1)
-  (setq all-the-icons-scale-factor 1.1)
-  :custom
-  (doom-modeline-height 12)
-  (doom-modeline-persp-name nil))
-
-(use-package all-the-icons
-  :defer 0)
-
 (use-package polymode
   :defer t)
 
@@ -224,13 +196,14 @@
 (use-package smartparens
   :defer 0
   :commands (smartparens-mode)
+  :hook
+  (js-mode . smartparens-mode)
+  (go-mode . smartparens-mode)
+  (html-mode . smartparens-mode)
+  (python-mode . smartparens-mode)
+  (emacs-lisp-mode . smartparens-mode)
   :config
-  (require 'smartparens-config)
-  (add-hook 'js-mode-hook #'smartparens-mode)
-  (add-hook 'go-mode-hook #'smartparens-mode)
-  (add-hook 'html-mode-hook #'smartparens-mode)
-  (add-hook 'python-mode-hook #'smartparens-mode)
-  (add-hook 'emacs-lisp-mode-hook #'smartparens-mode))
+  (require 'smartparens-config))
 
 (use-package yasnippet
   :defer 1
@@ -374,30 +347,6 @@
 (use-package gomacro-mode
   :hook (go-mode . gomacro-mode))
 
-(with-eval-after-load 'python
-  (setq python-shell-interpreter "ipython"))
-
-(use-package python-pytest
-  :defer t
-  :custom
-  (python-pytest-confirm t))
-
-(use-package poetry
-  :defer t)
-
-(use-package pyvenv
-  :commands (pyvenv-mode)
-  :init
-  (add-hook 'python-mode-hook #'pyvenv-mode))
-
-(use-package pyimport
-  :defer t
-  :init
-  (add-hook 'before-save-hook 'pyimport-remove-unused))
-
-(use-package cython-mode
-  :defer t)
-
 (use-package dumb-jump
   :init
   (setq dumb-jump-selector 'ivy)
@@ -440,13 +389,6 @@
   ;; dap-go-setup
   (add-hook 'dap-stopped-hook
             (lambda (arg) (call-interactively #'dap-hydra))))
-
-(use-package lsp-pyright
-  :defer t
-  :custom ((lsp-pyright-multi-root nil))
-  :hook (python-mode . (lambda ()
-                         (require 'lsp-pyright)
-                         (lsp))))
 
 (use-package ivy
   :ensure t

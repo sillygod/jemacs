@@ -733,9 +733,11 @@ Use a prefix argument ARG to indicate creation of a new process instead."
 
 (defun vterm-perform-last-command ()
   (interactive)
-  (new-terminal)
-  (vterm-send-up)
-  (vterm-send-return))
+  (let ((bname (buffer-name)))
+    (new-terminal)
+    (vterm-send-up)
+    (vterm-send-return)
+    (pop-to-buffer bname t)))
 
 (defun my-counsel-projectile-rg (&optional options)
   "Search the current project with rg and search under certarn directory

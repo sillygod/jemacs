@@ -40,8 +40,8 @@
        (expand-file-name "auto-save-list" user-emacs-directory)
        "/.saves-"))
 
-(add-to-list 'load-path (expand-file-name "modules/" home-dir))
-(add-to-list 'load-path (expand-file-name "core/" home-dir))
+(add-to-list 'load-path (expand-file-name "modules" home-dir))
+(add-to-list 'load-path (expand-file-name "core" home-dir))
 
 (require 'jemacs-ui)
 (require 'jemacs-package)

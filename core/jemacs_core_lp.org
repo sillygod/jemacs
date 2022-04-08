@@ -975,9 +975,11 @@
    #+begin_src emacs-lisp
      (defun vterm-perform-last-command ()
        (interactive)
-       (new-terminal)
-       (vterm-send-up)
-       (vterm-send-return))
+       (let ((bname (buffer-name)))
+         (new-terminal)
+         (vterm-send-up)
+         (vterm-send-return)
+         (pop-to-buffer bname t)))
    #+end_src
 
 ** search relevant functions

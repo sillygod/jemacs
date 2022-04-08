@@ -7,7 +7,9 @@
 ;;; Code:
 
 
+(require 'jemacs-theme)
 (require 'jemacs-unarrange)
+(require 'jemacs-python)
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
 (with-eval-after-load 'evil
