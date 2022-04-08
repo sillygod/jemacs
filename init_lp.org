@@ -1,7 +1,6 @@
 #+TITLE: Init.el
 #+PROPERTY: header-args:emacs-lisp :tangle ./init.el :mkdirp yes
 
-
 * make exec-path is matched from the shell's PATH
 
   #+begin_src emacs-lisp
@@ -55,8 +54,8 @@
 * add modules and core to the load path
 
   #+begin_src emacs-lisp
-    (add-to-list 'load-path (expand-file-name "modules/" home-dir))
-    (add-to-list 'load-path (expand-file-name "core/" home-dir))
+    (add-to-list 'load-path (expand-file-name "modules" home-dir))
+    (add-to-list 'load-path (expand-file-name "core" home-dir))
   #+end_src
 
 * loading core settings

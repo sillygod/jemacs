@@ -87,53 +87,6 @@
       :hook (prog-mode . highlight-parentheses-mode))
   #+end_src
 
-* doom-themes
-
-  To install the following font for the alignment issue in org-table.
-  https://github.com/be5invis/Sarasa-Gothic
-
-  #+begin_src emacs-lisp
-    (use-package doom-themes
-      :init
-      (load-theme 'doom-one t)
-      (doom-themes-org-config)
-      (set-face-attribute 'default nil :background "#292b2e")
-
-      (with-eval-after-load 'org
-        ;; change some ui
-        (set-face-attribute 'org-link nil :font "Sarasa Mono SC" :height default-font-size :foreground "#3f7c8f")
-        (set-face-attribute 'org-level-2 nil :foreground "#6cd4ac")
-        (set-face-attribute 'org-level-3 nil :foreground "#219e57")
-        (set-face-attribute 'org-table nil :font "Sarasa Mono SC")
-        (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
-        (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
-        (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
-
-  #+end_src
-
-* doom modeline
-  #+begin_src emacs-lisp
-    (use-package doom-modeline
-      :config
-      ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
-      (doom-modeline-mode 1)
-      (setq all-the-icons-scale-factor 1.1)
-      :custom
-      (doom-modeline-height 12)
-      (doom-modeline-persp-name nil))
-  #+end_src
-
-* all-the-icons
-
-  Maybe, you need to install this manually by the following commands.
-
-  =M-x all-the-icons-install-fonts=
-
-  #+begin_src emacs-lisp
-    (use-package all-the-icons
-      :defer 0)
-  #+end_src
-
 * polymode
 
   https://polymode.github.io/installation/
@@ -242,6 +195,9 @@
 
   make rime input method work seamlessly with emacs
 
+  you can download the rime from the github
+  https://github.com/rime/librime/releases/download/1.7.2/rime-1.7.2-osx.zip
+
   #+begin_src emacs-lisp
     (use-package rime
       :defer 1
@@ -251,6 +207,7 @@
                       :files ("*.el" "Makefile" "lib.c"))
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
+      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@29/include/")
       (rime-user-data-dir "/Users/jing/Library/Rime/")
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
@@ -406,13 +363,14 @@
     (use-package smartparens
       :defer 0
       :commands (smartparens-mode)
+      :hook
+      (js-mode . smartparens-mode)
+      (go-mode . smartparens-mode)
+      (html-mode . smartparens-mode)
+      (python-mode . smartparens-mode)
+      (emacs-lisp-mode . smartparens-mode)
       :config
-      (require 'smartparens-config)
-      (add-hook 'js-mode-hook #'smartparens-mode)
-      (add-hook 'go-mode-hook #'smartparens-mode)
-      (add-hook 'html-mode-hook #'smartparens-mode)
-      (add-hook 'python-mode-hook #'smartparens-mode)
-      (add-hook 'emacs-lisp-mode-hook #'smartparens-mode))
+      (require 'smartparens-config))
   #+end_src
 
 * yasnippet
@@ -618,36 +576,6 @@
       :hook (go-mode . gomacro-mode))
   #+end_src
 
-* python mode
-
-  This is a basic setup for python language.
-
-  #+begin_src emacs-lisp
-    (with-eval-after-load 'python
-      (setq python-shell-interpreter "ipython"))
-
-    (use-package python-pytest
-      :defer t
-      :custom
-      (python-pytest-confirm t))
-
-    (use-package poetry
-      :defer t)
-
-    (use-package pyvenv
-      :commands (pyvenv-mode)
-      :init
-      (add-hook 'python-mode-hook #'pyvenv-mode))
-
-    (use-package pyimport
-      :defer t
-      :init
-      (add-hook 'before-save-hook 'pyimport-remove-unused))
-
-    (use-package cython-mode
-      :defer t)
-  #+end_src
-
 * dumb-jump
 
   a jump to definition with search tool (ag, rg)
@@ -710,30 +638,6 @@
                 (lambda (arg) (call-interactively #'dap-hydra))))
   #+end_src
 
-  #+begin_src emacs-lisp :tangle no
-    (use-package lsp-python-ms
-      :after
-      (lsp-mode)
-      :init
-      (setq lsp-python-ms-auto-install-server t))
-  #+end_src
-
-  in the beginning, you may need to install the pyright server manually
-  commands: lsp install server: pyright
-
-  Notes: the dependencies node version
-  https://github.com/emacs-lsp/lsp-pyright/issues/34
-
-  #+begin_src emacs-lisp
-    (use-package lsp-pyright
-      :defer t
-      :custom ((lsp-pyright-multi-root nil))
-      :hook (python-mode . (lambda ()
-                             (require 'lsp-pyright)
-                             (lsp))))
-
-  #+end_src
-
   currently, disable =lsp-ui=
 
   #+begin_src emacs-lisp :tangle no
@@ -761,6 +665,7 @@
       :diminish
       :bind (:map ivy-minibuffer-map
                   ("TAB" . ivy-alt-done)
+                  ("<escape>" . keyboard-escape-quit)
                   ("C-l" . ivy-alt-done)
                   ("C-j" . ivy-next-line)
                   ("C-k" . ivy-previous-line)
@@ -995,6 +900,7 @@
 
   #+begin_src emacs-lisp
     (use-package hideshow
+      :hook (prog-mode . hs-minor-mode)
       :commands
       (hs-toggle-hiding
        hs-hide-block
@@ -2284,6 +2190,6 @@
 * provide package
 
   #+begin_src emacs-lisp
-    (provide jemacs-unarrange)
+    (provide 'jemacs-unarrange)
     ;;; jemacs-unarrange.el ends here
   #+end_src

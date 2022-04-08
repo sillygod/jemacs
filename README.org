@@ -14,7 +14,7 @@
 
 *** some util tools
     #+begin_src sh
-      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh
+      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh # install im-select
       brew install ispell pngpaste ripgrep
     #+end_src
 
@@ -27,24 +27,24 @@
 *** spawn the emacs
 
     #+begin_src bash
-      emacs -Q --load init.el
+      emacs
     #+end_src
 
 ** clone the repo
 
   #+begin_src shell
-    git clone https://github.com/sillygod/jemacs.git
+    git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
   #+end_src
 
 * Run in docker
-* 考慮 emacs server, client mode
+
+  #+begin_src bash
+
+  #+end_src
+* Consider to adopting emacs server, client mode
   https://github.com/tecosaur/emacs-everywhere
   https://github.com/bling/fzf.el
   https://github.com/jeremy-compostella/pdfgrep
-
-  查一下 org-roam 怎麼增加 auto complete nodes
-  查一下萬一node撞名要怎麼辦
-  https://austinhenley.com/blog/solvingunknownproblems.html
 
 * Start to build my own emacs
 
@@ -109,7 +109,7 @@
    - https://protesilaos.com/dotemacs/
    - https://github.com/alhassy/emacs.d/blob/master/README.org
    - https://github.com/angrybacon/dotemacs/blob/master/dotemacs.org
-   - https://github.com/hungyiloo/doom-emacs-conf/tree/master/autoload (簡單版的可以參考)
+   - https://github.com/hungyiloo/doom-emacs-conf/tree/master/autoload
    - https://github.com/condy0919/.emacs.d
 
 ** literate programming
@@ -139,6 +139,7 @@
    #+begin_src sh
      docker run --rm -p 8080:80 --name envisaged -v /Users/jing/Desktop/jemacs/:/visualization/git_repo:ro -e GOURCE_TITLE="jemacs" utensils/envisaged
    #+end_src
+
 ** start to rewrite configs
    https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
    https://www.youtube.com/watch?v=uB8McDsRyXY

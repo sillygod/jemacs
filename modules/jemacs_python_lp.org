@@ -1,0 +1,114 @@
+#+TITLE: jemacs-python.el
+#+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-python.el :mkdirp yes
+
+* setup
+
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
+
+    ;;; Code:
+
+
+  #+end_src
+
+* python mode
+
+  This is a basic setup for python language.
+
+  #+begin_src emacs-lisp
+    (with-eval-after-load 'python
+      (setq python-shell-interpreter "ipython"))
+
+    (use-package python-pytest
+      :defer t
+      :custom
+      (python-pytest-confirm t))
+
+    (use-package poetry
+      :commands
+      (poetry-venv-workon
+       poetry-venv-deactivate
+       poetry-venv-toggle))
+
+    (use-package pyvenv
+      :commands (pyvenv-mode)
+      :hook
+      (python-mode . pyvenv-mode))
+
+    (use-package pyimport
+      :defer t
+      :hook
+      (before-save-hook . pyimport-remove-unused))
+
+    (use-package cython-mode
+      :defer t)
+  #+end_src
+
+* hideshow syntax configuration
+
+  #+begin_src emacs-lisp
+    (defun jemacs/python-hideshow-forward-sexp-function (arg)
+      "Python specific `forward-sexp' function for `hs-minor-mode'.
+        Argument ARG is ignored."
+      arg  ; Shut up, byte compiler.
+      (python-nav-end-of-block))
+
+    (defun jemacs/python-setup-hs-mode ()
+      "Replace `hs-special-modes-alist' for `python-mode'."
+      (let
+          ((python-mode-hs-info
+            '(python-mode
+              "\\s-*\\_<\\(?:def\\|class\\|if\\|elif\\|else\\|for\\|try\\|except\\|with\\|while\\)\\_>" "" "#"
+              jemacs/python-hideshow-forward-sexp-function
+              nil)))
+        (setq hs-special-modes-alist (cl-remove-if #'(lambda (x) (eq (car x) 'python-mode)) hs-special-modes-alist))
+        (add-to-list 'hs-special-modes-alist python-mode-hs-info)
+        (hs-grok-mode-type)))
+
+
+    (use-package python
+      :commands
+      (python-nav-end-of-block)
+      :hook
+      (python-mode . jemacs/python-setup-hs-mode))
+  #+end_src
+
+* lsp extension related to python
+
+  #+begin_src emacs-lisp :tangle no
+    (use-package lsp-python-ms
+      :after
+      (lsp-mode)
+      :init
+      (setq lsp-python-ms-auto-install-server t))
+  #+end_src
+
+
+  in the beginning, you may need to install the pyright server manually
+  commands: lsp install server: pyright
+
+  Notes: the dependencies node version
+  https://github.com/emacs-lsp/lsp-pyright/issues/34
+
+  #+begin_src emacs-lisp
+    (use-package lsp-pyright
+      :defer t
+      :after (lsp-mode poetry)
+      :custom ((lsp-pyright-multi-root nil))
+      :hook (python-mode . (lambda ()
+                             (require 'lsp-pyright)
+                             (poetry-venv-workon)
+                             (lsp))))
+
+  #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-python)
+    ;;; jemacs-python.el ends here
+  #+end_src

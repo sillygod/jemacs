@@ -10,6 +10,11 @@
   There are many ways to do it. One of them is call =list-package=
   Or delete the entire folder =elpa= make the emacs to redownload all packages.
 
+  #+begin_src emacs-lisp
+    (use-package
+      :if conds) # to decide whether loading this package or not.
+  #+end_src
+
 ** setup
    #+begin_src emacs-lisp
      ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
