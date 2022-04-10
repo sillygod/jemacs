@@ -20,8 +20,6 @@
 
   #+begin_src emacs-lisp
     (use-package winner
-      :init
-      (add-hook 'ediff-quit-hook 'winner-undo)
       :commands (winner-undo))
   #+end_src
 
@@ -797,16 +795,6 @@
       :defer t)
   #+end_src
 
-* ediff
-
-  #+begin_src emacs-lisp
-    (use-package ediff
-      :defer t
-      :init
-      (setq ediff-window-setup-function 'ediff-setup-windows-plain)
-      (setq ediff-split-window-function 'split-window-horizontally))
-  #+end_src
-
 * evil
   it's evil! provide you vim-like ux in emacs.
 
@@ -949,33 +937,6 @@
       :config
       (define-key iedit-occurrence-keymap-default
         (kbd "<escape>") #'(lambda () (interactive) (iedit-mode -1))))
-  #+end_src
-
-* git version control
-
-  ENHANCE: adjust the pop ui
-  #+begin_src emacs-lisp
-    (use-package git-messenger
-      :defer t
-      :init
-      (setq git-messenger:show-detail t)
-      (setq git-messenger:use-magit-popup t))
-
-    (use-package magit
-      :defer 2
-      :custom
-      ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
-       (magit-repository-directories
-        '(("~/Desktop/data_platform" . 1)
-          ("~/Desktop/cdp-cache" . 1)
-          ("~/Desktop/ansible-playground" . 1)
-          ("~/Desktop/go-playground" . 1)
-          ("~/Desktop/spacemacs-private" . 1)))))
-
-    (use-package forge
-      :defer 2
-      :after magit)
-
   #+end_src
 
 * auto-highlight-symbol

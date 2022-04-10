@@ -7,8 +7,6 @@
 ;;; Code:
 
 (use-package winner
-  :init
-  (add-hook 'ediff-quit-hook 'winner-undo)
   :commands (winner-undo))
 
 (use-package all-the-icons-dired
@@ -478,12 +476,6 @@
 (use-package vterm-toggle
   :defer t)
 
-(use-package ediff
-  :defer t
-  :init
-  (setq ediff-window-setup-function 'ediff-setup-windows-plain)
-  (setq ediff-split-window-function 'split-window-horizontally))
-
 (use-package evil
   :defer 0
   :init
@@ -584,27 +576,6 @@
   :config
   (define-key iedit-occurrence-keymap-default
     (kbd "<escape>") #'(lambda () (interactive) (iedit-mode -1))))
-
-(use-package git-messenger
-  :defer t
-  :init
-  (setq git-messenger:show-detail t)
-  (setq git-messenger:use-magit-popup t))
-
-(use-package magit
-  :defer 2
-  :custom
-  ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
-   (magit-repository-directories
-    '(("~/Desktop/data_platform" . 1)
-      ("~/Desktop/cdp-cache" . 1)
-      ("~/Desktop/ansible-playground" . 1)
-      ("~/Desktop/go-playground" . 1)
-      ("~/Desktop/spacemacs-private" . 1)))))
-
-(use-package forge
-  :defer 2
-  :after magit)
 
 (use-package auto-highlight-symbol
   :commands
