@@ -59,6 +59,35 @@
 (defun system-is-windows ()
   (eq system-type 'windows-nt))
 
+(defvar emacs-path "/usr/local/opt/emacs-plus@29/bin/emacs")
+(defvar org-tangle-cmd (concat emacs-path " --batch --eval \"(require 'org)\" --eval \"(require 'ob-tangle)\" --eval '(find-file \"%s\")' --eval '(org-babel-tangle)'"))
+
+(defun export-lp-configs ()
+  "walk through the emacs home dir and find the org files with
+suffix _lp. Then, before performing the function org-babel-tangle for every one of them,
+this will make sure the file is saved.
+"
+  (interactive)
+  (setq-local default-directory (directory-file-name home-dir))
+  (let ((async-shell-command-buffer 'new-buffer)
+        (display-buffer-alist
+         '(("*my async shell command*" display-buffer-no-window)))
+        (lp-files
+         (split-string
+          (shell-command-to-string (find-cmd '(name "*_lp.org")))
+          "\n" t)))
+
+    ;; iterate lp-files and check if saved and then perform org-babel-tangle for them
+    (cl-loop for fname in lp-files
+             do (progn
+                  (when (and (get-file-buffer fname)
+                             (buffer-modified-p (get-file-buffer fname)))
+                    (message "%s is modified, forced to save." fname)
+                    (with-current-buffer (get-file-buffer fname)
+                      (save-buffer)))
+                  (message "will perform %s" (format org-tangle-cmd fname))
+                  (async-shell-command (format org-tangle-cmd fname) (get-buffer-create "*my async shell command*"))))))
+
 (defmacro measure-time (&rest body)
   `(let ((time (current-time)))
      ,@body
