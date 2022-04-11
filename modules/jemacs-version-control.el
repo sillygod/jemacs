@@ -8,9 +8,9 @@
 
 (use-package git-messenger
   :defer t
-  :init
-  (setq git-messenger:show-detail t)
-  (setq git-messenger:use-magit-popup t))
+  :custom
+  (git-messenger:show-detail t)
+  (git-messenger:use-magit-popup t))
 
 (use-package magit
   :defer 2

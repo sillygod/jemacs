@@ -17,13 +17,14 @@
 
 * git version control
 
+  Maybe we can consider to use [[https://github.com/Artawower/blamer.el][another blame tool]]
   ENHANCE: adjust the pop ui
   #+begin_src emacs-lisp
     (use-package git-messenger
       :defer t
-      :init
-      (setq git-messenger:show-detail t)
-      (setq git-messenger:use-magit-popup t))
+      :custom
+      (git-messenger:show-detail t)
+      (git-messenger:use-magit-popup t))
 
     (use-package magit
       :defer 2

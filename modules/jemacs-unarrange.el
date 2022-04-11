@@ -555,7 +555,10 @@
    hs-hide-block
    hs-hide-level
    hs-show-all
-   hs-hide-all))
+   hs-hide-all)
+  :config
+  (with-eval-after-load 'evil
+    (evil-define-key 'normal prog-mode-map (kbd "z z") 'hs-toggle-hiding)))
 
 (use-package multiple-cursors
   :init

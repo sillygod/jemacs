@@ -70,6 +70,7 @@
   (org-startup-with-inline-images t)
 
   (org-agenda-use-tag-inheritance nil)
+  (org-hide-leading-stars t)
 
   :config
   (keymap-unset org-mode-map "C-'" t)
@@ -208,18 +209,17 @@
 
 (use-package toc-org
   :defer t
-  :init
-  (add-hook 'org-mode-hook 'toc-org-mode)
-  (add-hook 'markdown-mode-hook 'toc-org-mode)
+  :hook
+  (org-mode . toc-org-mode)
+  (markdown-mode . toc-org-mode)
   :commands (toc-org-insert-toc))
 
 (use-package evil-org
-  :after org
-  :config
-  (add-hook 'org-mode-hook 'evil-org-mode)
-  (add-hook 'evil-org-mode-hook
-            (lambda ()
-              (evil-org-set-key-theme))))
+  :after t
+  :hook
+  (org-mode . evil-org-mode)
+  (evil-org-mode . (lambda ()
+                     (evil-org-set-key-theme))))
 
 (use-package restclient
   :defer t)
@@ -361,7 +361,6 @@ INFO is a plist used as a communication channel."
   ;; customize the bullet symbol
   (custom-set-variables '(org-bullets-bullet-list '("❐" "○" "﹅" "▶")))
   (setq org-superstar-headline-bullets-list '("❐" "○" "✎" "⚈"))
-  (setq org-hide-leading-stars t)
 
   ;; to customize the org-capture template and clear the template before
   ;; we add the template in the list.
