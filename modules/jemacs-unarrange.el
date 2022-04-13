@@ -367,14 +367,13 @@
   (js-mode . lsp)
   (c-mode . lsp)
   (c++-mode . lsp)
-  :config
-  ;; turn off lens mode
-  (setq lsp-lens-enable nil)
-  (setq lsp-headerline-breadcrumb-enable nil)
-  (setq lsp-enable-folding nil)
-  (setq lsp-enable-snippet nil)
-  (setq lsp-enable-imenu nil)
-  (setq lsp-enable-links nil))
+  :custom
+  (lsp-lens-enable nil) ;; turn off lens mode
+  (lsp-headerline-breadcrumb-enable nil)
+  (lsp-enable-folding nil)
+  (lsp-enable-snippet nil)
+  (lsp-enable-imenu nil)
+  (lsp-enable-links nil))
 
 (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
 
