@@ -143,9 +143,7 @@
 ** start to rewrite configs
    https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
    https://www.youtube.com/watch?v=uB8McDsRyXY
-
-   I think this guy reference this from the system crafter
-   https://github.com/braineo/fate-emacs/blob/master/modules/fate-python.el
+   https://github.com/oantolin/emacs-config
 
 ** Tips
    if you don't want some block to be exported, then you can add =:tangle no= onto src clock

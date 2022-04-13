@@ -26,8 +26,8 @@
   :config
   ;; (setq persp-show-modestring nil) this will disable showing the persp name in the modeline
   (doom-modeline-mode 1)
-  (setq all-the-icons-scale-factor 1.1)
   :custom
+  (all-the-icons-scale-factor 1.1)
   (doom-modeline-height 12)
   (doom-modeline-persp-name nil))
 

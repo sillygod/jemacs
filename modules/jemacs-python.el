@@ -58,13 +58,19 @@
   :hook
   (python-mode . jemacs/python-setup-hs-mode))
 
+(defun lsp-with-poetry-env ()
+  (let ((project (projectile-ensure-project (projectile-project-root))))
+    (add-dir-local-variable 'python-mode poetry-venv (poetry-get-virtualenv))
+    )
+  (poetrpy-venv-workon)
+  (lsp))
+
 (use-package lsp-pyright
   :defer t
   :after (lsp-mode poetry)
-  :custom ((lsp-pyright-multi-root nil))
+  :custom ((lsp-pyright-multi-root t))
   :hook (python-mode . (lambda ()
                          (require 'lsp-pyright)
-                         (poetry-venv-workon)
                          (lsp))))
 
 (provide 'jemacs-python)

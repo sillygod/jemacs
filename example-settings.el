@@ -9,7 +9,9 @@
 
 (require 'jemacs-theme)
 (require 'jemacs-unarrange)
+(require 'jemacs-note-taking)
 (require 'jemacs-python)
+(require 'jemacs-version-control)
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
 (with-eval-after-load 'evil
@@ -26,5 +28,5 @@
   (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<down>") #'next-line)
   (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "M-<up>") #'comint-previous-input))
 
-(provide settings)
+(provide 'settings)
 ;;; settings.el ends here

@@ -1,0 +1,23 @@
+#+TITLE: jemacs-project.el
+#+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-project.el :mkdirp yes
+
+* setup
+
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
+
+    ;;; Code:
+
+
+  #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-project)
+    ;;; jemacs-project.el ends here
+  #+end_src
