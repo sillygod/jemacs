@@ -143,3 +143,4 @@
    https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
    https://www.youtube.com/watch?v=uB8McDsRyXY
    https://github.com/oantolin/emacs-config
+   https://github.com/braineo/fate-emacs
