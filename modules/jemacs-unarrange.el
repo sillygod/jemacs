@@ -60,19 +60,6 @@
   ;; (load-library "counsel-jq-yq-autoloads"))
   )
 
-(use-package gotests
-  :defer 1
-  :straight (
-             :local-repo "~/Desktop/spacemacs-private/local/gotests"
-             )
-  ;; the file with suffix -test will be treated as tests files by default
-  ;; which will function as package files.
-  ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
-  ;; :config
-  ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
-  ;; (load-library "go-test-autoloads")
-  )
-
 (use-package hl-todo
   :defer t
   :hook
@@ -88,13 +75,6 @@
           ("NOTE" success bold)
           ("BUG" error bold)
           ("DEPRECATED" font-lock-doc-face bold))))
-
-(use-package diff-hl
-  :defer 1
-  :init
-  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
-  :config
-  (global-diff-hl-mode))
 
 (use-package so-long
   :defer 1
@@ -119,14 +99,6 @@
   (setq rime-translate-keybindings
         '("C-f" "C-b" "C-n" "C-p" "C-g" "<left>" "<return>" "TAB" "<tab>" "<right>" "<up>" "<down>" "<prior>" "<next>" "<delete>"))
   (define-key rime-mode-map (kbd "C-'") 'rime-inline-ascii))
-
-(use-package perspective
-  :diminish persp-mode
-  :commands (persp-switch)
-  :custom
-  (persp-modestring-short t)
-  :config
-  (persp-mode))
 
 (use-package which-key
   :defer 0
@@ -332,19 +304,6 @@
 (use-package cargo
   :defer t)
 
-(use-package go-mode
-  :defer 2
-  :config
-  (progn
-    (setq gofmt-command "goimports")
-    (add-hook 'before-save-hook 'gofmt-before-save)))
-
-(use-package protobuf-mode
-  :defer t)
-
-(use-package gomacro-mode
-  :hook (go-mode . gomacro-mode))
-
 (use-package dumb-jump
   :init
   (setq dumb-jump-selector 'ivy)
@@ -444,36 +403,10 @@
 (use-package request
   :defer t)
 
-(use-package projectile
-  :defer 1
-  :custom ((projectile-completion-system 'ivy))
-  :config
-  (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
-  (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
-  (projectile-mode +1))
-
-(use-package counsel-projectile
-  :after projectile
-  :defer 1
-  :config (counsel-projectile-mode))
-
 (use-package avy
   :defer t
   :config
   (setq avy-background t))
-
-(use-package vterm
-  :defer t
-  :init
-  (setq vterm-always-compile-module t)
-  (setq vterm-timer-delay 0.01)
-  (with-eval-after-load 'evil
-    (evil-set-initial-state 'vterm-mode 'emacs))
-  :config
-  (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape))
-
-(use-package vterm-toggle
-  :defer t)
 
 (use-package evil
   :defer 0

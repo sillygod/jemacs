@@ -11,6 +11,8 @@
 (require 'jemacs-unarrange)
 (require 'jemacs-note-taking)
 (require 'jemacs-python)
+(require 'jemacs-go)
+(require 'jemacs-project)
 (require 'jemacs-version-control)
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)

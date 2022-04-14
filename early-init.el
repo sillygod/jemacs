@@ -29,9 +29,10 @@
 (unless (file-exists-p user-emacs-directory)
   (mkdir user-emacs-directory t))
 
-(when (boundp 'native-comp-eln-load-path)
+(when (fboundp 'startup-redirect-eln-cache)
   (setcar native-comp-eln-load-path (expand-file-name "eln-cache/" user-emacs-directory))
-  (setq native-compile-target-directory (expand-file-name "eln-cache/" user-emacs-directory)))
+  (setq native-compile-target-directory (expand-file-name "eln-cache/" user-emacs-directory))
+  (startup-redirect-eln-cache (expand-file-name "eln-cache/" user-emacs-directory)))
 
 (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
 (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))

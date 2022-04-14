@@ -27,6 +27,18 @@
   :defer 2
   :after magit)
 
+(defun get-pull-request-uri ()
+  (interactive)
+  (save-excursion
+    (with-current-buffer (magit-process-buffer t)
+      (goto-char (point-max))
+      (re-search-backward "^remote:\s*\\(https?://.*\\)+?$")
+      ;; it seems that match-string-no-properties will get nothing if
+      ;; you switch buffer after re-search-backward
+      (let ((uri (match-string-no-properties 1)))
+        (message "copy pull request: %s to clipboard" uri)
+        (kill-new uri)))))
+
 (use-package ediff
   :defer t
   :after winner
@@ -35,6 +47,13 @@
   :custom
   (ediff-window-setup-function 'ediff-setup-windows-plain)
   (ediff-split-window-function 'split-window-horizontally))
+
+(use-package diff-hl
+  :defer 1
+  :init
+  (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
+  :config
+  (global-diff-hl-mode))
 
 (provide 'jemacs-version-control)
 ;;; jemacs-version-contorl.el ends here

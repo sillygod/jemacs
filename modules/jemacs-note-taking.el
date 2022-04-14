@@ -229,6 +229,56 @@
   :after (org restclient)
   :init (add-to-list 'org-babel-load-languages '(restclient . t)))
 
+(defvar pair-list nil) ;; a property list
+
+(defun iterate-org-level (&optional input)
+  (interactive)
+  ;; we need to escape the space in the property
+  ;; ex. (setq a '(:abc\ cde 1))
+  (require 'epa-file)
+  (require 'org-element)
+  (with-temp-buffer
+    (epa-file-insert-file-contents "~/Dropbox/myorgs/management/learning.org.gpg")
+    (setq pair-list nil)
+    (cl-loop for i from 0
+             for ele in (org-element-parse-buffer 'headline)
+             when (and (> i 0) (not (equal ele nil)))
+             do (let* ((prop (plist-get ele 'headline))
+                       (domain (plist-get prop :DOMAIN))
+                       (title (plist-get prop :title))
+                       (pass (plist-get prop :SECRET)))
+
+                  (setq pair-list (plist-put pair-list (intern (message ":%s--%s" title domain)) pass))))
+    (cl-loop for i from 0 for ele in pair-list
+             when (cl-evenp i) collect ele)))
+
+
+(defun get-se-action (x)
+  (kill-new
+   (base64-decode-string
+    (decode-coding-string
+     (plist-get pair-list (intern x)) 'utf-8)))
+  (message "success"))
+
+(defun get-secret ()
+  (interactive)
+  (ivy-read "choose: " (iterate-org-level)
+            :action #'get-se-action
+            :caller 'get-secret))
+
+(defun org-insert-toc ()
+  "Insert table of content for org mode."
+  (interactive)
+  (beginning-of-line)
+  (insert "*" " " ":TOC:")
+  (backward-char 5)
+  (evil-insert-state))
+
+(defun create-journal-to (dest)
+  "~/Dropbox/myorgs/stock/journal"
+  (let ((org-journal-dir dest))
+    (call-interactively 'org-journal-new-entry)))
+
 (with-eval-after-load 'org
   (defcustom org-html-tableel-org "no"
     "Export table.el cells as org code if set to \"t\" or \"yes\".
