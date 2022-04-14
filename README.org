@@ -1,4 +1,4 @@
-[[imgs/myemacs.png]
+[[assets/bear.jpeg]]
 
 * What is this
 
@@ -36,6 +36,8 @@
     git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
   #+end_src
 
+  copy example-settings.el and modify it
+
 * Run in docker
 
   #+begin_src bash
@@ -50,8 +52,6 @@
 
 ** things needed to be done or enahnced
 
-   - [X] add run test for go mode
-   - [X] doom modeline is so slow after updating (cause flashing with which-key, auto highlight)
    - [ ] wirte a hydra for iedit mode
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
@@ -79,7 +79,6 @@
    - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
    - [ ] interactive sql mode
-   - [ ] spacemacs' org-doc-view mode?
    - [ ] https://github.com/osener/emacs-webkit-color-picker
    - [ ] https://github.com/quelpa/quelpa need this?
    - [ ] adopt darkroom package?
@@ -144,11 +143,3 @@
    https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
    https://www.youtube.com/watch?v=uB8McDsRyXY
    https://github.com/oantolin/emacs-config
-
-** Tips
-   if you don't want some block to be exported, then you can add =:tangle no= onto src clock
-
-   ex.
-   #+begin_src emacs-lisp :tangle no
-     (message "hi")
-   #+end_src
