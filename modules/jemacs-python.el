@@ -58,6 +58,36 @@
   :hook
   (python-mode . jemacs/python-setup-hs-mode))
 
+(defvar python-run-command "python")
+(defvar python-run-args "")
+
+(defun workon-virtual-env-and-lsp ()
+  (interactive)
+  (poetry-venv-workon)
+  (lsp-restart-workspace))
+
+;; TODO: implement this one
+(defun my-run-python ()
+  "Use vterm to run python shell instead.
+     Furthermore, using ipython instead if it's installed."
+  (interactive)
+
+  ;; create a vterm buffer with python shell
+  ;; maybe, I can reference from the python-inferior-mode
+
+  (if (featurep 'poetry)
+      (vterm-send-string (poetry-virtualenv-path))
+    (vterm-send-string "python"))
+  (vterm-send-return))
+
+(defun python-run-main ()
+  (interactive)
+  (shell-command
+   (format (concat python-run-command " %s %s")
+           (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
+                                     (buffer-file-name (buffer-base-buffer))))
+           python-run-args)))
+
 (defun lsp-with-poetry-env ()
   (let ((project (projectile-ensure-project (projectile-project-root))))
     (add-dir-local-variable 'python-mode poetry-venv (poetry-get-virtualenv))

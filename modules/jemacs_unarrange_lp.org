@@ -124,22 +124,6 @@
       )
   #+end_src
 
-* go-test
-  #+begin_src emacs-lisp
-    (use-package gotests
-      :defer 1
-      :straight (
-                 :local-repo "~/Desktop/spacemacs-private/local/gotests"
-                 )
-      ;; the file with suffix -test will be treated as tests files by default
-      ;; which will function as package files.
-      ;; :load-path "~/Desktop/spacemacs-private/local/go-test"
-      ;; :config
-      ;; (package-generate-autoloads "go-test" "~/Desktop/spacemacs-private/local/go-test")
-      ;; (load-library "go-test-autoloads")
-      )
-  #+end_src
-
 * hl-todo mode
 
   TODO: https://github.com/coldnew/coldnew-emacs#highlight-fixme-todo
@@ -160,23 +144,6 @@
               ("NOTE" success bold)
               ("BUG" error bold)
               ("DEPRECATED" font-lock-doc-face bold))))
-  #+end_src
-
-* diff-hl
-
-  I've check this. It seems to set =magit-post-refresh-hook= is enough.
-
-  #+begin_src emacs-lisp :tangle no
-    (add-hook 'magit-pre-refresh-hook 'diff-hl-magit-pre-refresh) ;; no need
-  #+end_src
-
-  #+begin_src emacs-lisp
-    (use-package diff-hl
-      :defer 1
-      :init
-      (add-hook 'magit-post-refresh-hook 'diff-hl-magit-post-refresh)
-      :config
-      (global-diff-hl-mode))
   #+end_src
 
 * so-long
@@ -215,18 +182,6 @@
       (setq rime-translate-keybindings
             '("C-f" "C-b" "C-n" "C-p" "C-g" "<left>" "<return>" "TAB" "<tab>" "<right>" "<up>" "<down>" "<prior>" "<next>" "<delete>"))
       (define-key rime-mode-map (kbd "C-'") 'rime-inline-ascii))
-  #+end_src
-
-* perspective mode
-  a workspace manager
-  #+begin_src emacs-lisp
-    (use-package perspective
-      :diminish persp-mode
-      :commands (persp-switch)
-      :custom
-      (persp-modestring-short t)
-      :config
-      (persp-mode))
   #+end_src
 
 * which key mode
@@ -558,22 +513,6 @@
 
   #+end_src
 
-* go mode
-  #+begin_src emacs-lisp
-    (use-package go-mode
-      :defer 2
-      :config
-      (progn
-        (setq gofmt-command "goimports")
-        (add-hook 'before-save-hook 'gofmt-before-save)))
-
-    (use-package protobuf-mode
-      :defer t)
-
-    (use-package gomacro-mode
-      :hook (go-mode . gomacro-mode))
-  #+end_src
-
 * dumb-jump
 
   a jump to definition with search tool (ag, rg)
@@ -727,22 +666,6 @@
 
   #+end_src
 
-* projectile
-  #+begin_src emacs-lisp
-    (use-package projectile
-      :defer 1
-      :custom ((projectile-completion-system 'ivy))
-      :config
-      (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
-      (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
-      (projectile-mode +1))
-
-    (use-package counsel-projectile
-      :after projectile
-      :defer 1
-      :config (counsel-projectile-mode))
-  #+end_src
-
 * avy
   =(setq avy-background t)= will diminish the background to make the target clearly.
 
@@ -752,46 +675,6 @@
       :config
       (setq avy-background t))
 
-  #+end_src
-
-* vterm
-
-  Failed to install vterm: https://melpa.org/packages/vterm-20200926.1215.tar: Not found
-  =package-refresh-contents=
-
-  Optional, you can send additional string and perform it after vterm open
-
-  the following is replaced by other function
-  #+begin_src emacs-lisp :tangle no
-    (add-hook 'vterm-mode-hook (lambda ()
-                                 (vterm-send-string "source ~/.bash_profile")
-                                 (vterm-send-return)
-                                 (evil-emacs-state)))
-  #+end_src
-
-  if you want to customize the vterm's font, you could add the settings below
-  #+begin_src emacs-lisp :tangle no
-    (add-hook #'(lambda ()
-                  (set-face-attribute 'variable-pitch nil :font "Sarasa Mono SC")
-                  (set (make-local-variable 'buffer-face-mode-face) 'variable-pitch)
-                  (buffer-face-mode t)))
-  #+end_src
-
-  #+begin_src emacs-lisp
-    (use-package vterm
-      :defer t
-      :init
-      (setq vterm-always-compile-module t)
-      (setq vterm-timer-delay 0.01)
-      (with-eval-after-load 'evil
-        (evil-set-initial-state 'vterm-mode 'emacs))
-      :config
-      (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape))
-  #+end_src
-
-  #+begin_src emacs-lisp
-    (use-package vterm-toggle
-      :defer t)
   #+end_src
 
 * evil
