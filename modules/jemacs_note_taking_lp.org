@@ -79,6 +79,8 @@
       (org-startup-truncated nil)
       (org-export-backends '(ascii html icalendar latex odt md))
 
+      (org-id-locations-file (expand-file-name "org.org-id-locations" home-dir))
+
       (org-image-actual-width nil)
       ;; org-edit-src without prompting window
       (org-src-window-setup 'current-window)

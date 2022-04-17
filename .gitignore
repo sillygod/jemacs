@@ -8,3 +8,8 @@ nov-places
 bookmarks
 elpa/
 librime/
+
+early-init.el
+init.el
+modules/*.el
+core/*.el

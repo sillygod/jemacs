@@ -10,8 +10,10 @@
 ;; ("\\*+ \\(IN PROGRESS\\)" . ((svg-tag-make "IN PROGRESS" :face 'org-todo :margin 0)))
 ;; ("\\*+ \\(DONE\\)" . ((svg-tag-make "DONE" :face 'org-done :margin 0)))
 
+(defgroup beautify nil
+  "Beautify the ui."
+  :group 'external)
 
-(provide 'beautify)
 
 (defun svg-tag--build-keywords (item)
   "Process an item in order to install it as a new keyword."
@@ -39,4 +41,5 @@
 
 (svg-tag--build-keywords `("hi" . (svg-lib-tag "hi" nil :stroke 0)))
 
+(provide 'beautify)
 ;;; beautify ends here
