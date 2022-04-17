@@ -24,19 +24,27 @@
       brew install emacs-plus@29 --with-xwidgets --with-modern-papirus-icon --with-native-comp
     #+end_src
 
+** clone the repo
+
+  #+begin_src bash
+    git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
+  #+end_src
+
+  copy example-settings.el and modify it
+
+  then produce the setup files of core and modules by the following commands
+
+  #+begin_src bash
+    bash lp.sh
+  #+end_src
+
+
 *** spawn the emacs
 
     #+begin_src bash
       emacs
     #+end_src
 
-** clone the repo
-
-  #+begin_src shell
-    git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
-  #+end_src
-
-  copy example-settings.el and modify it
 
 * Run in docker
 
