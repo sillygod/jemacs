@@ -32,7 +32,10 @@
   #+end_src
 
 * go-test
-  #+begin_src emacs-lisp
+
+  if you pass a function as the arguement of :local-repo, it will not be evaludated.
+
+  #+begin_src emacs-lisp :tangle no
     (use-package gotests
       :defer 1
       :straight (
@@ -47,6 +50,12 @@
       )
   #+end_src
 
+  #+begin_src emacs-lisp
+    (eval `(use-package gotests
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/gotests"))))
+
+  #+end_src
 
 * golang relevant helper
   #+begin_src emacs-lisp

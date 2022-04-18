@@ -101,7 +101,7 @@
 
   search thing under point [[https://devdocs.io/][devdocs]]
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package devdocs
       :defer t
       :straight (
@@ -109,9 +109,16 @@
 
   #+end_src
 
+  #+begin_src emacs-lisp
+    (eval `(use-package devdocs
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/devdocs"))))
+
+  #+end_src
+
 * counsel-jq-yq
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package counsel-jq-yq
       :defer 1
       :straight (
@@ -122,6 +129,14 @@
       ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
       ;; (load-library "counsel-jq-yq-autoloads"))
       )
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (eval `(use-package counsel-jq-yq
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/counsel-jq-yq"))))
+
+
   #+end_src
 
 * hl-todo mode
