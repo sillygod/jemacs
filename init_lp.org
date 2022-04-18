@@ -33,7 +33,7 @@
                   (let* ((display-buffer-alist '(("*my async shell command*" display-buffer-no-window)))
                          (output-buffer (generate-new-buffer "*my async shell command*"))
                          (proc (progn
-                                 (async-shell-command "$SHELL --login -c 'echo $PATH'" output-buffer)
+                                 (async-shell-command "/bin/bash --login -c 'echo $PATH'" output-buffer)
                                  (get-buffer-process output-buffer))))
                     (if (process-live-p proc)
                         (set-process-sentinel proc #'do-something)

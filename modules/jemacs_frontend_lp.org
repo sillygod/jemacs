@@ -15,6 +15,28 @@
 
   #+end_src
 
+* frontend development
+  #+begin_src emacs-lisp
+    (use-package emmet-mode
+      :defer t
+      :hook
+      (html-mode . emmet-mode)
+      (web-mode . emmet-mode))
+
+    (use-package web-mode
+      :defer t
+      :mode
+      (("\\.html\\'" . web-mode)))
+
+    (use-package js2-mode
+      :after (rainbow-delimiters)
+      :defer t
+      :config
+      (setq js2-mode-show-parse-errors nil)
+      (setq js2-mode-show-strict-warnings nil)
+      (js2-minor-mode))
+  #+end_src
+
 * provide package
 
   #+begin_src emacs-lisp
