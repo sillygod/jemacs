@@ -12,6 +12,7 @@
 (require 'jemacs-note-taking)
 (require 'jemacs-python)
 (require 'jemacs-go)
+(require 'jemacs-frontend)
 (require 'jemacs-project)
 (require 'jemacs-version-control)
 

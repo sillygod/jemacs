@@ -36,7 +36,7 @@
     (use-package gotests
       :defer 1
       :straight (
-                 :local-repo "~/Desktop/spacemacs-private/local/gotests"
+                 :local-repo (concat home-dir "local/gotests")
                  )
       ;; the file with suffix -test will be treated as tests files by default
       ;; which will function as package files.
