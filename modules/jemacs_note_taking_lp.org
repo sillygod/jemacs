@@ -1,6 +1,7 @@
 #+TITLE: jemacs-note-taking.el
 #+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-note-taking.el :mkdirp yes
 
+
 * setup
 
   #+begin_src emacs-lisp
@@ -174,7 +175,7 @@
       (:host github :repo "org-roam/org-roam" :files (:defaults "extensions/*"))
       :after org
       :custom
-      (org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming")
+      (org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming/")
       (org-roam-db-location (concat org-roam-directory "org-roam.db"))
       :init
       (setq org-roam-v2-ack t)
@@ -269,7 +270,7 @@
 
   #+begin_src emacs-lisp
     (use-package evil-org
-      :after t
+      :after org
       :hook
       (org-mode . evil-org-mode)
       (evil-org-mode . (lambda ()

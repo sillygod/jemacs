@@ -48,20 +48,20 @@
 ** setup the XQuartz
   https://gist.github.com/cschiewek/246a244ba23da8b9f0e7b11a68bf3285
 
+  then start xhost
+
   #+begin_src bash
-    docker pull ghcr.io/sillygod/jemacs/emacs:latest
     xhost +localhost
-    docker run -it --rm --env="DISPLAY=host.docker.internal:0" -v /tmp/.X11-unix:/tmp/.X11-unix -v [/your/workspace/]:[/mnt/workspace]ghcr.io/sillygod/jemacs/emacs
+  #+end_src
+
+  pull docker image or you build it by your own.
+
+    #+begin_src bash
+    docker pull ghcr.io/sillygod/jemacs/emacs:latest
+    docker run -it --rm --env="DISPLAY=docker.for.mac.host.internal:0" -v /tmp/.X11-unix:/tmp/.X11-unix -v [/your/workspace/]:[/mnt/workspace]ghcr.io/sillygod/jemacs/emacs
   #+end_src
 
 * Reference
-
-   - https://emacs.stackexchange.com/questions/31244/how-can-i-disable-evil-in-help-mode
-   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
-   - https://github.com/xiongtx/eros (interesting plugins)
-   - https://endlessparentheses.com/
-   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
-   - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
 
 ** dotfiles
 
@@ -89,20 +89,24 @@
 
 ** misc
 
+   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
+   - https://endlessparentheses.com/
+   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
+   - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
+
    - https://github.com/sulami/literate-calc-mode.el
    - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
-   - https://github.com/clemera/objed (interesting..)
-   - https://github.com/daipeihust/im-select (combine this with evil mode)
    - https://leanpub.com/lit-config/read
    - https://github.com/wbolster/emacs-direnv
-   - http://ergoemacs.org/emacs/emacs.html
+   - http://xahlee.info/emacs/emacs/emacs.html
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
    - autothemer
    - https://www.gnu.org/software/hyperbole/#summary
    - https://www.deepl.com/translator (dictionary)
 
 ** start to rewrite configs
-   https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
-   https://www.youtube.com/watch?v=uB8McDsRyXY
-   https://github.com/oantolin/emacs-config
-   https://github.com/braineo/fate-emacs
+
+   - https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
+   - https://www.youtube.com/watch?v=uB8McDsRyXY
+   - https://github.com/oantolin/emacs-config
+   - https://github.com/braineo/fate-emacs
