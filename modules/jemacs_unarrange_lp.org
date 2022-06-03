@@ -515,7 +515,7 @@
 * lua
   #+begin_src emacs-lisp
     (use-package lua-mode
-      :mode ("\\.lua\\'" . lua-mode)
+      :mode (("\\.lua\\'" . lua-mode))
       :defer t)
   #+end_src
 
@@ -728,6 +728,17 @@
   it's evil! provide you vim-like ux in emacs.
 
   #+begin_src emacs-lisp
+
+    (defun show-error-or-doc ()
+      "Show errors if flycheck detects errors existed or display the documentation."
+      (interactive)
+      (if (flycheck-overlay-errors-at (point))
+          (flycheck-display-error-at-point)
+        (lsp-describe-thing-at-point)))
+
+  #+end_src
+
+  #+begin_src emacs-lisp
     (use-package evil
       :defer 0
       :init
@@ -742,7 +753,7 @@
       ;; Use visual line motions even outside of visual-line-mode buffers
       (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
       (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
-      (evil-define-key 'normal prog-mode-map (kbd "g h") 'flycheck-display-error-at-point)
+      (evil-define-key 'normal prog-mode-map (kbd "g h") 'show-error-or-doc)
       (evil-define-key 'normal prog-mode-map (kbd "U") 'undo-redo)
 
 
@@ -750,12 +761,12 @@
       (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
       (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'dashboard-mode 'normal)
+      (evil-set-initial-state 'dashboard-mode 'normal))
 
-      (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-      (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-      (add-hook 'evil-insert-state-exit-hook 'im-remember)
-      (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
+      ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+      ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+      ;; (add-hook 'evil-insert-state-exit-hook 'im-remember)
+      ;; (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
   #+end_src
 
   evil-matchit  make =%= to be able to jump to and back the tag
@@ -1340,8 +1351,10 @@
        ("8" winum-select-window-8 nil)
        ("9" winum-select-window-9 nil))
 
-     (defhydra hydra-org-roam ()
+     (defhydra hydra-org-roam (:exit t)
        "Launcher for `org-roam'."
+       ("a" org-roam-alias-add "add alias for node")
+       ;; this is used for whening the name is conflict. It mostly happens in the header name
        ("c" org-id-get-create "create node")
        ("i" org-roam-node-insert "insert")
        ("f" org-roam-node-find "find file")

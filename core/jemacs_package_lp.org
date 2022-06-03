@@ -58,6 +58,11 @@
 
 ** try out straight.el
 
+   #+begin_src emacs-lisp :tangle no
+     straight-pull-package-and-deps ;; to upgrade package
+     straight-rebuild-package ;; after pulling the package, it should build the package cache
+   #+end_src
+
    #+begin_src emacs-lisp
      (setq straight-check-for-modifications nil)
      (defvar bootstrap-version)

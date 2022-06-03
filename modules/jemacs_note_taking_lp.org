@@ -330,6 +330,21 @@
 
   #+end_src
 
+* org copy subtree's content
+
+  #+begin_src emacs-lisp
+    (defun org-copy-subtree-content ()
+      (interactive)
+      (save-excursion
+        (org-back-to-heading)
+        (forward-line)
+        (let ((beg (point))
+              (end (point)))
+          (outline-end-of-subtree)
+          (setq end (point))
+          (kill-new (buffer-substring-no-properties beg end)))))
+  #+end_src
+
 * org-insert-toc
   FUTURE: maybe we can enhance this with prompting like org-insert-link
   #+begin_src emacs-lisp
