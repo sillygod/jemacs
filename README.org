@@ -96,6 +96,7 @@
 
    - https://github.com/sulami/literate-calc-mode.el
    - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
+   - https://github.com/manateelazycat/lsp-bridge (another lsp choice)
    - https://leanpub.com/lit-config/read
    - https://github.com/wbolster/emacs-direnv
    - http://xahlee.info/emacs/emacs/emacs.html

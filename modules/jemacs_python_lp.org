@@ -136,8 +136,7 @@
 
     (use-package lsp-pyright
       :defer t
-      :after (lsp-mode poetry)
-      :custom ((lsp-pyright-multi-root t))
+      :custom (lsp-pyright-multi-root nil)
       :hook (python-mode . (lambda ()
                              (require 'lsp-pyright)
                              (lsp))))
