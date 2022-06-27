@@ -111,3 +111,6 @@
    - https://www.youtube.com/watch?v=uB8McDsRyXY
    - https://github.com/oantolin/emacs-config
    - https://github.com/braineo/fate-emacs
+
+** implement a dired sort transient or hydra
+   https://gitlab.com/xuhdev/dired-quick-sort/-/blob/master/dired-quick-sort.el

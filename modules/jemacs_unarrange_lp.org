@@ -274,7 +274,7 @@
   #+begin_src emacs-lisp
     (use-package conf-mode
       :defer t
-      :mode ("poetry\\.lock" . conf-toml-mode))
+      :mode ("\\(Cargo.lock\\|\\poetry\\.lock\\)\\'" . conf-toml-mode)) ;; a macro to generate auto-mode-list
   #+end_src
 
 * jinja2-mode
@@ -330,6 +330,8 @@
       :hook
       (js-mode . smartparens-mode)
       (go-mode . smartparens-mode)
+      (rust-mode . (lambda () (sp-local-pair 'rust-mode "'" nil :actions nil)
+                     (smartparens-mode))) ;;; don't pair lifetime specifiers
       (html-mode . smartparens-mode)
       (python-mode . smartparens-mode)
       (emacs-lisp-mode . smartparens-mode)
@@ -786,6 +788,13 @@
             "xx" "go run" 'go-run-main
             "d" "debug" 'dap-hydra
             "e" "gomacro" 'gomacro-run)
+
+
+          (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+
+        (with-eval-after-load 'rust-mode
+          (apply 'define-leader-key-map-for 'rust-mode-map
+                 (lsp-keybinding))
 
 
           (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
