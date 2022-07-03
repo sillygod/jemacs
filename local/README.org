@@ -1,6 +1,8 @@
 * My experimental packages
 
 ** implement my own python-repl
-  https://github.com/tpapp/julia-repl
+
+  we can borrow the idea from https://github.com/tpapp/julia-repl
+
 * tips
   toggle-debug-on-error is a not bad helper fuction when developing package

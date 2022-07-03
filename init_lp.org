@@ -64,6 +64,7 @@
     (require 'jemacs-ui)
     (require 'jemacs-package)
     (require 'jemacs-core)
+    (require 'jemacs-ux)
 
     (when (file-exists-p jemacs-settings-file)
       (load jemacs-settings-file nil 'nomessage))

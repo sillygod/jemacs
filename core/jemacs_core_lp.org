@@ -223,20 +223,6 @@
           (message "%.06f s" (float-time (time-since time)))))
 
 
-     ;; TODO: find a way to handle this better
-     (add-hook 'org-babel-pre-tangle-hook #'(lambda ()
-                                              (setq-default evil-normal-state-entry-hook nil)
-                                              (setq-default evil-insert-state-entry-hook nil)
-                                              (setq-default evil-insert-state-exit-hook nil)
-                                              (setq-default evil-emacs-state-entry-hook nil)))
-
-
-     (add-hook 'org-babel-post-tangle-hook #'(lambda ()
-                                               (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-                                               (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-                                               (add-hook 'evil-insert-state-exit-hook 'im-remember)
-                                               (add-hook 'evil-emacs-state-entry-hook 'im-use-eng)))
-
      (defun measure-org-babel-tangle ()
        "A simple wrap to measure org-babel-tangle."
        (interactive)
@@ -296,6 +282,24 @@
                 (progn
                   (call-process-shell-command (concat im-exec " " default-im))
                   (setq current-im default-im))))))
+
+
+     ;; TODO: find a way to handle this better
+     ;; comment this because now we use emacs pinyin package to handle non english input method
+     ;; no need to use im-select
+     ;; (add-hook 'org-babel-pre-tangle-hook #'(lambda ()
+     ;;                                          (setq-default evil-normal-state-entry-hook nil)
+     ;;                                          (setq-default evil-insert-state-entry-hook nil)
+     ;;                                          (setq-default evil-insert-state-exit-hook nil)
+     ;;                                          (setq-default evil-emacs-state-entry-hook nil)))
+
+
+     ;; (add-hook 'org-babel-post-tangle-hook #'(lambda ()
+     ;;                                           (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+     ;;                                           (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+     ;;                                           (add-hook 'evil-insert-state-exit-hook 'im-remember)
+     ;;                                           (add-hook 'evil-emacs-state-entry-hook 'im-use-eng)))
+
    #+end_src
 
 ** util helpers to be completed

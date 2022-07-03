@@ -97,6 +97,13 @@
       :defer t)
   #+end_src
 
+* terraform
+
+  #+begin_src emacs-lisp
+    (use-package terraform-mode
+      :defer t)
+  #+end_src
+
 * devdocs
 
   search thing under point [[https://devdocs.io/][devdocs]]
@@ -199,17 +206,6 @@
       (define-key rime-mode-map (kbd "C-'") 'rime-inline-ascii))
   #+end_src
 
-* which key mode
-  a friendly key shortcut hint.
-  #+begin_src emacs-lisp
-    (use-package which-key
-      :defer 0
-      :diminish which-key-mode
-      :config
-      (setq which-key-idle-delay 0.05)
-      (which-key-mode 1))
-  #+end_src
-
 * dictonary relevant packages
   there two package are not usable right now.
   #+begin_src emacs-lisp
@@ -278,7 +274,7 @@
   #+begin_src emacs-lisp
     (use-package conf-mode
       :defer t
-      :mode ("poetry\\.lock" . conf-toml-mode))
+      :mode ("\\(Cargo.lock\\|\\poetry\\.lock\\)\\'" . conf-toml-mode)) ;; a macro to generate auto-mode-list
   #+end_src
 
 * jinja2-mode
@@ -334,6 +330,8 @@
       :hook
       (js-mode . smartparens-mode)
       (go-mode . smartparens-mode)
+      (rust-mode . (lambda () (sp-local-pair 'rust-mode "'" nil :actions nil)
+                     (smartparens-mode))) ;;; don't pair lifetime specifiers
       (html-mode . smartparens-mode)
       (python-mode . smartparens-mode)
       (emacs-lisp-mode . smartparens-mode)
@@ -376,16 +374,6 @@
       ([remap describe-command] . helpful-command)
       ([remap describe-variable] . counsel-describe-variable)
       ([remap describe-key] . helpful-key))
-  #+end_src
-
-* expand-region
-  a convenient selection expander.
-
-  #+begin_src emacs-lisp
-    (use-package expand-region
-      :commands
-      (er--expand-region-1)
-      :defer t)
   #+end_src
 
 * winum
@@ -451,6 +439,60 @@
       :defer t)
   #+end_src
 
+** experiment tree-sitter
+
+   tree-sitter requires emacs built with dynamic modules (due to c bindings library) supports.
+   (functionp 'module-load)
+
+   #+begin_src emacs-lisp
+     (use-package tree-sitter
+       :defer t)
+     (use-package tree-sitter-langs
+       :defer t
+       :hook
+       (tree-sitter-after-on . tree-sitter-hl-mode))
+   #+end_src
+
+   #+begin_src emacs-lisp
+     (defun json-get-path (current-node output)
+       "Get path to json value at cursor position.  CURRENT-NODE is a tree-sitter-node.
+     OUTPUT is parsed path list."
+       (let* ((parent-node (tsc-get-parent current-node)))
+         (if parent-node
+           (progn
+             (when (eq (tsc-node-type parent-node) 'array)
+               (let ((index -1)
+                     (cursor (tsc-make-cursor parent-node)))
+                 (tsc-goto-first-child cursor)
+                 (while (not (tsc-node-eq current-node (tsc-current-node cursor)))
+                     (progn
+                       (tsc-goto-next-sibling cursor)
+                       (if (tsc-node-named-p (tsc-current-node cursor))
+                         (progn
+                           (setq index (+ index 1))))))
+                 (setq output (push index output))))
+             (when (eq (tsc-node-type current-node) 'pair)
+                 (setq output (push (tsc-node-text (tsc-get-nth-child current-node 0)) output)))
+             (json-get-path parent-node output))
+           output)))
+
+     (defun json-print-path-js ()
+       "Copy json path in JavaScript format."
+       (interactive)
+       (let (json-path)
+         (dolist (elt (json-get-path (tree-sitter-node-at-pos) '()) json-path)
+           (when (stringp elt)
+             (let* ((trimmed-elt (string-trim elt "\"" "\"")))
+               (if (string-match-p "-" trimmed-elt)
+                   (setq json-path (concat json-path "[" trimmed-elt "]"))
+                 (setq json-path (concat json-path "." trimmed-elt)))))
+           (when (numberp elt)
+             (setq json-path (concat json-path "[" (number-to-string elt) "]"))))
+         (message json-path)
+         (kill-new json-path)))
+
+   #+end_src
+
 * cmake
   #+begin_src emacs-lisp
     (use-package cmake-mode
@@ -461,7 +503,7 @@
 * lua
   #+begin_src emacs-lisp
     (use-package lua-mode
-      :mode ("\\.lua\\'" . lua-mode)
+      :mode (("\\.lua\\'" . lua-mode))
       :defer t)
   #+end_src
 
@@ -578,172 +620,6 @@
       (setq lsp-ui-sideline-enable nil))
   #+end_src
 
-* ivy & swiper & counsel
-
-  =(setq ivy-use-selectable-prompt t)=
-  to make the candidate you typed selectable. This is useful when you call =counsel-find-file=.
-  Ex. You can choose the bar.yml when there is a candidate named barfar.yml
-
-  =(setq ivy-initial-inputs-alist nil)=
-  let the input in the ivy-minibuffer empty when opening the it.
-
-
-  #+begin_src emacs-lisp
-    (use-package ivy
-      :ensure t
-      :diminish
-      :bind (:map ivy-minibuffer-map
-                  ("TAB" . ivy-alt-done)
-                  ("<escape>" . keyboard-escape-quit)
-                  ("C-l" . ivy-alt-done)
-                  ("C-j" . ivy-next-line)
-                  ("C-k" . ivy-previous-line)
-                  ("C-u" . ivy-backward-kill-word)
-                  :map ivy-switch-buffer-map
-                  ("C-k" . ivy-previous-line)
-                  ("C-l" . ivy-done)
-                  ("C-d" . ivy-switch-buffer-kill)
-                  :map ivy-reverse-i-search-map
-                  ("C-k" . ivy-previous-line)
-                  ("C-d" . ivy-reverse-i-search-kill))
-      :config
-      (ivy-mode 1)
-      (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
-      (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
-      (setq ivy-use-selectable-prompt t)
-      ;; (setq ivy-dynamic-exhibit-delay-ms 250)
-      (setq ivy-initial-inputs-alist nil)
-      (with-eval-after-load 'evil
-        (define-key ivy-occur-grep-mode-map (kbd "w") nil)
-        (evil-define-key 'normal ivy-occur-grep-mode-map
-          (kbd "i")
-          #'(lambda ()
-              (interactive)
-              (ivy-wgrep-change-to-wgrep-mode)
-              (evil-insert-state)))))
-
-    (use-package ivy-rich
-      :after (ivy)
-      :init
-      (ivy-rich-mode 1))
-  #+end_src
-
-  After calling =swiper=, =counsel search=, ivy-occur (C-c C-o) will get all the candidates in another buffer.
-  Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
-
-  Use =multiple-cursor= may be helpful here.
-  Finally, =Ctrl-c Ctrl-c= to commit change
-  there are some key binding in the swiper-map
-
-  #+begin_src emacs-lisp
-    (use-package swiper
-      :bind (("C-s" . swiper)))
-  #+end_src
-
-  #+begin_src emacs-lisp
-    (use-package counsel
-      :bind (("M-x" . counsel-M-x)
-             ("C-x b" . counsel-ibuffer)
-             ("C-x C-f" . counsel-find-file)
-             :map minibuffer-local-map
-             ("C-w" . 'ivy-backward-kill-word)
-             :map ivy-minibuffer-map
-             ("C-w" . 'ivy-backward-kill-word)
-             ("C-r" . 'counsel-minibuffer-history))
-      :config
-      (setq counsel-find-file-at-point t))
-
-    ;; counsel-search will use the package request with this function
-    (use-package request
-      :defer t)
-
-  #+end_src
-
-* avy
-  =(setq avy-background t)= will diminish the background to make the target clearly.
-
-  #+begin_src emacs-lisp
-    (use-package avy
-      :defer t
-      :config
-      (setq avy-background t))
-
-  #+end_src
-
-* evil
-  it's evil! provide you vim-like ux in emacs.
-
-  #+begin_src emacs-lisp
-    (use-package evil
-      :defer 0
-      :init
-      (setq evil-want-keybinding nil) ;; this will cause some evil keybinding
-      ;; of other modes not working when it's set to true
-      :config
-      (setq evil-want-integration t)
-      (setq evil-want-C-u-scroll t)
-      (setq evil-want-C-i-jump nil)
-      (evil-mode 1)
-      (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
-      ;; Use visual line motions even outside of visual-line-mode buffers
-      (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
-      (evil-define-key 'normal prog-mode-map (kbd "C-k") 'evil-scroll-line-up)
-      (evil-define-key 'normal prog-mode-map (kbd "g h") 'flycheck-display-error-at-point)
-      (evil-define-key 'normal prog-mode-map (kbd "U") 'undo-redo)
-
-
-      (evil-global-set-key 'motion "j" 'evil-next-visual-line)
-      (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
-
-      (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'dashboard-mode 'normal)
-
-      (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-      (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-      (add-hook 'evil-insert-state-exit-hook 'im-remember)
-      (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
-  #+end_src
-
-  evil-matchit  make =%= to be able to jump to and back the tag
-  evil-collection provides some pre-defined evil key binding for other-modes.
-
-  #+begin_src emacs-lisp
-    (use-package evil-matchit
-      :after evil
-      :config
-      (global-evil-matchit-mode 1))
-
-    (use-package evil-collection
-      :after evil
-      :config
-      (delete 'wgrep evil-collection-mode-list)
-      (delete 'vterm evil-collection-mode-list)
-      (delete 'lispy evil-collection-mode-list)
-      (delete 'ivy evil-collection-mode-list)
-      (delete 'view evil-collection-mode-list)
-      ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
-      (setq evil-collection-company-use-tng nil)
-      (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
-                                                (when (eq _mode 'docker)
-                                                  (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
-      (evil-collection-init))
-  #+end_src
-
-  evil-nerd-commenter provide the quick comment util functions.
-
-  #+begin_src emacs-lisp
-    (use-package evil-nerd-commenter
-      :after evil
-      :commands evilnc-comment-operator
-      :init
-      (define-key evil-normal-state-map "gc" 'evilnc-comment-operator))
-
-    (use-package evil-surround
-      :after evil
-      :config
-      (global-evil-surround-mode 1))
-  #+end_src
-
 * wgrep mode
   #+begin_src emacs-lisp
     (use-package wgrep
@@ -757,35 +633,6 @@
       (evil-define-key 'normal wgrep-mode-map (kbd "<escape>") 'wgrep-exit)
       (evil-define-key 'normal wgrep-mode-map (kbd ", ,") 'wgrep-finish-edit)
       (evil-define-key 'normal wgrep-mode-map (kbd ", k") 'wgrep-abort-changes))
-  #+end_src
-
-* code folding
-
-  #+begin_src emacs-lisp
-    (use-package hideshow
-      :hook (prog-mode . hs-minor-mode)
-      :commands
-      (hs-toggle-hiding
-       hs-hide-block
-       hs-hide-level
-       hs-show-all
-       hs-hide-all)
-      :config
-      (with-eval-after-load 'evil
-        (evil-define-key 'normal prog-mode-map (kbd "z z") 'hs-toggle-hiding)))
-  #+end_src
-
-
-  create arbitrary fold not like other package auto detect the program language
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package vimish-fold
-      :after evil
-      :hook (prog-mode . vimish-fold-mode))
-
-    (use-package evil-vimish-fold
-      :after vimish-fold
-      :hook (prog-mode . evil-vimish-fold-mode))
   #+end_src
 
 * multiple-cursors
@@ -941,6 +788,13 @@
             "xx" "go run" 'go-run-main
             "d" "debug" 'dap-hydra
             "e" "gomacro" 'gomacro-run)
+
+
+          (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+
+        (with-eval-after-load 'rust-mode
+          (apply 'define-leader-key-map-for 'rust-mode-map
+                 (lsp-keybinding))
 
 
           (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
@@ -1286,8 +1140,10 @@
        ("8" winum-select-window-8 nil)
        ("9" winum-select-window-9 nil))
 
-     (defhydra hydra-org-roam ()
+     (defhydra hydra-org-roam (:exit t)
        "Launcher for `org-roam'."
+       ("a" org-roam-alias-add "add alias for node")
+       ;; this is used for whening the name is conflict. It mostly happens in the header name
        ("c" org-id-get-create "create node")
        ("i" org-roam-node-insert "insert")
        ("f" org-roam-node-find "find file")
@@ -1526,41 +1382,6 @@
        (evil-define-key '(normal motion) 'evil-motion-state-map
          (kbd "*") 'wrap-mark-operation))
    #+end_src
-
-* company
-  company-mode setup
-
-  #+begin_notes
-  "<return>" is the Return key while emacs runs in a graphical user interface.
-  "RET" is the Return key while emacs runs in a terminal. ...
-  But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
-  #+end_notes
-
-  #+begin_src emacs-lisp
-    (use-package company
-      :defer 0
-      :config
-      (setq company-minimum-prefix-length 2)
-      (setq company-idle-delay 0.1)
-      (setq company-format-margin-function 'company-vscode-dark-icons-margin)
-      ;; In evil-collection, it adjust the key binding for the company-mode
-      ;; NOTE: Furthermore, it also disable the pre-select behavior when
-      ;; showing the completion candidates.
-      (define-key company-active-map (kbd "<return>") 'company-complete-selection)
-      (global-company-mode 1))
-  #+end_src
-
-  NOTE: temporarily disable =company-tabnine= because it consumes lots of cpu.
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package company-tabnine
-      :config
-      (with-eval-after-load 'company
-        (add-to-list 'company-backends #'company-tabnine)
-        (setq company-tabnine-always-trigger nil)
-        (setq company-show-numbers t)
-        (setq company-idle-delay 0.1)))
-  #+end_src
 
 * provide package
 

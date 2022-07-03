@@ -1,8 +1,9 @@
-* Consider to adopting emacs server, client mode
+* Some plugins can be referenced
 
-  https://github.com/tecosaur/emacs-everywhere
-  https://github.com/bling/fzf.el
-  https://github.com/jeremy-compostella/pdfgrep
+  - https://github.com/tecosaur/emacs-everywhere
+  - https://github.com/bling/fzf.el
+  - https://github.com/jeremy-compostella/pdfgrep
+  - https://github.com/xiongtx/eros (interesting plugins)
 
 * Start to build my own emacs
 
@@ -41,7 +42,6 @@
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
    - [ ] research the doom emacs boostrap flow https://github.com/SystemCrafters/rational-emacs
-
 
 ** to see the visualization of git history
 
