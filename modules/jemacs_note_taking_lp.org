@@ -177,9 +177,11 @@
       :custom
       (org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming/")
       (org-roam-db-location (concat org-roam-directory "org-roam.db"))
+      (org-roam-completion-everywhere t)
       :init
       (setq org-roam-v2-ack t)
       :config
+      (setq completion-ignore-case t) ;; make ivy completion case insensitive
       (setq org-roam-node-display-template (concat
                                             "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
