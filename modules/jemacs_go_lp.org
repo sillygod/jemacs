@@ -50,6 +50,8 @@
       )
   #+end_src
 
+  We can use quasiquote to achieve the effects
+
   #+begin_src emacs-lisp
     (eval `(use-package gotests
              :defer t

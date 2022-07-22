@@ -43,6 +43,15 @@
     ;;                               (setq gc-cons-threshold 800000)))
   #+end_src
 
+* set up config home directory
+  #+begin_src emacs-lisp
+    (defvar home-dir (file-name-directory load-file-name))
+    (setq user-emacs-directory (expand-file-name "emacs-home/" home-dir))
+    (unless (file-exists-p user-emacs-directory)
+      (mkdir user-emacs-directory t))
+
+  #+end_src
+
 * prevent redisplay before setup the ui
 
   #+begin_src emacs-lisp
@@ -62,23 +71,20 @@
     (setq load-prefer-newer noninteractive)
   #+end_src
 
-* set up config home directory and loading custom settings
-  #+begin_src emacs-lisp
-    (defvar home-dir (file-name-directory load-file-name))
-    (setq user-emacs-directory (expand-file-name "emacs-home" home-dir))
-    (unless (file-exists-p user-emacs-directory)
-      (mkdir user-emacs-directory t))
+* loading custom settings
 
+  #+begin_src emacs-lisp
     (when (if (fboundp 'native-comp-available-p) (native-comp-available-p))
       (setcar native-comp-eln-load-path (expand-file-name "eln-cache/" user-emacs-directory))
       (setq native-compile-target-directory (expand-file-name "eln-cache/" user-emacs-directory))
       (when (fboundp 'startup-redirect-eln-cache)
-        (startup-redirect-eln-cache (expand-file-name "eln-cache/" user-emacs-directory))))
+        (startup-redirect-eln-cache (convert-standard-filename (expand-file-name "eln-cache/" user-emacs-directory)))))
 
     (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
     (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
     (when (file-exists-p jemacs-config-file)
       (load jemacs-config-file nil 'nomessage))
+
   #+end_src
 
 * UI adjustment

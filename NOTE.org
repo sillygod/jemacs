@@ -10,6 +10,7 @@
 ** things needed to be done or enahnced
 
    - [ ] wirte a hydra for iedit mode
+   - [ ] replace projectile with project.el
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] https://github.com/emacs-lsp/lsp-mode/issues/1863 (try this if you want to use pylance instead of pyright)
    - [ ] toggle window maximum should be memorized with projectile (https://oremacs.com/2016/06/27/ivy-push-view/)

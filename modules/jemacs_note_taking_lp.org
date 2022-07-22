@@ -51,6 +51,9 @@
       ;; cool! some functions need to be enable
       ;; like <s press tab to complete org structure (org-tempo)
       ;; these variables can be found in the source code of org.el
+      (org-pretty-entities t) ;; org-toggle-pretty-entities
+
+      (org-link-descriptive t)
       (org-modules '(ol-w3m
                      ol-bbdb
                      ol-bibtex
@@ -80,7 +83,7 @@
       (org-startup-truncated nil)
       (org-export-backends '(ascii html icalendar latex odt md))
 
-      (org-id-locations-file (expand-file-name "org.org-id-locations" home-dir))
+      (org-id-locations-file (expand-file-name "org.org-id-locations" user-emacs-directory))
 
       (org-image-actual-width nil)
       ;; org-edit-src without prompting window
@@ -92,6 +95,7 @@
       (org-hide-leading-stars t)
 
       :config
+      (require 'org-indent)
       (keymap-unset org-mode-map "C-'" t)
       ;; (setq org-ellipsis " ▾")
       (setq-default org-default-notes-file
@@ -170,6 +174,18 @@
   Remember to run =org-roam-db-build-cache= at first time.
 
   #+begin_src emacs-lisp
+    (defun my-org-roam-fontify-like-in-org-mode (s)
+      "Fontify string S like in Org mode.
+    Like `org-fontify-like-in-org-mode', but supports `org-ref'."
+      (with-temp-buffer
+        (insert s)
+        (let ((org-ref-buffer-hacked t))
+          (org-mode)
+          (org-font-lock-ensure)
+          (if org-link-descriptive
+              (org-link-display-format (buffer-string))
+          (buffer-string)))))
+
     (use-package org-roam
       :straight
       (:host github :repo "org-roam/org-roam" :files (:defaults "extensions/*"))
@@ -180,7 +196,13 @@
       (org-roam-completion-everywhere t)
       :init
       (setq org-roam-v2-ack t)
+      (defalias 'org-font-lock-ensure
+        (if (fboundp 'font-lock-ensure)
+            #'font-lock-ensure
+          (lambda (&optional _beg _end)
+            (with-no-warnings (font-lock-fontify-buffer)))))
       :config
+      (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
       (setq completion-ignore-case t) ;; make ivy completion case insensitive
       (setq org-roam-node-display-template (concat
                                             "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
