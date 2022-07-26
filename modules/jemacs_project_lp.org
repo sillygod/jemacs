@@ -28,7 +28,7 @@
   #+end_src
 
 * projectile
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package projectile
       :defer 1
       :custom ((projectile-completion-system 'ivy))
@@ -37,10 +37,46 @@
       (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
       (projectile-mode +1))
 
-    (use-package counsel-projectile
-      :after projectile
-      :defer 1
-      :config (counsel-projectile-mode))
+    ;; (use-package counsel-projectile
+    ;;   :after projectile
+    ;;   :defer 1
+    ;;   :config (counsel-projectile-mode))
+  #+end_src
+
+* project.el
+
+  try to replace the projectile with built-in =project.el=
+  todo implement my own project switch project
+
+  #+begin_src emacs-lisp
+    (defun project-try-local (dir)
+      "Determine if DIR is a non-Git project."
+      (catch 'ret
+        (let ((pr-flags '((".project")
+                          ("go.mod" "Cargo.toml" "project.clj" "pom.xml" "package.json" "pyproject.toml") ;; higher priority
+                          ("Makefile" "README.org" "readme.org" "README.md"))))
+          (dolist (current-level pr-flags)
+            (dolist (f current-level)
+              (when-let ((root (locate-dominating-file dir f)))
+                (throw 'ret (list 'vc 'Git root))))))))
+
+    (setq project-find-functions '(project-try-local project-try-vc))
+
+    (defun consult-switch-project ()
+      "Switch project with consult interface"
+      (interactive)
+      (let* ((candidates (project-known-project-roots))
+             (proj (project-current t (consult--read
+                                       candidates
+                                       :prompt "Switch to project: "
+                                       :sort nil
+                                       :category 'file
+                                       :require-match t))))
+
+        (project-find-file-in
+         nil
+         (list (project-root proj))
+         proj)))
   #+end_src
 
 * vterm
@@ -92,12 +128,19 @@
       (evilnc-comment-or-uncomment-lines arg))
 
     (defun counsel-jump-in-buffer ()
-      "Jump in buffer with `counsel-imenu' or `counsel-org-goto' if in 'org-mode'."
+      "Jump in buffer with `counsel-imenu' or `consult-org-heading' if in 'org-mode'."
       (interactive)
       (call-interactively
        (cond
-        ((eq major-mode 'org-mode) 'counsel-org-goto)
-        (t 'counsel-imenu))))
+        ((eq major-mode 'org-mode) 'consult-org-heading)
+        (t 'consult-imenu))))
+
+    (defmacro project-with-default-dir (dir &rest body)
+      "Invoke in DIR the BODY."
+      (declare (debug t) (indent 1))
+      `(let ((default-directory ,dir))
+         ,@body))
+
 
     (defun project-run-vterm (&optional arg)
       "Invoke `vterm' in the project's root.
@@ -105,19 +148,21 @@
     Switch to the project specific term buffer if it already exists.
     Use a prefix argument ARG to indicate creation of a new process instead."
       (interactive "P")
-      (let* ((project (projectile-ensure-project (projectile-project-root)))
-             (buffer (projectile-generate-process-name "vterm" arg)))
+      (let* ((project (project-root (project-current t)))
+             (buffer (format "*%s %s*" "vterm" project)))
         (unless (buffer-live-p (get-buffer buffer))
           (unless (require 'vterm nil 'noerror)
             (error "Package 'vterm' is not available"))
-          (projectile-with-default-dir project
+          (project-with-default-dir project
             (vterm-other-window buffer)))
         (pop-to-buffer buffer)))
 
     (defun new-terminal ()
       "New a terminal in project root or the current directory."
       (interactive)
-      (if (projectile-project-p)
+      (if (not (equal
+                nil
+                (project-root (project-current t))))
           (project-run-vterm)
         (vterm-other-window)))
 
@@ -130,9 +175,10 @@
 * search relevant functions
 
   My customize search function
+  org-fold-show-context-detail
 
   #+begin_src emacs-lisp
-    (defun my-counsel-projectile-rg (&optional options)
+    (defun my-project-rg (&optional options)
       "Search the current project with rg and search under certarn directory
          if it's not in a project.
 

@@ -128,7 +128,7 @@
 
   #+begin_src emacs-lisp
     (defun lsp-with-poetry-env ()
-      (let ((project (projectile-ensure-project (projectile-project-root))))
+      (let ((project (project-root (project-current t))))
         (add-dir-local-variable 'python-mode poetry-venv (poetry-get-virtualenv))
         )
       (poetrpy-venv-workon)

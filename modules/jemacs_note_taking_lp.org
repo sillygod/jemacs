@@ -357,8 +357,11 @@
 * org copy subtree's content
 
   #+begin_src emacs-lisp
-    (defun org-copy-subtree-content ()
-      (interactive)
+    (defun org-copy-subtree-content (&optional n)
+      "copy subtree content without header"
+      (interactive "p")
+      (print n) ;; it's weird sometime the vertico minibuffer will be stucked
+      ;; but with this, it can resolve that problem.
       (save-excursion
         (org-back-to-heading)
         (forward-line)

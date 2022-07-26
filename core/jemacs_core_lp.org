@@ -693,7 +693,7 @@
      (defun org-file-show-headings (org-file)
        (interactive)
        (find-file (expand-file-name org-file))
-       (counsel-org-goto)
+       (consult-org-heading)
        (org-overview)
        (org-reveal)
        (org-show-subtree)
@@ -827,24 +827,48 @@
    #+begin_src emacs-lisp
      (defun google-search-action (x)
        "Search for X.
-          force to make new session without using the original session."
+               force to make new session without using the original session."
        (xwidget-webkit-browse-url
         (concat
-         (nth 2 (assoc counsel-search-engine counsel-search-engines-alist))
+         "https://www.google.com/search?q="
          (url-hexify-string x)) t))
 
+     (defun search-request-data-google (data)
+       (mapcar #'identity (aref data 1)))
+
+     (defun search-function (input)
+       "Create a request to a search engine with INPUT.
+          Return 0 tells `ivy--exhibit' not to update the minibuffer.
+          We update it in the callback with `ivy-update-candidates'."
+       (search-request-data-google
+        (request-response-data
+         (request
+           "http://suggestqueries.google.com/complete/search"
+           :type "GET"
+           :params (list
+                    (cons "client" "firefox")
+                    (cons "q" input))
+           :parser 'json-read
+           :sync t))))
+
+     (defun wrap-to-consult-read (prog fn input)
+       (let ((res (append (list prog) (list "%s\n") (funcall fn input))))
+         (list :command res)))
+
+     (defun search-format (lines)
+       (split-string lines " "))
 
      (defun google-search ()
        "Counsel-search with xwidget open url."
        (interactive)
        (require 'request)
        (require 'json)
-       (let ((counsel-search-engine 'google))
-         (ivy-read "search: "
-                   #'counsel-search-function
-                   :action #'google-search-action
-                   :dynamic-collection t
-                   :caller 'google-search)))
+       (google-search-action
+       (consult--read
+        (consult--async-command #'(lambda (input) (wrap-to-consult-read "printf" #'search-function input)))
+        :prompt "search: "
+        :preview-key nil
+        :sort nil)))
 
      (defun open-with-xwidget-action (x)
        (xwidget-webkit-browse-url
@@ -852,20 +876,13 @@
                          "file://"
                          (expand-file-name x ivy--directory))) t))
 
-     (with-eval-after-load 'counsel
+     (with-eval-after-load 'consult
        (defun open-with-xwidget (&optional initial-input)
          "Open file with xwidget browse url."
          (interactive)
-         (counsel--find-file-1 "Find file: "
-                               initial-input
-                               #'open-with-xwidget-action
-                               'open-with-xwidget))
-
-       ;; how to customize the tab behavior
-       ;; add the open-with-xwidget in the alt-done alist
-       (ivy-configure 'open-with-xwidget
-         :parent 'read-file-name-internal
-         :occur #'counsel-find-file-occur))
+         (open-with-xwidget-action
+          (consult--read
+           :prompt "Open file: "))))
    #+end_src
 
 ** auto tangle literate config
@@ -882,7 +899,7 @@
 ** operation with marked text
 
    #+begin_src emacs-lisp
-     (defun send-text-and-move-to-projectile-vterm ()
+     (defun send-text-and-move-to-project-vterm ()
        (interactive)
        (when (region-active-p)
          ;; get the mark content

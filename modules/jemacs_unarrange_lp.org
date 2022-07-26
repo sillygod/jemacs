@@ -366,13 +366,11 @@
   make help description more readble
   #+begin_src emacs-lisp
     (use-package helpful
-      :custom
-      (counsel-describe-function-function #'helpful-callable)
-      (counsel-describe-variable-function #'helpful-variable)
       :bind
-      ([remap describe-function] . counsel-describe-function)
-      ([remap describe-command] . helpful-command)
-      ([remap describe-variable] . counsel-describe-variable)
+      ([remap describe-command] . helpful-callable)
+      ([remap describe-function] . helpful-function)
+      ([remap describe-variable] . helpful-variable)
+      ([remap describe-symbol] . helpful-symbol)
       ([remap describe-key] . helpful-key))
   #+end_src
 
@@ -885,13 +883,13 @@
 
 
       (define-leader-key-global
-        "SPC" 'counsel-M-x
-        "/" 'my-counsel-projectile-rg
+        "SPC" 'execute-extended-command
+        "/" 'consult-ripgrep
         "v" 'er/expand-region
         "u" 'universal-argument
         "'" 'new-terminal
         "TAB" 'vterm-perform-last-command
-        "?" 'counsel-descbinds)
+        "?" 'describe-bindings)
 
       ;; which-key-replacement-alist
       ;; change the content of the above variable
@@ -922,7 +920,7 @@
 
       (define-leader-key-global
         "r" '(:ignore t :which-key "resume/register")
-        "rk" '(counsel-yank-pop :which-key "kill ring")
+        "rk" '(consult-yank-pop :which-key "kill ring")
         "re" '(counsel-evil-registers :which-key "evil register")
         "rl" '(ivy-resume :which-key "ivy-resume"))
 
@@ -944,9 +942,9 @@
 
       (define-leader-key-global
         "b" '(:ignore t :which-key "buffer")
-        "bb" '(counsel-projectile-switch-to-buffer :which-key "project-list-buffer")
+        "bb" '(consult-project-buffer :which-key "project-list-buffer")
         "bd" '(kill-this-buffer :which-key "kill-buffer")
-        "bB" '(counsel-switch-buffer :which-key "list-buffer")
+        "bB" '(consult-buffer :which-key "list-buffer")
         "bi" '(ibuffer :which-key "ibuffer")
         "bn" '(next-buffer :which-key "next-buffer")
         "bp" '(previous-buffer :which-key "previous-buffer")
@@ -980,14 +978,14 @@
 
       (define-leader-key-global
         "p" '(:ignore t :which-key "project")
-        "pp" '((lambda () (interactive) (counsel-projectile-switch-project 2)) :which-key "switch project")
-        "pf" '(counsel-projectile-find-file :which-key "find-file"))
+        "pp" '(consult-switch-project :which-key "switch project")
+        "pf" '(project-find-file :which-key "find-file"))
 
       (define-leader-key-global
         "s" '(:ignore t :which-key "search")
         "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
-        "ss" '(swiper :which-key "swiper")
-        "sS" '(swiper-all :which-key "swiper-all"))
+        "ss" '(consult-line :which-key "consult-line")
+        "sS" '(consult-line-multi :which-key "swiper-all"))
 
       (define-leader-key-global
         "g" '(:ignore t :which-key "git")
@@ -1058,7 +1056,7 @@
         "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
         "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
 
-        "xs" '(send-text-and-move-to-projectile-vterm :which-key "send content to and focus on vterm"))
+        "xs" '(send-text-and-move-to-project-vterm :which-key "send content to and focus on vterm"))
 
       (define-leader-key-global
         "f" '(:ignore t :which-key "files")
@@ -1068,7 +1066,7 @@
         "fd" '(dired-jump :which-key "dired")
         "fs" '(save-buffer :which-key "save file")
         "fr" '(rename-current-buffer-file :which-key "rename file")
-        "ff" '(counsel-find-file :which-key "find file"))
+        "ff" '(find-file :which-key "find file"))
 
       (message "DEBUG: !! complete general setting"))
   #+end_src
@@ -1168,8 +1166,8 @@
 
        ("n" next-buffer nil)
        ("p" previous-buffer nil)
-       ("b" counsel-projectile-switch-to-buffer nil)
-       ("B" counsel-switch-buffer nil)
+       ("b" consult-project-buffer nil)
+       ("B" consult-buffer nil)
        ("o" other-window nil)
        ("d" kill-this-buffer nil))
 
@@ -1184,7 +1182,7 @@
        "toggle mode"
        ("r" rainbow-mode "rainbow mode")
        ("w" whitespace-mode "whitespace-mode")
-       ("t" counsel-load-theme "theme")
+       ("t" consult-theme "theme")
        ("v" visual-line-mode "visual line mode")
        ("f" flyspell-mode "check spell"))
 
@@ -1314,7 +1312,7 @@
      ^match^                   ^Search^                       ^edit^                        ^operation^
      ^^^─────────────────────────────────────────────────────────────────────────────────────────────────────────
      [_v_]: expand             [_s_]: swiper                  [_e_]: iedit                  [_t_]: send to vterm
-     [_-_]: contract           [_/_]: counsel-projectile-rg   [_h_]: highlight
+     [_-_]: contract           [_/_]: project-rg   [_h_]: highlight
      [_r_]: range              ^ ^                            [_c_]: change surround
      [_n_]: next
      [_N_]: prev
@@ -1324,14 +1322,13 @@
        ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all t)) nil :exit t)
        ("v" expand-and-highlight-region nil)
        ("-" contract-and-highlight-region nil)
-       ;; counsel-projectile-rg-initial-input
        ("s" swiper-thing-at-point nil)
        ("c" evil-surround-region nil)
-       ("/" my-counsel-projectile-rg nil)
+       ("/" my-project-rg nil)
        ("e" my-iedit-mode nil :exit t)
        ("h" highlight-region nil)
        ("r" my-change-range nil)
-       ("t" send-text-and-move-to-projectile-vterm nil :exit t)
+       ("t" send-text-and-move-to-project-vterm nil :exit t)
        ("n" my-ahs-forward nil)
        ("N" my-ahs-backward nil))
 
@@ -1368,7 +1365,7 @@
      (with-eval-after-load 'auto-highlight-symbol
        (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
        (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-counsel-projectile-rg)
+       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-project-rg)
        (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
 
      (defun wrap-mark-operation ()
