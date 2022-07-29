@@ -173,7 +173,7 @@
       (setq prefix-help-command #'embark-prefix-help-command)
 
       :config
-      (remove 'embark-mixed-indicator embark-indicators)
+      (delete 'embark-mixed-indicator embark-indicators)
       (add-to-list 'embark-indicators 'embark-which-key-indicator)
       (advice-add #'embark-completing-read-prompter
                   :around #'embark-hide-which-key-indicator)
@@ -225,8 +225,14 @@
     (use-package vertico
       :custom
       (vertico-cycle t)
+      :straight
+      (:host github :repo "minad/vertico" :files ("*.el" "extensions/*.el"))
       :bind (:map vertico-map
-                  ("DEL" . my-minibuffer-backward-kill))
+                  ("C-w" . my-minibuffer-backward-kill))
+      :hook
+      (rfn-eshadow-update-overlay . vertico-directory-tidy) ; Clean up file path when typing
+      (minibuffer-setup . vertico-repeat-save) ; Make sure vertico state is saved
+
       :init
       (vertico-mode))
   #+end_src
@@ -284,8 +290,9 @@
       (evil-global-set-key 'motion "j" 'evil-next-visual-line)
       (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
+      (evil-set-initial-state 'minibuffer-mode 'emacs)
       (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'dashboard-mode 'normal))
+      (evil-set-initial-state 'lisp-interaction-mode 'normal))
 
       ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
       ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)

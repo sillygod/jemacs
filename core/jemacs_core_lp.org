@@ -852,7 +852,7 @@
            :sync t))))
 
      (defun wrap-to-consult-read (prog fn input)
-       (let ((res (append (list prog) (list "%s\n") (funcall fn input))))
+       (let ((res (append (if (listp prog) prog (list prog)) (funcall fn input))))
          (list :command res)))
 
      (defun search-format (lines)
@@ -865,7 +865,7 @@
        (require 'json)
        (google-search-action
        (consult--read
-        (consult--async-command #'(lambda (input) (wrap-to-consult-read "printf" #'search-function input)))
+        (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
         :prompt "search: "
         :preview-key nil
         :sort nil)))

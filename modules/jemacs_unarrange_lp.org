@@ -129,7 +129,7 @@
     (use-package counsel-jq-yq
       :defer 1
       :straight (
-                 :local-repo (concat home-dir "local/counsel-jq-yq")
+                 :local-repo (concat home-dir "local/jq-yq")
                  )
       ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
       ;; :config
@@ -139,10 +139,9 @@
   #+end_src
 
   #+begin_src emacs-lisp
-    (eval `(use-package counsel-jq-yq
+    (eval `(use-package jq-yq
              :defer t
-             :straight (:local-repo ,(concat home-dir "local/counsel-jq-yq"))))
-
+             :straight (:local-repo ,(concat home-dir "local/jq-yq"))))
 
   #+end_src
 
@@ -552,8 +551,10 @@
 
   #+begin_src emacs-lisp
     (use-package dumb-jump
-      :init
-      (setq dumb-jump-selector 'ivy)
+      :custom
+      (dumb-jump-selector 'completing-read)
+      (dumb-jump-disable-obsolete-warnings t)
+      (dumb-jump-prefer-searcher 'rg)
       :defer t)
   #+end_src
 
@@ -884,7 +885,7 @@
 
       (define-leader-key-global
         "SPC" 'execute-extended-command
-        "/" 'consult-ripgrep
+        "/" 'my-project-rg
         "v" 'er/expand-region
         "u" 'universal-argument
         "'" 'new-terminal
@@ -914,15 +915,16 @@
         "j" '(:ignore t :which-key "jump")
         "jw" '(avy-goto-char-timer :which-key "avy goto words")
         "ju" '(avy-jump-url :which-key "goto url")
+        "jd" '(dumb-jump-go :which-key "goto definition") ;; limit the search area with the project root
         "jl" '(avy-goto-line :which-key "goto line")
-        "ji" '(counsel-jump-in-buffer :which-key "imenu")
+        "ji" '(jump-in-buffer :which-key "imenu")
         "j(" '(check-parens :which-key "check-parens"))
 
       (define-leader-key-global
         "r" '(:ignore t :which-key "resume/register")
         "rk" '(consult-yank-pop :which-key "kill ring")
-        "re" '(counsel-evil-registers :which-key "evil register")
-        "rl" '(ivy-resume :which-key "ivy-resume"))
+        "re" '(consult-register :which-key "evil register")
+        "rl" '(vertico-repeat :which-key "minibuffer-resume"))
 
       (define-leader-key-global
         "a" '(:ignore t :which-key "applications")

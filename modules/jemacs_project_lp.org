@@ -27,22 +27,6 @@
       (persp-mode))
   #+end_src
 
-* projectile
-  #+begin_src emacs-lisp :tangle no
-    (use-package projectile
-      :defer 1
-      :custom ((projectile-completion-system 'ivy))
-      :config
-      (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
-      (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
-      (projectile-mode +1))
-
-    ;; (use-package counsel-projectile
-    ;;   :after projectile
-    ;;   :defer 1
-    ;;   :config (counsel-projectile-mode))
-  #+end_src
-
 * project.el
 
   try to replace the projectile with built-in =project.el=
@@ -127,7 +111,7 @@
       (interactive "p")
       (evilnc-comment-or-uncomment-lines arg))
 
-    (defun counsel-jump-in-buffer ()
+    (defun jump-in-buffer ()
       "Jump in buffer with `counsel-imenu' or `consult-org-heading' if in 'org-mode'."
       (interactive)
       (call-interactively
@@ -186,24 +170,12 @@
          be passed to rg. It is read from the minibuffer if the function
          is called with a prefix argument."
       (interactive)
-      ;; change this to read a directory path
-      (let* ((search-directory (if (projectile-project-p)
-                                   (projectile-project-root)
-                                 (read-directory-name "Start from directory: ")))
-             (ivy--actions-list (copy-sequence ivy--actions-list))
-             (ignored
-              (mapconcat (lambda (i)
-                           (concat "--glob !" (shell-quote-argument i)))
-                         (append
-                          (projectile--globally-ignored-file-suffixes-glob)
-                          (projectile-ignored-files-rel)
-                          (projectile-ignored-directories-rel))
-                         " "))
-             (counsel-rg-base-command
-              (let ((counsel-ag-command counsel-rg-base-command))
-                (counsel--format-ag-command ignored "%s")))
+      (let* ((search-directory (or
+                                (project-root (project-current nil))
+                                (read-directory-name "Start from directory: ")))
+
              (initial-input (cond
-                             ((use-region-p) (buffer-substring (region-beginning) (region-end)))
+                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
                              ((and (boundp 'ahs-current-overlay)
                                    (not (eq ahs-current-overlay nil))) (buffer-substring (overlay-start ahs-current-overlay)
                                    (overlay-end ahs-current-overlay)))
@@ -212,23 +184,28 @@
         (when (region-active-p)
           (deactivate-mark))
 
-        (ivy-add-actions
-         'counsel-rg
-         counsel-projectile-rg-extra-actions)
 
-        (when (= (prefix-numeric-value current-prefix-arg) 4)
-          (setq current-prefix-arg '(16)))
-
-        (counsel-rg initial-input
-                    search-directory
-                    options
-                    (projectile-prepend-project-name
-                     (concat (car (if (listp counsel-rg-base-command)
-                                      counsel-rg-base-command
-                                    (split-string counsel-rg-base-command)))
-                             ": ")))))
+        (consult-ripgrep search-directory initial-input)))
 
   #+end_src
+
+* deprecated
+** projectile
+   replaced with the built-in project.el
+   #+begin_src emacs-lisp :tangle no
+     (use-package projectile
+       :defer 1
+       :custom ((projectile-completion-system 'ivy))
+       :config
+       (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
+       (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
+       (projectile-mode +1))
+
+     (use-package counsel-projectile
+       :after projectile
+       :defer 1
+       :config (counsel-projectile-mode))
+   #+end_src
 
 * provide package
 
