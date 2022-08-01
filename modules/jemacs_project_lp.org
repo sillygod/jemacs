@@ -144,9 +144,7 @@
     (defun new-terminal ()
       "New a terminal in project root or the current directory."
       (interactive)
-      (if (not (equal
-                nil
-                (project-root (project-current t))))
+      (if (not (project-current nil))
           (project-run-vterm)
         (vterm-other-window)))
 
@@ -170,9 +168,11 @@
          be passed to rg. It is read from the minibuffer if the function
          is called with a prefix argument."
       (interactive)
-      (let* ((search-directory (or
-                                (project-root (project-current nil))
-                                (read-directory-name "Start from directory: ")))
+      (let* ((search-directory (if (project-current nil)
+                                   (project-root (project-current nil))
+                                 (read-directory-name "Start from directory: ")))
+
+             (default-directory search-directory)
 
              (initial-input (cond
                              ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
@@ -183,7 +183,6 @@
 
         (when (region-active-p)
           (deactivate-mark))
-
 
         (consult-ripgrep search-directory initial-input)))
 

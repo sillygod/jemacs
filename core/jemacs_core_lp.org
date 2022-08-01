@@ -815,12 +815,11 @@
        (unless yas-global-mode (yas-global-mode 1))
        (yas-minor-mode 1))
 
-     (defun ivy-yas ()
+     (defun insert-yas ()
        "Lazy load ivy-yasnippet."
        (interactive)
        (load-yasnippet)
-       (require 'ivy-yasnippet)
-       (call-interactively 'ivy-yasnippet))
+       (call-interactively 'yas-insert-snippet))
    #+end_src
 
 ** xwidget relevant functions
@@ -869,6 +868,45 @@
         :prompt "search: "
         :preview-key nil
         :sort nil)))
+
+     (defun url-join (&rest parts)
+       (cl-reduce (lambda (a b)
+                    (let ((a (string-remove-suffix "/" a))
+                          (b (string-remove-prefix "/" b)))
+                      (concat a "/" b)))
+                  parts))
+
+     (defun artifachub-search-action (repo-name pkg-name &optional kind)
+       "kind=0 -> helm"
+       (url-join "https://artifacthub.io/packages"
+                 (cond
+                  ((equal kind 0) "helm")
+                  (t "helm"))
+                 repo-name
+                 pkg-name))
+
+     (defun transform-artifacthub-response (data)
+       "transform the response data of artifacthub to the completion read format."
+       (mapcar #'(lambda (d)
+                   (let* ((repository (assoc-default 'repository d))
+                          (repo-name (assoc-default 'name repository))
+                          (pkg-name (assoc-default 'name d)))
+                     (format "%s-%s" repo-name pkg-name))) (cdar data)))
+
+     (defun search-artifacthub-function (input)
+       "search the input keyword on artifachub."
+       (request-response-data
+        (request
+          "https://artifacthub.io/api/v1/packages/search"
+          :type "GET"
+          :params (list
+                   (cons "ts_query_web" input)
+                   (cons "facets" "false")
+                   (cons "sort" "relevance")
+                   (cons "limit" 10)
+                   (cons "offset" 0))
+          :parser 'json-read
+          :sync t)))
 
      (defun open-with-xwidget-action (x)
        (xwidget-webkit-browse-url

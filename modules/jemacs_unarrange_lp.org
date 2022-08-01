@@ -347,7 +347,7 @@
     (use-package yasnippet
       :defer 1
       :config
-      (add-to-list 'yas-snippet-dirs "/Users/jing/Desktop/spacemacs-private/snippets")
+      (add-to-list 'yas-snippet-dirs (expand-file-name "snippets" home-dir))
       ;; (yas-global-mode 1)
       (yas-minor-mode 1))
 
@@ -355,10 +355,40 @@
       :defer t
       :after yasnippet)
 
+    (when (featurep 'consult)
+
+      (defun consult-yasnippet--tmpl (&optional all-templates)
+        (barf-if-buffer-read-only)
+        (let* ((buffer-undo-list t) ; Prevent querying user (and showing previews) from updating the undo-history
+               (candidates
+                (consult-yasnippet--candidates
+                 (if all-templates
+                     (yas--all-templates (map-values yas--tables))
+                   (yas--all-templates (yas--get-snippet-tables))))))
+          (consult--read
+           candidates
+           :prompt "Choose a snippet: "
+           :annotate (consult-yasnippet--annotate candidates)
+           :lookup 'consult--lookup-cdr
+           :require-match t
+           :state (consult-yasnippet--preview)
+           :category 'yasnippet)))
+
+      (defun consult-yas (arg)
+        (interactive "P")
+        (let* ((template (consult-yasnippet--tmpl arg))
+               (thing-start ())
+               (thing-end ()))
+          (yas-expand-snippet (yas--template-content template)
+                              thing-start thing-end
+                              (yas--template-expand-env template)))))
+  #+end_src
+
+  ivy-yasnippet is deprecated because ivy is replaced by consult
+  #+begin_src emacs-lisp :tangle no
     (use-package ivy-yasnippet
       :defer t
-      :after yaanippet)
-
+      :after yasnippet)
   #+end_src
 
 * helpful
@@ -370,6 +400,7 @@
       ([remap describe-function] . helpful-function)
       ([remap describe-variable] . helpful-variable)
       ([remap describe-symbol] . helpful-symbol)
+      ([remap describe-keymap] . helpful-varaible)
       ([remap describe-key] . helpful-key))
   #+end_src
 
@@ -551,22 +582,26 @@
 
   #+begin_src emacs-lisp
     (use-package dumb-jump
+      :init
+      (add-hook 'xref-backend-functions #'dumb-jump-xref-activate)
       :custom
       (dumb-jump-selector 'completing-read)
-      (dumb-jump-disable-obsolete-warnings t)
       (dumb-jump-prefer-searcher 'rg)
       :defer t)
   #+end_src
 
 * lsp mode
 
-  run =company-diag= to check what the company-backen is being used.
+  run =company-diag= to check what the company-backend is being used.
   =(setq lsp-keymap-prefix "SPC m")= this will only affect the display info of whichkey.
 
 
   If you want a breadcrumb to hint current position, add the following setting.
   #+begin_src emacs-lisp :tangle no
     (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
+
+    ;; it's deprecated now for me
+    (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
   #+end_src
 
   #+begin_src emacs-lisp
@@ -595,7 +630,6 @@
       (lsp-enable-imenu nil)
       (lsp-enable-links nil))
 
-    (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
 
     (use-package dap-mode
       :defer t
@@ -964,7 +998,7 @@
 
       (define-leader-key-global
         "i" '(:ignore t :which-key "insert")
-        "is" '(ivy-yas :which-key "snippets"))
+        "is" '(insert-yas :which-key "snippets"))
 
       (define-leader-key-global
         "l" '(:ignore t :which-key "layout")

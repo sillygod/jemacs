@@ -203,7 +203,6 @@
             (with-no-warnings (font-lock-fontify-buffer)))))
       :config
       (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
-      (setq completion-ignore-case t) ;; make ivy completion case insensitive
       (setq org-roam-node-display-template (concat
                                             "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
@@ -255,12 +254,6 @@
           (setq org-roam-capture-additional-template-props (list :finalize 'find-file))
           (org-roam-capture--capture))))
 
-    (defun ora-org-roam-find-file ()
-      (interactive)
-      (unless org-roam-mode (org-roam-mode))
-      (ivy-read "File: " (org-roam--get-title-path-completions)
-                :action #'ora-org-roam-find-file-action
-                :caller 'ora-org-roam-find-file))
   #+end_src
 
 * ob-async
@@ -316,6 +309,7 @@
 
   #+begin_src emacs-lisp
     (defvar pair-list nil) ;; a property list
+    (defvar secret-file-path "~/Dropbox/myorgs/management/learning.org.gpg")
 
     (defun iterate-org-level (&optional input)
       (interactive)
@@ -324,7 +318,7 @@
       (require 'epa-file)
       (require 'org-element)
       (with-temp-buffer
-        (epa-file-insert-file-contents "~/Dropbox/myorgs/management/learning.org.gpg")
+        (epa-file-insert-file-contents secret-file-path)
         (setq pair-list nil)
         (cl-loop for i from 0
                  for ele in (org-element-parse-buffer 'headline)
@@ -334,9 +328,9 @@
                            (title (plist-get prop :title))
                            (pass (plist-get prop :SECRET)))
 
-                      (setq pair-list (plist-put pair-list (intern (message ":%s--%s" title domain)) pass))))
+                      (setq pair-list (plist-put pair-list (intern (format ":%s--%s" title domain)) pass))))
         (cl-loop for i from 0 for ele in pair-list
-                 when (cl-evenp i) collect ele)))
+                 when (cl-evenp i) collect (symbol-name ele))))
 
 
     (defun get-se-action (x)
@@ -344,23 +338,35 @@
        (base64-decode-string
         (decode-coding-string
          (plist-get pair-list (intern x)) 'utf-8)))
-      (message "success"))
+      (message "copy secret into clipboard"))
 
     (defun get-secret ()
       (interactive)
-      (ivy-read "choose: " (iterate-org-level)
-                :action #'get-se-action
-                :caller 'get-secret))
+      (cond
+       ((featurep 'ivy)
+        (ivy-read
+         "choose: " (iterate-org-level)
+         :action #'get-se-action
+         :caller 'get-secret))
+       ((featurep 'consult)
+        (let ((candidates (iterate-org-level)))
+          (get-se-action
+           (consult--read
+            candidates
+            :prompt "choose: "
+            :sort nil
+            :preview-key nil
+            :require-match t))))))
+
 
   #+end_src
 
 * org copy subtree's content
 
   #+begin_src emacs-lisp
-    (defun org-copy-subtree-content (&optional n)
+    (defun org-copy-subtree-content (arg)
       "copy subtree content without header"
-      (interactive "p")
-      (print n) ;; it's weird sometime the vertico minibuffer will be stucked
+      (interactive "P")
       ;; but with this, it can resolve that problem.
       (save-excursion
         (org-back-to-heading)
@@ -369,7 +375,12 @@
               (end (point)))
           (outline-end-of-subtree)
           (setq end (point))
-          (kill-new (buffer-substring-no-properties beg end)))))
+          (if arg
+              (kill-new (buffer-substring-no-properties beg end))
+            (org-copy-visible beg end))))
+
+      ;; it's weird sometime the vertico minibuffer will be stucked
+      (message "copy content without header"))
   #+end_src
 
 * org-insert-toc

@@ -97,6 +97,25 @@
       :defer t)
   #+end_src
 
+* some built-in package
+
+  #+begin_src emacs-lisp
+
+    (use-package emacs
+      ;; when you want to customize something defined in C source code
+      ;; put them here
+      :custom
+      (completion-ignore-case t) ;; make the completion case insensitive
+      (read-buffer-completion-ignore-case t)
+      (enable-recursive-minibuffers t))
+
+    (use-package simple
+      :straight (:type built-in)
+      :custom
+      (read-extended-command-predicate #'command-completion-default-include-p))
+
+  #+end_src
+
 * consult & corfu & embark
   a nice article for comparison
   https://macowners.club/posts/from-ivy-to-vertico/
@@ -113,6 +132,7 @@
       (consult-async-input-throttle 0.1)
       (consult-async-input-debounce 0.0)
       (consult-async-refresh-delay 0.1)
+      (consult-goto-line-numbers nil)
       (xref-show-xrefs-function #'consult-xref)
       (xref-show-definitions-function #'consult-xref)
       :bind (:map minibuffer-local-map
@@ -222,9 +242,17 @@
             (delete-minibuffer-contents))
         (backward-delete-char arg)))
 
+    (defun sort-prefix-first (files)
+      (let ((files (vertico-sort-history-length-alpha files))
+            (input (buffer-substring (minibuffer-prompt-end)
+                                     (max (minibuffer-prompt-end) (point)))))
+        (nconc (seq-filter (lambda (x) (string-prefix-p (downcase input) (downcase x))) files)
+               (seq-remove (lambda (x) (string-suffix-p "/" x)) files))))
+
     (use-package vertico
       :custom
       (vertico-cycle t)
+      (vertico-sort-function #'sort-prefix-first)
       :straight
       (:host github :repo "minad/vertico" :files ("*.el" "extensions/*.el"))
       :bind (:map vertico-map
