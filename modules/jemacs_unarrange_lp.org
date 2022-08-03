@@ -340,7 +340,7 @@
 
 * yasnippet
 
-  TODO: find a way to replace the hardcode path
+  TODO: replace ivy with consult
   =(yas-reload-all)= will rebuild the snippets, This will be trigger when enable yas-xx-mode
 
   #+begin_src emacs-lisp
@@ -581,6 +581,19 @@
   a jump to definition with search tool (ag, rg)
 
   #+begin_src emacs-lisp
+    (defvar-local dumb-temp-search-directory nil)
+
+    (defun my-dumb-jump-get-project-root (filepath)
+      "a very hack way to customize the way to search the project of dumb-jump"
+      (let ((search-directory (or dumb-temp-search-directory
+                                  (if (project-current nil)
+                                  (project-root (project-current nil))
+                                (read-directory-name "Start from directory: ")))))
+        (setq-local dumb-temp-search-directory search-directory)
+        search-directory))
+
+    (advice-add 'dumb-jump-get-project-root :override #'my-dumb-jump-get-project-root)
+
     (use-package dumb-jump
       :init
       (add-hook 'xref-backend-functions #'dumb-jump-xref-activate)

@@ -30,7 +30,6 @@
 * project.el
 
   try to replace the projectile with built-in =project.el=
-  todo implement my own project switch project
 
   #+begin_src emacs-lisp
     (defun project-try-local (dir)
@@ -144,7 +143,7 @@
     (defun new-terminal ()
       "New a terminal in project root or the current directory."
       (interactive)
-      (if (not (project-current nil))
+      (if (project-current nil)
           (project-run-vterm)
         (vterm-other-window)))
 
