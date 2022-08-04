@@ -25,7 +25,7 @@
   let the input in the ivy-minibuffer empty when opening the it.
 
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package ivy
       :ensure t
       :diminish
@@ -72,12 +72,12 @@
   Finally, =Ctrl-c Ctrl-c= to commit change
   there are some key binding in the swiper-map
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package swiper
       :bind (("C-s" . swiper)))
   #+end_src
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package counsel
       :bind (("M-x" . counsel-M-x)
              ("C-x b" . counsel-ibuffer)
@@ -90,10 +90,192 @@
       :config
       (setq counsel-find-file-at-point t))
 
-    ;; counsel-search will use the package request with this function
+  #+end_src
+
+  #+begin_src emacs-lisp
     (use-package request
       :defer t)
+  #+end_src
 
+* some built-in package
+
+  #+begin_src emacs-lisp
+
+    (use-package emacs
+      ;; when you want to customize something defined in C source code
+      ;; put them here
+      :custom
+      (completion-ignore-case t) ;; make the completion case insensitive
+      (read-buffer-completion-ignore-case t)
+      (enable-recursive-minibuffers t))
+
+    (use-package simple
+      :straight (:type built-in)
+      :custom
+      (read-extended-command-predicate #'command-completion-default-include-p))
+
+  #+end_src
+
+* consult & corfu & embark
+  a nice article for comparison
+  https://macowners.club/posts/from-ivy-to-vertico/
+
+  consult is another completion package
+
+  #+begin_src emacs-lisp
+    (use-package consult
+      :defer t
+      :commands
+      (consult--read)
+      :custom
+      (consult-async-min-input 2)
+      (consult-async-input-throttle 0.1)
+      (consult-async-input-debounce 0.0)
+      (consult-async-refresh-delay 0.1)
+      (consult-goto-line-numbers nil)
+      (xref-show-xrefs-function #'consult-xref)
+      (xref-show-definitions-function #'consult-xref)
+      :bind (:map minibuffer-local-map
+                  ("C-k" . vertico-previous)
+                  ("C-j" . vertico-next)
+                  ("C-r" . consult-history))
+      :config
+      (consult-customize
+       consult-theme
+       :preview-key '(:debounce 0.2 any)
+       consult-ripgrep consult-git-grep consult-grep
+       consult-bookmark consult-recent-file consult-xref
+       consult--source-bookmark consult--source-recent-file
+       consult--source-project-recent-file
+       :preview-key (kbd "C-l")))
+  #+end_src
+
+
+  #+begin_src emacs-lisp
+    (defun embark-which-key-indicator ()
+      "An embark indicator that displays keymaps using which-key.
+    The which-key help message will show the type and value of the
+    current target followed by an ellipsis if there are further
+    targets."
+      (lambda (&optional keymap targets prefix)
+        (if (null keymap)
+            (which-key--hide-popup-ignore-command)
+          (which-key--show-keymap
+           (if (eq (plist-get (car targets) :type) 'embark-become)
+               "Become"
+             (format "Act on %s '%s'%s"
+                     (plist-get (car targets) :type)
+                     (embark--truncate-target (plist-get (car targets) :target))
+                     (if (cdr targets) "…" "")))
+           (if prefix
+               (pcase (lookup-key keymap prefix 'accept-default)
+                 ((and (pred keymapp) km) km)
+                 (_ (key-binding prefix 'accept-default)))
+             keymap)
+           nil nil t (lambda (binding)
+                       (not (string-suffix-p "-argument" (cdr binding))))))))
+
+    (defun embark-hide-which-key-indicator (fn &rest args)
+      "Hide the which-key indicator immediately when using the completing-read prompter."
+      (which-key--hide-popup-ignore-command)
+      (let ((embark-indicators
+             (remq #'embark-which-key-indicator embark-indicators)))
+          (apply fn args)))
+
+    (use-package embark
+      :bind
+      (("C-c C-c" . embark-act)   ;; pick some comfortable binding
+       ("C-;" . embark-dwim)      ;; good alternative: M-.
+       ("C-h B" . embark-bindings)) ;; alternative for `describe-bindings'
+
+      :init
+      ;; Optionally replace the key help with a completing-read interface
+      (setq prefix-help-command #'embark-prefix-help-command)
+
+      :config
+      (delete 'embark-mixed-indicator embark-indicators)
+      (add-to-list 'embark-indicators 'embark-which-key-indicator)
+      (advice-add #'embark-completing-read-prompter
+                  :around #'embark-hide-which-key-indicator)
+      ;; Hide the mode line of the Embark live/completions buffers
+      (add-to-list 'display-buffer-alist
+                   '("\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
+                     nil
+                     (window-parameters (mode-line-format . none)))))
+
+    ;; Consult users will also want the embark-consult package.
+    (use-package embark-consult
+      :after (embark consult)
+      :demand t ; only necessary if you have the hook below
+      ;; if you want to have consult previews as you move around an
+      ;; auto-updating embark collect buffer
+      :hook
+      (embark-collect-mode . consult-preview-at-point-mode))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (defun company-first-initialism (_component index _total)
+      (when (and (company--active-p) (= index 0))
+        #'orderless-initialism))
+
+    (use-package orderless
+      :custom
+      (completion-styles '(orderless partial-completion))
+      (orderless-style-dispatchers '(company-first-initialism))  ;; disable orderless in company mode
+      (completion-category-overrides '((file (styles basic partial-completion)))))
+  #+end_src
+
+  a package completion in buffer to replace the company package
+  #+begin_src emacs-lisp
+    (use-package corfu
+      :init
+      (corfu-mode)
+      :custom
+      (corfu-auto t)
+      (corfu-auto-delay 0.1)
+      (corfu-auto-prefix 2))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (defun my-minibuffer-backward-kill (arg)
+      "When minibuffer is completing a file name delete up to parent
+    folder, otherwise delete a char"
+      (interactive "p")
+      (if minibuffer-completing-file-name
+          (if (string-match-p "/." (minibuffer-contents))
+              (zap-up-to-char (- arg) ?/)
+            (delete-minibuffer-contents))
+        (backward-delete-char arg)))
+
+    (defun sort-prefix-first (candidates)
+      (let ((candidates (vertico-sort-history-length-alpha candidates))
+            (input (buffer-substring (minibuffer-prompt-end)
+                                     (max (minibuffer-prompt-end) (point)))))
+        (if (equal input "")
+            candidates
+          (nconc (seq-filter (lambda (x) (string-prefix-p (downcase input) (downcase x))) candidates)
+                 (seq-remove (lambda (x) (string-prefix-p (downcase input) (downcase x))) candidates)))))
+
+    (use-package vertico
+      :custom
+      (vertico-cycle t)
+      (vertico-sort-function #'sort-prefix-first)
+      :straight
+      (:host github :repo "minad/vertico" :files ("*.el" "extensions/*.el"))
+      :bind (:map vertico-map
+                  ("C-w" . my-minibuffer-backward-kill))
+      :hook
+      (rfn-eshadow-update-overlay . vertico-directory-tidy) ; Clean up file path when typing
+      (minibuffer-setup . vertico-repeat-save) ; Make sure vertico state is saved
+
+      :init
+      (vertico-mode))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package marginalia
+      :init
+      (marginalia-mode))
   #+end_src
 
 * avy
@@ -143,8 +325,9 @@
       (evil-global-set-key 'motion "j" 'evil-next-visual-line)
       (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
+      (evil-set-initial-state 'minibuffer-mode 'emacs)
       (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'dashboard-mode 'normal))
+      (evil-set-initial-state 'lisp-interaction-mode 'normal))
 
       ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
       ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
