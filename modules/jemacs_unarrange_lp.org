@@ -600,6 +600,7 @@
       :custom
       (dumb-jump-selector 'completing-read)
       (dumb-jump-prefer-searcher 'rg)
+      (dumb-jump-force-searcher 'rg)
       :defer t)
   #+end_src
 
@@ -1034,7 +1035,7 @@
         "s" '(:ignore t :which-key "search")
         "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
         "ss" '(consult-line :which-key "consult-line")
-        "sS" '(consult-line-multi :which-key "swiper-all"))
+        "sS" '(consult-line-multi :which-key "consult-line-all"))
 
       (define-leader-key-global
         "g" '(:ignore t :which-key "git")
@@ -1360,8 +1361,8 @@
 
      ^match^                   ^Search^                       ^edit^                        ^operation^
      ^^^─────────────────────────────────────────────────────────────────────────────────────────────────────────
-     [_v_]: expand             [_s_]: swiper                  [_e_]: iedit                  [_t_]: send to vterm
-     [_-_]: contract           [_/_]: project-rg   [_h_]: highlight
+     [_v_]: expand             [_s_]: consult-line            [_e_]: iedit                  [_t_]: send to vterm
+     [_-_]: contract           [_/_]: project-rg              [_h_]: highlight
      [_r_]: range              ^ ^                            [_c_]: change surround
      [_n_]: next
      [_N_]: prev
@@ -1371,7 +1372,7 @@
        ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all t)) nil :exit t)
        ("v" expand-and-highlight-region nil)
        ("-" contract-and-highlight-region nil)
-       ("s" swiper-thing-at-point nil)
+       ("s" consult-line nil)
        ("c" evil-surround-region nil)
        ("/" my-project-rg nil)
        ("e" my-iedit-mode nil :exit t)

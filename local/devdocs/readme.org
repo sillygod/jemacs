@@ -3,5 +3,6 @@
 To provide a quick documentation look up feature for emacs. =devdocs-search= will open the browser and show the search result on the devdocs.io.
 
 * References
-  
+
 - https://devdocs.io/python~3.7/library/itertools#itertools.cycle
+- https://github.com/astoff/devdocs.el/blob/main/devdocs.el

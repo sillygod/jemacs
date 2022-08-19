@@ -112,7 +112,8 @@
     (use-package simple
       :straight (:type built-in)
       :custom
-      (read-extended-command-predicate #'command-completion-default-include-p))
+      ;; (read-extended-command-predicate #'command-completion-default-include-p))
+      (read-extended-command-predicate nil))
 
   #+end_src
 
@@ -214,14 +215,16 @@
   #+end_src
 
   #+begin_src emacs-lisp
-    (defun company-first-initialism (_component index _total)
-      (when (and (company--active-p) (= index 0))
-        #'orderless-initialism))
+
+    (defun my-company-transform (candidates)
+      (print (string last-command-event))
+      candidates)
+
+    (setq company-transformers nil)
 
     (use-package orderless
       :custom
       (completion-styles '(orderless partial-completion))
-      (orderless-style-dispatchers '(company-first-initialism))  ;; disable orderless in company mode
       (completion-category-overrides '((file (styles basic partial-completion)))))
   #+end_src
 
@@ -258,7 +261,7 @@
 
     (use-package vertico
       :custom
-      (vertico-cycle t)
+      (vertico-cycle nil)
       (vertico-sort-function #'sort-prefix-first)
       :straight
       (:host github :repo "minad/vertico" :files ("*.el" "extensions/*.el"))
@@ -306,14 +309,17 @@
   #+begin_src emacs-lisp
     (use-package evil
       :defer 0
-      :init
-      (setq evil-want-keybinding nil) ;; this will cause some evil keybinding
+      :custom
+      (evil-want-C-i-jump nil)
+      (evil-want-C-u-scroll t)
+      (evil-want-integration t)
+      (evil-want-keybinding nil) ;; this will cause some evil keybinding
       ;; of other modes not working when it's set to true
+      (evil-goto-definition-functions '(evil-goto-definition-imenu
+                                         evil-goto-definition-xref
+                                         evil-goto-definition-semantic
+                                         evil-goto-definition-search))
       :config
-      (setq evil-want-integration t)
-      (setq evil-want-C-u-scroll t)
-      (setq evil-want-C-i-jump nil)
-      (evil-mode 1)
       (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
       ;; Use visual line motions even outside of visual-line-mode buffers
       (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
@@ -321,18 +327,18 @@
       (evil-define-key 'normal prog-mode-map (kbd "g h") 'show-error-or-doc)
       (evil-define-key 'normal prog-mode-map (kbd "U") 'undo-redo)
 
-
       (evil-global-set-key 'motion "j" 'evil-next-visual-line)
       (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
       (evil-set-initial-state 'minibuffer-mode 'emacs)
       (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'lisp-interaction-mode 'normal))
+      (evil-set-initial-state 'lisp-interaction-mode 'normal)
+      (evil-mode 1))
 
-      ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-      ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-      ;; (add-hook 'evil-insert-state-exit-hook 'im-remember)
-      ;; (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
+          ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+          ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+          ;; (add-hook 'evil-insert-state-exit-hook 'im-remember)
+          ;; (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
   #+end_src
 
   evil-matchit  make =%= to be able to jump to and back the tag
@@ -351,6 +357,7 @@
       (delete 'vterm evil-collection-mode-list)
       (delete 'lispy evil-collection-mode-list)
       (delete 'ivy evil-collection-mode-list)
+      (delete 'go-mode evil-collection-mode-list)
       (delete 'view evil-collection-mode-list)
       ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
       (setq evil-collection-company-use-tng nil)

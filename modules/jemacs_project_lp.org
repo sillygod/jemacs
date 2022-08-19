@@ -124,6 +124,12 @@
       `(let ((default-directory ,dir))
          ,@body))
 
+    (defun project-vterm-setup (major-mode)
+      "Perform some setup instruction when spawning a new shell for certain mode."
+      (cond
+       ((eq major-mode 'python-mode) (progn
+                                       (vterm-send-string "source $(poetry env info --path)/bin/activate")
+                                       (vterm-send-return)))))
 
     (defun project-run-vterm (&optional arg)
       "Invoke `vterm' in the project's root.
@@ -131,13 +137,15 @@
     Switch to the project specific term buffer if it already exists.
     Use a prefix argument ARG to indicate creation of a new process instead."
       (interactive "P")
-      (let* ((project (project-root (project-current t)))
+      (let* ((mmode major-mode)
+             (project (project-root (project-current t)))
              (buffer (format "*%s %s*" "vterm" project)))
         (unless (buffer-live-p (get-buffer buffer))
           (unless (require 'vterm nil 'noerror)
             (error "Package 'vterm' is not available"))
           (project-with-default-dir project
-            (vterm-other-window buffer)))
+            (vterm-other-window buffer)
+            (project-vterm-setup mmode)))
         (pop-to-buffer buffer)))
 
     (defun new-terminal ()

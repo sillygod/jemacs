@@ -299,6 +299,9 @@
     (use-package restclient
       :defer t)
 
+    (use-package restclient-jq
+      :defer t)
+
     (use-package ob-restclient
       :defer t
       :after (org restclient)
@@ -493,6 +496,7 @@
          (shell . t)
          (dot . t)
          (sql . t)
+         (lua . t)
          (python . t)))
 
       (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
