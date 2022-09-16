@@ -497,6 +497,7 @@
          (dot . t)
          (sql . t)
          (lua . t)
+         (js . t)
          (python . t)))
 
       (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))

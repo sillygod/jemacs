@@ -687,19 +687,23 @@
   By default, it's path is =~/.emacs.d/.mc-lists.el= and I customize the storing path already.
   Research how evil-mc customize the multiple-cursor
 
+  https://github.com/magnars/multiple-cursors.el#unknown-commands
+
   #+begin_src emacs-lisp
     (use-package multiple-cursors
-      :init
-      (global-set-key (kbd "C-S-a") 'mc/edit-lines)
-      (global-set-key (kbd "C-S-<down-mouse-1>") 'mc/add-cursor-on-click)
-      (global-set-key (kbd "<C-S-right>") 'mc/mark-next-like-this)
-      (global-set-key (kbd "<C-S-left>") 'mc/mark-previous-like-this)
+      :custom
+      (mc/always-run-for-all t)
       :commands
       (mc/edit-lines
        mc/mark-all-like-this
        mc/add-cursor-on-click
        mc/mark-next-like-this
        mc/mark-previous-like-this))
+
+    (use-package evil-mc
+      :after evil
+      :config
+      (global-evil-mc-mode 1))
   #+end_src
 
   #+begin_src emacs-lisp
@@ -1024,6 +1028,7 @@
       (define-leader-key-global
         "n" '(:ignore t :which-key "narrow")
         "nf" '(narrow-to-defun :which-key "narrow to defun")
+        "nr" '(narrow-to-region :which-key "narrow to region")
         "nw" '(widen :which-key "widen"))
 
       (define-leader-key-global
@@ -1378,6 +1383,7 @@
        ("e" my-iedit-mode nil :exit t)
        ("h" highlight-region nil)
        ("r" my-change-range nil)
+       ("l" google-search)
        ("t" send-text-and-move-to-project-vterm nil :exit t)
        ("n" my-ahs-forward nil)
        ("N" my-ahs-backward nil))

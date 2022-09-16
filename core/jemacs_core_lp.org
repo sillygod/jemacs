@@ -862,12 +862,16 @@
        (interactive)
        (require 'request)
        (require 'json)
-       (google-search-action
-       (consult--read
-        (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
-        :prompt "search: "
-        :preview-key nil
-        :sort nil)))
+       (let ((initial-input (cond
+                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
+                             (t nil))))
+         (google-search-action
+          (consult--read
+           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
+           :prompt "search: "
+           :initial initial-input
+           :preview-key nil
+           :sort nil))))
 
      (defun url-join (&rest parts)
        (cl-reduce (lambda (a b)

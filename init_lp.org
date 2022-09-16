@@ -43,8 +43,8 @@
 
 * set up where the packages to be installed
   #+begin_src emacs-lisp
-    (setq package-user-dir (concat user-emacs-directory "/" "elpa"))
-    (setq mc/list-file (concat user-emacs-directory "/" "mc-lists.el"))
+    (setq package-user-dir (concat user-emacs-directory "elpa"))
+    (setq mc/list-file (concat user-emacs-directory "mc-lists.el"))
     (setq auto-save-list-file-prefix
           (concat
            (expand-file-name "auto-save-list" user-emacs-directory)

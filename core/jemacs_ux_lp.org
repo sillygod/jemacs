@@ -235,6 +235,7 @@
       (corfu-mode)
       :custom
       (corfu-auto t)
+      (corfu-preselect-first t)
       (corfu-auto-delay 0.1)
       (corfu-auto-prefix 2))
   #+end_src
