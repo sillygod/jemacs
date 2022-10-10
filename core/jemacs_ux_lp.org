@@ -231,13 +231,41 @@
   a package completion in buffer to replace the company package
   #+begin_src emacs-lisp
     (use-package corfu
+      :after evil
+      :config
+      (evil-make-overriding-map corfu-map)
+      (advice-add 'corfu--setup :after 'evil-normalize-keymaps)
+      (advice-add 'corfu--teardown :after 'evil-normalize-keymaps)
       :init
-      (corfu-mode)
+      (global-corfu-mode)
+      :bind (:map corfu-map
+                  ("C-j" . corfu-next)
+                  ("C-k" . corfu-previous)
+                  ("<escape>" . corfu-quit)
+                  ("SPC" . corfu-insert-separator))
       :custom
       (corfu-auto t)
+      (corfu-scroll-margin 4)
+      (corfu-min-width 90)
       (corfu-preselect-first t)
       (corfu-auto-delay 0.1)
       (corfu-auto-prefix 2))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package kind-icon
+      :after corfu
+      :custom
+      (kind-icon-default-face 'corfu-default) ; to compute blended backgrounds correctly
+      :config
+      (add-to-list 'corfu-margin-formatters #'kind-icon-margin-formatter))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package cape
+      :init
+      (add-to-list 'completion-at-point-functions #'cape-file)
+      (add-to-list 'completion-at-point-functions #'cape-dabbrev))
   #+end_src
 
   #+begin_src emacs-lisp
@@ -452,8 +480,8 @@
       ;; In evil-collection, it adjust the key binding for the company-mode
       ;; NOTE: Furthermore, it also disable the pre-select behavior when
       ;; showing the completion candidates.
-      (define-key company-active-map (kbd "<return>") 'company-complete-selection)
-      (global-company-mode 1))
+      (define-key company-active-map (kbd "<return>") 'company-complete-selection))
+      ;; (global-company-mode 1))
   #+end_src
 
   NOTE: temporarily disable =company-tabnine= because it consumes lots of cpu.

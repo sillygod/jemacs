@@ -621,7 +621,8 @@
   #+begin_src emacs-lisp
     (use-package lsp-mode
       :init
-      (setq lsp-completion-provider :capf) ;; the official recommends use this
+      ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
+      (setq lsp-completion-provider :none) ;; the official recommends use this
       (setq lsp-enable-symbol-highlighting nil)
       (setq lsp-signature-render-documentation nil)
       (setq read-process-output-max (* 1024 1024))
