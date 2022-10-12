@@ -57,3 +57,4 @@
 - https://www.masteringemacs.org/article/polymode-multiple-major-modes-how-to-use-sql-python-in-one-buffer
 - https://gist.github.com/grafov/10985431
 - https://github.com/TxGVNN/emacs-k8s-mode
+- https://github.com/abrochard/kubel

@@ -764,6 +764,12 @@
              (kill-buffer-and-window)
            (kill-buffer))))
 
+     (defun copy-file-path-with-lino ()
+       (interactive)
+       (let ((info (concat (dired-replace-in-string (getenv "HOME") "~" (buffer-file-name)) ":" (number-to-string (line-number-at-pos)))))
+         (kill-new info)
+         (message "copy %s to clipboard" info)))
+
      (defun copy-file-path ()
        "Copy and show the file path of the current buffer."
        (interactive)

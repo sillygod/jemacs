@@ -20,7 +20,7 @@
   #+begin_src emacs-lisp
     (use-package perspective
       :diminish persp-mode
-      :commands (persp-switch)
+      :commands (persp-switch persp-names)
       :custom
       (persp-modestring-short t)
       :config
@@ -32,6 +32,28 @@
   try to replace the projectile with built-in =project.el=
 
   #+begin_src emacs-lisp
+    (cl-defmethod project-root ((project (head local)))
+      (cadr project))
+
+    (cl-defmethod project-files ((project (head local)) &optional dirs)
+      (mapcan
+       (lambda (dir)
+         (project--files-in-directory dir
+                                      (project--dir-ignores project dir)))
+       (or dirs
+           (list (project-root project)))))
+
+    (defun project-try-no-vc-local (dir)
+      "Determine if DIR is a non-Git project."
+      (catch 'ret
+      (let ((pr-flags '((".project")
+                        ("go.mod" "Cargo.toml" "project.clj" "pom.xml" "package.json" "pyproject.toml") ;; higher priority
+                        ("Makefile" "README.org" "readme.org" "README.md"))))
+        (dolist (current-level pr-flags)
+          (dolist (f current-level)
+            (when-let ((root (locate-dominating-file dir f)))
+              (throw 'ret (list 'local root))))))))
+
     (defun project-try-local (dir)
       "Determine if DIR is a non-Git project."
       (catch 'ret
@@ -43,7 +65,7 @@
               (when-let ((root (locate-dominating-file dir f)))
                 (throw 'ret (list 'vc 'Git root))))))))
 
-    (setq project-find-functions '(project-try-local project-try-vc))
+    (setq project-find-functions '(project-try-vc project-try-local))
 
     (defun consult-switch-project ()
       "Switch project with consult interface"

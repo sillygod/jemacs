@@ -229,7 +229,25 @@
   #+end_src
 
   a package completion in buffer to replace the company package
+  https://github.com/minad/corfu/wiki#example-configuration-with-flex
+
   #+begin_src emacs-lisp
+    (defun corfu-insert-separator-or-complete ()
+      (interactive)
+      (pcase-let* ((`(,beg ,end . ,_) completion-in-region--data)
+                   (str (buffer-substring-no-properties beg end))
+                   (candidate (nth corfu--index corfu--candidates)))
+
+        ;; (when (equal str candidate)
+        ;;   (call-interactively 'corfu-insert)
+        ;;   (insert " "))
+
+        (if (not (derived-mode-p 'prog-mode))
+            (call-interactively 'corfu-insert-separator)
+          (progn
+            (insert " ")
+            (call-interactively 'corfu-quit)))))
+
     (use-package corfu
       :after evil
       :config
@@ -242,7 +260,9 @@
                   ("C-j" . corfu-next)
                   ("C-k" . corfu-previous)
                   ("<escape>" . corfu-quit)
-                  ("SPC" . corfu-insert-separator))
+                  ("<tab>". corfu-insert)
+                  ("SPC" . corfu-insert-separator-or-complete))
+
       :custom
       (corfu-auto t)
       (corfu-scroll-margin 4)

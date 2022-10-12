@@ -203,8 +203,8 @@
             (with-no-warnings (font-lock-fontify-buffer)))))
       :config
       (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
-      (setq org-roam-node-display-template (concat
-                                            "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
+      (setq org-roam-node-display-template
+            (concat "${title:*}" (propertize "${tags:30}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
             `(("d" "default" entry
                "* %<%H:%M> %?"
