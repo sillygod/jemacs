@@ -619,6 +619,52 @@
   #+end_src
 
   #+begin_src emacs-lisp
+    (defun add-xref-dumb-jump-before-xref-lsp (arg)
+      (when lsp-enable-xref
+        (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
+
+    (defun get-xref-find-backends ()
+      (let (backends
+            backend)
+        (dolist (f xref-backend-functions)
+          (when (functionp f)
+            (setq backend (funcall f))
+            (when backend
+              (cl-pushnew (funcall f) backends))))
+        (reverse backends)))
+
+    (defun my-xref--create-fetcher (input kind arg)
+      "Return an xref list fetcher function.
+
+    It revisits the saved position and delegates the finding logic to
+    the xref backend method indicated by KIND and passes ARG to it."
+      (let* ((orig-buffer (current-buffer))
+             (orig-position (point))
+             (backends (get-xref-find-backends))
+             (method (intern (format "xref-backend-%s" kind))))
+        (lambda ()
+          (save-excursion
+            ;; Xref methods are generally allowed to depend on the text
+            ;; around point, not just on their explicit arguments.
+            ;;
+            ;; There is only so much we can do, however, to recreate that
+            ;; context, given that the user is free to change the buffer
+            ;; contents freely in the meantime.
+            (when (buffer-live-p orig-buffer)
+              (set-buffer orig-buffer)
+              (ignore-errors (goto-char orig-position)))
+            (let (xrefs)
+              (cl-dolist (backend backends)
+                (ignore-errors
+                  (setq xrefs (funcall method backend arg))
+                  (when xrefs
+                    (cl-return))))
+              (unless xrefs
+                (xref--not-found-error kind input))
+              xrefs)))))
+
+
+
     (use-package lsp-mode
       :init
       ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
@@ -627,6 +673,7 @@
       (setq lsp-signature-render-documentation nil)
       (setq read-process-output-max (* 1024 1024))
       ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
+
       :commands
       (lsp)
       :hook
@@ -643,7 +690,10 @@
       (lsp-enable-folding nil)
       (lsp-enable-snippet nil)
       (lsp-enable-imenu nil)
-      (lsp-enable-links nil))
+      (lsp-enable-links nil)
+      :config
+      (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+      (advice-add 'lsp-managed-mode :before 'add-xref-dumb-jump-before-xref-lsp))
 
 
     (use-package dap-mode
@@ -977,6 +1027,11 @@
         "r" '(:ignore t :which-key "resume/register")
         "rk" '(consult-yank-pop :which-key "kill ring")
         "re" '(consult-register :which-key "evil register")
+
+        "rm" '(:ignore t :which-key "mark ring")
+        "rml" '(consult-mark :which-key "local mark ring")
+        "rmg" '(consult-global-mark :which-key "global mark ring")
+
         "rl" '(vertico-repeat :which-key "minibuffer-resume"))
 
       (define-leader-key-global

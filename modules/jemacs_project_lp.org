@@ -65,7 +65,7 @@
               (when-let ((root (locate-dominating-file dir f)))
                 (throw 'ret (list 'vc 'Git root))))))))
 
-    (setq project-find-functions '(project-try-vc project-try-local))
+    (setq project-find-functions '(project-try-local project-try-vc))
 
     (defun consult-switch-project ()
       "Switch project with consult interface"

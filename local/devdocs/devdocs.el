@@ -227,6 +227,10 @@ DOC is a document metadata alist."
   (when-let ((i (string-match "#" path)))
     (substring path (1+ i))))
 
+(defun devdocs--revert-buffer (&rest _args)
+  "Refresh DevDocs buffer."
+  (devdocs--render (pop devdocs--stack)))
+
 (defun devdocs--render (entry)
   "Render a devdocs documentation entry, returning a buffer.
 
@@ -275,8 +279,78 @@ fragment part of ENTRY.path."
 (defun devdocs-go-forward ()
   "Go to the next entry in the devdocs buffer."
   (interactive)
-  )
+  (unless (car devdocs--forward-stack)
+    (user-error "No next entry"))
+  (devdocs--render (pop devdocs--forward-stack)))
 
+(defun devdocs-next-entry (count)
+  "Go forward COUNT entries in this documents.
+
+Note taht this refers to the index order, which may not coincide with the order
+of appearance in the text."
+  (interactive "p")
+  (let-alist (car devdocs--stack)
+    (let* ((entries (devdocs--index \.doc 'entries))
+            (pred (lambda (entry _) (string= (alist-get 'path entry) \.path)))
+            (current (seq-position entries nil pred)))
+         (unless current (user-error "No current entry"))
+         (devdocs--render
+          (or (ignore-error 'args-out-of-range (elt entries (+ count current)))
+              (user-error "No %s entry" (if (< count 0) "previous" "next")))))))
+
+(defun devdocs-previous-entry (count)
+  "Go backward COUNT entries in this document."
+  (interactive "p")
+  (devdocs-next-entry (- count)))
+
+(defun devdocs-goto-page (doc page)
+  "Go to a given PAGE (a number or path) of DOC.
+Interactively, read a page name with completion."
+  (interactive (let-alist (car devdocs--stack)
+                 (list .doc (completing-read "Go to page: "
+                                             (append (devdocs--index .doc 'page) nil)
+                                             nil t nil 'devdocs-history))))
+  (let* ((path (cond ((stringp page) page)
+                     ((numberp page) (elt (devdocs--index doc 'pages) page))))
+         (entry (or (seq-find (lambda (entry) (string= (alist-get 'path entry) path))
+                              (devdocs--index doc 'entries))
+                    `((doc . ,doc) (path . ,path)))))
+    (devdocs--render entry)))
+
+(defun devdocs-first-page (doc)
+  "Go to the first page of DOC."
+  (interactive (list (alist-get 'doc (car devdocs--stack))))
+  (devdocs-goto-page doc 0))
+
+(defun devdocs-last-page (doc)
+  "Go to last page of DOC."
+  (interactive (list (alist-get 'doc (car devdocs--stack))))
+  (devdocs-goto-page doc (1- (length (devdocs--index doc 'pages)))))
+
+(defun devdocs-next-page (count)
+  "Go forward COUNT pages in this document."
+  (interactive "p")
+  (let-alist (car devdocs--stack)
+    (let* ((pages (devdocs--index .doc 'pages))
+           (dest (+ count (seq-position pages (devdocs--path-file .path)))))
+      (cond ((< dest 0) (user-error "No previous page"))
+            ((<= (length pages) dest) (user-error "No next page")))
+      (devdocs-goto-page .doc dest))))
+
+(defun devdocs-previous-page (count)
+  "Go backward COUNT entries in this document."
+  (interactive "p")
+  (devdocs-next-page (- count)))
+
+(defun devdocs-copy-url ()
+  "Copy the URL of the current DevDocs page to the kill ring."
+  (interactive)
+  (let-alist (or (car devdocs--stack)
+                 (user-error "Not in a DevDcos buffer"))
+    (let ((url (url-encode-url (format "%s/%s/%s" devdocs-site-url .doc.slug (if .fragment (concat (devdocs--path-file .path) "#" .fragment)
+                                                                               .path)))))
+      (kill-new url)
+      (message "Copied %s" url))))
 
 ;; https://www.gnu.org/software/emacs/manual/html_node/elisp/Customization-Types.html#Customization-Types
 (defcustom devdocs-alist

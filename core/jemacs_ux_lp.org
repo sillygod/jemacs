@@ -265,6 +265,8 @@
 
       :custom
       (corfu-auto t)
+      (corfu-quit-no-match t)
+      (corfu-on-exact-match nil)
       (corfu-scroll-margin 4)
       (corfu-min-width 90)
       (corfu-preselect-first t)
@@ -285,6 +287,8 @@
     (use-package cape
       :init
       (add-to-list 'completion-at-point-functions #'cape-file)
+      (add-to-list 'completion-at-point-functions #'cape-abbrev)
+      (add-to-list 'completion-at-point-functions #'cape-symbol)
       (add-to-list 'completion-at-point-functions #'cape-dabbrev))
   #+end_src
 
