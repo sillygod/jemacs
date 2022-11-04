@@ -138,7 +138,7 @@ DOC is a document metadata alist."
     (with-temp-buffer
       (mm-url-insert-file-contents (format "%s/%s/index.json?%s" devdocs-cdn-url slug mtime))
       (let ((index (json-read)))
-        (push `(page . ,(vconcat (nreverse pages))) index)
+        (push `(pages . ,(vconcat (nreverse pages))) index)
         (with-temp-file (expand-file-name "index" temp)
           (prin1 index (current-buffer)))))
     (with-temp-file (expand-file-name "metadata" temp)
@@ -177,7 +177,7 @@ DOC is a document metadata alist."
     (let* ((docmeta (cons 'doc doc))
            (indexes (with-temp-buffer
                       (insert-file-contents (expand-file-name
-                                             (concat (alist-get 'slug doc) "/index")
+                                             (concat (alist-get 'slug doc) "index")
                                              devdocs-data-dir))
                       (read (current-buffer))))
            (entries (alist-get 'entries indexes)))
@@ -245,17 +245,17 @@ fragment part of ENTRY.path."
             (shr-external-rendering-functions `((pre . devdocs--shr-tag-pre)
                                                 ,@shr-external-rendering-functions))
             (file (expand-file-name (format "%s/%s.html"
-                                            \.doc.slug
-                                            (url-hexify-string (devdocs--path-file \.path)))
+                                            .doc.slug
+                                            (url-hexify-string (devdocs--path-file .path)))
                                     devdocs-data-dir)))
         (erase-buffer)
-        (setq-local shr-target-id (or \.fragment (devdocs--path-fragment \.path)))
+        (setq-local shr-target-id (or .fragment (devdocs--path-fragment .path)))
         (shr-insert-document
          (with-temp-buffer
            (insert-file-contents file)
            (libxml-parse-html-region (point-min) (point-max)))))
       (set-buffer-modified-p nil)
-      (setq-local devdocs-current-docs (list \.doc.slug))
+      (setq-local devdocs-current-docs (list .doc.slug))
       (push entry devdocs--stack)
       (setq-local list-buffers-directory (format-mode-line devdocs-header-line nil nil (current-buffer)))
       (devdocs-goto-target))))
@@ -290,8 +290,8 @@ Note taht this refers to the index order, which may not coincide with the order
 of appearance in the text."
   (interactive "p")
   (let-alist (car devdocs--stack)
-    (let* ((entries (devdocs--index \.doc 'entries))
-            (pred (lambda (entry _) (string= (alist-get 'path entry) \.path)))
+    (let* ((entries (devdocs--index .doc 'entries))
+            (pred (lambda (entry _) (string= (alist-get 'path entry) .path)))
             (current (seq-position entries nil pred)))
          (unless current (user-error "No current entry"))
          (devdocs--render
@@ -308,7 +308,7 @@ of appearance in the text."
 Interactively, read a page name with completion."
   (interactive (let-alist (car devdocs--stack)
                  (list .doc (completing-read "Go to page: "
-                                             (append (devdocs--index .doc 'page) nil)
+                                             (append (devdocs--index .doc 'pages) nil)
                                              nil t nil 'devdocs-history))))
   (let* ((path (cond ((stringp page) page)
                      ((numberp page) (elt (devdocs--index doc 'pages) page))))
@@ -347,7 +347,9 @@ Interactively, read a page name with completion."
   (interactive)
   (let-alist (or (car devdocs--stack)
                  (user-error "Not in a DevDcos buffer"))
-    (let ((url (url-encode-url (format "%s/%s/%s" devdocs-site-url .doc.slug (if .fragment (concat (devdocs--path-file .path) "#" .fragment)
+    (let ((url (url-encode-url
+                (format "%s/%s/%s" devdocs-url .doc.slug
+                        (if .fragment (concat (devdocs--path-file .path) "#" .fragment)
                                                                                .path)))))
       (kill-new url)
       (message "Copied %s" url))))
