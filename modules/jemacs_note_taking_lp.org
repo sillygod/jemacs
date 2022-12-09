@@ -26,6 +26,16 @@
     (use-package org-ql
       :defer t)
 
+    (defun my-todo-agenda ()
+      "need to research the org-ql"
+      (interactive)
+      (org-ql-search
+        "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        '(todo)
+        :title "Things to Be Done"
+        :sort '(deadline)
+        :super-groups '((:auto-parent t))))
+
     (use-package org-drill
       :defer t)
 
