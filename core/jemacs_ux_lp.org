@@ -437,7 +437,7 @@
 
 * code folding
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package hideshow
       :hook (prog-mode . hs-minor-mode)
       :commands

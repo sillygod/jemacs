@@ -126,7 +126,7 @@
 * counsel-jq-yq
 
   #+begin_src emacs-lisp :tangle no
-    (use-package counsel-jq-yq
+    (use-package jq-yq
       :defer 1
       :straight (
                  :local-repo (concat home-dir "local/jq-yq")
@@ -231,6 +231,8 @@
       :defer t
       :mode ("\\.epub\\'" . nov-mode))
   #+end_src
+
+  https://github.com/chenyanming/nov-xwidget  another choice
 
 * uuidgen
   #+begin_src emacs-lisp
@@ -461,8 +463,9 @@
   #+end_src
 
   a quick way to find the path for value
+  (deprecated)
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package json-snatcher
       :defer t)
   #+end_src
@@ -474,11 +477,77 @@
 
    #+begin_src emacs-lisp
      (use-package tree-sitter
-       :defer t)
+       :config
+       (global-tree-sitter-mode))
+
      (use-package tree-sitter-langs
        :defer t
        :hook
        (tree-sitter-after-on . tree-sitter-hl-mode))
+   #+end_src
+
+   #+begin_src emacs-lisp
+     (use-package ts-fold
+       :after (evil tree-sitter)
+       :straight (ts-fold :type git :host github :repo "emacs-tree-sitter/ts-fold")
+       :config
+       (push '(block . (ts-fold-range-seq -1 1)) (alist-get 'python-mode ts-fold-range-alist))
+       (add-to-list 'evil-fold-list
+                    '((ts-fold-mode)
+                      :toggle ts-fold-toggle
+                      :open ts-fold-open
+                      :close ts-fold-close
+                      :open-rec ts-fold-open-recursively
+                      :open-all ts-fold-open-all
+                      :close-all ts-fold-close-all))
+       (global-ts-fold-mode))
+   #+end_src
+
+   #+begin_src emacs-lisp
+     (with-eval-after-load 'yaml
+       (with-eval-after-load 'json
+         (defun get-config-nesting-paths ()
+           "Get out all the nested paths in a config file."
+           (let* ((query (pcase major-mode
+                           ('json-mode "(object (pair (string (string_content) @key) (_)) @item)")
+                           ('yaml-mode "(block_mapping_pair (flow_node) @key (_)) @item")))
+                  (root-node (tsc-root-node tree-sitter-tree))
+                  (query (tsc-make-query tree-sitter-language query))
+                  (matches (tsc-query-matches query root-node #'tsc--buffer-substring-no-properties))
+                  (prev-node-ends '(0)) ;; we can get away with just end as the list is sorted
+                  (current-key-depth '())
+                  (item-ranges (seq-map (lambda (x)
+                                          (let ((item (seq-elt (cdr x) 0))
+                                                (key (seq-elt (cdr x) 1)))
+                                            (list (tsc-node-text (cdr key))
+                                                  (tsc-node-range (cdr key))
+                                                  (tsc-node-range (cdr item)))))
+                                        matches)))
+             (mapcar (lambda (x)
+                       (let* ((current-end (seq-elt (cadr (cdr x)) 1))
+                              (parent-end (car prev-node-ends))
+                              (current-key (car x)))
+                         (progn
+                           (if (> current-end parent-end)
+                               (mapcar (lambda (x)
+                                         (if (> current-end x)
+                                             (progn
+                                               (setq prev-node-ends (cdr prev-node-ends))
+                                               (setq current-key-depth (cdr current-key-depth)))))
+                                       prev-node-ends))
+                           (setq current-key-depth (cons current-key current-key-depth))
+                           (setq prev-node-ends (cons current-end prev-node-ends))
+                           (list (reverse current-key-depth) (seq-elt (cadr x) 0)))))
+                     item-ranges)))
+
+         (defun imenu-config-nesting-path ()
+           "Return config-nesting paths for use in imenu"
+           (mapcar (lambda (x)
+                     (cons (string-join (car x) ".") (cadr x)))
+                   (get-config-nesting-paths)))
+
+         (add-hook 'json-mode-hook (lambda () (setq imenu-create-index-function #'imenu-config-nesting-path)))
+         (add-hook 'yaml-mode-hook (lambda () (setq imenu-create-index-function #'imenu-config-nesting-path)))))
    #+end_src
 
    #+begin_src emacs-lisp
@@ -533,6 +602,17 @@
     (use-package lua-mode
       :mode (("\\.lua\\'" . lua-mode))
       :defer t)
+  #+end_src
+
+* calibre
+
+  #+begin_src emacs-lisp
+    (use-package calibredb
+      :defer t
+      :config
+      (setq calibredb-format-all-the-icons t)
+      (setq calibredb-root-dir "~/OneDrive/calibre")
+      (setq calibredb-db-dir (expand-file-name "metadata.db" calibredb-root-dir)))
   #+end_src
 
 * common lisp or emacs lisp
@@ -921,8 +1001,8 @@
           (define-leader-key-map-for 'json-mode-map
             "" "major mode" nil
             "l"  "lookup" nil
-            "ll" "snatch path" 'jsons-print-path
-            "lj" "jq" 'counsel-jq))
+            "ll" "snatch path" 'json-print-path-js
+            "lj" "jq" 'consult-jq))
 
 
         (with-eval-after-load 'yaml-mode
@@ -1123,7 +1203,6 @@
         "t"  '(:ignore t :which-key "toggles")
         "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
         "ti" '(toggle-input-method :which-key "toggle input method")
-        "tv" '(visual-fill-column-mode :which-key "visual fill column mode")
         "ts" '(hydra-text-scale/body :which-key "scale text"))
 
       (define-leader-key-global
