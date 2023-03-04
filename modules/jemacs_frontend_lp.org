@@ -37,6 +37,21 @@
       (js2-minor-mode))
   #+end_src
 
+* mobile
+
+  #+begin_src emacs-lisp
+    (use-package dart-mode
+      :defer t)
+
+    (use-package flutter
+      :after (dart-mode))
+
+    ;; (use-package lsp-dart
+    ;;   :defer t
+    ;;   :hook (dart-mode . lsp))
+
+  #+end_src
+
 * provide package
 
   #+begin_src emacs-lisp

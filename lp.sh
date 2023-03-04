@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # add emacspath env or change this to your emacs path
-emacspath="${emacspath:=/usr/local/opt/emacs-plus@29/bin/emacs}"
+emacspath="${emacspath:=/usr/local/bin/emacs}"
 
 for f in $(find $(pwd)  -name "*_lp.org");
 do

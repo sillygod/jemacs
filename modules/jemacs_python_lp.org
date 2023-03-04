@@ -31,6 +31,7 @@
     (use-package poetry
       :commands
       (poetry-venv-workon
+       poetry-get-virtualenv
        poetry-venv-deactivate
        poetry-venv-toggle))
 
@@ -50,7 +51,7 @@
 
 * hideshow syntax configuration
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (defun jemacs/python-hideshow-forward-sexp-function (arg)
       "Python specific `forward-sexp' function for `hs-minor-mode'.
         Argument ARG is ignored."
@@ -85,7 +86,7 @@
     (defun workon-virtual-env-and-lsp ()
       (interactive)
       (poetry-venv-workon)
-      (lsp-restart-workspace))
+      (call-interactively 'eglot))
 
     ;; TODO: implement this one
     (defun my-run-python ()
@@ -126,7 +127,7 @@
   Notes: the dependencies node version
   https://github.com/emacs-lsp/lsp-pyright/issues/34
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (defun lsp-with-poetry-env ()
       (let ((project (project-root (project-current t))))
         (add-dir-local-variable 'python-mode poetry-venv (poetry-get-virtualenv))

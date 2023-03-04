@@ -184,7 +184,7 @@
 
 ** org tangle lp configs
    #+begin_src emacs-lisp
-     (defvar emacs-path "/usr/local/opt/emacs-plus@29/bin/emacs")
+     (defvar emacs-path "/usr/local/bin/emacs")
      (defvar org-tangle-cmd (concat emacs-path " --batch --eval \"(require 'org)\" --eval \"(require 'ob-tangle)\" --eval '(find-file \"%s\")' --eval '(org-babel-tangle)'"))
 
      (defun export-lp-configs ()
@@ -764,6 +764,12 @@
              (kill-buffer-and-window)
            (kill-buffer))))
 
+     (defun copy-file-path-with-lino ()
+       (interactive)
+       (let ((info (concat (dired-replace-in-string (getenv "HOME") "~" (buffer-file-name)) ":" (number-to-string (line-number-at-pos)))))
+         (kill-new info)
+         (message "copy %s to clipboard" info)))
+
      (defun copy-file-path ()
        "Copy and show the file path of the current buffer."
        (interactive)
@@ -862,12 +868,16 @@
        (interactive)
        (require 'request)
        (require 'json)
-       (google-search-action
-       (consult--read
-        (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
-        :prompt "search: "
-        :preview-key nil
-        :sort nil)))
+       (let ((initial-input (cond
+                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
+                             (t nil))))
+         (google-search-action
+          (consult--read
+           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
+           :prompt "search: "
+           :initial initial-input
+           :preview-key nil
+           :sort nil))))
 
      (defun url-join (&rest parts)
        (cl-reduce (lambda (a b)
@@ -912,7 +922,7 @@
        (xwidget-webkit-browse-url
         (url-encode-url (concat
                          "file://"
-                         (expand-file-name x ivy--directory))) t))
+                         (expand-file-name x))) t))
 
      (with-eval-after-load 'consult
        (defun open-with-xwidget (&optional initial-input)

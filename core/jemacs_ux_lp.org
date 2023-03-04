@@ -112,7 +112,8 @@
     (use-package simple
       :straight (:type built-in)
       :custom
-      (read-extended-command-predicate #'command-completion-default-include-p))
+      ;; (read-extended-command-predicate #'command-completion-default-include-p))
+      (read-extended-command-predicate nil))
 
   #+end_src
 
@@ -147,7 +148,7 @@
        consult-bookmark consult-recent-file consult-xref
        consult--source-bookmark consult--source-recent-file
        consult--source-project-recent-file
-       :preview-key (kbd "C-l")))
+       :preview-key '("C-l")))
   #+end_src
 
 
@@ -214,26 +215,87 @@
   #+end_src
 
   #+begin_src emacs-lisp
-    (defun company-first-initialism (_component index _total)
-      (when (and (company--active-p) (= index 0))
-        #'orderless-initialism))
+
+    (defun my-company-transform (candidates)
+      (print (string last-command-event))
+      candidates)
+
+    (setq company-transformers nil)
 
     (use-package orderless
       :custom
       (completion-styles '(orderless partial-completion))
-      (orderless-style-dispatchers '(company-first-initialism))  ;; disable orderless in company mode
       (completion-category-overrides '((file (styles basic partial-completion)))))
   #+end_src
 
   a package completion in buffer to replace the company package
+  https://github.com/minad/corfu/wiki#example-configuration-with-flex
+
   #+begin_src emacs-lisp
+    (defun corfu-insert-separator-or-complete ()
+      (interactive)
+      (pcase-let* ((`(,beg ,end . ,_) completion-in-region--data)
+                   (str (buffer-substring-no-properties beg end))
+                   (candidate (nth corfu--index corfu--candidates)))
+
+        ;; (when (equal str candidate)
+        ;;   (call-interactively 'corfu-insert)
+        ;;   (insert " "))
+
+        (if (not (derived-mode-p 'prog-mode))
+            (call-interactively 'corfu-insert-separator)
+          (progn
+            (insert " ")
+            (call-interactively 'corfu-quit)))))
+
     (use-package corfu
+      :after evil
+      :straight
+      (:host github :repo "minad/corfu" :files ("*.el" "extensions/*.el"))
+      :config
+      (evil-make-overriding-map corfu-map)
+      (advice-add 'corfu--setup :after 'evil-normalize-keymaps)
+      (advice-add 'corfu--teardown :after 'evil-normalize-keymaps)
       :init
-      (corfu-mode)
+      (global-corfu-mode)
+      :bind (:map corfu-map
+                  ("C-j" . corfu-next)
+                  ("C-k" . corfu-previous)
+                  ("<escape>" . corfu-quit)
+                  ("<tab>". corfu-insert)
+                  ("SPC" . corfu-insert-separator-or-complete))
+
       :custom
       (corfu-auto t)
+      (corfu-quit-no-match t)
+      (corfu-on-exact-match nil)
+      (corfu-scroll-margin 4)
+      (corfu-min-width 90)
+      (corfu-preselect-first t)
       (corfu-auto-delay 0.1)
       (corfu-auto-prefix 2))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package eldoc-box)
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package kind-icon
+      :after corfu
+      :custom
+      (kind-icon-default-face 'corfu-default) ; to compute blended backgrounds correctly
+      :config
+      (add-to-list 'corfu-margin-formatters #'kind-icon-margin-formatter))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package cape
+      :init
+      (add-to-list 'completion-at-point-functions #'cape-file)
+      (add-to-list 'completion-at-point-functions #'cape-abbrev)
+      (add-to-list 'completion-at-point-functions #'cape-symbol)
+      (add-to-list 'completion-at-point-functions #'cape-dabbrev))
   #+end_src
 
   #+begin_src emacs-lisp
@@ -258,7 +320,7 @@
 
     (use-package vertico
       :custom
-      (vertico-cycle t)
+      (vertico-cycle nil)
       (vertico-sort-function #'sort-prefix-first)
       :straight
       (:host github :repo "minad/vertico" :files ("*.el" "extensions/*.el"))
@@ -293,27 +355,29 @@
   it's evil! provide you vim-like ux in emacs.
 
   #+begin_src emacs-lisp
-
     (defun show-error-or-doc ()
       "Show errors if flycheck detects errors existed or display the documentation."
       (interactive)
       (if (flycheck-overlay-errors-at (point))
           (flycheck-display-error-at-point)
-        (lsp-describe-thing-at-point)))
+        (eldoc-box-eglot-help-at-point)))
 
   #+end_src
 
   #+begin_src emacs-lisp
     (use-package evil
       :defer 0
-      :init
-      (setq evil-want-keybinding nil) ;; this will cause some evil keybinding
+      :custom
+      (evil-want-C-i-jump nil)
+      (evil-want-C-u-scroll t)
+      (evil-want-integration t)
+      (evil-want-keybinding nil) ;; this will cause some evil keybinding
       ;; of other modes not working when it's set to true
+      (evil-goto-definition-functions '(evil-goto-definition-imenu
+                                         evil-goto-definition-xref
+                                         evil-goto-definition-semantic
+                                         evil-goto-definition-search))
       :config
-      (setq evil-want-integration t)
-      (setq evil-want-C-u-scroll t)
-      (setq evil-want-C-i-jump nil)
-      (evil-mode 1)
       (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
       ;; Use visual line motions even outside of visual-line-mode buffers
       (evil-define-key 'normal prog-mode-map (kbd "C-j") 'evil-scroll-line-down)
@@ -321,18 +385,18 @@
       (evil-define-key 'normal prog-mode-map (kbd "g h") 'show-error-or-doc)
       (evil-define-key 'normal prog-mode-map (kbd "U") 'undo-redo)
 
-
       (evil-global-set-key 'motion "j" 'evil-next-visual-line)
       (evil-global-set-key 'motion "k" 'evil-previous-visual-line)
 
       (evil-set-initial-state 'minibuffer-mode 'emacs)
       (evil-set-initial-state 'messages-buffer-mode 'normal)
-      (evil-set-initial-state 'lisp-interaction-mode 'normal))
+      (evil-set-initial-state 'lisp-interaction-mode 'normal)
+      (evil-mode 1))
 
-      ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
-      ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
-      ;; (add-hook 'evil-insert-state-exit-hook 'im-remember)
-      ;; (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
+          ;; (add-hook 'evil-normal-state-entry-hook 'im-use-eng)
+          ;; (add-hook 'evil-insert-state-entry-hook 'im-use-prev)
+          ;; (add-hook 'evil-insert-state-exit-hook 'im-remember)
+          ;; (add-hook 'evil-emacs-state-entry-hook 'im-use-eng))
   #+end_src
 
   evil-matchit  make =%= to be able to jump to and back the tag
@@ -351,6 +415,7 @@
       (delete 'vterm evil-collection-mode-list)
       (delete 'lispy evil-collection-mode-list)
       (delete 'ivy evil-collection-mode-list)
+      (delete 'go-mode evil-collection-mode-list)
       (delete 'view evil-collection-mode-list)
       ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
       (setq evil-collection-company-use-tng nil)
@@ -377,7 +442,7 @@
 
 * code folding
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package hideshow
       :hook (prog-mode . hs-minor-mode)
       :commands
@@ -444,8 +509,8 @@
       ;; In evil-collection, it adjust the key binding for the company-mode
       ;; NOTE: Furthermore, it also disable the pre-select behavior when
       ;; showing the completion candidates.
-      (define-key company-active-map (kbd "<return>") 'company-complete-selection)
-      (global-company-mode 1))
+      (define-key company-active-map (kbd "<return>") 'company-complete-selection))
+      ;; (global-company-mode 1))
   #+end_src
 
   NOTE: temporarily disable =company-tabnine= because it consumes lots of cpu.

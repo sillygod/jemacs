@@ -20,7 +20,7 @@
   #+begin_src emacs-lisp
     (use-package perspective
       :diminish persp-mode
-      :commands (persp-switch)
+      :commands (persp-switch persp-names)
       :custom
       (persp-modestring-short t)
       :config
@@ -32,6 +32,28 @@
   try to replace the projectile with built-in =project.el=
 
   #+begin_src emacs-lisp
+    (cl-defmethod project-root ((project (head local)))
+      (cadr project))
+
+    (cl-defmethod project-files ((project (head local)) &optional dirs)
+      (mapcan
+       (lambda (dir)
+         (project--files-in-directory dir
+                                      (project--dir-ignores project dir)))
+       (or dirs
+           (list (project-root project)))))
+
+    (defun project-try-no-vc-local (dir)
+      "Determine if DIR is a non-Git project."
+      (catch 'ret
+      (let ((pr-flags '((".project")
+                        ("go.mod" "Cargo.toml" "project.clj" "pom.xml" "package.json" "pyproject.toml") ;; higher priority
+                        ("Makefile" "README.org" "readme.org" "README.md"))))
+        (dolist (current-level pr-flags)
+          (dolist (f current-level)
+            (when-let ((root (locate-dominating-file dir f)))
+              (throw 'ret (list 'local root))))))))
+
     (defun project-try-local (dir)
       "Determine if DIR is a non-Git project."
       (catch 'ret
@@ -54,8 +76,12 @@
                                        :prompt "Switch to project: "
                                        :sort nil
                                        :category 'file
-                                       :require-match t))))
+                                       :require-match t)))
+             (dname (file-name-nondirectory (directory-file-name (file-name-directory (project-root proj))))))
 
+        (if (or (member dname (persp-names))
+                (y-or-n-p (format "create a new layer: %s" dname)))
+            (persp-switch dname))
         (project-find-file-in
          nil
          (list (project-root proj))
@@ -124,6 +150,12 @@
       `(let ((default-directory ,dir))
          ,@body))
 
+    (defun project-vterm-setup (major-mode)
+      "Perform some setup instruction when spawning a new shell for certain mode."
+      (cond
+       ((member major-mode '(python-mode python-ts-mode)) (progn
+                                       (vterm-send-string "source $(poetry env info --path)/bin/activate")
+                                       (vterm-send-return)))))
 
     (defun project-run-vterm (&optional arg)
       "Invoke `vterm' in the project's root.
@@ -131,13 +163,15 @@
     Switch to the project specific term buffer if it already exists.
     Use a prefix argument ARG to indicate creation of a new process instead."
       (interactive "P")
-      (let* ((project (project-root (project-current t)))
+      (let* ((mmode major-mode)
+             (project (project-root (project-current t)))
              (buffer (format "*%s %s*" "vterm" project)))
         (unless (buffer-live-p (get-buffer buffer))
           (unless (require 'vterm nil 'noerror)
             (error "Package 'vterm' is not available"))
           (project-with-default-dir project
-            (vterm-other-window buffer)))
+            (vterm-other-window buffer)
+            (project-vterm-setup mmode)))
         (pop-to-buffer buffer)))
 
     (defun new-terminal ()

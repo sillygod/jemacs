@@ -40,6 +40,11 @@
 
 (defvar go-test-buffer-name "*gotest*")
 
+(defun go-run-test-debug ()
+  "
+dlv test killer/app -- -test.run ^TestMarshalcheck$."
+  (interactive))
+
 (defun go-run-tests (args)
   "Run golang's test.
 According to the situation, ARGS will be function name,

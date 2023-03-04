@@ -26,6 +26,16 @@
     (use-package org-ql
       :defer t)
 
+    (defun my-todo-agenda ()
+      "need to research the org-ql"
+      (interactive)
+      (org-ql-search
+        "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        '(todo)
+        :title "Things to Be Done"
+        :sort '(deadline)
+        :super-groups '((:auto-parent t))))
+
     (use-package org-drill
       :defer t)
 
@@ -203,8 +213,8 @@
             (with-no-warnings (font-lock-fontify-buffer)))))
       :config
       (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
-      (setq org-roam-node-display-template (concat
-                                            "${title:100}" (propertize "${tags:30}" 'face 'org-tag)))
+      (setq org-roam-node-display-template
+            (concat "${title:*}" (propertize "${tags:40}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
             `(("d" "default" entry
                "* %<%H:%M> %?"
@@ -297,6 +307,9 @@
 * restclient
   #+begin_src emacs-lisp
     (use-package restclient
+      :defer t)
+
+    (use-package restclient-jq
       :defer t)
 
     (use-package ob-restclient
@@ -493,6 +506,8 @@
          (shell . t)
          (dot . t)
          (sql . t)
+         (lua . t)
+         (js . t)
          (python . t)))
 
       (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
