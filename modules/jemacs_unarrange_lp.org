@@ -48,8 +48,7 @@
 
   #+begin_src emacs-lisp
     (use-package svg-lib
-      :defer 1
-      :straight (svg-lib :type git :host github :files ("*.el") :repo "rougier/svg-lib"))
+      :defer 1)
   #+end_src
 
 * diminish
@@ -486,6 +485,61 @@
        (tree-sitter-after-on . tree-sitter-hl-mode))
    #+end_src
 
+   now tree sitter are builtin in emacs 29
+
+   auto setup tree sitter inspired from
+   https://github.com/renzmann/treesit-auto/blob/main/treesit-auto.el
+
+   #+begin_src emacs-lisp :tangle no
+     (use-package treesit
+       :straight (:type built-in)
+       :commands (treesit-install-language-grammar treesit-install-all-languages)
+       :init
+       (setq treesit-language-source-alist
+             '((bash . ("https://github.com/tree-sitter/tree-sitter-bash"))
+               (c . ("https://github.com/tree-sitter/tree-sitter-c"))
+               (cpp . ("https://github.com/tree-sitter/tree-sitter-cpp"))
+               (common-lisp "https://github.com/theHamsta/tree-sitter-commonlisp")
+               (elisp "https://github.com/Wilfred/tree-sitter-elisp")
+               (css . ("https://github.com/tree-sitter/tree-sitter-css"))
+               (go . ("https://github.com/tree-sitter/tree-sitter-go"))
+               (html . ("https://github.com/tree-sitter/tree-sitter-html"))
+               (javascript . ("https://github.com/tree-sitter/tree-sitter-javascript"))
+               (json . ("https://github.com/tree-sitter/tree-sitter-json"))
+               (lua . ("https://github.com/Azganoth/tree-sitter-lua"))
+               (make . ("https://github.com/alemuller/tree-sitter-make"))
+               (ocaml . ("https://github.com/tree-sitter/tree-sitter-ocaml" "ocaml/src" "ocaml"))
+               (python . ("https://github.com/tree-sitter/tree-sitter-python"))
+               (php . ("https://github.com/tree-sitter/tree-sitter-php"))
+               (tsx . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "tsx/src"))
+               (typescript . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "typescript"))
+               (ruby . ("https://github.com/tree-sitter/tree-sitter-ruby"))
+               (rust . ("https://github.com/tree-sitter/tree-sitter-rust"))
+               (sql . ("https://github.com/m-novikov/tree-sitter-sql"))
+               (yaml "https://github.com/ikatyang/tree-sitter-yaml")
+               (toml . ("https://github.com/tree-sitter/tree-sitter-toml"))
+               (zig . ("https://github.com/GrayJack/tree-sitter-zig"))))
+       :config
+       (let ((langs (mapcar 'car treesit-language-source-alist)))
+         (dolist (lang langs)
+           (let ((ts-mode (intern (concat (symbol-name lang) "-ts-mode")))
+                 (name-mode (intern (concat (symbol-name lang) "-mode"))))
+             (if (and (fboundp ts-mode) (treesit-ready-p lang t))
+                 (add-to-list 'major-mode-remap-alist `(,name-mode . ,ts-mode)))))))
+
+     (defun treesit-install-all-languages ()
+       "Install all languages specified by `treesit-language-source-alist'."
+       (interactive)
+       (let ((languages (mapcar 'car treesit-language-source-alist)))
+         (dolist (lang languages)
+           (let ((ts-mode (intern (concat (symbol-name lang) "-ts-mode")))
+                 (name-mode (intern (concat (symbol-name lang) "-mode"))))
+
+             (treesit-install-language-grammar lang)
+             (message "`%s' parser was installed." lang)
+             (sit-for 0.75)))))
+   #+end_src
+
    #+begin_src emacs-lisp
      (use-package ts-fold
        :after (evil tree-sitter)
@@ -684,19 +738,10 @@
       :defer t)
   #+end_src
 
-* lsp mode
+* language server protocol mode
 
   run =company-diag= to check what the company-backend is being used.
   =(setq lsp-keymap-prefix "SPC m")= this will only affect the display info of whichkey.
-
-
-  If you want a breadcrumb to hint current position, add the following setting.
-  #+begin_src emacs-lisp :tangle no
-    (lsp-mode . (lambda () (lsp-headerline-breadcrumb-mode)))
-
-    ;; it's deprecated now for me
-    (use-package lsp-ivy :commands lsp-ivy-workspace-symbol)
-  #+end_src
 
   #+begin_src emacs-lisp
     (defun add-xref-dumb-jump-before-xref-lsp (arg)
@@ -745,46 +790,91 @@
 
 
 
-    (use-package lsp-mode
-      :init
-      ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
-      (setq lsp-completion-provider :none) ;; the official recommends use this
-      (setq lsp-enable-symbol-highlighting nil)
-      (setq lsp-signature-render-documentation nil)
-      (setq read-process-output-max (* 1024 1024))
-      ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
+  #+end_src
 
-      :commands
-      (lsp)
+  TODO: deprecate lsp, I decide to adopt elgot.
+
+  #+begin_src emacs-lisp
+    (use-package eglot
+      :defer t
+      :init
+      (setq read-process-output-max (* 1024 1024))
       :hook
-      (go-mode . lsp)
-      (python-mode . lsp)
-      (lua-mode . lsp)
-      (rust-mode . lsp)
-      (js-mode . lsp)
-      (c-mode . lsp)
-      (c++-mode . lsp)
+      ;; (python-ts-mode . eglot-ensure)
+      (rust-mode . eglot-ensure)
+      (rust-ts-mode . eglot-ensure)
+      (lua-mode . eglot-ensure)
+      (dart-mode . eglot-ensure)
+      (js-mode . eglot-ensure)
+      (js-ts-mode . eglot-ensure)
+      (typescript-ts-mode . eglot-ensure)
+      (typescript-mode . eglot-ensure)
+      (json-mode . eglot-ensure)
+      (json-ts-mode . eglot-ensure)
+      (yaml-mode . eglot-ensure)
+      (yaml-ts-mode . eglot-ensure)
+      (go-mode . eglot-ensure)
+      (go-ts-mode . eglot-ensure)
       :custom
-      (lsp-lens-enable nil) ;; turn off lens mode
-      (lsp-headerline-breadcrumb-enable nil)
-      (lsp-enable-folding nil)
-      (lsp-enable-snippet nil)
-      (lsp-enable-imenu nil)
-      (lsp-enable-links nil)
+      (eglot-stay-out-of '(eldoc))
+      (eglot-ignored-server-capabilities '(:hoverProvider
+                                           :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
-      (advice-add 'lsp-managed-mode :before 'add-xref-dumb-jump-before-xref-lsp))
+      (add-hook 'python-mode-hook (lambda ()
+                                    (setq-default eglot-workspace-configuration
+                                                `((:python .
+                                                          (:venvPath ,(poetry-get-virtualenv)
+                                                           :pythonPath ,(concat (poetry-get-virtualenv) "/bin")))))
+                                    (eglot-ensure)))
+
+      (add-hook 'eglot-managed-mode-hook (lambda () (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
+      (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
+      (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
+  #+end_src
+
+  #+begin_src emacs-lisp :tangle no
+        (use-package lsp-mode
+          :init
+          ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
+          (setq lsp-completion-provider :none) ;; the official recommends use this
+          (setq lsp-enable-symbol-highlighting nil)
+          (setq lsp-signature-render-documentation nil)
+          (setq read-process-output-max (* 1024 1024))
+          ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
+
+          :commands
+          (lsp)
+          :hook
+          (go-mode . lsp)
+          (python-mode . lsp)
+          (lua-mode . lsp)
+          (rust-mode . lsp)
+          (js-mode . lsp)
+          (c-mode . lsp)
+          (c++-mode . lsp)
+          :custom
+          (lsp-lens-enable nil) ;; turn off lens mode
+          (lsp-headerline-breadcrumb-enable nil)
+          (lsp-enable-folding nil)
+          (lsp-enable-snippet nil)
+          (lsp-enable-imenu nil)
+          (lsp-enable-links nil)
+          :config
+          (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+          (advice-add 'lsp-managed-mode :before 'add-xref-dumb-jump-before-xref-lsp))
 
 
-    (use-package dap-mode
-      :defer t
-      :config
-      ;; pip install "ptvsd>=4.2"
-      (require 'dap-python)
-      (require 'dap-go)
-      ;; dap-go-setup
-      (add-hook 'dap-stopped-hook
-                (lambda (arg) (call-interactively #'dap-hydra))))
+        (use-package dap-mode
+          :defer t
+          :config
+          ;; pip install "ptvsd>=4.2"
+          (require 'dap-python)
+          (require 'dap-go)
+          ;; dap-go-setup
+          (add-hook 'dap-stopped-hook
+                    (lambda (arg) (call-interactively #'dap-hydra))))
+
   #+end_src
 
   currently, disable =lsp-ui=
@@ -914,8 +1004,8 @@
         (evil-define-key 'motion org-agenda-mode-map
           (kbd "j") 'org-agenda-next-line
           "t" 'org-agenda-todo
-          "I" 'org-agenda-clock-in ; Original binding
-          "O" 'org-agenda-clock-out ; Original binding
+          "I" 'org-agenda-clock-in          ; Original binding
+          "O" 'org-agenda-clock-out         ; Original binding
           (kbd "<return>") 'org-agenda-goto
           (kbd "k") 'org-agenda-previous-line
           (kbd "s") 'org-save-all-org-buffers))
@@ -951,142 +1041,129 @@
       ;; keybinding for racket-mode
       (with-eval-after-load 'racket-mode
         (define-leader-key-map-for 'racket-mode
-          "" "major mode" nil
-          "x" "execute" nil
-          "xx" "racket run" 'racket-run))
+                                   "" "major mode" nil
+                                   "x" "execute" nil
+                                   "xx" "racket run" 'racket-run))
 
       ;; lsp keybindings for some major modes
-      (with-eval-after-load 'lsp-mode
 
-        ;; keybinding for go-mode
-        (with-eval-after-load 'go-mode
+      ;; keybinding for go-mode
+      (with-eval-after-load 'go-mode
 
-          (apply 'define-leader-key-map-for 'go-mode-map
-                 (lsp-keybinding))
-
-          (define-leader-key-map-for 'go-mode-map
-            "" "major mode" nil
-            "x" "execute" nil
-            "xx" "go run" 'go-run-main
-            "d" "debug" 'dap-hydra
-            "e" "gomacro" 'gomacro-run)
+        (define-leader-key-map-for 'go-mode-map
+                                   "" "major mode" nil
+                                   "x" "execute" nil
+                                   "xx" "go run" 'go-run-main
+                                   "d" "debug" 'dap-hydra
+                                   "e" "gomacro" 'gomacro-run)
 
 
-          (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+        (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
-        (with-eval-after-load 'rust-mode
-          (apply 'define-leader-key-map-for 'rust-mode-map
-                 (lsp-keybinding))
+      (with-eval-after-load 'rust-mode
 
+        (evil-define-key 'normal rust-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
-          (evil-define-key 'normal go-mode-map (kbd "K") 'evil-smart-doc-lookup))
+      ;; keybinding for python-mode
+      (with-eval-after-load 'python
 
-        ;; keybinding for python-mode
-        (with-eval-after-load 'python
-          (apply 'define-leader-key-map-for 'python-mode-map
-                 (lsp-keybinding))
+        (apply 'define-leader-key-map-for
+               (list 'python-mode-map
+                     "" "major mode" 'nil
 
-          (apply 'define-leader-key-map-for
-                 (list 'python-mode-map
-                       "" "major mode" 'nil
+                     "t" "tests" 'python-pytest-dispatch
+                     "x" "execute" nil
+                     "xx" "python run" 'python-run-main
+                     "v" "workon env" 'workon-virtual-env-and-lsp
+                     "d" "debug" 'dap-hydra))
+        (evil-define-key 'normal python-mode-map (kbd "K") 'evil-smart-doc-lookup))
 
-                       "t" "tests" 'python-pytest-dispatch
-                       "x" "execute" nil
-                       "xx" "python run" 'python-run-main
-                       "v" "workon env" 'workon-virtual-env-and-lsp
-                       "d" "debug" 'dap-hydra))
-          (evil-define-key 'normal python-mode-map (kbd "K") 'evil-smart-doc-lookup))
-
-        (with-eval-after-load 'json-mode
-          (define-leader-key-map-for 'json-mode-map
-            "" "major mode" nil
-            "l"  "lookup" nil
-            "ll" "snatch path" 'json-print-path-js
-            "lj" "jq" 'consult-jq))
+      (with-eval-after-load 'json-mode
+        (define-leader-key-map-for 'json-mode-map
+                                   "" "major mode" nil
+                                   "l"  "lookup" nil
+                                   "ll" "snatch path" 'json-print-path-js
+                                   "lj" "jq" 'consult-jq))
 
 
-        (with-eval-after-load 'yaml-mode
-          (define-leader-key-map-for 'yaml-mode-map
-            "" "major mode" nil
-            "l" "lookup" nil
-            "ly" "yq" 'counsel-yq))
+      (with-eval-after-load 'yaml-mode
+        (define-leader-key-map-for 'yaml-mode-map
+                                   "" "major mode" nil
+                                   "l" "lookup" nil
+                                   "ly" "yq" 'counsel-yq))
 
-        ;; keybinding fro c, c++ mode
-        (with-eval-after-load 'cc-mode
-          (apply 'define-leader-key-map-for 'c-mode-map (lsp-keybinding))
-          (apply 'define-leader-key-map-for 'c++-mode-map (lsp-keybinding))))
 
       (with-eval-after-load 'elisp-mode
         (define-leader-key-map-for 'emacs-lisp-mode-map
-          "" "major mode" nil
-          "e" "eval" nil
-          "ef" "eval defun" 'eval-defun
-          "eb" "eval buffer" 'eval-buffer
-          "er" "eval region" 'eval-region ))
+                                   "" "major mode" nil
+                                   "e" "eval" nil
+                                   "ef" "eval defun" 'eval-defun
+                                   "eb" "eval buffer" 'eval-buffer
+                                   "er" "eval region" 'eval-region ))
 
       (with-eval-after-load 'org
         (define-leader-key-map-for 'org-mode-map
-          "" "major mode" nil
+                                   "" "major mode" nil
 
-          "a" "org-agenda" 'org-agenda
-          "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
-          "'" "org-edit-special" 'org-edit-special
+                                   "a" "org-agenda" 'org-agenda
+                                   "," "org-ctrl-c-ctrl-c" 'org-ctrl-c-ctrl-c
+                                   "'" "org-edit-special" 'org-edit-special
 
-          "b" "babel" nil
-          "bt" "tangle" 'org-babel-tangle
+                                   "b" "babel" nil
+                                   "bt" "tangle" 'org-babel-tangle
 
-          "i" "insert" nil
-          "il" "insert link" 'org-insert-link
-          "it" "insert toc" 'org-insert-toc
+                                   "i" "insert" nil
+                                   "il" "insert link" 'org-insert-link
+                                   "it" "insert toc" 'org-insert-toc
 
-          "e" "export" nil
-          "ee" "org-export-dispatch" 'org-export-dispatch
+                                   "e" "export" nil
+                                   "ee" "org-export-dispatch" 'org-export-dispatch
 
-          "n" "narrow" nil
-          "ns" "narrow subtree" 'org-narrow-to-subtree
-          "nN" "widen" 'widen
+                                   "n" "narrow" nil
+                                   "ns" "narrow subtree" 'org-narrow-to-subtree
+                                   "nN" "widen" 'widen
 
-          "r" "org roam hydra" 'hydra-org-roam/body
+                                   "r" "org roam hydra" 'hydra-org-roam/body
 
-          "s" "schedule" nil
-          "ss" "org-schedule" 'org-schedule
-          "sd" "org-deadline" 'org-deadline
-          "st" "org-time-stamp" 'org-time-stamp
+                                   "s" "schedule" nil
+                                   "ss" "org-schedule" 'org-schedule
+                                   "sd" "org-deadline" 'org-deadline
+                                   "st" "org-time-stamp" 'org-time-stamp
 
-          "d" "org-download" nil
-          "dc" "from clipboard" 'org-download-clipboard
-          "ds" "from screenshot" 'org-download-screenshot
+                                   "d" "org-download" nil
+                                   "dc" "from clipboard" 'org-download-clipboard
+                                   "ds" "from screenshot" 'org-download-screenshot
 
-          "t" "toggles" nil
-          "tl" "link display" 'org-toggle-link-display
-          "ti" "inline image" 'org-toggle-inline-images
+                                   "t" "toggles" nil
+                                   "tl" "link display" 'org-toggle-link-display
+                                   "ti" "inline image" 'org-toggle-inline-images
 
-          "j" "journals" nil
-          "jn" "new entry" 'org-journal-new-entry
-          "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
+                                   "j" "journals" nil
+                                   "jn" "new entry" 'org-journal-new-entry
+                                   "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
 
 
       (define-leader-key-global
-        "SPC" 'execute-extended-command
-        "/" 'my-project-rg
-        "v" 'er/expand-region
-        "u" 'universal-argument
-        "'" 'new-terminal
-        "TAB" 'vterm-perform-last-command
-        "?" 'describe-bindings)
+       "SPC" 'execute-extended-command
+       "/" 'my-project-rg
+       "v" 'er/expand-region
+       "u" 'universal-argument
+       "'" 'new-terminal
+       "TAB" 'vterm-perform-last-command
+       "?" 'describe-bindings)
 
       ;; which-key-replacement-alist
       ;; change the content of the above variable
       (define-leader-key-global
-        "1" 'winum-select-window-1
-        "2" '(winum-select-window-2 :which-key t)
-        "3" '(winum-select-window-3 :which-key t)
-        "4" '(winum-select-window-4 :which-key t)
-        "5" '(winum-select-window-5 :which-key t)
-        "6" '(winum-select-window-6 :which-key t)
-        "7" '(winum-select-window-7 :which-key t)
-        "8" '(winum-select-window-8 :which-key t)
-        "9" '(winum-select-window-9 :which-key t))
+       "1" 'winum-select-window-1
+       "2" '(winum-select-window-2 :which-key t)
+       "3" '(winum-select-window-3 :which-key t)
+       "4" '(winum-select-window-4 :which-key t)
+       "5" '(winum-select-window-5 :which-key t)
+       "6" '(winum-select-window-6 :which-key t)
+       "7" '(winum-select-window-7 :which-key t)
+       "8" '(winum-select-window-8 :which-key t)
+       "9" '(winum-select-window-9 :which-key t))
 
       ;; need to find a way to add which-key hints
       ;; for the following window selection
@@ -1095,168 +1172,168 @@
             which-key-replacement-alist)
 
       (define-leader-key-global
-        "j" '(:ignore t :which-key "jump")
-        "jw" '(avy-goto-char-timer :which-key "avy goto words")
-        "ju" '(avy-jump-url :which-key "goto url")
-        "jd" '(dumb-jump-go :which-key "goto definition") ;; limit the search area with the project root
-        "jl" '(avy-goto-line :which-key "goto line")
-        "ji" '(jump-in-buffer :which-key "imenu")
-        "j(" '(check-parens :which-key "check-parens"))
+       "j" '(:ignore t :which-key "jump")
+       "jw" '(avy-goto-char-timer :which-key "avy goto words")
+       "ju" '(avy-jump-url :which-key "goto url")
+       "jd" '(dumb-jump-go :which-key "goto definition") ;; limit the search area with the project root
+       "jl" '(avy-goto-line :which-key "goto line")
+       "ji" '(jump-in-buffer :which-key "imenu")
+       "j(" '(check-parens :which-key "check-parens"))
 
       (define-leader-key-global
-        "r" '(:ignore t :which-key "resume/register")
-        "rk" '(consult-yank-pop :which-key "kill ring")
-        "re" '(consult-register :which-key "evil register")
+       "r" '(:ignore t :which-key "resume/register")
+       "rk" '(consult-yank-pop :which-key "kill ring")
+       "re" '(consult-register :which-key "evil register")
 
-        "rm" '(:ignore t :which-key "mark ring")
-        "rml" '(consult-mark :which-key "local mark ring")
-        "rmg" '(consult-global-mark :which-key "global mark ring")
+       "rm" '(:ignore t :which-key "mark ring")
+       "rml" '(consult-mark :which-key "local mark ring")
+       "rmg" '(consult-global-mark :which-key "global mark ring")
 
-        "rl" '(vertico-repeat :which-key "minibuffer-resume"))
-
-      (define-leader-key-global
-        "a" '(:ignore t :which-key "applications")
-
-        "ad" '(docker t :which-key "docker")
-
-        "al" '(:ignore t :which-key "lookup/dictionary")
-        "ald" '(define-word :which-key "lookup definition")
-        "alg" '(google-search :which-key "google search")
-        "alx" '(open-with-xwidget :which-key "open with xwidget")
-
-        "ao" '(:ignore t :which-key "org")
-        "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
-        "aog" '(:ignore t :which-key "goto")
-        "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
-        "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
+       "rl" '(vertico-repeat :which-key "minibuffer-resume"))
 
       (define-leader-key-global
-        "b" '(:ignore t :which-key "buffer")
-        "bb" '(consult-project-buffer :which-key "project-list-buffer")
-        "bd" '(kill-this-buffer :which-key "kill-buffer")
-        "bB" '(consult-buffer :which-key "list-buffer")
-        "bi" '(ibuffer :which-key "ibuffer")
-        "bn" '(next-buffer :which-key "next-buffer")
-        "bp" '(previous-buffer :which-key "previous-buffer")
-        "bN" '(new-empty-buffer :which-key "new empty buffer")
-        "b." '(buffer-operate/body :which-key "buffer transient"))
+       "a" '(:ignore t :which-key "applications")
+
+       "ad" '(docker t :which-key "docker")
+
+       "al" '(:ignore t :which-key "lookup/dictionary")
+       "ald" '(define-word :which-key "lookup definition")
+       "alg" '(google-search :which-key "google search")
+       "alx" '(open-with-xwidget :which-key "open with xwidget")
+
+       "ao" '(:ignore t :which-key "org")
+       "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
+       "aog" '(:ignore t :which-key "goto")
+       "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
+       "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
 
       (define-leader-key-global
-        "c" '(:ignore t :which-key "comment/compile")
-        "cl" '(comment-or-uncomment-lines :which-key "comment or uncomment"))
+       "b" '(:ignore t :which-key "buffer")
+       "bb" '(consult-project-buffer :which-key "project-list-buffer")
+       "bd" '(kill-this-buffer :which-key "kill-buffer")
+       "bB" '(consult-buffer :which-key "list-buffer")
+       "bi" '(ibuffer :which-key "ibuffer")
+       "bn" '(next-buffer :which-key "next-buffer")
+       "bp" '(previous-buffer :which-key "previous-buffer")
+       "bN" '(new-empty-buffer :which-key "new empty buffer")
+       "b." '(buffer-operate/body :which-key "buffer transient"))
 
       (define-leader-key-global
-        "e" '(:ignore t :which-key "errors")
-        "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
+       "c" '(:ignore t :which-key "comment/compile")
+       "cl" '(comment-or-uncomment-lines :which-key "comment or uncomment"))
+
+      (define-leader-key-global
+       "e" '(:ignore t :which-key "errors")
+       "el" '(toggle-flycheck-error-list :which-key "flycheck error list"))
 
 
       (define-leader-key-global
-        "i" '(:ignore t :which-key "insert")
-        "is" '(insert-yas :which-key "snippets"))
+       "i" '(:ignore t :which-key "insert")
+       "is" '(insert-yas :which-key "snippets"))
 
       (define-leader-key-global
-        "l" '(:ignore t :which-key "layout")
-        "ll" '(persp-switch :which-key "switch layout")
-        "lr" '(persp-rename :which-key "rename layout")
-        "ld" '(persp-kill :which-key "delete layout")
-        "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
+       "l" '(:ignore t :which-key "layout")
+       "ll" '(persp-switch :which-key "switch layout")
+       "lr" '(persp-rename :which-key "rename layout")
+       "ld" '(persp-kill :which-key "delete layout")
+       "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
 
       (define-leader-key-global
-        "n" '(:ignore t :which-key "narrow")
-        "nf" '(narrow-to-defun :which-key "narrow to defun")
-        "nr" '(narrow-to-region :which-key "narrow to region")
-        "nw" '(widen :which-key "widen"))
+       "n" '(:ignore t :which-key "narrow")
+       "nf" '(narrow-to-defun :which-key "narrow to defun")
+       "nr" '(narrow-to-region :which-key "narrow to region")
+       "nw" '(widen :which-key "widen"))
 
       (define-leader-key-global
-        "p" '(:ignore t :which-key "project")
-        "pp" '(consult-switch-project :which-key "switch project")
-        "pf" '(project-find-file :which-key "find-file"))
+       "p" '(:ignore t :which-key "project")
+       "pp" '(consult-switch-project :which-key "switch project")
+       "pf" '(project-find-file :which-key "find-file"))
 
       (define-leader-key-global
-        "s" '(:ignore t :which-key "search")
-        "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
-        "ss" '(consult-line :which-key "consult-line")
-        "sS" '(consult-line-multi :which-key "consult-line-all"))
+       "s" '(:ignore t :which-key "search")
+       "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
+       "ss" '(consult-line :which-key "consult-line")
+       "sS" '(consult-line-multi :which-key "consult-line-all"))
 
       (define-leader-key-global
-        "g" '(:ignore t :which-key "git")
-        "gi" '(magit-init :which-key "gagit init")
-        "gb" '(:ignore t :which-key "blame")
-        "gl" '(magit-list-repositories :which-key "magit list repos")
-        "gbl" '(git-messenger:popup-message  :which-key "this line")
-        "gbb" '(magit-blame-addition  :which-key "this buffer")
-        "gs" '(magit-status :which-key "magit status"))
+       "g" '(:ignore t :which-key "git")
+       "gi" '(magit-init :which-key "gagit init")
+       "gb" '(:ignore t :which-key "blame")
+       "gl" '(magit-list-repositories :which-key "magit list repos")
+       "gbl" '(git-messenger:popup-message  :which-key "this line")
+       "gbb" '(magit-blame-addition  :which-key "this buffer")
+       "gs" '(magit-status :which-key "magit status"))
 
       (define-leader-key-global
-        "k" '(:ignore t :which-key "kmacro")
-        "ks" '(kmacro-start-macro-or-insert-counter :which-key "start macro/insert counter")
-        "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
-        "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
-        "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
+       "k" '(:ignore t :which-key "kmacro")
+       "ks" '(kmacro-start-macro-or-insert-counter :which-key "start macro/insert counter")
+       "ke" '(kmacro-end-or-call-macro :which-key "end or run record")
+       "kv" '(kmacro-view-macro-repeat :which-key "view last macro")
+       "kn" '(kmacro-name-last-macro :which-key "name the last kmacro"))
 
       (define-leader-key-global
-        "q" '(:ignore t :which-key "quit")
-        "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
-        "qr" '(restart-emacs :which-key "restart"))
+       "q" '(:ignore t :which-key "quit")
+       "qq" '(save-buffers-kill-emacs :which-key "quit with saving buffer")
+       "qr" '(restart-emacs :which-key "restart"))
 
       (define-leader-key-global
-        "t"  '(:ignore t :which-key "toggles")
-        "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
-        "ti" '(toggle-input-method :which-key "toggle input method")
-        "ts" '(hydra-text-scale/body :which-key "scale text"))
+       "t"  '(:ignore t :which-key "toggles")
+       "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+       "ti" '(toggle-input-method :which-key "toggle input method")
+       "ts" '(hydra-text-scale/body :which-key "scale text"))
 
       (define-leader-key-global
-        "w" '(:ignore t :which-key "windows")
-        "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
-        "ww" '(other-window :which-key "other-window")
-        "wm" '(toggle-maximize-buffer :which-key "window maximized")
-        "wM" '(toggle-frame-maximized :which-key "frame maximized")
-        "wd" '(delete-window :which-key "delete window")
-        "wh" '(evil-window-left :which-key "go to window left")
-        "wl" '(evil-window-right :which-key "go to window right")
-        "wk" '(evil-window-up :which-key "go to window up")
-        "wr" '(rotate-windows-forward :which-key "rotate window")
-        "wj" '(evil-window-down :which-key "go to window down")
-        "wL" '(evil-window-move-far-right :which-key "move window to right side")
-        "wH" '(evil-window-move-far-left :which-key "move window to left side")
-        "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
-        "wK" '(evil-window-move-very-top :which-key "move window to top side")
+       "w" '(:ignore t :which-key "windows")
+       "wf" '(toggle-frame-fullscreen :which-key "toggle fullscreen")
+       "ww" '(other-window :which-key "other-window")
+       "wm" '(toggle-maximize-buffer :which-key "window maximized")
+       "wM" '(toggle-frame-maximized :which-key "frame maximized")
+       "wd" '(delete-window :which-key "delete window")
+       "wh" '(evil-window-left :which-key "go to window left")
+       "wl" '(evil-window-right :which-key "go to window right")
+       "wk" '(evil-window-up :which-key "go to window up")
+       "wr" '(rotate-windows-forward :which-key "rotate window")
+       "wj" '(evil-window-down :which-key "go to window down")
+       "wL" '(evil-window-move-far-right :which-key "move window to right side")
+       "wH" '(evil-window-move-far-left :which-key "move window to left side")
+       "wJ" '(evil-window-move-very-bottom :which-key "move window to bottom side")
+       "wK" '(evil-window-move-very-top :which-key "move window to top side")
 
-        "wg" '(switch-to-minibuffer-window :which-key "go to minibuffer")
+       "wg" '(switch-to-minibuffer-window :which-key "go to minibuffer")
 
-        "w/" '(evil-window-vsplit :which-key "split vertically")
-        "w-" '(evil-window-split :which-key "split horizontally")
+       "w/" '(evil-window-vsplit :which-key "split vertically")
+       "w-" '(evil-window-split :which-key "split horizontally")
 
-        "w=" '(balance-windows :which-key "balance")
-        "w[" '(my-shrink-window-horizontally :which-key "shrink h")
-        "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
-        "w{" '(my-shrink-window :which-key: "shrink v")
-        "w}" '(my-enlarge-window :which-key: "enlarge v")
+       "w=" '(balance-windows :which-key "balance")
+       "w[" '(my-shrink-window-horizontally :which-key "shrink h")
+       "w]" '(my-enlarge-window-horizontally :which-key "enlarge h")
+       "w{" '(my-shrink-window :which-key: "shrink v")
+       "w}" '(my-enlarge-window :which-key: "enlarge v")
 
-        "wF" '(make-frame :which-key "make frame")
-        "wD" '(delete-frame :which-key "delete frame")
-        "wo" '(other-frame :which-key "other frame")
-        "w." '(window-operate/body :which-key "window transient"))
-
-      (define-leader-key-global
-        "x" '(:ignore t :which-key "texts")
-        "xc" '(count-words-region :which-key "count-words-region")
-
-        "xb" '(:ignore t :which-key "base64")
-        "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
-        "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
-
-        "xs" '(send-text-and-move-to-project-vterm :which-key "send content to and focus on vterm"))
+       "wF" '(make-frame :which-key "make frame")
+       "wD" '(delete-frame :which-key "delete frame")
+       "wo" '(other-frame :which-key "other frame")
+       "w." '(window-operate/body :which-key "window transient"))
 
       (define-leader-key-global
-        "f" '(:ignore t :which-key "files")
-        "fe" '(:ignore t :which-key "emacs")
-        "fed" '(my-find-dotfile :which-key "open config dotfile")
-        "fy" '(copy-file-path :which-key "copy file path")
-        "fd" '(dired-jump :which-key "dired")
-        "fs" '(save-buffer :which-key "save file")
-        "fr" '(rename-current-buffer-file :which-key "rename file")
-        "ff" '(find-file :which-key "find file"))
+       "x" '(:ignore t :which-key "texts")
+       "xc" '(count-words-region :which-key "count-words-region")
+
+       "xb" '(:ignore t :which-key "base64")
+       "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
+       "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
+
+       "xs" '(send-text-and-move-to-project-vterm :which-key "send content to and focus on vterm"))
+
+      (define-leader-key-global
+       "f" '(:ignore t :which-key "files")
+       "fe" '(:ignore t :which-key "emacs")
+       "fed" '(my-find-dotfile :which-key "open config dotfile")
+       "fy" '(copy-file-path :which-key "copy file path")
+       "fd" '(dired-jump :which-key "dired")
+       "fs" '(save-buffer :which-key "save file")
+       "fr" '(rename-current-buffer-file :which-key "rename file")
+       "ff" '(find-file :which-key "find file"))
 
       (message "DEBUG: !! complete general setting"))
   #+end_src

@@ -148,7 +148,7 @@
        consult-bookmark consult-recent-file consult-xref
        consult--source-bookmark consult--source-recent-file
        consult--source-project-recent-file
-       :preview-key (kbd "C-l")))
+       :preview-key '("C-l")))
   #+end_src
 
 
@@ -250,6 +250,8 @@
 
     (use-package corfu
       :after evil
+      :straight
+      (:host github :repo "minad/corfu" :files ("*.el" "extensions/*.el"))
       :config
       (evil-make-overriding-map corfu-map)
       (advice-add 'corfu--setup :after 'evil-normalize-keymaps)
@@ -272,6 +274,10 @@
       (corfu-preselect-first t)
       (corfu-auto-delay 0.1)
       (corfu-auto-prefix 2))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package eldoc-box)
   #+end_src
 
   #+begin_src emacs-lisp
@@ -349,13 +355,12 @@
   it's evil! provide you vim-like ux in emacs.
 
   #+begin_src emacs-lisp
-
     (defun show-error-or-doc ()
       "Show errors if flycheck detects errors existed or display the documentation."
       (interactive)
       (if (flycheck-overlay-errors-at (point))
           (flycheck-display-error-at-point)
-        (lsp-describe-thing-at-point)))
+        (eldoc-box-eglot-help-at-point)))
 
   #+end_src
 

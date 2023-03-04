@@ -184,7 +184,7 @@
 
 ** org tangle lp configs
    #+begin_src emacs-lisp
-     (defvar emacs-path "/usr/local/opt/emacs-plus@29/bin/emacs")
+     (defvar emacs-path "/usr/local/bin/emacs")
      (defvar org-tangle-cmd (concat emacs-path " --batch --eval \"(require 'org)\" --eval \"(require 'ob-tangle)\" --eval '(find-file \"%s\")' --eval '(org-babel-tangle)'"))
 
      (defun export-lp-configs ()
@@ -922,7 +922,7 @@
        (xwidget-webkit-browse-url
         (url-encode-url (concat
                          "file://"
-                         (expand-file-name x ivy--directory))) t))
+                         (expand-file-name x))) t))
 
      (with-eval-after-load 'consult
        (defun open-with-xwidget (&optional initial-input)
