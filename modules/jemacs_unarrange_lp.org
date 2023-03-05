@@ -107,14 +107,6 @@
 
   search thing under point [[https://devdocs.io/][devdocs]]
 
-  #+begin_src emacs-lisp :tangle no
-    (use-package devdocs
-      :defer t
-      :straight (
-                 :local-repo (concat home-dir "local/devdocs"))
-
-  #+end_src
-
   #+begin_src emacs-lisp
     (eval `(use-package devdocs
              :defer t
@@ -123,19 +115,6 @@
   #+end_src
 
 * counsel-jq-yq
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package jq-yq
-      :defer 1
-      :straight (
-                 :local-repo (concat home-dir "local/jq-yq")
-                 )
-      ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-      ;; :config
-      ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
-      ;; (load-library "counsel-jq-yq-autoloads"))
-      )
-  #+end_src
 
   #+begin_src emacs-lisp
     (eval `(use-package jq-yq
@@ -192,7 +171,7 @@
                       :files ("*.el" "Makefile" "lib.c"))
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
-      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@29/include/")
+      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@30/include/")
       (rime-user-data-dir "/Users/jing/Library/Rime/")
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
@@ -385,12 +364,6 @@
                               (yas--template-expand-env template)))))
   #+end_src
 
-  ivy-yasnippet is deprecated because ivy is replaced by consult
-  #+begin_src emacs-lisp :tangle no
-    (use-package ivy-yasnippet
-      :defer t
-      :after yasnippet)
-  #+end_src
 
 * helpful
   make help description more readble
@@ -461,13 +434,6 @@
           (add-to-list 'flycheck-global-modes 'yaml-mode))))
   #+end_src
 
-  a quick way to find the path for value
-  (deprecated)
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package json-snatcher
-      :defer t)
-  #+end_src
 
 ** experiment tree-sitter
 
@@ -485,7 +451,7 @@
        (tree-sitter-after-on . tree-sitter-hl-mode))
    #+end_src
 
-   now tree sitter are builtin in emacs 29
+   now tree sitter are builtin in emacs 29 but it's not matured.
 
    auto setup tree sitter inspired from
    https://github.com/renzmann/treesit-auto/blob/main/treesit-auto.el
@@ -816,16 +782,16 @@
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      (eglot-stay-out-of '(eldoc))
+      ;; (eglot-stay-out-of '(eldoc))
       (eglot-ignored-server-capabilities '(:hoverProvider
                                            :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
       (add-hook 'python-mode-hook (lambda ()
-                                    (setq-default eglot-workspace-configuration
-                                                `((:python .
-                                                          (:venvPath ,(poetry-get-virtualenv)
-                                                           :pythonPath ,(concat (poetry-get-virtualenv) "/bin")))))
+                                    ;; (setq-default eglot-workspace-configuration
+                                    ;;             `((:python .
+                                    ;;                       (:venvPath ,(poetry-get-virtualenv)
+                                    ;;                        :pythonPath ,(concat (poetry-get-virtualenv) "/bin")))))
                                     (eglot-ensure)))
 
       (add-hook 'eglot-managed-mode-hook (lambda () (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
@@ -833,60 +799,6 @@
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
   #+end_src
 
-  #+begin_src emacs-lisp :tangle no
-        (use-package lsp-mode
-          :init
-          ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
-          (setq lsp-completion-provider :none) ;; the official recommends use this
-          (setq lsp-enable-symbol-highlighting nil)
-          (setq lsp-signature-render-documentation nil)
-          (setq read-process-output-max (* 1024 1024))
-          ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
-
-          :commands
-          (lsp)
-          :hook
-          (go-mode . lsp)
-          (python-mode . lsp)
-          (lua-mode . lsp)
-          (rust-mode . lsp)
-          (js-mode . lsp)
-          (c-mode . lsp)
-          (c++-mode . lsp)
-          :custom
-          (lsp-lens-enable nil) ;; turn off lens mode
-          (lsp-headerline-breadcrumb-enable nil)
-          (lsp-enable-folding nil)
-          (lsp-enable-snippet nil)
-          (lsp-enable-imenu nil)
-          (lsp-enable-links nil)
-          :config
-          (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
-          (advice-add 'lsp-managed-mode :before 'add-xref-dumb-jump-before-xref-lsp))
-
-
-        (use-package dap-mode
-          :defer t
-          :config
-          ;; pip install "ptvsd>=4.2"
-          (require 'dap-python)
-          (require 'dap-go)
-          ;; dap-go-setup
-          (add-hook 'dap-stopped-hook
-                    (lambda (arg) (call-interactively #'dap-hydra))))
-
-  #+end_src
-
-  currently, disable =lsp-ui=
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package lsp-ui
-      :after flycheck
-      :commands lsp-ui-mode
-      :config
-      (setq lsp-ui-doc-enable nil)
-      (setq lsp-ui-sideline-enable nil))
-  #+end_src
 
 * wgrep mode
   #+begin_src emacs-lisp

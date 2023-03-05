@@ -497,16 +497,6 @@
 
 ** misc
 
-   Note:
-   #+begin_src emacs-lisp :tangle no
-     (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
-       (print (key-binding (kbd (concat "SPC" " mhh"))))
-       (if (commandp binding)
-           (call-interactively binding)
-         (evil-lookup)))
-   #+end_src
-
-
    #+begin_src emacs-lisp
      (defun hey-god (question)
        "Reduce distraction when you search the answer for the question.
@@ -857,8 +847,7 @@
            :sync t))))
 
      (defun wrap-to-consult-read (prog fn input)
-       (let ((res (append (if (listp prog) prog (list prog)) (funcall fn input))))
-         (list :command res)))
+       (append (if (listp prog) prog (list prog)) (funcall fn input)))
 
      (defun search-format (lines)
        (split-string lines " "))
@@ -918,31 +907,27 @@
           :parser 'json-read
           :sync t)))
 
-     (defun open-with-xwidget-action (x)
+     (defun open-with-xwidget-action (x dir)
        (xwidget-webkit-browse-url
         (url-encode-url (concat
                          "file://"
-                         (expand-file-name x))) t))
+                         (expand-file-name x dir))) t))
 
      (with-eval-after-load 'consult
        (defun open-with-xwidget (&optional initial-input)
          "Open file with xwidget browse url."
          (interactive)
-         (open-with-xwidget-action
-          (consult--read
-           :prompt "Open file: "))))
+         (let* ((selected-dir (read-directory-name "select directory: "))
+                (candidates (directory-files selected-dir)))
+           (open-with-xwidget-action
+            (consult--read
+             candidates
+             :prompt "Open file: ")
+            selected-dir))))
    #+end_src
 
-** auto tangle literate config
-   #+begin_src emacs-lisp :tangle no
-     (defun my-tangle-literate-config ()
-       "Auto call org-babel-tangle when saving the literate_setup.org"
-       (when (string-equal (buffer-file-name) (expand-file-name "~/Desktop/spacemacs-private/mycraft/literate_setup.org"))
-
-         (org-babel-tangle nil)))
-
-     (add-hook 'after-save-hook #'my-tangle-literate-config)
-   #+end_src
+   #+RESULTS:
+   : open-with-xwidget
 
 ** operation with marked text
 
