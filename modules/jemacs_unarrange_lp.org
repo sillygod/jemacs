@@ -654,6 +654,8 @@
     (use-package lispy
       :init
       (setq lispy-key-theme '(special c-digits))
+      :custom
+      (lispy-x-default-verbosity 1)
       :hook ((common-lisp-mode . lispy-mode)
              (emacs-lisp-mode . lispy-mode)
              (scheme-mode . lispy-mode))
@@ -782,19 +784,29 @@
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      ;; (eglot-stay-out-of '(eldoc))
+      (eglot-stay-out-of '(xref))
+      ;; (enable-local-variables nil)
+      (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
                                            :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
       (add-hook 'python-mode-hook (lambda ()
-                                    ;; (setq-default eglot-workspace-configuration
-                                    ;;             `((:python .
-                                    ;;                       (:venvPath ,(poetry-get-virtualenv)
-                                    ;;                        :pythonPath ,(concat (poetry-get-virtualenv) "/bin")))))
-                                    (eglot-ensure)))
+                                    (let ((venv-path (poetry-get-virtualenv)))
+                                      (setq-default eglot-workspace-configuration
+                                                    `(:pyright (:venv
+                                                                ,(file-name-nondirectory venv-path))
+                                                               :python (:venvPath
+                                                                        ,(file-name-directory venv-path)
+                                                                        :pythonPath
+                                                                        ,(concat venv-path "/bin/python")))))
 
-      (add-hook 'eglot-managed-mode-hook (lambda () (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
+                                    (when (featurep 'eglot)
+                                      (eglot-ensure)
+                                      (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)
+                                      (add-hook 'xref-backend-functions 'eglot-xref-backend nil t))))
+
+      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
   #+end_src
@@ -983,7 +995,6 @@
                (list 'python-mode-map
                      "" "major mode" 'nil
 
-                     "t" "tests" 'python-pytest-dispatch
                      "x" "execute" nil
                      "xx" "python run" 'python-run-main
                      "v" "workon env" 'workon-virtual-env-and-lsp

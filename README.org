@@ -69,27 +69,12 @@
    - https://github.com/oantolin/emacs-config
    - https://github.com/braineo/fate-emacs
 
-** literate programming
-
-   - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
-   - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
-   - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
-   - https://soliloquium.zealmaker.com/fastpages/orgmode/2020/04/27/blogging-with-orgmode-and-fastpages
-
 ** misc
 
    - https://www.youtube.com/@SystemCrafters/streams (systemCrafter)
    - https://github.com/p3r7/awesome-elisp
-   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
-   - https://endlessparentheses.com/
-   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
    - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
-   - https://github.com/sulami/literate-calc-mode.el
-   - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
+   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
+   - https://endlessparentheses.com/
    - https://github.com/wbolster/emacs-direnv
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
-   - https://www.gnu.org/software/hyperbole/#summary
-
-
-** implement a dired sort transient or hydra
-   https://gitlab.com/xuhdev/dired-quick-sort/-/blob/master/dired-quick-sort.el

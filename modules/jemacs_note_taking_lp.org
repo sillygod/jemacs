@@ -238,19 +238,6 @@
               org-roam-ui-update-on-save t
               org-roam-ui-open-on-start nil))
 
-    (with-eval-after-load 'counsel
-      (defun org-roam-todo ()
-        "An ad-hoc agenda for `org-roam'."
-        (interactive)
-        (let* ((regex "^\\* TODO")
-               (b (get-buffer (concat "*ivy-occur counsel-rg \"" regex "\"*"))))
-          (if b
-              (progn
-                (switch-to-buffer b)
-                (ivy-occur-revert-buffer))
-            (setq unread-command-events (listify-key-sequence (kbd "C-c C-o M->")))
-            (counsel-rg regex org-roam-directory "--sort modified")))))
-
 
     (defun ora-org-roam-find-file-action (x)
       (if (consp x)

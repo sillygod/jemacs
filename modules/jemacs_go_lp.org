@@ -18,7 +18,7 @@
 * go mode
   #+begin_src emacs-lisp
     (use-package go-mode
-      :defer 2
+      :defer t
       :custom
       (gofmt-command "goimports")
       :hook

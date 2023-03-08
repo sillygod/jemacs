@@ -306,9 +306,7 @@
    #+begin_src emacs-lisp
      ;; NOTE: borrow from spacemacs
      (defun show-hide-helm-or-ivy-prompt-msg (msg sec)
-       "Show a MSG at the helm or ivy prompt for SEC.
-          With Helm, remember the path, then restore it after SEC.
-          With Ivy, the path isn't editable, just remove the MSG after SEC."
+       "Show a MSG at the helm or ivy prompt for SEC. "
        (run-at-time
         0 nil
         #'(lambda (msg sec)
@@ -371,9 +369,7 @@
                       (when (fboundp 'recentf-add-file)
                         (recentf-add-file new-name)
                         (recentf-remove-if-non-kept old-filename))
-                      (when (and (featurep 'projectile)
-                                 (projectile-project-p))
-                        (call-interactively #'projectile-invalidate-cache))
+
                       (message (cond ((and file-moved-p file-renamed-p)
                                       (concat "File Moved & Renamed\n"
                                               "From: " old-filename "\n"

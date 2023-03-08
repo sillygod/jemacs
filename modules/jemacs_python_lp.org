@@ -23,10 +23,10 @@
     (with-eval-after-load 'python
       (setq python-shell-interpreter "ipython"))
 
-    (use-package python-pytest
-      :defer t
-      :custom
-      (python-pytest-confirm t))
+    ;; (use-package python-pytest
+    ;;   :defer t
+    ;;   :custom
+    ;;   (python-pytest-confirm t))
 
     (use-package poetry
       :commands
