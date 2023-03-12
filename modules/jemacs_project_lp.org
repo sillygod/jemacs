@@ -133,7 +133,7 @@
       (evilnc-comment-or-uncomment-lines arg))
 
     (defun jump-in-buffer ()
-      "Jump in buffer with `counsel-imenu' or `consult-org-heading' if in 'org-mode'."
+      "Jump in buffer with `consult-imenu' or `consult-org-heading' if in 'org-mode'."
       (interactive)
       (call-interactively
        (cond

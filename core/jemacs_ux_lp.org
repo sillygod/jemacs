@@ -299,10 +299,9 @@
       (evil-want-integration t)
       (evil-want-keybinding nil) ;; this will cause some evil keybinding
       ;; of other modes not working when it's set to true
-      (evil-goto-definition-functions '(evil-goto-definition-imenu
-                                         evil-goto-definition-xref
-                                         evil-goto-definition-semantic
-                                         evil-goto-definition-search))
+      (evil-goto-definition-functions '(evil-goto-definition-xref
+                                        evil-goto-definition-semantic
+                                        evil-goto-definition-search))
       :config
       (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
       ;; Use visual line motions even outside of visual-line-mode buffers

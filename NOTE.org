@@ -34,7 +34,6 @@
 
    - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] tree sitter (https://emacs-tree-sitter.github.io/)
-   - [ ] add lookup function like doom emacs (which is based on counsel-search)
    - [ ] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
    - [ ] interactive sql mode
    - [ ] https://github.com/osener/emacs-webkit-color-picker

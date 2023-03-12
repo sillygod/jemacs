@@ -1,22 +1,25 @@
 ;;; dired-sort.el --- Quick doc search on devdocs.io -*- lexical-binding: t -*-
 
 ;;; Commentary:
-;; To use, type M-x devdocs-search
+;; macos built in ls doesn't support --group-directories-first flag
+;; brew install coreutils
 ;;; Code:
 
-;; https://gitlab.com/xuhdev/dired-quick-sort/-/blob/master/dired-quick-sort.el
 
 (require 'dired)
 (require 'ls-lisp)
 (require 'savehist)
 (require 'hydra)
 
+(when (eq system-type 'darwin)
+  (setq insert-directory-program "gls"))
+
 (defcustom dired-sort-suppress-setup-warning nil
   "How to handle the warning in `dired-sort-setup'."
   :type '(choice (const :tag "Display" nil)
                  (const :tag "Suppress" t)
                  (const :tag "Display as a message" 'message))
-  :group 'dired-quick-sort)
+  :group 'dired-sort)
 
 (defvar dired-sort-sort-by-last "version"
   "The main sort criterion used last time.
@@ -78,10 +81,10 @@ t means no revert buffer. for more detail, please go to the doc of dired-sort-ot
           dired-sort-sort-by-last
           (if (char-equal dired-sort-reverse-last ?y)
               "-r" "")
-          (if (char-equal dired-quick-sort-group-directories-last ?y)
+          (if (char-equal dired-sort-group-directories-last ?y)
               "--group-directories-first" "")
-          (if (not (string= dired-quick-sort-time-last "default"))
-              (concat "--time=" dired-quick-sort-time-last) "")))
+          (if (not (string= dired-sort-time-last "default"))
+              (concat "--time=" dired-sort-time-last) "")))
 
 (defun dired-sort--sort-by-last (field)
   (if (string= dired-sort-sort-by-last field) "[X]" "[ ]"))
@@ -150,33 +153,34 @@ criteria after entering `dired-mode'.  You can choose to not call
 this setup function and run a modified version of this function
 to use your own preferred setup:
 
-  ;; Replace \"S\" with other keys to invoke the dired-quick-sort hydra.
-  (define-key dired-mode-map \"S\" 'hydra-dired-quick-sort/body)
+  ;; Replace \"S\" with other keys to invoke the dired-sort hydra.
+  (define-key dired-mode-map \"S\" 'hydra-dired-sort/body)
   ;; Automatically use the sorting defined here to sort.
-  (add-hook 'dired-mode-hook 'dired-quick-sort)"
+  (add-hook 'dired-mode-hook 'dired-sort)"
 
   (if (not ls-lisp-use-insert-directory-program)
-      (dired-quick-sort--display-setup-warning
-"`ls-lisp-use-insert-directory-program' is nil. The package `dired-quick-sort'
-will not work and thus is not set up by `dired-quick-sort-setup'. Set it to t to
+      (dired-sort--display-setup-warning
+       "`ls-lisp-use-insert-directory-program' is nil. The package `dired-sort'
+will not work and thus is not set up by `dired-sort-setup'. Set it to t to
 suppress this warning. Alternatively, set
-`dired-quick-sort-suppress-setup-warning' to suppress warning and skip setup
+`dired-sort-suppress-setup-warning' to suppress warning and skip setup
 silently.")
     (if (not
          (with-temp-buffer
            (call-process insert-directory-program nil t nil "--version")
            (string-match-p "GNU" (buffer-string))))
-        (dired-quick-sort--display-setup-warning
-"`insert-directory-program' does
+        (dired-sort--display-setup-warning
+         "`insert-directory-program' does
 not point to GNU ls.  Please set `insert-directory-program' to GNU ls.  The
-package `dired-quick-sort' will not work and thus is not set up by
-`dired-quick-sort-setup'. Alternatively, set
-`dired-quick-sort-suppress-setup-warning' to suppress warning and skip setup
+package `dired-sort' will not work and thus is not set up by
+`dired-sort-setup'. Alternatively, set
+`dired-sort-suppress-setup-warning' to suppress warning and skip setup
 silently.")
-      (define-key dired-mode-map "S" 'hydra-dired-quick-sort/body)
-      (add-hook 'dired-mode-hook #'dired-quick-sort-set-switches))))
+      (evil-define-key 'normal (kbd "s") 'hydra-dired-sort/body)
+      ;; (add-hook 'dired-mode-hook #'dired-sort-set-switches)
+      )))
 
-(provide 'dired-quick-sort)
+(provide 'dired-sort)
 
 
 

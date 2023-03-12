@@ -123,6 +123,14 @@
 
   #+end_src
 
+* dired sort
+
+  #+begin_src emacs-lisp
+    (eval `(use-package dired-sort
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/dired-sort"))))
+  #+end_src
+
 * hl-todo mode
 
   TODO: https://github.com/coldnew/coldnew-emacs#highlight-fixme-todo
@@ -421,7 +429,6 @@
       :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
              ("Procfile\\'" . yaml-mode))
       :init
-      (add-hook 'yaml-mode-hook 'lsp)
       (add-hook 'yaml-mode-hook #'(lambda ()
                                     (set (make-local-variable 'tab-width) 2)
                                     (set (make-local-variable 'evil-shift-width) 2)
@@ -712,9 +719,6 @@
   =(setq lsp-keymap-prefix "SPC m")= this will only affect the display info of whichkey.
 
   #+begin_src emacs-lisp
-    (defun add-xref-dumb-jump-before-xref-lsp (arg)
-      (when lsp-enable-xref
-        (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
 
     (defun get-xref-find-backends ()
       (let (backends
@@ -762,6 +766,12 @@
 
   TODO: deprecate lsp, I decide to adopt elgot.
 
+  #+begin_src emacs-lisp :tangle no
+    (use-package lsp-bridge
+      :defer t
+      :straight (:host github :repo "manateelazycat/lsp-bridge" :files ("*.el" "")))
+  #+end_src
+
   #+begin_src emacs-lisp
     (use-package eglot
       :defer t
@@ -785,25 +795,39 @@
       (go-ts-mode . eglot-ensure)
       :custom
       (eglot-stay-out-of '(xref))
-      ;; (enable-local-variables nil)
+      (enable-local-variables nil)
+      (xref-search-program 'ripgrep)
       (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
                                            :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
       (add-hook 'python-mode-hook (lambda ()
-                                    (let ((venv-path (poetry-get-virtualenv)))
+                                    (when-let ((venv-path (python-find-virtualenv)))
                                       (setq-default eglot-workspace-configuration
-                                                    `(:pyright (:venv
-                                                                ,(file-name-nondirectory venv-path))
-                                                               :python (:venvPath
-                                                                        ,(file-name-directory venv-path)
-                                                                        :pythonPath
-                                                                        ,(concat venv-path "/bin/python")))))
+                                                    `(:python.analysis
+                                                      (:stubPath
+                                                       ""
+                                                       :useLibraryCodeForTypes
+                                                       t
+                                                       :autoSearchPaths
+                                                       t
+                                                       :autoImportCompletions
+                                                       t
+                                                       :diagnosticMode
+                                                       "openFilesOnly")
+                                                      :python
+                                                      (:venvPath
+                                                       ,(file-name-directory venv-path)
+                                                       :venv
+                                                       ,(file-name-nondirectory venv-path)
+                                                       :pythonPath
+                                                       ,(concat venv-path "/bin/python")))))
 
                                     (when (featurep 'eglot)
+                                      (flycheck-mode -1)
                                       (eglot-ensure)
-                                      (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)
+                                      (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
                                       (add-hook 'xref-backend-functions 'eglot-xref-backend nil t))))
 
       (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
@@ -969,7 +993,8 @@
                                    "x" "execute" nil
                                    "xx" "racket run" 'racket-run))
 
-      ;; lsp keybindings for some major modes
+      ;; keybindings for some major modes
+      ;; NOTE: consider to move these to the configuration of each major-mode?
 
       ;; keybinding for go-mode
       (with-eval-after-load 'go-mode
@@ -993,13 +1018,13 @@
 
         (apply 'define-leader-key-map-for
                (list 'python-mode-map
-                     "" "major mode" 'nil
+                     "" "major mode" '()
 
                      "x" "execute" nil
                      "xx" "python run" 'python-run-main
+                     "h" "help" 'eldoc-box-eglot-help-at-point
                      "v" "workon env" 'workon-virtual-env-and-lsp
-                     "d" "debug" 'dap-hydra))
-        (evil-define-key 'normal python-mode-map (kbd "K") 'evil-smart-doc-lookup))
+                     "d" "debug" 'dap-hydra)))
 
       (with-eval-after-load 'json-mode
         (define-leader-key-map-for 'json-mode-map
@@ -1013,7 +1038,7 @@
         (define-leader-key-map-for 'yaml-mode-map
                                    "" "major mode" nil
                                    "l" "lookup" nil
-                                   "ly" "yq" 'counsel-yq))
+                                   "ly" "yq" 'consult-yq))
 
 
       (with-eval-after-load 'elisp-mode
@@ -1127,7 +1152,7 @@
        "ao" '(:ignore t :which-key "org")
        "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
        "aog" '(:ignore t :which-key "goto")
-       "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
+       "aogj" '((lambda () (interactive) (find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
        "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
 
       (define-leader-key-global

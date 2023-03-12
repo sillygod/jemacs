@@ -28,12 +28,37 @@
     ;;   :custom
     ;;   (python-pytest-confirm t))
 
-    (use-package poetry
-      :commands
-      (poetry-venv-workon
-       poetry-get-virtualenv
-       poetry-venv-deactivate
-       poetry-venv-toggle))
+    (defvar python-project-venv-plist nil
+      "A property list to cache the project's virtualenv.")
+
+    (defun python-find-project-root ()
+      "Return the python project root with project.el. If not found,
+    it supporse the project is handled by poetry so it will try to find the
+    direcotry contains the pyproject.toml file. The final fallbakc will let
+    you choose the root directory."
+      (or (if-let* ((proj (project-current nil))
+                    (project-root (project-root proj))) project-root)
+          (locate-dominating-file default-directory "pyproject.toml")
+          (if (y-or-n-p "do you want to set the project root manually?")
+              (read-directory-name "select directory: "))))
+
+
+    (defun python-find-virtualenv ()
+      "Return the virtualenv path with current project.
+    First, check if there is a .venv directory exists. If not found,
+    try to find the virtualenv with the poetry info -p
+    "
+      (when-let* ((root (python-find-project-root))
+                  (proot (intern (format ":%s" root))))
+        (or (plist-get python-project-venv-plist proot)
+            (when-let ((venv (concat root ".venv"))
+                       (_ (file-directory-p venv)))
+              (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
+              venv)
+            (let* ((default-directory root)
+                   (venv (string-trim-right (shell-command-to-string "poetry env info -p"))))
+              (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
+              venv))))
 
     (use-package pyvenv
       :commands (pyvenv-mode)
@@ -56,7 +81,7 @@
 
     (defun workon-virtual-env-and-lsp ()
       (interactive)
-      (poetry-venv-workon)
+      (pyvenv-activate (python-find-virtualenv))
       (call-interactively 'eglot))
 
     ;; TODO: implement this one
@@ -68,9 +93,8 @@
       ;; create a vterm buffer with python shell
       ;; maybe, I can reference from the python-inferior-mode
 
-      (if (featurep 'poetry)
-          (vterm-send-string (poetry-virtualenv-path))
-        (vterm-send-string "python"))
+      (vterm-send-string (concat "source " (python-find-virtualenv) "/bin/activate"))
+      (vterm-send-string "python")
       (vterm-send-return))
 
     (defun python-run-main ()

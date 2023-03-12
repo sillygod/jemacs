@@ -528,58 +528,6 @@
        (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust))
    #+end_src
 
-** lsp-keybinding
-   #+begin_src emacs-lisp
-     (defun lsp-keybinding ()
-       "Return the keybinding for lsp functions."
-       (list "=" "format" nil
-             "==" "lsp-format-buffer" 'lsp-format-buffer
-             "=r" "lsp-format-region" 'lsp-format-region
-
-             "a" "code actions" nil
-             "aa" "lsp-execute-code-action" 'lsp-execute-code-action
-             "al" "lsp-avy-lens" 'lsp-avy-lens
-             "ah" "lsp-document-highlight" 'lsp-document-highlight
-
-             "F" "folder" nil
-             "Fa" "lsp-workspace-folders-add" 'lsp-workspace-folders-add
-             "Fr" "lsp-workspace-folders-remove " 'lsp-workspace-folders-remove
-             "Fb" "lsp-workspace-blacklist-remove" 'lsp-workspace-blacklist-remove
-
-             "g" "goto" nil
-             "gg" "lsp-find-definition" 'lsp-find-definition
-             "gr" "lsp-find-references" 'lsp-find-references
-             "gi" "lsp-find-implementation" 'lsp-find-implementation
-             "gt" "lsp-find-type-definition" 'lsp-find-type-definition
-             "gd" "lsp-find-declaration" 'lsp-find-declaration
-             "ga" "xref-find-apropos" 'xref-find-apropos
-
-             "G" "peek" nil
-             "Gg" "lsp-ui-peek-find-definitions" 'lsp-ui-peek-find-definitions
-             "Gr" "lsp-ui-peek-find-references" 'lsp-ui-peek-find-references
-             "Gi" "lsp-ui-peek-find-implementatio" 'lsp-ui-peek-find-implementation
-             "Gs" "lsp-ui-peek-find-workspace-symbol" 'lsp-ui-peek-find-workspace-symbol
-
-
-             "h" "help" nil
-             "hh" "lsp-describe-thing-at-point" 'lsp-describe-thing-at-point
-             "hs" "lsp-signature-activate" 'lsp-signature-activate
-             "hg" "lsp-ui-doc-glance" 'lsp-ui-doc-glance
-
-             "r" "refactor" nil
-             "rr" "lsp-rename" 'lsp-rename
-             "ro" "lsp-organize-imports" 'lsp-organize-imports
-
-
-             "T" "toggle" nil
-             "Tl" "lsp-lens-mode" 'lsp-lens-mode
-             "TL" "lsp-toggle-trace-io" 'lsp-toggle-trace-io
-             "Th" "lsp-toggle-symbol-highlight" 'lsp-toggle-symbol-highlight
-             "TS" "lsp-ui-sideline-mode" 'lsp-ui-sideline-mode
-             "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
-             "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
-   #+end_src
-
 ** lsp define key helper
    #+begin_src emacs-lisp
      (defun define-leader-key-global (&rest MAPS)
