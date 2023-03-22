@@ -128,7 +128,9 @@
   #+begin_src emacs-lisp
     (eval `(use-package dired-sort
              :defer t
-             :straight (:local-repo ,(concat home-dir "local/dired-sort"))))
+             :straight (:local-repo ,(concat home-dir "local/dired-sort"))
+             :config
+             (dired-sort-setup)))
   #+end_src
 
 * hl-todo mode
@@ -773,6 +775,7 @@
   #+end_src
 
   #+begin_src emacs-lisp
+
     (use-package eglot
       :defer t
       :init
@@ -787,14 +790,14 @@
       (js-ts-mode . eglot-ensure)
       (typescript-ts-mode . eglot-ensure)
       (typescript-mode . eglot-ensure)
-      (json-mode . eglot-ensure)
+      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
       (json-ts-mode . eglot-ensure)
-      (yaml-mode . eglot-ensure)
+      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
       (yaml-ts-mode . eglot-ensure)
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      (eglot-stay-out-of '(xref))
+      (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
       (enable-local-variables nil)
       (xref-search-program 'ripgrep)
       (eglot-events-buffer-size 0)
@@ -802,6 +805,8 @@
                                            :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+      ;; this make evil go to definition works normally like xref-find-definitions
+      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
       (add-hook 'python-mode-hook (lambda ()
                                     (when-let ((venv-path (python-find-virtualenv)))
                                       (setq-default eglot-workspace-configuration
@@ -822,13 +827,13 @@
                                                        :venv
                                                        ,(file-name-nondirectory venv-path)
                                                        :pythonPath
-                                                       ,(concat venv-path "/bin/python")))))
+                                                       ,(concat venv-path "/bin/python"))))
 
-                                    (when (featurep 'eglot)
-                                      (flycheck-mode -1)
-                                      (eglot-ensure)
-                                      (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
-                                      (add-hook 'xref-backend-functions 'eglot-xref-backend nil t))))
+                                      (when (featurep 'eglot)
+                                        (flycheck-mode -1)
+                                        (eglot-ensure)
+                                        (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
+                                        (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
 
       (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))

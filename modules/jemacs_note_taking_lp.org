@@ -62,7 +62,9 @@
       ;; like <s press tab to complete org structure (org-tempo)
       ;; these variables can be found in the source code of org.el
       (org-pretty-entities t) ;; org-toggle-pretty-entities
-
+      (org-use-sub-superscripts '{})
+      ;; make _, ^ only inside the {} will work as subscript or as superscript
+      ;; ex. n{^2}
       (org-link-descriptive t)
       (org-modules '(ol-w3m
                      ol-bbdb
