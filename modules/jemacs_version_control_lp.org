@@ -90,6 +90,16 @@
       (global-diff-hl-mode))
   #+end_src
 
+* smerge
+  # TODO: add smerge mode map into repeat map
+  map-keymap
+      (lambda (_key cmd)
+        (when (symbolp cmd)
+          (put cmd 'repeat-map 'smerge-basic-map)))
+    smerge-basic-map)
+
+so you don't have to type C-c ^ over and over leading to madness
+
 * provide package
 
   #+begin_src emacs-lisp

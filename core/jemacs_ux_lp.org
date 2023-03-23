@@ -390,7 +390,7 @@
       :defer t)
   #+end_src
 
-* company
+* company (deprecated)
   company-mode setup
 
   #+begin_notes
@@ -399,7 +399,7 @@
   But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
   #+end_notes
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package company
       :defer 0
       :config

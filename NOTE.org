@@ -13,7 +13,6 @@
    - [ ] wirte a hydra for iedit mode
    - [ ] https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
    - [ ] https://github.com/wbolster/emacs-python-coverage
-   - [ ] toggle window maximum should be memorized with projectile (https://oremacs.com/2016/06/27/ivy-push-view/)
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el

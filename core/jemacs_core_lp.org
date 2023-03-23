@@ -242,7 +242,7 @@
    *need to install the package [[https://github.com/daipeihust/im-select][im-select]]*
    TODO: refactor this auto switch input method function into another file.
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (defcustom im-exec "/usr/local/bin/im-select"
        "The im executable binary path."
        :type 'string)
@@ -870,8 +870,6 @@
             selected-dir))))
    #+end_src
 
-   #+RESULTS:
-   : open-with-xwidget
 
 ** operation with marked text
 

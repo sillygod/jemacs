@@ -128,8 +128,9 @@
   #+begin_src emacs-lisp
     (eval `(use-package dired-sort
              :defer t
+             :after (hydra evil)
              :straight (:local-repo ,(concat home-dir "local/dired-sort"))
-             :config
+             :init
              (dired-sort-setup)))
   #+end_src
 

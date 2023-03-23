@@ -131,9 +131,6 @@
       (org-download-image-dir "./img")
       :defer t)
 
-    (use-package org-journal
-      :defer t)
-
     (use-package ox-reveal
       :after org)
 
@@ -186,17 +183,6 @@
   Remember to run =org-roam-db-build-cache= at first time.
 
   #+begin_src emacs-lisp
-    (defun my-org-roam-fontify-like-in-org-mode (s)
-      "Fontify string S like in Org mode.
-    Like `org-fontify-like-in-org-mode', but supports `org-ref'."
-      (with-temp-buffer
-        (insert s)
-        (let ((org-ref-buffer-hacked t))
-          (org-mode)
-          (org-font-lock-ensure)
-          (if org-link-descriptive
-              (org-link-display-format (buffer-string))
-          (buffer-string)))))
 
     (use-package org-roam
       :straight
@@ -208,13 +194,8 @@
       (org-roam-completion-everywhere t)
       :init
       (setq org-roam-v2-ack t)
-      (defalias 'org-font-lock-ensure
-        (if (fboundp 'font-lock-ensure)
-            #'font-lock-ensure
-          (lambda (&optional _beg _end)
-            (with-no-warnings (font-lock-fontify-buffer)))))
+
       :config
-      (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
       (setq org-roam-node-display-template
             (concat "${title:*}" (propertize "${tags:40}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
