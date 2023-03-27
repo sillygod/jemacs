@@ -819,14 +819,18 @@
                       (concat a "/" b)))
                   parts))
 
-     (defun artifachub-search-action (repo-name pkg-name &optional kind)
+     (defun artifacthub-search-action (repo-pkg &optional kind)
        "kind=0 -> helm"
-       (url-join "https://artifacthub.io/packages"
-                 (cond
-                  ((equal kind 0) "helm")
-                  (t "helm"))
-                 repo-name
-                 pkg-name))
+       (let* ((parts (split-string repo-pkg "__"))
+              (repo-name (car parts))
+              (pkg-name (cadr parts)))
+         (xwidget-webkit-browse-url
+          (url-join "https://artifacthub.io/packages"
+                    (cond
+                     ((equal kind 0) "helm")
+                     (t "helm"))
+                    repo-name
+                    pkg-name))))
 
      (defun transform-artifacthub-response (data)
        "transform the response data of artifacthub to the completion read format."
@@ -834,10 +838,11 @@
                    (let* ((repository (assoc-default 'repository d))
                           (repo-name (assoc-default 'name repository))
                           (pkg-name (assoc-default 'name d)))
-                     (format "%s-%s" repo-name pkg-name))) (cdar data)))
+                     (format "%s__%s" repo-name pkg-name))) (cdar data)))
 
      (defun search-artifacthub-function (input)
        "search the input keyword on artifachub."
+       (transform-artifacthub-response
        (request-response-data
         (request
           "https://artifacthub.io/api/v1/packages/search"
@@ -849,7 +854,23 @@
                    (cons "limit" 10)
                    (cons "offset" 0))
           :parser 'json-read
-          :sync t)))
+          :sync t))))
+
+     (defun artifacthub-search ()
+       (interactive)
+       (require 'request)
+       (require 'json)
+       (let ((initial-input (cond
+                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
+                             (t nil))))
+         (artifacthub-search-action
+          (consult--read
+           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-artifacthub-function input)))
+           :prompt "search: "
+           :initial initial-input
+           :preview-key nil
+           :sort nil))))
+
 
      (defun open-with-xwidget-action (x dir)
        (xwidget-webkit-browse-url

@@ -331,8 +331,10 @@
 
 * yasnippet
 
-  TODO: replace ivy with consult
   =(yas-reload-all)= will rebuild the snippets, This will be trigger when enable yas-xx-mode
+
+  implement a consult interface for yas snippets
+  https://github.com/mohkale/consult-yasnippet/blob/master/consult-yasnippet.el
 
   #+begin_src emacs-lisp
     (use-package yasnippet

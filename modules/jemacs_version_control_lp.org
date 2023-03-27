@@ -91,12 +91,26 @@
   #+end_src
 
 * smerge
-  # TODO: add smerge mode map into repeat map
-  map-keymap
-      (lambda (_key cmd)
-        (when (symbolp cmd)
-          (put cmd 'repeat-map 'smerge-basic-map)))
-    smerge-basic-map)
+
+  #+begin_src emacs-lisp
+    (defun repeat-which-key-popup (keymap)
+      (if keymap
+          (which-key--create-buffer-and-show
+           nil keymap)
+        (which-key--hide-popup)))
+
+    (setq repeat-echo-function #'repeat-which-key-popup)
+
+    (defun repeatize (keymap)
+        "Add `repeat-mode' support to a KEYMAP."
+        (map-keymap
+         (lambda (_key cmd)
+           (when (symbolp cmd)
+             (put cmd 'repeat-map keymap)))
+         (symbol-value keymap)))
+
+    (repeatize 'smerge-basic-map)
+  #+end_src
 
 so you don't have to type C-c ^ over and over leading to madness
 

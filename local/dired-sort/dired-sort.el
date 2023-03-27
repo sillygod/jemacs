@@ -176,7 +176,9 @@ package `dired-sort' will not work and thus is not set up by
 `dired-sort-setup'. Alternatively, set
 `dired-sort-suppress-setup-warning' to suppress warning and skip setup
 silently.")
-      (evil-define-key 'normal dired-mode-map (kbd "s") 'hydra-dired-sort/body)
+      (with-eval-after-load 'evil
+
+        (evil-define-key 'normal dired-mode-map (kbd "s") 'hydra-dired-sort/body))
       ;; (add-hook 'dired-mode-hook #'dired-sort-set-switches)
       )))
 
