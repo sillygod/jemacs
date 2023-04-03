@@ -333,9 +333,6 @@
 
   =(yas-reload-all)= will rebuild the snippets, This will be trigger when enable yas-xx-mode
 
-  implement a consult interface for yas snippets
-  https://github.com/mohkale/consult-yasnippet/blob/master/consult-yasnippet.el
-
   #+begin_src emacs-lisp
     (use-package yasnippet
       :defer 1
@@ -348,35 +345,7 @@
       :defer t
       :after yasnippet)
 
-    (when (featurep 'consult)
-
-      (defun consult-yasnippet--tmpl (&optional all-templates)
-        (barf-if-buffer-read-only)
-        (let* ((buffer-undo-list t) ; Prevent querying user (and showing previews) from updating the undo-history
-               (candidates
-                (consult-yasnippet--candidates
-                 (if all-templates
-                     (yas--all-templates (map-values yas--tables))
-                   (yas--all-templates (yas--get-snippet-tables))))))
-          (consult--read
-           candidates
-           :prompt "Choose a snippet: "
-           :annotate (consult-yasnippet--annotate candidates)
-           :lookup 'consult--lookup-cdr
-           :require-match t
-           :state (consult-yasnippet--preview)
-           :category 'yasnippet)))
-
-      (defun consult-yas (arg)
-        (interactive "P")
-        (let* ((template (consult-yasnippet--tmpl arg))
-               (thing-start ())
-               (thing-end ()))
-          (yas-expand-snippet (yas--template-content template)
-                              thing-start thing-end
-                              (yas--template-expand-env template)))))
   #+end_src
-
 
 * helpful
   make help description more readble
@@ -678,18 +647,6 @@
 
   #+end_src
 
-* rust mode
-  #+begin_src emacs-lisp
-    (use-package rust-mode
-      :defer t
-      :mode "\\.rs\\'"
-      :init (setq rust-format-on-save t))
-
-    (use-package cargo
-      :defer t)
-
-  #+end_src
-
 * dumb-jump
 
   a jump to definition with search tool (ag, rg)
@@ -812,7 +769,7 @@
       (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
       (add-hook 'python-mode-hook (lambda ()
                                     (when-let ((venv-path (python-find-virtualenv)))
-                                      (setq-default eglot-workspace-configuration
+                                      (setq-local eglot-workspace-configuration
                                                     `(:python.analysis
                                                       (:stubPath
                                                        ""
@@ -842,7 +799,6 @@
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
   #+end_src
-
 
 * wgrep mode
   #+begin_src emacs-lisp

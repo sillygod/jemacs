@@ -1,0 +1,36 @@
+#+TITLE: jemacs-rust.el
+#+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-rust.el :mkdirp yes
+
+* setup
+
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
+
+    ;;; Code:
+
+
+  #+end_src
+
+* rust mode
+  #+begin_src emacs-lisp
+    (use-package rust-mode
+      :defer t
+      :mode "\\.rs\\'"
+      :custom
+      (rust-format-on-save t))
+
+    (use-package cargo
+      :defer t)
+
+  #+end_src
+
+* provide package
+
+  #+begin_src emacs-lisp
+    (provide 'jemacs-rust)
+    ;;; jemacs-rust.el ends here
+  #+end_src

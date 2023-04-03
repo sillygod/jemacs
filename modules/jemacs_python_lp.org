@@ -60,6 +60,14 @@
               (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
               venv))))
 
+    (defun python-refind-virtualenv ()
+      "works like `python-find-virtualenv' but it refresh the cache of venv-plist"
+      (interactive)
+      (when-let* ((root (python-find-project-root))
+                  (proot (intern (format ":%s" root))))
+        (plist-put python-project-venv-plist proot nil)
+        (python-find-virtualenv)))
+
     (use-package pyvenv
       :commands (pyvenv-mode)
       :hook
@@ -81,7 +89,7 @@
 
     (defun workon-virtual-env-and-lsp ()
       (interactive)
-      (pyvenv-activate (python-find-virtualenv))
+      (pyvenv-activate (python-refind-virtualenv))
       (call-interactively 'eglot))
 
     ;; TODO: implement this one

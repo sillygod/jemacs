@@ -40,7 +40,7 @@
 *** spawn the emacs
 
     #+begin_src bash
-      emacs # -debug-init
+      emacs # -debug-init is your friend helps you catch some errors
     #+end_src
 
 * Run in docker

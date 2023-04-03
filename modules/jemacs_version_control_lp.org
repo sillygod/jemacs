@@ -109,7 +109,10 @@
              (put cmd 'repeat-map keymap)))
          (symbol-value keymap)))
 
-    (repeatize 'smerge-basic-map)
+    (use-package smerge-mode
+      :straight (:type built-in)
+      :config
+      (repeatize 'smerge-basic-map))
   #+end_src
 
 so you don't have to type C-c ^ over and over leading to madness
