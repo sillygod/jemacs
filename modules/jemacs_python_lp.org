@@ -23,17 +23,50 @@
     (with-eval-after-load 'python
       (setq python-shell-interpreter "ipython"))
 
-    (use-package python-pytest
-      :defer t
-      :custom
-      (python-pytest-confirm t))
+    ;; (use-package python-pytest
+    ;;   :defer t
+    ;;   :custom
+    ;;   (python-pytest-confirm t))
 
-    (use-package poetry
-      :commands
-      (poetry-venv-workon
-       poetry-get-virtualenv
-       poetry-venv-deactivate
-       poetry-venv-toggle))
+    (defvar python-project-venv-plist nil
+      "A property list to cache the project's virtualenv.")
+
+    (defun python-find-project-root ()
+      "Return the python project root with project.el. If not found,
+    it supporse the project is handled by poetry so it will try to find the
+    direcotry contains the pyproject.toml file. The final fallbakc will let
+    you choose the root directory."
+      (or (if-let* ((proj (project-current nil))
+                    (project-root (project-root proj))) project-root)
+          (locate-dominating-file default-directory "pyproject.toml")
+          (if (y-or-n-p "do you want to set the project root manually?")
+              (read-directory-name "select directory: "))))
+
+
+    (defun python-find-virtualenv ()
+      "Return the virtualenv path with current project.
+    First, check if there is a .venv directory exists. If not found,
+    try to find the virtualenv with the poetry info -p
+    "
+      (when-let* ((root (python-find-project-root))
+                  (proot (intern (format ":%s" root))))
+        (or (plist-get python-project-venv-plist proot)
+            (when-let ((venv (concat root ".venv"))
+                       (_ (file-directory-p venv)))
+              (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
+              venv)
+            (let* ((default-directory root)
+                   (venv (string-trim-right (shell-command-to-string "poetry env info -p"))))
+              (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
+              venv))))
+
+    (defun python-refind-virtualenv ()
+      "works like `python-find-virtualenv' but it refresh the cache of venv-plist"
+      (interactive)
+      (when-let* ((root (python-find-project-root))
+                  (proot (intern (format ":%s" root))))
+        (plist-put python-project-venv-plist proot nil)
+        (python-find-virtualenv)))
 
     (use-package pyvenv
       :commands (pyvenv-mode)
@@ -49,35 +82,6 @@
       :defer t)
   #+end_src
 
-* hideshow syntax configuration
-
-  #+begin_src emacs-lisp :tangle no
-    (defun jemacs/python-hideshow-forward-sexp-function (arg)
-      "Python specific `forward-sexp' function for `hs-minor-mode'.
-        Argument ARG is ignored."
-      arg  ; Shut up, byte compiler.
-      (python-nav-end-of-block))
-
-    (defun jemacs/python-setup-hs-mode ()
-      "Replace `hs-special-modes-alist' for `python-mode'."
-      (let
-          ((python-mode-hs-info
-            '(python-mode
-              "\\s-*\\_<\\(?:def\\|class\\|if\\|elif\\|else\\|for\\|try\\|except\\|with\\|while\\)\\_>" "" "#"
-              jemacs/python-hideshow-forward-sexp-function
-              nil)))
-        (setq hs-special-modes-alist (cl-remove-if #'(lambda (x) (eq (car x) 'python-mode)) hs-special-modes-alist))
-        (add-to-list 'hs-special-modes-alist python-mode-hs-info)
-        (hs-grok-mode-type)))
-
-
-    (use-package python
-      :commands
-      (python-nav-end-of-block)
-      :hook
-      (python-mode . jemacs/python-setup-hs-mode))
-  #+end_src
-
 * python relevant
   #+begin_src emacs-lisp
     (defvar python-run-command "python")
@@ -85,7 +89,7 @@
 
     (defun workon-virtual-env-and-lsp ()
       (interactive)
-      (poetry-venv-workon)
+      (pyvenv-activate (python-refind-virtualenv))
       (call-interactively 'eglot))
 
     ;; TODO: implement this one
@@ -97,9 +101,8 @@
       ;; create a vterm buffer with python shell
       ;; maybe, I can reference from the python-inferior-mode
 
-      (if (featurep 'poetry)
-          (vterm-send-string (poetry-virtualenv-path))
-        (vterm-send-string "python"))
+      (vterm-send-string (concat "source " (python-find-virtualenv) "/bin/activate"))
+      (vterm-send-string "python")
       (vterm-send-return))
 
     (defun python-run-main ()
@@ -109,39 +112,6 @@
                (shell-quote-argument (or (file-remote-p (buffer-file-name (buffer-base-buffer)) 'localname)
                                          (buffer-file-name (buffer-base-buffer))))
                python-run-args)))
-  #+end_src
-* lsp extension related to python
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package lsp-python-ms
-      :after
-      (lsp-mode)
-      :init
-      (setq lsp-python-ms-auto-install-server t))
-  #+end_src
-
-
-  in the beginning, you may need to install the pyright server manually
-  commands: lsp install server: pyright
-
-  Notes: the dependencies node version
-  https://github.com/emacs-lsp/lsp-pyright/issues/34
-
-  #+begin_src emacs-lisp :tangle no
-    (defun lsp-with-poetry-env ()
-      (let ((project (project-root (project-current t))))
-        (add-dir-local-variable 'python-mode poetry-venv (poetry-get-virtualenv))
-        )
-      (poetrpy-venv-workon)
-      (lsp))
-
-    (use-package lsp-pyright
-      :defer t
-      :custom (lsp-pyright-multi-root nil)
-      :hook (python-mode . (lambda ()
-                             (require 'lsp-pyright)
-                             (lsp))))
-
   #+end_src
 
 * provide package

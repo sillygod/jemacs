@@ -15,82 +15,7 @@
 
    #+end_src
 
-* ivy & swiper & counsel
-
-  =(setq ivy-use-selectable-prompt t)=
-  to make the candidate you typed selectable. This is useful when you call =counsel-find-file=.
-  Ex. You can choose the bar.yml when there is a candidate named barfar.yml
-
-  =(setq ivy-initial-inputs-alist nil)=
-  let the input in the ivy-minibuffer empty when opening the it.
-
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package ivy
-      :ensure t
-      :diminish
-      :bind (:map ivy-minibuffer-map
-                  ("TAB" . ivy-alt-done)
-                  ("<escape>" . keyboard-escape-quit)
-                  ("C-l" . ivy-alt-done)
-                  ("C-j" . ivy-next-line)
-                  ("C-k" . ivy-previous-line)
-                  ("C-u" . ivy-backward-kill-word)
-                  :map ivy-switch-buffer-map
-                  ("C-k" . ivy-previous-line)
-                  ("C-l" . ivy-done)
-                  ("C-d" . ivy-switch-buffer-kill)
-                  :map ivy-reverse-i-search-map
-                  ("C-k" . ivy-previous-line)
-                  ("C-d" . ivy-reverse-i-search-kill))
-      :config
-      (ivy-mode 1)
-      (setq ivy-more-chars-alist '((t . 2))) ;; set the char limit when searching with ivy
-      (setq ivy-re-builders-alist '((t . ivy--regex-ignore-order)))
-      (setq ivy-use-selectable-prompt t)
-      ;; (setq ivy-dynamic-exhibit-delay-ms 250)
-      (setq ivy-initial-inputs-alist nil)
-      (with-eval-after-load 'evil
-        (define-key ivy-occur-grep-mode-map (kbd "w") nil)
-        (evil-define-key 'normal ivy-occur-grep-mode-map
-          (kbd "i")
-          #'(lambda ()
-              (interactive)
-              (ivy-wgrep-change-to-wgrep-mode)
-              (evil-insert-state)))))
-
-    (use-package ivy-rich
-      :after (ivy)
-      :init
-      (ivy-rich-mode 1))
-  #+end_src
-
-  After calling =swiper=, =counsel search=, ivy-occur (C-c C-o) will get all the candidates in another buffer.
-  Then we can enter edit mode by ivy-wgrep-change-to-wgrep-mode (C-x C-q)
-
-  Use =multiple-cursor= may be helpful here.
-  Finally, =Ctrl-c Ctrl-c= to commit change
-  there are some key binding in the swiper-map
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package swiper
-      :bind (("C-s" . swiper)))
-  #+end_src
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package counsel
-      :bind (("M-x" . counsel-M-x)
-             ("C-x b" . counsel-ibuffer)
-             ("C-x C-f" . counsel-find-file)
-             :map minibuffer-local-map
-             ("C-w" . 'ivy-backward-kill-word)
-             :map ivy-minibuffer-map
-             ("C-w" . 'ivy-backward-kill-word)
-             ("C-r" . 'counsel-minibuffer-history))
-      :config
-      (setq counsel-find-file-at-point t))
-
-  #+end_src
+* request
 
   #+begin_src emacs-lisp
     (use-package request
@@ -360,6 +285,7 @@
       (interactive)
       (if (flycheck-overlay-errors-at (point))
           (flycheck-display-error-at-point)
+        ;; flymake-show-buffer-diagnostics
         (eldoc-box-eglot-help-at-point)))
 
   #+end_src
@@ -373,10 +299,9 @@
       (evil-want-integration t)
       (evil-want-keybinding nil) ;; this will cause some evil keybinding
       ;; of other modes not working when it's set to true
-      (evil-goto-definition-functions '(evil-goto-definition-imenu
-                                         evil-goto-definition-xref
-                                         evil-goto-definition-semantic
-                                         evil-goto-definition-search))
+      (evil-goto-definition-functions '(evil-goto-definition-xref
+                                        evil-goto-definition-semantic
+                                        evil-goto-definition-search))
       :config
       (define-key evil-insert-state-map (kbd "C-g") 'evil-normal-state)
       ;; Use visual line motions even outside of visual-line-mode buffers
@@ -441,33 +366,8 @@
   #+end_src
 
 * code folding
+  now use ts-fold instead
 
-  #+begin_src emacs-lisp :tangle no
-    (use-package hideshow
-      :hook (prog-mode . hs-minor-mode)
-      :commands
-      (hs-toggle-hiding
-       hs-hide-block
-       hs-hide-level
-       hs-show-all
-       hs-hide-all)
-      :config
-      (with-eval-after-load 'evil
-        (evil-define-key 'normal prog-mode-map (kbd "z z") 'hs-toggle-hiding)))
-  #+end_src
-
-
-  create arbitrary fold not like other package auto detect the program language
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package vimish-fold
-      :after evil
-      :hook (prog-mode . vimish-fold-mode))
-
-    (use-package evil-vimish-fold
-      :after vimish-fold
-      :hook (prog-mode . evil-vimish-fold-mode))
-  #+end_src
 
 * which key mode
   a friendly key shortcut hint.
@@ -490,7 +390,7 @@
       :defer t)
   #+end_src
 
-* company
+* company (deprecated)
   company-mode setup
 
   #+begin_notes
@@ -499,7 +399,7 @@
   But the problem is, by binding (kbd "RET") , you are also binding (kbd "C-m")
   #+end_notes
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package company
       :defer 0
       :config
@@ -511,18 +411,6 @@
       ;; showing the completion candidates.
       (define-key company-active-map (kbd "<return>") 'company-complete-selection))
       ;; (global-company-mode 1))
-  #+end_src
-
-  NOTE: temporarily disable =company-tabnine= because it consumes lots of cpu.
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package company-tabnine
-      :config
-      (with-eval-after-load 'company
-        (add-to-list 'company-backends #'company-tabnine)
-        (setq company-tabnine-always-trigger nil)
-        (setq company-show-numbers t)
-        (setq company-idle-delay 0.1)))
   #+end_src
 
 * provide package

@@ -46,10 +46,6 @@
     (use-package flutter
       :after (dart-mode))
 
-    ;; (use-package lsp-dart
-    ;;   :defer t
-    ;;   :hook (dart-mode . lsp))
-
   #+end_src
 
 * provide package

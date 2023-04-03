@@ -87,6 +87,27 @@ org-babel-load-file ?
 
   #+end_src
 
+* window configuration
+
+  TODO:
+  window-toggle-side-windows -> research this
+
+  format
+  (condition, (action ation ... ))
+
+  #+begin_src emacs-lisp
+    (add-to-list 'display-buffer-alist
+      '("\\*vterm.*\\*" display-buffer-in-direction
+        (direction . bottom)
+        (window . root)
+        (window-height . 0.3)))
+
+    (add-to-list 'display-buffer-alist
+     '("\\*helpful.*\\*"
+       (display-buffer-reuse-window display-buffer-pop-up-window)
+       (inhibit-same-window . t)))
+  #+end_src
+
 * provide package
 
   #+begin_src emacs-lisp

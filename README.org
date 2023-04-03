@@ -19,7 +19,7 @@
 *** install emacs-plus
 
     #+begin_src sh
-      brew install emacs-plus@30 --with-xwidgets --with-modern-papirus-icon
+      brew install emacs-plus@30 --with-xwidgets --with-modern-papirus-icon --with-native-comp
     #+end_src
 
 ** clone the repo
@@ -40,7 +40,7 @@
 *** spawn the emacs
 
     #+begin_src bash
-      emacs
+      emacs # -debug-init is your friend helps you catch some errors
     #+end_src
 
 * Run in docker
@@ -65,52 +65,15 @@
 
 ** dotfiles
 
-   - https://github.com/mwfogleman/.emacs.d/blob/master/michael.org#hideshow
-   - https://github.com/mpereira/.emacs.d#a-fast-non-projectile-based-project-file-finder
-   - https://github.com/daviwil/dotfiles
-   - https://laptrinhx.com/evil-emacs-configuration-1977138996/
-   - https://github.com/lccambiaghi/.doom.d
-   - https://github.com/jschaf/dotfiles/blob/master/emacs/start.el
-   - https://github.com/raxod502/radian/tree/develop/emacs
-   - https://github.com/p3r7/awesome-elisp
-   - https://protesilaos.com/dotemacs/
-   - https://github.com/alhassy/emacs.d/blob/master/README.org
-   - https://github.com/angrybacon/dotemacs/blob/master/dotemacs.org
-   - https://github.com/hungyiloo/doom-emacs-conf/tree/master/autoload
-   - https://github.com/condy0919/.emacs.d
    - https://protesilaos.com/emacs/dotemacs (inspired)
-
-** literate programming
-
-   - https://www.cs.tufts.edu/~nr/noweb/ (literate programming)
-   - https://www-cs-faculty.stanford.edu/~knuth/cweb.html (literate programming)
-   - http://www.literateprogramming.com/knuthweb.pdf (paper about leterate programming)
-   - https://soliloquium.zealmaker.com/fastpages/orgmode/2020/04/27/blogging-with-orgmode-and-fastpages
-   - https://leanpub.com/lit-config/read#leanpub-auto-multiple-config-files-per-org-file
+   - https://github.com/oantolin/emacs-config
+   - https://github.com/braineo/fate-emacs
+   - https://karthinks.com/
 
 ** misc
 
-   - https://gitlab.com/xuhdev/dired-quick-sort/-/merge_requests/3 (interesting)
-   - https://endlessparentheses.com/
-   - http://blog.lujun9972.win/tags/emacs%E4%B9%8B%E6%80%92/
+   - https://www.youtube.com/@SystemCrafters/streams (systemCrafter)
+   - https://github.com/p3r7/awesome-elisp
    - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
-   - https://github.com/sulami/literate-calc-mode.el
-   - https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
-   - https://github.com/manateelazycat/lsp-bridge (another lsp choice)
-   - https://leanpub.com/lit-config/read
-   - https://github.com/wbolster/emacs-direnv
-   - http://xahlee.info/emacs/emacs/emacs.html
+   - https://endlessparentheses.com/
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)
-   - autothemer
-   - https://www.gnu.org/software/hyperbole/#summary
-   - https://www.deepl.com/translator (dictionary)
-
-** start to rewrite configs
-
-   - https://takeonrules.com/2021/05/15/a-year-or-so-of-emacs/
-   - https://www.youtube.com/watch?v=uB8McDsRyXY
-   - https://github.com/oantolin/emacs-config
-   - https://github.com/braineo/fate-emacs
-
-** implement a dired sort transient or hydra
-   https://gitlab.com/xuhdev/dired-quick-sort/-/blob/master/dired-quick-sort.el

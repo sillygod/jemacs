@@ -242,7 +242,7 @@
    *need to install the package [[https://github.com/daipeihust/im-select][im-select]]*
    TODO: refactor this auto switch input method function into another file.
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (defcustom im-exec "/usr/local/bin/im-select"
        "The im executable binary path."
        :type 'string)
@@ -306,9 +306,7 @@
    #+begin_src emacs-lisp
      ;; NOTE: borrow from spacemacs
      (defun show-hide-helm-or-ivy-prompt-msg (msg sec)
-       "Show a MSG at the helm or ivy prompt for SEC.
-          With Helm, remember the path, then restore it after SEC.
-          With Ivy, the path isn't editable, just remove the MSG after SEC."
+       "Show a MSG at the helm or ivy prompt for SEC. "
        (run-at-time
         0 nil
         #'(lambda (msg sec)
@@ -371,9 +369,7 @@
                       (when (fboundp 'recentf-add-file)
                         (recentf-add-file new-name)
                         (recentf-remove-if-non-kept old-filename))
-                      (when (and (featurep 'projectile)
-                                 (projectile-project-p))
-                        (call-interactively #'projectile-invalidate-cache))
+
                       (message (cond ((and file-moved-p file-renamed-p)
                                       (concat "File Moved & Renamed\n"
                                               "From: " old-filename "\n"
@@ -497,16 +493,6 @@
 
 ** misc
 
-   Note:
-   #+begin_src emacs-lisp :tangle no
-     (let ((binding (global-key-binding (kbd (concat "SPC" " mhh")))))
-       (print (key-binding (kbd (concat "SPC" " mhh"))))
-       (if (commandp binding)
-           (call-interactively binding)
-         (evil-lookup)))
-   #+end_src
-
-
    #+begin_src emacs-lisp
      (defun hey-god (question)
        "Reduce distraction when you search the answer for the question.
@@ -540,58 +526,6 @@
      (defun org-mode-visual-fill ()
        "A beautiful word wrap effect."
        (advice-add 'text-scale-adjust :after #'visual-fill-column-adjust))
-   #+end_src
-
-** lsp-keybinding
-   #+begin_src emacs-lisp
-     (defun lsp-keybinding ()
-       "Return the keybinding for lsp functions."
-       (list "=" "format" nil
-             "==" "lsp-format-buffer" 'lsp-format-buffer
-             "=r" "lsp-format-region" 'lsp-format-region
-
-             "a" "code actions" nil
-             "aa" "lsp-execute-code-action" 'lsp-execute-code-action
-             "al" "lsp-avy-lens" 'lsp-avy-lens
-             "ah" "lsp-document-highlight" 'lsp-document-highlight
-
-             "F" "folder" nil
-             "Fa" "lsp-workspace-folders-add" 'lsp-workspace-folders-add
-             "Fr" "lsp-workspace-folders-remove " 'lsp-workspace-folders-remove
-             "Fb" "lsp-workspace-blacklist-remove" 'lsp-workspace-blacklist-remove
-
-             "g" "goto" nil
-             "gg" "lsp-find-definition" 'lsp-find-definition
-             "gr" "lsp-find-references" 'lsp-find-references
-             "gi" "lsp-find-implementation" 'lsp-find-implementation
-             "gt" "lsp-find-type-definition" 'lsp-find-type-definition
-             "gd" "lsp-find-declaration" 'lsp-find-declaration
-             "ga" "xref-find-apropos" 'xref-find-apropos
-
-             "G" "peek" nil
-             "Gg" "lsp-ui-peek-find-definitions" 'lsp-ui-peek-find-definitions
-             "Gr" "lsp-ui-peek-find-references" 'lsp-ui-peek-find-references
-             "Gi" "lsp-ui-peek-find-implementatio" 'lsp-ui-peek-find-implementation
-             "Gs" "lsp-ui-peek-find-workspace-symbol" 'lsp-ui-peek-find-workspace-symbol
-
-
-             "h" "help" nil
-             "hh" "lsp-describe-thing-at-point" 'lsp-describe-thing-at-point
-             "hs" "lsp-signature-activate" 'lsp-signature-activate
-             "hg" "lsp-ui-doc-glance" 'lsp-ui-doc-glance
-
-             "r" "refactor" nil
-             "rr" "lsp-rename" 'lsp-rename
-             "ro" "lsp-organize-imports" 'lsp-organize-imports
-
-
-             "T" "toggle" nil
-             "Tl" "lsp-lens-mode" 'lsp-lens-mode
-             "TL" "lsp-toggle-trace-io" 'lsp-toggle-trace-io
-             "Th" "lsp-toggle-symbol-highlight" 'lsp-toggle-symbol-highlight
-             "TS" "lsp-ui-sideline-mode" 'lsp-ui-sideline-mode
-             "Td" "lsp-ui-doc-mode" 'lsp-ui-doc-mode
-             "Ts" "lsp-toggle-signature-auto-activate" 'lsp-toggle-signature-auto-activate))
    #+end_src
 
 ** lsp define key helper
@@ -857,8 +791,7 @@
            :sync t))))
 
      (defun wrap-to-consult-read (prog fn input)
-       (let ((res (append (if (listp prog) prog (list prog)) (funcall fn input))))
-         (list :command res)))
+       (append (if (listp prog) prog (list prog)) (funcall fn input)))
 
      (defun search-format (lines)
        (split-string lines " "))
@@ -886,14 +819,18 @@
                       (concat a "/" b)))
                   parts))
 
-     (defun artifachub-search-action (repo-name pkg-name &optional kind)
+     (defun artifacthub-search-action (repo-pkg &optional kind)
        "kind=0 -> helm"
-       (url-join "https://artifacthub.io/packages"
-                 (cond
-                  ((equal kind 0) "helm")
-                  (t "helm"))
-                 repo-name
-                 pkg-name))
+       (let* ((parts (split-string repo-pkg "__"))
+              (repo-name (car parts))
+              (pkg-name (cadr parts)))
+         (xwidget-webkit-browse-url
+          (url-join "https://artifacthub.io/packages"
+                    (cond
+                     ((equal kind 0) "helm")
+                     (t "helm"))
+                    repo-name
+                    pkg-name))))
 
      (defun transform-artifacthub-response (data)
        "transform the response data of artifacthub to the completion read format."
@@ -901,10 +838,11 @@
                    (let* ((repository (assoc-default 'repository d))
                           (repo-name (assoc-default 'name repository))
                           (pkg-name (assoc-default 'name d)))
-                     (format "%s-%s" repo-name pkg-name))) (cdar data)))
+                     (format "%s__%s" repo-name pkg-name))) (cdar data)))
 
      (defun search-artifacthub-function (input)
        "search the input keyword on artifachub."
+       (transform-artifacthub-response
        (request-response-data
         (request
           "https://artifacthub.io/api/v1/packages/search"
@@ -916,33 +854,43 @@
                    (cons "limit" 10)
                    (cons "offset" 0))
           :parser 'json-read
-          :sync t)))
+          :sync t))))
 
-     (defun open-with-xwidget-action (x)
+     (defun artifacthub-search ()
+       (interactive)
+       (require 'request)
+       (require 'json)
+       (let ((initial-input (cond
+                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
+                             (t nil))))
+         (artifacthub-search-action
+          (consult--read
+           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-artifacthub-function input)))
+           :prompt "search: "
+           :initial initial-input
+           :preview-key nil
+           :sort nil))))
+
+
+     (defun open-with-xwidget-action (x dir)
        (xwidget-webkit-browse-url
         (url-encode-url (concat
                          "file://"
-                         (expand-file-name x))) t))
+                         (expand-file-name x dir))) t))
 
      (with-eval-after-load 'consult
        (defun open-with-xwidget (&optional initial-input)
          "Open file with xwidget browse url."
          (interactive)
-         (open-with-xwidget-action
-          (consult--read
-           :prompt "Open file: "))))
+         (let* ((selected-dir (read-directory-name "select directory: "))
+                (candidates (directory-files selected-dir)))
+           (open-with-xwidget-action
+            (consult--read
+             candidates
+             :prompt "Open file: ")
+            selected-dir))))
    #+end_src
 
-** auto tangle literate config
-   #+begin_src emacs-lisp :tangle no
-     (defun my-tangle-literate-config ()
-       "Auto call org-babel-tangle when saving the literate_setup.org"
-       (when (string-equal (buffer-file-name) (expand-file-name "~/Desktop/spacemacs-private/mycraft/literate_setup.org"))
-
-         (org-babel-tangle nil)))
-
-     (add-hook 'after-save-hook #'my-tangle-literate-config)
-   #+end_src
 
 ** operation with marked text
 

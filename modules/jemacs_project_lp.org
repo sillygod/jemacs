@@ -94,13 +94,9 @@
   =package-refresh-contents=
 
   Optional, you can send additional string and perform it after vterm open
-
-  the following is replaced by other function
+  ex.
   #+begin_src emacs-lisp :tangle no
-    (add-hook 'vterm-mode-hook (lambda ()
-                                 (vterm-send-string "source ~/.bash_profile")
-                                 (vterm-send-return)
-                                 (evil-emacs-state)))
+    (vterm-send-string "source ~/.bash_profile")
   #+end_src
 
   if you want to customize the vterm's font, you could add the settings below
@@ -137,7 +133,7 @@
       (evilnc-comment-or-uncomment-lines arg))
 
     (defun jump-in-buffer ()
-      "Jump in buffer with `counsel-imenu' or `consult-org-heading' if in 'org-mode'."
+      "Jump in buffer with `consult-imenu' or `consult-org-heading' if in 'org-mode'."
       (interactive)
       (call-interactively
        (cond
@@ -220,24 +216,6 @@
         (consult-ripgrep search-directory initial-input)))
 
   #+end_src
-
-* deprecated
-** projectile
-   replaced with the built-in project.el
-   #+begin_src emacs-lisp :tangle no
-     (use-package projectile
-       :defer 1
-       :custom ((projectile-completion-system 'ivy))
-       :config
-       (define-key projectile-mode-map (kbd "C-c p") 'projectile-command-map)
-       (add-to-list 'projectile-project-root-files-bottom-up "pyproject.toml")
-       (projectile-mode +1))
-
-     (use-package counsel-projectile
-       :after projectile
-       :defer 1
-       :config (counsel-projectile-mode))
-   #+end_src
 
 * provide package
 

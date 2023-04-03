@@ -62,7 +62,9 @@
       ;; like <s press tab to complete org structure (org-tempo)
       ;; these variables can be found in the source code of org.el
       (org-pretty-entities t) ;; org-toggle-pretty-entities
-
+      (org-use-sub-superscripts '{})
+      ;; make _, ^ only inside the {} will work as subscript or as superscript
+      ;; ex. n{^2}
       (org-link-descriptive t)
       (org-modules '(ol-w3m
                      ol-bbdb
@@ -129,9 +131,6 @@
       (org-download-image-dir "./img")
       :defer t)
 
-    (use-package org-journal
-      :defer t)
-
     (use-package ox-reveal
       :after org)
 
@@ -184,17 +183,6 @@
   Remember to run =org-roam-db-build-cache= at first time.
 
   #+begin_src emacs-lisp
-    (defun my-org-roam-fontify-like-in-org-mode (s)
-      "Fontify string S like in Org mode.
-    Like `org-fontify-like-in-org-mode', but supports `org-ref'."
-      (with-temp-buffer
-        (insert s)
-        (let ((org-ref-buffer-hacked t))
-          (org-mode)
-          (org-font-lock-ensure)
-          (if org-link-descriptive
-              (org-link-display-format (buffer-string))
-          (buffer-string)))))
 
     (use-package org-roam
       :straight
@@ -206,13 +194,8 @@
       (org-roam-completion-everywhere t)
       :init
       (setq org-roam-v2-ack t)
-      (defalias 'org-font-lock-ensure
-        (if (fboundp 'font-lock-ensure)
-            #'font-lock-ensure
-          (lambda (&optional _beg _end)
-            (with-no-warnings (font-lock-fontify-buffer)))))
+
       :config
-      (advice-add 'org-roam-fontify-like-in-org-mode :override #'my-org-roam-fontify-like-in-org-mode)
       (setq org-roam-node-display-template
             (concat "${title:*}" (propertize "${tags:40}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
@@ -237,19 +220,6 @@
               org-roam-ui-follow t
               org-roam-ui-update-on-save t
               org-roam-ui-open-on-start nil))
-
-    (with-eval-after-load 'counsel
-      (defun org-roam-todo ()
-        "An ad-hoc agenda for `org-roam'."
-        (interactive)
-        (let* ((regex "^\\* TODO")
-               (b (get-buffer (concat "*ivy-occur counsel-rg \"" regex "\"*"))))
-          (if b
-              (progn
-                (switch-to-buffer b)
-                (ivy-occur-revert-buffer))
-            (setq unread-command-events (listify-key-sequence (kbd "C-c C-o M->")))
-            (counsel-rg regex org-roam-directory "--sort modified")))))
 
 
     (defun ora-org-roam-find-file-action (x)

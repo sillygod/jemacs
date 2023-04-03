@@ -107,14 +107,6 @@
 
   search thing under point [[https://devdocs.io/][devdocs]]
 
-  #+begin_src emacs-lisp :tangle no
-    (use-package devdocs
-      :defer t
-      :straight (
-                 :local-repo (concat home-dir "local/devdocs"))
-
-  #+end_src
-
   #+begin_src emacs-lisp
     (eval `(use-package devdocs
              :defer t
@@ -124,24 +116,22 @@
 
 * counsel-jq-yq
 
-  #+begin_src emacs-lisp :tangle no
-    (use-package jq-yq
-      :defer 1
-      :straight (
-                 :local-repo (concat home-dir "local/jq-yq")
-                 )
-      ;; :load-path "~/Desktop/spacemacs-private/local/counsel-jq-yq"
-      ;; :config
-      ;; (package-generate-autoloads "counsel-jq-yq" "~/Desktop/spacemacs-private/local/counsel-jq-yq")
-      ;; (load-library "counsel-jq-yq-autoloads"))
-      )
-  #+end_src
-
   #+begin_src emacs-lisp
     (eval `(use-package jq-yq
              :defer t
              :straight (:local-repo ,(concat home-dir "local/jq-yq"))))
 
+  #+end_src
+
+* dired sort
+
+  #+begin_src emacs-lisp
+    (eval `(use-package dired-sort
+             :defer t
+             :after (hydra evil)
+             :straight (:local-repo ,(concat home-dir "local/dired-sort"))
+             :init
+             (dired-sort-setup)))
   #+end_src
 
 * hl-todo mode
@@ -192,7 +182,7 @@
                       :files ("*.el" "Makefile" "lib.c"))
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
-      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@29/include/")
+      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@30/include/")
       (rime-user-data-dir "/Users/jing/Library/Rime/")
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
@@ -341,7 +331,6 @@
 
 * yasnippet
 
-  TODO: replace ivy with consult
   =(yas-reload-all)= will rebuild the snippets, This will be trigger when enable yas-xx-mode
 
   #+begin_src emacs-lisp
@@ -356,40 +345,6 @@
       :defer t
       :after yasnippet)
 
-    (when (featurep 'consult)
-
-      (defun consult-yasnippet--tmpl (&optional all-templates)
-        (barf-if-buffer-read-only)
-        (let* ((buffer-undo-list t) ; Prevent querying user (and showing previews) from updating the undo-history
-               (candidates
-                (consult-yasnippet--candidates
-                 (if all-templates
-                     (yas--all-templates (map-values yas--tables))
-                   (yas--all-templates (yas--get-snippet-tables))))))
-          (consult--read
-           candidates
-           :prompt "Choose a snippet: "
-           :annotate (consult-yasnippet--annotate candidates)
-           :lookup 'consult--lookup-cdr
-           :require-match t
-           :state (consult-yasnippet--preview)
-           :category 'yasnippet)))
-
-      (defun consult-yas (arg)
-        (interactive "P")
-        (let* ((template (consult-yasnippet--tmpl arg))
-               (thing-start ())
-               (thing-end ()))
-          (yas-expand-snippet (yas--template-content template)
-                              thing-start thing-end
-                              (yas--template-expand-env template)))))
-  #+end_src
-
-  ivy-yasnippet is deprecated because ivy is replaced by consult
-  #+begin_src emacs-lisp :tangle no
-    (use-package ivy-yasnippet
-      :defer t
-      :after yasnippet)
   #+end_src
 
 * helpful
@@ -448,7 +403,6 @@
       :mode (("\\.\\(yml\\|yaml\\)\\'" . yaml-mode)
              ("Procfile\\'" . yaml-mode))
       :init
-      (add-hook 'yaml-mode-hook 'lsp)
       (add-hook 'yaml-mode-hook #'(lambda ()
                                     (set (make-local-variable 'tab-width) 2)
                                     (set (make-local-variable 'evil-shift-width) 2)
@@ -461,13 +415,6 @@
           (add-to-list 'flycheck-global-modes 'yaml-mode))))
   #+end_src
 
-  a quick way to find the path for value
-  (deprecated)
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package json-snatcher
-      :defer t)
-  #+end_src
 
 ** experiment tree-sitter
 
@@ -485,7 +432,7 @@
        (tree-sitter-after-on . tree-sitter-hl-mode))
    #+end_src
 
-   now tree sitter are builtin in emacs 29
+   now tree sitter are builtin in emacs 29 but it's not matured.
 
    auto setup tree sitter inspired from
    https://github.com/renzmann/treesit-auto/blob/main/treesit-auto.el
@@ -688,6 +635,8 @@
     (use-package lispy
       :init
       (setq lispy-key-theme '(special c-digits))
+      :custom
+      (lispy-x-default-verbosity 1)
       :hook ((common-lisp-mode . lispy-mode)
              (emacs-lisp-mode . lispy-mode)
              (scheme-mode . lispy-mode))
@@ -695,18 +644,6 @@
       (with-eval-after-load 'evil-matchit
         (lispy-define-key lispy-mode-map (kbd "%") 'lispy-different)
         (lispy-define-key lispy-mode-map (kbd "d") 'lispy-kill)))
-
-  #+end_src
-
-* rust mode
-  #+begin_src emacs-lisp
-    (use-package rust-mode
-      :defer t
-      :mode "\\.rs\\'"
-      :init (setq rust-format-on-save t))
-
-    (use-package cargo
-      :defer t)
 
   #+end_src
 
@@ -744,9 +681,6 @@
   =(setq lsp-keymap-prefix "SPC m")= this will only affect the display info of whichkey.
 
   #+begin_src emacs-lisp
-    (defun add-xref-dumb-jump-before-xref-lsp (arg)
-      (when lsp-enable-xref
-        (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
 
     (defun get-xref-find-backends ()
       (let (backends
@@ -794,7 +728,14 @@
 
   TODO: deprecate lsp, I decide to adopt elgot.
 
+  #+begin_src emacs-lisp :tangle no
+    (use-package lsp-bridge
+      :defer t
+      :straight (:host github :repo "manateelazycat/lsp-bridge" :files ("*.el" "")))
+  #+end_src
+
   #+begin_src emacs-lisp
+
     (use-package eglot
       :defer t
       :init
@@ -809,83 +750,54 @@
       (js-ts-mode . eglot-ensure)
       (typescript-ts-mode . eglot-ensure)
       (typescript-mode . eglot-ensure)
-      (json-mode . eglot-ensure)
+      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
       (json-ts-mode . eglot-ensure)
-      (yaml-mode . eglot-ensure)
+      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
       (yaml-ts-mode . eglot-ensure)
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      (eglot-stay-out-of '(eldoc))
+      (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
+      (enable-local-variables nil)
+      (xref-search-program 'ripgrep)
+      (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
                                            :documentHighlightProvider))
       :config
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+      ;; this make evil go to definition works normally like xref-find-definitions
+      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
       (add-hook 'python-mode-hook (lambda ()
-                                    (setq-default eglot-workspace-configuration
-                                                `((:python .
-                                                          (:venvPath ,(poetry-get-virtualenv)
-                                                           :pythonPath ,(concat (poetry-get-virtualenv) "/bin")))))
-                                    (eglot-ensure)))
+                                    (when-let ((venv-path (python-find-virtualenv)))
+                                      (setq-local eglot-workspace-configuration
+                                                    `(:python.analysis
+                                                      (:stubPath
+                                                       ""
+                                                       :useLibraryCodeForTypes
+                                                       t
+                                                       :autoSearchPaths
+                                                       t
+                                                       :autoImportCompletions
+                                                       t
+                                                       :diagnosticMode
+                                                       "openFilesOnly")
+                                                      :python
+                                                      (:venvPath
+                                                       ,(file-name-directory venv-path)
+                                                       :venv
+                                                       ,(file-name-nondirectory venv-path)
+                                                       :pythonPath
+                                                       ,(concat venv-path "/bin/python"))))
 
-      (add-hook 'eglot-managed-mode-hook (lambda () (add-hook 'xref-backend-functions #'dumb-jump-xref-activate nil t)))
+                                      (when (featurep 'eglot)
+                                        (flycheck-mode -1)
+                                        (eglot-ensure)
+                                        (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
+                                        (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
+
+      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
-  #+end_src
-
-  #+begin_src emacs-lisp :tangle no
-        (use-package lsp-mode
-          :init
-          ;; (setq lsp-completion-provider :capf) ;; the official recommends use this
-          (setq lsp-completion-provider :none) ;; the official recommends use this
-          (setq lsp-enable-symbol-highlighting nil)
-          (setq lsp-signature-render-documentation nil)
-          (setq read-process-output-max (* 1024 1024))
-          ;; https://emacs-lsp.github.io/lsp-mode/page/performance/
-
-          :commands
-          (lsp)
-          :hook
-          (go-mode . lsp)
-          (python-mode . lsp)
-          (lua-mode . lsp)
-          (rust-mode . lsp)
-          (js-mode . lsp)
-          (c-mode . lsp)
-          (c++-mode . lsp)
-          :custom
-          (lsp-lens-enable nil) ;; turn off lens mode
-          (lsp-headerline-breadcrumb-enable nil)
-          (lsp-enable-folding nil)
-          (lsp-enable-snippet nil)
-          (lsp-enable-imenu nil)
-          (lsp-enable-links nil)
-          :config
-          (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
-          (advice-add 'lsp-managed-mode :before 'add-xref-dumb-jump-before-xref-lsp))
-
-
-        (use-package dap-mode
-          :defer t
-          :config
-          ;; pip install "ptvsd>=4.2"
-          (require 'dap-python)
-          (require 'dap-go)
-          ;; dap-go-setup
-          (add-hook 'dap-stopped-hook
-                    (lambda (arg) (call-interactively #'dap-hydra))))
-
-  #+end_src
-
-  currently, disable =lsp-ui=
-
-  #+begin_src emacs-lisp :tangle no
-    (use-package lsp-ui
-      :after flycheck
-      :commands lsp-ui-mode
-      :config
-      (setq lsp-ui-doc-enable nil)
-      (setq lsp-ui-sideline-enable nil))
   #+end_src
 
 * wgrep mode
@@ -1045,7 +957,8 @@
                                    "x" "execute" nil
                                    "xx" "racket run" 'racket-run))
 
-      ;; lsp keybindings for some major modes
+      ;; keybindings for some major modes
+      ;; NOTE: consider to move these to the configuration of each major-mode?
 
       ;; keybinding for go-mode
       (with-eval-after-load 'go-mode
@@ -1069,14 +982,13 @@
 
         (apply 'define-leader-key-map-for
                (list 'python-mode-map
-                     "" "major mode" 'nil
+                     "" "major mode" '()
 
-                     "t" "tests" 'python-pytest-dispatch
                      "x" "execute" nil
                      "xx" "python run" 'python-run-main
+                     "h" "help" 'eldoc-box-eglot-help-at-point
                      "v" "workon env" 'workon-virtual-env-and-lsp
-                     "d" "debug" 'dap-hydra))
-        (evil-define-key 'normal python-mode-map (kbd "K") 'evil-smart-doc-lookup))
+                     "d" "debug" 'dap-hydra)))
 
       (with-eval-after-load 'json-mode
         (define-leader-key-map-for 'json-mode-map
@@ -1090,7 +1002,7 @@
         (define-leader-key-map-for 'yaml-mode-map
                                    "" "major mode" nil
                                    "l" "lookup" nil
-                                   "ly" "yq" 'counsel-yq))
+                                   "ly" "yq" 'consult-yq))
 
 
       (with-eval-after-load 'elisp-mode
@@ -1204,7 +1116,7 @@
        "ao" '(:ignore t :which-key "org")
        "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
        "aog" '(:ignore t :which-key "goto")
-       "aogj" '((lambda () (interactive) (counsel-find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
+       "aogj" '((lambda () (interactive) (find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
        "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
 
       (define-leader-key-global
