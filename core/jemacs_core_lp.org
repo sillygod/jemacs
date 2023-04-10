@@ -759,7 +759,7 @@
        "Lazy load ivy-yasnippet."
        (interactive)
        (load-yasnippet)
-       (call-interactively 'yas-insert-snippet))
+       (call-interactively 'consult-yas))
    #+end_src
 
 ** xwidget relevant functions

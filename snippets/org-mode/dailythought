@@ -1,6 +1,22 @@
 # key : <dailythought
 # name : Daily thought
 # contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
 # --
 * routines
 * introspect
+** report
+# daily report
+
+1. []
+
+** retrospect
+
+[[id:BB7B89A7-CD08-4D05-8CD9-145297F14543][three good things]] to build a happier life
+reflect on positive experiences and the reasons why they occurred
+
+1.
+
+2.
+
+3.

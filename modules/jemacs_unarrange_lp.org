@@ -123,6 +123,14 @@
 
   #+end_src
 
+* consult yas
+
+  #+begin_src emacs-lisp
+    (eval `(use-package consult-yas
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/consult-yas"))))
+  #+end_src
+
 * dired sort
 
   #+begin_src emacs-lisp
@@ -383,11 +391,13 @@
       :init
       (add-hook 'prog-mode-hook 'flycheck-mode)
       (add-hook 'text-mode-hook 'flycheck-mode)
-      (setq flycheck-highlighting-mode 'lines)
-      (setq flycheck-indication-mode '())
+      :custom
+      (flycheck-highlighting-mode 'lines)
+      (flycheck-indication-mode '())
+      (flycheck-emacs-lisp-load-path 'inherit)
       :config
       (add-hook 'org-src-mode-hook #'(lambda ()
-                                      (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
+                                       (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
   #+end_src
 
 * json-mode & yaml-mode
@@ -769,6 +779,8 @@
       (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
       (add-hook 'python-mode-hook (lambda ()
                                     (when-let ((venv-path (python-find-virtualenv)))
+                                      ;; NOTE: this should be set to directory variable?
+                                      (pyvenv-activate venv-path)
                                       (setq-local eglot-workspace-configuration
                                                     `(:python.analysis
                                                       (:stubPath
