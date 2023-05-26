@@ -768,7 +768,7 @@
       (go-ts-mode . eglot-ensure)
       :custom
       (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
-      (enable-local-variables nil)
+      (enable-local-variables nil) ;; do I need this ?
       (xref-search-program 'ripgrep)
       (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
@@ -778,10 +778,13 @@
       ;; this make evil go to definition works normally like xref-find-definitions
       (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
       (add-hook 'python-mode-hook (lambda ()
+                                    (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
-                                      ;; NOTE: this should be set to directory variable?
                                       (pyvenv-activate venv-path)
-                                      (setq-local eglot-workspace-configuration
+
+                                      ;; TODO:
+                                      ;; assign a function to eglot-workspace-configuration instead of variable
+                                      (setq-default eglot-workspace-configuration
                                                     `(:python.analysis
                                                       (:stubPath
                                                        ""

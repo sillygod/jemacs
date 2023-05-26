@@ -221,8 +221,8 @@
       (add-to-list 'completion-at-point-functions #'cape-abbrev)
       (add-to-list 'completion-at-point-functions #'cape-symbol)
       (add-to-list 'completion-at-point-functions #'cape-dabbrev)
-      :custom
-      (dabbrev-case-fold-search 'case-fold-search))
+      :config
+      (setq dabbrev-case-fold-search 'case-fold-search))
   #+end_src
 
   #+begin_src emacs-lisp

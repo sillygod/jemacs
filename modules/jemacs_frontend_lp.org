@@ -35,6 +35,21 @@
       (setq js2-mode-show-parse-errors nil)
       (setq js2-mode-show-strict-warnings nil)
       (js2-minor-mode))
+
+    (use-package typescript-mode
+      :after (rainbow-delimiters)
+      :mode (("\\.ts\\'" . typescript-mode))
+      :defer t)
+  #+end_src
+
+* formatter
+
+  #+begin_src emacs-lisp
+    (use-package apheleia
+      :defer t
+      :hook
+      (js-mode . apheleia-mode)
+      (js2-mode . apheleia-mode))
   #+end_src
 
 * mobile
