@@ -170,7 +170,12 @@
   #+begin_src emacs-lisp
     (use-package so-long
       :defer 1
+      :straight (:type built-in)
       :config
+      (setq long-line-threshold 5000)
+      (setq large-hscroll-threshold 50)
+      (setq bidi-inhibit-bpa t)
+      (setq bidi-display-reordering nil)
       (global-so-long-mode 1))
   #+end_src
 
