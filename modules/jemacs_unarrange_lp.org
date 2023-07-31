@@ -51,6 +51,31 @@
       :defer 1)
   #+end_src
 
+* pixel scroll
+
+  #+begin_src emacs-lisp
+    (use-package pixel-scroll
+      :straight (:type built-in)
+      :after evil
+      :config
+      (defun my-evil-adjust-cursor (&optional _)
+        "Move point one character back if at the end of a non-empty line.
+    This behavior is controlled by `evil-move-beyond-eol'."
+        (and (not evil-move-beyond-eol)
+             (not (bolp)) ;; a workaround
+             ;; https://github.com/emacs-evil/evil/issues/1778
+             (eolp)
+             (= (point)
+                (save-excursion
+                  (evil-move-end-of-line)
+                  (point)))
+             (evil-move-cursor-back t)))
+      (with-eval-after-load 'evil
+        (advice-add 'evil-adjust-cursor :override 'my-evil-adjust-cursor))
+      (pixel-scroll-precision-mode 1)
+      (setq fast-but-imprecise-scrolling t))
+  #+end_src
+
 * diminish
   #+begin_src emacs-lisp
     (use-package diminish :defer t)
@@ -171,9 +196,11 @@
     (use-package so-long
       :defer 1
       :straight (:type built-in)
+      :custom
+      (so-long-threshold 20000)
       :config
-      (setq long-line-threshold 5000)
       (setq large-hscroll-threshold 50)
+      (setq long-line-threshold 8000)
       (setq bidi-inhibit-bpa t)
       (setq bidi-display-reordering nil)
       (global-so-long-mode 1))
@@ -519,6 +546,9 @@
        (global-ts-fold-mode))
    #+end_src
 
+   an optional structure navigation package
+   https://github.com/mickeynp/combobulate
+
    #+begin_src emacs-lisp
      (with-eval-after-load 'yaml
        (with-eval-after-load 'json
@@ -824,6 +854,8 @@
   #+begin_src emacs-lisp
     (use-package wgrep
       :after evil
+      :custom
+      (wgrep-auto-save-buffer t)
       :commands
       (wgrep-finish-edit
        wgrep-finish-edit
@@ -1047,6 +1079,7 @@
                                    "i" "insert" nil
                                    "il" "insert link" 'org-insert-link
                                    "it" "insert toc" 'org-insert-toc
+                                   "is" "insert time section" 'insert-new-time-section-under-routine
 
                                    "e" "export" nil
                                    "ee" "org-export-dispatch" 'org-export-dispatch
@@ -1068,11 +1101,7 @@
 
                                    "t" "toggles" nil
                                    "tl" "link display" 'org-toggle-link-display
-                                   "ti" "inline image" 'org-toggle-inline-images
-
-                                   "j" "journals" nil
-                                   "jn" "new entry" 'org-journal-new-entry
-                                   "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
+                                   "ti" "inline image" 'org-toggle-inline-images))
 
 
       (define-leader-key-global

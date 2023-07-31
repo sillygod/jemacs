@@ -24,6 +24,11 @@
       :hook
       (before-save . gofmt-before-save))
 
+    (use-package go-ts-mode
+      :defer t
+      :custom
+      (go-ts-mode-indent-offset 4))
+
     (use-package protobuf-mode
       :defer t)
 

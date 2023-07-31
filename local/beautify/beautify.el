@@ -42,4 +42,4 @@
 (svg-tag--build-keywords `("hi" . (svg-lib-tag "hi" nil :stroke 0)))
 
 (provide 'beautify)
-;;; beautify ends here
+;;; beautify.el ends here

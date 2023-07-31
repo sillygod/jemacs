@@ -1,7 +1,6 @@
 #+TITLE: jemacs-note-taking.el
 #+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-note-taking.el :mkdirp yes
 
-
 * setup
 
   #+begin_src emacs-lisp
@@ -197,7 +196,7 @@
 
       :config
       (setq org-roam-node-display-template
-            (concat "${title:*}" (propertize "${tags:40}" 'face 'org-tag)))
+            (concat "${title:100}" (propertize "${tags:40}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
             `(("d" "default" entry
                "* %<%H:%M> %?"
@@ -366,6 +365,27 @@
       (message "copy content without header"))
   #+end_src
 
+* insert a time section in routine
+
+  #+begin_src emacs-lisp
+    (defun insert-new-time-section-under-routine ()
+      "Insert a new subheader under the main header in Org mode."
+      (interactive)
+      (save-excursion
+        (goto-char (point-min))
+        (if (re-search-forward "^\\* routines$" nil t)
+            (if (re-search-forward (concat "^\\*\\{2,5\\} " (format-time-string "%H:00:00")) nil t)
+                (org-show-subtree)
+              (progn
+                (org-end-of-subtree)
+                (if (= (org-outline-level) 1)
+                    (call-interactively 'org-insert-subheading nil)
+                  (org-insert-heading))
+                (insert (format-time-string "%H:00:00"))))
+
+          (message "Hint: The word \"* routines\" is not found. You should call this in the daily routine."))))
+  #+end_src
+
 * org-insert-toc
   FUTURE: maybe we can enhance this with prompting like org-insert-link
   #+begin_src emacs-lisp
@@ -376,14 +396,6 @@
       (insert "*" " " ":TOC:")
       (backward-char 5)
       (evil-insert-state))
-  #+end_src
-
-* org journal stock
-  #+begin_src emacs-lisp
-    (defun create-journal-to (dest)
-      "~/Dropbox/myorgs/stock/journal"
-      (let ((org-journal-dir dest))
-        (call-interactively 'org-journal-new-entry)))
   #+end_src
 
 * org table configuration
