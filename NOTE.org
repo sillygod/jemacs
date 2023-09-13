@@ -28,7 +28,7 @@
 ** better to have
 
    - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
-   - [ ] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
+   - [X] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
    - [ ] interactive sql mode
    - [ ] adopt darkroom package?
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)

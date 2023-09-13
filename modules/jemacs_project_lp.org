@@ -113,6 +113,11 @@
   We have to call it again when you moving back.
   NOTE: we still process hydra menu influence vterm
 
+  I found another solution may be better.
+  Manually enter vterm-copy-mode when activate evil mode.
+  Enter the evil mode when mouse scrolls
+  https://emacs.stackexchange.com/questions/2204/hook-that-indicates-when-the-cursor-has-been-moved-by-scrolling
+
   #+begin_src emacs-lisp
     (defun prevent-whichkey-interfere-vterm (act-popup-dim)
       (when (equal major-mode 'vterm-mode)

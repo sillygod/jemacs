@@ -235,6 +235,19 @@
 
   #+end_src
 
+* org-transclusion
+
+  # TODO: setup transclusion usages
+  # customize the fringe color and background of transclusion block
+  # research why it will try to read all org roam file when referring to a org roam file
+  # https://nobiot.github.io/org-transclusion/#Faces-_0026-fringe-bitmap
+  #+transclude: [[id:CD451D64-4615-4339-8058-128E33653FC3][Find Job Fight]] :lines 5-20
+
+  #+begin_src emacs-lisp
+    (use-package org-transclusion
+      :after org)
+  #+end_src
+
 * ob-async
   #+begin_src emacs-lisp
     (use-package ob-async

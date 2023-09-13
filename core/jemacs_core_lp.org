@@ -491,6 +491,16 @@
          (kill-new x)))
    #+end_src
 
+** insert current time with millisecond precision
+
+   #+begin_src emacs-lisp
+     (defun insert-current-timestamp ()
+       "Inser the current timestamp with millisecond precision."
+       (interactive)
+       (let ((tx (float-time (current-time))))
+         (insert (format "%d" (truncate (* 1000 tx))))))
+   #+end_src
+
 ** misc
 
    #+begin_src emacs-lisp
@@ -890,7 +900,6 @@
              :prompt "Open file: ")
             selected-dir))))
    #+end_src
-
 
 ** operation with marked text
 

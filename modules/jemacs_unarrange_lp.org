@@ -803,7 +803,9 @@
       (go-ts-mode . eglot-ensure)
       :custom
       (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
-      (enable-local-variables nil) ;; do I need this ?
+      (enable-local-variables t)
+      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
+      ;; For more detail, go to see the help doc of normal-mode
       (xref-search-program 'ripgrep)
       (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
@@ -1190,7 +1192,9 @@
 
       (define-leader-key-global
        "i" '(:ignore t :which-key "insert")
-       "is" '(insert-yas :which-key "snippets"))
+       "is" '(insert-yas :which-key "snippets")
+       "it" '(insert-current-timestamp :which-key "timestamp")
+       "iu" '(uuidgen :which-key "uuid4"))
 
       (define-leader-key-global
        "l" '(:ignore t :which-key "layout")
@@ -1221,9 +1225,10 @@
        "gi" '(magit-init :which-key "gagit init")
        "gb" '(:ignore t :which-key "blame")
        "gl" '(magit-list-repositories :which-key "magit list repos")
-       "gbl" '(git-messenger:popup-message  :which-key "this line")
-       "gbb" '(magit-blame-addition  :which-key "this buffer")
-       "gs" '(magit-status :which-key "magit status"))
+       "gbl" '(git-messenger:popup-message :which-key "this line")
+       "gbb" '(magit-blame-addition :which-key "this buffer")
+       "gs" '(magit-status :which-key "magit status")
+       "gt" '(magit-file-dispatch :which-key "magit time machine"))
 
       (define-leader-key-global
        "k" '(:ignore t :which-key "kmacro")
@@ -1364,7 +1369,8 @@
        ("6" winum-select-window-6 nil)
        ("7" winum-select-window-7 nil)
        ("8" winum-select-window-8 nil)
-       ("9" winum-select-window-9 nil))
+       ("9" winum-select-window-9 nil)
+       ("<escape>" nil "finished" :exit t))
 
      (defhydra hydra-org-roam (:exit t)
        "Launcher for `org-roam'."
@@ -1397,7 +1403,8 @@
        ("b" consult-project-buffer nil)
        ("B" consult-buffer nil)
        ("o" other-window nil)
-       ("d" kill-this-buffer nil))
+       ("d" kill-this-buffer nil)
+       ("<escape>" nil "finished" :exit t))
 
      (defhydra hydra-text-scale (:timeout 8)
        "scale text"
