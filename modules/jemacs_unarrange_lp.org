@@ -211,7 +211,13 @@
   make rime input method work seamlessly with emacs
 
   you can download the rime from the github
-  https://github.com/rime/librime/releases/download/1.7.2/rime-1.7.2-osx.zip
+  brew install --cask squirrel
+
+
+  #+begin_src bash :tangle no
+    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.8.5/rime-08dd95f-macOS.tar.bz2
+    tar -xf rime.tar.bz2 -d ~/.emacs.d/librime
+  #+end_src
 
   #+begin_src emacs-lisp
     (use-package rime
@@ -222,7 +228,7 @@
                       :files ("*.el" "Makefile" "lib.c"))
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
-      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@30/include/")
+      (rime-emacs-module-header-root (shell-command-to-string "echo -n $(brew --prefix)/include"))
       (rime-user-data-dir "/Users/jing/Library/Rime/")
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
@@ -463,7 +469,7 @@
    tree-sitter requires emacs built with dynamic modules (due to c bindings library) supports.
    (functionp 'module-load)
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (use-package tree-sitter
        :config
        (global-tree-sitter-mode))
@@ -779,12 +785,14 @@
       :straight (:host github :repo "manateelazycat/lsp-bridge" :files ("*.el" "")))
   #+end_src
 
+  https://github.com/mohkale/consult-eglot/
   #+begin_src emacs-lisp
 
     (use-package eglot
       :defer t
       :init
       (setq read-process-output-max (* 1024 1024))
+      (setq eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
       :hook
       ;; (python-ts-mode . eglot-ensure)
       (rust-mode . eglot-ensure)
@@ -802,7 +810,6 @@
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
       (enable-local-variables t)
       ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
       ;; For more detail, go to see the help doc of normal-mode

@@ -28,14 +28,15 @@
     git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
   #+end_src
 
-  copy ~example-settings.el~ to ~settings.el~ and modify it
-  then produce the setup files of core and modules by the following the command
+  To produce the setup files of core and modules by the following the command
 
   #+begin_src bash
     bash lp.sh
   #+end_src
 
   Once you setup config completely, you can also produce those files by elisp function ~export-lp-configs~
+
+  Finally, copy ~example-settings.el~ to ~settings.el~ and modify it
 
 *** spawn the emacs
 

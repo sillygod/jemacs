@@ -76,7 +76,6 @@
                      ol-rmail
                      ol-eww
                      org-habit
-                     ol-git-link
                      org-protocol
                      org-tempo))
 
