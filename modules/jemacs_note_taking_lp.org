@@ -165,6 +165,36 @@
 
   #+end_src
 
+* org beautify
+
+  #+begin_src emacs-lisp
+    (defun get-youtube-video-id (url)
+      "Get the 'v' query parameter value from a YouTube video URL."
+      (let* ((url-parts (url-generic-parse-url url))
+             (query-string (url-filename url-parts))
+             (query-params (url-parse-query-string query-string))
+             (v-value (cdr (assoc "/watch?v" query-params))))
+        (car v-value)))
+
+    (defun insert-xwidget-for-youtube (url)
+      "Insert a xwidget in buffer and display the content of url."
+      (let ((embed-url (format "https://www.youtube.com/embed/%s?controls=1" (get-youtube-video-id url)))
+            (widget (make-xwidget
+                     'webkit
+                     "Video"
+                     (truncate (* (window-pixel-width) 0.8))
+                     (truncate (* (window-pixel-width) 0.8 0.75)))))
+        (insert
+         (propertize
+          " [video] "
+          'display (list 'xwidget :xwidget widget)))
+        (xwidget-webkit-execute-script
+         widget (format "document.body.innerHTML = %S;"
+                        (format
+                         "<style>body { margin: 0px; }</style><div style='background: black; height: 100%%; display: flex; align-items: center; justify-content: center;'><iframe width='%s' height='%s' src=%s></iframe></div>"
+                         "100%" "100%" embed-url)))))
+
+  #+end_src
 * htmlize
 
   it's required when you want the html exported by =org-export= with syntax highlight effect.
@@ -564,7 +594,7 @@
       (setq org-capture-templates nil)
 
       (setq org-todo-keywords
-            '((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
+            '((sequence "TODO" "IN PROGRESS(i!)" "|" "DONE" "PRESERVE")))
 
       (setq org-todo-keyword-faces
             '(("TODO" . "#dc752f")

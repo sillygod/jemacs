@@ -41,6 +41,9 @@
       :defer 2
       :after magit)
 
+    (use-package code-review
+      :defer 2
+      :after forge)
   #+end_src
 
 ** get pull request url from magit process buffer
