@@ -118,7 +118,11 @@
   Enter the evil mode when mouse scrolls
   https://emacs.stackexchange.com/questions/2204/hook-that-indicates-when-the-cursor-has-been-moved-by-scrolling
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
+    ;; deprecated I prevent manually activate these
+    ;; (advice-add 'which-key--show-popup :before 'prevent-whichkey-interfere-vterm)
+    ;; (advice-add 'hydra-show-hint :before 'prevent-hydra-interfere-vterm)
+    ;; (advice-add 'vterm-mode :after 'toggle-vterm-copy-mode-when-window-selection-changed)
     (defun prevent-whichkey-interfere-vterm (act-popup-dim)
       (when (equal major-mode 'vterm-mode)
         (unless vterm-copy-mode
@@ -141,7 +145,23 @@
              (with-current-buffer (window-buffer w) (vterm-copy-mode))))
        nil t))
 
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (defun toggle-copy-mode-respect-to-model-state ()
+      (interactive)
+      (if (evil-emacs-state-p)
+          (evil-normal-state)
+        (evil-emacs-state))
+      (unless vterm-copy-mode
+        (vterm-copy-mode))
+      (when buffer-read-only
+        ;; toggle it back
+        (read-only-mode)))
+
+
     (use-package vterm
+      :after evil
       :defer t
       :custom
       (vterm-always-compile-module t)
@@ -152,11 +172,8 @@
       :config
       (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
       (define-key vterm-mode-map (kbd "C-c C-z") 'vterm-send-C-z)
-
-
-      (advice-add 'which-key--show-popup :before 'prevent-whichkey-interfere-vterm)
-      (advice-add 'hydra-show-hint :before 'prevent-hydra-interfere-vterm)
-      (advice-add 'vterm-mode :after 'toggle-vterm-copy-mode-when-window-selection-changed))
+      (define-key vterm-mode-map (kbd "C-z") 'toggle-copy-mode-respect-to-model-state)
+      (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
   #+end_src
 
 

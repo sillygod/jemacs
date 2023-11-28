@@ -821,6 +821,7 @@
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
       ;; this make evil go to definition works normally like xref-find-definitions
       (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
+      (fset #'jsonrpc--log-event #'ignore)
       (add-hook 'python-mode-hook (lambda ()
                                     (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
