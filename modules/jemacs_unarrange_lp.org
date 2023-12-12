@@ -88,6 +88,19 @@
       :commands command-log-mode)
   #+end_src
 
+* emacs ellama (AI tool like chatgpt)
+  https://github.com/s-kostyaev/ellama
+
+  #+begin_src emacs-lisp
+    (use-package ellama
+      :straight
+      (:host github :repo "s-kostyaev/ellama" :files ("*.el"))
+      :init
+      (require 'llm-ollama)
+      (setopt ellama-provider
+              (make-llm-ollama
+               :chat-model "zephyr" :embedding-model "zephyr")))
+  #+end_src
 * rainbow-mode
   #+begin_src emacs-lisp
     (use-package rainbow-mode
@@ -1337,6 +1350,19 @@
    #+begin_src emacs-lisp
      (use-package hydra
        :defer t)
+
+     (transient-define-prefix window-transient ()
+       "Window operation transient."
+       :transient-suffix 'transiet--do-stay
+       [["Resize"
+         ]
+        ["Select"
+         ]
+        ["Move"
+         ]
+        ["Action"
+         ]
+        ])
 
      (defhydra window-operate ()
        "

@@ -28,10 +28,21 @@
 
 ;;; Code:
 
+(require 'cl)
+
 
 ;; the overlay has higher priority than the font-lock
 ;; that means the word highlighted by font-lock will be overwritten by the overlay
 ;; if both of them are covered the same area
+
+;;; Faces
+
+(defvar jlight-matched-overlay-face
+  '((t (:inherit highlight)))
+  "Symbol Overlay default face.")
+
+(defvar jlight-current-matched-overlay-face
+  '((t (:inherit shr-mark))))
 
 (defvar jlight-matches '()
   "It stores the matched highlighted regions as a cons of begin and end.")
@@ -39,26 +50,25 @@
 (defvar jlight-pointer 0
   "It's the index of matches currently pointed to.")
 
+(defun set-pointer (index)
+  "Set the pointer to the element at the specified INDEX in the `jlight-matches` list."
+  (setq jlight-pointer index))
 
-;; (defun set-pointer (index)
-;;   "Set the pointer to point to the element at the specified index in the `things` list."
-;;   (setq pointer-index index))
+(defun get-pointer ()
+  "Get the current element pointed by the pointer."
+  (nth jlight-pointer jlight-matches))
 
-;; (defun get-pointer ()
-;;   "Get the current element pointed by the pointer."
-;;   (nth pointer-index things))
+(defun move-pointer-next ()
+  "Move the pointer to the next element in the `jlight-matches` list."
+  (setq jlight-pointer (mod (1+ jlight-pointer) (length jlight-matches))))
 
-;; (defun move-pointer-next ()
-;;   "Move the pointer to the next element in the `things` list."
-;;   (setq pointer-index (mod (1+ pointer-index) (length things))))
+(defun move-pointer-previous ()
+  "Move the pointer to the previous element in the `jlight-matches` list."
+  (setq jlight-pointer (mod (1- jlight-pointer) (length jlight-matches))))
 
-;; (defun move-pointer-previous ()
-;;   "Move the pointer to the previous element in the `things` list."
-;;   (setq pointer-index (mod (1- pointer-index) (length things))))
-
-;; (defun get-index (value)
-;;   "Get the index of the first occurrence of VALUE in the `things` list."
-;;   (cl-position value things))
+(defun get-index (value)
+  "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
+  (cl-position value jlight-matches :test #'(lambda (x y) (equal x y))))
 
 (defun keymap-help-doc (keymap)
   "Display the key bindings for the specified `KEYMAP'."
@@ -69,47 +79,76 @@
         (insert (substitute-command-keys
                  (format "\\{%s}" (symbol-name keymap))))))))
 
+(defun reset-point-and-maches ()
+  (setq jlight-matches '())
+  (setq jlight-pointer 0))
 
+;; TODO: fix the highlight priority issue
+;; it seems that mark region has a higher priority
 (defun highlight-selected-word ()
   "Highlight the selected word using overlays."
   (interactive)
   (let ((selected-word (if (region-active-p)
                            (buffer-substring-no-properties (region-beginning) (region-end))
-                         (thing-at-point 'word))))
+                         (thing-at-point 'word)))
+        (cur-pos (point)))
     (when selected-word
       (let ((regexp (regexp-quote selected-word)))
         (save-excursion
           (goto-char (point-min))
           (while (re-search-forward regexp nil t)
             (let ((overlay (make-overlay (match-beginning 0) (match-end 0))))
-              (overlay-put overlay 'face '(:background "yellow"))
+              (add-to-list 'jlight-matches (cons (match-beginning 0) (match-end 0)) t)
+              (if (and (>= cur-pos (match-beginning 0))
+                       (<= cur-pos (match-end 0)))
+                  (progn
+                    (overlay-put overlay 'face jlight-current-matched-overlay-face)
+                    (set-pointer (get-index (cons (match-beginning 0) (match-end 0)))))
+                (overlay-put overlay 'face jlight-matched-overlay-face))
               (overlay-put overlay 'highlight-selected-word t))))))))
 
+(defvar ignore-clear-post-commands '(goto-next-highlighted-word
+                                     goto-prev-highlighted-word))
+
+;;; TODO: add hook in current buffer
 (defun clear-highlight ()
   "Clear the highlighted words."
   (interactive)
-  (remove-overlays (point-min) (point-max) 'highlight-selected-word t))
+  (unless (member this-command ignore-clear-post-commands)
+    (if (member 'clear-highlight post-command-hook)
+        (remove-hook 'post-command-hook 'clear-highlight))
+    (remove-overlays (point-min) (point-max) 'highlight-selected-word t)
+    (reset-point-and-maches)))
+
+(defun get-current-overlay ()
+  "Iterate the overlay under current point."
+  (dolist (overlay (overlays-at (car (get-pointer))))
+    (when (overlay-get overlay 'highlight-selected-word)
+      (cl-return overlay))))
+
 
 (defun goto-next-highlighted-word ()
   "Move to the next highlighted word."
   (interactive)
-  (require 'cl-lib)
-  (let ((matches (cl-loop for overlay in (overlays-in (point) (point-max))
-                          if (overlay-get overlay 'highlight-selected-word)
-                          collect (cons (overlay-start overlay) (overlay-end overlay)))))
+  (overlay-put (get-current-overlay) 'face jlight-matched-overlay-face)
+  (move-pointer-next)
+  (goto-char (car (get-pointer)))
+  (overlay-put (get-current-overlay) 'face jlight-current-matched-overlay-face))
 
-    (goto-char (car (cadr matches)))))
+(defun goto-prev-highlighted-word ()
+  "Move to the previous highlighted word."
+  (interactive)
+  (overlay-put (get-current-overlay) 'face jlight-matched-overlay-face)
+  (move-pointer-previous)
+  (goto-char (car (get-pointer)))
+  (overlay-put (get-current-overlay) 'face jlight-current-matched-overlay-face))
 
-;; (defun get-highlighted-occurrences ()
-;;   "Retrieve the positions of highlighted occurrences."
-;;   (interactive)
-;;   (if (null hi-lock-interactive-patterns)
-;;       (message "No highlighted occurrences.")
-;;     (let ((matches (cl-loop for overlay in (overlays-in (point-min) (point-max))
-;;                             if (eq (overlay-get overlay 'face) 'hi-yellow)
-;;                             collect (cons (overlay-start overlay) (overlay-end overlay)))))
-;;       matches)))
 
+;; TODO: consider to add keymaps in overlay? like esc to clear the highlight
+
+;; narrow-to-region, narrow-to display region (window-start?)
+;; (eq (window-buffer) (current-buffer))
+;; need to keep the current matched position
 
 (provide 'jlight)
 

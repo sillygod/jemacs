@@ -26,8 +26,13 @@
       (git-messenger:show-detail t)
       (git-messenger:use-magit-popup t))
 
+    (use-package transient
+      :config
+      (progn (unload-feature 'transient t) (require 'transient)))
+
     (use-package magit
       :defer 2
+      :after transient
       :custom
       ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
        (magit-repository-directories

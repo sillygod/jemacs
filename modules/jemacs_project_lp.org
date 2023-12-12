@@ -150,14 +150,13 @@
   #+begin_src emacs-lisp
     (defun toggle-copy-mode-respect-to-model-state ()
       (interactive)
-      (if (evil-emacs-state-p)
-          (evil-normal-state)
-        (evil-emacs-state))
-      (unless vterm-copy-mode
-        (vterm-copy-mode))
-      (when buffer-read-only
-        ;; toggle it back
-        (read-only-mode)))
+      (cond
+       ((evil-emacs-state-p)
+        (evil-normal-state)
+        (call-interactively 'vterm-copy-mode))
+       ((evil-normal-state-p)
+        (evil-emacs-state)
+        (call-interactively 'vterm-copy-mode))))
 
 
     (use-package vterm
@@ -173,7 +172,8 @@
       (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
       (define-key vterm-mode-map (kbd "C-c C-z") 'vterm-send-C-z)
       (define-key vterm-mode-map (kbd "C-z") 'toggle-copy-mode-respect-to-model-state)
-      (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
+      (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state)
+      (evil-define-key 'normal 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
   #+end_src
 
 

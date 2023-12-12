@@ -222,6 +222,7 @@
       (add-to-list 'completion-at-point-functions #'cape-symbol)
       (add-to-list 'completion-at-point-functions #'cape-dabbrev)
       :config
+      (setq cape-dabbrev-check-other-buffers nil)
       (setq dabbrev-case-fold-search 'case-fold-search))
   #+end_src
 

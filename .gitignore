@@ -3,6 +3,7 @@
 .DS_Store
 
 emacs-home/
+eln-cache/
 org-roam.db
 nov-places
 bookmarks

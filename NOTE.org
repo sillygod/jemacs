@@ -4,6 +4,10 @@
   - https://github.com/bling/fzf.el
   - https://github.com/jeremy-compostella/pdfgrep
   - https://github.com/xiongtx/eros (interesting plugins)
+  - https://github.com/minad/tempel (another choice for snippet completion)
+
+  a nice show case of transient
+  https://github.com/positron-solutions/transient-showcase
 
 * Start to build my own emacs
 

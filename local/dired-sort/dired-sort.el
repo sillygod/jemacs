@@ -9,7 +9,6 @@
 (require 'dired)
 (require 'ls-lisp)
 (require 'savehist)
-(require 'hydra)
 
 (when (eq system-type 'darwin)
   (setq insert-directory-program "gls"))
@@ -17,8 +16,7 @@
 (defcustom dired-sort-suppress-setup-warning nil
   "How to handle the warning in `dired-sort-setup'."
   :type '(choice (const :tag "Display" nil)
-                 (const :tag "Suppress" t)
-                 (const :tag "Display as a message" 'message))
+                 (const :tag "Suppress" t))
   :group 'dired-sort)
 
 (defvar dired-sort-sort-by-last "version"
@@ -70,13 +68,14 @@ enabled.  When invoked interactively, nil's are passed to all arguments."
   (dired-sort-other (dired-sort--format-switches)))
 
 (defun dired-sort-set-switches ()
-  "Set switches according to variables. For use in `dired-mode-hook'.
-t means no revert buffer. for more detail, please go to the doc of dired-sort-other."
+  "Set switch according to variables.
+For use in `dired-mode-hook'.
+t means no revert buffer.
+for more detail, please go to the doc of dired-sort-other."
   (dired-sort-other (dired-sort--format-switches) t))
 
 (defun dired-sort--format-switches ()
-  "Return a dired-listing-switches string according to
-`dired-sort' settings."
+  "Return a `dired-listing-switches' string according to `dired-sort' settings."
   (format "%s --sort=%s %s %s %s" dired-listing-switches
           dired-sort-sort-by-last
           (if (char-equal dired-sort-reverse-last ?y)
@@ -86,51 +85,43 @@ t means no revert buffer. for more detail, please go to the doc of dired-sort-ot
           (if (not (string= dired-sort-time-last "default"))
               (concat "--time=" dired-sort-time-last) "")))
 
-(defun dired-sort--sort-by-last (field)
-  (if (string= dired-sort-sort-by-last field) "[X]" "[ ]"))
+(transient-define-prefix dired-sort-transient ()
+  "Dired sort transient."
+  :transient-suffix 'transient--do-stay
+  [["Sort by"
+    ("n" (lambda () (interactive) (dired-sort "none"))
+     :description (lambda () (concat "none " (if (string= dired-sort-sort-by-last "none") "[X]" "[ ]"))))
+    ("t" (lambda () (interactive) (dired-sort "time"))
+     :description (lambda () (concat "time " (if (string= dired-sort-sort-by-last "time") "[X]" "[ ]"))))
+    ("s" (lambda () (interactive) (dired-sort "size"))
+     :description (lambda () (concat "size " (if (string= dired-sort-sort-by-last "size") "[X]" "[ ]"))))
+    ("v" (lambda () (interactive) (dired-sort "version"))
+     :description (lambda () (concat "version " (if (string= dired-sort-sort-by-last "version") "[X]" "[ ]"))))
+    ("e" (lambda () (interactive) (dired-sort "extension"))
+     :description (lambda () (concat "extension " (if (string= dired-sort-sort-by-last "extension") "[X]" "[ ]"))))
+    ("q" "quit" transient-quit-all)]
+   ["Reverse"
+    ("r" (lambda () (interactive) (dired-sort nil ?y))
+     :description (lambda () (if (char-equal dired-sort-reverse-last ?y) "[X]" "[ ]")))
+    ("R" (lambda () (interactive) (dired-sort nil ?n))
+     :description (lambda () (if (char-equal dired-sort-reverse-last ?n) "[X]" "[ ]")))]
+   ["Group Directories"
+    ("g" (lambda () (interactive) (dired-sort nil nil ?y))
+     :description (lambda () (if (char-equal dired-sort-group-directories-last ?y) "[X]" "[ ]")))
+    ("G" (lambda () (interactive) (dired-sort nil nil ?n))
+     :description (lambda () (if (char-equal dired-sort-group-directories-last ?n) "[X]" "[ ]")))]
+   ["Time"
+    ("d" (lambda () (interactive) (dired-sort nil nil nil "default"))
+     :description (lambda () (if (string= dired-sort-time-last "default") "[X]" "[ ]")))
+    ("a" (lambda () (interactive) (dired-sort nil nil nil "atime"))
+     :description (lambda () (if (string= dired-sort-time-last "atime") "[X]" "[ ]")))
+    ("u" (lambda () (interactive) (dired-sort nil nil nil "use"))
+     :description (lambda () (if (string= dired-sort-time-last "use") "[X]" "[ ]")))
+    ("c" (lambda () (interactive) (dired-sort nil nil nil "ctime"))
+     :description (lambda () (if (string= dired-sort-time-last "ctime") "[X]" "[ ]")))
+    ("S" (lambda () (interactive) (dired-sort nil nil nil "status"))
+     :description (lambda () (if (string= dired-sort-time-last "status") "[X]" "[ ]")))]])
 
-(defhydra hydra-dired-sort (:hint none)
-  "
-^Sort by^                   ^Reverse^               ^Group Directories^            ^Time
-^^^^^^^^^----------------------------------------------------------------------------------------------------------------
-_n_: ?n? none               _r_: ?r? yes            _g_: ?g? yes                   _d_: ?d? default (last modified time)
-_t_: ?t? time               _R_: ?R? no             _G_: ?G? no                    _A_: ?A? atime
-_s_: ?s? size               ^ ^                     ^ ^                            _a_: ?a? access
-_v_: ?v? version (natural)  ^ ^                     ^ ^                            _u_: ?u? use
-_e_: ?e? extension          ^ ^                     ^ ^                            _c_: ?c? ctime
-_q_: quit                   ^ ^                     ^ ^                            _S_: ?S? status
-"
-  ("n" (dired-sort "none")
-       (dired-sort--sort-by-last "none"))
-  ("t" (dired-sort "time")
-       (dired-sort--sort-by-last "time"))
-  ("s" (dired-sort "size")
-       (dired-sort--sort-by-last "size"))
-  ("v" (dired-sort "version")
-       (dired-sort--sort-by-last "version"))
-  ("e" (dired-sort "extension")
-       (dired-sort--sort-by-last "extension"))
-  ("r" (dired-sort nil ?y)
-       (if (char-equal dired-sort-reverse-last ?y) "[X]" "[ ]"))
-  ("R" (dired-sort nil ?n)
-       (if (char-equal dired-sort-reverse-last ?n) "[X]" "[ ]"))
-  ("g" (dired-sort nil nil ?y)
-       (if (char-equal dired-sort-group-directories-last ?y) "[X]" "[ ]"))
-  ("G" (dired-sort nil nil ?n)
-       (if (char-equal dired-sort-group-directories-last ?n) "[X]" "[ ]"))
-  ("d" (dired-sort nil nil nil "default")
-       (if (string= dired-sort-time-last "default") "[X]" "[ ]"))
-  ("A" (dired-sort nil nil nil "atime")
-       (if (string= dired-sort-time-last "atime") "[X]" "[ ]"))
-  ("a" (dired-sort nil nil nil "access")
-       (if (string= dired-sort-time-last "access") "[X]" "[ ]"))
-  ("u" (dired-sort nil nil nil "use")
-       (if (string= dired-sort-time-last "use") "[X]" "[ ]"))
-  ("c" (dired-sort nil nil nil "ctime")
-       (if (string= dired-sort-time-last "ctime") "[X]" "[ ]"))
-  ("S" (dired-sort nil nil nil "status")
-       (if (string= dired-sort-time-last "status") "[X]" "[ ]"))
-  ("q" nil "quit" :hint t :color blue))
 
 (defun dired-sort--display-setup-warning (msg)
   "Display setup warning according to
@@ -147,16 +138,10 @@ _q_: quit                   ^ ^                     ^ ^                         
 (defun dired-sort-setup ()
   "Run the default setup.
 
-This will bind the key S in `dired-mode' to run
-`hydra-dired-sort/body', and automatically run the sorting
+This will bind the key s in `dired-mode' to run
+`dired-sort-transient', and automatically run the sorting
 criteria after entering `dired-mode'.  You can choose to not call
-this setup function and run a modified version of this function
-to use your own preferred setup:
-
-  ;; Replace \"S\" with other keys to invoke the dired-sort hydra.
-  (define-key dired-mode-map \"S\" 'hydra-dired-sort/body)
-  ;; Automatically use the sorting defined here to sort.
-  (add-hook 'dired-mode-hook 'dired-sort)"
+this setup function and run a modified version of this function."
 
   (if (not ls-lisp-use-insert-directory-program)
       (dired-sort--display-setup-warning
@@ -177,14 +162,8 @@ package `dired-sort' will not work and thus is not set up by
 `dired-sort-suppress-setup-warning' to suppress warning and skip setup
 silently.")
       (with-eval-after-load 'evil
-
-        (evil-define-key 'normal dired-mode-map (kbd "s") 'hydra-dired-sort/body))
-      ;; (add-hook 'dired-mode-hook #'dired-sort-set-switches)
-      )))
+        (evil-define-key 'normal dired-mode-map (kbd "s") 'dired-sort-transient)))))
 
 (provide 'dired-sort)
-
-
-
 
 ;;; dired-sort.el ends here

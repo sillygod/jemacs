@@ -67,6 +67,11 @@
 * disable package enable at startup and some misc settings
 
   #+begin_src emacs-lisp
+     (setq package-install-upgrade-built-in t)
+   #+end_src
+
+
+  #+begin_src emacs-lisp
     (setq package-enable-at-startup nil)
     (setq load-prefer-newer noninteractive)
   #+end_src
