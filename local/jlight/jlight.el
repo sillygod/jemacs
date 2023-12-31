@@ -38,21 +38,29 @@
 ;;; Faces
 
 (defvar jlight-matched-overlay-face
-  '((t (:inherit highlight)))
+  '(:inherit highlight)
   "Symbol Overlay default face.")
 
 (defvar jlight-current-matched-overlay-face
-  '((t (:inherit shr-mark))))
+  '(:inherit shr-mark))
 
-(defvar jlight-matches '()
+(defvar jlight-highlight-priority 1000
+  "Symbol highlight priority.")
+
+(defvar ignore-clear-post-commands '(highlight-selected-word
+                                     goto-next-highlighted-word
+                                     goto-prev-highlighted-word)
+  "The commands ignored to trigger hook while words are highlighted.")
+
+(defvar-local jlight-matches '()
   "It stores the matched highlighted regions as a cons of begin and end.")
 
-(defvar jlight-pointer 0
+(defvar-local jlight-pointer 0
   "It's the index of matches currently pointed to.")
 
 (defun set-pointer (index)
   "Set the pointer to the element at the specified INDEX in the `jlight-matches` list."
-  (setq jlight-pointer index))
+  (setq-local jlight-pointer index))
 
 (defun get-pointer ()
   "Get the current element pointed by the pointer."
@@ -60,11 +68,11 @@
 
 (defun move-pointer-next ()
   "Move the pointer to the next element in the `jlight-matches` list."
-  (setq jlight-pointer (mod (1+ jlight-pointer) (length jlight-matches))))
+  (set-pointer (mod (1+ jlight-pointer) (length jlight-matches))))
 
 (defun move-pointer-previous ()
   "Move the pointer to the previous element in the `jlight-matches` list."
-  (setq jlight-pointer (mod (1- jlight-pointer) (length jlight-matches))))
+  (set-pointer (mod (1- jlight-pointer) (length jlight-matches))))
 
 (defun get-index (value)
   "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
@@ -80,14 +88,16 @@
                  (format "\\{%s}" (symbol-name keymap))))))))
 
 (defun reset-point-and-maches ()
-  (setq jlight-matches '())
-  (setq jlight-pointer 0))
+  "Clear the sotred matched positions and reset the pointer."
+  (setq-local jlight-matches '())
+  (set-pointer 0))
 
-;; TODO: fix the highlight priority issue
-;; it seems that mark region has a higher priority
 (defun highlight-selected-word ()
   "Highlight the selected word using overlays."
   (interactive)
+  (unless (member 'clear-highlight post-command-hook)
+    (add-hook 'post-command-hook 'clear-highlight nil t))
+
   (let ((selected-word (if (region-active-p)
                            (buffer-substring-no-properties (region-beginning) (region-end))
                          (thing-at-point 'word)))
@@ -105,18 +115,15 @@
                     (overlay-put overlay 'face jlight-current-matched-overlay-face)
                     (set-pointer (get-index (cons (match-beginning 0) (match-end 0)))))
                 (overlay-put overlay 'face jlight-matched-overlay-face))
+              (overlay-put overlay 'priority jlight-highlight-priority)
               (overlay-put overlay 'highlight-selected-word t))))))))
 
-(defvar ignore-clear-post-commands '(goto-next-highlighted-word
-                                     goto-prev-highlighted-word))
-
-;;; TODO: add hook in current buffer
 (defun clear-highlight ()
   "Clear the highlighted words."
   (interactive)
   (unless (member this-command ignore-clear-post-commands)
     (if (member 'clear-highlight post-command-hook)
-        (remove-hook 'post-command-hook 'clear-highlight))
+        (remove-hook 'post-command-hook 'clear-highlight t))
     (remove-overlays (point-min) (point-max) 'highlight-selected-word t)
     (reset-point-and-maches)))
 
@@ -143,8 +150,6 @@
   (goto-char (car (get-pointer)))
   (overlay-put (get-current-overlay) 'face jlight-current-matched-overlay-face))
 
-
-;; TODO: consider to add keymaps in overlay? like esc to clear the highlight
 
 ;; narrow-to-region, narrow-to display region (window-start?)
 ;; (eq (window-buffer) (current-buffer))
