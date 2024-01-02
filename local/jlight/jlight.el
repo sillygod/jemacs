@@ -48,6 +48,9 @@
   "Symbol highlight priority.")
 
 (defvar ignore-clear-post-commands '(highlight-selected-word
+                                     wrap-mark-operation
+                                     expand-and-highlight-region
+                                     contract-and-highlight-region
                                      goto-next-highlighted-word
                                      goto-prev-highlighted-word)
   "The commands ignored to trigger hook while words are highlighted.")
@@ -74,6 +77,12 @@
   "Move the pointer to the previous element in the `jlight-matches` list."
   (set-pointer (mod (1- jlight-pointer) (length jlight-matches))))
 
+(defun jlight-get-matched-thing ()
+  "Get the matched word."
+  (let ((region (first jlight-matches)))
+    (buffer-substring-no-properties (car region) (cdr region))))
+
+
 (defun get-index (value)
   "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
   (cl-position value jlight-matches :test #'(lambda (x y) (equal x y))))
@@ -92,9 +101,24 @@
   (setq-local jlight-matches '())
   (set-pointer 0))
 
+;;;###autoload
+(defun has-jlight-matches-p ()
+  "Return the state if highlighted matches exist."
+  (eq jlight-matches '()))
+
+;;;###autoload
 (defun highlight-selected-word ()
   "Highlight the selected word using overlays."
   (interactive)
+
+  (unless (eq jlight-matches '())
+    (when (region-active-p)
+      (let* ((begin (region-beginning))
+             (end (region-end)))
+
+        (clear-highlight t)
+        (set-mark begin)
+        (goto-char end))))
   (unless (member 'clear-highlight post-command-hook)
     (add-hook 'post-command-hook 'clear-highlight nil t))
 
@@ -118,12 +142,17 @@
               (overlay-put overlay 'priority jlight-highlight-priority)
               (overlay-put overlay 'highlight-selected-word t))))))))
 
-(defun clear-highlight ()
-  "Clear the highlighted words."
+
+;;;###autoload
+(defun clear-highlight (&optional force)
+  "Clear the highlighted words.  FORCE not nil means clear highlight directly."
   (interactive)
-  (unless (member this-command ignore-clear-post-commands)
+  (when (or (not (member this-command ignore-clear-post-commands))
+            force)
     (if (member 'clear-highlight post-command-hook)
         (remove-hook 'post-command-hook 'clear-highlight t))
+    (when (region-active-p)
+      (deactivate-mark))
     (remove-overlays (point-min) (point-max) 'highlight-selected-word t)
     (reset-point-and-maches)))
 
@@ -134,17 +163,23 @@
       (cl-return overlay))))
 
 
+;;;###autoload
 (defun goto-next-highlighted-word ()
   "Move to the next highlighted word."
   (interactive)
+  (when (region-active-p)
+    (deactivate-mark))
   (overlay-put (get-current-overlay) 'face jlight-matched-overlay-face)
   (move-pointer-next)
   (goto-char (car (get-pointer)))
   (overlay-put (get-current-overlay) 'face jlight-current-matched-overlay-face))
 
+;;;###autoload
 (defun goto-prev-highlighted-word ()
   "Move to the previous highlighted word."
   (interactive)
+  (when (region-active-p)
+    (deactivate-mark))
   (overlay-put (get-current-overlay) 'face jlight-matched-overlay-face)
   (move-pointer-previous)
   (goto-char (car (get-pointer)))

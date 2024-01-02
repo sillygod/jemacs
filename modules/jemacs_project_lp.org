@@ -263,9 +263,8 @@
 
              (initial-input (cond
                              ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
-                             ((and (boundp 'ahs-current-overlay)
-                                   (not (eq ahs-current-overlay nil))) (buffer-substring (overlay-start ahs-current-overlay)
-                                   (overlay-end ahs-current-overlay)))
+                             ((not (has-jlight-matches-p))
+                              (buffer-substring-no-properties (car (get-pointer)) (cdr (get-pointer))))
                              (t nil))))
 
         (when (region-active-p)

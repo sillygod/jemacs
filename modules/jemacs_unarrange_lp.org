@@ -152,6 +152,12 @@
 
   #+end_src
 
+* jlight
+  #+begin_src emacs-lisp
+    (eval `(use-package jlight
+                 :defer t
+                 :straight (:local-repo ,(concat home-dir "local/jlight"))))
+  #+end_src
 * counsel-jq-yq
 
   #+begin_src emacs-lisp
@@ -923,25 +929,6 @@
         (kbd "<escape>") #'(lambda () (interactive) (iedit-mode -1))))
   #+end_src
 
-* auto-highlight-symbol
-
-  Only the mode appears in the =ahs-plugin-bod-modes= can use beginning of the defun plugin
-
-  #+begin_src emacs-lisp
-    (use-package auto-highlight-symbol
-      :commands
-      (ahs-forward
-       ahs-unhighlight
-       ahs-unhighlight-all
-       ahs-change-range
-       ahs-change-range-internal
-       ahs-dropdown-list-p
-       ash-backward)
-      :config
-      (setq ahs-case-fold-search nil)
-      (add-to-list 'ahs-plugin-bod-modes 'python-mode))
-  #+end_src
-
 * general
 
   provide a spacemacs leader like ux.
@@ -976,6 +963,102 @@
       ;; NOTE: keysmaps override is to make general-define-key to be global scope
       ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
       (message "DEBUG: !! general init")
+
+      (transient-define-prefix window-transient ()
+        "Window operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Resize"
+          ("[" "shrink h" my-shrink-window-horizontally)
+          ("]" "enlarge h" my-enlarge-window-horizontally)
+          ("{" "shrink v" my-shrink-window)
+          ("}" "enlarge v" my-enlarge-window)
+          ("=" "balance" balance-windows)
+          ("m" "maximize" toggle-maximize-buffer)
+          ("q" "quit" transient-quit-all)
+          ("<escape>" "quit" transient-quit-all)
+          ]
+         ["Select"
+          ("h" "left" evil-window-left)
+          ("l" "right" evil-window-right)
+          ("k" "up" evil-window-up)
+          ("j" "down" evil-window-down)
+          ("1" "window 1" winum-select-window-1)
+          ("2" "window 2" winum-select-window-2)
+          ("3" "window 3" winum-select-window-3)
+          ("4" "window 4" winum-select-window-4)
+          ("5" "window 5" winum-select-window-5)
+          ("6" "window 6" winum-select-window-6)
+          ]
+         ["Move"
+          ("L" "left" evil-window-move-far-right)
+          ("H" "right" evil-window-move-far-left)
+          ("J" "down" evil-window-move-very-bottom)
+          ("K" "up" evil-window-move-very-top)
+          ]
+         ["Action"
+          ("/" "split vertically" evil-window-vsplit)
+          ("-" "split horizontally" evil-window-split)
+          ("d" "delete window" delete-window)
+          ]
+         ])
+
+
+      (with-eval-after-load 'org-roam
+        (transient-define-prefix org-roam-transient ()
+          "Org roam operation transient."
+          :transient-suffix 'transient--do-exit
+          [["Action"
+            ("a" "add alias for node" org-roam-alias-add)
+            ;; this is used for whening the name is conflict. It mostly happens in the header name
+            ("c" "create node" org-id-get-create)
+            ("i" "insert" org-roam-node-insert)
+            ("f" "find file" org-roam-node-find)
+            ("d" "dailies" org-roam-dailies-goto-today)
+            ("l" "back link buffer" org-roam-buffer-toggle)
+            ("g" "graph" my-org-roam-ui-open)
+            ("r" "db refresh" my-refresh-org-roam-db-cache)
+            ("t" "add tag" org-roam-tag-add)
+            ("<escape>" "quit" transient-quit-all)
+            ("q" "quit" transient-quit-all)]
+           ]))
+
+
+      (transient-define-prefix buffer-transient ()
+        "Buffer operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Move"
+          ("n" "next buffer" next-buffer)
+          ("p" "prev buffer" previous-buffer)
+          ("b" "project buffers" consult-project-buffer)
+          ("B" "buffer lists" consult-buffer)
+          ("o" "other window" other-window)
+          ("q" "quit" transient-quit-all)]
+         ["Action"
+          ("d" "delete" kill-this-buffer)
+          ]])
+
+      (transient-define-prefix text-transient ()
+        "Text operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Action"
+          ("j" "+" text-scale-increase)
+          ("k" "-" text-scale-decrease)
+          ("0" "reset" (lambda () (interactive) (text-scale-adjust 0)))
+          ("q" "quit" transient-quit-all)]
+         ])
+
+      (transient-define-prefix toggle-mode-transient ()
+        "Toggle mode transient."
+        :transient-suffix 'transient--do-stay
+        [["Action"
+          ("r" "rainbow mode" rainbow-mode)
+          ("w" "whitespace-mode" whitespace-mode)
+          ("t" "theme" consult-theme :transient transient--do-exit)
+          ("v" "visual line mode" visual-line-mode)
+          ("f" "check spell" flyspell-mode)
+          ("q" "quit" transient-quit-all)]
+         ])
+
 
       (with-eval-after-load 'emmet-mode
         (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
@@ -1237,7 +1320,7 @@
 
       (define-leader-key-global
        "s" '(:ignore t :which-key "search")
-       "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
+       "sc" '((lambda () (interactive) (evil-ex-nohighlight)(clear-highlight)) :which-key "clear highlight")
        "ss" '(consult-line :which-key "consult-line")
        "sS" '(consult-line-multi :which-key "consult-line-all"))
 
@@ -1329,282 +1412,91 @@
 
 ** +hydra+ motion (replaced with the builtin functions of transient)
 
-   #+begin_src emacs-lisp
-     (use-package hydra
-       :defer t)
-
-     (transient-define-prefix window-transient ()
-       "Window operation transient."
-       :transient-suffix 'transient--do-stay
-       [["Resize"
-         ("[" "shrink h" my-shrink-window-horizontally)
-         ("]" "enlarge h" my-enlarge-window-horizontally)
-         ("{" "shrink v" my-shrink-window)
-         ("}" "enlarge v" my-enlarge-window)
-         ("=" "balance" balance-windows)
-         ("m" "maximize" toggle-maximize-buffer)
-         ]
-        ["Select"
-         ("h" "left" evil-window-left)
-         ("l" "right" evil-window-right)
-         ("k" "up" evil-window-up)
-         ("j" "down" evil-window-down)
-         ("1" "window 1" winum-select-window-1)
-         ("2" "window 2" winum-select-window-2)
-         ("3" "window 3" winum-select-window-3)
-         ("4" "window 4" winum-select-window-4)
-         ("5" "window 5" winum-select-window-5)
-         ("6" "window 6" winum-select-window-6)
-         ("q" "quit" transient-quit-all)
-         ]
-        ["Move"
-         ("L" "left" evil-window-move-far-right)
-         ("H" "right" evil-window-move-far-left)
-         ("J" "down" evil-window-move-very-bottom)
-         ("K" "up" evil-window-move-very-top)
-         ]
-        ["Action"
-         ("/" "split vertically" evil-window-vsplit)
-         ("-" "split horizontally" evil-window-split)
-         ("d" "delete window" delete-window)
-         ]
-        ])
-
-
-     (transient-define-prefix org-roam-transient ()
-       "Org roam operation transient."
-       :transient-suffix 'transient--do-stay
-       [["Action"
-         ("a" "add alias for node" (lambda () (interactive) org-roam-alias-add))
-         ;; this is used for whening the name is conflict. It mostly happens in the header name
-         ("c" "create node" (lambda () (interactive) org-id-get-create))
-         ("i" "insert" (lambda () (interactive) org-roam-node-insert))
-         ("f" "find file" (lambda () (interactive) org-roam-node-find))
-         ("d" "dailies" (lambda () (interactive) org-roam-dailies-goto-today))
-         ("l" "back link buffer" (lambda () (interactive) org-roam-buffer-toggle))
-         ("g" "graph" (lambda () (interactive) my-org-roam-ui-open))
-         ("r" "db refresh" (lambda () (interactive) my-refresh-org-roam-db-cache))
-         ("t" "add tag" (lambda () (interactive) org-roam-tag-add))
-         ("q" "quit" transient-quit-all)]])
-
-
-     (transient-define-prefix buffer-transient ()
-       "Buffer operation transient."
-       :transient-suffix 'transient--do-stay
-       [["Move"
-         ("n" "next buffer" next-buffer)
-         ("p" "prev buffer" previous-buffer)
-         ("b" "project buffers" consult-project-buffer)
-         ("B" "buffer lists" consult-buffer)
-         ("o" "other window" other-window)
-         ("q" "quit" transient-quit-all)]
-        ["Action"
-         ("d" "delete" kill-this-buffer)
-         ]])
-
-     (transient-define-prefix text-transient ()
-       "Text operation transient."
-       :transient-suffix 'transient--do-stay
-       [["Action"
-         ("j" "+" text-scale-increase)
-         ("k" "-" text-scale-decrease)
-         ("0" "reset" (lambda () (interactive) (text-scale-adjust 0)))
-         ("q" "quit" transient-quit-all)]
-        ])
-
-     (transient-define-prefix toggle-mode-transient ()
-       "Toggle mode transient."
-       :transient-suffix 'transient--do-stay
-       [["Action"
-         ("r" "rainbow mode" rainbow-mode)
-         ("w" "whitespace-mode" whitespace-mode)
-         ("t" "theme" consult-theme :transient transient--do-exit)
-         ("v" "visual line mode" visual-line-mode)
-         ("f" "check spell" flyspell-mode)
-         ("q" "quit" transient-quit-all)]
-        ])
-   #+end_src
-
    Originally, evil defines key =*= in motion-state with =evil-search-forward=
 
    #+begin_src emacs-lisp
-     (setq ahs-default-range 'ahs-range-whole-buffer)
 
-     (defun my-ahs-highlight-p ()
-       "Ruturn Non-nil if symbols can be highlighted."
-       (interactive)
-       (let* ((beg (if (region-active-p) (region-beginning) (overlay-start ahs-current-overlay)))
-              (end (if (region-active-p) (region-end) (overlay-end ahs-current-overlay)))
-              (face (get-text-property beg 'face))
-              (symbol (buffer-substring beg end)))
+     (with-eval-after-load 'transient
 
-         (ahs-unhighlight t)
-         (when (and symbol
-                    (not (ahs-dropdown-list-p))
-                    ;; (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
-                    ;; disable skip highlight for some font-face
-                    (not (ahs-symbol-p ahs-exclude symbol t))
-                    (ahs-symbol-p ahs-include symbol))
-           (list symbol beg end))))
+       (defun expand-and-highlight-region ()
+         (interactive)
+         (er--expand-region-1)
+         (highlight-selected-word))
 
-     (defun my-ahs-search-symbol (symbol search-range)
-       "Search `SYMBOL' in `SEARCH-RANGE'."
-       (save-excursion
-         (let ((case-fold-search ahs-case-fold-search)
-               ;; (regexp (concat "\\_<\\(" (regexp-quote symbol) "\\)\\_>" ))
-               (regexp (regexp-quote symbol))
-               (beg (car search-range))
-               (end (cdr search-range)))
-           (goto-char end)
-           (while (re-search-backward regexp beg t)
-             (let* ((symbol-beg (match-beginning 0))
-                    (symbol-end (match-end 0))
-                    (tprop (text-properties-at symbol-beg))
-                    (face (cadr (memq 'face tprop)))
-                    (fontified (cadr (memq 'fontified tprop))))
-               (unless (or face fontified)
-                 (setq ahs-need-fontify t))
-               (push (list symbol-beg
-                           symbol-end
-                           face fontified) ahs-search-work))))))
+       (defun contract-and-highlight-region ()
+         (interactive)
+         (call-interactively 'er/contract-region)
+         (highlight-selected-word))
 
 
-     (defun my-ahs-light-up (current)
-       "Light up symbols."
-       (cl-loop for symbol in ahs-search-work
+       (defun evil-surround-region-utils (operation)
+         ;; TODO: implement this one
+         (interactive (evil-surround-interactive-setup))
+         ;; (cond
+         ;;  ((eq operation 'change)
+         ;;   (call-interactively 'evil-surround-change))
+         ;;  ((eq operation 'delete)
+         ;;   (call-interactively 'evil-surround-delete))
+         ;;  (t
+         ;;   (evil-surround-setup-surround-line-operators)
+         ;;   (evil-surround-call-with-repeat 'evil-surround-region))))
 
-                for beg = (nth 0 symbol)
-                for end = (nth 1 symbol)
-                for face = (or (nth 2 symbol)
-                               (get-text-property beg 'face))
-                for face = (ahs-add-overlay-face beg face)
-
-                do (let ((overlay (make-overlay beg end nil nil t)))
-                     (overlay-put overlay 'ahs-symbol t)
-                     (overlay-put overlay 'window (selected-window))
-                     (overlay-put overlay 'face
-                                  (if (ahs-face-p face 'ahs-definition-face-list)
-                                      (if current ahs-definition-face
-                                        ahs-definition-face-unfocused)
-                                    (if current ahs-face ahs-face-unfocused)))
-                     (push overlay ahs-overlay-list))))
-
-     (advice-add 'ahs-light-up :override #'my-ahs-light-up)
-     (advice-add 'ahs-highlight-p :override #'my-ahs-highlight-p)
-     (advice-add 'ahs-search-symbol :override #'my-ahs-search-symbol)
-
-     (defun expand-and-highlight-region ()
-       (interactive)
-       (er--expand-region-1)
-       (highlight-region))
-
-     (defun contract-and-highlight-region ()
-       (interactive)
-       (call-interactively 'er/contract-region)
-       (highlight-region))
+         (if (region-active-p)
+             (evil-surround-setup-surround-line-operators)
+           (evil-surround-call-with-repeat 'evil-surround-region)))
 
 
-     (defun highlight-region ()
-       (interactive)
-       (let ((hh (my-ahs-highlight-p)))
-         (unless ahs-current-range
-           (ahs-change-range-internal ahs-default-range))
-         (when hh
-           (ahs-highlight (nth 0 hh)
-                          (nth 1 hh)
-                          (nth 2 hh)))))
+       (transient-define-prefix mark-transient ()
+         "Swift kniffe for mark region."
+         :transient-suffix 'transient--do-stay
+         [["Match"
+           ("v" "expand" expand-and-highlight-region)
+           ("-" "contract" contract-and-highlight-region)
+           ("r" "range" my-change-range)
+           ("n" "next" goto-next-highlighted-word)
+           ("N" "prev" goto-prev-highlighted-word)
+           ("q" "quit" transient-quit-all)
+           ("<escape>" "quit" transient-quit-all)
+           ]
+          ["Search"
+           ("s" "consult line" (lambda () (interactive) (consult-line (jlight-get-matched-thing))))
+           ("/" "project search" my-project-rg)
+           ]
+          ["Edit"
+           ("e" "iedit" my-iedit-mode :transient transient--do-exit)
+           ("c" "change surround" evil-surround-region :transient transient--do-exit)
+           ]
+          ["Misc"
+           ("t" "send to vterm" send-text-and-move-to-project-vterm :transient transient--do-exit)
+           ]
+          ])
 
 
-     (defun evil-surround-region-utils (operation)
-       ;; TODO: implement this one
-       (interactive (evil-surround-interactive-setup))
-       ;; (cond
-       ;;  ((eq operation 'change)
-       ;;   (call-interactively 'evil-surround-change))
-       ;;  ((eq operation 'delete)
-       ;;   (call-interactively 'evil-surround-delete))
-       ;;  (t
-       ;;   (evil-surround-setup-surround-line-operators)
-       ;;   (evil-surround-call-with-repeat 'evil-surround-region))))
+       (defun my-iedit-mode ()
+         (interactive)
+         (call-interactively 'iedit-mode)
+         (iedit-restrict-region
+          (first jlight-matches)
+          (last jlight-matches)))
 
-       (if (region-active-p)
-           (evil-surround-setup-surround-line-operators)
-         (evil-surround-call-with-repeat 'evil-surround-region)))
+       (defun my-change-range ()
+         (interactive)
+         ;; TODO: implement change range function
+         (iedit-restrict-region
+          (ahs-current-plugin-prop 'start)
+          (ahs-current-plugin-prop 'end)))
 
 
-     (defhydra mark-operation ()
-       "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
+       (defun wrap-mark-operation ()
+         (interactive)
+         (unless (region-active-p)
+           (er--expand-region-1))
+         (highlight-selected-word)
+         (mark-transient))
 
-     ^match^                   ^Search^                       ^edit^                        ^operation^
-     ^^^─────────────────────────────────────────────────────────────────────────────────────────────────────────
-     [_v_]: expand             [_s_]: consult-line            [_e_]: iedit                  [_t_]: send to vterm
-     [_-_]: contract           [_/_]: project-rg              [_h_]: highlight
-     [_r_]: range              ^ ^                            [_c_]: change surround
-     [_n_]: next
-     [_N_]: prev
-     [_<escape>_]: quit
-     "
-
-       ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all t)) nil :exit t)
-       ("v" expand-and-highlight-region nil)
-       ("-" contract-and-highlight-region nil)
-       ("s" consult-line nil)
-       ("c" evil-surround-region nil)
-       ("/" my-project-rg nil)
-       ("e" my-iedit-mode nil :exit t)
-       ("h" highlight-region nil)
-       ("r" my-change-range nil)
-       ("l" google-search)
-       ("t" send-text-and-move-to-project-vterm nil :exit t)
-       ("n" my-ahs-forward nil)
-       ("N" my-ahs-backward nil))
-
-     (defun my-iedit-mode ()
-       (interactive)
-       (ahs-unhighlight-all)
-       (call-interactively 'iedit-mode)
-       (iedit-restrict-region
-        (ahs-current-plugin-prop 'start)
-        (ahs-current-plugin-prop 'end)))
-
-     (defun my-change-range ()
-       (interactive)
-       (setq range (ahs-runnable-plugins t))
-       (ahs-change-range-internal range)
-       (if ahs-current-overlay
-           (highlight-region))
-       (iedit-restrict-region
-        (ahs-current-plugin-prop 'start)
-        (ahs-current-plugin-prop 'end)))
-
-     (defun my-ahs-forward ()
-       (interactive)
-       (when (region-active-p)
-         (deactivate-mark))
-       (ahs-forward))
-
-     (defun my-ahs-backward ()
-       (interactive)
-       (when (region-active-p)
-         (deactivate-mark))
-       (ahs-backward))
-
-     (with-eval-after-load 'auto-highlight-symbol
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-project-rg)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
-
-     (defun wrap-mark-operation ()
-       (interactive)
-       (unless (region-active-p)
-         (er--expand-region-1))
-       (highlight-region)
-       (mark-operation/body))
-
-     (with-eval-after-load 'evil
-       (evil-define-key '(normal motion) 'evil-motion-state-map
-         (kbd "*") 'wrap-mark-operation))
+       (with-eval-after-load 'evil
+         (evil-define-key '(normal motion) 'evil-motion-state-map
+           (kbd "*") 'wrap-mark-operation)))
    #+end_src
 
 * provide package
