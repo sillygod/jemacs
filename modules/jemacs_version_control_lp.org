@@ -109,7 +109,7 @@
     (defun repeat-which-key-popup (keymap)
       (if keymap
           (which-key--create-buffer-and-show
-           nil keymap)
+           nil (symbol-value keymap))
         (which-key--hide-popup)))
 
     (setq repeat-echo-function #'repeat-which-key-popup)

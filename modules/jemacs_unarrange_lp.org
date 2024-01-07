@@ -717,6 +717,42 @@
 
   #+end_src
 
+  a minimum lisp like structural editing
+
+  #+begin_src emacs-lisp :tangle no
+    (repeat-mode 1)
+    (defvar structural-edit-map
+      (let ((map (make-sparse-keymap)))
+        (pcase-dolist (`(,k . ,f)
+                       '(("u" . backward-up-list)
+                         ("f" . forward-sexp)
+                         ("b" . backward-sexp)
+                         ("d" . down-list)
+                         ("k" . kill-sexp)
+                         ("n" . sp-next-sexp)
+                         ("p" . sp-previous-sexp)
+                         ("K" . sp-kill-hybrid-sexp)
+                         ("]" . sp-forward-slurp-sexp)
+                         ("[" . sp-backward-slurp-sexp)
+                         ("}" . sp-forward-barf-sexp)
+                         ("{" . sp-backward-barf-sexp)
+                         ("C" . sp-convolute-sexp)
+                         ("J" . sp-join-sexp)
+                         ("S" . sp-split-sexp)
+                         ("R" . sp-raise-sexp)
+                         ("\\" . indent-region)
+                         ("/" . undo)
+                         ("t" . transpose-sexps)
+                         ("x" . eval-defun)))
+          (define-key map (kbd k) f))
+        map))
+
+    (map-keymap
+     (lambda (_ cmd)
+       (put cmd 'repeat-map 'structural-edit-map))
+     structural-edit-map)
+  #+end_src
+
 * dumb-jump
 
   a jump to definition with search tool (ag, rg)
@@ -1476,8 +1512,8 @@
          (interactive)
          (call-interactively 'iedit-mode)
          (iedit-restrict-region
-          (first jlight-matches)
-          (last jlight-matches)))
+          (jlight-get-startpoint-of-first-matched)
+          (jlight-get-endpoint-of-last-matched)))
 
        (defun my-change-range ()
          (interactive)

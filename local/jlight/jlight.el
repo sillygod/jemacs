@@ -28,7 +28,7 @@
 
 ;;; Code:
 
-(require 'cl)
+(require 'cl-lib)
 
 
 ;; the overlay has higher priority than the font-lock
@@ -62,12 +62,14 @@
   "It's the index of matches currently pointed to.")
 
 (defun set-pointer (index)
-  "Set the pointer to the element at the specified INDEX in the `jlight-matches` list."
+  "Set the pointer to the element at INDEX in the `jlight-matches` list."
   (setq-local jlight-pointer index))
 
-(defun get-pointer ()
-  "Get the current element pointed by the pointer."
-  (nth jlight-pointer jlight-matches))
+(defun get-pointer (&optional index)
+  "Get the current element pointed by the pointer.
+When `INDEX' is not given, use the jlight-pointer instead."
+  (let ((i (or index jlight-pointer)))
+    (nth i jlight-matches)))
 
 (defun move-pointer-next ()
   "Move the pointer to the next element in the `jlight-matches` list."
@@ -79,9 +81,21 @@
 
 (defun jlight-get-matched-thing ()
   "Get the matched word."
-  (let ((region (first jlight-matches)))
+  (let ((region (cl-first jlight-matches)))
     (buffer-substring-no-properties (car region) (cdr region))))
 
+(defun jlight-get-startpoint-of-first-matched ()
+  "Return the beg point of the first-matched thing.
+It's useful for the function like iedit restrict region."
+  (car (cl-first jlight-matches)))
+
+(defun jlight-get-endpoint-of-last-matched ()
+  "Return the end point of the last-matched thing.
+It's useful for the function like iedit restrict region."
+  (cdar (last jlight-matches)))
+
+
+(defun jlight-get-beg-and-end-point-of-matched ()
 
 (defun get-index (value)
   "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
@@ -117,8 +131,9 @@
              (end (region-end)))
 
         (clear-highlight t)
-        (set-mark begin)
-        (goto-char end))))
+        (goto-char begin)
+        ;; Moving cursor to the begin is very important or the (point) of the endpoint will vary from your cursor's position
+        (set-mark end))))
   (unless (member 'clear-highlight post-command-hook)
     (add-hook 'post-command-hook 'clear-highlight nil t))
 
@@ -158,7 +173,7 @@
 
 (defun get-current-overlay ()
   "Iterate the overlay under current point."
-  (dolist (overlay (overlays-at (car (get-pointer))))
+  (cl-dolist (overlay (overlays-at (car (get-pointer))))
     (when (overlay-get overlay 'highlight-selected-word)
       (cl-return overlay))))
 
