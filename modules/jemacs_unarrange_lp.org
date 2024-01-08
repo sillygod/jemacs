@@ -1080,6 +1080,7 @@
           ("j" "+" text-scale-increase)
           ("k" "-" text-scale-decrease)
           ("0" "reset" (lambda () (interactive) (text-scale-adjust 0)))
+          ("<escape>" "quit" transient-quit-all)
           ("q" "quit" transient-quit-all)]
          ])
 
@@ -1087,11 +1088,13 @@
         "Toggle mode transient."
         :transient-suffix 'transient--do-stay
         [["Action"
+          ("d" "distraction mode" writeroom-mode)
           ("r" "rainbow mode" rainbow-mode)
           ("w" "whitespace-mode" whitespace-mode)
           ("t" "theme" consult-theme :transient transient--do-exit)
           ("v" "visual line mode" visual-line-mode)
           ("f" "check spell" flyspell-mode)
+          ("<escape>" "quit" transient-quit-all)
           ("q" "quit" transient-quit-all)]
          ])
 

@@ -195,6 +195,13 @@
                          "100%" "100%" embed-url)))))
 
   #+end_src
+
+* writeroom mode
+  #+begin_src emacs-lisp
+    (use-package writeroom-mode
+      :defer t)
+  #+end_src
+
 * htmlize
 
   it's required when you want the html exported by =org-export= with syntax highlight effect.
