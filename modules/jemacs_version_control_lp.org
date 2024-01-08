@@ -26,8 +26,18 @@
       (git-messenger:show-detail t)
       (git-messenger:use-magit-popup t))
 
+    (use-package transient
+      :init
+      (unload-feature 'transient t))
+
+    ;; (use-package transient
+    ;;   :config
+    ;;   (progn (unload-feature 'transient t) (require 'transient)))
+
+
     (use-package magit
       :defer 2
+      :after transient
       :custom
       ((magit-display-buffer-function #'magit-display-buffer-same-window-except-diff-v1)
        (magit-repository-directories
@@ -41,6 +51,9 @@
       :defer 2
       :after magit)
 
+    (use-package code-review
+      :defer 2
+      :after forge)
   #+end_src
 
 ** get pull request url from magit process buffer
@@ -96,7 +109,7 @@
     (defun repeat-which-key-popup (keymap)
       (if keymap
           (which-key--create-buffer-and-show
-           nil keymap)
+           nil (symbol-value keymap))
         (which-key--hide-popup)))
 
     (setq repeat-echo-function #'repeat-which-key-popup)

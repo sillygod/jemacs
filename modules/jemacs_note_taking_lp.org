@@ -1,7 +1,6 @@
 #+TITLE: jemacs-note-taking.el
 #+PROPERTY: header-args:emacs-lisp :tangle ./jemacs-note-taking.el :mkdirp yes
 
-
 * setup
 
   #+begin_src emacs-lisp
@@ -77,7 +76,6 @@
                      ol-rmail
                      ol-eww
                      org-habit
-                     ol-git-link
                      org-protocol
                      org-tempo))
 
@@ -167,6 +165,43 @@
 
   #+end_src
 
+* org beautify
+
+  #+begin_src emacs-lisp
+    (defun get-youtube-video-id (url)
+      "Get the 'v' query parameter value from a YouTube video URL."
+      (let* ((url-parts (url-generic-parse-url url))
+             (query-string (url-filename url-parts))
+             (query-params (url-parse-query-string query-string))
+             (v-value (cdr (assoc "/watch?v" query-params))))
+        (car v-value)))
+
+    (defun insert-xwidget-for-youtube (url)
+      "Insert a xwidget in buffer and display the content of url."
+      (let ((embed-url (format "https://www.youtube.com/embed/%s?controls=1" (get-youtube-video-id url)))
+            (widget (make-xwidget
+                     'webkit
+                     "Video"
+                     (truncate (* (window-pixel-width) 0.8))
+                     (truncate (* (window-pixel-width) 0.8 0.75)))))
+        (insert
+         (propertize
+          " [video] "
+          'display (list 'xwidget :xwidget widget)))
+        (xwidget-webkit-execute-script
+         widget (format "document.body.innerHTML = %S;"
+                        (format
+                         "<style>body { margin: 0px; }</style><div style='background: black; height: 100%%; display: flex; align-items: center; justify-content: center;'><iframe width='%s' height='%s' src=%s></iframe></div>"
+                         "100%" "100%" embed-url)))))
+
+  #+end_src
+
+* writeroom mode
+  #+begin_src emacs-lisp
+    (use-package writeroom-mode
+      :defer t)
+  #+end_src
+
 * htmlize
 
   it's required when you want the html exported by =org-export= with syntax highlight effect.
@@ -197,7 +232,7 @@
 
       :config
       (setq org-roam-node-display-template
-            (concat "${title:*}" (propertize "${tags:40}" 'face 'org-tag)))
+            (concat "${title:100}" (propertize "${tags:40}" 'face 'org-tag)))
       (setq org-roam-dailies-capture-templates
             `(("d" "default" entry
                "* %<%H:%M> %?"
@@ -234,6 +269,19 @@
           (setq org-roam-capture-additional-template-props (list :finalize 'find-file))
           (org-roam-capture--capture))))
 
+  #+end_src
+
+* org-transclusion
+
+  # TODO: setup transclusion usages
+  # customize the fringe color and background of transclusion block
+  # research why it will try to read all org roam file when referring to a org roam file
+  # https://nobiot.github.io/org-transclusion/#Faces-_0026-fringe-bitmap
+  #+transclude: [[id:CD451D64-4615-4339-8058-128E33653FC3][Find Job Fight]] :lines 5-20
+
+  #+begin_src emacs-lisp
+    (use-package org-transclusion
+      :after org)
   #+end_src
 
 * ob-async
@@ -366,6 +414,27 @@
       (message "copy content without header"))
   #+end_src
 
+* insert a time section in routine
+
+  #+begin_src emacs-lisp
+    (defun insert-new-time-section-under-routine ()
+      "Insert a new subheader under the main header in Org mode."
+      (interactive)
+      (save-excursion
+        (goto-char (point-min))
+        (if (re-search-forward "^\\* routines$" nil t)
+            (if (re-search-forward (concat "^\\*\\{2,5\\} " (format-time-string "%H:00:00")) nil t)
+                (org-show-subtree)
+              (progn
+                (org-end-of-subtree)
+                (if (= (org-outline-level) 1)
+                    (call-interactively 'org-insert-subheading nil)
+                  (org-insert-heading))
+                (insert (format-time-string "%H:00:00"))))
+
+          (message "Hint: The word \"* routines\" is not found. You should call this in the daily routine."))))
+  #+end_src
+
 * org-insert-toc
   FUTURE: maybe we can enhance this with prompting like org-insert-link
   #+begin_src emacs-lisp
@@ -376,14 +445,6 @@
       (insert "*" " " ":TOC:")
       (backward-char 5)
       (evil-insert-state))
-  #+end_src
-
-* org journal stock
-  #+begin_src emacs-lisp
-    (defun create-journal-to (dest)
-      "~/Dropbox/myorgs/stock/journal"
-      (let ((org-journal-dir dest))
-        (call-interactively 'org-journal-new-entry)))
   #+end_src
 
 * org table configuration
@@ -540,7 +601,7 @@
       (setq org-capture-templates nil)
 
       (setq org-todo-keywords
-            '((sequence "TODO" "IN PROGRESS" "|" "DONE" "PRESERVE")))
+            '((sequence "TODO" "IN PROGRESS(i!)" "|" "DONE" "PRESERVE")))
 
       (setq org-todo-keyword-faces
             '(("TODO" . "#dc752f")

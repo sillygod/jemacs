@@ -4,14 +4,16 @@
   - https://github.com/bling/fzf.el
   - https://github.com/jeremy-compostella/pdfgrep
   - https://github.com/xiongtx/eros (interesting plugins)
+  - https://github.com/minad/tempel (another choice for snippet completion)
+
+  a nice show case of transient
+  https://github.com/positron-solutions/transient-showcase
 
 * Start to build my own emacs
 
 ** things needed to be done or enahnced
 
    - [ ] implement my own run-python-shell
-   - [ ] wirte a hydra for iedit mode
-   - [ ] https://github.com/jerrypnz/major-mode-hydra.el (pretty hydra)
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
@@ -28,9 +30,7 @@
 ** better to have
 
    - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
-   - [ ] consider where can I apply org transclusion https://github.com/nobiot/org-transclusion
    - [ ] interactive sql mode
-   - [ ] adopt darkroom package?
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
 

@@ -51,6 +51,31 @@
       :defer 1)
   #+end_src
 
+* pixel scroll
+
+  #+begin_src emacs-lisp
+    (use-package pixel-scroll
+      :straight (:type built-in)
+      :after evil
+      :config
+      (defun my-evil-adjust-cursor (&optional _)
+        "Move point one character back if at the end of a non-empty line.
+    This behavior is controlled by `evil-move-beyond-eol'."
+        (and (not evil-move-beyond-eol)
+             (not (bolp)) ;; a workaround
+             ;; https://github.com/emacs-evil/evil/issues/1778
+             (eolp)
+             (= (point)
+                (save-excursion
+                  (evil-move-end-of-line)
+                  (point)))
+             (evil-move-cursor-back t)))
+      (with-eval-after-load 'evil
+        (advice-add 'evil-adjust-cursor :override 'my-evil-adjust-cursor))
+      (pixel-scroll-precision-mode 1)
+      (setq fast-but-imprecise-scrolling t))
+  #+end_src
+
 * diminish
   #+begin_src emacs-lisp
     (use-package diminish :defer t)
@@ -63,6 +88,19 @@
       :commands command-log-mode)
   #+end_src
 
+* emacs ellama (AI tool like chatgpt)
+  https://github.com/s-kostyaev/ellama
+
+  #+begin_src emacs-lisp
+    (use-package ellama
+      :straight
+      (:host github :repo "s-kostyaev/ellama" :files ("*.el"))
+      :init
+      (require 'llm-ollama)
+      (setopt ellama-provider
+              (make-llm-ollama
+               :chat-model "zephyr" :embedding-model "zephyr")))
+  #+end_src
 * rainbow-mode
   #+begin_src emacs-lisp
     (use-package rainbow-mode
@@ -114,6 +152,12 @@
 
   #+end_src
 
+* jlight
+  #+begin_src emacs-lisp
+    (eval `(use-package jlight
+                 :defer t
+                 :straight (:local-repo ,(concat home-dir "local/jlight"))))
+  #+end_src
 * counsel-jq-yq
 
   #+begin_src emacs-lisp
@@ -123,12 +167,20 @@
 
   #+end_src
 
+* consult yas
+
+  #+begin_src emacs-lisp
+    (eval `(use-package consult-yas
+             :defer t
+             :straight (:local-repo ,(concat home-dir "local/consult-yas"))))
+  #+end_src
+
 * dired sort
 
   #+begin_src emacs-lisp
     (eval `(use-package dired-sort
              :defer t
-             :after (hydra evil)
+             :after (evil)
              :straight (:local-repo ,(concat home-dir "local/dired-sort"))
              :init
              (dired-sort-setup)))
@@ -162,7 +214,14 @@
   #+begin_src emacs-lisp
     (use-package so-long
       :defer 1
+      :straight (:type built-in)
+      :custom
+      (so-long-threshold 20000)
       :config
+      (setq large-hscroll-threshold 50)
+      (setq long-line-threshold 8000)
+      (setq bidi-inhibit-bpa t)
+      (setq bidi-display-reordering nil)
       (global-so-long-mode 1))
   #+end_src
 
@@ -171,7 +230,13 @@
   make rime input method work seamlessly with emacs
 
   you can download the rime from the github
-  https://github.com/rime/librime/releases/download/1.7.2/rime-1.7.2-osx.zip
+  brew install --cask squirrel
+
+
+  #+begin_src bash :tangle no
+    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.8.5/rime-08dd95f-macOS.tar.bz2
+    tar -xf rime.tar.bz2 -d ~/.emacs.d/librime
+  #+end_src
 
   #+begin_src emacs-lisp
     (use-package rime
@@ -182,7 +247,7 @@
                       :files ("*.el" "Makefile" "lib.c"))
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
-      (rime-emacs-module-header-root "/usr/local/opt/emacs-plus@30/include/")
+      (rime-emacs-module-header-root (shell-command-to-string "echo -n $(brew --prefix)/include"))
       (rime-user-data-dir "/Users/jing/Library/Rime/")
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
@@ -383,11 +448,13 @@
       :init
       (add-hook 'prog-mode-hook 'flycheck-mode)
       (add-hook 'text-mode-hook 'flycheck-mode)
-      (setq flycheck-highlighting-mode 'lines)
-      (setq flycheck-indication-mode '())
+      :custom
+      (flycheck-highlighting-mode 'lines)
+      (flycheck-indication-mode '())
+      (flycheck-emacs-lisp-load-path 'inherit)
       :config
       (add-hook 'org-src-mode-hook #'(lambda ()
-                                      (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
+                                       (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
   #+end_src
 
 * json-mode & yaml-mode
@@ -421,7 +488,7 @@
    tree-sitter requires emacs built with dynamic modules (due to c bindings library) supports.
    (functionp 'module-load)
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (use-package tree-sitter
        :config
        (global-tree-sitter-mode))
@@ -503,6 +570,9 @@
                       :close-all ts-fold-close-all))
        (global-ts-fold-mode))
    #+end_src
+
+   an optional structure navigation package
+   https://github.com/mickeynp/combobulate
 
    #+begin_src emacs-lisp
      (with-eval-after-load 'yaml
@@ -647,6 +717,42 @@
 
   #+end_src
 
+  a minimum lisp like structural editing
+
+  #+begin_src emacs-lisp :tangle no
+    (repeat-mode 1)
+    (defvar structural-edit-map
+      (let ((map (make-sparse-keymap)))
+        (pcase-dolist (`(,k . ,f)
+                       '(("u" . backward-up-list)
+                         ("f" . forward-sexp)
+                         ("b" . backward-sexp)
+                         ("d" . down-list)
+                         ("k" . kill-sexp)
+                         ("n" . sp-next-sexp)
+                         ("p" . sp-previous-sexp)
+                         ("K" . sp-kill-hybrid-sexp)
+                         ("]" . sp-forward-slurp-sexp)
+                         ("[" . sp-backward-slurp-sexp)
+                         ("}" . sp-forward-barf-sexp)
+                         ("{" . sp-backward-barf-sexp)
+                         ("C" . sp-convolute-sexp)
+                         ("J" . sp-join-sexp)
+                         ("S" . sp-split-sexp)
+                         ("R" . sp-raise-sexp)
+                         ("\\" . indent-region)
+                         ("/" . undo)
+                         ("t" . transpose-sexps)
+                         ("x" . eval-defun)))
+          (define-key map (kbd k) f))
+        map))
+
+    (map-keymap
+     (lambda (_ cmd)
+       (put cmd 'repeat-map 'structural-edit-map))
+     structural-edit-map)
+  #+end_src
+
 * dumb-jump
 
   a jump to definition with search tool (ag, rg)
@@ -734,12 +840,14 @@
       :straight (:host github :repo "manateelazycat/lsp-bridge" :files ("*.el" "")))
   #+end_src
 
+  https://github.com/mohkale/consult-eglot/
   #+begin_src emacs-lisp
 
     (use-package eglot
       :defer t
       :init
       (setq read-process-output-max (* 1024 1024))
+      (setq eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
       :hook
       ;; (python-ts-mode . eglot-ensure)
       (rust-mode . eglot-ensure)
@@ -757,8 +865,9 @@
       (go-mode . eglot-ensure)
       (go-ts-mode . eglot-ensure)
       :custom
-      (eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
-      (enable-local-variables nil)
+      (enable-local-variables t)
+      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
+      ;; For more detail, go to see the help doc of normal-mode
       (xref-search-program 'ripgrep)
       (eglot-events-buffer-size 0)
       (eglot-ignored-server-capabilities '(:hoverProvider
@@ -767,9 +876,15 @@
       (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
       ;; this make evil go to definition works normally like xref-find-definitions
       (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
+      (fset #'jsonrpc--log-event #'ignore)
       (add-hook 'python-mode-hook (lambda ()
+                                    (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
-                                      (setq-local eglot-workspace-configuration
+                                      (pyvenv-activate venv-path)
+
+                                      ;; TODO:
+                                      ;; assign a function to eglot-workspace-configuration instead of variable
+                                      (setq-default eglot-workspace-configuration
                                                     `(:python.analysis
                                                       (:stubPath
                                                        ""
@@ -804,6 +919,8 @@
   #+begin_src emacs-lisp
     (use-package wgrep
       :after evil
+      :custom
+      (wgrep-auto-save-buffer t)
       :commands
       (wgrep-finish-edit
        wgrep-finish-edit
@@ -848,25 +965,6 @@
         (kbd "<escape>") #'(lambda () (interactive) (iedit-mode -1))))
   #+end_src
 
-* auto-highlight-symbol
-
-  Only the mode appears in the =ahs-plugin-bod-modes= can use beginning of the defun plugin
-
-  #+begin_src emacs-lisp
-    (use-package auto-highlight-symbol
-      :commands
-      (ahs-forward
-       ahs-unhighlight
-       ahs-unhighlight-all
-       ahs-change-range
-       ahs-change-range-internal
-       ahs-dropdown-list-p
-       ash-backward)
-      :config
-      (setq ahs-case-fold-search nil)
-      (add-to-list 'ahs-plugin-bod-modes 'python-mode))
-  #+end_src
-
 * general
 
   provide a spacemacs leader like ux.
@@ -901,6 +999,105 @@
       ;; NOTE: keysmaps override is to make general-define-key to be global scope
       ;; No need to set this one (evil-make-overriding-map dired-mode-map 'normal)
       (message "DEBUG: !! general init")
+
+      (transient-define-prefix window-transient ()
+        "Window operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Resize"
+          ("[" "shrink h" my-shrink-window-horizontally)
+          ("]" "enlarge h" my-enlarge-window-horizontally)
+          ("{" "shrink v" my-shrink-window)
+          ("}" "enlarge v" my-enlarge-window)
+          ("=" "balance" balance-windows)
+          ("m" "maximize" toggle-maximize-buffer)
+          ("q" "quit" transient-quit-all)
+          ("<escape>" "quit" transient-quit-all)
+          ]
+         ["Select"
+          ("h" "left" evil-window-left)
+          ("l" "right" evil-window-right)
+          ("k" "up" evil-window-up)
+          ("j" "down" evil-window-down)
+          ("1" "window 1" winum-select-window-1)
+          ("2" "window 2" winum-select-window-2)
+          ("3" "window 3" winum-select-window-3)
+          ("4" "window 4" winum-select-window-4)
+          ("5" "window 5" winum-select-window-5)
+          ("6" "window 6" winum-select-window-6)
+          ]
+         ["Move"
+          ("L" "left" evil-window-move-far-right)
+          ("H" "right" evil-window-move-far-left)
+          ("J" "down" evil-window-move-very-bottom)
+          ("K" "up" evil-window-move-very-top)
+          ]
+         ["Action"
+          ("/" "split vertically" evil-window-vsplit)
+          ("-" "split horizontally" evil-window-split)
+          ("d" "delete window" delete-window)
+          ]
+         ])
+
+
+      (with-eval-after-load 'org-roam
+        (transient-define-prefix org-roam-transient ()
+          "Org roam operation transient."
+          :transient-suffix 'transient--do-exit
+          [["Action"
+            ("a" "add alias for node" org-roam-alias-add)
+            ;; this is used for whening the name is conflict. It mostly happens in the header name
+            ("c" "create node" org-id-get-create)
+            ("i" "insert" org-roam-node-insert)
+            ("f" "find file" org-roam-node-find)
+            ("d" "dailies" org-roam-dailies-goto-today)
+            ("l" "back link buffer" org-roam-buffer-toggle)
+            ("g" "graph" my-org-roam-ui-open)
+            ("r" "db refresh" my-refresh-org-roam-db-cache)
+            ("t" "add tag" org-roam-tag-add)
+            ("<escape>" "quit" transient-quit-all)
+            ("q" "quit" transient-quit-all)]
+           ]))
+
+
+      (transient-define-prefix buffer-transient ()
+        "Buffer operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Move"
+          ("n" "next buffer" next-buffer)
+          ("p" "prev buffer" previous-buffer)
+          ("b" "project buffers" consult-project-buffer)
+          ("B" "buffer lists" consult-buffer)
+          ("o" "other window" other-window)
+          ("q" "quit" transient-quit-all)]
+         ["Action"
+          ("d" "delete" kill-this-buffer)
+          ]])
+
+      (transient-define-prefix text-transient ()
+        "Text operation transient."
+        :transient-suffix 'transient--do-stay
+        [["Action"
+          ("j" "+" text-scale-increase)
+          ("k" "-" text-scale-decrease)
+          ("0" "reset" (lambda () (interactive) (text-scale-adjust 0)))
+          ("<escape>" "quit" transient-quit-all)
+          ("q" "quit" transient-quit-all)]
+         ])
+
+      (transient-define-prefix toggle-mode-transient ()
+        "Toggle mode transient."
+        :transient-suffix 'transient--do-stay
+        [["Action"
+          ("d" "distraction mode" writeroom-mode)
+          ("r" "rainbow mode" rainbow-mode)
+          ("w" "whitespace-mode" whitespace-mode)
+          ("t" "theme" consult-theme :transient transient--do-exit)
+          ("v" "visual line mode" visual-line-mode)
+          ("f" "check spell" flyspell-mode)
+          ("<escape>" "quit" transient-quit-all)
+          ("q" "quit" transient-quit-all)]
+         ])
+
 
       (with-eval-after-load 'emmet-mode
         (evil-define-key 'insert emmet-mode-keymap (kbd "TAB") 'my-emmet-expand))
@@ -1027,6 +1224,7 @@
                                    "i" "insert" nil
                                    "il" "insert link" 'org-insert-link
                                    "it" "insert toc" 'org-insert-toc
+                                   "is" "insert time section" 'insert-new-time-section-under-routine
 
                                    "e" "export" nil
                                    "ee" "org-export-dispatch" 'org-export-dispatch
@@ -1035,7 +1233,7 @@
                                    "ns" "narrow subtree" 'org-narrow-to-subtree
                                    "nN" "widen" 'widen
 
-                                   "r" "org roam hydra" 'hydra-org-roam/body
+                                   "r" "org roam transient" 'org-roam-transient
 
                                    "s" "schedule" nil
                                    "ss" "org-schedule" 'org-schedule
@@ -1048,11 +1246,7 @@
 
                                    "t" "toggles" nil
                                    "tl" "link display" 'org-toggle-link-display
-                                   "ti" "inline image" 'org-toggle-inline-images
-
-                                   "j" "journals" nil
-                                   "jn" "new entry" 'org-journal-new-entry
-                                   "js" "new stock entry" #'(lambda () (interactive) (create-journal-to "~/Dropbox/myorgs/stock/journal"))))
+                                   "ti" "inline image" 'org-toggle-inline-images))
 
 
       (define-leader-key-global
@@ -1114,7 +1308,7 @@
        "alx" '(open-with-xwidget :which-key "open with xwidget")
 
        "ao" '(:ignore t :which-key "org")
-       "aor" '(hydra-org-roam/body :which-key "org-roam-hydra")
+       "aor" '(org-roam-transient :which-key "org-roam-transient")
        "aog" '(:ignore t :which-key "goto")
        "aogj" '((lambda () (interactive) (find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
        "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
@@ -1128,7 +1322,7 @@
        "bn" '(next-buffer :which-key "next-buffer")
        "bp" '(previous-buffer :which-key "previous-buffer")
        "bN" '(new-empty-buffer :which-key "new empty buffer")
-       "b." '(buffer-operate/body :which-key "buffer transient"))
+       "b." '(buffer-transient :which-key "buffer transient"))
 
       (define-leader-key-global
        "c" '(:ignore t :which-key "comment/compile")
@@ -1141,7 +1335,9 @@
 
       (define-leader-key-global
        "i" '(:ignore t :which-key "insert")
-       "is" '(insert-yas :which-key "snippets"))
+       "is" '(insert-yas :which-key "snippets")
+       "it" '(insert-current-timestamp :which-key "timestamp")
+       "iu" '(uuidgen :which-key "uuid4"))
 
       (define-leader-key-global
        "l" '(:ignore t :which-key "layout")
@@ -1163,7 +1359,7 @@
 
       (define-leader-key-global
        "s" '(:ignore t :which-key "search")
-       "sc" '((lambda () (interactive) (evil-ex-nohighlight)(ahs-clear)) :which-key "clear highlight")
+       "sc" '((lambda () (interactive) (evil-ex-nohighlight)(clear-highlight)) :which-key "clear highlight")
        "ss" '(consult-line :which-key "consult-line")
        "sS" '(consult-line-multi :which-key "consult-line-all"))
 
@@ -1172,9 +1368,10 @@
        "gi" '(magit-init :which-key "gagit init")
        "gb" '(:ignore t :which-key "blame")
        "gl" '(magit-list-repositories :which-key "magit list repos")
-       "gbl" '(git-messenger:popup-message  :which-key "this line")
-       "gbb" '(magit-blame-addition  :which-key "this buffer")
-       "gs" '(magit-status :which-key "magit status"))
+       "gbl" '(git-messenger:popup-message :which-key "this line")
+       "gbb" '(magit-blame-addition :which-key "this buffer")
+       "gs" '(magit-status :which-key "magit status")
+       "gt" '(magit-file-dispatch :which-key "magit time machine"))
 
       (define-leader-key-global
        "k" '(:ignore t :which-key "kmacro")
@@ -1190,9 +1387,9 @@
 
       (define-leader-key-global
        "t"  '(:ignore t :which-key "toggles")
-       "tm" '(hydra-mode-toggle/body :which-key "toggle mode")
+       "tm" '(toggle-mode-transient :which-key "toggle mode")
        "ti" '(toggle-input-method :which-key "toggle input method")
-       "ts" '(hydra-text-scale/body :which-key "scale text"))
+       "ts" '(text-transient :which-key "scale text"))
 
       (define-leader-key-global
        "w" '(:ignore t :which-key "windows")
@@ -1225,7 +1422,7 @@
        "wF" '(make-frame :which-key "make frame")
        "wD" '(delete-frame :which-key "delete frame")
        "wo" '(other-frame :which-key "other frame")
-       "w." '(window-operate/body :which-key "window transient"))
+       "w." '(window-transient :which-key "window transient"))
 
       (define-leader-key-global
        "x" '(:ignore t :which-key "texts")
@@ -1250,314 +1447,95 @@
       (message "DEBUG: !! complete general setting"))
   #+end_src
 
-* hydra
+* hydra replaced with transient
 
-** hydra doc rule
-
-   it seems need to add =\n= at the beginning and end of docstring.
-   TODO: to understand the hydra's doc rule.
-
-   %`[elisp variable]
-   %([elisp function])
-
-   #+begin_example
-     ^Resize^
-     ^^^^────
-     _[_ : a
-     _]_ : b
-     _{_ : c
-     _}_ : d
-     _=_ : f
-   #+end_example
-
-** hydra motion
-
-   #+begin_src emacs-lisp
-     (use-package hydra
-       :defer t)
-
-     (defhydra window-operate ()
-       "
-     Window management :)
-     ^Resize^                ^select^                         ^Move^          ^Action^
-     ^───────────────^       ^────────^                       ^────────^      ^────────^
-     [_[_] : shrink h        [_h_]: left                      [_H_]: left       [_/_]: split vertically
-     [_]_] : enlarge h       [_l_]: right                     [_L_]: right      [_-_]: split horizontally
-     [_{_] : shrink v        [_k_]: up                        [_K_]: up         [_d_]: delete window
-     [_}_] : enlarge v       [_j_]: down                      [_J_]: down
-     [_=_] : balance         [_1_.._9_]: window 1..9
-     [_m_] : window maximize
-     "
-       ("[" my-shrink-window-horizontally nil)
-       ("]" my-enlarge-window-horizontally nil)
-       ("{" my-shrink-window nil)
-       ("}" my-enlarge-window nil)
-       ("=" balance-windows nil)
-       ("d" delete-window nil)
-       ("m" toggle-maximize-buffer nil)
-       ("h" evil-window-left nil)
-       ("l" evil-window-right nil)
-       ("k" evil-window-up nil)
-       ("j" evil-window-down nil)
-       ("r" rotate-windows-forward nil)
-       ("L" evil-window-move-far-right nil)
-       ("H" evil-window-move-far-left nil)
-       ("J" evil-window-move-very-bottom nil)
-       ("K" evil-window-move-very-top nil)
-       ("/" evil-window-vsplit nil)
-       ("-" evil-window-split nil)
-
-       ("1" winum-select-window-1 nil)
-       ("2" winum-select-window-2 nil)
-       ("3" winum-select-window-3 nil)
-       ("4" winum-select-window-4 nil)
-       ("5" winum-select-window-5 nil)
-       ("6" winum-select-window-6 nil)
-       ("7" winum-select-window-7 nil)
-       ("8" winum-select-window-8 nil)
-       ("9" winum-select-window-9 nil))
-
-     (defhydra hydra-org-roam (:exit t)
-       "Launcher for `org-roam'."
-       ("a" org-roam-alias-add "add alias for node")
-       ;; this is used for whening the name is conflict. It mostly happens in the header name
-       ("c" org-id-get-create "create node")
-       ("i" org-roam-node-insert "insert")
-       ("f" org-roam-node-find "find file")
-       ("d" org-roam-dailies-goto-today "dailies")
-       ("l" org-roam-buffer-toggle "back link buffer")
-       ("g" my-org-roam-ui-open "graph")
-       ("r" my-refresh-org-roam-db-cache "db refresh")
-       ("t" org-roam-tag-add "add tag"))
-
-
-     (defhydra buffer-operate ()
-       "
-     buffer management :)
-     ^Move^                         ^action^
-     ^────────^                     ^───────^
-     [_n_] : next buffer            [_d_] : delete
-     [_p_] : prev buffer
-     [_b_] : project buffers
-     [_B_] : buffers list
-     [_o_] : other window
-     "
-
-       ("n" next-buffer nil)
-       ("p" previous-buffer nil)
-       ("b" consult-project-buffer nil)
-       ("B" consult-buffer nil)
-       ("o" other-window nil)
-       ("d" kill-this-buffer nil))
-
-     (defhydra hydra-text-scale (:timeout 8)
-       "scale text"
-       ("j" text-scale-increase "+")
-       ("k" text-scale-decrease "-")
-       ("0" ((lambda (inc) (text-scale-adjust inc)) 0) "reset")
-       ("<escape>" nil "finished" :exit t))
-
-     (defhydra hydra-mode-toggle ()
-       "toggle mode"
-       ("r" rainbow-mode "rainbow mode")
-       ("w" whitespace-mode "whitespace-mode")
-       ("t" consult-theme "theme")
-       ("v" visual-line-mode "visual line mode")
-       ("f" flyspell-mode "check spell"))
-
-     (defhydra hydra-table-mode ()
-       "table-mode edit shortcut"
-       ("+" table-insert-row-column "insert new row/column")
-       ("*" table-span-cell "merge cell")
-       (":" table-justify "align cell")
-       ("-" table-split-cell-vertically "cell split horizontally")
-       ("/" table-split-cell-horizontally "cell split vertically")
-       ("<" table-narrow-cell "narrow cell")
-       (">" table-widen-cell "widen cell")
-       ("{" table-shorten-cell "shorten cell")
-       ("}" table-heighten-cell "heighten cell"))
-   #+end_src
+** +hydra+ motion (replaced with the builtin functions of transient)
 
    Originally, evil defines key =*= in motion-state with =evil-search-forward=
 
    #+begin_src emacs-lisp
-     (setq ahs-default-range 'ahs-range-whole-buffer)
 
-     (defun my-ahs-highlight-p ()
-       "Ruturn Non-nil if symbols can be highlighted."
-       (interactive)
-       (let* ((beg (if (region-active-p) (region-beginning) (overlay-start ahs-current-overlay)))
-              (end (if (region-active-p) (region-end) (overlay-end ahs-current-overlay)))
-              (face (get-text-property beg 'face))
-              (symbol (buffer-substring beg end)))
+     (with-eval-after-load 'transient
 
-         (ahs-unhighlight t)
-         (when (and symbol
-                    (not (ahs-dropdown-list-p))
-                    ;; (not (ahs-face-p (ahs-add-overlay-face beg face) 'ahs-inhibit-face-list))
-                    ;; disable skip highlight for some font-face
-                    (not (ahs-symbol-p ahs-exclude symbol t))
-                    (ahs-symbol-p ahs-include symbol))
-           (list symbol beg end))))
+       (defun expand-and-highlight-region ()
+         (interactive)
+         (er--expand-region-1)
+         (highlight-selected-word))
 
-     (defun my-ahs-search-symbol (symbol search-range)
-       "Search `SYMBOL' in `SEARCH-RANGE'."
-       (save-excursion
-         (let ((case-fold-search ahs-case-fold-search)
-               ;; (regexp (concat "\\_<\\(" (regexp-quote symbol) "\\)\\_>" ))
-               (regexp (regexp-quote symbol))
-               (beg (car search-range))
-               (end (cdr search-range)))
-           (goto-char end)
-           (while (re-search-backward regexp beg t)
-             (let* ((symbol-beg (match-beginning 0))
-                    (symbol-end (match-end 0))
-                    (tprop (text-properties-at symbol-beg))
-                    (face (cadr (memq 'face tprop)))
-                    (fontified (cadr (memq 'fontified tprop))))
-               (unless (or face fontified)
-                 (setq ahs-need-fontify t))
-               (push (list symbol-beg
-                           symbol-end
-                           face fontified) ahs-search-work))))))
+       (defun contract-and-highlight-region ()
+         (interactive)
+         (call-interactively 'er/contract-region)
+         (highlight-selected-word))
 
 
-     (defun my-ahs-light-up (current)
-       "Light up symbols."
-       (cl-loop for symbol in ahs-search-work
+       (defun evil-surround-region-utils (operation)
+         ;; TODO: implement this one
+         (interactive (evil-surround-interactive-setup))
+         ;; (cond
+         ;;  ((eq operation 'change)
+         ;;   (call-interactively 'evil-surround-change))
+         ;;  ((eq operation 'delete)
+         ;;   (call-interactively 'evil-surround-delete))
+         ;;  (t
+         ;;   (evil-surround-setup-surround-line-operators)
+         ;;   (evil-surround-call-with-repeat 'evil-surround-region))))
 
-                for beg = (nth 0 symbol)
-                for end = (nth 1 symbol)
-                for face = (or (nth 2 symbol)
-                               (get-text-property beg 'face))
-                for face = (ahs-add-overlay-face beg face)
-
-                do (let ((overlay (make-overlay beg end nil nil t)))
-                     (overlay-put overlay 'ahs-symbol t)
-                     (overlay-put overlay 'window (selected-window))
-                     (overlay-put overlay 'face
-                                  (if (ahs-face-p face 'ahs-definition-face-list)
-                                      (if current ahs-definition-face
-                                        ahs-definition-face-unfocused)
-                                    (if current ahs-face ahs-face-unfocused)))
-                     (push overlay ahs-overlay-list))))
-
-     (advice-add 'ahs-light-up :override #'my-ahs-light-up)
-     (advice-add 'ahs-highlight-p :override #'my-ahs-highlight-p)
-     (advice-add 'ahs-search-symbol :override #'my-ahs-search-symbol)
-
-     (defun expand-and-highlight-region ()
-       (interactive)
-       (er--expand-region-1)
-       (highlight-region))
-
-     (defun contract-and-highlight-region ()
-       (interactive)
-       (call-interactively 'er/contract-region)
-       (highlight-region))
+         (if (region-active-p)
+             (evil-surround-setup-surround-line-operators)
+           (evil-surround-call-with-repeat 'evil-surround-region)))
 
 
-     (defun highlight-region ()
-       (interactive)
-       (let ((hh (my-ahs-highlight-p)))
-         (unless ahs-current-range
-           (ahs-change-range-internal ahs-default-range))
-         (when hh
-           (ahs-highlight (nth 0 hh)
-                          (nth 1 hh)
-                          (nth 2 hh)))))
+       (transient-define-prefix mark-transient ()
+         "Swift kniffe for mark region."
+         :transient-suffix 'transient--do-stay
+         [["Match"
+           ("v" "expand" expand-and-highlight-region)
+           ("-" "contract" contract-and-highlight-region)
+           ("r" "range" my-change-range)
+           ("n" "next" goto-next-highlighted-word)
+           ("N" "prev" goto-prev-highlighted-word)
+           ("q" "quit" transient-quit-all)
+           ("<escape>" "quit" transient-quit-all)
+           ]
+          ["Search"
+           ("s" "consult line" (lambda () (interactive) (consult-line (jlight-get-matched-thing))))
+           ("/" "project search" my-project-rg)
+           ]
+          ["Edit"
+           ("e" "iedit" my-iedit-mode :transient transient--do-exit)
+           ("c" "change surround" evil-surround-region :transient transient--do-exit)
+           ]
+          ["Misc"
+           ("t" "send to vterm" send-text-and-move-to-project-vterm :transient transient--do-exit)
+           ]
+          ])
 
 
-     (defun evil-surround-region-utils (operation)
-       ;; TODO: implement this one
-       (interactive (evil-surround-interactive-setup))
-       ;; (cond
-       ;;  ((eq operation 'change)
-       ;;   (call-interactively 'evil-surround-change))
-       ;;  ((eq operation 'delete)
-       ;;   (call-interactively 'evil-surround-delete))
-       ;;  (t
-       ;;   (evil-surround-setup-surround-line-operators)
-       ;;   (evil-surround-call-with-repeat 'evil-surround-region))))
+       (defun my-iedit-mode ()
+         (interactive)
+         (call-interactively 'iedit-mode)
+         (iedit-restrict-region
+          (jlight-get-startpoint-of-first-matched)
+          (jlight-get-endpoint-of-last-matched)))
 
-       (if (region-active-p)
-           (evil-surround-setup-surround-line-operators)
-         (evil-surround-call-with-repeat 'evil-surround-region)))
+       (defun my-change-range ()
+         (interactive)
+         ;; TODO: implement change range function
+         (iedit-restrict-region
+          (ahs-current-plugin-prop 'start)
+          (ahs-current-plugin-prop 'end)))
 
 
-     (defhydra mark-operation ()
-       "\nSwift knife %s(propertize (format \" %s \" (ahs-current-plugin-prop 'name)) 'face  (ahs-current-plugin-prop 'face))
+       (defun wrap-mark-operation ()
+         (interactive)
+         (unless (region-active-p)
+           (er--expand-region-1))
+         (highlight-selected-word)
+         (mark-transient))
 
-     ^match^                   ^Search^                       ^edit^                        ^operation^
-     ^^^─────────────────────────────────────────────────────────────────────────────────────────────────────────
-     [_v_]: expand             [_s_]: consult-line            [_e_]: iedit                  [_t_]: send to vterm
-     [_-_]: contract           [_/_]: project-rg              [_h_]: highlight
-     [_r_]: range              ^ ^                            [_c_]: change surround
-     [_n_]: next
-     [_N_]: prev
-     [_<escape>_]: quit
-     "
-
-       ("<escape>" (lambda ()(interactive) (ahs-unhighlight-all t)) nil :exit t)
-       ("v" expand-and-highlight-region nil)
-       ("-" contract-and-highlight-region nil)
-       ("s" consult-line nil)
-       ("c" evil-surround-region nil)
-       ("/" my-project-rg nil)
-       ("e" my-iedit-mode nil :exit t)
-       ("h" highlight-region nil)
-       ("r" my-change-range nil)
-       ("l" google-search)
-       ("t" send-text-and-move-to-project-vterm nil :exit t)
-       ("n" my-ahs-forward nil)
-       ("N" my-ahs-backward nil))
-
-     (defun my-iedit-mode ()
-       (interactive)
-       (ahs-unhighlight-all)
-       (call-interactively 'iedit-mode)
-       (iedit-restrict-region
-        (ahs-current-plugin-prop 'start)
-        (ahs-current-plugin-prop 'end)))
-
-     (defun my-change-range ()
-       (interactive)
-       (setq range (ahs-runnable-plugins t))
-       (ahs-change-range-internal range)
-       (if ahs-current-overlay
-           (highlight-region))
-       (iedit-restrict-region
-        (ahs-current-plugin-prop 'start)
-        (ahs-current-plugin-prop 'end)))
-
-     (defun my-ahs-forward ()
-       (interactive)
-       (when (region-active-p)
-         (deactivate-mark))
-       (ahs-forward))
-
-     (defun my-ahs-backward ()
-       (interactive)
-       (when (region-active-p)
-         (deactivate-mark))
-       (ahs-backward))
-
-     (with-eval-after-load 'auto-highlight-symbol
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-change-range)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-backward)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-project-rg)
-       (add-to-list 'ahs-unhighlight-allowed-commands 'mark-operation/my-ahs-forward))
-
-     (defun wrap-mark-operation ()
-       (interactive)
-       (unless (region-active-p)
-         (er--expand-region-1))
-       (highlight-region)
-       (mark-operation/body))
-
-     (with-eval-after-load 'evil
-       (evil-define-key '(normal motion) 'evil-motion-state-map
-         (kbd "*") 'wrap-mark-operation))
+       (with-eval-after-load 'evil
+         (evil-define-key '(normal motion) 'evil-motion-state-map
+           (kbd "*") 'wrap-mark-operation)))
    #+end_src
 
 * provide package

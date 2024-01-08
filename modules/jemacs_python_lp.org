@@ -42,6 +42,40 @@
           (if (y-or-n-p "do you want to set the project root manually?")
               (read-directory-name "select directory: "))))
 
+    (defun extract-python-version-from-pyproject-toml (file)
+      "Extract Python version from a pyproject.toml file.
+    Returns the Python version number as a string."
+      (let ((python-version nil))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (while (re-search-forward "^python = \"\\([^\"]+\\)\"" nil t)
+            (setq python-version (match-string 1)))
+          python-version)))
+
+    (defun decide-python-version ()
+      "extract the python version defined in the pyproject.toml or ask to input the python
+    version."
+      (or
+       (if-let ((folder (locate-dominating-file default-directory "pyproject.toml"))
+                (project-toml (expand-file-name "pyproject.toml" folder)))
+           (extract-python-version-from-pyproject-toml project-toml))))
+
+    (defun pyenv-ensure-version (version)
+      (let ((message (string-trim-right (shell-command-to-string (concat "pyenv local " version)))))
+        (when (string-match (regexp-quote "not installed") message)
+          (shell-command-to-string (concat "pyenv install " version))
+          (pyenv-ensure-version version))
+        version))
+
+    (defun python-initialize-virtualenv ()
+      (let ((venv (string-trim-right (shell-command-to-string "poetry env info -p"))))
+        (unless (equal venv "")
+          ;; decide which python version to be install and setup
+          ;; pyenv local "python version"
+          ;; poetry env use $(pyenv which python)
+          )))
+
 
     (defun python-find-virtualenv ()
       "Return the virtualenv path with current project.

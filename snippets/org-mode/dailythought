@@ -1,6 +1,36 @@
 # key : <dailythought
 # name : Daily thought
 # contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
 # --
 * routines
+adopt the [[id:B3199E7A-4D43-43D6-95D8-587FE263AC6D][Time Blocking]] method
 * introspect
+** report
+# daily report
+
+1. []
+
+** retrospect
+
+[[id:BB7B89A7-CD08-4D05-8CD9-145297F14543][three good things]] to build a happier life
+reflect on positive experiences and the reasons why they occurred
+why you are happy about this
+
+#+begin_quote
+I will show you my three good things below and here some instructions for you.
+Remember you need to do all instructions for all of my three good things.
+
+First, you need to check if there is any English grammar problem of them and fixed them.
+please show the original sentence and your recommended correction. In addition, give the reason why you fix like this.
+
+Second, rephrase my writings to be more like the native speaker does and tell me why to rewrite like this.
+
+Third, give some feedback of my three good things
+#+end_quote
+
+1.
+
+2.
+
+3.

@@ -1,5 +1,11 @@
-;;; package --- Summary
-;;; python-repl.el                  -*- lexical-binding: t -*-
+;;; python-repl.el --- Summary -*- lexical-binding: t -*-
+;;
+;; Author: jing
+;; Maintainer: jing
+;; Version: version
+;; Keywords: highlight
+
+
 ;;; Commentary:
 ;;;
 ;;; Code:

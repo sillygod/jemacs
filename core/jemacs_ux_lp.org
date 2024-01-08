@@ -220,7 +220,10 @@
       (add-to-list 'completion-at-point-functions #'cape-file)
       (add-to-list 'completion-at-point-functions #'cape-abbrev)
       (add-to-list 'completion-at-point-functions #'cape-symbol)
-      (add-to-list 'completion-at-point-functions #'cape-dabbrev))
+      (add-to-list 'completion-at-point-functions #'cape-dabbrev)
+      :config
+      (setq cape-dabbrev-check-other-buffers nil)
+      (setq dabbrev-case-fold-search 'case-fold-search))
   #+end_src
 
   #+begin_src emacs-lisp
@@ -344,9 +347,9 @@
       (delete 'view evil-collection-mode-list)
       ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
       (setq evil-collection-company-use-tng nil)
-      (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
-                                                (when (eq _mode 'docker)
-                                                  (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
+      ;; (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
+      ;;                                           (when (eq _mode 'docker)
+      ;;                                             (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
       (evil-collection-init))
   #+end_src
 

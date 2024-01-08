@@ -10,6 +10,9 @@
 ;; ("\\*+ \\(IN PROGRESS\\)" . ((svg-tag-make "IN PROGRESS" :face 'org-todo :margin 0)))
 ;; ("\\*+ \\(DONE\\)" . ((svg-tag-make "DONE" :face 'org-done :margin 0)))
 
+;; It's seems that svg tag mode is promising enough to be used
+;; https://github.com/rougier/svg-tag-mode/blob/main/examples/example-2.el
+
 (defgroup beautify nil
   "Beautify the ui."
   :group 'external)
@@ -42,4 +45,4 @@
 (svg-tag--build-keywords `("hi" . (svg-lib-tag "hi" nil :stroke 0)))
 
 (provide 'beautify)
-;;; beautify ends here
+;;; beautify.el ends here

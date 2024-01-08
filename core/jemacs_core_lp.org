@@ -184,7 +184,7 @@
 
 ** org tangle lp configs
    #+begin_src emacs-lisp
-     (defvar emacs-path "/usr/local/bin/emacs")
+     (defvar emacs-path (shell-command-to-string "echo -n $(which emacs)"))
      (defvar org-tangle-cmd (concat emacs-path " --batch --eval \"(require 'org)\" --eval \"(require 'ob-tangle)\" --eval '(find-file \"%s\")' --eval '(org-babel-tangle)'"))
 
      (defun export-lp-configs ()
@@ -491,6 +491,16 @@
          (kill-new x)))
    #+end_src
 
+** insert current time with millisecond precision
+
+   #+begin_src emacs-lisp
+     (defun insert-current-timestamp ()
+       "Inser the current timestamp with millisecond precision."
+       (interactive)
+       (let ((tx (float-time (current-time))))
+         (insert (format "%d" (truncate (* 1000 tx))))))
+   #+end_src
+
 ** misc
 
    #+begin_src emacs-lisp
@@ -759,7 +769,7 @@
        "Lazy load ivy-yasnippet."
        (interactive)
        (load-yasnippet)
-       (call-interactively 'yas-insert-snippet))
+       (call-interactively 'consult-yas))
    #+end_src
 
 ** xwidget relevant functions
@@ -890,7 +900,6 @@
              :prompt "Open file: ")
             selected-dir))))
    #+end_src
-
 
 ** operation with marked text
 

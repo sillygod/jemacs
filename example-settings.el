@@ -19,8 +19,8 @@
 
 (global-set-key (kbd "<escape>") 'keyboard-escape-quit)
 (with-eval-after-load 'evil
-  (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-operate/body)
-  (evil-define-key 'emacs 'global (kbd "M-w") 'window-operate/body))
+  (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-transient)
+  (evil-define-key 'emacs 'global (kbd "M-w") 'window-transient))
 
 (use-package ielm
   :defer t
