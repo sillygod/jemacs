@@ -848,35 +848,7 @@
       :init
       (setq read-process-output-max (* 1024 1024))
       (setq eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
-      :hook
-      ;; (python-ts-mode . eglot-ensure)
-      (rust-mode . eglot-ensure)
-      (rust-ts-mode . eglot-ensure)
-      (lua-mode . eglot-ensure)
-      (dart-mode . eglot-ensure)
-      (js-mode . eglot-ensure)
-      (js-ts-mode . eglot-ensure)
-      (typescript-ts-mode . eglot-ensure)
-      (typescript-mode . eglot-ensure)
-      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
-      (json-ts-mode . eglot-ensure)
-      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
-      (yaml-ts-mode . eglot-ensure)
-      (go-mode . eglot-ensure)
-      (go-ts-mode . eglot-ensure)
-      :custom
-      (enable-local-variables t)
-      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
-      ;; For more detail, go to see the help doc of normal-mode
-      (xref-search-program 'ripgrep)
-      (eglot-events-buffer-size 0)
-      (eglot-ignored-server-capabilities '(:hoverProvider
-                                           :documentHighlightProvider))
-      :config
-      (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
-      ;; this make evil go to definition works normally like xref-find-definitions
-      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
-      (fset #'jsonrpc--log-event #'ignore)
+      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-hook 'python-mode-hook (lambda ()
                                     (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
@@ -909,8 +881,36 @@
                                         (eglot-ensure)
                                         (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
                                         (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
+      :hook
+      ;; (python-ts-mode . eglot-ensure)
+      (rust-mode . eglot-ensure)
+      (rust-ts-mode . eglot-ensure)
+      (lua-mode . eglot-ensure)
+      (dart-mode . eglot-ensure)
+      (js-mode . eglot-ensure)
+      (js-ts-mode . eglot-ensure)
+      (typescript-ts-mode . eglot-ensure)
+      (typescript-mode . eglot-ensure)
+      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
+      (json-ts-mode . eglot-ensure)
+      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
+      (yaml-ts-mode . eglot-ensure)
+      (go-mode . eglot-ensure)
+      (go-ts-mode . eglot-ensure)
+      :custom
+      (enable-local-variables t)
+      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
+      ;; For more detail, go to see the help doc of normal-mode
+      (xref-search-program 'ripgrep)
+      (eglot-events-buffer-size 0)
+      (eglot-ignored-server-capabilities '(:hoverProvider
+                                           :documentHighlightProvider))
+      :config
+      (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+      ;; this make evil go to definition works normally like xref-find-definitions
+      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
+      (fset #'jsonrpc--log-event #'ignore)
 
-      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
   #+end_src
@@ -1447,6 +1447,44 @@
       (message "DEBUG: !! complete general setting"))
   #+end_src
 
+* experimental popup frame
+
+  we can spawn from the shell
+
+  #+begin_src bash
+    emacsclient -ne "(present (completing-read \"Open: \" '((\"a\" \"a-1\") (\"b\" \"b-2\") (\"c\" \"c-3\"))))"
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (defmacro present (&rest body)
+      "Create a buffer with BUFFER-NAME and eval BODY in a basic frame."
+      (declare (indent 1) (debug t))
+      `(let* ((buffer (get-buffer-create (generate-new-buffer-name "*present*")))
+              (frame (make-frame '((auto-raise . t)
+                                   (top . 200)
+                                   (height . 20)
+                                   (width . 110)
+                                   (internal-border-width . 20)
+                                   (left . 0.33)
+                                   (left-fringe . 0)
+                                   (line-spacing . 3)
+                                   (menu-bar-lines . 0)
+                                   (minibuffer . only)
+                                   (right-fringe . 0)
+                                   (tool-bar-lines . 0)
+                                   (undecorated . t)
+                                   (unsplittable . t)
+                                   (vertical-scroll-bars . nil)))))
+
+         (select-frame frame)
+         (select-frame-set-input-focus frame)
+         (with-current-buffer buffer
+               (unwind-protect
+                   ,@body
+                 (delete-other-windows)
+                 (delete-frame frame)
+                 (kill-buffer buffer)))))
+  #+end_src
 * hydra replaced with transient
 
 ** +hydra+ motion (replaced with the builtin functions of transient)

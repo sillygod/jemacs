@@ -1,0 +1,5 @@
+
+* implement my own python-repl
+
+ we can borrow the idea from https://github.com/tpapp/julia-repl
+ https://github.com/alhassy/repl-driven-development/blob/main/repl-driven-development.el

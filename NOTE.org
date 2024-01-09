@@ -5,6 +5,7 @@
   - https://github.com/jeremy-compostella/pdfgrep
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://github.com/minad/tempel (another choice for snippet completion)
+  - https://github.com/ksqsf/org-xlatex/blob/main/org-xlatex.el
 
   a nice show case of transient
   https://github.com/positron-solutions/transient-showcase
@@ -14,8 +15,8 @@
 ** things needed to be done or enahnced
 
    - [ ] implement my own run-python-shell
+   - [ ] my own pdf viewer? (https://github.com/mozilla/pdf.js?utm_source=cdnjs&utm_medium=cdnjs_link&utm_campaign=cdnjs_library)
    - [ ] https://github.com/wbolster/emacs-python-coverage
-   - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)

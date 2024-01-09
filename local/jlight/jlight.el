@@ -95,8 +95,6 @@ It's useful for the function like iedit restrict region."
   (cdar (last jlight-matches)))
 
 
-(defun jlight-get-beg-and-end-point-of-matched ()
-
 (defun get-index (value)
   "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
   (cl-position value jlight-matches :test #'(lambda (x y) (equal x y))))
