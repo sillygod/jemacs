@@ -1530,6 +1530,7 @@
            ("v" "expand" expand-and-highlight-region)
            ("-" "contract" contract-and-highlight-region)
            ("r" "range" my-change-range)
+           ("i" "toggle case sensitive" my-toggle-case-sensitive)
            ("n" "next" goto-next-highlighted-word)
            ("N" "prev" goto-prev-highlighted-word)
            ("q" "quit" transient-quit-all)
@@ -1548,6 +1549,10 @@
            ]
           ])
 
+       (defun my-toggle-case-sensitive ()
+         (interactive)
+         (setq-local case-fold-search (not case-fold-search))
+         (highlight-selected-word (not case-fold-search)))
 
        (defun my-iedit-mode ()
          (interactive)
@@ -1568,7 +1573,7 @@
          (interactive)
          (unless (region-active-p)
            (er--expand-region-1))
-         (highlight-selected-word)
+         (highlight-selected-word (not case-fold-search))
          (mark-transient))
 
        (with-eval-after-load 'evil
