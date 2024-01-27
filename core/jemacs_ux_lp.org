@@ -179,8 +179,6 @@
       (:host github :repo "minad/corfu" :files ("*.el" "extensions/*.el"))
       :config
       (evil-make-overriding-map corfu-map)
-      (advice-add 'corfu--setup :after 'evil-normalize-keymaps)
-      (advice-add 'corfu--teardown :after 'evil-normalize-keymaps)
       :init
       (global-corfu-mode)
       :bind (:map corfu-map
@@ -219,7 +217,7 @@
       :init
       (add-to-list 'completion-at-point-functions #'cape-file)
       (add-to-list 'completion-at-point-functions #'cape-abbrev)
-      (add-to-list 'completion-at-point-functions #'cape-symbol)
+      (add-to-list 'completion-at-point-functions #'cape-keyword)
       (add-to-list 'completion-at-point-functions #'cape-dabbrev)
       :config
       (setq cape-dabbrev-check-other-buffers nil)
