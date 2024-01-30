@@ -51,14 +51,19 @@
       (doom-modeline-persp-name nil))
   #+end_src
 
-* all-the-icons
+* +all-the-icons+ replaced with nerd-icon
 
   Maybe, you need to install this manually by the following commands.
 
   =M-x all-the-icons-install-fonts=
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package all-the-icons
+      :defer 0)
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package nerd-icons
       :defer 0)
   #+end_src
 

@@ -375,7 +375,6 @@
   #+begin_src emacs-lisp
     (use-package which-key
       :defer 0
-      :diminish which-key-mode
       :config
       (setq which-key-idle-delay 0.05)
       (which-key-mode 1))

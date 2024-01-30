@@ -199,6 +199,8 @@
 * writeroom mode
   #+begin_src emacs-lisp
     (use-package writeroom-mode
+      :custom
+      (writeroom-width 220)
       :defer t)
   #+end_src
 

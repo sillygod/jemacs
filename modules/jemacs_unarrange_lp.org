@@ -27,12 +27,18 @@
 
   pres =S-RET= will perform dired-find-file-other-window
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package all-the-icons-dired
       :hook (dired-mode . all-the-icons-dired-mode)
       :config
       (setq all-the-icons-dired-monochrome nil)
       (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package nerd-icons-dired
+      :hook
+      (dired-mode . nerd-icons-dired-mode))
   #+end_src
 
 * esup
@@ -74,11 +80,6 @@
         (advice-add 'evil-adjust-cursor :override 'my-evil-adjust-cursor))
       (pixel-scroll-precision-mode 1)
       (setq fast-but-imprecise-scrolling t))
-  #+end_src
-
-* diminish
-  #+begin_src emacs-lisp
-    (use-package diminish :defer t)
   #+end_src
 
 * command-log-mode
@@ -235,7 +236,7 @@
 
   #+begin_src bash :tangle no
     curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.8.5/rime-08dd95f-macOS.tar.bz2
-    tar -xf rime.tar.bz2 -d ~/.emacs.d/librime
+    tar -xf rime.tar.bz2 -d -C ~/.emacs.d/emacs-home/librime
   #+end_src
 
   #+begin_src emacs-lisp
@@ -1481,9 +1482,11 @@
          (with-current-buffer buffer
                (unwind-protect
                    ,@body
-                 (delete-other-windows)
-                 (delete-frame frame)
-                 (kill-buffer buffer)))))
+                   (delete-other-windows)
+                   (delete-frame frame)
+                   (kill-buffer buffer)
+                   ;; holy shit, kill buffer and window resolve the issue of remained minibuffer!
+                   (kill-buffer-and-window)))))
   #+end_src
 * hydra replaced with transient
 

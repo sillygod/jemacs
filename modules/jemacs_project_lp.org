@@ -19,7 +19,6 @@
   a workspace manager
   #+begin_src emacs-lisp
     (use-package perspective
-      :diminish persp-mode
       :commands (persp-switch persp-names)
       :custom
       (persp-modestring-short t)
