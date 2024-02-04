@@ -43,53 +43,54 @@
     ;;                               (setq gc-cons-threshold 800000)))
   #+end_src
 
-* initial-scratch
+* splash buffer
+
   #+begin_src emacs-lisp
+    (defun pixel-width-to-char-width (pixel-width)
+      (/ (* pixel-width (window-width)) (window-pixel-width)))
 
-    (setq initial-scratch-message
-          "
+    (defun pixel-height-to-char-height (pixel-height)
+      (/ (* pixel-height (window-height)) (window-pixel-height)))
 
-                                                    :=:
-                                                    :+-
-                                                 .--   :-:
-                                                 .--   :-:
-                                                    :=:     .:.
-                                                    :=:     :+-
-                                           .-=+=:         :-.  --
-                                         .=*+::-*=        :-.  --
-                                        -**=    *+          -*=
-                                      .=*=.    =*:          .:.
-                                     -*+.     -*=
-                            :=***-  .-=       =*****+=:       .***+-
-                            ,**:                      -*+.         =*-
-                            ,**:                       +*=         =*-
-                            ,**:            :*=.      :**:         =*-
-                            ,**:             =**+++++**+.          =*-
-                            ,**:            .++:.::::.=*=          =*-
-                           =*+             :*=       -*+          :*+.
-                         :++=               +*+=====+**.           :+*=.
-                         -*+-              :*=.......-*+           .+*+:
-                          .+*=             .++:......=*=          .*+-
-                            ,**:             =*+*****+*+.          =*-
-                            ,**:            -*=       -*+          =*-
-                            ,**:            .++-::::::+*-          =*-
-                            ,**:              -====+**=            =*-
-                            ,**:                  :+*=             =*-
-                            -**+++++++++++++++++**+:          .+++*+
-                              ...................              ....
+    (defun show-splash-buffer ()
+      "Show welcom buffer when startup."
+      (require 'svg)
+      (unless (get-buffer "*Splash*")
+        (with-current-buffer (get-buffer-create "*Splash*")
+          (let* ((truncate-lines t)
+                 (mode-line-format nil)
+                 (width 360)
+                 (height 360)
+                 (svg (svg-create width height))
+                 (top-margin (floor (/ (- (window-height) (pixel-height-to-char-height height)) 2)))
+                 (left-margin (floor (/ (- (window-width) (pixel-width-to-char-width width)) 2)))
+                 (splash-message "Nice!"))
+            (erase-buffer)
+            (goto-char (point-min))
+            (insert (make-string top-margin ?\n))
+            (insert (make-string left-margin ?\ ))
+            (svg-embed
+             svg
+             (expand-file-name "assets/jgebang.png" home-dir)
+             "image/png" nil
+             :width (format "%spx" width) :height (format "%spx" height))
+            (svg-insert-image svg)
+            (insert "\n\n")
+            (insert (make-string (floor (/ (- (window-width) (string-width splash-message)) 2)) ?\ ))
+            (insert splash-message)
+            (read-only-mode 1))))
 
-
-     ")
-
-
+      (switch-to-buffer (get-buffer "*Splash*")))
 
 
 
-
-
-
+    (setq initial-scratch-message nil)
+    (add-hook 'window-setup-hook (lambda ()
+                                   (when (display-graphic-p)
+                                     (show-splash-buffer))) t)
 
   #+end_src
+
 * set up config home directory
   #+begin_src emacs-lisp
     (defvar home-dir (file-name-directory load-file-name))
@@ -160,8 +161,8 @@
     (add-to-list 'default-frame-alist '(tool-bar-lines . 0))
     (add-to-list 'default-frame-alist '(left-fringe . 5))
     (add-to-list 'default-frame-alist '(right-fringe . 5))
-    (add-to-list 'default-frame-alist '(fullscreen . maximized))
-    ;; (add-to-list 'default-frame-alist '(background-color . "#292b2e")) ;; this will be overwrite by doom-themes
+    (add-to-list 'initial-frame-alist '(fullscreen . maximized))
+
     (add-to-list 'default-frame-alist '(font . "Source Code Pro-15"))
   #+end_src
 
