@@ -52,6 +52,7 @@
     (defun pixel-height-to-char-height (pixel-height)
       (/ (* pixel-height (window-height)) (window-pixel-height)))
 
+
     (defun show-splash-buffer ()
       "Show welcom buffer when startup."
       (require 'svg)
@@ -62,6 +63,7 @@
                  (width 360)
                  (height 360)
                  (svg (svg-create width height))
+                 (cursor-type nil)
                  (top-margin (floor (/ (- (window-height) (pixel-height-to-char-height height)) 2)))
                  (left-margin (floor (/ (- (window-width) (pixel-width-to-char-width width)) 2)))
                  (splash-message "Nice!"))
@@ -78,6 +80,9 @@
             (insert "\n\n")
             (insert (make-string (floor (/ (- (window-width) (string-width splash-message)) 2)) ?\ ))
             (insert splash-message)
+            (setq-local evil-default-cursor '(ignore)) ;; without this, change cursor-type will not work when evil mode enabled.
+            (setq-local cursor-type nil)
+            ;; (setq-local evil-normal-state-cursor '(bar . 0)) this will affect the cursor-type
             (read-only-mode 1))))
 
       (switch-to-buffer (get-buffer "*Splash*")))

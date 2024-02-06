@@ -53,13 +53,24 @@
             (setq python-version (match-string 1)))
           python-version)))
 
+    (defun consult-pyenv-install-version ()
+      "Read the candidates from the pyenv install -l and return the one choosed."
+      ;; command-shell-to-string and convert the result to a list!
+       (let ((versions (cdr (split-string (shell-command-to-string "pyenv install -l") "\n" t "\s+"))))
+       (consult--read
+         versions
+         :prompt "Choose the version want to install: "
+         :sort nil
+         :require-match t)))
+
     (defun decide-python-version ()
       "extract the python version defined in the pyproject.toml or ask to input the python
     version."
       (or
        (if-let ((folder (locate-dominating-file default-directory "pyproject.toml"))
                 (project-toml (expand-file-name "pyproject.toml" folder)))
-           (extract-python-version-from-pyproject-toml project-toml))))
+           (extract-python-version-from-pyproject-toml project-toml))
+       (consult-pyenv-install-version)))
 
     (defun pyenv-ensure-version (version)
       (let ((message (string-trim-right (shell-command-to-string (concat "pyenv local " version)))))
@@ -70,11 +81,13 @@
 
     (defun python-initialize-virtualenv ()
       (let ((venv (string-trim-right (shell-command-to-string "poetry env info -p"))))
-        (unless (equal venv "")
-          ;; decide which python version to be install and setup
-          ;; pyenv local "python version"
-          ;; poetry env use $(pyenv which python)
-          )))
+        (when (equal venv "")
+          (let ((py-version (decide-python-version)))
+            (if (<= ?0 (string-to-char (substring py-version 0 1)) ?9)
+              (pyenv-ensure-version py-version)
+              (pyenv-ensure-version (substring py-version 1 nil)))
+            (shell-command-to-string "poetry env use $(pyenv which python)")
+          ))))
 
 
     (defun python-find-virtualenv ()

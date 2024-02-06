@@ -855,29 +855,30 @@
                                     (when-let ((venv-path (python-find-virtualenv)))
                                       (pyvenv-activate venv-path)
 
-                                      ;; TODO:
-                                      ;; assign a function to eglot-workspace-configuration instead of variable
-                                      (setq-default eglot-workspace-configuration
-                                                    `(:python.analysis
-                                                      (:stubPath
-                                                       ""
-                                                       :useLibraryCodeForTypes
-                                                       t
-                                                       :autoSearchPaths
-                                                       t
-                                                       :autoImportCompletions
-                                                       t
-                                                       :diagnosticMode
-                                                       "openFilesOnly")
-                                                      :python
-                                                      (:venvPath
-                                                       ,(file-name-directory venv-path)
-                                                       :venv
-                                                       ,(file-name-nondirectory venv-path)
-                                                       :pythonPath
-                                                       ,(concat venv-path "/bin/python"))))
+                                      (unless (equal ".venv" (file-name-base venv-path))
+                                        ;; TODO:
+                                        ;; assign a function to eglot-workspace-configuration instead of variable
+                                        (setq-default eglot-workspace-configuration
+                                                      `(:python.analysis
+                                                        (:stubPath
+                                                         ""
+                                                         :useLibraryCodeForTypes
+                                                         t
+                                                         :autoSearchPaths
+                                                         t
+                                                         :autoImportCompletions
+                                                         t
+                                                         :diagnosticMode
+                                                         "openFilesOnly")
+                                                        :python
+                                                        (:venvPath
+                                                         ,(file-name-directory venv-path)
+                                                         :venv
+                                                         ,(file-name-nondirectory venv-path)
+                                                         :pythonPath
+                                                         ,(concat venv-path "/bin/python")))))
 
-                                      (when (featurep 'eglot)
+                                      (when (fboundp 'eglot-ensure)
                                         (flycheck-mode -1)
                                         (eglot-ensure)
                                         (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)

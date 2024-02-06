@@ -1,0 +1,58 @@
+* Workspace functionalities
+
+To implement part of perspective-el's functions
+
+perspective's workspace restricted to belong to a frame
+it uses set-frame-parameter to assign the persp
+
+ex.
+
+#+begin_src emacs-lisp
+(defun persp-curr (&optional frame)
+  "Get the current perspective in FRAME.
+FRAME defaults to the currently selected frame."
+  ;; XXX: This must return a non-nil value to avoid breaking frames initialized
+  ;; with after-make-frame-functions bound to nil.
+  (persp-mode-guard)
+  (or (frame-parameter frame 'persp--curr)
+      (make-persp-internal)))
+#+end_src
+
+
+an example usage to change the which key for exsiting keymap
+
+#+begin_src emacs-lisp
+(define-key perspective-map (kbd "1") (lambda () (interactive) (persp-switch-by-number 1)))
+(define-key perspective-map (kbd "2") (lambda () (interactive) (persp-switch-by-number 2)))
+(define-key perspective-map (kbd "3") (lambda () (interactive) (persp-switch-by-number 3)))
+(define-key perspective-map (kbd "4") (lambda () (interactive) (persp-switch-by-number 4)))
+(define-key perspective-map (kbd "5") (lambda () (interactive) (persp-switch-by-number 5)))
+(define-key perspective-map (kbd "6") (lambda () (interactive) (persp-switch-by-number 6)))
+(define-key perspective-map (kbd "7") (lambda () (interactive) (persp-switch-by-number 7)))
+(define-key perspective-map (kbd "8") (lambda () (interactive) (persp-switch-by-number 8)))
+(define-key perspective-map (kbd "9") (lambda () (interactive) (persp-switch-by-number 9)))
+(define-key perspective-map (kbd "0") (lambda () (interactive) (persp-switch-by-number 10)))
+
+(with-eval-after-load 'which-key
+  (declare-function which-key-add-keymap-based-replacements "which-key.el")
+  (when (fboundp 'which-key-add-keymap-based-replacements)
+    (which-key-add-keymap-based-replacements perspective-map
+      "1" "switch to 1"
+      "2" "switch to 2"
+      "3" "switch to 3"
+      "4" "switch to 4"
+      "5" "switch to 5"
+      "6" "switch to 6"
+      "7" "switch to 7"
+      "8" "switch to 8"
+      "9" "switch to 9"
+      "0" "switch to 10")))
+#+end_src
+
+
+the fundamental features
+
+it should contains and remember correspanding settings the following features per workspace
+- window layout
+- modeline string?
+- multiple project?
