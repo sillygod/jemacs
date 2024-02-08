@@ -1,6 +1,7 @@
 * Workspace functionalities
 
 To implement part of perspective-el's functions
+and expect to remove it from my installed packages.
 
 perspective's workspace restricted to belong to a frame
 it uses set-frame-parameter to assign the persp
@@ -53,6 +54,22 @@ an example usage to change the which key for exsiting keymap
 the fundamental features
 
 it should contains and remember correspanding settings the following features per workspace
+- rename the workspace
 - window layout
-- modeline string?
+  (current-window-configuration) ?
+  set-window-configuration to restore the window layout
+  (point-marker) ? when (marker-position x) -> goto-char ?
+  persp-prompt: maybe we can use completion-read instead
+
+  it seems reasonable to bind the workspace to frame parameter! different gui windows can show different workspace!
+
+- buffer? why associate buffers to a workspace?
+  We've had a project buffer list.
+
+- modeline string
+  need to check how to update modeline (current workspace name)
 - multiple project?
+
+
+Should I use cl-defstruct?
+do some research about it

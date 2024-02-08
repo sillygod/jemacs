@@ -159,6 +159,13 @@
                  :defer t
                  :straight (:local-repo ,(concat home-dir "local/jlight"))))
   #+end_src
+
+* jworkspace
+  #+begin_src emacs-lisp
+    (eval `(use-package jworkspace
+                 :defer t
+                 :straight (:local-repo ,(concat home-dir "local/jworkspace"))))
+  #+end_src
 * counsel-jq-yq
 
   #+begin_src emacs-lisp
@@ -1343,10 +1350,9 @@
 
       (define-leader-key-global
        "l" '(:ignore t :which-key "layout")
-       "ll" '(persp-switch :which-key "switch layout")
-       "lr" '(persp-rename :which-key "rename layout")
-       "ld" '(persp-kill :which-key "delete layout")
-       "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
+       "ll" '(jworkspace-switch-workspace :which-key "switch layout")
+       "lr" '(jworkspace-rename-workspace :which-key "rename layout")
+       "ld" '(jworkspace-delete-workspace :which-key "delete layout"))
 
       (define-leader-key-global
        "n" '(:ignore t :which-key "narrow")
