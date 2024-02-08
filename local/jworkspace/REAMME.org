@@ -6,19 +6,6 @@ and expect to remove it from my installed packages.
 perspective's workspace restricted to belong to a frame
 it uses set-frame-parameter to assign the persp
 
-ex.
-
-#+begin_src emacs-lisp
-(defun persp-curr (&optional frame)
-  "Get the current perspective in FRAME.
-FRAME defaults to the currently selected frame."
-  ;; XXX: This must return a non-nil value to avoid breaking frames initialized
-  ;; with after-make-frame-functions bound to nil.
-  (persp-mode-guard)
-  (or (frame-parameter frame 'persp--curr)
-      (make-persp-internal)))
-#+end_src
-
 
 an example usage to change the which key for exsiting keymap
 
@@ -54,14 +41,9 @@ an example usage to change the which key for exsiting keymap
 the fundamental features
 
 it should contains and remember correspanding settings the following features per workspace
-- rename the workspace
 - window layout
-  (current-window-configuration) ?
-  set-window-configuration to restore the window layout
-  (point-marker) ? when (marker-position x) -> goto-char ?
-  persp-prompt: maybe we can use completion-read instead
+  (point-marker) ? when (marker-position (pointer-marker) -> goto-char ?
 
-  it seems reasonable to bind the workspace to frame parameter! different gui windows can show different workspace!
 
 - buffer? why associate buffers to a workspace?
   We've had a project buffer list.
@@ -71,5 +53,7 @@ it should contains and remember correspanding settings the following features pe
 - multiple project?
 
 
-Should I use cl-defstruct?
-do some research about it
+what's the different between
+(window-state-get)
+and
+(current-window-configuration)

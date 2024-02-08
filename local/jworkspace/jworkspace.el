@@ -41,9 +41,12 @@
                           (:copier nil))
   name
   (window-config (progn
-                   (delete-other-windows)
-                   (show-splash-buffer)
-                   (current-window-configuration)))
+                   (save-window-excursion
+                     (delete-other-windows)
+                     (show-splash-buffer)
+                     (window-state-get)
+                     ;;(current-window-configuration)
+                     )))
   (point-marker (point-marker)))
 
 (defun jworkspace-remove-nth-element (nth list)
@@ -82,9 +85,13 @@
     ;; TODO: what do I need to deal with if the current-workspace is the same as the one to be deleted.
     (remhash name jworkspace-map)
     (when (> (hash-table-count jworkspace-map) 0)
-      (set-window-configuration
+      (window-state-put
        (jworkspace-window-config
         (gethash (nth 0 (hash-table-keys jworkspace-map)) jworkspace-map))))))
+
+      ;; (set-window-configuration
+      ;;  (jworkspace-window-config
+      ;;   (gethash (nth 0 (hash-table-keys jworkspace-map)) jworkspace-map))))))
 
 ;;;###autoload
 (defun jworkspace-switch-workspace (&optional name)
@@ -99,9 +106,11 @@ it will create the specified workspace."
                         (jworkspace-new-workspace workspace-name))))
 
     (when (jworkspace--get-current-workspace)
-      (setf (jworkspace-window-config (jworkspace--get-current-workspace)) (current-window-configuration)))
+      ;; (setf (jworkspace-window-config (jworkspace--get-current-workspace)) (current-window-configuration)))
+      (setf (jworkspace-window-config (jworkspace--get-current-workspace)) (window-state-get)))
 
-    (set-window-configuration (jworkspace-window-config workspace))
+    ;; (set-window-configuration (jworkspace-window-config workspace))
+    (window-state-put (jworkspace-window-config workspace))
     (jworkspace--set-current-workspace workspace)))
 
 ;;;###autoload
