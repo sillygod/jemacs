@@ -37,6 +37,9 @@
 ;; (gethash k jworkspace-map)
 ;; (remhash k jworkspace-map)
 
+(defvar jworkspace--save-dir-path (concat user-emacs-directory ".jworkspace")
+  "The dir path for saving the workspaces settings.")
+
 (cl-defstruct (jworkspace (:constructor jworkspace-create)
                           (:copier nil))
   name
@@ -122,6 +125,19 @@ it will create the specified workspace."
     (remhash (jworkspace-name workspace) jworkspace-map)
     (setf (jworkspace-name workspace) name)
     (puthash name workspace jworkspace-map)))
+
+(defun jworkspace-save-workspace ()
+  "Persist the workspace into file."
+  (interactive))
+
+(defun jworkspace-load-workspace ()
+  "Load the workspace from the list in file.")
+
+(defun jworkspace-select-and-load-workspace ()
+  "Load the selected workspace from the list and load it."
+  (interactive)
+
+  )
 
 (provide 'jworkspace)
 

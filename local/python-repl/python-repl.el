@@ -3,7 +3,7 @@
 ;; Author: jing
 ;; Maintainer: jing
 ;; Version: version
-;; Keywords: highlight
+;; Keywords: repl
 
 
 ;;; Commentary:
@@ -12,6 +12,7 @@
 
 (require 'cl-generic)
 (require 'cl-lib)
+(require 'vterm)
 
 (defgroup python-repl nil
   "Python repl wiwth vterm."
@@ -22,25 +23,36 @@
   :type 'hook
   :group 'python-repl)
 
-(defcustom python-repl-inferior-buffer-name-base "python-repl"
-  "Prefix for the names of python repl buffers."
-  :type 'string
-  :group 'python-repl)
-
-(defun python-repl--add-earmuffs (buffer-name)
-  "Add earmuffs * * to BUFFER-NAME."
-  (concat "*" buffer-name "*"))
+;; inferior" buffer usually refers to a buffer that is associated with an external process
+(defvar-local python-repl-inferior-buffer nil
+  "A local variable holds the current binding buffer to be interactived.")
 
 (defun python-repl--has-running-vterm-process (buffer)
   "Return non nil if BUFFER has a running vterm process."
-  (let ((proc (buffer-local-value 'vterm--process buffer)))
-    (and proc (memq (process-status proc) '(run stop open listen connect)))))
+  (vterm-check-proc buffer))
+
+(defun python-repl--maybe-spawn-python-shell ()
+  "To ensure the python shell is spawned.
+It will create a ipython shell by default or python shell when
+there is no such process in the target buffer."
+  )
+
+(defun python-repl--create-default-vterm-buffer ()
+  "Create the default buffer with python shell.")
+
+(defun python-repl--select-target-vterm-buffer ()
+  "Create a buffer with python shell process by default, if there is no such one.")
 
 
-;; why use compilation mode? Can I just send the code block to the terminal?
-;; keep doing research the library
+;; pop up the buffer automatically?
+(defun python-repl-send-line ())
 
-(cl-defstruct python-repl--buffer-vterm)
+
+(defun python-repl-send-region ())
+
+
+(defun python-repl-send-buffer ())
+
 
 (provide 'python-repl)
 ;;; python-repl.el ends here

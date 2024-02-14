@@ -45,6 +45,8 @@
 
 * splash buffer
 
+   maybe, I can refer to a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]]) to improve my splash buffer
+
   #+begin_src emacs-lisp
     (defun pixel-width-to-char-width (pixel-width)
       (/ (* pixel-width (window-width)) (window-pixel-width)))

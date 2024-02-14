@@ -20,7 +20,6 @@
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
-   - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
 
 ** program relavant config
@@ -30,7 +29,6 @@
 
 ** better to have
 
-   - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] interactive sql mode
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
