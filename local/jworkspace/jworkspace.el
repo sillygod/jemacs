@@ -47,10 +47,7 @@
                    (save-window-excursion
                      (delete-other-windows)
                      (show-splash-buffer)
-                     (window-state-get)
-                     ;;(current-window-configuration)
-                     )))
-  (point-marker (point-marker)))
+                     (window-state-get)))))
 
 (defun jworkspace-remove-nth-element (nth list)
   "Remove the NTH index's element in the LIST."
@@ -127,17 +124,25 @@ it will create the specified workspace."
     (puthash name workspace jworkspace-map)))
 
 (defun jworkspace-save-workspace ()
-  "Persist the workspace into file."
-  (interactive))
+  "Persist the workspace into file.
+TODO: research a way to serialze the window state .."
+  (interactive)
+  (unless (file-exists-p jworkspace--save-dir-path)
+    (mkdir jworkspace--save-dir-path t))
+  (with-temp-file (concat jworkspace--save-dir-path "/save-workspace")
+    (insert (format "%S" jworkspace-map))))
 
 (defun jworkspace-load-workspace ()
-  "Load the workspace from the list in file.")
-
-(defun jworkspace-select-and-load-workspace ()
-  "Load the selected workspace from the list and load it."
+  "Load the workspaces from the list in file."
   (interactive)
+  (setq jworkspace-map
+        (with-temp-buffer
+          (insert-file-contents (concat jworkspace--save-dir-path "/save-workspace"))
+          (read (current-buffer)))))
 
-  )
+(defun jworkspace-load-and-select-workspace ()
+  (jworkspace-load-workspace)
+  (call-interactively 'jworkspace-switch-workspace))
 
 (provide 'jworkspace)
 

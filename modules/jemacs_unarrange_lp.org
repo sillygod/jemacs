@@ -216,6 +216,31 @@
               ("DEPRECATED" font-lock-doc-face bold))))
   #+end_src
 
+* spawn ollama or cps
+
+  #+begin_src emacs-lisp
+    (defun spwan-ollama-web-and-open ()
+      (interactive)
+      (let* ((default-directory "~/Desktop/ollama-webui/backend/")
+             (buf (get-buffer-create (concat "*" "ollama-web" "*")))
+             (proc (get-buffer-process buf)))
+        (unless proc
+          (start-process "ollama-web" buf "bash" "start.sh"))
+        (xwidget-webkit-browse-url "http://localhost:8080")))
+
+
+    (defun spawn-calibre-web-and-open ()
+      "Spawn a cps process in background and open it on browser.
+    https://github.com/janeczku/calibre-web"
+      (interactive)
+      (let* ((buf (get-buffer-create (concat "*" "calibre-web" "*")))
+             (proc (get-buffer-process buf)))
+
+        (unless proc
+          (start-process "calibre-web" buf "cps"))
+        (xwidget-webkit-browse-url "http://localhost:8080")))
+  #+end_src
+
 * so-long
   prevent emacs from freezing when encountering a very long line
 
@@ -269,6 +294,12 @@
 
 * dictonary relevant packages
   there two package are not usable right now.
+
+  TODO:
+  now, emacs has a builtin dictionary features
+  ex. dictionary-lookup-definition
+  take it into consideration?
+
   #+begin_src emacs-lisp
     (use-package define-word
       :defer t)

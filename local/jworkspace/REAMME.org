@@ -44,16 +44,11 @@ it should contains and remember correspanding settings the following features pe
 - window layout
   (point-marker) ? when (marker-position (pointer-marker) -> goto-char ?
 
-
 - buffer? why associate buffers to a workspace?
   We've had a project buffer list.
 
 - modeline string
   need to check how to update modeline (current workspace name)
-- multiple project?
 
 
-what's the different between
-(window-state-get)
-and
-(current-window-configuration)
+what's the different between (window-state-get) and (current-window-configuration)

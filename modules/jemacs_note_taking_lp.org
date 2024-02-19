@@ -23,17 +23,34 @@
 
   #+begin_src emacs-lisp
     (use-package org-ql
-      :defer t)
+      :defer org
+      :config
+      (setq org-agenda-inhibit-startup t)
+      (setq org-agenda-dim-blocked-tasks nil)
+      (setq org-agenda-ignore-properties '(effort appt stats category))
+      (setq org-agenda-use-tag-inheritance nil))
 
     (defun my-todo-agenda ()
       "need to research the org-ql"
       (interactive)
       (org-ql-search
-        "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        ;; "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        (directory-files org-roam-directory nil ".org")
         '(todo)
         :title "Things to Be Done"
         :sort '(deadline)
-        :super-groups '((:auto-parent t))))
+        :super-groups `((:name "Daily plan"
+                               :deadline today)
+                        (:name "Weekly plan"
+                               :and
+                               (:deadline (after ,(format-time-string "%Y-%m-%d" (time-subtract (current-time) (* 7 24 60 60))))
+                                          :deadline (before ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 7 24 60 60))))))
+                        (:name "Monthly plan"
+                               :and
+                               (:deadline (after ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 7 24 60 60))))
+                                          :deadline (before ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 30 24 60 60))))))
+
+                        (:auto-parent t))))
 
     (use-package org-drill
       :defer t)
