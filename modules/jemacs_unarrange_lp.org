@@ -481,6 +481,9 @@
   #+end_src
 
 * flycheck mode
+
+  https://github.com/emacs-languagetool
+
   #+begin_src emacs-lisp
     (use-package flycheck
       :commands (flycheck-mode)
@@ -953,6 +956,15 @@
 
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
+  #+end_src
+
+  NOTE: it's not compatible with the latest eglot
+  #+begin_src emacs-lisp :tangle no
+    (use-package eglot-booster
+      :straight
+      (:host github :repo "jdtsmith/eglot-booster" :files ("*.el"))
+      :after eglot
+      :config (eglot-booster-mode))
   #+end_src
 
 * wgrep mode

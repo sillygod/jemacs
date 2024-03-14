@@ -175,6 +175,9 @@
 
 * Font setup & config background color
 
+  https://www.programmingfonts.org/
+  this is a nice website to browse the font suitable for programming.
+
   #+begin_src emacs-lisp
     (defvar default-font-size 140)
     (set-face-attribute 'fixed-pitch nil :font "Source Code Pro" :height default-font-size)
