@@ -238,7 +238,7 @@
 
         (unless proc
           (start-process "calibre-web" buf "cps"))
-        (xwidget-webkit-browse-url "http://localhost:8080")))
+        (xwidget-webkit-browse-url "http://localhost:8083")))
   #+end_src
 
 * so-long

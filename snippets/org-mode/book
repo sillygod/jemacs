@@ -1,0 +1,13 @@
+# key : <book
+# name : Book
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+
+author:
+
+* The book in 3 sentences or 3 points
+* Impresisions
+* How the Book Changed Me
+* Favorite Quotes
+* Summary + Notes for each sections
