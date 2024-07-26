@@ -142,6 +142,18 @@
       :defer t)
   #+end_src
 
+* solidity
+
+  #+begin_src emacs-lisp
+    (use-package solidity
+      :straight
+      (:host github :repo "ethereum/emacs-solidity" :files ("*.el"))
+      :custom
+      (solidity-comment-style 'slash)
+      :init
+      (require 'solidity-mode))
+  #+end_src
+
 * devdocs
 
   search thing under point [[https://devdocs.io/][devdocs]]
@@ -267,8 +279,8 @@
 
 
   #+begin_src bash :tangle no
-    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.8.5/rime-08dd95f-macOS.tar.bz2
-    tar -xf rime.tar.bz2 -d -C ~/.emacs.d/emacs-home/librime
+    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.11.2/rime-5b09f35-macOS-universal.tar.bz2
+    tar -xf rime.tar.bz2 -C ~/.emacs.d/emacs-home/librime
   #+end_src
 
   #+begin_src emacs-lisp
@@ -896,28 +908,27 @@
                                     (when-let ((venv-path (python-find-virtualenv)))
                                       (pyvenv-activate venv-path)
 
-                                      (unless (equal ".venv" (file-name-base venv-path))
-                                        ;; TODO:
-                                        ;; assign a function to eglot-workspace-configuration instead of variable
-                                        (setq-default eglot-workspace-configuration
-                                                      `(:python.analysis
-                                                        (:stubPath
-                                                         ""
-                                                         :useLibraryCodeForTypes
-                                                         t
-                                                         :autoSearchPaths
-                                                         t
-                                                         :autoImportCompletions
-                                                         t
-                                                         :diagnosticMode
-                                                         "openFilesOnly")
-                                                        :python
-                                                        (:venvPath
-                                                         ,(file-name-directory venv-path)
-                                                         :venv
-                                                         ,(file-name-nondirectory venv-path)
-                                                         :pythonPath
-                                                         ,(concat venv-path "/bin/python")))))
+                                      ;; TODO:
+                                      ;; assign a function to eglot-workspace-configuration instead of variable
+                                      (setq-default eglot-workspace-configuration
+                                                    `(:python.analysis
+                                                      (:stubPath
+                                                       ""
+                                                       :useLibraryCodeForTypes
+                                                       t
+                                                       :autoSearchPaths
+                                                       t
+                                                       :autoImportCompletions
+                                                       t
+                                                       :diagnosticMode
+                                                       "openFilesOnly")
+                                                      :python
+                                                      (:venvPath
+                                                       ,(file-name-directory venv-path)
+                                                       :venv
+                                                       ,(file-name-nondirectory venv-path)
+                                                       :pythonPath
+                                                       ,(concat venv-path "/bin/python"))))
 
                                       (when (fboundp 'eglot-ensure)
                                         (flycheck-mode -1)
@@ -955,6 +966,7 @@
       (fset #'jsonrpc--log-event #'ignore)
 
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
+      (add-to-list 'eglot-server-programs '(solidity-mode . ("nomicfoundation-solidity-language-server" "--stdio")))
       (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
   #+end_src
 
@@ -1135,6 +1147,20 @@
           ("<escape>" "quit" transient-quit-all)
           ("q" "quit" transient-quit-all)]
          ])
+
+      (with-eval-after-load 'git-timemachine
+        (transient-define-prefix git-timemachine-transient ()
+          "Git timemachien transient."
+          :transient-suffix 'transient--do-stay
+          [["Action"
+            ("p" "prev" git-timemachine-show-previous-revision)
+            ("n" "next" git-timemachine-show-next-revision)
+            ("s" "search" git-timemachine-show-revision-fuzzy)
+            ("g" "magit goto commit" git-timemachine-show-commit :transient transient--do-exit)
+            ("c" "copy revision" git-timemachine-kill-revision :transient transient--do-exit)
+            ("<escape>" "quit" git-timemachine-quit :transient transient--do-exit)
+            ("q" "quit" git-timemachine-quit :transient transient--do-exit)]
+           ]))
 
       (transient-define-prefix toggle-mode-transient ()
         "Toggle mode transient."
@@ -1422,7 +1448,7 @@
        "gbl" '(git-messenger:popup-message :which-key "this line")
        "gbb" '(magit-blame-addition :which-key "this buffer")
        "gs" '(magit-status :which-key "magit status")
-       "gt" '(magit-file-dispatch :which-key "magit time machine"))
+       "gt" '((lambda () (interactive) (git-timemachine) (git-timemachine-transient)) :which-key "magit time machine"))
 
       (define-leader-key-global
        "k" '(:ignore t :which-key "kmacro")

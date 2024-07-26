@@ -264,7 +264,11 @@
               ("b" "book" plain
                "* The book in 3 sentences or 3 points\n* Impresisions\n* How the Book Changed Me\n* Favorite Quotes\n* Summary + Notes for each sections\n "
                :target
-               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :book:\n\nauthor:"))))
+               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :book:\n\nauthor:"))
+              ("c" "course" plain
+               "* Impressions\n* Summary + Notes for each section\n "
+               :target
+               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :course:\n\nlink:\n"))))
       (setq org-roam-dailies-directory "journal/")
       (org-roam-db-autosync-enable))
 

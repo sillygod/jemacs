@@ -1,0 +1,22 @@
+# key : <blinkist
+# name : Blinkist
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+
+*Summarize:*
+
+*Take a pause and reflect if you have some thought about the section.*
+-
+
+*Ask questions yourself and answer it:*
+- Q:
+A:
+
+*Vocabulary:*
+-
+
+*Their meanings and collocations:*
+
+
+*Finally, do a discussion (you can chat with chapgpt)*

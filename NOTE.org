@@ -21,6 +21,7 @@
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
+   - [ ] asciinema (write utils for this)
 
 ** program relavant config
 

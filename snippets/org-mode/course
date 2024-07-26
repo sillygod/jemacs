@@ -1,0 +1,10 @@
+# key : <course
+# name : Course
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+
+link:
+
+* Impressions
+* Summary + Notes for each section
