@@ -14,5 +14,6 @@ librime/
 early-init.el
 init.el
 settings.el
+config.el
 modules/*.el
 core/*.el

@@ -10,6 +10,9 @@
   a nice show case of transient
   https://github.com/positron-solutions/transient-showcase
 
+  a collection of useful extensions for emacs
+  https://github.com/bbatsov/crux
+
 * Start to build my own emacs
 
 ** things needed to be done or enahnced

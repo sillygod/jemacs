@@ -369,6 +369,33 @@
 * code folding
   now use ts-fold instead
 
+* indent guide
+
+  issue: emacs-plus doesn't support stripple currently.
+  https://github.com/d12frosted/homebrew-emacs-plus/issues/622
+  https://github.com/jdtsmith/indent-bars/tree/main?tab=readme-ov-file#compatibility
+
+  indent-bars-prefer-character t -> use traditional way : display by character
+
+  #+begin_src emacs-lisp
+    (use-package indent-bars
+      :defer t
+      :straight (indent-bars :type git :host github :repo "jdtsmith/indent-bars")
+      :hook ((prog-mode) . indent-bars-mode)
+      :custom
+      (indent-bars-color '(highlight :face-bg t :blend 0.3))
+      (indent-bars-pattern ".")
+      (indent-bars-width-frac 0.2)
+      (indent-bars-pad-frac 0.1)
+      (indent-bars-zigzag nil)
+      (indent-bars-treesit-support t)
+      (indent-bars-prefer-character t)
+      (indent-bars-color-by-depth nil)
+      (indent-bars-highlight-current-depth '(:blend 1)) ; pump up the BG blend on current
+      (indent-bars-display-on-blank-lines nil)
+      :config
+      (indent-bars-reset))
+  #+end_src
 
 * which key mode
   a friendly key shortcut hint.

@@ -143,6 +143,7 @@
       :custom
       (org-download-screenshot-method "screencapture -i %s")
       (org-download-image-org-width 500)
+      (org-download-image-html-width 500)
       (org-download-image-dir "./img")
       :defer t)
 

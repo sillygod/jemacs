@@ -57,6 +57,25 @@
       :defer 1)
   #+end_src
 
+* aider chat
+
+  #+begin_src emacs-lisp
+    (use-package aider
+      :straight (:host github :repo "tninja/aider.el" :files ("aider.el"))
+      :config
+      ;; Use claude-3-5-sonnet cause it is best in aider benchmark
+      (setq aider-args '("--model" "mistral/mistral-large-latest"))
+      (setenv "MISTRAL_API_KEY" mistral_api_key)
+      ;; Or use gemini v2 model since it is very good and free
+      ;; (setq aider-args '("--model" "gemini/gemini-exp-1206"))
+      ;; (setenv "GEMINI_API_KEY" <your-gemini-api-key>)
+      ;; Or use your personal config file
+      ;; (setq aider-args `("--config" ,(expand-file-name "~/.aider.conf.yml")))
+      ;; ;;
+      ;; Optional: Set a key binding for the transient menu
+      )
+  #+end_src
+
 * pixel scroll
 
   #+begin_src emacs-lisp
@@ -102,6 +121,13 @@
               (make-llm-ollama
                :chat-model "zephyr" :embedding-model "zephyr")))
   #+end_src
+
+* magit gpt commit
+  https://github.com/douo/magit-gptcommit
+
+* gptel
+  https://github.com/karthink/gptel
+
 * rainbow-mode
   #+begin_src emacs-lisp
     (use-package rainbow-mode
@@ -145,7 +171,7 @@
 * solidity
 
   #+begin_src emacs-lisp
-    (use-package solidity
+    (use-package solidity-mode
       :straight
       (:host github :repo "ethereum/emacs-solidity" :files ("*.el"))
       :custom
@@ -553,12 +579,12 @@
        (tree-sitter-after-on . tree-sitter-hl-mode))
    #+end_src
 
-   now tree sitter are builtin in emacs 29 but it's not matured.
+   =now tree sitter are builtin in emacs 29 but it's not matured= However, I still decide to adopt the builtin functions.
 
    auto setup tree sitter inspired from
    https://github.com/renzmann/treesit-auto/blob/main/treesit-auto.el
 
-   #+begin_src emacs-lisp :tangle no
+   #+begin_src emacs-lisp
      (use-package treesit
        :straight (:type built-in)
        :commands (treesit-install-language-grammar treesit-install-all-languages)
@@ -580,7 +606,7 @@
                (python . ("https://github.com/tree-sitter/tree-sitter-python"))
                (php . ("https://github.com/tree-sitter/tree-sitter-php"))
                (tsx . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "tsx/src"))
-               (typescript . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "typescript"))
+               (typescript . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "typescript/src"))
                (ruby . ("https://github.com/tree-sitter/tree-sitter-ruby"))
                (rust . ("https://github.com/tree-sitter/tree-sitter-rust"))
                (sql . ("https://github.com/m-novikov/tree-sitter-sql"))
@@ -608,21 +634,24 @@
              (sit-for 0.75)))))
    #+end_src
 
+   https://github.com/emacs-tree-sitter/treesit-fold
+
    #+begin_src emacs-lisp
-     (use-package ts-fold
-       :after (evil tree-sitter)
-       :straight (ts-fold :type git :host github :repo "emacs-tree-sitter/ts-fold")
+     (use-package treesit-fold
+       :after (evil)
+       :straight (treesit-fold :type git :host github :repo "emacs-tree-sitter/treesit-fold")
        :config
-       (push '(block . (ts-fold-range-seq -1 1)) (alist-get 'python-mode ts-fold-range-alist))
+       (push '(block . (treesit-fold-range-seq -1 1)) (alist-get 'python-mode treesit-fold-range-alist))
+       (push '(block . (treesit-fold-range-seq -1 1)) (alist-get 'python-ts-mode treesit-fold-range-alist))
        (add-to-list 'evil-fold-list
-                    '((ts-fold-mode)
-                      :toggle ts-fold-toggle
-                      :open ts-fold-open
-                      :close ts-fold-close
-                      :open-rec ts-fold-open-recursively
-                      :open-all ts-fold-open-all
-                      :close-all ts-fold-close-all))
-       (global-ts-fold-mode))
+                    '((treesit-fold-mode)
+                      :toggle treesit-fold-toggle
+                      :open treesit-fold-open
+                      :close treesit-fold-close
+                      :open-rec treesit-fold-open-recursively
+                      :open-all treesit-fold-open-all
+                      :close-all treesit-fold-close-all))
+       (global-treesit-fold-mode))
    #+end_src
 
    an optional structure navigation package
@@ -903,6 +932,38 @@
       (setq read-process-output-max (* 1024 1024))
       (setq eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
       (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
+      (add-hook 'python-ts-mode-hook (lambda ()
+                                       (message "setup eglot")
+                                       (when-let ((venv-path (python-find-virtualenv)))
+                                         (pyvenv-activate venv-path)
+
+                                         ;; TODO:
+                                         ;; assign a function to eglot-workspace-configuration instead of variable
+                                         (setq-default eglot-workspace-configuration
+                                                       `(:python.analysis
+                                                         (:stubPath
+                                                          ""
+                                                          :useLibraryCodeForTypes
+                                                          t
+                                                          :autoSearchPaths
+                                                          t
+                                                          :autoImportCompletions
+                                                          t
+                                                          :diagnosticMode
+                                                          "openFilesOnly")
+                                                         :python
+                                                         (:venvPath
+                                                          ,(file-name-directory venv-path)
+                                                          :venv
+                                                          ,(file-name-nondirectory venv-path)
+                                                          :pythonPath
+                                                          ,(concat venv-path "/bin/python"))))
+
+                                         (when (fboundp 'eglot-ensure)
+                                           (flycheck-mode -1)
+                                           (eglot-ensure)
+                                           (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
+                                           (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
       (add-hook 'python-mode-hook (lambda ()
                                     (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
@@ -936,7 +997,6 @@
                                         (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
                                         (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
       :hook
-      ;; (python-ts-mode . eglot-ensure)
       (rust-mode . eglot-ensure)
       (rust-ts-mode . eglot-ensure)
       (lua-mode . eglot-ensure)
@@ -966,8 +1026,11 @@
       (fset #'jsonrpc--log-event #'ignore)
 
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
+      (add-to-list 'eglot-server-programs '(dart-mode . ("dart" "language-server" "--client-id" "emacs.eglot-dart" "--client-version" "1.2" "--protocol" "lsp")))
       (add-to-list 'eglot-server-programs '(solidity-mode . ("nomicfoundation-solidity-language-server" "--stdio")))
-      (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
+      (add-to-list 'eglot-server-programs
+                   '((rust-ts-mode rust-mode) .
+                     ("rustup" "run" "stable" "rust-analyzer" :initializationOptions (:check (:command "clippy"))))))
   #+end_src
 
   NOTE: it's not compatible with the latest eglot
