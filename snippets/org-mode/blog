@@ -1,0 +1,11 @@
+# key : <blog
+# name : Blog
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+
+#+DATE: `(format-time-string "%Y-%m-%d %H:%M")`
+#+COVER_IMAGE:
+#+EXCERPT: string
+#+OG_IMAGE:
+#+PUBLISH: false

@@ -1,0 +1,33 @@
+
+* implement my own python-repl
+
+ we can borrow the idea from https://github.com/tpapp/julia-repl
+ https://docs.doomemacs.org/latest/modules/tools/eval/
+ https://github.com/alhassy/repl-driven-development/blob/main/repl-driven-development.el
+
+ core functionalities
+ - repl-send-line
+ - repl-send-region
+ - repl-send-buffer
+
+
+ what does this do
+
+ do some research of the following functions
+ - compilation-shell-minor-mode?
+   all the error-parsing commands of the Compilation major mode are available but bound to keys that don't collide with Shell mode.
+   So that means I can think this is a special compilation-mode?
+ - inferior-buffer
+
+ currently, I only want to integrate this with vterm mode,
+ ansi term is not considered.
+
+ just call this to perform repl's re
+ (vterm-send-string string paste-p)? what does paste-p do?
+
+ the built-in inferior-python-mode is based on comint (as I know, there are some conflict with ipython mode)
+
+ executable-find to show the executable path
+ compilation-search-path
+
+ =vterm-eval-cmds= custom vterm to execute emacs lisp function instead of print the string

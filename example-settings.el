@@ -17,7 +17,7 @@
 (require 'jemacs-project)
 (require 'jemacs-version-control)
 
-(global-set-key (kbd "<escape>") 'keyboard-escape-quit)
+(global-set-key (kbd "<escape>") 'keyboard-quit)
 (with-eval-after-load 'evil
   (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-transient)
   (evil-define-key 'emacs 'global (kbd "M-w") 'window-transient))

@@ -1,2 +1,3 @@
-reference:
-https://github.com/wolray/symbol-overlay/blob/master/symbol-overlay.el#L9
+* Jlight
+
+  a simple package to highlights all matched strings with the pattenr of the selected word and provides some cursor moving operations.

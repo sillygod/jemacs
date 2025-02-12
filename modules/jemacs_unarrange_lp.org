@@ -27,12 +27,18 @@
 
   pres =S-RET= will perform dired-find-file-other-window
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package all-the-icons-dired
       :hook (dired-mode . all-the-icons-dired-mode)
       :config
       (setq all-the-icons-dired-monochrome nil)
       (set-face-attribute 'all-the-icons-dired-dir-face nil :foreground "#FF8822"))
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (use-package nerd-icons-dired
+      :hook
+      (dired-mode . nerd-icons-dired-mode))
   #+end_src
 
 * esup
@@ -49,6 +55,25 @@
   #+begin_src emacs-lisp
     (use-package svg-lib
       :defer 1)
+  #+end_src
+
+* aider chat
+
+  #+begin_src emacs-lisp
+    (use-package aider
+      :straight (:host github :repo "tninja/aider.el" :files ("aider.el"))
+      :config
+      ;; Use claude-3-5-sonnet cause it is best in aider benchmark
+      (setq aider-args '("--model" "mistral/mistral-large-latest"))
+      (setenv "MISTRAL_API_KEY" mistral_api_key)
+      ;; Or use gemini v2 model since it is very good and free
+      ;; (setq aider-args '("--model" "gemini/gemini-exp-1206"))
+      ;; (setenv "GEMINI_API_KEY" <your-gemini-api-key>)
+      ;; Or use your personal config file
+      ;; (setq aider-args `("--config" ,(expand-file-name "~/.aider.conf.yml")))
+      ;; ;;
+      ;; Optional: Set a key binding for the transient menu
+      )
   #+end_src
 
 * pixel scroll
@@ -76,11 +101,6 @@
       (setq fast-but-imprecise-scrolling t))
   #+end_src
 
-* diminish
-  #+begin_src emacs-lisp
-    (use-package diminish :defer t)
-  #+end_src
-
 * command-log-mode
   this will log the keys you press in another buffer
   #+begin_src emacs-lisp
@@ -101,6 +121,13 @@
               (make-llm-ollama
                :chat-model "zephyr" :embedding-model "zephyr")))
   #+end_src
+
+* magit gpt commit
+  https://github.com/douo/magit-gptcommit
+
+* gptel
+  https://github.com/karthink/gptel
+
 * rainbow-mode
   #+begin_src emacs-lisp
     (use-package rainbow-mode
@@ -141,6 +168,18 @@
       :defer t)
   #+end_src
 
+* solidity
+
+  #+begin_src emacs-lisp
+    (use-package solidity-mode
+      :straight
+      (:host github :repo "ethereum/emacs-solidity" :files ("*.el"))
+      :custom
+      (solidity-comment-style 'slash)
+      :init
+      (require 'solidity-mode))
+  #+end_src
+
 * devdocs
 
   search thing under point [[https://devdocs.io/][devdocs]]
@@ -157,6 +196,13 @@
     (eval `(use-package jlight
                  :defer t
                  :straight (:local-repo ,(concat home-dir "local/jlight"))))
+  #+end_src
+
+* jworkspace
+  #+begin_src emacs-lisp
+    (eval `(use-package jworkspace
+                 :defer t
+                 :straight (:local-repo ,(concat home-dir "local/jworkspace"))))
   #+end_src
 * counsel-jq-yq
 
@@ -208,6 +254,31 @@
               ("DEPRECATED" font-lock-doc-face bold))))
   #+end_src
 
+* spawn ollama or cps
+
+  #+begin_src emacs-lisp
+    (defun spwan-ollama-web-and-open ()
+      (interactive)
+      (let* ((default-directory "~/Desktop/ollama-webui/backend/")
+             (buf (get-buffer-create (concat "*" "ollama-web" "*")))
+             (proc (get-buffer-process buf)))
+        (unless proc
+          (start-process "ollama-web" buf "bash" "start.sh"))
+        (xwidget-webkit-browse-url "http://localhost:8080")))
+
+
+    (defun spawn-calibre-web-and-open ()
+      "Spawn a cps process in background and open it on browser.
+    https://github.com/janeczku/calibre-web"
+      (interactive)
+      (let* ((buf (get-buffer-create (concat "*" "calibre-web" "*")))
+             (proc (get-buffer-process buf)))
+
+        (unless proc
+          (start-process "calibre-web" buf "cps"))
+        (xwidget-webkit-browse-url "http://localhost:8083")))
+  #+end_src
+
 * so-long
   prevent emacs from freezing when encountering a very long line
 
@@ -234,8 +305,8 @@
 
 
   #+begin_src bash :tangle no
-    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.8.5/rime-08dd95f-macOS.tar.bz2
-    tar -xf rime.tar.bz2 -d ~/.emacs.d/librime
+    curl -L -o rime.tar.bz2 https://github.com/rime/librime/releases/download/1.11.2/rime-5b09f35-macOS-universal.tar.bz2
+    tar -xf rime.tar.bz2 -C ~/.emacs.d/emacs-home/librime
   #+end_src
 
   #+begin_src emacs-lisp
@@ -261,6 +332,12 @@
 
 * dictonary relevant packages
   there two package are not usable right now.
+
+  TODO:
+  now, emacs has a builtin dictionary features
+  ex. dictionary-lookup-definition
+  take it into consideration?
+
   #+begin_src emacs-lisp
     (use-package define-word
       :defer t)
@@ -442,6 +519,9 @@
   #+end_src
 
 * flycheck mode
+
+  https://github.com/emacs-languagetool
+
   #+begin_src emacs-lisp
     (use-package flycheck
       :commands (flycheck-mode)
@@ -499,12 +579,12 @@
        (tree-sitter-after-on . tree-sitter-hl-mode))
    #+end_src
 
-   now tree sitter are builtin in emacs 29 but it's not matured.
+   =now tree sitter are builtin in emacs 29 but it's not matured= However, I still decide to adopt the builtin functions.
 
    auto setup tree sitter inspired from
    https://github.com/renzmann/treesit-auto/blob/main/treesit-auto.el
 
-   #+begin_src emacs-lisp :tangle no
+   #+begin_src emacs-lisp
      (use-package treesit
        :straight (:type built-in)
        :commands (treesit-install-language-grammar treesit-install-all-languages)
@@ -526,7 +606,7 @@
                (python . ("https://github.com/tree-sitter/tree-sitter-python"))
                (php . ("https://github.com/tree-sitter/tree-sitter-php"))
                (tsx . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "tsx/src"))
-               (typescript . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "typescript"))
+               (typescript . ("https://github.com/tree-sitter/tree-sitter-typescript" "master" "typescript/src"))
                (ruby . ("https://github.com/tree-sitter/tree-sitter-ruby"))
                (rust . ("https://github.com/tree-sitter/tree-sitter-rust"))
                (sql . ("https://github.com/m-novikov/tree-sitter-sql"))
@@ -554,21 +634,24 @@
              (sit-for 0.75)))))
    #+end_src
 
+   https://github.com/emacs-tree-sitter/treesit-fold
+
    #+begin_src emacs-lisp
-     (use-package ts-fold
-       :after (evil tree-sitter)
-       :straight (ts-fold :type git :host github :repo "emacs-tree-sitter/ts-fold")
+     (use-package treesit-fold
+       :after (evil)
+       :straight (treesit-fold :type git :host github :repo "emacs-tree-sitter/treesit-fold")
        :config
-       (push '(block . (ts-fold-range-seq -1 1)) (alist-get 'python-mode ts-fold-range-alist))
+       (push '(block . (treesit-fold-range-seq -1 1)) (alist-get 'python-mode treesit-fold-range-alist))
+       (push '(block . (treesit-fold-range-seq -1 1)) (alist-get 'python-ts-mode treesit-fold-range-alist))
        (add-to-list 'evil-fold-list
-                    '((ts-fold-mode)
-                      :toggle ts-fold-toggle
-                      :open ts-fold-open
-                      :close ts-fold-close
-                      :open-rec ts-fold-open-recursively
-                      :open-all ts-fold-open-all
-                      :close-all ts-fold-close-all))
-       (global-ts-fold-mode))
+                    '((treesit-fold-mode)
+                      :toggle treesit-fold-toggle
+                      :open treesit-fold-open
+                      :close treesit-fold-close
+                      :open-rec treesit-fold-open-recursively
+                      :open-all treesit-fold-open-all
+                      :close-all treesit-fold-close-all))
+       (global-treesit-fold-mode))
    #+end_src
 
    an optional structure navigation package
@@ -848,35 +931,39 @@
       :init
       (setq read-process-output-max (* 1024 1024))
       (setq eglot-stay-out-of '(xref imenu)) ;; imenu in go-mode will cause jsonrpc timeout
-      :hook
-      ;; (python-ts-mode . eglot-ensure)
-      (rust-mode . eglot-ensure)
-      (rust-ts-mode . eglot-ensure)
-      (lua-mode . eglot-ensure)
-      (dart-mode . eglot-ensure)
-      (js-mode . eglot-ensure)
-      (js-ts-mode . eglot-ensure)
-      (typescript-ts-mode . eglot-ensure)
-      (typescript-mode . eglot-ensure)
-      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
-      (json-ts-mode . eglot-ensure)
-      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
-      (yaml-ts-mode . eglot-ensure)
-      (go-mode . eglot-ensure)
-      (go-ts-mode . eglot-ensure)
-      :custom
-      (enable-local-variables t)
-      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
-      ;; For more detail, go to see the help doc of normal-mode
-      (xref-search-program 'ripgrep)
-      (eglot-events-buffer-size 0)
-      (eglot-ignored-server-capabilities '(:hoverProvider
-                                           :documentHighlightProvider))
-      :config
-      (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
-      ;; this make evil go to definition works normally like xref-find-definitions
-      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
-      (fset #'jsonrpc--log-event #'ignore)
+      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
+      (add-hook 'python-ts-mode-hook (lambda ()
+                                       (message "setup eglot")
+                                       (when-let ((venv-path (python-find-virtualenv)))
+                                         (pyvenv-activate venv-path)
+
+                                         ;; TODO:
+                                         ;; assign a function to eglot-workspace-configuration instead of variable
+                                         (setq-default eglot-workspace-configuration
+                                                       `(:python.analysis
+                                                         (:stubPath
+                                                          ""
+                                                          :useLibraryCodeForTypes
+                                                          t
+                                                          :autoSearchPaths
+                                                          t
+                                                          :autoImportCompletions
+                                                          t
+                                                          :diagnosticMode
+                                                          "openFilesOnly")
+                                                         :python
+                                                         (:venvPath
+                                                          ,(file-name-directory venv-path)
+                                                          :venv
+                                                          ,(file-name-nondirectory venv-path)
+                                                          :pythonPath
+                                                          ,(concat venv-path "/bin/python"))))
+
+                                         (when (fboundp 'eglot-ensure)
+                                           (flycheck-mode -1)
+                                           (eglot-ensure)
+                                           (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
+                                           (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
       (add-hook 'python-mode-hook (lambda ()
                                     (message "setup eglot")
                                     (when-let ((venv-path (python-find-virtualenv)))
@@ -904,15 +991,55 @@
                                                        :pythonPath
                                                        ,(concat venv-path "/bin/python"))))
 
-                                      (when (featurep 'eglot)
+                                      (when (fboundp 'eglot-ensure)
                                         (flycheck-mode -1)
                                         (eglot-ensure)
                                         (add-hook 'xref-backend-functions 'dumb-jump-xref-activate nil t)
                                         (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))))
+      :hook
+      (rust-mode . eglot-ensure)
+      (rust-ts-mode . eglot-ensure)
+      (lua-mode . eglot-ensure)
+      (dart-mode . eglot-ensure)
+      (js-mode . eglot-ensure)
+      (js-ts-mode . eglot-ensure)
+      (typescript-ts-mode . eglot-ensure)
+      (typescript-mode . eglot-ensure)
+      (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
+      (json-ts-mode . eglot-ensure)
+      (yaml-mode . eglot-ensure) ;; brew install yaml-language-server
+      (yaml-ts-mode . eglot-ensure)
+      (go-mode . eglot-ensure)
+      (go-ts-mode . eglot-ensure)
+      :custom
+      (enable-local-variables t)
+      ;; do I need this ? setting this to nil will cause -*- mode:xxx -*- not be performed. we'll manually run normal-mode.
+      ;; For more detail, go to see the help doc of normal-mode
+      (xref-search-program 'ripgrep)
+      (eglot-events-buffer-size 0)
+      (eglot-ignored-server-capabilities '(:hoverProvider
+                                           :documentHighlightProvider))
+      :config
+      (advice-add #'xref--create-fetcher :override #'my-xref--create-fetcher)
+      ;; this make evil go to definition works normally like xref-find-definitions
+      (setq xref-prompt-for-identifier (append xref-prompt-for-identifier '(evil-goto-definition)))
+      (fset #'jsonrpc--log-event #'ignore)
 
-      (add-hook 'eglot--managed-mode-hook #'(lambda () (add-hook 'xref-backend-functions 'eglot-xref-backend nil t)))
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
-      (add-to-list 'eglot-server-programs '(rust-mode . ("rustup" "run" "stable" "rust-analyzer"))))
+      (add-to-list 'eglot-server-programs '(dart-mode . ("dart" "language-server" "--client-id" "emacs.eglot-dart" "--client-version" "1.2" "--protocol" "lsp")))
+      (add-to-list 'eglot-server-programs '(solidity-mode . ("nomicfoundation-solidity-language-server" "--stdio")))
+      (add-to-list 'eglot-server-programs
+                   '((rust-ts-mode rust-mode) .
+                     ("rustup" "run" "stable" "rust-analyzer" :initializationOptions (:check (:command "clippy"))))))
+  #+end_src
+
+  NOTE: it's not compatible with the latest eglot
+  #+begin_src emacs-lisp :tangle no
+    (use-package eglot-booster
+      :straight
+      (:host github :repo "jdtsmith/eglot-booster" :files ("*.el"))
+      :after eglot
+      :config (eglot-booster-mode))
   #+end_src
 
 * wgrep mode
@@ -1083,6 +1210,20 @@
           ("<escape>" "quit" transient-quit-all)
           ("q" "quit" transient-quit-all)]
          ])
+
+      (with-eval-after-load 'git-timemachine
+        (transient-define-prefix git-timemachine-transient ()
+          "Git timemachien transient."
+          :transient-suffix 'transient--do-stay
+          [["Action"
+            ("p" "prev" git-timemachine-show-previous-revision)
+            ("n" "next" git-timemachine-show-next-revision)
+            ("s" "search" git-timemachine-show-revision-fuzzy)
+            ("g" "magit goto commit" git-timemachine-show-commit :transient transient--do-exit)
+            ("c" "copy revision" git-timemachine-kill-revision :transient transient--do-exit)
+            ("<escape>" "quit" git-timemachine-quit :transient transient--do-exit)
+            ("q" "quit" git-timemachine-quit :transient transient--do-exit)]
+           ]))
 
       (transient-define-prefix toggle-mode-transient ()
         "Toggle mode transient."
@@ -1341,10 +1482,9 @@
 
       (define-leader-key-global
        "l" '(:ignore t :which-key "layout")
-       "ll" '(persp-switch :which-key "switch layout")
-       "lr" '(persp-rename :which-key "rename layout")
-       "ld" '(persp-kill :which-key "delete layout")
-       "lb" '(persp-switch-to-buffer* :which-key "persp buffer list"))
+       "ll" '(jworkspace-switch-workspace :which-key "switch layout")
+       "lr" '(jworkspace-rename-workspace :which-key "rename layout")
+       "ld" '(jworkspace-delete-workspace :which-key "delete layout"))
 
       (define-leader-key-global
        "n" '(:ignore t :which-key "narrow")
@@ -1371,7 +1511,7 @@
        "gbl" '(git-messenger:popup-message :which-key "this line")
        "gbb" '(magit-blame-addition :which-key "this buffer")
        "gs" '(magit-status :which-key "magit status")
-       "gt" '(magit-file-dispatch :which-key "magit time machine"))
+       "gt" '((lambda () (interactive) (git-timemachine) (git-timemachine-transient)) :which-key "magit time machine"))
 
       (define-leader-key-global
        "k" '(:ignore t :which-key "kmacro")
@@ -1447,6 +1587,46 @@
       (message "DEBUG: !! complete general setting"))
   #+end_src
 
+* experimental popup frame
+
+  we can spawn from the shell
+
+  #+begin_src bash
+    emacsclient -ne "(present (completing-read \"Open: \" '((\"a\" \"a-1\") (\"b\" \"b-2\") (\"c\" \"c-3\"))))"
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (defmacro present (&rest body)
+      "Create a buffer with BUFFER-NAME and eval BODY in a basic frame."
+      (declare (indent 1) (debug t))
+      `(let* ((buffer (get-buffer-create (generate-new-buffer-name "*present*")))
+              (frame (make-frame '((auto-raise . t)
+                                   (top . 200)
+                                   (height . 20)
+                                   (width . 110)
+                                   (internal-border-width . 20)
+                                   (left . 0.33)
+                                   (left-fringe . 0)
+                                   (line-spacing . 3)
+                                   (menu-bar-lines . 0)
+                                   (minibuffer . only)
+                                   (right-fringe . 0)
+                                   (tool-bar-lines . 0)
+                                   (undecorated . t)
+                                   (unsplittable . t)
+                                   (vertical-scroll-bars . nil)))))
+
+         (select-frame frame)
+         (select-frame-set-input-focus frame)
+         (with-current-buffer buffer
+               (unwind-protect
+                   ,@body
+                   (delete-other-windows)
+                   (delete-frame frame)
+                   (kill-buffer buffer)
+                   ;; holy shit, kill buffer and window resolve the issue of remained minibuffer!
+                   (kill-buffer-and-window)))))
+  #+end_src
 * hydra replaced with transient
 
 ** +hydra+ motion (replaced with the builtin functions of transient)
@@ -1492,6 +1672,7 @@
            ("v" "expand" expand-and-highlight-region)
            ("-" "contract" contract-and-highlight-region)
            ("r" "range" my-change-range)
+           ("i" "toggle case sensitive" my-toggle-case-sensitive)
            ("n" "next" goto-next-highlighted-word)
            ("N" "prev" goto-prev-highlighted-word)
            ("q" "quit" transient-quit-all)
@@ -1510,6 +1691,10 @@
            ]
           ])
 
+       (defun my-toggle-case-sensitive ()
+         (interactive)
+         (setq-local case-fold-search (not case-fold-search))
+         (highlight-selected-word (not case-fold-search)))
 
        (defun my-iedit-mode ()
          (interactive)
@@ -1530,7 +1715,7 @@
          (interactive)
          (unless (region-active-p)
            (er--expand-region-1))
-         (highlight-selected-word)
+         (highlight-selected-word (not case-fold-search))
          (mark-transient))
 
        (with-eval-after-load 'evil

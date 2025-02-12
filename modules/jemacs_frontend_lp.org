@@ -40,6 +40,20 @@
       :after (rainbow-delimiters)
       :mode (("\\.ts\\'" . typescript-mode))
       :defer t)
+
+    (use-package css-in-js-mode
+      :straight '(css-in-js-mode :type git :host github :repo "orzechowskid/tree-sitter-css-in-js"))
+
+    (use-package tsx-mode
+      :defer t
+      :straight
+      (:type git :host github :repo "orzechowskid/tsx-mode.el")
+      :mode (("\\.[jt]s[x]?\\'" . tsx-mode))
+      :init
+      (require 'tsx-mode)
+      :config
+      (tsx-mode))
+
   #+end_src
 
 * formatter
@@ -47,9 +61,15 @@
   #+begin_src emacs-lisp
     (use-package apheleia
       :defer t
+      :defines
+      apheleia-formatters
+      apheleia-mode-alist
       :hook
       (js-mode . apheleia-mode)
-      (js2-mode . apheleia-mode))
+      (js2-mode . apheleia-mode)
+      :config
+      (setf (alist-get 'prettier-json apheleia-formatters)
+            '("prettier" "--stdin-filepath" filepath)))
   #+end_src
 
 * mobile
@@ -59,8 +79,13 @@
       :defer t)
 
     (use-package flutter
-      :after (dart-mode))
-
+      :defer t
+      :after (dart-mode)
+      :config
+      (setq flutter-sdk-path (directory-file-name
+                              (file-name-directory
+                               (directory-file-name
+                                (file-name-directory (executable-find "flutter")))))))
   #+end_src
 
 * provide package

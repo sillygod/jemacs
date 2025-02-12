@@ -17,9 +17,8 @@
 
 * perspective mode
   a workspace manager
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package perspective
-      :diminish persp-mode
       :commands (persp-switch persp-names)
       :custom
       (persp-modestring-short t)
@@ -79,9 +78,9 @@
                                        :require-match t)))
              (dname (file-name-nondirectory (directory-file-name (file-name-directory (project-root proj))))))
 
-        (if (or (member dname (persp-names))
+        (if (or (jworkspace-worsapce-existp dname)
                 (y-or-n-p (format "create a new layer: %s" dname)))
-            (persp-switch dname))
+            (jworkspace-switch-workspace dname))
         (project-find-file-in
          nil
          (list (project-root proj))

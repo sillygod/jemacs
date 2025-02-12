@@ -161,8 +161,8 @@ package `dired-sort' will not work and thus is not set up by
 `dired-sort-setup'. Alternatively, set
 `dired-sort-suppress-setup-warning' to suppress warning and skip setup
 silently.")
-      (with-eval-after-load 'evil
-        (evil-define-key 'normal dired-mode-map (kbd "s") 'dired-sort-transient)))))
+      (with-eval-after-load 'evil-core
+        (evil-define-key* 'normal dired-mode-map (kbd "s") 'dired-sort-transient)))))
 
 (provide 'dired-sort)
 

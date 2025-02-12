@@ -5,10 +5,6 @@ where to store your private yasnippets.
 
 This path will be loaded automatically and used whenever Yasnippets loads.
 
-** In spacemacs with helm
-   
-you can press =SPC i s= to get a list of snippets you can called under current major mode.
-
 * References
 
  - https://joaotavora.github.io/yasnippet/snippet-development.html#org592456a

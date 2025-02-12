@@ -23,17 +23,34 @@
 
   #+begin_src emacs-lisp
     (use-package org-ql
-      :defer t)
+      :defer org
+      :config
+      (setq org-agenda-inhibit-startup t)
+      (setq org-agenda-dim-blocked-tasks nil)
+      (setq org-agenda-ignore-properties '(effort appt stats category))
+      (setq org-agenda-use-tag-inheritance nil))
 
     (defun my-todo-agenda ()
       "need to research the org-ql"
       (interactive)
       (org-ql-search
-        "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        ;; "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        (directory-files org-roam-directory nil ".org")
         '(todo)
         :title "Things to Be Done"
         :sort '(deadline)
-        :super-groups '((:auto-parent t))))
+        :super-groups `((:name "Daily plan"
+                               :deadline today)
+                        (:name "Weekly plan"
+                               :and
+                               (:deadline (after ,(format-time-string "%Y-%m-%d" (time-subtract (current-time) (* 7 24 60 60))))
+                                          :deadline (before ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 8 24 60 60))))))
+                        (:name "Monthly plan"
+                               :and
+                               (:deadline (after ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 7 24 60 60))))
+                                          :deadline (before ,(format-time-string "%Y-%m-%d" (time-add (current-time) (* 31 24 60 60))))))
+
+                        (:auto-parent t))))
 
     (use-package org-drill
       :defer t)
@@ -126,6 +143,7 @@
       :custom
       (org-download-screenshot-method "screencapture -i %s")
       (org-download-image-org-width 500)
+      (org-download-image-html-width 500)
       (org-download-image-dir "./img")
       :defer t)
 
@@ -199,6 +217,8 @@
 * writeroom mode
   #+begin_src emacs-lisp
     (use-package writeroom-mode
+      :custom
+      (writeroom-width 220)
       :defer t)
   #+end_src
 
@@ -241,7 +261,15 @@
       (setq org-roam-capture-templates
             `(("d" "default" plain "%?" :target
                (file+head "${slug}.org" "#+title: ${title}\n")
-               :unnarrowed t)))
+               :unnarrowed t)
+              ("b" "book" plain
+               "* The book in 3 sentences or 3 points\n* Impresisions\n* How the Book Changed Me\n* Favorite Quotes\n* Summary + Notes for each sections\n "
+               :target
+               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :book:\n\nauthor:"))
+              ("c" "course" plain
+               "* Impressions\n* Summary + Notes for each section\n "
+               :target
+               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :course:\n\nlink:\n"))))
       (setq org-roam-dailies-directory "journal/")
       (org-roam-db-autosync-enable))
 
@@ -590,15 +618,8 @@
 
       ;; to allow creating a new heading when performing the org refile
       (setq org-refile-allow-creating-parent-nodes 'confirm)
-
-
-      ;; customize the bullet symbol
-      (custom-set-variables '(org-bullets-bullet-list '("❐" "○" "﹅" "▶")))
       (setq org-superstar-headline-bullets-list '("❐" "○" "✎" "⚈"))
 
-      ;; to customize the org-capture template and clear the template before
-      ;; we add the template in the list.
-      (setq org-capture-templates nil)
 
       (setq org-todo-keywords
             '((sequence "TODO" "IN PROGRESS(i!)" "|" "DONE" "PRESERVE")))
@@ -608,40 +629,7 @@
               ("IN PROGRESS" . "#33eecc")
               ("NO_NEWS" . "#cdb7b5")
               ("ABANDON" . "#f2241f")
-              ("OFFERGET" . "#4f97d7")))
-
-
-      ;; in order to group the templates we need to add the key-description
-      ;; pair first or it will not work
-      (add-to-list 'org-capture-templates '("i" "Inbox"))
-      (add-to-list 'org-capture-templates
-                   '("im" "Misc Inbox" entry
-                     (file+headline "~/Dropbox/myorgs/inbox.org" "Misc")
-                     "** %^{title} %?\n %(current-kill 0)\n\n"))
-
-      (add-to-list 'org-capture-templates '("b" "Bookmarks"))
-      (add-to-list 'org-capture-templates
-                   '("bb" "Blogs bookmarks" entry
-                     (file+headline "~/Dropbox/myorgs/bookmarks.org" "Blogs")
-                     "** %^{title} %?\n %(current-kill 0)\n\n"))
-      (add-to-list 'org-capture-templates
-                   '("bs" "Speeches bookmarks" checkitem
-                     (file+headline "~/Dropbox/myorgs/bookmarks.org" "Speeches")
-                     "- [ ] [[%(current-kill 0)][%^{link description}]]\n"))
-
-      (add-to-list 'org-capture-templates '("t" "Todos"))
-      (add-to-list 'org-capture-templates
-                   '("td" "a one day todo" entry
-                     (file+headline "~/Dropbox/myorgs/todo.org" "一天內可以解決的事項")
-                     "** TODO %^{title} %?\n SCHEDULED: %^t\n%? "))
-      (add-to-list 'org-capture-templates
-                   '("tw" "a week todo" entry
-                     (file+headline "~/Dropbox/myorgs/todo.org" "一週內可以解決的事項")
-                     "** TODO %^{title} %?\n SCHEDULED: %t\n"))
-      (add-to-list 'org-capture-templates
-                   '("tl" "a longterm todo" entry
-                     (file+headline "~/Dropbox/myorgs/todo.org" "長期計畫")
-                     "** TODO %^{title} %?\n SCHEDULED: %t\n")))
+              ("OFFERGET" . "#4f97d7"))))
   #+end_src
 
 * provide package

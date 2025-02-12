@@ -566,6 +566,11 @@
    #+end_src
 
 
+   a way to change the which-key's hint for key binding!
+   (which-key-add-keymap-based-replacements my-prefix-keymap
+     "b" `("buffer" . ,my-prefix-bufferkeymap)
+     "h" `("help" . ,help-map))
+
    still have no idea how =(which-key-add-major-mode-key-based-replacements mode key desc)=
    works?
 
@@ -786,9 +791,7 @@
        (mapcar #'identity (aref data 1)))
 
      (defun search-function (input)
-       "Create a request to a search engine with INPUT.
-          Return 0 tells `ivy--exhibit' not to update the minibuffer.
-          We update it in the callback with `ivy-update-candidates'."
+       "Create a request to a search engine with INPUT."
        (search-request-data-google
         (request-response-data
          (request

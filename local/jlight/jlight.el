@@ -49,6 +49,7 @@
 
 (defvar ignore-clear-post-commands '(highlight-selected-word
                                      wrap-mark-operation
+                                     my-toggle-case-sensitive
                                      expand-and-highlight-region
                                      contract-and-highlight-region
                                      goto-next-highlighted-word
@@ -95,8 +96,6 @@ It's useful for the function like iedit restrict region."
   (cdar (last jlight-matches)))
 
 
-(defun jlight-get-beg-and-end-point-of-matched ()
-
 (defun get-index (value)
   "Get the index of the first occurrence of VALUE in the `jlight-matches` list."
   (cl-position value jlight-matches :test #'(lambda (x y) (equal x y))))
@@ -121,9 +120,10 @@ It's useful for the function like iedit restrict region."
   (eq jlight-matches '()))
 
 ;;;###autoload
-(defun highlight-selected-word ()
-  "Highlight the selected word using overlays."
-  (interactive)
+(defun highlight-selected-word (&optional case-sensitive)
+  "Highlight the selected word using overlays.
+CASE-SENSITIVE affect the buffer local variable `case-fold-search'."
+  (interactive "P")
 
   (unless (eq jlight-matches '())
     (when (region-active-p)
@@ -140,6 +140,7 @@ It's useful for the function like iedit restrict region."
   (let ((selected-word (if (region-active-p)
                            (buffer-substring-no-properties (region-beginning) (region-end))
                          (thing-at-point 'word)))
+        (case-fold-search (not case-sensitive)) ;; case-fold-search t means case insensitive
         (cur-pos (point)))
     (when selected-word
       (let ((regexp (regexp-quote selected-word)))

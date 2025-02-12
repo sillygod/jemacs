@@ -34,6 +34,10 @@
     ;;   :config
     ;;   (progn (unload-feature 'transient t) (require 'transient)))
 
+    (use-package git-timemachine
+      :defer 2
+      :after magit)
+
 
     (use-package magit
       :defer 2

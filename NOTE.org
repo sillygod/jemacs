@@ -5,22 +5,26 @@
   - https://github.com/jeremy-compostella/pdfgrep
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://github.com/minad/tempel (another choice for snippet completion)
+  - https://github.com/ksqsf/org-xlatex/blob/main/org-xlatex.el
 
   a nice show case of transient
   https://github.com/positron-solutions/transient-showcase
+
+  a collection of useful extensions for emacs
+  https://github.com/bbatsov/crux
 
 * Start to build my own emacs
 
 ** things needed to be done or enahnced
 
    - [ ] implement my own run-python-shell
+   - [ ] my own pdf viewer? (https://github.com/mozilla/pdf.js?utm_source=cdnjs&utm_medium=cdnjs_link&utm_campaign=cdnjs_library)
    - [ ] https://github.com/wbolster/emacs-python-coverage
-   - [ ] check devdocs' functionality and pop-up with window-frame
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
    - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
-   - [ ] [[https://github.com/syl20bnr/spacemacs/blob/develop/layers/%2Bmisc/multiple-cursors/packages.el][integration for multiple cursor from spacemacs]]
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
+   - [ ] asciinema (write utils for this)
 
 ** program relavant config
 
@@ -29,7 +33,6 @@
 
 ** better to have
 
-   - [ ] a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]])
    - [ ] interactive sql mode
    - [ ] write a plugin to read some good blogs, articles from some website (ex. https://stackoverflow.blog/)
    - [ ] k8s editor mode https://github.com/TxGVNN/emacs-k8s-mode/blob/master/k8s-mode.el
