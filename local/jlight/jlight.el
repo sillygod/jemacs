@@ -24,8 +24,6 @@
 
 ;;; Commentary:
 
-;; commentary
-
 ;;; Code:
 
 (require 'cl-lib)

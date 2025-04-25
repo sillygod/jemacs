@@ -1,5 +1,8 @@
-;;; package --- Summary
-;;; jq-yq.el                  -*- lexical-binding: t -*-
+;;; jq-yq.el --- Summary  -*- lexical-binding: t -*-
+;; Author: jing
+;; Maintainer: jing
+;; Keywords: jq-yq
+
 ;;; Commentary:
 ;;;
 ;;; Code:
@@ -22,7 +25,7 @@
       (deactivate-mark)))
 
 (defun jq-query-buffer (input content)
-  ""
+  "Call jq with the buffer content."
   (when (get-buffer "*jq*")
     (with-current-buffer "*jq*"
       (erase-buffer)))
@@ -40,7 +43,7 @@ X is ignored."
 
 (defun wrap-to-consult (prog fn &rest args)
   (let ((res (append (if (listp prog) prog (list prog)) (apply fn args))))
-    (list :command res)))
+    (list res)))
 
 ;;;###autoload
 (defun consult-jq ()
@@ -53,9 +56,9 @@ X is ignored."
                    (buffer-substring-no-properties (point-min) (point-max)))))
     (jq-action
      (consult--read
-      (consult--async-command #'(lambda (input) (wrap-to-consult "echo" #'jq-query-buffer input content)))
+      (consult--process-collection #'(lambda (input) (wrap-to-consult "echo" #'jq-query-buffer input content)))
       :prompt "jq query: "
-      :initial "\\."
+      :initial "."
       :preview-key nil
       :sort nil))))
 
@@ -108,9 +111,9 @@ X is ignored."
 
     (yq-action
      (consult--read
-      (consult--async-command #'(lambda (input) (wrap-to-consult "echo" #'yq-query-buffer input content)))
+      (consult--process-collection #'(lambda (input) (wrap-to-consult "echo" #'yq-query-buffer input content)))
       :prompt "yq query: "
-      :initial "\\."
+      :initial "."
       :preview-key nil
       :sort nil))))
 

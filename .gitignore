@@ -17,3 +17,4 @@ settings.el
 config.el
 modules/*.el
 core/*.el
+.aider*

@@ -42,6 +42,28 @@
           (if (y-or-n-p "do you want to set the project root manually?")
               (read-directory-name "select directory: "))))
 
+    (defun python-detect-venv-tool ()
+      "Detect which virtual environment tool is used in the current project.
+    Checks for Poetry (via pyproject.toml or poetry command)
+    or uv (via uv.lock or uv venv --show).
+    Returns :poetry, :uv, or nil if neither is detected."
+      (when-let ((root (python-find-project-root)))
+        (let ((default-directory root))
+          (cond
+           ;; Check for Poetry: look for pyproject.toml with [tool.poetry] or valid poetry env
+           ((or (and (file-exists-p "pyproject.toml")
+                     (with-temp-buffer
+                       (insert-file-contents "pyproject.toml")
+                       (re-search-forward "\\[tool\\.poetry\\]" nil t)))
+                (let ((poetry-env (string-trim-right
+                                   (shell-command-to-string "poetry env info -p 2>/dev/null"))))
+                  (and (not (equal "" poetry-env)) (file-directory-p poetry-env))))
+            :poetry)
+           ;; Check for uv: look for uv.lock or valid uv venv
+           ((file-exists-p "uv.lock")
+            :uv)
+           (t nil)))))
+
     (defun extract-python-version-from-pyproject-toml (file)
       "Extract Python version from a pyproject.toml file.
     Returns the Python version number as a string."
@@ -62,6 +84,33 @@
          :prompt "Choose the version want to install: "
          :sort nil
          :require-match t)))
+
+    (defun python-get-uv-lock-venv-path ()
+      "Extract the virtual environment path from the 'virtual' field in uv.lock.
+    Looks for 'source = { virtual = \"xxx\" }' in the [package] section.
+    Returns the absolute path to the virtual environment or nil if not found."
+      (when-let ((root (python-find-project-root))
+                 (uv-lock-file (expand-file-name "uv.lock" root)))
+        (when (file-exists-p uv-lock-file)
+          (with-temp-buffer
+            (insert-file-contents uv-lock-file)
+            (goto-char (point-min))
+            ;; Search for [package] section
+            ;; Search for source = { virtual = "xxx" } within the section
+            (when (re-search-forward "source = { virtual = \"\\([^\"]+\\)\" }" nil t)
+              (let ((venv-path (match-string 1)))
+                ;; Resolve relative path against project root
+                (if (equal venv-path ".")
+                    (expand-file-name ".venv" root)
+                  (expand-file-name venv-path root))))))))
+
+    (defun python-vterm-setup-string ()
+      "Return the command to active python virtualenv for the vterm."
+      (let ((tool (python-detect-venv-tool)))
+        (cond
+         ((equal tool :uv) (concat "source " (python-get-uv-lock-venv-path) "/bin/activate"))
+          ((equal tool :poetry) "source $(poetry env info --path)/bin/activate")
+          (t nil))))
 
     (defun decide-python-version ()
       "extract the python version defined in the pyproject.toml or ask to input the python

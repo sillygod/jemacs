@@ -55,6 +55,7 @@
       :defer 2
       :after magit)
 
+    ;; https://github.com/doomemacs/doomemacs/issues/7191
     (use-package code-review
       :defer 2
       :after forge)

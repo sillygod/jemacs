@@ -61,15 +61,15 @@
   #+begin_src emacs-lisp
     (use-package apheleia
       :defer t
+      :functions
+      apheleia-global-mode
       :defines
       apheleia-formatters
       apheleia-mode-alist
-      :hook
-      (js-mode . apheleia-mode)
-      (js2-mode . apheleia-mode)
       :config
       (setf (alist-get 'prettier-json apheleia-formatters)
-            '("prettier" "--stdin-filepath" filepath)))
+            '("prettier" "--stdin-filepath" filepath))
+      (apheleia-global-mode 1))
   #+end_src
 
 * mobile

@@ -207,7 +207,7 @@
       "Perform some setup instruction when spawning a new shell for certain mode."
       (cond
        ((member major-mode '(python-mode python-ts-mode)) (progn
-                                                            (vterm-send-string "source $(poetry env info --path)/bin/activate")
+                                                            (vterm-send-string (python-vterm-setup-string))
                                                             (vterm-send-return)))))
 
     (defun project-run-vterm (&optional arg)

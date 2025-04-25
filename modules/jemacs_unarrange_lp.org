@@ -61,7 +61,7 @@
 
   #+begin_src emacs-lisp
     (use-package aider
-      :straight (:host github :repo "tninja/aider.el" :files ("aider.el"))
+      :straight (:host github :repo "tninja/aider.el" :files ("aider.el" "aider-core.el" "aider-file.el" "aider-code-change.el" "aider-discussion.el" "aider-prompt-mode.el"))
       :config
       ;; Use claude-3-5-sonnet cause it is best in aider benchmark
       (setq aider-args '("--model" "mistral/mistral-large-latest"))
@@ -532,6 +532,7 @@
       (flycheck-highlighting-mode 'lines)
       (flycheck-indication-mode '())
       (flycheck-emacs-lisp-load-path 'inherit)
+      (flycheck-javascript-eslint-executable "./node_modules/.bin/eslint")
       :config
       (add-hook 'org-src-mode-hook #'(lambda ()
                                        (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
@@ -706,32 +707,29 @@
 
    #+begin_src emacs-lisp
      (defun json-get-path (current-node output)
-       "Get path to json value at cursor position.  CURRENT-NODE is a tree-sitter-node.
+       "Get path to json value at cursor position.  CURRENT-NODE is a treesit-node.
      OUTPUT is parsed path list."
-       (let* ((parent-node (tsc-get-parent current-node)))
+       (let* ((parent-node (treesit-node-parent current-node)))
          (if parent-node
-           (progn
-             (when (eq (tsc-node-type parent-node) 'array)
-               (let ((index -1)
-                     (cursor (tsc-make-cursor parent-node)))
-                 (tsc-goto-first-child cursor)
-                 (while (not (tsc-node-eq current-node (tsc-current-node cursor)))
-                     (progn
-                       (tsc-goto-next-sibling cursor)
-                       (if (tsc-node-named-p (tsc-current-node cursor))
-                         (progn
-                           (setq index (+ index 1))))))
-                 (setq output (push index output))))
-             (when (eq (tsc-node-type current-node) 'pair)
-                 (setq output (push (tsc-node-text (tsc-get-nth-child current-node 0)) output)))
-             (json-get-path parent-node output))
+             (progn
+               (when (equal (treesit-node-type parent-node) "array")
+                 (let ((index -1)
+                       (child (treesit-node-child parent-node 0)))
+                   (while (and child (not (treesit-node-eq current-node child)))
+                     (when (treesit-node-check child 'named)
+                       (setq index (+ index 1)))
+                     (setq child (treesit-node-next-sibling child)))
+                   (setq output (push index output))))
+               (when (equal (treesit-node-type current-node) "pair")
+                 (setq output (push (treesit-node-text (treesit-node-child current-node 0)) output)))
+               (json-get-path parent-node output))
            output)))
 
      (defun json-print-path-js ()
        "Copy json path in JavaScript format."
        (interactive)
        (let (json-path)
-         (dolist (elt (json-get-path (tree-sitter-node-at-pos) '()) json-path)
+         (dolist (elt (json-get-path (treesit-node-at (point)) '()) json-path)
            (when (stringp elt)
              (let* ((trimmed-elt (string-trim elt "\"" "\"")))
                (if (string-match-p "-" trimmed-elt)
@@ -1003,6 +1001,7 @@
       (dart-mode . eglot-ensure)
       (js-mode . eglot-ensure)
       (js-ts-mode . eglot-ensure)
+      (tsx-mode-hook . eglot-ensure)
       (typescript-ts-mode . eglot-ensure)
       (typescript-mode . eglot-ensure)
       (json-mode . eglot-ensure) ;; npm i -g vscode-langservers-extracted
@@ -1328,6 +1327,13 @@
                      "v" "workon env" 'workon-virtual-env-and-lsp
                      "d" "debug" 'dap-hydra)))
 
+      (with-eval-after-load 'json-ts-mode
+        (define-leader-key-map-for 'json-ts-mode-map
+                                   "" "major mode" nil
+                                   "l" "lookup" nil
+                                   "ll" "snatch path" 'json-print-path-js
+                                   "lj" "jq" 'consult-jq))
+
       (with-eval-after-load 'json-mode
         (define-leader-key-map-for 'json-mode-map
                                    "" "major mode" nil
@@ -1440,6 +1446,8 @@
 
       (define-leader-key-global
        "a" '(:ignore t :which-key "applications")
+
+       "aa" '(aider-transient-menu :which-key "aider-chat")
 
        "ad" '(docker t :which-key "docker")
 

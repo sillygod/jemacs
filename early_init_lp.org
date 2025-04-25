@@ -43,6 +43,32 @@
     ;;                               (setq gc-cons-threshold 800000)))
   #+end_src
 
+* set up config home directory
+  #+begin_src emacs-lisp
+    (defvar home-dir (file-name-directory load-file-name))
+    (setq user-emacs-directory (expand-file-name "emacs-home/" home-dir))
+    (unless (file-exists-p user-emacs-directory)
+      (mkdir user-emacs-directory t))
+
+  #+end_src
+
+* loading custom settings
+
+  #+begin_src emacs-lisp
+    (when (if (fboundp 'native-comp-available-p) (native-comp-available-p))
+      (when (fboundp 'startup-redirect-eln-cache)
+        ;; to make it automatically run startup--update-eln-cache
+        ;; which will set the eln cache directory under the user-emcas-directory
+        (setq native-comp-enable-subr-trampolines (expand-file-name (file-name-as-directory "eln-cache") user-emacs-directory))
+        (setq startup--original-eln-load-path native-comp-eln-load-path)))
+
+    (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
+    (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
+    (when (file-exists-p jemacs-config-file)
+      (load jemacs-config-file nil 'nomessage))
+
+  #+end_src
+
 * splash buffer
 
    maybe, I can refer to a startup dashboard ([[https://github.com/rougier/nano-emacs/blob/master/nano-splash.el][reference]]) to improve my splash buffer
@@ -98,15 +124,6 @@
 
   #+end_src
 
-* set up config home directory
-  #+begin_src emacs-lisp
-    (defvar home-dir (file-name-directory load-file-name))
-    (setq user-emacs-directory (expand-file-name "emacs-home/" home-dir))
-    (unless (file-exists-p user-emacs-directory)
-      (mkdir user-emacs-directory t))
-
-  #+end_src
-
 * prevent redisplay before setup the ui
 
   #+begin_src emacs-lisp
@@ -129,22 +146,6 @@
   #+begin_src emacs-lisp
     (setq package-enable-at-startup nil)
     (setq load-prefer-newer noninteractive)
-  #+end_src
-
-* loading custom settings
-
-  #+begin_src emacs-lisp
-    (when (if (fboundp 'native-comp-available-p) (native-comp-available-p))
-      (when (fboundp 'startup-redirect-eln-cache)
-        ;; to make it automatically run startup--update-eln-cache
-        ;; which will set the eln cache directory under the user-emcas-directory
-        (setq startup--original-eln-load-path native-comp-eln-load-path)))
-
-    (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
-    (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
-    (when (file-exists-p jemacs-config-file)
-      (load jemacs-config-file nil 'nomessage))
-
   #+end_src
 
 * UI adjustment

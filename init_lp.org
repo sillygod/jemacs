@@ -74,3 +74,12 @@
       (load jemacs-settings-file nil 'nomessage))
 
   #+end_src
+
+* after init
+
+  #+begin_src emacs-lisp
+    (require 'jworkspace)
+
+    (add-hook 'window-setup-hook (lambda ()
+                                   (jworkspace-new-workspace "main")) t)
+  #+end_src
