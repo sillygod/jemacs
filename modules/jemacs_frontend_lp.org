@@ -26,7 +26,8 @@
     (use-package web-mode
       :defer t
       :mode
-      (("\\.html\\'" . web-mode)))
+      (("\\.html\\'" . web-mode)
+       ("\\.vue\\'" . web-mode)))
 
     (use-package js2-mode
       :after (rainbow-delimiters)

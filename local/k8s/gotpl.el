@@ -14,6 +14,10 @@
 ;; 1) Highlights all strings in the source file, including HTML attributes,
 ;;    and does not properly highlight template actions inside these strings.
 
+;; https://emacs.stackexchange.com/questions/82758/mode-for-editing-helm-templates-helm-as-in-helm-charts-not-emacs-helm-mode
+
+;; https://github.com/ngalaiko/tree-sitter-go-template
+
 (defvar go-template-mode-syntax-table
   (let ((st (make-syntax-table)))
     ;; Add _ to :word: character class

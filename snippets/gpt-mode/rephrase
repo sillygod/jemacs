@@ -1,0 +1,6 @@
+# key : <rephrase
+# name : Rephrase
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+Please rephrase this sentence to sound more natural: "${1:sentence}".

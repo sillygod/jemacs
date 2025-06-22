@@ -819,7 +819,7 @@
                              (t nil))))
          (google-search-action
           (consult--read
-           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
+           (consult--process-collection #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
            :prompt "search: "
            :initial initial-input
            :preview-key nil
@@ -878,7 +878,7 @@
                              (t nil))))
          (artifacthub-search-action
           (consult--read
-           (consult--async-command #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-artifacthub-function input)))
+           (consult--process-collection #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-artifacthub-function input)))
            :prompt "search: "
            :initial initial-input
            :preview-key nil

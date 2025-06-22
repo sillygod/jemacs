@@ -1,0 +1,6 @@
+# key : <vocabulary
+# name : Vocabulary
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+Define the word "${1:`(current-kill 0)`}" in English, including its IPA pronunciation, phonetic breakdown, and Oxford Phonetics Respelling. Explain its prefix, suffix, and root word. Provide its meanings in different contexts, along with example sentences for each. Additionally, list common collocations and relevant synonyms, clarifying their contextual differences and whether they can be used interchangeably. Provide a way of thinking in English to learn this word.

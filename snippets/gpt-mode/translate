@@ -1,0 +1,5 @@
+# key : <translate
+# name : Translate
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+Please translate this sentence "${1:sentence}" into "${2:language}".

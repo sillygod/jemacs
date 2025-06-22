@@ -59,7 +59,7 @@
 
 * aider chat
 
-  #+begin_src emacs-lisp
+  #+begin_src emacs-lisp :tangle no
     (use-package aider
       :straight (:host github :repo "tninja/aider.el" :files ("aider.el" "aider-core.el" "aider-file.el" "aider-code-change.el" "aider-discussion.el" "aider-prompt-mode.el"))
       :config
@@ -74,6 +74,21 @@
       ;; ;;
       ;; Optional: Set a key binding for the transient menu
       )
+  #+end_src
+
+  now, use this implementation instead
+  https://github.com/MatthewZMD/aidermacs
+
+  #+begin_src emacs-lisp
+    (use-package aidermacs
+      :bind (("C-c a" . aidermacs-transient-menu))
+      :config
+      ; Set API_KEY in .bashrc, that will automatically picked up by aider or in elisp
+      (setenv "MISTRAL_API_KEY" mistral_api_key)
+      :custom
+      ; See the Configuration section below
+      (aidermacs-use-architect-mode t)
+      (aidermacs-default-model "mistral/mistral-large-latest"))
   #+end_src
 
 * pixel scroll
@@ -127,6 +142,39 @@
 
 * gptel
   https://github.com/karthink/gptel
+
+  #+begin_src emacs-lisp
+    (use-package gptel
+      :defer t
+      :config
+      ;; OPTIONAL configuration
+      (setq gptel-model 'mistral-small
+
+            gptel-default-mode #'org-mode
+            gptel-backend
+            (gptel-make-openai "mistral"    ;Any name you want
+              :host "api.mistral.ai"
+              :endpoint "/v1/chat/completions"
+              :protocol "https"
+              :stream t
+              :key mistral_api_key
+              :models '("mistral-large-latest")))
+      (gptel-make-openai "Groq"             ;Any name you want
+        :host "api.groq.com"
+        :endpoint "/openai/v1/chat/completions"
+        :stream t
+        :key groq_api_key          ;can be a function that returns the key
+        :models '("meta-llama/llama-3.3-70b-versatile"
+                  "meta-llama/llama-4-maverick-17b-128e-instruct"
+                  "deepseek-r1-distill-llama-70b"
+                  "qwen-qwq-32b"))
+
+      (transient-suffix-put 'gptel-menu (kbd "RET") :key "C-<return>"))
+  #+end_src
+
+* minuet-ai
+
+  currently, not take into consideration
 
 * rainbow-mode
   #+begin_src emacs-lisp
@@ -599,6 +647,7 @@
                (css . ("https://github.com/tree-sitter/tree-sitter-css"))
                (go . ("https://github.com/tree-sitter/tree-sitter-go"))
                (html . ("https://github.com/tree-sitter/tree-sitter-html"))
+               (helm . ("https://github.com/ngalaiko/tree-sitter-go-template" "master" "dialects/helm/src"))
                (javascript . ("https://github.com/tree-sitter/tree-sitter-javascript"))
                (json . ("https://github.com/tree-sitter/tree-sitter-json"))
                (lua . ("https://github.com/Azganoth/tree-sitter-lua"))
@@ -611,8 +660,9 @@
                (ruby . ("https://github.com/tree-sitter/tree-sitter-ruby"))
                (rust . ("https://github.com/tree-sitter/tree-sitter-rust"))
                (sql . ("https://github.com/m-novikov/tree-sitter-sql"))
-               (yaml "https://github.com/ikatyang/tree-sitter-yaml")
+               (yaml "https://github.com/tree-sitter-grammars/tree-sitter-yaml")
                (toml . ("https://github.com/tree-sitter/tree-sitter-toml"))
+               (vue . ("https://github.com/tree-sitter-grammars/tree-sitter-vue"))
                (zig . ("https://github.com/GrayJack/tree-sitter-zig"))))
        :config
        (let ((langs (mapcar 'car treesit-language-source-alist)))
@@ -999,6 +1049,7 @@
       (rust-ts-mode . eglot-ensure)
       (lua-mode . eglot-ensure)
       (dart-mode . eglot-ensure)
+      (helm-mode . eglot-ensure)
       (js-mode . eglot-ensure)
       (js-ts-mode . eglot-ensure)
       (tsx-mode-hook . eglot-ensure)
@@ -1025,6 +1076,7 @@
       (fset #'jsonrpc--log-event #'ignore)
 
       (add-to-list 'eglot-server-programs '(python-mode . ("pyright-langserver" "--stdio")))
+      (add-to-list 'eglot-server-programs '(helm-mode "helm_ls" "serve"))
       (add-to-list 'eglot-server-programs '(dart-mode . ("dart" "language-server" "--client-id" "emacs.eglot-dart" "--client-version" "1.2" "--protocol" "lsp")))
       (add-to-list 'eglot-server-programs '(solidity-mode . ("nomicfoundation-solidity-language-server" "--stdio")))
       (add-to-list 'eglot-server-programs
@@ -1447,7 +1499,7 @@
       (define-leader-key-global
        "a" '(:ignore t :which-key "applications")
 
-       "aa" '(aider-transient-menu :which-key "aider-chat")
+       "aa" '(aidermacs-transient-menu :which-key "aider-chat")
 
        "ad" '(docker t :which-key "docker")
 

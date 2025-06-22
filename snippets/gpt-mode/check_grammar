@@ -1,0 +1,6 @@
+# key : <check_grammar
+# name : Check Grammar
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+Please check the sentence's grammar "${1:sentence}". Give some advices as a native English speaker and how would you rephrase it to make it more fluent.

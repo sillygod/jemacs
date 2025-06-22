@@ -127,7 +127,8 @@
       (add-to-list 'display-buffer-alist
                    '("\\`\\*Embark Collect \\(Live\\|Completions\\)\\*"
                      nil
-                     (window-parameters (mode-line-format . none)))))
+                     (window-parameters (mode-line-format . none))))
+      (define-key embark-file-map (kbd "f") 'find-name-dired))
 
     ;; Consult users will also want the embark-consult package.
     (use-package embark-consult
@@ -391,6 +392,9 @@
       (indent-bars-pad-frac 0.1)
       (indent-bars-zigzag nil)
       (indent-bars-treesit-support t)
+      (indent-bars-no-descend-lists t)
+      (indent-bars-treesit-scope '((python function_definition class_definition for_statement
+                                           if_statement with_statement while_statement)))
       (indent-bars-prefer-character t)
       (indent-bars-color-by-depth nil)
       (indent-bars-highlight-current-depth '(:blend 1)) ; pump up the BG blend on current
