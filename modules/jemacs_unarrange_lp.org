@@ -169,7 +169,29 @@
                   "deepseek-r1-distill-llama-70b"
                   "qwen-qwq-32b"))
 
+      (require 'gptel-integrations)
+
       (transient-suffix-put 'gptel-menu (kbd "RET") :key "C-<return>"))
+  #+end_src
+
+* mcp
+  
+  #+begin_src emacs-lisp
+    (use-package mcp
+      :defer t
+      :straight (:host github :repo "lizqwerscott/mcp.el" :files ("*.el"))
+      :after gptel
+      :custom (mcp-hub-servers
+               `(("filesystem" . (:command "npx" :args ("-y" "@modelcontextprotocol/server-filesystem" "~/Downloads/works/unno")))
+                 ("fetch" . (:command "uvx" :args ("mcp-server-fetch")))))
+      ;; ("graphlit" . (
+      ;;                :command "npx"
+      ;;                :args ("-y" "graphlit-mcp-server")
+      ;;                :env (
+      ;;                      :GRAPHLIT_ORGANIZATION_ID "your-organization-id"
+      ;;                      :GRAPHLIT_ENVIRONMENT_ID "your-environment-id"
+      ;;                      :GRAPHLIT_JWT_SECRET "your-jwt-secret")))))
+      :config (require 'mcp-hub))
   #+end_src
 
 * minuet-ai

@@ -32,5 +32,11 @@
   (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<down>") #'next-line)
   (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "M-<up>") #'comint-previous-input))
 
+;; your ai key
+(setq mistral_api_key "")
+(setq groq_api_key "")
+(setq codestral_api_key "")
+
+
 (provide 'settings)
 ;;; settings.el ends here
