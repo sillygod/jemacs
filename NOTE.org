@@ -12,9 +12,14 @@
 
   a collection of useful extensions for emacs
   https://github.com/bbatsov/crux
-  
+
   add an shortcut
   find-name-dired
+
+  start to leverage the gptel
+  https://github.com/gregoryg/AIPIHKAL
+
+  global-text-scale-adjust <- why does this sometimes not work
 
 * Start to build my own emacs
 

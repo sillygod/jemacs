@@ -148,7 +148,7 @@
       :defer t
       :config
       ;; OPTIONAL configuration
-      (setq gptel-model 'mistral-small
+      (setq gptel-model 'mistral-large-latest
 
             gptel-default-mode #'org-mode
             gptel-backend
@@ -175,7 +175,7 @@
   #+end_src
 
 * mcp
-  
+
   #+begin_src emacs-lisp
     (use-package mcp
       :defer t
