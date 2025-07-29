@@ -81,5 +81,6 @@
     (require 'jworkspace)
 
     (add-hook 'window-setup-hook (lambda ()
-                                   (jworkspace-new-workspace "main")) t)
+                                   (jworkspace-new-workspace "main")
+                                   (jworkspace-switch-workspace "main")) t)
   #+end_src

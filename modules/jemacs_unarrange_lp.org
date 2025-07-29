@@ -59,7 +59,7 @@
 
 * aider chat
 
-  #+begin_src emacs-lisp 
+  #+begin_src emacs-lisp
     (use-package aider
       :defer t
       :config
@@ -206,6 +206,7 @@
                   "qwen-qwq-32b"))
 
       (require 'gptel-integrations)
+      (macher-install)
 
       ;; (transient-suffix-put 'gptel-menu (kbd "RET") :key "C-<return>")
 
@@ -403,6 +404,33 @@
       )
   #+end_src
 
+  https://github.com/kmontag/macher
+
+  #+begin_src emacs-lisp
+    (use-package macher
+      :defer t
+      :ensure (:host github :repo "kmontag/macher")
+
+      :custom
+      ;; The org UI has structured navigation and nice content folding.
+      (macher-action-buffer-ui 'org)
+
+      :config
+      ;; Adjust buffer positioning to taste.
+      ;; (add-to-list
+      ;;  'display-buffer-alist
+      ;;  '("\\*macher:.*\\*"
+      ;;    (display-buffer-in-side-window)
+      ;;    (side . bottom)))
+      ;; (add-to-list
+      ;;  'display-buffer-alist
+      ;;  '("\\*macher-patch:.*\\*"
+      ;;    (display-buffer-in-side-window)
+      ;;    (side . right)))
+      )
+
+  #+end_src
+
 * mcp
 
   #+begin_src emacs-lisp
@@ -462,6 +490,9 @@
   #+end_src
 
 * terraform
+
+  https://github.com/kgrotel/terraform-ts-mode
+  terraform ts mode?
 
   #+begin_src emacs-lisp
     (use-package terraform-mode
