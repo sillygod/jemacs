@@ -19,7 +19,7 @@
 *** install emacs-plus
 
     #+begin_src sh
-      brew install emacs-plus@30 --with-xwidgets --with-modern-papirus-icon --with-native-comp
+      brew install emacs-plus@30 --with-xwidgets --with-modern-papirus-icon
     #+end_src
 
 ** clone the repo

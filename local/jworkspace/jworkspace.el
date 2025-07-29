@@ -63,7 +63,9 @@ See Info node `(elisp)Window Parameters'."
                    (save-window-excursion
                      (delete-other-windows)
                      (show-splash-buffer)
-                     (window-state-get)))))
+                     (window-state-get))))
+  temp-window-config nil)
+  
 
 (defun jworkspace-remove-nth-element (nth list)
   "Remove the NTH index's element in the LIST."
@@ -122,12 +124,23 @@ it will create the specified workspace."
                         (jworkspace-new-workspace workspace-name))))
 
     (when (jworkspace--get-current-workspace)
-      ;; (setf (jworkspace-window-config (jworkspace--get-current-workspace)) (current-window-configuration)))
       (setf (jworkspace-window-config (jworkspace--get-current-workspace)) (window-state-get)))
 
     ;; (set-window-configuration (jworkspace-window-config workspace))
     (window-state-put (jworkspace-window-config workspace))
     (jworkspace--set-current-workspace workspace)))
+
+;;;###autoload
+(defun jworkspace-toggle-maximize-window ()
+  "Maximize the current window and can toggle back the original window layout."
+  (interactive)
+  (when-let ((workspace (jworkspace--get-current-workspace)))
+    (if (and (one-window-p)
+             (jworkspace-temp-window-config workspace))
+        (window-state-put (jworkspace-temp-window-config workspace))
+      (progn
+        (setf (jworkspace-temp-window-config workspace) (window-state-get))
+        (delete-other-windows)))))
 
 ;;;###autoload
 (defun jworkspace-rename-workspace ()

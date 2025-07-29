@@ -127,12 +127,6 @@
         (unless vterm-copy-mode
           (vterm-copy-mode))))
 
-    (defun prevent-hydra-interfere-vterm (hint caller)
-      (when (equal major-mode 'vterm-mode)
-        (unless vterm-copy-mode
-          (vterm-copy-mode))))
-
-
     (defun toggle-vterm-copy-mode-when-window-selection-changed ()
       "Prevent vterm auto scroll buffer to the bottom when
     moving cursor to other window."

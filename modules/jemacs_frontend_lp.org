@@ -48,10 +48,8 @@
     (use-package tsx-mode
       :defer t
       :straight
-      (:type git :host github :repo "orzechowskid/tsx-mode.el")
+      (:type git :host github :repo "orzechowskid/tsx-mode.el" :branch "emacs30")
       :mode (("\\.[jt]s[x]?\\'" . tsx-mode))
-      :init
-      (require 'tsx-mode)
       :config
       (tsx-mode))
 

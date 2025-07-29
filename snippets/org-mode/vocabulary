@@ -1,0 +1,87 @@
+# key : <vocabulary
+# name : Vocabulary
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+Define the word "${1:`(current-kill 0)`}" in English, including its IPA pronunciation, phonetic breakdown, and Oxford Phonetics Respelling. Explain its prefix, suffix, and root word. Provide its meanings in different contexts, along with example sentences for each. Additionally, list common collocations and relevant synonyms, clarifying their contextual differences and whether they can be used interchangeably. Provide a way of thinking in English to learn this word.
+
+Here is an example using the word “abase”:
+
+---
+
+📘 **Definition of "abase"**
+
+**Abase** *(verb)* — to lower someone in rank, position, reputation, or self-respect; to degrade or humble.
+
+🔤 **Pronunciation**
+
+- **IPA:** /əˈbeɪs/  
+- **Phonetic Breakdown:** uh-BAYS  
+- **Oxford Phonetics Respelling:** /ə-BAYS/
+
+🧱 **Word Structure: Prefix, Root, and Suffix**
+
+- **Prefix:** **a-** (from Latin, meaning "to" or "toward")  
+- **Root:** **base** (from Latin *basis*, meaning “foundation” or “low part”)  
+- **Suffix:** *(none explicitly; "-e" is part of the verb form)*
+
+💡 So, **abase** literally means *"to bring toward the base (bottom)"* — hence, to lower someone in status or dignity.
+
+---
+
+### 💡 Meanings in Different Contexts
+
+#### 1. **Social/Honor Context**  
+**Meaning:** To humiliate or belittle someone publicly or emotionally.  
+**Example:**  
+> The general refused to **abase** himself before the enemy commander.
+
+#### 2. **Moral/Ethical Context**  
+**Meaning:** To lower one's own dignity, often voluntarily or out of shame.  
+**Example:**  
+> She would never **abase** herself by begging for his forgiveness.
+
+#### 3. **Religious or Literary Context**  
+**Meaning:** To humble oneself before a higher power or authority.  
+**Example:**  
+> He chose to **abase** himself before God in prayer and repentance.
+
+---
+
+### 🧩 Common Collocations
+
+- **abase oneself**  
+- **be abased**  
+- **utterly abased**  
+- **refuse to abase**  
+- **feel abased**
+
+---
+
+### 📚 Relevant Synonyms and Differences
+
+| **Synonym**   | **Meaning**                                  | **Context**                         | **Interchangeable?**     |
+|-------------+--------------------------------------------+-----------------------------------+------------------------|
+| **Degrade**   | Lower in dignity, rank, or moral character | Formal, broad usage               | ✅ Often               |
+| **Humiliate** | Cause someone to feel ashamed              | Emotional/social contexts         | ✅ Sometimes           |
+| **Belittle**  | Dismiss someone as unimportant             | Psychological, not formal ranking | 🚫 Not always         |
+| **Demean**    | Treat as lacking in worth or dignity       | Emotional/social                  | ✅ Often               |
+| **Mortify**   | Cause extreme embarrassment or shame       | Strong emotional reaction         | 🚫 Different emphasis |
+| **Lower**     | Make less in amount or status              | Generic                           | ✅ With caution       |
+
+---
+
+### 🧠 How to Think in English to Learn "Abase"
+
+> “To **abase** is to bring someone **down to the base level** — socially, emotionally, or morally.”
+
+Imagine someone **standing tall** and then being **pushed downward** — not physically, but in terms of **respect or status**.
+
+- **Visual trick**: Think of the word **"base"** as the **bottom floor**, and “abasing” someone is **pushing them down to that floor**.  
+- Use the phrase:  
+  > “I will not abase myself” → “I won’t lower myself just to please others.”
+
+---
+
+Now, define the word: **[INSERT TARGET WORD HERE]** using the **same format and level of detail** as shown above.
+

@@ -1,0 +1,6 @@
+# key : <translate
+# name : Translate
+# contributor : Jing <sillygod@livemail.tw>
+# expand-env: ((yas-indent-line 'nothing))
+# --
+Please provide a brief explanation of the tone, context, collocations, and phrase usage in the following sentence, and translate it into natural, fluent "${1:language}" suitable for user-facing product copy: "${2:`(current-kill 0)`}"

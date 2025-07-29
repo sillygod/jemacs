@@ -628,16 +628,6 @@
        (when (active-minibuffer-window)
          (select-window (active-minibuffer-window))))
 
-     (defun toggle-maximize-buffer ()
-       "Maximize buffer."
-       (interactive)
-       (save-excursion
-         (if (and (= 1 (length (window-list)))
-                  (assoc ?_ register-alist))
-             (jump-to-register ?_)
-           (progn
-             (window-configuration-to-register ?_)
-             (delete-other-windows)))))
 
      (defun org-file-show-headings (org-file)
        (interactive)

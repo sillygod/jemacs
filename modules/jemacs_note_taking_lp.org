@@ -569,6 +569,9 @@
          (js . t)
          (python . t)))
 
+      ;; NOTE: we need to add this to make org src block highlight the syntax
+      (add-to-list 'org-src-lang-modes '("python" . python))
+
       (add-to-list 'org-structure-template-alist '("sel" . "src emacs-lisp"))
       (add-to-list 'org-structure-template-alist '("sb" . "src bash"))
       (add-to-list 'org-structure-template-alist '("sp" . "src python"))

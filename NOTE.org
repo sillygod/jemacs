@@ -14,10 +14,13 @@
   https://github.com/bbatsov/crux
 
   add an shortcut
-  find-name-dired
+  find-name-dired (find is too slow)
+  consult-find  (use find)
+  I think we can use =rg --files | rg xxx= instead
 
   start to leverage the gptel
-  https://github.com/gregoryg/AIPIHKAL
+  https://github.com/jwiegley/gptel-prompts
+  https://github.com/rajp152k/fabric-gpt.el
 
   global-text-scale-adjust <- why does this sometimes not work
 
