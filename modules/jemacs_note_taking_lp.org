@@ -418,6 +418,51 @@
             :require-match t))))))
 
 
+
+
+    (defun random-bytes (n)
+      "Return a unibyte string of N random bytes."
+      (if (file-readable-p "/dev/urandom")
+          ;; Use system CSPRNG if available
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally "/dev/urandom" nil nil n)
+            (buffer-string))
+        ;; Fallback to Emacs PRNG
+        (let ((s (make-string n 0)))
+          (dotimes (i n s)
+            (aset s i (random 256))))))
+
+    (defun secure-random-password (&optional length algo symbols)
+      "Generate a password of LENGTH chars using ALGO hash and SYMBOLS charset.
+    Defaults: LENGTH=20, ALGO='sha256, SYMBOLS=alnum+symbols."
+      (let* ((len (or length 20))
+             (charset (concat "abcdefghijklmnopqrstuvwxyz"
+                              "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                              "0123456789"
+                              (or symbols "!@#$%^&*_-+=")))
+             (clen (length charset))
+             ;; Step 1: get random bytes
+             (seed (random-bytes 64))
+             ;; Step 2: hash them with secure-hash
+             (digest (secure-hash (or algo 'sha256) seed nil nil t))
+             ;; Step 3: repeat hash if we need more material
+             (pool (apply #'concat
+                          (cl-loop repeat 4
+                                   collect (secure-hash (or algo 'sha256)
+                                                        (concat digest seed)
+                                                        nil nil t)))))
+        ;; Step 4: map hash bytes into charset
+        (apply #'string
+               (cl-loop for i below len
+                        for b = (aref pool i)
+                        collect (aref charset (% b clen))))))
+
+    (defun insert-secure-random-password (length)
+      "Prompt for LENGTH and insert a secure random password at point."
+      (interactive "nPassword length: ")
+      (insert (secure-random-password length)))
+
   #+end_src
 
 * org copy subtree's content

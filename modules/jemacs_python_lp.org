@@ -47,7 +47,7 @@
     Checks for Poetry (via pyproject.toml or poetry command)
     or uv (via uv.lock or uv venv --show).
     Returns :poetry, :uv, or nil if neither is detected."
-      (when-let ((root (python-find-project-root)))
+      (when-let* ((root (python-find-project-root)))
         (let ((default-directory root))
           (cond
            ;; Check for Poetry: look for pyproject.toml with [tool.poetry] or valid poetry env
@@ -116,7 +116,7 @@
       "extract the python version defined in the pyproject.toml or ask to input the python
     version."
       (or
-       (if-let ((folder (locate-dominating-file default-directory "pyproject.toml"))
+       (if-let* ((folder (locate-dominating-file default-directory "pyproject.toml"))
                 (project-toml (expand-file-name "pyproject.toml" folder)))
            (extract-python-version-from-pyproject-toml project-toml))
        (consult-pyenv-install-version)))

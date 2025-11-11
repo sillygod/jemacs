@@ -2,7 +2,6 @@
 
   - https://github.com/tecosaur/emacs-everywhere
   - https://github.com/bling/fzf.el
-  - https://github.com/jeremy-compostella/pdfgrep
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://github.com/minad/tempel (another choice for snippet completion)
   - https://github.com/ksqsf/org-xlatex/blob/main/org-xlatex.el
@@ -13,22 +12,22 @@
   a collection of useful extensions for emacs
   https://github.com/bbatsov/crux
 
-  add an shortcut
-  find-name-dired (find is too slow)
-  consult-find  (use find)
-  I think we can use =rg --files | rg xxx= instead
-
   start to leverage the gptel
   https://github.com/jwiegley/gptel-prompts
   https://github.com/rajp152k/fabric-gpt.el
 
   global-text-scale-adjust <- why does this sometimes not work
+  
+  implement a features that bookmark some commands for every project 
+  TAG=test3 docker build . -t asia.gcr.io/staging-211402/gorilla:test3
+  kubectl get pod ghost
+  
 
 * Start to build my own emacs
 
 ** things needed to be done or enahnced
 
-   - [ ] implement my own run-python-shell
+   - [ ] implement my own run-python-shell (can learn from claude code cli or gemini cli https://github.com/linchen2chris/gemini-cli.el)
    - [ ] my own pdf viewer? (https://github.com/mozilla/pdf.js?utm_source=cdnjs&utm_medium=cdnjs_link&utm_campaign=cdnjs_library)
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]

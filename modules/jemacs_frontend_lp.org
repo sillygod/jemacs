@@ -42,6 +42,9 @@
       :mode (("\\.ts\\'" . typescript-mode))
       :defer t)
 
+    (use-package flymake-jsts
+      :straight '(flymake-jsts :type git :host github :repo "orzechowskid/flymake-jsts" :branch "main"))
+
     (use-package css-in-js-mode
       :straight '(css-in-js-mode :type git :host github :repo "orzechowskid/tree-sitter-css-in-js"))
 

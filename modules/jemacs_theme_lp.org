@@ -23,9 +23,8 @@
   #+begin_src emacs-lisp
     (use-package doom-themes
       :init
-      (load-theme 'doom-one t)
-      (doom-themes-org-config)
       (set-face-attribute 'default nil :background "#292b2e")
+      ;; https://github.com/doomemacs/themes/issues/875
 
       (with-eval-after-load 'org
         ;; change some ui
@@ -35,7 +34,10 @@
         (set-face-attribute 'org-table nil :font "Sarasa Term SC Nerd")
         (set-face-attribute 'org-agenda-date nil :foreground "#41918b")
         (set-face-attribute 'org-agenda-date-today nil :foreground "#118844")
-        (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333")))
+        (set-face-attribute 'org-agenda-date-weekend nil :foreground "#cc3333"))
+      :config
+      (load-theme 'doom-one t)
+      (doom-themes-org-config))
 
   #+end_src
 

@@ -16,6 +16,7 @@
 (require 'jemacs-frontend)
 (require 'jemacs-project)
 (require 'jemacs-version-control)
+(require 'jemacs-ai)
 
 (global-set-key (kbd "<escape>") 'keyboard-quit)
 (with-eval-after-load 'evil

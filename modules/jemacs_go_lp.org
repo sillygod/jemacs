@@ -34,6 +34,9 @@
 
     (use-package gomacro-mode
       :hook (go-mode . gomacro-mode))
+
+    (use-package templ-ts-mode
+      :defer t)
   #+end_src
 
 * go-test

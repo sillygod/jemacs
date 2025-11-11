@@ -712,7 +712,7 @@
      (defun copy-file-path ()
        "Copy and show the file path of the current buffer."
        (interactive)
-       (if-let (file-path (get-file-path))
+       (if-let* (file-path (get-file-path))
            (progn
              (kill-new file-path)
              (message "%s" file-path))
@@ -727,7 +727,7 @@
      Returns:
        - A string containing the file path in case of success.
        - `nil' in case the current buffer does not have a directory."
-       (when-let (file-path (buffer-file-name))
+       (when-let* (file-path (buffer-file-name))
          (file-truename file-path)))
 
    #+end_src
@@ -748,7 +748,7 @@
        "Toggle flycheck's error list window.
      If the error list is visible, hide it.  Otherwise, show it."
        (interactive)
-       (-if-let (window (flycheck-get-error-list-window))
+       (if-let* (window (flycheck-get-error-list-window))
            (quit-window nil window)
          (flycheck-list-errors)))
    #+end_src
@@ -769,6 +769,39 @@
 
 ** xwidget relevant functions
    #+begin_src emacs-lisp
+     (defun rg-query-files (input dir)
+       "Run rg --files in DIR and filter with rg --ignore-case INPUT.
+
+       find-name-dired (find is too slow)
+       consult-find  (use find)
+     "
+       ;; (let ((command (concat "rg --files " dir " | rg --ignore-case " (shell-quote-argument input))))
+       (let ((command (concat "fd " (shell-quote-argument input) " " dir)))
+         (split-string
+          (shell-command-to-string command)
+          "\n"
+          t)))
+
+     (defun wrap-to-consult (prog fn &rest args)
+       (let ((res (append (if (listp prog) prog (list prog)) (apply fn args))))
+         (list res)))
+
+     (defun rg-file-search ()
+       "Search files or directories in a selected directory using rg with consult."
+       (interactive)
+       (require 'consult)
+       (let* ((selected-dir (read-directory-name "Select directory: "))
+              (initial-input (when (use-region-p)
+                               (buffer-substring-no-properties (region-beginning) (region-end)))))
+         (find-file
+          (consult--read
+           (consult--process-collection
+               #'(lambda (input) (wrap-to-consult '("printf" "%s\n") #'rg-query-files input selected-dir)))
+           :prompt "Search files: "
+           :initial initial-input
+           :preview-key nil
+           :sort nil))))
+
      (defun google-search-action (x)
        "Search for X.
                force to make new session without using the original session."

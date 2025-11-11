@@ -50,7 +50,7 @@
                         ("Makefile" "README.org" "readme.org" "README.md"))))
         (dolist (current-level pr-flags)
           (dolist (f current-level)
-            (when-let ((root (locate-dominating-file dir f)))
+            (when-let* ((root (locate-dominating-file dir f)))
               (throw 'ret (list 'local root))))))))
 
     (defun project-try-local (dir)
@@ -61,7 +61,7 @@
                           ("Makefile" "README.org" "readme.org" "README.md"))))
           (dolist (current-level pr-flags)
             (dolist (f current-level)
-              (when-let ((root (locate-dominating-file dir f)))
+              (when-let* ((root (locate-dominating-file dir f)))
                 (throw 'ret (list 'vc 'Git root))))))))
 
     (setq project-find-functions '(project-try-local project-try-vc))
