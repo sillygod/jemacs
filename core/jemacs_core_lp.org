@@ -414,8 +414,9 @@
    #+end_src
 
 ** my customize docker shell with vterm
+   deprecated
 
-   #+begin_src emacs-lisp
+   #+begin_src emacs-lisp :tangle no
      (defun docker-container-vterm (container &optional read-shell)
        "Open `shell' in CONTAINER.  When READ-SHELL is not nil, ask the user for it."
        (interactive (list

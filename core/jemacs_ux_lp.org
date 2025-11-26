@@ -350,9 +350,6 @@
       (delete 'view evil-collection-mode-list)
       ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
       (setq evil-collection-company-use-tng nil)
-      ;; (add-hook 'evil-collection-setup-hook #'(lambda (_mode mode-keymaps &rest _rest)
-      ;;                                           (when (eq _mode 'docker)
-      ;;                                             (evil-define-key 'normal 'docker-container-mode-map (kbd "b") 'docker-container-vterm))))
       (evil-collection-init))
   #+end_src
 
@@ -395,6 +392,7 @@
       (indent-bars-width-frac 0.2)
       (indent-bars-pad-frac 0.1)
       (indent-bars-zigzag nil)
+      (indent-bars-treesit-support t)
       (indent-bars-treesit-support t)
       (indent-bars-no-descend-lists t)
       (indent-bars-treesit-scope '((python function_definition class_definition for_statement

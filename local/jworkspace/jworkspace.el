@@ -134,7 +134,7 @@ it will create the specified workspace."
 (defun jworkspace-toggle-maximize-window ()
   "Maximize the current window and can toggle back the original window layout."
   (interactive)
-  (when-let ((workspace (jworkspace--get-current-workspace)))
+  (when-let* ((workspace (jworkspace--get-current-workspace)))
     (if (and (one-window-p)
              (jworkspace-temp-window-config workspace))
         (window-state-put (jworkspace-temp-window-config workspace))
@@ -146,8 +146,8 @@ it will create the specified workspace."
 (defun jworkspace-rename-workspace ()
   "Rename the current workspace to input name."
   (interactive)
-  (when-let ((workspace (jworkspace--get-current-workspace))
-             (name (read-string (format "Rename workspace '%s' to: " (jworkspace-name workspace)))))
+  (when-let* ((workspace (jworkspace--get-current-workspace))
+              (name (read-string (format "Rename workspace '%s' to: " (jworkspace-name workspace)))))
     (remhash (jworkspace-name workspace) jworkspace-map)
     (setf (jworkspace-name workspace) name)
     (puthash name workspace jworkspace-map)))

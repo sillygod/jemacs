@@ -89,7 +89,7 @@
       "Extract the virtual environment path from the 'virtual' field in uv.lock.
     Looks for 'source = { virtual = \"xxx\" }' in the [package] section.
     Returns the absolute path to the virtual environment or nil if not found."
-      (when-let ((root (python-find-project-root))
+      (when-let* ((root (python-find-project-root))
                  (uv-lock-file (expand-file-name "uv.lock" root)))
         (when (file-exists-p uv-lock-file)
           (with-temp-buffer
@@ -147,7 +147,7 @@
       (when-let* ((root (python-find-project-root))
                   (proot (intern (format ":%s" root))))
         (or (plist-get python-project-venv-plist proot)
-            (when-let ((venv (concat root ".venv"))
+            (when-let* ((venv (concat root ".venv"))
                        (_ (file-directory-p venv)))
               (setq python-project-venv-plist (plist-put python-project-venv-plist proot venv))
               venv)

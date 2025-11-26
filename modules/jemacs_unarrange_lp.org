@@ -1590,6 +1590,8 @@
     emacsclient -ne "(present (completing-read \"Open: \" '((\"a\" \"a-1\") (\"b\" \"b-2\") (\"c\" \"c-3\"))))"
   #+end_src
 
+  M-x server-start ?
+
   #+begin_src emacs-lisp
     (defmacro present (&rest body)
       "Create a buffer with BUFFER-NAME and eval BODY in a basic frame."
@@ -1611,6 +1613,7 @@
                                    (unsplittable . t)
                                    (vertical-scroll-bars . nil)))))
 
+         (raise-frame frame)
          (select-frame frame)
          (select-frame-set-input-focus frame)
          (with-current-buffer buffer
@@ -1619,8 +1622,7 @@
                    (delete-other-windows)
                    (delete-frame frame)
                    (kill-buffer buffer)
-                   ;; holy shit, kill buffer and window resolve the issue of remained minibuffer!
-                   (kill-buffer-and-window)))))
+                   ))))
   #+end_src
 * hydra replaced with transient
 
