@@ -231,6 +231,7 @@
     (defun avy-jump-url ()
       "Use avy to go to url in the buffer."
       (interactive)
+      (require 'avy)
       (avy-jump "https?://"))
   #+end_src
 
