@@ -67,7 +67,10 @@
          ))
       :config
       ;; OPTIONAL configuration
-      (setq gptel-model 'devstral-medium-latest
+      ;; devstral-medium-latest
+      ;; mistral-large-2512
+      ;; devstral-2512
+      (setq gptel-model 'mistral-large-2512
 
             gptel-default-mode #'org-mode
             gptel-backend
@@ -78,7 +81,7 @@
               :stream t
               :key mistral_api_key
               :models '("mistral-large-latest"
-                        "mistral-medium-latest"
+                        "devstral-2512"
                         "codestral-latest"
                         "devstral-medium-latest"
                         "devstral-small-latest")))
@@ -95,7 +98,8 @@
       (require 'gptel-integrations)
       (macher-install)
 
-      ;; (transient-suffix-put 'gptel-menu (kbd "RET") :key "C-<return>")
+      (require 'gptel-transient)
+      (transient-suffix-put 'gptel-menu (kbd "RET") :key "C-<return>")
 
       (defun get-staged-diff ()
         "Get the diff of staged files in the current Git repository."
