@@ -476,7 +476,7 @@
        (let ((content (buffer-substring-no-properties start end)))
          (when (use-region-p)
            (delete-region start end)
-           (insert (base64-encode-string (encode-coding-string content 'utf-8))))))
+           (insert (base64-encode-string (encode-coding-string content 'utf-8) t)))))
 
      (defun my-decode-region-base64 (start end)
        (interactive "r")
@@ -713,7 +713,7 @@
      (defun copy-file-path ()
        "Copy and show the file path of the current buffer."
        (interactive)
-       (if-let* (file-path (get-file-path))
+       (if-let* ((file-path (get-file-path)))
            (progn
              (kill-new file-path)
              (message "%s" file-path))
@@ -728,7 +728,7 @@
      Returns:
        - A string containing the file path in case of success.
        - `nil' in case the current buffer does not have a directory."
-       (when-let* (file-path (buffer-file-name))
+       (when-let* ((file-path (buffer-file-name)))
          (file-truename file-path)))
 
    #+end_src
@@ -749,7 +749,7 @@
        "Toggle flycheck's error list window.
      If the error list is visible, hide it.  Otherwise, show it."
        (interactive)
-       (if-let* (window (flycheck-get-error-list-window))
+       (if-let* ((window (flycheck-get-error-list-window)))
            (quit-window nil window)
          (flycheck-list-errors)))
    #+end_src

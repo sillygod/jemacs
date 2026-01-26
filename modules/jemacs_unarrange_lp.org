@@ -1413,7 +1413,7 @@
        "j" '(:ignore t :which-key "jump")
        "jw" '(avy-goto-char-timer :which-key "avy goto words")
        "ju" '(avy-jump-url :which-key "goto url")
-       "jd" '(dumb-jump-go :which-key "goto definition") ;; limit the search area with the project root
+       "jd" '(xref-find-definitions :which-key "goto definition") ;; limit the search area with the project root
        "jl" '(avy-goto-line :which-key "goto line")
        "ji" '(jump-in-buffer :which-key "imenu")
        "j(" '(check-parens :which-key "check-parens"))
