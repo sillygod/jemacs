@@ -20,11 +20,34 @@
   Maybe we can consider to use [[https://github.com/Artawower/blamer.el][another blame tool]]
   ENHANCE: adjust the pop ui
   #+begin_src emacs-lisp
-    (use-package git-messenger
-      :defer t
+    (use-package blamer
+      :straight (:host github :repo "artawower/blamer.el")
       :custom
-      (git-messenger:show-detail t)
-      (git-messenger:use-magit-popup t))
+      (blamer-idle-time 0.3)
+      (blamer-min-offset 70)
+      :custom-face
+      (blamer-face ((t :foreground "#7a88cf"
+                       :background nil
+                       :height 140
+                       :italic t)))
+      :config
+      (defun blamer-callback-show-commit-diff (commit-info)
+        (interactive)
+        (let ((commit-hash (plist-get commit-info :commit-hash)))
+          (when commit-hash
+            (magit-show-commit commit-hash))))
+
+
+
+      (setq blamer-bindings '(("s" . blamer-callback-show-commit-diff))))
+
+
+
+    ;; (use-package git-messenger
+    ;;   :defer t
+    ;;   :custom
+    ;;   (git-messenger:show-detail t)
+    ;;   (git-messenger:use-magit-popup t))
 
     (use-package transient
       :init

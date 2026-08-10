@@ -132,6 +132,7 @@
 
    #+begin_src emacs-lisp
      (global-auto-revert-mode t)
+     (setq auto-revert-verbose nil)
    #+end_src
 
 ** turn on global visual-line-mode
