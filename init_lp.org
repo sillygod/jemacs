@@ -84,3 +84,13 @@
                                    (jworkspace-new-workspace "main")
                                    (jworkspace-switch-workspace "main")) t)
   #+end_src
+
+* loading the custom file
+
+  `custom-file' is pointed at =custom.el= in [[file:early_init_lp.org][early_init_lp.org]].  Load it last so
+  that an explicit =M-x customize= choice overrides the module defaults.
+
+  #+begin_src emacs-lisp
+    (when (and custom-file (file-exists-p custom-file))
+      (load custom-file nil 'nomessage))
+  #+end_src

@@ -28,15 +28,28 @@
     git clone https://github.com/sillygod/jemacs.git ~/.emacs.d
   #+end_src
 
-  To produce the setup files of core and modules by the following the command
+  Then set up your personal configuration.  Nothing machine-specific lives in
+  a tracked file --- there are two git-ignored hooks for it, and which one you
+  want depends on *when* the value is needed:
+
+  #+begin_src bash
+    cp example-personal_lp.org personal_lp.org   # loaded last; keys, keybindings, overrides
+    cp example-config.el       config.el         # loaded first; only values a module needs while loading
+  #+end_src
+
+  ~config.el~ is loaded from early-init, before straight.el and use-package
+  exist, so it can hold plain ~setq~ / ~defvar~ only.  ~personal_lp.org~
+  tangles to ~settings.el~ and is loaded at the end of init, where everything
+  is available.  ~example-personal_lp.org~ explains the split in detail,
+  including which ~use-package~ keyword belongs where.
+
+  To produce the setup files of core, modules and your personal config:
 
   #+begin_src bash
     bash lp.sh
   #+end_src
 
   Once you setup config completely, you can also produce those files by elisp function ~export-lp-configs~
-
-  Finally, copy ~example-settings.el~ to ~settings.el~ and modify it
 
 *** spawn the emacs
 

@@ -65,9 +65,32 @@
 
     (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
     (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))
+
+    ;; Anything machine-specific that a module needs *while it is being
+    ;; required* has to be declared here with a neutral default, because
+    ;; config.el is the only personal file that runs this early.
+    ;; See `example-config.el' for how to fill these in.
+    (defvar jemacs-local-repo-root nil
+      "Directory holding personally checked-out packages, or nil.
+Modules that pull a package from a local checkout should read this
+instead of hardcoding an absolute path, and should skip the package
+entirely when it is nil.")
+
     (when (file-exists-p jemacs-config-file)
       (load jemacs-config-file nil 'nomessage))
 
+  #+end_src
+
+* custom file
+
+  =M-x customize= writes into `custom-file', which defaults to whatever
+  loaded first -- that used to be =init.el=, a tangle output, so every
+  =./lp.sh= run silently threw those settings away.  Point it at a real
+  file instead.  It is loaded at the *end* of [[file:init_lp.org][init_lp.org]] so that an explicit
+  customization wins over the module defaults.
+
+  #+begin_src emacs-lisp
+    (setq custom-file (expand-file-name "custom.el" home-dir))
   #+end_src
 
 * splash buffer
