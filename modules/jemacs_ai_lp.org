@@ -507,6 +507,33 @@
 
   #+end_src
   
+* ghostherd — AI agent herd on ghostel
+
+  Manage multiple coding-agent CLIs (claude / grok / agy) as named
+  ghostel sessions, with sidebar + consult switcher, state detection,
+  notifications, and inter-agent messaging.
+
+  #+begin_src emacs-lisp
+    (eval `(use-package ghostherd
+             :straight (:local-repo ,(concat home-dir "local/ghostherd"))
+             :commands (ghostherd-new
+                        ghostherd-new-pair
+                        ghostherd-switch
+                        ghostherd-sidebar
+                        ghostherd-next-blocked
+                        ghostherd-menu
+                        ghostherd-message-interactive
+                        ghostherd-prompt-interactive
+                        ghostherd-kill
+                        ghostherd-rename
+                        ghostherd-mode)
+             :config
+             (setq ghostherd-notify-on-blocked t
+                   ghostherd-notify-on-exit t
+                   ghostherd-notify-on-done t)
+             (ghostherd-mode 1)))
+  #+end_src
+
 * provide package
 
   #+begin_src emacs-lisp

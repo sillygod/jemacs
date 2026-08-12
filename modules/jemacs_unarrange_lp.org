@@ -1466,6 +1466,18 @@
 
        "aa" '(aider-transient-menu :which-key "aider-chat")
 
+       "ah" '(:ignore t :which-key "ghostherd")
+       "ahh" '(ghostherd-menu :which-key "menu")
+       "ahn" '(ghostherd-new :which-key "new agent")
+       "ah2" '(ghostherd-new-pair :which-key "new pair (split)")
+       "ahs" '(ghostherd-switch :which-key "switch")
+       "ahb" '(ghostherd-sidebar :which-key "sidebar")
+       "ah." '(ghostherd-next-blocked :which-key "next blocked")
+       "ahm" '(ghostherd-message-interactive :which-key "message agent")
+       "ahi" '(ghostherd-prompt-interactive :which-key "prompt agent")
+       "ahk" '(ghostherd-kill :which-key "kill")
+       "ahr" '(ghostherd-rename :which-key "rename")
+
        "ad" '(docker t :which-key "docker")
 
        "al" '(:ignore t :which-key "lookup/dictionary")

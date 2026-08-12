@@ -1,0 +1,408 @@
+#+TITLE: ghostherd
+
+Manage AI coding-agent CLIs inside [[https://github.com/dakra/ghostel][ghostel]] terminals — a herdr-inspired
+control plane bound to the Emacs session.
+
+* Status
+
+| Item        | Value                                              |
+|-------------+----------------------------------------------------|
+| Phase       | *1 — MVP* (complete enough to dogfood)             |
+| Lifetime    | Bound to Emacs (no background daemon / tmux yet)   |
+| Branch      | developed on =chore/extract-personal-config=       |
+| Package     | =local/ghostherd/= (straight =:local-repo=)        |
+| Wired in    | =jemacs-ai= + leader =SPC a h=                     |
+
+* Features (Phase 1)
+
+- Spawn *claude* / *grok* / *agy* (or a plain shell) as named sessions
+- Multiple concurrent agents per project (e.g. implementer + reviewer)
+- Sidebar (=ghostherd-sidebar=) + consult switcher (=ghostherd-switch=)
+- State polling: =working= / =blocked= / =idle= / =done= / =dead=
+- Notifications via =alert= (config uses =osx-notifier=)
+- Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
+- Agents can call herd commands via =ghostel_cmd= (whitelisted)
+
+* Commands
+
+| Command                             | What                                 |
+|-------------------------------------+--------------------------------------|
+| =M-x ghostherd-new=                 | Spawn an agent                       |
+| =M-x ghostherd-new-pair=            | Spawn two agents, split windows      |
+| =M-x ghostherd-switch=              | Completing-read jump                 |
+| =M-x ghostherd-sidebar=             | Side window list                     |
+| =M-x ghostherd-next-blocked=        | Jump to next blocked/done agent      |
+| =M-x ghostherd-message-interactive= | Send attributed message to an agent  |
+| =M-x ghostherd-prompt-interactive=  | Submit a prompt to an agent          |
+| =M-x ghostherd-menu=                | One-key dispatcher                   |
+| =M-x ghostherd-kill=                | Kill session (+ buffer)              |
+| =M-x ghostherd-rename=              | Rename session                       |
+| =M-x ghostherd-mark-state=          | Manual state / auto                  |
+| =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
+
+** Leader keys (=SPC a h …=)
+
+| Key   | Command        |
+|-------+----------------|
+| =ahh= | menu           |
+| =ahn= | new agent      |
+| =ah2= | new pair       |
+| =ahs= | switch         |
+| =ahb= | sidebar        |
+| =ah.= | next blocked   |
+| =ahm= | message agent  |
+| =ahi= | prompt agent   |
+| =ahk= | kill           |
+| =ahr= | rename         |
+
+** Sidebar keys
+
+=RET= visit · =N= new · =P= pair · =k= kill · =r= rename · =m= message ·
+=i= prompt · =s= toggle project filter · =g= refresh · =.= next blocked ·
+=M= mark state · =q= quit
+
+* Agent CLI args (looked up from local binaries)
+
+Defaults launch the bare interactive CLI. Extra args are prompted in
+=ghostherd-new=, or set permanently via =ghostherd-agent-specs= =:args=.
+
+** claude
+
+Interactive session by default.
+
+Useful flags:
+- =--permission-mode plan|acceptEdits|bypassPermissions|default|dontAsk=
+- =--dangerously-skip-permissions=
+- =--model sonnet|opus|<full-name>=
+- =-c / --continue=, =-r / --resume=
+- =--system-prompt PROMPT=
+- =-w / --worktree [name]=
+
+** grok
+
+Useful flags:
+- =--permission-mode default|acceptEdits|auto|dontAsk|bypassPermissions|plan=
+- =--always-approve=
+- =-m / --model MODEL=
+- =-c / --continue=, =-r / --resume=
+- =--cwd DIR=
+- =--system-prompt-override PROMPT=
+- =-w / --worktree [NAME]=
+
+** agy
+
+Useful flags:
+- =--mode accept-edits|plan=
+- =--dangerously-skip-permissions=
+- =--model MODEL=
+- =-c / --continue=
+- =-i / --prompt-interactive PROMPT=
+- =--effort low|medium|high=
+- =--sandbox=
+
+* Inter-agent communication
+
+Herdr exposes pane/agent primitives over a socket. ghostherd mirrors the
+useful subset in Elisp (and via =ghostel_cmd= from inside an agent shell).
+
+** Elisp
+
+#+begin_src emacs-lisp
+  ;; Submit work to the reviewer and wait until settled
+  (ghostherd-prompt "reviewer" "Review the current diff for security issues" t 180)
+
+  ;; Message with attribution (from implementer → reviewer)
+  (ghostherd-message "implementer" "reviewer"
+                     "Please review commits on this branch."
+                     :submit t)
+
+  ;; Read another agent's recent screen
+  (ghostherd-read "reviewer" 80)
+
+  ;; Wait for blocked/idle/done
+  (ghostherd-wait "reviewer" '(blocked idle done) 120)
+#+end_src
+
+** From an agent shell (ghostel_cmd)
+
+When shell integration is active and the command is whitelisted:
+
+#+begin_src bash
+  ghostel_cmd ghostherd-list
+  ghostel_cmd ghostherd-state reviewer
+  ghostel_cmd ghostherd-prompt reviewer "Review the diff"
+  ghostel_cmd ghostherd-message reviewer "Please review" implementer
+  ghostel_cmd ghostherd-read reviewer 60
+#+end_src
+
+Typical workflow:
+1. =SPC a h 2= → implementer (claude) | reviewer (claude or grok)
+2. Work in implementer
+3. =SPC a h m= → message reviewer with a review request
+4. =SPC a h .= when reviewer is blocked / done
+
+* Notifications (ghostel hooks)
+
+ghostherd reuses ghostel's process lifecycle rather than inventing a
+parallel notifier:
+
+| Signal                       | Source                        | Herd action            |
+|------------------------------+-------------------------------+------------------------|
+| Process exit                 | =ghostel-exit-functions=      | state → =dead=, notify |
+| OSC 133 command start/finish | =ghostel-command-*-functions= | shell kind state hints |
+| Screen rules (poll)          | timer                         | working/blocked/idle   |
+| Desktop notify               | =alert= / =osx-notifier=      | blocked / done / dead  |
+
+Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
+session stays visible as =dead= until you kill it from the herd.
+
+* Config knobs
+
+#+begin_src emacs-lisp
+  (setq ghostherd-default-kind 'claude
+        ghostherd-poll-interval 1.5
+        ghostherd-spawn-delay 0.8
+        ghostherd-notify-on-blocked t
+        ghostherd-sidebar-side 'left)
+
+  ;; Permanent default args example:
+  (setf (alist-get 'claude ghostherd-agent-specs)
+        (plist-put (alist-get 'claude ghostherd-agent-specs)
+                   :args '("--permission-mode" "acceptEdits")))
+#+end_src
+
+* Testing
+
+Phase 1 has no automated ERT suite yet (ghostel PTYs are hard to drive
+headlessly). Treat the following as the dogfood checklist. Run after
+reloading config (or restarting Emacs) so =local/ghostherd= and leader
+keys are loaded.
+
+** Prerequisites
+
+1. =ghostel= package installed and working (=M-x ghostel= opens a shell).
+2. CLIs on =PATH=: =claude=, =grok=, =agy= (skip kinds you do not have).
+3. =alert= available (this config sets =alert-default-style= to =osx-notifier=).
+4. =jemacs-ai= loaded so =use-package ghostherd= ran; first command will load the package and enable =ghostherd-mode=.
+
+** Smoke (load / compile)
+
+In a shell:
+
+#+begin_src bash
+  emacs --batch \
+    --eval "(add-to-list 'load-path \"~/.emacs.d/local/ghostherd\")" \
+    --eval "(byte-compile-file \"~/.emacs.d/local/ghostherd/ghostherd.el\")"
+#+end_src
+
+Expect: no errors (warnings about free vars from ghostel internals are OK if any).
+
+In Emacs:
+
+#+begin_src emacs-lisp
+  (require 'ghostherd)
+  (ghostherd-mode 1)
+  (featurep 'ghostherd)   ; => t
+#+end_src
+
+** Manual test plan
+
+Run each row; mark pass/fail. Prefer a real project directory so project
+filter and buffer names look right.
+
+*** T1 — Spawn single agent
+
+| Step | Action                                      | Expected                                      |
+|------+---------------------------------------------+-----------------------------------------------|
+| 1    | =SPC a h n= (or =M-x ghostherd-new=)        | Prompts kind / name / dir / args / notes      |
+| 2    | Kind =claude=, name =t1-claude=             | Buffer =*ghostherd:t1-claude*= appears        |
+| 3    | Wait ~1–2s                                  | CLI starts (not stuck forever at bare shell)  |
+| 4    | Repeat for =grok= and =agy= if installed    | Same for each kind                            |
+
+Failure modes: spawn delay too short → raise =ghostherd-spawn-delay=;
+command not found → fix PATH for Emacs (login shell / exec-path).
+
+*** T2 — Sidebar + switch
+
+| Step | Action                         | Expected                                      |
+|------+--------------------------------+-----------------------------------------------|
+| 1    | =SPC a h b=                    | Side window =*ghostherd*= with session rows   |
+| 2    | Move to a row, =RET=           | Focuses that agent buffer                     |
+| 3    | =SPC a h s=                    | Completing-read lists agents with state glyph |
+| 4    | =g= in sidebar                 | Rows refresh without error                    |
+
+*** T3 — Pair layout
+
+| Step | Action                    | Expected                                           |
+|------+---------------------------+----------------------------------------------------|
+| 1    | In a project: =SPC a h 2= | Prompts two kinds/names                            |
+| 2    | Accept defaults           | Two windows: implementer \| reviewer, both running |
+
+*** T4 — State detection
+
+| Step | Action                                          | Expected                          |
+|------+-------------------------------------------------+-----------------------------------|
+| 1    | Ask agent to do a short task                    | Sidebar/state → =working= (⟳)     |
+| 2    | Trigger a permission/approval prompt if possible | State → =blocked= (⚠)            |
+| 3    | macOS notification on blocked                   | Banner via =osx-notifier=         |
+| 4    | Finish task, leave session unfocused            | Eventually =done= (✓) or =idle=   |
+| 5    | =SPC a h .=                                     | Jumps to blocked/done agent       |
+| 6    | If detection wrong: =M-x ghostherd-mark-state=  | Manual override sticky until auto |
+
+Screen rules are heuristic. Prefer *missed blocked* over *false blocked*.
+Tune =:screen-rules= in =ghostherd-agent-specs= when a CLI UI changes.
+
+*** T5 — Inter-agent message
+
+| Step | Action                                                        | Expected                                      |
+|------+---------------------------------------------------------------+-----------------------------------------------|
+| 1    | Have two live sessions (=implementer=, =reviewer=)            | Both in herd                                  |
+| 2    | =SPC a h m= → target =reviewer=, body =hello from test=       | Text pasted into reviewer (submitted if configured) |
+| 3    | Elisp: =(ghostherd-message "implementer" "reviewer" "ping" :submit t)= | Attributed header + body in reviewer     |
+| 4    | =(ghostherd-read "reviewer" 40)=                              | String contains recent tail                   |
+| 5    | =(ghostherd-prompt "reviewer" "Reply with pong only")=        | Prompt submitted                              |
+
+*** T6 — ghostel_cmd from inside an agent
+
+Only if ghostel shell integration works in that buffer:
+
+#+begin_src bash
+  ghostel_cmd ghostherd-list
+  ghostel_cmd ghostherd-state implementer
+#+end_src
+
+Expected: text listing / state line; unknown session returns a clear error string.
+
+*** T7 — Exit / kill / notify
+
+| Step | Action                                      | Expected                                |
+|------+---------------------------------------------+-----------------------------------------|
+| 1    | Quit the agent CLI (=/exit=, =C-c=, etc.)   | Session → =dead=; buffer *not* auto-killed |
+| 2    | Desktop notify on exit (if enabled)         | =ghostherd · <name> exited=             |
+| 3    | =SPC a h k= on that session                 | Removed from herd; buffer killed        |
+
+*** T8 — Project filter
+
+| Step | Action                                      | Expected                     |
+|------+---------------------------------------------+------------------------------|
+| 1    | Spawn agents in two different projects      | Both listed                  |
+| 2    | In project A, sidebar =s=                   | Only project A sessions show |
+| 3    | =s= again                                   | Filter off                   |
+
+*** T9 — Modeline
+
+With =ghostherd-mode= on and ≥1 session: mode-line shows a herd summary
+(e.g. cow glyph + counts). Click → opens sidebar.
+
+** Regression notes to capture while testing
+
+Record failures here or in issues while dogfooding:
+
+- [ ] claude blocked pattern false positive / miss: _______________
+- [ ] grok blocked pattern false positive / miss: _______________
+- [ ] agy blocked pattern false positive / miss: _______________
+- [ ] spawn-delay too low on this machine: _______________
+- [ ] =ghostel_cmd= whitelist missing after reload: _______________
+- [ ] Other: _______________
+
+** Future automated tests (Phase 2+)
+
+| Suite              | Scope                                              | Notes                          |
+|--------------------+----------------------------------------------------+--------------------------------|
+| ERT unit           | name uniqueness, candidate format, rule matching   | No PTY needed                  |
+| ERT with temp buf  | registry register/remove, state machine transitions | Fake buffer + injected tail    |
+| Interactive script | =emacsclient= spawn/kill smoke                     | Optional CI later              |
+
+Do *not* block Phase 2 UX work on full TUI integration tests.
+
+* Roadmap (remaining phases)
+
+Phase 1 (this tree) is intentionally small: spawn, list, switch, state,
+notify, pair layout, message/prompt/read/wait.
+
+** Phase 1.1 — Stabilize detection (next dogfood pass)
+
+Goal: make state trustworthy for daily use without false blocked spam.
+
+- [ ] Tune =:screen-rules= per CLI after T4 sessions (version notes in
+  =readme.org= or a =manifests/= file)
+- [ ] =ghostherd-explain= (like herdr =agent explain=): show last tail
+  snippet + which rule matched
+- [ ] OSC progress (=ghostel-progress-function=) → force =working= + %
+- [ ] OSC title → sidebar summary column
+- [ ] Document known false positives per agent version
+
+** Phase 2 — Usability
+
+Goal: less friction for multi-agent day-to-day work.
+
+- [ ] Layout presets beyond pair (e.g. 1+2 grid, focus agent only)
+- [ ] Session notes editable from sidebar; show role in switcher
+- [ ] Persist last herd snapshot for the Emacs session restart *within*
+  one day (desktop.el / custom file) — still bound to Emacs, not detach
+- [ ] Per-project default kinds/args via dir-locals
+- [ ] Consult annotations (kind, project, age, notes)
+- [ ] =ghostherd-restart-agent= (re-send launch command in same buffer)
+- [ ] ERT unit tests for pure helpers (rules, naming, format)
+
+** Phase 2.5 — Richer automation (herdr-like control)
+
+Goal: scripts and agents can orchestrate without focusing panes.
+
+- [ ] =ghostherd-wait-output= (regex on buffer tail, timeout)
+- [ ] =ghostherd-send-keys= (esc, ctrl+c, etc. via =ghostel-send-key=)
+- [ ] Pipeline helper: implement → message reviewer → wait → notify
+- [ ] Structured JSON-ish listing for =ghostherd-cmd-list=
+- [ ] Optional =emacsclient= CLI wrapper script
+  (=bin/ghostherd= → =emacsclient -e '(ghostherd-…)'=)
+
+** Phase 3 — Detach / survive Emacs quit
+
+Goal: optional herdr-like lifetime (agents keep running if Emacs dies).
+
+- [ ] Backend abstraction: =ghostel= (current) \| =tmux= \| =dtach=
+- [ ] Attach/detach UI still through ghostel (tmux attach in buffer)
+- [ ] Restore herd registry from backend session list on Emacs start
+- [ ] Explicit non-goal until then: phone SSH thin client, full socket
+  server compatible with herdr
+
+** Phase 4 — Ecosystem (only if still useful)
+
+- [ ] Extract =ghostherd= to its own repo / MELPA if others want it
+- [ ] Optional lifecycle hooks plugins per CLI (beyond screen scrape)
+- [ ] Compare/contrast doc vs herdr for users choosing tools
+
+** Explicit non-goals (for now)
+
+- Replacing gptel / copilot / in-buffer LLM workflows
+- Implementing a full A2A network protocol
+- Windows-first support (macOS/Linux Emacs + ghostel is the target)
+
+* Architecture sketch
+
+#+begin_src text
+  UI: sidebar | consult | modeline | alert
+           │
+  Control: spawn kill rename prompt message wait
+           │
+  Detect:  timer + screen rules + ghostel-exit / OSC hooks
+           │
+  Runtime: ghostel buffers (real PTYs), one per session
+#+end_src
+
+Sessions live in =ghostherd--sessions= (id → =ghostherd-session= struct).
+Buffer-local =ghostherd-session-id= links the PTY buffer back to the registry.
+
+* Design decisions log
+
+| Decision              | Choice                                      | Why                                      |
+|-----------------------+---------------------------------------------+------------------------------------------|
+| Lifetime              | Bound to Emacs first                        | Simpler; detach is Phase 3               |
+| UI                    | Sidebar *and* consult                       | Herd overview + fast jump                |
+| Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
+| Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
+| Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |
+| State authority       | Screen rules + exit hooks                   | No per-CLI lifecycle plugins yet         |
+| Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
+| Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
+| Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |
