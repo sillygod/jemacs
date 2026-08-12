@@ -22,6 +22,14 @@
 ;; is nil (the default, declared in early_init_lp.org).
 ;; (setq jemacs-local-repo-root "~/src/emacs-packages")
 
+;; Root of your org files.  jemacs-note-taking derives the agenda files,
+;; the journal directory, the notes file and the password store from it,
+;; so this is normally the only path you need to set.
+;; (setq jemacs-org-root "~/Dropbox/myorgs/")
+
+;; Only if your org-roam notes live in a subdirectory of the root.
+;; (setq jemacs-org-roam-directory "~/Dropbox/myorgs/notes/")
+
 ;; Run this config out of a different directory.
 ;; (setq user-emacs-directory "~/.mynewcraft.d")
 

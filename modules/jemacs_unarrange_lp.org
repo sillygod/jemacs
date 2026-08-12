@@ -315,7 +315,7 @@
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
       (rime-emacs-module-header-root (shell-command-to-string "echo -n $(brew --prefix)/include"))
-      (rime-user-data-dir "/Users/jing/Library/Rime/")
+      (rime-user-data-dir (expand-file-name "~/Library/Rime/"))
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
       (rime-show-candidate 'posframe)
@@ -1476,8 +1476,8 @@
        "ao" '(:ignore t :which-key "org")
        "aor" '(org-roam-transient :which-key "org-roam-transient")
        "aog" '(:ignore t :which-key "goto")
-       "aogj" '((lambda () (interactive) (find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
-       "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
+       "aogj" '((lambda () (interactive) (find-file (expand-file-name "journal" jemacs-org-root))) :which-key "journal note")
+       "aogt" '((lambda () (interactive) (org-file-show-headings (expand-file-name "todo.org" (or jemacs-org-roam-directory jemacs-org-root)))) :which-key "todo note"))
 
       (define-leader-key-global
        "b" '(:ignore t :which-key "buffer")
@@ -1534,7 +1534,7 @@
        "gi" '(magit-init :which-key "gagit init")
        "gb" '(:ignore t :which-key "blame")
        "gl" '(magit-list-repositories :which-key "magit list repos")
-       "gbl" '(git-messenger:popup-message :which-key "this line")
+       "gbl" '(blamer-show-commit-info :which-key "this line")
        "gbb" '(magit-blame-addition :which-key "this buffer")
        "gs" '(magit-status :which-key "magit status")
        "gt" '((lambda () (interactive) (git-timemachine) (git-timemachine-transient)) :which-key "magit time machine"))

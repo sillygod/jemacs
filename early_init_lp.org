@@ -76,6 +76,15 @@ Modules that pull a package from a local checkout should read this
 instead of hardcoding an absolute path, and should skip the package
 entirely when it is nil.")
 
+    (defvar jemacs-org-root (expand-file-name "~/org/")
+      "Root directory holding your org files.
+Everything under it -- the agenda files, the journal, the notes file --
+is derived from this, so only this one value is machine-specific.")
+
+    (defvar jemacs-org-roam-directory nil
+      "Directory org-roam indexes.  Defaults to `jemacs-org-root' when nil.
+Set this only if your roam notes live in a subdirectory of the root.")
+
     (when (file-exists-p jemacs-config-file)
       (load jemacs-config-file nil 'nomessage))
 

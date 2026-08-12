@@ -34,7 +34,7 @@
       "need to research the org-ql"
       (interactive)
       (org-ql-search
-        ;; "~/Dropbox/myorgs/life_books_courses_programming/todo.org"
+        ;; (expand-file-name "todo.org" org-roam-directory)
         (directory-files org-roam-directory nil ".org")
         '(todo)
         :title "Things to Be Done"
@@ -126,7 +126,7 @@
       (keymap-unset org-mode-map "C-'" t)
       ;; (setq org-ellipsis " ▾")
       (setq-default org-default-notes-file
-                    "~/Dropbox/myorgs/todo.org")
+                    (expand-file-name "todo.org" jemacs-org-root))
 
 
       :ensure org-contrib)
@@ -244,8 +244,13 @@
       (:host github :repo "org-roam/org-roam" :files (:defaults "extensions/*"))
       :after org
       :custom
-      (org-roam-directory "/Users/jing/Dropbox/myorgs/life_books_courses_programming/")
-      (org-roam-db-location (concat org-roam-directory "org-roam.db"))
+      ;; Read, never hardcode: `:custom' is `customize-set-variable', which
+      ;; runs unconditionally at load time and would clobber a value set in
+      ;; config.el.  `org-roam-db-location' is derived here and now, so the
+      ;; root has to be right by this point -- overriding it later from
+      ;; settings.el would leave the db pointing at the old directory.
+      (org-roam-directory (or jemacs-org-roam-directory jemacs-org-root))
+      (org-roam-db-location (expand-file-name "org-roam.db" org-roam-directory))
       (org-roam-completion-everywhere t)
       :init
       (setq org-roam-v2-ack t)
@@ -368,7 +373,8 @@
 
   #+begin_src emacs-lisp
     (defvar pair-list nil) ;; a property list
-    (defvar secret-file-path "~/Dropbox/myorgs/management/learning.org.gpg")
+    (defvar secret-file-path
+      (expand-file-name "management/learning.org.gpg" jemacs-org-root))
 
     (defun iterate-org-level (&optional input)
       (interactive)
@@ -597,8 +603,8 @@
 
   example settings for org-agenda-files
   #+begin_example
-  (setq org-agenda-files (file-expand-wildcards "~/Dropbox/myorgs/*.org"))
-  (setq org-agenda-files (directory-files-recursively "~/Dropbox/myorgs/" "\\.org$"))
+  (setq org-agenda-files (file-expand-wildcards (expand-file-name "*.org" jemacs-org-root)))
+  (setq org-agenda-files (directory-files-recursively jemacs-org-root "\\.org$"))
   #+end_example
 
 
@@ -653,11 +659,14 @@
       ;;              :html-scale 1.0
       ;;              :matchers '("begin" "$1" "$" "$$" "\\(" "\\[")))
 
-      (setq org-journal-dir "~/Dropbox/myorgs/journal/")
+      (setq org-journal-dir (expand-file-name "journal/" jemacs-org-root))
       (setq org-journal-file-type 'weekly)
       (setq org-journal-file-format "%Y-%m-%W.org")
 
-      (setq org-agenda-files (split-string (shell-command-to-string "find ~/Dropbox/myorgs -type f | grep '.*.org$' | grep -E -v 'presentation/|journal/'") "\n" t))
+      (setq org-agenda-files
+            (seq-remove (lambda (f) (string-match-p "/\\(presentation\\|journal\\)/" f))
+                        (directory-files-recursively
+                         (expand-file-name jemacs-org-root) "\\.org\\'")))
 
       ;; to config the org refile
       (setq org-refile-targets '((org-agenda-files :maxlevel . 3)))

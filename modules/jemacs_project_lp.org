@@ -167,6 +167,9 @@
       (define-key vterm-mode-map (kbd "C-z") 'toggle-copy-mode-respect-to-model-state)
       (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state)
       (evil-define-key 'normal 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
+
+    (use-package ghostel
+      :ensure t)
   #+end_src
 
 
