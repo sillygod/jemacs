@@ -272,6 +272,39 @@ Two things it has to get right:
   callback that throws cancels the watch rather than leaving it polling
   forever.
 
+* From a shell (=bin/ghostherd=)
+
+=ghostel_cmd= reaches the herd from inside an agent's own terminal. This is
+for everywhere else --- a Makefile, a git hook, a CI step:
+
+#+begin_src bash
+  bin/ghostherd list                       # JSON
+  bin/ghostherd state reviewer
+  bin/ghostherd prompt reviewer "Run the suite"
+  bin/ghostherd handoff reviewer "Review the diff" implementer
+  bin/ghostherd keys reviewer down down return
+  bin/ghostherd interrupt reviewer
+#+end_src
+
+=GHOSTHERD_SOCKET= picks an emacsclient socket; =GHOSTHERD_DRY_RUN= prints
+the elisp instead of running it, which is how the quoting is tested.
+
+Two things it has to get right, both learned the hard way:
+
+- *Quoting.* Every argument is free text --- a prompt can contain quotes,
+  backslashes and newlines --- so it is escaped into an Emacs Lisp string
+  literal rather than interpolated. Verified by round-tripping through the
+  Emacs reader, not by eyeballing.
+- *Output goes through a temp file, and the write is pinned to UTF-8.*
+  =emacsclient -e= prints the *Lisp representation*, so JSON would come back
+  double-escaped as ="[{\"name\":...}]"=. Writing to a file avoids that ---
+  but agent output is full of non-ASCII (box drawing, the =❯= in a
+  permission prompt), and =write-region= without an explicit coding system
+  calls =select-safe-coding-system=, which *prompts*. In batch that is an
+  error; in a daemon it blocks forever on a minibuffer nobody can answer and
+  wedges the server for every later call too. That is not hypothetical: it
+  is what the first version did.
+
 * Notifications (ghostel hooks)
 
 ghostherd reuses ghostel's process lifecycle rather than inventing a
@@ -625,8 +658,7 @@ Goal: scripts and agents can orchestrate without focusing panes.
 - [X] Pipeline helper: implement → message reviewer → wait → notify
   (=ghostherd-handoff=)
 - [X] Structured JSON listing for =ghostherd-cmd-list= / =ghostherd-cmd-state=
-- [ ] Optional =emacsclient= CLI wrapper script
-  (=bin/ghostherd= → =emacsclient -e '(ghostherd-…)'=)
+- [X] =emacsclient= CLI wrapper (=bin/ghostherd=)
 
 ** Phase 3 — tmux backend
 
