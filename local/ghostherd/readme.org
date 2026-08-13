@@ -7,9 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                              |
 |-------------+----------------------------------------------------|
-| Phase       | *2 done* — bar =:screen-rules= tuning (needs data) |
+| Phase       | *2.5 done* — bar =:screen-rules= tuning (needs data) |
 | Lifetime    | Bound to Emacs (tmux backend is Phase 3)           |
-| Tests       | =ghostherd-tests.el= — 43 ERT, mutation-checked    |
+| Tests       | =ghostherd-tests.el= — 72 ERT, mutation-checked    |
 | Branch      | developed on =chore/extract-personal-config=       |
 | Package     | =local/ghostherd/= (straight =:local-repo=)        |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                     |
