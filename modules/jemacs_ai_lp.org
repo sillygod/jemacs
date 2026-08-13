@@ -526,6 +526,7 @@
                         ghostherd-prompt-interactive
                         ghostherd-kill
                         ghostherd-rename
+                        ghostherd-explain
                         ghostherd-mode)
              :config
              (setq ghostherd-notify-on-blocked t
@@ -548,6 +549,7 @@
              ;; n/p are left to evil's j/k.
              (evil-define-key 'normal ghostherd-sidebar-mode-map
                (kbd "?") #'ghostherd-sidebar-help
+               (kbd "e") #'ghostherd-explain
                (kbd "RET") #'ghostherd-sidebar-visit
                (kbd "o") #'ghostherd-sidebar-visit
                (kbd "gr") #'ghostherd-sidebar-refresh

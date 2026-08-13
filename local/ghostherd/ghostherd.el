@@ -43,6 +43,8 @@
 ;; Internal ghostel buffer-locals (not public API, but stable enough).
 (defvar ghostel--process)
 (defvar ghostel--buffer-identity)
+(defvar ghostel--title)
+(defvar ghostel-progress-function)
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-query-before-killing)
 (defvar ghostel-buffer-name)
@@ -191,6 +193,24 @@ Only used when the session is started via shell + command (not direct exec)."
   :type 'integer
   :group 'ghostherd)
 
+(defcustom ghostherd-use-osc-progress t
+  "Treat ConEmu OSC 9;4 progress reports as evidence that an agent is working.
+Screen scraping cannot tell a silent agent from a finished one; a CLI
+that emits progress tells us directly.  Takes effect when
+`ghostherd-mode' is next enabled."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-progress-ttl 5
+  "Seconds an OSC 9;4 progress report counts as evidence of `working'.
+Reports stop arriving the moment an agent blocks on a prompt, so this
+only needs to outlast the gap between two updates of a live task."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--saved-progress-function nil
+  "Value of `ghostel-progress-function' displaced by `ghostherd--on-progress'.")
+
 (defcustom ghostherd-notify-on-blocked t
   "Notify when a session transitions into `blocked'."
   :type 'boolean
@@ -214,6 +234,17 @@ Only used when the session is started via shell + command (not direct exec)."
 (defcustom ghostherd-sidebar-width 36
   "Width of the ghostherd sidebar window."
   :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-show-title nil
+  "Show the agent's OSC 2 terminal title as a sidebar column.
+
+Off by default because the existing columns already need about 70
+characters and `ghostherd-sidebar-width' is 36, so rows wrap as it is --
+turning this on without also widening the sidebar or trimming the
+Project column will make that worse.  Takes effect next time the sidebar
+buffer is created."
+  :type 'boolean
   :group 'ghostherd)
 
 (defcustom ghostherd-buffer-name-format "*ghostherd:%s*"
@@ -252,7 +283,13 @@ Filled with FROM name, TO name, and BODY."
   last-active
   (seen t)
   (manual-state nil)
-  notes)
+  notes
+  ;; Last ConEmu OSC 9;4 report: the STATE symbol, its percentage (or nil),
+  ;; and when it arrived.  Written on ghostel's VT-parser callpath, so
+  ;; nothing here may be expensive to set; it is *read* by the poll path.
+  progress-state
+  progress-percent
+  progress-at)
 
 (defvar ghostherd--sessions (make-hash-table :test 'equal)
   "Map of session id string → `ghostherd-session'.")
@@ -301,6 +338,21 @@ Each function is called with (SESSION OLD-STATE NEW-STATE).")
 (defun ghostherd--abbreviate (path)
   "Abbreviate PATH for display."
   (if path (abbreviate-file-name path) "~"))
+
+(defun ghostherd--session-title (session)
+  "Return SESSION's OSC 2 terminal title, or nil when it says nothing new.
+Read straight off ghostel's buffer-local `ghostel--title' rather than
+through `ghostel-buffer-name-function', which is how ghostel turns a
+title into a buffer name -- taking that over would fight ghostherd's own
+naming.  A title equal to the buffer name is the shell echoing us back."
+  (when-let* ((buf (ghostherd-session-buffer session)))
+    (when (and (buffer-live-p buf) (boundp 'ghostel--title))
+      (let ((title (buffer-local-value 'ghostel--title buf)))
+        (when (stringp title)
+          (let ((title (string-trim title)))
+            (unless (or (string-empty-p title)
+                        (equal title (buffer-name buf)))
+              title)))))))
 
 (defun ghostherd--unique-name (base)
   "Return a unique session name derived from BASE."
@@ -427,6 +479,33 @@ working over idle (strict blocked detection, herdr-style)."
         (try 'working)
         (try 'idle))))
 
+(defun ghostherd--progress-fresh-p (session)
+  "Return non-nil if SESSION reported OSC progress recently enough to trust.
+`remove' and `pause' are excluded: they say the agent stopped reporting,
+which is exactly when the screen rules should take back over."
+  (and ghostherd-use-osc-progress
+       (memq (ghostherd-session-progress-state session) '(set indeterminate))
+       (when-let* ((at (ghostherd-session-progress-at session)))
+         (< (float-time (time-subtract (current-time) at))
+            ghostherd-progress-ttl))))
+
+(defun ghostherd--progress-reason (session)
+  "Describe SESSION's last progress report, for the state reason."
+  (let ((percent (ghostherd-session-progress-percent session)))
+    (if percent
+        (format "osc progress %d%%" percent)
+      "osc progress")))
+
+(defun ghostherd--match-all-rules (text rules)
+  "Return every (STATE . PATTERN) in RULES matching TEXT.
+`ghostherd--match-rules' stops at the first winner, which is what the
+state machine wants but hides why a rule lost.  This reports the lot, in
+precedence order, for `ghostherd-explain'."
+  (cl-loop for state in '(blocked working idle)
+           append (cl-loop for pattern in (alist-get state rules)
+                           when (string-match-p pattern text)
+                           collect (cons state pattern))))
+
 (defun ghostherd--detect-state (session)
   "Return (STATE . REASON) for SESSION from screen rules / buffer liveness."
   (cond
@@ -450,9 +529,17 @@ working over idle (strict blocked detection, herdr-style)."
        (t
         (let* ((tail (ghostherd--buffer-tail buf))
                (hit (ghostherd--match-rules tail rules)))
-          (or hit
-              ;; Known agent, no match → idle fallback (herdr-style)
-              (cons 'idle "default_known_agent_idle_fallback")))))))))
+          (cond
+           ;; Screen rules keep priority for `blocked': a stale progress
+           ;; report must never mask an agent sitting on a prompt.
+           ((eq (car-safe hit) 'blocked) hit)
+           ;; Otherwise a live progress report beats scraping, which cannot
+           ;; tell a working agent from a quiet one.
+           ((ghostherd--progress-fresh-p session)
+            (cons 'working (ghostherd--progress-reason session)))
+           (hit hit)
+           ;; Known agent, no match → idle fallback (herdr-style)
+           (t (cons 'idle "default_known_agent_idle_fallback"))))))))))
 
 (defun ghostherd--set-state (session new &optional reason)
   "Set SESSION state to NEW with optional REASON, run hooks/notify."
@@ -538,11 +625,45 @@ EVENT is the sentinel event string from ghostel."
          session 'idle
          (format "command finish (%s)" (or status "?")))))))
 
+(defun ghostherd--on-progress (state percent)
+  "Record a ConEmu OSC 9;4 progress report for the current buffer's session.
+STATE and PERCENT are as documented for `ghostel-progress-function'.
+
+This runs synchronously on ghostel's VT-parser callpath, where anything
+slow stalls terminal output, so it only stores the report -- deciding
+what it means is left to the poll path.  The previous
+`ghostel-progress-function' is always called, since it is a single
+global setting rather than a hook and is very likely someone's spinner."
+  (when-let* ((session (ghostherd-get (current-buffer))))
+    (setf (ghostherd-session-progress-state session) state
+          (ghostherd-session-progress-percent session) percent
+          (ghostherd-session-progress-at session) (current-time)))
+  (when (functionp ghostherd--saved-progress-function)
+    (funcall ghostherd--saved-progress-function state percent)))
+
 (defun ghostherd--install-hooks ()
   "Install ghostel hooks used by ghostherd."
   (add-hook 'ghostel-exit-functions #'ghostherd--on-ghostel-exit)
   (add-hook 'ghostel-command-start-functions #'ghostherd--on-command-start)
-  (add-hook 'ghostel-command-finish-functions #'ghostherd--on-command-finish))
+  (add-hook 'ghostel-command-finish-functions #'ghostherd--on-command-finish)
+  (when (and ghostherd-use-osc-progress
+             (boundp 'ghostel-progress-function)
+             (not (eq ghostel-progress-function #'ghostherd--on-progress)))
+    (setq ghostherd--saved-progress-function ghostel-progress-function
+          ghostel-progress-function #'ghostherd--on-progress)))
+
+(defun ghostherd--remove-hooks ()
+  "Undo `ghostherd--install-hooks'.
+Restoring `ghostel-progress-function' matters more than the rest: it is
+a single global function, not a hook, so leaving ours in place would
+keep someone else's spinner permanently displaced."
+  (remove-hook 'ghostel-exit-functions #'ghostherd--on-ghostel-exit)
+  (remove-hook 'ghostel-command-start-functions #'ghostherd--on-command-start)
+  (remove-hook 'ghostel-command-finish-functions #'ghostherd--on-command-finish)
+  (when (and (boundp 'ghostel-progress-function)
+             (eq ghostel-progress-function #'ghostherd--on-progress))
+    (setq ghostel-progress-function ghostherd--saved-progress-function
+          ghostherd--saved-progress-function nil)))
 
 (defun ghostherd--register-eval-cmds ()
   "Whitelist ghostherd commands for `ghostel_cmd' from agent shells."
@@ -746,6 +867,69 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
           (user-error "Unknown session")))))
 
 ;;;###autoload
+;;;###autoload
+(defun ghostherd-explain (&optional session)
+  "Explain how SESSION's state was decided.
+Shows the scraped tail, every `:screen-rules' pattern that matched it,
+and which one won.  Rule tuning is guesswork without this: a false
+`blocked' looks identical to a real one until you can see that some
+pattern matched text the agent merely printed.
+
+Interactively, uses the sidebar row at point when there is one, and
+otherwise prompts."
+  (interactive)
+  (let* ((session (or session
+                      (and (derived-mode-p 'ghostherd-sidebar-mode)
+                           (ghostherd--sidebar-session-at-point))
+                      (ghostherd--read-session "Explain agent: ")))
+         (kind (ghostherd-session-kind session))
+         (spec (ignore-errors (ghostherd--spec kind)))
+         (rules (plist-get spec :screen-rules))
+         (live (ghostherd--session-live-p session))
+         (tail (and live (ghostherd--buffer-tail
+                          (ghostherd-session-buffer session))))
+         (hits (and tail rules (ghostherd--match-all-rules tail rules)))
+         (winner (and tail rules (ghostherd--match-rules tail rules))))
+    (with-help-window "*ghostherd explain*"
+      (with-current-buffer standard-output
+        (insert (format "%s  (%s)\n\n" (ghostherd-session-name session) kind))
+        (insert (format "  state    %s %s\n"
+                        (ghostherd--state-glyph (ghostherd-session-state session))
+                        (ghostherd-session-state session)))
+        (insert (format "  reason   %s\n"
+                        (or (ghostherd-session-state-reason session) "—")))
+        (when (ghostherd-session-manual-state session)
+          (insert (format "  manual   %s  (overrides detection until cleared)\n"
+                          (ghostherd-session-manual-state session))))
+        (insert (format "  buffer   %s%s\n\n"
+                        (buffer-name (ghostherd-session-buffer session))
+                        (if live "" "  [dead]")))
+
+        (cond
+         ((not live)
+          (insert "Buffer is dead; no detection runs.\n"))
+         ((null rules)
+          (insert "No :screen-rules for this kind — state is forced to `working'.\n"))
+         ((null hits)
+          (insert "No rule matched. Falling back to `idle'.\n"))
+         (t
+          (insert "Matches, in precedence order (blocked > working > idle):\n\n")
+          (pcase-dolist (`(,state . ,pattern) hits)
+            (insert (format "  %-8s %-3s %s\n"
+                            state
+                            (if (equal (cons state pattern) winner) "->" "")
+                            pattern)))
+          (insert "\nOnly the first line wins.  A rule listed under a\n")
+          (insert "higher-precedence state shadows every rule below it.\n")))
+
+        (when tail
+          (insert (format "\nScraped tail (last %d lines):\n"
+                          ghostherd-screen-tail-lines))
+          (insert (make-string 60 ?-) "\n")
+          (insert tail)
+          (unless (bolp) (insert "\n"))
+          (insert (make-string 60 ?-) "\n"))))))
+
 (defun ghostherd-switch ()
   "Switch to a ghostherd session (consult/completing-read)."
   (interactive)
@@ -1045,6 +1229,7 @@ FROM may be a session, session name, or free-form label such as \"user\"."
     (ghostherd-sidebar-refresh               . "Refresh")
     (ghostherd-next-blocked                  . "Next blocked / done")
     (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
+    (ghostherd-explain                       . "Explain how state was decided")
     (ghostherd-sidebar-help                  . "This help")
     (quit-window                             . "Quit"))
   "Commands listed by `ghostherd-sidebar-help', in display order.")
@@ -1093,6 +1278,7 @@ Commands with no binding in the current state are omitted."
 (defvar-keymap ghostherd-sidebar-mode-map
   :doc "Keymap for `ghostherd-sidebar-mode'."
   "?" #'ghostherd-sidebar-help
+  "e" #'ghostherd-explain
   "n" #'next-line
   "p" #'previous-line
   "RET" #'ghostherd-sidebar-visit
@@ -1111,17 +1297,24 @@ Commands with no binding in the current state are omitted."
 
 (define-derived-mode ghostherd-sidebar-mode tabulated-list-mode "GhostHerd"
   "Sidebar listing ghostherd agent sessions."
-  (setq tabulated-list-format
-        [("S" 2 t)
-         ("Name" 14 t)
-         ("Kind" 8 t)
-         ("State" 9 t)
-         ("Project" 24 t)
-         ("Age" 6 t)])
+  (setq tabulated-list-format (ghostherd--sidebar-format))
   (setq tabulated-list-padding 1)
   (setq tabulated-list-sort-key (cons "Name" nil))
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
   (tabulated-list-init-header))
+
+(defun ghostherd--sidebar-format ()
+  "Return the `tabulated-list-format' vector for the sidebar.
+Kept beside `ghostherd--sidebar-build-entries', which must produce cells
+in exactly this order."
+  (vconcat
+   [("S" 2 t)
+    ("Name" 14 t)
+    ("Kind" 8 t)
+    ("State" 9 t)
+    ("Project" 24 t)
+    ("Age" 6 t)]
+   (when ghostherd-sidebar-show-title [("Title" 24 t)])))
 
 (defun ghostherd--sidebar-build-entries ()
   "Rebuild `tabulated-list-entries' from the sessions as they stand.
@@ -1136,15 +1329,19 @@ it is safe to call from inside the poll path without recursing."
              (let* ((state (ghostherd-session-state s))
                     (face (ghostherd--state-face state)))
                (list (ghostherd-session-id s)
-                     (vector
-                      (propertize (ghostherd--state-glyph state) 'face face)
-                      (propertize (ghostherd-session-name s) 'face face)
-                      (symbol-name (ghostherd-session-kind s))
-                      (propertize (symbol-name state) 'face face)
-                      (ghostherd--abbreviate (ghostherd-session-project s))
-                      (ghostherd--age-string
-                       (or (ghostherd-session-last-active s)
-                           (ghostherd-session-started-at s)))))))
+                     ;; Cell order must match `ghostherd--sidebar-format'.
+                     (vconcat
+                      (vector
+                       (propertize (ghostherd--state-glyph state) 'face face)
+                       (propertize (ghostherd-session-name s) 'face face)
+                       (symbol-name (ghostherd-session-kind s))
+                       (propertize (symbol-name state) 'face face)
+                       (ghostherd--abbreviate (ghostherd-session-project s))
+                       (ghostherd--age-string
+                        (or (ghostherd-session-last-active s)
+                            (ghostherd-session-started-at s))))
+                      (when ghostherd-sidebar-show-title
+                        (vector (or (ghostherd--session-title s) "")))))))
            sessions))))
 
 (defun ghostherd--sidebar-entries ()
@@ -1313,6 +1510,7 @@ while the sidebar is actually on screen."
           (setq mode-line-misc-info
                 (append mode-line-misc-info
                         '((:eval (ghostherd--mode-line-segment)))))))
+    (ghostherd--remove-hooks)
     (when (timerp ghostherd--poll-timer)
       (cancel-timer ghostherd--poll-timer)
       (setq ghostherd--poll-timer nil))

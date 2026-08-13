@@ -38,6 +38,7 @@ control plane bound to the Emacs session.
 | =M-x ghostherd-kill=                | Kill session (+ buffer)              |
 | =M-x ghostherd-rename=              | Rename session                       |
 | =M-x ghostherd-mark-state=          | Manual state / auto                  |
+| =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 
 ** Leader keys (=SPC a h …=)
@@ -57,9 +58,9 @@ control plane bound to the Emacs session.
 
 ** Sidebar keys
 
-=?= help · =RET= visit · =N= new · =P= pair · =k= kill · =r= rename ·
-=m= message · =i= prompt · =s= toggle project filter · =g= refresh ·
-=.= next blocked · =M= mark state · =q= quit
+=?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
+=r= rename · =m= message · =i= prompt · =s= toggle project filter ·
+=g= refresh · =.= next blocked · =M= mark state · =q= quit
 
 =?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
 keymaps rather than this table, so it stays correct under Evil or any
@@ -158,8 +159,61 @@ parallel notifier:
 |------------------------------+-------------------------------+------------------------|
 | Process exit                 | =ghostel-exit-functions=      | state → =dead=, notify |
 | OSC 133 command start/finish | =ghostel-command-*-functions= | shell kind state hints |
+| OSC 9;4 progress             | =ghostel-progress-function=   | → =working= (+ %)      |
+| OSC 2 title                  | =ghostel--title=              | sidebar Title column   |
 | Screen rules (poll)          | timer                         | working/blocked/idle   |
 | Desktop notify               | =alert= / =osx-notifier=      | blocked / done / dead  |
+
+Two notes on the OSC integrations, because neither is a hook:
+
+- =ghostel-progress-function= is a single global function, very likely
+  someone's spinner. ghostherd saves and *chains to* the previous value, and
+  restores it when =ghostherd-mode= is disabled. Its handler runs
+  synchronously on ghostel's VT-parser callpath, where slow work stalls
+  terminal output, so it only records the report; the poll path decides what
+  it means.
+- The title is read straight off buffer-local =ghostel--title=. Going through
+  =ghostel-buffer-name-function= (ghostel's title→buffer-name mapping) would
+  fight ghostherd's own buffer naming.
+
+* Why is it in that state? (=ghostherd-explain=)
+
+=e= in the sidebar, or =M-x ghostherd-explain=. Shows the scraped tail, every
+=:screen-rules= pattern that matched it, and which one won:
+
+#+begin_example
+  agy-review  (agy)
+
+    state    ○ idle
+    reason   —
+    buffer   *ghostherd:agy-review*
+
+  Matches, in precedence order (blocked > working > idle):
+
+    blocked  ->  Do you want to proceed
+    working      Running
+    working      esc to interrupt
+    idle         ^>
+
+  Only the first line wins.  A rule listed under a
+  higher-precedence state shadows every rule below it.
+#+end_example
+
+Rule tuning is guesswork without this. A false =blocked= looks exactly like a
+real one until you can see *which* pattern matched, and that the agent had
+merely printed the words rather than stopped on a prompt.
+
+** Detection notes per CLI
+
+Screen rules are heuristics against a UI that changes between releases, so
+record what was observed against which version. Prefer a *missed* =blocked=
+over a false one.
+
+| CLI    | Version tested | Known false positive / miss | Fix applied |
+|--------+----------------+-----------------------------+-------------|
+| claude |                |                             |             |
+| grok   |                |                             |             |
+| agy    | 1.1.12         |                             |             |
 
 Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
 session stays visible as =dead= until you kill it from the herd.
@@ -172,6 +226,15 @@ session stays visible as =dead= until you kill it from the herd.
         ghostherd-spawn-delay 0.8
         ghostherd-notify-on-blocked t
         ghostherd-sidebar-side 'left)
+
+  ;; OSC 9;4 progress as evidence of `working'
+  (setq ghostherd-use-osc-progress t
+        ghostherd-progress-ttl 5)         ; seconds a report stays trusted
+
+  ;; OSC 2 title as a sidebar column.  Off by default: the existing columns
+  ;; already need ~70 chars against a `ghostherd-sidebar-width' of 36, so rows
+  ;; wrap as it is.  Widen the sidebar (or trim Project) before enabling.
+  (setq ghostherd-sidebar-show-title nil)
 
   ;; Permanent default args example:
   (setf (alist-get 'claude ghostherd-agent-specs)
@@ -332,13 +395,22 @@ notify, pair layout, message/prompt/read/wait.
 
 Goal: make state trustworthy for daily use without false blocked spam.
 
-- [ ] Tune =:screen-rules= per CLI after T4 sessions (version notes in
-  =readme.org= or a =manifests/= file)
-- [ ] =ghostherd-explain= (like herdr =agent explain=): show last tail
+- [X] =ghostherd-explain= (like herdr =agent explain=): show last tail
   snippet + which rule matched
-- [ ] OSC progress (=ghostel-progress-function=) → force =working= + %
-- [ ] OSC title → sidebar summary column
-- [ ] Document known false positives per agent version
+- [X] OSC progress (=ghostel-progress-function=) → force =working= + %
+- [X] OSC title → sidebar summary column (opt-in; see the width note under
+  Config knobs)
+- [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
+  data; =ghostherd-explain= is what produces it
+- [ ] Document known false positives per agent version — table stubbed under
+  "Detection notes per CLI"
+
+Also surfaced while doing the above, not yet addressed:
+
+- [ ] Sidebar columns need ~70 characters but =ghostherd-sidebar-width= is
+  36, so every row wraps. Either widen the window, shrink =Project= (24 is
+  the bulk of it, and is redundant when the project filter is on), or make
+  the column set configurable.
 
 ** Phase 2 — Usability
 
