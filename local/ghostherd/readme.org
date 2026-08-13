@@ -152,6 +152,20 @@ When shell integration is active and the command is whitelisted:
   ghostel_cmd ghostherd-read reviewer 60
 #+end_src
 
+=ghostherd-list= and =ghostherd-state= emit JSON:
+
+#+begin_example
+  [{"name":"reviewer","kind":"grok","state":"blocked","reason":"Approve",
+    "project":"/src/app/","notes":"reviews auth","age":"3m"}]
+#+end_example
+
+Not for tidiness --- the previous tab/equals format had no escaping, and two
+of the fields are free text. A note containing a tab or newline turned one
+record into several, and =reason= holds a raw =:screen-rules= regexp, which
+can contain anything. An unknown session reports ={"error":...}= rather than
+a prose string, so a caller can tell a failure from a session that happens
+to be named like one.
+
 Typical workflow:
 1. =SPC a h 2= → implementer (claude) | reviewer (claude or grok)
 2. Work in implementer
@@ -610,7 +624,7 @@ Goal: scripts and agents can orchestrate without focusing panes.
   =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
 - [X] Pipeline helper: implement → message reviewer → wait → notify
   (=ghostherd-handoff=)
-- [ ] Structured JSON-ish listing for =ghostherd-cmd-list=
+- [X] Structured JSON listing for =ghostherd-cmd-list= / =ghostherd-cmd-state=
 - [ ] Optional =emacsclient= CLI wrapper script
   (=bin/ghostherd= → =emacsclient -e '(ghostherd-…)'=)
 

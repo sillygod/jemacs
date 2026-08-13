@@ -1473,30 +1473,43 @@ watch rather than stacking a second timer on it."
 
 ;;; Commands callable from agent shells via ghostel_cmd
 
+(defun ghostherd--json (object)
+  "Encode OBJECT as JSON.
+`json-serialize' is built in since Emacs 27 and this package requires
+28.1, so there is no json.el fallback to keep."
+  (json-serialize object))
+
+(defun ghostherd-session-as-alist (session)
+  "Return SESSION as an alist ready for JSON encoding."
+  (list (cons 'name (ghostherd-session-name session))
+        (cons 'kind (symbol-name (ghostherd-session-kind session)))
+        (cons 'state (symbol-name (ghostherd-session-state session)))
+        (cons 'reason (or (ghostherd-session-state-reason session) ""))
+        (cons 'project (or (ghostherd-session-project session) ""))
+        (cons 'notes (or (ghostherd-session-notes session) ""))
+        (cons 'age (ghostherd--age-string
+                    (or (ghostherd-session-last-active session)
+                        (ghostherd-session-started-at session))))))
+
 (defun ghostherd-cmd-list (&rest _)
-  "Return a text listing of herd sessions for agent shells."
+  "Return herd sessions as JSON, for agent shells.
+
+JSON rather than the tab/equals text this used to emit, because two of
+the fields are free-form and the old format had no escaping: a note
+containing a tab or a newline silently turned one record into several,
+and `reason' holds a raw `:screen-rules' regexp, which can contain
+anything at all."
   (ghostherd--ensure-sessions)
-  (if (= (hash-table-count ghostherd--sessions) 0)
-      "(no sessions)"
-    (mapconcat
-     (lambda (s)
-       (format "%s\tkind=%s\tstate=%s\tproject=%s\tnotes=%s"
-               (ghostherd-session-name s)
-               (ghostherd-session-kind s)
-               (ghostherd-session-state s)
-               (or (ghostherd-session-project s) "-")
-               (or (ghostherd-session-notes s) "")))
-     (ghostherd-sessions)
-     "\n")))
+  (ghostherd--json
+   (vconcat (mapcar #'ghostherd-session-as-alist (ghostherd-sessions)))))
 
 (defun ghostherd-cmd-state (name &rest _)
-  "Return state string for session NAME."
-  (if-let* ((s (ghostherd-get name)))
-      (format "%s %s %s"
-              (ghostherd-session-name s)
-              (ghostherd-session-state s)
-              (or (ghostherd-session-state-reason s) ""))
-    (format "unknown session: %s" name)))
+  "Return the state of session NAME as JSON."
+  (ghostherd--json
+   (if-let* ((s (ghostherd-get name)))
+       (ghostherd-session-as-alist s)
+     (list (cons 'error "unknown session")
+           (cons 'name name)))))
 
 (defun ghostherd-cmd-send (name text &rest _)
   "Send TEXT to session NAME without submitting."

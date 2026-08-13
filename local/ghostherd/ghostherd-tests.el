@@ -718,6 +718,62 @@ prints, the screen rules still see the idle prompt it had before."
   (ghostherd-tests--with-herd ()
     (should-error (ghostherd-handoff "nope" "hi") :type 'user-error)))
 
+;;; Agent-shell command surface
+
+(defun ghostherd-tests--parse-json (string)
+  "Parse STRING as JSON into alists with symbol keys."
+  (json-parse-string string :object-type 'alist :array-type 'list))
+
+(ert-deftest ghostherd-test-cmd-list-survives-hostile-notes ()
+  "The old tab/equals format had no escaping, and notes are free text: a
+tab or newline in one turned a single record into several."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'idle
+                              :notes "review\tthen\nreport \"it\"")
+    (let* ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-list))))
+      (should (= (length parsed) 1))
+      (should (equal (alist-get 'notes (car parsed))
+                     "review\tthen\nreport \"it\"")))))
+
+(ert-deftest ghostherd-test-cmd-list-survives-regexp-reason ()
+  "`reason' holds a raw :screen-rules pattern, which can contain anything."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'blocked)))
+      (setf (ghostherd-session-state-reason s) "❯ 1\\. Yes\t\"quoted\"")
+      (let ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-list))))
+        (should (equal (alist-get 'reason (car parsed))
+                       "❯ 1\\. Yes\t\"quoted\""))))))
+
+(ert-deftest ghostherd-test-cmd-list-empty-is-valid-json ()
+  "An empty herd must still parse, not be the string \"(no sessions)\"."
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd-tests--parse-json (ghostherd-cmd-list)) '()))))
+
+(ert-deftest ghostherd-test-cmd-list-fields ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "rev" :kind 'grok :state 'idle
+                              :project "/tmp/p/" :notes "n")
+    (let ((row (car (ghostherd-tests--parse-json (ghostherd-cmd-list)))))
+      (dolist (field '(name kind state reason project notes age))
+        (should (assq field row)))
+      (should (equal (alist-get 'name row) "rev"))
+      (should (equal (alist-get 'kind row) "grok")))))
+
+(ert-deftest ghostherd-test-cmd-state-reports-unknown-as-json ()
+  "An error has to be machine-readable too, or the caller cannot tell it
+apart from a session literally named \"unknown session: x\"."
+  (ghostherd-tests--with-herd ()
+    (let ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-state "nope"))))
+      (should (equal (alist-get 'error parsed) "unknown session"))
+      (should (equal (alist-get 'name parsed) "nope")))))
+
+(ert-deftest ghostherd-test-cmd-state-known ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'blocked)
+    (let ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-state "a"))))
+      (should (equal (alist-get 'state parsed) "blocked"))
+      (should-not (assq 'error parsed)))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
