@@ -1163,6 +1163,89 @@ When SUBMIT is non-nil, also send RET (Enter)."
     (ghostherd--set-state session 'working "input sent"))
   text)
 
+(defconst ghostherd-key-aliases
+  '(("esc"       . ("escape"    . nil))
+    ("escape"    . ("escape"    . nil))
+    ("ret"       . ("return"    . nil))
+    ("return"    . ("return"    . nil))
+    ("enter"     . ("return"    . nil))
+    ("tab"       . ("tab"       . nil))
+    ("space"     . ("space"     . nil))
+    ("up"        . ("up"        . nil))
+    ("down"      . ("down"      . nil))
+    ("left"      . ("left"      . nil))
+    ("right"     . ("right"     . nil))
+    ("backspace" . ("backspace" . nil))
+    ("C-c"       . ("c"         . "ctrl"))
+    ("C-d"       . ("d"         . "ctrl"))
+    ("C-z"       . ("z"         . "ctrl")))
+  "Map friendly key names to `ghostel-send-key' (KEY-NAME . MODS) pairs.
+
+Exists so callers -- including agent shells going through `ghostel_cmd'
+-- can say \"esc\" or \"C-c\" without knowing ghostel's encoder
+vocabulary.  Anything not listed is passed through unchanged, so the
+full vocabulary stays reachable.")
+
+(defun ghostherd--resolve-key (key)
+  "Return (KEY-NAME . MODS) for KEY, via `ghostherd-key-aliases'."
+  (or (alist-get key ghostherd-key-aliases nil nil #'equal)
+      (cons key nil)))
+
+;;;###autoload
+(defun ghostherd-send-keys (session &rest keys)
+  "Send control KEYS to SESSION -- Escape, C-c, arrows, Tab and so on.
+
+`ghostherd-send' can only paste text and optionally press Return, which
+covers talking *to* an agent but not operating its interface.  Escaping
+a runaway generation, answering an arrow-driven permission menu or
+sending EOF are keystrokes, not text: pasting the characters \"esc\"
+just feeds the agent a word.
+
+Unlike `ghostherd-send', this does not mark the session `working'.  The
+usual reason to send a key is to make the agent *stop*, so claiming it
+just started would be backwards; the next poll reports what actually
+happened."
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session buffer is not live"))
+  (with-current-buffer (ghostherd-session-buffer session)
+    (unless (derived-mode-p 'ghostel-mode)
+      (user-error "Session buffer is not a ghostel terminal"))
+    (dolist (key keys)
+      (pcase-let ((`(,name . ,mods) (ghostherd--resolve-key key)))
+        (ghostel-send-key name mods))))
+  keys)
+
+;;;###autoload
+(defun ghostherd-interrupt (session)
+  "Send Escape to SESSION -- what agent CLIs bind to \"esc to interrupt\"."
+  (interactive (list (ghostherd--read-session "Interrupt agent: ")))
+  (ghostherd-send-keys session "esc"))
+
+;;;###autoload
+(defun ghostherd-abort (session)
+  "Send C-c to SESSION, for when Escape is not enough."
+  (interactive (list (ghostherd--read-session "Abort agent: ")))
+  (ghostherd-send-keys session "C-c"))
+
+;;;###autoload
+(defun ghostherd-answer (session choice)
+  "Answer SESSION's menu prompt by moving to CHOICE and pressing Return.
+
+CHOICE is 1-based.  Some agent CLIs accept the digit as text; others
+only respond to the arrow keys, and there is no way to tell from the
+outside which you are looking at.  Arrows work for both."
+  (interactive
+   (list (ghostherd--read-session "Answer agent: ")
+         (read-number "Choice (1-based): " 1)))
+  (when (< choice 1)
+    (user-error "Choice is 1-based"))
+  ;; Home first: the highlighted option is not necessarily the first.
+  (apply #'ghostherd-send-keys session
+         (append (make-list 9 "up")
+                 (make-list (1- choice) "down")
+                 (list "return"))))
+
 (defun ghostherd-prompt (session prompt &optional wait timeout)
   "Submit PROMPT to SESSION (text + Enter).
 When WAIT is non-nil, poll until state is idle/done/blocked or TIMEOUT
@@ -1386,6 +1469,9 @@ what lets consult and marginalia treat these as sessions."
     (ghostherd-sidebar-rename                . "Rename session")
     (ghostherd-respawn                       . "Respawn from recipe")
     (ghostherd-sidebar-notes                 . "Edit note / role")
+    (ghostherd-sidebar-interrupt             . "Interrupt (Escape)")
+    (ghostherd-sidebar-abort                 . "Abort (C-c)")
+    (ghostherd-sidebar-answer                . "Answer menu prompt")
     (ghostherd-sidebar-message               . "Message agent")
     (ghostherd-sidebar-prompt                . "Prompt agent")
     (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
@@ -1444,6 +1530,9 @@ Commands with no binding in the current state are omitted."
   "e" #'ghostherd-explain
   "R" #'ghostherd-respawn
   "c" #'ghostherd-sidebar-notes
+  "z" #'ghostherd-sidebar-interrupt
+  "Z" #'ghostherd-sidebar-abort
+  "a" #'ghostherd-sidebar-answer
   "n" #'next-line
   "p" #'previous-line
   "RET" #'ghostherd-sidebar-visit
@@ -1640,6 +1729,24 @@ while the sidebar is actually on screen."
   (when-let* ((s (ghostherd--sidebar-session-at-point)))
     (ghostherd-set-notes
      s (read-string "Note: " (ghostherd-session-notes s)))))
+
+(defun ghostherd-sidebar-interrupt ()
+  "Send Escape to the session at point."
+  (interactive)
+  (when-let* ((s (ghostherd--sidebar-session-at-point)))
+    (ghostherd-interrupt s)))
+
+(defun ghostherd-sidebar-abort ()
+  "Send C-c to the session at point."
+  (interactive)
+  (when-let* ((s (ghostherd--sidebar-session-at-point)))
+    (ghostherd-abort s)))
+
+(defun ghostherd-sidebar-answer ()
+  "Answer the menu prompt of the session at point."
+  (interactive)
+  (when-let* ((s (ghostherd--sidebar-session-at-point)))
+    (ghostherd-answer s (read-number "Choice (1-based): " 1))))
 
 (defun ghostherd-sidebar-message ()
   "Message the session at point."

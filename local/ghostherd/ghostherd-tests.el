@@ -464,6 +464,90 @@ only for the shapes actually expected."
     (should-not (funcall safe-args '("--effort" 3)))
     (should-not (funcall safe-args "--effort"))))
 
+;;; Control keys
+
+(defmacro ghostherd-tests--recording-keys (&rest body)
+  "Run BODY with ghostel's send functions recorded into `sent'.
+`sent' collects (KEY-NAME . MODS) for keys and (:text . STRING) for text."
+  (declare (indent 0) (debug t))
+  `(let ((sent nil))
+     (cl-letf (((symbol-function 'ghostel-send-key)
+                (lambda (name &optional mods) (push (cons name mods) sent)))
+               ((symbol-function 'ghostel-paste-string)
+                (lambda (text) (push (cons :text text) sent)))
+               ((symbol-function 'derived-mode-p) (lambda (&rest _) t)))
+       ,@body
+       (nreverse sent))))
+
+(ert-deftest ghostherd-test-send-keys-resolves-aliases ()
+  "Callers say \"esc\" or \"C-c\"; ghostel's encoder wants a name and a
+modifier string."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a"))
+           (sent (ghostherd-tests--recording-keys
+                   (ghostherd-send-keys s "esc" "C-c" "down" "return"))))
+      (should (equal sent '(("escape" . nil)
+                            ("c" . "ctrl")
+                            ("down" . nil)
+                            ("return" . nil)))))))
+
+(ert-deftest ghostherd-test-send-keys-passes-unknown-through ()
+  "Unlisted names reach ghostel unchanged, so its full vocabulary stays
+reachable without ghostherd having to mirror it."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a"))
+           (sent (ghostherd-tests--recording-keys
+                   (ghostherd-send-keys s "f5"))))
+      (should (equal sent '(("f5" . nil)))))))
+
+(ert-deftest ghostherd-test-send-keys-does-not-claim-working ()
+  "Sending Escape means stop.  Marking the session `working' -- which is
+what `ghostherd-send' does -- would be exactly backwards."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :state 'blocked)))
+      (ignore (ghostherd-tests--recording-keys (ghostherd-send-keys s "esc")))
+      (should (eq (ghostherd-session-state s) 'blocked)))))
+
+(ert-deftest ghostherd-test-send-vs-send-keys-state ()
+  "The contrast is the point: text input does imply work started."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :state 'idle)))
+      (ignore (ghostherd-tests--recording-keys (ghostherd-send s "hello" t)))
+      (should (eq (ghostherd-session-state s) 'working)))))
+
+(ert-deftest ghostherd-test-interrupt-and-abort ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (should (equal (ghostherd-tests--recording-keys (ghostherd-interrupt s))
+                     '(("escape" . nil))))
+      (should (equal (ghostherd-tests--recording-keys (ghostherd-abort s))
+                     '(("c" . "ctrl")))))))
+
+(ert-deftest ghostherd-test-answer-homes-before-descending ()
+  "The highlighted option is not necessarily the first, so counting down
+from wherever the cursor happens to be would pick the wrong answer."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a"))
+           (sent (ghostherd-tests--recording-keys (ghostherd-answer s 3)))
+           (names (mapcar #'car sent)))
+      (should (equal (last names) '("return")))
+      (should (= (cl-count "down" names :test #'equal) 2))
+      (should (> (cl-count "up" names :test #'equal) 1))
+      ;; every `up' precedes every `down'
+      (should (< (cl-position "up" names :test #'equal :from-end t)
+                 (cl-position "down" names :test #'equal))))))
+
+(ert-deftest ghostherd-test-answer-rejects-zero ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (should-error (ghostherd-answer s 0) :type 'user-error))))
+
+(ert-deftest ghostherd-test-send-keys-requires-live-buffer ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (kill-buffer (ghostherd-session-buffer s))
+      (should-error (ghostherd-send-keys s "esc") :type 'user-error))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()

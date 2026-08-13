@@ -529,6 +529,9 @@
                         ghostherd-explain
                         ghostherd-respawn
                         ghostherd-set-notes
+                        ghostherd-interrupt
+                        ghostherd-abort
+                        ghostherd-answer
                         ghostherd-mode)
              :config
              (setq ghostherd-notify-on-blocked t
@@ -554,6 +557,9 @@
                (kbd "e") #'ghostherd-explain
                (kbd "R") #'ghostherd-respawn
                (kbd "c") #'ghostherd-sidebar-notes
+               (kbd "z") #'ghostherd-sidebar-interrupt
+               (kbd "Z") #'ghostherd-sidebar-abort
+               (kbd "a") #'ghostherd-sidebar-answer
                (kbd "RET") #'ghostherd-sidebar-visit
                (kbd "o") #'ghostherd-sidebar-visit
                (kbd "gr") #'ghostherd-sidebar-refresh

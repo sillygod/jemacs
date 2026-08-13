@@ -42,6 +42,9 @@ control plane bound to the Emacs session.
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
 | =M-x ghostherd-set-notes=           | Set an agent's role / note           |
+| =M-x ghostherd-interrupt=           | Send Escape ("esc to interrupt")     |
+| =M-x ghostherd-abort=               | Send C-c                             |
+| =M-x ghostherd-answer=              | Answer a menu prompt by number       |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 
 ** Leader keys (=SPC a h …=)
@@ -62,7 +65,8 @@ control plane bound to the Emacs session.
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
-=r= rename · =R= respawn · =c= note · =m= message · =i= prompt ·
+=r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
+=a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
 
@@ -153,6 +157,39 @@ Typical workflow:
 2. Work in implementer
 3. =SPC a h m= → message reviewer with a review request
 4. =SPC a h .= when reviewer is blocked / done
+
+* Talking to an agent vs operating it
+
+Two different things, and only the first existed before Phase 2.5.
+
+=ghostherd-send= / =ghostherd-prompt= paste *text* and optionally press
+Return. That is how you talk *to* an agent, and it assumes the agent is
+sitting there waiting for input.
+
+=ghostherd-send-keys= sends *keystrokes*. Escaping a runaway generation,
+answering an arrow-driven permission menu, sending EOF --- none of these are
+text. Pasting the characters =esc= just feeds the agent a word.
+
+#+begin_src emacs-lisp
+  (ghostherd-interrupt "reviewer")          ; Escape -- "esc to interrupt"
+  (ghostherd-abort "reviewer")              ; C-c
+  (ghostherd-answer "reviewer" 2)           ; pick option 2 of a menu
+  (ghostherd-send-keys "reviewer" "tab" "down" "return")
+#+end_src
+
+Three things worth knowing:
+
+- Keys do *not* mark the session =working=, though text input does. The usual
+  reason to send a key is to make the agent *stop*; claiming it just started
+  would be backwards. The next poll reports what actually happened.
+- =ghostherd-answer= presses Up several times before descending. The
+  highlighted option is not necessarily the first, and counting down from
+  wherever the cursor happens to be picks the wrong answer. Some CLIs accept
+  the digit as text and some only respond to arrows; there is no way to tell
+  from outside, and arrows work for both.
+- Friendly names (=esc=, =C-c=, =down=) are mapped in
+  =ghostherd-key-aliases=. Anything unlisted is passed through to
+  =ghostel-send-key= unchanged, so its full vocabulary stays reachable.
 
 * Notifications (ghostel hooks)
 
@@ -502,7 +539,8 @@ an Emacs child.
 Goal: scripts and agents can orchestrate without focusing panes.
 
 - [ ] =ghostherd-wait-output= (regex on buffer tail, timeout)
-- [ ] =ghostherd-send-keys= (esc, ctrl+c, etc. via =ghostel-send-key=)
+- [X] =ghostherd-send-keys= (esc, ctrl+c, arrows, tab) --- plus
+  =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
 - [ ] Pipeline helper: implement → message reviewer → wait → notify
 - [ ] Structured JSON-ish listing for =ghostherd-cmd-list=
 - [ ] Optional =emacsclient= CLI wrapper script
