@@ -221,6 +221,25 @@ over a false one.
 Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
 session stays visible as =dead= until you kill it from the herd.
 
+* Per-project defaults
+
+Drop this in a project's =.dir-locals.el= and =ghostherd-new= preselects the
+kind and prefills the args:
+
+#+begin_src emacs-lisp
+  ((nil . ((ghostherd-project-kind . claude)
+           (ghostherd-project-args . ("--permission-mode" "acceptEdits")))))
+#+end_src
+
+Both are marked =safe-local-variable= for their expected shapes, so no
+prompt. They are read *by directory* rather than from the current buffer:
+=ghostherd-new= is often invoked from the sidebar or another non-file buffer,
+which never picked up the project's dir-locals at all.
+
+Resolved before the kind prompt so the project can preselect it. Changing
+the directory later in the same prompt sequence does not re-read --
+re-prompting for a kind you already answered would be worse than stale.
+
 * Config knobs
 
 #+begin_src emacs-lisp
@@ -443,7 +462,7 @@ Goal: less friction for multi-agent day-to-day work.
 - [X] Session notes editable from sidebar (=c=); role shown in switcher
 - [ ] Persist last herd snapshot for the Emacs session restart *within*
   one day (desktop.el / custom file) — still bound to Emacs, not detach
-- [ ] Per-project default kinds/args via dir-locals
+- [X] Per-project default kinds/args via dir-locals
 - [X] Consult annotations (kind, project, age, notes) --- candidates are
   now bare names with the detail in an affixation, so typing matches the
   name instead of whatever happened to be concatenated into the string

@@ -329,6 +329,46 @@ Each function is called with (SESSION OLD-STATE NEW-STATE).")
   "Return the list of known agent kind symbols."
   (mapcar #'car ghostherd-agent-specs))
 
+(defvar ghostherd-project-kind nil
+  "Default agent kind for a project, set from its =.dir-locals.el=.
+
+  ((nil . ((ghostherd-project-kind . claude))))")
+(put 'ghostherd-project-kind 'safe-local-variable #'symbolp)
+
+(defvar ghostherd-project-args nil
+  "Default extra CLI arguments for a project, from its =.dir-locals.el=.
+
+  ((nil . ((ghostherd-project-args . (\"--permission-mode\" \"acceptEdits\")))))")
+(put 'ghostherd-project-args 'safe-local-variable
+     (lambda (value) (and (listp value) (seq-every-p #'stringp value))))
+
+(defun ghostherd-project-defaults (&optional directory)
+  "Return (KIND . ARGS) from DIRECTORY's directory-local variables.
+
+Read from the directory rather than from the current buffer on purpose:
+`ghostherd-new' is often invoked from the sidebar or another non-file
+buffer, which never picked up the project's dir-locals at all.
+
+A malformed .dir-locals.el costs you the defaults, not the ability to
+start an agent: `hack-dir-local-variables' warns and yields nothing
+rather than signalling.  The `ignore-errors' is for the filesystem
+around it, not for that case."
+  (let ((directory (file-name-as-directory
+                    (expand-file-name (or directory default-directory)))))
+    (or (ignore-errors
+          (with-temp-buffer
+            (setq default-directory directory)
+            ;; The lookup keys off `buffer-file-name', not
+            ;; `default-directory'; the latter just keeps this temp buffer
+            ;; coherent.  `hack-dir-local-variables' collects into
+            ;; `file-local-variables-alist' without applying anything.
+            (setq-local buffer-file-name
+                        (expand-file-name ".ghostherd" directory))
+            (hack-dir-local-variables)
+            (cons (alist-get 'ghostherd-project-kind file-local-variables-alist)
+                  (alist-get 'ghostherd-project-args file-local-variables-alist))))
+        (cons nil nil))))
+
 (defun ghostherd--spec (kind)
   "Return the plist for KIND from `ghostherd-agent-specs'."
   (or (alist-get kind ghostherd-agent-specs)
@@ -835,24 +875,29 @@ one, and otherwise prompts."
   "Interactively create a new ghostherd agent session.
 With prefix or KIND, skip the kind prompt."
   (interactive)
-  (let* ((kind (or kind
+  (let* ((project (ghostherd--project-root))
+         ;; Resolved before the kind prompt so a project can preselect it.
+         ;; A later change of directory does not re-read: re-prompting for
+         ;; kind after you already answered would be worse than stale.
+         (defaults (ghostherd-project-defaults (or project default-directory)))
+         (kind (or kind
                    (intern
                     (completing-read
                      "Agent kind: "
                      (mapcar #'symbol-name (ghostherd--agent-kinds))
                      nil t nil nil
-                     (symbol-name ghostherd-default-kind)))))
+                     (symbol-name (or (car defaults) ghostherd-default-kind))))))
          (spec (ghostherd--spec kind))
          (default-name (ghostherd--unique-name (symbol-name kind)))
          (name (read-string "Session name: " default-name))
-         (project (ghostherd--project-root))
          (directory (if project
                         (read-directory-name "Directory: " project nil t)
                       (read-directory-name "Directory: " default-directory nil t)))
          (arg-string (read-string
                       (format "Extra args for %s (optional): "
                               (or (plist-get spec :command) "shell"))
-                      (when-let* ((a (plist-get spec :args)))
+                      (when-let* ((a (or (cdr defaults)
+                                         (plist-get spec :args))))
                         (string-join a " "))))
          (args (when (and arg-string (not (string-empty-p arg-string)))
                  (split-string-and-unquote arg-string)))

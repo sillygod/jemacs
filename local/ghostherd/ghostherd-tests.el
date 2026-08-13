@@ -408,6 +408,62 @@ render as an empty annotation field."
       (ghostherd-set-notes s nil)
       (should-not (ghostherd-session-notes s)))))
 
+;;; Per-project defaults
+
+(defmacro ghostherd-tests--with-dir-locals (contents &rest body)
+  "Run BODY with `dir' bound to a temp directory holding CONTENTS.
+CONTENTS is written verbatim as .dir-locals.el, or nil for none."
+  (declare (indent 1) (debug t))
+  `(let ((dir (file-name-as-directory (make-temp-file "ghostherd-dl" t))))
+     (unwind-protect
+         (progn
+           (when ,contents
+             (with-temp-file (expand-file-name ".dir-locals.el" dir)
+               (insert ,contents)))
+           ,@body)
+       (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-project-defaults-read-from-directory ()
+  "Read by directory, not from the current buffer: `ghostherd-new' is
+often invoked from the sidebar, which never picked up dir-locals."
+  (ghostherd-tests--with-dir-locals
+      "((nil . ((ghostherd-project-kind . grok)
+                (ghostherd-project-args . (\"--effort\" \"high\")))))"
+    (let ((defaults (ghostherd-project-defaults dir)))
+      (should (eq (car defaults) 'grok))
+      (should (equal (cdr defaults) '("--effort" "high"))))))
+
+(ert-deftest ghostherd-test-project-defaults-absent ()
+  (ghostherd-tests--with-dir-locals nil
+    (should (equal (ghostherd-project-defaults dir) '(nil . nil)))))
+
+(ert-deftest ghostherd-test-project-defaults-partial ()
+  "Setting only one of the two must not fabricate the other."
+  (ghostherd-tests--with-dir-locals
+      "((nil . ((ghostherd-project-kind . claude))))"
+    (let ((defaults (ghostherd-project-defaults dir)))
+      (should (eq (car defaults) 'claude))
+      (should-not (cdr defaults)))))
+
+(ert-deftest ghostherd-test-project-defaults-survive-malformed-file ()
+  "A broken .dir-locals.el costs the defaults, not the ability to start
+an agent.  This asserts the contract, not the mechanism: Emacs warns and
+yields nothing here rather than signalling, so it does not exercise the
+`ignore-errors' around the read."
+  (ghostherd-tests--with-dir-locals "((nil . ((ghostherd-project-kind"
+    (should (equal (ghostherd-project-defaults dir) '(nil . nil)))))
+
+(ert-deftest ghostherd-test-project-defaults-safe-predicates ()
+  "Marked safe so a project preference does not trigger a prompt, but
+only for the shapes actually expected."
+  (should (funcall (get 'ghostherd-project-kind 'safe-local-variable) 'claude))
+  (should-not (funcall (get 'ghostherd-project-kind 'safe-local-variable) "claude"))
+  (let ((safe-args (get 'ghostherd-project-args 'safe-local-variable)))
+    (should (funcall safe-args '("--effort" "high")))
+    (should (funcall safe-args nil))
+    (should-not (funcall safe-args '("--effort" 3)))
+    (should-not (funcall safe-args "--effort"))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
