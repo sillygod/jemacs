@@ -191,6 +191,38 @@ Three things worth knowing:
   =ghostherd-key-aliases=. Anything unlisted is passed through to
   =ghostel-send-key= unchanged, so its full vocabulary stays reachable.
 
+* Waiting
+
+=ghostherd-wait= watches the state machine, which only knows the five states
+the screen rules can produce. Plenty of things worth waiting for have no
+state of their own --- a test summary, a specific error, the agent naming
+the file it just wrote.
+
+#+begin_src emacs-lisp
+  (ghostherd-wait "reviewer" '(blocked idle done) 120)   ; by state
+  (ghostherd-wait-output "reviewer" "[0-9]+ failures" 300)  ; by output
+  (ghostherd-wait-output "reviewer" "deployed" 60 t)     ; nil instead of error
+#+end_src
+
+- Returns the matched text; signals on timeout unless NOERROR, because
+  scripts branching on "did it happen" should not have to wrap every call in
+  =condition-case=.
+- Checks *before* sleeping. Output can arrive between whatever triggered the
+  wait and the wait itself, and a first check one interval late would miss
+  it.
+- Gives up when the session dies. A dead agent will never produce the text;
+  waiting out the full timeout for it is just a hang.
+- Matching is *case-sensitive*, unlike =:screen-rules= --- see below.
+
+** Known issue: rule matching case
+
+=:screen-rules= use =string-match-p= under whatever =case-fold-search=
+happens to be at poll time, which is not something the rule author controls.
+=ghostherd-output-matches= binds it to nil deliberately so a regexp means
+what it says. The rules should probably do the same, but changing it would
+silently alter what every existing pattern matches, so it wants a dogfood
+pass rather than a quiet fix.
+
 * Notifications (ghostel hooks)
 
 ghostherd reuses ghostel's process lifecycle rather than inventing a
@@ -538,7 +570,7 @@ an Emacs child.
 
 Goal: scripts and agents can orchestrate without focusing panes.
 
-- [ ] =ghostherd-wait-output= (regex on buffer tail, timeout)
+- [X] =ghostherd-wait-output= (regex on buffer tail, timeout)
 - [X] =ghostherd-send-keys= (esc, ctrl+c, arrows, tab) --- plus
   =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
 - [ ] Pipeline helper: implement → message reviewer → wait → notify

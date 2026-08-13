@@ -1263,6 +1263,11 @@ seconds elapse (default 120)."
   (ghostherd--buffer-tail (ghostherd-session-buffer session)
                           (or n-lines ghostherd-screen-tail-lines)))
 
+(defcustom ghostherd-wait-poll-interval 0.4
+  "Seconds between checks in `ghostherd-wait' and `ghostherd-wait-output'."
+  :type 'number
+  :group 'ghostherd)
+
 (defun ghostherd-wait (session states &optional timeout)
   "Block until SESSION state is a member of STATES or TIMEOUT seconds.
 STATES is a list of symbols.  Returns the state or signals on timeout.
@@ -1275,11 +1280,58 @@ TIMEOUT nil means wait indefinitely (not recommended interactively)."
              (and (not (memq state states))
                   (or (null deadline)
                       (< (float-time) deadline))))
-      (sit-for 0.4))
+      (sit-for ghostherd-wait-poll-interval))
     (unless (memq state states)
       (user-error "Timeout waiting for %s to become %s (was %s)"
                   (ghostherd-session-name session) states state))
     state))
+
+(defun ghostherd-output-matches (session regexp &optional lines)
+  "Return the text in SESSION's last LINES matching REGEXP, or nil.
+
+Matching is case-sensitive: a regexp written to catch a prompt should
+mean what it says.  Note this differs from `:screen-rules', which match
+under whatever `case-fold-search' happens to be -- see the known issue
+in readme.org."
+  (setq session (ghostherd-get session))
+  (when (ghostherd--session-live-p session)
+    (let ((case-fold-search nil)
+          (tail (ghostherd--buffer-tail (ghostherd-session-buffer session)
+                                        lines)))
+      (when (string-match regexp tail)
+        (match-string 0 tail)))))
+
+;;;###autoload
+(defun ghostherd-wait-output (session regexp &optional timeout noerror lines)
+  "Block until REGEXP appears in SESSION's recent output, or TIMEOUT.
+
+`ghostherd-wait' watches the state machine, which only knows the five
+states the screen rules can produce.  Plenty of things worth waiting for
+have no state of their own -- a test summary line, a specific error, the
+agent naming the file it just wrote.
+
+Returns the matched text.  On timeout, signals unless NOERROR, in which
+case it returns nil; scripts branching on \"did it happen\" should not
+have to wrap every call in `condition-case'.
+
+LINES overrides how much of the tail is searched, defaulting to
+`ghostherd-screen-tail-lines'.  TIMEOUT nil waits indefinitely."
+  (setq session (ghostherd-get session))
+  (let ((deadline (and timeout (+ (float-time) timeout)))
+        found)
+    ;; Check before sleeping: output can arrive between whatever triggered
+    ;; the wait and the wait itself, and a first poll one interval late
+    ;; would miss it.
+    (while (and (not (setq found (ghostherd-output-matches
+                                  session regexp lines)))
+                (ghostherd--session-live-p session)
+                (or (null deadline) (< (float-time) deadline)))
+      (sit-for ghostherd-wait-poll-interval))
+    (cond
+     (found)
+     (noerror nil)
+     (t (user-error "Timeout waiting for %s to output %s"
+                    (ghostherd-session-name session) regexp)))))
 
 (cl-defun ghostherd-message (from to body &key (submit ghostherd-submit-on-message))
   "Send an attributed message from session FROM to session TO.

@@ -548,6 +548,86 @@ from wherever the cursor happens to be would pick the wrong answer."
       (kill-buffer (ghostherd-session-buffer s))
       (should-error (ghostherd-send-keys s "esc") :type 'user-error))))
 
+;;; Waiting on output
+
+(ert-deftest ghostherd-test-output-matches-returns-match ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (insert "running\n42 tests, 0 failures\n"))
+      (should (equal (ghostherd-output-matches s "[0-9]+ failures")
+                     "0 failures"))
+      (should-not (ghostherd-output-matches s "no such text")))))
+
+(ert-deftest ghostherd-test-output-matches-is-case-sensitive ()
+  "A regexp for a prompt should mean what it says."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "ERROR: bad\n"))
+      (should (ghostherd-output-matches s "ERROR"))
+      (should-not (ghostherd-output-matches s "error"))
+      ;; ...even when the caller's environment says otherwise
+      (let ((case-fold-search t))
+        (should-not (ghostherd-output-matches s "error"))))))
+
+(ert-deftest ghostherd-test-output-matches-honours-lines ()
+  "Only the tail is searched, so old output stops matching."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (insert "needle\n")
+        (insert (make-string 50 ?\n)))
+      (should-not (ghostherd-output-matches s "needle" 5))
+      (should (ghostherd-output-matches s "needle" 100)))))
+
+(ert-deftest ghostherd-test-output-matches-dead-buffer ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "x\n"))
+      (kill-buffer (ghostherd-session-buffer s))
+      (should-not (ghostherd-output-matches s "x")))))
+
+(ert-deftest ghostherd-test-wait-output-returns-without-sleeping ()
+  "Output can arrive between whatever triggered the wait and the wait
+itself; a first check one interval late would miss it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (slept nil))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "done\n"))
+      (cl-letf (((symbol-function 'sit-for)
+                 (lambda (&rest _) (setq slept t))))
+        (should (equal (ghostherd-wait-output s "done" 10) "done")))
+      (should-not slept))))
+
+(ert-deftest ghostherd-test-wait-output-timeout-signals ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (ghostherd-wait-poll-interval 0))
+      (should (string-match-p
+               "Timeout waiting"
+               (cadr (should-error (ghostherd-wait-output s "never" 0.05)
+                                   :type 'user-error)))))))
+
+(ert-deftest ghostherd-test-wait-output-noerror-returns-nil ()
+  "Branching on \"did it happen\" should not require `condition-case'."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (ghostherd-wait-poll-interval 0))
+      (should-not (ghostherd-wait-output s "never" 0.05 t)))))
+
+(ert-deftest ghostherd-test-wait-output-gives-up-on-dead-session ()
+  "A dead agent will never produce the text; waiting out the full
+timeout for it is just a hang."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (ghostherd-wait-poll-interval 0)
+          (slept 0))
+      (kill-buffer (ghostherd-session-buffer s))
+      (cl-letf (((symbol-function 'sit-for)
+                 (lambda (&rest _) (setq slept (1+ slept)))))
+        (should-not (ghostherd-wait-output s "never" 600 t)))
+      (should (= slept 0)))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
