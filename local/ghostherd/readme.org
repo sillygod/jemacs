@@ -7,8 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                              |
 |-------------+----------------------------------------------------|
-| Phase       | *1 — MVP* (complete enough to dogfood)             |
-| Lifetime    | Bound to Emacs (no background daemon / tmux yet)   |
+| Phase       | *2 — Usability* (1 and 1.1 done bar rule tuning)   |
+| Lifetime    | Bound to Emacs (tmux backend is Phase 3)           |
+| Tests       | =ghostherd-tests.el= — 43 ERT, mutation-checked    |
 | Branch      | developed on =chore/extract-personal-config=       |
 | Package     | =local/ghostherd/= (straight =:local-repo=)        |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                     |
@@ -460,8 +461,6 @@ Goal: less friction for multi-agent day-to-day work.
 
 - [ ] Layout presets beyond pair (e.g. 1+2 grid, focus agent only)
 - [X] Session notes editable from sidebar (=c=); role shown in switcher
-- [ ] Persist last herd snapshot for the Emacs session restart *within*
-  one day (desktop.el / custom file) — still bound to Emacs, not detach
 - [X] Per-project default kinds/args via dir-locals
 - [X] Consult annotations (kind, project, age, notes) --- candidates are
   now bare names with the detail in an affixation, so typing matches the
@@ -506,15 +505,41 @@ Goal: scripts and agents can orchestrate without focusing panes.
 - [ ] Optional =emacsclient= CLI wrapper script
   (=bin/ghostherd= → =emacsclient -e '(ghostherd-…)'=)
 
-** Phase 3 — Detach / survive Emacs quit
+** Phase 3 — tmux backend
 
-Goal: optional herdr-like lifetime (agents keep running if Emacs dies).
+Goal: read the agent's screen out of band, and let sessions outlive Emacs.
+
+Originally written as "detach / survive Emacs quit", which undersold it.
+Survival is the *smaller* prize. The larger one is =tmux capture-pane=:
+state detection today scrapes the Emacs buffer, which is why so much of
+Phase 1.1 went into fighting alt-screen behaviour, resize repaints and
+what ghostel had or had not rendered yet. capture-pane reads the pane
+directly, works when nothing is attached, and does not care how ghostel
+draws. =send-keys= likewise injects input without needing focus.
 
 - [ ] Backend abstraction: =ghostel= (current) \| =tmux= \| =dtach=
+- [ ] Screen source behind the same abstraction, so =:screen-rules= run
+  against =capture-pane= output when the backend is tmux
 - [ ] Attach/detach UI still through ghostel (tmux attach in buffer)
-- [ ] Restore herd registry from backend session list on Emacs start
+- [ ] Restore herd registry from backend session list on Emacs start ---
+  needs a session naming convention
 - [ ] Explicit non-goal until then: phone SSH thin client, full socket
   server compatible with herdr
+
+*** What it costs
+
+Two terminal emulators nested: tmux's VT inside ghostel's. Phase 1.1
+already spent real effort on one layer of SIGWINCH and repaint behaviour
+(see the resize debounce in =jemacs-project.el=); this adds another. Plus
+tmux prefix keys colliding inside Emacs, and alt-screen passing through one
+more translation.
+
+*** When to pull it forward
+
+**If tuning =:screen-rules= turns out to be painful, that is the signal.**
+The tuning loop is only hard because the thing being scraped is a rendering
+of a rendering. capture-pane removes that indirection, so a Phase 1.1 that
+keeps fighting the buffer is really a Phase 3 argument in disguise.
 
 ** Phase 4 — Ecosystem (only if still useful)
 
