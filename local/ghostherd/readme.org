@@ -231,9 +231,9 @@ session stays visible as =dead= until you kill it from the herd.
   (setq ghostherd-use-osc-progress t
         ghostherd-progress-ttl 5)         ; seconds a report stays trusted
 
-  ;; OSC 2 title as a sidebar column.  Off by default: the existing columns
-  ;; already need ~70 chars against a `ghostherd-sidebar-width' of 36, so rows
-  ;; wrap as it is.  Widen the sidebar (or trim Project) before enabling.
+  ;; OSC 2 title as a sidebar column.  Columns are fitted to the sidebar
+  ;; width, and Title outranks Project, so in a narrow sidebar this trades
+  ;; the project path for the title rather than overflowing.
   (setq ghostherd-sidebar-show-title nil)
 
   ;; Permanent default args example:
@@ -405,12 +405,12 @@ Goal: make state trustworthy for daily use without false blocked spam.
 - [ ] Document known false positives per agent version — table stubbed under
   "Detection notes per CLI"
 
-Also surfaced while doing the above, not yet addressed:
-
-- [ ] Sidebar columns need ~70 characters but =ghostherd-sidebar-width= is
-  36, so every row wraps. Either widen the window, shrink =Project= (24 is
-  the bulk of it, and is redundant when the project filter is on), or make
-  the column set configurable.
+- [X] Sidebar columns are fitted to the window instead of overflowing it.
+  They used to be a fixed vector needing ~70 characters against a default
+  width of 36, so every row wrapped. =ghostherd--sidebar-column-specs= now
+  lists candidates most-useful-first and the widest, least informative ones
+  (=Project=, then =Kind=) drop out when there is no room. The fit follows a
+  manual resize, not just =ghostherd-sidebar-width=.
 
 ** Phase 2 — Usability
 

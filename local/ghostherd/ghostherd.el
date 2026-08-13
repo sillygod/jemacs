@@ -237,13 +237,12 @@ only needs to outlast the gap between two updates of a live task."
   :group 'ghostherd)
 
 (defcustom ghostherd-sidebar-show-title nil
-  "Show the agent's OSC 2 terminal title as a sidebar column.
+  "Offer the agent's OSC 2 terminal title as a sidebar column.
 
-Off by default because the existing columns already need about 70
-characters and `ghostherd-sidebar-width' is 36, so rows wrap as it is --
-turning this on without also widening the sidebar or trimming the
-Project column will make that worse.  Takes effect next time the sidebar
-buffer is created."
+The column still has to earn its place: columns are fitted to the
+sidebar's width (see `ghostherd--sidebar-column-specs'), and Title ranks
+above Project, so in a narrow sidebar enabling this trades the project
+path for the title.  Nothing overflows either way."
   :type 'boolean
   :group 'ghostherd)
 
@@ -1297,30 +1296,94 @@ Commands with no binding in the current state are omitted."
 
 (define-derived-mode ghostherd-sidebar-mode tabulated-list-mode "GhostHerd"
   "Sidebar listing ghostherd agent sessions."
-  (setq tabulated-list-format (ghostherd--sidebar-format))
+  ;; Padding first: `ghostherd--sidebar-format' budgets against it.
   (setq tabulated-list-padding 1)
+  (setq tabulated-list-format (ghostherd--sidebar-format))
   (setq tabulated-list-sort-key (cons "Name" nil))
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
   (tabulated-list-init-header))
 
+(defconst ghostherd--sidebar-column-specs
+  '((glyph   "S"        2 mandatory)
+    (name    "Name"    14 mandatory)
+    (state   "State"    8)
+    (age     "Age"      5)
+    (kind    "Kind"     6)
+    (title   "Title"   20)
+    (project "Project" 20))
+  "Candidate sidebar columns as (KEY HEADER WIDTH [MANDATORY]).
+
+Listed most useful first: `ghostherd--sidebar-visible-columns' takes them
+in this order for as long as they fit.  The glyph and the name are
+mandatory -- without them there is no list.  `project' comes last because
+it is the widest and says least: sessions are usually all in one project,
+and the project filter exists for when they are not.")
+
+(defun ghostherd--sidebar-available-width ()
+  "Columns the sidebar actually has: the live window, else the configured width.
+Reading the window means the layout follows a manual resize, not just
+the value of `ghostherd-sidebar-width'."
+  (or (when-let* ((buf (get-buffer "*ghostherd*"))
+                  (win (get-buffer-window buf t)))
+        (window-body-width win))
+      ghostherd-sidebar-width))
+
+(defun ghostherd--sidebar-visible-columns ()
+  "Return the column specs that fit the sidebar's available width.
+
+The widths used to be a fixed vector totalling ~70 columns against a
+default sidebar width of 36, so every row wrapped.  Fit them to the
+window instead, dropping the least useful columns rather than silently
+overflowing."
+  (let ((budget (max 20 (1- (ghostherd--sidebar-available-width))))
+        (used 0)
+        (kept nil))
+    (dolist (spec ghostherd--sidebar-column-specs (nreverse kept))
+      (when (or (not (eq (car spec) 'title)) ghostherd-sidebar-show-title)
+        ;; tabulated-list draws `tabulated-list-padding' leading columns and
+        ;; a separating space after every column but the last.
+        (let ((cost (+ (nth 2 spec) (if kept 1 tabulated-list-padding))))
+          (when (or (nth 3 spec) (<= (+ used cost) budget))
+            (setq used (+ used cost))
+            (push spec kept)))))))
+
 (defun ghostherd--sidebar-format ()
-  "Return the `tabulated-list-format' vector for the sidebar.
-Kept beside `ghostherd--sidebar-build-entries', which must produce cells
-in exactly this order."
-  (vconcat
-   [("S" 2 t)
-    ("Name" 14 t)
-    ("Kind" 8 t)
-    ("State" 9 t)
-    ("Project" 24 t)
-    ("Age" 6 t)]
-   (when ghostherd-sidebar-show-title [("Title" 24 t)])))
+  "Return `tabulated-list-format' for the columns that fit."
+  (vconcat (mapcar (lambda (spec)
+                     (list (nth 1 spec) (nth 2 spec) t))
+                   (ghostherd--sidebar-visible-columns))))
+
+(defun ghostherd--sidebar-sync-format ()
+  "Re-fit `tabulated-list-format' when the available width changed.
+Called before every rebuild so widening or narrowing the sidebar brings
+columns back rather than needing the buffer recreated."
+  (when (derived-mode-p 'ghostherd-sidebar-mode)
+    (let ((fitted (ghostherd--sidebar-format)))
+      (unless (equal fitted tabulated-list-format)
+        (setq tabulated-list-format fitted)
+        (tabulated-list-init-header)))))
+
+(defun ghostherd--sidebar-cell (session key state face)
+  "Return SESSION's cell for column KEY, given its STATE and FACE."
+  (pcase key
+    ('glyph   (propertize (ghostherd--state-glyph state) 'face face))
+    ('name    (propertize (ghostherd-session-name session) 'face face))
+    ('kind    (symbol-name (ghostherd-session-kind session)))
+    ('state   (propertize (symbol-name state) 'face face))
+    ('project (ghostherd--abbreviate (ghostherd-session-project session)))
+    ('title   (or (ghostherd--session-title session) ""))
+    ('age     (ghostherd--age-string
+               (or (ghostherd-session-last-active session)
+                   (ghostherd-session-started-at session))))
+    (_        "")))
 
 (defun ghostherd--sidebar-build-entries ()
   "Rebuild `tabulated-list-entries' from the sessions as they stand.
 Pure rendering -- it does not poll, so unlike `ghostherd--sidebar-entries'
 it is safe to call from inside the poll path without recursing."
-  (let ((sessions (if ghostherd--sidebar-filter-project
+  (ghostherd--sidebar-sync-format)
+  (let ((columns (ghostherd--sidebar-visible-columns))
+        (sessions (if ghostherd--sidebar-filter-project
                       (ghostherd-sessions ghostherd--sidebar-filter-project)
                     (ghostherd-sessions))))
     (setq tabulated-list-entries
@@ -1328,20 +1391,14 @@ it is safe to call from inside the poll path without recursing."
            (lambda (s)
              (let* ((state (ghostherd-session-state s))
                     (face (ghostherd--state-face state)))
+               ;; Cells are generated from the same column list as the
+               ;; header, so the two cannot drift apart.
                (list (ghostherd-session-id s)
-                     ;; Cell order must match `ghostherd--sidebar-format'.
                      (vconcat
-                      (vector
-                       (propertize (ghostherd--state-glyph state) 'face face)
-                       (propertize (ghostherd-session-name s) 'face face)
-                       (symbol-name (ghostherd-session-kind s))
-                       (propertize (symbol-name state) 'face face)
-                       (ghostherd--abbreviate (ghostherd-session-project s))
-                       (ghostherd--age-string
-                        (or (ghostherd-session-last-active s)
-                            (ghostherd-session-started-at s))))
-                      (when ghostherd-sidebar-show-title
-                        (vector (or (ghostherd--session-title s) "")))))))
+                      (mapcar (lambda (spec)
+                                (ghostherd--sidebar-cell
+                                 s (car spec) state face))
+                              columns)))))
            sessions))))
 
 (defun ghostherd--sidebar-entries ()
