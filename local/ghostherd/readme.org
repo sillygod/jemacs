@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                              |
 |-------------+----------------------------------------------------|
-| Phase       | *2 — Usability* (1 and 1.1 done bar rule tuning)   |
+| Phase       | *2 done* — bar =:screen-rules= tuning (needs data) |
 | Lifetime    | Bound to Emacs (tmux backend is Phase 3)           |
 | Tests       | =ghostherd-tests.el= — 43 ERT, mutation-checked    |
 | Branch      | developed on =chore/extract-personal-config=       |
@@ -459,7 +459,10 @@ Goal: make state trustworthy for daily use without false blocked spam.
 
 Goal: less friction for multi-agent day-to-day work.
 
-- [ ] Layout presets beyond pair (e.g. 1+2 grid, focus agent only)
+- [-] Layout presets beyond pair (1+2 grid, focus agent only) --- *decided
+  against*. =ghostherd-new-pair= covers the split that actually gets used,
+  and window layout is something Emacs already has better tools for than a
+  herd manager should reimplement.
 - [X] Session notes editable from sidebar (=c=); role shown in switcher
 - [X] Per-project default kinds/args via dir-locals
 - [X] Consult annotations (kind, project, age, notes) --- candidates are
