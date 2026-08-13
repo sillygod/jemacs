@@ -1335,7 +1335,11 @@ The widths used to be a fixed vector totalling ~70 columns against a
 default sidebar width of 36, so every row wrapped.  Fit them to the
 window instead, dropping the least useful columns rather than silently
 overflowing."
-  (let ((budget (max 20 (1- (ghostherd--sidebar-available-width))))
+  ;; No floor on the budget: one used to be here, but glyph + name always
+  ;; cost less than it, so the mandatory flag below could never fire and a
+  ;; deliberately tiny sidebar overflowed anyway.  Let the budget go small
+  ;; and let `mandatory' be what guarantees a usable list.
+  (let ((budget (1- (ghostherd--sidebar-available-width)))
         (used 0)
         (kept nil))
     (dolist (spec ghostherd--sidebar-column-specs (nreverse kept))

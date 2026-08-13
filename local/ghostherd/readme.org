@@ -244,10 +244,30 @@ session stays visible as =dead= until you kill it from the herd.
 
 * Testing
 
-Phase 1 has no automated ERT suite yet (ghostel PTYs are hard to drive
-headlessly). Treat the following as the dogfood checklist. Run after
-reloading config (or restarting Emacs) so =local/ghostherd= and leader
-keys are loaded.
+** Automated (=ghostherd-tests.el=)
+
+#+begin_src bash
+  cd local/ghostherd
+  emacs --batch -L . -l ghostherd.el -l ghostherd-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
+
+Covers the parts that need no PTY: rule matching and precedence, OSC
+progress freshness and handler chaining, state-detection precedence, sidebar
+column fitting, title filtering, naming and age formatting.
+
+The suite was mutation-checked rather than merely run --- breaking the
+blocked-beats-progress rule, the progress chaining, the column budget, the
+mandatory-column flag and the title filter each fail a test. That exercise
+found a real defect: a floor on the column budget made the mandatory flag
+unreachable, so it was dead code (and the floor caused overflow at very
+narrow widths).
+
+** Manual
+
+The interactive spawn/kill paths still need a human, since driving real
+ghostel PTYs headlessly is what Phase 1 deferred. Run after reloading config
+(or restarting Emacs) so =local/ghostherd= and leader keys are loaded.
 
 ** Prerequisites
 
@@ -376,13 +396,13 @@ Record failures here or in issues while dogfooding:
 - [ ] =ghostel_cmd= whitelist missing after reload: _______________
 - [ ] Other: _______________
 
-** Future automated tests (Phase 2+)
+** Remaining test gaps
 
-| Suite              | Scope                                              | Notes                          |
-|--------------------+----------------------------------------------------+--------------------------------|
-| ERT unit           | name uniqueness, candidate format, rule matching   | No PTY needed                  |
-| ERT with temp buf  | registry register/remove, state machine transitions | Fake buffer + injected tail    |
-| Interactive script | =emacsclient= spawn/kill smoke                     | Optional CI later              |
+| Suite              | Scope                                  | Notes             |
+|--------------------+----------------------------------------+-------------------|
+| ERT unit           | *done* --- see =ghostherd-tests.el=    | No PTY needed     |
+| ERT with temp buf  | registry register/remove, spawn recipe | Fake buffer       |
+| Interactive script | =emacsclient= spawn/kill smoke         | Optional CI later |
 
 Do *not* block Phase 2 UX work on full TUI integration tests.
 
@@ -422,8 +442,14 @@ Goal: less friction for multi-agent day-to-day work.
   one day (desktop.el / custom file) — still bound to Emacs, not detach
 - [ ] Per-project default kinds/args via dir-locals
 - [ ] Consult annotations (kind, project, age, notes)
-- [ ] =ghostherd-restart-agent= (re-send launch command in same buffer)
-- [ ] ERT unit tests for pure helpers (rules, naming, format)
+- [X] ERT unit tests for pure helpers (rules, naming, format) ---
+  =ghostherd-tests.el=, mutation-checked
+
+Note: "persist snapshot" and "restart-agent" were the same item and are
+merged. Agents are Emacs child processes, so a snapshot can only ever hold
+the *recipe* (kind, dir, args, notes), never the conversation --- but each
+CLI has its own =--continue=, which recovers the rest for free. Surviving an
+Emacs quit for real is Phase 3.
 
 ** Phase 2.5 — Richer automation (herdr-like control)
 
