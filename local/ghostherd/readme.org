@@ -40,6 +40,7 @@ control plane bound to the Emacs session.
 | =M-x ghostherd-mark-state=          | Manual state / auto                  |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
+| =M-x ghostherd-set-notes=           | Set an agent's role / note           |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 
 ** Leader keys (=SPC a h …=)
@@ -60,7 +61,7 @@ control plane bound to the Emacs session.
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
-=r= rename · =R= respawn · =m= message · =i= prompt ·
+=r= rename · =R= respawn · =c= note · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
 
@@ -439,11 +440,13 @@ Goal: make state trustworthy for daily use without false blocked spam.
 Goal: less friction for multi-agent day-to-day work.
 
 - [ ] Layout presets beyond pair (e.g. 1+2 grid, focus agent only)
-- [ ] Session notes editable from sidebar; show role in switcher
+- [X] Session notes editable from sidebar (=c=); role shown in switcher
 - [ ] Persist last herd snapshot for the Emacs session restart *within*
   one day (desktop.el / custom file) — still bound to Emacs, not detach
 - [ ] Per-project default kinds/args via dir-locals
-- [ ] Consult annotations (kind, project, age, notes)
+- [X] Consult annotations (kind, project, age, notes) --- candidates are
+  now bare names with the detail in an affixation, so typing matches the
+  name instead of whatever happened to be concatenated into the string
 - [X] ERT unit tests for pure helpers (rules, naming, format) ---
   =ghostherd-tests.el=, mutation-checked
 

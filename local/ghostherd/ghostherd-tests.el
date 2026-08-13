@@ -334,6 +334,80 @@ has to tear the old one down first or it can never succeed twice."
       (should (equal (plist-get spawned :args)
                      '("--effort" "high" "--continue"))))))
 
+;;; Switcher annotation and notes
+
+(ert-deftest ghostherd-test-candidate-is-just-the-name ()
+  "Detail lives in the annotation, so it cannot widen what input matches."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "reviewer" :kind 'grok
+                                       :project "/tmp/proj/")))
+      (should (equal (ghostherd--format-candidate s) "reviewer")))))
+
+(ert-deftest ghostherd-test-annotation-carries-detail ()
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session
+               :name "reviewer" :kind 'grok :state 'blocked
+               :project "/tmp/proj/" :notes "reviews auth"))
+           (annotation (substring-no-properties
+                        (ghostherd--session-annotation s))))
+      (dolist (fragment '("grok" "blocked" "/tmp/proj/" "reviews auth"))
+        (should (string-match-p (regexp-quote fragment) annotation))))))
+
+(ert-deftest ghostherd-test-annotation-elides-long-notes ()
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :notes (make-string 200 ?x)))
+           (ghostherd-annotation-note-width 12)
+           (annotation (substring-no-properties
+                        (ghostherd--session-annotation s))))
+      (should-not (string-match-p (make-string 20 ?x) annotation))
+      (should (< (length annotation) 100)))))
+
+(ert-deftest ghostherd-test-annotation-omits-absent-note ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      ;; no trailing separator run where the note would have been
+      (should-not (string-match-p
+                   "  \\'" (substring-no-properties
+                            (ghostherd--session-annotation s)))))))
+
+(ert-deftest ghostherd-test-affixation-maps-back-to-sessions ()
+  "Affixation is handed bare candidate strings, so the name must be
+enough to find the session again."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'blocked)
+    (ghostherd-tests--session :name "b" :kind 'grok :state 'idle)
+    (let ((rows (ghostherd--session-affixation '("a" "b"))))
+      (should (equal (mapcar #'car rows) '("a" "b")))
+      (should (string-match-p (regexp-quote (ghostherd--state-glyph 'blocked))
+                              (nth 1 (car rows))))
+      (should (string-match-p "agy" (nth 2 (car rows)))))))
+
+(ert-deftest ghostherd-test-affixation-tolerates-stale-candidate ()
+  "A session can die between building the list and rendering it."
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd--session-affixation '("gone"))
+                   '(("gone" "" ""))))))
+
+(ert-deftest ghostherd-test-completion-table-advertises-category ()
+  "The category is what lets consult and marginalia recognise these."
+  (let* ((table (ghostherd--session-completion-table '("a")))
+         (metadata (funcall table "" nil 'metadata)))
+    (should (eq (alist-get 'category (cdr metadata)) 'ghostherd-session))
+    (should (eq (alist-get 'affixation-function (cdr metadata))
+                'ghostherd--session-affixation))))
+
+(ert-deftest ghostherd-test-set-notes-normalises-blank ()
+  "Blank input clears the note rather than storing whitespace that would
+render as an empty annotation field."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a")))
+      (ghostherd-set-notes s "  reviews auth  ")
+      (should (equal (ghostherd-session-notes s) "reviews auth"))
+      (ghostherd-set-notes s "   ")
+      (should-not (ghostherd-session-notes s))
+      (ghostherd-set-notes s nil)
+      (should-not (ghostherd-session-notes s)))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
@@ -360,13 +434,10 @@ has to tear the old one down first or it can never succeed twice."
                         '(blocked working done idle dead))))
     (should (= (length glyphs) (length (delete-dups (copy-sequence glyphs)))))))
 
-(ert-deftest ghostherd-test-format-candidate-contains-identity ()
-  (ghostherd-tests--with-herd ()
-    (let* ((s (ghostherd-tests--session :name "reviewer" :kind 'grok
-                                        :project "/tmp/proj/" :state 'idle))
-           (candidate (ghostherd--format-candidate s)))
-      (should (string-match-p "reviewer" candidate))
-      (should (string-match-p "grok" candidate)))))
+;; NOTE: an older test asserted the candidate string itself contained the
+;; kind and project.  That was true while everything was crammed into one
+;; string; it is superseded by `ghostherd-test-candidate-is-just-the-name'
+;; and `ghostherd-test-annotation-carries-detail'.
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

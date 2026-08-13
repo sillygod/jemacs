@@ -909,16 +909,14 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
   (let* ((sessions (cl-remove-if-not
                     (or predicate #'identity)
                     (ghostherd-sessions)))
-         (candidates
-          (mapcar (lambda (s)
-                    (cons (ghostherd--format-candidate s) s))
-                  sessions)))
+         (candidates (mapcar #'ghostherd--format-candidate sessions)))
     (unless candidates
       (user-error "No ghostherd sessions"))
-    (let ((choice (completing-read (or prompt "Session: ")
-                                   candidates nil t)))
-      (or (alist-get choice candidates nil nil #'equal)
-          (ghostherd-get choice)
+    (let ((choice (completing-read
+                   (or prompt "Session: ")
+                   (ghostherd--session-completion-table candidates)
+                   nil t)))
+      (or (ghostherd-get choice)
           (user-error "Unknown session")))))
 
 ;;;###autoload
@@ -1035,6 +1033,26 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (message "Killed session %s" (ghostherd-session-name session))))
 
 ;;;###autoload
+;;;###autoload
+(defun ghostherd-set-notes (session notes)
+  "Set SESSION's NOTES -- the free-form role description.
+
+Kept out of the session name on purpose: the name is an identifier that
+buffer names and `ghostherd-get' depend on, so it cannot carry \"reviews
+the auth branch, do not let it push\".  Notes show up in the switcher
+annotation, which is where you are choosing between agents."
+  (interactive
+   (let ((s (ghostherd--read-session "Note for agent: ")))
+     (list s (read-string "Note: " (ghostherd-session-notes s)))))
+  (setq session (ghostherd-get session))
+  (unless session
+    (user-error "No such session"))
+  (let ((notes (and notes (string-trim notes))))
+    (setf (ghostherd-session-notes session)
+          (and notes (not (string-empty-p notes)) notes)))
+  (ghostherd--sidebar-refresh)
+  (ghostherd-session-notes session))
+
 (defun ghostherd-rename (session new-name)
   "Rename SESSION to NEW-NAME."
   (interactive
@@ -1242,15 +1260,58 @@ FROM may be a session, session name, or free-form label such as \"user\"."
     ('starting 'font-lock-comment-face)
     (_        'default)))
 
+(defcustom ghostherd-annotation-note-width 32
+  "Characters of a session's note shown in the switcher before eliding."
+  :type 'integer
+  :group 'ghostherd)
+
 (defun ghostherd--format-candidate (session)
-  "Format SESSION as a completing-read candidate string."
-  (format "%s  %s  %s  %s"
-          (propertize (ghostherd--state-glyph (ghostherd-session-state session))
-                      'face (ghostherd--state-face
-                             (ghostherd-session-state session)))
-          (ghostherd-session-name session)
-          (ghostherd-session-kind session)
-          (ghostherd--abbreviate (ghostherd-session-project session))))
+  "Return the completing-read candidate string for SESSION.
+Just the name: detail belongs in the annotation, where it is visually
+distinct and does not silently widen what your input matches against."
+  (ghostherd-session-name session))
+
+(defun ghostherd--session-annotation (session)
+  "Return the annotation suffix describing SESSION."
+  (let* ((note (ghostherd-session-notes session))
+         (note (and note (string-trim note)))
+         (note (and note (not (string-empty-p note))
+                    (truncate-string-to-width
+                     note ghostherd-annotation-note-width nil nil t)))
+         (parts (delq nil
+                      (list (symbol-name (ghostherd-session-kind session))
+                            (symbol-name (ghostherd-session-state session))
+                            (ghostherd--age-string
+                             (or (ghostherd-session-last-active session)
+                                 (ghostherd-session-started-at session)))
+                            (ghostherd--abbreviate
+                             (ghostherd-session-project session))
+                            note))))
+    (concat "  " (propertize (string-join parts "  ")
+                             'face 'completions-annotations))))
+
+(defun ghostherd--session-affixation (candidates)
+  "Affix CANDIDATES with a state glyph and `ghostherd--session-annotation'."
+  (mapcar
+   (lambda (name)
+     (if-let* ((session (ghostherd-get name)))
+         (let ((state (ghostherd-session-state session)))
+           (list name
+                 (propertize (concat (ghostherd--state-glyph state) " ")
+                             'face (ghostherd--state-face state))
+                 (ghostherd--session-annotation session)))
+       (list name "" "")))
+   candidates))
+
+(defun ghostherd--session-completion-table (candidates)
+  "Return a completion table over CANDIDATES carrying ghostherd metadata.
+A table rather than a plain list so the category is advertised, which is
+what lets consult and marginalia treat these as sessions."
+  (lambda (string predicate action)
+    (if (eq action 'metadata)
+        `(metadata (category . ghostherd-session)
+                   (affixation-function . ghostherd--session-affixation))
+      (complete-with-action action candidates string predicate))))
 
 (defun ghostherd--age-string (time)
   "Human-readable age for TIME."
@@ -1279,6 +1340,7 @@ FROM may be a session, session name, or free-form label such as \"user\"."
     (ghostherd-sidebar-kill                  . "Kill session")
     (ghostherd-sidebar-rename                . "Rename session")
     (ghostherd-respawn                       . "Respawn from recipe")
+    (ghostherd-sidebar-notes                 . "Edit note / role")
     (ghostherd-sidebar-message               . "Message agent")
     (ghostherd-sidebar-prompt                . "Prompt agent")
     (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
@@ -1336,6 +1398,7 @@ Commands with no binding in the current state are omitted."
   "?" #'ghostherd-sidebar-help
   "e" #'ghostherd-explain
   "R" #'ghostherd-respawn
+  "c" #'ghostherd-sidebar-notes
   "n" #'next-line
   "p" #'previous-line
   "RET" #'ghostherd-sidebar-visit
@@ -1525,6 +1588,13 @@ while the sidebar is actually on screen."
        (ghostherd-rename
         s
         (read-string "New name: " (ghostherd-session-name s)))))))
+
+(defun ghostherd-sidebar-notes ()
+  "Edit the note on the session at point."
+  (interactive)
+  (when-let* ((s (ghostherd--sidebar-session-at-point)))
+    (ghostherd-set-notes
+     s (read-string "Note: " (ghostherd-session-notes s)))))
 
 (defun ghostherd-sidebar-message ()
   "Message the session at point."

@@ -528,6 +528,7 @@
                         ghostherd-rename
                         ghostherd-explain
                         ghostherd-respawn
+                        ghostherd-set-notes
                         ghostherd-mode)
              :config
              (setq ghostherd-notify-on-blocked t
@@ -552,6 +553,7 @@
                (kbd "?") #'ghostherd-sidebar-help
                (kbd "e") #'ghostherd-explain
                (kbd "R") #'ghostherd-respawn
+               (kbd "c") #'ghostherd-sidebar-notes
                (kbd "RET") #'ghostherd-sidebar-visit
                (kbd "o") #'ghostherd-sidebar-visit
                (kbd "gr") #'ghostherd-sidebar-refresh
