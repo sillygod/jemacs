@@ -67,6 +67,7 @@
      :args nil
      :description "Claude Code"
      :process-names ("claude")
+     :continue-args ("--continue")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Do you want to make this edit"
@@ -88,6 +89,7 @@
      :args nil
      :description "Grok Build TUI"
      :process-names ("grok")
+     :continue-args ("--continue")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -111,6 +113,7 @@
      :args nil
      :description "agy CLI"
      :process-names ("agy")
+     :continue-args ("--continue")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -137,6 +140,8 @@
 Each entry is (KIND . PLIST) with keys:
 :command        executable name or path (nil = shell only)
 :args           default argument list (strings)
+:continue-args  flag that resumes the CLI's previous conversation, used by
+                `ghostherd-respawn'.  nil when the CLI has no such flag.
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
@@ -774,6 +779,57 @@ PLIST keys:
     (ghostherd--sidebar-refresh)
     session))
 
+(defun ghostherd-session-recipe (session)
+  "Return the plist `ghostherd-spawn' needs to recreate SESSION.
+
+This is the whole of what can be persisted.  Agents are Emacs child
+processes, so nothing survives Emacs itself -- the conversation lives in
+the CLI's own store, which is what `:continue-args' reaches."
+  (list :name (ghostherd-session-name session)
+        :project (ghostherd-session-project session)
+        :directory (ghostherd-session-project session)
+        :command (ghostherd-session-command session)
+        :args (ghostherd-session-args session)
+        :notes (ghostherd-session-notes session)))
+
+;;;###autoload
+(defun ghostherd-respawn (session &optional continue)
+  "Relaunch SESSION from its recipe, replacing any existing buffer.
+
+With CONTINUE non-nil, append the CLI's `:continue-args' so it resumes
+its previous conversation rather than starting cold.  Interactively that
+is the default when the agent kind has such a flag, since the usual
+reason to respawn is that the agent died or wedged and you want it back
+where it was.
+
+Called interactively, acts on the sidebar row at point when there is
+one, and otherwise prompts."
+  (interactive
+   (let* ((session (or (and (derived-mode-p 'ghostherd-sidebar-mode)
+                            (ghostherd--sidebar-session-at-point))
+                       (ghostherd--read-session "Respawn agent: ")))
+          (spec (ignore-errors
+                  (ghostherd--spec (ghostherd-session-kind session))))
+          (continuable (plist-get spec :continue-args)))
+     (list session
+           (and continuable
+                (y-or-n-p (format "Resume the previous conversation (%s)? "
+                                  (string-join continuable " ")))))))
+  (setq session (ghostherd-get session))
+  (unless session
+    (user-error "No such session"))
+  (let* ((kind (ghostherd-session-kind session))
+         (spec (ghostherd--spec kind))
+         (recipe (ghostherd-session-recipe session))
+         (args (append (plist-get recipe :args)
+                       (and continue (plist-get spec :continue-args)))))
+    (when (and continue (null (plist-get spec :continue-args)))
+      (user-error "%s has no resume flag" kind))
+    ;; Free both the buffer name and the registry id before respawning:
+    ;; `ghostherd-spawn' refuses to clobber an existing buffer.
+    (ghostherd-kill session t)
+    (apply #'ghostherd-spawn kind (plist-put (copy-sequence recipe) :args args))))
+
 ;;;###autoload
 (defun ghostherd-new (&optional kind)
   "Interactively create a new ghostherd agent session.
@@ -1222,6 +1278,7 @@ FROM may be a session, session name, or free-form label such as \"user\"."
     (ghostherd-new-pair                      . "New pair (split windows)")
     (ghostherd-sidebar-kill                  . "Kill session")
     (ghostherd-sidebar-rename                . "Rename session")
+    (ghostherd-respawn                       . "Respawn from recipe")
     (ghostherd-sidebar-message               . "Message agent")
     (ghostherd-sidebar-prompt                . "Prompt agent")
     (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
@@ -1278,6 +1335,7 @@ Commands with no binding in the current state are omitted."
   :doc "Keymap for `ghostherd-sidebar-mode'."
   "?" #'ghostherd-sidebar-help
   "e" #'ghostherd-explain
+  "R" #'ghostherd-respawn
   "n" #'next-line
   "p" #'previous-line
   "RET" #'ghostherd-sidebar-visit

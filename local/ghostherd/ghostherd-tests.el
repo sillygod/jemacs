@@ -261,6 +261,79 @@ drift; check that they really do line up at both extremes."
       (kill-buffer (ghostherd-session-buffer s))
       (should-not (ghostherd--session-title s)))))
 
+;;; Respawn recipe
+
+(ert-deftest ghostherd-test-recipe-round-trips-identity ()
+  "The recipe is everything that can be persisted; losing a field here
+means a respawned agent quietly comes back as something else."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session
+               :name "reviewer" :kind 'grok :project "/tmp/proj/"
+               :command "grok" :args '("--model" "x") :notes "review only"))
+           (recipe (ghostherd-session-recipe s)))
+      (should (equal (plist-get recipe :name) "reviewer"))
+      (should (equal (plist-get recipe :command) "grok"))
+      (should (equal (plist-get recipe :args) '("--model" "x")))
+      (should (equal (plist-get recipe :notes) "review only"))
+      (should (equal (plist-get recipe :project) "/tmp/proj/")))))
+
+(ert-deftest ghostherd-test-continue-args-appended-not-replacing ()
+  "Resuming must add to the recipe's args, not stand in for them --
+otherwise a session spawned with --model comes back on the default."
+  (let* ((spec (ghostherd--spec 'claude))
+         (base '("--permission-mode" "acceptEdits"))
+         (composed (append base (plist-get spec :continue-args))))
+    (should (equal composed '("--permission-mode" "acceptEdits" "--continue")))))
+
+(ert-deftest ghostherd-test-continue-args-declared-per-kind ()
+  "Declared in the spec rather than hardcoded, so a CLI without a resume
+flag is representable."
+  (dolist (kind '(claude grok agy))
+    (should (plist-get (ghostherd--spec kind) :continue-args)))
+  (should-not (plist-get (ghostherd--spec 'shell) :continue-args)))
+
+(ert-deftest ghostherd-test-respawn-rejects-continue-without-flag ()
+  "Match the message, not just `user-error'.  Falling through to
+`ghostherd-spawn' also raises a user-error (no ghostel here), so a
+type-only assertion passes whether or not the guard exists."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "sh" :kind 'shell)))
+      (should (string-match-p
+               "no resume flag"
+               (cadr (should-error (ghostherd-respawn s t)
+                                   :type 'user-error)))))))
+
+(ert-deftest ghostherd-test-respawn-frees-name-before-spawning ()
+  "`ghostherd-spawn' refuses to clobber an existing buffer, so respawn
+has to tear the old one down first or it can never succeed twice."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy))
+           (buf (ghostherd-session-buffer s))
+           (spawned nil))
+      ;; Stand in for the PTY: record the call, assert the way is clear.
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (kind &rest plist)
+                   (setq spawned (cons kind plist))
+                   (should-not (buffer-live-p buf))
+                   (should-not (gethash "a" ghostherd--sessions))
+                   nil)))
+        (ghostherd-respawn s nil))
+      (should (eq (car spawned) 'agy))
+      (should (equal (plist-get (cdr spawned) :name) "a")))))
+
+(ert-deftest ghostherd-test-respawn-passes-continue-args ()
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy
+                                        :args '("--effort" "high")))
+           (spawned nil))
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (kind &rest plist)
+                   (ignore kind)
+                   (setq spawned plist) nil)))
+        (ghostherd-respawn s t))
+      (should (equal (plist-get spawned :args)
+                     '("--effort" "high" "--continue"))))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()

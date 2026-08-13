@@ -39,6 +39,7 @@ control plane bound to the Emacs session.
 | =M-x ghostherd-rename=              | Rename session                       |
 | =M-x ghostherd-mark-state=          | Manual state / auto                  |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
+| =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 
 ** Leader keys (=SPC a h …=)
@@ -59,8 +60,9 @@ control plane bound to the Emacs session.
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
-=r= rename · =m= message · =i= prompt · =s= toggle project filter ·
-=g= refresh · =.= next blocked · =M= mark state · =q= quit
+=r= rename · =R= respawn · =m= message · =i= prompt ·
+=s= toggle project filter · =g= refresh · =.= next blocked ·
+=M= mark state · =q= quit
 
 =?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
 keymaps rather than this table, so it stays correct under Evil or any
@@ -445,11 +447,31 @@ Goal: less friction for multi-agent day-to-day work.
 - [X] ERT unit tests for pure helpers (rules, naming, format) ---
   =ghostherd-tests.el=, mutation-checked
 
-Note: "persist snapshot" and "restart-agent" were the same item and are
-merged. Agents are Emacs child processes, so a snapshot can only ever hold
-the *recipe* (kind, dir, args, notes), never the conversation --- but each
-CLI has its own =--continue=, which recovers the rest for free. Surviving an
-Emacs quit for real is Phase 3.
+- [X] =ghostherd-respawn= (=R= in the sidebar) --- was two roadmap items,
+  "persist snapshot" and "restart-agent", which turned out to be the same
+  thing
+
+** What a snapshot can and cannot hold
+
+Agents are Emacs child processes: when Emacs exits, they exit. So the most
+that can be persisted is the *recipe* --- kind, directory, args, notes ---
+which is exactly what =ghostherd-session-recipe= returns.
+
+The conversation is not in the recipe, and never can be. But it is not lost
+either: it lives in the CLI's own store, and each CLI has a flag to reopen
+it. That flag is declared per kind as =:continue-args= in
+=ghostherd-agent-specs= rather than hardcoded, so a CLI without one is
+representable (=shell= has none) and respawn refuses instead of silently
+starting cold.
+
+=ghostherd-respawn= therefore gets most of the way to "my herd came back"
+with no new dependency: it frees the old buffer and id, then respawns from
+the recipe, appending =:continue-args= when asked. Note *appending* --- a
+session spawned with =--model= must come back on that model, not the
+default.
+
+Surviving an Emacs quit for real is Phase 3, and needs a process that is not
+an Emacs child.
 
 ** Phase 2.5 — Richer automation (herdr-like control)
 
