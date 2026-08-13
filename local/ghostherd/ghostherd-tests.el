@@ -628,6 +628,96 @@ timeout for it is just a hang."
         (should-not (ghostherd-wait-output s "never" 600 t)))
       (should (= slept 0)))))
 
+;;; Handoff pipeline
+
+(defmacro ghostherd-tests--with-fake-terminal (&rest body)
+  "Run BODY with ghostel send functions and notification stubbed out."
+  (declare (indent 0) (debug t))
+  `(cl-letf (((symbol-function 'ghostel-send-key) (lambda (&rest _) nil))
+             ((symbol-function 'ghostel-paste-string) (lambda (&rest _) nil))
+             ((symbol-function 'derived-mode-p) (lambda (&rest _) t))
+             ((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+     ,@body))
+
+(defun ghostherd-tests--tick (session &rest args)
+  "Run one handoff tick for SESSION with ARGS (deadline grace callback)."
+  (apply #'ghostherd--handoff-tick (ghostherd-session-id session) args))
+
+(ert-deftest ghostherd-test-handoff-does-not-block ()
+  "The point of the pipeline is to keep working while the other agent
+runs, so the handoff itself must never call `sit-for'."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "reviewer" :kind 'agy))
+          (slept nil))
+      (ghostherd-tests--with-fake-terminal
+        (cl-letf (((symbol-function 'sit-for)
+                   (lambda (&rest _) (setq slept t))))
+          (ghostherd-handoff s "please review")))
+      (should-not slept)
+      (should (gethash "reviewer" ghostherd--handoff-watches))
+      (ghostherd--handoff-cancel "reviewer"))))
+
+(ert-deftest ghostherd-test-handoff-grace-suppresses-early-settle ()
+  "An agent does not start the instant it is handed something; until it
+prints, the screen rules still see the idle prompt it had before."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle))
+           (calls nil)
+           (callback (lambda (_s state) (push state calls))))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      ;; still inside the grace window
+      (ghostherd-tests--tick s nil (+ (float-time) 100) callback)
+      (should-not calls)
+      ;; grace elapsed
+      (ghostherd-tests--tick s nil (- (float-time) 1) callback)
+      (should (equal calls '(idle))))))
+
+(ert-deftest ghostherd-test-handoff-reports-timeout ()
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy))
+           (calls nil)
+           (callback (lambda (_s state) (push state calls))))
+      ;; never settles: no rules match a blank screen for a known agent...
+      (with-current-buffer (ghostherd-session-buffer s) (insert "Thinking\n"))
+      (ghostherd-tests--tick s (- (float-time) 1) (- (float-time) 10) callback)
+      (should (equal calls '(timeout))))))
+
+(ert-deftest ghostherd-test-handoff-replaces-existing-watch ()
+  "Two handoffs to one agent must not leave two timers polling it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (ghostherd-tests--with-fake-terminal
+        (ghostherd-handoff s "one")
+        (let ((first (gethash "a" ghostherd--handoff-watches)))
+          (ghostherd-handoff s "two")
+          (let ((second (gethash "a" ghostherd--handoff-watches)))
+            (should-not (eq first second))
+            (should-not (memq first timer-list))
+            (should (memq second timer-list)))))
+      (ghostherd--handoff-cancel "a")
+      (should-not (gethash "a" ghostherd--handoff-watches)))))
+
+(ert-deftest ghostherd-test-handoff-tick-survives-broken-callback ()
+  "A callback that throws must not leave the timer polling forever."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (puthash "a" (run-with-timer 100 100 #'ignore) ghostherd--handoff-watches)
+      (ghostherd-tests--with-fake-terminal
+        (ghostherd-tests--tick s nil (- (float-time) 1)
+                               (lambda (&rest _) (error "boom"))))
+      (should-not (gethash "a" ghostherd--handoff-watches)))))
+
+(ert-deftest ghostherd-test-handoff-tick-drops-vanished-session ()
+  (ghostherd-tests--with-herd ()
+    (puthash "gone" (run-with-timer 100 100 #'ignore) ghostherd--handoff-watches)
+    (ghostherd--handoff-tick "gone" nil 0 #'ignore)
+    (should-not (gethash "gone" ghostherd--handoff-watches))))
+
+(ert-deftest ghostherd-test-handoff-rejects-unknown-target ()
+  (ghostherd-tests--with-herd ()
+    (should-error (ghostherd-handoff "nope" "hi") :type 'user-error)))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()

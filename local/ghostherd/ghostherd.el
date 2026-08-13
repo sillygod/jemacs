@@ -1352,6 +1352,107 @@ FROM may be a session, session name, or free-form label such as \"user\"."
     payload))
 
 ;;;###autoload
+(defcustom ghostherd-handoff-settled-states '(blocked idle done dead)
+  "States that end a `ghostherd-handoff' watch."
+  :type '(repeat symbol)
+  :group 'ghostherd)
+
+(defcustom ghostherd-handoff-grace 4
+  "Seconds after a handoff during which a settled state is not believed.
+
+An agent does not start working the instant it is handed something: the
+CLI has to wake up and print, and until it does the screen rules see the
+same idle prompt they saw before.  Without this the watch would report
+completion immediately, every time."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--handoff-watches (make-hash-table :test 'equal)
+  "Active handoff watch timers, keyed by session id.")
+
+(defun ghostherd--handoff-cancel (id)
+  "Cancel any handoff watch on session ID."
+  (when-let* ((timer (gethash id ghostherd--handoff-watches)))
+    (cancel-timer timer)
+    (remhash id ghostherd--handoff-watches)))
+
+(defun ghostherd--handoff-tick (id deadline grace callback)
+  "One poll of the handoff watch on session ID."
+  (let ((session (ghostherd-get id))
+        (now (float-time)))
+    (condition-case error
+        (cond
+         ((null session) (ghostherd--handoff-cancel id))
+         ((< now grace) nil)
+         ((memq (ghostherd-poll-session session)
+                ghostherd-handoff-settled-states)
+          (ghostherd--handoff-cancel id)
+          (funcall callback session (ghostherd-session-state session)))
+         ((and deadline (>= now deadline))
+          (ghostherd--handoff-cancel id)
+          (funcall callback session 'timeout)))
+      ;; A broken callback must not leave the timer running forever.
+      (error
+       (ghostherd--handoff-cancel id)
+       (message "ghostherd handoff watch failed: %s"
+                (error-message-string error))))))
+
+;;;###autoload
+(defun ghostherd-handoff (to text &optional from timeout callback)
+  "Hand TEXT to agent TO, then watch it settle -- without blocking Emacs.
+
+This is the pipeline primitive: message an agent, wait, report.  It is
+deliberately asynchronous.  `ghostherd-wait' blocks in a `sit-for' loop,
+which would freeze you out of the very editor you are meant to keep
+working in while the other agent runs -- and orchestrating without
+having to sit and watch a pane is the whole point.
+
+FROM attributes the message (a session, a name, or a label like
+\"user\").  CALLBACK receives (SESSION STATE), where STATE is the
+settled state or the symbol `timeout'; it defaults to a notification.
+TIMEOUT defaults to 600 seconds, nil means no deadline.
+
+Handing off to a session that is already being watched replaces the
+watch rather than stacking a second timer on it."
+  (setq to (ghostherd-get to))
+  (unless to
+    (user-error "Unknown target session"))
+  (let* ((id (ghostherd-session-id to))
+         (timeout (if (eq timeout 'none) nil (or timeout 600)))
+         (callback (or callback #'ghostherd--handoff-notify))
+         (now (float-time)))
+    (if from
+        (ghostherd-message from to text :submit t)
+      (ghostherd-send to text t))
+    (ghostherd--handoff-cancel id)
+    (puthash id
+             (run-with-timer
+              ghostherd-wait-poll-interval ghostherd-wait-poll-interval
+              #'ghostherd--handoff-tick
+              id
+              (and timeout (+ now timeout))
+              (+ now ghostherd-handoff-grace)
+              callback)
+             ghostherd--handoff-watches)
+    to))
+
+(defun ghostherd--handoff-notify (session state)
+  "Default `ghostherd-handoff' callback: notify about SESSION and STATE."
+  (ghostherd--notify
+   (format "ghostherd · %s %s" (ghostherd-session-name session) state)
+   (if (eq state 'timeout)
+       "handoff timed out"
+     (or (ghostherd-session-state-reason session) "handoff settled"))))
+
+;;;###autoload
+(defun ghostherd-handoff-interactive (to text)
+  "Hand TEXT to agent TO from the current session, and watch it settle."
+  (interactive
+   (let ((to (ghostherd--read-session "Hand off to agent: ")))
+     (list to (read-string (format "Message for %s: "
+                                   (ghostherd-session-name to))))))
+  (ghostherd-handoff to text (or (ghostherd-get (current-buffer)) "user")))
+
 (defun ghostherd-message-interactive (to body)
   "Interactively message agent TO with BODY (from user or current session)."
   (interactive

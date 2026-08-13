@@ -223,6 +223,41 @@ what it says. The rules should probably do the same, but changing it would
 silently alter what every existing pattern matches, so it wants a dogfood
 pass rather than a quiet fix.
 
+* Handing work to another agent
+
+=ghostherd-handoff= is the pipeline primitive: message an agent, watch it,
+report.
+
+#+begin_src emacs-lisp
+  ;; from the implementer, hand a review request to the reviewer
+  (ghostherd-handoff "reviewer" "Review the diff on this branch"
+                     "implementer")
+
+  ;; with your own completion handler
+  (ghostherd-handoff "reviewer" "Run the suite" "user" 300
+                     (lambda (session state)
+                       (when (eq state 'done)
+                         (pop-to-buffer (ghostherd-session-buffer session)))))
+#+end_src
+
+*It is asynchronous, deliberately.* =ghostherd-wait= blocks in a =sit-for=
+loop, which would freeze you out of the very editor you are meant to keep
+working in while the other agent runs --- and orchestrating without sitting
+and watching a pane is the entire point of this phase. There is a test that
+fails if a handoff ever calls =sit-for=.
+
+Two things it has to get right:
+
+- *Grace window.* An agent does not start the instant it is handed
+  something: the CLI has to wake up and print, and until it does the screen
+  rules still see the idle prompt from before. Without
+  =ghostherd-handoff-grace= the watch would report completion immediately,
+  every time.
+- *One watch per agent.* Handing off to an agent that is already being
+  watched replaces the watch instead of stacking a second timer on it, and a
+  callback that throws cancels the watch rather than leaving it polling
+  forever.
+
 * Notifications (ghostel hooks)
 
 ghostherd reuses ghostel's process lifecycle rather than inventing a
@@ -573,7 +608,8 @@ Goal: scripts and agents can orchestrate without focusing panes.
 - [X] =ghostherd-wait-output= (regex on buffer tail, timeout)
 - [X] =ghostherd-send-keys= (esc, ctrl+c, arrows, tab) --- plus
   =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
-- [ ] Pipeline helper: implement → message reviewer → wait → notify
+- [X] Pipeline helper: implement → message reviewer → wait → notify
+  (=ghostherd-handoff=)
 - [ ] Structured JSON-ish listing for =ghostherd-cmd-list=
 - [ ] Optional =emacsclient= CLI wrapper script
   (=bin/ghostherd= → =emacsclient -e '(ghostherd-…)'=)
