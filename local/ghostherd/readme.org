@@ -57,9 +57,17 @@ control plane bound to the Emacs session.
 
 ** Sidebar keys
 
-=RET= visit · =N= new · =P= pair · =k= kill · =r= rename · =m= message ·
-=i= prompt · =s= toggle project filter · =g= refresh · =.= next blocked ·
-=M= mark state · =q= quit
+=?= help · =RET= visit · =N= new · =P= pair · =k= kill · =r= rename ·
+=m= message · =i= prompt · =s= toggle project filter · =g= refresh ·
+=.= next blocked · =M= mark state · =q= quit
+
+=?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
+keymaps rather than this table, so it stays correct under Evil or any
+personal rebinding. Under =evil-collection= the sidebar inherits
+=tabulated-list-mode='s *normal* state, where the single-letter keys above
+are shadowed; a typical remap moves kill to =x= (so =k= still moves point)
+and refresh to =gr= (so the =g= prefix survives). Press =?= to see what is
+actually bound.
 
 * Agent CLI args (looked up from local binaries)
 

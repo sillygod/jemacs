@@ -503,7 +503,7 @@ working over idle (strict blocked detection, herdr-style)."
     (setq ghostherd--poll-timer
           (run-with-timer ghostherd-poll-interval
                           ghostherd-poll-interval
-                          #'ghostherd-poll-all))))
+                          #'ghostherd--poll-tick))))
 
 (defun ghostherd--stop-poll-timer ()
   "Stop the background poll timer when no sessions remain."
@@ -1031,8 +1031,68 @@ FROM may be a session, session name, or free-form label such as \"user\"."
 (defvar ghostherd--sidebar-filter-project nil
   "When non-nil, sidebar only shows this project root.")
 
+(defconst ghostherd-sidebar-help-commands
+  '((ghostherd-sidebar-visit                 . "Visit agent buffer")
+    (next-line                               . "Next row")
+    (previous-line                           . "Previous row")
+    (ghostherd-new                           . "New agent")
+    (ghostherd-new-pair                      . "New pair (split windows)")
+    (ghostherd-sidebar-kill                  . "Kill session")
+    (ghostherd-sidebar-rename                . "Rename session")
+    (ghostherd-sidebar-message               . "Message agent")
+    (ghostherd-sidebar-prompt                . "Prompt agent")
+    (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
+    (ghostherd-sidebar-refresh               . "Refresh")
+    (ghostherd-next-blocked                  . "Next blocked / done")
+    (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
+    (ghostherd-sidebar-help                  . "This help")
+    (quit-window                             . "Quit"))
+  "Commands listed by `ghostherd-sidebar-help', in display order.")
+
+(defun ghostherd--sidebar-help-keys (command)
+  "Return up to two readable key descriptions for COMMAND in this buffer."
+  (seq-take
+   (delete-dups
+    (delq nil
+          (mapcar
+           (lambda (key)
+             ;; Evil also exposes its state bindings under a `<normal-state>'
+             ;; pseudo-prefix, which just duplicates the real key.
+             (unless (and (> (length key) 0)
+                          (symbolp (aref key 0))
+                          (string-suffix-p "-state" (symbol-name (aref key 0))))
+               (key-description key)))
+           (where-is-internal command nil nil nil t))))
+   2))
+
+(defun ghostherd-sidebar-help ()
+  "Show the sidebar key bindings.
+Keys are looked up from the buffer's live keymaps rather than hardcoded,
+so the listing stays correct when Evil or a user keymap rebinds them --
+e.g. Evil users typically move kill off `k' so it can still move point.
+Commands with no binding in the current state are omitted."
+  (interactive)
+  (let* ((origin (current-buffer))
+         (rows (delq nil
+                     (mapcar
+                      (lambda (entry)
+                        (when-let* ((keys (with-current-buffer origin
+                                            (ghostherd--sidebar-help-keys
+                                             (car entry)))))
+                          (cons (string-join keys ", ") (cdr entry))))
+                      ghostherd-sidebar-help-commands)))
+         (width (apply #'max 3 (mapcar (lambda (row) (length (car row))) rows)))
+         ;; Emacs `format' has no `*' field width; build the format string.
+         (line-format (format "  %%-%ds  %%s\n" width)))
+    (with-help-window "*ghostherd help*"
+      (with-current-buffer standard-output
+        (insert "GhostHerd sidebar\n\n")
+        (pcase-dolist (`(,keys . ,description) rows)
+          (insert (format line-format keys description)))))))
+
 (defvar-keymap ghostherd-sidebar-mode-map
   :doc "Keymap for `ghostherd-sidebar-mode'."
+  "?" #'ghostherd-sidebar-help
   "n" #'next-line
   "p" #'previous-line
   "RET" #'ghostherd-sidebar-visit
@@ -1063,9 +1123,10 @@ FROM may be a session, session name, or free-form label such as \"user\"."
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
   (tabulated-list-init-header))
 
-(defun ghostherd--sidebar-entries ()
-  "Rebuild `tabulated-list-entries' for the sidebar."
-  (ghostherd-poll-all)
+(defun ghostherd--sidebar-build-entries ()
+  "Rebuild `tabulated-list-entries' from the sessions as they stand.
+Pure rendering -- it does not poll, so unlike `ghostherd--sidebar-entries'
+it is safe to call from inside the poll path without recursing."
   (let ((sessions (if ghostherd--sidebar-filter-project
                       (ghostherd-sessions ghostherd--sidebar-filter-project)
                     (ghostherd-sessions))))
@@ -1086,12 +1147,32 @@ FROM may be a session, session name, or free-form label such as \"user\"."
                            (ghostherd-session-started-at s)))))))
            sessions))))
 
+(defun ghostherd--sidebar-entries ()
+  "Poll every session, then rebuild `tabulated-list-entries'.
+Used by the interactive refresh and `tabulated-list-revert-hook'."
+  (ghostherd-poll-all)
+  (ghostherd--sidebar-build-entries))
+
 (defun ghostherd--sidebar-refresh ()
-  "Refresh the sidebar buffer if it exists."
+  "Re-render the sidebar from current session state, without polling.
+Rebuilding the entries is the point: `tabulated-list-print' alone
+re-prints whatever `tabulated-list-entries' already held, so a state
+change would redraw the same stale row it drew last time."
   (when-let* ((buf (get-buffer "*ghostherd*")))
     (with-current-buffer buf
       (when (derived-mode-p 'ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
         (tabulated-list-print t)))))
+
+(defun ghostherd--poll-tick ()
+  "Timer callback: poll every session, then keep a visible sidebar current.
+A state change already redraws via `ghostherd--set-state', but the Age
+column advances with no state change at all, so refresh on each tick
+while the sidebar is actually on screen."
+  (ghostherd-poll-all)
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (when (get-buffer-window buf t)
+      (ghostherd--sidebar-refresh))))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."

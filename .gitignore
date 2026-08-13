@@ -1,5 +1,5 @@
 .credentials
-.elc
+*.elc
 .DS_Store
 
 .vscode
