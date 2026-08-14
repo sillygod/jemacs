@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 126 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 128 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -589,6 +589,25 @@ bring it back configured:
 #+begin_src bash
   tmux -L ghostherd kill-server
 #+end_src
+
+** The agent is drawing into a fraction of the window
+
+Ask the host what size it thinks it is, rather than guessing from what
+you can see:
+
+#+begin_src bash
+  tmux -L ghostherd display-message -p -t '=gh-<hash>-<name>:' \
+       'pane #{pane_width}x#{pane_height} client #{client_width}x#{client_height}'
+#+end_src
+
+If the pane is much smaller than the window, the terminal was sized
+before it was displayed and never re-synced --- =ghostherd-visit= now
+forces a resize after showing the buffer, so revisiting the session
+should fix it. Resizing the Emacs window by a column does too, since
+that is a real size change and ghostel's own hook fires.
+
+This is easy to mistake for a scrolling problem: the content is there,
+the window is big, and only a corner of it is being drawn into.
 
 ** Something flickers, or repaints oddly
 

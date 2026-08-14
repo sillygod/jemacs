@@ -991,6 +991,26 @@ PLIST keys:
     (ghostherd--sidebar-refresh)
     session))
 
+(declare-function ghostel--adjust-size "ghostel" (window &optional force))
+
+(defun ghostherd--sync-view-size (buffer)
+  "Resize BUFFER's terminal to the window now showing it.
+
+ghostel sizes a terminal when it is created and thereafter from
+`window-size-change-functions', which fire when a window is *resized*.
+Displaying a buffer in an existing window is not a resize, so a view
+created before it was displayed -- which is every tmux attach, since the
+client has to exist before there is anything to show -- keeps whatever
+size it was born with.  The agent then draws into a screen a fraction of
+the window you are looking at, which reads as not being able to scroll
+rather than as a pane that is 63x23 inside a window twice that.
+
+Forced, because the terminal's own idea of its size is exactly what is
+stale here."
+  (when-let* ((window (get-buffer-window buffer t)))
+    (when (fboundp 'ghostel--adjust-size)
+      (ignore-errors (ghostel--adjust-size window t)))))
+
 (defun ghostherd-visit (session)
   "Display SESSION, attaching a view to its host when there is none.
 
@@ -1005,6 +1025,7 @@ design where a second terminal emulator is in the picture."
     (setf (ghostherd-session-buffer session) buffer
           (ghostherd-session-seen session) t)
     (pop-to-buffer buffer)
+    (ghostherd--sync-view-size buffer)
     buffer))
 
 ;;;###autoload
@@ -1195,6 +1216,8 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
     (split-window-right)
     (other-window 1)
     (switch-to-buffer (ghostherd--host-view right))
+    (ghostherd--sync-view-size (ghostherd-session-buffer left))
+    (ghostherd--sync-view-size (ghostherd-session-buffer right))
     (message "Spawned %s (%s) | %s (%s)"
              left-name left-kind right-name right-kind)
     (list left right)))

@@ -259,6 +259,40 @@ that it never reaches the state machine."
         (let ((ghostherd-reason-context context))
           (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
 
+;;; The view has to be the size of the window
+
+(cl-defmethod ghostherd-backend-view ((_backend (eql fake)) session)
+  (ghostherd-session-buffer session))
+
+(ert-deftest ghostherd-test-visiting-resizes-the-terminal ()
+  "ghostel sizes a terminal when it is created and thereafter only from
+`window-size-change-functions'.  Displaying a buffer in an existing
+window is not a resize, so every tmux attach -- which must create the
+client before there is anything to show -- kept whatever size it was
+born with, and the agent drew into a fraction of the window."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :backend 'fake))
+           (forced nil))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                ((symbol-function 'get-buffer-window)
+                 (lambda (&rest _) 'the-window))
+                ((symbol-function 'ghostel--adjust-size)
+                 (lambda (window force) (setq forced (list window force)))))
+        (ghostherd-visit s))
+      ;; forced, because the terminal's own idea of its size is the stale
+      ;; thing -- an unforced adjust returns early when it sees no change
+      (should (equal forced '(the-window t))))))
+
+(ert-deftest ghostherd-test-undisplayed-view-is-not-resized ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :backend 'fake))
+          (called nil))
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) nil))
+                ((symbol-function 'ghostel--adjust-size)
+                 (lambda (&rest _) (setq called t))))
+        (ghostherd--sync-view-size (ghostherd-session-buffer s)))
+      (should-not called))))
+
 ;;; Not idle, just slow
 
 (ert-deftest ghostherd-test-fresh-prompt-is-not-idle ()
