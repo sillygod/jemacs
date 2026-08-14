@@ -1,0 +1,201 @@
+#+TITLE: ghostherd — design
+
+Why ghostherd is shaped the way it is. The manual is [[file:../readme.org][readme.org]]; this is
+the part you read once, or when you are about to change something and
+want to know what it was protecting.
+
+Rationale that a *maintainer* needs at the moment of editing lives in
+the code as well, not only here. The tmux target rules below, for
+instance, are repeated in full in =ghostherd-tmux.el=, because the
+person who breaks them will be reading that file and not this one.
+
+* Architecture sketch
+
+#+begin_src text
+  UI: sidebar | consult | modeline | alert
+           │
+  Control: spawn kill rename prompt message wait handoff
+           │
+  Detect:  timer + screen rules + ghostel-exit / OSC hooks
+           │
+  Host:    capture · send-text · send-keys · live-p · exited-p
+           spawn · kill · rename · list · view          ← the slot
+           │                              │
+  Runtime: ghostel buffer (PTY)      tmux session (PTY, on -L ghostherd)
+           agent = Emacs child       agent outlives Emacs; view optional
+#+end_src
+
+Sessions live in =ghostherd--sessions= (id → =ghostherd-session= struct).
+Buffer-local =ghostherd-session-id= links a view buffer back to the
+registry — a *view*, since on the tmux backend a session may have none.
+
+Files:
+
+| File                  | Holds                                                 |
+|-----------------------+-------------------------------------------------------|
+| =ghostherd-backend.el= | session struct, registry, the slot, ghostel implementor |
+| =ghostherd-tmux.el=    | tmux implementor, naming, recipe stash, restore       |
+| =ghostherd.el=         | everything else — detection, UI, messaging, commands  |
+
+Two deviations from the Phase 3 plan (see [[file:roadmap.org][roadmap.org]]), both forced:
+
+- The ghostel implementor lives in =ghostherd-backend.el= *with* the
+  struct rather than being extracted around it. Splitting them the
+  other way is circular: the implementor needs the accessors, and the
+  struct is what the whole package is about.
+- The tmux server config is *generated* into
+  =~/.emacs.d/ghostherd-tmux.conf= from a string, not shipped as a file
+  beside the source. A lone =.conf= is not on any package manager's
+  default file list, so the shipped version works from a checkout and
+  silently does not once built — and a missing config means
+  =remain-on-exit off=, which fails a long way from its cause.
+
+* Why tmux, and why not as a multiplexer
+
+Survival is the smaller prize. The larger one is =capture-pane=: state
+detection used to scrape the Emacs buffer, which is why so much of Phase
+1.1 went into fighting alt-screen behaviour, resize repaints and what
+ghostel had or had not rendered yet. capture-pane reads the pane
+directly, works when nothing is attached, and does not care how ghostel
+draws.
+
+So tmux is here as a *named, detachable PTY that can dump its own
+screen*. One ghostherd session = one tmux session on a dedicated socket
+(=tmux -L ghostherd=), one window, one pane, =status off=, =prefix
+None=. Not windows-as-tabs, not panes-as-layout: either would put a
+third navigation layer inside ghostel, and Emacs already multiplexes.
+Your own =tmux= on the default socket is untouched.
+
+* Two tmux details worth writing down
+
+- *Targets are =\=NAME:=, always.* Without the =\== tmux prefix-matches,
+  so =gh-abc-rev= silently drives =gh-abc-reviewer=. Without the
+  trailing colon, the commands that parse a *pane* target — =set-option=,
+  =capture-pane=, =send-keys= — resolve a bare =\=NAME= against the
+  current session instead. =display-message= is the one that makes this
+  worth remembering: given =\=NAME= it prints an empty format rather
+  than failing.
+- *The config goes on every invocation.* tmux reads =-f= once, in
+  whichever process starts the server, and the only ghostherd command
+  that can start one is =new-session=. Passing it always puts =status
+  off= and =remain-on-exit on= in force *before* the first pane exists —
+  a =set-option= after the fact races a CLI that has already drawn its
+  TUI at the wrong height. It also means no server lingers between
+  herds: tmux exits with its last session, and the next spawn brings it
+  back configured.
+
+* What the tmux host costs
+
+Two terminal emulators nested — tmux's VT inside ghostel's — but only
+for the agent you are actually looking at.
+
+Resizing an attached agent's window flickers. Dogfooding found this
+immediately, and the layer responsible is *not* this one: attaching the
+same tmux session from a plain terminal and dragging that window
+flickers identically, so it is agy repainting under tmux and nothing
+ghostherd can debounce away. Worth knowing before anyone spends an
+afternoon on the =jemacs-ghostel-resize-debounce= knob --- which is now
+a variable rather than a hardcoded 0.15, since the cost per resize
+event really did double and the number should be reachable.
+
+The isolating test costs nothing and is the one to reach for whenever a
+symptom could belong to either VT:
+
+#+begin_src bash
+  tmux -L ghostherd attach -t '=gh-<hash>-<name>:'
+#+end_src
+
+(=prefix None= means no =C-b d=; detach with =tmux -L ghostherd
+detach-client= from another shell.)
+
+=ghostel_cmd= does not work inside a tmux-hosted agent: ghostel's shell
+integration is installed into the shell *ghostel* spawns, and here it
+spawns =tmux attach=. Use =bin/ghostherd= instead, which is what it was
+for.
+
+* What a snapshot can and cannot hold
+
+On the ghostel backend, agents are Emacs child processes: when Emacs
+exits, they exit. So the most that can be persisted is the *recipe* ---
+kind, directory, args, notes --- which is exactly what
+=ghostherd-session-recipe= returns. (Phase 3 changed the first sentence,
+not the second: on the tmux backend the agent itself survives, and the
+same recipe is written onto the host so =ghostherd-restore= can rebuild
+the session around a process that never stopped.)
+
+The conversation is not in the recipe, and never can be. But it is not lost
+either: it lives in the CLI's own store, and each CLI has a flag to reopen
+it. That flag is declared per kind as =:continue-args= in
+=ghostherd-agent-specs= rather than hardcoded, so a CLI without one is
+representable (=shell= has none) and respawn refuses instead of silently
+starting cold.
+
+=ghostherd-respawn= therefore gets most of the way to "my herd came back"
+with no new dependency: it frees the old buffer and id, then respawns from
+the recipe, appending =:continue-args= when asked. Note *appending* --- a
+session spawned with =--model= must come back on that model, not the
+default.
+
+Surviving an Emacs quit for real needed a process that is not an Emacs
+child --- which is Phase 3, and is what =ghostherd-backend= now selects.
+Respawn stays useful either way: after a restart on tmux, restore has
+already done the work, so the interesting respawn case is the one it
+always was --- a wedged CLI.
+
+* Rule matching case  (was a known issue; fixed)
+
+=:screen-rules= used to match under whatever =case-fold-search= happened
+to be when the poll timer fired --- the buffer that was current, in other
+words, which no rule author chooses or can even see. The same pattern
+could mean two different things on two consecutive ticks.
+
+The bug was never the *value*, it was that there was no value.
+=ghostherd--rule-matches-p= now binds it, and binds it to nil, for three
+reasons:
+
+1. The patterns were written by reading an agent's screen and copying
+   what was on it. Case-sensitive *is* the authored intent; folding was
+   an accident of where the timer happened to fire.
+2. =ghostherd-output-matches= has always bound it to nil, and one
+   package should not match two ways.
+3. It is the safer direction under the standing policy of preferring a
+   *missed* =blocked= to a false one. Folding made =Running= match the
+   word "running" in ordinary agent prose, and =permission= match an
+   agent merely discussing permissions --- a false =working= and a false
+   =blocked= respectively.
+
+No shipped pattern was rewritten to compensate, which is the part to
+watch while dogfooding. Roughly thirty of them contain a cased letter;
+the three whose casing the UI might vary are =permission=, =Approve= and
+=Allow this=. If one of those starts missing, =ghostherd-explain= shows
+it (the pattern will be absent from the match list even though the words
+are visible in the tail), and the fix is local and one character wide:
+
+#+begin_src emacs-lisp
+  "[Pp]ermission"          ; both, deliberately, rather than by accident
+#+end_src
+
+That is the whole reason this waited for a dogfood pass instead of being
+a quiet fix: the change had to be *stated* somewhere before it altered
+what thirty patterns match.
+
+* Design decisions log
+
+| Decision              | Choice                                      | Why                                      |
+|-----------------------+---------------------------------------------+------------------------------------------|
+| Lifetime              | Bound to Emacs first, then a host slot      | Simpler first; detach became Phase 3     |
+| UI                    | Sidebar *and* consult                       | Herd overview + fast jump                |
+| Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
+| Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
+| Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |
+| State authority       | Screen rules + exit hooks                   | No per-CLI lifecycle plugins yet         |
+| Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
+| Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
+| Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |
+| Phase 3 host          | tmux as headless PTY, 1 session per agent   | Capture + survive; not a second mux      |
+| Backend dispatch      | On a symbol, not a struct subtype           | One session type; the host is a field    |
+| Backend default       | =ghostel=, per session at birth             | Switching must not strand a live herd    |
+| tmux spawn            | Direct exec, no shell                       | No quoting, no spawn-delay guesswork     |
+| tmux recipe           | =@ghostherd-*= session options              | A sidecar file outlives nothing reliably |
+| tmux config           | Generated from a string, =-f= every call    | A shipped .conf does not survive a build |
+| View vs state         | =buffer= nil means detached, not dead       | Closing a window is not a crash          |

@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3 done* — T10 passed, including attach/detach/re-attach     |
+| Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= — 109 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -15,7 +15,17 @@ control plane bound to the Emacs session.
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                              |
 
-* Features (Phase 1)
+This file is the manual: what it does, how to drive it, what to do when
+it misbehaves. Three things live next door, because they have different
+readers and different lifetimes:
+
+| Document                                    | For                                                 |
+|---------------------------------------------+-----------------------------------------------------|
+| [[file:docs/design.org][docs/design.org]]    | why it is shaped this way, and what was traded away |
+| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T12        |
+| [[file:docs/roadmap.org][docs/roadmap.org]]  | phase history, what shipped, what is left           |
+
+* Features
 
 - Spawn *claude* / *grok* / *agy* (or a plain shell) as named sessions
 - Multiple concurrent agents per project (e.g. implementer + reviewer)
@@ -26,7 +36,7 @@ control plane bound to the Emacs session.
 - Agents can call herd commands via =ghostel_cmd= (whitelisted; ghostel
   backend only --- see "Hosts")
 
-* Hosts (Phase 3)
+* Hosts
 
 An agent has to run *somewhere*, and ghostherd no longer assumes where.
 Everything above the host slot — detection, messaging, handoff, the
@@ -51,21 +61,8 @@ with, so switching does not strand the herd you already have, and
 =ghostherd-restore= sweeps *every* backend rather than just the current
 one.
 
-** Why tmux, and why not as a multiplexer
-
-Survival is the smaller prize. The larger one is =capture-pane=: state
-detection used to scrape the Emacs buffer, which is why so much of Phase
-1.1 went into fighting alt-screen behaviour, resize repaints and what
-ghostel had or had not rendered yet. capture-pane reads the pane
-directly, works when nothing is attached, and does not care how ghostel
-draws.
-
-So tmux is here as a *named, detachable PTY that can dump its own
-screen*. One ghostherd session = one tmux session on a dedicated socket
-(=tmux -L ghostherd=), one window, one pane, =status off=, =prefix
-None=. Not windows-as-tabs, not panes-as-layout: either would put a
-third navigation layer inside ghostel, and Emacs already multiplexes.
-Your own =tmux= on the default socket is untouched.
+Why tmux, why one session per agent, and what the nesting costs are in
+[[file:docs/design.org][docs/design.org]].
 
 ** Attach is optional
 
@@ -115,95 +112,6 @@ state.
 What does not come back is Emacs-side and never could: a manual state
 override, whether a session has been seen, the last OSC progress
 report. Notes do, because they were written onto the host.
-
-** Two tmux details worth writing down
-
-- *Targets are =\=NAME:=, always.* Without the =\== tmux prefix-matches,
-  so =gh-abc-rev= silently drives =gh-abc-reviewer=. Without the
-  trailing colon, the commands that parse a *pane* target — =set-option=,
-  =capture-pane=, =send-keys= — resolve a bare =\=NAME= against the
-  current session instead. =display-message= is the one that makes this
-  worth remembering: given =\=NAME= it prints an empty format rather
-  than failing.
-- *The config goes on every invocation.* tmux reads =-f= once, in
-  whichever process starts the server, and the only ghostherd command
-  that can start one is =new-session=. Passing it always puts =status
-  off= and =remain-on-exit on= in force *before* the first pane exists —
-  a =set-option= after the fact races a CLI that has already drawn its
-  TUI at the wrong height. It also means no server lingers between
-  herds: tmux exits with its last session, and the next spawn brings it
-  back configured.
-
-Recovery for a server started without the config is =tmux -L ghostherd
-kill-server=. Reconfiguring a running server from Elisp is not.
-
-** Reloading over a live herd
-
-Phase 3 added two slots to =ghostherd-session=. Emacs does not migrate
-structs that already exist, so a session created before the reload is
-read through the new accessors with every field after the new slot
-shifted along: =backend= comes back holding a project path.
-
-It is worth knowing what that looks like, because the symptom names
-neither the cause nor the cure:
-
-#+begin_example
-  Error during redisplay: (eval (ghostherd--mode-line-segment) t) signaled
-  (cl-no-applicable-method ghostherd-backend-live-p "/src/app/" #s(ghostherd-session …))
-#+end_example
-
-The cure is to clear the registry, which deregisters the sessions and
-leaves their buffers and agents alone:
-
-#+begin_src emacs-lisp
-  (clrhash ghostherd--sessions)
-#+end_src
-
-Do that *before* reloading, not after. Structs cannot be versioned
-retroactively, so this could not be repaired --- only named:
-=ghostherd--backend-of= now checks that a backend is a symbol and says
-the above in one sentence.
-
-Two things were genuinely wrong, though, and are fixed:
-
-- The mode-line segment used to sweep the registry, which was free when
-  a host check was =buffer-live-p= and is not once one can run a
-  subprocess. Redisplay is no place for I/O, and no place to find out
-  that the I/O failed --- a segment that signals breaks the whole
-  frame, repeatedly. It now only reads. The poll timer still sweeps.
-- =ghostherd--ensure-sessions= treated an unanswerable host check as
-  "gone" and pruned. A host is far likelier to be briefly unreachable
-  than actually absent, so that deleted the herd instead of reporting
-  it. It now keeps what it cannot ask.
-
-** What it costs
-
-Two terminal emulators nested — tmux's VT inside ghostel's — but only
-for the agent you are actually looking at.
-
-Resizing an attached agent's window flickers. Dogfooding found this
-immediately, and the layer responsible is *not* this one: attaching the
-same tmux session from a plain terminal and dragging that window
-flickers identically, so it is agy repainting under tmux and nothing
-ghostherd can debounce away. Worth knowing before anyone spends an
-afternoon on the =jemacs-ghostel-resize-debounce= knob --- which is now
-a variable rather than a hardcoded 0.15, since the cost per resize
-event really did double and the number should be reachable.
-
-The isolating test costs nothing and is the one to reach for whenever a
-symptom could belong to either VT:
-
-#+begin_src bash
-  tmux -L ghostherd attach -t '=gh-<hash>-<name>:'
-#+end_src
-
-(=prefix None= means no =C-b d=; detach with =tmux -L ghostherd
-detach-client= from another shell.)
-
-=ghostel_cmd= does not work inside a tmux-hosted agent: ghostel's shell
-integration is installed into the shell *ghostel* spawns, and here it
-spawns =tmux attach=. Use =bin/ghostherd= instead, which is what it was
-for.
 
 * Commands
 
@@ -412,44 +320,8 @@ the file it just wrote.
   it.
 - Gives up when the session dies. A dead agent will never produce the text;
   waiting out the full timeout for it is just a hang.
-- Matching is *case-sensitive*, and so are =:screen-rules= --- see below.
-
-** Rule matching case  (was a known issue; fixed)
-
-=:screen-rules= used to match under whatever =case-fold-search= happened
-to be when the poll timer fired --- the buffer that was current, in other
-words, which no rule author chooses or can even see. The same pattern
-could mean two different things on two consecutive ticks.
-
-The bug was never the *value*, it was that there was no value.
-=ghostherd--rule-matches-p= now binds it, and binds it to nil, for three
-reasons:
-
-1. The patterns were written by reading an agent's screen and copying
-   what was on it. Case-sensitive *is* the authored intent; folding was
-   an accident of where the timer happened to fire.
-2. =ghostherd-output-matches= has always bound it to nil, and one
-   package should not match two ways.
-3. It is the safer direction under the standing policy of preferring a
-   *missed* =blocked= to a false one. Folding made =Running= match the
-   word "running" in ordinary agent prose, and =permission= match an
-   agent merely discussing permissions --- a false =working= and a false
-   =blocked= respectively.
-
-No shipped pattern was rewritten to compensate, which is the part to
-watch while dogfooding. Roughly thirty of them contain a cased letter;
-the three whose casing the UI might vary are =permission=, =Approve= and
-=Allow this=. If one of those starts missing, =ghostherd-explain= shows
-it (the pattern will be absent from the match list even though the words
-are visible in the tail), and the fix is local and one character wide:
-
-#+begin_src emacs-lisp
-  "[Pp]ermission"          ; both, deliberately, rather than by accident
-#+end_src
-
-That is the whole reason this waited for a dogfood pass instead of being
-a quiet fix: the change had to be *stated* somewhere before it altered
-what thirty patterns match.
+- Matching is *case-sensitive*, and so are =:screen-rules= --- see
+  "Rule matching case" in [[file:docs/design.org][docs/design.org]].
 
 * Handing work to another agent
 
@@ -594,8 +466,8 @@ over a false one.
 
 agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
 repaints its whole UI on every SIGWINCH, so an attached window flickers
-while dragged --- its own behaviour, not the nesting's; see "What it
-costs".
+while dragged --- its own behaviour, not the nesting's; see "What the
+tmux host costs" in [[file:docs/design.org][docs/design.org]].
 
 Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
 session stays visible as =dead= until you kill it from the herd.
@@ -651,463 +523,82 @@ re-prompting for a kind you already answered would be worse than stale.
                    :args '("--permission-mode" "acceptEdits")))
 #+end_src
 
-* Testing
+* Troubleshooting
 
-** Automated (=ghostherd-tests.el=)
+Symptoms whose cause is a long way from where they show up.
 
-#+begin_src bash
-  cd local/ghostherd
-  emacs --batch -L . -l ghostherd.el -l ghostherd-tests.el \
-        -f ert-run-tests-batch-and-exit
-#+end_src
+** Reloading over a live herd
 
-Covers the parts that need no PTY: rule matching and precedence, OSC
-progress freshness and handler chaining, state-detection precedence, sidebar
-column fitting, title filtering, naming and age formatting.
+Phase 3 added two slots to =ghostherd-session=. Emacs does not migrate
+structs that already exist, so a session created before the reload is
+read through the new accessors with every field after the new slot
+shifted along: =backend= comes back holding a project path.
 
-Phase 3 added the host slot, and the way it is tested is the point: a
-=fake= backend answers with a known screen, so the tests pin the *call
-sites* rather than either implementor. Rewiring detection back to a
-buffer fails a test with no tmux and no PTY anywhere near it. For tmux
-itself, =ghostherd-tmux--call= is the single seam every invocation
-passes through, so stubbing it pins the actual command lines --- which
-is where this backend's mistakes live: a missing =\==, a =paste-buffer=
-without =-r=, a =capture-pane= that grew a =-J=.
+It is worth knowing what that looks like, because the symptom names
+neither the cause nor the cure:
 
-One test runs against a real tmux (spawn → capture → send → restore →
-kill) and is skipped when tmux is absent. It is the only thing that
-would catch tmux changing its mind about a flag.
+#+begin_example
+  Error during redisplay: (eval (ghostherd--mode-line-segment) t) signaled
+  (cl-no-applicable-method ghostherd-backend-live-p "/src/app/" #s(ghostherd-session …))
+#+end_example
 
-The suite was mutation-checked rather than merely run. Breaking the
-blocked-beats-progress rule, the progress chaining, the column budget,
-the mandatory-column flag and the title filter each fail a test; so do
-marking a detached view as =dead=, dropping the exact-target =\==,
-joining wrapped lines in a capture, letting =paste-buffer= turn
-newlines into submissions, hashing a project root with and without its
-trailing slash, and letting restore clobber a session it already knows.
-
-That exercise has now found two real defects. The first was a floor on
-the column budget that made the mandatory flag unreachable. The second
-was an off-by-one in the new screen tail: a capture of exactly N rows
-ends in a newline, so splitting it yields N+1 fields and taking the
-last N drops the *first* line --- which is how the first thing an agent
-printed goes missing from a screen that is plainly still showing it.
-
-** Manual
-
-The interactive spawn/kill paths still need a human, since driving real
-ghostel PTYs headlessly is what Phase 1 deferred. Run after reloading config
-(or restarting Emacs) so =local/ghostherd= and leader keys are loaded.
-
-** Prerequisites
-
-1. =ghostel= package installed and working (=M-x ghostel= opens a shell).
-2. CLIs on =PATH=: =claude=, =grok=, =agy= (skip kinds you do not have).
-2b. For T10–T12, =tmux= on =PATH= (developed against 3.5a).
-3. =alert= available (this config sets =alert-default-style= to =osx-notifier=).
-4. =jemacs-ai= loaded so =use-package ghostherd= ran; first command will load the package and enable =ghostherd-mode=.
-
-** Smoke (load / compile)
-
-In a shell:
-
-#+begin_src bash
-  cd ~/.emacs.d/local/ghostherd
-  emacs --batch -L . -f batch-byte-compile \
-        ghostherd-backend.el ghostherd-tmux.el ghostherd.el
-#+end_src
-
-Expect: no errors (warnings about free vars from ghostel internals are OK if any).
-
-In Emacs:
+The cure is to clear the registry, which deregisters the sessions and
+leaves their buffers and agents alone:
 
 #+begin_src emacs-lisp
-  (require 'ghostherd)
-  (ghostherd-mode 1)
-  (featurep 'ghostherd)   ; => t
+  (clrhash ghostherd--sessions)
 #+end_src
 
-** Manual test plan
+Do that *before* reloading, not after. Structs cannot be versioned
+retroactively, so this could not be repaired --- only named:
+=ghostherd--backend-of= now checks that a backend is a symbol and says
+the above in one sentence.
 
-Run each row; mark pass/fail. Prefer a real project directory so project
-filter and buffer names look right.
+Two things were genuinely wrong, though, and are fixed:
 
-*** T1 — Spawn single agent
+- The mode-line segment used to sweep the registry, which was free when
+  a host check was =buffer-live-p= and is not once one can run a
+  subprocess. Redisplay is no place for I/O, and no place to find out
+  that the I/O failed --- a segment that signals breaks the whole
+  frame, repeatedly. It now only reads. The poll timer still sweeps.
+- =ghostherd--ensure-sessions= treated an unanswerable host check as
+  "gone" and pruned. A host is far likelier to be briefly unreachable
+  than actually absent, so that deleted the herd instead of reporting
+  it. It now keeps what it cannot ask.
 
-| Step | Action                                      | Expected                                      |
-|------+---------------------------------------------+-----------------------------------------------|
-| 1    | =SPC a h n= (or =M-x ghostherd-new=)        | Prompts kind / name / dir / args / notes      |
-| 2    | Kind =claude=, name =t1-claude=             | Buffer =*ghostherd:t1-claude*= appears        |
-| 3    | Wait ~1–2s                                  | CLI starts (not stuck forever at bare shell)  |
-| 4    | Repeat for =grok= and =agy= if installed    | Same for each kind                            |
+** A stale tmux server
 
-Failure modes: spawn delay too short → raise =ghostherd-spawn-delay=;
-command not found → fix PATH for Emacs (login shell / exec-path).
-
-*** T2 — Sidebar + switch
-
-| Step | Action                         | Expected                                      |
-|------+--------------------------------+-----------------------------------------------|
-| 1    | =SPC a h b=                    | Side window =*ghostherd*= with session rows   |
-| 2    | Move to a row, =RET=           | Focuses that agent buffer                     |
-| 3    | =SPC a h s=                    | Completing-read lists agents with state glyph |
-| 4    | =g= in sidebar                 | Rows refresh without error                    |
-
-*** T3 — Pair layout
-
-| Step | Action                    | Expected                                           |
-|------+---------------------------+----------------------------------------------------|
-| 1    | In a project: =SPC a h 2= | Prompts two kinds/names                            |
-| 2    | Accept defaults           | Two windows: implementer \| reviewer, both running |
-
-*** T4 — State detection
-
-| Step | Action                                          | Expected                          |
-|------+-------------------------------------------------+-----------------------------------|
-| 1    | Ask agent to do a short task                    | Sidebar/state → =working= (⟳)     |
-| 2    | Trigger a permission/approval prompt if possible | State → =blocked= (⚠)            |
-| 3    | macOS notification on blocked                   | Banner via =osx-notifier=         |
-| 4    | Finish task, leave session unfocused            | Eventually =done= (✓) or =idle=   |
-| 5    | =SPC a h .=                                     | Jumps to blocked/done agent       |
-| 6    | If detection wrong: =M-x ghostherd-mark-state=  | Manual override sticky until auto |
-
-Screen rules are heuristic. Prefer *missed blocked* over *false blocked*.
-Tune =:screen-rules= in =ghostherd-agent-specs= when a CLI UI changes.
-
-*** T5 — Inter-agent message
-
-| Step | Action                                                        | Expected                                      |
-|------+---------------------------------------------------------------+-----------------------------------------------|
-| 1    | Have two live sessions (=implementer=, =reviewer=)            | Both in herd                                  |
-| 2    | =SPC a h m= → target =reviewer=, body =hello from test=       | Text pasted into reviewer (submitted if configured) |
-| 3    | Elisp: =(ghostherd-message "implementer" "reviewer" "ping" :submit t)= | Attributed header + body in reviewer     |
-| 4    | =(ghostherd-read "reviewer" 40)=                              | String contains recent tail                   |
-| 5    | =(ghostherd-prompt "reviewer" "Reply with pong only")=        | Prompt submitted                              |
-
-*** T6 — ghostel_cmd from inside an agent
-
-Only if ghostel shell integration works in that buffer:
+A server started without ghostherd's config keeps whatever options it
+started with, and =-f= is only read by the process that starts one.
+There is no fixing that from Elisp; kill it and let the next spawn
+bring it back configured:
 
 #+begin_src bash
-  ghostel_cmd ghostherd-list
-  ghostel_cmd ghostherd-state implementer
+  tmux -L ghostherd kill-server
 #+end_src
 
-Expected: text listing / state line; unknown session returns a clear error string.
+** Something flickers, or repaints oddly
 
-*** T7 — Exit / kill / notify
+An attached agent has two terminal emulators between it and you. Before
+attributing anything to that, find out which one: attach the same tmux
+session from a plain terminal and reproduce it there.
 
-| Step | Action                                      | Expected                                |
-|------+---------------------------------------------+-----------------------------------------|
-| 1    | Quit the agent CLI (=/exit=, =C-c=, etc.)   | Session → =dead=; buffer *not* auto-killed |
-| 2    | Desktop notify on exit (if enabled)         | =ghostherd · <name> exited=             |
-| 3    | =SPC a h k= on that session                 | Removed from herd; buffer killed        |
-
-*** T8 — Project filter
-
-| Step | Action                                      | Expected                     |
-|------+---------------------------------------------+------------------------------|
-| 1    | Spawn agents in two different projects      | Both listed                  |
-| 2    | In project A, sidebar =s=                   | Only project A sessions show |
-| 3    | =s= again                                   | Filter off                   |
-
-*** T9 — Modeline
-
-With =ghostherd-mode= on and ≥1 session: mode-line shows a herd summary
-(e.g. cow glyph + counts). Click → opens sidebar.
-
-*** T10 — tmux backend, headless
-
-This is the acceptance test for Phase 3. Everything below T10 is
-exercised by ERT *except* attach, which needs the compiled ghostel
-module and so has never run outside a real Emacs.
-
-Set =(setq ghostherd-backend 'tmux)= first.
-
-| Step | Action                                             | Expected                                             |
-|------+----------------------------------------------------+------------------------------------------------------|
-|    1 | =SPC a h n= → claude, name =t10=, =:display= on    | Buffer appears; the agent is *inside* tmux           |
-|    2 | =tmux -L ghostherd list-sessions= in a real shell  | One =gh-<hash>-t10=                                  |
-|    3 | Sidebar: state tracks the agent as usual           | Detection is now =capture-pane=, not the buffer      |
-|    4 | =M-x ghostherd-explain=                            | Shows host id + backend, and the captured tail       |
-|    5 | Kill the =*ghostherd:t10*= buffer                  | Row stays; switcher annotates it =detached=          |
-|    6 | Sidebar =RET= on that row                          | Re-attaches; same conversation, nothing lost         |
-
-Failure modes: no session at step 2 → tmux not on Emacs's =exec-path=;
-status bar visible after attach → the generated config was not read,
-check =ghostherd-tmux--config-file= and =tmux -L ghostherd kill-server=.
-
-*** T11 — Surviving Emacs
-
-| Step | Action                                    | Expected                                       |
-|------+-------------------------------------------+------------------------------------------------|
-|    1 | With a live tmux-backed agent, quit Emacs | =tmux -L ghostherd list-sessions= still lists it |
-|    2 | Start Emacs, run any ghostherd command    | =ghostherd-mode= restores it, detached          |
-|    3 | Check the sidebar                         | Name, kind, project and *notes* all came back  |
-|    4 | =RET=                                     | Attaches to the agent that never stopped       |
-|    5 | =SPC a h k=                               | Session *and* tmux session both gone           |
-
-*** T12 — Detach is not death
-
-The bug this phase most had to avoid.
-
-| Step | Action                                        | Expected                                  |
-|------+-----------------------------------------------+-------------------------------------------|
-|    1 | Attach a tmux-backed agent, set it working    | State =working=                           |
-|    2 | Kill the buffer while it is still working     | *No* "exited" notification; state unchanged |
-|    3 | Wait a poll or two                            | Still =working=, still detached           |
-|    4 | Quit the agent CLI itself (=/exit=)           | *Now* =dead=, and the last screen is still capturable |
-
-** Regression notes to capture while testing
-
-Record failures here or in issues while dogfooding:
-
-- [ ] claude blocked pattern false positive / miss: _______________
-- [ ] grok blocked pattern false positive / miss: _______________
-- [ ] agy blocked pattern false positive / miss: _______________
-- [ ] spawn-delay too low on this machine: _______________
-- [ ] =ghostel_cmd= whitelist missing after reload: _______________
-- [ ] Other: _______________
-
-** Remaining test gaps
-
-| Suite              | Scope                                    | Notes                     |
-|--------------------+------------------------------------------+---------------------------|
-| ERT unit           | *done* --- see =ghostherd-tests.el=      | No PTY needed             |
-| ERT, fake backend  | *done* --- detection/read through the slot | No tmux, no PTY         |
-| ERT, stubbed tmux  | *done* --- the command lines themselves  | Stubs =--call=            |
-| ERT, real tmux     | *done* --- spawn/capture/send/restore/kill | Skipped without tmux    |
-| Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
-| Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
-
-Do *not* block UX work on full TUI integration tests of claude/grok
-themselves. That is still the Phase 1 gap, and Phase 3 did not close it.
-
-* Roadmap (remaining phases)
-
-Phase 1 (this tree) is intentionally small: spawn, list, switch, state,
-notify, pair layout, message/prompt/read/wait.
-
-** Phase 1.1 — Stabilize detection (next dogfood pass)
-
-Goal: make state trustworthy for daily use without false blocked spam.
-
-- [X] =ghostherd-explain= (like herdr =agent explain=): show last tail
-  snippet + which rule matched
-- [X] OSC progress (=ghostel-progress-function=) → force =working= + %
-- [X] OSC title → sidebar summary column (opt-in; see the width note under
-  Config knobs)
-- [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
-  data; =ghostherd-explain= is what produces it
-- [X] Rules match case-sensitively rather than under whatever
-  =case-fold-search= the poll timer happened to fire under.  See "Rule
-  matching case"; the patterns themselves are unchanged and that is the
-  part to watch
-- [ ] Document known false positives per agent version — table stubbed under
-  "Detection notes per CLI"
-
-- [X] Sidebar columns are fitted to the window instead of overflowing it.
-  They used to be a fixed vector needing ~70 characters against a default
-  width of 36, so every row wrapped. =ghostherd--sidebar-column-specs= now
-  lists candidates most-useful-first and the widest, least informative ones
-  (=Project=, then =Kind=) drop out when there is no room. The fit follows a
-  manual resize, not just =ghostherd-sidebar-width=.
-
-** Phase 2 — Usability
-
-Goal: less friction for multi-agent day-to-day work.
-
-- [-] Layout presets beyond pair (1+2 grid, focus agent only) --- *decided
-  against*. =ghostherd-new-pair= covers the split that actually gets used,
-  and window layout is something Emacs already has better tools for than a
-  herd manager should reimplement.
-- [X] Session notes editable from sidebar (=c=); role shown in switcher
-- [X] Per-project default kinds/args via dir-locals
-- [X] Consult annotations (kind, project, age, notes) --- candidates are
-  now bare names with the detail in an affixation, so typing matches the
-  name instead of whatever happened to be concatenated into the string
-- [X] ERT unit tests for pure helpers (rules, naming, format) ---
-  =ghostherd-tests.el=, mutation-checked
-
-- [X] =ghostherd-respawn= (=R= in the sidebar) --- was two roadmap items,
-  "persist snapshot" and "restart-agent", which turned out to be the same
-  thing
-
-** What a snapshot can and cannot hold
-
-On the ghostel backend, agents are Emacs child processes: when Emacs
-exits, they exit. So the most that can be persisted is the *recipe* ---
-kind, directory, args, notes --- which is exactly what
-=ghostherd-session-recipe= returns. (Phase 3 changed the first sentence,
-not the second: on the tmux backend the agent itself survives, and the
-same recipe is written onto the host so =ghostherd-restore= can rebuild
-the session around a process that never stopped.)
-
-The conversation is not in the recipe, and never can be. But it is not lost
-either: it lives in the CLI's own store, and each CLI has a flag to reopen
-it. That flag is declared per kind as =:continue-args= in
-=ghostherd-agent-specs= rather than hardcoded, so a CLI without one is
-representable (=shell= has none) and respawn refuses instead of silently
-starting cold.
-
-=ghostherd-respawn= therefore gets most of the way to "my herd came back"
-with no new dependency: it frees the old buffer and id, then respawns from
-the recipe, appending =:continue-args= when asked. Note *appending* --- a
-session spawned with =--model= must come back on that model, not the
-default.
-
-Surviving an Emacs quit for real needed a process that is not an Emacs
-child --- which is Phase 3, and is what =ghostherd-backend= now selects.
-Respawn stays useful either way: after a restart on tmux, restore has
-already done the work, so the interesting respawn case is the one it
-always was --- a wedged CLI.
-
-** Phase 2.5 — Richer automation (herdr-like control)
-
-Goal: scripts and agents can orchestrate without focusing panes.
-
-- [X] =ghostherd-wait-output= (regex on buffer tail, timeout)
-- [X] =ghostherd-send-keys= (esc, ctrl+c, arrows, tab) --- plus
-  =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
-- [X] Pipeline helper: implement → message reviewer → wait → notify
-  (=ghostherd-handoff=)
-- [X] Structured JSON listing for =ghostherd-cmd-list= / =ghostherd-cmd-state=
-- [X] =emacsclient= CLI wrapper (=bin/ghostherd=)
-
-** Phase 3 — tmux as a headless PTY host  *(done, bar the manual pass)*
-
-Goal: read the agent's screen out of band, and let sessions outlive Emacs.
-
-The design and its rationale now live under "Hosts (Phase 3)" above,
-where someone using the thing will actually find them. This is the
-record of what shipped and what is left.
-
-*** What shipped
-
-- [X] The host slot as *capabilities, not product names*: =capture=,
-  =send-text=, =send-keys=, =live-p=, =exited-p=, =title=, =spawn=,
-  =kill=, =rename=, =view=, =list=. =cl-defgeneric= dispatching on the
-  backend symbol, with =ghostherd--host-*= wrappers that read it off
-  the session
-- [X] The ghostel path extracted behind that slot with no behaviour
-  change — the 72 Phase 2.5 tests stayed green through slice 1
-- [X] tmux implementor: dedicated socket, one session per agent,
-  =status off= / =prefix None=, direct exec (no shell, so no
-  =ghostherd-spawn-delay= guesswork)
-- [X] The recipe stashed on the tmux session as =@ghostherd-*= options;
-  args as JSON, so a =--system-prompt= full of quotes round-trips
-- [X] =ghostherd-restore= on =ghostherd-mode=, sweeping every backend
-- [X] Attach on visit only; =ghostherd-visit= is the single entry point
-  and =ghostherd-new-pair= is still just two Emacs windows
-- [X] Detach ≠ death (see "Attach is optional")
-- [X] =dead= rows survive: =remain-on-exit on= mirrors what
-  =ghostel-kill-buffer-on-exit= nil already did for the other backend
-- [X] 28 new ERT tests, mutation-checked; plus a real-tmux round trip
-  that is skipped when tmux is absent
-
-*** What is left
-
-- [X] The attach path, T10.  Spawn detached, detect over =capture-pane=,
-  kill the buffer, watch the row stay, =RET= back onto the same agent.
-  =ghostel-exec= needs the compiled module, so this could only ever be
-  a manual check; it passed.  T11 (surviving an Emacs quit) and T12
-  (working → detach → still working) are still worth a run
-- [ ] Tune =:screen-rules= against actual =capture-pane= output. This
-  is the leftover Phase 1.1 data pass, and it is *why* Phase 3 was
-  worth doing first: the tuning loop was only hard because the thing
-  being scraped was a rendering of a rendering
-- [X] Decided: =jemacs-ai= opts in with =(setq ghostherd-backend 'tmux)=.
-  The package default stays =ghostel=, which needs nothing installed
-
-*** Deliberately not done
-
-- Windows as a navigation layer, panes as a layout layer
-- Loading the user's =tmux.conf=, or sharing the default socket
-- Phone / SSH thin client, herdr-compatible socket server
-- Making tmux the *package* default.  A package should work with
-  nothing installed, and the ghostel backend does.  Opting in belongs
-  in a config that knows the machine has tmux --- =jemacs-ai= sets
-  =ghostherd-backend= to =tmux=, because a survival feature that only
-  works when you remembered to switch it on beforehand does not cover
-  the restart you did not expect
-- A dtach implementor: it cannot =capture=, so it buys only the
-  smaller half of the prize
-- Asking ghostel for a VT grid API. Still worth doing later as 3a —
-  capture from a real grid, not from buffer text, would be the larger
-  prize *without* the nested VT, and persistence could then sit on a
-  thinner host. Until it exists, tmux is the one widely installed tool
-  that does both jobs.
-
-** Phase 4 — Ecosystem (only if still useful)
-
-- [ ] Extract =ghostherd= to its own repo / MELPA if others want it
-- [ ] Optional lifecycle hooks plugins per CLI (beyond screen scrape)
-- [ ] Compare/contrast doc vs herdr for users choosing tools
-
-** Explicit non-goals (for now)
-
-- Replacing gptel / copilot / in-buffer LLM workflows
-- Implementing a full A2A network protocol
-- Windows-first support (macOS/Linux Emacs + ghostel is the target)
-
-* Architecture sketch
-
-#+begin_src text
-  UI: sidebar | consult | modeline | alert
-           │
-  Control: spawn kill rename prompt message wait handoff
-           │
-  Detect:  timer + screen rules + ghostel-exit / OSC hooks
-           │
-  Host:    capture · send-text · send-keys · live-p · exited-p
-           spawn · kill · rename · list · view          ← the slot
-           │                              │
-  Runtime: ghostel buffer (PTY)      tmux session (PTY, on -L ghostherd)
-           agent = Emacs child       agent outlives Emacs; view optional
+#+begin_src bash
+  tmux -L ghostherd attach -t '=gh-<hash>-<name>:'
 #+end_src
 
-Sessions live in =ghostherd--sessions= (id → =ghostherd-session= struct).
-Buffer-local =ghostherd-session-id= links a view buffer back to the
-registry — a *view*, since on the tmux backend a session may have none.
+If it happens there too, ghostel is not involved and neither is
+ghostherd. (=prefix None= means no =C-b d=; detach with =tmux -L
+ghostherd detach-client= from another shell.) This is not hypothetical
+— see "What the tmux host costs" in [[file:docs/design.org][docs/design.org]].
 
-Files:
+** State is wrong for a CLI
 
-| File                  | Holds                                                 |
-|-----------------------+-------------------------------------------------------|
-| =ghostherd-backend.el= | session struct, registry, the slot, ghostel implementor |
-| =ghostherd-tmux.el=    | tmux implementor, naming, recipe stash, restore       |
-| =ghostherd.el=         | everything else — detection, UI, messaging, commands  |
+=M-x ghostherd-explain=, or =e= in the sidebar. It shows the scraped
+tail, every =:screen-rules= pattern that matched it, and which one won.
+A false =blocked= looks exactly like a real one until you can see
+*which* pattern matched text the agent had merely printed.
 
-Two deviations from the Phase 3 plan below, both forced:
-
-- The ghostel implementor lives in =ghostherd-backend.el= *with* the
-  struct rather than being extracted around it. Splitting them the
-  other way is circular: the implementor needs the accessors, and the
-  struct is what the whole package is about.
-- The tmux server config is *generated* into
-  =~/.emacs.d/ghostherd-tmux.conf= from a string, not shipped as a file
-  beside the source. A lone =.conf= is not on any package manager's
-  default file list, so the shipped version works from a checkout and
-  silently does not once built — and a missing config means
-  =remain-on-exit off=, which fails a long way from its cause.
-
-* Design decisions log
-
-| Decision              | Choice                                      | Why                                      |
-|-----------------------+---------------------------------------------+------------------------------------------|
-| Lifetime              | Bound to Emacs first, then a host slot      | Simpler first; detach became Phase 3     |
-| UI                    | Sidebar *and* consult                       | Herd overview + fast jump                |
-| Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
-| Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
-| Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |
-| State authority       | Screen rules + exit hooks                   | No per-CLI lifecycle plugins yet         |
-| Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
-| Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
-| Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |
-| Phase 3 host          | tmux as headless PTY, 1 session per agent   | Capture + survive; not a second mux      |
-| Backend dispatch      | On a symbol, not a struct subtype           | One session type; the host is a field    |
-| Backend default       | =ghostel=, per session at birth             | Switching must not strand a live herd    |
-| tmux spawn            | Direct exec, no shell                       | No quoting, no spawn-delay guesswork     |
-| tmux recipe           | =@ghostherd-*= session options              | A sidecar file outlives nothing reliably |
-| tmux config           | Generated from a string, =-f= every call    | A shipped .conf does not survive a build |
-| View vs state         | =buffer= nil means detached, not dead       | Closing a window is not a crash          |
+Rules are matched case-sensitively; a pattern that is plainly on screen
+but absent from the match list is usually a casing difference. See
+"Rule matching case" in [[file:docs/design.org][docs/design.org]].

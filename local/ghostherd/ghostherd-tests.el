@@ -3,8 +3,9 @@
 ;;; Commentary:
 
 ;; Unit tests for ghostherd's pure helpers -- the parts that need no PTY.
-;; The interactive spawn/kill paths still need the manual plan in readme.org;
-;; driving real ghostel terminals headlessly is what Phase 1 deferred.
+;; The interactive spawn/kill paths still need the manual plan in
+;; docs/testing.org; driving real ghostel terminals headlessly is what
+;; Phase 1 deferred.
 ;;
 ;; Run:
 ;;
