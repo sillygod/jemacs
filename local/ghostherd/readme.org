@@ -557,6 +557,28 @@ Two things were genuinely wrong, though, and are fixed:
   than actually absent, so that deleted the herd instead of reporting
   it. It now keeps what it cannot ask.
 
+** A change to the code took, but a change to a =defcustom= did not
+
+Reloading a file re-evaluates its =defcustom= forms, and =defcustom=
+deliberately does *not* overwrite a variable that already has a value ---
+otherwise every reload would discard your customizations. So a reload
+picks up new *code* and keeps old *defaults*, which is a confusing half
+state while the defaults are the thing being edited.
+
+=:screen-rules= live in =ghostherd-agent-specs=, so this bites every
+time detection is tuned. It showed up as a rule that plainly should
+have matched not matching, with =ghostherd-explain= showing the
+now-current code reporting =no rule matched= against a screen the
+now-current rules would have caught:
+
+#+begin_src emacs-lisp
+  (custom-reevaluate-setting 'ghostherd-agent-specs)
+#+end_src
+
+That takes the standard value if you have never customized it, and your
+saved value if you have --- so it is safe to run either way, and worth
+running after any reload that touched the rules.
+
 ** A stale tmux server
 
 A server started without ghostherd's config keeps whatever options it
