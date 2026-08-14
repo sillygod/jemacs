@@ -181,6 +181,25 @@ Two things were genuinely wrong, though, and are fixed:
 Two terminal emulators nested — tmux's VT inside ghostel's — but only
 for the agent you are actually looking at.
 
+Resizing an attached agent's window flickers. Dogfooding found this
+immediately, and the layer responsible is *not* this one: attaching the
+same tmux session from a plain terminal and dragging that window
+flickers identically, so it is agy repainting under tmux and nothing
+ghostherd can debounce away. Worth knowing before anyone spends an
+afternoon on the =jemacs-ghostel-resize-debounce= knob --- which is now
+a variable rather than a hardcoded 0.15, since the cost per resize
+event really did double and the number should be reachable.
+
+The isolating test costs nothing and is the one to reach for whenever a
+symptom could belong to either VT:
+
+#+begin_src bash
+  tmux -L ghostherd attach -t '=gh-<hash>-<name>:'
+#+end_src
+
+(=prefix None= means no =C-b d=; detach with =tmux -L ghostherd
+detach-client= from another shell.)
+
 =ghostel_cmd= does not work inside a tmux-hosted agent: ghostel's shell
 integration is installed into the shell *ghostel* spawns, and here it
 spawns =tmux attach=. Use =bin/ghostherd= instead, which is what it was
@@ -543,7 +562,12 @@ over a false one.
 |--------+----------------+-----------------------------+-------------|
 | claude |                |                             |             |
 | grok   |                |                             |             |
-| agy    | 1.1.12         |                             |             |
+| agy    | 1.1.13         | none yet                    |             |
+
+agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
+repaints its whole UI on every SIGWINCH, so an attached window flickers
+while dragged --- its own behaviour, not the nesting's; see "What it
+costs".
 
 Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
 session stays visible as =dead= until you kill it from the herd.
