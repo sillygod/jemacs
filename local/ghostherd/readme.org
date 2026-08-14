@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 122 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 123 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -408,6 +408,22 @@ Screen rules are heuristics against a UI that changes between releases,
 so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
+
+* Scrolling back (=ghostherd-scrollback=)
+
+On the ghostel backend the buffer accumulates everything the agent ever
+printed, so scrolling back is just moving point. Behind tmux the buffer
+holds only the *visible pane* --- the history is in tmux, where =prefix
+None= leaves no way in from the keyboard.
+
+=M-x ghostherd-scrollback= pulls it into an ordinary Emacs buffer, where
+every motion you already know works. Putting it back as a tmux key
+binding would have made tmux a third navigation layer, which is the one
+thing this backend refuses to be.
+
+A full-screen TUI keeps no history at all --- the alternate screen is
+never saved --- so for those this shows the current screen, and the
+agent's own keys (=ctrl+o=, its pager) are what scroll it.
 
 * What happened while you were away (=ghostherd-log=)
 

@@ -220,12 +220,21 @@ and which one won.
 |--------+----------------+-----------------------------+-------------|
 | claude |                |                             |             |
 | grok   |                |                             |             |
-| agy    | 1.1.13         | none yet                    |             |
+| agy    | 1.1.13         | =Thinking= matches a model name in the =/model= picker | not yet |
 
 agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
 repaints its whole UI on every SIGWINCH, so an attached window flickers
 while dragged --- its own behaviour, not the nesting's; see "What the
 tmux host costs" in [[file:design.org][design.org]].
+
+First finding, from the herd log's first hour: choosing a model with
+=/model= lists =Claude Sonnet 4.6 (Thinking)=, and the =working= rule
+=Thinking= matches it.  The agent is idle at a menu, the herd says
+=working=, and the churn out of it fires a spurious =done= notification a
+second later.  A rule anchored to how the status line actually draws it
+--- =Thinking…= with the ellipsis, or leading whitespace --- would not.
+Left alone deliberately: it is one observation, and the point of the log
+is to collect several before touching thirty patterns.
 
 Anything else worth recording:
 

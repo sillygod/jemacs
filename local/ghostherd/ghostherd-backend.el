@@ -248,6 +248,16 @@ full vocabulary stays reachable.")
 This is what the screen rules, `ghostherd-read', `ghostherd-explain'
 and `ghostherd-wait-output' all read.")
 
+(cl-defgeneric ghostherd-backend-scrollback (_backend _session _lines)
+  "Return up to LINES of SESSION's history, or nil when it keeps none.
+
+Distinct from `ghostherd-backend-capture', which is deliberately the
+*visible* pane and nothing more -- scrollback is where a permission
+prompt that has already scrolled away still lives, and matching one
+would be matching something that is no longer true.  Reading it on
+purpose is a different act from detecting on it."
+  nil)
+
 (cl-defgeneric ghostherd-backend-send-text (backend session text submit)
   "Type TEXT into SESSION, pressing Return when SUBMIT is non-nil.")
 
@@ -346,6 +356,10 @@ agent buffers are left alone -- or restart Emacs"
 (defun ghostherd--host-send-keys (session keys)
   "Send KEYS to SESSION."
   (ghostherd-backend-send-keys (ghostherd--backend-of session) session keys))
+
+(defun ghostherd--host-scrollback (session lines)
+  "Return up to LINES of SESSION's history, or nil."
+  (ghostherd-backend-scrollback (ghostherd--backend-of session) session lines))
 
 (defun ghostherd--host-live-p (session)
   "Return non-nil when SESSION's host still exists."
@@ -446,6 +460,13 @@ _KIND is reserved for kind-specific quoting later."
          (proc (and (buffer-live-p buffer)
                     (buffer-local-value 'ghostel--process buffer))))
     (and proc (not (process-live-p proc)) "process exited")))
+
+(cl-defmethod ghostherd-backend-scrollback
+  ((_backend (eql ghostel)) session lines)
+  ;; The buffer *is* the history here, and it is already an Emacs buffer
+  ;; you can move around in -- so this exists for symmetry rather than
+  ;; because anyone needs it.
+  (ghostherd--buffer-tail (ghostherd--ghostel-buffer session) lines))
 
 (cl-defmethod ghostherd-backend-title ((_backend (eql ghostel)) session)
   (ghostherd--buffer-title (ghostherd-session-buffer session)))

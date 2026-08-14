@@ -499,6 +499,15 @@ must not touch `state' -- the agent is still running."
        "")
    n))
 
+(cl-defmethod ghostherd-backend-scrollback
+  ((_backend (eql tmux)) session lines)
+  ;; -S -N reaches back into the pane's history, which is the one thing
+  ;; `capture-pane' is deliberately not allowed to do on the detect path.
+  ;; -J is still off: joining wrapped lines invents rows nobody drew.
+  (ghostherd-tmux--try
+   "capture-pane" "-p" "-S" (format "-%d" lines) "-t"
+   (ghostherd-tmux--target (ghostherd-session-host-id session))))
+
 (cl-defmethod ghostherd-backend-send-text
   ((_backend (eql tmux)) session text submit)
   (let ((target (ghostherd-tmux--target (ghostherd-session-host-id session))))

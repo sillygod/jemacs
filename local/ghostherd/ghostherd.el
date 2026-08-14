@@ -628,6 +628,19 @@ alone."
   :type 'integer
   :group 'ghostherd)
 
+(defun ghostherd--saying-something-p (line)
+  "Return non-nil when LINE carries words rather than decoration.
+
+Agent CLIs draw logos and spinners out of block glyphs, and the first
+run of the herd log caught the subject lookup picking one up: a state
+reason came out as a row of half-blocks followed by the command that had
+actually been typed.  Enumerating the glyphs is a losing game -- there
+are hundreds and every CLI picks different ones -- so require the line
+to contain some letters or digits instead."
+  (>= (cl-count-if (lambda (c) (or (<= ?a c ?z) (<= ?A c ?Z) (<= ?0 c ?9)))
+                   line)
+      3))
+
 (defun ghostherd--screen-lines (text pos)
   "Return the line of TEXT containing POS, and the lines before it."
   (let* ((start (1+ (or (cl-position ?\n text :end pos :from-end t) -1)))
@@ -665,7 +678,9 @@ is decided by the pattern alone."
                                                     ghostherd-reason-context)
                                   for clean = (ghostherd--clean-screen-line
                                                candidate)
-                                  when (and clean (not (equal clean matched)))
+                                  when (and clean
+                                            (not (equal clean matched))
+                                            (ghostherd--saying-something-p clean))
                                   return clean)))
             (if subject
                 (ghostherd--clean-screen-line (concat subject " — " matched))
@@ -1792,6 +1807,44 @@ what lets consult and marginalia treat these as sessions."
        (t (format "%ds" secs))))))
 
 
+(defcustom ghostherd-scrollback-lines 3000
+  "Lines of history `ghostherd-scrollback' asks the host for."
+  :type 'integer
+  :group 'ghostherd)
+
+;;;###autoload
+(defun ghostherd-scrollback (session)
+  "Show SESSION's history in an ordinary Emacs buffer.
+
+The tmux backend took something away without meaning to.  A ghostel
+buffer accumulates everything the agent ever printed, so scrolling back
+is just moving point; behind tmux the buffer holds only the visible
+pane, and the history is in tmux -- where `prefix None' leaves no way in
+from the keyboard.
+
+Putting it back as a tmux key binding would make tmux a third
+navigation layer, which is the one thing this backend refuses to be.
+Pulling the history into a buffer instead costs nothing and lands it
+somewhere every Emacs motion already works.
+
+A full-screen TUI keeps no history at all -- the alternate screen is not
+saved -- so for those this shows the current screen and the agent's own
+keys are what scroll it."
+  (interactive (list (ghostherd--read-session "Scrollback of agent: ")))
+  (setq session (ghostherd-get session))
+  (let ((text (ghostherd--host-scrollback session ghostherd-scrollback-lines))
+        (name (ghostherd-session-name session)))
+    (unless (and text (not (string-empty-p (string-trim text))))
+      (user-error "No history kept for %s" name))
+    (with-current-buffer (get-buffer-create (format "*ghostherd history: %s*" name))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        (goto-char (point-max)))
+      (special-mode)
+      (pop-to-buffer (current-buffer)))))
+
+
 ;;; Herd log buffer
 
 (defun ghostherd--log-kind-face (kind)

@@ -184,6 +184,18 @@ approve is above it, and it is the half that must survive truncation."
     (should (string-prefix-p "Bash(rm -rf build/ && npm publish)" reason))
     (should (< (cl-search "Bash" reason) (cl-search "proceed" reason)))))
 
+(ert-deftest ghostherd-test-reason-subject-must-carry-words ()
+  "Caught on the herd log's first run: agent CLIs draw logos out of block
+glyphs, and the subject lookup happily picked one up, so a reason came
+out as a row of half-blocks followed by the command actually typed.
+Enumerating the glyphs is a losing game; requiring words is not."
+  (let ((screen "▛▀▖ ▞▀▖\n▙▄▘ ▝▄▘\n> /model\n"))
+    (should (equal (ghostherd--rule-reason screen '(idle . "^> ")) "/model")))
+  ;; a real subject still comes through
+  (let ((screen "Bash(npm publish)\n> /model\n"))
+    (should (equal (ghostherd--rule-reason screen '(idle . "^> "))
+                   "Bash(npm publish) — /model"))))
+
 (ert-deftest ghostherd-test-reason-context-is-bounded ()
   "Looking back forever would attribute any earlier output to the prompt."
   (let* ((screen (concat "the subject\n" (make-string 8 ?\n)
