@@ -68,6 +68,46 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
 (ert-deftest ghostherd-test-match-rules-no-match-is-nil ()
   (should-not (ghostherd--match-rules "nothing here" ghostherd-tests--rules)))
 
+(ert-deftest ghostherd-test-rules-ignore-ambient-case-fold ()
+  "The bug was never the value, it was that there was no value: rules
+matched under whatever `case-fold-search' the buffer current at poll
+time happened to have, so one pattern could mean two things on two
+consecutive ticks.  Nothing a rule author writes -- or can see --
+chooses that buffer."
+  (let ((text "Do you want to proceed"))
+    (dolist (ambient '(t nil))
+      (let ((case-fold-search ambient))
+        (should (ghostherd--rule-matches-p "Do you want to proceed" text))
+        (should-not (ghostherd--rule-matches-p "do you want to proceed" text))))))
+
+(ert-deftest ghostherd-test-rules-are-case-sensitive-both-ways ()
+  "Case-sensitive is the authored intent: the patterns were written by
+reading an agent's screen and copying what was on it.  It is also the
+safer direction under `prefer a missed blocked to a false one' --
+folding made `Running' match the word \"running\" in ordinary prose."
+  (let ((rules '((working . ("Running"))))
+        (case-fold-search t))
+    (should (equal (ghostherd--match-rules "Running tests\n" rules)
+                   '(working . "Running")))
+    (should-not (ghostherd--match-rules "running the suite\n" rules))
+    ;; ...and a rule that wants both says so, rather than hoping.
+    (should (ghostherd--match-rules
+             "running the suite\n" '((working . ("[Rr]unning")))))))
+
+(ert-deftest ghostherd-test-explain-agrees-with-detection ()
+  "`ghostherd-explain' exists to show why a rule won or lost, so it has
+to match on exactly the same terms -- an explain that folds where
+detection does not would confidently explain a match that never
+happened."
+  (let ((rules '((blocked . ("Approve")) (idle . ("^> "))))
+        (text "approve this\n> ")
+        (case-fold-search t))
+    ;; The winner falls through to idle rather than a folded `blocked'...
+    (should (equal (ghostherd--match-rules text rules) '(idle . "^> ")))
+    ;; ...and explain must not list a blocked hit that detection did not see.
+    (should-not (cl-find 'blocked (ghostherd--match-all-rules text rules)
+                         :key #'car))))
+
 (ert-deftest ghostherd-test-match-all-rules-reports-losers ()
   "`--match-all-rules' is what makes `ghostherd-explain' able to show why
 a rule lost, so it must report every hit, in precedence order."

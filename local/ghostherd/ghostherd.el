@@ -452,6 +452,29 @@ host no longer exists to ask."
 
 ;;; State detection
 
+(defun ghostherd--rule-matches-p (pattern text)
+  "Return non-nil when screen-rule PATTERN matches TEXT.
+
+Case-sensitively, and that is the whole reason this exists rather than
+a bare `string-match-p'.  Rules used to match under whatever
+`case-fold-search' happened to be when the poll timer fired -- the
+buffer that was current, in other words, which no rule author chooses
+or can even see.  The same pattern could therefore mean two different
+things on two ticks.
+
+nil rather than t because the patterns were written by reading an
+agent's screen and copying what was on it: case-sensitive *is* the
+authored intent, and it matches `ghostherd-output-matches', which has
+always bound it this way.  It is also the safer direction under the
+project's standing policy of preferring a missed `blocked' to a false
+one -- folding made `Running' match the word \"running\" in ordinary
+agent prose, and `permission' match an agent merely talking about
+permissions.
+
+A rule that genuinely wants both cases says so: \\=[Pp]ermission."
+  (let ((case-fold-search nil))
+    (string-match-p pattern text)))
+
 (defun ghostherd--match-rules (text rules)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
 RULES is an alist of (STATE . REGEXP-LIST).  Prefer blocked over
@@ -459,7 +482,7 @@ working over idle (strict blocked detection, herdr-style)."
   (cl-labels ((try (state)
                 (when-let* ((patterns (alist-get state rules)))
                   (cl-loop for pat in patterns
-                           when (string-match-p pat text)
+                           when (ghostherd--rule-matches-p pat text)
                            return (cons state pat)))))
     (or (try 'blocked)
         (try 'working)
@@ -489,7 +512,7 @@ state machine wants but hides why a rule lost.  This reports the lot, in
 precedence order, for `ghostherd-explain'."
   (cl-loop for state in '(blocked working idle)
            append (cl-loop for pattern in (alist-get state rules)
-                           when (string-match-p pattern text)
+                           when (ghostherd--rule-matches-p pattern text)
                            collect (cons state pattern))))
 
 (defun ghostherd--detect-state (session)
@@ -1257,9 +1280,8 @@ TIMEOUT nil means wait indefinitely (not recommended interactively)."
   "Return the text in SESSION's last LINES matching REGEXP, or nil.
 
 Matching is case-sensitive: a regexp written to catch a prompt should
-mean what it says.  Note this differs from `:screen-rules', which match
-under whatever `case-fold-search' happens to be -- see the known issue
-in readme.org."
+mean what it says.  `:screen-rules' now agree -- see
+`ghostherd--rule-matches-p'."
   (setq session (ghostherd-get session))
   (when (ghostherd--session-live-p session)
     (let ((case-fold-search nil)

@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — T10 passed, including attach/detach/re-attach     |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 106 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 109 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -412,16 +412,44 @@ the file it just wrote.
   it.
 - Gives up when the session dies. A dead agent will never produce the text;
   waiting out the full timeout for it is just a hang.
-- Matching is *case-sensitive*, unlike =:screen-rules= --- see below.
+- Matching is *case-sensitive*, and so are =:screen-rules= --- see below.
 
-** Known issue: rule matching case
+** Rule matching case  (was a known issue; fixed)
 
-=:screen-rules= use =string-match-p= under whatever =case-fold-search=
-happens to be at poll time, which is not something the rule author controls.
-=ghostherd-output-matches= binds it to nil deliberately so a regexp means
-what it says. The rules should probably do the same, but changing it would
-silently alter what every existing pattern matches, so it wants a dogfood
-pass rather than a quiet fix.
+=:screen-rules= used to match under whatever =case-fold-search= happened
+to be when the poll timer fired --- the buffer that was current, in other
+words, which no rule author chooses or can even see. The same pattern
+could mean two different things on two consecutive ticks.
+
+The bug was never the *value*, it was that there was no value.
+=ghostherd--rule-matches-p= now binds it, and binds it to nil, for three
+reasons:
+
+1. The patterns were written by reading an agent's screen and copying
+   what was on it. Case-sensitive *is* the authored intent; folding was
+   an accident of where the timer happened to fire.
+2. =ghostherd-output-matches= has always bound it to nil, and one
+   package should not match two ways.
+3. It is the safer direction under the standing policy of preferring a
+   *missed* =blocked= to a false one. Folding made =Running= match the
+   word "running" in ordinary agent prose, and =permission= match an
+   agent merely discussing permissions --- a false =working= and a false
+   =blocked= respectively.
+
+No shipped pattern was rewritten to compensate, which is the part to
+watch while dogfooding. Roughly thirty of them contain a cased letter;
+the three whose casing the UI might vary are =permission=, =Approve= and
+=Allow this=. If one of those starts missing, =ghostherd-explain= shows
+it (the pattern will be absent from the match list even though the words
+are visible in the tail), and the fix is local and one character wide:
+
+#+begin_src emacs-lisp
+  "[Pp]ermission"          ; both, deliberately, rather than by accident
+#+end_src
+
+That is the whole reason this waited for a dogfood pass instead of being
+a quiet fix: the change had to be *stated* somewhere before it altered
+what thirty patterns match.
 
 * Handing work to another agent
 
@@ -871,6 +899,10 @@ Goal: make state trustworthy for daily use without false blocked spam.
   Config knobs)
 - [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
   data; =ghostherd-explain= is what produces it
+- [X] Rules match case-sensitively rather than under whatever
+  =case-fold-search= the poll timer happened to fire under.  See "Rule
+  matching case"; the patterns themselves are unchanged and that is the
+  part to watch
 - [ ] Document known false positives per agent version — table stubbed under
   "Detection notes per CLI"
 
