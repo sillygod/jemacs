@@ -175,6 +175,14 @@
         ;; and you never notice; a full-screen agent CLI repaints its entire UI
         ;; block and it strobes.  Collapse the drag into a single resize once it
         ;; settles.
+        (defvar jemacs-ghostel-resize-debounce 0.15
+          "Seconds of idle before a dragged ghostel window resizes its PTY.
+Tuned when one resize meant one repaint.  A tmux-hosted agent --
+ghostherd's tmux backend -- costs two: the agent redraws into tmux's
+screen, and tmux then repaints the whole pane to the client, clear
+included.  Raise it if resizing strobes.  The only cost of a larger
+value is the terminal lagging behind the window while you drag.")
+
         (defvar jemacs-ghostel-resize-timers (make-hash-table :test 'eq)
           "Pending debounced ghostel resize timers, keyed by window.")
 
@@ -196,7 +204,7 @@
             ;; loses both, failing later with a bare "void-variable window".
             (puthash window
                      (run-with-idle-timer
-                      0.15 nil
+                      jemacs-ghostel-resize-debounce nil
                       (lambda (win fn)
                         (remhash win jemacs-ghostel-resize-timers)
                         (when (window-live-p win)
