@@ -72,42 +72,19 @@ Nobody needs to be attached for the herd to work. Detection reads
 =tmux attach=, inside a ghostel buffer. Killing that buffer detaches;
 the agent keeps running.
 
-*Detaching is not dying,* and that is the one bug this phase had to get
-right. The ghostel process in an attached buffer is =tmux attach=, so
-its exit means a client went away. Marking the session =dead= there
-would fire a notification, make a handoff give up, and be reverted by
-the next poll anyway. The exit hook therefore asks
-=ghostherd-backend-view-is-host-p= first, and an unknown backend gets
-the safe answer.
-
 Both listings say so. The switcher annotates such a session =detached=;
 the sidebar appends =ghostherd-detached-glyph= to its state glyph, so a
-row reads =○▪= rather than =○=. It is a state of the *view*,
-deliberately not of =state= --- an agent is working or blocked whether
-or not anyone is watching.
-
-The mark rides in the spare character of the two-wide glyph column
-instead of getting a column of its own. At the default sidebar width
-there is no room for another column, so a =View= column would be fitted
-away in exactly the situation that needs it. Marking the detached rows
-rather than the attached ones also keeps it silent on the ghostel
-backend, where a registered session always has its buffer.
-
-This was originally left out of the sidebar on the grounds that the
-switcher is where you choose an agent. That was wrong, and the first
-run of T10 found it: the sidebar is the herd *overview*, and an
-overview that cannot distinguish a herd running headless from one you
-are watching is not describing the herd.
+row reads =○▪= rather than =○=. That is a state of the *view*, not of
+=state= --- an agent is working or blocked whether or not anyone is
+watching, and detaching never marks it =dead=. See "Detach is not
+death" in [[file:docs/design.org][docs/design.org]].
 
 ** Surviving Emacs
 
 The recipe — kind, project, command, args, notes — is stashed on the
-tmux session itself as =@ghostherd-*= user options, not in a sidecar
-file (which can be deleted while the process it describes is still
-running) and not in the session name (which is not big enough).
-=ghostherd-mode= runs =ghostherd-restore= on enable, so a herd left by a
-previous Emacs comes back detached and the first poll fills in its
-state.
+tmux session itself, as =@ghostherd-*= user options.  =ghostherd-mode=
+runs =ghostherd-restore= on enable, so a herd left by a previous Emacs
+comes back detached and the first poll fills in its state.
 
 What does not come back is Emacs-side and never could: a manual state
 override, whether a session has been seen, the last OSC progress
@@ -253,12 +230,10 @@ When shell integration is active and the command is whitelisted:
     "project":"/src/app/","notes":"reviews auth","age":"3m"}]
 #+end_example
 
-Not for tidiness --- the previous tab/equals format had no escaping, and two
-of the fields are free text. A note containing a tab or newline turned one
-record into several, and =reason= holds a raw =:screen-rules= regexp, which
-can contain anything. An unknown session reports ={"error":...}= rather than
-a prose string, so a caller can tell a failure from a session that happens
-to be named like one.
+An unknown session reports ={"error":...}= rather than a prose string,
+so a caller can tell a failure from a session that happens to be named
+like one. Why JSON and not the tab/equals format it replaced: see
+"Why the agent-shell listing is JSON" in [[file:docs/design.org][docs/design.org]].
 
 Typical workflow:
 1. =SPC a h 2= → implementer (claude) | reviewer (claude or grok)
@@ -268,7 +243,7 @@ Typical workflow:
 
 * Talking to an agent vs operating it
 
-Two different things, and only the first existed before Phase 2.5.
+Two different things.
 
 =ghostherd-send= / =ghostherd-prompt= paste *text* and optionally press
 Return. That is how you talk *to* an agent, and it assumes the agent is
@@ -287,17 +262,15 @@ text. Pasting the characters =esc= just feeds the agent a word.
 
 Three things worth knowing:
 
-- Keys do *not* mark the session =working=, though text input does. The usual
-  reason to send a key is to make the agent *stop*; claiming it just started
-  would be backwards. The next poll reports what actually happened.
-- =ghostherd-answer= presses Up several times before descending. The
-  highlighted option is not necessarily the first, and counting down from
-  wherever the cursor happens to be picks the wrong answer. Some CLIs accept
-  the digit as text and some only respond to arrows; there is no way to tell
-  from outside, and arrows work for both.
+- Keys do *not* mark the session =working=, though text input does --- the
+  usual reason to send a key is to make the agent *stop*. The next poll
+  reports what actually happened.
+- =ghostherd-answer= is 1-based and drives the menu with arrows, not
+  digits, so it works on CLIs that ignore the number.
 - Friendly names (=esc=, =C-c=, =down=) are mapped in
-  =ghostherd-key-aliases=. Anything unlisted is passed through to
-  =ghostel-send-key= unchanged, so its full vocabulary stays reachable.
+  =ghostherd-key-aliases=; each backend translates them into its own
+  vocabulary, and anything unlisted is passed through unchanged, so the
+  host's full key set stays reachable.
 
 * Waiting
 
@@ -312,14 +285,12 @@ the file it just wrote.
   (ghostherd-wait-output "reviewer" "deployed" 60 t)     ; nil instead of error
 #+end_src
 
-- Returns the matched text; signals on timeout unless NOERROR, because
-  scripts branching on "did it happen" should not have to wrap every call in
+- Returns the matched text; signals on timeout unless NOERROR, so a
+  script branching on "did it happen" need not wrap every call in
   =condition-case=.
-- Checks *before* sleeping. Output can arrive between whatever triggered the
-  wait and the wait itself, and a first check one interval late would miss
-  it.
-- Gives up when the session dies. A dead agent will never produce the text;
-  waiting out the full timeout for it is just a hang.
+- Checks *before* sleeping, so output that arrived between the thing you
+  triggered and the wait itself is not missed.
+- Gives up when the session dies rather than waiting out the timeout.
 - Matching is *case-sensitive*, and so are =:screen-rules= --- see
   "Rule matching case" in [[file:docs/design.org][docs/design.org]].
 
@@ -340,23 +311,16 @@ report.
                          (pop-to-buffer (ghostherd-session-buffer session)))))
 #+end_src
 
-*It is asynchronous, deliberately.* =ghostherd-wait= blocks in a =sit-for=
-loop, which would freeze you out of the very editor you are meant to keep
-working in while the other agent runs --- and orchestrating without sitting
-and watching a pane is the entire point of this phase. There is a test that
-fails if a handoff ever calls =sit-for=.
+*It is asynchronous, deliberately* --- it returns at once and the
+callback fires later, so Emacs stays yours while the other agent works.
+Two consequences worth relying on: handing off again to the same agent
+*replaces* its watch rather than stacking a second one, and for
+=ghostherd-handoff-grace= seconds after the handoff a settled state is
+not believed, because an agent that has not woken up yet still shows the
+prompt it had before.
 
-Two things it has to get right:
-
-- *Grace window.* An agent does not start the instant it is handed
-  something: the CLI has to wake up and print, and until it does the screen
-  rules still see the idle prompt from before. Without
-  =ghostherd-handoff-grace= the watch would report completion immediately,
-  every time.
-- *One watch per agent.* Handing off to an agent that is already being
-  watched replaces the watch instead of stacking a second timer on it, and a
-  callback that throws cancels the watch rather than leaving it polling
-  forever.
+Why asynchronous, and what the grace window is protecting against:
+see "Why handoff is asynchronous" in [[file:docs/design.org][docs/design.org]].
 
 * From a shell (=bin/ghostherd=)
 
@@ -375,21 +339,10 @@ for everywhere else --- a Makefile, a git hook, a CI step:
 =GHOSTHERD_SOCKET= picks an emacsclient socket; =GHOSTHERD_DRY_RUN= prints
 the elisp instead of running it, which is how the quoting is tested.
 
-Two things it has to get right, both learned the hard way:
-
-- *Quoting.* Every argument is free text --- a prompt can contain quotes,
-  backslashes and newlines --- so it is escaped into an Emacs Lisp string
-  literal rather than interpolated. Verified by round-tripping through the
-  Emacs reader, not by eyeballing.
-- *Output goes through a temp file, and the write is pinned to UTF-8.*
-  =emacsclient -e= prints the *Lisp representation*, so JSON would come back
-  double-escaped as ="[{\"name\":...}]"=. Writing to a file avoids that ---
-  but agent output is full of non-ASCII (box drawing, the =❯= in a
-  permission prompt), and =write-region= without an explicit coding system
-  calls =select-safe-coding-system=, which *prompts*. In batch that is an
-  error; in a daemon it blocks forever on a minibuffer nobody can answer and
-  wedges the server for every later call too. That is not hypothetical: it
-  is what the first version did.
+Arguments may contain anything --- quotes, backslashes, newlines --- and
+output comes back as raw UTF-8 rather than a Lisp string. Both took two
+attempts; see "What bin/ghostherd had to get right" in
+[[file:docs/design.org][docs/design.org]].
 
 * Notifications (ghostel hooks)
 
@@ -413,17 +366,9 @@ expected: screen rules carry detection on their own, exactly as they do
 when a progress report has gone stale, and the title is still readable
 as =#{pane_title}=, which tmux tracks from the same escape sequence.
 
-Two notes on the OSC integrations, because neither is a hook:
-
-- =ghostel-progress-function= is a single global function, very likely
-  someone's spinner. ghostherd saves and *chains to* the previous value, and
-  restores it when =ghostherd-mode= is disabled. Its handler runs
-  synchronously on ghostel's VT-parser callpath, where slow work stalls
-  terminal output, so it only records the report; the poll path decides what
-  it means.
-- The title is read straight off buffer-local =ghostel--title=. Going through
-  =ghostel-buffer-name-function= (ghostel's title→buffer-name mapping) would
-  fight ghostherd's own buffer naming.
+Neither OSC integration is a hook, and both had to be taken over
+carefully --- see "The two OSC integrations that are not hooks" in
+[[file:docs/design.org][docs/design.org]].
 
 * Why is it in that state? (=ghostherd-explain=)
 
@@ -452,25 +397,14 @@ Rule tuning is guesswork without this. A false =blocked= looks exactly like a
 real one until you can see *which* pattern matched, and that the agent had
 merely printed the words rather than stopped on a prompt.
 
-** Detection notes per CLI
+An exited agent stays visible as =dead= with its last screen until you
+kill it from the herd, on either backend --- that is what
+=ghostel-kill-buffer-on-exit= nil and tmux's =remain-on-exit on= are for.
 
-Screen rules are heuristics against a UI that changes between releases, so
-record what was observed against which version. Prefer a *missed* =blocked=
-over a false one.
-
-| CLI    | Version tested | Known false positive / miss | Fix applied |
-|--------+----------------+-----------------------------+-------------|
-| claude |                |                             |             |
-| grok   |                |                             |             |
-| agy    | 1.1.13         | none yet                    |             |
-
-agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
-repaints its whole UI on every SIGWINCH, so an attached window flickers
-while dragged --- its own behaviour, not the nesting's; see "What the
-tmux host costs" in [[file:docs/design.org][docs/design.org]].
-
-Agent buffers set =ghostel-kill-buffer-on-exit= to nil so an exited
-session stays visible as =dead= until you kill it from the herd.
+Screen rules are heuristics against a UI that changes between releases,
+so what has been observed against which version is recorded in the
+dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
+false one.
 
 * Per-project defaults
 
@@ -483,13 +417,11 @@ kind and prefills the args:
 #+end_src
 
 Both are marked =safe-local-variable= for their expected shapes, so no
-prompt. They are read *by directory* rather than from the current buffer:
-=ghostherd-new= is often invoked from the sidebar or another non-file buffer,
-which never picked up the project's dir-locals at all.
-
-Resolved before the kind prompt so the project can preselect it. Changing
-the directory later in the same prompt sequence does not re-read --
-re-prompting for a kind you already answered would be worse than stale.
+prompt. They are read *by directory* rather than from the current buffer,
+since =ghostherd-new= is usually invoked from the sidebar, which never
+picked up the project's dir-locals at all --- and read *before* the kind
+prompt, so changing the directory later in the same prompt sequence does
+not re-read.
 
 * Config knobs
 

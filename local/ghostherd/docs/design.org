@@ -179,6 +179,115 @@ That is the whole reason this waited for a dogfood pass instead of being
 a quiet fix: the change had to be *stated* somewhere before it altered
 what thirty patterns match.
 
+* Decisions behind the API
+
+The manual states what each entry point does; these are the reasons it
+does it that way. Grouped here rather than inline so the manual stays a
+manual --- but the load-bearing copy of anything a maintainer needs
+*while editing* is the comment in the code, not this.
+
+** Detach is not death
+
+*The one bug this phase had to get right.* The ghostel process in an
+attached buffer is =tmux attach=, so its exit means a client went away.
+Marking the session =dead= there would fire a notification, make a
+handoff give up, and be reverted by the next poll anyway. The exit hook
+therefore asks =ghostherd-backend-view-is-host-p= first, and an unknown
+backend gets the safe answer.
+
+Showing it is a separate problem, and the answer was wrong once. The
+mark rides in the spare character of the two-wide glyph column instead
+of getting a column of its own: at the default sidebar width there is no
+room for another column, so a =View= column would be fitted away in
+exactly the situation that needs it. Marking the detached rows rather
+than the attached ones also keeps it silent on the ghostel backend,
+where a registered session always has its buffer.
+
+It was originally left out of the sidebar altogether, on the grounds
+that the switcher is where you choose an agent. That was wrong, and the
+first run of T10 found it: the sidebar is the herd *overview*, and an
+overview that cannot distinguish a herd running headless from one you
+are watching is not describing the herd.
+
+** Where the recipe lives
+
+On the tmux session as user options, rather than the two obvious
+alternatives. Not a sidecar file: that can be deleted while the process
+it describes is still running, which is the one thing a recipe must
+never outlive. Not the session name: it is not big enough, and =args= is
+a list of free text that would need escaping in a field tmux also parses
+for =:= and =.=.
+
+=args= is stored as a JSON array for exactly that reason. =notes= is not,
+because =call-process= passes a value as one argv entry, so tmux sees
+embedded newlines without help.
+
+** Why the agent-shell listing is JSON
+
+Not for tidiness. The previous tab/equals format had no escaping, and
+two of the fields are free text: a note containing a tab or a newline
+silently turned one record into several, and =reason= holds a raw
+=:screen-rules= regexp, which can contain anything at all.
+
+** Answering a menu by number
+
+=ghostherd-answer= presses Up several times before descending. The
+highlighted option is not necessarily the first, and counting down from
+wherever the cursor happens to be picks the wrong answer.
+
+Arrows rather than the digit because some CLIs accept the number as text
+and some only respond to arrows, and there is no way to tell which you
+are looking at from outside. Arrows work for both.
+
+** Why handoff is asynchronous
+
+=ghostherd-wait= blocks in a =sit-for= loop, which would freeze you out
+of the very editor you are meant to keep working in while the other
+agent runs --- and orchestrating without sitting and watching a pane is
+the entire point. There is a test that fails if a handoff ever calls
+=sit-for=.
+
+Two things it has to get right:
+
+- *Grace window.* An agent does not start the instant it is handed
+  something: the CLI has to wake up and print, and until it does the
+  screen rules still see the idle prompt from before. Without
+  =ghostherd-handoff-grace= the watch would report completion
+  immediately, every time.
+- *One watch per agent.* A second handoff replaces the watch instead of
+  stacking a timer on it, and a callback that throws cancels the watch
+  rather than leaving it polling forever.
+
+** What bin/ghostherd had to get right
+
+Two things, both learned the hard way:
+
+- *Quoting.* Every argument is free text --- a prompt can contain quotes,
+  backslashes and newlines --- so it is escaped into an Emacs Lisp string
+  literal rather than interpolated. Verified by round-tripping through
+  the Emacs reader, not by eyeballing.
+- *Output goes through a temp file, and the write is pinned to UTF-8.*
+  =emacsclient -e= prints the *Lisp representation*, so JSON would come
+  back double-escaped as ="[{\"name\":...}]"=. Writing to a file avoids
+  that --- but agent output is full of non-ASCII (box drawing, the =❯= in
+  a permission prompt), and =write-region= without an explicit coding
+  system calls =select-safe-coding-system=, which *prompts*. In batch
+  that is an error; in a daemon it blocks forever on a minibuffer nobody
+  can answer and wedges the server for every later call too. That is not
+  hypothetical: it is what the first version did.
+
+** The two OSC integrations that are not hooks
+
+- =ghostel-progress-function= is a single global function, very likely
+  someone's spinner. ghostherd saves and *chains to* the previous value,
+  and restores it when =ghostherd-mode= is disabled. Its handler runs
+  synchronously on ghostel's VT-parser callpath, where slow work stalls
+  terminal output, so it only records the report; the poll path decides
+  what it means.
+- The title is read straight off buffer-local =ghostel--title=. Going
+  through =ghostel-buffer-name-function= (ghostel's title→buffer-name
+  mapping) would fight ghostherd's own buffer naming.
+
 * Design decisions log
 
 | Decision              | Choice                                      | Why                                      |

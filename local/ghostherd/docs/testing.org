@@ -208,13 +208,27 @@ The bug this phase most had to avoid.
 |    3 | Wait a poll or two                            | Still =working=, still detached           |
 |    4 | Quit the agent CLI itself (=/exit=)           | *Now* =dead=, and the last screen is still capturable |
 
-* Regression notes to capture while testing
+* Dogfood log
 
-Record failures here or in issues while dogfooding:
+Screen rules are heuristics against a UI that changes between releases,
+so record what was observed against which version.  Prefer a *missed*
+=blocked= over a false one.  =M-x ghostherd-explain= is what produces
+the evidence: it shows the scraped tail, every pattern that matched it,
+and which one won.
 
-- [ ] claude blocked pattern false positive / miss: _______________
-- [ ] grok blocked pattern false positive / miss: _______________
-- [ ] agy blocked pattern false positive / miss: _______________
+| CLI    | Version tested | Known false positive / miss | Fix applied |
+|--------+----------------+-----------------------------+-------------|
+| claude |                |                             |             |
+| grok   |                |                             |             |
+| agy    | 1.1.13         | none yet                    |             |
+
+agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
+repaints its whole UI on every SIGWINCH, so an attached window flickers
+while dragged --- its own behaviour, not the nesting's; see "What the
+tmux host costs" in [[file:design.org][design.org]].
+
+Anything else worth recording:
+
 - [ ] spawn-delay too low on this machine: _______________
 - [ ] =ghostel_cmd= whitelist missing after reload: _______________
 - [ ] Other: _______________
