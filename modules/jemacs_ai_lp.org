@@ -539,6 +539,20 @@
              (setq ghostherd-notify-on-blocked t
                    ghostherd-notify-on-exit t
                    ghostherd-notify-on-done t)
+
+             ;; Host new agents on tmux rather than as Emacs children.
+             ;; The package itself defaults to `ghostel', which is right
+             ;; for a package -- that backend needs nothing installed.
+             ;; The opt-in belongs here, on a machine that has tmux.
+             ;;
+             ;; Left off, surviving a restart would only work when I had
+             ;; remembered to set this beforehand, and the moment it
+             ;; matters is always the one I did not expect.  Existing
+             ;; sessions keep the backend they were born with, and
+             ;; `ghostherd-restore' sweeps both, so this is not a switch
+             ;; that strands anything.
+             (setq ghostherd-backend 'tmux)
+
              (ghostherd-mode 1)
 
              ;; `ghostherd-sidebar-mode' derives from `tabulated-list-mode',

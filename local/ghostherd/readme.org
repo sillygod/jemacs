@@ -960,15 +960,20 @@ record of what shipped and what is left.
   is the leftover Phase 1.1 data pass, and it is *why* Phase 3 was
   worth doing first: the tuning loop was only hard because the thing
   being scraped was a rendering of a rendering
-- [ ] Decide whether =ghostherd-backend= should become the default for
-  new agents, after a week of dogfooding
+- [X] Decided: =jemacs-ai= opts in with =(setq ghostherd-backend 'tmux)=.
+  The package default stays =ghostel=, which needs nothing installed
 
 *** Deliberately not done
 
 - Windows as a navigation layer, panes as a layout layer
 - Loading the user's =tmux.conf=, or sharing the default socket
 - Phone / SSH thin client, herdr-compatible socket server
-- Making tmux the default backend
+- Making tmux the *package* default.  A package should work with
+  nothing installed, and the ghostel backend does.  Opting in belongs
+  in a config that knows the machine has tmux --- =jemacs-ai= sets
+  =ghostherd-backend= to =tmux=, because a survival feature that only
+  works when you remembered to switch it on beforehand does not cover
+  the restart you did not expect
 - A dtach implementor: it cannot =capture=, so it buys only the
   smaller half of the prize
 - Asking ghostel for a VT grid API. Still worth doing later as 3a —
