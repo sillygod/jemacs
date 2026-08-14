@@ -221,11 +221,30 @@ and which one won.
 | claude |                |                             |             |
 | grok   |                |                             |             |
 | agy    | 1.1.13         | =Thinking= matches a model name in the =/model= picker | not yet |
+| agy    | 1.1.13         | =^>= matched the transcript, not the prompt | =^> *$= |
 
 agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
 repaints its whole UI on every SIGWINCH, so an attached window flickers
 while dragged --- its own behaviour, not the nesting's; see "What the
 tmux host costs" in [[file:design.org][design.org]].
+
+The one that mattered, from the log's second hour.  agy scrolls rather
+than repaints, so every line you have ever typed stays on screen as
+=> what you typed=.  The idle rule =^>= matched those, which means it
+reported =idle= from the first time you pressed Return --- forever, and
+regardless of what the agent was doing.  Combined with the idle→done
+promotion, every prompt produced a =done= notification about a second
+after it was sent.
+
+The reason field said so out loud, which is what made it findable:
+
+: state    ○ idle
+: reason   execute date command      ← sent half a minute earlier
+
+Fixed by anchoring to an *empty* prompt, =^> *$=.  Free to tighten,
+because a prompt the rules fail to recognise falls through to the idle
+default anyway.  claude's separator line and grok's banner were the same
+category error --- frame, not state --- and are gone.
 
 First finding, from the herd log's first hour: choosing a model with
 =/model= lists =Claude Sonnet 4.6 (Thinking)=, and the =working= rule

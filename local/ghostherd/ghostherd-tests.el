@@ -31,6 +31,10 @@
 BINDINGS are extra `let' bindings evaluated inside the clean registry."
   (declare (indent 1) (debug t))
   `(let ((ghostherd--sessions (make-hash-table :test 'equal))
+         ;; Keyed by session id and global, so without this a test that
+         ;; sends input to "a" leaves the next test's "a" inside the
+         ;; input grace -- which is exactly how this line got written.
+         (ghostherd--input-at (make-hash-table :test 'equal))
          ,@bindings)
      ,@body))
 
@@ -254,6 +258,58 @@ that it never reaches the state machine."
       (dolist (context '(0 3 50))
         (let ((ghostherd-reason-context context))
           (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
+
+;;; Not idle, just slow
+
+(ert-deftest ghostherd-test-fresh-prompt-is-not-idle ()
+  "An agent does not start the instant you press Return.  The poll one
+second later reads the screen it had before, calls it idle, promotes it
+to `done' because work was in flight, and tells you an agent that has
+not read your prompt is ready for review.  `ghostherd-handoff' guarded
+its own watch against this from the start; the poll path did not."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'idle))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-input-grace 60))
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil))
+                ((symbol-function 'ghostherd--host-send-text)
+                 (lambda (&rest _) nil)))
+        (ghostherd-send s "do the thing" t))
+      ;; the screen still shows the prompt it showed before
+      (should (eq (ghostherd-poll-session s) 'working))
+      ;; ...and once the grace is up, the same screen means what it says
+      (let ((ghostherd-input-grace 0))
+        (should (eq (ghostherd-poll-session s) 'done))))))
+
+(ert-deftest ghostherd-test-grace-does-not-outrank-a-prompt ()
+  "Only `idle' is disbelieved.  An agent that woke up and immediately
+asked something must still report `blocked' inside the window, or the
+grace would hide the very thing it exists to wait for."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'idle))
+          (ghostherd-tests--fake-screen "Do you want to proceed?\n")
+          (ghostherd-input-grace 60))
+      (puthash "a" (float-time) ghostherd--input-at)
+      (should (eq (car (ghostherd--detect-state s)) 'blocked))
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'blocked))))))
+
+(ert-deftest ghostherd-test-idle-rules-want-an-empty-prompt ()
+  "The finding that started this: these agents scroll rather than
+repaint, so every line you have ever typed stays on screen behind its
+prompt glyph.  A rule matching those reports `idle' from the first time
+you press Return, forever -- and the reason field said so out loud, by
+quoting a command sent half a minute earlier."
+  (let ((transcript "> execute date command\n\n● Bash(date)\n\n>\n? for shortcuts\n"))
+    (dolist (kind '(claude grok agy))
+      (let* ((rules (plist-get (ghostherd--spec kind) :screen-rules))
+             (echo-only (car (split-string transcript "\n>\n"))))
+        ;; the empty prompt at the bottom is idle
+        (should (eq (car (ghostherd--match-rules transcript rules)) 'idle))
+        ;; the echoed command on its own is not
+        (should-not (ghostherd--match-rules echo-only rules))))))
 
 ;;; Herd log
 

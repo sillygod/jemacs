@@ -75,9 +75,11 @@
                   "Baking..."
                   "Thinking"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
-      (idle . ("────────────────────────────────"
-               "^❯ "
-               "^> "))))
+      ;; An *empty* prompt.  A scrolling agent keeps every line you ever
+      ;; typed, so "^> " matches the transcript rather than the cursor --
+      ;; see the note under :screen-rules below.
+      (idle . ("^❯ *$"
+               "^> *$"))))
     (grok
      :command "grok"
      :args nil
@@ -98,10 +100,9 @@
                   "esc to interrupt"
                   "ctrl\\+c to interrupt"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
-      (idle . ("^› "
-               "^❯ "
-               "^> "
-               "Grok Build"))))
+      (idle . ("^› *$"
+               "^❯ *$"
+               "^> *$"))))
     (agy
      :command "agy"
      :args nil
@@ -120,9 +121,9 @@
                   "Running"
                   "esc to interrupt"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
-      (idle . ("^❯ "
-               "^> "
-               "^› "))))
+      (idle . ("^❯ *$"
+               "^> *$"
+               "^› *$"))))
     (shell
      :command nil
      :args nil
@@ -139,6 +140,17 @@ Each entry is (KIND . PLIST) with keys:
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
+
+An `idle' rule must match an *empty* prompt: ^> *$ rather than ^> with
+anything allowed after it.  These agents scroll rather than repaint, so
+every line you have ever typed stays on screen behind its prompt glyph,
+and a rule that matches those reports `idle' from the moment you first
+press Return, forever.  Tightening costs nothing: a prompt the rules
+fail to recognise falls through to the idle default anyway.
+
+Two rules were dropped for the same reason -- claude's separator line
+and grok's startup banner are part of the frame, not of the state.  They
+are on screen while the agent works, so they said `idle' throughout.
 
 Common optional CLI flags (not enabled by default — set via :args
 or the ARGUMENTS prompt in `ghostherd-new'):
@@ -725,7 +737,37 @@ an anchored prompt like \"^> \" is all furniture."
             (cons 'working (ghostherd--progress-reason session)))
            (hit (cons (car hit) (ghostherd--rule-reason tail hit)))
            ;; Known agent, no match → idle fallback (herdr-style)
-           (t (cons 'idle "default_known_agent_idle_fallback"))))))))))
+           (t (cons 'idle "no rule matched"))))))))))
+
+(defcustom ghostherd-input-grace 6
+  "Seconds after input during which a session is not believed to be idle.
+
+The same reasoning as `ghostherd-handoff-grace', which had it first and
+had it alone.  An agent does not start the instant you press Return: the
+CLI has to wake up and print, and until it does the screen still shows
+what it showed before -- so the poll one second later reads `idle',
+promotes it to `done' because work was in flight, and notifies you that
+an agent which has not yet read your prompt is ready for review.
+
+`ghostherd-handoff' guarded its own watch against exactly this and the
+poll path did not, which is why it only showed up when someone sent a
+prompt by hand and then watched the log."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--input-at (make-hash-table :test 'equal)
+  "Session id → when input was last sent, as a float time.
+
+A hash table rather than a slot on `ghostherd-session': adding a slot
+means every session object created before the next reload is read
+through shifted accessors, and this package is developed by reloading
+into a live herd.  The readme's troubleshooting section has the story.")
+
+(defun ghostherd--waking-up-p (session)
+  "Return non-nil while SESSION is too freshly prompted to be believed idle."
+  (when-let* ((at (gethash (ghostherd-session-id session)
+                           ghostherd--input-at)))
+    (< (- (float-time) at) ghostherd-input-grace)))
 
 (defun ghostherd--set-state (session new &optional reason)
   "Set SESSION state to NEW with optional REASON, run hooks/notify."
@@ -750,6 +792,15 @@ an anchored prompt like \"^> \" is all furniture."
   (setq session (ghostherd-get session))
   (when session
     (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
+      ;; Freshly prompted agents are not idle, they are slow.  Before the
+      ;; grace elapses the screen still shows whatever it showed when you
+      ;; pressed Return, and believing it turns into a `done' notification
+      ;; for work that has not started.
+      (when (and (eq state 'idle)
+                 (not (ghostherd-session-manual-state session))
+                 (ghostherd--waking-up-p session))
+        (setq state 'working
+              reason "input sent, not awake yet"))
       ;; Promote idle → done when work finishes (herdr-style: stays
       ;; visible until the user views the session).
       (when (and (eq state 'idle)
@@ -1281,6 +1332,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
   (let ((buf (ghostherd-session-buffer session))
         (id (ghostherd-session-id session)))
     (remhash id ghostherd--sessions)
+    (remhash id ghostherd--input-at)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
@@ -1368,6 +1420,7 @@ When SUBMIT is non-nil, also send RET (Enter)."
   (unless (ghostherd--session-live-p session)
     (user-error "Session host is not live"))
   (ghostherd--host-send-text session text submit)
+  (puthash (ghostherd-session-id session) (float-time) ghostherd--input-at)
   ;; Logged before the state change, so the log reads in causal order:
   ;; what you sent, then what it did.
   (ghostherd--log-add session 'input
