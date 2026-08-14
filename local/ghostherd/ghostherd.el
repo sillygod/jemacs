@@ -33,21 +33,20 @@
 (require 'subr-x)
 (require 'project)
 (require 'tabulated-list)
+;; The host slot, the session struct and the ghostel implementor.  Loaded
+;; first because everything below is written against the slot rather than
+;; against ghostel directly.
+(require 'ghostherd-backend)
+(require 'ghostherd-tmux)
 
-(declare-function ghostel "ghostel" (&optional arg))
-(declare-function ghostel-send-string "ghostel" (string))
-(declare-function ghostel-paste-string "ghostel" (string))
-(declare-function ghostel-send-key "ghostel" (key-name &optional mods))
 (declare-function alert "alert" (message &rest kwargs))
 
-;; Internal ghostel buffer-locals (not public API, but stable enough).
-(defvar ghostel--process)
-(defvar ghostel--buffer-identity)
-(defvar ghostel--title)
+;; The ghostel I/O shims, the `ghostherd' group and the session struct
+;; now live in ghostherd-backend.el.  These few stay because `defvar'
+;; without a value declares a variable special only within one file, and
+;; the hook plumbing below is still ghostherd's own.
 (defvar ghostel-progress-function)
-(defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-query-before-killing)
-(defvar ghostel-buffer-name)
 (defvar ghostel-eval-cmds)
 (defvar ghostel-exit-functions)
 (defvar ghostel-command-start-functions)
@@ -55,11 +54,6 @@
 
 
 ;;; Customization
-
-(defgroup ghostherd nil
-  "Manage AI agent CLIs running in ghostel terminals."
-  :group 'tools
-  :prefix "ghostherd-")
 
 (defcustom ghostherd-agent-specs
   '((claude
@@ -182,20 +176,9 @@ agy:
   :type 'symbol
   :group 'ghostherd)
 
-(defcustom ghostherd-spawn-delay 0.8
-  "Seconds to wait for the shell prompt before launching the agent command.
-Only used when the session is started via shell + command (not direct exec)."
-  :type 'number
-  :group 'ghostherd)
-
 (defcustom ghostherd-poll-interval 1.5
   "Seconds between automatic state polls for live sessions."
   :type 'number
-  :group 'ghostherd)
-
-(defcustom ghostherd-screen-tail-lines 40
-  "Number of buffer lines from the bottom used for screen-state detection."
-  :type 'integer
   :group 'ghostherd)
 
 (defcustom ghostherd-use-osc-progress t
@@ -251,11 +234,6 @@ path for the title.  Nothing overflows either way."
   :type 'boolean
   :group 'ghostherd)
 
-(defcustom ghostherd-buffer-name-format "*ghostherd:%s*"
-  "Format string for session buffer names.  %s is the session name."
-  :type 'string
-  :group 'ghostherd)
-
 (defcustom ghostherd-message-template
   "[ghostherd message from %s → %s]\n%s\n"
   "Template for inter-agent messages.
@@ -271,41 +249,15 @@ Filled with FROM name, TO name, and BODY."
 
 ;;; Session model
 
-(cl-defstruct (ghostherd-session
-               (:constructor ghostherd-session--create)
-               (:copier nil))
-  id
-  name
-  kind
-  buffer
-  project
-  command
-  args
-  (state 'starting)
-  state-reason
-  (started-at (current-time))
-  last-active
-  (seen t)
-  (manual-state nil)
-  notes
-  ;; Last ConEmu OSC 9;4 report: the STATE symbol, its percentage (or nil),
-  ;; and when it arrived.  Written on ghostel's VT-parser callpath, so
-  ;; nothing here may be expensive to set; it is *read* by the poll path.
-  progress-state
-  progress-percent
-  progress-at)
-
-(defvar ghostherd--sessions (make-hash-table :test 'equal)
-  "Map of session id string → `ghostherd-session'.")
+;; `ghostherd-session', the registry and `ghostherd-get' live in
+;; ghostherd-backend.el: the implementors need them, and they are the one
+;; thing both layers share.
 
 (defvar ghostherd--counter 0
   "Monotonic counter for generated session names.")
 
 (defvar ghostherd--poll-timer nil
   "Idle timer that polls session states.")
-
-(defvar-local ghostherd-session-id nil
-  "Session id of the ghostherd session hosted in this buffer, if any.")
 
 (defvar ghostherd-state-change-hook nil
   "Hook run after a session state changes.
@@ -319,11 +271,6 @@ Each function is called with (SESSION OLD-STATE NEW-STATE).")
 
 
 ;;; Helpers
-
-(defun ghostherd--require-ghostel ()
-  "Load ghostel or signal an error."
-  (unless (require 'ghostel nil t)
-    (user-error "ghostherd requires the ghostel package")))
 
 (defun ghostherd--agent-kinds ()
   "Return the list of known agent kind symbols."
@@ -384,19 +331,11 @@ around it, not for that case."
   (if path (abbreviate-file-name path) "~"))
 
 (defun ghostherd--session-title (session)
-  "Return SESSION's OSC 2 terminal title, or nil when it says nothing new.
-Read straight off ghostel's buffer-local `ghostel--title' rather than
-through `ghostel-buffer-name-function', which is how ghostel turns a
-title into a buffer name -- taking that over would fight ghostherd's own
-naming.  A title equal to the buffer name is the shell echoing us back."
-  (when-let* ((buf (ghostherd-session-buffer session)))
-    (when (and (buffer-live-p buf) (boundp 'ghostel--title))
-      (let ((title (buffer-local-value 'ghostel--title buf)))
-        (when (stringp title)
-          (let ((title (string-trim title)))
-            (unless (or (string-empty-p title)
-                        (equal title (buffer-name buf)))
-              title)))))))
+  "Return SESSION's terminal title, or nil when it says nothing new.
+Which OSC 2 stream that comes from is the backend's business: a ghostel
+session has it as a buffer-local, a detached tmux session has it as
+`#{pane_title}'."
+  (ghostherd--host-title session))
 
 (defun ghostherd--unique-name (base)
   "Return a unique session name derived from BASE."
@@ -407,28 +346,14 @@ naming.  A title equal to the buffer name is the shell echoing us back."
             name (format "%s-%d" base n)))
     name))
 
-(defun ghostherd--buffer-name (name)
-  "Return buffer name for session NAME."
-  (format ghostherd-buffer-name-format name))
-
 (defun ghostherd--session-live-p (session)
-  "Return non-nil if SESSION's buffer is live."
-  (and session (buffer-live-p (ghostherd-session-buffer session))))
+  "Return non-nil if SESSION's host is still there.
 
-(defun ghostherd-get (id-or-name)
-  "Return session for ID-OR-NAME, or nil.
-Accepts session id, name, or a live buffer that hosts a session."
-  (cond
-   ((ghostherd-session-p id-or-name) id-or-name)
-   ((bufferp id-or-name)
-    (when-let* ((id (buffer-local-value 'ghostherd-session-id id-or-name)))
-      (gethash id ghostherd--sessions)))
-   ((stringp id-or-name)
-    (or (gethash id-or-name ghostherd--sessions)
-        (cl-find id-or-name (hash-table-values ghostherd--sessions)
-                 :key #'ghostherd-session-name
-                 :test #'equal)))
-   (t nil)))
+This used to mean \"the buffer exists\", which was the same statement
+while every agent was an Emacs child.  It is not the same on a backend
+where the buffer is a client: a tmux session nobody is attached to has
+no buffer at all and is very much alive."
+  (ghostherd--host-live-p session))
 
 (defun ghostherd-sessions (&optional project)
   "Return all sessions, optionally filtered to PROJECT root."
@@ -445,18 +370,26 @@ Accepts session id, name, or a live buffer that hosts a session."
          #'string< :key #'ghostherd-session-name)))))
 
 (defun ghostherd--ensure-sessions ()
-  "Drop sessions whose buffers are gone."
+  "Drop sessions whose host is gone.
+
+An agent that exited is not gone: the ghostel backend keeps its buffer
+(`ghostel-kill-buffer-on-exit' nil) and the tmux backend keeps its pane
+(`remain-on-exit on') precisely so the row can sit there saying `dead'
+with its last screen intact.  What this prunes is the session whose
+host no longer exists to ask."
   (maphash
    (lambda (id session)
-     (unless (ghostherd--session-live-p session)
-       (when (not (eq (ghostherd-session-state session) 'dead))
-         (setf (ghostherd-session-state session) 'dead
-               (ghostherd-session-state-reason session) "buffer gone"))
-       ;; Keep dead sessions briefly so the sidebar can show them; prune
-       ;; only when buffer object is fully gone and already dead.
-       (unless (buffer-live-p (ghostherd-session-buffer session))
-         (remhash id ghostherd--sessions)
-         (run-hook-with-args 'ghostherd-session-removed-hook session))))
+     ;; One session whose host cannot be asked must not take the sweep
+     ;; down with it, and must not be read as gone either: pruning on a
+     ;; failed question would delete the herd rather than report it.
+     ;; Keep it, and let the poll surface the error.
+     (unless (condition-case nil
+                 (ghostherd--session-live-p session)
+               (error t))
+       (setf (ghostherd-session-state session) 'dead
+             (ghostherd-session-state-reason session) "host gone")
+       (remhash id ghostherd--sessions)
+       (run-hook-with-args 'ghostherd-session-removed-hook session)))
    ghostherd--sessions))
 
 
@@ -498,17 +431,6 @@ Accepts session id, name, or a live buffer that hosts a session."
 
 
 ;;; State detection
-
-(defun ghostherd--buffer-tail (buffer &optional n)
-  "Return the last N lines of BUFFER as a single string."
-  (with-current-buffer buffer
-    (let* ((n (or n ghostherd-screen-tail-lines))
-           (end (point-max))
-           (start (save-excursion
-                    (goto-char end)
-                    (forward-line (- n))
-                    (point))))
-      (buffer-substring-no-properties start end))))
 
 (defun ghostherd--match-rules (text rules)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
@@ -556,22 +478,21 @@ precedence order, for `ghostherd-explain'."
    ((ghostherd-session-manual-state session)
     (cons (ghostherd-session-manual-state session) "manual"))
    ((not (ghostherd--session-live-p session))
-    (cons 'dead "buffer dead"))
+    (cons 'dead "host gone"))
    (t
-    (let* ((buf (ghostherd-session-buffer session))
-           (proc (buffer-local-value 'ghostel--process buf))
-           (kind (ghostherd-session-kind session))
+    (let* ((kind (ghostherd-session-kind session))
            (spec (ignore-errors (ghostherd--spec kind)))
-           (rules (plist-get spec :screen-rules)))
+           (rules (plist-get spec :screen-rules))
+           (exited (ghostherd--host-exited-p session)))
       (cond
-       ((and proc (not (process-live-p proc)))
-        (cons 'dead "process exited"))
+       (exited
+        (cons 'dead exited))
        ((eq kind 'shell)
         (cons 'idle "shell"))
        ((null rules)
         (cons 'working "no rules"))
        (t
-        (let* ((tail (ghostherd--buffer-tail buf))
+        (let* ((tail (ghostherd--host-capture session))
                (hit (ghostherd--match-rules tail rules)))
           (cond
            ;; Screen rules keep priority for `blocked': a stale progress
@@ -647,11 +568,21 @@ precedence order, for `ghostherd-explain'."
 ;;; Ghostel integration hooks
 
 (defun ghostherd--on-ghostel-exit (buffer event)
-  "Mark herd session dead when ghostel process in BUFFER exits.
-EVENT is the sentinel event string from ghostel."
+  "React to the ghostel process in BUFFER exiting.  EVENT is the sentinel.
+
+Whether that is a death depends on what the buffer was running.  On the
+ghostel backend the buffer *is* the agent, so it is.  On a backend where
+the buffer holds a client -- `tmux attach' -- the exit only means the
+view went away, and marking the session dead would turn every closed
+window into a crash: a notification would fire, a handoff would give up,
+and the next poll would flip the state straight back."
   (when-let* ((session (ghostherd-get buffer)))
-    (ghostherd--set-state session 'dead (string-trim (or event "exited")))
-    (ghostherd--stop-poll-timer)))
+    (if (ghostherd-backend-view-is-host-p (ghostherd-session-backend session))
+        (progn
+          (ghostherd--set-state session 'dead (string-trim (or event "exited")))
+          (ghostherd--stop-poll-timer))
+      (setf (ghostherd-session-buffer session) nil)
+      (ghostherd--sidebar-refresh))))
 
 (defun ghostherd--on-command-start (buffer)
   "OSC 133 command-start hook: mark SESSION on BUFFER as working."
@@ -724,30 +655,6 @@ keep someone else's spinner permanently displaced."
 
 ;;; Spawn / kill / rename
 
-(defun ghostherd--shell-quote-args (args)
-  "Shell-quote ARGS list into a single string."
-  (mapconcat #'shell-quote-argument args " "))
-
-(defun ghostherd--build-launch-string (_kind command args)
-  "Build the shell command line for COMMAND and ARGS.
-_KIND is reserved for kind-specific quoting later."
-  (when command
-    (string-trim
-     (concat command
-             (when args
-               (concat " " (ghostherd--shell-quote-args args)))))))
-
-(defun ghostherd--launch-in-buffer (buffer launch)
-  "Send LAUNCH command + RET in ghostel BUFFER after a short delay."
-  (when (and launch (not (string-empty-p launch)))
-    (run-at-time
-     ghostherd-spawn-delay nil
-     (lambda ()
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (when (derived-mode-p 'ghostel-mode)
-             (ghostel-send-string (concat launch "\n")))))))))
-
 (defun ghostherd-spawn (kind &rest plist)
   "Spawn an agent of KIND and return the `ghostherd-session'.
 
@@ -758,8 +665,8 @@ PLIST keys:
   :args      override argument list
   :notes     free-form note / role description
   :directory working directory (defaults to project or `default-directory')
+  :backend   host to start it on (defaults to `ghostherd-backend')
   :display   when non-nil (default t), pop to the buffer"
-  (ghostherd--require-ghostel)
   (ghostherd--install-hooks)
   (ghostherd--register-eval-cmds)
   (let* ((spec (ghostherd--spec kind))
@@ -777,57 +684,120 @@ PLIST keys:
                    (plist-get plist :args)
                  (plist-get spec :args)))
          (notes (plist-get plist :notes))
+         (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
                     t))
-         (bufname (ghostherd--buffer-name name))
-         (launch (ghostherd--build-launch-string kind command args))
-         buffer
+         (started (ghostherd-backend-spawn
+                   backend
+                   (list :name name :kind kind :command command :args args
+                         :directory directory :project project :notes notes)))
          session)
-    (when (get-buffer bufname)
-      (user-error "Buffer already exists: %s" bufname))
-    (let ((default-directory directory)
-          (ghostel-buffer-name bufname)
-          ;; Keep exited agent buffers so the herd can mark them dead.
-          (ghostel-kill-buffer-on-exit nil))
-      (setq buffer (ghostel t))
-      ;; `ghostel' may reuse/rename; force our identity/name.
-      (with-current-buffer buffer
-        (rename-buffer bufname t)
-        (setq-local ghostel-kill-buffer-on-exit nil)
-        (setq-local ghostherd-session-id name)
-        (setq-local ghostel--buffer-identity bufname)
-        (ghostherd--launch-in-buffer buffer launch)))
     (setq session
           (ghostherd-session--create
            :id name
            :name name
            :kind kind
-           :buffer buffer
+           :backend backend
+           :host-id (plist-get started :host-id)
+           :buffer (plist-get started :buffer)
            :project (and project (expand-file-name project))
            :command command
            :args args
-           :state (if launch 'starting 'idle)
-           :state-reason (if launch "spawned" "shell")
+           :state (if (plist-get started :started) 'starting 'idle)
+           :state-reason (if (plist-get started :started) "spawned" "shell")
            :notes notes
            :last-active (current-time)))
     (puthash name session ghostherd--sessions)
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
     (when display
-      (pop-to-buffer buffer))
+      (ghostherd-visit session))
     (ghostherd--sidebar-refresh)
     session))
+
+(defun ghostherd-visit (session)
+  "Display SESSION, attaching a view to its host when there is none.
+
+On the ghostel backend there is always exactly one buffer and this just
+pops to it.  On tmux the buffer is a client that may not exist yet, so
+visiting is what runs `tmux attach' -- the only moment in the whole
+design where a second terminal emulator is in the picture."
+  (setq session (ghostherd-get session))
+  (unless session
+    (user-error "No such session"))
+  (let ((buffer (ghostherd--host-view session)))
+    (setf (ghostherd-session-buffer session) buffer
+          (ghostherd-session-seen session) t)
+    (pop-to-buffer buffer)
+    buffer))
+
+;;;###autoload
+(defun ghostherd-restore ()
+  "Register agents the host still has but this Emacs does not.
+
+Only reachable on a backend whose agents outlive Emacs, so this is
+where a herd comes back after a restart.  Sessions come back detached
+-- alive, with no buffer -- and the first poll fills in their state
+from the screen.
+
+Emacs-side bookkeeping does not survive and is not meant to: a manual
+state override, whether a session has been seen, the last OSC progress
+report.  Notes do, because they were written onto the host.
+
+Every known backend is asked, not just `ghostherd-backend'.  Changing
+which host new agents start on should not hide the ones already
+running, and a session keeps the backend it was born with anyway."
+  (interactive)
+  (let ((restored 0))
+    (dolist (entry (mapcan (lambda (backend)
+                             (mapcar (lambda (recipe) (cons backend recipe))
+                                     (ghostherd-backend-list backend)))
+                           ghostherd-known-backends))
+      (let* ((backend (car entry))
+             (recipe (cdr entry))
+             (name (plist-get recipe :name)))
+        (unless (ghostherd-get name)
+          (puthash name
+                   (ghostherd-session--create
+                    :id name
+                    :name name
+                    :kind (or (plist-get recipe :kind) 'shell)
+                    :backend backend
+                    :host-id (plist-get recipe :host-id)
+                    :buffer nil
+                    :project (plist-get recipe :project)
+                    :command (plist-get recipe :command)
+                    :args (plist-get recipe :args)
+                    :notes (plist-get recipe :notes)
+                    :state 'idle
+                    :state-reason "restored"
+                    ;; Seen: a herd that was already there when Emacs
+                    ;; started has not just finished anything.
+                    :seen t
+                    :last-active (current-time))
+                   ghostherd--sessions)
+          (setq restored (1+ restored)))))
+    (when (> restored 0)
+      (ghostherd--ensure-poll-timer)
+      (ghostherd--sidebar-refresh))
+    restored))
 
 (defun ghostherd-session-recipe (session)
   "Return the plist `ghostherd-spawn' needs to recreate SESSION.
 
-This is the whole of what can be persisted.  Agents are Emacs child
-processes, so nothing survives Emacs itself -- the conversation lives in
-the CLI's own store, which is what `:continue-args' reaches."
+This is the whole of what a respawn can carry over.  The conversation
+is not in it and never can be: it lives in the CLI's own store, which
+is what `:continue-args' reaches.
+
+Whether the *agent* survives depends on the backend.  On ghostel it
+cannot -- the agent is an Emacs child.  On tmux it does, and this same
+recipe is written onto the host so `ghostherd-restore' can rebuild the
+session around a process that never stopped."
   (list :name (ghostherd-session-name session)
         :project (ghostherd-session-project session)
         :directory (ghostherd-session-project session)
+        :backend (ghostherd-session-backend session)
         :command (ghostherd-session-command session)
         :args (ghostherd-session-args session)
         :notes (ghostherd-session-notes session)))
@@ -939,17 +909,33 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
                                  :project project
                                  :notes "reviewer"
                                  :display nil)))
+    ;; Two Emacs windows, each showing one agent.  On tmux that is two
+    ;; attach clients; it is emphatically not a tmux split -- pane layout
+    ;; is something Emacs already does better than a herd manager should
+    ;; reimplement.
     (delete-other-windows)
-    (switch-to-buffer (ghostherd-session-buffer left))
+    (switch-to-buffer (ghostherd--host-view left))
     (split-window-right)
     (other-window 1)
-    (switch-to-buffer (ghostherd-session-buffer right))
+    (switch-to-buffer (ghostherd--host-view right))
     (message "Spawned %s (%s) | %s (%s)"
              left-name left-kind right-name right-kind)
     (list left right)))
 
+(defun ghostherd--maybe-restore ()
+  "Re-adopt hosted agents when the registry has nothing in it.
+
+Cheap insurance against a transient blind spot.  `ghostherd--ensure-sessions'
+runs from the mode-line and prunes anything whose host it cannot reach,
+so one moment of a host being unreachable would otherwise drop the herd
+from the UI until the mode was toggled -- even though every agent is
+still running."
+  (when (zerop (hash-table-count ghostherd--sessions))
+    (ignore-errors (ghostherd-restore))))
+
 (defun ghostherd--read-session (&optional prompt predicate)
   "Read a session via completing-read using PROMPT and optional PREDICATE."
+  (ghostherd--maybe-restore)
   (ghostherd--ensure-sessions)
   (let* ((sessions (cl-remove-if-not
                     (or predicate #'identity)
@@ -984,8 +970,7 @@ otherwise prompts."
          (spec (ignore-errors (ghostherd--spec kind)))
          (rules (plist-get spec :screen-rules))
          (live (ghostherd--session-live-p session))
-         (tail (and live (ghostherd--buffer-tail
-                          (ghostherd-session-buffer session))))
+         (tail (and live (ghostherd--host-capture session)))
          (hits (and tail rules (ghostherd--match-all-rules tail rules)))
          (winner (and tail rules (ghostherd--match-rules tail rules))))
     (with-help-window "*ghostherd explain*"
@@ -999,13 +984,18 @@ otherwise prompts."
         (when (ghostherd-session-manual-state session)
           (insert (format "  manual   %s  (overrides detection until cleared)\n"
                           (ghostherd-session-manual-state session))))
-        (insert (format "  buffer   %s%s\n\n"
-                        (buffer-name (ghostherd-session-buffer session))
-                        (if live "" "  [dead]")))
+        (insert (format "  host     %s  (%s)\n"
+                        (or (ghostherd-session-host-id session) "—")
+                        (ghostherd-session-backend session)))
+        (insert (format "  view     %s\n\n"
+                        (let ((buffer (ghostherd-session-buffer session)))
+                          (cond ((buffer-live-p buffer) (buffer-name buffer))
+                                (live "detached — nobody is attached")
+                                (t "—")))))
 
         (cond
          ((not live)
-          (insert "Buffer is dead; no detection runs.\n"))
+          (insert "Host is gone; no detection runs.\n"))
          ((null rules)
           (insert "No :screen-rules for this kind — state is forced to `working'.\n"))
          ((null hits)
@@ -1031,9 +1021,7 @@ otherwise prompts."
 (defun ghostherd-switch ()
   "Switch to a ghostherd session (consult/completing-read)."
   (interactive)
-  (let ((session (ghostherd--read-session "Switch to agent: ")))
-    (setf (ghostherd-session-seen session) t)
-    (pop-to-buffer (ghostherd-session-buffer session))))
+  (ghostherd-visit (ghostherd--read-session "Switch to agent: ")))
 
 ;;;###autoload
 (defun ghostherd-next-blocked ()
@@ -1050,8 +1038,7 @@ otherwise prompts."
     (unless targets
       (user-error "No blocked/done agents"))
     (let ((session (car targets)))
-      (setf (ghostherd-session-seen session) t)
-      (pop-to-buffer (ghostherd-session-buffer session))
+      (ghostherd-visit session)
       (message "Jumped to %s (%s)"
                (ghostherd-session-name session)
                (ghostherd-session-state session)))))
@@ -1069,10 +1056,15 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
         (id (ghostherd-session-id session)))
     (remhash id ghostherd--sessions)
     (run-hook-with-args 'ghostherd-session-removed-hook session)
-    (when (and kill-buffer (buffer-live-p buf))
-      (let ((kill-buffer-query-functions nil)
-            (ghostel-query-before-killing nil))
-        (ignore-errors (kill-buffer buf))))
+    (when kill-buffer
+      ;; The host first: on tmux the buffer is only a client, so killing
+      ;; it would detach and leave the agent running headless with
+      ;; nothing in the herd pointing at it.
+      (ghostherd--host-kill session)
+      (when (buffer-live-p buf)
+        (let ((kill-buffer-query-functions nil)
+              (ghostel-query-before-killing nil))
+          (ignore-errors (kill-buffer buf)))))
     (ghostherd--stop-poll-timer)
     (ghostherd--sidebar-refresh)
     (message "Killed session %s" (ghostherd-session-name session))))
@@ -1107,17 +1099,14 @@ annotation, which is where you are choosing between agents."
   (setq session (ghostherd-get session))
   (when (ghostherd-get new-name)
     (user-error "Name already in use: %s" new-name))
-  (let ((old-id (ghostherd-session-id session))
-        (buf (ghostherd-session-buffer session)))
+  (let ((old-id (ghostherd-session-id session)))
     (remhash old-id ghostherd--sessions)
     (setf (ghostherd-session-id session) new-name
           (ghostherd-session-name session) new-name)
     (puthash new-name session ghostherd--sessions)
-    (when (buffer-live-p buf)
-      (with-current-buffer buf
-        (rename-buffer (ghostherd--buffer-name new-name) t)
-        (setq-local ghostherd-session-id new-name)
-        (setq-local ghostel--buffer-identity (buffer-name))))
+    ;; The host has its own name for the session -- a tmux session name,
+    ;; the buffer name -- and it is the backend's job to keep it in step.
+    (ghostherd--host-rename session new-name)
     (ghostherd--sidebar-refresh)
     (message "Renamed to %s" new-name)))
 
@@ -1149,47 +1138,11 @@ STATE is one of working, blocked, idle, done, dead, or auto (clear)."
 When SUBMIT is non-nil, also send RET (Enter)."
   (setq session (ghostherd-get session))
   (unless (ghostherd--session-live-p session)
-    (user-error "Session buffer is not live"))
-  (with-current-buffer (ghostherd-session-buffer session)
-    (unless (derived-mode-p 'ghostel-mode)
-      (user-error "Session buffer is not a ghostel terminal"))
-    ;; Prefer bracketed paste for multi-line / long prompts.
-    (if (fboundp 'ghostel-paste-string)
-        (ghostel-paste-string text)
-      (ghostel-send-string text))
-    (when submit
-      (ghostel-send-key "return")))
+    (user-error "Session host is not live"))
+  (ghostherd--host-send-text session text submit)
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
   text)
-
-(defconst ghostherd-key-aliases
-  '(("esc"       . ("escape"    . nil))
-    ("escape"    . ("escape"    . nil))
-    ("ret"       . ("return"    . nil))
-    ("return"    . ("return"    . nil))
-    ("enter"     . ("return"    . nil))
-    ("tab"       . ("tab"       . nil))
-    ("space"     . ("space"     . nil))
-    ("up"        . ("up"        . nil))
-    ("down"      . ("down"      . nil))
-    ("left"      . ("left"      . nil))
-    ("right"     . ("right"     . nil))
-    ("backspace" . ("backspace" . nil))
-    ("C-c"       . ("c"         . "ctrl"))
-    ("C-d"       . ("d"         . "ctrl"))
-    ("C-z"       . ("z"         . "ctrl")))
-  "Map friendly key names to `ghostel-send-key' (KEY-NAME . MODS) pairs.
-
-Exists so callers -- including agent shells going through `ghostel_cmd'
--- can say \"esc\" or \"C-c\" without knowing ghostel's encoder
-vocabulary.  Anything not listed is passed through unchanged, so the
-full vocabulary stays reachable.")
-
-(defun ghostherd--resolve-key (key)
-  "Return (KEY-NAME . MODS) for KEY, via `ghostherd-key-aliases'."
-  (or (alist-get key ghostherd-key-aliases nil nil #'equal)
-      (cons key nil)))
 
 ;;;###autoload
 (defun ghostherd-send-keys (session &rest keys)
@@ -1207,13 +1160,8 @@ just started would be backwards; the next poll reports what actually
 happened."
   (setq session (ghostherd-get session))
   (unless (ghostherd--session-live-p session)
-    (user-error "Session buffer is not live"))
-  (with-current-buffer (ghostherd-session-buffer session)
-    (unless (derived-mode-p 'ghostel-mode)
-      (user-error "Session buffer is not a ghostel terminal"))
-    (dolist (key keys)
-      (pcase-let ((`(,name . ,mods) (ghostherd--resolve-key key)))
-        (ghostel-send-key name mods))))
+    (user-error "Session host is not live"))
+  (ghostherd--host-send-keys session keys)
   keys)
 
 ;;;###autoload
@@ -1256,12 +1204,11 @@ seconds elapse (default 120)."
   session)
 
 (defun ghostherd-read (session &optional n-lines)
-  "Return the last N-LINES of SESSION's terminal buffer."
+  "Return the last N-LINES of SESSION's screen."
   (setq session (ghostherd-get session))
   (unless (ghostherd--session-live-p session)
-    (user-error "Session buffer is not live"))
-  (ghostherd--buffer-tail (ghostherd-session-buffer session)
-                          (or n-lines ghostherd-screen-tail-lines)))
+    (user-error "Session host is not live"))
+  (ghostherd--host-capture session (or n-lines ghostherd-screen-tail-lines)))
 
 (defcustom ghostherd-wait-poll-interval 0.4
   "Seconds between checks in `ghostherd-wait' and `ghostherd-wait-output'."
@@ -1296,8 +1243,7 @@ in readme.org."
   (setq session (ghostherd-get session))
   (when (ghostherd--session-live-p session)
     (let ((case-fold-search nil)
-          (tail (ghostherd--buffer-tail (ghostherd-session-buffer session)
-                                        lines)))
+          (tail (ghostherd--host-capture session lines)))
       (when (string-match regexp tail)
         (match-string 0 tail)))))
 
@@ -1575,6 +1521,13 @@ distinct and does not silently widen what your input matches against."
          (parts (delq nil
                       (list (symbol-name (ghostherd-session-kind session))
                             (symbol-name (ghostherd-session-state session))
+                            ;; A view, not a state: the agent is running
+                            ;; and nobody is attached.  Worth saying here
+                            ;; because this is where you pick one, and
+                            ;; choosing it is what attaches.
+                            (unless (buffer-live-p
+                                     (ghostherd-session-buffer session))
+                              "detached")
                             (ghostherd--age-string
                              (or (ghostherd-session-last-active session)
                                  (ghostherd-session-started-at session)))
@@ -1865,11 +1818,10 @@ while the sidebar is actually on screen."
   (ghostherd-get (tabulated-list-get-id)))
 
 (defun ghostherd-sidebar-visit ()
-  "Visit the session at point."
+  "Visit the session at point, attaching a view when it is detached."
   (interactive)
   (when-let* ((s (ghostherd--sidebar-session-at-point)))
-    (setf (ghostherd-session-seen s) t)
-    (pop-to-buffer (ghostherd-session-buffer s))))
+    (ghostherd-visit s)))
 
 (defun ghostherd-sidebar-kill ()
   "Kill the session at point."
@@ -1958,6 +1910,7 @@ while the sidebar is actually on screen."
 (defun ghostherd-sidebar ()
   "Open the ghostherd sidebar in a side window."
   (interactive)
+  (ghostherd--maybe-restore)
   (ghostherd--ensure-sessions)
   (let ((buf (get-buffer-create "*ghostherd*")))
     (with-current-buffer buf
@@ -1977,8 +1930,13 @@ while the sidebar is actually on screen."
 ;;; Global minor mode / modeline
 
 (defun ghostherd--mode-line-segment ()
-  "Mode-line segment summarizing herd attention."
-  (ghostherd--ensure-sessions)
+  "Mode-line segment summarizing herd attention.
+
+Reads the registry and nothing else.  It used to sweep it first, which
+was free while a host check was `buffer-live-p' and is not once a host
+check can run a subprocess -- redisplay is no place for I/O, and no
+place to discover that the I/O failed either.  The poll timer already
+sweeps every `ghostherd-poll-interval'."
   (let* ((sessions (hash-table-values ghostherd--sessions))
          (blocked (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'blocked))
                                sessions))
@@ -2012,6 +1970,10 @@ while the sidebar is actually on screen."
       (progn
         (ghostherd--install-hooks)
         (ghostherd--register-eval-cmds)
+        ;; Enabling the mode is the restore hook: a herd left running by
+        ;; a previous Emacs is picked up here, before anything asks for
+        ;; a session list.
+        (ignore-errors (ghostherd-restore))
         (ghostherd--ensure-poll-timer)
         (unless (member '(:eval (ghostherd--mode-line-segment)) mode-line-misc-info)
           (setq mode-line-misc-info

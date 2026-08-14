@@ -532,6 +532,8 @@
                         ghostherd-interrupt
                         ghostherd-abort
                         ghostherd-answer
+                        ghostherd-restore
+                        ghostherd-visit
                         ghostherd-mode)
              :config
              (setq ghostherd-notify-on-blocked t
