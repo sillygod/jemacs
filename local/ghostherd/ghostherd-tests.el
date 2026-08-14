@@ -47,6 +47,40 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
     (puthash id session ghostherd--sessions)
     session))
 
+;;; A backend that answers with whatever a test wants
+
+(defvar ghostherd-tests--fake-screen ""
+  "Screen the `fake' backend reports.")
+
+(defvar ghostherd-tests--fake-live t
+  "What the `fake' backend says about liveness.")
+
+(defvar ghostherd-tests--fake-recipes nil
+  "Recipes the `fake' backend offers `ghostherd-restore'.")
+
+(cl-defmethod ghostherd-backend-capture
+  ((_backend (eql fake)) _session &optional _n)
+  ghostherd-tests--fake-screen)
+
+(cl-defmethod ghostherd-backend-live-p ((_backend (eql fake)) _session)
+  ghostherd-tests--fake-live)
+
+(cl-defmethod ghostherd-backend-list ((_backend (eql fake)))
+  ghostherd-tests--fake-recipes)
+
+(defmacro ghostherd-tests--recording-keys (&rest body)
+  "Run BODY with ghostel's send functions recorded into `sent'.
+`sent' collects (KEY-NAME . MODS) for keys and (:text . STRING) for text."
+  (declare (indent 0) (debug t))
+  `(let ((sent nil))
+     (cl-letf (((symbol-function 'ghostel-send-key)
+                (lambda (name &optional mods) (push (cons name mods) sent)))
+               ((symbol-function 'ghostel-paste-string)
+                (lambda (text) (push (cons :text text) sent)))
+               ((symbol-function 'derived-mode-p) (lambda (&rest _) t)))
+       ,@body
+       (nreverse sent))))
+
 ;;; Screen rule matching
 
 (defconst ghostherd-tests--rules
@@ -116,6 +150,193 @@ a rule lost, so it must report every hit, in precedence order."
          (hits (ghostherd--match-all-rules text ghostherd-tests--rules)))
     (should (equal (mapcar #'car hits) '(blocked working working idle)))
     (should (member '(working . "Thinking") hits))))
+
+;;; What a state reason says
+
+(defconst ghostherd-tests--permission-screen
+  (concat "╭────────────────────────────────────────────╮\n"
+          "│ Bash(rm -rf build/ && npm publish)         │\n"
+          "│                                            │\n"
+          "│ Do you want to proceed?                    │\n"
+          "│ ❯ 1. Yes                                   │\n"
+          "╰────────────────────────────────────────────╯\n")
+  "A permission prompt as an agent actually draws one.")
+
+(ert-deftest ghostherd-test-reason-is-the-screen-not-the-pattern ()
+  "The reason used to hold the regexp that matched -- a debugging
+artifact that leaked into the notification, the switcher and the JSON
+listing, so \"needs attention\" was followed by a pattern rather than by
+the question."
+  (let* ((hit '(blocked . "Do you want to proceed"))
+         (reason (ghostherd--rule-reason
+                  ghostherd-tests--permission-screen hit)))
+    (should-not (equal reason (cdr hit)))
+    (should (string-match-p "Do you want to proceed\\?" reason))
+    ;; and none of the box it was drawn in
+    (should-not (string-match-p "[│╭╰]" reason))))
+
+(ert-deftest ghostherd-test-reason-leads-with-the-subject ()
+  "The matched line is the generic half.  What you are being asked to
+approve is above it, and it is the half that must survive truncation."
+  (let ((reason (ghostherd--rule-reason
+                 ghostherd-tests--permission-screen
+                 '(blocked . "Do you want to proceed"))))
+    (should (string-prefix-p "Bash(rm -rf build/ && npm publish)" reason))
+    (should (< (cl-search "Bash" reason) (cl-search "proceed" reason)))))
+
+(ert-deftest ghostherd-test-reason-context-is-bounded ()
+  "Looking back forever would attribute any earlier output to the prompt."
+  (let* ((screen (concat "the subject\n" (make-string 8 ?\n)
+                         "Do you want to proceed?\n"))
+         (hit '(blocked . "Do you want to proceed")))
+    (let ((ghostherd-reason-context 3))
+      (should-not (string-match-p "subject"
+                                  (ghostherd--rule-reason screen hit))))
+    (let ((ghostherd-reason-context 20))
+      (should (string-match-p "subject"
+                              (ghostherd--rule-reason screen hit))))))
+
+(ert-deftest ghostherd-test-reason-falls-back-for-bare-prompts ()
+  "An anchored prompt cleans away to nothing.  Dressing it with whatever
+happened to precede it would attribute an unrelated line to the reason,
+so it keeps the pattern instead."
+  (should (equal (ghostherd--rule-reason "some earlier output\n> \n"
+                                         '(idle . "^> "))
+                 "^> ")))
+
+(ert-deftest ghostherd-test-detect-state-reason-comes-from-the-screen ()
+  "Pins the call site, not just the helper.  A mutation that rewires
+`ghostherd--detect-state' back to storing the pattern passed every test
+written against `ghostherd--rule-reason' alone -- which is precisely the
+bug that shipped for two phases."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-tests--permission-screen))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'blocked))
+        ;; not the pattern...
+        (should-not (member reason
+                            (alist-get 'blocked
+                                       (plist-get (ghostherd--spec 'agy)
+                                                  :screen-rules))))
+        ;; ...but what was on the screen
+        (should (string-match-p "npm publish" reason))))))
+
+(ert-deftest ghostherd-test-detect-working-reason-comes-from-the-screen ()
+  "Same for the other state a rule can win: the =working= branch is a
+separate call site and was missed once already."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen "  compiling the parser\n  Working…\n"))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'working))
+        (should-not (equal reason "Working"))
+        (should (string-match-p "compiling the parser" reason))))))
+
+(ert-deftest ghostherd-test-reason-cannot-change-state ()
+  "It is a display heuristic and is allowed to be one, on the condition
+that it never reaches the state machine."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-tests--permission-screen))
+      (dolist (context '(0 3 50))
+        (let ((ghostherd-reason-context context))
+          (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
+
+;;; Herd log
+
+(defmacro ghostherd-tests--with-log (&rest body)
+  "Run BODY with an empty herd log."
+  (declare (indent 0) (debug t))
+  `(let ((ghostherd--log nil)
+         (ghostherd-log-max 500)
+         (ghostherd-log-screens 20))
+     (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+       ,@body)))
+
+(ert-deftest ghostherd-test-log-records-transitions ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :state 'idle)))
+        (ghostherd--set-state s 'working "input sent")
+        (should (= (length ghostherd--log) 1))
+        (let ((entry (car ghostherd--log)))
+          (should (equal (ghostherd-log-entry-session entry) "rev"))
+          (should (eq (ghostherd-log-entry-kind entry) 'state))
+          (should (string-match-p "idle → working" (ghostherd-log-entry-text entry)))
+          (should (string-match-p "input sent" (ghostherd-log-entry-text entry))))
+        ;; a no-op transition is not an event
+        (ghostherd--set-state s 'working "again")
+        (should (= (length ghostherd--log) 1))))))
+
+(ert-deftest ghostherd-test-log-keeps-the-screen-behind-a-block ()
+  "The reason the log keeps screens at all: `ghostherd-explain' can only
+answer while the agent is still sitting on the prompt, so a rule that
+fired at 02:00 would otherwise be unarguable by morning."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--permission-screen))
+        (ghostherd--set-state s 'blocked "proceed?")
+        (should (string-match-p "npm publish"
+                                (ghostherd-log-entry-screen (car ghostherd--log))))
+        ;; every other transition is far too common to keep screens for
+        (ghostherd--set-state s 'working "off it goes")
+        (should-not (ghostherd-log-entry-screen (car ghostherd--log)))))))
+
+(ert-deftest ghostherd-test-log-caps-screens-not-entries ()
+  "Five hundred one-line entries cost nothing; twenty 40x120 screens are
+the actual memory.  Old entries stay, they just stop carrying one."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :backend 'fake))
+            (ghostherd-tests--fake-screen "a screen")
+            (ghostherd-log-screens 2))
+        (dotimes (_ 5)
+          (ghostherd--set-state s 'working "w")
+          (ghostherd--set-state s 'blocked "b"))
+        (should (= (length ghostherd--log) 10))
+        (should (= (cl-count-if #'ghostherd-log-entry-screen ghostherd--log) 2))
+        ;; ...and they are the newest two blocks: entries alternate
+        ;; working/blocked, so the screens sit at 0 and 2, not 0 and 1.
+        (should (ghostherd-log-entry-screen (nth 0 ghostherd--log)))
+        (should (ghostherd-log-entry-screen (nth 2 ghostherd--log)))
+        (should-not (ghostherd-log-entry-screen (nth 4 ghostherd--log)))))))
+
+(ert-deftest ghostherd-test-log-trims-to-max ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :state 'idle))
+            (ghostherd-log-max 4)
+            (ghostherd-log-screens 0))
+        (dotimes (_ 10)
+          (ghostherd--set-state s 'working "w")
+          (ghostherd--set-state s 'idle "i"))
+        (should (= (length ghostherd--log) 4))))))
+
+(ert-deftest ghostherd-test-log-reads-in-causal-order ()
+  "What you sent, then what it did -- not the other way round."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :state 'idle)))
+        (ignore (ghostherd-tests--recording-keys
+                  (ghostherd-send s "please review the diff" t)))
+        (let ((texts (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))))
+          (should (= (length texts) 2))
+          (should (string-match-p "please review the diff" (nth 0 texts)))
+          (should (string-match-p "→ working" (nth 1 texts))))))))
+
+(ert-deftest ghostherd-test-log-renders-without-a-session ()
+  "The log outlives the sessions it describes, so rendering must not
+depend on any of them still existing."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (ghostherd--log-add "gone" 'life "killed")
+      (with-temp-buffer
+        (ghostherd-log-mode)
+        (ghostherd--log-render (current-buffer))
+        (should (string-match-p "gone" (buffer-string)))
+        (should (string-match-p "killed" (buffer-string)))))))
 
 ;;; OSC 9;4 progress
 
@@ -532,19 +753,6 @@ only for the shapes actually expected."
 
 ;;; Control keys
 
-(defmacro ghostherd-tests--recording-keys (&rest body)
-  "Run BODY with ghostel's send functions recorded into `sent'.
-`sent' collects (KEY-NAME . MODS) for keys and (:text . STRING) for text."
-  (declare (indent 0) (debug t))
-  `(let ((sent nil))
-     (cl-letf (((symbol-function 'ghostel-send-key)
-                (lambda (name &optional mods) (push (cons name mods) sent)))
-               ((symbol-function 'ghostel-paste-string)
-                (lambda (text) (push (cons :text text) sent)))
-               ((symbol-function 'derived-mode-p) (lambda (&rest _) t)))
-       ,@body
-       (nreverse sent))))
-
 (ert-deftest ghostherd-test-send-keys-resolves-aliases ()
   "Callers say \"esc\" or \"C-c\"; ghostel's encoder wants a name and a
 modifier string."
@@ -872,25 +1080,6 @@ apart from a session literally named \"unknown session: x\"."
 ;; these tests pin the call sites rather than either implementor: a fake
 ;; backend returns a known screen, and breaking the wiring fails a test
 ;; without tmux or a PTY being anywhere near it.
-
-(defvar ghostherd-tests--fake-screen ""
-  "Screen the `fake' backend reports.")
-
-(defvar ghostherd-tests--fake-live t
-  "What the `fake' backend says about liveness.")
-
-(defvar ghostherd-tests--fake-recipes nil
-  "Recipes the `fake' backend offers `ghostherd-restore'.")
-
-(cl-defmethod ghostherd-backend-capture
-  ((_backend (eql fake)) _session &optional _n)
-  ghostherd-tests--fake-screen)
-
-(cl-defmethod ghostherd-backend-live-p ((_backend (eql fake)) _session)
-  ghostherd-tests--fake-live)
-
-(cl-defmethod ghostherd-backend-list ((_backend (eql fake)))
-  ghostherd-tests--fake-recipes)
 
 (ert-deftest ghostherd-test-detect-reads-through-the-backend ()
   "Detection must take the screen from the backend, not from a buffer.

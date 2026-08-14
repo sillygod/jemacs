@@ -276,6 +276,46 @@ Two things, both learned the hard way:
   can answer and wedges the server for every later call too. That is not
   hypothetical: it is what the first version did.
 
+** What a state reason says
+
+=state-reason= used to hold the =:screen-rules= pattern that matched. That
+is a debugging artifact, and it leaked: the desktop notification, the
+switcher annotation and =bin/ghostherd state= all showed a regexp where
+the agent's question belonged. The readme even had to explain that the
+JSON listing needed escaping because "=reason= holds a raw regexp, which
+can contain anything at all".
+
+It now holds the *line* the pattern matched, cleaned of the box it was
+drawn in --- plus, where one is within =ghostherd-reason-context= rows
+above, the nearest line that survives cleaning, joined subject-first:
+
+: Bash(rm -rf build/ && npm publish) — Do you want to proceed?
+
+Subject first because the matched line is usually the *generic* half. On
+its own, "needs attention (Do you want to proceed?)" says no more than
+"needs attention" did, and it is the specific half that must survive
+truncation.
+
+The context lookup is a display heuristic and is allowed to be one: at
+worst a notification gains an irrelevant line. It cannot affect *state*,
+which is still decided by the pattern alone, and there is a test that
+holds that line. Where the matched line cleans away to nothing --- an
+anchored prompt like =^>= is all furniture --- the reason keeps the
+pattern rather than dressing it with whatever happened to precede it.
+
+** Why the log keeps screens
+
+Rule tuning needs the screen a rule fired against, and =ghostherd-explain=
+only offers that while the agent is still sitting on the prompt. Keeping
+it in the log means the evidence accumulates whether or not anyone was
+watching, which is what turns "tune the rules once there is data" from a
+task requiring presence into one requiring only attention.
+
+Only transitions into =blocked= are captured: they are rare --- once per
+prompt, not once per poll --- and they are the ones worth arguing about.
+Entries and screens are trimmed separately, because 500 one-line entries
+cost nothing and twenty 40x120 screens are the actual memory.
+
 ** The two OSC integrations that are not hooks
 
 - =ghostel-progress-function= is a single global function, very likely

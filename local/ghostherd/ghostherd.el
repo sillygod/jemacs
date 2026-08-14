@@ -450,6 +450,78 @@ host no longer exists to ask."
               "process exited")))))))
 
 
+;;; Herd log
+;;
+;; Notifications are the wrong medium for a herd that runs while you are
+;; elsewhere: they arrive once, in the order they happened, and are gone.
+;; The log is what you read when you come back -- and, because it keeps
+;; the screen behind each `blocked', it is also how `:screen-rules' get
+;; tuned without anyone having to be present at the moment a rule fired.
+
+(defcustom ghostherd-log-max 500
+  "Entries kept in the herd log.  Oldest are dropped first."
+  :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-log-screens 20
+  "How many captured screens the log keeps alongside `blocked' entries.
+
+The point of keeping them: rule tuning needs the screen a rule fired
+against, and =ghostherd-explain= only offers that while the agent is
+still sitting on the prompt.  Storing it means the data accumulates
+whether or not you were watching.
+
+Only transitions into `blocked' are captured -- they are rare, and they
+are the ones worth arguing about.  0 disables it."
+  :type 'integer
+  :group 'ghostherd)
+
+(cl-defstruct (ghostherd-log-entry (:constructor ghostherd-log-entry--create)
+                                   (:copier nil))
+  (time (current-time))
+  session
+  kind
+  text
+  screen)
+
+(defvar ghostherd--log nil
+  "Herd log entries, newest first.")
+
+(defun ghostherd--log-add (session kind text &optional screen)
+  "Record TEXT about SESSION under KIND, optionally with a SCREEN."
+  (push (ghostherd-log-entry--create
+         :session (if (ghostherd-session-p session)
+                      (ghostherd-session-name session)
+                    (format "%s" session))
+         :kind kind :text text :screen screen)
+        ghostherd--log)
+  ;; Trim by entries and by screens separately: 500 one-line entries cost
+  ;; nothing, and twenty 40x120 screens are the actual memory.
+  (when (> (length ghostherd--log) ghostherd-log-max)
+    (setq ghostherd--log (seq-take ghostherd--log ghostherd-log-max)))
+  (let ((kept 0))
+    (dolist (entry ghostherd--log)
+      (when (ghostherd-log-entry-screen entry)
+        (setq kept (1+ kept))
+        (when (> kept ghostherd-log-screens)
+          (setf (ghostherd-log-entry-screen entry) nil)))))
+  (when-let* ((buf (get-buffer "*ghostherd-log*")))
+    (when (get-buffer-window buf t)
+      (ghostherd--log-render buf)))
+  nil)
+
+(defun ghostherd--log-transition (session old new reason)
+  "Log SESSION moving from OLD to NEW because of REASON."
+  (ghostherd--log-add
+   session 'state
+   (format "%s → %s%s" (or old "?") new (if reason (format "  %s" reason) ""))
+   ;; One extra capture, only on the transition worth arguing about.  It
+   ;; is not free -- on the tmux backend it is a subprocess -- but an
+   ;; agent blocks once per prompt, not once per poll.
+   (when (and (eq new 'blocked) (> ghostherd-log-screens 0))
+     (ignore-errors (ghostherd--host-capture session)))))
+
+
 ;;; State detection
 
 (defun ghostherd--rule-matches-p (pattern text)
@@ -515,6 +587,96 @@ precedence order, for `ghostherd-explain'."
                            when (ghostherd--rule-matches-p pattern text)
                            collect (cons state pattern))))
 
+(defcustom ghostherd-reason-width 90
+  "Characters of screen text kept as a session's state reason."
+  :type 'integer
+  :group 'ghostherd)
+
+(defconst ghostherd--screen-furniture
+  "[│─╭╮╰╯┌┐└┘├┤┬┴┼┃━┏┓┗┛▌▐█▏▕]"
+  "Box-drawing and gutter characters agent TUIs pad their frames with.")
+
+(defun ghostherd--clean-screen-line (line)
+  "Return LINE as one readable sentence, or nil if nothing is left.
+
+A captured line arrives as the agent drew it: inside a box, padded to
+the pane width, often behind a prompt glyph.  None of that survives a
+trip through a desktop notification, so strip it here rather than at
+each of the four places the reason is displayed."
+  (let* ((s (replace-regexp-in-string ghostherd--screen-furniture " " line))
+         (s (replace-regexp-in-string "\\`[ \t❯›»▸▪●○*•>-]+" "" s))
+         (s (replace-regexp-in-string "[ \t]+" " " s))
+         (s (string-trim s)))
+    (unless (string-empty-p s)
+      (truncate-string-to-width s ghostherd-reason-width nil nil t))))
+
+(defcustom ghostherd-reason-context 3
+  "Lines to look back for the subject of a prompt the rules matched.
+
+The matched line is usually the *generic* half.  A claude permission
+prompt reads
+
+  Bash(rm -rf build/ && npm publish)
+
+  Do you want to proceed?
+
+and the pattern matches the second one, so \"needs attention (Do you
+want to proceed?)\" says no more than \"needs attention\" did.  The line
+that tells you what you are approving is above it, past however many
+blank or box-only rows the agent drew.  Set to 0 to use the matched line
+alone."
+  :type 'integer
+  :group 'ghostherd)
+
+(defun ghostherd--screen-lines (text pos)
+  "Return the line of TEXT containing POS, and the lines before it."
+  (let* ((start (1+ (or (cl-position ?\n text :end pos :from-end t) -1)))
+         (end (or (cl-position ?\n text :start pos) (length text))))
+    (cons (substring text start end)
+          (nreverse (split-string (substring text 0 (max 0 (1- start))) "\n")))))
+
+(defun ghostherd--matched-line (text pattern)
+  "Return the cleaned prompt of TEXT that PATTERN matched, or nil.
+
+The reason field used to hold the pattern itself, which is a debugging
+artifact: it leaked into the notification, the switcher annotation and
+the JSON listing, so \"agy needs attention\" was followed by a regexp
+rather than by the question the agent had asked.
+
+Returns the matched line, and where one is found within
+`ghostherd-reason-context' rows above it, the nearest line that survives
+cleaning -- joined subject-first, so truncation eats the generic half
+rather than the specific one.
+
+This is a display heuristic and is allowed to be one: at worst a
+notification gains an irrelevant line.  It cannot affect *state*, which
+is decided by the pattern alone."
+  (let ((case-fold-search nil))
+    (when-let* ((pos (string-match pattern text)))
+      (pcase-let* ((`(,line . ,before) (ghostherd--screen-lines text pos))
+                   (matched (ghostherd--clean-screen-line line)))
+        ;; Context only augments a line that said something itself.  An
+        ;; anchored prompt like "^> " cleans away to nothing, and dressing
+        ;; it with whatever preceded it would attribute an unrelated line
+        ;; to the reason.
+        (when matched
+          (let ((subject (cl-loop for candidate in (seq-take
+                                                    before
+                                                    ghostherd-reason-context)
+                                  for clean = (ghostherd--clean-screen-line
+                                               candidate)
+                                  when (and clean (not (equal clean matched)))
+                                  return clean)))
+            (if subject
+                (ghostherd--clean-screen-line (concat subject " — " matched))
+              matched)))))))
+
+(defun ghostherd--rule-reason (text hit)
+  "Return the human-readable reason for rule HIT against TEXT.
+Falls back to the pattern when the matched line cleans up to nothing --
+an anchored prompt like \"^> \" is all furniture."
+  (or (ghostherd--matched-line text (cdr hit)) (cdr hit)))
+
 (defun ghostherd--detect-state (session)
   "Return (STATE . REASON) for SESSION from screen rules / buffer liveness."
   (cond
@@ -540,12 +702,13 @@ precedence order, for `ghostherd-explain'."
           (cond
            ;; Screen rules keep priority for `blocked': a stale progress
            ;; report must never mask an agent sitting on a prompt.
-           ((eq (car-safe hit) 'blocked) hit)
+           ((eq (car-safe hit) 'blocked)
+            (cons 'blocked (ghostherd--rule-reason tail hit)))
            ;; Otherwise a live progress report beats scraping, which cannot
            ;; tell a working agent from a quiet one.
            ((ghostherd--progress-fresh-p session)
             (cons 'working (ghostherd--progress-reason session)))
-           (hit hit)
+           (hit (cons (car hit) (ghostherd--rule-reason tail hit)))
            ;; Known agent, no match → idle fallback (herdr-style)
            (t (cons 'idle "default_known_agent_idle_fallback"))))))))))
 
@@ -560,6 +723,7 @@ precedence order, for `ghostherd-explain'."
       ;; until the user visits the session.
       (when (memq new '(working blocked done))
         (setf (ghostherd-session-seen session) nil))
+      (ghostherd--log-transition session old new reason)
       (ghostherd--maybe-notify-state session old new)
       (run-hook-with-args 'ghostherd-state-change-hook session old new)
       (when (get-buffer "*ghostherd*")
@@ -752,6 +916,8 @@ PLIST keys:
            :notes notes
            :last-active (current-time)))
     (puthash name session ghostherd--sessions)
+    (ghostherd--log-add session 'life
+                        (format "spawned %s on %s" kind backend))
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
     (when display
@@ -820,6 +986,8 @@ running, and a session keeps the backend it was born with anyway."
                     :seen t
                     :last-active (current-time))
                    ghostherd--sessions)
+          (ghostherd--log-add name 'life
+                              (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
     (when (> restored 0)
       (ghostherd--ensure-poll-timer)
@@ -1098,6 +1266,8 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
   (let ((buf (ghostherd-session-buffer session))
         (id (ghostherd-session-id session)))
     (remhash id ghostherd--sessions)
+    (ghostherd--log-add session 'life
+                        (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
     (when kill-buffer
       ;; The host first: on tmux the buffer is only a client, so killing
@@ -1183,6 +1353,13 @@ When SUBMIT is non-nil, also send RET (Enter)."
   (unless (ghostherd--session-live-p session)
     (user-error "Session host is not live"))
   (ghostherd--host-send-text session text submit)
+  ;; Logged before the state change, so the log reads in causal order:
+  ;; what you sent, then what it did.
+  (ghostherd--log-add session 'input
+                      (format "← %s%s"
+                              (ghostherd--clean-screen-line
+                               (car (split-string text "\n" t)))
+                              (if submit "" "  (not submitted)")))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
   text)
@@ -1615,6 +1792,95 @@ what lets consult and marginalia treat these as sessions."
        (t (format "%ds" secs))))))
 
 
+;;; Herd log buffer
+
+(defun ghostherd--log-kind-face (kind)
+  "Face for a log entry of KIND."
+  (pcase kind
+    ('state 'default)
+    ('input 'font-lock-string-face)
+    ('life  'shadow)
+    (_      'default)))
+
+(defvar-keymap ghostherd-log-mode-map
+  :doc "Keymap for `ghostherd-log-mode'."
+  "RET" #'ghostherd-log-show-screen
+  "g"   #'ghostherd-log-refresh
+  "q"   #'quit-window)
+
+(define-derived-mode ghostherd-log-mode special-mode "GhostHerd-Log"
+  "Chronological log of what the herd did."
+  (setq truncate-lines t))
+
+(defun ghostherd--log-render (buffer)
+  "Draw the herd log into BUFFER."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)
+          (at-end (eobp))
+          (point-was (point)))
+      (erase-buffer)
+      ;; Oldest first: a log is read downwards, and the interesting end is
+      ;; the one you have not seen.
+      (dolist (entry (reverse ghostherd--log))
+        (let ((start (point)))
+          (insert (format "%s  %-14s %s\n"
+                          (format-time-string "%H:%M:%S"
+                                              (ghostherd-log-entry-time entry))
+                          (ghostherd-log-entry-session entry)
+                          (propertize (or (ghostherd-log-entry-text entry) "")
+                                      'face (ghostherd--log-kind-face
+                                             (ghostherd-log-entry-kind entry)))))
+          (when (ghostherd-log-entry-screen entry)
+            (put-text-property start (point) 'ghostherd-log-entry entry)
+            (save-excursion
+              (goto-char (1- (point)))
+              (insert (propertize "  ⏎" 'face 'shadow))))))
+      (when (= (point-min) (point-max))
+        (insert "Nothing logged yet.\n"))
+      (goto-char (if at-end (point-max) (min point-was (point-max)))))))
+
+(defun ghostherd-log-refresh ()
+  "Redraw the herd log."
+  (interactive)
+  (ghostherd--log-render (current-buffer)))
+
+(defun ghostherd-log-show-screen ()
+  "Show the screen captured with the log entry at point.
+
+This is the reason the log keeps them.  `ghostherd-explain' answers \"why
+is it in that state\" only while the agent is still in it; a rule that
+fired at 02:00 is otherwise unarguable by morning."
+  (interactive)
+  (let ((entry (get-text-property (point) 'ghostherd-log-entry)))
+    (unless entry
+      (user-error "No screen kept for this entry"))
+    (with-help-window "*ghostherd screen*"
+      (with-current-buffer standard-output
+        (insert (format "%s  %s  %s\n"
+                        (format-time-string "%F %T"
+                                            (ghostherd-log-entry-time entry))
+                        (ghostherd-log-entry-session entry)
+                        (ghostherd-log-entry-text entry)))
+        (insert (make-string 60 ?-) "\n")
+        (insert (ghostherd-log-entry-screen entry))
+        (unless (bolp) (insert "\n"))
+        (insert (make-string 60 ?-) "\n")))))
+
+;;;###autoload
+(defun ghostherd-log ()
+  "Show what the herd has been doing.
+
+Every state transition and every prompt sent, with a timestamp.  Lines
+marked =⏎= kept the screen that produced them; =RET= shows it."
+  (interactive)
+  (let ((buf (get-buffer-create "*ghostherd-log*")))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'ghostherd-log-mode)
+        (ghostherd-log-mode))
+      (ghostherd--log-render buf))
+    (pop-to-buffer buf)))
+
+
 ;;; Sidebar
 
 (defvar ghostherd--sidebar-filter-project nil
@@ -1640,6 +1906,7 @@ what lets consult and marginalia treat these as sessions."
     (ghostherd-next-blocked                  . "Next blocked / done")
     (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
     (ghostherd-explain                       . "Explain how state was decided")
+    (ghostherd-log                           . "Herd log (what happened while you were away)")
     (ghostherd-sidebar-help                  . "This help")
     (quit-window                             . "Quit"))
   "Commands listed by `ghostherd-sidebar-help', in display order.")
@@ -1715,6 +1982,7 @@ Commands with no binding in the current state are omitted."
   "g" #'ghostherd-sidebar-refresh
   "q" #'quit-window
   "." #'ghostherd-next-blocked
+  "L" #'ghostherd-log
   "M" #'ghostherd-sidebar-mark-state)
 
 (define-derived-mode ghostherd-sidebar-mode tabulated-list-mode "GhostHerd"
@@ -2064,6 +2332,7 @@ sweeps every `ghostherd-poll-interval'."
             ("k" "kill" ghostherd-kill)
             ("r" "rename" ghostherd-rename)
             ("M" "mark state" ghostherd-mark-state)
+            ("l" "herd log" ghostherd-log)
             ("g" "poll now" ghostherd-poll-all)))
          (key (char-to-string
                (read-char

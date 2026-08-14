@@ -1477,6 +1477,7 @@
        "ahi" '(ghostherd-prompt-interactive :which-key "prompt agent")
        "ahk" '(ghostherd-kill :which-key "kill")
        "ahr" '(ghostherd-rename :which-key "rename")
+   "ahl" '(ghostherd-log :which-key "herd log")
 
        "ad" '(docker t :which-key "docker")
 

@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 109 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 122 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -112,6 +112,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-abort=               | Send C-c                             |
 | =M-x ghostherd-answer=              | Answer a menu prompt by number       |
 | =M-x ghostherd-restore=             | Re-adopt agents that outlived Emacs  |
+| =M-x ghostherd-log=                 | What the herd did while you were away |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 
 ** Leader keys (=SPC a h …=)
@@ -128,11 +129,13 @@ report. Notes do, because they were written onto the host.
 | =ahi= | prompt agent   |
 | =ahk= | kill           |
 | =ahr= | rename         |
+| =ahl= | herd log       |
 
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
+=L= herd log ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
@@ -406,6 +409,30 @@ so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
 
+* What happened while you were away (=ghostherd-log=)
+
+=SPC a h l=, or =L= in the sidebar. Every state transition and every
+prompt sent, oldest first, with a timestamp:
+
+#+begin_example
+  22:36:48  reviewer       spawned claude on tmux
+  22:36:48  reviewer       starting → working  input sent
+  22:36:48  reviewer       ← review the diff on this branch
+  22:36:48  reviewer       working → blocked  Bash(rm -rf build/ && npm publish) — Do you want to proceed?  ⏎
+  22:36:48  reviewer       blocked → idle  seen
+#+end_example
+
+Notifications are the wrong medium for a herd that runs while you are
+elsewhere: they arrive once and are gone. This is what you read when you
+get back.
+
+A line marked =⏎= kept the *screen* that produced it; =RET= shows it.
+Only transitions into =blocked= keep one, and only the last
+=ghostherd-log-screens= of them --- which is the other reason the log
+exists. =ghostherd-explain= can only answer "why is it in that state"
+while the agent is still in it, so a rule that fired at 02:00 would
+otherwise be unarguable by morning.
+
 * Per-project defaults
 
 Drop this in a project's =.dir-locals.el= and =ghostherd-new= preselects the
@@ -431,6 +458,17 @@ not re-read.
         ghostherd-spawn-delay 0.8
         ghostherd-notify-on-blocked t
         ghostherd-sidebar-side 'left)
+
+  ;; The herd log.  Entries are cheap; the screens kept behind `blocked'
+  ;; transitions are the actual memory (about 5K each).
+  (setq ghostherd-log-max 500
+        ghostherd-log-screens 20)
+
+  ;; How much screen a state reason carries.  The matched line is usually
+  ;; the generic half of a prompt ("Do you want to proceed?"); the subject
+  ;; is above it, past however many box-drawing rows the agent drew.
+  (setq ghostherd-reason-width 90
+        ghostherd-reason-context 3)
 
   ;; OSC 9;4 progress as evidence of `working'
   (setq ghostherd-use-osc-progress t

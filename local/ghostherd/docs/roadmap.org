@@ -17,7 +17,12 @@ Goal: make state trustworthy for daily use without false blocked spam.
 - [X] OSC title → sidebar summary column (opt-in; see the width note under
   Config knobs)
 - [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
-  data; =ghostherd-explain= is what produces it
+  data; =ghostherd-explain= produces it live, and the herd log now keeps
+  the screen behind every =blocked= so it accumulates unattended
+- [X] A state reason says what the agent asked rather than which regexp
+  matched, so a notification is actionable without visiting the agent
+- [X] =ghostherd-log=: what the herd did while you were away, with the
+  screen behind each =blocked= kept for tuning
 - [X] Rules match case-sensitively rather than under whatever
   =case-fold-search= the poll timer happened to fire under.  See "Rule
   matching case" in [[file:design.org][design.org]]; the patterns themselves are unchanged,

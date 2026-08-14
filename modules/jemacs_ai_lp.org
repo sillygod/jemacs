@@ -533,6 +533,7 @@
                         ghostherd-abort
                         ghostherd-answer
                         ghostherd-restore
+                    ghostherd-log
                         ghostherd-visit
                         ghostherd-mode)
              :config
@@ -587,7 +588,8 @@
                (kbd "i") #'ghostherd-sidebar-prompt
                (kbd "s") #'ghostherd-sidebar-toggle-project-filter
                (kbd ".") #'ghostherd-next-blocked
-               (kbd "M") #'ghostherd-sidebar-mark-state
+               (kbd "L") #'ghostherd-log
+           (kbd "M") #'ghostherd-sidebar-mark-state
                (kbd "q") #'quit-window)))
   #+end_src
 
