@@ -234,6 +234,20 @@ path for the title.  Nothing overflows either way."
   :type 'boolean
   :group 'ghostherd)
 
+(defcustom ghostherd-detached-glyph "·"
+  "Marker appended to the sidebar's state glyph when nothing is attached.
+
+Rides in the spare character of the two-wide glyph column rather than
+taking a column of its own: at the default sidebar width there is no
+room for another column, so a `View' one would be fitted away exactly
+where it is needed.
+
+Marks the *detached* rows rather than the attached ones, which keeps it
+silent on the ghostel backend -- there a registered session always has
+its buffer, so nothing is ever marked."
+  :type 'string
+  :group 'ghostherd)
+
 (defcustom ghostherd-message-template
   "[ghostherd message from %s → %s]\n%s\n"
   "Template for inter-agent messages.
@@ -1641,7 +1655,14 @@ Commands with no binding in the current state are omitted."
       (with-current-buffer standard-output
         (insert "GhostHerd sidebar\n\n")
         (pcase-dolist (`(,keys . ,description) rows)
-          (insert (format line-format keys description)))))))
+          (insert (format line-format keys description)))
+        (insert "\nState glyphs\n\n")
+        (dolist (state '(blocked working done idle starting dead))
+          (insert (format "  %-3s %s\n"
+                          (ghostherd--state-glyph state) state)))
+        (insert (format "\n  %-3s no view attached -- the agent is running\n"
+                        ghostherd-detached-glyph))
+        (insert "      and nobody is looking.  RET attaches one.\n")))))
 
 (defvar-keymap ghostherd-sidebar-mode-map
   :doc "Keymap for `ghostherd-sidebar-mode'."
@@ -1744,7 +1765,16 @@ columns back rather than needing the buffer recreated."
 (defun ghostherd--sidebar-cell (session key state face)
   "Return SESSION's cell for column KEY, given its STATE and FACE."
   (pcase key
-    ('glyph   (propertize (ghostherd--state-glyph state) 'face face))
+    ('glyph   (concat
+               (propertize (ghostherd--state-glyph state) 'face face)
+               ;; Whether anyone is looking is a fact about the *view*,
+               ;; so it is a separate mark rather than a state glyph of
+               ;; its own -- an agent is working or blocked regardless.
+               ;; It belongs in the overview all the same: without it a
+               ;; herd running headless looks exactly like one you are
+               ;; watching.
+               (unless (buffer-live-p (ghostherd-session-buffer session))
+                 (propertize ghostherd-detached-glyph 'face 'shadow))))
     ('name    (propertize (ghostherd-session-name session) 'face face))
     ('kind    (symbol-name (ghostherd-session-kind session)))
     ('state   (propertize (symbol-name state) 'face face))

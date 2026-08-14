@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 code-complete* — attach path needs the manual pass        |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 104 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 106 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -83,8 +83,24 @@ the next poll anyway. The exit hook therefore asks
 =ghostherd-backend-view-is-host-p= first, and an unknown backend gets
 the safe answer.
 
-The switcher says =detached= for a session with no view. It is a state
-of the *view*, deliberately not of =state=.
+Both listings say so. The switcher annotates such a session =detached=;
+the sidebar appends =ghostherd-detached-glyph= to its state glyph, so a
+row reads =○·= rather than =○=. It is a state of the *view*,
+deliberately not of =state= --- an agent is working or blocked whether
+or not anyone is watching.
+
+The mark rides in the spare character of the two-wide glyph column
+instead of getting a column of its own. At the default sidebar width
+there is no room for another column, so a =View= column would be fitted
+away in exactly the situation that needs it. Marking the detached rows
+rather than the attached ones also keeps it silent on the ghostel
+backend, where a registered session always has its buffer.
+
+This was originally left out of the sidebar on the grounds that the
+switcher is where you choose an agent. That was wrong, and the first
+run of T10 found it: the sidebar is the herd *overview*, and an
+overview that cannot distinguish a herd running headless from one you
+are watching is not describing the herd.
 
 ** Surviving Emacs
 
@@ -216,6 +232,10 @@ for.
 =a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
+
+=?= also prints the glyph legend: =⚠= blocked, =⟳= working, =✓= done,
+=○= idle, =…= starting, =✖= dead, and a trailing =·= for a session with
+no view attached.
 
 =?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
 keymaps rather than this table, so it stays correct under Evil or any

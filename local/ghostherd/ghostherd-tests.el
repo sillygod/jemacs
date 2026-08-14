@@ -240,6 +240,31 @@ drift; check that they really do line up at both extremes."
             (should (= (length tabulated-list-format)
                        (length (cadr (car tabulated-list-entries)))))))))))
 
+(ert-deftest ghostherd-test-sidebar-marks-detached-rows ()
+  "A herd running headless must not look identical to one you are
+watching.  The mark rides in the spare character of the glyph column,
+because at the default sidebar width a column of its own would be
+fitted away exactly where it is needed."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'tmux))
+           (attached (ghostherd--sidebar-cell s 'glyph 'idle 'default)))
+      (should (equal attached (ghostherd--state-glyph 'idle)))
+      (setf (ghostherd-session-buffer s) nil)
+      (let ((detached (ghostherd--sidebar-cell s 'glyph 'idle 'default)))
+        (should-not (equal detached attached))
+        (should (string-prefix-p attached detached))
+        ;; It has to fit the column it borrows, or it pushes the row out.
+        (should (<= (string-width detached)
+                    (nth 2 (assq 'glyph ghostherd--sidebar-column-specs))))))))
+
+(ert-deftest ghostherd-test-sidebar-mark-is-silent-on-ghostel ()
+  "On the ghostel backend a registered session always has its buffer, so
+the mark must never appear there -- the concept does not exist."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (should (equal (ghostherd--sidebar-cell s 'glyph 'idle 'default)
+                     (ghostherd--state-glyph 'idle))))))
+
 ;;; Terminal title
 
 (ert-deftest ghostherd-test-session-title-filters-noise ()
