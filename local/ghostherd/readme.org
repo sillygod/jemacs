@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3 code-complete* — attach path needs the manual pass        |
+| Phase       | *3 done* — T10 passed, including attach/detach/re-attach     |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= — 106 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -85,7 +85,7 @@ the safe answer.
 
 Both listings say so. The switcher annotates such a session =detached=;
 the sidebar appends =ghostherd-detached-glyph= to its state glyph, so a
-row reads =○·= rather than =○=. It is a state of the *view*,
+row reads =○▪= rather than =○=. It is a state of the *view*,
 deliberately not of =state= --- an agent is working or blocked whether
 or not anyone is watching.
 
@@ -234,8 +234,8 @@ for.
 =M= mark state · =q= quit
 
 =?= also prints the glyph legend: =⚠= blocked, =⟳= working, =✓= done,
-=○= idle, =…= starting, =✖= dead, and a trailing =·= for a session with
-no view attached.
+=○= idle, =…= starting, =✖= dead, and a trailing =▪= — in the row's own
+colour — for a session with no view attached.
 
 =?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
 keymaps rather than this table, so it stays correct under Evil or any
@@ -951,9 +951,11 @@ record of what shipped and what is left.
 
 *** What is left
 
-- [ ] *The attach path has never run against real ghostel.* Everything
-  else is exercised headlessly, but =ghostel-exec= needs the compiled
-  module, so T10–T12 in the manual plan are the real acceptance test
+- [X] The attach path, T10.  Spawn detached, detect over =capture-pane=,
+  kill the buffer, watch the row stay, =RET= back onto the same agent.
+  =ghostel-exec= needs the compiled module, so this could only ever be
+  a manual check; it passed.  T11 (surviving an Emacs quit) and T12
+  (working → detach → still working) are still worth a run
 - [ ] Tune =:screen-rules= against actual =capture-pane= output. This
   is the leftover Phase 1.1 data pass, and it is *why* Phase 3 was
   worth doing first: the tuning loop was only hard because the thing

@@ -234,7 +234,7 @@ path for the title.  Nothing overflows either way."
   :type 'boolean
   :group 'ghostherd)
 
-(defcustom ghostherd-detached-glyph "·"
+(defcustom ghostherd-detached-glyph "▪"
   "Marker appended to the sidebar's state glyph when nothing is attached.
 
 Rides in the spare character of the two-wide glyph column rather than
@@ -244,7 +244,13 @@ where it is needed.
 
 Marks the *detached* rows rather than the attached ones, which keeps it
 silent on the ghostel backend -- there a registered session always has
-its buffer, so nothing is ever marked."
+its buffer, so nothing is ever marked.
+
+Was a shadowed middle dot, on the theory that a detached agent is the
+normal case on the tmux backend and should not shout.  It undershot:
+one dim pixel next to a glyph is not a signal, and information nobody
+notices is information that is not there.  Something with ink, in the
+row's own colour."
   :type 'string
   :group 'ghostherd)
 
@@ -1774,7 +1780,7 @@ columns back rather than needing the buffer recreated."
                ;; herd running headless looks exactly like one you are
                ;; watching.
                (unless (buffer-live-p (ghostherd-session-buffer session))
-                 (propertize ghostherd-detached-glyph 'face 'shadow))))
+                 (propertize ghostherd-detached-glyph 'face face))))
     ('name    (propertize (ghostherd-session-name session) 'face face))
     ('kind    (symbol-name (ghostherd-session-kind session)))
     ('state   (propertize (symbol-name state) 'face face))
