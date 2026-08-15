@@ -1,0 +1,120 @@
+#+TITLE: personal.el (template)
+
+Copy this file to =personal_lp.org= (git-ignored) and edit it, then run
+=./lp.sh=.  It tangles to =settings.el=, which =init.el= loads last --- after
+straight.el, use-package and every module is up.
+
+* where personal settings go
+
+  Two hooks, and the only thing that decides between them is *when the value
+  is needed*:
+
+  | file             | loaded at             | available there            | put here                                          |
+  |------------------+-----------------------+----------------------------+---------------------------------------------------|
+  | =config.el=      | early-init, first     | plain =setq= / =defvar=    | values a module reads *while being required*      |
+  | =settings.el=    | end of init.el, last  | everything                 | keys, keybindings, overrides, personal packages    |
+
+  Within a =use-package= form the split follows the same rule, because the
+  keywords do not all run at the same moment.  =:custom= and =:init= run when
+  the module is required; =:config= waits until the package actually loads,
+  which with =:defer= can be *later than this file*.
+
+  | part                                    | evaluated                        | personal value goes         |
+  |-----------------------------------------+----------------------------------+-----------------------------|
+  | =:straight= recipe, =:load-path=        | at require time                  | =config.el=                 |
+  | =:if= / =:when=                         | at require time                  | =config.el=                 |
+  | =:custom=                               | at require time, before =:init=  | neutral default in the module org, overridden here |
+  | =:init= needing a value                 | at require time                  | =config.el=                 |
+  | =:init= that is a personal side effect  | ---                              | straight into this file     |
+  | =:config= on a deferred package         | after the package loads          | here, via =with-eval-after-load= |
+
+  Two things that bite:
+
+  1. A bare =setq= here is *overwritten* by a deferred package's =:config=,
+     which runs later.  Use =with-eval-after-load= for those.
+  2. =:custom= expands to =customize-set-variable=, which honours a variable's
+     =:set= function.  Overriding it with a bare =setq= bypasses =:set= and
+     silently does nothing for variables that have one --- use
+     =customize-set-variable= to override, too.
+
+  And before splitting a package at all, ask whether it means anything to
+  anyone else.  A wholly private package (private repo, personal
+  credentials) should not be split --- move the entire =use-package= form
+  here and leave a pointer in the module org.
+
+* modules
+
+  #+begin_src emacs-lisp
+    ;;; mycraft --- Summary  -*- lexical-binding: t; -*-
+    ;;; Copyright (C) 2020 mycraft maintainers
+    ;;; Author: Jing
+    ;;; package --- mycraft
+    ;;; Commentary:
+
+    ;;; Code:
+
+
+    (require 'jemacs-theme)
+    (require 'jemacs-unarrange)
+    (require 'jemacs-note-taking)
+    (require 'jemacs-python)
+    (require 'jemacs-go)
+    (require 'jemacs-rust)
+    (require 'jemacs-frontend)
+    (require 'jemacs-project)
+    (require 'jemacs-version-control)
+    (require 'jemacs-ai)
+  #+end_src
+
+* keybindings
+
+  Personal side effects --- the kind of thing that would otherwise sit in a
+  module's =:init= and be pushed to everyone.
+
+  #+begin_src emacs-lisp
+    (global-set-key (kbd "<escape>") 'keyboard-quit)
+    (with-eval-after-load 'evil
+      (evil-define-key 'emacs 'global (kbd "M-b") 'buffer-transient)
+      (evil-define-key 'emacs 'global (kbd "M-w") 'window-transient))
+
+    (use-package ielm
+      :defer t
+      :after evil
+      :init
+      (evil-define-key 'insert interior-emacs-lisp-mode-map (kbd "M-RET") #'ielm-return)
+      (evil-define-key 'insert interior-emacs-lisp-mode-map (kbd "RET") #'electric-newline-and-maybe-indent)
+      (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<up>") #'previous-line)
+      (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "<down>") #'next-line)
+      (evil-define-key 'insert inferior-emacs-lisp-mode-map (kbd "M-<up>") #'comint-previous-input))
+  #+end_src
+
+* ai keys
+
+  #+begin_src emacs-lisp
+    (setq mistral_api_key "")
+    (setq groq_api_key "")
+    (setq codestral_api_key "")
+    (setq gemini_api_key "")
+  #+end_src
+
+* wholly personal packages
+
+  Private repo plus per-account cloud credentials --- nothing here is
+  reusable, so the whole declaration lives in this file rather than being
+  split across a module org.  See the =ecloud= heading in
+  [[file:modules/jemacs_unarrange_lp.org][modules/jemacs_unarrange_lp.org]].
+
+  #+begin_src emacs-lisp
+    ;; (use-package ecloud
+    ;;   :straight (:local-repo "/path/to/your/ecloud" :files ("emacs/*.el" "server"))
+    ;;   :custom
+    ;;   (ecloud-accounts '((staging . "/path/to/staging-sa.json")
+    ;;                      (production . "/path/to/production-sa.json"))))
+  #+end_src
+
+* provide
+
+  #+begin_src emacs-lisp
+    (provide 'settings)
+    ;;; settings.el ends here
+  #+end_src

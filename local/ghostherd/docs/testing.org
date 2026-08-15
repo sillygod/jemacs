@@ -1,0 +1,276 @@
+#+TITLE: ghostherd — testing
+
+How the suite is built and what still needs a human. The manual is
+[[file:../readme.org][readme.org]].
+
+* Automated (=ghostherd-tests.el=)
+
+#+begin_src bash
+  cd local/ghostherd
+  emacs --batch -L . -l ghostherd.el -l ghostherd-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
+
+Covers the parts that need no PTY: rule matching and precedence, OSC
+progress freshness and handler chaining, state-detection precedence, sidebar
+column fitting, title filtering, naming and age formatting.
+
+Phase 3 added the host slot, and the way it is tested is the point: a
+=fake= backend answers with a known screen, so the tests pin the *call
+sites* rather than either implementor. Rewiring detection back to a
+buffer fails a test with no tmux and no PTY anywhere near it. For tmux
+itself, =ghostherd-tmux--call= is the single seam every invocation
+passes through, so stubbing it pins the actual command lines --- which
+is where this backend's mistakes live: a missing =\==, a =paste-buffer=
+without =-r=, a =capture-pane= that grew a =-J=.
+
+One test runs against a real tmux (spawn → capture → send → restore →
+kill) and is skipped when tmux is absent. It is the only thing that
+would catch tmux changing its mind about a flag.
+
+The suite was mutation-checked rather than merely run. Breaking the
+blocked-beats-progress rule, the progress chaining, the column budget,
+the mandatory-column flag and the title filter each fail a test; so do
+marking a detached view as =dead=, dropping the exact-target =\==,
+joining wrapped lines in a capture, letting =paste-buffer= turn
+newlines into submissions, hashing a project root with and without its
+trailing slash, and letting restore clobber a session it already knows.
+
+That exercise has now found two real defects. The first was a floor on
+the column budget that made the mandatory flag unreachable. The second
+was an off-by-one in the new screen tail: a capture of exactly N rows
+ends in a newline, so splitting it yields N+1 fields and taking the
+last N drops the *first* line --- which is how the first thing an agent
+printed goes missing from a screen that is plainly still showing it.
+
+* Manual
+
+The interactive spawn/kill paths still need a human, since driving real
+ghostel PTYs headlessly is what Phase 1 deferred. Run after reloading config
+(or restarting Emacs) so =local/ghostherd= and leader keys are loaded.
+
+* Prerequisites
+
+1. =ghostel= package installed and working (=M-x ghostel= opens a shell).
+2. CLIs on =PATH=: =claude=, =grok=, =agy= (skip kinds you do not have).
+3. =tmux= on =PATH= for T10–T12 (developed against 3.5a).
+4. =alert= available (this config sets =alert-default-style= to =osx-notifier=).
+5. =jemacs-ai= loaded so =use-package ghostherd= ran; first command will load the package and enable =ghostherd-mode=.
+
+* Smoke (load / compile)
+
+In a shell:
+
+#+begin_src bash
+  cd ~/.emacs.d/local/ghostherd
+  emacs --batch -L . -f batch-byte-compile \
+        ghostherd-backend.el ghostherd-tmux.el ghostherd.el
+#+end_src
+
+Expect: no errors (warnings about free vars from ghostel internals are OK if any).
+
+In Emacs:
+
+#+begin_src emacs-lisp
+  (require 'ghostherd)
+  (ghostherd-mode 1)
+  (featurep 'ghostherd)   ; => t
+#+end_src
+
+* Manual test plan
+
+Run each row; mark pass/fail. Prefer a real project directory so project
+filter and buffer names look right.
+
+** T1 — Spawn single agent
+
+| Step | Action                                      | Expected                                      |
+|------+---------------------------------------------+-----------------------------------------------|
+| 1    | =SPC a h n= (or =M-x ghostherd-new=)        | Prompts kind / name / dir / args / notes      |
+| 2    | Kind =claude=, name =t1-claude=             | Buffer =*ghostherd:t1-claude*= appears        |
+| 3    | Wait ~1–2s                                  | CLI starts (not stuck forever at bare shell)  |
+| 4    | Repeat for =grok= and =agy= if installed    | Same for each kind                            |
+
+Failure modes: spawn delay too short → raise =ghostherd-spawn-delay=;
+command not found → fix PATH for Emacs (login shell / exec-path).
+
+** T2 — Sidebar + switch
+
+| Step | Action                         | Expected                                      |
+|------+--------------------------------+-----------------------------------------------|
+| 1    | =SPC a h b=                    | Side window =*ghostherd*= with session rows   |
+| 2    | Move to a row, =RET=           | Focuses that agent buffer                     |
+| 3    | =SPC a h s=                    | Completing-read lists agents with state glyph |
+| 4    | =g= in sidebar                 | Rows refresh without error                    |
+
+** T3 — Pair layout
+
+| Step | Action                    | Expected                                           |
+|------+---------------------------+----------------------------------------------------|
+| 1    | In a project: =SPC a h 2= | Prompts two kinds/names                            |
+| 2    | Accept defaults           | Two windows: implementer \| reviewer, both running |
+
+** T4 — State detection
+
+| Step | Action                                          | Expected                          |
+|------+-------------------------------------------------+-----------------------------------|
+| 1    | Ask agent to do a short task                    | Sidebar/state → =working= (⟳)     |
+| 2    | Trigger a permission/approval prompt if possible | State → =blocked= (⚠)            |
+| 3    | macOS notification on blocked                   | Banner via =osx-notifier=         |
+| 4    | Finish task, leave session unfocused            | Eventually =done= (✓) or =idle=   |
+| 5    | =SPC a h .=                                     | Jumps to blocked/done agent       |
+| 6    | If detection wrong: =M-x ghostherd-mark-state=  | Manual override sticky until auto |
+
+Screen rules are heuristic. Prefer *missed blocked* over *false blocked*.
+Tune =:screen-rules= in =ghostherd-agent-specs= when a CLI UI changes.
+
+** T5 — Inter-agent message
+
+| Step | Action                                                        | Expected                                      |
+|------+---------------------------------------------------------------+-----------------------------------------------|
+| 1    | Have two live sessions (=implementer=, =reviewer=)            | Both in herd                                  |
+| 2    | =SPC a h m= → target =reviewer=, body =hello from test=       | Text pasted into reviewer (submitted if configured) |
+| 3    | Elisp: =(ghostherd-message "implementer" "reviewer" "ping" :submit t)= | Attributed header + body in reviewer     |
+| 4    | =(ghostherd-read "reviewer" 40)=                              | String contains recent tail                   |
+| 5    | =(ghostherd-prompt "reviewer" "Reply with pong only")=        | Prompt submitted                              |
+
+** T6 — ghostel_cmd from inside an agent
+
+Only if ghostel shell integration works in that buffer:
+
+#+begin_src bash
+  ghostel_cmd ghostherd-list
+  ghostel_cmd ghostherd-state implementer
+#+end_src
+
+Expected: text listing / state line; unknown session returns a clear error string.
+
+** T7 — Exit / kill / notify
+
+| Step | Action                                      | Expected                                |
+|------+---------------------------------------------+-----------------------------------------|
+| 1    | Quit the agent CLI (=/exit=, =C-c=, etc.)   | Session → =dead=; buffer *not* auto-killed |
+| 2    | Desktop notify on exit (if enabled)         | =ghostherd · <name> exited=             |
+| 3    | =SPC a h k= on that session                 | Removed from herd; buffer killed        |
+
+** T8 — Project filter
+
+| Step | Action                                      | Expected                     |
+|------+---------------------------------------------+------------------------------|
+| 1    | Spawn agents in two different projects      | Both listed                  |
+| 2    | In project A, sidebar =s=                   | Only project A sessions show |
+| 3    | =s= again                                   | Filter off                   |
+
+** T9 — Modeline
+
+With =ghostherd-mode= on and ≥1 session: mode-line shows a herd summary
+(e.g. cow glyph + counts). Click → opens sidebar.
+
+** T10 — tmux backend, headless
+
+This is the acceptance test for Phase 3. Everything below T10 is
+exercised by ERT *except* attach, which needs the compiled ghostel
+module and so has never run outside a real Emacs.
+
+Set =(setq ghostherd-backend 'tmux)= first.
+
+| Step | Action                                             | Expected                                             |
+|------+----------------------------------------------------+------------------------------------------------------|
+|    1 | =SPC a h n= → claude, name =t10=, =:display= on    | Buffer appears; the agent is *inside* tmux           |
+|    2 | =tmux -L ghostherd list-sessions= in a real shell  | One =gh-<hash>-t10=                                  |
+|    3 | Sidebar: state tracks the agent as usual           | Detection is now =capture-pane=, not the buffer      |
+|    4 | =M-x ghostherd-explain=                            | Shows host id + backend, and the captured tail       |
+|    5 | Kill the =*ghostherd:t10*= buffer                  | Row stays; switcher annotates it =detached=          |
+|    6 | Sidebar =RET= on that row                          | Re-attaches; same conversation, nothing lost         |
+
+Failure modes: no session at step 2 → tmux not on Emacs's =exec-path=;
+status bar visible after attach → the generated config was not read,
+check =ghostherd-tmux--config-file= and =tmux -L ghostherd kill-server=.
+
+** T11 — Surviving Emacs
+
+| Step | Action                                    | Expected                                       |
+|------+-------------------------------------------+------------------------------------------------|
+|    1 | With a live tmux-backed agent, quit Emacs | =tmux -L ghostherd list-sessions= still lists it |
+|    2 | Start Emacs, run any ghostherd command    | =ghostherd-mode= restores it, detached          |
+|    3 | Check the sidebar                         | Name, kind, project and *notes* all came back  |
+|    4 | =RET=                                     | Attaches to the agent that never stopped       |
+|    5 | =SPC a h k=                               | Session *and* tmux session both gone           |
+
+** T12 — Detach is not death
+
+The bug this phase most had to avoid.
+
+| Step | Action                                        | Expected                                  |
+|------+-----------------------------------------------+-------------------------------------------|
+|    1 | Attach a tmux-backed agent, set it working    | State =working=                           |
+|    2 | Kill the buffer while it is still working     | *No* "exited" notification; state unchanged |
+|    3 | Wait a poll or two                            | Still =working=, still detached           |
+|    4 | Quit the agent CLI itself (=/exit=)           | *Now* =dead=, and the last screen is still capturable |
+
+* Dogfood log
+
+Screen rules are heuristics against a UI that changes between releases,
+so record what was observed against which version.  Prefer a *missed*
+=blocked= over a false one.  =M-x ghostherd-explain= is what produces
+the evidence: it shows the scraped tail, every pattern that matched it,
+and which one won.
+
+| CLI    | Version tested | Known false positive / miss | Fix applied |
+|--------+----------------+-----------------------------+-------------|
+| claude |                |                             |             |
+| grok   |                |                             |             |
+| agy    | 1.1.13         | =Thinking= matches a model name in the =/model= picker | not yet |
+| agy    | 1.1.13         | =^>= matched the transcript, not the prompt | =^> *$= |
+
+agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
+repaints its whole UI on every SIGWINCH, so an attached window flickers
+while dragged --- its own behaviour, not the nesting's; see "What the
+tmux host costs" in [[file:design.org][design.org]].
+
+The one that mattered, from the log's second hour.  agy scrolls rather
+than repaints, so every line you have ever typed stays on screen as
+=> what you typed=.  The idle rule =^>= matched those, which means it
+reported =idle= from the first time you pressed Return --- forever, and
+regardless of what the agent was doing.  Combined with the idle→done
+promotion, every prompt produced a =done= notification about a second
+after it was sent.
+
+The reason field said so out loud, which is what made it findable:
+
+: state    ○ idle
+: reason   execute date command      ← sent half a minute earlier
+
+Fixed by anchoring to an *empty* prompt, =^> *$=.  Free to tighten,
+because a prompt the rules fail to recognise falls through to the idle
+default anyway.  claude's separator line and grok's banner were the same
+category error --- frame, not state --- and are gone.
+
+First finding, from the herd log's first hour: choosing a model with
+=/model= lists =Claude Sonnet 4.6 (Thinking)=, and the =working= rule
+=Thinking= matches it.  The agent is idle at a menu, the herd says
+=working=, and the churn out of it fires a spurious =done= notification a
+second later.  A rule anchored to how the status line actually draws it
+--- =Thinking…= with the ellipsis, or leading whitespace --- would not.
+Left alone deliberately: it is one observation, and the point of the log
+is to collect several before touching thirty patterns.
+
+Anything else worth recording:
+
+- [ ] spawn-delay too low on this machine: _______________
+- [ ] =ghostel_cmd= whitelist missing after reload: _______________
+- [ ] Other: _______________
+
+* Remaining test gaps
+
+| Suite              | Scope                                    | Notes                     |
+|--------------------+------------------------------------------+---------------------------|
+| ERT unit           | *done* --- see =ghostherd-tests.el=      | No PTY needed             |
+| ERT, fake backend  | *done* --- detection/read through the slot | No tmux, no PTY         |
+| ERT, stubbed tmux  | *done* --- the command lines themselves  | Stubs =--call=            |
+| ERT, real tmux     | *done* --- spawn/capture/send/restore/kill | Skipped without tmux    |
+| Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
+| Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
+
+Do *not* block UX work on full TUI integration tests of claude/grok
+themselves. That is still the Phase 1 gap, and Phase 3 did not close it.

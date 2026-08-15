@@ -1,5 +1,5 @@
 .credentials
-.elc
+*.elc
 .DS_Store
 
 .vscode
@@ -18,3 +18,7 @@ config.el
 modules/*.el
 core/*.el
 .aider*
+
+;; personal / machine-specific configuration
+personal_lp.org
+custom.el

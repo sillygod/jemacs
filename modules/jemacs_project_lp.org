@@ -141,32 +141,82 @@
   #+end_src
 
   #+begin_src emacs-lisp
-    (defun toggle-copy-mode-respect-to-model-state ()
-      (interactive)
-      (cond
-       ((evil-emacs-state-p)
-        (evil-normal-state)
-        (call-interactively 'vterm-copy-mode))
-       ((evil-normal-state-p)
-        (evil-emacs-state)
-        (call-interactively 'vterm-copy-mode))))
+        (defun toggle-copy-mode-respect-to-model-state ()
+          (interactive)
+          (cond
+           ((evil-emacs-state-p)
+            (evil-normal-state)
+            (call-interactively 'vterm-copy-mode))
+           ((evil-normal-state-p)
+            (evil-emacs-state)
+            (call-interactively 'vterm-copy-mode))))
 
 
-    (use-package vterm
-      :after evil
-      :defer t
-      :custom
-      (vterm-always-compile-module t)
-      :init
-      (setq vterm-timer-delay 0.01)
-      (with-eval-after-load 'evil
-        (evil-set-initial-state 'vterm-mode 'emacs))
-      :config
-      (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
-      (define-key vterm-mode-map (kbd "C-c C-z") 'vterm-send-C-z)
-      (define-key vterm-mode-map (kbd "C-z") 'toggle-copy-mode-respect-to-model-state)
-      (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state)
-      (evil-define-key 'normal 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
+        (use-package vterm
+          :after evil
+          :defer t
+          :custom
+          (vterm-always-compile-module t)
+          :init
+          (setq vterm-timer-delay 0.01)
+          (with-eval-after-load 'evil
+            (evil-set-initial-state 'vterm-mode 'emacs))
+          :config
+          (define-key vterm-mode-map (kbd "<escape>") 'vterm-send-escape)
+          (define-key vterm-mode-map (kbd "C-c C-z") 'vterm-send-C-z)
+          (define-key vterm-mode-map (kbd "C-z") 'toggle-copy-mode-respect-to-model-state)
+          (evil-define-key 'emacs 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state)
+          (evil-define-key 'normal 'vterm-mode-map (kbd "C-z") #'toggle-copy-mode-respect-to-model-state))
+
+        ;; ghostel has no debounce on the resize path: `ghostel--adjust-size' runs
+        ;; from `window-size-change-functions', i.e. once per redisplay frame, and
+        ;; each call resizes the PTY and redraws synchronously.  Dragging a divider
+        ;; therefore sends dozens of SIGWINCHes.  A shell repaints one prompt line
+        ;; and you never notice; a full-screen agent CLI repaints its entire UI
+        ;; block and it strobes.  Collapse the drag into a single resize once it
+        ;; settles.
+        (defvar jemacs-ghostel-resize-debounce 0.15
+          "Seconds of idle before a dragged ghostel window resizes its PTY.
+Tuned when one resize meant one repaint.  A tmux-hosted agent --
+ghostherd's tmux backend -- costs two: the agent redraws into tmux's
+screen, and tmux then repaints the whole pane to the client, clear
+included.  Raise it if resizing strobes.  The only cost of a larger
+value is the terminal lagging behind the window while you drag.")
+
+        (defvar jemacs-ghostel-resize-timers (make-hash-table :test 'eq)
+          "Pending debounced ghostel resize timers, keyed by window.")
+
+        (defun jemacs-ghostel-debounce-resize (orig window &optional force)
+          "Defer ghostel's PTY resize until window dragging settles.
+    FORCE paths -- font scaling, mode switches, explicit anchors -- are
+    deliberately synchronous upstream, so they are passed straight through."
+          (if force
+              (funcall orig window force)
+            (when-let* ((old (gethash window jemacs-ghostel-resize-timers)))
+              (cancel-timer old))
+            ;; Keyed per window: a single global timer would let two ghostel
+            ;; windows cancel each other and leave one never resized.
+            ;;
+            ;; WINDOW and ORIG are passed as timer arguments rather than captured
+            ;; in a closure.  Tangled config runs lexbound, but `C-c C-c' on an org
+            ;; src block does not -- `org-babel-default-header-args:emacs-lisp'
+            ;; defaults to (:lexical . "no") -- and a closure evaluated that way
+            ;; loses both, failing later with a bare "void-variable window".
+            (puthash window
+                     (run-with-idle-timer
+                      jemacs-ghostel-resize-debounce nil
+                      (lambda (win fn)
+                        (remhash win jemacs-ghostel-resize-timers)
+                        (when (window-live-p win)
+                          ;; force: repaint whatever went stale during the drag
+                          (funcall fn win t)))
+                      window orig)
+                     jemacs-ghostel-resize-timers)))
+
+        (use-package ghostel
+          :ensure t
+          :config
+          (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize))
   #+end_src
 
 

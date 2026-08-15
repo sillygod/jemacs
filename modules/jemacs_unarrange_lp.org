@@ -185,6 +185,38 @@
              :straight (:local-repo ,(concat home-dir "local/consult-yas"))))
   #+end_src
 
+* ecloud
+  :PROPERTIES:
+  :header-args:emacs-lisp: :tangle no
+  :END:
+
+  Deliberately *not* tangled from here.  ecloud is wholly personal --- it is
+  pulled from a private checkout and every account maps to a cloud service
+  account credential --- so there is nothing here another person could reuse.
+  It lives in =personal_lp.org= instead (see =example-personal_lp.org= for the
+  shape).  The declaration below is kept only as documentation:
+
+  #+begin_src emacs-lisp
+    (use-package ecloud
+      :straight (:local-repo "/path/to/your/ecloud" :files ("emacs/*.el" "server"))
+      :custom
+      (ecloud-accounts '((staging . "/path/to/staging-sa.json")
+                         (production . "/path/to/production-sa.json"))))
+  #+end_src
+
+  Working on a =:local-repo= package means straight caches a build of it.  To
+  pick up edits, drop that cache (and the native-comp one) and restart:
+
+  #+begin_src emacs-lisp :tangle no
+    (delete-directory (expand-file-name "straight/build/PACKAGE" user-emacs-directory) t)
+
+    (when (boundp 'native-comp-eln-load-path)
+      (dolist (dir native-comp-eln-load-path)
+        (when (file-directory-p dir)
+          (dolist (f (directory-files dir t "PACKAGE"))
+            (delete-file f)))))
+  #+end_src
+
 * dired sort
 
   #+begin_src emacs-lisp
@@ -283,7 +315,7 @@
       :custom
       (rime-librime-root (expand-file-name "librime/dist" user-emacs-directory))
       (rime-emacs-module-header-root (shell-command-to-string "echo -n $(brew --prefix)/include"))
-      (rime-user-data-dir "/Users/jing/Library/Rime/")
+      (rime-user-data-dir (expand-file-name "~/Library/Rime/"))
       (rime-inline-ascii-trigger 'shift-l)
       (default-input-method "rime")
       (rime-show-candidate 'posframe)
@@ -1434,6 +1466,19 @@
 
        "aa" '(aider-transient-menu :which-key "aider-chat")
 
+       "ah" '(:ignore t :which-key "ghostherd")
+       "ahh" '(ghostherd-menu :which-key "menu")
+       "ahn" '(ghostherd-new :which-key "new agent")
+       "ah2" '(ghostherd-new-pair :which-key "new pair (split)")
+       "ahs" '(ghostherd-switch :which-key "switch")
+       "ahb" '(ghostherd-sidebar :which-key "sidebar")
+       "ah." '(ghostherd-next-blocked :which-key "next blocked")
+       "ahm" '(ghostherd-message-interactive :which-key "message agent")
+       "ahi" '(ghostherd-prompt-interactive :which-key "prompt agent")
+       "ahk" '(ghostherd-kill :which-key "kill")
+       "ahr" '(ghostherd-rename :which-key "rename")
+   "ahl" '(ghostherd-log :which-key "herd log")
+
        "ad" '(docker t :which-key "docker")
 
        "al" '(:ignore t :which-key "lookup/dictionary")
@@ -1444,8 +1489,8 @@
        "ao" '(:ignore t :which-key "org")
        "aor" '(org-roam-transient :which-key "org-roam-transient")
        "aog" '(:ignore t :which-key "goto")
-       "aogj" '((lambda () (interactive) (find-file (expand-file-name "~/Dropbox/myorgs/journal"))) :which-key "journal note")
-       "aogt" '((lambda () (interactive) (org-file-show-headings "~/Dropbox/myorgs/life_books_courses_programming/todo.org")) :which-key "todo note"))
+       "aogj" '((lambda () (interactive) (find-file (expand-file-name "journal" jemacs-org-root))) :which-key "journal note")
+       "aogt" '((lambda () (interactive) (org-file-show-headings (expand-file-name "todo.org" (or jemacs-org-roam-directory jemacs-org-root)))) :which-key "todo note"))
 
       (define-leader-key-global
        "b" '(:ignore t :which-key "buffer")
@@ -1502,7 +1547,7 @@
        "gi" '(magit-init :which-key "gagit init")
        "gb" '(:ignore t :which-key "blame")
        "gl" '(magit-list-repositories :which-key "magit list repos")
-       "gbl" '(git-messenger:popup-message :which-key "this line")
+       "gbl" '(blamer-show-commit-info :which-key "this line")
        "gbb" '(magit-blame-addition :which-key "this buffer")
        "gs" '(magit-status :which-key "magit status")
        "gt" '((lambda () (interactive) (git-timemachine) (git-timemachine-transient)) :which-key "magit time machine"))

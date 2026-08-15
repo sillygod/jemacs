@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# ghostherd — drive the herd in a running Emacs from a shell.
+#
+# The in-Emacs commands are already reachable from an agent's own terminal
+# via `ghostel_cmd'. This is for everything else: a Makefile, a git hook, a
+# CI step, another shell.
+#
+# Usage: ghostherd <command> [args...]
+#
+#   list                     sessions as JSON
+#   state NAME               one session as JSON
+#   read NAME [LINES]        recent output
+#   send NAME TEXT           paste text, do not submit
+#   prompt NAME TEXT         submit a prompt
+#   message TO TEXT [FROM]   attributed message
+#   handoff TO TEXT [FROM]   send, then watch and notify (returns at once)
+#   keys NAME KEY...         send keystrokes, e.g. esc / C-c / down
+#   interrupt NAME           Escape
+#   abort NAME               C-c
+#
+# Env:
+#   GHOSTHERD_SOCKET   passed to emacsclient -s
+#   GHOSTHERD_DRY_RUN  print the elisp instead of running it
+
+set -euo pipefail
+
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+
+die() { printf 'ghostherd: %s\n' "$1" >&2; exit 1; }
+
+# Quote a shell string as an Emacs Lisp string literal.  Everything the
+# caller passes is free text -- a prompt can contain quotes, backslashes and
+# newlines -- and interpolating it raw would either break the form or let it
+# inject code.
+elisp_string() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+# Evaluate FORM and print whatever string it returns.
+#
+# Not `emacsclient -e' alone: that prints the *Lisp representation*, so a
+# JSON payload comes back double-escaped as "[{\"name\":...}]".  Writing to
+# a file keeps the payload out of the reader's syntax entirely.
+run() {
+  local form=$1
+
+  if [ -n "${GHOSTHERD_DRY_RUN:-}" ]; then
+    printf '%s\n' "$form"
+    return 0
+  fi
+
+  local out status
+  out=$(mktemp "${TMPDIR:-/tmp}/ghostherd.XXXXXX")
+  trap 'rm -f "$out"' RETURN
+
+  # `require' first: the cmd-* entry points are not autoloaded, so in an
+  # Emacs that has not opened an agent yet they would be void-function.
+  #
+  # `coding-system-for-write' is not optional.  Agent output is full of
+  # non-ASCII -- box drawing, the ❯ in a permission prompt -- and without it
+  # `write-region' calls `select-safe-coding-system', which *prompts*.  In
+  # batch that is an error; in a daemon it blocks forever on a minibuffer
+  # nobody can answer, wedging the server for every later call too.
+  set -- --eval "(progn (require 'ghostherd)
+                        (let ((coding-system-for-write 'utf-8))
+                          (with-temp-file $(elisp_string "$out")
+                            (insert (format \"%s\" $form)))))"
+  [ -n "${GHOSTHERD_SOCKET:-}" ] && set -- -s "$GHOSTHERD_SOCKET" "$@"
+
+  if ! emacsclient "$@" >/dev/null 2>"$out.err"; then
+    status=$(cat "$out.err" 2>/dev/null || true)
+    rm -f "$out.err"
+    die "emacsclient failed${status:+: $status}"
+  fi
+  rm -f "$out.err"
+  cat "$out"
+}
+
+need() {
+  local want=$1 got=$2
+  [ "$got" -ge "$want" ] || die "not enough arguments (see: ghostherd help)"
+}
+
+[ $# -ge 1 ] || { usage; exit 2; }
+cmd=$1; shift
+
+case $cmd in
+  help|-h|--help) usage ;;
+
+  list)  run '(ghostherd-cmd-list)' ;;
+
+  state) need 1 $#; run "(ghostherd-cmd-state $(elisp_string "$1"))" ;;
+
+  read)
+    need 1 $#
+    if [ $# -ge 2 ]; then
+      run "(ghostherd-read $(elisp_string "$1") $2)"
+    else
+      run "(ghostherd-read $(elisp_string "$1"))"
+    fi
+    ;;
+
+  send)
+    need 2 $#
+    run "(progn (ghostherd-send $(elisp_string "$1") $(elisp_string "$2") nil)
+                \"sent\")"
+    ;;
+
+  prompt)
+    need 2 $#
+    run "(progn (ghostherd-prompt $(elisp_string "$1") $(elisp_string "$2"))
+                \"prompted\")"
+    ;;
+
+  message)
+    need 2 $#
+    from=${3:-user}
+    run "(progn (ghostherd-message $(elisp_string "$from") $(elisp_string "$1")
+                                   $(elisp_string "$2") :submit t)
+                \"messaged\")"
+    ;;
+
+  handoff)
+    need 2 $#
+    from=${3:-user}
+    run "(progn (ghostherd-handoff $(elisp_string "$1") $(elisp_string "$2")
+                                   $(elisp_string "$from"))
+                \"handed off\")"
+    ;;
+
+  keys)
+    need 2 $#
+    target=$1; shift
+    keys=""
+    for k in "$@"; do keys="$keys $(elisp_string "$k")"; done
+    run "(progn (ghostherd-send-keys $(elisp_string "$target")$keys) \"sent\")"
+    ;;
+
+  interrupt)
+    need 1 $#
+    run "(progn (ghostherd-interrupt $(elisp_string "$1")) \"interrupted\")"
+    ;;
+
+  abort)
+    need 1 $#
+    run "(progn (ghostherd-abort $(elisp_string "$1")) \"aborted\")"
+    ;;
+
+  *) die "unknown command: $cmd (see: ghostherd help)" ;;
+esac

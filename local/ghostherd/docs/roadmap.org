@@ -1,0 +1,146 @@
+#+TITLE: ghostherd — roadmap
+
+What shipped in each phase, what is left, and what was decided against.
+The manual is [[file:../readme.org][readme.org]]; the reasoning behind the choices is in
+[[file:design.org][design.org]].
+
+Phase 1 (this tree) is intentionally small: spawn, list, switch, state,
+notify, pair layout, message/prompt/read/wait.
+
+* Phase 1.1 — Stabilize detection (next dogfood pass)
+
+Goal: make state trustworthy for daily use without false blocked spam.
+
+- [X] =ghostherd-explain= (like herdr =agent explain=): show last tail
+  snippet + which rule matched
+- [X] OSC progress (=ghostel-progress-function=) → force =working= + %
+- [X] OSC title → sidebar summary column (opt-in; see the width note under
+  Config knobs)
+- [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
+  data; =ghostherd-explain= produces it live, and the herd log now keeps
+  the screen behind every =blocked= so it accumulates unattended
+- [X] A state reason says what the agent asked rather than which regexp
+  matched, so a notification is actionable without visiting the agent
+- [X] =ghostherd-log=: what the herd did while you were away, with the
+  screen behind each =blocked= kept for tuning
+- [X] Rules match case-sensitively rather than under whatever
+  =case-fold-search= the poll timer happened to fire under.  See "Rule
+  matching case" in [[file:design.org][design.org]]; the patterns themselves are unchanged,
+  and that is the part to watch
+- [ ] Document known false positives per agent version — the table is under
+  "Detection notes per CLI" in [[file:../readme.org][readme.org]]
+
+- [X] Sidebar columns are fitted to the window instead of overflowing it.
+  They used to be a fixed vector needing ~70 characters against a default
+  width of 36, so every row wrapped. =ghostherd--sidebar-column-specs= now
+  lists candidates most-useful-first and the widest, least informative ones
+  (=Project=, then =Kind=) drop out when there is no room. The fit follows a
+  manual resize, not just =ghostherd-sidebar-width=.
+
+* Phase 2 — Usability
+
+Goal: less friction for multi-agent day-to-day work.
+
+- [-] Layout presets beyond pair (1+2 grid, focus agent only) --- *decided
+  against*. =ghostherd-new-pair= covers the split that actually gets used,
+  and window layout is something Emacs already has better tools for than a
+  herd manager should reimplement.
+- [X] Session notes editable from sidebar (=c=); role shown in switcher
+- [X] Per-project default kinds/args via dir-locals
+- [X] Consult annotations (kind, project, age, notes) --- candidates are
+  now bare names with the detail in an affixation, so typing matches the
+  name instead of whatever happened to be concatenated into the string
+- [X] ERT unit tests for pure helpers (rules, naming, format) ---
+  =ghostherd-tests.el=, mutation-checked
+
+- [X] =ghostherd-respawn= (=R= in the sidebar) --- was two roadmap items,
+  "persist snapshot" and "restart-agent", which turned out to be the same
+  thing
+
+* Phase 2.5 — Richer automation (herdr-like control)
+
+Goal: scripts and agents can orchestrate without focusing panes.
+
+- [X] =ghostherd-wait-output= (regex on buffer tail, timeout)
+- [X] =ghostherd-send-keys= (esc, ctrl+c, arrows, tab) --- plus
+  =ghostherd-interrupt= / =ghostherd-abort= / =ghostherd-answer=
+- [X] Pipeline helper: implement → message reviewer → wait → notify
+  (=ghostherd-handoff=)
+- [X] Structured JSON listing for =ghostherd-cmd-list= / =ghostherd-cmd-state=
+- [X] =emacsclient= CLI wrapper (=bin/ghostherd=)
+
+* Phase 3 — tmux as a headless PTY host  *(done)*
+
+Goal: read the agent's screen out of band, and let sessions outlive Emacs.
+
+How it behaves is in [[file:../readme.org][readme.org]] under "Hosts", where someone using
+the thing will find it; why it is shaped that way is in [[file:design.org][design.org]].
+This is the record of what shipped and what is left.
+
+** What shipped
+
+- [X] The host slot as *capabilities, not product names*: =capture=,
+  =send-text=, =send-keys=, =live-p=, =exited-p=, =title=, =spawn=,
+  =kill=, =rename=, =view=, =list=. =cl-defgeneric= dispatching on the
+  backend symbol, with =ghostherd--host-*= wrappers that read it off
+  the session
+- [X] The ghostel path extracted behind that slot with no behaviour
+  change — the 72 Phase 2.5 tests stayed green through slice 1
+- [X] tmux implementor: dedicated socket, one session per agent,
+  =status off= / =prefix None=, direct exec (no shell, so no
+  =ghostherd-spawn-delay= guesswork)
+- [X] The recipe stashed on the tmux session as =@ghostherd-*= options;
+  args as JSON, so a =--system-prompt= full of quotes round-trips
+- [X] =ghostherd-restore= on =ghostherd-mode=, sweeping every backend
+- [X] Attach on visit only; =ghostherd-visit= is the single entry point
+  and =ghostherd-new-pair= is still just two Emacs windows
+- [X] Detach ≠ death (see "Attach is optional" in [[file:../readme.org][readme.org]])
+- [X] =dead= rows survive: =remain-on-exit on= mirrors what
+  =ghostel-kill-buffer-on-exit= nil already did for the other backend
+- [X] 28 new ERT tests, mutation-checked; plus a real-tmux round trip
+  that is skipped when tmux is absent
+
+** What is left
+
+- [X] The attach path, T10.  Spawn detached, detect over =capture-pane=,
+  kill the buffer, watch the row stay, =RET= back onto the same agent.
+  =ghostel-exec= needs the compiled module, so this could only ever be
+  a manual check; it passed.  T11 (surviving an Emacs quit) and T12
+  (working → detach → still working) are still worth a run
+- [ ] Tune =:screen-rules= against actual =capture-pane= output. This
+  is the leftover Phase 1.1 data pass, and it is *why* Phase 3 was
+  worth doing first: the tuning loop was only hard because the thing
+  being scraped was a rendering of a rendering
+- [X] Decided: =jemacs-ai= opts in with =(setq ghostherd-backend 'tmux)=.
+  The package default stays =ghostel=, which needs nothing installed
+
+** Deliberately not done
+
+- Windows as a navigation layer, panes as a layout layer
+- Loading the user's =tmux.conf=, or sharing the default socket
+- Phone / SSH thin client, herdr-compatible socket server
+- Making tmux the *package* default.  A package should work with
+  nothing installed, and the ghostel backend does.  Opting in belongs
+  in a config that knows the machine has tmux --- =jemacs-ai= sets
+  =ghostherd-backend= to =tmux=, because a survival feature that only
+  works when you remembered to switch it on beforehand does not cover
+  the restart you did not expect
+- A dtach implementor: it cannot =capture=, so it buys only the
+  smaller half of the prize
+- Asking ghostel for a VT grid API. Still worth doing later as 3a —
+  capture from a real grid, not from buffer text, would be the larger
+  prize *without* the nested VT, and persistence could then sit on a
+  thinner host. Until it exists, tmux is the one widely installed tool
+  that does both jobs.
+
+* Phase 4 — Ecosystem (only if still useful)
+
+- [ ] Extract =ghostherd= to its own repo / MELPA if others want it
+- [ ] Optional lifecycle hooks plugins per CLI (beyond screen scrape)
+- [ ] Compare/contrast doc vs herdr for users choosing tools
+
+* Explicit non-goals (for now)
+
+- Replacing gptel / copilot / in-buffer LLM workflows
+- Implementing a full A2A network protocol
+- Windows-first support (macOS/Linux Emacs + ghostel is the target)

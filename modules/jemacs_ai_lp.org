@@ -507,6 +507,92 @@
 
   #+end_src
   
+* ghostherd — AI agent herd on ghostel
+
+  Manage multiple coding-agent CLIs (claude / grok / agy) as named
+  ghostel sessions, with sidebar + consult switcher, state detection,
+  notifications, and inter-agent messaging.
+
+  #+begin_src emacs-lisp
+    (eval `(use-package ghostherd
+             :straight (:local-repo ,(concat home-dir "local/ghostherd"))
+             :commands (ghostherd-new
+                        ghostherd-new-pair
+                        ghostherd-switch
+                        ghostherd-sidebar
+                        ghostherd-next-blocked
+                        ghostherd-menu
+                        ghostherd-message-interactive
+                        ghostherd-prompt-interactive
+                        ghostherd-kill
+                        ghostherd-rename
+                        ghostherd-explain
+                        ghostherd-respawn
+                        ghostherd-set-notes
+                        ghostherd-interrupt
+                        ghostherd-abort
+                        ghostherd-answer
+                        ghostherd-restore
+                    ghostherd-log
+                        ghostherd-visit
+                        ghostherd-mode)
+             :config
+             (setq ghostherd-notify-on-blocked t
+                   ghostherd-notify-on-exit t
+                   ghostherd-notify-on-done t)
+
+             ;; Host new agents on tmux rather than as Emacs children.
+             ;; The package itself defaults to `ghostel', which is right
+             ;; for a package -- that backend needs nothing installed.
+             ;; The opt-in belongs here, on a machine that has tmux.
+             ;;
+             ;; Left off, surviving a restart would only work when I had
+             ;; remembered to set this beforehand, and the moment it
+             ;; matters is always the one I did not expect.  Existing
+             ;; sessions keep the backend they were born with, and
+             ;; `ghostherd-restore' sweeps both, so this is not a switch
+             ;; that strands anything.
+             (setq ghostherd-backend 'tmux)
+
+             (ghostherd-mode 1)
+
+             ;; `ghostherd-sidebar-mode' derives from `tabulated-list-mode',
+             ;; which evil-collection puts in normal state -- so the sidebar's
+             ;; own single-letter keys are shadowed by evil.  Rebind them for
+             ;; normal state, with two deliberate departures from the plain
+             ;; bindings documented in the package readme:
+             ;;
+             ;;   k -> x   `k' is evil's move-up.  Leaving kill on `k' means
+             ;;            navigating the list kills sessions.
+             ;;   g -> gr  `g' is an evil prefix; taking it whole would cost
+             ;;            gg/gl/gh.  `gr' is the evil-collection convention
+             ;;            for refresh/revert.
+             ;;
+             ;; n/p are left to evil's j/k.
+             (evil-define-key 'normal ghostherd-sidebar-mode-map
+               (kbd "?") #'ghostherd-sidebar-help
+               (kbd "e") #'ghostherd-explain
+               (kbd "R") #'ghostherd-respawn
+               (kbd "c") #'ghostherd-sidebar-notes
+               (kbd "z") #'ghostherd-sidebar-interrupt
+               (kbd "Z") #'ghostherd-sidebar-abort
+               (kbd "a") #'ghostherd-sidebar-answer
+               (kbd "RET") #'ghostherd-sidebar-visit
+               (kbd "o") #'ghostherd-sidebar-visit
+               (kbd "gr") #'ghostherd-sidebar-refresh
+               (kbd "x") #'ghostherd-sidebar-kill
+               (kbd "N") #'ghostherd-new
+               (kbd "P") #'ghostherd-new-pair
+               (kbd "r") #'ghostherd-sidebar-rename
+               (kbd "m") #'ghostherd-sidebar-message
+               (kbd "i") #'ghostherd-sidebar-prompt
+               (kbd "s") #'ghostherd-sidebar-toggle-project-filter
+               (kbd ".") #'ghostherd-next-blocked
+               (kbd "L") #'ghostherd-log
+           (kbd "M") #'ghostherd-sidebar-mark-state
+               (kbd "q") #'quit-window)))
+  #+end_src
+
 * provide package
 
   #+begin_src emacs-lisp

@@ -166,9 +166,11 @@
 ** go to dotfile
    #+begin_src emacs-lisp
      (defun my-find-dotfile ()
-       "Edit the `dotfile', in the current window."
+       "Edit the `dotfile', in the current window.
+     This opens `personal_lp.org', not the `settings.el' it tangles to --- edits
+     to the tangle output are thrown away by the next `export-lp-configs'."
        (interactive)
-       (find-file-existing (expand-file-name "settings.el" home-dir)))
+       (find-file-existing (expand-file-name "personal_lp.org" home-dir)))
    #+end_src
 ** an helper to detect os
 
