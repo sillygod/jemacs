@@ -264,6 +264,19 @@ purpose is a different act from detecting on it."
 (cl-defgeneric ghostherd-backend-send-keys (backend session keys)
   "Send KEYS -- friendly names, see `ghostherd-key-aliases' -- to SESSION.")
 
+(cl-defgeneric ghostherd-backend-scroll (_backend _session _lines)
+  "Scroll SESSION's view back by LINES, or forward when LINES is negative.
+
+Distinct from `ghostherd-backend-scrollback\=', which hands you the
+history as text to read elsewhere.  This moves the *live view*, so the
+buffer you are already in shows older output and then comes back --
+which is what an Emacs buffer does, and what people expect of anything
+that looks like one.
+
+Returns non-nil when the backend handled it, so a caller can fall back
+to ordinary Emacs scrolling."
+  nil)
+
 (cl-defgeneric ghostherd-backend-live-p (backend session)
   "Return non-nil when SESSION's host still exists.
 
@@ -360,6 +373,10 @@ agent buffers are left alone -- or restart Emacs"
 (defun ghostherd--host-scrollback (session lines)
   "Return up to LINES of SESSION's history, or nil."
   (ghostherd-backend-scrollback (ghostherd--backend-of session) session lines))
+
+(defun ghostherd--host-scroll (session lines)
+  "Scroll SESSION's view back by LINES.  Non-nil when the host handled it."
+  (ghostherd-backend-scroll (ghostherd--backend-of session) session lines))
 
 (defun ghostherd--host-live-p (session)
   "Return non-nil when SESSION's host still exists."

@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 132 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 135 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -422,9 +422,38 @@ earns its place.
 If nothing arrived and you expected it, the herd log says why: a
 transition to =idle= rather than =done= means you were watching.
 
-* Scrolling back (=ghostherd-scrollback=)
+* Scrolling
 
-=SPC a h H=, or =H= in the sidebar.
+The agent view scrolls like any other buffer: the wheel, =PageUp= /
+=PageDown=, =M-v= / =C-M-v=. Behind tmux the buffer holds one screen and
+the history is in the host, so those keys move the *host's* view and the
+same buffer shows older output --- you are not sent anywhere else, and
+you can keep typing.
+
+The mechanism is tmux copy mode driven by command rather than by a
+prefix key, so it never becomes something to learn or get stuck in:
+scrolling back to the bottom leaves it automatically. On the ghostel
+backend nothing is intercepted, because the buffer already holds
+everything and Emacs already scrolls it.
+
+Evil users in normal state will want these bound there too ---
+=ghostherd-scroll-up=, =ghostherd-scroll-down=,
+=ghostherd-scroll-page-up=, =ghostherd-scroll-page-down= are the whole
+surface:
+
+#+begin_src emacs-lisp
+  (evil-define-key 'normal ghostherd-terminal-mode-map
+    (kbd "C-e") #'ghostherd-scroll-down
+    (kbd "C-y") #'ghostherd-scroll-up
+    (kbd "C-d") #'ghostherd-scroll-page-down
+    (kbd "C-u") #'ghostherd-scroll-page-up)
+#+end_src
+
+** Reading it elsewhere (=ghostherd-scrollback=)
+
+=SPC a h H=, or =H= in the sidebar. Dumps the history into an ordinary
+read-only buffer instead of moving the live view --- for searching it,
+copying out of it, or keeping it open beside the agent.
 
 On the ghostel backend the buffer accumulates everything the agent ever
 printed, so scrolling back is just moving point. Behind tmux the buffer

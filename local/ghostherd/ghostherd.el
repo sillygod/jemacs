@@ -1982,6 +1982,77 @@ keys are what scroll it."
       (pop-to-buffer (current-buffer)))))
 
 
+(defcustom ghostherd-scroll-lines 3
+  "Lines moved per scroll step in an attached agent view."
+  :type 'integer
+  :group 'ghostherd)
+
+(defun ghostherd--scroll (lines)
+  "Scroll the agent viewed in the current buffer back by LINES."
+  (let ((session (ghostherd-get (current-buffer))))
+    (unless session
+      (user-error "Not a ghostherd agent buffer"))
+    (unless (ghostherd--host-scroll session lines)
+      ;; A host that does not scroll its own view keeps its output in the
+      ;; buffer, where Emacs has always been able to scroll it.
+      (if (> lines 0) (scroll-down lines) (scroll-up (- lines))))))
+
+;;;###autoload
+(defun ghostherd-scroll-up (&optional lines)
+  "Scroll the agent view back into its history by LINES."
+  (interactive "p")
+  (ghostherd--scroll (* (or lines 1) ghostherd-scroll-lines)))
+
+;;;###autoload
+(defun ghostherd-scroll-down (&optional lines)
+  "Scroll the agent view forward, back towards the live screen."
+  (interactive "p")
+  (ghostherd--scroll (- (* (or lines 1) ghostherd-scroll-lines))))
+
+;;;###autoload
+(defun ghostherd-scroll-page-up ()
+  "Scroll the agent view back by roughly a screen."
+  (interactive)
+  (ghostherd--scroll (max 1 (- (window-body-height) 2))))
+
+;;;###autoload
+(defun ghostherd-scroll-page-down ()
+  "Scroll the agent view forward by roughly a screen."
+  (interactive)
+  (ghostherd--scroll (- (max 1 (- (window-body-height) 2)))))
+
+(defvar-keymap ghostherd-terminal-mode-map
+  :doc "Scrolling for an attached agent view, in the vocabulary Emacs uses."
+  "<wheel-up>"     #'ghostherd-scroll-up
+  "<wheel-down>"   #'ghostherd-scroll-down
+  "<mouse-4>"      #'ghostherd-scroll-up
+  "<mouse-5>"      #'ghostherd-scroll-down
+  "<prior>"        #'ghostherd-scroll-page-up
+  "<next>"         #'ghostherd-scroll-page-down
+  "M-v"            #'ghostherd-scroll-page-up
+  "C-M-v"          #'ghostherd-scroll-page-down)
+
+;;;###autoload
+(define-minor-mode ghostherd-terminal-mode
+  "Make an attached agent view scroll like an ordinary buffer.
+
+Only needed where the buffer is a *client*.  On the ghostel backend the
+buffer holds everything the agent printed and Emacs has always scrolled
+it; behind tmux it holds one screen, and the history is in the host --
+so the wheel, PageUp/PageDown and \[ghostherd-scroll-page-up] drive the
+host's own view instead, and the same buffer shows older output.
+
+The mechanism is tmux copy mode, driven by command rather than by a
+prefix key, so it never becomes something to learn or get stuck in:
+scrolling back to the bottom leaves it automatically.
+
+Evil users in normal state will want the commands bound there too --
+`ghostherd-scroll-up\=', `ghostherd-scroll-down\=' and the two page
+commands are the whole surface."
+  :lighter " ⇅"
+  :keymap ghostherd-terminal-mode-map)
+
+
 ;;; Herd log buffer
 
 (defun ghostherd--log-kind-face (kind)

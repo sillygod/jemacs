@@ -86,6 +86,59 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
        ,@body
        (nreverse sent))))
 
+(defvar ghostherd-tests--tmux-calls nil
+  "Argument lists handed to tmux by the code under test.")
+
+(defun ghostherd-tests--tmux-panes ()
+  "Fake `list-panes' output showing every registered tmux session alive."
+  (mapconcat (lambda (s)
+               (format "%s\t0\t\n" (ghostherd-session-host-id s)))
+             (cl-remove-if-not
+              (lambda (s) (eq (ghostherd-session-backend s) 'tmux))
+              (hash-table-values ghostherd--sessions))
+             ""))
+
+(defmacro ghostherd-tests--with-tmux (responses &rest body)
+  "Run BODY with tmux stubbed, recording calls in `ghostherd-tests--tmux-calls'.
+
+RESPONSES maps a tmux subcommand to the (STATUS . OUTPUT) it answers
+with.  `list-panes' defaults to reporting every registered tmux session
+alive, since almost everything checks liveness on the way past;
+anything else unlisted succeeds silently.
+
+The recording is not `let'-bound, so assertions after the form still
+see the calls."
+  (declare (indent 1) (debug t))
+  `(progn
+     (setq ghostherd-tests--tmux-calls nil)
+     (let ((ghostherd-tmux--status-cache nil))
+       (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                  (lambda (args)
+                    (push args ghostherd-tests--tmux-calls)
+                    (or (alist-get (car args) ,responses nil nil #'equal)
+                        (if (equal (car args) "list-panes")
+                            (cons 0 (ghostherd-tests--tmux-panes))
+                          (cons 0 ""))))))
+         ,@body))
+     (setq ghostherd-tests--tmux-calls
+           (nreverse ghostherd-tests--tmux-calls))))
+
+(defun ghostherd-tests--tmux-call (subcommand)
+  "Return the recorded tmux call for SUBCOMMAND, or nil."
+  (cl-find subcommand ghostherd-tests--tmux-calls
+           :key #'car :test #'equal))
+
+(defun ghostherd-tests--tmux-options ()
+  "Return the (OPTION . VALUE) pairs written by recorded `set-option' calls."
+  (mapcar (lambda (call) (cons (nth 3 call) (nth 4 call)))
+          (cl-remove-if-not (lambda (call) (equal (car call) "set-option"))
+                            ghostherd-tests--tmux-calls)))
+
+(defun ghostherd-tests--tmux-session (&rest args)
+  "Register a tmux-backed session from ARGS."
+  (apply #'ghostherd-tests--session
+         :backend 'tmux :host-id "gh-abc-rev" args))
+
 ;;; Screen rule matching
 
 (defconst ghostherd-tests--rules
@@ -259,6 +312,46 @@ that it never reaches the state machine."
       (dolist (context '(0 3 50))
         (let ((ghostherd-reason-context context))
           (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
+
+(ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
+  "The buffer behind tmux holds one screen, so scrolling it in Emacs
+moves nothing.  The wheel has to drive the host's own view, in one
+invocation, since this runs per click."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (ghostherd-tests--with-tmux nil
+          (let ((ghostherd-scroll-lines 3))
+            (ghostherd-scroll-up))))
+      (let ((call (ghostherd-tests--tmux-call "copy-mode")))
+        ;; -e is what keeps it invisible: reaching the bottom leaves copy
+        ;; mode on its own, so there is no mode to get stuck in
+        (should (member "-e" call))
+        (should (member "scroll-up" call))
+        (should (member "3" call))
+        ;; one invocation, not two
+        (should (= (length ghostherd-tests--tmux-calls) 1))))))
+
+(ert-deftest ghostherd-test-scrolling-down-goes-the-other-way ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (ghostherd-tests--with-tmux nil (ghostherd-scroll-down)))
+      (should (member "scroll-down" (ghostherd-tests--tmux-call "copy-mode"))))))
+
+(ert-deftest ghostherd-test-a-host-that-cannot-scroll-lets-emacs-do-it ()
+  "The ghostel backend keeps its output in the buffer, where Emacs has
+always been able to scroll it -- so the same keys must fall through
+rather than erroring."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (scrolled nil))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (cl-letf (((symbol-function 'scroll-down)
+                   (lambda (&optional n) (setq scrolled n))))
+          (let ((ghostherd-scroll-lines 3))
+            (ghostherd-scroll-up))))
+      (should (equal scrolled 3)))))
 
 ;;; The view has to be the size of the window
 
@@ -1492,59 +1585,6 @@ attaches, and Escape lags."
 ;; `ghostherd-tmux--call' is the single seam every tmux invocation passes
 ;; through, so stubbing it pins the actual command lines -- which is
 ;; where this backend's mistakes live.
-
-(defvar ghostherd-tests--tmux-calls nil
-  "Argument lists handed to tmux by the code under test.")
-
-(defun ghostherd-tests--tmux-panes ()
-  "Fake `list-panes' output showing every registered tmux session alive."
-  (mapconcat (lambda (s)
-               (format "%s\t0\t\n" (ghostherd-session-host-id s)))
-             (cl-remove-if-not
-              (lambda (s) (eq (ghostherd-session-backend s) 'tmux))
-              (hash-table-values ghostherd--sessions))
-             ""))
-
-(defmacro ghostherd-tests--with-tmux (responses &rest body)
-  "Run BODY with tmux stubbed, recording calls in `ghostherd-tests--tmux-calls'.
-
-RESPONSES maps a tmux subcommand to the (STATUS . OUTPUT) it answers
-with.  `list-panes' defaults to reporting every registered tmux session
-alive, since almost everything checks liveness on the way past;
-anything else unlisted succeeds silently.
-
-The recording is not `let'-bound, so assertions after the form still
-see the calls."
-  (declare (indent 1) (debug t))
-  `(progn
-     (setq ghostherd-tests--tmux-calls nil)
-     (let ((ghostherd-tmux--status-cache nil))
-       (cl-letf (((symbol-function 'ghostherd-tmux--call)
-                  (lambda (args)
-                    (push args ghostherd-tests--tmux-calls)
-                    (or (alist-get (car args) ,responses nil nil #'equal)
-                        (if (equal (car args) "list-panes")
-                            (cons 0 (ghostherd-tests--tmux-panes))
-                          (cons 0 ""))))))
-         ,@body))
-     (setq ghostherd-tests--tmux-calls
-           (nreverse ghostherd-tests--tmux-calls))))
-
-(defun ghostherd-tests--tmux-call (subcommand)
-  "Return the recorded tmux call for SUBCOMMAND, or nil."
-  (cl-find subcommand ghostherd-tests--tmux-calls
-           :key #'car :test #'equal))
-
-(defun ghostherd-tests--tmux-options ()
-  "Return the (OPTION . VALUE) pairs written by recorded `set-option' calls."
-  (mapcar (lambda (call) (cons (nth 3 call) (nth 4 call)))
-          (cl-remove-if-not (lambda (call) (equal (car call) "set-option"))
-                            ghostherd-tests--tmux-calls)))
-
-(defun ghostherd-tests--tmux-session (&rest args)
-  "Register a tmux-backed session from ARGS."
-  (apply #'ghostherd-tests--session
-         :backend 'tmux :host-id "gh-abc-rev" args))
 
 (ert-deftest ghostherd-test-tmux-capture-takes-the-visible-pane ()
   "No -e (rules match text, not SGR), no -J (joining wrapped lines

@@ -474,6 +474,10 @@ must not touch `state' -- the agent is still running."
       ;; unlike the ghostel backend, where the dead buffer *is* the
       ;; evidence.
       (setq-local ghostel-kill-buffer-on-exit t)
+      ;; The buffer is a client showing one screen; this is what makes it
+      ;; scroll like the buffer it looks like.
+      (when (fboundp 'ghostherd-terminal-mode)
+        (ghostherd-terminal-mode 1))
       (add-hook 'kill-buffer-hook #'ghostherd-tmux--on-view-killed nil t))
     (setf (ghostherd-session-buffer session) buffer)
     buffer))
@@ -507,6 +511,21 @@ must not touch `state' -- the agent is still running."
   (ghostherd-tmux--try
    "capture-pane" "-p" "-S" (format "-%d" lines) "-t"
    (ghostherd-tmux--target (ghostherd-session-host-id session))))
+
+(cl-defmethod ghostherd-backend-scroll ((_backend (eql tmux)) session lines)
+  ;; tmux copy mode is the only thing that can move a pane's view, but it
+  ;; is driven here by command rather than by a prefix key, so it never
+  ;; becomes a navigation layer the user has to learn.  `-e' is what makes
+  ;; it invisible: scrolling back to the bottom leaves copy mode on its
+  ;; own, so there is no mode to notice or get stuck in.
+  ;;
+  ;; One invocation, because this runs per wheel click.
+  (let ((target (ghostherd-tmux--target (ghostherd-session-host-id session))))
+    (and (ghostherd-tmux--try
+          "copy-mode" "-e" "-t" target
+          ";" "send-keys" "-X" "-N" (number-to-string (abs lines))
+          "-t" target (if (> lines 0) "scroll-up" "scroll-down"))
+         t)))
 
 (cl-defmethod ghostherd-backend-send-text
   ((_backend (eql tmux)) session text submit)
