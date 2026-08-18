@@ -222,11 +222,29 @@ and which one won.
 | grok   |                |                             |             |
 | agy    | 1.1.13         | =Thinking= matches a model name in the =/model= picker | not yet |
 | agy    | 1.1.13         | =^>= matched the transcript, not the prompt | =^> *$= |
+| agy    | 1.1.13         | prompt is drawn while working too, so no prompt rule can mean idle | =ghostherd-idle-settle= |
 
 agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
 repaints its whole UI on every SIGWINCH, so an attached window flickers
 while dragged --- its own behaviour, not the nesting's; see "What the
 tmux host costs" in [[file:design.org][design.org]].
+
+The one that finished the argument, from the third pass.  Tightening
+the prompt rule was right and not enough: agy draws its input prompt
+whether or not it is working, so *no* rule about the prompt can mean
+idle for this UI.  What makes its screen read as busy is a spinner, and
+that blinks out between two tool calls --- a poll landing in the gap saw
+nothing working, called it idle, promoted it to =done=, and notified.
+Three seconds of that produced four "ready for review" banners.
+
+So the fix is not a better rule but hysteresis: =ghostherd-idle-settle=
+holds a busy session at its state until idle has stuck.  Entering idle
+waits; leaving it is immediate, because something appearing on screen is
+a positive signal.
+
+Second finding in the same screenshot: every one of those banners was
+about an agent visible in a window at the time.  =done= means "finished
+while you were not looking", so a session on screen now counts as seen.
 
 The one that mattered, from the log's second hour.  agy scrolls rather
 than repaints, so every line you have ever typed stays on screen as

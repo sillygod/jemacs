@@ -763,6 +763,46 @@ means every session object created before the next reload is read
 through shifted accessors, and this package is developed by reloading
 into a live herd.  The readme's troubleshooting section has the story.")
 
+(defcustom ghostherd-idle-settle 4
+  "Seconds a busy session must look idle before it is believed.
+
+Agent CLIs draw their input prompt whether or not they are working, so
+an empty prompt is not evidence of idleness -- what makes a screen read
+as busy is a spinner or a status line, and those blink out between two
+tool calls.  A poll landing in that gap sees a screen with nothing
+working on it, calls it idle, promotes it to `done', and notifies.  The
+next poll sees the spinner again.  Three seconds of flapping produced
+four notifications in the log this was written from.
+
+Only entering idle waits.  Leaving it is immediate, because that is a
+positive signal: something appeared on the screen."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--idle-since (make-hash-table :test 'equal)
+  "Session id → when it first looked idle, as a float time.")
+
+(defun ghostherd--settle-idle (session state)
+  "Return STATE, or SESSION's current state while idle has not stuck yet."
+  (let ((id (ghostherd-session-id session))
+        (was (ghostherd-session-state session)))
+    (cond
+     ((or (not (eq state 'idle))
+          (not (memq was '(working blocked starting))))
+      (remhash id ghostherd--idle-since)
+      state)
+     (t
+      (let ((since (or (gethash id ghostherd--idle-since)
+                       (puthash id (float-time) ghostherd--idle-since))))
+        (if (>= (- (float-time) since) ghostherd-idle-settle)
+            (progn (remhash id ghostherd--idle-since) state)
+          was))))))
+
+(defun ghostherd--visible-p (session)
+  "Return non-nil when SESSION is on screen in some window right now."
+  (when-let* ((buffer (ghostherd-session-buffer session)))
+    (and (buffer-live-p buffer) (get-buffer-window buffer t) t)))
+
 (defun ghostherd--waking-up-p (session)
   "Return non-nil while SESSION is too freshly prompted to be believed idle."
   (when-let* ((at (gethash (ghostherd-session-id session)
@@ -791,6 +831,11 @@ into a live herd.  The readme's troubleshooting section has the story.")
   "Recompute and store state for SESSION.  Return new state."
   (setq session (ghostherd-get session))
   (when session
+    ;; A session in a window has been seen, by definition.  `done' means
+    ;; "finished while you were not looking"; announcing it about an agent
+    ;; you are watching is just noise, and it was most of the noise.
+    (when (ghostherd--visible-p session)
+      (setf (ghostherd-session-seen session) t))
     (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
       ;; Freshly prompted agents are not idle, they are slow.  Before the
       ;; grace elapses the screen still shows whatever it showed when you
@@ -801,6 +846,8 @@ into a live herd.  The readme's troubleshooting section has the story.")
                  (ghostherd--waking-up-p session))
         (setq state 'working
               reason "input sent, not awake yet"))
+      ;; ...and a busy agent between two tool calls is not idle either.
+      (setq state (ghostherd--settle-idle session state))
       ;; Promote idle → done when work finishes (herdr-style: stays
       ;; visible until the user views the session).
       (when (and (eq state 'idle)
@@ -1356,6 +1403,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
         (id (ghostherd-session-id session)))
     (remhash id ghostherd--sessions)
     (remhash id ghostherd--input-at)
+    (remhash id ghostherd--idle-since)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)

@@ -35,6 +35,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; sends input to "a" leaves the next test's "a" inside the
          ;; input grace -- which is exactly how this line got written.
          (ghostherd--input-at (make-hash-table :test 'equal))
+         (ghostherd--idle-since (make-hash-table :test 'equal))
          ,@bindings)
      ,@body))
 
@@ -293,6 +294,53 @@ born with, and the agent drew into a fraction of the window."
         (ghostherd--sync-view-size (ghostherd-session-buffer s)))
       (should-not called))))
 
+(ert-deftest ghostherd-test-brief-idle-does-not-finish-the-work ()
+  "The flap that produced four \"ready for review\" notifications in three
+seconds: agy draws its prompt whether or not it is working, so what
+makes a screen read as busy is the spinner -- and that blinks out
+between two tool calls.  A poll landing in the gap saw nothing working
+and called it done."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 60))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+        ;; the gap between two tool calls is not the end of the work
+        (should (eq (ghostherd-poll-session s) 'working))
+        (should (eq (ghostherd-poll-session s) 'working))
+        ;; ...but a screen that stays quiet is
+        (let ((ghostherd-idle-settle 0))
+          (should (eq (ghostherd-poll-session s) 'done)))))))
+
+(ert-deftest ghostherd-test-leaving-idle-is-immediate ()
+  "Only entering idle waits.  Something appearing on the screen is a
+positive signal and must not be held back by a settle window."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'idle))
+          (ghostherd-tests--fake-screen "⣾ Working...\n")
+          (ghostherd-idle-settle 60))
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'working))))))
+
+(ert-deftest ghostherd-test-an-agent-on-screen-has-been-seen ()
+  "`done' means finished while you were not looking.  Announcing it
+about an agent in a window you are looking at was most of the noise."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0)
+          (notified nil))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify)
+                 (lambda (&rest _) (setq notified t)))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) t)))
+        (should (eq (ghostherd-poll-session s) 'idle))
+        (should-not notified)))))
+
 ;;; Not idle, just slow
 
 (ert-deftest ghostherd-test-fresh-prompt-is-not-idle ()
@@ -312,8 +360,9 @@ its own watch against this from the start; the poll path did not."
         (ghostherd-send s "do the thing" t))
       ;; the screen still shows the prompt it showed before
       (should (eq (ghostherd-poll-session s) 'working))
-      ;; ...and once the grace is up, the same screen means what it says
-      (let ((ghostherd-input-grace 0))
+      ;; ...and once both windows are up, the same screen means what it says
+      (let ((ghostherd-input-grace 0)
+            (ghostherd-idle-settle 0))
         (should (eq (ghostherd-poll-session s) 'done))))))
 
 (ert-deftest ghostherd-test-grace-does-not-outrank-a-prompt ()

@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 128 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 131 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -474,6 +474,12 @@ not re-read.
         ghostherd-spawn-delay 0.8
         ghostherd-notify-on-blocked t
         ghostherd-sidebar-side 'left)
+
+  ;; How long a busy session must look idle before it is believed.  An
+  ;; agent draws its prompt whether or not it is working, so what makes a
+  ;; screen read as busy is a spinner -- and that blinks out between two
+  ;; tool calls.
+  (setq ghostherd-idle-settle 4)
 
   ;; How long after sending input a session is not believed to be idle.
   ;; An agent takes a moment to wake up, and the screen it had before is
