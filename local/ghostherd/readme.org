@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3 done* — hosts are a slot; tmux is the second one         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 131 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 132 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -408,6 +408,18 @@ Screen rules are heuristics against a UI that changes between releases,
 so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
+
+* When you get told
+
+=blocked= and =dead= always notify.  =done= is different: it means
+*finished while you were not looking*, so it fires only when the agent
+was not on your screen at the time --- a window on a visible, focused
+frame counts as watched, and being merely displayed does not, since a
+frame that is iconified or on another desktop is exactly when a banner
+earns its place.
+
+If nothing arrived and you expected it, the herd log says why: a
+transition to =idle= rather than =done= means you were watching.
 
 * Scrolling back (=ghostherd-scrollback=)
 

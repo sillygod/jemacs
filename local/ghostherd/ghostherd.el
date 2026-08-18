@@ -798,10 +798,23 @@ positive signal: something appeared on the screen."
             (progn (remhash id ghostherd--idle-since) state)
           was))))))
 
-(defun ghostherd--visible-p (session)
-  "Return non-nil when SESSION is on screen in some window right now."
+(defun ghostherd--watched-p (session)
+  "Return non-nil when you could actually be looking at SESSION now.
+
+`done' means finished while you were not looking, so this decides
+whether a notification is worth firing.  Being displayed is not enough:
+`get-buffer-window\=' with ALL-FRAMES t counts frames that are
+iconified or on another desktop, which are precisely the moments a
+banner is for.  So: a window on a *visible* frame, and that frame
+holding input focus.
+
+`frame-focus-state\=' answers `unknown\=' where the window system cannot
+say.  Unknown is treated as focused, on the grounds that a missing
+notification is a smaller wrong than one you did not need."
   (when-let* ((buffer (ghostherd-session-buffer session)))
-    (and (buffer-live-p buffer) (get-buffer-window buffer t) t)))
+    (when (buffer-live-p buffer)
+      (when-let* ((window (get-buffer-window buffer 'visible)))
+        (not (null (frame-focus-state (window-frame window))))))))
 
 (defun ghostherd--waking-up-p (session)
   "Return non-nil while SESSION is too freshly prompted to be believed idle."
@@ -831,10 +844,10 @@ positive signal: something appeared on the screen."
   "Recompute and store state for SESSION.  Return new state."
   (setq session (ghostherd-get session))
   (when session
-    ;; A session in a window has been seen, by definition.  `done' means
-    ;; "finished while you were not looking"; announcing it about an agent
-    ;; you are watching is just noise, and it was most of the noise.
-    (when (ghostherd--visible-p session)
+    ;; A session you are looking at has been seen, by definition.  `done'
+    ;; means "finished while you were not looking"; announcing it about an
+    ;; agent on your screen is just noise, and it was most of the noise.
+    (when (ghostherd--watched-p session)
       (setf (ghostherd-session-seen session) t))
     (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
       ;; Freshly prompted agents are not idle, they are slow.  Before the

@@ -325,6 +325,26 @@ positive signal and must not be held back by a settle window."
       (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
         (should (eq (ghostherd-poll-session s) 'working))))))
 
+(ert-deftest ghostherd-test-an-unfocused-emacs-is-not-watching ()
+  "Being displayed is not being watched.  `get-buffer-window\=' with
+ALL-FRAMES t counts frames that are iconified or on another desktop --
+which is exactly when you want the banner.  Switching to a browser must
+put the notification back."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0)
+          (notified nil))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify)
+                 (lambda (&rest _) (setq notified t)))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
+                ((symbol-function 'frame-focus-state) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'done))
+        (should notified)))))
+
 (ert-deftest ghostherd-test-an-agent-on-screen-has-been-seen ()
   "`done' means finished while you were not looking.  Announcing it
 about an agent in a window you are looking at was most of the noise."
@@ -337,7 +357,9 @@ about an agent in a window you are looking at was most of the noise."
       (setf (ghostherd-session-seen s) nil)
       (cl-letf (((symbol-function 'ghostherd--notify)
                  (lambda (&rest _) (setq notified t)))
-                ((symbol-function 'get-buffer-window) (lambda (&rest _) t)))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
+                ((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
         (should (eq (ghostherd-poll-session s) 'idle))
         (should-not notified)))))
 

@@ -229,6 +229,12 @@ repaints its whole UI on every SIGWINCH, so an attached window flickers
 while dragged --- its own behaviour, not the nesting's; see "What the
 tmux host costs" in [[file:design.org][design.org]].
 
+Follow-up, same session: silencing the flood also silenced the one
+notification that was wanted.  Being *displayed* was the wrong test --
+=get-buffer-window= with ALL-FRAMES t counts iconified frames and other
+desktops, so switching to a browser still counted as watching.  It is
+now a window on a visible frame whose frame holds input focus.
+
 The one that finished the argument, from the third pass.  Tightening
 the prompt rule was right and not enough: agy draws its input prompt
 whether or not it is working, so *no* rule about the prompt can mean
