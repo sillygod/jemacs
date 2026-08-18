@@ -534,6 +534,98 @@ are the ones worth arguing about.  0 disables it."
      (ignore-errors (ghostherd--host-capture session)))))
 
 
+;;; What the agent says about itself
+;;
+;; The third state authority, after screen rules and the ghostel/OSC
+;; hooks.  Rules scrape a TUI that is redrawn differently every release,
+;; which is why tuning them is a permanent job; but the CLIs already know
+;; when they stop for a question and when they finish, and most of them
+;; can run a command at that moment.  A report is that command arriving:
+;;
+;;   ghostherd report self blocked "Bash(rm -rf build/) — proceed?"
+;;
+;; It is deliberately *not* `ghostherd-mark-state'.  A manual mark is
+;; sticky, which is right for a human overriding detection and wrong for
+;; a hook: one missed edge and the row is frozen at `blocked' forever.  A
+;; report expires instead, the way an OSC progress report does -- the
+;; pattern this is modelled on, down to the freshness check.
+
+(defcustom ghostherd-report-ttl 120
+  "Seconds an agent's own report about itself stays trusted.
+
+Short, because expiry is nearly free when the report was *true*: a real
+prompt is still on the screen, the rules find it, and the herd falls
+back to exactly the behaviour it had before reports existed.  Expiry is
+also the only cure when the report was *stale* -- a hook chain that
+broke halfway through a session, or a CLI that fires nothing on the way
+out of a prompt -- so a long TTL buys a lie and sells nothing.
+
+Long enough, meanwhile, that a prompt nobody answers for a minute is
+still described by the agent's own words rather than by whichever
+regexp happened to match the box it was drawn in."
+  :type 'number
+  :group 'ghostherd)
+
+(defconst ghostherd-report-states '(working blocked idle done)
+  "States an agent may claim for itself.
+
+`dead' is not among them: liveness is the host's answer, and an agent
+that could still report is by definition not dead.")
+
+(defvar ghostherd--reports (make-hash-table :test 'equal)
+  "Session id → (STATE REASON TIME), the last thing an agent said about itself.
+
+A hash table rather than two more `ghostherd-session' slots, for the
+reason under \"Reloading over a live herd\" in readme.org: struct slots
+cannot be added under a running herd without shifting every field after
+them.  This is Emacs-side, transient and not worth that risk -- and it
+is the same shape as `ghostherd--input-at' and `ghostherd--idle-since',
+which are cleared in the same places.")
+
+;;;###autoload
+(defun ghostherd-report (session state &optional reason)
+  "Record that SESSION says it is in STATE, because REASON.
+
+STATE is one of `ghostherd-report-states', or `auto' to withdraw the
+report and go back to detection alone.
+
+This only records; the poll path decides what it means, the same
+division of labour as `ghostherd--on-progress'.  The poll it schedules
+is a timer rather than a direct call because the shortest way here is
+`ghostel_cmd', which is dispatched inside ghostel's VT parser -- where a
+capture is a subprocess in the middle of drawing a terminal."
+  (interactive
+   (list (ghostherd--read-session "Session: ")
+         (intern (completing-read "Reports itself: "
+                                  (cons "auto" (mapcar #'symbol-name
+                                                       ghostherd-report-states))
+                                  nil t))))
+  (setq session (ghostherd-get session))
+  (unless session
+    (user-error "No such session"))
+  (unless (or (eq state 'auto) (memq state ghostherd-report-states))
+    (user-error "Cannot report state %s (one of %s, or auto)"
+                state ghostherd-report-states))
+  (let ((id (ghostherd-session-id session)))
+    (if (eq state 'auto)
+        (progn (remhash id ghostherd--reports)
+               (ghostherd--log-add session 'report "withdrew its own report"))
+      (puthash id (list state reason (current-time)) ghostherd--reports)
+      (ghostherd--log-add session 'report
+                          (format "reports %s%s" state
+                                  (if reason (format "  %s" reason) ""))))
+    (run-with-timer 0 nil #'ghostherd-poll-session id)
+    state))
+
+(defun ghostherd--fresh-report (session)
+  "Return SESSION's own last report as (STATE . REASON) while it is trusted."
+  (when-let* ((entry (gethash (ghostherd-session-id session) ghostherd--reports)))
+    (pcase-let ((`(,state ,reason ,at) entry))
+      (when (< (float-time (time-subtract (current-time) at))
+               ghostherd-report-ttl)
+        (cons state (or reason (format "reported %s" state)))))))
+
+
 ;;; State detection
 
 (defun ghostherd--rule-matches-p (pattern text)
@@ -719,23 +811,39 @@ an anchored prompt like \"^> \" is all furniture."
       (cond
        (exited
         (cons 'dead exited))
-       ((eq kind 'shell)
-        (cons 'idle "shell"))
-       ((null rules)
-        (cons 'working "no rules"))
        (t
-        (let* ((tail (ghostherd--host-capture session))
-               (hit (ghostherd--match-rules tail rules)))
+        (let* ((tail (and rules (ghostherd--host-capture session)))
+               (hit (and tail (ghostherd--match-rules tail rules)))
+               (report (ghostherd--fresh-report session)))
           (cond
            ;; Screen rules keep priority for `blocked': a stale progress
-           ;; report must never mask an agent sitting on a prompt.
+           ;; report must never mask an agent sitting on a prompt, and
+           ;; neither may a stale report from the agent itself.
            ((eq (car-safe hit) 'blocked)
             (cons 'blocked (ghostherd--rule-reason tail hit)))
+           ;; What the agent says about itself beats reading its screen,
+           ;; which is a rendering of a drawing of the same fact -- with
+           ;; one exception.  A claimed `blocked' loses to a screen that
+           ;; positively says `working', because those patterns match a
+           ;; spinner: an agent generating tokens is not sitting on a
+           ;; prompt, whatever its last hook said.  `idle' is not
+           ;; positive evidence -- it is this function's fallback -- so it
+           ;; does not get the same veto.
+           ((and report
+                 (not (and (eq (car report) 'blocked)
+                           (eq (car-safe hit) 'working))))
+            report)
+           ;; A shell is not an agent, so nothing about it is detectable
+           ;; -- but if something reported for it, that was believed above.
+           ((eq kind 'shell)
+            (cons 'idle "shell"))
            ;; Otherwise a live progress report beats scraping, which cannot
            ;; tell a working agent from a quiet one.
            ((ghostherd--progress-fresh-p session)
             (cons 'working (ghostherd--progress-reason session)))
            (hit (cons (car hit) (ghostherd--rule-reason tail hit)))
+           ((null rules)
+            (cons 'working "no rules"))
            ;; Known agent, no match → idle fallback (herdr-style)
            (t (cons 'idle "no rule matched"))))))))))
 
@@ -844,37 +952,51 @@ notification is a smaller wrong than one you did not need."
   "Recompute and store state for SESSION.  Return new state."
   (setq session (ghostherd-get session))
   (when session
-    ;; A session you are looking at has been seen, by definition.  `done'
-    ;; means "finished while you were not looking"; announcing it about an
-    ;; agent on your screen is just noise, and it was most of the noise.
-    (when (ghostherd--watched-p session)
-      (setf (ghostherd-session-seen session) t))
-    (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
-      ;; Freshly prompted agents are not idle, they are slow.  Before the
-      ;; grace elapses the screen still shows whatever it showed when you
-      ;; pressed Return, and believing it turns into a `done' notification
-      ;; for work that has not started.
-      (when (and (eq state 'idle)
-                 (not (ghostherd-session-manual-state session))
-                 (ghostherd--waking-up-p session))
-        (setq state 'working
-              reason "input sent, not awake yet"))
-      ;; ...and a busy agent between two tool calls is not idle either.
-      (setq state (ghostherd--settle-idle session state))
-      ;; Promote idle → done when work finishes (herdr-style: stays
-      ;; visible until the user views the session).
-      (when (and (eq state 'idle)
-                 (memq (ghostherd-session-state session)
-                       '(working blocked starting))
-                 (not (ghostherd-session-seen session)))
-        (setq state 'done
-              reason (or reason "idle after work")))
-      ;; Once viewed, demote done back to plain idle.
-      (when (and (eq state 'idle)
-                 (eq (ghostherd-session-state session) 'done)
-                 (ghostherd-session-seen session))
-        (setq reason (or reason "seen")))
-      (ghostherd--set-state session state reason))))
+    (let ((watched (ghostherd--watched-p session)))
+      ;; A session you are looking at has been seen, by definition.  `done'
+      ;; means "finished while you were not looking"; announcing it about an
+      ;; agent on your screen is just noise, and it was most of the noise.
+      (when watched
+        (setf (ghostherd-session-seen session) t))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
+        ;; Freshly prompted agents are not idle, they are slow.  Before the
+        ;; grace elapses the screen still shows whatever it showed when you
+        ;; pressed Return, and believing it turns into a `done' notification
+        ;; for work that has not started.
+        ;;
+        ;; Both this and the settle below only ever hold back an `idle',
+        ;; and they exist because a *screen* is weak evidence.  The states
+        ;; an agent actually reports about itself -- `working', `blocked',
+        ;; `done' -- pass through untouched, which is the point: a hook
+        ;; firing at the moment the CLI stops needs no hysteresis.
+        (when (and (eq state 'idle)
+                   (not (ghostherd-session-manual-state session))
+                   (ghostherd--waking-up-p session))
+          (setq state 'working
+                reason "input sent, not awake yet"))
+        ;; ...and a busy agent between two tool calls is not idle either.
+        (setq state (ghostherd--settle-idle session state))
+        ;; Promote idle → done when work finishes (herdr-style: stays
+        ;; visible until the user views the session).
+        (when (and (eq state 'idle)
+                   (memq (ghostherd-session-state session)
+                         '(working blocked starting))
+                   (not (ghostherd-session-seen session)))
+          (setq state 'done
+                reason (or reason "idle after work")))
+        ;; `done' means finished while you were not looking, whoever said
+        ;; so.  The promotion above carries that rule in its own
+        ;; condition; a report can say `done' outright, and has to obey it
+        ;; too rather than banner an agent you are watching.
+        (when (and (eq state 'done) watched)
+          (setq state 'idle
+                reason (or reason "done, but you are watching")))
+        ;; Once viewed, demote done back to plain idle.
+        (when (and (eq state 'idle)
+                   (eq (ghostherd-session-state session) 'done)
+                   (ghostherd-session-seen session))
+          (setq reason (or reason "seen")))
+        (ghostherd--set-state session state reason)))))
 
 (defun ghostherd-poll-all ()
   "Poll every registered session."
@@ -981,7 +1103,8 @@ keep someone else's spinner permanently displaced."
                      ("ghostherd-prompt" ghostherd-cmd-prompt)
                      ("ghostherd-message" ghostherd-cmd-message)
                      ("ghostherd-read" ghostherd-cmd-read)
-                     ("ghostherd-state" ghostherd-cmd-state)))
+                     ("ghostherd-state" ghostherd-cmd-state)
+                     ("ghostherd-report" ghostherd-cmd-report)))
       (unless (assoc (car entry) ghostel-eval-cmds)
         (add-to-list 'ghostel-eval-cmds entry)))))
 
@@ -1344,6 +1467,18 @@ otherwise prompts."
         (when (ghostherd-session-manual-state session)
           (insert (format "  manual   %s  (overrides detection until cleared)\n"
                           (ghostherd-session-manual-state session))))
+        ;; Which authority decided this is the first thing to know, and a
+        ;; report is the one that leaves no trace on the screen below.
+        (when-let* ((entry (gethash (ghostherd-session-id session)
+                                    ghostherd--reports)))
+          (pcase-let ((`(,reported ,why ,at) entry))
+            (insert (format "  reports  %s%s  (%s ago, trusted for %ss)\n"
+                            reported
+                            (if why (format "  %s" why) "")
+                            (ghostherd--age-string at)
+                            ghostherd-report-ttl))
+            (unless (ghostherd--fresh-report session)
+              (insert "           expired — detection has it back\n"))))
         (insert (format "  host     %s  (%s)\n"
                         (or (ghostherd-session-host-id session) "—")
                         (ghostherd-session-backend session)))
@@ -1417,6 +1552,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--sessions)
     (remhash id ghostherd--input-at)
     (remhash id ghostherd--idle-since)
+    (remhash id ghostherd--reports)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
@@ -1468,6 +1604,15 @@ annotation, which is where you are choosing between agents."
     (setf (ghostherd-session-id session) new-name
           (ghostherd-session-name session) new-name)
     (puthash new-name session ghostherd--sessions)
+    ;; Everything else keyed by id has to move with it.  A rename used to
+    ;; drop the input grace and the idle-settle timestamp on the floor,
+    ;; which was invisible; dropping a report is not, since it would put a
+    ;; blocked row back under the rules mid-prompt.
+    (dolist (table (list ghostherd--input-at ghostherd--idle-since
+                         ghostherd--reports))
+      (when-let* ((value (gethash old-id table)))
+        (remhash old-id table)
+        (puthash new-name value table)))
     ;; The host has its own name for the session -- a tmux session name,
     ;; the buffer name -- and it is the backend's job to keep it in step.
     (ghostherd--host-rename session new-name)
@@ -1808,6 +1953,25 @@ watch rather than stacking a second timer on it."
                     (or (ghostherd-session-last-active session)
                         (ghostherd-session-started-at session))))))
 
+(defun ghostherd--cmd-caller ()
+  "Return the session on whose behalf a `ghostel_cmd' is running, or nil.
+
+`ghostel_cmd' is dispatched from the VT parser of the terminal that
+asked, so the caller is identifiable with no environment at all: its
+buffer is the current one.  `bin/ghostherd' cannot use this --
+emacsclient does not carry the caller's environment into the form it
+evaluates, and the buffer it evaluates in is nobody's terminal -- so
+there the shell substitutes `GHOSTHERD_SESSION' itself.  Two paths, one
+answer."
+  (ghostherd-get (current-buffer)))
+
+(defun ghostherd--cmd-target (name)
+  "Return NAME, or the calling session when NAME is \"self\"."
+  (if (equal name "self")
+      (or (ghostherd--cmd-caller)
+          (user-error "self: this is not an agent's own terminal"))
+    name))
+
 (defun ghostherd-cmd-list (&rest _)
   "Return herd sessions as JSON, for agent shells.
 
@@ -1821,31 +1985,44 @@ anything at all."
    (vconcat (mapcar #'ghostherd-session-as-alist (ghostherd-sessions)))))
 
 (defun ghostherd-cmd-state (name &rest _)
-  "Return the state of session NAME as JSON."
+  "Return the state of session NAME as JSON.  NAME may be \"self\"."
   (ghostherd--json
-   (if-let* ((s (ghostherd-get name)))
+   (if-let* ((s (ghostherd-get (ghostherd--cmd-target name))))
        (ghostherd-session-as-alist s)
      (list (cons 'error "unknown session")
            (cons 'name name)))))
 
 (defun ghostherd-cmd-send (name text &rest _)
   "Send TEXT to session NAME without submitting."
-  (ghostherd-send name text nil)
+  (ghostherd-send (ghostherd--cmd-target name) text nil)
   (format "sent to %s" name))
 
 (defun ghostherd-cmd-prompt (name text &rest _)
   "Prompt session NAME with TEXT (submitted)."
-  (ghostherd-prompt name text)
+  (ghostherd-prompt (ghostherd--cmd-target name) text)
   (format "prompted %s" name))
 
 (defun ghostherd-cmd-message (to text &optional from &rest _)
-  "Message TO with TEXT, optional FROM name (default: user/caller)."
-  (ghostherd-message (or from "user") to text :submit t)
+  "Message TO with TEXT, optional FROM name.
+
+FROM defaults to the calling agent rather than to \"user\": an agent's
+message attributed to the human is what identity exists to stop."
+  (ghostherd-message (or (and from (ghostherd--cmd-target from))
+                         (ghostherd--cmd-caller)
+                         "user")
+                     (ghostherd--cmd-target to) text :submit t)
   (format "message → %s" to))
 
+(defun ghostherd-cmd-report (name state &optional reason &rest _)
+  "Record that session NAME reports itself in STATE, because REASON.
+NAME may be \"self\", which is how a CLI hook is expected to call this."
+  (ghostherd-report (ghostherd--cmd-target name) (intern state) reason)
+  (format "%s reports %s" name state))
+
 (defun ghostherd-cmd-read (name &optional n &rest _)
-  "Read last N lines from session NAME."
-  (ghostherd-read name (and n (string-to-number n))))
+  "Read last N lines from session NAME.  NAME may be \"self\"."
+  (ghostherd-read (ghostherd--cmd-target name)
+                  (and n (string-to-number n))))
 
 
 ;;; Display helpers
@@ -2073,10 +2250,11 @@ commands are the whole surface."
 (defun ghostherd--log-kind-face (kind)
   "Face for a log entry of KIND."
   (pcase kind
-    ('state 'default)
-    ('input 'font-lock-string-face)
-    ('life  'shadow)
-    (_      'default)))
+    ('state  'default)
+    ('input  'font-lock-string-face)
+    ('report 'font-lock-keyword-face)
+    ('life   'shadow)
+    (_       'default)))
 
 (defvar-keymap ghostherd-log-mode-map
   :doc "Keymap for `ghostherd-log-mode'."

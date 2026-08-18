@@ -16,6 +16,10 @@
 
 (require 'ert)
 (require 'ghostherd)
+;; For `server-name', which `ghostherd-agent-environment' reads and one
+;; test binds -- ghostherd only `defvar's it, so without this a `let'
+;; around it is lexical and the function still sees it unbound.
+(require 'server)
 
 ;;; Fixtures
 
@@ -36,6 +40,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; input grace -- which is exactly how this line got written.
          (ghostherd--input-at (make-hash-table :test 'equal))
          (ghostherd--idle-since (make-hash-table :test 'equal))
+         (ghostherd--reports (make-hash-table :test 'equal))
          ,@bindings)
      ,@body))
 
@@ -697,6 +702,137 @@ spinner, so ghostherd must chain to it and hand it back on teardown."
       (kill-buffer (ghostherd-session-buffer s))
       (should (equal (car (ghostherd--detect-state s)) 'dead)))))
 
+;;; What the agent says about itself
+
+(defun ghostherd-tests--reporting (screen state &optional reason)
+  "Detect state for a fake agy session showing SCREEN that reported STATE."
+  (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+    (with-current-buffer (ghostherd-session-buffer s) (insert screen))
+    (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+      (ghostherd-report s state reason))
+    (ghostherd--detect-state s)))
+
+(ert-deftest ghostherd-test-report-beats-a-quiet-screen ()
+  "The whole point: an idle-looking prompt is what the rules fall back to,
+and the agent knows better."
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd-tests--reporting "> \n" 'blocked "may I rm -rf?")
+                   '(blocked . "may I rm -rf?")))))
+
+(ert-deftest ghostherd-test-report-without-a-reason-says-so ()
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd-tests--reporting "> \n" 'done)
+                   '(done . "reported done")))))
+
+(ert-deftest ghostherd-test-screen-blocked-still-beats-a-report ()
+  "A prompt on the screen is the one thing nothing may mask -- not a stale
+progress report, and not a stale report from the agent either."
+  (ghostherd-tests--with-herd ()
+    (should (eq (car (ghostherd-tests--reporting "Do you want to proceed\n"
+                                                 'working))
+                'blocked))))
+
+(ert-deftest ghostherd-test-screen-working-vetoes-a-claimed-blocked ()
+  "`working' patterns match a spinner, and an agent generating tokens is
+not sitting on a prompt whatever its last hook said.  `idle' gets no such
+veto -- it is the fallback, not evidence."
+  (ghostherd-tests--with-herd ()
+    (should (eq (car (ghostherd-tests--reporting "Thinking…\n" 'blocked))
+                'working))
+    (should (eq (car (ghostherd-tests--reporting "> \n" 'blocked))
+                'blocked))))
+
+(ert-deftest ghostherd-test-report-expires ()
+  "Expiry costs nothing when the report was true -- the prompt is still on
+the screen -- and is the only cure when it was stale."
+  (ghostherd-tests--with-herd ((ghostherd-report-ttl 60))
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (puthash "a" (list 'blocked "old news"
+                         (time-subtract (current-time) 61))
+               ghostherd--reports)
+      (should (eq (car (ghostherd--detect-state s)) 'idle))
+      (should-not (ghostherd--fresh-report s)))))
+
+(ert-deftest ghostherd-test-report-cannot-claim-dead ()
+  "Liveness is the host's answer, and an agent able to report is not dead."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (should-error (ghostherd-report s 'dead) :type 'user-error))))
+
+(ert-deftest ghostherd-test-report-auto-withdraws-it ()
+  "Unlike `ghostherd-mark-state', which is sticky by design."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'blocked)
+        (should (eq (car (ghostherd--detect-state s)) 'blocked))
+        (ghostherd-report s 'auto))
+      (should (eq (car (ghostherd--detect-state s)) 'idle)))))
+
+(ert-deftest ghostherd-test-report-does-not-poll-on-the-spot ()
+  "The shortest way here is `ghostel_cmd', dispatched inside ghostel's VT
+parser: a capture there is a subprocess in the middle of drawing a
+terminal.  Recording is not deciding, the same as OSC progress."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy))
+          (polled nil)
+          (deferred nil))
+      (cl-letf (((symbol-function 'ghostherd-poll-session)
+                 (lambda (&rest _) (setq polled t)))
+                ((symbol-function 'run-with-timer)
+                 (lambda (&rest _) (setq deferred t))))
+        (ghostherd-report s 'blocked))
+      (should-not polled)
+      (should deferred))))
+
+(ert-deftest ghostherd-test-reported-done-is-not-held-by-idle-settle ()
+  "Hysteresis exists because screens lie between two tool calls.  A hook
+firing at the moment the CLI stops needs none, and would be ruined by it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working
+                                       :seen nil)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'done "finished the review"))
+      (should (eq (ghostherd-poll-session s) 'done))
+      (should (equal (ghostherd-session-state-reason s) "finished the review")))))
+
+(ert-deftest ghostherd-test-reported-done-while-watching-does-not-banner ()
+  "`done' means finished while you were not looking, whoever said so."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working
+                                       :seen nil)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+                ((symbol-function 'ghostherd--watched-p) (lambda (_s) t)))
+        (ghostherd-report s 'done)
+        (should (eq (ghostherd-poll-session s) 'idle))))))
+
+(ert-deftest ghostherd-test-rename-carries-the-report ()
+  "The report is keyed by id, and a rename changes the id -- which used to
+drop the input grace and the settle timestamp silently."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'blocked "waiting on you"))
+      (ghostherd-rename s "b")
+      (should (equal (ghostherd--fresh-report s) '(blocked . "waiting on you")))
+      (should-not (gethash "a" ghostherd--reports)))))
+
+(ert-deftest ghostherd-test-cmd-report-is-how-a-hook-calls-in ()
+  "Strings in, because this arrives through `ghostel_cmd' word-splitting."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "impl" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+        (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+          (ghostherd-cmd-report "self" "blocked" "chose a file"))
+        (should (equal (ghostherd--detect-state s)
+                       '(blocked . "chose a file")))))))
+
 ;;; Sidebar column fitting
 
 (defun ghostherd-tests--columns-width (columns)
@@ -1314,6 +1450,54 @@ apart from a session literally named \"unknown session: x\"."
       (should (equal (alist-get 'state parsed) "blocked"))
       (should-not (assq 'error parsed)))))
 
+;;; Knowing your own name
+
+(ert-deftest ghostherd-test-agent-environment-carries-the-name ()
+  "The one thing an agent cannot be told after it starts."
+  (let ((env (ghostherd-agent-environment
+              'tmux (list :name "reviewer" :kind 'agy))))
+    (should (member "GHOSTHERD_SESSION=reviewer" env))
+    (should (member "GHOSTHERD_BACKEND=tmux" env))))
+
+(ert-deftest ghostherd-test-agent-environment-names-the-emacs-socket ()
+  "`bin/ghostherd' is the only way back for a tmux-hosted agent, and it
+should reach *this* Emacs without being configured."
+  (let ((server-name "herd"))
+    (should (member "GHOSTHERD_SOCKET=herd"
+                    (ghostherd-agent-environment 'tmux '(:name "a"))))))
+
+(ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
+  "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
+the caller is identifiable with no environment at all."
+  (ghostherd-tests--with-herd ()
+    (let ((session (ghostherd-tests--session :name "impl" :kind 'agy
+                                             :state 'working)))
+      (with-current-buffer (ghostherd-session-buffer session)
+        (let ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-state "self"))))
+          (should (equal (alist-get 'name parsed) "impl")))))))
+
+(ert-deftest ghostherd-test-cmd-self-outside-an-agent-is-an-error ()
+  "Better than resolving to whatever buffer happened to be current."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "impl" :kind 'agy)
+    (with-temp-buffer
+      (should-error (ghostherd-cmd-state "self") :type 'user-error))))
+
+(ert-deftest ghostherd-test-cmd-message-attributes-the-caller ()
+  "FROM used to default to \"user\", which was a lie whenever the caller
+was another agent -- and an agent had no way to say otherwise."
+  (ghostherd-tests--with-herd ()
+    (let ((impl (ghostherd-tests--session :name "impl" :kind 'agy))
+          (rev (ghostherd-tests--session :name "rev" :kind 'agy))
+          (sent nil))
+      (ignore rev)
+      (cl-letf (((symbol-function 'ghostherd-send)
+                 (lambda (_session text &optional _submit) (setq sent text))))
+        (with-current-buffer (ghostherd-session-buffer impl)
+          (ghostherd-cmd-message "rev" "have a look"))
+        (should (string-match-p "impl" sent))
+        (should-not (string-match-p "user" sent))))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
@@ -1663,6 +1847,62 @@ tmux hands multiple trailing arguments to execvp as they are."
     (let ((call (ghostherd-tests--tmux-call "new-session")))
       (should (member "-d" call))
       (should (equal (last call 4) '("agy" "--effort" "high" "a b"))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-injects-identity ()
+  "`-e' before the command, and the command still last: everything after
+it belongs to execvp."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown))
+      (ghostherd-tests--with-tmux '(("has-session" . (1 . "")))
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev" :kind 'agy :command "agy" :args '("--effort")
+                     :directory "/tmp/" :project "/tmp/"))))
+    (let ((call (ghostherd-tests--tmux-call "new-session")))
+      (should (member "GHOSTHERD_SESSION=rev" call))
+      (should (member "GHOSTHERD_BACKEND=tmux" call))
+      (should (equal (last call 2) '("agy" "--effort")))
+      ;; -e has to come before the command, or tmux hands it to the agent.
+      (should (< (cl-position "-e" call :test #'equal)
+                 (cl-position "agy" call :test #'equal))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-retries-without-identity ()
+  "`-e' is tmux 3.2+.  The version is not parsed -- `tmux -V' says things
+like \"next-3.6\" -- so the spawn is its own probe: an old tmux gets one
+failed call and then the herd it always had, minus identity."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown)
+          (calls nil))
+      (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                 (lambda (args)
+                   (push args calls)
+                   (cond
+                    ;; Failure means "no such session"; answering 0 here
+                    ;; tells `--unique-id' every name is taken, and it
+                    ;; looks for a free one forever.
+                    ((equal (car args) "has-session") (cons 1 ""))
+                    ((member "-e" args) (cons 1 "unknown option -- e"))
+                    (t (cons 0 ""))))))
+        (should (ghostherd-backend-spawn
+                 'tmux (list :name "rev" :kind 'agy :command "agy"
+                             :directory "/tmp/" :project "/tmp/")))
+        ;; And the answer is remembered: the next spawn does not pay for it.
+        (should (eq ghostherd-tmux--env-supported nil))
+        (setq calls nil)
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev2" :kind 'agy :command "agy"
+                     :directory "/tmp/" :project "/tmp/"))
+        (should-not (cl-find-if (lambda (args) (member "-e" args)) calls))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-failure-is-still-an-error ()
+  "The retry must not swallow a spawn that failed for a real reason."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown))
+      (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                 (lambda (_args) (cons 1 "no space left on device"))))
+        (should-error (ghostherd-backend-spawn
+                       'tmux (list :name "rev" :kind 'agy :command "agy"
+                                   :directory "/tmp/" :project "/tmp/"))
+                      :type 'user-error)))))
 
 (ert-deftest ghostherd-test-tmux-spawn-writes-the-recipe ()
   "The tmux session name is not big enough to hold a recipe, and a

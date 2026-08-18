@@ -50,6 +50,9 @@
 (defvar ghostel-command-start-functions)
 (defvar ghostel-command-finish-functions)
 
+;; server.el's, read for `GHOSTHERD_SOCKET' in `ghostherd-agent-environment'.
+(defvar server-name)
+
 
 ;;; Customization
 
@@ -208,6 +211,41 @@ naming.  A title equal to the buffer name is the shell echoing us back."
           (unless (or (string-empty-p title)
                       (equal title (buffer-name buffer)))
             title))))))
+
+
+;;; Agent identity
+;;
+;; An agent that does not know its own name cannot use half of what the
+;; herd offers.  `bin/ghostherd message TO TEXT FROM' has to be *told*
+;; who is speaking, so the wrapper defaulted the sender to "user" -- a
+;; lie whenever the caller was another agent -- and nothing a CLI reports
+;; about itself could be attributed at all.
+;;
+;; Nobody can tell it after the fact, either: the value has to be in the
+;; process environment before the agent execs.  So identity is injected
+;; at spawn, by every implementor, from one list.
+
+(defun ghostherd-agent-environment (backend plist)
+  "Return VAR=VALUE strings identifying the session PLIST describes.
+BACKEND is the implementor doing the spawning.
+
+`GHOSTHERD_SOCKET' is the emacsclient socket, not a tmux one, and it is
+here because `bin/ghostherd' already reads it: an agent hosted by tmux
+has no `ghostel_cmd' -- ghostel's shell integration is installed in the
+shell ghostel spawns, which there is `tmux attach' -- so the wrapper is
+its only way back into the herd, and it should reach *this* Emacs
+without anyone having configured it.
+
+It is omitted when server.el has not been loaded, which is not a case
+worth handling: an Emacs `emacsclient' can reach has loaded it, and
+`emacsclient' with no `-s' looks for the same default the variable
+would have held.  server.el is deliberately not required for it --
+loading a subsystem to read one variable off it would be backwards."
+  (append
+   (list (format "GHOSTHERD_SESSION=%s" (plist-get plist :name))
+         (format "GHOSTHERD_BACKEND=%s" backend))
+   (when (and (boundp 'server-name) (stringp server-name))
+     (list (format "GHOSTHERD_SOCKET=%s" server-name)))))
 
 
 ;;; Key names
@@ -521,6 +559,13 @@ _KIND is reserved for kind-specific quoting later."
       (user-error "Buffer already exists: %s" bufname))
     (let ((default-directory (plist-get plist :directory))
           (ghostel-buffer-name bufname)
+          ;; The shell ghostel starts inherits this, and exports it to the
+          ;; agent command typed into it afterwards -- which is why the
+          ;; binding has to be in force around `ghostel', not around the
+          ;; launch string.
+          (process-environment
+           (append (ghostherd-agent-environment 'ghostel plist)
+                   process-environment))
           ;; Keep exited agent buffers so the herd can mark them dead.
           (ghostel-kill-buffer-on-exit nil))
       (setq buffer (ghostel t))

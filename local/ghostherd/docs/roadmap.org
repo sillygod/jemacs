@@ -18,7 +18,11 @@ Goal: make state trustworthy for daily use without false blocked spam.
   Config knobs)
 - [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
   data; =ghostherd-explain= produces it live, and the herd log now keeps
-  the screen behind every =blocked= so it accumulates unattended
+  the screen behind every =blocked= so it accumulates unattended.
+  *Demoted rather than done*: Phase 3.5 lets an agent report its own
+  state, so for a CLI with lifecycle hooks the rules became the fallback
+  instead of the authority. Still worth doing for the CLIs that have no
+  hooks — which is why the dogfood log stays open
 - [X] A state reason says what the agent asked rather than which regexp
   matched, so a notification is actionable without visiting the agent
 - [X] =ghostherd-log=: what the herd did while you were away, with the
@@ -133,10 +137,72 @@ This is the record of what shipped and what is left.
   thinner host. Until it exists, tmux is the one widely installed tool
   that does both jobs.
 
+* Phase 3.5 — The agent as an authority on itself  *(done)*
+
+Goal: stop guessing =blocked= and =done= from a rendering of a screen,
+for the CLIs that already know.
+
+How to use it is in [[file:../readme.org][readme.org]] under "Agents that report themselves" and
+"Which agent am I?"; why it is shaped that way is in [[file:design.org][design.org]] under
+"Why a report is not a mark".
+
+** What shipped
+
+- [X] *Identity at spawn.* =GHOSTHERD_SESSION= / =GHOSTHERD_BACKEND= /
+  =GHOSTHERD_SOCKET= in the agent's environment, from one list, on both
+  backends. Nothing could tell a process afterwards, which is why every
+  idea below was impossible before it
+- [X] =self= everywhere: in =bin/ghostherd= (substituted by the shell,
+  the only place that has the variable) and in the =ghostel_cmd=
+  commands (from the calling terminal's buffer). Plus =ghostherd whoami=
+- [X] A message from an agent is attributed to *that agent*.
+  =bin/ghostherd message TO TEXT= defaulted the sender to ="user"= --- a
+  lie whenever the caller was an agent, and it had no way to say
+  otherwise
+- [X] =ghostherd-report= / =ghostherd report self STATE [WHY]=: the third
+  state authority, with a TTL rather than the stickiness of
+  =ghostherd-mark-state=. Precedence table in the readme; a =blocked=
+  rule on the screen still beats it, and a =working= screen vetoes a
+  claimed =blocked=
+- [X] =ghostherd-explain= shows the report, its age, and whether it
+  expired --- a report is the one authority that leaves no trace on the
+  screen printed below it
+- [X] =done= means "finished while you were not looking" for a report
+  too, not only for the promotion path that used to own the rule
+- [X] A rename carries the report (and the input grace, and the settle
+  timestamp) to the new id instead of dropping them
+- [X] 20 new ERT tests, mutation-checked; plus a real round trip through
+  tmux, emacsclient and =bin/ghostherd=
+
+** What is left
+
+- [ ] Dogfood the claude hook wiring for a few days: the TTL and the
+  =working=-vetoes-=blocked= rule are both judgement calls that want log
+  evidence, and =ghostherd-explain= now prints exactly what is needed to
+  argue about them
+- [ ] grok and agy: find out whether they have a hook mechanism at all.
+  The readme documents claude's because it is the one that does
+
+** Deliberately not done
+
+- Reports for =shell= sessions. A shell has no agent lifecycle, and a
+  human claiming a state already has =ghostherd-mark-state=
+- =dead= as a reportable state. Liveness is the host's answer, and an
+  agent still able to report is not dead
+- An alias table so a renamed agent's stale =GHOSTHERD_SESSION= keeps
+  working. That is a memory leak with a lookup in front of it; a respawn
+  is the honest repair
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
-- [ ] Optional lifecycle hooks plugins per CLI (beyond screen scrape)
+- [-] Optional lifecycle hooks plugins per CLI (beyond screen scrape) ---
+  *mostly answered by Phase 3.5*, and answered from the other end: the
+  herd takes a report on one command instead of hosting a plugin per CLI,
+  so the CLI-specific part is three lines of that CLI's own hook config.
+  What is left would be shipping those snippets per kind (an
+  =:report-hooks= field beside =:screen-rules=), which is worth doing
+  only once more than one CLI has been wired up by hand
 - [ ] Compare/contrast doc vs herdr for users choosing tools
 
 * Explicit non-goals (for now)

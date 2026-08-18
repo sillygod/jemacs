@@ -15,6 +15,13 @@ Covers the parts that need no PTY: rule matching and precedence, OSC
 progress freshness and handler chaining, state-detection precedence, sidebar
 column fitting, title filtering, naming and age formatting.
 
+Phase 3.5 added the report authority, and the tests to reach for when
+editing detection are the precedence ones: which authority wins is now a
+five-row table (readme, "Agents that report themselves"), and every row
+has a test. The two that look like oddities are load-bearing --- a
+=working= screen vetoing a claimed =blocked=, and a report never being
+polled synchronously.
+
 Phase 3 added the host slot, and the way it is tested is the point: a
 =fake= backend answers with a known screen, so the tests pin the *call
 sites* rather than either implementor. Rewiring detection back to a
@@ -53,7 +60,8 @@ ghostel PTYs headlessly is what Phase 1 deferred. Run after reloading config
 
 1. =ghostel= package installed and working (=M-x ghostel= opens a shell).
 2. CLIs on =PATH=: =claude=, =grok=, =agy= (skip kinds you do not have).
-3. =tmux= on =PATH= for T10–T12 (developed against 3.5a).
+3. =tmux= on =PATH= for T10–T13 (developed against 3.5a; identity
+   injection needs 3.2+, and degrades with a warning below that).
 4. =alert= available (this config sets =alert-default-style= to =osx-notifier=).
 5. =jemacs-ai= loaded so =use-package ghostherd= ran; first command will load the package and enable =ghostherd-mode=.
 
@@ -208,6 +216,25 @@ The bug this phase most had to avoid.
 |    3 | Wait a poll or two                            | Still =working=, still detached           |
 |    4 | Quit the agent CLI itself (=/exit=)           | *Now* =dead=, and the last screen is still capturable |
 
+** T13 — Identity and self-reported state
+
+Both halves of Phase 3.5, and the only part ERT cannot reach: whether the
+variables really arrive in a process tmux exec'd, and whether a CLI's own
+hook can drive the herd.
+
+| Step | Action                                                    | Expected                                     |
+|------+-----------------------------------------------------------+----------------------------------------------|
+|    1 | In a spawned agent's shell: =ghostherd whoami=            | Its own session name                         |
+|    2 | =ghostherd report self blocked "trying it"=               | Row turns =blocked= within a poll; banner    |
+|    3 | =M-x ghostherd-explain=                                   | =reports blocked  trying it  (Ns ago…)=      |
+|    4 | =ghostherd report self auto=                              | Back to whatever the screen says             |
+|    5 | Wire claude's hooks (see readme), then answer a permission prompt | =blocked= on the question, =done= on Stop |
+|    6 | From the other agent: =ghostherd message implementer hi=  | Arrives attributed to the *sender*, not "user" |
+|    7 | Kill the hook config mid-session, leave a prompt open     | Row falls back to the rules within the TTL   |
+
+Step 7 is the one worth doing deliberately: it is the failure mode the
+TTL exists for, and the reason a report is not a =mark-state=.
+
 * Dogfood log
 
 Screen rules are heuristics against a UI that changes between releases,
@@ -294,6 +321,7 @@ Anything else worth recording:
 | ERT, stubbed tmux  | *done* --- the command lines themselves  | Stubs =--call=            |
 | ERT, real tmux     | *done* --- spawn/capture/send/restore/kill | Skipped without tmux    |
 | Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
+| Agent-driven reports | *gap* --- needs a real CLI's hooks      | Manual: T13               |
 | Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
 
 Do *not* block UX work on full TUI integration tests of claude/grok

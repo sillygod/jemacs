@@ -7,9 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3 done* — hosts are a slot; tmux is the second one         |
+| Phase       | *3.5 done* — an agent is an authority on its own state      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 135 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 155 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -33,6 +33,9 @@ readers and different lifetimes:
 - State polling: =working= / =blocked= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
+- Agents know their own name (=GHOSTHERD_SESSION=) and can say =self=
+- Agents can report their own state, so =blocked= / =done= need not be
+  scraped off a screen --- see "Agents that report themselves"
 - Agents can call herd commands via =ghostel_cmd= (whitelisted; ghostel
   backend only --- see "Hosts")
 
@@ -104,7 +107,8 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-menu=                | One-key dispatcher                   |
 | =M-x ghostherd-kill=                | Kill session (+ buffer)              |
 | =M-x ghostherd-rename=              | Rename session                       |
-| =M-x ghostherd-mark-state=          | Manual state / auto                  |
+| =M-x ghostherd-mark-state=          | Manual state / auto (sticky)         |
+| =M-x ghostherd-report=              | Record what an agent says about itself |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
 | =M-x ghostherd-set-notes=           | Set an agent's role / note           |
@@ -225,7 +229,12 @@ When shell integration is active and the command is whitelisted:
   ghostel_cmd ghostherd-prompt reviewer "Review the diff"
   ghostel_cmd ghostherd-message reviewer "Please review" implementer
   ghostel_cmd ghostherd-read reviewer 60
+  ghostel_cmd ghostherd-report self blocked "waiting on a decision"
 #+end_src
+
+=self= is the calling agent, and the sender of a =ghostherd-message=
+defaults to it: this path is dispatched from the asking terminal, so the
+caller is known without being named.
 
 =ghostherd-list= and =ghostherd-state= emit JSON:
 
@@ -340,6 +349,36 @@ for everywhere else --- a Makefile, a git hook, a CI step:
   bin/ghostherd interrupt reviewer
 #+end_src
 
+** Which agent am I?
+
+Every agent the herd spawns gets its own name in its environment, on both
+backends, because nothing can tell it afterwards:
+
+| Variable            | Holds                                          |
+|---------------------+------------------------------------------------|
+| =GHOSTHERD_SESSION= | this agent's session name                      |
+| =GHOSTHERD_BACKEND= | =ghostel= or =tmux=, informational             |
+| =GHOSTHERD_SOCKET=  | the emacsclient socket this herd is running in |
+
+So from inside an agent, everything works without knowing anything:
+
+#+begin_src bash
+  ghostherd whoami                            # → reviewer
+  ghostherd read self 40
+  ghostherd message implementer "found it"    # FROM defaults to reviewer
+#+end_src
+
+Any =NAME= may be =self=. =FROM= used to default to ="user"=, which was a
+lie whenever an agent was the one talking --- and an agent had no way to
+say otherwise.
+
+Two edges worth knowing. =GHOSTHERD_SESSION= is fixed at spawn, so
+=ghostherd-rename= leaves a running agent holding its old name; it will
+get =unknown session= until it is respawned. And injecting it on the tmux
+backend needs =new-session -e=, which is tmux 3.2+: on an older tmux the
+spawn still works, with a warning, and agents simply do not know their
+own name.
+
 =GHOSTHERD_SOCKET= picks an emacsclient socket; =GHOSTHERD_DRY_RUN= prints
 the elisp instead of running it, which is how the quoting is tested.
 
@@ -373,6 +412,69 @@ as =#{pane_title}=, which tmux tracks from the same escape sequence.
 Neither OSC integration is a hook, and both had to be taken over
 carefully --- see "The two OSC integrations that are not hooks" in
 [[file:docs/design.org][docs/design.org]].
+
+* Agents that report themselves
+
+Screen rules scrape a TUI that is drawn differently every release, which
+is why tuning them is a standing job. But the CLIs already *know* when
+they stop for a question and when they finish, and most of them can run a
+command at that moment. That command is:
+
+#+begin_src bash
+  ghostherd report self blocked "Bash(rm -rf build/) — proceed?"
+  ghostherd report self working
+  ghostherd report self done
+  ghostherd report self auto        # withdraw; back to detection alone
+#+end_src
+
+Under tmux that is =bin/ghostherd=; in a ghostel-hosted agent
+=ghostel_cmd ghostherd-report self blocked "…"= does the same without
+emacsclient. Both need identity, which is why it exists.
+
+For claude, whose hooks hand their payload to the command as JSON on
+stdin, the wiring is three entries:
+
+#+begin_src js
+  // .claude/settings.json — hook names are the CLI's own; check its docs
+  {"hooks": {
+     "Notification":     [{"hooks": [{"type": "command",
+       "command": "ghostherd report self blocked \"$(jq -r '.message // empty')\""}]}],
+     "UserPromptSubmit": [{"hooks": [{"type": "command",
+       "command": "ghostherd report self working"}]}],
+     "Stop":             [{"hooks": [{"type": "command",
+       "command": "ghostherd report self done"}]}]}}
+#+end_src
+
+A report is *not* =ghostherd-mark-state=. A manual mark is sticky, which
+is right for a human overriding detection and wrong for a hook: one
+missed edge and the row is frozen at =blocked= forever. A report expires
+after =ghostherd-report-ttl= (120s) instead, the way an OSC progress
+report does --- and expiry costs nothing when the report was true, since
+a real prompt is still on the screen for the rules to find.
+
+Who wins, in order:
+
+| Authority                        | Beats                                    |
+|----------------------------------+------------------------------------------|
+| Manual mark (=M= / =mark-state=) | everything, until cleared                |
+| Host says the process is gone    | everything below                         |
+| A =blocked= rule on the screen   | a report --- a real prompt is never masked |
+| A fresh report                   | progress, rules, the idle fallback       |
+| A =working= rule on the screen   | a report claiming =blocked= (see below)  |
+| OSC progress                     | rules                                    |
+
+The one exception reads oddly and is deliberate: a claimed =blocked=
+loses to a screen that positively says =working=, because those patterns
+match a spinner --- an agent generating tokens is not sitting on a prompt,
+whatever its last hook said. =idle= gets no such veto, because =idle= is
+not evidence; it is what detection falls back to.
+
+Reports are for agent kinds. A =shell= session has no agent lifecycle to
+report, and a human claiming a state wants =ghostherd-mark-state=.
+
+=ghostherd-explain= shows the current report, its age, and whether it has
+expired --- which matters because a report leaves no trace on the screen
+below it.
 
 * Why is it in that state? (=ghostherd-explain=)
 
@@ -553,6 +655,12 @@ not re-read.
   ;; OSC 9;4 progress as evidence of `working'
   (setq ghostherd-use-osc-progress t
         ghostherd-progress-ttl 5)         ; seconds a report stays trusted
+
+  ;; How long an agent's own report about itself is believed.  Short is
+  ;; safe: when the report was true the prompt is still on screen, so
+  ;; expiry costs nothing -- and expiry is the only cure for a hook chain
+  ;; that broke halfway through a session.
+  (setq ghostherd-report-ttl 120)
 
   ;; OSC 2 title as a sidebar column.  Columns are fitted to the sidebar
   ;; width, and Title outranks Project, so in a narrow sidebar this trades

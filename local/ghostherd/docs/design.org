@@ -276,6 +276,93 @@ Two things, both learned the hard way:
   can answer and wedges the server for every later call too. That is not
   hypothetical: it is what the first version did.
 
+** An agent knowing its own name
+
+Injected into the environment at spawn, by every implementor, from one
+list (=ghostherd-agent-environment=). Not discoverable any other way:
+=bin/ghostherd= runs in a shell whose only link to the herd is what it
+inherited, and =emacsclient= does not carry the caller's environment into
+the form it evaluates --- so an Emacs asked "who is =self=" cannot answer
+for that path. The shell substitutes it instead.
+
+The =ghostel_cmd= path *can* answer, and does: it is dispatched inside the
+VT parser of the terminal that asked, so the calling session's buffer is
+the current one. Two paths, one word, and both had to work before a hook
+could say =self=.
+
+On tmux this needs =new-session -e=, which arrived in 3.2. The version is
+not parsed --- =tmux -V= says things like =next-3.6= --- and the option is
+not probed separately: the spawn *is* the probe, cached, and a failure
+retries without identity, which is exactly the herd that existed before
+identity did. The alternative considered was exec'ing =env VAR=… agent=
+as the command, which needs no tmux feature at all; rejected because a
+session spawned with no command (=shell=) then gets nothing, and that is
+precisely the session a human types =ghostherd= into by hand.
+
+=GHOSTHERD_SESSION= is fixed at spawn, so a rename leaves a running agent
+holding a name the registry no longer has. That is a real edge and it is
+documented rather than fixed: tmux can update its session environment,
+but not the environment of a process it already exec'd, so the only
+honest repairs are a respawn or an alias table --- and an alias table for
+old names is a memory leak with a lookup in front of it.
+
+** Why a report is not a mark
+
+=ghostherd-mark-state= already existed, and reusing it for CLI lifecycle
+hooks would have been one line. It is the wrong shape: a manual mark is
+*sticky*, which is right for a human overriding detection and fatal for a
+hook. One missed edge --- a CLI that fires nothing on the way out of a
+prompt, a hook chain broken by a config edit --- and the row is frozen at
+=blocked= for the rest of the session, notification already sent.
+
+So a report expires, and the pattern it copies is the one already in the
+file: OSC progress, down to the freshness check. =ghostherd-report-ttl=
+is short (120s) for an asymmetry worth stating plainly:
+
+- when the report was *true*, expiry costs nothing --- the prompt is still
+  on the screen, the rules find it, and the herd falls back to the
+  behaviour it had before reports existed;
+- when the report was *stale*, expiry is the only cure.
+
+A long TTL therefore buys a lie and sells nothing.
+
+Three smaller decisions inside it:
+
+- *Storage is a hash table, not two struct slots.* Adding slots to
+  =ghostherd-session= is what "Reloading over a live herd" in
+  [[file:../readme.org][readme.org]] is about: every field after the new one shifts under a
+  running herd. A report is Emacs-side, transient, and keyed by id ---
+  the same shape as =ghostherd--input-at= and =ghostherd--idle-since=,
+  and cleared in the same places. Which is also why =ghostherd-rename=
+  now moves those three entries to the new id instead of dropping them:
+  losing the input grace silently was survivable, losing a report
+  mid-prompt is not.
+- *A claimed =blocked= loses to a =working= screen.* The rules' =working=
+  patterns match a spinner, and an agent emitting tokens is not sitting
+  on a prompt whatever its last hook said. =idle= gets no such veto,
+  because =idle= is not evidence --- it is what detection falls back to
+  when nothing matched. This is the same reasoning as
+  =ghostherd-idle-settle=: something appearing on the screen is a
+  positive signal, its absence is not.
+- *Recording is not deciding.* =ghostherd-report= stores and schedules a
+  poll on a zero-delay timer rather than polling in place, because the
+  shortest route here is =ghostel_cmd= --- inside ghostel's VT parser,
+  where a capture is a subprocess in the middle of drawing a terminal.
+  The OSC progress handler is under the same constraint for the same
+  reason, and there is a test that fails if this one stops deferring.
+
+The hedges in =ghostherd-poll-session= needed no exemption, which is
+worth writing down because it looks like an oversight: both only ever
+hold back an =idle=, and the states a hook actually reports --- =working=,
+=blocked=, =done= --- pass straight through. Hysteresis exists because
+screens lie between two tool calls; a hook firing at the moment the CLI
+stops does not need it, and would be ruined by it.
+
+What did need a rule is =done=: it means *finished while you were not
+looking*, and the promotion path carried that condition in its own
+=if=. A report can say =done= outright, so the rule moved out to where
+both paths pass through it.
+
 ** What a state reason says
 
 =state-reason= used to hold the =:screen-rules= pattern that matched. That
@@ -337,7 +424,10 @@ cost nothing and twenty 40x120 screens are the actual memory.
 | Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
 | Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
 | Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |
-| State authority       | Screen rules + exit hooks                   | No per-CLI lifecycle plugins yet         |
+| State authority       | Screen rules + exit hooks + agent reports   | The CLI knows what a screen only hints   |
+| Agent identity        | Injected at spawn, one list per implementor  | Nothing can tell a process afterwards    |
+| Reported state        | Expires (TTL), unlike a manual mark         | A missed edge must not freeze a row      |
+| Report storage        | Hash table keyed by id, not struct slots    | New slots break a herd across a reload   |
 | Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
 | Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
 | Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |

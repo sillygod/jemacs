@@ -614,6 +614,52 @@ buffer name back."
           (setq-local ghostherd-session-id new-name)
           (setq-local ghostel--buffer-identity (buffer-name)))))))
 
+(defvar ghostherd-tmux--env-supported 'unknown
+  "Whether this tmux accepts `new-session -e'.  See `ghostherd-tmux--new-session'.")
+
+(defun ghostherd-tmux--new-session (args env)
+  "Run new-session with ARGS, passing ENV as `-e' options where supported.
+
+`-e' arrived in tmux 3.2, and it is the only way to put a variable into
+the environment of a process tmux execs *directly*: `set-environment'
+reaches the next process started in the session, not the one already
+running, and there is no shell here to export anything.
+
+The version is not parsed -- `tmux -V' says things like \"next-3.6\" --
+and the option is not probed separately either.  The spawn itself is the
+probe: it either works, or it is retried without identity, which is
+exactly what the herd did before identity existed.  The answer is cached
+because an old tmux does not get newer between two spawns, and because
+the warning is worth saying once rather than every time.
+
+ENV is separate from ARGS so the caller can keep ARGS in tmux's own
+order: the options go in front of the command, and the command has to
+stay last, since everything after it belongs to execvp."
+  (let* ((env-args (and (not (eq ghostherd-tmux--env-supported nil))
+                        (mapcan (lambda (var) (list "-e" var)) (copy-sequence env))))
+         (full (if env-args
+                   (append (list (car args)) env-args (cdr args))
+                 args)))
+    (pcase-let ((`(,status . ,output) (ghostherd-tmux--call full)))
+      (cond
+       ((eq status 0)
+        (when env-args (setq ghostherd-tmux--env-supported t))
+        output)
+       ;; No -e was sent, so the failure is about something real.
+       ((null env-args)
+        (user-error "tmux new-session failed: %s" (string-trim (or output ""))))
+       (t
+        (pcase-let ((`(,status2 . ,output2) (ghostherd-tmux--call args)))
+          (unless (eq status2 0)
+            (user-error "tmux new-session failed: %s" (string-trim (or output2 ""))))
+          (setq ghostherd-tmux--env-supported nil)
+          (display-warning
+           'ghostherd
+           (format "tmux does not support `new-session -e' (needs 3.2+), so agents \
+will not know their own name: %s" (string-trim (or output "")))
+           :warning)
+          output2))))))
+
 (cl-defmethod ghostherd-backend-spawn ((_backend (eql tmux)) plist)
   (ghostherd-tmux--ensure-available)
   (let* ((name (plist-get plist :name))
@@ -626,13 +672,14 @@ buffer name back."
     ;; tmux does not need a shell in the way, so `ghostherd-spawn-delay'
     ;; and its guesswork do not apply.  Multiple trailing arguments are
     ;; passed to execvp as-is, so nothing here is shell-quoted.
-    (apply #'ghostherd-tmux--run
-           (append (list "new-session" "-d" "-s" id
-                         "-c" (expand-file-name
-                               (or (plist-get plist :directory) "~/"))
-                         "-x" (number-to-string (car size))
-                         "-y" (number-to-string (cdr size)))
-                   (when command (cons command args))))
+    (ghostherd-tmux--new-session
+     (append (list "new-session" "-d" "-s" id
+                   "-c" (expand-file-name
+                         (or (plist-get plist :directory) "~/"))
+                   "-x" (number-to-string (car size))
+                   "-y" (number-to-string (cdr size)))
+             (when command (cons command args)))
+     (ghostherd-agent-environment 'tmux plist))
     (ghostherd-tmux--write-recipe id plist)
     (ghostherd-tmux--forget)
     (list :host-id id :buffer nil :started (and command t))))

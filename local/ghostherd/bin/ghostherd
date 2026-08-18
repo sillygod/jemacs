@@ -17,16 +17,46 @@
 #   keys NAME KEY...         send keystrokes, e.g. esc / C-c / down
 #   interrupt NAME           Escape
 #   abort NAME               C-c
+#   report NAME STATE [WHY]  what the agent says about itself:
+#                            working | blocked | idle | done | auto
+#   whoami                   this agent's own session name
 #
-# Env:
+# Any NAME may be `self', and FROM defaults to whoever is calling: an
+# agent spawned by the herd has GHOSTHERD_SESSION in its environment.
+#
+# Env (set for you at spawn; override to talk to another herd):
+#   GHOSTHERD_SESSION  this agent's session name; `self' and FROM read it
+#   GHOSTHERD_BACKEND  ghostel or tmux, informational
 #   GHOSTHERD_SOCKET   passed to emacsclient -s
 #   GHOSTHERD_DRY_RUN  print the elisp instead of running it
 
 set -euo pipefail
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { printf 'ghostherd: %s\n' "$1" >&2; exit 1; }
+
+# Resolve a session argument into $who, so every command takes `self'.
+#
+# The env var is the only place this can come from.  emacsclient does not
+# carry the caller's environment into the form it evaluates, so an Emacs
+# asked "who is self" has no way to answer; the shell that holds the
+# variable is the one that must substitute it.
+#
+# Through a global rather than by printing, because a `die' inside `$( )'
+# exits only the subshell: the first version of this printed the error
+# and then carried on with an empty session name.
+who=
+resolve() {
+  case $1 in
+    self)
+      [ -n "${GHOSTHERD_SESSION:-}" ] ||
+        die "GHOSTHERD_SESSION is not set (not running inside a herd agent?)"
+      who=$GHOSTHERD_SESSION
+      ;;
+    *) who=$1 ;;
+  esac
+}
 
 # Quote a shell string as an Emacs Lisp string literal.  Everything the
 # caller passes is free text -- a prompt can contain quotes, backslashes and
@@ -92,61 +122,83 @@ case $cmd in
 
   list)  run '(ghostherd-cmd-list)' ;;
 
-  state) need 1 $#; run "(ghostherd-cmd-state $(elisp_string "$1"))" ;;
+  whoami) resolve self; printf '%s\n' "$who" ;;
+
+  state)
+    need 1 $#; resolve "$1"
+    run "(ghostherd-cmd-state $(elisp_string "$who"))"
+    ;;
 
   read)
-    need 1 $#
+    need 1 $#; resolve "$1"
     if [ $# -ge 2 ]; then
-      run "(ghostherd-read $(elisp_string "$1") $2)"
+      run "(ghostherd-read $(elisp_string "$who") $2)"
     else
-      run "(ghostherd-read $(elisp_string "$1"))"
+      run "(ghostherd-read $(elisp_string "$who"))"
     fi
     ;;
 
   send)
-    need 2 $#
-    run "(progn (ghostherd-send $(elisp_string "$1") $(elisp_string "$2") nil)
+    need 2 $#; resolve "$1"
+    run "(progn (ghostherd-send $(elisp_string "$who") $(elisp_string "$2") nil)
                 \"sent\")"
     ;;
 
   prompt)
-    need 2 $#
-    run "(progn (ghostherd-prompt $(elisp_string "$1") $(elisp_string "$2"))
+    need 2 $#; resolve "$1"
+    run "(progn (ghostherd-prompt $(elisp_string "$who") $(elisp_string "$2"))
                 \"prompted\")"
     ;;
 
+  # FROM defaults to the caller, not to "user": attributing an agent's own
+  # message to the human is the bug identity exists to fix.
   message)
-    need 2 $#
-    from=${3:-user}
-    run "(progn (ghostherd-message $(elisp_string "$from") $(elisp_string "$1")
+    need 2 $#; resolve "$1"; to=$who
+    resolve "${3:-${GHOSTHERD_SESSION:-user}}"
+    run "(progn (ghostherd-message $(elisp_string "$who") $(elisp_string "$to")
                                    $(elisp_string "$2") :submit t)
                 \"messaged\")"
     ;;
 
   handoff)
-    need 2 $#
-    from=${3:-user}
-    run "(progn (ghostherd-handoff $(elisp_string "$1") $(elisp_string "$2")
-                                   $(elisp_string "$from"))
+    need 2 $#; resolve "$1"; to=$who
+    resolve "${3:-${GHOSTHERD_SESSION:-user}}"
+    run "(progn (ghostherd-handoff $(elisp_string "$to") $(elisp_string "$2")
+                                   $(elisp_string "$who"))
                 \"handed off\")"
     ;;
 
   keys)
-    need 2 $#
-    target=$1; shift
+    need 2 $#; resolve "$1"; shift
     keys=""
     for k in "$@"; do keys="$keys $(elisp_string "$k")"; done
-    run "(progn (ghostherd-send-keys $(elisp_string "$target")$keys) \"sent\")"
+    run "(progn (ghostherd-send-keys $(elisp_string "$who")$keys) \"sent\")"
     ;;
 
   interrupt)
-    need 1 $#
-    run "(progn (ghostherd-interrupt $(elisp_string "$1")) \"interrupted\")"
+    need 1 $#; resolve "$1"
+    run "(progn (ghostherd-interrupt $(elisp_string "$who")) \"interrupted\")"
     ;;
 
   abort)
-    need 1 $#
-    run "(progn (ghostherd-abort $(elisp_string "$1")) \"aborted\")"
+    need 1 $#; resolve "$1"
+    run "(progn (ghostherd-abort $(elisp_string "$who")) \"aborted\")"
+    ;;
+
+  # The point of identity: this is what a CLI's own lifecycle hook calls,
+  # so state stops being guessed from a rendering of the agent's screen.
+  report)
+    need 2 $#; resolve "$1"
+    case $2 in
+      working|blocked|idle|done|auto) ;;
+      *) die "report: state must be working, blocked, idle, done or auto" ;;
+    esac
+    if [ $# -ge 3 ]; then
+      why=$(elisp_string "$3")
+    else
+      why=nil
+    fi
+    run "(progn (ghostherd-report $(elisp_string "$who") '$2 $why) \"reported\")"
     ;;
 
   *) die "unknown command: $cmd (see: ghostherd help)" ;;
