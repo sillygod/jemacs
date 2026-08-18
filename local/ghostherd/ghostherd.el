@@ -2097,6 +2097,7 @@ marked =⏎= kept the screen that produced them; =RET= shows it."
     (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
     (ghostherd-explain                       . "Explain how state was decided")
     (ghostherd-log                           . "Herd log (what happened while you were away)")
+    (ghostherd-scrollback                    . "Scrollback (history the pane no longer shows)")
     (ghostherd-sidebar-help                  . "This help")
     (quit-window                             . "Quit"))
   "Commands listed by `ghostherd-sidebar-help', in display order.")
@@ -2172,6 +2173,7 @@ Commands with no binding in the current state are omitted."
   "g" #'ghostherd-sidebar-refresh
   "q" #'quit-window
   "." #'ghostherd-next-blocked
+  "H" #'ghostherd-scrollback
   "L" #'ghostherd-log
   "M" #'ghostherd-sidebar-mark-state)
 
@@ -2523,6 +2525,7 @@ sweeps every `ghostherd-poll-interval'."
             ("r" "rename" ghostherd-rename)
             ("M" "mark state" ghostherd-mark-state)
             ("l" "herd log" ghostherd-log)
+            ("h" "scrollback" ghostherd-scrollback)
             ("g" "poll now" ghostherd-poll-all)))
          (key (char-to-string
                (read-char

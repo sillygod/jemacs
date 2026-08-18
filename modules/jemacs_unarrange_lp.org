@@ -1478,6 +1478,7 @@
        "ahk" '(ghostherd-kill :which-key "kill")
        "ahr" '(ghostherd-rename :which-key "rename")
    "ahl" '(ghostherd-log :which-key "herd log")
+"ahH" '(ghostherd-scrollback :which-key "scrollback")
 
        "ad" '(docker t :which-key "docker")
 

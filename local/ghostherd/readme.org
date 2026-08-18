@@ -130,12 +130,13 @@ report. Notes do, because they were written onto the host.
 | =ahk= | kill           |
 | =ahr= | rename         |
 | =ahl= | herd log       |
+| =ahH= | scrollback     |
 
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
-=L= herd log ·
+=L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
@@ -422,6 +423,8 @@ If nothing arrived and you expected it, the herd log says why: a
 transition to =idle= rather than =done= means you were watching.
 
 * Scrolling back (=ghostherd-scrollback=)
+
+=SPC a h H=, or =H= in the sidebar.
 
 On the ghostel backend the buffer accumulates everything the agent ever
 printed, so scrolling back is just moving point. Behind tmux the buffer
