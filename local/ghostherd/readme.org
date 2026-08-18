@@ -436,17 +436,26 @@ scrolling back to the bottom leaves it automatically. On the ghostel
 backend nothing is intercepted, because the buffer already holds
 everything and Emacs already scrolls it.
 
-Evil users in normal state will want these bound there too ---
-=ghostherd-scroll-up=, =ghostherd-scroll-down=,
-=ghostherd-scroll-page-up=, =ghostherd-scroll-page-down= are the whole
+=M->= (or =G= under Evil) returns to the live screen --- which is also
+what leaves tmux's copy mode, so it means "put me back where I can
+type" rather than being a mode command.
+
+Evil owns those keys in normal state, so it needs its own bindings.
+=jemacs-ai= sets both states up; the five commands are the whole
 surface:
 
 #+begin_src emacs-lisp
   (evil-define-key 'normal ghostherd-terminal-mode-map
-    (kbd "C-e") #'ghostherd-scroll-down
     (kbd "C-y") #'ghostherd-scroll-up
+    (kbd "C-e") #'ghostherd-scroll-down
+    (kbd "C-u") #'ghostherd-scroll-page-up
     (kbd "C-d") #'ghostherd-scroll-page-down
-    (kbd "C-u") #'ghostherd-scroll-page-up)
+    (kbd "G")   #'ghostherd-scroll-bottom)
+
+  (evil-define-key 'emacs ghostherd-terminal-mode-map
+    (kbd "C-v") #'ghostherd-scroll-page-down
+    (kbd "M-v") #'ghostherd-scroll-page-up
+    (kbd "M->") #'ghostherd-scroll-bottom)
 #+end_src
 
 ** Reading it elsewhere (=ghostherd-scrollback=)

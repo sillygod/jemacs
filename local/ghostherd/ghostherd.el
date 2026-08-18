@@ -2021,6 +2021,20 @@ keys are what scroll it."
   (interactive)
   (ghostherd--scroll (- (max 1 (- (window-body-height) 2)))))
 
+;;;###autoload
+(defun ghostherd-scroll-bottom ()
+  "Return the agent view to the live screen.
+
+Scrolls forward far enough to hit the bottom, which is also what makes
+tmux leave copy mode -- so this is \"put me back where I can type\"
+rather than a mode command."
+  (interactive)
+  (let ((session (ghostherd-get (current-buffer))))
+    (unless session
+      (user-error "Not a ghostherd agent buffer"))
+    (unless (ghostherd--host-scroll session (- (* 1000 ghostherd-scroll-lines)))
+      (goto-char (point-max)))))
+
 (defvar-keymap ghostherd-terminal-mode-map
   :doc "Scrolling for an attached agent view, in the vocabulary Emacs uses."
   "<wheel-up>"     #'ghostherd-scroll-up
@@ -2030,7 +2044,8 @@ keys are what scroll it."
   "<prior>"        #'ghostherd-scroll-page-up
   "<next>"         #'ghostherd-scroll-page-down
   "M-v"            #'ghostherd-scroll-page-up
-  "C-M-v"          #'ghostherd-scroll-page-down)
+  "C-M-v"          #'ghostherd-scroll-page-down
+  "M->"            #'ghostherd-scroll-bottom)
 
 ;;;###autoload
 (define-minor-mode ghostherd-terminal-mode
