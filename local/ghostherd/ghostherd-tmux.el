@@ -27,6 +27,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'seq)
 (require 'ghostherd-backend)
 
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
@@ -167,8 +168,13 @@ looking."
 
 Liveness is consulted far more often than it changes -- every poll, and
 every mode-line redisplay through `ghostherd--ensure-sessions'.  One
-snapshot answers for the whole herd, so the cost is one subprocess per
-tick rather than one per session per redisplay."
+snapshot answers for the whole herd, so the cost is one subprocess rather
+than one per session.
+
+On the poll path it is now zero: the batched fetch asks for the same
+fields in the same round trip and stamps this cache from the answer, so
+what this TTL governs is how stale an *interactive* reader will accept a
+liveness answer before paying for a fresh one."
   :type 'number
   :group 'ghostherd)
 
@@ -412,27 +418,228 @@ ALIST maps a tmux session name to (DEAD-P . TITLE).")
             (cons now (ghostherd-tmux--read-snapshot))))
     (cdr ghostherd-tmux--status-cache)))
 
+(defconst ghostherd-tmux--status-format
+  "#{session_name}\t#{pane_dead}\t#{pane_title}"
+  "Fields the herd needs about every pane, in one line each.
+
+The title is last because it is the only one that can contain the
+separator.  A constant because two callers ask for it now: the standalone
+snapshot below, and the batched fetch that answers liveness and every
+screen in the same round trip.")
+
+(defun ghostherd-tmux--parse-snapshot (text)
+  "Parse TEXT, `ghostherd-tmux--status-format' per line, into the status alist."
+  (delq nil
+        (mapcar (lambda (line)
+                  (when (string-match "\\`\\([^\t]*\\)\t\\([^\t]*\\)\t?\\(.*\\)\\'"
+                                      line)
+                    (cons (match-string 1 line)
+                          (cons (equal (match-string 2 line) "1")
+                                (match-string 3 line)))))
+                (split-string text "\n" t))))
+
 (defun ghostherd-tmux--read-snapshot ()
   "Ask tmux for every pane's session name, dead flag and title.
 
-One call for the whole herd.  The title is last on the line because it
-is the only field that can contain the separator."
-  (let ((out (ghostherd-tmux--try
-              "list-panes" "-a" "-F" "#{session_name}\t#{pane_dead}\t#{pane_title}")))
-    (when out
-      (delq nil
-            (mapcar (lambda (line)
-                      (when (string-match "\\`\\([^\t]*\\)\t\\([^\t]*\\)\t?\\(.*\\)\\'"
-                                          line)
-                        (cons (match-string 1 line)
-                              (cons (equal (match-string 2 line) "1")
-                                    (match-string 3 line)))))
-                    (split-string out "\n" t))))))
+One call for the whole herd.  On the poll path this is not called at all:
+the batched fetch stamps the same cache from the same fields, so asking
+again would be a second subprocess for an answer already in hand."
+  (when-let* ((out (ghostherd-tmux--try
+                    "list-panes" "-a" "-F" ghostherd-tmux--status-format)))
+    (ghostherd-tmux--parse-snapshot out)))
 
 (defun ghostherd-tmux--status (session)
   "Return (DEAD-P . TITLE) for SESSION, or nil when its host is gone."
   (when-let* ((id (ghostherd-session-host-id session)))
     (cdr (assoc id (ghostherd-tmux--snapshot)))))
+
+
+;;; One round trip for the whole herd
+;;
+;; The poll path used to cost one subprocess *per agent* per tick, run
+;; synchronously from the timer: six agents meant seven forks every 1.5
+;; seconds (six captures and a `list-panes'), and a tmux server that
+;; stopped answering took Emacs down with it, because `call-process' does
+;; not come back and cannot be interrupted.
+;;
+;; tmux takes a list of commands in one invocation -- which
+;; `ghostherd-backend-scroll' already relies on -- so the whole tick is
+;; one call: the status fields first, then a delimiter and a capture per
+;; pane.  Asynchronously, because the point is that nothing on the timer
+;; path waits for a host.
+;;
+;; Two things this had to get right, both confirmed against tmux 3.5a:
+;;
+;; - *A failure abandons the rest of the list.*  A pane killed from
+;;   outside makes its capture fail, and every command after it never
+;;   runs.  So a partial answer is normal and the parse is tolerant: what
+;;   came back is used, what did not is read individually by the caller.
+;; - *stderr must be kept out of the screens.*  That abandoned list
+;;   explains itself on stderr ("can't find session: x"), and a sentence
+;;   like that landing in a captured screen is text the rules would
+;;   happily match.
+
+(defcustom ghostherd-tmux-fetch-timeout 10
+  "Seconds before an unanswered batched fetch is given up on.
+
+A wedged tmux server is the failure this exists for.  Killing the fetch
+stalls the *herd* -- states stop updating until the server answers again
+-- which is the right half to sacrifice: the alternative was an Emacs
+that stops redrawing."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd-tmux--fetch nil
+  "The in-flight batched fetch process, or nil.")
+
+(defvar ghostherd-tmux--fetch-started nil
+  "When the in-flight fetch began, as a float time.")
+
+(defvar ghostherd-tmux--fetch-warned nil
+  "Non-nil once a hung fetch has been complained about.")
+
+(defun ghostherd-tmux--marker ()
+  "Return a delimiter for one fetch that no screen can already be holding.
+
+Random per fetch rather than a fixed unlikely string: the text being
+delimited is whatever an agent chose to print, an agent can print
+anything, and \"unlikely\" is how this kind of parsing fails months
+later."
+  (format "@@ghostherd-%08x@@" (random (expt 2 32))))
+
+(defun ghostherd-tmux--screens-args (ids marker)
+  "Return the tmux arguments dumping the status fields and every pane in IDS.
+Each pane's screen is preceded by MARKER and its id on a line of its own."
+  (append (list "list-panes" "-a" "-F" ghostherd-tmux--status-format)
+          (mapcan (lambda (id)
+                    (list ";" "display-message" "-p" (concat marker " " id)
+                          ";" "capture-pane" "-p" "-t"
+                          (ghostherd-tmux--target id)))
+                  (copy-sequence ids))))
+
+(defun ghostherd-tmux--parse-screens (output marker)
+  "Split OUTPUT into (STATUS-TEXT . ALIST of host id → screen), by MARKER.
+
+Everything before the first marker is the status block; each marker
+starts the screen of the pane it names.  A pane whose screen has nothing
+on it is left out: the honest reading of \"marker printed, nothing
+followed\" is that the capture after it never ran."
+  (let ((prefix (concat marker " "))
+        (status nil) (screens nil) (current nil) (lines nil)
+        ;; The marker line ends the screen before it, so those screens
+        ;; arrive with no trailing newline -- but the last one runs to the
+        ;; end of the output, where tmux left one.  Same shape for all of
+        ;; them, or the tail trim would cut one line deeper for the last
+        ;; pane than for its neighbours.
+        (close (lambda (id acc)
+                 (cons id (string-join
+                           (nreverse (if (equal (car acc) "") (cdr acc) acc))
+                           "\n")))))
+    (dolist (line (split-string output "\n"))
+      (if (not (string-prefix-p prefix line))
+          (push line lines)
+        ;; A marker closes whatever it follows: the status block if it is
+        ;; the first one, the previous pane's screen otherwise.
+        (if current
+            (push (funcall close current lines) screens)
+          (setq status (string-join (nreverse lines) "\n")))
+        (setq current (substring line (length prefix))
+              lines nil)))
+    (if current
+        (push (funcall close current lines) screens)
+      (setq status (string-join (nreverse lines) "\n")))
+    (cons status
+          (delq nil
+                (mapcar (lambda (cell)
+                          (when (string-match-p "[^ \t\n]" (cdr cell))
+                            cell))
+                        (nreverse screens))))))
+
+(defun ghostherd-tmux--fetch-overdue-p ()
+  "Give up on a fetch that has stopped answering.  Return non-nil if killed."
+  (when (and ghostherd-tmux--fetch-started
+             (> (- (float-time) ghostherd-tmux--fetch-started)
+                ghostherd-tmux-fetch-timeout))
+    (unless ghostherd-tmux--fetch-warned
+      (setq ghostherd-tmux--fetch-warned t)
+      (display-warning
+       'ghostherd
+       (format "tmux has not answered in %ss; herd states are stale until it does \
+(see \"A stale tmux server\" in readme.org)"
+               ghostherd-tmux-fetch-timeout)
+       :warning))
+    (delete-process ghostherd-tmux--fetch)
+    t))
+
+(defun ghostherd-tmux--fetch-done (buffer marker by-host n callback)
+  "Finish a batched fetch: parse BUFFER, stamp the cache, call CALLBACK.
+MARKER delimits the screens, BY-HOST maps host id → session id, and each
+screen is trimmed to N lines so it matches what `capture' would return."
+  (setq ghostherd-tmux--fetch nil
+        ghostherd-tmux--fetch-started nil)
+  (let ((output (if (buffer-live-p buffer)
+                    (with-current-buffer buffer (buffer-string))
+                  "")))
+    (when (buffer-live-p buffer) (kill-buffer buffer))
+    (pcase-let ((`(,status . ,screens)
+                 (ghostherd-tmux--parse-screens output marker)))
+      ;; The status fields rode along in the same round trip, so stamping
+      ;; the cache here is what keeps the poll path from asking a second
+      ;; time -- synchronously -- for an answer already in hand.
+      (when (and status (string-match-p "\t" status))
+        (setq ghostherd-tmux--fetch-warned nil
+              ghostherd-tmux--status-cache
+              (cons (float-time) (ghostherd-tmux--parse-snapshot status))))
+      (funcall callback
+               (delq nil
+                     (mapcar (lambda (cell)
+                               (when-let* ((id (cdr (assoc (car cell) by-host))))
+                                 (cons id (ghostherd--string-tail (cdr cell) n))))
+                             screens))))))
+
+(cl-defmethod ghostherd-backend-screens
+  ((_backend (eql tmux)) sessions n callback)
+  (when (and (ghostherd-tmux-available-p)
+             (cl-some #'ghostherd-session-host-id sessions))
+    (if (process-live-p ghostherd-tmux--fetch)
+        ;; Claim the tick anyway: a fetch already running covers it, and
+        ;; starting a second one against a slow server is how a pile-up
+        ;; begins.
+        (progn (ghostherd-tmux--fetch-overdue-p) t)
+      (let* ((live (seq-filter #'ghostherd-session-host-id sessions))
+             (marker (ghostherd-tmux--marker))
+             (by-host (mapcar (lambda (s)
+                                (cons (ghostherd-session-host-id s)
+                                      (ghostherd-session-id s)))
+                              live))
+             (buffer (generate-new-buffer " *ghostherd-tmux-fetch*")))
+        (setq ghostherd-tmux--fetch-started (float-time))
+        (setq ghostherd-tmux--fetch
+              (make-process
+               :name "ghostherd-tmux-fetch"
+               :buffer buffer
+               :noquery t
+               :connection-type 'pipe
+               :coding 'utf-8
+               ;; Separate, not merged: see the note at the top of this
+               ;; section about stderr in a captured screen.
+               :stderr (ghostherd-tmux--fetch-stderr)
+               :command (append (list ghostherd-tmux-executable)
+                                (ghostherd-tmux--socket-args)
+                                (ghostherd-tmux--screens-args
+                                 (mapcar #'car by-host) marker))
+               :sentinel
+               (lambda (proc _event)
+                 (unless (process-live-p proc)
+                   (ghostherd-tmux--fetch-done buffer marker by-host n
+                                               callback)))))
+        t))))
+
+(defun ghostherd-tmux--fetch-stderr ()
+  "Return the buffer a fetch's stderr goes to, emptied first."
+  (let ((buffer (get-buffer-create " *ghostherd-tmux-stderr*")))
+    (with-current-buffer buffer (erase-buffer))
+    buffer))
 
 
 ;;; Attaching a view
@@ -474,6 +681,10 @@ must not touch `state' -- the agent is still running."
       ;; unlike the ghostel backend, where the dead buffer *is* the
       ;; evidence.
       (setq-local ghostel-kill-buffer-on-exit t)
+      ;; The buffer is a client showing one screen; this is what makes it
+      ;; scroll like the buffer it looks like.
+      (when (fboundp 'ghostherd-terminal-mode)
+        (ghostherd-terminal-mode 1))
       (add-hook 'kill-buffer-hook #'ghostherd-tmux--on-view-killed nil t))
     (setf (ghostherd-session-buffer session) buffer)
     buffer))
@@ -507,6 +718,21 @@ must not touch `state' -- the agent is still running."
   (ghostherd-tmux--try
    "capture-pane" "-p" "-S" (format "-%d" lines) "-t"
    (ghostherd-tmux--target (ghostherd-session-host-id session))))
+
+(cl-defmethod ghostherd-backend-scroll ((_backend (eql tmux)) session lines)
+  ;; tmux copy mode is the only thing that can move a pane's view, but it
+  ;; is driven here by command rather than by a prefix key, so it never
+  ;; becomes a navigation layer the user has to learn.  `-e' is what makes
+  ;; it invisible: scrolling back to the bottom leaves copy mode on its
+  ;; own, so there is no mode to notice or get stuck in.
+  ;;
+  ;; One invocation, because this runs per wheel click.
+  (let ((target (ghostherd-tmux--target (ghostherd-session-host-id session))))
+    (and (ghostherd-tmux--try
+          "copy-mode" "-e" "-t" target
+          ";" "send-keys" "-X" "-N" (number-to-string (abs lines))
+          "-t" target (if (> lines 0) "scroll-up" "scroll-down"))
+         t)))
 
 (cl-defmethod ghostherd-backend-send-text
   ((_backend (eql tmux)) session text submit)
@@ -595,6 +821,52 @@ buffer name back."
           (setq-local ghostherd-session-id new-name)
           (setq-local ghostel--buffer-identity (buffer-name)))))))
 
+(defvar ghostherd-tmux--env-supported 'unknown
+  "Whether this tmux accepts `new-session -e'.  See `ghostherd-tmux--new-session'.")
+
+(defun ghostherd-tmux--new-session (args env)
+  "Run new-session with ARGS, passing ENV as `-e' options where supported.
+
+`-e' arrived in tmux 3.2, and it is the only way to put a variable into
+the environment of a process tmux execs *directly*: `set-environment'
+reaches the next process started in the session, not the one already
+running, and there is no shell here to export anything.
+
+The version is not parsed -- `tmux -V' says things like \"next-3.6\" --
+and the option is not probed separately either.  The spawn itself is the
+probe: it either works, or it is retried without identity, which is
+exactly what the herd did before identity existed.  The answer is cached
+because an old tmux does not get newer between two spawns, and because
+the warning is worth saying once rather than every time.
+
+ENV is separate from ARGS so the caller can keep ARGS in tmux's own
+order: the options go in front of the command, and the command has to
+stay last, since everything after it belongs to execvp."
+  (let* ((env-args (and (not (eq ghostherd-tmux--env-supported nil))
+                        (mapcan (lambda (var) (list "-e" var)) (copy-sequence env))))
+         (full (if env-args
+                   (append (list (car args)) env-args (cdr args))
+                 args)))
+    (pcase-let ((`(,status . ,output) (ghostherd-tmux--call full)))
+      (cond
+       ((eq status 0)
+        (when env-args (setq ghostherd-tmux--env-supported t))
+        output)
+       ;; No -e was sent, so the failure is about something real.
+       ((null env-args)
+        (user-error "tmux new-session failed: %s" (string-trim (or output ""))))
+       (t
+        (pcase-let ((`(,status2 . ,output2) (ghostherd-tmux--call args)))
+          (unless (eq status2 0)
+            (user-error "tmux new-session failed: %s" (string-trim (or output2 ""))))
+          (setq ghostherd-tmux--env-supported nil)
+          (display-warning
+           'ghostherd
+           (format "tmux does not support `new-session -e' (needs 3.2+), so agents \
+will not know their own name: %s" (string-trim (or output "")))
+           :warning)
+          output2))))))
+
 (cl-defmethod ghostherd-backend-spawn ((_backend (eql tmux)) plist)
   (ghostherd-tmux--ensure-available)
   (let* ((name (plist-get plist :name))
@@ -607,13 +879,14 @@ buffer name back."
     ;; tmux does not need a shell in the way, so `ghostherd-spawn-delay'
     ;; and its guesswork do not apply.  Multiple trailing arguments are
     ;; passed to execvp as-is, so nothing here is shell-quoted.
-    (apply #'ghostherd-tmux--run
-           (append (list "new-session" "-d" "-s" id
-                         "-c" (expand-file-name
-                               (or (plist-get plist :directory) "~/"))
-                         "-x" (number-to-string (car size))
-                         "-y" (number-to-string (cdr size)))
-                   (when command (cons command args))))
+    (ghostherd-tmux--new-session
+     (append (list "new-session" "-d" "-s" id
+                   "-c" (expand-file-name
+                         (or (plist-get plist :directory) "~/"))
+                   "-x" (number-to-string (car size))
+                   "-y" (number-to-string (cdr size)))
+             (when command (cons command args)))
+     (ghostherd-agent-environment 'tmux plist))
     (ghostherd-tmux--write-recipe id plist)
     (ghostherd-tmux--forget)
     (list :host-id id :buffer nil :started (and command t))))

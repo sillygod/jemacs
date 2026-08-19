@@ -18,8 +18,8 @@ person who breaks them will be reading that file and not this one.
            │
   Detect:  timer + screen rules + ghostel-exit / OSC hooks
            │
-  Host:    capture · send-text · send-keys · live-p · exited-p
-           spawn · kill · rename · list · view          ← the slot
+  Host:    capture · screens · send-text · send-keys · live-p
+           exited-p · spawn · kill · rename · list · view  ← the slot
            │                              │
   Runtime: ghostel buffer (PTY)      tmux session (PTY, on -L ghostherd)
            agent = Emacs child       agent outlives Emacs; view optional
@@ -276,6 +276,152 @@ Two things, both learned the hard way:
   can answer and wedges the server for every later call too. That is not
   hypothetical: it is what the first version did.
 
+** What the poll path costs
+
+It used to cost one subprocess *per agent* per tick, run synchronously
+from the timer. Measured against a real tmux with six shells:
+
+| Shape                                  | Blocks Emacs for | Total  |
+|----------------------------------------+------------------+--------|
+| Old: 6 =capture-pane= + 1 =list-panes= | 30.5 ms          | 30.5 ms |
+| New: one batched fetch, asynchronous   | 6.1 ms           | 10.5 ms |
+
+The blocking column is the one that mattered, and the shape of it more
+than the number: =O(N)= forks on a 1.5-second timer, so the cost of
+watching an agent was paid again for every other agent in the herd. tmux
+takes a list of commands in one invocation --- which
+=ghostherd-backend-scroll= already relied on for the wheel --- so the
+whole tick is one call: the =list-panes= fields, then a delimiter and a
+=capture-pane= per session.
+
+Asynchronous for a different reason than speed. =call-process= does not
+come back and cannot be interrupted, so a wedged tmux server did not
+stall the *herd*, it stalled *Emacs* --- from a timer, repeatedly, with
+the readme already documenting stale servers as a thing that happens.
+Now a fetch that has not answered within =ghostherd-tmux-fetch-timeout=
+is killed and complained about once, and the herd goes stale instead.
+
+Three things this had to get right, all three confirmed against 3.5a
+rather than assumed:
+
+- *A failure abandons the rest of the command list.* One pane killed from
+  outside makes its =capture-pane= fail, and every command after it never
+  runs. So a partial answer is normal: what came back is used, and any
+  session the batch did not answer for is read individually by the
+  caller. A marker with nothing after it is reported as *missing* rather
+  than as an empty screen, because an empty screen reads as =idle=.
+- *stderr must be kept out of the screens.* That abandoned list explains
+  itself on stderr (="can't find session: x"=), and a sentence like that
+  landing in a captured screen is text the rules would happily match.
+- *The delimiter is random per fetch.* The text being delimited is
+  whatever an agent chose to print, an agent can print anything, and a
+  fixed "unlikely" marker is how this kind of parsing fails months later.
+
+Two consequences worth stating because they look like oversights:
+
+- =ghostherd-tmux-status-ttl= no longer governs the poll path at all. The
+  batched fetch asks for the same fields in the same round trip and stamps
+  the cache from the answer, which is *why* the sweep runs inside the
+  callback rather than before the fetch: ask first, and
+  =ghostherd--ensure-sessions= would pay for a second, synchronous
+  =list-panes= to learn what the fetch was about to say. A herd
+  straddling both hosts still pays that one call per tick, since the
+  ghostel group's sweep runs before the tmux answer arrives. A
+  single-host herd pays none.
+- *No poll backoff, deliberately.* Polling idle sessions less often was
+  the obvious fix while the cost was =O(N)= subprocesses; batching
+  removed the thing it was fixing. What remains per session is a regexp
+  match over forty lines, and a herd is not big enough for that to be
+  worth the staleness --- or worth explaining why a =blocked= took four
+  seconds to appear.
+
+** An agent knowing its own name
+
+Injected into the environment at spawn, by every implementor, from one
+list (=ghostherd-agent-environment=). Not discoverable any other way:
+=bin/ghostherd= runs in a shell whose only link to the herd is what it
+inherited, and =emacsclient= does not carry the caller's environment into
+the form it evaluates --- so an Emacs asked "who is =self=" cannot answer
+for that path. The shell substitutes it instead.
+
+The =ghostel_cmd= path *can* answer, and does: it is dispatched inside the
+VT parser of the terminal that asked, so the calling session's buffer is
+the current one. Two paths, one word, and both had to work before a hook
+could say =self=.
+
+On tmux this needs =new-session -e=, which arrived in 3.2. The version is
+not parsed --- =tmux -V= says things like =next-3.6= --- and the option is
+not probed separately: the spawn *is* the probe, cached, and a failure
+retries without identity, which is exactly the herd that existed before
+identity did. The alternative considered was exec'ing =env VAR=… agent=
+as the command, which needs no tmux feature at all; rejected because a
+session spawned with no command (=shell=) then gets nothing, and that is
+precisely the session a human types =ghostherd= into by hand.
+
+=GHOSTHERD_SESSION= is fixed at spawn, so a rename leaves a running agent
+holding a name the registry no longer has. That is a real edge and it is
+documented rather than fixed: tmux can update its session environment,
+but not the environment of a process it already exec'd, so the only
+honest repairs are a respawn or an alias table --- and an alias table for
+old names is a memory leak with a lookup in front of it.
+
+** Why a report is not a mark
+
+=ghostherd-mark-state= already existed, and reusing it for CLI lifecycle
+hooks would have been one line. It is the wrong shape: a manual mark is
+*sticky*, which is right for a human overriding detection and fatal for a
+hook. One missed edge --- a CLI that fires nothing on the way out of a
+prompt, a hook chain broken by a config edit --- and the row is frozen at
+=blocked= for the rest of the session, notification already sent.
+
+So a report expires, and the pattern it copies is the one already in the
+file: OSC progress, down to the freshness check. =ghostherd-report-ttl=
+is short (120s) for an asymmetry worth stating plainly:
+
+- when the report was *true*, expiry costs nothing --- the prompt is still
+  on the screen, the rules find it, and the herd falls back to the
+  behaviour it had before reports existed;
+- when the report was *stale*, expiry is the only cure.
+
+A long TTL therefore buys a lie and sells nothing.
+
+Three smaller decisions inside it:
+
+- *Storage is a hash table, not two struct slots.* Adding slots to
+  =ghostherd-session= is what "Reloading over a live herd" in
+  [[file:../readme.org][readme.org]] is about: every field after the new one shifts under a
+  running herd. A report is Emacs-side, transient, and keyed by id ---
+  the same shape as =ghostherd--input-at= and =ghostherd--idle-since=,
+  and cleared in the same places. Which is also why =ghostherd-rename=
+  now moves those three entries to the new id instead of dropping them:
+  losing the input grace silently was survivable, losing a report
+  mid-prompt is not.
+- *A claimed =blocked= loses to a =working= screen.* The rules' =working=
+  patterns match a spinner, and an agent emitting tokens is not sitting
+  on a prompt whatever its last hook said. =idle= gets no such veto,
+  because =idle= is not evidence --- it is what detection falls back to
+  when nothing matched. This is the same reasoning as
+  =ghostherd-idle-settle=: something appearing on the screen is a
+  positive signal, its absence is not.
+- *Recording is not deciding.* =ghostherd-report= stores and schedules a
+  poll on a zero-delay timer rather than polling in place, because the
+  shortest route here is =ghostel_cmd= --- inside ghostel's VT parser,
+  where a capture is a subprocess in the middle of drawing a terminal.
+  The OSC progress handler is under the same constraint for the same
+  reason, and there is a test that fails if this one stops deferring.
+
+The hedges in =ghostherd-poll-session= needed no exemption, which is
+worth writing down because it looks like an oversight: both only ever
+hold back an =idle=, and the states a hook actually reports --- =working=,
+=blocked=, =done= --- pass straight through. Hysteresis exists because
+screens lie between two tool calls; a hook firing at the moment the CLI
+stops does not need it, and would be ruined by it.
+
+What did need a rule is =done=: it means *finished while you were not
+looking*, and the promotion path carried that condition in its own
+=if=. A report can say =done= outright, so the rule moved out to where
+both paths pass through it.
+
 ** What a state reason says
 
 =state-reason= used to hold the =:screen-rules= pattern that matched. That
@@ -316,6 +462,47 @@ prompt, not once per poll --- and they are the ones worth arguing about.
 Entries and screens are trimmed separately, because 500 one-line entries
 cost nothing and twenty 40x120 screens are the actual memory.
 
+** Why the log outlives Emacs
+
+Because the herd does. Phase 3 exists so an agent survives an Emacs quit;
+the log's own justification is that "notifications arrive once and are
+gone, this is what you read when you get back"; and the most ordinary way
+of getting back --- starting Emacs again --- was the one case that threw
+it away. Worse, it threw away the *screens*, whose entire argument is that
+a rule which fired at 02:00 is unarguable by morning. Overnight is
+precisely the span an Emacs restart falls inside.
+
+The mechanism is boring on purpose, and five details in it are not:
+
+- *Appended per entry, not written on the way out.* A
+  =kill-emacs-hook= does not run for the crash this is meant to survive.
+  One line per transition is cheap enough to pay as it happens, and
+  =kill -9= is the test that matters.
+- *A plist per line, not the struct.* Printing
+  =#s(ghostherd-log-entry …)= reads back into the struct *as it is
+  then* --- add a slot and every line written before today returns with
+  its fields shifted along, which is the reload trap under "Reloading
+  over a live herd" wearing different clothes. A plist tolerates a key
+  that did not exist yet and one that no longer does.
+- *One line per entry, which needs =print-escape-newlines=.* A captured
+  screen is forty lines of box drawing, and without that binding it
+  would print as forty lines --- taking the crash-safety property with
+  it, since a truncated tail is only harmless while it can be exactly
+  one entry. =print-length= and =print-level= are bound for a different
+  reason: they are *user* settings, and writing ="..."= into somebody's
+  log where their agent's screen should be is a silent corruption.
+- *Compacted on read, not on write.* Appending is what keeps logging
+  cheap, so the file grows with whatever a session did and both caps are
+  applied once, when something is reading anyway. The cost is bounded by
+  one session's activity rather than by all of them.
+- *One warning, then memory only.* The write happens per state
+  transition, so a read-only directory has to cost a single warning
+  rather than a message every time an agent changes state.
+
+=ghostherd-log-clear= is the consequence rather than a feature: quitting
+Emacs used to empty the log by accident, and something has to do it on
+purpose now that nothing does.
+
 ** The two OSC integrations that are not hooks
 
 - =ghostel-progress-function= is a single global function, very likely
@@ -337,7 +524,15 @@ cost nothing and twenty 40x120 screens are the actual memory.
 | Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
 | Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
 | Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |
-| State authority       | Screen rules + exit hooks                   | No per-CLI lifecycle plugins yet         |
+| State authority       | Screen rules + exit hooks + agent reports   | The CLI knows what a screen only hints   |
+| Agent identity        | Injected at spawn, one list per implementor  | Nothing can tell a process afterwards    |
+| Reported state        | Expires (TTL), unlike a manual mark         | A missed edge must not freeze a row      |
+| Report storage        | Hash table keyed by id, not struct slots    | New slots break a herd across a reload   |
+| Poll I/O              | One batched round trip per host, async      | Was O(N) forks, blocking, on a timer     |
+| Wedged host           | Give up after a timeout, warn once          | Stale herd beats a frozen Emacs          |
+| Poll backoff          | *Not done* --- batching removed the reason   | Staleness with nothing left to buy       |
+| Log lifetime          | Appended to a file per entry                 | The restart is the absence it is for      |
+| Log on disk           | One plist per line, compacted on read        | Struct slots shift; appending stays cheap |
 | Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
 | Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
 | Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |

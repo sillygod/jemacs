@@ -18,7 +18,11 @@ Goal: make state trustworthy for daily use without false blocked spam.
   Config knobs)
 - [ ] Tune =:screen-rules= per CLI after T4 sessions — needs real dogfood
   data; =ghostherd-explain= produces it live, and the herd log now keeps
-  the screen behind every =blocked= so it accumulates unattended
+  the screen behind every =blocked= so it accumulates unattended.
+  *Demoted rather than done*: Phase 3.5 lets an agent report its own
+  state, so for a CLI with lifecycle hooks the rules became the fallback
+  instead of the authority. Still worth doing for the CLIs that have no
+  hooks — which is why the dogfood log stays open
 - [X] A state reason says what the agent asked rather than which regexp
   matched, so a notification is actionable without visiting the agent
 - [X] =ghostherd-log=: what the herd did while you were away, with the
@@ -133,10 +137,166 @@ This is the record of what shipped and what is left.
   thinner host. Until it exists, tmux is the one widely installed tool
   that does both jobs.
 
+* Phase 3.5 — The agent as an authority on itself  *(done)*
+
+Goal: stop guessing =blocked= and =done= from a rendering of a screen,
+for the CLIs that already know.
+
+How to use it is in [[file:../readme.org][readme.org]] under "Agents that report themselves" and
+"Which agent am I?"; why it is shaped that way is in [[file:design.org][design.org]] under
+"Why a report is not a mark".
+
+** What shipped
+
+- [X] *Identity at spawn.* =GHOSTHERD_SESSION= / =GHOSTHERD_BACKEND= /
+  =GHOSTHERD_SOCKET= in the agent's environment, from one list, on both
+  backends. Nothing could tell a process afterwards, which is why every
+  idea below was impossible before it
+- [X] =self= everywhere: in =bin/ghostherd= (substituted by the shell,
+  the only place that has the variable) and in the =ghostel_cmd=
+  commands (from the calling terminal's buffer). Plus =ghostherd whoami=
+- [X] A message from an agent is attributed to *that agent*.
+  =bin/ghostherd message TO TEXT= defaulted the sender to ="user"= --- a
+  lie whenever the caller was an agent, and it had no way to say
+  otherwise
+- [X] =ghostherd-report= / =ghostherd report self STATE [WHY]=: the third
+  state authority, with a TTL rather than the stickiness of
+  =ghostherd-mark-state=. Precedence table in the readme; a =blocked=
+  rule on the screen still beats it, and a =working= screen vetoes a
+  claimed =blocked=
+- [X] =ghostherd-explain= shows the report, its age, and whether it
+  expired --- a report is the one authority that leaves no trace on the
+  screen printed below it
+- [X] =done= means "finished while you were not looking" for a report
+  too, not only for the promotion path that used to own the rule
+- [X] A rename carries the report (and the input grace, and the settle
+  timestamp) to the new id instead of dropping them
+- [X] 20 new ERT tests, mutation-checked; plus a real round trip through
+  tmux, emacsclient and =bin/ghostherd=
+
+** What is left
+
+- [ ] Dogfood the claude hook wiring for a few days: the TTL and the
+  =working=-vetoes-=blocked= rule are both judgement calls that want log
+  evidence, and =ghostherd-explain= now prints exactly what is needed to
+  argue about them
+- [ ] grok and agy: find out whether they have a hook mechanism at all.
+  The readme documents claude's because it is the one that does
+
+** Deliberately not done
+
+- Reports for =shell= sessions. A shell has no agent lifecycle, and a
+  human claiming a state already has =ghostherd-mark-state=
+- =dead= as a reportable state. Liveness is the host's answer, and an
+  agent still able to report is not dead
+- An alias table so a renamed agent's stale =GHOSTHERD_SESSION= keeps
+  working. That is a memory leak with a lookup in front of it; a respawn
+  is the honest repair
+
+* Phase 3.6 — One round trip per tick  *(done)*
+
+Goal: make the cost of watching an agent independent of how many other
+agents you are watching, and stop a wedged host from taking Emacs with
+it.
+
+The numbers and the three tmux behaviours this rests on are in
+[[file:design.org][design.org]] under "What the poll path costs".
+
+** What shipped
+
+- [X] =ghostherd-backend-screens=: an optional slot capability for a host
+  that can dump the whole herd's screens in one go, asynchronously.
+  Returning nil --- which ghostel does, because its screens are already
+  Emacs buffers --- keeps the old per-session read
+- [X] The tmux implementor: =list-panes= plus a delimiter and a
+  =capture-pane= per session, in one =make-process=, with stderr kept out
+  of the screens and a random per-fetch delimiter
+- [X] Six agents: 30.5 ms of blocking per tick → 6.1 ms, and N+1
+  subprocesses → 1
+- [X] The liveness snapshot rides along in the same round trip, so the
+  poll path no longer makes a second synchronous call to ask
+- [X] =ghostherd-tmux-fetch-timeout=: a host that stops answering is
+  given up on and complained about once, rather than blocking Emacs in
+  an uninterruptible =call-process= from a timer
+- [X] A fetch never stacks on a slow server: the tick is skipped instead
+- [X] =ghostherd--detect-state= and =ghostherd-poll-session= take the
+  screen the batch already fetched; every interactive caller still reads
+  for itself
+- [X] 10 new ERT tests including a real-tmux batch round trip, plus pure
+  seams for the argument list and the parse
+
+** What is left
+
+- [ ] Watch for a partial-batch pattern in daily use. A pane killed from
+  outside is meant to cost one tick of individual reads; if that turns
+  out to be common rather than rare, the fetch should ask =list-panes=
+  first and capture only what it reported
+
+** Deliberately not done
+
+- Poll backoff for idle sessions. It was the obvious fix while the cost
+  was per-session; batching removed the thing it fixed, and staleness
+  is a real price with nothing left to buy
+- Batching the *other* tmux calls (send, keys, options). They happen
+  once per user action, not once per tick per agent
+
+* Phase 3.7 — The log outlives Emacs  *(done)*
+
+Goal: close the asymmetry Phase 3 opened. Agents survive an Emacs quit;
+the record of what they did while nobody was watching did not.
+
+Why the mechanism is shaped this way is in [[file:design.org][design.org]] under "Why the
+log outlives Emacs".
+
+** What shipped
+
+- [X] =ghostherd-log-file= (on by default): every entry appended as it
+  happens, read back when =ghostherd-mode= comes up, with a seam line
+  saying how many entries came from the earlier Emacs
+- [X] The kept =blocked= screens persist too --- they are the reason the
+  log keeps anything, and 02:00 was always going to be on the far side of
+  a restart
+- [X] Appended per entry rather than saved on exit, because a
+  =kill-emacs-hook= does not run for a crash. Verified with =kill -9=:
+  new Emacs, same file, transition line and screen both intact
+- [X] A plist per line rather than the struct, so a future slot cannot
+  shift every line written before it
+- [X] Compaction on read, so the file is bounded by one session's
+  activity rather than by all of them
+- [X] One warning and then memory-only if the file cannot be written ---
+  the write happens per transition, so a read-only directory must not
+  produce a message per transition
+- [X] =ghostherd-log-clear= (=C= in the log buffer): quitting Emacs used
+  to empty the log by accident
+- [X] 9 new ERT tests (175 total), mutation-checked five ways
+
+** What is left
+
+- [ ] Watch the file size over a week of real use. The bound is "one
+  session's activity", and if that turns out to mean megabytes then
+  compaction wants a size trigger rather than only a start-up one
+
+** Deliberately not done
+
+- Persisting the *reports* table. A report is trusted for 120 seconds; one
+  that outlived the Emacs it was made in should lose to the rules, which
+  is what happens by not writing it down
+- Persisting =seen=, the manual state or the OSC progress. Same reason as
+  the recipe: they describe this Emacs's relationship with the agent, not
+  the agent
+- A log per project or per session. The herd log is the herd's, and
+  filtering a buffer is a different feature from splitting a file
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
-- [ ] Optional lifecycle hooks plugins per CLI (beyond screen scrape)
+- [-] Optional lifecycle hooks plugins per CLI (beyond screen scrape) ---
+  *mostly answered by Phase 3.5*, and answered from the other end: the
+  herd takes a report on one command instead of hosting a plugin per CLI,
+  so the CLI-specific part is three lines of that CLI's own hook config.
+  What is left would be shipping those snippets per kind (an
+  =:report-hooks= field beside =:screen-rules=), which is worth doing
+  only once more than one CLI has been wired up by hand
 - [ ] Compare/contrast doc vs herdr for users choosing tools
 
 * Explicit non-goals (for now)

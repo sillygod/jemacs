@@ -7,9 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3 done* — hosts are a slot; tmux is the second one         |
+| Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 128 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 175 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -22,7 +22,7 @@ readers and different lifetimes:
 | Document                                    | For                                                 |
 |---------------------------------------------+-----------------------------------------------------|
 | [[file:docs/design.org][docs/design.org]]    | why it is shaped this way, and what was traded away |
-| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T12        |
+| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T15        |
 | [[file:docs/roadmap.org][docs/roadmap.org]]  | phase history, what shipped, what is left           |
 
 * Features
@@ -33,6 +33,9 @@ readers and different lifetimes:
 - State polling: =working= / =blocked= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
+- Agents know their own name (=GHOSTHERD_SESSION=) and can say =self=
+- Agents can report their own state, so =blocked= / =done= need not be
+  scraped off a screen --- see "Agents that report themselves"
 - Agents can call herd commands via =ghostel_cmd= (whitelisted; ghostel
   backend only --- see "Hosts")
 
@@ -104,7 +107,8 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-menu=                | One-key dispatcher                   |
 | =M-x ghostherd-kill=                | Kill session (+ buffer)              |
 | =M-x ghostherd-rename=              | Rename session                       |
-| =M-x ghostherd-mark-state=          | Manual state / auto                  |
+| =M-x ghostherd-mark-state=          | Manual state / auto (sticky)         |
+| =M-x ghostherd-report=              | Record what an agent says about itself |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
 | =M-x ghostherd-set-notes=           | Set an agent's role / note           |
@@ -130,12 +134,13 @@ report. Notes do, because they were written onto the host.
 | =ahk= | kill           |
 | =ahr= | rename         |
 | =ahl= | herd log       |
+| =ahH= | scrollback     |
 
 ** Sidebar keys
 
 =?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
-=L= herd log ·
+=L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
 =M= mark state · =q= quit
@@ -224,7 +229,12 @@ When shell integration is active and the command is whitelisted:
   ghostel_cmd ghostherd-prompt reviewer "Review the diff"
   ghostel_cmd ghostherd-message reviewer "Please review" implementer
   ghostel_cmd ghostherd-read reviewer 60
+  ghostel_cmd ghostherd-report self blocked "waiting on a decision"
 #+end_src
+
+=self= is the calling agent, and the sender of a =ghostherd-message=
+defaults to it: this path is dispatched from the asking terminal, so the
+caller is known without being named.
 
 =ghostherd-list= and =ghostherd-state= emit JSON:
 
@@ -339,6 +349,36 @@ for everywhere else --- a Makefile, a git hook, a CI step:
   bin/ghostherd interrupt reviewer
 #+end_src
 
+** Which agent am I?
+
+Every agent the herd spawns gets its own name in its environment, on both
+backends, because nothing can tell it afterwards:
+
+| Variable            | Holds                                          |
+|---------------------+------------------------------------------------|
+| =GHOSTHERD_SESSION= | this agent's session name                      |
+| =GHOSTHERD_BACKEND= | =ghostel= or =tmux=, informational             |
+| =GHOSTHERD_SOCKET=  | the emacsclient socket this herd is running in |
+
+So from inside an agent, everything works without knowing anything:
+
+#+begin_src bash
+  ghostherd whoami                            # → reviewer
+  ghostherd read self 40
+  ghostherd message implementer "found it"    # FROM defaults to reviewer
+#+end_src
+
+Any =NAME= may be =self=. =FROM= used to default to ="user"=, which was a
+lie whenever an agent was the one talking --- and an agent had no way to
+say otherwise.
+
+Two edges worth knowing. =GHOSTHERD_SESSION= is fixed at spawn, so
+=ghostherd-rename= leaves a running agent holding its old name; it will
+get =unknown session= until it is respawned. And injecting it on the tmux
+backend needs =new-session -e=, which is tmux 3.2+: on an older tmux the
+spawn still works, with a warning, and agents simply do not know their
+own name.
+
 =GHOSTHERD_SOCKET= picks an emacsclient socket; =GHOSTHERD_DRY_RUN= prints
 the elisp instead of running it, which is how the quoting is tested.
 
@@ -372,6 +412,69 @@ as =#{pane_title}=, which tmux tracks from the same escape sequence.
 Neither OSC integration is a hook, and both had to be taken over
 carefully --- see "The two OSC integrations that are not hooks" in
 [[file:docs/design.org][docs/design.org]].
+
+* Agents that report themselves
+
+Screen rules scrape a TUI that is drawn differently every release, which
+is why tuning them is a standing job. But the CLIs already *know* when
+they stop for a question and when they finish, and most of them can run a
+command at that moment. That command is:
+
+#+begin_src bash
+  ghostherd report self blocked "Bash(rm -rf build/) — proceed?"
+  ghostherd report self working
+  ghostherd report self done
+  ghostherd report self auto        # withdraw; back to detection alone
+#+end_src
+
+Under tmux that is =bin/ghostherd=; in a ghostel-hosted agent
+=ghostel_cmd ghostherd-report self blocked "…"= does the same without
+emacsclient. Both need identity, which is why it exists.
+
+For claude, whose hooks hand their payload to the command as JSON on
+stdin, the wiring is three entries:
+
+#+begin_src js
+  // .claude/settings.json — hook names are the CLI's own; check its docs
+  {"hooks": {
+     "Notification":     [{"hooks": [{"type": "command",
+       "command": "ghostherd report self blocked \"$(jq -r '.message // empty')\""}]}],
+     "UserPromptSubmit": [{"hooks": [{"type": "command",
+       "command": "ghostherd report self working"}]}],
+     "Stop":             [{"hooks": [{"type": "command",
+       "command": "ghostherd report self done"}]}]}}
+#+end_src
+
+A report is *not* =ghostherd-mark-state=. A manual mark is sticky, which
+is right for a human overriding detection and wrong for a hook: one
+missed edge and the row is frozen at =blocked= forever. A report expires
+after =ghostherd-report-ttl= (120s) instead, the way an OSC progress
+report does --- and expiry costs nothing when the report was true, since
+a real prompt is still on the screen for the rules to find.
+
+Who wins, in order:
+
+| Authority                        | Beats                                    |
+|----------------------------------+------------------------------------------|
+| Manual mark (=M= / =mark-state=) | everything, until cleared                |
+| Host says the process is gone    | everything below                         |
+| A =blocked= rule on the screen   | a report --- a real prompt is never masked |
+| A fresh report                   | progress, rules, the idle fallback       |
+| A =working= rule on the screen   | a report claiming =blocked= (see below)  |
+| OSC progress                     | rules                                    |
+
+The one exception reads oddly and is deliberate: a claimed =blocked=
+loses to a screen that positively says =working=, because those patterns
+match a spinner --- an agent generating tokens is not sitting on a prompt,
+whatever its last hook said. =idle= gets no such veto, because =idle= is
+not evidence; it is what detection falls back to.
+
+Reports are for agent kinds. A =shell= session has no agent lifecycle to
+report, and a human claiming a state wants =ghostherd-mark-state=.
+
+=ghostherd-explain= shows the current report, its age, and whether it has
+expired --- which matters because a report leaves no trace on the screen
+below it.
 
 * Why is it in that state? (=ghostherd-explain=)
 
@@ -409,7 +512,59 @@ so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
 
-* Scrolling back (=ghostherd-scrollback=)
+* When you get told
+
+=blocked= and =dead= always notify.  =done= is different: it means
+*finished while you were not looking*, so it fires only when the agent
+was not on your screen at the time --- a window on a visible, focused
+frame counts as watched, and being merely displayed does not, since a
+frame that is iconified or on another desktop is exactly when a banner
+earns its place.
+
+If nothing arrived and you expected it, the herd log says why: a
+transition to =idle= rather than =done= means you were watching.
+
+* Scrolling
+
+The agent view scrolls like any other buffer: the wheel, =PageUp= /
+=PageDown=, =M-v= / =C-M-v=. Behind tmux the buffer holds one screen and
+the history is in the host, so those keys move the *host's* view and the
+same buffer shows older output --- you are not sent anywhere else, and
+you can keep typing.
+
+The mechanism is tmux copy mode driven by command rather than by a
+prefix key, so it never becomes something to learn or get stuck in:
+scrolling back to the bottom leaves it automatically. On the ghostel
+backend nothing is intercepted, because the buffer already holds
+everything and Emacs already scrolls it.
+
+=M->= (or =G= under Evil) returns to the live screen --- which is also
+what leaves tmux's copy mode, so it means "put me back where I can
+type" rather than being a mode command.
+
+Evil owns those keys in normal state, so it needs its own bindings.
+=jemacs-ai= sets both states up; the five commands are the whole
+surface:
+
+#+begin_src emacs-lisp
+  (evil-define-key 'normal ghostherd-terminal-mode-map
+    (kbd "C-y") #'ghostherd-scroll-up
+    (kbd "C-e") #'ghostherd-scroll-down
+    (kbd "C-u") #'ghostherd-scroll-page-up
+    (kbd "C-d") #'ghostherd-scroll-page-down
+    (kbd "G")   #'ghostherd-scroll-bottom)
+
+  (evil-define-key 'emacs ghostherd-terminal-mode-map
+    (kbd "C-v") #'ghostherd-scroll-page-down
+    (kbd "M-v") #'ghostherd-scroll-page-up
+    (kbd "M->") #'ghostherd-scroll-bottom)
+#+end_src
+
+** Reading it elsewhere (=ghostherd-scrollback=)
+
+=SPC a h H=, or =H= in the sidebar. Dumps the history into an ordinary
+read-only buffer instead of moving the live view --- for searching it,
+copying out of it, or keeping it open beside the agent.
 
 On the ghostel backend the buffer accumulates everything the agent ever
 printed, so scrolling back is just moving point. Behind tmux the buffer
@@ -449,6 +604,33 @@ exists. =ghostherd-explain= can only answer "why is it in that state"
 while the agent is still in it, so a rule that fired at 02:00 would
 otherwise be unarguable by morning.
 
+** It survives Emacs, because the herd does
+
+The log is appended to =ghostherd-log-file= as it happens, and read back
+when =ghostherd-mode= comes up. So the seam looks like this, and
+everything above the middle line is from the Emacs you no longer have:
+
+#+begin_example
+  02:14:07  reviewer  working → blocked  Bash(rm -rf build/) — proceed?  ⏎
+  09:31:02  herd      resumed 148 entries from an earlier Emacs
+  09:31:02  reviewer  restored from tmux, detached
+#+end_example
+
+Which closes a hole rather than adding a feature. Phase 3 exists so that
+agents outlive Emacs; the log describes itself as what you read when you
+get back; and the most ordinary way of getting back was the one that
+threw the log away --- including the 02:00 screen, the one case the kept
+screens were for.
+
+Appended per entry, not saved on the way out: a =kill-emacs-hook= does
+not run for the crash this is meant to survive (verified with =kill -9=).
+Caps are applied when the file is *read*, so it grows with a session and
+is compacted once at the start of the next one.
+
+=C= in the log buffer forgets the lot, file included --- quitting Emacs
+used to do that by accident, and now nothing does. Set
+=ghostherd-log-file= to nil to go back to memory only.
+
 * Per-project defaults
 
 Drop this in a project's =.dir-locals.el= and =ghostherd-new= preselects the
@@ -475,15 +657,24 @@ not re-read.
         ghostherd-notify-on-blocked t
         ghostherd-sidebar-side 'left)
 
+  ;; How long a busy session must look idle before it is believed.  An
+  ;; agent draws its prompt whether or not it is working, so what makes a
+  ;; screen read as busy is a spinner -- and that blinks out between two
+  ;; tool calls.
+  (setq ghostherd-idle-settle 4)
+
   ;; How long after sending input a session is not believed to be idle.
   ;; An agent takes a moment to wake up, and the screen it had before is
   ;; still on show until it does.
   (setq ghostherd-input-grace 6)
 
   ;; The herd log.  Entries are cheap; the screens kept behind `blocked'
-  ;; transitions are the actual memory (about 5K each).
+  ;; transitions are the actual memory -- and now the actual disk (about
+  ;; 5K each).  Both caps are applied when the file is read.
   (setq ghostherd-log-max 500
-        ghostherd-log-screens 20)
+        ghostherd-log-screens 20
+        ;; nil = memory only, and gone with this Emacs
+        ghostherd-log-file (locate-user-emacs-file "ghostherd-log.eld"))
 
   ;; How much screen a state reason carries.  The matched line is usually
   ;; the generic half of a prompt ("Do you want to proceed?"); the subject
@@ -495,6 +686,12 @@ not re-read.
   (setq ghostherd-use-osc-progress t
         ghostherd-progress-ttl 5)         ; seconds a report stays trusted
 
+  ;; How long an agent's own report about itself is believed.  Short is
+  ;; safe: when the report was true the prompt is still on screen, so
+  ;; expiry costs nothing -- and expiry is the only cure for a hook chain
+  ;; that broke halfway through a session.
+  (setq ghostherd-report-ttl 120)
+
   ;; OSC 2 title as a sidebar column.  Columns are fitted to the sidebar
   ;; width, and Title outranks Project, so in a narrow sidebar this trades
   ;; the project path for the title rather than overflowing.
@@ -505,7 +702,8 @@ not re-read.
   (setq ghostherd-backend 'tmux
         ghostherd-tmux-socket "ghostherd"      ; never the default socket
         ghostherd-tmux-default-size '(120 . 40) ; size while detached
-        ghostherd-tmux-status-ttl 1.0          ; one list-panes per tick
+        ghostherd-tmux-status-ttl 1.0          ; interactive liveness reads
+        ghostherd-tmux-fetch-timeout 10        ; give up on a wedged server
         ghostherd-tmux-config nil)             ; nil = generate one
 
   ;; Permanent default args example:
@@ -589,6 +787,20 @@ bring it back configured:
 #+begin_src bash
   tmux -L ghostherd kill-server
 #+end_src
+
+** "tmux has not answered in 10s"
+
+A warning, once, and then a herd whose states stop changing while the
+sidebar keeps drawing them. The poll path asks tmux for the whole herd
+in one asynchronous call per tick; if that call does not come back within
+=ghostherd-tmux-fetch-timeout= it is killed, and the next tick tries
+again.
+
+Being told is the whole point. This used to be a synchronous
+=call-process= per agent, and =call-process= neither returns nor accepts
+=C-g= --- so a server in this state took *Emacs* down rather than the
+herd, and looked like Emacs hanging for no reason. What to do about it is
+the section above.
 
 ** The agent is drawing into a fraction of the window
 

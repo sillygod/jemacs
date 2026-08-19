@@ -533,7 +533,8 @@
                         ghostherd-abort
                         ghostherd-answer
                         ghostherd-restore
-                    ghostherd-log
+                        ghostherd-log
+                        ghostherd-scrollback
                         ghostherd-visit
                         ghostherd-mode)
              :config
@@ -588,9 +589,27 @@
                (kbd "i") #'ghostherd-sidebar-prompt
                (kbd "s") #'ghostherd-sidebar-toggle-project-filter
                (kbd ".") #'ghostherd-next-blocked
+               (kbd "H") #'ghostherd-scrollback
                (kbd "L") #'ghostherd-log
-           (kbd "M") #'ghostherd-sidebar-mark-state
-               (kbd "q") #'quit-window)))
+               (kbd "M") #'ghostherd-sidebar-mark-state
+               (kbd "q") #'quit-window)
+
+             ;; An attached agent view is a client showing one screen: the history
+             ;; lives in tmux, so the usual motions have to drive *its* view.  The
+             ;; wheel, PageUp/PageDown and M-v are on `ghostherd-terminal-mode-map'
+             ;; already and work in emacs state; normal state needs evil's own
+             ;; vocabulary, since evil owns those keys there.
+             (evil-define-key 'normal ghostherd-terminal-mode-map
+               (kbd "C-y") #'ghostherd-scroll-up
+               (kbd "C-e") #'ghostherd-scroll-down
+               (kbd "C-u") #'ghostherd-scroll-page-up
+               (kbd "C-d") #'ghostherd-scroll-page-down
+               (kbd "G")   #'ghostherd-scroll-bottom)
+
+             (evil-define-key 'emacs ghostherd-terminal-mode-map
+               (kbd "C-v") #'ghostherd-scroll-page-down
+               (kbd "M-v") #'ghostherd-scroll-page-up
+               (kbd "M->") #'ghostherd-scroll-bottom)))
   #+end_src
 
 * provide package

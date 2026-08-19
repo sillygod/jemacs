@@ -50,6 +50,9 @@
 (defvar ghostel-command-start-functions)
 (defvar ghostel-command-finish-functions)
 
+;; server.el's, read for `GHOSTHERD_SOCKET' in `ghostherd-agent-environment'.
+(defvar server-name)
+
 
 ;;; Customization
 
@@ -210,6 +213,41 @@ naming.  A title equal to the buffer name is the shell echoing us back."
             title))))))
 
 
+;;; Agent identity
+;;
+;; An agent that does not know its own name cannot use half of what the
+;; herd offers.  `bin/ghostherd message TO TEXT FROM' has to be *told*
+;; who is speaking, so the wrapper defaulted the sender to "user" -- a
+;; lie whenever the caller was another agent -- and nothing a CLI reports
+;; about itself could be attributed at all.
+;;
+;; Nobody can tell it after the fact, either: the value has to be in the
+;; process environment before the agent execs.  So identity is injected
+;; at spawn, by every implementor, from one list.
+
+(defun ghostherd-agent-environment (backend plist)
+  "Return VAR=VALUE strings identifying the session PLIST describes.
+BACKEND is the implementor doing the spawning.
+
+`GHOSTHERD_SOCKET' is the emacsclient socket, not a tmux one, and it is
+here because `bin/ghostherd' already reads it: an agent hosted by tmux
+has no `ghostel_cmd' -- ghostel's shell integration is installed in the
+shell ghostel spawns, which there is `tmux attach' -- so the wrapper is
+its only way back into the herd, and it should reach *this* Emacs
+without anyone having configured it.
+
+It is omitted when server.el has not been loaded, which is not a case
+worth handling: an Emacs `emacsclient' can reach has loaded it, and
+`emacsclient' with no `-s' looks for the same default the variable
+would have held.  server.el is deliberately not required for it --
+loading a subsystem to read one variable off it would be backwards."
+  (append
+   (list (format "GHOSTHERD_SESSION=%s" (plist-get plist :name))
+         (format "GHOSTHERD_BACKEND=%s" backend))
+   (when (and (boundp 'server-name) (stringp server-name))
+     (list (format "GHOSTHERD_SOCKET=%s" server-name)))))
+
+
 ;;; Key names
 
 (defconst ghostherd-key-aliases
@@ -248,6 +286,28 @@ full vocabulary stays reachable.")
 This is what the screen rules, `ghostherd-read', `ghostherd-explain'
 and `ghostherd-wait-output' all read.")
 
+(cl-defgeneric ghostherd-backend-screens (_backend _sessions _n _callback)
+  "Fetch the last N lines of every session in SESSIONS at once, if you can.
+
+CALLBACK is called with one argument, an alist of session id → screen
+string.  A session missing from it, or present with nothing on it, is one
+the caller must read individually -- so a partial answer is a valid
+answer, which matters because a host may abandon a batch halfway.
+
+Return non-nil to claim the tick: the caller will then *not* read any
+session itself, and expects either a callback or a deliberate silence
+\(a fetch already in flight covers this tick as well).  Return nil --
+the default -- and the caller falls back to `ghostherd-backend-capture'
+per session, which is the right answer whenever a screen is already in
+Emacs and costs nothing to read.
+
+Why this exists at all: the poll path used to run one subprocess *per
+agent* per tick, synchronously, on the timer.  Six agents meant six
+forks every 1.5 seconds inside the redisplay-adjacent path, and a host
+that stopped answering froze Emacs rather than the herd.  A host that can
+answer for the whole herd in one round trip should say so here."
+  nil)
+
 (cl-defgeneric ghostherd-backend-scrollback (_backend _session _lines)
   "Return up to LINES of SESSION's history, or nil when it keeps none.
 
@@ -263,6 +323,19 @@ purpose is a different act from detecting on it."
 
 (cl-defgeneric ghostherd-backend-send-keys (backend session keys)
   "Send KEYS -- friendly names, see `ghostherd-key-aliases' -- to SESSION.")
+
+(cl-defgeneric ghostherd-backend-scroll (_backend _session _lines)
+  "Scroll SESSION's view back by LINES, or forward when LINES is negative.
+
+Distinct from `ghostherd-backend-scrollback\=', which hands you the
+history as text to read elsewhere.  This moves the *live view*, so the
+buffer you are already in shows older output and then comes back --
+which is what an Emacs buffer does, and what people expect of anything
+that looks like one.
+
+Returns non-nil when the backend handled it, so a caller can fall back
+to ordinary Emacs scrolling."
+  nil)
 
 (cl-defgeneric ghostherd-backend-live-p (backend session)
   "Return non-nil when SESSION's host still exists.
@@ -360,6 +433,10 @@ agent buffers are left alone -- or restart Emacs"
 (defun ghostherd--host-scrollback (session lines)
   "Return up to LINES of SESSION's history, or nil."
   (ghostherd-backend-scrollback (ghostherd--backend-of session) session lines))
+
+(defun ghostherd--host-scroll (session lines)
+  "Scroll SESSION's view back by LINES.  Non-nil when the host handled it."
+  (ghostherd-backend-scroll (ghostherd--backend-of session) session lines))
 
 (defun ghostherd--host-live-p (session)
   "Return non-nil when SESSION's host still exists."
@@ -504,6 +581,13 @@ _KIND is reserved for kind-specific quoting later."
       (user-error "Buffer already exists: %s" bufname))
     (let ((default-directory (plist-get plist :directory))
           (ghostel-buffer-name bufname)
+          ;; The shell ghostel starts inherits this, and exports it to the
+          ;; agent command typed into it afterwards -- which is why the
+          ;; binding has to be in force around `ghostel', not around the
+          ;; launch string.
+          (process-environment
+           (append (ghostherd-agent-environment 'ghostel plist)
+                   process-environment))
           ;; Keep exited agent buffers so the herd can mark them dead.
           (ghostel-kill-buffer-on-exit nil))
       (setq buffer (ghostel t))

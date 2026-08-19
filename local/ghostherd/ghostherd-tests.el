@@ -16,6 +16,10 @@
 
 (require 'ert)
 (require 'ghostherd)
+;; For `server-name', which `ghostherd-agent-environment' reads and one
+;; test binds -- ghostherd only `defvar's it, so without this a `let'
+;; around it is lexical and the function still sees it unbound.
+(require 'server)
 
 ;;; Fixtures
 
@@ -35,6 +39,14 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; sends input to "a" leaves the next test's "a" inside the
          ;; input grace -- which is exactly how this line got written.
          (ghostherd--input-at (make-hash-table :test 'equal))
+         (ghostherd--idle-since (make-hash-table :test 'equal))
+         (ghostherd--reports (make-hash-table :test 'equal))
+         ;; Every logged transition now appends to a file, and the default
+         ;; is the user's real one.  Persistence gets tested deliberately,
+         ;; with a temporary file, and nowhere else.
+         (ghostherd-log-file nil)
+         (ghostherd--log-writable t)
+         (ghostherd--log-loaded t)
          ,@bindings)
      ,@body))
 
@@ -84,6 +96,59 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
                ((symbol-function 'derived-mode-p) (lambda (&rest _) t)))
        ,@body
        (nreverse sent))))
+
+(defvar ghostherd-tests--tmux-calls nil
+  "Argument lists handed to tmux by the code under test.")
+
+(defun ghostherd-tests--tmux-panes ()
+  "Fake `list-panes' output showing every registered tmux session alive."
+  (mapconcat (lambda (s)
+               (format "%s\t0\t\n" (ghostherd-session-host-id s)))
+             (cl-remove-if-not
+              (lambda (s) (eq (ghostherd-session-backend s) 'tmux))
+              (hash-table-values ghostherd--sessions))
+             ""))
+
+(defmacro ghostherd-tests--with-tmux (responses &rest body)
+  "Run BODY with tmux stubbed, recording calls in `ghostherd-tests--tmux-calls'.
+
+RESPONSES maps a tmux subcommand to the (STATUS . OUTPUT) it answers
+with.  `list-panes' defaults to reporting every registered tmux session
+alive, since almost everything checks liveness on the way past;
+anything else unlisted succeeds silently.
+
+The recording is not `let'-bound, so assertions after the form still
+see the calls."
+  (declare (indent 1) (debug t))
+  `(progn
+     (setq ghostherd-tests--tmux-calls nil)
+     (let ((ghostherd-tmux--status-cache nil))
+       (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                  (lambda (args)
+                    (push args ghostherd-tests--tmux-calls)
+                    (or (alist-get (car args) ,responses nil nil #'equal)
+                        (if (equal (car args) "list-panes")
+                            (cons 0 (ghostherd-tests--tmux-panes))
+                          (cons 0 ""))))))
+         ,@body))
+     (setq ghostherd-tests--tmux-calls
+           (nreverse ghostherd-tests--tmux-calls))))
+
+(defun ghostherd-tests--tmux-call (subcommand)
+  "Return the recorded tmux call for SUBCOMMAND, or nil."
+  (cl-find subcommand ghostherd-tests--tmux-calls
+           :key #'car :test #'equal))
+
+(defun ghostherd-tests--tmux-options ()
+  "Return the (OPTION . VALUE) pairs written by recorded `set-option' calls."
+  (mapcar (lambda (call) (cons (nth 3 call) (nth 4 call)))
+          (cl-remove-if-not (lambda (call) (equal (car call) "set-option"))
+                            ghostherd-tests--tmux-calls)))
+
+(defun ghostherd-tests--tmux-session (&rest args)
+  "Register a tmux-backed session from ARGS."
+  (apply #'ghostherd-tests--session
+         :backend 'tmux :host-id "gh-abc-rev" args))
 
 ;;; Screen rule matching
 
@@ -259,6 +324,46 @@ that it never reaches the state machine."
         (let ((ghostherd-reason-context context))
           (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
 
+(ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
+  "The buffer behind tmux holds one screen, so scrolling it in Emacs
+moves nothing.  The wheel has to drive the host's own view, in one
+invocation, since this runs per click."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (ghostherd-tests--with-tmux nil
+          (let ((ghostherd-scroll-lines 3))
+            (ghostherd-scroll-up))))
+      (let ((call (ghostherd-tests--tmux-call "copy-mode")))
+        ;; -e is what keeps it invisible: reaching the bottom leaves copy
+        ;; mode on its own, so there is no mode to get stuck in
+        (should (member "-e" call))
+        (should (member "scroll-up" call))
+        (should (member "3" call))
+        ;; one invocation, not two
+        (should (= (length ghostherd-tests--tmux-calls) 1))))))
+
+(ert-deftest ghostherd-test-scrolling-down-goes-the-other-way ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a")))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (ghostherd-tests--with-tmux nil (ghostherd-scroll-down)))
+      (should (member "scroll-down" (ghostherd-tests--tmux-call "copy-mode"))))))
+
+(ert-deftest ghostherd-test-a-host-that-cannot-scroll-lets-emacs-do-it ()
+  "The ghostel backend keeps its output in the buffer, where Emacs has
+always been able to scroll it -- so the same keys must fall through
+rather than erroring."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (scrolled nil))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (cl-letf (((symbol-function 'scroll-down)
+                   (lambda (&optional n) (setq scrolled n))))
+          (let ((ghostherd-scroll-lines 3))
+            (ghostherd-scroll-up))))
+      (should (equal scrolled 3)))))
+
 ;;; The view has to be the size of the window
 
 (cl-defmethod ghostherd-backend-view ((_backend (eql fake)) session)
@@ -293,6 +398,75 @@ born with, and the agent drew into a fraction of the window."
         (ghostherd--sync-view-size (ghostherd-session-buffer s)))
       (should-not called))))
 
+(ert-deftest ghostherd-test-brief-idle-does-not-finish-the-work ()
+  "The flap that produced four \"ready for review\" notifications in three
+seconds: agy draws its prompt whether or not it is working, so what
+makes a screen read as busy is the spinner -- and that blinks out
+between two tool calls.  A poll landing in the gap saw nothing working
+and called it done."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 60))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+        ;; the gap between two tool calls is not the end of the work
+        (should (eq (ghostherd-poll-session s) 'working))
+        (should (eq (ghostherd-poll-session s) 'working))
+        ;; ...but a screen that stays quiet is
+        (let ((ghostherd-idle-settle 0))
+          (should (eq (ghostherd-poll-session s) 'done)))))))
+
+(ert-deftest ghostherd-test-leaving-idle-is-immediate ()
+  "Only entering idle waits.  Something appearing on the screen is a
+positive signal and must not be held back by a settle window."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'idle))
+          (ghostherd-tests--fake-screen "⣾ Working...\n")
+          (ghostherd-idle-settle 60))
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'working))))))
+
+(ert-deftest ghostherd-test-an-unfocused-emacs-is-not-watching ()
+  "Being displayed is not being watched.  `get-buffer-window\=' with
+ALL-FRAMES t counts frames that are iconified or on another desktop --
+which is exactly when you want the banner.  Switching to a browser must
+put the notification back."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0)
+          (notified nil))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify)
+                 (lambda (&rest _) (setq notified t)))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
+                ((symbol-function 'frame-focus-state) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'done))
+        (should notified)))))
+
+(ert-deftest ghostherd-test-an-agent-on-screen-has-been-seen ()
+  "`done' means finished while you were not looking.  Announcing it
+about an agent in a window you are looking at was most of the noise."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0)
+          (notified nil))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify)
+                 (lambda (&rest _) (setq notified t)))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) t))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
+                ((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
+        (should (eq (ghostherd-poll-session s) 'idle))
+        (should-not notified)))))
+
 ;;; Not idle, just slow
 
 (ert-deftest ghostherd-test-fresh-prompt-is-not-idle ()
@@ -312,8 +486,9 @@ its own watch against this from the start; the poll path did not."
         (ghostherd-send s "do the thing" t))
       ;; the screen still shows the prompt it showed before
       (should (eq (ghostherd-poll-session s) 'working))
-      ;; ...and once the grace is up, the same screen means what it says
-      (let ((ghostherd-input-grace 0))
+      ;; ...and once both windows are up, the same screen means what it says
+      (let ((ghostherd-input-grace 0)
+            (ghostherd-idle-settle 0))
         (should (eq (ghostherd-poll-session s) 'done))))))
 
 (ert-deftest ghostherd-test-grace-does-not-outrank-a-prompt ()
@@ -440,6 +615,165 @@ depend on any of them still existing."
         (should (string-match-p "gone" (buffer-string)))
         (should (string-match-p "killed" (buffer-string)))))))
 
+;;; A log that outlives Emacs
+
+(defmacro ghostherd-tests--with-log-file (&rest body)
+  "Run BODY with the herd log persisted to a temporary file."
+  (declare (indent 0) (debug t))
+  `(let* ((file (make-temp-file "ghostherd-log-test" nil ".eld"))
+          (ghostherd-log-file file)
+          (ghostherd--log nil)
+          (ghostherd--log-loaded nil)
+          (ghostherd--log-writable t)
+          (ghostherd-log-max 500)
+          (ghostherd-log-screens 20))
+     (unwind-protect
+         (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+           ,@body)
+       (ignore-errors (delete-file file)))))
+
+(defun ghostherd-tests--log-lines (file)
+  "Return the lines of FILE."
+  (with-temp-buffer
+    (let ((coding-system-for-read 'utf-8))
+      (insert-file-contents file))
+    (split-string (buffer-string) "\n" t)))
+
+(ert-deftest ghostherd-test-log-survives-a-restart ()
+  "The point of the whole thing: what the previous Emacs saw is still
+there, screens included, because a rule that fired at 02:00 is otherwise
+unarguable by morning."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "rev" 'state "working → blocked  Approve?"
+                          "❯ 1. Yes\n│ box │\n> ")
+      (ghostherd--log-add "rev" 'input "← go on")
+      ;; A second Emacs, same file.
+      (let ((ghostherd--log nil)
+            (ghostherd--log-loaded nil))
+        (should (= (ghostherd-log-load) 2))
+        ;; Newest first, and one marker on top saying where the seam is.
+        (should (= (length ghostherd--log) 3))
+        (should (string-match-p "resumed 2 entries"
+                                (ghostherd-log-entry-text (car ghostherd--log))))
+        (let ((blocked (cl-find 'state ghostherd--log
+                                :key #'ghostherd-log-entry-kind)))
+          (should (equal (ghostherd-log-entry-session blocked) "rev"))
+          (should (equal (ghostherd-log-entry-text blocked)
+                         "working → blocked  Approve?"))
+          (should (equal (ghostherd-log-entry-screen blocked)
+                         "❯ 1. Yes\n│ box │\n> ")))))))
+
+(ert-deftest ghostherd-test-log-is-one-line-per-entry ()
+  "A screen is forty lines of box drawing, and it has to print as one:
+appending is only cheap because a crash can damage nothing but the last
+line."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "one" "top\nmiddle\nbottom")
+      (ghostherd--log-add "a" 'state "two")
+      (should (= (length (ghostherd-tests--log-lines file)) 2)))))
+
+(ert-deftest ghostherd-test-log-print-settings-are-not-the-users ()
+  "`print-length' and `print-level' are user settings, and writing
+\"...\" into somebody's log instead of their agent's screen would be a
+silent corruption."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((print-length 2) (print-level 1))
+        (ghostherd--log-add "a" 'state "text" "s1\ns2\ns3"))
+      (let ((ghostherd--log nil) (ghostherd--log-loaded nil))
+        (ghostherd-log-load)
+        (let ((entry (cl-find 'state ghostherd--log
+                              :key #'ghostherd-log-entry-kind)))
+          (should (equal (ghostherd-log-entry-text entry) "text"))
+          (should (equal (ghostherd-log-entry-screen entry) "s1\ns2\ns3")))))))
+
+(ert-deftest ghostherd-test-log-lines-are-plists-not-structs ()
+  "Printing the struct would read back into the struct *as it is then*:
+one added slot and every line written before today comes back with its
+fields shifted along."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'life "spawned")
+      (let ((form (car (read-from-string (car (ghostherd-tests--log-lines file))))))
+        (should (listp form))
+        (should-not (recordp form))
+        (should (equal (plist-get form :text) "spawned"))))))
+
+(ert-deftest ghostherd-test-log-tolerates-a-truncated-tail ()
+  "The one corruption to expect: Emacs died mid-write."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "first")
+      (let ((coding-system-for-write 'utf-8))
+        (write-region "(:time (26000 1) :session \"a\" :kind sta" nil file t 'silent))
+      (let ((ghostherd--log nil) (ghostherd--log-loaded nil))
+        (should (= (ghostherd-log-load) 1))
+        (should (cl-find "first" ghostherd--log
+                         :key #'ghostherd-log-entry-text :test #'equal))))))
+
+(ert-deftest ghostherd-test-log-compacts-on-load ()
+  "Appending is what keeps logging cheap, so the file grows with the
+session and the caps are applied once, when something is reading anyway."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (dotimes (i 8)
+        (ghostherd--log-add "a" 'state (format "entry %d" i) (format "screen %d" i)))
+      (should (= (length (ghostherd-tests--log-lines file)) 8))
+      (let ((ghostherd--log nil)
+            (ghostherd--log-loaded nil)
+            (ghostherd-log-max 5)
+            (ghostherd-log-screens 2))
+        (should (= (ghostherd-log-load) 5))
+        ;; The cap holds *including* the resume marker: it is a log line
+        ;; like any other, so the oldest of the five kept is pushed out.
+        (should (= (length ghostherd--log) 5))
+        ;; Only the newest two still carry a screen -- the screens are the
+        ;; actual disk.
+        (should (= (length (seq-filter #'ghostherd-log-entry-screen ghostherd--log))
+                   2))
+        (should (equal (ghostherd-log-entry-screen
+                        (cl-find 'state ghostherd--log
+                                 :key #'ghostherd-log-entry-kind))
+                       "screen 7"))
+        ;; And the file was rewritten rather than appended to, so it does
+        ;; not grow forever: five compacted lines plus the marker.
+        (should (= (length (ghostherd-tests--log-lines file)) 6))))))
+
+(ert-deftest ghostherd-test-log-keeps-going-when-the-file-cannot-be-written ()
+  "The write happens per state transition, so a read-only directory must
+cost one warning rather than one message per transition."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((ghostherd-log-file (expand-file-name "nope/deeper/log.eld" file))
+            (warnings 0))
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (&rest _) (setq warnings (1+ warnings)))))
+          (ghostherd--log-add "a" 'state "first")
+          (ghostherd--log-add "a" 'state "second"))
+        (should (= warnings 1))
+        (should-not ghostherd--log-writable)
+        (should (= (length ghostherd--log) 2))))))
+
+(ert-deftest ghostherd-test-log-clear-forgets-the-file-too ()
+  "Quitting Emacs used to do this by accident."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "first")
+      (should (file-exists-p file))
+      (ghostherd-log-clear)
+      (should-not ghostherd--log)
+      (should-not (file-exists-p file)))))
+
+(ert-deftest ghostherd-test-log-file-nil-keeps-it-in-memory ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((ghostherd-log-file nil))
+        (ghostherd--log-add "a" 'state "first")
+        (should (= (length ghostherd--log) 1))
+        (should (= (length (ghostherd-tests--log-lines file)) 0))))))
+
 ;;; OSC 9;4 progress
 
 (ert-deftest ghostherd-test-progress-fresh-only-while-running ()
@@ -532,6 +866,137 @@ spinner, so ghostherd must chain to it and hand it back on teardown."
     (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
       (kill-buffer (ghostherd-session-buffer s))
       (should (equal (car (ghostherd--detect-state s)) 'dead)))))
+
+;;; What the agent says about itself
+
+(defun ghostherd-tests--reporting (screen state &optional reason)
+  "Detect state for a fake agy session showing SCREEN that reported STATE."
+  (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+    (with-current-buffer (ghostherd-session-buffer s) (insert screen))
+    (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+      (ghostherd-report s state reason))
+    (ghostherd--detect-state s)))
+
+(ert-deftest ghostherd-test-report-beats-a-quiet-screen ()
+  "The whole point: an idle-looking prompt is what the rules fall back to,
+and the agent knows better."
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd-tests--reporting "> \n" 'blocked "may I rm -rf?")
+                   '(blocked . "may I rm -rf?")))))
+
+(ert-deftest ghostherd-test-report-without-a-reason-says-so ()
+  (ghostherd-tests--with-herd ()
+    (should (equal (ghostherd-tests--reporting "> \n" 'done)
+                   '(done . "reported done")))))
+
+(ert-deftest ghostherd-test-screen-blocked-still-beats-a-report ()
+  "A prompt on the screen is the one thing nothing may mask -- not a stale
+progress report, and not a stale report from the agent either."
+  (ghostherd-tests--with-herd ()
+    (should (eq (car (ghostherd-tests--reporting "Do you want to proceed\n"
+                                                 'working))
+                'blocked))))
+
+(ert-deftest ghostherd-test-screen-working-vetoes-a-claimed-blocked ()
+  "`working' patterns match a spinner, and an agent generating tokens is
+not sitting on a prompt whatever its last hook said.  `idle' gets no such
+veto -- it is the fallback, not evidence."
+  (ghostherd-tests--with-herd ()
+    (should (eq (car (ghostherd-tests--reporting "Thinking…\n" 'blocked))
+                'working))
+    (should (eq (car (ghostherd-tests--reporting "> \n" 'blocked))
+                'blocked))))
+
+(ert-deftest ghostherd-test-report-expires ()
+  "Expiry costs nothing when the report was true -- the prompt is still on
+the screen -- and is the only cure when it was stale."
+  (ghostherd-tests--with-herd ((ghostherd-report-ttl 60))
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (puthash "a" (list 'blocked "old news"
+                         (time-subtract (current-time) 61))
+               ghostherd--reports)
+      (should (eq (car (ghostherd--detect-state s)) 'idle))
+      (should-not (ghostherd--fresh-report s)))))
+
+(ert-deftest ghostherd-test-report-cannot-claim-dead ()
+  "Liveness is the host's answer, and an agent able to report is not dead."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (should-error (ghostherd-report s 'dead) :type 'user-error))))
+
+(ert-deftest ghostherd-test-report-auto-withdraws-it ()
+  "Unlike `ghostherd-mark-state', which is sticky by design."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'blocked)
+        (should (eq (car (ghostherd--detect-state s)) 'blocked))
+        (ghostherd-report s 'auto))
+      (should (eq (car (ghostherd--detect-state s)) 'idle)))))
+
+(ert-deftest ghostherd-test-report-does-not-poll-on-the-spot ()
+  "The shortest way here is `ghostel_cmd', dispatched inside ghostel's VT
+parser: a capture there is a subprocess in the middle of drawing a
+terminal.  Recording is not deciding, the same as OSC progress."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy))
+          (polled nil)
+          (deferred nil))
+      (cl-letf (((symbol-function 'ghostherd-poll-session)
+                 (lambda (&rest _) (setq polled t)))
+                ((symbol-function 'run-with-timer)
+                 (lambda (&rest _) (setq deferred t))))
+        (ghostherd-report s 'blocked))
+      (should-not polled)
+      (should deferred))))
+
+(ert-deftest ghostherd-test-reported-done-is-not-held-by-idle-settle ()
+  "Hysteresis exists because screens lie between two tool calls.  A hook
+firing at the moment the CLI stops needs none, and would be ruined by it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working
+                                       :seen nil)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'done "finished the review"))
+      (should (eq (ghostherd-poll-session s) 'done))
+      (should (equal (ghostherd-session-state-reason s) "finished the review")))))
+
+(ert-deftest ghostherd-test-reported-done-while-watching-does-not-banner ()
+  "`done' means finished while you were not looking, whoever said so."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working
+                                       :seen nil)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+                ((symbol-function 'ghostherd--watched-p) (lambda (_s) t)))
+        (ghostherd-report s 'done)
+        (should (eq (ghostherd-poll-session s) 'idle))))))
+
+(ert-deftest ghostherd-test-rename-carries-the-report ()
+  "The report is keyed by id, and a rename changes the id -- which used to
+drop the input grace and the settle timestamp silently."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+        (ghostherd-report s 'blocked "waiting on you"))
+      (ghostherd-rename s "b")
+      (should (equal (ghostherd--fresh-report s) '(blocked . "waiting on you")))
+      (should-not (gethash "a" ghostherd--reports)))))
+
+(ert-deftest ghostherd-test-cmd-report-is-how-a-hook-calls-in ()
+  "Strings in, because this arrives through `ghostel_cmd' word-splitting."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "impl" :kind 'agy :state 'idle)))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+        (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil)))
+          (ghostherd-cmd-report "self" "blocked" "chose a file"))
+        (should (equal (ghostherd--detect-state s)
+                       '(blocked . "chose a file")))))))
 
 ;;; Sidebar column fitting
 
@@ -1150,6 +1615,54 @@ apart from a session literally named \"unknown session: x\"."
       (should (equal (alist-get 'state parsed) "blocked"))
       (should-not (assq 'error parsed)))))
 
+;;; Knowing your own name
+
+(ert-deftest ghostherd-test-agent-environment-carries-the-name ()
+  "The one thing an agent cannot be told after it starts."
+  (let ((env (ghostherd-agent-environment
+              'tmux (list :name "reviewer" :kind 'agy))))
+    (should (member "GHOSTHERD_SESSION=reviewer" env))
+    (should (member "GHOSTHERD_BACKEND=tmux" env))))
+
+(ert-deftest ghostherd-test-agent-environment-names-the-emacs-socket ()
+  "`bin/ghostherd' is the only way back for a tmux-hosted agent, and it
+should reach *this* Emacs without being configured."
+  (let ((server-name "herd"))
+    (should (member "GHOSTHERD_SOCKET=herd"
+                    (ghostherd-agent-environment 'tmux '(:name "a"))))))
+
+(ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
+  "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
+the caller is identifiable with no environment at all."
+  (ghostherd-tests--with-herd ()
+    (let ((session (ghostherd-tests--session :name "impl" :kind 'agy
+                                             :state 'working)))
+      (with-current-buffer (ghostherd-session-buffer session)
+        (let ((parsed (ghostherd-tests--parse-json (ghostherd-cmd-state "self"))))
+          (should (equal (alist-get 'name parsed) "impl")))))))
+
+(ert-deftest ghostherd-test-cmd-self-outside-an-agent-is-an-error ()
+  "Better than resolving to whatever buffer happened to be current."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "impl" :kind 'agy)
+    (with-temp-buffer
+      (should-error (ghostherd-cmd-state "self") :type 'user-error))))
+
+(ert-deftest ghostherd-test-cmd-message-attributes-the-caller ()
+  "FROM used to default to \"user\", which was a lie whenever the caller
+was another agent -- and an agent had no way to say otherwise."
+  (ghostherd-tests--with-herd ()
+    (let ((impl (ghostherd-tests--session :name "impl" :kind 'agy))
+          (rev (ghostherd-tests--session :name "rev" :kind 'agy))
+          (sent nil))
+      (ignore rev)
+      (cl-letf (((symbol-function 'ghostherd-send)
+                 (lambda (_session text &optional _submit) (setq sent text))))
+        (with-current-buffer (ghostherd-session-buffer impl)
+          (ghostherd-cmd-message "rev" "have a look"))
+        (should (string-match-p "impl" sent))
+        (should-not (string-match-p "user" sent))))))
+
 ;;; Naming and formatting
 
 (ert-deftest ghostherd-test-unique-name ()
@@ -1422,59 +1935,6 @@ attaches, and Escape lags."
 ;; through, so stubbing it pins the actual command lines -- which is
 ;; where this backend's mistakes live.
 
-(defvar ghostherd-tests--tmux-calls nil
-  "Argument lists handed to tmux by the code under test.")
-
-(defun ghostherd-tests--tmux-panes ()
-  "Fake `list-panes' output showing every registered tmux session alive."
-  (mapconcat (lambda (s)
-               (format "%s\t0\t\n" (ghostherd-session-host-id s)))
-             (cl-remove-if-not
-              (lambda (s) (eq (ghostherd-session-backend s) 'tmux))
-              (hash-table-values ghostherd--sessions))
-             ""))
-
-(defmacro ghostherd-tests--with-tmux (responses &rest body)
-  "Run BODY with tmux stubbed, recording calls in `ghostherd-tests--tmux-calls'.
-
-RESPONSES maps a tmux subcommand to the (STATUS . OUTPUT) it answers
-with.  `list-panes' defaults to reporting every registered tmux session
-alive, since almost everything checks liveness on the way past;
-anything else unlisted succeeds silently.
-
-The recording is not `let'-bound, so assertions after the form still
-see the calls."
-  (declare (indent 1) (debug t))
-  `(progn
-     (setq ghostherd-tests--tmux-calls nil)
-     (let ((ghostherd-tmux--status-cache nil))
-       (cl-letf (((symbol-function 'ghostherd-tmux--call)
-                  (lambda (args)
-                    (push args ghostherd-tests--tmux-calls)
-                    (or (alist-get (car args) ,responses nil nil #'equal)
-                        (if (equal (car args) "list-panes")
-                            (cons 0 (ghostherd-tests--tmux-panes))
-                          (cons 0 ""))))))
-         ,@body))
-     (setq ghostherd-tests--tmux-calls
-           (nreverse ghostherd-tests--tmux-calls))))
-
-(defun ghostherd-tests--tmux-call (subcommand)
-  "Return the recorded tmux call for SUBCOMMAND, or nil."
-  (cl-find subcommand ghostherd-tests--tmux-calls
-           :key #'car :test #'equal))
-
-(defun ghostherd-tests--tmux-options ()
-  "Return the (OPTION . VALUE) pairs written by recorded `set-option' calls."
-  (mapcar (lambda (call) (cons (nth 3 call) (nth 4 call)))
-          (cl-remove-if-not (lambda (call) (equal (car call) "set-option"))
-                            ghostherd-tests--tmux-calls)))
-
-(defun ghostherd-tests--tmux-session (&rest args)
-  "Register a tmux-backed session from ARGS."
-  (apply #'ghostherd-tests--session
-         :backend 'tmux :host-id "gh-abc-rev" args))
-
 (ert-deftest ghostherd-test-tmux-capture-takes-the-visible-pane ()
   "No -e (rules match text, not SGR), no -J (joining wrapped lines
 invents rows the agent never drew), and no scrollback (an alt-screen
@@ -1552,6 +2012,62 @@ tmux hands multiple trailing arguments to execvp as they are."
     (let ((call (ghostherd-tests--tmux-call "new-session")))
       (should (member "-d" call))
       (should (equal (last call 4) '("agy" "--effort" "high" "a b"))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-injects-identity ()
+  "`-e' before the command, and the command still last: everything after
+it belongs to execvp."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown))
+      (ghostherd-tests--with-tmux '(("has-session" . (1 . "")))
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev" :kind 'agy :command "agy" :args '("--effort")
+                     :directory "/tmp/" :project "/tmp/"))))
+    (let ((call (ghostherd-tests--tmux-call "new-session")))
+      (should (member "GHOSTHERD_SESSION=rev" call))
+      (should (member "GHOSTHERD_BACKEND=tmux" call))
+      (should (equal (last call 2) '("agy" "--effort")))
+      ;; -e has to come before the command, or tmux hands it to the agent.
+      (should (< (cl-position "-e" call :test #'equal)
+                 (cl-position "agy" call :test #'equal))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-retries-without-identity ()
+  "`-e' is tmux 3.2+.  The version is not parsed -- `tmux -V' says things
+like \"next-3.6\" -- so the spawn is its own probe: an old tmux gets one
+failed call and then the herd it always had, minus identity."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown)
+          (calls nil))
+      (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                 (lambda (args)
+                   (push args calls)
+                   (cond
+                    ;; Failure means "no such session"; answering 0 here
+                    ;; tells `--unique-id' every name is taken, and it
+                    ;; looks for a free one forever.
+                    ((equal (car args) "has-session") (cons 1 ""))
+                    ((member "-e" args) (cons 1 "unknown option -- e"))
+                    (t (cons 0 ""))))))
+        (should (ghostherd-backend-spawn
+                 'tmux (list :name "rev" :kind 'agy :command "agy"
+                             :directory "/tmp/" :project "/tmp/")))
+        ;; And the answer is remembered: the next spawn does not pay for it.
+        (should (eq ghostherd-tmux--env-supported nil))
+        (setq calls nil)
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev2" :kind 'agy :command "agy"
+                     :directory "/tmp/" :project "/tmp/"))
+        (should-not (cl-find-if (lambda (args) (member "-e" args)) calls))))))
+
+(ert-deftest ghostherd-test-tmux-spawn-failure-is-still-an-error ()
+  "The retry must not swallow a spawn that failed for a real reason."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--env-supported 'unknown))
+      (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                 (lambda (_args) (cons 1 "no space left on device"))))
+        (should-error (ghostherd-backend-spawn
+                       'tmux (list :name "rev" :kind 'agy :command "agy"
+                                   :directory "/tmp/" :project "/tmp/"))
+                      :type 'user-error)))))
 
 (ert-deftest ghostherd-test-tmux-spawn-writes-the-recipe ()
   "The tmux session name is not big enough to hold a recipe, and a
@@ -1642,6 +2158,202 @@ missing binary reports a gone host rather than signalling."
           (ghostherd-tmux-executable "ghostherd-no-such-tmux"))
       (should-not (ghostherd--host-live-p s))
       (should-not (ghostherd-tmux-available-p)))))
+
+;;; One round trip for the whole herd
+
+(ert-deftest ghostherd-test-screens-args-put-a-marker-before-each-pane ()
+  "The status fields ride along in front, then one delimiter per pane --
+so a single invocation answers liveness, titles and every screen."
+  (let* ((marker "@@m@@")
+         (args (ghostherd-tmux--screens-args '("gh-a" "gh-b") marker)))
+    (should (equal (seq-take args 4)
+                   (list "list-panes" "-a" "-F"
+                         ghostherd-tmux--status-format)))
+    (should (equal (nthcdr 4 args)
+                   (list ";" "display-message" "-p" "@@m@@ gh-a"
+                         ";" "capture-pane" "-p" "-t" "=gh-a:"
+                         ";" "display-message" "-p" "@@m@@ gh-b"
+                         ";" "capture-pane" "-p" "-t" "=gh-b:")))))
+
+(ert-deftest ghostherd-test-screens-marker-is-not-guessable ()
+  "The text being delimited is whatever an agent chose to print, and an
+agent can print anything -- including a fixed \"unlikely\" delimiter."
+  (should-not (equal (ghostherd-tmux--marker) (ghostherd-tmux--marker))))
+
+(ert-deftest ghostherd-test-parse-screens-splits-status-from-panes ()
+  (pcase-let ((`(,status . ,screens)
+               (ghostherd-tmux--parse-screens
+                (concat "gh-a\t0\ttitle a\ngh-b\t0\ttitle b\n"
+                        "@@m@@ gh-a\nAAA\nAAA2\n"
+                        "@@m@@ gh-b\nBBB\n")
+                "@@m@@")))
+    (should (equal status "gh-a\t0\ttitle a\ngh-b\t0\ttitle b"))
+    (should (equal (alist-get "gh-a" screens nil nil #'equal) "AAA\nAAA2"))
+    (should (equal (alist-get "gh-b" screens nil nil #'equal) "BBB"))))
+
+(ert-deftest ghostherd-test-parse-screens-tolerates-an-abandoned-list ()
+  "tmux abandons the rest of a command list at the first failure, which a
+pane killed from outside is enough to cause.  What came back is used; the
+pane whose marker printed with nothing after it is *not* reported as an
+empty screen, because an empty screen would read as `idle'."
+  (pcase-let ((`(,_status . ,screens)
+               (ghostherd-tmux--parse-screens
+                (concat "gh-a\t0\tt\n"
+                        "@@m@@ gh-a\nAAA\n"
+                        "@@m@@ gh-gone\n")
+                "@@m@@")))
+    (should (equal (mapcar #'car screens) '("gh-a")))))
+
+(ert-deftest ghostherd-test-fetch-stamps-the-status-cache ()
+  "Liveness came back in the same round trip, so asking for it again --
+synchronously, on the timer -- is the call this whole path removes."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--status-cache nil)
+          (ghostherd-tmux--fetch nil)
+          (got 'unset)
+          (buffer (generate-new-buffer " *fetch-test*")))
+      (with-current-buffer buffer
+        (insert "gh-abc-rev\t0\tagy\n@@m@@ gh-abc-rev\nThinking…\n"))
+      (ghostherd-tmux--fetch-done buffer "@@m@@" '(("gh-abc-rev" . "rev")) 40
+                                  (lambda (screens) (setq got screens)))
+      (should (equal got '(("rev" . "Thinking…"))))
+      (should (equal (ghostherd-tmux--parse-snapshot "gh-abc-rev\t0\tagy")
+                     (cdr ghostherd-tmux--status-cache)))
+      ;; Fresh by definition: it was stamped just now, so no reader on this
+      ;; tick pays for a second list-panes.
+      (should (assoc "gh-abc-rev" (ghostherd-tmux--snapshot))))))
+
+(ert-deftest ghostherd-test-fetch-does-not-stack ()
+  "A second fetch against a slow server is how a pile-up starts."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--tmux-session :name "rev"))
+           (started 0)
+           (fake (start-process "ghostherd-fetch-stub" nil "sleep" "30")))
+      (unwind-protect
+          (let ((ghostherd-tmux--fetch fake)
+                (ghostherd-tmux--fetch-started (float-time)))
+            (cl-letf (((symbol-function 'make-process)
+                       (lambda (&rest _) (setq started (1+ started)) fake)))
+              (should (ghostherd-backend-screens 'tmux (list s) 40 #'ignore)))
+            (should (= started 0)))
+        (delete-process fake)))))
+
+(ert-deftest ghostherd-test-poll-uses-the-screen-it-was-given ()
+  "The whole point: the poll path reads each screen once, in a batch, and
+detection must not go back to the host for what it already has."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (cl-letf (((symbol-function 'ghostherd--host-capture)
+                 (lambda (&rest _) (error "captured again"))))
+        (should (eq (ghostherd-poll-session s "Thinking…\n") 'working))))))
+
+(ert-deftest ghostherd-test-poll-all-falls-back-per-session ()
+  "A host whose screen is already an Emacs buffer says nothing here, and
+gets read session by session -- which costs nothing there."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle
+                                       :backend 'fake))
+          (ghostherd-tests--fake-screen "Thinking…\n"))
+      (ghostherd-poll-all)
+      (should (eq (ghostherd-session-state s) 'working)))))
+
+(ert-deftest ghostherd-test-poll-all-groups-by-backend ()
+  "One round trip is a claim only a single host can make, and a herd may
+straddle two."
+  (ghostherd-tests--with-herd ()
+    (let ((tmux-session (ghostherd-tests--tmux-session :name "t" :kind 'agy
+                                                       :state 'idle))
+          (fake-session (ghostherd-tests--session :name "f" :kind 'agy
+                                                  :state 'idle :backend 'fake))
+          (ghostherd-tests--fake-screen "Thinking…\n")
+          (asked nil))
+      (cl-letf (((symbol-function 'ghostherd-backend-screens)
+                 (lambda (backend sessions _n callback)
+                   (push (cons backend (mapcar #'ghostherd-session-name sessions))
+                         asked)
+                   (when (eq backend 'tmux)
+                     (funcall callback '(("t" . "Do you want to proceed\n")))
+                     t))))
+        ;; The liveness sweep still runs, and without the stub it would ask
+        ;; the real socket about a session that is not there.
+        (ghostherd-tests--with-tmux nil
+          (ghostherd-poll-all)))
+      (should (equal (alist-get 'tmux asked) '("t")))
+      (should (equal (alist-get 'fake asked) '("f")))
+      (should (eq (ghostherd-session-state tmux-session) 'blocked))
+      (should (eq (ghostherd-session-state fake-session) 'working)))))
+
+(ert-deftest ghostherd-test-late-callbacks-keep-their-own-group ()
+  "A fetch answers after the loop that started it has moved on, so each
+group's callback has to still be about *that* group's sessions."
+  (ghostherd-tests--with-herd ()
+    (let ((a (ghostherd-tests--session :name "a" :kind 'agy :state 'idle
+                                       :backend 'one))
+          (b (ghostherd-tests--session :name "b" :kind 'agy :state 'idle
+                                       :backend 'two))
+          (pending nil))
+      (cl-letf (((symbol-function 'ghostherd-backend-screens)
+                 (lambda (backend sessions _n callback)
+                   ;; Hold the callback, the way a real fetch does.
+                   (push (cons backend (lambda (screens)
+                                         (ignore sessions)
+                                         (funcall callback screens)))
+                         pending)
+                   t))
+                ((symbol-function 'ghostherd--session-live-p) (lambda (_s) t)))
+        (ghostherd-poll-all)
+        (should (= (length pending) 2))
+        ;; Deliver in the opposite order, and give both the same screen
+        ;; text: if a callback had captured the wrong group, one of these
+        ;; sessions would be left untouched.
+        (funcall (cdr (assq 'one pending)) '(("a" . "Do you want to proceed\n")))
+        (funcall (cdr (assq 'two pending)) '(("b" . "Thinking…\n")))
+        (should (eq (ghostherd-session-state a) 'blocked))
+        (should (eq (ghostherd-session-state b) 'working))))))
+
+(ert-deftest ghostherd-test-tmux-batch-round-trip ()
+  "Two real panes, one invocation, both screens back -- and stderr from a
+pane that is not there kept out of them."
+  (skip-unless (executable-find "tmux"))
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd-tmux-socket "ghostherd-ert-batch")
+           (ghostherd-tmux--status-cache nil)
+           (ghostherd-tmux--fetch nil)
+           (sessions nil)
+           (screens 'unset))
+      (unwind-protect
+          (progn
+            (dolist (name '("batch-a" "batch-b"))
+              (push (ghostherd-spawn
+                     'shell :name name :backend 'tmux
+                     :project temporary-file-directory
+                     :directory temporary-file-directory
+                     :command "sh"
+                     :args (list "-c" (format "echo screen-of-%s; cat" name))
+                     :display nil)
+                    sessions))
+            (sleep-for 0.5)
+            (should (ghostherd-backend-screens
+                     'tmux sessions 40 (lambda (s) (setq screens s))))
+            (with-timeout (10 (error "batched fetch never came back"))
+              (while (eq screens 'unset)
+                (accept-process-output nil 0.05)))
+            (should (equal (sort (mapcar #'car screens) #'string<)
+                           '("batch-a" "batch-b")))
+            (should (string-match-p "screen-of-batch-a"
+                                    (alist-get "batch-a" screens nil nil #'equal)))
+            (should (string-match-p "screen-of-batch-b"
+                                    (alist-get "batch-b" screens nil nil #'equal)))
+            ;; And the same round trip answered liveness.
+            (should (assoc (ghostherd-session-host-id (car sessions))
+                           (cdr ghostherd-tmux--status-cache))))
+        (dolist (session sessions)
+          (ignore-errors (ghostherd--host-kill session)))
+        (when (timerp ghostherd--poll-timer)
+          (cancel-timer ghostherd--poll-timer)
+          (setq ghostherd--poll-timer nil))
+        (call-process "tmux" nil nil nil "-L" "ghostherd-ert-batch"
+                      "kill-server")))))
 
 ;;; Optional: a real tmux round trip
 
