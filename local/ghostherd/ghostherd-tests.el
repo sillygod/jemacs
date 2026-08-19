@@ -41,6 +41,12 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--input-at (make-hash-table :test 'equal))
          (ghostherd--idle-since (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
+         ;; Every logged transition now appends to a file, and the default
+         ;; is the user's real one.  Persistence gets tested deliberately,
+         ;; with a temporary file, and nowhere else.
+         (ghostherd-log-file nil)
+         (ghostherd--log-writable t)
+         (ghostherd--log-loaded t)
          ,@bindings)
      ,@body))
 
@@ -608,6 +614,165 @@ depend on any of them still existing."
         (ghostherd--log-render (current-buffer))
         (should (string-match-p "gone" (buffer-string)))
         (should (string-match-p "killed" (buffer-string)))))))
+
+;;; A log that outlives Emacs
+
+(defmacro ghostherd-tests--with-log-file (&rest body)
+  "Run BODY with the herd log persisted to a temporary file."
+  (declare (indent 0) (debug t))
+  `(let* ((file (make-temp-file "ghostherd-log-test" nil ".eld"))
+          (ghostherd-log-file file)
+          (ghostherd--log nil)
+          (ghostherd--log-loaded nil)
+          (ghostherd--log-writable t)
+          (ghostherd-log-max 500)
+          (ghostherd-log-screens 20))
+     (unwind-protect
+         (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
+           ,@body)
+       (ignore-errors (delete-file file)))))
+
+(defun ghostherd-tests--log-lines (file)
+  "Return the lines of FILE."
+  (with-temp-buffer
+    (let ((coding-system-for-read 'utf-8))
+      (insert-file-contents file))
+    (split-string (buffer-string) "\n" t)))
+
+(ert-deftest ghostherd-test-log-survives-a-restart ()
+  "The point of the whole thing: what the previous Emacs saw is still
+there, screens included, because a rule that fired at 02:00 is otherwise
+unarguable by morning."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "rev" 'state "working → blocked  Approve?"
+                          "❯ 1. Yes\n│ box │\n> ")
+      (ghostherd--log-add "rev" 'input "← go on")
+      ;; A second Emacs, same file.
+      (let ((ghostherd--log nil)
+            (ghostherd--log-loaded nil))
+        (should (= (ghostherd-log-load) 2))
+        ;; Newest first, and one marker on top saying where the seam is.
+        (should (= (length ghostherd--log) 3))
+        (should (string-match-p "resumed 2 entries"
+                                (ghostherd-log-entry-text (car ghostherd--log))))
+        (let ((blocked (cl-find 'state ghostherd--log
+                                :key #'ghostherd-log-entry-kind)))
+          (should (equal (ghostherd-log-entry-session blocked) "rev"))
+          (should (equal (ghostherd-log-entry-text blocked)
+                         "working → blocked  Approve?"))
+          (should (equal (ghostherd-log-entry-screen blocked)
+                         "❯ 1. Yes\n│ box │\n> ")))))))
+
+(ert-deftest ghostherd-test-log-is-one-line-per-entry ()
+  "A screen is forty lines of box drawing, and it has to print as one:
+appending is only cheap because a crash can damage nothing but the last
+line."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "one" "top\nmiddle\nbottom")
+      (ghostherd--log-add "a" 'state "two")
+      (should (= (length (ghostherd-tests--log-lines file)) 2)))))
+
+(ert-deftest ghostherd-test-log-print-settings-are-not-the-users ()
+  "`print-length' and `print-level' are user settings, and writing
+\"...\" into somebody's log instead of their agent's screen would be a
+silent corruption."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((print-length 2) (print-level 1))
+        (ghostherd--log-add "a" 'state "text" "s1\ns2\ns3"))
+      (let ((ghostherd--log nil) (ghostherd--log-loaded nil))
+        (ghostherd-log-load)
+        (let ((entry (cl-find 'state ghostherd--log
+                              :key #'ghostherd-log-entry-kind)))
+          (should (equal (ghostherd-log-entry-text entry) "text"))
+          (should (equal (ghostherd-log-entry-screen entry) "s1\ns2\ns3")))))))
+
+(ert-deftest ghostherd-test-log-lines-are-plists-not-structs ()
+  "Printing the struct would read back into the struct *as it is then*:
+one added slot and every line written before today comes back with its
+fields shifted along."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'life "spawned")
+      (let ((form (car (read-from-string (car (ghostherd-tests--log-lines file))))))
+        (should (listp form))
+        (should-not (recordp form))
+        (should (equal (plist-get form :text) "spawned"))))))
+
+(ert-deftest ghostherd-test-log-tolerates-a-truncated-tail ()
+  "The one corruption to expect: Emacs died mid-write."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "first")
+      (let ((coding-system-for-write 'utf-8))
+        (write-region "(:time (26000 1) :session \"a\" :kind sta" nil file t 'silent))
+      (let ((ghostherd--log nil) (ghostherd--log-loaded nil))
+        (should (= (ghostherd-log-load) 1))
+        (should (cl-find "first" ghostherd--log
+                         :key #'ghostherd-log-entry-text :test #'equal))))))
+
+(ert-deftest ghostherd-test-log-compacts-on-load ()
+  "Appending is what keeps logging cheap, so the file grows with the
+session and the caps are applied once, when something is reading anyway."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (dotimes (i 8)
+        (ghostherd--log-add "a" 'state (format "entry %d" i) (format "screen %d" i)))
+      (should (= (length (ghostherd-tests--log-lines file)) 8))
+      (let ((ghostherd--log nil)
+            (ghostherd--log-loaded nil)
+            (ghostherd-log-max 5)
+            (ghostherd-log-screens 2))
+        (should (= (ghostherd-log-load) 5))
+        ;; The cap holds *including* the resume marker: it is a log line
+        ;; like any other, so the oldest of the five kept is pushed out.
+        (should (= (length ghostherd--log) 5))
+        ;; Only the newest two still carry a screen -- the screens are the
+        ;; actual disk.
+        (should (= (length (seq-filter #'ghostherd-log-entry-screen ghostherd--log))
+                   2))
+        (should (equal (ghostherd-log-entry-screen
+                        (cl-find 'state ghostherd--log
+                                 :key #'ghostherd-log-entry-kind))
+                       "screen 7"))
+        ;; And the file was rewritten rather than appended to, so it does
+        ;; not grow forever: five compacted lines plus the marker.
+        (should (= (length (ghostherd-tests--log-lines file)) 6))))))
+
+(ert-deftest ghostherd-test-log-keeps-going-when-the-file-cannot-be-written ()
+  "The write happens per state transition, so a read-only directory must
+cost one warning rather than one message per transition."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((ghostherd-log-file (expand-file-name "nope/deeper/log.eld" file))
+            (warnings 0))
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (&rest _) (setq warnings (1+ warnings)))))
+          (ghostherd--log-add "a" 'state "first")
+          (ghostherd--log-add "a" 'state "second"))
+        (should (= warnings 1))
+        (should-not ghostherd--log-writable)
+        (should (= (length ghostherd--log) 2))))))
+
+(ert-deftest ghostherd-test-log-clear-forgets-the-file-too ()
+  "Quitting Emacs used to do this by accident."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (ghostherd--log-add "a" 'state "first")
+      (should (file-exists-p file))
+      (ghostherd-log-clear)
+      (should-not ghostherd--log)
+      (should-not (file-exists-p file)))))
+
+(ert-deftest ghostherd-test-log-file-nil-keeps-it-in-memory ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((ghostherd-log-file nil))
+        (ghostherd--log-add "a" 'state "first")
+        (should (= (length ghostherd--log) 1))
+        (should (= (length (ghostherd-tests--log-lines file)) 0))))))
 
 ;;; OSC 9;4 progress
 

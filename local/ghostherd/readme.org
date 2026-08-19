@@ -7,9 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.6 done* — one round trip per tick, off the main thread    |
+| Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 165 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 175 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -22,7 +22,7 @@ readers and different lifetimes:
 | Document                                    | For                                                 |
 |---------------------------------------------+-----------------------------------------------------|
 | [[file:docs/design.org][docs/design.org]]    | why it is shaped this way, and what was traded away |
-| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T14        |
+| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T15        |
 | [[file:docs/roadmap.org][docs/roadmap.org]]  | phase history, what shipped, what is left           |
 
 * Features
@@ -604,6 +604,33 @@ exists. =ghostherd-explain= can only answer "why is it in that state"
 while the agent is still in it, so a rule that fired at 02:00 would
 otherwise be unarguable by morning.
 
+** It survives Emacs, because the herd does
+
+The log is appended to =ghostherd-log-file= as it happens, and read back
+when =ghostherd-mode= comes up. So the seam looks like this, and
+everything above the middle line is from the Emacs you no longer have:
+
+#+begin_example
+  02:14:07  reviewer  working → blocked  Bash(rm -rf build/) — proceed?  ⏎
+  09:31:02  herd      resumed 148 entries from an earlier Emacs
+  09:31:02  reviewer  restored from tmux, detached
+#+end_example
+
+Which closes a hole rather than adding a feature. Phase 3 exists so that
+agents outlive Emacs; the log describes itself as what you read when you
+get back; and the most ordinary way of getting back was the one that
+threw the log away --- including the 02:00 screen, the one case the kept
+screens were for.
+
+Appended per entry, not saved on the way out: a =kill-emacs-hook= does
+not run for the crash this is meant to survive (verified with =kill -9=).
+Caps are applied when the file is *read*, so it grows with a session and
+is compacted once at the start of the next one.
+
+=C= in the log buffer forgets the lot, file included --- quitting Emacs
+used to do that by accident, and now nothing does. Set
+=ghostherd-log-file= to nil to go back to memory only.
+
 * Per-project defaults
 
 Drop this in a project's =.dir-locals.el= and =ghostherd-new= preselects the
@@ -642,9 +669,12 @@ not re-read.
   (setq ghostherd-input-grace 6)
 
   ;; The herd log.  Entries are cheap; the screens kept behind `blocked'
-  ;; transitions are the actual memory (about 5K each).
+  ;; transitions are the actual memory -- and now the actual disk (about
+  ;; 5K each).  Both caps are applied when the file is read.
   (setq ghostherd-log-max 500
-        ghostherd-log-screens 20)
+        ghostherd-log-screens 20
+        ;; nil = memory only, and gone with this Emacs
+        ghostherd-log-file (locate-user-emacs-file "ghostherd-log.eld"))
 
   ;; How much screen a state reason carries.  The matched line is usually
   ;; the generic half of a prompt ("Do you want to proceed?"); the subject

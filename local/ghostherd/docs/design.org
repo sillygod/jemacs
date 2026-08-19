@@ -18,8 +18,8 @@ person who breaks them will be reading that file and not this one.
            │
   Detect:  timer + screen rules + ghostel-exit / OSC hooks
            │
-  Host:    capture · send-text · send-keys · live-p · exited-p
-           spawn · kill · rename · list · view          ← the slot
+  Host:    capture · screens · send-text · send-keys · live-p
+           exited-p · spawn · kill · rename · list · view  ← the slot
            │                              │
   Runtime: ghostel buffer (PTY)      tmux session (PTY, on -L ghostherd)
            agent = Emacs child       agent outlives Emacs; view optional
@@ -462,6 +462,47 @@ prompt, not once per poll --- and they are the ones worth arguing about.
 Entries and screens are trimmed separately, because 500 one-line entries
 cost nothing and twenty 40x120 screens are the actual memory.
 
+** Why the log outlives Emacs
+
+Because the herd does. Phase 3 exists so an agent survives an Emacs quit;
+the log's own justification is that "notifications arrive once and are
+gone, this is what you read when you get back"; and the most ordinary way
+of getting back --- starting Emacs again --- was the one case that threw
+it away. Worse, it threw away the *screens*, whose entire argument is that
+a rule which fired at 02:00 is unarguable by morning. Overnight is
+precisely the span an Emacs restart falls inside.
+
+The mechanism is boring on purpose, and five details in it are not:
+
+- *Appended per entry, not written on the way out.* A
+  =kill-emacs-hook= does not run for the crash this is meant to survive.
+  One line per transition is cheap enough to pay as it happens, and
+  =kill -9= is the test that matters.
+- *A plist per line, not the struct.* Printing
+  =#s(ghostherd-log-entry …)= reads back into the struct *as it is
+  then* --- add a slot and every line written before today returns with
+  its fields shifted along, which is the reload trap under "Reloading
+  over a live herd" wearing different clothes. A plist tolerates a key
+  that did not exist yet and one that no longer does.
+- *One line per entry, which needs =print-escape-newlines=.* A captured
+  screen is forty lines of box drawing, and without that binding it
+  would print as forty lines --- taking the crash-safety property with
+  it, since a truncated tail is only harmless while it can be exactly
+  one entry. =print-length= and =print-level= are bound for a different
+  reason: they are *user* settings, and writing ="..."= into somebody's
+  log where their agent's screen should be is a silent corruption.
+- *Compacted on read, not on write.* Appending is what keeps logging
+  cheap, so the file grows with whatever a session did and both caps are
+  applied once, when something is reading anyway. The cost is bounded by
+  one session's activity rather than by all of them.
+- *One warning, then memory only.* The write happens per state
+  transition, so a read-only directory has to cost a single warning
+  rather than a message every time an agent changes state.
+
+=ghostherd-log-clear= is the consequence rather than a feature: quitting
+Emacs used to empty the log by accident, and something has to do it on
+purpose now that nothing does.
+
 ** The two OSC integrations that are not hooks
 
 - =ghostel-progress-function= is a single global function, very likely
@@ -490,6 +531,8 @@ cost nothing and twenty 40x120 screens are the actual memory.
 | Poll I/O              | One batched round trip per host, async      | Was O(N) forks, blocking, on a timer     |
 | Wedged host           | Give up after a timeout, warn once          | Stale herd beats a frozen Emacs          |
 | Poll backoff          | *Not done* --- batching removed the reason   | Staleness with nothing left to buy       |
+| Log lifetime          | Appended to a file per entry                 | The restart is the absence it is for      |
+| Log on disk           | One plist per line, compacted on read        | Struct slots shift; appending stays cheap |
 | Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
 | Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
 | Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |

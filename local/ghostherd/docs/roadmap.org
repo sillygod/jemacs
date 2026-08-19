@@ -240,6 +240,53 @@ The numbers and the three tmux behaviours this rests on are in
 - Batching the *other* tmux calls (send, keys, options). They happen
   once per user action, not once per tick per agent
 
+* Phase 3.7 — The log outlives Emacs  *(done)*
+
+Goal: close the asymmetry Phase 3 opened. Agents survive an Emacs quit;
+the record of what they did while nobody was watching did not.
+
+Why the mechanism is shaped this way is in [[file:design.org][design.org]] under "Why the
+log outlives Emacs".
+
+** What shipped
+
+- [X] =ghostherd-log-file= (on by default): every entry appended as it
+  happens, read back when =ghostherd-mode= comes up, with a seam line
+  saying how many entries came from the earlier Emacs
+- [X] The kept =blocked= screens persist too --- they are the reason the
+  log keeps anything, and 02:00 was always going to be on the far side of
+  a restart
+- [X] Appended per entry rather than saved on exit, because a
+  =kill-emacs-hook= does not run for a crash. Verified with =kill -9=:
+  new Emacs, same file, transition line and screen both intact
+- [X] A plist per line rather than the struct, so a future slot cannot
+  shift every line written before it
+- [X] Compaction on read, so the file is bounded by one session's
+  activity rather than by all of them
+- [X] One warning and then memory-only if the file cannot be written ---
+  the write happens per transition, so a read-only directory must not
+  produce a message per transition
+- [X] =ghostherd-log-clear= (=C= in the log buffer): quitting Emacs used
+  to empty the log by accident
+- [X] 9 new ERT tests (175 total), mutation-checked five ways
+
+** What is left
+
+- [ ] Watch the file size over a week of real use. The bound is "one
+  session's activity", and if that turns out to mean megabytes then
+  compaction wants a size trigger rather than only a start-up one
+
+** Deliberately not done
+
+- Persisting the *reports* table. A report is trusted for 120 seconds; one
+  that outlived the Emacs it was made in should lose to the rules, which
+  is what happens by not writing it down
+- Persisting =seen=, the manual state or the OSC progress. Same reason as
+  the recipe: they describe this Emacs's relationship with the agent, not
+  the agent
+- A log per project or per session. The herd log is the herd's, and
+  filtering a buffer is a different feature from splitting a file
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

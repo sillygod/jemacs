@@ -257,6 +257,21 @@ The failure the fetch timeout exists for, and the one ERT cannot stage:
 Step 1 is the regression: before Phase 3.6 this hung Emacs in an
 uninterruptible =call-process=, repeatedly, from a timer.
 
+** T15 — The log outlives Emacs
+
+ERT covers the file format; what it cannot stage is a real Emacs dying.
+
+| Step | Action                                              | Expected                                          |
+|------+-----------------------------------------------------+---------------------------------------------------|
+|    1 | Run a herd until something goes =blocked=            | A =⏎= line in =SPC a h l=                          |
+|    2 | =pkill -9 emacs= (no exit hooks run)                 | --                                                |
+|    3 | Start Emacs, =SPC a h l=                             | Yesterday's lines, then "resumed N entries…"      |
+|    4 | =RET= on the old =⏎= line                            | The screen that rule fired against, still there   |
+|    5 | =C= in the log buffer                                | Log and file both gone                            |
+
+Step 4 is the one that matters: it is the 02:00 rule the kept screens
+exist for, read the next morning.
+
 * Dogfood log
 
 Screen rules are heuristics against a UI that changes between releases,
@@ -345,6 +360,7 @@ Anything else worth recording:
 | Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
 | Agent-driven reports | *gap* --- needs a real CLI's hooks      | Manual: T13               |
 | Batched fetch        | *done* --- real tmux, two panes, one call | Wedged host: manual T14 |
+| Log persistence      | *done* --- format, caps, truncated tail  | A real crash: manual T15 |
 | Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
 
 Do *not* block UX work on full TUI integration tests of claude/grok

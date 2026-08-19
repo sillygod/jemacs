@@ -497,8 +497,166 @@ are the ones worth arguing about.  0 disables it."
   text
   screen)
 
+(defcustom ghostherd-log-file (locate-user-emacs-file "ghostherd-log.eld")
+  "File the herd log is appended to, or nil to keep it in memory only.
+
+On by default, because the restart this is for is the one nobody
+planned.  Phase 3 made agents outlive Emacs -- that is what the tmux
+backend is *for* -- and the log describes itself as \"what you read when
+you get back\", where the most ordinary way of getting back is starting
+Emacs again.  A log that only survives while Emacs does answers every
+absence except that one.
+
+The screens matter more than the lines here.  `ghostherd-explain' can
+only say why an agent is in a state while it is still in it, so a rule
+that fired at 02:00 is unarguable by morning unless the screen behind it
+was kept -- and \"by morning\" is exactly the span an Emacs restart
+tends to fall inside."
+  :type '(choice (const :tag "Memory only" nil) file)
+  :group 'ghostherd)
+
 (defvar ghostherd--log nil
   "Herd log entries, newest first.")
+
+(defvar ghostherd--log-loaded nil
+  "Non-nil once `ghostherd-log-file' has been read this session.")
+
+(defvar ghostherd--log-writable t
+  "Non-nil while appending to `ghostherd-log-file' is still worth trying.
+
+Cleared after one failure, because the write happens per state
+transition: a read-only directory would otherwise produce an error
+message every time an agent changed state.")
+
+(defun ghostherd--log-form (entry)
+  "Return ENTRY as a plist ready to be printed on one line.
+
+A plist rather than the struct itself, deliberately.  Printing
+`#s(ghostherd-log-entry ...)' reads back only into the struct as it was
+*then*: add a slot and every line written before today comes back with
+its fields shifted along, which is the same trap as \"Reloading over a
+live herd\" in readme.org and just as remote from its cause.  A plist
+tolerates a key that did not exist yet and one that no longer does."
+  (append (list :time (ghostherd-log-entry-time entry)
+                :session (ghostherd-log-entry-session entry)
+                :kind (ghostherd-log-entry-kind entry)
+                :text (ghostherd-log-entry-text entry))
+          (when-let* ((screen (ghostherd-log-entry-screen entry)))
+            (list :screen screen))))
+
+(defun ghostherd--log-entry-from-form (form)
+  "Rebuild a log entry from FORM, or nil when FORM is not one."
+  (when (and (consp form) (plist-member form :time))
+    (ghostherd-log-entry--create
+     :time (plist-get form :time)
+     :session (plist-get form :session)
+     :kind (plist-get form :kind)
+     :text (plist-get form :text)
+     :screen (plist-get form :screen))))
+
+(defun ghostherd--log-print (entries)
+  "Return ENTRIES, oldest first, as one printed form per line.
+
+One line per entry is what makes appending cheap and a crash survivable:
+a half-written last line is the only damage possible, and the loader
+stops there.  Three print settings are load-bearing --
+`print-escape-newlines' because a captured screen is full of them and
+would otherwise span lines, and `print-length' / `print-level' because a
+user who set them would get \"...\" written into their own log."
+  (let ((print-escape-newlines t)
+        (print-length nil)
+        (print-level nil))
+    (mapconcat (lambda (entry)
+                 (concat (prin1-to-string (ghostherd--log-form entry)) "\n"))
+               entries "")))
+
+(defun ghostherd--log-write (text append)
+  "Write TEXT to `ghostherd-log-file', appending when APPEND is non-nil."
+  (when (and ghostherd-log-file ghostherd--log-writable)
+    (condition-case error
+        (let ((coding-system-for-write 'utf-8))
+          ;; Explicit UTF-8, and not decorative: a screen is box drawing and
+          ;; a reason can be a prompt in any language, and `write-region'
+          ;; without one calls `select-safe-coding-system', which *prompts*
+          ;; -- an error in batch, a wedged daemon otherwise.
+          (write-region text nil ghostherd-log-file append 'silent))
+      (error
+       (setq ghostherd--log-writable nil)
+       (display-warning
+        'ghostherd
+        (format "cannot write %s, keeping the herd log in memory only: %s"
+                ghostherd-log-file (error-message-string error))
+        :warning)))))
+
+(defun ghostherd-log-load ()
+  "Read `ghostherd-log-file' into the herd log and compact the file.
+
+Compaction happens here rather than on the way in: appending is what
+keeps logging cheap, so the file grows with whatever the session did, and
+the caps (`ghostherd-log-max', `ghostherd-log-screens') are applied once,
+when something is reading anyway.  A line that will not parse ends the
+read -- the expected corruption is a truncated tail from a crash, and
+what follows one is not worth guessing at."
+  (interactive)
+  (setq ghostherd--log-loaded t)
+  (when (and ghostherd-log-file (file-readable-p ghostherd-log-file))
+    (let ((entries nil))
+      (with-temp-buffer
+        (let ((coding-system-for-read 'utf-8))
+          (insert-file-contents ghostherd-log-file))
+        (goto-char (point-min))
+        (condition-case nil
+            (while t
+              (if-let* ((entry (ghostherd--log-entry-from-form (read (current-buffer)))))
+                  (push entry entries)
+                ;; A form that is not an entry: skip it rather than stop,
+                ;; since two Emacsen appending to one file can interleave.
+                nil))
+          (error nil)))
+      ;; `entries' is newest first already, which is how the log is kept.
+      (setq ghostherd--log (ghostherd--log-trim entries))
+      (ghostherd--log-write (ghostherd--log-print (reverse ghostherd--log)) nil)
+      (let ((read (length ghostherd--log)))
+        (when (> read 0)
+          ;; Through `--log-add', so the seam is a line of the log like any
+          ;; other: trimmed with the rest, and there again next time.
+          (ghostherd--log-add "herd" 'life
+                              (format "resumed %d entries from an earlier Emacs"
+                                      read)))
+        read))))
+
+(defun ghostherd--log-trim (entries)
+  "Return ENTRIES (newest first) within both log caps.
+
+Entries and screens are capped separately because they cost differently:
+500 one-line entries are nothing, and twenty 40x120 screens are the
+actual memory -- and now the actual disk."
+  (let ((kept (if (> (length entries) ghostherd-log-max)
+                  (seq-take entries ghostherd-log-max)
+                entries))
+        (screens 0))
+    (dolist (entry kept)
+      (when (ghostherd-log-entry-screen entry)
+        (setq screens (1+ screens))
+        (when (> screens ghostherd-log-screens)
+          (setf (ghostherd-log-entry-screen entry) nil))))
+    kept))
+
+;;;###autoload
+(defun ghostherd-log-clear ()
+  "Forget the herd log, on disk as well as in memory.
+
+Quitting Emacs used to do this by accident; now that it does not,
+something has to do it on purpose."
+  (interactive)
+  (when (or (not (called-interactively-p 'interactive))
+            (yes-or-no-p "Forget the herd log, including the kept screens? "))
+    (setq ghostherd--log nil)
+    (when (and ghostherd-log-file (file-exists-p ghostherd-log-file))
+      (ignore-errors (delete-file ghostherd-log-file)))
+    (when-let* ((buf (get-buffer "*ghostherd-log*")))
+      (ghostherd--log-render buf))
+    (message "Herd log cleared")))
 
 (defun ghostherd--log-add (session kind text &optional screen)
   "Record TEXT about SESSION under KIND, optionally with a SCREEN."
@@ -508,16 +666,11 @@ are the ones worth arguing about.  0 disables it."
                     (format "%s" session))
          :kind kind :text text :screen screen)
         ghostherd--log)
-  ;; Trim by entries and by screens separately: 500 one-line entries cost
-  ;; nothing, and twenty 40x120 screens are the actual memory.
-  (when (> (length ghostherd--log) ghostherd-log-max)
-    (setq ghostherd--log (seq-take ghostherd--log ghostherd-log-max)))
-  (let ((kept 0))
-    (dolist (entry ghostherd--log)
-      (when (ghostherd-log-entry-screen entry)
-        (setq kept (1+ kept))
-        (when (> kept ghostherd-log-screens)
-          (setf (ghostherd-log-entry-screen entry) nil)))))
+  ;; Appended as it happens rather than saved on the way out: a
+  ;; `kill-emacs-hook' does not run for the crash this is meant to
+  ;; survive, and one line is cheap enough to write per transition.
+  (ghostherd--log-write (ghostherd--log-print (list (car ghostherd--log))) t)
+  (setq ghostherd--log (ghostherd--log-trim ghostherd--log))
   (when-let* ((buf (get-buffer "*ghostherd-log*")))
     (when (get-buffer-window buf t)
       (ghostherd--log-render buf)))
@@ -2309,6 +2462,7 @@ commands are the whole surface."
   :doc "Keymap for `ghostherd-log-mode'."
   "RET" #'ghostherd-log-show-screen
   "g"   #'ghostherd-log-refresh
+  "C"   #'ghostherd-log-clear
   "q"   #'quit-window)
 
 (define-derived-mode ghostherd-log-mode special-mode "GhostHerd-Log"
@@ -2374,8 +2528,15 @@ fired at 02:00 is otherwise unarguable by morning."
   "Show what the herd has been doing.
 
 Every state transition and every prompt sent, with a timestamp.  Lines
-marked =⏎= kept the screen that produced them; =RET= shows it."
+marked =⏎= kept the screen that produced them; =RET= shows it.  The log
+spans Emacs restarts, so entries from an earlier session are above the
+line that says so; `C' forgets the lot."
   (interactive)
+  ;; Reachable without `ghostherd-mode' having been enabled -- so this is
+  ;; the second place the file gets read, and the flag is why it is not
+  ;; read twice.
+  (unless ghostherd--log-loaded
+    (ghostherd-log-load))
   (let ((buf (get-buffer-create "*ghostherd-log*")))
     (with-current-buffer buf
       (unless (derived-mode-p 'ghostherd-log-mode)
@@ -2801,6 +2962,10 @@ sweeps every `ghostherd-poll-interval'."
       (progn
         (ghostherd--install-hooks)
         (ghostherd--register-eval-cmds)
+        ;; The log first, so what the previous Emacs saw is above what this
+        ;; one is about to do: restore writes its own lines.
+        (unless ghostherd--log-loaded
+          (ignore-errors (ghostherd-log-load)))
         ;; Enabling the mode is the restore hook: a herd left running by
         ;; a previous Emacs is picked up here, before anything asks for
         ;; a session list.
