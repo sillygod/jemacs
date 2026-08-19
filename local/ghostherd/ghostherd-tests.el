@@ -9,7 +9,8 @@
 ;;
 ;; Run:
 ;;
-;;   emacs --batch -L . -l ghostherd.el -l ghostherd-tests.el \
+;;   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+;;         -L . -l ghostherd.el -l ghostherd-tests.el \
 ;;         -f ert-run-tests-batch-and-exit
 
 ;;; Code:

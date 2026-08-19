@@ -7,7 +7,8 @@ How the suite is built and what still needs a human. The manual is
 
 #+begin_src bash
   cd local/ghostherd
-  emacs --batch -L . -l ghostherd.el -l ghostherd-tests.el \
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L . -l ghostherd.el -l ghostherd-tests.el \
         -f ert-run-tests-batch-and-exit
 #+end_src
 
@@ -78,7 +79,8 @@ In a shell:
 
 #+begin_src bash
   cd ~/.emacs.d/local/ghostherd
-  emacs --batch -L . -f batch-byte-compile \
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L . -f batch-byte-compile \
         ghostherd-backend.el ghostherd-tmux.el ghostherd.el
 #+end_src
 

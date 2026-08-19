@@ -59,7 +59,6 @@
       (when (fboundp 'startup-redirect-eln-cache)
         ;; to make it automatically run startup--update-eln-cache
         ;; which will set the eln cache directory under the user-emcas-directory
-        (setq native-comp-enable-subr-trampolines (expand-file-name (file-name-as-directory "eln-cache") user-emacs-directory))
         (setq startup--original-eln-load-path native-comp-eln-load-path)
         (startup-redirect-eln-cache (expand-file-name (file-name-as-directory "eln-cache") user-emacs-directory))))
 
