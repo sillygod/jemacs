@@ -92,7 +92,6 @@
                   "Allow this"
                   "Approve"
                   "permission"
-                  "always-approve"
                   "\\[y/N\\]"
                   "\\(y/n\\)"))
       (working . ("Working"
@@ -149,9 +148,13 @@ and a rule that matches those reports `idle' from the moment you first
 press Return, forever.  Tightening costs nothing: a prompt the rules
 fail to recognise falls through to the idle default anyway.
 
-Two rules were dropped for the same reason -- claude's separator line
-and grok's startup banner are part of the frame, not of the state.  They
-are on screen while the agent works, so they said `idle' throughout.
+Three rules were dropped for the same reason -- claude's separator line,
+grok's startup banner and grok's permission-mode banner are part of the
+frame, not of the state.  The first two are on screen while the agent
+works, so they said `idle' throughout.  The third was worse: grok prints
+its mode in the border of the input box, so `always-approve' -- the mode
+in which it will *not* ask -- read as `blocked', which outranks
+`working', for as long as that mode was on.
 
 Common optional CLI flags (not enabled by default — set via :args
 or the ARGUMENTS prompt in `ghostherd-new'):

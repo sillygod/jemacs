@@ -573,6 +573,22 @@ quoting a command sent half a minute earlier."
         ;; the echoed command on its own is not
         (should-not (ghostherd--match-rules echo-only rules))))))
 
+(ert-deftest ghostherd-test-a-mode-banner-is-not-a-permission-prompt ()
+  "grok draws its permission mode into the border of the input box, so
+`always-approve\=' -- the mode in which it does *not* stop to ask -- was
+on screen for as long as the mode was on.  `blocked\=' outranks
+`working\=', so an agent three minutes into an edit, spinner running,
+sat in the sidebar asking for attention it did not want."
+  (let ((rules (plist-get (ghostherd--spec 'grok) :screen-rules))
+        (screen (concat
+                 "  \u2503  \u25c6 Thinking\u2026\n"
+                 "  \u2503  Now update activation columns.\n"
+                 "    \u2846 Thinking\u2026 1.9s              3m33s [stop]\n"
+                 "  \u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n"
+                 "  \u2502 \u276f                                  \u2502\n"
+                 "  \u2570\u2500\u2500 Grok 4.6 (xhigh) \u00b7 always-approve \u2500\u256f\n")))
+    (should (eq (car (ghostherd--match-rules screen rules)) 'working))))
+
 ;;; Herd log
 
 (defmacro ghostherd-tests--with-log (&rest body)
