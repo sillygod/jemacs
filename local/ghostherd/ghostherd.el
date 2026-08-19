@@ -2465,7 +2465,14 @@ scrolling back to the bottom leaves it automatically.
 
 Evil users in normal state will want the commands bound there too --
 `ghostherd-scroll-up\=', `ghostherd-scroll-down\=' and the two page
-commands are the whole surface."
+commands are the whole surface.
+
+Bind them out of the terminal's own vocabulary, though.  This map is on
+the agent view, so anything bound here is a key the agent never sees,
+and only behind tmux -- the ghostel backend has no such mode, so the
+same key keeps working there and the loss looks like a backend bug.
+`C-M-v\=' pages down above for that reason: `C-v\=' is how Claude Code
+pastes an image."
   :lighter " ⇅"
   :keymap ghostherd-terminal-mode-map)
 

@@ -606,8 +606,13 @@
                (kbd "C-d") #'ghostherd-scroll-page-down
                (kbd "G")   #'ghostherd-scroll-bottom)
 
+             ;; `C-M-v', not `C-v': a terminal key belongs to whatever is running
+             ;; in the terminal, and Claude Code pastes images from the clipboard
+             ;; on `C-v'.  Binding it here reached the agent view only -- the
+             ;; ghostel backend has no `ghostherd-terminal-mode' -- which is
+             ;; exactly the shape the bug reappeared in.
              (evil-define-key 'emacs ghostherd-terminal-mode-map
-               (kbd "C-v") #'ghostherd-scroll-page-down
+               (kbd "C-M-v") #'ghostherd-scroll-page-down
                (kbd "M-v") #'ghostherd-scroll-page-up
                (kbd "M->") #'ghostherd-scroll-bottom)))
   #+end_src
