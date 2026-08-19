@@ -7,9 +7,9 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.5 done* — an agent is an authority on its own state      |
+| Phase       | *3.6 done* — one round trip per tick, off the main thread    |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 155 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 165 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -22,7 +22,7 @@ readers and different lifetimes:
 | Document                                    | For                                                 |
 |---------------------------------------------+-----------------------------------------------------|
 | [[file:docs/design.org][docs/design.org]]    | why it is shaped this way, and what was traded away |
-| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T12        |
+| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T14        |
 | [[file:docs/roadmap.org][docs/roadmap.org]]  | phase history, what shipped, what is left           |
 
 * Features
@@ -672,7 +672,8 @@ not re-read.
   (setq ghostherd-backend 'tmux
         ghostherd-tmux-socket "ghostherd"      ; never the default socket
         ghostherd-tmux-default-size '(120 . 40) ; size while detached
-        ghostherd-tmux-status-ttl 1.0          ; one list-panes per tick
+        ghostherd-tmux-status-ttl 1.0          ; interactive liveness reads
+        ghostherd-tmux-fetch-timeout 10        ; give up on a wedged server
         ghostherd-tmux-config nil)             ; nil = generate one
 
   ;; Permanent default args example:
@@ -756,6 +757,20 @@ bring it back configured:
 #+begin_src bash
   tmux -L ghostherd kill-server
 #+end_src
+
+** "tmux has not answered in 10s"
+
+A warning, once, and then a herd whose states stop changing while the
+sidebar keeps drawing them. The poll path asks tmux for the whole herd
+in one asynchronous call per tick; if that call does not come back within
+=ghostherd-tmux-fetch-timeout= it is killed, and the next tick tries
+again.
+
+Being told is the whole point. This used to be a synchronous
+=call-process= per agent, and =call-process= neither returns nor accepts
+=C-g= --- so a server in this state took *Emacs* down rather than the
+herd, and looked like Emacs hanging for no reason. What to do about it is
+the section above.
 
 ** The agent is drawing into a fraction of the window
 

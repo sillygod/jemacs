@@ -15,6 +15,13 @@ Covers the parts that need no PTY: rule matching and precedence, OSC
 progress freshness and handler chaining, state-detection precedence, sidebar
 column fitting, title filtering, naming and age formatting.
 
+Phase 3.6 moved the poll path to one batched, asynchronous round trip
+per host. Two pure seams make that testable without a process: the tmux
+argument list (=--screens-args=) and the parse (=--parse-screens=). The
+tolerant-parse test is the one to keep honest --- tmux abandons a command
+list at the first failure, so a partial answer is normal input, not an
+error case.
+
 Phase 3.5 added the report authority, and the tests to reach for when
 editing detection are the precedence ones: which authority wins is now a
 five-row table (readme, "Agents that report themselves"), and every row
@@ -235,6 +242,21 @@ hook can drive the herd.
 Step 7 is the one worth doing deliberately: it is the failure mode the
 TTL exists for, and the reason a report is not a =mark-state=.
 
+** T14 — A host that stops answering
+
+The failure the fetch timeout exists for, and the one ERT cannot stage:
+=SIGSTOP= is the cheapest wedged server there is.
+
+| Step | Action                                                       | Expected                                        |
+|------+--------------------------------------------------------------+-------------------------------------------------|
+|    1 | =pkill -STOP -f 'tmux.*-L ghostherd'= with a herd running     | Emacs stays responsive; no freeze on the timer   |
+|    2 | Wait =ghostherd-tmux-fetch-timeout= (10s)                     | One warning; sidebar states stop changing        |
+|    3 | Keep typing in an unrelated buffer for a while                | Still responsive, and only one warning total     |
+|    4 | =pkill -CONT -f 'tmux.*-L ghostherd'=                         | States resume within a tick or two               |
+
+Step 1 is the regression: before Phase 3.6 this hung Emacs in an
+uninterruptible =call-process=, repeatedly, from a timer.
+
 * Dogfood log
 
 Screen rules are heuristics against a UI that changes between releases,
@@ -322,6 +344,7 @@ Anything else worth recording:
 | ERT, real tmux     | *done* --- spawn/capture/send/restore/kill | Skipped without tmux    |
 | Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
 | Agent-driven reports | *gap* --- needs a real CLI's hooks      | Manual: T13               |
+| Batched fetch        | *done* --- real tmux, two panes, one call | Wedged host: manual T14 |
 | Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
 
 Do *not* block UX work on full TUI integration tests of claude/grok

@@ -193,6 +193,53 @@ How to use it is in [[file:../readme.org][readme.org]] under "Agents that report
   working. That is a memory leak with a lookup in front of it; a respawn
   is the honest repair
 
+* Phase 3.6 — One round trip per tick  *(done)*
+
+Goal: make the cost of watching an agent independent of how many other
+agents you are watching, and stop a wedged host from taking Emacs with
+it.
+
+The numbers and the three tmux behaviours this rests on are in
+[[file:design.org][design.org]] under "What the poll path costs".
+
+** What shipped
+
+- [X] =ghostherd-backend-screens=: an optional slot capability for a host
+  that can dump the whole herd's screens in one go, asynchronously.
+  Returning nil --- which ghostel does, because its screens are already
+  Emacs buffers --- keeps the old per-session read
+- [X] The tmux implementor: =list-panes= plus a delimiter and a
+  =capture-pane= per session, in one =make-process=, with stderr kept out
+  of the screens and a random per-fetch delimiter
+- [X] Six agents: 30.5 ms of blocking per tick → 6.1 ms, and N+1
+  subprocesses → 1
+- [X] The liveness snapshot rides along in the same round trip, so the
+  poll path no longer makes a second synchronous call to ask
+- [X] =ghostherd-tmux-fetch-timeout=: a host that stops answering is
+  given up on and complained about once, rather than blocking Emacs in
+  an uninterruptible =call-process= from a timer
+- [X] A fetch never stacks on a slow server: the tick is skipped instead
+- [X] =ghostherd--detect-state= and =ghostherd-poll-session= take the
+  screen the batch already fetched; every interactive caller still reads
+  for itself
+- [X] 10 new ERT tests including a real-tmux batch round trip, plus pure
+  seams for the argument list and the parse
+
+** What is left
+
+- [ ] Watch for a partial-batch pattern in daily use. A pane killed from
+  outside is meant to cost one tick of individual reads; if that turns
+  out to be common rather than rare, the fetch should ask =list-panes=
+  first and capture only what it reported
+
+** Deliberately not done
+
+- Poll backoff for idle sessions. It was the obvious fix while the cost
+  was per-session; batching removed the thing it fixed, and staleness
+  is a real price with nothing left to buy
+- Batching the *other* tmux calls (send, keys, options). They happen
+  once per user action, not once per tick per agent
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

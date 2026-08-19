@@ -276,6 +276,65 @@ Two things, both learned the hard way:
   can answer and wedges the server for every later call too. That is not
   hypothetical: it is what the first version did.
 
+** What the poll path costs
+
+It used to cost one subprocess *per agent* per tick, run synchronously
+from the timer. Measured against a real tmux with six shells:
+
+| Shape                                  | Blocks Emacs for | Total  |
+|----------------------------------------+------------------+--------|
+| Old: 6 =capture-pane= + 1 =list-panes= | 30.5 ms          | 30.5 ms |
+| New: one batched fetch, asynchronous   | 6.1 ms           | 10.5 ms |
+
+The blocking column is the one that mattered, and the shape of it more
+than the number: =O(N)= forks on a 1.5-second timer, so the cost of
+watching an agent was paid again for every other agent in the herd. tmux
+takes a list of commands in one invocation --- which
+=ghostherd-backend-scroll= already relied on for the wheel --- so the
+whole tick is one call: the =list-panes= fields, then a delimiter and a
+=capture-pane= per session.
+
+Asynchronous for a different reason than speed. =call-process= does not
+come back and cannot be interrupted, so a wedged tmux server did not
+stall the *herd*, it stalled *Emacs* --- from a timer, repeatedly, with
+the readme already documenting stale servers as a thing that happens.
+Now a fetch that has not answered within =ghostherd-tmux-fetch-timeout=
+is killed and complained about once, and the herd goes stale instead.
+
+Three things this had to get right, all three confirmed against 3.5a
+rather than assumed:
+
+- *A failure abandons the rest of the command list.* One pane killed from
+  outside makes its =capture-pane= fail, and every command after it never
+  runs. So a partial answer is normal: what came back is used, and any
+  session the batch did not answer for is read individually by the
+  caller. A marker with nothing after it is reported as *missing* rather
+  than as an empty screen, because an empty screen reads as =idle=.
+- *stderr must be kept out of the screens.* That abandoned list explains
+  itself on stderr (="can't find session: x"=), and a sentence like that
+  landing in a captured screen is text the rules would happily match.
+- *The delimiter is random per fetch.* The text being delimited is
+  whatever an agent chose to print, an agent can print anything, and a
+  fixed "unlikely" marker is how this kind of parsing fails months later.
+
+Two consequences worth stating because they look like oversights:
+
+- =ghostherd-tmux-status-ttl= no longer governs the poll path at all. The
+  batched fetch asks for the same fields in the same round trip and stamps
+  the cache from the answer, which is *why* the sweep runs inside the
+  callback rather than before the fetch: ask first, and
+  =ghostherd--ensure-sessions= would pay for a second, synchronous
+  =list-panes= to learn what the fetch was about to say. A herd
+  straddling both hosts still pays that one call per tick, since the
+  ghostel group's sweep runs before the tmux answer arrives. A
+  single-host herd pays none.
+- *No poll backoff, deliberately.* Polling idle sessions less often was
+  the obvious fix while the cost was =O(N)= subprocesses; batching
+  removed the thing it was fixing. What remains per session is a regexp
+  match over forty lines, and a herd is not big enough for that to be
+  worth the staleness --- or worth explaining why a =blocked= took four
+  seconds to appear.
+
 ** An agent knowing its own name
 
 Injected into the environment at spawn, by every implementor, from one
@@ -428,6 +487,9 @@ cost nothing and twenty 40x120 screens are the actual memory.
 | Agent identity        | Injected at spawn, one list per implementor  | Nothing can tell a process afterwards    |
 | Reported state        | Expires (TTL), unlike a manual mark         | A missed edge must not freeze a row      |
 | Report storage        | Hash table keyed by id, not struct slots    | New slots break a herd across a reload   |
+| Poll I/O              | One batched round trip per host, async      | Was O(N) forks, blocking, on a timer     |
+| Wedged host           | Give up after a timeout, warn once          | Stale herd beats a frozen Emacs          |
+| Poll backoff          | *Not done* --- batching removed the reason   | Staleness with nothing left to buy       |
 | Blocked policy        | Strict (miss rather than false positive)    | Same as herdr                            |
 | Notify                | Reuse ghostel hooks + alert                 | No parallel notifier                     |
 | Kill-on-exit          | Off for herd buffers                        | Keep =dead= rows visible                 |

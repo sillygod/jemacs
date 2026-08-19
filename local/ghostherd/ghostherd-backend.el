@@ -286,6 +286,28 @@ full vocabulary stays reachable.")
 This is what the screen rules, `ghostherd-read', `ghostherd-explain'
 and `ghostherd-wait-output' all read.")
 
+(cl-defgeneric ghostherd-backend-screens (_backend _sessions _n _callback)
+  "Fetch the last N lines of every session in SESSIONS at once, if you can.
+
+CALLBACK is called with one argument, an alist of session id → screen
+string.  A session missing from it, or present with nothing on it, is one
+the caller must read individually -- so a partial answer is a valid
+answer, which matters because a host may abandon a batch halfway.
+
+Return non-nil to claim the tick: the caller will then *not* read any
+session itself, and expects either a callback or a deliberate silence
+\(a fetch already in flight covers this tick as well).  Return nil --
+the default -- and the caller falls back to `ghostherd-backend-capture'
+per session, which is the right answer whenever a screen is already in
+Emacs and costs nothing to read.
+
+Why this exists at all: the poll path used to run one subprocess *per
+agent* per tick, synchronously, on the timer.  Six agents meant six
+forks every 1.5 seconds inside the redisplay-adjacent path, and a host
+that stopped answering froze Emacs rather than the herd.  A host that can
+answer for the whole herd in one round trip should say so here."
+  nil)
+
 (cl-defgeneric ghostherd-backend-scrollback (_backend _session _lines)
   "Return up to LINES of SESSION's history, or nil when it keeps none.
 

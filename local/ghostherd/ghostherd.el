@@ -31,6 +31,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'seq)
 (require 'project)
 (require 'tabulated-list)
 ;; The host slot, the session struct and the ghostel implementor.  Loaded
@@ -796,8 +797,14 @@ Falls back to the pattern when the matched line cleans up to nothing --
 an anchored prompt like \"^> \" is all furniture."
   (or (ghostherd--matched-line text (cdr hit)) (cdr hit)))
 
-(defun ghostherd--detect-state (session)
-  "Return (STATE . REASON) for SESSION from screen rules / buffer liveness."
+(defun ghostherd--detect-state (session &optional screen)
+  "Return (STATE . REASON) for SESSION from screen rules / buffer liveness.
+
+SCREEN is that session's screen when the caller already has it -- the
+poll path fetches the whole herd's screens in one go, and reading each
+one again individually is the cost that made it worth batching.  Without
+it, this captures for itself, which is what every interactive caller
+does."
   (cond
    ((ghostherd-session-manual-state session)
     (cons (ghostherd-session-manual-state session) "manual"))
@@ -812,7 +819,7 @@ an anchored prompt like \"^> \" is all furniture."
        (exited
         (cons 'dead exited))
        (t
-        (let* ((tail (and rules (ghostherd--host-capture session)))
+        (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
                (hit (and tail (ghostherd--match-rules tail rules)))
                (report (ghostherd--fresh-report session)))
           (cond
@@ -948,8 +955,10 @@ notification is a smaller wrong than one you did not need."
         (ghostherd--sidebar-refresh)))
     new))
 
-(defun ghostherd-poll-session (session)
-  "Recompute and store state for SESSION.  Return new state."
+(defun ghostherd-poll-session (session &optional screen)
+  "Recompute and store state for SESSION.  Return new state.
+SCREEN is SESSION's screen if the caller already fetched it; see
+`ghostherd--detect-state'."
   (setq session (ghostherd-get session))
   (when session
     (let ((watched (ghostherd--watched-p session)))
@@ -958,7 +967,7 @@ notification is a smaller wrong than one you did not need."
       ;; agent on your screen is just noise, and it was most of the noise.
       (when watched
         (setf (ghostherd-session-seen session) t))
-      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session)))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state session screen)))
         ;; Freshly prompted agents are not idle, they are slow.  Before the
         ;; grace elapses the screen still shows whatever it showed when you
         ;; pressed Return, and believing it turns into a `done' notification
@@ -999,10 +1008,50 @@ notification is a smaller wrong than one you did not need."
         (ghostherd--set-state session state reason)))))
 
 (defun ghostherd-poll-all ()
-  "Poll every registered session."
+  "Poll every registered session, one round trip per host where possible.
+
+A host that can dump the whole herd's screens in one go says so from
+`ghostherd-backend-screens' and is then responsible for the tick; one
+that cannot -- ghostel, where the screen is already an Emacs buffer --
+gets read session by session, which costs nothing there.
+
+Sessions are grouped by backend rather than swept in one list, because
+\"one round trip\" is a claim only a single host can make, and a herd may
+straddle two."
+  (let ((groups (seq-group-by #'ghostherd-session-backend
+                              (hash-table-values ghostherd--sessions))))
+    (if (null groups)
+        (ghostherd--ensure-sessions)
+      (pcase-dolist (`(,backend . ,members) groups)
+        ;; The callback closes over MEMBERS and may arrive long after this
+        ;; loop has moved on -- safe, because `dolist' binds afresh per
+        ;; iteration under lexical binding, and each group's callback
+        ;; therefore keeps its own sessions.
+        (unless (ignore-errors
+                  (ghostherd-backend-screens
+                   backend members ghostherd-screen-tail-lines
+                   (lambda (screens)
+                     (ghostherd--poll-with-screens members screens))))
+          (ghostherd--poll-with-screens members nil))))))
+
+(defun ghostherd--poll-with-screens (sessions screens)
+  "Recompute state for SESSIONS, reading SCREENS instead of the hosts.
+
+SCREENS is an alist of session id → screen, and it is allowed to be
+partial: a host may abandon a batch halfway, and a session it did not
+answer for is read individually rather than skipped.
+
+The sweep runs here rather than in the caller so that a batched host has
+already stamped whatever it learned in the same round trip -- otherwise
+asking whether each session is still alive would be the second
+synchronous call this exists to remove."
   (ghostherd--ensure-sessions)
-  (dolist (session (hash-table-values ghostherd--sessions))
-    (ignore-errors (ghostherd-poll-session session))))
+  (dolist (session sessions)
+    (ignore-errors
+      ;; The sweep may have deregistered it in between.
+      (when (ghostherd-get (ghostherd-session-id session))
+        (ghostherd-poll-session
+         session (cdr (assoc (ghostherd-session-id session) screens)))))))
 
 (defun ghostherd--ensure-poll-timer ()
   "Start the background poll timer if needed."

@@ -1994,6 +1994,202 @@ missing binary reports a gone host rather than signalling."
       (should-not (ghostherd--host-live-p s))
       (should-not (ghostherd-tmux-available-p)))))
 
+;;; One round trip for the whole herd
+
+(ert-deftest ghostherd-test-screens-args-put-a-marker-before-each-pane ()
+  "The status fields ride along in front, then one delimiter per pane --
+so a single invocation answers liveness, titles and every screen."
+  (let* ((marker "@@m@@")
+         (args (ghostherd-tmux--screens-args '("gh-a" "gh-b") marker)))
+    (should (equal (seq-take args 4)
+                   (list "list-panes" "-a" "-F"
+                         ghostherd-tmux--status-format)))
+    (should (equal (nthcdr 4 args)
+                   (list ";" "display-message" "-p" "@@m@@ gh-a"
+                         ";" "capture-pane" "-p" "-t" "=gh-a:"
+                         ";" "display-message" "-p" "@@m@@ gh-b"
+                         ";" "capture-pane" "-p" "-t" "=gh-b:")))))
+
+(ert-deftest ghostherd-test-screens-marker-is-not-guessable ()
+  "The text being delimited is whatever an agent chose to print, and an
+agent can print anything -- including a fixed \"unlikely\" delimiter."
+  (should-not (equal (ghostherd-tmux--marker) (ghostherd-tmux--marker))))
+
+(ert-deftest ghostherd-test-parse-screens-splits-status-from-panes ()
+  (pcase-let ((`(,status . ,screens)
+               (ghostherd-tmux--parse-screens
+                (concat "gh-a\t0\ttitle a\ngh-b\t0\ttitle b\n"
+                        "@@m@@ gh-a\nAAA\nAAA2\n"
+                        "@@m@@ gh-b\nBBB\n")
+                "@@m@@")))
+    (should (equal status "gh-a\t0\ttitle a\ngh-b\t0\ttitle b"))
+    (should (equal (alist-get "gh-a" screens nil nil #'equal) "AAA\nAAA2"))
+    (should (equal (alist-get "gh-b" screens nil nil #'equal) "BBB"))))
+
+(ert-deftest ghostherd-test-parse-screens-tolerates-an-abandoned-list ()
+  "tmux abandons the rest of a command list at the first failure, which a
+pane killed from outside is enough to cause.  What came back is used; the
+pane whose marker printed with nothing after it is *not* reported as an
+empty screen, because an empty screen would read as `idle'."
+  (pcase-let ((`(,_status . ,screens)
+               (ghostherd-tmux--parse-screens
+                (concat "gh-a\t0\tt\n"
+                        "@@m@@ gh-a\nAAA\n"
+                        "@@m@@ gh-gone\n")
+                "@@m@@")))
+    (should (equal (mapcar #'car screens) '("gh-a")))))
+
+(ert-deftest ghostherd-test-fetch-stamps-the-status-cache ()
+  "Liveness came back in the same round trip, so asking for it again --
+synchronously, on the timer -- is the call this whole path removes."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-tmux--status-cache nil)
+          (ghostherd-tmux--fetch nil)
+          (got 'unset)
+          (buffer (generate-new-buffer " *fetch-test*")))
+      (with-current-buffer buffer
+        (insert "gh-abc-rev\t0\tagy\n@@m@@ gh-abc-rev\nThinking…\n"))
+      (ghostherd-tmux--fetch-done buffer "@@m@@" '(("gh-abc-rev" . "rev")) 40
+                                  (lambda (screens) (setq got screens)))
+      (should (equal got '(("rev" . "Thinking…"))))
+      (should (equal (ghostherd-tmux--parse-snapshot "gh-abc-rev\t0\tagy")
+                     (cdr ghostherd-tmux--status-cache)))
+      ;; Fresh by definition: it was stamped just now, so no reader on this
+      ;; tick pays for a second list-panes.
+      (should (assoc "gh-abc-rev" (ghostherd-tmux--snapshot))))))
+
+(ert-deftest ghostherd-test-fetch-does-not-stack ()
+  "A second fetch against a slow server is how a pile-up starts."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--tmux-session :name "rev"))
+           (started 0)
+           (fake (start-process "ghostherd-fetch-stub" nil "sleep" "30")))
+      (unwind-protect
+          (let ((ghostherd-tmux--fetch fake)
+                (ghostherd-tmux--fetch-started (float-time)))
+            (cl-letf (((symbol-function 'make-process)
+                       (lambda (&rest _) (setq started (1+ started)) fake)))
+              (should (ghostherd-backend-screens 'tmux (list s) 40 #'ignore)))
+            (should (= started 0)))
+        (delete-process fake)))))
+
+(ert-deftest ghostherd-test-poll-uses-the-screen-it-was-given ()
+  "The whole point: the poll path reads each screen once, in a batch, and
+detection must not go back to the host for what it already has."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (cl-letf (((symbol-function 'ghostherd--host-capture)
+                 (lambda (&rest _) (error "captured again"))))
+        (should (eq (ghostherd-poll-session s "Thinking…\n") 'working))))))
+
+(ert-deftest ghostherd-test-poll-all-falls-back-per-session ()
+  "A host whose screen is already an Emacs buffer says nothing here, and
+gets read session by session -- which costs nothing there."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle
+                                       :backend 'fake))
+          (ghostherd-tests--fake-screen "Thinking…\n"))
+      (ghostherd-poll-all)
+      (should (eq (ghostherd-session-state s) 'working)))))
+
+(ert-deftest ghostherd-test-poll-all-groups-by-backend ()
+  "One round trip is a claim only a single host can make, and a herd may
+straddle two."
+  (ghostherd-tests--with-herd ()
+    (let ((tmux-session (ghostherd-tests--tmux-session :name "t" :kind 'agy
+                                                       :state 'idle))
+          (fake-session (ghostherd-tests--session :name "f" :kind 'agy
+                                                  :state 'idle :backend 'fake))
+          (ghostherd-tests--fake-screen "Thinking…\n")
+          (asked nil))
+      (cl-letf (((symbol-function 'ghostherd-backend-screens)
+                 (lambda (backend sessions _n callback)
+                   (push (cons backend (mapcar #'ghostherd-session-name sessions))
+                         asked)
+                   (when (eq backend 'tmux)
+                     (funcall callback '(("t" . "Do you want to proceed\n")))
+                     t))))
+        ;; The liveness sweep still runs, and without the stub it would ask
+        ;; the real socket about a session that is not there.
+        (ghostherd-tests--with-tmux nil
+          (ghostherd-poll-all)))
+      (should (equal (alist-get 'tmux asked) '("t")))
+      (should (equal (alist-get 'fake asked) '("f")))
+      (should (eq (ghostherd-session-state tmux-session) 'blocked))
+      (should (eq (ghostherd-session-state fake-session) 'working)))))
+
+(ert-deftest ghostherd-test-late-callbacks-keep-their-own-group ()
+  "A fetch answers after the loop that started it has moved on, so each
+group's callback has to still be about *that* group's sessions."
+  (ghostherd-tests--with-herd ()
+    (let ((a (ghostherd-tests--session :name "a" :kind 'agy :state 'idle
+                                       :backend 'one))
+          (b (ghostherd-tests--session :name "b" :kind 'agy :state 'idle
+                                       :backend 'two))
+          (pending nil))
+      (cl-letf (((symbol-function 'ghostherd-backend-screens)
+                 (lambda (backend sessions _n callback)
+                   ;; Hold the callback, the way a real fetch does.
+                   (push (cons backend (lambda (screens)
+                                         (ignore sessions)
+                                         (funcall callback screens)))
+                         pending)
+                   t))
+                ((symbol-function 'ghostherd--session-live-p) (lambda (_s) t)))
+        (ghostherd-poll-all)
+        (should (= (length pending) 2))
+        ;; Deliver in the opposite order, and give both the same screen
+        ;; text: if a callback had captured the wrong group, one of these
+        ;; sessions would be left untouched.
+        (funcall (cdr (assq 'one pending)) '(("a" . "Do you want to proceed\n")))
+        (funcall (cdr (assq 'two pending)) '(("b" . "Thinking…\n")))
+        (should (eq (ghostherd-session-state a) 'blocked))
+        (should (eq (ghostherd-session-state b) 'working))))))
+
+(ert-deftest ghostherd-test-tmux-batch-round-trip ()
+  "Two real panes, one invocation, both screens back -- and stderr from a
+pane that is not there kept out of them."
+  (skip-unless (executable-find "tmux"))
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd-tmux-socket "ghostherd-ert-batch")
+           (ghostherd-tmux--status-cache nil)
+           (ghostherd-tmux--fetch nil)
+           (sessions nil)
+           (screens 'unset))
+      (unwind-protect
+          (progn
+            (dolist (name '("batch-a" "batch-b"))
+              (push (ghostherd-spawn
+                     'shell :name name :backend 'tmux
+                     :project temporary-file-directory
+                     :directory temporary-file-directory
+                     :command "sh"
+                     :args (list "-c" (format "echo screen-of-%s; cat" name))
+                     :display nil)
+                    sessions))
+            (sleep-for 0.5)
+            (should (ghostherd-backend-screens
+                     'tmux sessions 40 (lambda (s) (setq screens s))))
+            (with-timeout (10 (error "batched fetch never came back"))
+              (while (eq screens 'unset)
+                (accept-process-output nil 0.05)))
+            (should (equal (sort (mapcar #'car screens) #'string<)
+                           '("batch-a" "batch-b")))
+            (should (string-match-p "screen-of-batch-a"
+                                    (alist-get "batch-a" screens nil nil #'equal)))
+            (should (string-match-p "screen-of-batch-b"
+                                    (alist-get "batch-b" screens nil nil #'equal)))
+            ;; And the same round trip answered liveness.
+            (should (assoc (ghostherd-session-host-id (car sessions))
+                           (cdr ghostherd-tmux--status-cache))))
+        (dolist (session sessions)
+          (ignore-errors (ghostherd--host-kill session)))
+        (when (timerp ghostherd--poll-timer)
+          (cancel-timer ghostherd--poll-timer)
+          (setq ghostherd--poll-timer nil))
+        (call-process "tmux" nil nil nil "-L" "ghostherd-ert-batch"
+                      "kill-server")))))
+
 ;;; Optional: a real tmux round trip
 
 (ert-deftest ghostherd-test-tmux-round-trip ()
