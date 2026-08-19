@@ -466,7 +466,59 @@ about an agent in a window you are looking at was most of the noise."
                 ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
                 ((symbol-function 'frame-focus-state) (lambda (&rest _) t)))
         (should (eq (ghostherd-poll-session s) 'idle))
-        (should-not notified)))))
+        (should-not notified)
+        ;; and the log says so, since that is what the manual sends you
+        ;; to read when no banner arrives
+        (should (equal (ghostherd-session-state-reason s)
+                       "done, but you are watching"))))))
+
+(ert-deftest ghostherd-test-a-glance-while-it-works-is-not-watching-it-finish ()
+  "Sending a prompt means looking at the agent, and the poll a second
+later latched `seen\='.  Nothing cleared it before the work ended, so the
+run finished silently however long you had been away -- the whole herd
+log this was written from contains no `done\=' at all."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'claude :backend 'fake
+                                       :state 'working))
+          (ghostherd-idle-settle 0)
+          (notified nil)
+          (watching t))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify)
+                 (lambda (&rest _) (setq notified t)))
+                ((symbol-function 'get-buffer-window)
+                 (lambda (&rest _) (and watching t)))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'a-frame))
+                ((symbol-function 'frame-focus-state)
+                 (lambda (&rest _) watching)))
+        ;; one poll with the session on your focused frame
+        (let ((ghostherd-tests--fake-screen "· esc to interrupt\n"))
+          (should (eq (ghostherd-poll-session s) 'working)))
+        (should (ghostherd-session-seen s))
+        ;; you switch to the browser; it finishes there
+        (setq watching nil)
+        (let ((ghostherd-tests--fake-screen "> \n"))
+          (should (eq (ghostherd-poll-session s) 'done)))
+        (should notified)))))
+
+(ert-deftest ghostherd-test-done-holds-until-the-session-is-viewed ()
+  "`done\=' is the one state no screen can show, so a poll that re-reads
+the screen has nothing to re-derive it from and it decayed back to
+`idle\=' on the next tick -- 1.5 seconds of ✓ for work nobody had looked
+at yet."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'claude :backend 'fake
+                                       :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0))
+      (setf (ghostherd-session-seen s) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session s) 'done))
+        (should (eq (ghostherd-poll-session s) 'done))
+        ;; ...and lets go once it has been visited
+        (setf (ghostherd-session-seen s) t)
+        (should (eq (ghostherd-poll-session s) 'idle))))))
 
 ;;; Not idle, just slow
 

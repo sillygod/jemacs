@@ -1138,26 +1138,49 @@ SCREEN is SESSION's screen if the caller already fetched it; see
                 reason "input sent, not awake yet"))
         ;; ...and a busy agent between two tool calls is not idle either.
         (setq state (ghostherd--settle-idle session state))
-        ;; Promote idle → done when work finishes (herdr-style: stays
-        ;; visible until the user views the session).
+        ;; Promote idle → done when work finishes.
+        ;;
+        ;; Whether you saw it finish is asked below, of `watched\=', which
+        ;; is about this instant.  It used to be asked here of `seen\=',
+        ;; which is not: `seen\=' latches the moment the session is on a
+        ;; focused frame and only clears on the way back into `working\='.
+        ;; So watching an agent start -- which is what sending it a prompt
+        ;; looks like -- suppressed the banner for the whole run, however
+        ;; long you were away by the time it ended.  No `done\=' was ever
+        ;; logged on the herd this was written from.
         (when (and (eq state 'idle)
                    (memq (ghostherd-session-state session)
-                         '(working blocked starting))
-                   (not (ghostherd-session-seen session)))
+                         '(working blocked starting)))
           (setq state 'done
                 reason (or reason "idle after work")))
+        ;; Herdr-style: `done' stays visible until the user views the
+        ;; session.  It needs saying, because nothing re-derives it: the
+        ;; screen cannot show `done\=' -- `ghostherd--detect-state' has no
+        ;; branch that returns it -- and the promotion above only fires
+        ;; out of `working'.  Without this the ✓ lasted a single tick.
+        (when (and (eq state 'idle)
+                   (eq (ghostherd-session-state session) 'done)
+                   (not (ghostherd-session-seen session)))
+          (setq state 'done
+                reason (or (ghostherd-session-state-reason session) reason)))
         ;; `done' means finished while you were not looking, whoever said
-        ;; so.  The promotion above carries that rule in its own
-        ;; condition; a report can say `done' outright, and has to obey it
-        ;; too rather than banner an agent you are watching.
+        ;; so -- the promotion, the hold above, or an agent reporting it
+        ;; outright.  All three answer to this.
+        ;;
+        ;; Both of these overwrite REASON rather than defaulting it.
+        ;; `ghostherd--detect-state' answers with a reason in every
+        ;; branch it has, so an `or\=' here could never reach its own
+        ;; string, and the log said "no rule matched" about a decision
+        ;; the rules did not make -- which is the one line the manual
+        ;; tells you to read when a banner does not arrive.
         (when (and (eq state 'done) watched)
           (setq state 'idle
-                reason (or reason "done, but you are watching")))
+                reason "done, but you are watching"))
         ;; Once viewed, demote done back to plain idle.
         (when (and (eq state 'idle)
                    (eq (ghostherd-session-state session) 'done)
                    (ghostherd-session-seen session))
-          (setq reason (or reason "seen")))
+          (setq reason "seen"))
         (ghostherd--set-state session state reason)))))
 
 (defun ghostherd-poll-all ()
