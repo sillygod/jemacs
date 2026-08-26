@@ -1482,6 +1482,26 @@ project's agy back."
         (should (equal (tabulated-list-get-id) "a"))
         (should (< (point) ghostherd--sidebar-preview-start))))))
 
+(ert-deftest ghostherd-test-sidebar-message-submits-as-keyword ()
+  "The overlay is not an agent, and SUBMIT is a keyword.
+
+A bare fourth argument `t' is `Keyword argument t not one of
+(:submit)' -- overlay `m' failed that way while `SPC a h m' did not."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "rev" :kind 'agy))
+          (got nil))
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (from to body &rest keys)
+                   (setq got (list from to body keys))))
+                ((symbol-function 'read-string) (lambda (&rest _) "hello"))
+                ((symbol-function 'ghostherd--sidebar-session-at-point)
+                 (lambda () s)))
+        (ghostherd-sidebar-message)
+        (should (equal (nth 0 got) "user"))
+        (should (eq (nth 1 got) s))
+        (should (equal (nth 2 got) "hello"))
+        (should (eq (plist-get (nth 3 got) :submit) t))))))
+
 (ert-deftest ghostherd-test-sidebar-preview-can-be-off ()
   (ghostherd-tests--with-herd ()
     (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)

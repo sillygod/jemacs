@@ -2558,7 +2558,14 @@ same key keeps working there and the loss looks like a backend bug.
 `C-M-v\=' pages down above for that reason: `C-v\=' is how Claude Code
 pastes an image."
   :lighter " ⇅"
-  :keymap ghostherd-terminal-mode-map)
+  :keymap ghostherd-terminal-mode-map
+  (when (and ghostherd-terminal-mode
+             (bound-and-true-p evil-local-mode)
+             (fboundp 'evil-emacs-state)
+             (not (eq evil-state 'emacs)))
+    ;; The buffer is a PTY.  Normal state would swallow the agent's own
+    ;; keys; emacs state is the one this map was written for.
+    (evil-emacs-state)))
 
 
 ;;; Herd log buffer
@@ -3270,13 +3277,31 @@ while the sidebar is actually on screen."
   (when-let* ((s (ghostherd--sidebar-session-at-point)))
     (ghostherd-answer s (read-number "Choice (1-based): " 1))))
 
+(defun ghostherd--sidebar-caller-session ()
+  "Session that opened the list, if the parent window is an agent view.
+
+The overlay buffer is never a session -- `ghostherd-get' of it is nil,
+and treating that as FROM used to be harmless only because
+`ghostherd-message' falls back to \"user\".  The parent frame's window
+is the one that had focus before the overlay, so a message sent from
+an agent view is still attributed to that agent."
+  (when (and ghostherd--sidebar-posframe-parent
+             (frame-live-p ghostherd--sidebar-posframe-parent))
+    (ghostherd-get (window-buffer
+                    (frame-selected-window
+                     ghostherd--sidebar-posframe-parent)))))
+
 (defun ghostherd-sidebar-message ()
   "Message the session at point."
   (interactive)
   (when-let* ((s (ghostherd--sidebar-session-at-point))
               (body (read-string
                      (format "Message → %s: " (ghostherd-session-name s)))))
-    (ghostherd-message (ghostherd-get (current-buffer)) s body t)))
+    ;; SUBMIT is a keyword.  A bare `t' is `Keyword argument t not one
+    ;; of (:submit)' -- which is how overlay `m' failed while
+    ;; `SPC a h m' worked, the interactive command having used :submit.
+    (ghostherd-message (or (ghostherd--sidebar-caller-session) "user")
+                       s body :submit t)))
 
 (defun ghostherd-sidebar-prompt ()
   "Prompt the session at point."

@@ -216,7 +216,13 @@ value is the terminal lagging behind the window while you drag.")
         (use-package ghostel
           :ensure t
           :config
-          (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize))
+          (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize)
+          ;; Same reason as vterm: a terminal's keys belong to the program
+          ;; in it.  Evil normal state eats j/k, Escape, C-v (Claude
+          ;; image paste) and anything an agent TUI bound.  emacs state
+          ;; passes them through; C-z still toggles if you need motions.
+          (with-eval-after-load 'evil
+            (evil-set-initial-state 'ghostel-mode 'emacs)))
   #+end_src
 
 
