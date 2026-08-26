@@ -120,6 +120,12 @@ command not found → fix PATH for Emacs (login shell / exec-path).
 | 3    | =SPC a h s=                    | Completing-read lists agents with state glyph |
 | 4    | =g= in the list                | Rows refresh without error                    |
 | 5    | =SPC a h b=, then =Esc=        | Overlay / side window dismissed; layout unchanged |
+| 6    | =/= then =agy=                 | Rows narrow; footer shows =/agy= and =N/M=        |
+| 7    | =n= / =p=, then =RET=          | Moves among matches; visit closes the overlay     |
+| 8    | =/= =agy=, then =Esc=          | Query clears, full list returns; overlay stays    |
+| 9    | =Esc= again                    | Overlay dismissed                                 |
+| 10   | Move across rows               | Snapshot under the table follows the row          |
+| 11   | =v=                            | Preview pane hides; =v= again restores it         |
 
 ** T3 — Pair layout
 
@@ -290,6 +296,7 @@ and which one won.
 | agy    | 1.1.13         | =Thinking= matches a model name in the =/model= picker | not yet |
 | agy    | 1.1.13         | =^>= matched the transcript, not the prompt | =^> *$= |
 | agy    | 1.1.13         | prompt is drawn while working too, so no prompt rule can mean idle | =ghostherd-idle-settle= |
+| agy    | Gemini 3.1 Pro | substring =permission= matched JSON ="permissions"= after editing settings.json; agent was idle on =>= | =ghostherd--rule-permission-prompt= (word, not =permissions= / =permission-mode=) |
 
 agy 1.1.13 identifies itself as "Antigravity CLI".  Under tmux it
 repaints its whole UI on every SIGWINCH, so an attached window flickers

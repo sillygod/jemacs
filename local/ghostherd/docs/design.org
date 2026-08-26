@@ -199,6 +199,20 @@ without the library, or on a display that cannot host a child frame,
 log and help dismiss the overlay first: its window is dedicated and its
 frame unsplittable, so a =pop-to-buffer= from there has nowhere to go.
 
+Finding a row is not =ghostherd-switch=. The switcher is a jump;
+the overlay keeps the table in view, so =/= live-narrows it (flex
+on name/kind/state/project/notes) without stealing the completing-read
+surface or sending keys through the parent minibuffer. =s= remains a
+project pre-filter, AND-ed with the query. Esc clears before it
+dismisses, because a non-empty query is something you are still using.
+
+Selecting a row shows a snapshot of that agent's screen under the
+table. It is a capture, not an attach -- attaching would SIGWINCH the
+agent and steal layout, which is what the overlay exists to avoid.
+The last capture rides in =ghostherd--screens= (a hash table, like
+reports) so moving between rows is free until a 0.2s debounce
+recaptures the one you settled on. =v= turns the pane off.
+
 ** Detach is not death
 
 *The one bug this phase had to get right.* The ghostel process in an

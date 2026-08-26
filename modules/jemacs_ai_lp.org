@@ -570,6 +570,7 @@
              ;;            for refresh/revert.
              ;;   q / Esc  dismiss the overlay (or the side window).  Escape
              ;;            has to be bound in normal state or evil swallows it.
+             ;;   /        live-narrow.  evil-search would otherwise steal it.
              ;;
              ;; n/p are left to evil's j/k.
              (evil-define-key 'normal ghostherd-sidebar-mode-map
@@ -590,6 +591,8 @@
                (kbd "m") #'ghostherd-sidebar-message
                (kbd "i") #'ghostherd-sidebar-prompt
                (kbd "s") #'ghostherd-sidebar-toggle-project-filter
+               (kbd "/") #'ghostherd-sidebar-filter
+               (kbd "v") #'ghostherd-sidebar-toggle-preview
                (kbd ".") #'ghostherd-next-blocked
                (kbd "H") #'ghostherd-scrollback
                (kbd "L") #'ghostherd-log

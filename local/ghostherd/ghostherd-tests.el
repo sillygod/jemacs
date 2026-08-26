@@ -42,12 +42,15 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--input-at (make-hash-table :test 'equal))
          (ghostherd--idle-since (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
+         (ghostherd--screens (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
          ;; with a temporary file, and nowhere else.
          (ghostherd-log-file nil)
          (ghostherd--log-writable t)
          (ghostherd--log-loaded t)
+         (ghostherd--sidebar-query "")
+         (ghostherd--sidebar-filtering nil)
          ,@bindings)
      ,@body))
 
@@ -588,6 +591,57 @@ sat in the sidebar asking for attention it did not want."
                  "  \u2502 \u276f                                  \u2502\n"
                  "  \u2570\u2500\u2500 Grok 4.6 (xhigh) \u00b7 always-approve \u2500\u256f\n")))
     (should (eq (car (ghostherd--match-rules screen rules)) 'working))))
+
+(defconst ghostherd-tests--agy-permissions-json-idle
+  (concat
+   "  我已經幫你把 settings.json 更新好了\n"
+   "      \"permissions\": {\n"
+   "        \"allow\": [\n"
+   "          \"command(git commit)\"\n"
+   "        ],\n"
+   ">\n"
+   "? for shortcuts                                               Gemini 3.1 Pro\n")
+  "agy parked at a prompt after editing a permissions allow-list.
+The JSON key used to fire the `permission' blocked rule.")
+
+(ert-deftest ghostherd-test-permissions-json-is-not-a-prompt ()
+  "agy-ghost-commit sat at blocked on this screen: the agent was
+done, the prompt was empty, and the word that matched was the JSON
+key `permissions'.  Prefer a missed blocked to a false one."
+  (dolist (kind '(agy claude grok))
+    (let ((rules (plist-get (ghostherd--spec kind) :screen-rules)))
+      (should (eq (car (ghostherd--match-rules
+                        ghostherd-tests--agy-permissions-json-idle rules))
+                  'idle))
+      (should-not (cl-find 'blocked
+                           (ghostherd--match-all-rules
+                            ghostherd-tests--agy-permissions-json-idle rules)
+                           :key #'car)))))
+
+(ert-deftest ghostherd-test-permission-as-a-word-still-blocks ()
+  "Tightening must not throw away a real prompt that says permission."
+  (dolist (kind '(agy claude grok))
+    (let ((rules (plist-get (ghostherd--spec kind) :screen-rules)))
+      (should (eq (car (ghostherd--match-rules
+                        "Waiting for permission to continue\n" rules))
+                  'blocked))))
+  ;; And a proceed-box is still a proceed-box.
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules)))
+    (should (eq (car (ghostherd--match-rules
+                      ghostherd-tests--permission-screen rules))
+                'blocked))))
+
+(ert-deftest ghostherd-test-permission-mode-is-not-a-prompt ()
+  "The hyphen is a word boundary for `\\<', which is why this pattern
+does not use one: grok prints `permission-mode' in chrome that stays
+on screen at idle."
+  (dolist (kind '(agy claude grok))
+    (let ((rules (plist-get (ghostherd--spec kind) :screen-rules)))
+      (should-not (cl-find 'blocked
+                           (ghostherd--match-all-rules
+                            "Grok 4.6 · permission-mode always-approve\n> \n"
+                            rules)
+                           :key #'car)))))
 
 ;;; Herd log
 
@@ -1300,6 +1354,148 @@ the 36-column dashboard drops -- otherwise the extra width is wasted."
               ((symbol-function 'frame-width)
                (lambda (&optional _) 50)))
       (should (<= (ghostherd--sidebar-posframe-char-width) 50)))))
+
+;;; Live-narrow query
+
+(ert-deftest ghostherd-test-flex-matches-subsequence ()
+  (should (ghostherd--flex-match-p "agc" "agy-commit"))
+  (should (ghostherd--flex-match-p "AGY" "agy-commit"))
+  (should (ghostherd--flex-match-p "emacs.d" "/Users/jing/.emacs.d/local/ghostherd"))
+  (should-not (ghostherd--flex-match-p "xyz" "agy-commit"))
+  (should-not (ghostherd--flex-match-p "commitx" "agy-commit")))
+
+(ert-deftest ghostherd-test-sidebar-query-matches-fields ()
+  "Name, kind, state, project and notes are all searchable; tokens AND."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session
+              :name "agy-commit" :kind 'agy :state 'idle
+              :project "/Users/jing/.emacs.d/local/ghostherd"
+              :notes "reviews auth")))
+      (should (ghostherd--sidebar-query-matches-p s "agy"))
+      (should (ghostherd--sidebar-query-matches-p s "idle"))
+      (should (ghostherd--sidebar-query-matches-p s "ghostherd"))
+      (should (ghostherd--sidebar-query-matches-p s "auth"))
+      (should (ghostherd--sidebar-query-matches-p s "agy idle"))
+      (should-not (ghostherd--sidebar-query-matches-p s "agy blocked"))
+      (should (ghostherd--sidebar-query-matches-p s ""))
+      (should (ghostherd--sidebar-query-matches-p s "   ")))))
+
+(ert-deftest ghostherd-test-sidebar-query-narrows-rows ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "agy-commit" :kind 'agy :id "agy-commit")
+    (ghostherd-tests--session :name "grok-dev" :kind 'grok :id "grok-dev")
+    (let ((ghostherd--sidebar-query "agy")
+          (tabulated-list-padding 1)
+          (ghostherd-sidebar-width 72)
+          (ghostherd--sidebar-target-width 72))
+      (with-temp-buffer
+        (ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
+        (should (equal (mapcar #'car tabulated-list-entries) '("agy-commit")))
+        (should (= ghostherd--sidebar-match-count 1))
+        (should (= ghostherd--sidebar-total-count 2))))))
+
+(ert-deftest ghostherd-test-sidebar-query-ands-project-filter ()
+  "The live query runs on whatever the project filter already kept,
+not on the whole herd -- otherwise `/agy` would bring the other
+project's agy back."
+  (ghostherd-tests--with-herd ()
+    (let* ((a (ghostherd-tests--session :name "agy-a" :kind 'agy :id "agy-a"))
+           (b (ghostherd-tests--session :name "agy-b" :kind 'agy :id "agy-b"))
+           (ghostherd--sidebar-filter-project "/ignored/")
+           (ghostherd--sidebar-query "agy")
+           (tabulated-list-padding 1)
+           (ghostherd-sidebar-width 72)
+           (ghostherd--sidebar-target-width 72))
+      (cl-letf (((symbol-function 'ghostherd-sessions)
+                 (lambda (&optional project)
+                   (if project (list a) (list a b)))))
+        (with-temp-buffer
+          (ghostherd-sidebar-mode)
+          (ghostherd--sidebar-build-entries)
+          (should (equal (mapcar #'car tabulated-list-entries) '("agy-a")))
+          (should (= ghostherd--sidebar-total-count 1))
+          (should (= ghostherd--sidebar-match-count 1)))))))
+
+(ert-deftest ghostherd-test-sidebar-quit-clears-query-first ()
+  "Esc with a query is still using the list; only empty-Esc dismisses."
+  (let ((ghostherd--sidebar-query "agy")
+        (hidden nil))
+    (cl-letf (((symbol-function 'ghostherd--sidebar-hide-posframe)
+               (lambda () (setq hidden t)))
+              ((symbol-function 'ghostherd--sidebar-posframe-showing-p)
+               (lambda () t)))
+      (ghostherd-sidebar-quit)
+      (should (equal ghostherd--sidebar-query ""))
+      (should-not hidden)
+      (ghostherd-sidebar-quit)
+      (should hidden))))
+
+;;; Overlay screen preview
+
+(ert-deftest ghostherd-test-detect-stashes-the-screen ()
+  "The overlay preview must not recapture what the poll already paid for."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+          (ghostherd-tests--fake-screen "hello from the pane\n> \n"))
+      (ghostherd--detect-state s)
+      (should (string-match-p "hello from the pane"
+                              (gethash "a" ghostherd--screens))))))
+
+(ert-deftest ghostherd-test-kill-drops-the-screen ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (puthash "a" "cached\n" ghostherd--screens)
+      (cl-letf (((symbol-function 'ghostherd--host-kill) #'ignore)
+                ((symbol-function 'ghostherd--notify) #'ignore))
+        (ghostherd-kill s t))
+      (should-not (gethash "a" ghostherd--screens)))))
+
+(ert-deftest ghostherd-test-rename-carries-the-screen ()
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy)))
+      (puthash "a" "cached\n" ghostherd--screens)
+      (cl-letf (((symbol-function 'ghostherd--host-rename) #'ignore))
+        (ghostherd-rename s "b"))
+      (should-not (gethash "a" ghostherd--screens))
+      (should (equal (gethash "b" ghostherd--screens) "cached\n")))))
+
+(ert-deftest ghostherd-test-sidebar-preview-is-the-tail ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)
+    (puthash "a" "one\ntwo\nthree\nfour\n" ghostherd--screens)
+    (let ((ghostherd-sidebar-show-preview t)
+          (ghostherd-sidebar-preview-lines 2)
+          (tabulated-list-padding 1)
+          (ghostherd-sidebar-width 72)
+          (ghostherd--sidebar-target-width 72))
+      (with-temp-buffer
+        (ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
+        (ghostherd--sidebar-print)
+        (should ghostherd--sidebar-preview-start)
+        (let ((preview (buffer-substring-no-properties
+                        ghostherd--sidebar-preview-start (point-max))))
+          (should (string-match-p "three" preview))
+          (should (string-match-p "four" preview))
+          (should-not (string-match-p "one" preview)))
+        (should (equal (tabulated-list-get-id) "a"))
+        (should (< (point) ghostherd--sidebar-preview-start))))))
+
+(ert-deftest ghostherd-test-sidebar-preview-can-be-off ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)
+    (puthash "a" "secret-tail\n" ghostherd--screens)
+    (let ((ghostherd-sidebar-show-preview nil)
+          (tabulated-list-padding 1)
+          (ghostherd-sidebar-width 72)
+          (ghostherd--sidebar-target-width 72))
+      (with-temp-buffer
+        (ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
+        (ghostherd--sidebar-print)
+        (should-not (string-match-p "secret-tail" (buffer-string)))
+        (should-not ghostherd--sidebar-preview-start)))))
 
 ;;; Terminal title
 

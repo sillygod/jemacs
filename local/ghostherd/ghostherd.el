@@ -61,8 +61,19 @@
 
 ;;; Customization
 
+(defconst ghostherd--rule-permission-prompt
+  "\\([^[:alnum:]_]\\|^\\)permission\\([^[:alnum:]_-]\\|$\\)"
+  "A `blocked' pattern for a permission *prompt*.
+
+The old substring `permission' matched `permissions' in a JSON allow
+list and `permission-mode' in grok's idle banner -- both of which sit
+on screen while the agent is parked at a prompt.  Blocked outranks
+idle, so the row stayed ⚠.  Character classes rather than `\\\\<' `\\\\>'
+because those consult the current buffer's syntax table, the same
+class of ambient that `case-fold-search' used to be.")
+
 (defcustom ghostherd-agent-specs
-  '((claude
+  `((claude
      :command "claude"
      :args nil
      :description "Claude Code"
@@ -73,7 +84,7 @@
                   "Do you want to make this edit"
                   "Allow this action"
                   "Bash command"
-                  "permission"
+                  ,ghostherd--rule-permission-prompt
                   "Yes, and don't ask again"
                   "❯ 1\\. Yes"))
       (working . ("esc to interrupt"
@@ -96,7 +107,7 @@
      ((blocked . ("Do you want to proceed"
                   "Allow this"
                   "Approve"
-                  "permission"
+                  ,ghostherd--rule-permission-prompt
                   "\\[y/N\\]"
                   "\\(y/n\\)"))
       (working . ("Working"
@@ -117,7 +128,7 @@
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
-                  "permission"
+                  ,ghostherd--rule-permission-prompt
                   "Approve"
                   "\\[y/N\\]"
                   "\\(y/n\\)"))
@@ -260,6 +271,19 @@ that still works on a tty or in batch.
 
 Nil forces the side window even when posframe is available."
   :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-show-preview t
+  "Show a snapshot of the session at point under the session list.
+
+The snapshot is `capture-pane' / buffer text, not an attached view.
+`v' in the list toggles this."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-preview-lines 16
+  "Lines of captured screen shown in the overlay preview."
+  :type 'integer
   :group 'ghostherd)
 
 (defcustom ghostherd-sidebar-posframe-width 72
@@ -781,6 +805,12 @@ them.  This is Emacs-side, transient and not worth that risk -- and it
 is the same shape as `ghostherd--input-at' and `ghostherd--idle-since',
 which are cleared in the same places.")
 
+(defvar ghostherd--screens (make-hash-table :test 'equal)
+  "Session id → last captured screen.
+
+Filled by the poll path (and any other capture) so the overlay can
+preview without a second round trip, and without a new struct slot.")
+
 ;;;###autoload
 (defun ghostherd-report (session state &optional reason)
   "Record that SESSION says it is in STATE, because REASON.
@@ -1020,6 +1050,8 @@ does."
         (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
                (hit (and tail (ghostherd--match-rules tail rules)))
                (report (ghostherd--fresh-report session)))
+          (when tail
+            (puthash (ghostherd-session-id session) tail ghostherd--screens))
           (cond
            ;; Screen rules keep priority for `blocked': a stale progress
            ;; report must never mask an agent sitting on a prompt, and
@@ -1828,6 +1860,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--input-at)
     (remhash id ghostherd--idle-since)
     (remhash id ghostherd--reports)
+    (remhash id ghostherd--screens)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
@@ -1884,7 +1917,7 @@ annotation, which is where you are choosing between agents."
     ;; which was invisible; dropping a report is not, since it would put a
     ;; blocked row back under the rules mid-prompt.
     (dolist (table (list ghostherd--input-at ghostherd--idle-since
-                         ghostherd--reports))
+                         ghostherd--reports ghostherd--screens))
       (when-let* ((value (gethash old-id table)))
         (remhash old-id table)
         (puthash new-name value table)))
@@ -2632,6 +2665,27 @@ line that says so; `C' forgets the lot."
 (defvar ghostherd--sidebar-filter-project nil
   "When non-nil, sidebar only shows this project root.")
 
+(defvar ghostherd--sidebar-query ""
+  "Live-narrow string for the session list.  Empty means everything.")
+
+(defvar ghostherd--sidebar-filtering nil
+  "Non-nil while `/` has the session list consuming keys as a query.")
+
+(defvar ghostherd--sidebar-match-count 0
+  "Rows visible after the live query.")
+
+(defvar ghostherd--sidebar-total-count 0
+  "Rows after the project filter, before the live query.")
+
+(defvar-local ghostherd--sidebar-preview-start nil
+  "Marker where the preview pane begins in the session-list buffer.")
+
+(defvar ghostherd--sidebar-preview-id nil
+  "Session id currently shown in the preview pane.")
+
+(defvar ghostherd--sidebar-preview-timer nil
+  "Debounce timer for a fresh capture when the selected row changes.")
+
 (defvar ghostherd--sidebar-target-width nil
   "Column budget that wins over the live window's width.
 
@@ -2665,6 +2719,8 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-message               . "Message agent")
     (ghostherd-sidebar-prompt                . "Prompt agent")
     (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
+    (ghostherd-sidebar-filter                . "Live-narrow (flex)")
+    (ghostherd-sidebar-toggle-preview        . "Toggle screen preview")
     (ghostherd-sidebar-refresh               . "Refresh")
     (ghostherd-next-blocked                  . "Next blocked / done")
     (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
@@ -2746,6 +2802,8 @@ Commands with no binding in the current state are omitted."
   "m" #'ghostherd-sidebar-message
   "i" #'ghostherd-sidebar-prompt
   "s" #'ghostherd-sidebar-toggle-project-filter
+  "/" #'ghostherd-sidebar-filter
+  "v" #'ghostherd-sidebar-toggle-preview
   "g" #'ghostherd-sidebar-refresh
   "q" #'ghostherd-sidebar-quit
   "C-g" #'ghostherd-sidebar-quit
@@ -2764,18 +2822,31 @@ Commands with no binding in the current state are omitted."
   (setq truncate-lines t)
   (setq-local mode-line-format '(" " (:eval (ghostherd--sidebar-footer))))
   (hl-line-mode 1)
+  (setq-local ghostherd--sidebar-preview-start nil)
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
+  (add-hook 'post-command-hook #'ghostherd--sidebar-preview-on-command nil t)
   (tabulated-list-init-header))
 
 (defun ghostherd--sidebar-footer ()
   "Mode-line hint row for the session list."
-  (concat
-   "GhostHerd"
-   (when ghostherd--sidebar-filter-project
-     (format " [%s]"
-             (file-name-nondirectory
-              (directory-file-name ghostherd--sidebar-filter-project))))
-   "   RET visit  g refresh  ? help  Esc close"))
+  (let* ((query ghostherd--sidebar-query)
+         (querying (or ghostherd--sidebar-filtering
+                       (and query (not (string-empty-p query)))))
+         (counts (when querying
+                   (format " %d/%d"
+                           ghostherd--sidebar-match-count
+                           ghostherd--sidebar-total-count))))
+    (concat
+     "GhostHerd"
+     (when ghostherd--sidebar-filter-project
+       (format " [%s]"
+               (file-name-nondirectory
+                (directory-file-name ghostherd--sidebar-filter-project))))
+     (when querying (concat "  /" query))
+     (or counts "")
+     (if ghostherd--sidebar-filtering
+         "   RET visit  n/p move  Esc clear"
+       "   RET visit  / filter  v preview  Esc close"))))
 
 (defconst ghostherd--sidebar-column-specs
   '((glyph   "S"        2 mandatory)
@@ -2902,16 +2973,68 @@ columns back rather than needing the buffer recreated."
                    (ghostherd-session-started-at session))))
     (_        "")))
 
+(defun ghostherd--flex-regexp (query)
+  "Return a subsequence regexp for QUERY.
+Each character is quoted, so `emacs.d` does not become `emacs<any>d`."
+  (mapconcat (lambda (ch) (regexp-quote (char-to-string ch)))
+             (string-to-list query)
+             ".*"))
+
+(defun ghostherd--flex-match-p (query string)
+  "Return non-nil if QUERY is a subsequence of STRING, case-insensitively."
+  (let ((case-fold-search t))
+    (and query string
+         (not (string-empty-p query))
+         (string-match-p (ghostherd--flex-regexp query) string))))
+
+(defun ghostherd--sidebar-session-haystack (session)
+  "Searchable text for SESSION: name, kind, state, project, notes, title."
+  (mapconcat #'identity
+             (delq nil
+                   (list (ghostherd-session-name session)
+                         (when-let* ((k (ghostherd-session-kind session)))
+                           (symbol-name k))
+                         (when-let* ((st (ghostherd-session-state session)))
+                           (symbol-name st))
+                         (ghostherd-session-project session)
+                         (ghostherd--abbreviate
+                          (ghostherd-session-project session))
+                         (ghostherd-session-notes session)
+                         (ignore-errors (ghostherd--session-title session))))
+             " "))
+
+(defun ghostherd--sidebar-query-matches-p (session query)
+  "Return non-nil if SESSION matches QUERY.
+
+Empty QUERY matches everything.  Whitespace splits into tokens, each
+of which must flex-match the haystack -- so `agy idle` is an AND, not
+one long subsequence."
+  (or (not query)
+      (string-empty-p (string-trim query))
+      (let ((hay (ghostherd--sidebar-session-haystack session))
+            (case-fold-search t))
+        (cl-every (lambda (token)
+                    (string-match-p (ghostherd--flex-regexp token) hay))
+                  (split-string query)))))
+
 (defun ghostherd--sidebar-build-entries ()
   "Rebuild `tabulated-list-entries' from the sessions as they stand.
 Pure rendering -- it does not poll, so unlike `ghostherd--sidebar-entries'
 it is safe to call from inside the poll path without recursing."
   (ghostherd--sidebar-sync-format)
-  (let ((columns (ghostherd--sidebar-visible-columns))
-        (sessions (if ghostherd--sidebar-filter-project
-                      (ghostherd-sessions ghostherd--sidebar-filter-project)
-                    (ghostherd-sessions))))
-    (setq tabulated-list-entries
+  (let* ((columns (ghostherd--sidebar-visible-columns))
+         (sessions (if ghostherd--sidebar-filter-project
+                       (ghostherd-sessions ghostherd--sidebar-filter-project)
+                     (ghostherd-sessions)))
+         (query ghostherd--sidebar-query)
+         (matched (if (and query (not (string-empty-p (string-trim query))))
+                      (cl-remove-if-not
+                       (lambda (s) (ghostherd--sidebar-query-matches-p s query))
+                       sessions)
+                    sessions)))
+    (setq ghostherd--sidebar-total-count (length sessions)
+          ghostherd--sidebar-match-count (length matched)
+          tabulated-list-entries
           (mapcar
            (lambda (s)
              (let* ((state (ghostherd-session-state s))
@@ -2924,13 +3047,132 @@ it is safe to call from inside the poll path without recursing."
                                 (ghostherd--sidebar-cell
                                  s (car spec) state face))
                               columns)))))
-           sessions))))
+           matched))))
 
 (defun ghostherd--sidebar-entries ()
   "Poll every session, then rebuild `tabulated-list-entries'.
 Used by the interactive refresh and `tabulated-list-revert-hook'."
   (ghostherd-poll-all)
   (ghostherd--sidebar-build-entries))
+
+(defun ghostherd--sidebar-erase-preview ()
+  "Remove the preview pane, leaving only the tabulated-list rows."
+  (when (and ghostherd--sidebar-preview-start
+             (marker-position ghostherd--sidebar-preview-start))
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t))
+      (delete-region ghostherd--sidebar-preview-start (point-max))))
+  (setq ghostherd--sidebar-preview-start nil))
+
+(defun ghostherd--sidebar-preview-body (session)
+  "Return the snapshot text for SESSION, truncated to the pane."
+  (let* ((raw (or (gethash (ghostherd-session-id session) ghostherd--screens)
+                  (ignore-errors (ghostherd--host-capture session))
+                  ""))
+         (raw (if (and raw (not (string-empty-p (string-trim raw))))
+                  raw
+                "(no screen yet)"))
+         (tail (ghostherd--string-tail raw ghostherd-sidebar-preview-lines))
+         (width (max 20 (1- (ghostherd--sidebar-available-width)))))
+    (when (and raw (not (string-empty-p raw))
+               (not (equal raw "(no screen yet)")))
+      (puthash (ghostherd-session-id session) raw ghostherd--screens))
+    (mapconcat (lambda (line)
+                 (truncate-string-to-width line width nil nil t))
+               (split-string tail "\n")
+               "\n")))
+
+(defun ghostherd--sidebar-draw-preview ()
+  "Rebuild the preview pane under the current row."
+  (when (derived-mode-p 'ghostherd-sidebar-mode)
+    (let ((inhibit-read-only t)
+          (inhibit-modification-hooks t)
+          (session (and ghostherd-sidebar-show-preview
+                        (ghostherd--sidebar-session-at-point)))
+          (width (max 10 (or (ignore-errors (window-body-width))
+                             (ghostherd--sidebar-available-width)))))
+      (save-excursion
+        (ghostherd--sidebar-erase-preview)
+        (when ghostherd-sidebar-show-preview
+          (goto-char (point-max))
+          (unless (bolp) (insert "\n"))
+          (setq ghostherd--sidebar-preview-start (point-marker))
+          (insert (propertize (make-string width ?─) 'face 'shadow) "\n")
+          (insert (if session
+                      (ghostherd--sidebar-preview-body session)
+                    (propertize "(no session)" 'face 'shadow)))
+          (unless (bolp) (insert "\n"))))
+      (restore-buffer-modified-p nil))))
+
+(defun ghostherd--sidebar-print (&optional update)
+  "Print the session table and, if enabled, the preview under it."
+  (let ((id (tabulated-list-get-id)))
+    (ghostherd--sidebar-erase-preview)
+    (tabulated-list-print update)
+    (when id
+      (goto-char (point-min))
+      (while (and (not (eobp))
+                  (not (equal (tabulated-list-get-id) id)))
+        (forward-line 1))
+      (when (eobp) (goto-char (point-min))))
+    (ghostherd--sidebar-draw-preview)
+    (setq ghostherd--sidebar-preview-id (tabulated-list-get-id))))
+
+(defun ghostherd--sidebar-confine-point ()
+  "Keep point on a table row, not in the preview pane."
+  (when (and ghostherd--sidebar-preview-start
+             (marker-position ghostherd--sidebar-preview-start)
+             (>= (point) ghostherd--sidebar-preview-start)
+             (> ghostherd--sidebar-preview-start (point-min)))
+    (goto-char (1- ghostherd--sidebar-preview-start))
+    (beginning-of-line)))
+
+(defun ghostherd--sidebar-fresh-capture (id)
+  "Recapture ID's screen and redraw the preview if still selected."
+  (when-let* ((session (ghostherd-get id))
+              (buf (get-buffer "*ghostherd*")))
+    (when (and (ghostherd--sidebar-on-screen-p)
+               (equal id (with-current-buffer buf
+                           (ghostherd--sidebar-confine-point)
+                           (tabulated-list-get-id))))
+      (when-let* ((screen (ignore-errors (ghostherd--host-capture session))))
+        (puthash id screen ghostherd--screens)
+        (when (equal id ghostherd--sidebar-preview-id)
+          (with-current-buffer buf
+            (ghostherd--sidebar-draw-preview)
+            (when (and (ghostherd--sidebar-posframe-showing-p)
+                       (fboundp 'posframe-refresh))
+              (posframe-refresh buf))))))))
+
+(defun ghostherd--sidebar-schedule-fresh-capture (id)
+  "Debounce a recapture of ID so holding j/k does not fork per row."
+  (when (timerp ghostherd--sidebar-preview-timer)
+    (cancel-timer ghostherd--sidebar-preview-timer))
+  (setq ghostherd--sidebar-preview-timer
+        (run-with-timer 0.2 nil #'ghostherd--sidebar-fresh-capture id)))
+
+(defun ghostherd--sidebar-preview-on-command ()
+  "Follow point: draw the cached snapshot, then recapture shortly."
+  (when (and (derived-mode-p 'ghostherd-sidebar-mode)
+             ghostherd-sidebar-show-preview)
+    (ghostherd--sidebar-confine-point)
+    (let ((id (tabulated-list-get-id)))
+      (unless (equal id ghostherd--sidebar-preview-id)
+        (setq ghostherd--sidebar-preview-id id)
+        (ghostherd--sidebar-draw-preview)
+        (when id
+          (ghostherd--sidebar-schedule-fresh-capture id))))))
+
+(defun ghostherd-sidebar-toggle-preview ()
+  "Toggle the snapshot pane under the session list."
+  (interactive)
+  (setq ghostherd-sidebar-show-preview
+        (not ghostherd-sidebar-show-preview))
+  (setq ghostherd--sidebar-preview-id nil)
+  (ghostherd--sidebar-print t)
+  (when (ghostherd--sidebar-posframe-showing-p)
+    (ghostherd--sidebar-show-posframe (current-buffer)))
+  (message "Preview %s" (if ghostherd-sidebar-show-preview "on" "off")))
 
 (defun ghostherd--sidebar-refresh ()
   "Re-render the sidebar from current session state, without polling.
@@ -2941,7 +3183,7 @@ change would redraw the same stale row it drew last time."
     (with-current-buffer buf
       (when (derived-mode-p 'ghostherd-sidebar-mode)
         (ghostherd--sidebar-build-entries)
-        (tabulated-list-print t)
+        (ghostherd--sidebar-print t)
         (when (and (ghostherd--sidebar-posframe-showing-p)
                    (fboundp 'posframe-refresh))
           (posframe-refresh buf))))))
@@ -2969,7 +3211,7 @@ while the sidebar is actually on screen."
   "Interactive sidebar refresh."
   (interactive)
   (ghostherd--sidebar-entries)
-  (tabulated-list-print t)
+  (ghostherd--sidebar-print t)
   (when (and (ghostherd--sidebar-posframe-showing-p)
              (fboundp 'posframe-refresh))
     (posframe-refresh (current-buffer)))
@@ -3068,6 +3310,80 @@ while the sidebar is actually on screen."
   (message "Project filter: %s"
            (or ghostherd--sidebar-filter-project "off")))
 
+(defun ghostherd--sidebar-set-query (query)
+  "Set the live-narrow QUERY and redraw, keeping point on the same row."
+  (setq ghostherd--sidebar-query (or query ""))
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (with-current-buffer buf
+      (when (derived-mode-p 'ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
+        (ghostherd--sidebar-print t)
+        (when (and (ghostherd--sidebar-posframe-showing-p)
+                   (fboundp 'posframe-refresh))
+          (posframe-refresh buf)))))
+  (force-mode-line-update t))
+
+(defun ghostherd-sidebar-filter-self-insert ()
+  "Append `last-command-event' to the live query."
+  (interactive)
+  (let ((char last-command-event))
+    (when (and (characterp char) (>= char 32) (not (eq char 127)))
+      (ghostherd--sidebar-set-query
+       (concat ghostherd--sidebar-query (char-to-string char))))))
+
+(defun ghostherd-sidebar-filter-backspace ()
+  "Drop the last character of the live query."
+  (interactive)
+  (when (> (length ghostherd--sidebar-query) 0)
+    (ghostherd--sidebar-set-query
+     (substring ghostherd--sidebar-query 0 -1))))
+
+(defun ghostherd-sidebar-filter-clear ()
+  "Empty the live query without leaving filter-mode."
+  (interactive)
+  (ghostherd--sidebar-set-query ""))
+
+(defvar-keymap ghostherd-sidebar-filter-map
+  :doc "Transient keymap while the session list is live-narrowing.
+Printable keys append to the query; `n'/`p' still move so a match can
+be visited without leaving the filter.  `/` itself is how you enter
+this map, so it is not a query character."
+  "RET"         #'ghostherd-sidebar-visit
+  "C-m"         #'ghostherd-sidebar-visit
+  "n"           #'next-line
+  "p"           #'previous-line
+  "C-n"         #'next-line
+  "C-p"         #'previous-line
+  "<down>"      #'next-line
+  "<up>"        #'previous-line
+  "DEL"         #'ghostherd-sidebar-filter-backspace
+  "<backspace>" #'ghostherd-sidebar-filter-backspace
+  "<delete>"    #'ghostherd-sidebar-filter-backspace
+  "C-h"         #'ghostherd-sidebar-filter-backspace
+  "C-u"         #'ghostherd-sidebar-filter-clear
+  "C-g"         #'ghostherd-sidebar-quit
+  "<escape>"    #'ghostherd-sidebar-quit)
+
+(define-key ghostherd-sidebar-filter-map [t]
+            #'ghostherd-sidebar-filter-self-insert)
+
+(defun ghostherd-sidebar-filter ()
+  "Start live-narrowing the session list.
+
+Printable keys append to the query; `n'/`p'/`RET' still move and
+visit.  Esc clears a non-empty query, and dismisses the list when
+the query is already empty.  Matches name, kind, state, project,
+notes and title as a flex subsequence; whitespace is AND."
+  (interactive)
+  (setq ghostherd--sidebar-filtering t)
+  (force-mode-line-update t)
+  (set-transient-map
+   ghostherd-sidebar-filter-map
+   (lambda () ghostherd--sidebar-filtering)
+   (lambda ()
+     (setq ghostherd--sidebar-filtering nil)
+     (force-mode-line-update t))))
+
 (defun ghostherd--posframe-available-p ()
   "Return non-nil when posframe can actually display a child frame.
 
@@ -3100,7 +3416,13 @@ those are exactly the cases that must fall back."
   (let ((parent ghostherd--sidebar-posframe-parent)
         (buf (get-buffer "*ghostherd*")))
     (setq ghostherd--sidebar-posframe-parent nil
-          ghostherd--sidebar-posframe-fitted-width nil)
+          ghostherd--sidebar-posframe-fitted-width nil
+          ghostherd--sidebar-filtering nil
+          ghostherd--sidebar-query ""
+          ghostherd--sidebar-preview-id nil)
+    (when (timerp ghostherd--sidebar-preview-timer)
+      (cancel-timer ghostherd--sidebar-preview-timer)
+      (setq ghostherd--sidebar-preview-timer nil))
     (when (and buf (fboundp 'posframe-hide))
       (posframe-hide buf))
     (when (and parent (frame-live-p parent))
@@ -3118,12 +3440,23 @@ has always kept it open."
     (ghostherd--sidebar-hide-posframe)))
 
 (defun ghostherd-sidebar-quit ()
-  "Dismiss the session list.
-Hides the posframe overlay, or quits the side window."
+  "Dismiss the session list, or the live query first.
+
+A non-empty `/` query is cleared and filter-mode ends, so the next
+key is a command again (`z', `k').  An empty query dismisses: the
+posframe overlay hides, or the side window quits."
   (interactive)
-  (if (ghostherd--sidebar-posframe-showing-p)
-      (ghostherd--sidebar-hide-posframe)
-    (quit-window)))
+  (cond
+   ((and ghostherd--sidebar-query
+         (not (string-empty-p ghostherd--sidebar-query)))
+    (ghostherd--sidebar-set-query "")
+    (setq ghostherd--sidebar-filtering nil))
+   (t
+    (setq ghostherd--sidebar-filtering nil
+          ghostherd--sidebar-query "")
+    (if (ghostherd--sidebar-posframe-showing-p)
+        (ghostherd--sidebar-hide-posframe)
+      (quit-window)))))
 
 (defun ghostherd--sidebar-close-side-windows (buf)
   "Delete any side window showing BUF, so the overlay does not share a frame."
@@ -3165,7 +3498,7 @@ width is the floor; the parent minus a margin is the ceiling."
   "Max overlay height in lines, as a fraction of FRAME."
   (let* ((frame (or frame (ghostherd--sidebar-posframe-parent-frame)))
          (avail (max 8 (frame-height frame))))
-    (max 8 (min (- avail 4) (round (* 0.55 avail))))))
+    (max 8 (min (- avail 4) (round (* 0.72 avail))))))
 
 (defun ghostherd--sidebar-refit-posframe (width)
   "Rebuild the overlay's columns for WIDTH and show it again."
@@ -3176,7 +3509,7 @@ width is the floor; the parent minus a margin is the ceiling."
       (with-current-buffer buf
         (when (derived-mode-p 'ghostherd-sidebar-mode)
           (ghostherd--sidebar-build-entries)
-          (tabulated-list-print t)))
+          (ghostherd--sidebar-print t)))
       (ghostherd--sidebar-show-posframe buf))))
 
 (defun ghostherd--sidebar-posframe-on-parent-resize (frame)
@@ -3197,7 +3530,10 @@ Ignores the child frame itself, which also resizes as we show it."
          (width (or ghostherd--sidebar-target-width
                     (ghostherd--sidebar-posframe-char-width parent)))
          (rows (with-current-buffer buf
-                 (length tabulated-list-entries))))
+                 (length tabulated-list-entries)))
+         (preview (if ghostherd-sidebar-show-preview
+                      (+ 2 ghostherd-sidebar-preview-lines)
+                    0)))
     (setq ghostherd--sidebar-posframe-parent parent
           ghostherd--sidebar-posframe-fitted-width width)
     (add-hook 'window-size-change-functions
@@ -3211,7 +3547,7 @@ Ignores the child frame itself, which also resizes as we show it."
        :position (point)
        :width width
        :min-width (min 48 width)
-       :min-height (max 4 (1+ rows))
+       :min-height (max 4 (+ 1 rows preview))
        :max-height (ghostherd--sidebar-posframe-max-height parent)
        :left-fringe 12
        :right-fringe 12
@@ -3247,7 +3583,7 @@ Ignores the child frame itself, which also resizes as we show it."
       (unless (derived-mode-p 'ghostherd-sidebar-mode)
         (ghostherd-sidebar-mode))
       (ghostherd--sidebar-entries)
-      (tabulated-list-print t))
+      (ghostherd--sidebar-print t))
     buf))
 
 ;;;###autoload
@@ -3261,6 +3597,9 @@ either way; Esc or `q' dismisses."
   (interactive)
   (ghostherd--maybe-restore)
   (ghostherd--ensure-sessions)
+  (setq ghostherd--sidebar-query ""
+        ghostherd--sidebar-filtering nil
+        ghostherd--sidebar-preview-id nil)
   (let* ((overlay (ghostherd--use-posframe-p))
          (ghostherd--sidebar-target-width
           (and overlay (ghostherd--sidebar-posframe-char-width)))

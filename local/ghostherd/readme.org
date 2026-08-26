@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 190 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 203 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -142,8 +142,18 @@ report. Notes do, because they were written onto the host.
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
-=s= toggle project filter · =g= refresh · =.= next blocked ·
+=s= toggle project filter · =/= live-narrow · =v= preview · =g= refresh · =.= next blocked ·
 =M= mark state · =q= / =Esc= quit
+
+=/= flex-matches name, kind, state, project, notes and title. Whitespace
+is AND (=agy idle=). =n= / =p= still move; =Esc= clears the query, and
+closes the list only when the query is already empty. The project
+toggle (=s=) is a pre-filter; both apply together.
+
+The overlay grows a snapshot of the row at point under the table --
+=capture-pane= / buffer text, not an attached view. =n= / =p= follow it
+after a short debounce. =v= toggles the pane; =ghostherd-sidebar-show-preview=
+defaults to on.
 
 When posframe is installed and the display can host a child frame,
 =ghostherd-sidebar= opens a centred overlay rather than stealing a
@@ -666,7 +676,9 @@ not re-read.
         ghostherd-sidebar-side 'left
         ghostherd-sidebar-use-posframe t
         ghostherd-sidebar-posframe-width 72
-        ghostherd-sidebar-posframe-width-ratio 0.6)
+        ghostherd-sidebar-posframe-width-ratio 0.6
+        ghostherd-sidebar-show-preview t
+        ghostherd-sidebar-preview-lines 16)
 
   ;; How long a busy session must look idle before it is believed.  An
   ;; agent draws its prompt whether or not it is working, so what makes a
