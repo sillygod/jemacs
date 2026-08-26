@@ -568,6 +568,8 @@
              ;;   g -> gr  `g' is an evil prefix; taking it whole would cost
              ;;            gg/gl/gh.  `gr' is the evil-collection convention
              ;;            for refresh/revert.
+             ;;   q / Esc  dismiss the overlay (or the side window).  Escape
+             ;;            has to be bound in normal state or evil swallows it.
              ;;
              ;; n/p are left to evil's j/k.
              (evil-define-key 'normal ghostherd-sidebar-mode-map
@@ -592,7 +594,8 @@
                (kbd "H") #'ghostherd-scrollback
                (kbd "L") #'ghostherd-log
                (kbd "M") #'ghostherd-sidebar-mark-state
-               (kbd "q") #'quit-window)
+               (kbd "q") #'ghostherd-sidebar-quit
+               (kbd "<escape>") #'ghostherd-sidebar-quit)
 
              ;; An attached agent view is a client showing one screen: the history
              ;; lives in tmux, so the usual motions have to drive *its* view.  The

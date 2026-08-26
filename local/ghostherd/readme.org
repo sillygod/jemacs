@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 175 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 190 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -29,7 +29,7 @@ readers and different lifetimes:
 
 - Spawn *claude* / *grok* / *agy* (or a plain shell) as named sessions
 - Multiple concurrent agents per project (e.g. implementer + reviewer)
-- Sidebar (=ghostherd-sidebar=) + consult switcher (=ghostherd-switch=)
+- Session list (=ghostherd-sidebar=): posframe overlay when available, side window otherwise, plus consult switcher (=ghostherd-switch=)
 - State polling: =working= / =blocked= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
@@ -100,7 +100,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-new=                 | Spawn an agent                       |
 | =M-x ghostherd-new-pair=            | Spawn two agents, split windows      |
 | =M-x ghostherd-switch=              | Completing-read jump                 |
-| =M-x ghostherd-sidebar=             | Side window list                     |
+| =M-x ghostherd-sidebar=             | Session list (posframe, else side window) |
 | =M-x ghostherd-next-blocked=        | Jump to next blocked/done agent      |
 | =M-x ghostherd-message-interactive= | Send attributed message to an agent  |
 | =M-x ghostherd-prompt-interactive=  | Submit a prompt to an agent          |
@@ -143,7 +143,15 @@ report. Notes do, because they were written onto the host.
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= toggle project filter · =g= refresh · =.= next blocked ·
-=M= mark state · =q= quit
+=M= mark state · =q= / =Esc= quit
+
+When posframe is installed and the display can host a child frame,
+=ghostherd-sidebar= opens a centred overlay rather than stealing a
+column. =RET= / =e= / =L= / =H= / =?= dismiss it first so the thing they
+open does not land in the child frame. Without posframe, or on a tty,
+the original side window is what you get. Set
+=ghostherd-sidebar-use-posframe= to nil to keep the side window even
+when posframe is there.
 
 =?= also prints the glyph legend: =⚠= blocked, =⟳= working, =✓= done,
 =○= idle, =…= starting, =✖= dead, and a trailing =▪= — in the row's own
@@ -655,7 +663,10 @@ not re-read.
         ghostherd-poll-interval 1.5
         ghostherd-spawn-delay 0.8
         ghostherd-notify-on-blocked t
-        ghostherd-sidebar-side 'left)
+        ghostherd-sidebar-side 'left
+        ghostherd-sidebar-use-posframe t
+        ghostherd-sidebar-posframe-width 72
+        ghostherd-sidebar-posframe-width-ratio 0.6)
 
   ;; How long a busy session must look idle before it is believed.  An
   ;; agent draws its prompt whether or not it is working, so what makes a

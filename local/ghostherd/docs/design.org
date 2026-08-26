@@ -12,7 +12,7 @@ person who breaks them will be reading that file and not this one.
 * Architecture sketch
 
 #+begin_src text
-  UI: sidebar | consult | modeline | alert
+  UI: overlay (posframe) / side window | consult | modeline | alert
            │
   Control: spawn kill rename prompt message wait handoff
            │
@@ -185,6 +185,19 @@ The manual states what each entry point does; these are the reasons it
 does it that way. Grouped here rather than inline so the manual stays a
 manual --- but the load-bearing copy of anything a maintainer needs
 *while editing* is the comment in the code, not this.
+
+** Why the session list is an overlay
+
+The list used to be a side window because that is the Emacs-native
+overview. It stole 36 columns from every other window, including an
+attached agent -- a SIGWINCH and a full TUI repaint -- and it felt like
+a dashboard you have to keep open rather than something you summon.
+
+posframe is optional. The overlay is the same buffer and the same keys;
+without the library, or on a display that cannot host a child frame,
+=ghostherd-sidebar= still opens the side window. Visit, explain, the
+log and help dismiss the overlay first: its window is dedicated and its
+frame unsplittable, so a =pop-to-buffer= from there has nowhere to go.
 
 ** Detach is not death
 
@@ -520,7 +533,7 @@ purpose now that nothing does.
 | Decision              | Choice                                      | Why                                      |
 |-----------------------+---------------------------------------------+------------------------------------------|
 | Lifetime              | Bound to Emacs first, then a host slot      | Simpler first; detach became Phase 3     |
-| UI                    | Sidebar *and* consult                       | Herd overview + fast jump                |
+| UI                    | Overlay (posframe) *and* consult            | Summoned overview + fast jump; side window is the fallback |
 | Agents                | claude, grok, agy (+ shell)                 | What this machine runs                   |
 | Multi-agent           | First-class (pair + message)                | Review / implement split is common       |
 | Spawn strategy        | Shell then send CLI line                    | Matches “terminal owns agent”; flexible  |

@@ -60,6 +60,10 @@ Goal: less friction for multi-agent day-to-day work.
 - [X] =ghostherd-respawn= (=R= in the sidebar) --- was two roadmap items,
   "persist snapshot" and "restart-agent", which turned out to be the same
   thing
+- [X] Session list is a posframe overlay when posframe is available,
+  falling back to the side window. Same buffer, same keys; Esc
+  dismisses. Visit / explain / log leave the overlay so they do not
+  display inside the child frame.
 
 * Phase 2.5 — Richer automation (herdr-like control)
 

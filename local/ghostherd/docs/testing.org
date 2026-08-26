@@ -115,10 +115,11 @@ command not found → fix PATH for Emacs (login shell / exec-path).
 
 | Step | Action                         | Expected                                      |
 |------+--------------------------------+-----------------------------------------------|
-| 1    | =SPC a h b=                    | Side window =*ghostherd*= with session rows   |
-| 2    | Move to a row, =RET=           | Focuses that agent buffer                     |
+| 1    | =SPC a h b=                    | Centred posframe =*ghostherd*= (or a side window if posframe cannot display) |
+| 2    | Move to a row, =RET=           | Overlay closes; focuses that agent buffer     |
 | 3    | =SPC a h s=                    | Completing-read lists agents with state glyph |
-| 4    | =g= in sidebar                 | Rows refresh without error                    |
+| 4    | =g= in the list                | Rows refresh without error                    |
+| 5    | =SPC a h b=, then =Esc=        | Overlay / side window dismissed; layout unchanged |
 
 ** T3 — Pair layout
 

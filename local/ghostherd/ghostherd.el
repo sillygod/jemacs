@@ -16,7 +16,7 @@
 ;; Features:
 ;; - Spawn claude / grok / agy (or a plain shell) per project
 ;; - Multiple concurrent agents (e.g. implementer + reviewer)
-;; - Sidebar + consult switcher with working/blocked/idle/dead state
+;; - Session list (posframe overlay, side window fallback) + consult switcher
 ;; - Inter-agent messaging (prompt, send, read, wait, message)
 ;; - Notifications on blocked / process exit (via alert when available)
 ;;
@@ -41,6 +41,11 @@
 (require 'ghostherd-tmux)
 
 (declare-function alert "alert" (message &rest kwargs))
+(declare-function posframe-workable-p "posframe")
+(declare-function posframe-show "posframe")
+(declare-function posframe-hide "posframe")
+(declare-function posframe-refresh "posframe")
+(declare-function posframe-poshandler-frame-center "posframe")
 
 ;; The ghostel I/O shims, the `ghostherd' group and the session struct
 ;; now live in ghostherd-backend.el.  These few stay because `defvar'
@@ -231,13 +236,50 @@ only needs to outlast the gap between two updates of a live task."
   :group 'ghostherd)
 
 (defcustom ghostherd-sidebar-side 'left
-  "Side window side for `ghostherd-sidebar'."
+  "Side window side for `ghostherd-sidebar' when not using posframe."
   :type '(choice (const left) (const right))
   :group 'ghostherd)
 
 (defcustom ghostherd-sidebar-width 36
-  "Width of the ghostherd sidebar window."
+  "Width of the ghostherd side window.
+
+Used only when the session list is shown as a side window.  The
+posframe overlay sizes itself from the parent frame (see
+`ghostherd-sidebar-posframe-width-ratio'), so a 36-column dashboard
+does not constrain a centred panel."
   :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-use-posframe t
+  "Show the session list in a posframe overlay when possible.
+
+When non-nil, `ghostherd-sidebar' uses posframe if the library can
+be loaded and the display can host a child frame.  Otherwise it
+falls back to a side window -- the original display, and the one
+that still works on a tty or in batch.
+
+Nil forces the side window even when posframe is available."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-posframe-width 72
+  "Minimum character width of the session-list posframe overlay.
+
+The overlay grows with the parent frame (see
+`ghostherd-sidebar-posframe-width-ratio'); this is the floor, so a
+narrow Emacs still gets Kind and Project.  Nil for the ratio
+makes this a fixed width instead."
+  :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-sidebar-posframe-width-ratio 0.6
+  "Fraction of the parent frame's width used by the overlay.
+
+Nil means a fixed `ghostherd-sidebar-posframe-width' instead of
+scaling.  The result is clamped between that width and the parent
+minus a small margin."
+  :type '(choice (const :tag "Fixed width" nil)
+                 (number :tag "Fraction of frame"))
   :group 'ghostherd)
 
 (defcustom ghostherd-sidebar-show-title nil
@@ -1432,6 +1474,9 @@ design where a second terminal emulator is in the picture."
   (setq session (ghostherd-get session))
   (unless session
     (user-error "No such session"))
+  ;; The overlay's window is dedicated and its frame unsplittable;
+  ;; popping the agent from there has nowhere to put it.
+  (ghostherd--sidebar-leave-overlay)
   (let ((buffer (ghostherd--host-view session)))
     (setf (ghostherd-session-buffer session) buffer
           (ghostherd-session-seen session) t)
@@ -1622,6 +1667,7 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
     ;; attach clients; it is emphatically not a tmux split -- pane layout
     ;; is something Emacs already does better than a herd manager should
     ;; reimplement.
+    (ghostherd--sidebar-leave-overlay)
     (delete-other-windows)
     (switch-to-buffer (ghostherd--host-view left))
     (split-window-right)
@@ -1684,6 +1730,7 @@ otherwise prompts."
          (tail (and live (ghostherd--host-capture session)))
          (hits (and tail rules (ghostherd--match-all-rules tail rules)))
          (winner (and tail rules (ghostherd--match-rules tail rules))))
+    (ghostherd--sidebar-leave-overlay)
     (with-help-window "*ghostherd explain*"
       (with-current-buffer standard-output
         (insert (format "%s  (%s)\n\n" (ghostherd-session-name session) kind))
@@ -2378,6 +2425,7 @@ keys are what scroll it."
         (name (ghostherd-session-name session)))
     (unless (and text (not (string-empty-p (string-trim text))))
       (user-error "No history kept for %s" name))
+    (ghostherd--sidebar-leave-overlay)
     (with-current-buffer (get-buffer-create (format "*ghostherd history: %s*" name))
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -2575,6 +2623,7 @@ line that says so; `C' forgets the lot."
       (unless (derived-mode-p 'ghostherd-log-mode)
         (ghostherd-log-mode))
       (ghostherd--log-render buf))
+    (ghostherd--sidebar-leave-overlay)
     (pop-to-buffer buf)))
 
 
@@ -2582,6 +2631,23 @@ line that says so; `C' forgets the lot."
 
 (defvar ghostherd--sidebar-filter-project nil
   "When non-nil, sidebar only shows this project root.")
+
+(defvar ghostherd--sidebar-target-width nil
+  "Column budget that wins over the live window's width.
+
+Bound around a posframe open or refit so columns are laid out for
+the size the overlay *will* be, not the size the child frame still
+is.  Without it a resize would paint into the old width and then
+stretch the frame, truncating Project one step behind.")
+
+(defvar ghostherd--sidebar-posframe-parent nil
+  "Parent frame to restore when the posframe overlay is dismissed.")
+
+(defvar ghostherd--sidebar-posframe-fitted-width nil
+  "Last overlay width fitted to the parent frame.")
+
+(defvar ghostherd--sidebar-posframe-refitting nil
+  "Non-nil while the overlay is being resized, to ignore nested hooks.")
 
 (defconst ghostherd-sidebar-help-commands
   '((ghostherd-sidebar-visit                 . "Visit agent buffer")
@@ -2606,7 +2672,7 @@ line that says so; `C' forgets the lot."
     (ghostherd-log                           . "Herd log (what happened while you were away)")
     (ghostherd-scrollback                    . "Scrollback (history the pane no longer shows)")
     (ghostherd-sidebar-help                  . "This help")
-    (quit-window                             . "Quit"))
+    (ghostherd-sidebar-quit                  . "Quit"))
   "Commands listed by `ghostherd-sidebar-help', in display order.")
 
 (defun ghostherd--sidebar-help-keys (command)
@@ -2644,9 +2710,12 @@ Commands with no binding in the current state are omitted."
          (width (apply #'max 3 (mapcar (lambda (row) (length (car row))) rows)))
          ;; Emacs `format' has no `*' field width; build the format string.
          (line-format (format "  %%-%ds  %%s\n" width)))
+    ;; Keys are read first: dismissing the overlay selects the parent
+    ;; frame, and the listing would then be whatever that buffer binds.
+    (ghostherd--sidebar-leave-overlay)
     (with-help-window "*ghostherd help*"
       (with-current-buffer standard-output
-        (insert "GhostHerd sidebar\n\n")
+        (insert "GhostHerd\n\n")
         (pcase-dolist (`(,keys . ,description) rows)
           (insert (format line-format keys description)))
         (insert "\nState glyphs\n\n")
@@ -2678,20 +2747,35 @@ Commands with no binding in the current state are omitted."
   "i" #'ghostherd-sidebar-prompt
   "s" #'ghostherd-sidebar-toggle-project-filter
   "g" #'ghostherd-sidebar-refresh
-  "q" #'quit-window
+  "q" #'ghostherd-sidebar-quit
+  "C-g" #'ghostherd-sidebar-quit
+  "<escape>" #'ghostherd-sidebar-quit
   "." #'ghostherd-next-blocked
   "H" #'ghostherd-scrollback
   "L" #'ghostherd-log
   "M" #'ghostherd-sidebar-mark-state)
 
 (define-derived-mode ghostherd-sidebar-mode tabulated-list-mode "GhostHerd"
-  "Sidebar listing ghostherd agent sessions."
+  "Listing of ghostherd agent sessions."
   ;; Padding first: `ghostherd--sidebar-format' budgets against it.
   (setq tabulated-list-padding 1)
   (setq tabulated-list-format (ghostherd--sidebar-format))
   (setq tabulated-list-sort-key (cons "Name" nil))
+  (setq truncate-lines t)
+  (setq-local mode-line-format '(" " (:eval (ghostherd--sidebar-footer))))
+  (hl-line-mode 1)
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
   (tabulated-list-init-header))
+
+(defun ghostherd--sidebar-footer ()
+  "Mode-line hint row for the session list."
+  (concat
+   "GhostHerd"
+   (when ghostherd--sidebar-filter-project
+     (format " [%s]"
+             (file-name-nondirectory
+              (directory-file-name ghostherd--sidebar-filter-project))))
+   "   RET visit  g refresh  ? help  Esc close"))
 
 (defconst ghostherd--sidebar-column-specs
   '((glyph   "S"        2 mandatory)
@@ -2710,10 +2794,14 @@ it is the widest and says least: sessions are usually all in one project,
 and the project filter exists for when they are not.")
 
 (defun ghostherd--sidebar-available-width ()
-  "Columns the sidebar actually has: the live window, else the configured width.
-Reading the window means the layout follows a manual resize, not just
-the value of `ghostherd-sidebar-width'."
-  (or (when-let* ((buf (get-buffer "*ghostherd*"))
+  "Columns the session list actually has: a bound budget, else the window.
+
+`ghostherd--sidebar-target-width' wins when set: the overlay is sized
+from the parent frame *before* the child frame exists (or while it is
+still the old size during a refit).  Otherwise the live window, so a
+side window follows a manual drag.  Last, the configured width."
+  (or ghostherd--sidebar-target-width
+      (when-let* ((buf (get-buffer "*ghostherd*"))
                   (win (get-buffer-window buf t)))
         (window-body-width win))
       ghostherd-sidebar-width))
@@ -2732,14 +2820,48 @@ overflowing."
   (let ((budget (1- (ghostherd--sidebar-available-width)))
         (used 0)
         (kept nil))
-    (dolist (spec ghostherd--sidebar-column-specs (nreverse kept))
+    (dolist (spec ghostherd--sidebar-column-specs)
       (when (or (not (eq (car spec) 'title)) ghostherd-sidebar-show-title)
         ;; tabulated-list draws `tabulated-list-padding' leading columns and
         ;; a separating space after every column but the last.
         (let ((cost (+ (nth 2 spec) (if kept 1 tabulated-list-padding))))
           (when (or (nth 3 spec) (<= (+ used cost) budget))
             (setq used (+ used cost))
-            (push spec kept)))))))
+            (push spec kept)))))
+    (ghostherd--sidebar-grow-columns (nreverse kept) budget used)))
+
+(defun ghostherd--sidebar-grow-columns (columns budget used)
+  "Stretch project/name/title so leftover width is not empty padding.
+
+A wide overlay that still clips Project at 20 characters wasted the
+space that made it wide.  Weights prefer the path, then the name."
+  (let ((extra (max 0 (- budget used)))
+        (weights '((project . 3) (name . 2) (title . 2))))
+    (if (zerop extra)
+        columns
+      (let* ((keys (seq-filter (lambda (k) (assq k columns))
+                               (mapcar #'car weights)))
+             (total (apply #'+ (mapcar (lambda (k) (alist-get k weights))
+                                       keys))))
+        (if (zerop total)
+            columns
+          (let* ((shares
+                  (mapcar (lambda (k)
+                            (cons k (floor (* extra (/ (float (alist-get k weights))
+                                                       total)))))
+                          keys))
+                 (rest (- extra (apply #'+ (mapcar #'cdr shares)))))
+            (when (and (> rest 0) shares)
+              (setcdr (car shares) (+ (cdr (car shares)) rest)))
+            (mapcar (lambda (spec)
+                      (let ((add (or (alist-get (car spec) shares) 0)))
+                        (if (zerop add)
+                            spec
+                          (append (list (nth 0 spec)
+                                        (nth 1 spec)
+                                        (+ (nth 2 spec) add))
+                                  (nthcdr 3 spec)))))
+                    columns)))))))
 
 (defun ghostherd--sidebar-format ()
   "Return `tabulated-list-format' for the columns that fit."
@@ -2819,7 +2941,20 @@ change would redraw the same stale row it drew last time."
     (with-current-buffer buf
       (when (derived-mode-p 'ghostherd-sidebar-mode)
         (ghostherd--sidebar-build-entries)
-        (tabulated-list-print t)))))
+        (tabulated-list-print t)
+        (when (and (ghostherd--sidebar-posframe-showing-p)
+                   (fboundp 'posframe-refresh))
+          (posframe-refresh buf))))))
+
+(defun ghostherd--sidebar-on-screen-p ()
+  "Return non-nil when the session list is actually visible.
+
+An invisible posframe still has a window, so `get-buffer-window'
+is not enough: Age would keep being rewritten after Esc."
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (cl-some (lambda (win)
+               (frame-visible-p (window-frame win)))
+             (get-buffer-window-list buf nil t))))
 
 (defun ghostherd--poll-tick ()
   "Timer callback: poll every session, then keep a visible sidebar current.
@@ -2827,15 +2962,17 @@ A state change already redraws via `ghostherd--set-state', but the Age
 column advances with no state change at all, so refresh on each tick
 while the sidebar is actually on screen."
   (ghostherd-poll-all)
-  (when-let* ((buf (get-buffer "*ghostherd*")))
-    (when (get-buffer-window buf t)
-      (ghostherd--sidebar-refresh))))
+  (when (ghostherd--sidebar-on-screen-p)
+    (ghostherd--sidebar-refresh)))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."
   (interactive)
   (ghostherd--sidebar-entries)
   (tabulated-list-print t)
+  (when (and (ghostherd--sidebar-posframe-showing-p)
+             (fboundp 'posframe-refresh))
+    (posframe-refresh (current-buffer)))
   (message "ghostherd refreshed"))
 
 (defun ghostherd--sidebar-session-at-point ()
@@ -2931,24 +3068,206 @@ while the sidebar is actually on screen."
   (message "Project filter: %s"
            (or ghostherd--sidebar-filter-project "off")))
 
+(defun ghostherd--posframe-available-p ()
+  "Return non-nil when posframe can actually display a child frame.
+
+`require' succeeding is not enough: batch, a tty, and a frame
+without its own minibuffer all fail `posframe-workable-p', and
+those are exactly the cases that must fall back."
+  (and (require 'posframe nil t)
+       (fboundp 'posframe-workable-p)
+       (posframe-workable-p)))
+
+(defun ghostherd--use-posframe-p ()
+  "Return non-nil when the session list should open as a posframe."
+  (and ghostherd-sidebar-use-posframe
+       (ghostherd--posframe-available-p)))
+
+(defun ghostherd--sidebar-posframe-frame ()
+  "Return the session list's posframe, or nil."
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (and (boundp 'posframe--frame)
+         (buffer-local-value 'posframe--frame buf))))
+
+(defun ghostherd--sidebar-posframe-showing-p ()
+  "Return non-nil when the session list is a visible posframe."
+  (when-let* ((frame (ghostherd--sidebar-posframe-frame)))
+    (and (frame-live-p frame)
+         (frame-visible-p frame))))
+
+(defun ghostherd--sidebar-hide-posframe ()
+  "Hide the overlay and restore input focus to its parent frame."
+  (let ((parent ghostherd--sidebar-posframe-parent)
+        (buf (get-buffer "*ghostherd*")))
+    (setq ghostherd--sidebar-posframe-parent nil
+          ghostherd--sidebar-posframe-fitted-width nil)
+    (when (and buf (fboundp 'posframe-hide))
+      (posframe-hide buf))
+    (when (and parent (frame-live-p parent))
+      (select-frame-set-input-focus parent))))
+
+(defun ghostherd--sidebar-leave-overlay ()
+  "Dismiss the posframe overlay so a subsequent display uses a real window.
+
+The overlay's window is dedicated and its frame is unsplittable.
+`pop-to-buffer' from there has nowhere to put an agent, a help
+buffer or a log -- or would put it *in* the child frame.  The
+side-window display is left alone: it is a dashboard, and visit
+has always kept it open."
+  (when (ghostherd--sidebar-posframe-showing-p)
+    (ghostherd--sidebar-hide-posframe)))
+
+(defun ghostherd-sidebar-quit ()
+  "Dismiss the session list.
+Hides the posframe overlay, or quits the side window."
+  (interactive)
+  (if (ghostherd--sidebar-posframe-showing-p)
+      (ghostherd--sidebar-hide-posframe)
+    (quit-window)))
+
+(defun ghostherd--sidebar-close-side-windows (buf)
+  "Delete any side window showing BUF, so the overlay does not share a frame."
+  (dolist (win (get-buffer-window-list buf nil t))
+    (when (and (window-parameter win 'window-side)
+               (not (frame-parent (window-frame win))))
+      (ignore-errors (delete-window win)))))
+
+(defun ghostherd--sidebar-posframe-border-color ()
+  "Border colour for the overlay, taken from the current theme."
+  (or (face-foreground 'vertical-border nil t)
+      (face-foreground 'mode-line-inactive nil t)
+      "gray50"))
+
+(defun ghostherd--sidebar-posframe-parent-frame ()
+  "Frame the overlay should be sized against and return focus to."
+  (or (and (frame-live-p ghostherd--sidebar-posframe-parent)
+           ghostherd--sidebar-posframe-parent)
+      (frame-parent (selected-frame))
+      (selected-frame)))
+
+(defun ghostherd--sidebar-posframe-char-width (&optional frame)
+  "Character width of the overlay on FRAME.
+
+Scales with `ghostherd-sidebar-posframe-width-ratio' so a full-screen
+Emacs does not get a 72-column stamp in the middle.  The configured
+width is the floor; the parent minus a margin is the ceiling."
+  (let* ((frame (or frame (ghostherd--sidebar-posframe-parent-frame)))
+         (avail (max 1 (frame-width frame)))
+         (margin (min 12 (max 4 (/ avail 16))))
+         (ceil (max 48 (- avail margin)))
+         (floor (min ghostherd-sidebar-posframe-width ceil)))
+    (if (null ghostherd-sidebar-posframe-width-ratio)
+        floor
+      (let ((wanted (round (* ghostherd-sidebar-posframe-width-ratio avail))))
+        (max floor (min wanted ceil))))))
+
+(defun ghostherd--sidebar-posframe-max-height (&optional frame)
+  "Max overlay height in lines, as a fraction of FRAME."
+  (let* ((frame (or frame (ghostherd--sidebar-posframe-parent-frame)))
+         (avail (max 8 (frame-height frame))))
+    (max 8 (min (- avail 4) (round (* 0.55 avail))))))
+
+(defun ghostherd--sidebar-refit-posframe (width)
+  "Rebuild the overlay's columns for WIDTH and show it again."
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (let ((ghostherd--sidebar-posframe-refitting t)
+          (ghostherd--sidebar-target-width width))
+      (setq ghostherd--sidebar-posframe-fitted-width width)
+      (with-current-buffer buf
+        (when (derived-mode-p 'ghostherd-sidebar-mode)
+          (ghostherd--sidebar-build-entries)
+          (tabulated-list-print t)))
+      (ghostherd--sidebar-show-posframe buf))))
+
+(defun ghostherd--sidebar-posframe-on-parent-resize (frame)
+  "Refit the overlay when its parent FRAME changes size.
+Ignores the child frame itself, which also resizes as we show it."
+  (when (and (not ghostherd--sidebar-posframe-refitting)
+             ghostherd--sidebar-posframe-parent
+             (eq frame ghostherd--sidebar-posframe-parent)
+             (ghostherd--sidebar-posframe-showing-p))
+    (let ((width (ghostherd--sidebar-posframe-char-width frame)))
+      (unless (eql width ghostherd--sidebar-posframe-fitted-width)
+        (ghostherd--sidebar-refit-posframe width)))))
+
+(defun ghostherd--sidebar-show-posframe (buf)
+  "Show BUF as a centred, focusable posframe overlay."
+  (ghostherd--sidebar-close-side-windows buf)
+  (let* ((parent (ghostherd--sidebar-posframe-parent-frame))
+         (width (or ghostherd--sidebar-target-width
+                    (ghostherd--sidebar-posframe-char-width parent)))
+         (rows (with-current-buffer buf
+                 (length tabulated-list-entries))))
+    (setq ghostherd--sidebar-posframe-parent parent
+          ghostherd--sidebar-posframe-fitted-width width)
+    (add-hook 'window-size-change-functions
+              #'ghostherd--sidebar-posframe-on-parent-resize)
+    ;; `posframe-show' takes the selected frame as parent.  Calling it
+    ;; from inside the overlay would nest a child frame in itself.
+    (with-selected-frame parent
+      (posframe-show
+       buf
+       :poshandler #'posframe-poshandler-frame-center
+       :position (point)
+       :width width
+       :min-width (min 48 width)
+       :min-height (max 4 (1+ rows))
+       :max-height (ghostherd--sidebar-posframe-max-height parent)
+       :left-fringe 12
+       :right-fringe 12
+       :border-width 2
+       :border-color (ghostherd--sidebar-posframe-border-color)
+       :respect-header-line t
+       :respect-mode-line t
+       :lines-truncate t
+       :cursor 'box
+       :accept-focus t
+       :window-point (with-current-buffer buf (point))))
+    (when-let* ((frame (ghostherd--sidebar-posframe-frame)))
+      (select-frame-set-input-focus frame)
+      (select-window (frame-root-window frame)))))
+
+(defun ghostherd--sidebar-show-side-window (buf)
+  "Show BUF in a side window -- the display used when posframe cannot."
+  (when (fboundp 'posframe-hide)
+    (posframe-hide buf))
+  (setq ghostherd--sidebar-posframe-parent nil)
+  (pop-to-buffer
+   buf
+   `((display-buffer-in-side-window)
+     (side . ,ghostherd-sidebar-side)
+     (slot . 0)
+     (window-width . ,ghostherd-sidebar-width)
+     (preserve-size . (t . nil)))))
+
+(defun ghostherd--sidebar-prepare-buffer ()
+  "Return the session-list buffer, filled from the current registry."
+  (let ((buf (get-buffer-create "*ghostherd*")))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'ghostherd-sidebar-mode)
+        (ghostherd-sidebar-mode))
+      (ghostherd--sidebar-entries)
+      (tabulated-list-print t))
+    buf))
+
 ;;;###autoload
 (defun ghostherd-sidebar ()
-  "Open the ghostherd sidebar in a side window."
+  "Open the ghostherd session list.
+
+Uses a posframe overlay when `ghostherd-sidebar-use-posframe' is
+non-nil and posframe can display a child frame.  Otherwise opens
+the original side window.  The buffer and keys are the same
+either way; Esc or `q' dismisses."
   (interactive)
   (ghostherd--maybe-restore)
   (ghostherd--ensure-sessions)
-  (let ((buf (get-buffer-create "*ghostherd*")))
-    (with-current-buffer buf
-      (ghostherd-sidebar-mode)
-      (ghostherd--sidebar-entries)
-      (tabulated-list-print t))
-    (pop-to-buffer
-     buf
-     `((display-buffer-in-side-window)
-       (side . ,ghostherd-sidebar-side)
-       (slot . 0)
-       (window-width . ,ghostherd-sidebar-width)
-       (preserve-size . (t . nil))))
+  (let* ((overlay (ghostherd--use-posframe-p))
+         (ghostherd--sidebar-target-width
+          (and overlay (ghostherd--sidebar-posframe-char-width)))
+         (buf (ghostherd--sidebar-prepare-buffer)))
+    (if overlay
+        (ghostherd--sidebar-show-posframe buf)
+      (ghostherd--sidebar-show-side-window buf))
     buf))
 
 
