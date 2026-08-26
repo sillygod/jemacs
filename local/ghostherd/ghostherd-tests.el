@@ -51,6 +51,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--log-loaded t)
          (ghostherd--sidebar-query "")
          (ghostherd--sidebar-filtering nil)
+         (ghostherd--sidebar-help-visible nil)
          ,@bindings)
      ,@body))
 
@@ -1481,6 +1482,51 @@ project's agy back."
           (should-not (string-match-p "one" preview)))
         (should (equal (tabulated-list-get-id) "a"))
         (should (< (point) ghostherd--sidebar-preview-start))))))
+
+(ert-deftest ghostherd-test-sidebar-help-keys-are-local ()
+  "Leader keys are not overlay keys.  Listing them made `?' look like
+a global cheat-sheet, and opening that cheat-sheet killed the overlay."
+  (let ((keys (ghostherd--sidebar-help-keys 'ghostherd-new)))
+    (should (member "N" keys))
+    (should-not (cl-find "SPC" keys :test #'string-prefix-p))))
+
+(ert-deftest ghostherd-test-sidebar-help-stays-in-the-overlay ()
+  (let ((left nil)
+        (ghostherd--sidebar-help-visible nil))
+    (cl-letf (((symbol-function 'ghostherd--sidebar-leave-overlay)
+               (lambda () (setq left t)))
+              ((symbol-function 'ghostherd--sidebar-draw-preview) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-posframe-showing-p)
+               (lambda () nil)))
+      (ghostherd-sidebar-help)
+      (should ghostherd--sidebar-help-visible)
+      (should-not left)
+      (ghostherd-sidebar-help)
+      (should-not ghostherd--sidebar-help-visible))))
+
+(ert-deftest ghostherd-test-sidebar-help-text-omits-leader-keys ()
+  (let ((text (ghostherd--sidebar-help-text)))
+    (should (string-match-p "Visit" text))
+    (should (string-match-p (regexp-quote (ghostherd--state-glyph 'blocked))
+                            text))
+    (should-not (string-match-p "SPC a h" text))))
+
+(ert-deftest ghostherd-test-sidebar-quit-closes-help-before-overlay ()
+  "Esc peels the legend first, the way it peels a live query."
+  (let ((hidden nil)
+        (ghostherd--sidebar-help-visible t)
+        (ghostherd--sidebar-query ""))
+    (cl-letf (((symbol-function 'ghostherd--sidebar-hide-posframe)
+               (lambda () (setq hidden t)))
+              ((symbol-function 'ghostherd--sidebar-posframe-showing-p)
+               (lambda () t))
+              ((symbol-function 'ghostherd--sidebar-draw-preview) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-show-posframe) #'ignore))
+      (ghostherd-sidebar-quit)
+      (should-not ghostherd--sidebar-help-visible)
+      (should-not hidden)
+      (ghostherd-sidebar-quit)
+      (should hidden))))
 
 (ert-deftest ghostherd-test-sidebar-message-submits-as-keyword ()
   "The overlay is not an agent, and SUBMIT is a keyword.

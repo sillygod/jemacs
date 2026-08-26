@@ -9,7 +9,7 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 204 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= — 208 ERT, mutation-checked             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
 | Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
@@ -138,7 +138,7 @@ report. Notes do, because they were written onto the host.
 
 ** Sidebar keys
 
-=?= help · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
+=?= key legend (in the overlay) · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·

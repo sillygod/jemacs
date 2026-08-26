@@ -2693,6 +2693,9 @@ line that says so; `C' forgets the lot."
 (defvar ghostherd--sidebar-preview-timer nil
   "Debounce timer for a fresh capture when the selected row changes.")
 
+(defvar ghostherd--sidebar-help-visible nil
+  "Non-nil when the overlay preview pane is showing the key legend.")
+
 (defvar ghostherd--sidebar-target-width nil
   "Column budget that wins over the live window's width.
 
@@ -2738,56 +2741,78 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-quit                  . "Quit"))
   "Commands listed by `ghostherd-sidebar-help', in display order.")
 
+(defvar ghostherd-sidebar-mode-map)
+
+(defun ghostherd--sidebar-help-maps ()
+  "Keymaps whose bindings count as overlay keys.
+Global leader maps are excluded: `?' is a legend for this panel, not
+for `SPC a h'."
+  (let ((maps (list ghostherd-sidebar-mode-map)))
+    (when (fboundp 'evil-get-auxiliary-keymap)
+      (dolist (state '(normal emacs motion))
+        (when-let* ((aux (ignore-errors
+                           (evil-get-auxiliary-keymap
+                            ghostherd-sidebar-mode-map state t t))))
+          (push aux maps))))
+    maps))
+
 (defun ghostherd--sidebar-help-keys (command)
-  "Return up to two readable key descriptions for COMMAND in this buffer."
+  "Return up to two overlay key descriptions for COMMAND.
+Looks only in `ghostherd-sidebar-mode-map' (and Evil's auxiliary
+maps on it).  `where-is-internal' with a nil map would also report
+`SPC a h n', which is how the old `*ghostherd help*' buffer listed
+leader keys and then dismissed the overlay to show them."
   (seq-take
    (delete-dups
     (delq nil
-          (mapcar
-           (lambda (key)
-             ;; Evil also exposes its state bindings under a `<normal-state>'
-             ;; pseudo-prefix, which just duplicates the real key.
-             (unless (and (> (length key) 0)
-                          (symbolp (aref key 0))
-                          (string-suffix-p "-state" (symbol-name (aref key 0))))
-               (key-description key)))
-           (where-is-internal command nil nil nil t))))
+          (mapcan
+           (lambda (map)
+             (mapcar
+              (lambda (key)
+                (unless (and (> (length key) 0)
+                             (symbolp (aref key 0))
+                             (string-suffix-p "-state"
+                                              (symbol-name (aref key 0))))
+                  (key-description key)))
+              (where-is-internal command map nil nil t)))
+           (ghostherd--sidebar-help-maps))))
    2))
 
-(defun ghostherd-sidebar-help ()
-  "Show the sidebar key bindings.
-Keys are looked up from the buffer's live keymaps rather than hardcoded,
-so the listing stays correct when Evil or a user keymap rebinds them --
-e.g. Evil users typically move kill off `k' so it can still move point.
-Commands with no binding in the current state are omitted."
-  (interactive)
-  (let* ((origin (current-buffer))
-         (rows (delq nil
+(defun ghostherd--sidebar-help-text ()
+  "Return the overlay key legend as a string."
+  (let* ((rows (delq nil
                      (mapcar
                       (lambda (entry)
-                        (when-let* ((keys (with-current-buffer origin
-                                            (ghostherd--sidebar-help-keys
-                                             (car entry)))))
+                        (when-let* ((keys (ghostherd--sidebar-help-keys
+                                           (car entry))))
                           (cons (string-join keys ", ") (cdr entry))))
                       ghostherd-sidebar-help-commands)))
          (width (apply #'max 3 (mapcar (lambda (row) (length (car row))) rows)))
-         ;; Emacs `format' has no `*' field width; build the format string.
-         (line-format (format "  %%-%ds  %%s\n" width)))
-    ;; Keys are read first: dismissing the overlay selects the parent
-    ;; frame, and the listing would then be whatever that buffer binds.
-    (ghostherd--sidebar-leave-overlay)
-    (with-help-window "*ghostherd help*"
-      (with-current-buffer standard-output
-        (insert "GhostHerd\n\n")
-        (pcase-dolist (`(,keys . ,description) rows)
-          (insert (format line-format keys description)))
-        (insert "\nState glyphs\n\n")
-        (dolist (state '(blocked working done idle starting dead))
-          (insert (format "  %-3s %s\n"
-                          (ghostherd--state-glyph state) state)))
-        (insert (format "\n  %-3s no view attached -- the agent is running\n"
-                        ghostherd-detached-glyph))
-        (insert "      and nobody is looking.  RET attaches one.\n")))))
+         (line-format (format "%%-%ds  %%s" width)))
+    (concat
+     (mapconcat (lambda (row)
+                  (format line-format (car row) (cdr row)))
+                rows "\n")
+     "\n\n"
+     (mapconcat (lambda (state)
+                  (format "%s %s"
+                          (ghostherd--state-glyph state) state))
+                '(blocked working done idle starting dead)
+                "  ")
+     (format "\n%s detached (nobody attached; RET attaches)"
+             ghostherd-detached-glyph))))
+
+(defun ghostherd-sidebar-help ()
+  "Toggle the key legend in the overlay preview pane.
+Does not dismiss the overlay -- that was the old `*ghostherd help*'
+window, which had nowhere to go except by killing the child frame."
+  (interactive)
+  (setq ghostherd--sidebar-help-visible
+        (not ghostherd--sidebar-help-visible))
+  (ghostherd--sidebar-draw-preview)
+  (when (ghostherd--sidebar-posframe-showing-p)
+    (ghostherd--sidebar-show-posframe (current-buffer)))
+  (force-mode-line-update t))
 
 (defvar-keymap ghostherd-sidebar-mode-map
   :doc "Keymap for `ghostherd-sidebar-mode'."
@@ -2851,9 +2876,13 @@ Commands with no binding in the current state are omitted."
                 (directory-file-name ghostherd--sidebar-filter-project))))
      (when querying (concat "  /" query))
      (or counts "")
-     (if ghostherd--sidebar-filtering
-         "   RET visit  n/p move  Esc clear"
-       "   RET visit  / filter  v preview  Esc close"))))
+     (cond
+      (ghostherd--sidebar-filtering
+       "   RET visit  n/p move  Esc clear")
+      (ghostherd--sidebar-help-visible
+       "   ? close help  Esc close")
+      (t
+       "   RET visit  / filter  v preview  ? keys  Esc close")))))
 
 (defconst ghostherd--sidebar-column-specs
   '((glyph   "S"        2 mandatory)
@@ -3094,20 +3123,25 @@ Used by the interactive refresh and `tabulated-list-revert-hook'."
   (when (derived-mode-p 'ghostherd-sidebar-mode)
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t)
-          (session (and ghostherd-sidebar-show-preview
+          (session (and (not ghostherd--sidebar-help-visible)
+                        ghostherd-sidebar-show-preview
                         (ghostherd--sidebar-session-at-point)))
           (width (max 10 (or (ignore-errors (window-body-width))
                              (ghostherd--sidebar-available-width)))))
       (save-excursion
         (ghostherd--sidebar-erase-preview)
-        (when ghostherd-sidebar-show-preview
+        (when (or ghostherd-sidebar-show-preview
+                  ghostherd--sidebar-help-visible)
           (goto-char (point-max))
           (unless (bolp) (insert "\n"))
           (setq ghostherd--sidebar-preview-start (point-marker))
           (insert (propertize (make-string width ?─) 'face 'shadow) "\n")
-          (insert (if session
-                      (ghostherd--sidebar-preview-body session)
-                    (propertize "(no session)" 'face 'shadow)))
+          (insert (cond
+                   (ghostherd--sidebar-help-visible
+                    (ghostherd--sidebar-help-text))
+                   (session
+                    (ghostherd--sidebar-preview-body session))
+                   (t (propertize "(no session)" 'face 'shadow))))
           (unless (bolp) (insert "\n"))))
       (restore-buffer-modified-p nil))))
 
@@ -3160,15 +3194,16 @@ Used by the interactive refresh and `tabulated-list-revert-hook'."
 
 (defun ghostherd--sidebar-preview-on-command ()
   "Follow point: draw the cached snapshot, then recapture shortly."
-  (when (and (derived-mode-p 'ghostherd-sidebar-mode)
-             ghostherd-sidebar-show-preview)
+  (when (derived-mode-p 'ghostherd-sidebar-mode)
     (ghostherd--sidebar-confine-point)
-    (let ((id (tabulated-list-get-id)))
-      (unless (equal id ghostherd--sidebar-preview-id)
-        (setq ghostherd--sidebar-preview-id id)
-        (ghostherd--sidebar-draw-preview)
-        (when id
-          (ghostherd--sidebar-schedule-fresh-capture id))))))
+    (when (and ghostherd-sidebar-show-preview
+               (not ghostherd--sidebar-help-visible))
+      (let ((id (tabulated-list-get-id)))
+        (unless (equal id ghostherd--sidebar-preview-id)
+          (setq ghostherd--sidebar-preview-id id)
+          (ghostherd--sidebar-draw-preview)
+          (when id
+            (ghostherd--sidebar-schedule-fresh-capture id)))))))
 
 (defun ghostherd-sidebar-toggle-preview ()
   "Toggle the snapshot pane under the session list."
@@ -3444,6 +3479,7 @@ those are exactly the cases that must fall back."
           ghostherd--sidebar-posframe-fitted-width nil
           ghostherd--sidebar-filtering nil
           ghostherd--sidebar-query ""
+          ghostherd--sidebar-help-visible nil
           ghostherd--sidebar-preview-id nil)
     (when (timerp ghostherd--sidebar-preview-timer)
       (cancel-timer ghostherd--sidebar-preview-timer)
@@ -3457,10 +3493,11 @@ those are exactly the cases that must fall back."
   "Dismiss the posframe overlay so a subsequent display uses a real window.
 
 The overlay's window is dedicated and its frame is unsplittable.
-`pop-to-buffer' from there has nowhere to put an agent, a help
-buffer or a log -- or would put it *in* the child frame.  The
-side-window display is left alone: it is a dashboard, and visit
-has always kept it open."
+`pop-to-buffer' from there has nowhere to put an agent or a log
+-- or would put it *in* the child frame.  `?' no longer goes
+through this: the legend draws in the overlay's own preview pane.
+The side-window display is left alone: it is a dashboard, and
+visit has always kept it open."
   (when (ghostherd--sidebar-posframe-showing-p)
     (ghostherd--sidebar-hide-posframe)))
 
@@ -3476,6 +3513,12 @@ posframe overlay hides, or the side window quits."
          (not (string-empty-p ghostherd--sidebar-query)))
     (ghostherd--sidebar-set-query "")
     (setq ghostherd--sidebar-filtering nil))
+   (ghostherd--sidebar-help-visible
+    (setq ghostherd--sidebar-help-visible nil)
+    (ghostherd--sidebar-draw-preview)
+    (when (ghostherd--sidebar-posframe-showing-p)
+      (ghostherd--sidebar-show-posframe (get-buffer "*ghostherd*")))
+    (force-mode-line-update t))
    (t
     (setq ghostherd--sidebar-filtering nil
           ghostherd--sidebar-query "")
@@ -3556,9 +3599,13 @@ Ignores the child frame itself, which also resizes as we show it."
                     (ghostherd--sidebar-posframe-char-width parent)))
          (rows (with-current-buffer buf
                  (length tabulated-list-entries)))
-         (preview (if ghostherd-sidebar-show-preview
-                      (+ 2 ghostherd-sidebar-preview-lines)
-                    0)))
+         (preview (cond
+                   (ghostherd--sidebar-help-visible
+                    (max 8 (length (split-string
+                                    (ghostherd--sidebar-help-text) "\n"))))
+                   (ghostherd-sidebar-show-preview
+                    (+ 2 ghostherd-sidebar-preview-lines))
+                   (t 0))))
     (setq ghostherd--sidebar-posframe-parent parent
           ghostherd--sidebar-posframe-fitted-width width)
     (add-hook 'window-size-change-functions
@@ -3624,6 +3671,7 @@ either way; Esc or `q' dismisses."
   (ghostherd--ensure-sessions)
   (setq ghostherd--sidebar-query ""
         ghostherd--sidebar-filtering nil
+        ghostherd--sidebar-help-visible nil
         ghostherd--sidebar-preview-id nil)
   (let* ((overlay (ghostherd--use-posframe-p))
          (ghostherd--sidebar-target-width
