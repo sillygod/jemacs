@@ -191,6 +191,57 @@ class Store:
             merged = rrf_merge(dense_hits, sparse_hits, limit)
         return [_hit_to_dict(h) for h in merged]
 
+    def list_chunks(
+        self,
+        source_path: str | None = None,
+        session_id: str | None = None,
+        limit: int = 400,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Payload scroll.  No embedding — this is the viewer, not search."""
+        if not source_path and not session_id:
+            raise ValueError("source_path or session_id is required")
+        if not self.collection_exists():
+            return [], 0
+        must = []
+        if source_path:
+            must.append(
+                FieldCondition(
+                    key="source_path", match=MatchValue(value=source_path)
+                )
+            )
+        if session_id:
+            must.append(
+                FieldCondition(
+                    key="session_id", match=MatchValue(value=session_id)
+                )
+            )
+        records: list[Any] = []
+        next_offset = None
+        while True:
+            batch, next_offset = self.client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=Filter(must=must),
+                limit=256,
+                offset=next_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            records.extend(batch)
+            if next_offset is None:
+                break
+        records.sort(
+            key=lambda rec: int((rec.payload or {}).get("chunk_index") or 0)
+        )
+        total = len(records)
+        sliced = records[max(0, offset) : max(0, offset) + max(1, limit)]
+        chunks = []
+        for rec in sliced:
+            item = _hit_to_dict(rec)
+            item["score"] = 0.0
+            chunks.append(item)
+        return chunks, total
+
 
 def _filter(agent: str | None, project: str | None) -> Filter | None:
     must = []
@@ -207,7 +258,7 @@ def _hit_to_dict(hit: Any) -> dict[str, Any]:
     payload = hit.payload or {}
     return {
         "id": str(hit.id),
-        "score": float(hit.score or 0.0),
+        "score": float(getattr(hit, "score", None) or 0.0),
         "text": payload.get("text") or "",
         "agent": payload.get("agent") or "",
         "role": payload.get("role") or "",

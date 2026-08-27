@@ -2977,6 +2977,13 @@ itself changing its mind about a flag."
     (should (equal (plist-get (plist-get req :params) :query) "posframe"))
     (should (numberp (plist-get req :id)))))
 
+(ert-deftest ghostherd-test-memory-utf8-unibyte-json ()
+  "url.el leaves JSON unibyte; 你 must not display as \\344\\275\\240."
+  (let* ((json "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"text\":\"你分析\"}}")
+         (raw (encode-coding-string json 'utf-8)))
+    (should (equal (plist-get (ghostherd-memory--parse-response raw) :text)
+                   "你分析"))))
+
 (ert-deftest ghostherd-test-memory-parse-result-and-error ()
   (let ((ok (ghostherd-memory--parse-response
              "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true},\"error\":null}")))
@@ -2988,8 +2995,16 @@ itself changing its mind about a flag."
 (ert-deftest ghostherd-test-memory-menu-lists-search ()
   (should (equal (nth 2 (assoc "/" ghostherd-menu-choices))
                  'ghostherd-memory-search))
+  (should (equal (nth 2 (assoc "v" ghostherd-menu-choices))
+                 'ghostherd-memory-view))
   (should (equal (nth 2 (assoc "I" ghostherd-menu-choices))
                  'ghostherd-memory-import)))
+
+(ert-deftest ghostherd-test-memory-source-label-uses-basename ()
+  (should (string-match-p "chat_history.jsonl"
+                          (ghostherd-memory--source-label
+                           '(:agent "grok" :chunks 3 :project "/tmp/p"
+                             :source_path "/tmp/p/sess/chat_history.jsonl")))))
 
 (ert-deftest ghostherd-test-memory-cmd-import-force-flag ()
   "The CLI passes the string force, not a Lisp t, through emacsclient."

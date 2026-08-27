@@ -69,6 +69,14 @@ def test_import_search_via_rpc(tmp_path: Path, monkeypatch):
         )["hits"]
         assert hits
         assert any("ghost-commit" in h["text"] for h in hits)
+        listed = _rpc(client, "memory_list", {"agents": ["claude"]})
+        assert listed["total"] >= 1
+        assert any("s.jsonl" in (s.get("source_path") or "") for s in listed["sources"])
+        path = listed["sources"][0]["source_path"]
+        body = _rpc(client, "memory_chunks", {"source_path": path, "limit": 20})
+        assert body["total"] >= 1
+        assert any("ghost-commit" in (c.get("text") or "") for c in body["chunks"])
+        assert body["chunks"][0]["chunk_index"] <= body["chunks"][-1]["chunk_index"]
         missing = client.post(
             "/jsonrpc",
             json={"jsonrpc": "2.0", "id": 9, "method": "nope"},

@@ -1480,6 +1480,7 @@
        "ahl" '(ghostherd-log :which-key "herd log")
        "ahH" '(ghostherd-scrollback :which-key "scrollback")
        "ah/" '(ghostherd-memory-search :which-key "search memory")
+       "ahv" '(ghostherd-memory-view :which-key "view memory")
        "ahI" '(ghostherd-memory-import :which-key "import memory")
 
        "ad" '(docker t :which-key "docker")

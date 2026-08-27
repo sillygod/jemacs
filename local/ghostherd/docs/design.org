@@ -599,4 +599,5 @@ purpose now that nothing does.
 | Memory import         | Turns from chat, skip grok recap/updates    | Those files are history dumps, not chat  |
 | Memory lifetime       | Started on first search/import, not mode    | A model load does not belong on enable   |
 | Memory search default | All projects, =C-u= for this one            | The failure is "I forgot which project"  |
+| Memory viewer         | Emacs text buffer; list+chunks RPC          | The index is text; no images to render   |
 | Memory port           | 49152+, skip occupied, reuse ours           | 8766 collides with local-dev; ecloud is 8765 |

@@ -44,6 +44,8 @@ class JsonRpcHandler:
             "memory_status": self._status,
             "memory_import": self._import,
             "memory_search": self._search,
+            "memory_list": self._list,
+            "memory_chunks": self._chunks,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -104,6 +106,26 @@ class JsonRpcHandler:
             limit=limit,
             agent=params.get("agent") or None,
             project=params.get("project") or None,
+        )
+
+    def _list(self, params: dict) -> dict:
+        return get_engine().list_sources(
+            agent=params.get("agent") or None,
+            project=params.get("project") or None,
+            limit=int(params.get("limit") or 200),
+            offset=int(params.get("offset") or 0),
+        )
+
+    def _chunks(self, params: dict) -> dict:
+        source = params.get("source_path") or params.get("source") or None
+        session = params.get("session_id") or params.get("session") or None
+        if not source and not session:
+            raise ValueError("source_path or session_id is required")
+        return get_engine().list_chunks(
+            source_path=source,
+            session_id=session,
+            limit=int(params.get("limit") or 400),
+            offset=int(params.get("offset") or 0),
         )
 
 

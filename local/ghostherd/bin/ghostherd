@@ -22,6 +22,8 @@
 #   whoami                   this agent's own session name
 #   memory search QUERY [N]  search imported transcripts (JSON)
 #   memory import [force]    import claude/grok/agy transcripts
+#   memory list [AGENT]      imported sources (JSON)
+#   memory view SOURCE       chunks for a path or session id (JSON)
 #
 # Any NAME may be `self', and FROM defaults to whoever is calling: an
 # agent spawned by the herd has GHOSTHERD_SESSION in its environment.
@@ -34,7 +36,7 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { printf 'ghostherd: %s\n' "$1" >&2; exit 1; }
 
@@ -223,7 +225,20 @@ case $cmd in
           run "(ghostherd-cmd-memory-import)"
         fi
         ;;
-      *) die "memory: expected search or import (see: ghostherd help)" ;;
+      list)
+        shift
+        if [ $# -ge 1 ]; then
+          run "(ghostherd-cmd-memory-list $(elisp_string "$1"))"
+        else
+          run "(ghostherd-cmd-memory-list)"
+        fi
+        ;;
+      view)
+        shift
+        need 1 $#
+        run "(ghostherd-cmd-memory-chunks $(elisp_string "$1"))"
+        ;;
+      *) die "memory: expected search, import, list or view (see: ghostherd help)" ;;
     esac
     ;;
 

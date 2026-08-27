@@ -122,6 +122,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-log=                 | What the herd did while you were away |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 | =M-x ghostherd-memory-search=       | Search imported transcripts          |
+| =M-x ghostherd-memory-view=         | Browse imported sources (text)       |
 | =M-x ghostherd-memory-import=       | Import claude / grok / agy stores    |
 | =M-x ghostherd-memory-status=       | Sidecar health + point count         |
 
@@ -142,6 +143,7 @@ report. Notes do, because they were written onto the host.
 | =ahl= | herd log       |
 | =ahH= | scrollback     |
 | =ah/= | search memory  |
+| =ahv= | view memory    |
 | =ahI= | import memory  |
 
 ** Sidebar keys
@@ -708,17 +710,20 @@ does not touch those.
 #+end_src
 
 Then =SPC a h I= (or =M-x ghostherd-memory-import=) once, then =SPC a h /=
-to search.  Import is CPU-heavy (FastEmbed) and runs *in the sidecar*,
-not inside Emacs: watch =*ghostherd-memory*= for per-file progress; a
-second =I= while one is running is a no-op.  Already-imported files are
-skipped.  =C-u SPC a h /= restricts search to the current project; the
-default is all of them, because the usual failure is "I forgot which
-project".
+to search, or =SPC a h v= to browse sources (text only — images never
+entered the index).  Import is CPU-heavy (FastEmbed) and runs *in the
+sidecar*, not inside Emacs: watch =*ghostherd-memory*= for per-file
+progress; a second =I= while one is running is a no-op.  Already-imported
+files are skipped.  =C-u SPC a h /= or =C-u SPC a h v= restrict to the
+current project; the default is all of them, because the usual failure
+is "I forgot which project".
 
 An agent can ask the same index:
 
 #+begin_src bash
   bin/ghostherd memory search "agy-ghost-commit blocked"
+  bin/ghostherd memory list
+  bin/ghostherd memory view claude-session-id
 #+end_src
 
 Data lives in =~/.emacs.d/ghostherd-memory/= (Qdrant path + a sqlite

@@ -541,6 +541,7 @@
                         ghostherd-scrollback
                         ghostherd-visit
                         ghostherd-memory-search
+                        ghostherd-memory-view
                         ghostherd-memory-import
                         ghostherd-memory-status
                         ghostherd-mode)

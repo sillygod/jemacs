@@ -85,6 +85,41 @@ class MemoryEngine:
         )
         return {"hits": hits, "query": query}
 
+    def list_sources(
+        self,
+        agent: str | None = None,
+        project: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        sources, total = self.index.list_sources(
+            agent=agent or None,
+            project=project or None,
+            limit=max(1, int(limit)),
+            offset=max(0, int(offset)),
+        )
+        return {"sources": sources, "total": total}
+
+    def list_chunks(
+        self,
+        source_path: str | None = None,
+        session_id: str | None = None,
+        limit: int = 400,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        chunks, total = self.store.list_chunks(
+            source_path=source_path or None,
+            session_id=session_id or None,
+            limit=max(1, int(limit)),
+            offset=max(0, int(offset)),
+        )
+        return {
+            "chunks": chunks,
+            "total": total,
+            "offset": max(0, int(offset)),
+            "limit": max(1, int(limit)),
+        }
+
     def import_transcripts(
         self,
         agents: list[str] | None = None,

@@ -89,5 +89,51 @@ class SourceIndex:
         ).fetchall()
         return {agent or "unknown": n for agent, n in rows}
 
+    def list_sources(
+        self,
+        agent: str | None = None,
+        project: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        where = ["COALESCE(chunks, 0) > 0"]
+        args: list = []
+        if agent:
+            where.append("agent = ?")
+            args.append(agent)
+        if project:
+            where.append("(project = ? OR project LIKE ?)")
+            args.extend([project, project.rstrip("/") + "/%"])
+        clause = " AND ".join(where)
+        total = self._conn.execute(
+            f"SELECT COUNT(*) FROM sources WHERE {clause}", args
+        ).fetchone()[0]
+        rows = self._conn.execute(
+            f"""
+            SELECT source_path, mtime, size, agent, session_id, project,
+                   kind, chunks, imported_at
+            FROM sources
+            WHERE {clause}
+            ORDER BY imported_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*args, int(limit), int(offset)],
+        ).fetchall()
+        sources = [
+            {
+                "source_path": r[0],
+                "mtime": r[1],
+                "size": r[2],
+                "agent": r[3] or "",
+                "session_id": r[4] or "",
+                "project": r[5] or "",
+                "kind": r[6] or "",
+                "chunks": r[7] or 0,
+                "imported_at": r[8] or "",
+            }
+            for r in rows
+        ]
+        return sources, int(total)
+
     def close(self) -> None:
         self._conn.close()

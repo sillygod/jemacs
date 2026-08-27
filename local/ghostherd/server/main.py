@@ -58,7 +58,7 @@ async def jsonrpc_endpoint(request: Request) -> Response:
         )
         return Response(
             content=error_response.model_dump_json(exclude_none=True),
-            media_type="application/json",
+            media_type="application/json; charset=utf-8",
         )
 
     if isinstance(data, list):
@@ -69,9 +69,10 @@ async def jsonrpc_endpoint(request: Request) -> Response:
                 responses.append(resp)
         return Response(
             content=json.dumps(
-                [r.model_dump(exclude_none=True) for r in responses]
+                [r.model_dump(exclude_none=True) for r in responses],
+                ensure_ascii=False,
             ),
-            media_type="application/json",
+            media_type="application/json; charset=utf-8",
         )
 
     response = await _handle_single_request(data)
@@ -79,7 +80,7 @@ async def jsonrpc_endpoint(request: Request) -> Response:
         return Response(status_code=204)
     return Response(
         content=response.model_dump_json(exclude_none=True),
-        media_type="application/json",
+        media_type="application/json; charset=utf-8",
     )
 
 

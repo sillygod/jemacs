@@ -182,7 +182,8 @@ gap until uvicorn listens is closed by retrying on a dead process."
          (json-key-type 'keyword)
          (json-false nil)
          (json-null nil)
-         (data (ignore-errors (json-read-from-string body))))
+         (data (ignore-errors (json-read-from-string
+                               (ghostherd-memory--utf8 body)))))
     (and data (equal (plist-get data :service) "ghostherd-memory"))))
 
 (defun ghostherd-memory--health-ours-p (&optional port)
@@ -234,6 +235,14 @@ reuse the wrong process instead of walking to a free port."
       (setq request (plist-put request :params params)))
     request))
 
+(defun ghostherd-memory--utf8 (s)
+  "Decode S as UTF-8.
+
+url.el leaves JSON unibyte when the response has no charset.
+json.el then keeps 你 as raw bytes, which a UTF-8 buffer shows as
+\\344\\275\\240 instead of CJK."
+  (decode-coding-string (encode-coding-string (or s "") 'raw-text) 'utf-8))
+
 (defun ghostherd-memory--parse-response (response-string)
   "Parse RESPONSE-STRING as a JSON-RPC body.  Signal on error."
   (let* ((json-object-type 'plist)
@@ -241,7 +250,8 @@ reuse the wrong process instead of walking to a free port."
          (json-key-type 'keyword)
          (json-false nil)
          (json-null nil)
-         (response (json-read-from-string response-string))
+         (response (json-read-from-string
+                    (ghostherd-memory--utf8 response-string)))
          (error-obj (plist-get response :error)))
     (if error-obj
         (error "ghostherd-memory JSON-RPC %s: %s"
@@ -252,7 +262,8 @@ reuse the wrong process instead of walking to a free port."
 (defun ghostherd-memory--body-from-url-buffer ()
   (goto-char (point-min))
   (re-search-forward "\r?\n\r?\n" nil t)
-  (buffer-substring-no-properties (point) (point-max)))
+  (ghostherd-memory--utf8
+   (buffer-substring-no-properties (point) (point-max))))
 
 (defun ghostherd-memory-healthy-p ()
   "Return non-nil if the current port answers as this sidecar."
@@ -278,9 +289,7 @@ Import is CPU-heavy and must not freeze Emacs on `url-retrieve-synchronously'."
                (funcall error-callback (format "%s" err))
              (message "ghostherd-memory: %s" err)))
           (t
-           (goto-char (point-min))
-           (re-search-forward "\r?\n\r?\n" nil t)
-           (let ((body (buffer-substring-no-properties (point) (point-max))))
+           (let ((body (ghostherd-memory--body-from-url-buffer)))
              (condition-case parse-err
                  (funcall callback (ghostherd-memory--parse-response body))
                (error
@@ -480,28 +489,132 @@ progress is printed in `*ghostherd-memory*'."
    (and force (list :force t))
    (lambda (err) (message "ghostherd-memory: import failed: %s" err))))
 
-(defun ghostherd-memory--show-hits (query hits)
+(defvar-local ghostherd-memory--view-source nil
+  "Source path currently shown in a memory view buffer, or nil for search hits.")
+
+(defvar ghostherd-memory-view-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "g") #'ghostherd-memory-view-refresh)
+    (define-key map (kbd "RET") #'ghostherd-memory-view-at-point)
+    (define-key map (kbd "v") #'ghostherd-memory-view)
+    map)
+  "Keymap for `ghostherd-memory-view-mode'.")
+
+(define-derived-mode ghostherd-memory-view-mode special-mode "Herd-Mem"
+  "Text-only browser for imported memory chunks.
+No images: the index never stored them.  `RET' on a search hit opens
+that source; `g' reloads a source view; `v' picks another source."
+  :group 'ghostherd-memory)
+
+(defun ghostherd-memory--source-label (src)
+  (let* ((project (or (plist-get src :project) ""))
+         (leaf (if (string-empty-p project)
+                   "-"
+                 (file-name-nondirectory (directory-file-name project)))))
+    (format "%s  %s  %s  %s"
+            (or (plist-get src :agent) "?")
+            (or (plist-get src :chunks) 0)
+            leaf
+            (file-name-nondirectory
+             (or (plist-get src :source_path) "")))))
+
+(defun ghostherd-memory--insert-chunk (chunk)
+  (let* ((start (point))
+         (title (plist-get chunk :title))
+         (path (plist-get chunk :source_path)))
+    (insert (format "[%s] %s  %s  %s\n"
+                    (or (plist-get chunk :agent) "?")
+                    (or (plist-get chunk :project) "")
+                    (or (plist-get chunk :role) "")
+                    (if (and title (not (string-empty-p title)))
+                        title
+                      (or (plist-get chunk :session_id) ""))))
+    (insert (or (plist-get chunk :text) ""))
+    (unless (bolp) (insert "\n"))
+    (insert "\n" (make-string 60 ?-) "\n\n")
+    (add-text-properties
+     start (point)
+     (list 'ghostherd-memory-source path
+           'ghostherd-memory-session (plist-get chunk :session_id)))))
+
+(defun ghostherd-memory--show-buffer (title chunks &optional source-path)
   (let ((buf (get-buffer-create "*ghostherd memory*")))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (format "ghostherd memory — %s  (%d hits)\n\n"
-                        query (length hits)))
-        (dolist (hit hits)
-          (insert (format "[%s] %s  %s  %s\n"
-                          (or (plist-get hit :agent) "?")
-                          (or (plist-get hit :project) "")
-                          (or (plist-get hit :role) "")
-                          (let ((title (plist-get hit :title)))
-                            (if (and title (not (string-empty-p title)))
-                                title
-                              (or (plist-get hit :session_id) "")))))
-          (insert (or (plist-get hit :text) ""))
-          (unless (bolp) (insert "\n"))
-          (insert "\n" (make-string 60 ?-) "\n\n"))
+        (set-buffer-file-coding-system 'utf-8-unix)
+        (insert title "\n\n")
+        (if (null chunks)
+            (insert "(no chunks)\n")
+          (dolist (chunk chunks)
+            (ghostherd-memory--insert-chunk chunk)))
         (goto-char (point-min))
-        (read-only-mode 1)))
-    (pop-to-buffer buf)))
+        (ghostherd-memory-view-mode)
+        (setq ghostherd-memory--view-source source-path)))
+    (pop-to-buffer buf)
+    buf))
+
+(defun ghostherd-memory--show-hits (query hits)
+  (ghostherd-memory--show-buffer
+   (format "ghostherd memory — search %s  (%d hits)\nRET opens that source"
+           query (length hits))
+   hits
+   nil))
+
+(defun ghostherd-memory-view-source (source-path)
+  "Show indexed chunks for SOURCE-PATH (text only)."
+  (ghostherd-memory-ensure)
+  (let* ((result (ghostherd-memory-request
+                  "memory_chunks"
+                  (list :source_path source-path :limit 500)))
+         (chunks (plist-get result :chunks))
+         (total (or (plist-get result :total) 0))
+         (shown (length chunks))
+         (header (format "ghostherd memory — %s  (%d/%d chunks)"
+                         (file-name-nondirectory source-path)
+                         shown total)))
+    (when (and total (> total shown))
+      (setq header (format "%s  — truncated, %d not shown"
+                           header (- total shown))))
+    (ghostherd-memory--show-buffer header chunks source-path)))
+
+(defun ghostherd-memory-view-at-point ()
+  "Open the source under point, from a search hit."
+  (interactive)
+  (let ((path (get-text-property (point) 'ghostherd-memory-source)))
+    (unless path
+      (user-error "No memory source at point"))
+    (ghostherd-memory-view-source path)))
+
+(defun ghostherd-memory-view-refresh ()
+  "Reload the current source view."
+  (interactive)
+  (unless ghostherd-memory--view-source
+    (user-error "Not a source view (search hits have no single source)"))
+  (ghostherd-memory-view-source ghostherd-memory--view-source))
+
+;;;###autoload
+(defun ghostherd-memory-view (&optional project)
+  "Browse imported memory sources, then open one as text.
+With a prefix argument, restrict the list to the current project."
+  (interactive
+   (list (when current-prefix-arg
+           (when-let* ((p (project-current)))
+             (directory-file-name (expand-file-name (project-root p)))))))
+  (ghostherd-memory-ensure)
+  (let* ((params (list :limit 300))
+         (params (if project (plist-put params :project project) params))
+         (result (ghostherd-memory-request "memory_list" params))
+         (sources (plist-get result :sources)))
+    (unless sources
+      (user-error "No imported memory yet; run ghostherd-memory-import"))
+    (let* ((table (mapcar (lambda (src)
+                            (cons (ghostherd-memory--source-label src) src))
+                          sources))
+           (choice (completing-read "Memory source: " table nil t))
+           (src (cdr (assoc choice table))))
+      (ghostherd-memory-view-source (plist-get src :source_path)))))
 
 ;;;###autoload
 (defun ghostherd-memory-search (query &optional project)
@@ -543,6 +656,22 @@ is all projects — that is the point of the feature."
     "memory_import"
     (and (member force '("1" "true" "force" t)) (list :force t))
     ghostherd-memory-import-timeout)))
+
+(defun ghostherd-cmd-memory-list (&optional agent &rest _)
+  "JSON source list for agent shells."
+  (ghostherd-memory-ensure)
+  (json-encode
+   (ghostherd-memory-request
+    "memory_list"
+    (and agent (not (string-empty-p agent)) (list :agent agent)))))
+
+(defun ghostherd-cmd-memory-chunks (source &rest _)
+  "JSON chunks for SOURCE path or session id."
+  (ghostherd-memory-ensure)
+  (let ((params (if (and source (string-match-p "/" source))
+                    (list :source_path source)
+                  (list :session_id source))))
+    (json-encode (ghostherd-memory-request "memory_chunks" params))))
 
 (provide 'ghostherd-memory)
 ;;; ghostherd-memory.el ends here

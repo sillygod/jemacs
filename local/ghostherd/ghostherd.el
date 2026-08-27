@@ -1410,7 +1410,9 @@ keep someone else's spinner permanently displaced."
                      ("ghostherd-state" ghostherd-cmd-state)
                      ("ghostherd-report" ghostherd-cmd-report)
                      ("ghostherd-memory-search" ghostherd-cmd-memory-search)
-                     ("ghostherd-memory-import" ghostherd-cmd-memory-import)))
+                     ("ghostherd-memory-import" ghostherd-cmd-memory-import)
+                     ("ghostherd-memory-list" ghostherd-cmd-memory-list)
+                     ("ghostherd-memory-chunks" ghostherd-cmd-memory-chunks)))
       (unless (assoc (car entry) ghostel-eval-cmds)
         (add-to-list 'ghostel-eval-cmds entry)))))
 
@@ -3769,6 +3771,7 @@ sweeps every `ghostherd-poll-interval'."
     ("l" "herd log" ghostherd-log)
     ("h" "scrollback" ghostherd-scrollback)
     ("/" "search memory" ghostherd-memory-search)
+    ("v" "view memory" ghostherd-memory-view)
     ("I" "import memory" ghostherd-memory-import)
     ("g" "poll now" ghostherd-poll-all))
   "Key / label / command rows for `ghostherd-menu'.")
