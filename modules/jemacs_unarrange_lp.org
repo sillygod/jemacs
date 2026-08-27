@@ -1419,7 +1419,7 @@
        "v" 'er/expand-region
        "u" 'universal-argument
        "'" 'new-terminal
-       "TAB" 'vterm-perform-last-command
+       "TAB" 'terminal-perform-last-command
        "?" 'describe-bindings)
 
       ;; which-key-replacement-alist
@@ -1467,7 +1467,6 @@
        "aa" '(aider-transient-menu :which-key "aider-chat")
 
        "ah" '(:ignore t :which-key "ghostherd")
-       "ahh" '(ghostherd-menu :which-key "menu")
        "ahn" '(ghostherd-new :which-key "new agent")
        "ah2" '(ghostherd-new-pair :which-key "new pair (split)")
        "ahs" '(ghostherd-switch :which-key "switch")
@@ -1478,7 +1477,6 @@
        "ahk" '(ghostherd-kill :which-key "kill")
        "ahr" '(ghostherd-rename :which-key "rename")
        "ahl" '(ghostherd-log :which-key "herd log")
-       "ahH" '(ghostherd-scrollback :which-key "scrollback")
        "ah/" '(ghostherd-memory-search :which-key "search memory")
        "ahv" '(ghostherd-memory-view :which-key "view memory")
        "ahI" '(ghostherd-memory-import :which-key "import memory")
@@ -1615,7 +1613,7 @@
        "xbe" '(my-encode-region-base64 :which-key "base64-encode-region")
        "xbd" '(my-decode-region-base64 :which-key "base64-decode-region")
 
-       "xs" '(send-text-and-move-to-project-vterm :which-key "send content to and focus on vterm"))
+       "xs" '(send-text-and-move-to-project-terminal :which-key "send content to and focus on terminal"))
 
       (define-leader-key-global
        "f" '(:ignore t :which-key "files")
@@ -1734,7 +1732,7 @@
            ("o" "to org table" org-table-create-or-convert-from-region :transient transient--do-exit)
            ]
           ["Misc"
-           ("t" "send to vterm" send-text-and-move-to-project-vterm :transient transient--do-exit)
+           ("t" "send to terminal" send-text-and-move-to-project-terminal :transient transient--do-exit)
            ]
           ])
 

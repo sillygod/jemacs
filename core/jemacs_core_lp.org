@@ -934,26 +934,27 @@
 ** operation with marked text
 
    #+begin_src emacs-lisp
-     (defun send-text-and-move-to-project-vterm ()
+     (defun send-text-and-move-to-project-terminal ()
+       "Send the region to the project ghostel terminal and focus it."
        (interactive)
        (when (region-active-p)
-         ;; get the mark content
          (let ((content (buffer-substring (region-beginning) (region-end))))
            (new-terminal)
            (deactivate-mark)
-           (vterm-send-string content))))
+           (ghostel-paste-string content))))
 
    #+end_src
 
-** perform the last command for vterm
+** perform the last command in the project terminal
 
    #+begin_src emacs-lisp
-     (defun vterm-perform-last-command ()
+     (defun terminal-perform-last-command ()
+       "Replay the previous shell command in the project ghostel terminal."
        (interactive)
        (let ((bname (buffer-name)))
          (new-terminal)
-         (vterm-send-up)
-         (vterm-send-return)
+         (ghostel-send-key "up")
+         (ghostel-send-key "return")
          (pop-to-buffer bname t)))
    #+end_src
 

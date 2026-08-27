@@ -130,7 +130,6 @@ report. Notes do, because they were written onto the host.
 
 | Key   | Command        |
 |-------+----------------|
-| =ahh= | menu           |
 | =ahn= | new agent      |
 | =ah2= | new pair       |
 | =ahs= | switch         |
@@ -141,7 +140,6 @@ report. Notes do, because they were written onto the host.
 | =ahk= | kill           |
 | =ahr= | rename         |
 | =ahl= | herd log       |
-| =ahH= | scrollback     |
 | =ah/= | search memory  |
 | =ahv= | view memory    |
 | =ahI= | import memory  |
@@ -593,7 +591,7 @@ surface:
 
 ** Reading it elsewhere (=ghostherd-scrollback=)
 
-=SPC a h H=, or =H= in the sidebar. Dumps the history into an ordinary
+=H= in the overlay. Dumps the history into an ordinary
 read-only buffer instead of moving the live view --- for searching it,
 copying out of it, or keeping it open beside the agent.
 

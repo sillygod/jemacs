@@ -253,36 +253,38 @@ value is the terminal lagging behind the window while you drag.")
 
 
 
-    (defun project-vterm-setup (major-mode)
-      "Perform some setup instruction when spawning a new shell for certain mode."
-      (cond
-       ((member major-mode '(python-mode python-ts-mode)) (progn
-                                                            (vterm-send-string (python-vterm-setup-string))
-                                                            (vterm-send-return)))))
+    (defun project-ghostel-setup (major-mode)
+      "Send per-mode setup into the current ghostel buffer after spawn."
+      (when (member major-mode '(python-mode python-ts-mode))
+        (when-let* ((cmd (python-vterm-setup-string)))
+          (ghostel-send-string (concat cmd "\n")))))
 
-    (defun project-run-vterm (&optional arg)
-      "Invoke `vterm' in the project's root.
-
-    Switch to the project specific term buffer if it already exists.
-    Use a prefix argument ARG to indicate creation of a new process instead."
+    (defun project-run-ghostel (&optional arg)
+      "Open ghostel in the current project's root.
+    Reuse the project terminal if it already exists.  ARG is passed to
+    `ghostel-project' (non-numeric prefix starts a second terminal)."
       (interactive "P")
+      (require 'ghostel)
       (let* ((mmode major-mode)
-             (project (project-root (project-current t)))
-             (buffer (format "*%s %s*" "vterm" project)))
-        (unless (buffer-live-p (get-buffer buffer))
-          (unless (require 'vterm nil 'noerror)
-            (error "Package 'vterm' is not available"))
-          (project-with-default-dir project
-            (vterm-other-window buffer)
-            (project-vterm-setup mmode)))
-        (pop-to-buffer buffer)))
+             (root (project-root (project-current t)))
+             (identity (ghostel--project-buffer-name root))
+             (before (ghostel--find-buffer-by-identity identity))
+             (buf (ghostel-project arg)))
+        (unless (eq buf before)
+          (with-current-buffer buf
+            (project-ghostel-setup mmode)))
+        buf))
 
     (defun new-terminal ()
-      "New a terminal in project root or the current directory."
+      "Open a ghostel terminal in the project root, or the current directory."
       (interactive)
-      (if (project-current nil)
-          (project-run-vterm)
-        (vterm-other-window)))
+      (require 'ghostel)
+      (let ((display-buffer-overriding-action
+             '((display-buffer-pop-up-window)
+               (inhibit-same-window . t))))
+        (if (project-current nil)
+            (project-run-ghostel)
+          (ghostel))))
 
     (defun avy-jump-url ()
       "Use avy to go to url in the buffer."
