@@ -1,0 +1,36 @@
+[project]
+name = "ghostherd-memory"
+version = "0.1.0"
+description = "Local memory sidecar for ghostherd: import CLI transcripts, search via Qdrant + FastEmbed"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    "qdrant-client>=1.12.0",
+    "fastembed>=0.4.0",
+]
+license = {text = "GPL-3.0-or-later"}
+authors = [
+    {name = "Jing"},
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+exclude = ["/tests", "/tests/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]

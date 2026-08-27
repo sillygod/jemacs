@@ -20,6 +20,8 @@
 #   report NAME STATE [WHY]  what the agent says about itself:
 #                            working | blocked | idle | done | auto
 #   whoami                   this agent's own session name
+#   memory search QUERY [N]  search imported transcripts (JSON)
+#   memory import [force]    import claude/grok/agy transcripts
 #
 # Any NAME may be `self', and FROM defaults to whoever is calling: an
 # agent spawned by the herd has GHOSTHERD_SESSION in its environment.
@@ -32,7 +34,7 @@
 
 set -euo pipefail
 
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 
 die() { printf 'ghostherd: %s\n' "$1" >&2; exit 1; }
 
@@ -199,6 +201,30 @@ case $cmd in
       why=nil
     fi
     run "(progn (ghostherd-report $(elisp_string "$who") '$2 $why) \"reported\")"
+    ;;
+
+  memory)
+    need 1 $#
+    case $1 in
+      search)
+        shift
+        need 1 $#
+        if [ $# -ge 2 ]; then
+          run "(ghostherd-cmd-memory-search $(elisp_string "$1") $(elisp_string "$2"))"
+        else
+          run "(ghostherd-cmd-memory-search $(elisp_string "$1"))"
+        fi
+        ;;
+      import)
+        shift
+        if [ "${1:-}" = "force" ]; then
+          run "(ghostherd-cmd-memory-import \"force\")"
+        else
+          run "(ghostherd-cmd-memory-import)"
+        fi
+        ;;
+      *) die "memory: expected search or import (see: ghostherd help)" ;;
+    esac
     ;;
 
   *) die "unknown command: $cmd (see: ghostherd help)" ;;

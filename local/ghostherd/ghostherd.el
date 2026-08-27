@@ -19,6 +19,7 @@
 ;; - Session list (posframe overlay, side window fallback) + consult switcher
 ;; - Inter-agent messaging (prompt, send, read, wait, message)
 ;; - Notifications on blocked / process exit (via alert when available)
+;; - Shared transcript memory (Python sidecar: import + search)
 ;;
 ;; Main entry points:
 ;;   M-x ghostherd-new
@@ -39,6 +40,7 @@
 ;; against ghostel directly.
 (require 'ghostherd-backend)
 (require 'ghostherd-tmux)
+(require 'ghostherd-memory)
 
 (declare-function alert "alert" (message &rest kwargs))
 (declare-function posframe-workable-p "posframe")
@@ -1406,7 +1408,9 @@ keep someone else's spinner permanently displaced."
                      ("ghostherd-message" ghostherd-cmd-message)
                      ("ghostherd-read" ghostherd-cmd-read)
                      ("ghostherd-state" ghostherd-cmd-state)
-                     ("ghostherd-report" ghostherd-cmd-report)))
+                     ("ghostherd-report" ghostherd-cmd-report)
+                     ("ghostherd-memory-search" ghostherd-cmd-memory-search)
+                     ("ghostherd-memory-import" ghostherd-cmd-memory-import)))
       (unless (assoc (car entry) ghostel-eval-cmds)
         (add-to-list 'ghostel-eval-cmds entry)))))
 
@@ -3751,24 +3755,29 @@ sweeps every `ghostherd-poll-interval'."
 
 ;;; Transient-ish quick menu (no transient dependency)
 
+(defconst ghostherd-menu-choices
+  '(("n" "new agent" ghostherd-new)
+    ("2" "new pair (split)" ghostherd-new-pair)
+    ("s" "switch" ghostherd-switch)
+    ("b" "sidebar" ghostherd-sidebar)
+    ("." "next blocked" ghostherd-next-blocked)
+    ("m" "message agent" ghostherd-message-interactive)
+    ("i" "prompt agent" ghostherd-prompt-interactive)
+    ("k" "kill" ghostherd-kill)
+    ("r" "rename" ghostherd-rename)
+    ("M" "mark state" ghostherd-mark-state)
+    ("l" "herd log" ghostherd-log)
+    ("h" "scrollback" ghostherd-scrollback)
+    ("/" "search memory" ghostherd-memory-search)
+    ("I" "import memory" ghostherd-memory-import)
+    ("g" "poll now" ghostherd-poll-all))
+  "Key / label / command rows for `ghostherd-menu'.")
+
 ;;;###autoload
 (defun ghostherd-menu ()
   "Simple command dispatcher for ghostherd."
   (interactive)
-  (let* ((choices
-          '(("n" "new agent" ghostherd-new)
-            ("2" "new pair (split)" ghostherd-new-pair)
-            ("s" "switch" ghostherd-switch)
-            ("b" "sidebar" ghostherd-sidebar)
-            ("." "next blocked" ghostherd-next-blocked)
-            ("m" "message agent" ghostherd-message-interactive)
-            ("i" "prompt agent" ghostherd-prompt-interactive)
-            ("k" "kill" ghostherd-kill)
-            ("r" "rename" ghostherd-rename)
-            ("M" "mark state" ghostherd-mark-state)
-            ("l" "herd log" ghostherd-log)
-            ("h" "scrollback" ghostherd-scrollback)
-            ("g" "poll now" ghostherd-poll-all)))
+  (let* ((choices ghostherd-menu-choices)
          (key (char-to-string
                (read-char
                 (concat "ghostherd: "

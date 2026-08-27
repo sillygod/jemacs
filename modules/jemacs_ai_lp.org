@@ -515,7 +515,11 @@
 
   #+begin_src emacs-lisp
     (eval `(use-package ghostherd
-             :straight (:local-repo ,(concat home-dir "local/ghostherd"))
+             :straight (:local-repo ,(concat home-dir "local/ghostherd")
+                                    ;; ecloud's recipe copies server/ into the
+                                    ;; straight build; without this, locate-library
+                                    ;; sees only .elc and the sidecar is invisible.
+                                    :files ("*.el" "server"))
              :commands (ghostherd-new
                         ghostherd-new-pair
                         ghostherd-switch
@@ -536,6 +540,9 @@
                         ghostherd-log
                         ghostherd-scrollback
                         ghostherd-visit
+                        ghostherd-memory-search
+                        ghostherd-memory-import
+                        ghostherd-memory-status
                         ghostherd-mode)
              :config
              (setq ghostherd-notify-on-blocked t

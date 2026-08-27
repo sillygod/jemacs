@@ -291,6 +291,43 @@ log outlives Emacs".
 - A log per project or per session. The herd log is the herd's, and
   filtering a buffer is a different feature from splitting a file
 
+* Phase 3.8 — Shared transcript memory  *(this tree)*
+
+Goal: search what claude / grok / agy already did, including across
+projects, without merging their stores and without putting FastEmbed
+inside Emacs.
+
+** What shipped
+
+- [X] Python sidecar in =server/=, ecloud-shaped: FastAPI, JSON-RPC 2.0
+  over =POST /jsonrpc=, =/health=, =uv run uvicorn=, loopback, high
+  ports from 49152, skip occupied, reuse a leftover sidecar
+- [X] Importers: Claude jsonl + MEMORY.md; Grok =chat_history.jsonl= +
+  =summary.json= (not recap/updates/images); Agy sqlite UTF-8 salvage
+- [X] Qdrant local path + FastEmbed multilingual MiniLM, hybrid RRF
+- [X] Incremental import via a sqlite watermark
+- [X] Emacs client =ghostherd-memory.el=: start on first use, health
+  before restart, search / import / status
+- [X] =bin/ghostherd memory search|import= so an agent can ask
+- [X] pytest (fake embed, no model download) + ERT for the Elisp seam
+
+** What is left
+
+- [ ] First real import of this machine's corpus, then a day of
+  =SPC a h /= — ranking and chunk size are judgement calls
+- [ ] Optional distill pass (summaries into AGENTS.md-shaped notes)
+  once search is used enough to know what is missing
+- [ ] Agy protobuf, if a schema ever exists, instead of UTF-8 salvage
+
+** Deliberately not done
+
+- Starting the sidecar from =ghostherd-mode=
+- Docker Qdrant, or a second HTTP service for embeddings
+- English-only bge-small
+- Merging or rewriting the CLI transcript directories
+- Importing grok =recap_requests/=, =updates.jsonl=, or images
+- Auto-import on a timer
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

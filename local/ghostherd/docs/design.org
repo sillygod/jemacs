@@ -12,17 +12,18 @@ person who breaks them will be reading that file and not this one.
 * Architecture sketch
 
 #+begin_src text
-  UI: overlay (posframe) / side window | consult | modeline | alert
+  UI: overlay (posframe) / side window | consult | modeline | alert | memory
            │
-  Control: spawn kill rename prompt message wait handoff
+  Control: spawn kill rename prompt message wait handoff | memory search
            │
   Detect:  timer + screen rules + ghostel-exit / OSC hooks
            │
   Host:    capture · screens · send-text · send-keys · live-p
            exited-p · spawn · kill · rename · list · view  ← the slot
-           │                              │
-  Runtime: ghostel buffer (PTY)      tmux session (PTY, on -L ghostherd)
-           agent = Emacs child       agent outlives Emacs; view optional
+           │                              │                    │
+  Runtime: ghostel buffer (PTY)      tmux session          Python sidecar
+           agent = Emacs child       (PTY, -L ghostherd)   JSON-RPC /jsonrpc
+                                                       Qdrant path + FastEmbed
 #+end_src
 
 Sessions live in =ghostherd--sessions= (id → =ghostherd-session= struct).
@@ -36,6 +37,28 @@ Files:
 | =ghostherd-backend.el= | session struct, registry, the slot, ghostel implementor |
 | =ghostherd-tmux.el=    | tmux implementor, naming, recipe stash, restore       |
 | =ghostherd.el=         | everything else — detection, UI, messaging, commands  |
+| =ghostherd-memory.el=  | sidecar process + JSON-RPC client (=url.el=)            |
+| =server/=              | FastAPI JSON-RPC, importers, Qdrant, FastEmbed          |
+
+** Why a sidecar, and why this sidecar
+
+Emacs does not load FastEmbed or speak Qdrant's protocol.  The options
+were: shell out per search (model load on every query); embed Python in
+Emacs; or a local process with a small protocol.  ecloud already picked
+the third for GCP: FastAPI, JSON-RPC 2.0, =POST /jsonrpc=, =uv run
+uvicorn=, Emacs =url.el=, =/health= before a restart.  Memory copies
+that contract so there is one way this Emacs talks to a Python helper.
+
+Qdrant is embedded (=QdrantClient(path=...)=), not Dockered.  A second
+daemon to remember conversations is more moving parts than the feature
+is worth.  Hybrid search is dense cosine plus BM25, fused with RRF, so
+an exact identifier like =agy-ghost-commit= still ranks when the
+embedding is vague.
+
+The CLI stores stay theirs.  Import distills turns into an index;
+it does not rewrite =~/.claude= or =~/.grok=.  Grok recap dumps and
+=updates.jsonl= are skipped because they are the same history written
+again, and they are most of the bytes.
 
 Two deviations from the Phase 3 plan (see [[file:roadmap.org][roadmap.org]]), both forced:
 
@@ -570,3 +593,10 @@ purpose now that nothing does.
 | tmux recipe           | =@ghostherd-*= session options              | A sidecar file outlives nothing reliably |
 | tmux config           | Generated from a string, =-f= every call    | A shipped .conf does not survive a build |
 | View vs state         | =buffer= nil means detached, not dead       | Closing a window is not a crash          |
+| Shared memory         | Python sidecar, JSON-RPC over HTTP          | Same contract as ecloud; FastEmbed is slow |
+| Memory store          | Qdrant local path, not Docker               | One process, no extra daemon             |
+| Memory embed          | FastEmbed multilingual MiniLM               | Queries here are 中文 mixed with English |
+| Memory import         | Turns from chat, skip grok recap/updates    | Those files are history dumps, not chat  |
+| Memory lifetime       | Started on first search/import, not mode    | A model load does not belong on enable   |
+| Memory search default | All projects, =C-u= for this one            | The failure is "I forgot which project"  |
+| Memory port           | 49152+, skip occupied, reuse ours           | 8766 collides with local-dev; ecloud is 8765 |

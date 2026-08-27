@@ -10,7 +10,15 @@ How the suite is built and what still needs a human. The manual is
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
         -L . -l ghostherd.el -l ghostherd-tests.el \
         -f ert-run-tests-batch-and-exit
+
+  cd server && uv sync --extra dev && GHOSTHERD_MEMORY_FAKE_EMBED=1 uv run pytest
 #+end_src
+
+The sidecar tests live in =server/tests=. They never download FastEmbed:
+=GHOSTHERD_MEMORY_FAKE_EMBED=1= hashes tokens into vectors. That is
+enough to pin "import then search finds overlapping terms" and "grok
+recap_requests is not a source". A real ranking check is a dogfood pass
+after the first import of this machine's corpus.
 
 Covers the parts that need no PTY: rule matching and precedence, OSC
 progress freshness and handler chaining, state-detection precedence, sidebar
@@ -280,6 +288,20 @@ ERT covers the file format; what it cannot stage is a real Emacs dying.
 
 Step 4 is the one that matters: it is the 02:00 rule the kept screens
 exist for, read the next morning.
+
+** T16 — Shared memory sidecar
+
+Pytest covers import/search with a fake embedder. This is the first real
+corpus.
+
+| Step | Action | Expected |
+|------+--------+----------|
+| 1 | =cd server && uv sync= | deps, including FastEmbed, in =.venv= |
+| 2 | =SPC a h I= | sidecar starts; =*ghostherd-memory*= shows uvicorn; first run may download the model |
+| 3 | =SPC a h /= =posframe overlay= | hits from this repo's claude/grok sessions |
+| 4 | Search something only Claude did, from a grok buffer | still finds it (the index is shared) |
+| 5 | =C-u SPC a h /= in another project | restricted to that root |
+| 6 | =bin/ghostherd memory search "agy-ghost-commit"= | JSON hits, no recap dumps |
 
 * Dogfood log
 

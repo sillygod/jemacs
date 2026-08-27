@@ -2869,5 +2869,142 @@ itself changing its mind about a flag."
 ;; string; it is superseded by `ghostherd-test-candidate-is-just-the-name'
 ;; and `ghostherd-test-annotation-carries-detail'.
 
+;;; Memory sidecar (pure: no uvicorn)
+
+(ert-deftest ghostherd-test-memory-server-directory-finds-main ()
+  (let ((dir (ghostherd-memory--server-directory)))
+    (should dir)
+    (should (file-exists-p (expand-file-name "main.py" dir)))))
+
+(ert-deftest ghostherd-test-memory-server-follows-straight-symlink ()
+  "straight build dirs have .elc plus a symlink .el; server/ is in the checkout."
+  (let* ((src (make-temp-file "gh-src-" t))
+         (build (make-temp-file "gh-build-" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "server" src) t)
+          (write-region "pass\n" nil (expand-file-name "server/main.py" src))
+          (write-region "" nil (expand-file-name "ghostherd.el" src))
+          (make-symbolic-link (expand-file-name "ghostherd.el" src)
+                              (expand-file-name "ghostherd.el" build))
+          (write-region "" nil (expand-file-name "ghostherd.elc" build))
+          (cl-letf (((symbol-function 'locate-library)
+                     (lambda (name &rest _)
+                       (cond
+                        ((equal name "ghostherd")
+                         (expand-file-name "ghostherd.elc" build))
+                        ((equal name "ghostherd-memory") nil)))))
+            (let ((ghostherd-memory-server-directory nil)
+                  (load-file-name nil)
+                  (buffer-file-name nil))
+              (should (file-equal-p
+                       (ghostherd-memory--server-directory)
+                       (expand-file-name "server" src))))))
+      (delete-directory src t)
+      (delete-directory build t))))
+
+(ert-deftest ghostherd-test-memory-server-next-to-build-elc ()
+  "ecloud-style `:files (\"server\")` puts main.py beside the .elc."
+  (let* ((build (make-temp-file "gh-build-" t)))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "server" build) t)
+          (write-region "pass\n" nil (expand-file-name "server/main.py" build))
+          (write-region "" nil (expand-file-name "ghostherd.elc" build))
+          (cl-letf (((symbol-function 'locate-library)
+                     (lambda (name &rest _)
+                       (when (equal name "ghostherd")
+                         (expand-file-name "ghostherd.elc" build)))))
+            (let ((ghostherd-memory-server-directory nil)
+                  (load-file-name nil)
+                  (buffer-file-name nil))
+              (should (file-equal-p
+                       (ghostherd-memory--server-directory)
+                       (expand-file-name "server" build))))))
+      (delete-directory build t))))
+
+(ert-deftest ghostherd-test-memory-health-url-matches-rpc ()
+  (let ((ghostherd-memory-host "127.0.0.1")
+        (ghostherd-memory-port 49152)
+        (ghostherd-memory--port 49160))
+    (should (equal (ghostherd-memory--rpc-url)
+                   "http://127.0.0.1:49160/jsonrpc"))
+    (should (equal (ghostherd-memory--health-url)
+                   "http://127.0.0.1:49160/health"))
+    (should (equal (ghostherd-memory--rpc-url 49153)
+                   "http://127.0.0.1:49153/jsonrpc"))))
+
+(ert-deftest ghostherd-test-memory-port-candidates-start-high ()
+  (let ((ghostherd-memory-port 49152)
+        (ghostherd-memory-port-tries 32))
+    (should (equal (car (ghostherd-memory--port-candidates)) 49152))
+    (should (equal (car (last (ghostherd-memory--port-candidates))) 49183))
+    (should (< 8766 (car (ghostherd-memory--port-candidates))))))
+
+(ert-deftest ghostherd-test-memory-allocate-skips-occupied ()
+  "A listener that is not ours is not a bind target."
+  (let ((ghostherd-memory-port 49152)
+        (ghostherd-memory-port-tries 4)
+        (busy '(49152 49153)))
+    (cl-letf (((symbol-function 'ghostherd-memory--listening-p)
+               (lambda (port) (memq port busy))))
+      (should (equal (ghostherd-memory--allocate-port) 49154)))))
+
+(ert-deftest ghostherd-test-memory-find-running-requires-our-health ()
+  "HTTP 200 on a busy port is not enough — ecloud is 200 too."
+  (let ((ghostherd-memory-port 49152)
+        (ghostherd-memory-port-tries 3))
+    (cl-letf (((symbol-function 'ghostherd-memory--listening-p)
+               (lambda (_) t))
+              ((symbol-function 'ghostherd-memory--health-ours-p)
+               (lambda (port) (= port 49153))))
+      (should (equal (ghostherd-memory--find-running) 49153)))))
+
+(ert-deftest ghostherd-test-memory-health-body-is-this-sidecar ()
+  (should (ghostherd-memory--health-body-ours-p
+           "{\"status\":\"ok\",\"service\":\"ghostherd-memory\"}"))
+  (should-not (ghostherd-memory--health-body-ours-p
+               "{\"status\":\"ok\"}"))
+  (should-not (ghostherd-memory--health-body-ours-p
+               "not json")))
+
+(ert-deftest ghostherd-test-memory-build-request-is-jsonrpc-2 ()
+  (let ((ghostherd-memory--request-id 0)
+        (req (ghostherd-memory--build-request "memory_search"
+                                              (list :query "posframe"))))
+    (should (equal (plist-get req :jsonrpc) "2.0"))
+    (should (equal (plist-get req :method) "memory_search"))
+    (should (equal (plist-get (plist-get req :params) :query) "posframe"))
+    (should (numberp (plist-get req :id)))))
+
+(ert-deftest ghostherd-test-memory-parse-result-and-error ()
+  (let ((ok (ghostherd-memory--parse-response
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true},\"error\":null}")))
+    (should (eq (plist-get ok :ok) t)))
+  (should-error
+   (ghostherd-memory--parse-response
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"nope\"}}")))
+
+(ert-deftest ghostherd-test-memory-menu-lists-search ()
+  (should (equal (nth 2 (assoc "/" ghostherd-menu-choices))
+                 'ghostherd-memory-search))
+  (should (equal (nth 2 (assoc "I" ghostherd-menu-choices))
+                 'ghostherd-memory-import)))
+
+(ert-deftest ghostherd-test-memory-cmd-import-force-flag ()
+  "The CLI passes the string force, not a Lisp t, through emacsclient."
+  (let ((got nil))
+    (cl-letf (((symbol-function 'ghostherd-memory-ensure) #'ignore)
+              ((symbol-function 'ghostherd-memory-request)
+               (lambda (method params &optional _timeout)
+                 (setq got (list method params))
+                 '(:imported 0 :skipped 0 :sessions 0 :errors nil))))
+      (ghostherd-cmd-memory-import "force")
+      (should (equal (car got) "memory_import"))
+      (should (eq (plist-get (cadr got) :force) t))
+      (setq got nil)
+      (ghostherd-cmd-memory-import)
+      (should (equal (cadr got) nil)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

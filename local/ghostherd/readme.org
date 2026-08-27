@@ -7,12 +7,12 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.7 done* — the log outlives Emacs, like the herd does      |
+| Phase       | *3.8* — shared transcript memory (Python sidecar)            |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= — 208 ERT, mutation-checked             |
+| Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
-| Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= |
+| Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= · =ghostherd-memory.el= · =server/= |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                              |
 
 This file is the manual: what it does, how to drive it, what to do when
@@ -38,6 +38,9 @@ readers and different lifetimes:
   scraped off a screen --- see "Agents that report themselves"
 - Agents can call herd commands via =ghostel_cmd= (whitelisted; ghostel
   backend only --- see "Hosts")
+- Search past claude / grok / agy sessions (=ghostherd-memory-search=) via
+  a local Python sidecar (Qdrant + FastEmbed). Complementary: the herd
+  is *now*; memory is *before*.
 
 * Hosts
 
@@ -118,6 +121,9 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-restore=             | Re-adopt agents that outlived Emacs  |
 | =M-x ghostherd-log=                 | What the herd did while you were away |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
+| =M-x ghostherd-memory-search=       | Search imported transcripts          |
+| =M-x ghostherd-memory-import=       | Import claude / grok / agy stores    |
+| =M-x ghostherd-memory-status=       | Sidecar health + point count         |
 
 ** Leader keys (=SPC a h …=)
 
@@ -135,6 +141,8 @@ report. Notes do, because they were written onto the host.
 | =ahr= | rename         |
 | =ahl= | herd log       |
 | =ahH= | scrollback     |
+| =ah/= | search memory  |
+| =ahI= | import memory  |
 
 ** Sidebar keys
 
@@ -248,6 +256,7 @@ When shell integration is active and the command is whitelisted:
   ghostel_cmd ghostherd-message reviewer "Please review" implementer
   ghostel_cmd ghostherd-read reviewer 60
   ghostel_cmd ghostherd-report self blocked "waiting on a decision"
+  ghostel_cmd ghostherd-memory-search "posframe overlay"
 #+end_src
 
 =self= is the calling agent, and the sender of a =ghostherd-message=
@@ -365,6 +374,8 @@ for everywhere else --- a Makefile, a git hook, a CI step:
   bin/ghostherd handoff reviewer "Review the diff" implementer
   bin/ghostherd keys reviewer down down return
   bin/ghostherd interrupt reviewer
+  bin/ghostherd memory search "why was agy-ghost-commit blocked"
+  bin/ghostherd memory import
 #+end_src
 
 ** Which agent am I?
@@ -666,6 +677,62 @@ picked up the project's dir-locals at all --- and read *before* the kind
 prompt, so changing the directory later in the same prompt sequence does
 not re-read.
 
+* Shared memory (past sessions)
+
+The herd is *now*. Memory is *before*: search what claude, grok or agy
+already did, including in another project, without merging their on-disk
+stores.
+
+A Python sidecar (the same shape as ecloud: FastAPI, JSON-RPC 2.0 over
+=POST /jsonrpc=, =uv run uvicorn=, Emacs =url.el=) imports those
+transcripts into a local Qdrant and embeds them with FastEmbed.  It is
+a persistent process because the model load is slow; it is *not* started
+by =ghostherd-mode=.  The first memory command starts it.  Loopback only,
+no auth.  The port starts at *49152* (IANA dynamic/private, well above
+ecloud's 8765); if that is taken by something else, the next 31 ports
+are tried.  A leftover sidecar in that range is reused.
+
+| Store   | What is imported                                      | What is skipped                          |
+|---------+-------------------------------------------------------+------------------------------------------|
+| claude  | =~/.claude/projects/**/*.jsonl= and =memory/*.md=     | mode / permission / snapshots / images   |
+| grok    | =chat_history.jsonl= + =summary.json=                 | recap_requests, updates.jsonl, images    |
+| agy     | conversation sqlite, UTF-8 salvage + summaries        | protobuf as protobuf (there is no schema)|
+
+Grok's on-disk bulk is recaps, ACP streams and images, not chat.  Import
+does not touch those.
+
+#+begin_src bash
+  cd server && uv sync
+  # optional, Emacs starts this itself:
+  uv run uvicorn main:app --host 127.0.0.1 --port 49152
+#+end_src
+
+Then =SPC a h I= (or =M-x ghostherd-memory-import=) once, then =SPC a h /=
+to search.  Import is CPU-heavy (FastEmbed) and runs *in the sidecar*,
+not inside Emacs: watch =*ghostherd-memory*= for per-file progress; a
+second =I= while one is running is a no-op.  Already-imported files are
+skipped.  =C-u SPC a h /= restricts search to the current project; the
+default is all of them, because the usual failure is "I forgot which
+project".
+
+An agent can ask the same index:
+
+#+begin_src bash
+  bin/ghostherd memory search "agy-ghost-commit blocked"
+#+end_src
+
+Data lives in =~/.emacs.d/ghostherd-memory/= (Qdrant path + a sqlite
+watermark so a second import only re-embeds what changed).  Prefix
+=I= with =C-u= to force a full re-embed.  The default embedding model is
+=bge-small-zh-v1.5= (~70 chunk/s on this Mac).  Multilingual MiniLM is
+slower and still available via =GHOSTHERD_MEMORY_EMBED_MODEL=.  Not
+English-only bge-small-en.  Tests set =GHOSTHERD_MEMORY_FAKE_EMBED=1=
+so they never download a model.  Grok tool dumps are skipped (they are
+most of grok's bytes and rarely what you search).
+
+Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
+its cache; watch =*ghostherd-memory*= if that seems stuck.
+
 * Config knobs
 
 #+begin_src emacs-lisp
@@ -728,6 +795,11 @@ not re-read.
         ghostherd-tmux-status-ttl 1.0          ; interactive liveness reads
         ghostherd-tmux-fetch-timeout 10        ; give up on a wedged server
         ghostherd-tmux-config nil)             ; nil = generate one
+
+  ;; Shared transcript memory.  Not started by ghostherd-mode.
+  (setq ghostherd-memory-port 49152
+        ghostherd-memory-port-tries 32
+        ghostherd-memory-search-limit 8)
 
   ;; Permanent default args example:
   (setf (alist-get 'claude ghostherd-agent-specs)
