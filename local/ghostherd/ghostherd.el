@@ -59,6 +59,10 @@
 (defvar ghostel-exit-functions)
 (defvar ghostel-command-start-functions)
 (defvar ghostel-command-finish-functions)
+(defvar ghostel--input-mode)
+(declare-function ghostel-copy-mode "ghostel")
+(declare-function ghostel-readonly-exit "ghostel")
+(declare-function evil-define-key* "evil")
 
 
 ;;; Customization
@@ -1380,6 +1384,8 @@ global setting rather than a hook and is very likely someone's spinner."
   (add-hook 'ghostel-exit-functions #'ghostherd--on-ghostel-exit)
   (add-hook 'ghostel-command-start-functions #'ghostherd--on-command-start)
   (add-hook 'ghostel-command-finish-functions #'ghostherd--on-command-finish)
+  (advice-add 'ghostel-copy-mode :after #'ghostherd--copy-mode-sync-evil)
+  (advice-add 'ghostel-readonly-exit :after #'ghostherd--copy-mode-sync-evil)
   (when (and ghostherd-use-osc-progress
              (boundp 'ghostel-progress-function)
              (not (eq ghostel-progress-function #'ghostherd--on-progress)))
@@ -1394,6 +1400,8 @@ keep someone else's spinner permanently displaced."
   (remove-hook 'ghostel-exit-functions #'ghostherd--on-ghostel-exit)
   (remove-hook 'ghostel-command-start-functions #'ghostherd--on-command-start)
   (remove-hook 'ghostel-command-finish-functions #'ghostherd--on-command-finish)
+  (advice-remove 'ghostel-copy-mode #'ghostherd--copy-mode-sync-evil)
+  (advice-remove 'ghostel-readonly-exit #'ghostherd--copy-mode-sync-evil)
   (when (and (boundp 'ghostel-progress-function)
              (eq ghostel-progress-function #'ghostherd--on-progress))
     (setq ghostel-progress-function ghostherd--saved-progress-function
@@ -2481,13 +2489,17 @@ keys are what scroll it."
 
 (defun ghostherd--scroll (lines)
   "Scroll the agent viewed in the current buffer back by LINES."
-  (let ((session (ghostherd-get (current-buffer))))
-    (unless session
-      (user-error "Not a ghostherd agent buffer"))
-    (unless (ghostherd--host-scroll session lines)
-      ;; A host that does not scroll its own view keeps its output in the
-      ;; buffer, where Emacs has always been able to scroll it.
-      (if (> lines 0) (scroll-down lines) (scroll-up (- lines))))))
+  (if (eq ghostel--input-mode 'copy)
+      ;; The client is frozen; driving tmux would move a host this
+      ;; buffer no longer shows.
+      (if (> lines 0) (scroll-down lines) (scroll-up (- lines)))
+    (let ((session (ghostherd-get (current-buffer))))
+      (unless session
+        (user-error "Not a ghostherd agent buffer"))
+      (unless (ghostherd--host-scroll session lines)
+        ;; A host that does not scroll its own view keeps its output in the
+        ;; buffer, where Emacs has always been able to scroll it.
+        (if (> lines 0) (scroll-down lines) (scroll-up (- lines)))))))
 
 ;;;###autoload
 (defun ghostherd-scroll-up (&optional lines)
@@ -2527,6 +2539,34 @@ rather than a mode command."
     (unless (ghostherd--host-scroll session (- (* 1000 ghostherd-scroll-lines)))
       (goto-char (point-max)))))
 
+(defun ghostherd--copy-mode-sync-evil (&rest _)
+  "Use Evil normal state in copy mode so search keys do not exit it.
+
+`ghostel-readonly-fast-exit' leaves copy mode on any self-insert.
+Evil emacs state makes `?' and `/' self-insert, so the first key
+meant to search would drop copy mode -- which is how it looked
+impossible to enter."
+  (when (and (derived-mode-p 'ghostel-mode)
+             (bound-and-true-p ghostherd-session-id)
+             (bound-and-true-p evil-local-mode)
+             (fboundp 'evil-normal-state)
+             (fboundp 'evil-emacs-state))
+    (if (eq ghostel--input-mode 'copy)
+        (evil-normal-state)
+      (evil-emacs-state))))
+
+;;;###autoload
+(defun ghostherd-copy-mode ()
+  "Toggle ghostel copy mode in this agent view.
+
+Bound to `C-z' so it wins against Evil's emacs-state map, which
+would otherwise take `C-z' for `evil-exit-emacs-state' and leave
+the terminal live."
+  (interactive)
+  (unless (derived-mode-p 'ghostel-mode)
+    (user-error "Not a ghostel buffer"))
+  (call-interactively #'ghostel-copy-mode))
+
 (defvar-keymap ghostherd-terminal-mode-map
   :doc "Scrolling for an attached agent view, in the vocabulary Emacs uses."
   "<wheel-up>"     #'ghostherd-scroll-up
@@ -2537,7 +2577,28 @@ rather than a mode command."
   "<next>"         #'ghostherd-scroll-page-down
   "M-v"            #'ghostherd-scroll-page-up
   "C-M-v"          #'ghostherd-scroll-page-down
-  "M->"            #'ghostherd-scroll-bottom)
+  "M->"            #'ghostherd-scroll-bottom
+  "C-z"            #'ghostherd-copy-mode)
+
+(defun ghostherd--bind-evil-copy-mode ()
+  "Bind `C-z' in Evil emacs/normal so it is not `evil-exit-emacs-state'.
+
+Must call `evil-define-key*', the function.  `evil-define-key' is
+a macro; if this file is compiled without evil loaded the call is
+left as a function and startup dies with `Invalid function'."
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* 'emacs ghostherd-terminal-mode-map
+      (kbd "C-z") #'ghostherd-copy-mode)
+    (evil-define-key* 'normal ghostherd-terminal-mode-map
+      (kbd "C-z") #'ghostherd-copy-mode)))
+
+(with-eval-after-load 'evil
+  (ghostherd--bind-evil-copy-mode))
+
+;; So reloading this file is enough; `ghostherd-mode' still adds/removes
+;; the same pair around its own lifetime.
+(advice-add 'ghostel-copy-mode :after #'ghostherd--copy-mode-sync-evil)
+(advice-add 'ghostel-readonly-exit :after #'ghostherd--copy-mode-sync-evil)
 
 ;;;###autoload
 (define-minor-mode ghostherd-terminal-mode
@@ -2551,7 +2612,10 @@ host's own view instead, and the same buffer shows older output.
 
 The mechanism is tmux copy mode, driven by command rather than by a
 prefix key, so it never becomes something to learn or get stuck in:
-scrolling back to the bottom leaves it automatically.
+scrolling back to the bottom leaves it automatically.  Ghostel copy
+mode is separate: `C-z' (and ghostel's own `C-c C-t') freeze the
+current screen to select text.  That is not history -- overlay `H'
+is.
 
 Evil users in normal state will want the commands bound there too --
 `ghostherd-scroll-up\=', `ghostherd-scroll-down\=' and the two page

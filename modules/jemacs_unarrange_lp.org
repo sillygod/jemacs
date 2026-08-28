@@ -372,8 +372,10 @@
     (use-package docker
       :defer t)
 
-    (use-package docker-tramp
-      :defer t)
+    ;; Emacs 29+: /docker: /podman: /kubernetes: live in tramp-container.
+    ;; docker-tramp is obsolete and prints a warning if loaded.
+    (with-eval-after-load 'tramp
+      (require 'tramp-container))
 
     (use-package dockerfile-mode
       :defer t)
@@ -1211,6 +1213,8 @@
           ("b" "project buffers" consult-project-buffer)
           ("B" "buffer lists" consult-buffer)
           ("o" "other window" other-window)
+          ("t" "terminals" switch-terminal :transient transient--do-exit)
+          ("<escape>" "quit" transient-quit-all)
           ("q" "quit" transient-quit-all)]
          ["Action"
           ("d" "delete" kill-this-buffer)
@@ -1503,6 +1507,7 @@
        "bn" '(next-buffer :which-key "next-buffer")
        "bp" '(previous-buffer :which-key "previous-buffer")
        "bN" '(new-empty-buffer :which-key "new empty buffer")
+       "bt" '(switch-terminal :which-key "switch terminal")
        "b." '(buffer-transient :which-key "buffer transient"))
 
       (define-leader-key-global

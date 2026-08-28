@@ -571,9 +571,14 @@ everything and Emacs already scrolls it.
 what leaves tmux's copy mode, so it means "put me back where I can
 type" rather than being a mode command.
 
+Copying text off the screen is ghostel's copy mode, not tmux's.
+=C-z= (the same key as vterm) or =C-c C-t= freeze the current screen so
+you can yank; overlay =H= is history.  A full-screen TUI and a tmux
+attach both only have one screen, so copy mode is not a way to search
+what has scrolled away.
+
 Evil owns those keys in normal state, so it needs its own bindings.
-=jemacs-ai= sets both states up; the five commands are the whole
-surface:
+=jemacs-ai= sets both states up:
 
 #+begin_src emacs-lisp
   (evil-define-key 'normal ghostherd-terminal-mode-map
@@ -581,12 +586,14 @@ surface:
     (kbd "C-e") #'ghostherd-scroll-down
     (kbd "C-u") #'ghostherd-scroll-page-up
     (kbd "C-d") #'ghostherd-scroll-page-down
-    (kbd "G")   #'ghostherd-scroll-bottom)
+    (kbd "G")   #'ghostherd-scroll-bottom
+    (kbd "C-z") #'ghostherd-copy-mode)
 
   (evil-define-key 'emacs ghostherd-terminal-mode-map
-    (kbd "C-v") #'ghostherd-scroll-page-down
+    (kbd "C-M-v") #'ghostherd-scroll-page-down
     (kbd "M-v") #'ghostherd-scroll-page-up
-    (kbd "M->") #'ghostherd-scroll-bottom)
+    (kbd "M->") #'ghostherd-scroll-bottom
+    (kbd "C-z") #'ghostherd-copy-mode)
 #+end_src
 
 ** Reading it elsewhere (=ghostherd-scrollback=)

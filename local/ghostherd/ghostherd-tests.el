@@ -29,7 +29,9 @@
 ;; errors, so give them defaults the way a loaded ghostel would.
 (defvar-local ghostel--title nil)
 (defvar-local ghostel--process nil)
+(defvar-local ghostel--input-mode nil)
 (defvar ghostel-progress-function nil)
+(defvar evil-local-mode nil)
 
 (defmacro ghostherd-tests--with-herd (bindings &rest body)
   "Run BODY with an empty session registry.
@@ -368,6 +370,58 @@ rather than erroring."
           (let ((ghostherd-scroll-lines 3))
             (ghostherd-scroll-up))))
       (should (equal scrolled 3)))))
+
+(ert-deftest ghostherd-test-copy-mode-is-on-c-z ()
+  (should (eq (lookup-key ghostherd-terminal-mode-map (kbd "C-z"))
+              #'ghostherd-copy-mode)))
+
+(ert-deftest ghostherd-test-bind-evil-copy-mode-without-evil ()
+  "A no-op when `evil-define-key*' is missing, never a macro call."
+  (let ((saved (and (fboundp 'evil-define-key*)
+                    (symbol-function 'evil-define-key*))))
+    (when saved
+      (fmakunbound 'evil-define-key*))
+    (unwind-protect
+        (ghostherd--bind-evil-copy-mode)
+      (when saved
+        (fset 'evil-define-key* saved)))))
+
+(ert-deftest ghostherd-test-copy-mode-syncs-evil ()
+  "Copy mode with Evil emacs state makes `?' a self-insert, and
+`ghostel-readonly-fast-exit' then leaves copy mode on the first
+search key."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (state nil))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (setq-local ghostel--input-mode 'copy)
+        (cl-letf (((symbol-function 'derived-mode-p) (lambda (&rest _) t))
+                  ((symbol-function 'evil-normal-state)
+                   (lambda (&rest _) (setq state 'normal)))
+                  ((symbol-function 'evil-emacs-state)
+                   (lambda (&rest _) (setq state 'emacs)))
+                  (evil-local-mode t))
+          (ghostherd--copy-mode-sync-evil)
+          (should (eq state 'normal))
+          (setq-local ghostel--input-mode 'semi-char)
+          (ghostherd--copy-mode-sync-evil)
+          (should (eq state 'emacs)))))))
+
+(ert-deftest ghostherd-test-copy-mode-scrolls-the-frozen-buffer ()
+  "While copy mode holds the view, the wheel must not drive tmux --
+that would move a host the frozen client no longer shows."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a"))
+          (scrolled nil))
+      (with-current-buffer (ghostherd-session-buffer s)
+        (setq-local ghostel--input-mode 'copy)
+        (cl-letf (((symbol-function 'scroll-down)
+                   (lambda (&optional n) (setq scrolled n))))
+          (ghostherd-tests--with-tmux nil
+            (let ((ghostherd-scroll-lines 3))
+              (ghostherd-scroll-up)))))
+      (should (equal scrolled 3))
+      (should-not (ghostherd-tests--tmux-call "copy-mode")))))
 
 ;;; The view has to be the size of the window
 

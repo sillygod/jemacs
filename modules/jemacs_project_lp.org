@@ -142,14 +142,25 @@
 
   #+begin_src emacs-lisp
         (defun toggle-copy-mode-respect-to-model-state ()
+          "Toggle terminal copy mode together with Evil emacs/normal state."
           (interactive)
           (cond
+           ((derived-mode-p 'ghostel-mode)
+            (call-interactively 'ghostel-copy-mode))
            ((evil-emacs-state-p)
             (evil-normal-state)
             (call-interactively 'vterm-copy-mode))
            ((evil-normal-state-p)
             (evil-emacs-state)
             (call-interactively 'vterm-copy-mode))))
+
+        (defun jemacs-ghostel-sync-evil-copy-mode (&rest _)
+          "Use Evil normal state in copy mode so search keys do not exit it."
+          (when (and (derived-mode-p 'ghostel-mode)
+                     (bound-and-true-p evil-local-mode))
+            (if (eq ghostel--input-mode 'copy)
+                (evil-normal-state)
+              (evil-emacs-state))))
 
 
         (use-package vterm
@@ -217,12 +228,17 @@ value is the terminal lagging behind the window while you drag.")
           :ensure t
           :config
           (advice-add 'ghostel--adjust-size :around #'jemacs-ghostel-debounce-resize)
+          (advice-add 'ghostel-copy-mode :after #'jemacs-ghostel-sync-evil-copy-mode)
+          (advice-add 'ghostel-readonly-exit :after #'jemacs-ghostel-sync-evil-copy-mode)
           ;; Same reason as vterm: a terminal's keys belong to the program
           ;; in it.  Evil normal state eats j/k, Escape, C-v (Claude
           ;; image paste) and anything an agent TUI bound.  emacs state
-          ;; passes them through; C-z still toggles if you need motions.
+          ;; passes them through; C-z toggles copy mode for motions.
+          (define-key ghostel-mode-map (kbd "C-z") #'ghostel-copy-mode)
           (with-eval-after-load 'evil
-            (evil-set-initial-state 'ghostel-mode 'emacs)))
+            (evil-set-initial-state 'ghostel-mode 'emacs)
+            (evil-define-key 'emacs 'ghostel-mode-map (kbd "C-z") #'ghostel-copy-mode)
+            (evil-define-key 'normal 'ghostel-mode-map (kbd "C-z") #'ghostel-copy-mode)))
   #+end_src
 
 
@@ -285,6 +301,36 @@ value is the terminal lagging behind the window while you drag.")
         (if (project-current nil)
             (project-run-ghostel)
           (ghostel))))
+
+    (defun jemacs-project-layer-name (dir)
+      "Workspace/layer name for DIR, same rule as `consult-switch-project'."
+      (when-let* ((proj (project-current nil dir)))
+        (file-name-nondirectory
+         (directory-file-name
+          (file-name-directory (project-root proj))))))
+
+    (defun switch-terminal ()
+      "Pick a ghostel buffer, switch to its jworkspace layer, then display it.
+
+    Must list *all* terminals, not `ghostel-project-list-buffers': that
+    command is already scoped to the current project, whose layer is the
+    one you are on.  Switch the layer *before* displaying the buffer so
+    `window-state-put' does not wipe the selection."
+      (interactive)
+      (require 'ghostel)
+      (let* ((bufs (ghostel--all-buffers))
+             (buf (progn
+                    (unless bufs
+                      (user-error "No ghostel buffers"))
+                    (ghostel--read-buffer "Ghostel buffer: " bufs)))
+             (dir (buffer-local-value 'default-directory buf))
+             (layer (and dir (jemacs-project-layer-name dir))))
+        (when layer
+          (if (or (jworkspace-worsapce-existp layer)
+                  (y-or-n-p (format "create a new layer: %s" layer)))
+              (jworkspace-switch-workspace layer)))
+        (pop-to-buffer buf (append display-buffer--same-window-action
+                                   '((category . comint))))))
 
     (defun avy-jump-url ()
       "Use avy to go to url in the buffer."

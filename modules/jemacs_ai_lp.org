@@ -618,7 +618,8 @@
                (kbd "C-e") #'ghostherd-scroll-down
                (kbd "C-u") #'ghostherd-scroll-page-up
                (kbd "C-d") #'ghostherd-scroll-page-down
-               (kbd "G")   #'ghostherd-scroll-bottom)
+               (kbd "G")   #'ghostherd-scroll-bottom
+               (kbd "C-z") #'ghostherd-copy-mode)
 
              ;; `C-M-v', not `C-v': a terminal key belongs to whatever is running
              ;; in the terminal, and Claude Code pastes images from the clipboard
@@ -628,7 +629,8 @@
              (evil-define-key 'emacs ghostherd-terminal-mode-map
                (kbd "C-M-v") #'ghostherd-scroll-page-down
                (kbd "M-v") #'ghostherd-scroll-page-up
-               (kbd "M->") #'ghostherd-scroll-bottom)))
+               (kbd "M->") #'ghostherd-scroll-bottom
+               (kbd "C-z") #'ghostherd-copy-mode)))
   #+end_src
 
 * provide package
