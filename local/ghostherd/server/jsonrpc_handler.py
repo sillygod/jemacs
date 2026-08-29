@@ -9,6 +9,7 @@ from typing import Any, Callable
 from pydantic import BaseModel
 
 from engine import get_engine
+from herd import get_herd
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -46,6 +47,10 @@ class JsonRpcHandler:
             "memory_search": self._search,
             "memory_list": self._list,
             "memory_chunks": self._chunks,
+            "herd_list": self._herd_list,
+            "herd_message": self._herd_message,
+            "herd_inbox": self._herd_inbox,
+            "herd_tick": self._herd_tick,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -127,6 +132,39 @@ class JsonRpcHandler:
             limit=int(params.get("limit") or 400),
             offset=int(params.get("offset") or 0),
         )
+
+    def _herd_list(self, params: dict) -> dict:
+        project = params.get("project") or None
+        return get_herd().list_sessions(project=project)
+
+    def _herd_message(self, params: dict) -> dict:
+        to = params.get("to")
+        if params.get("body") is None:
+            raise ValueError("body is required")
+        submit = params.get("submit", True)
+        return get_herd().enqueue(
+            to=str(to or ""),
+            body=str(params.get("body")),
+            from_name=params.get("from"),
+            submit=bool(submit) if submit is not None else True,
+            handoff=bool(params.get("handoff")),
+        )
+
+    def _herd_inbox(self, params: dict) -> dict:
+        session = params.get("session") or params.get("name") or ""
+        return get_herd().inbox(
+            session=str(session),
+            limit=params.get("limit", 50),
+        )
+
+    def _herd_tick(self, params: dict) -> dict:
+        sessions = params.get("sessions") or []
+        if not isinstance(sessions, list):
+            raise ValueError("sessions must be a list")
+        ack_ids = params.get("ack_ids") or []
+        if not isinstance(ack_ids, list):
+            raise ValueError("ack_ids must be a list")
+        return get_herd().tick(sessions=sessions, ack_ids=[str(i) for i in ack_ids])
 
 
 handler = JsonRpcHandler()

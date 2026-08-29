@@ -177,6 +177,18 @@ Only if ghostel shell integration works in that buffer:
 
 Expected: text listing / state line; unknown session returns a clear error string.
 
+** T6b — sidecar herd mail (no binary)
+
+tmux backend; sidecar already up (=ghostherd-mode=).
+
+| Step | Action | Expected |
+|------+--------+----------|
+| 1 | In an agent pane, =echo $GHOSTHERD_RPC= | =http://127.0.0.1:<port>/jsonrpc= |
+| 2 | =curl -sS "$GHOSTHERD_RPC" ... herd_list= | JSON with both session names |
+| 3 | =herd_message= to an *idle* sibling | Attributed prompt appears within a couple of polls |
+| 4 | Repeat while the sibling is =working= | Held until idle, then pasted |
+| 5 | Overlay =m= | Still immediate; does not wait on the queue |
+
 ** T7 — Exit / kill / notify
 
 | Step | Action                                      | Expected                                |

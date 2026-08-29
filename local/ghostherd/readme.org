@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.8* — shared transcript memory (Python sidecar)            |
+| Phase       | *3.9* — sidecar herd mail (JSON-RPC, no binary)              |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -33,6 +33,7 @@ readers and different lifetimes:
 - State polling: =working= / =blocked= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
+- Agents can mail each other through the sidecar (=herd_message= / =herd_list= on =GHOSTHERD_RPC=), without =bin/ghostherd=
 - Agents know their own name (=GHOSTHERD_SESSION=) and can say =self=
 - Agents can report their own state, so =blocked= / =done= need not be
   scraped off a screen --- see "Agents that report themselves"
@@ -333,6 +334,30 @@ the file it just wrote.
 - Gives up when the session dies rather than waiting out the timeout.
 - Matching is *case-sensitive*, and so are =:screen-rules= --- see
   "Rule matching case" in [[file:docs/design.org][docs/design.org]].
+
+* Mail without the binary
+
+tmux-hosted agents have no =ghostel_cmd=, and =bin/ghostherd= is not on
+their PATH.  The sidecar they already share for memory is the bus.
+
+At spawn they get =GHOSTHERD_RPC= (JSON-RPC URL).  =ghostherd-mode=
+starts the sidecar so that URL exists.  The same URL is written to
+=ghostherd-mail/rpc.url= under =user-emacs-directory=, with
+=PROTOCOL.md= next to it.
+
+#+begin_src bash
+  curl -sS "$GHOSTHERD_RPC" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"herd_list","params":{}}'
+#+end_src
+
+=herd_message= queues ={from, to, body, handoff}=.  Each poll Emacs
+calls =herd_tick=: push the session snapshot, ack what it already
+pasted, pull whatever is deliverable.  A target that is =working= is
+not deliverable; the sidecar holds the row until it is idle.  Overlay
+=m= still pastes immediately and does not use the queue.
+
+A skill lives in =skills/ghostherd-mail/SKILL.md=; copy or symlink it
+into the CLI's skill directory.  The herd does not install it for you.
 
 * Handing work to another agent
 

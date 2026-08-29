@@ -291,7 +291,7 @@ log outlives Emacs".
 - A log per project or per session. The herd log is the herd's, and
   filtering a buffer is a different feature from splitting a file
 
-* Phase 3.8 — Shared transcript memory  *(this tree)*
+* Phase 3.8 — Shared transcript memory  *(done)*
 
 Goal: search what claude / grok / agy already did, including across
 projects, without merging their stores and without putting FastEmbed
@@ -321,12 +321,41 @@ inside Emacs.
 
 ** Deliberately not done
 
-- Starting the sidecar from =ghostherd-mode=
+- Starting the sidecar from =ghostherd-mode= — reversed in 3.9 so
+  spawn can inject =GHOSTHERD_RPC=
 - Docker Qdrant, or a second HTTP service for embeddings
 - English-only bge-small
 - Merging or rewriting the CLI transcript directories
 - Importing grok =recap_requests/=, =updates.jsonl=, or images
 - Auto-import on a timer
+
+* Phase 3.9 — Sidecar herd mail  *(this tree)*
+
+Goal: tmux-hosted agents mail each other without =bin/ghostherd= or
+=ghostel_cmd=.
+
+** What shipped
+
+- [X] =herd_list= / =herd_message= / =herd_inbox= / =herd_tick= on the
+  existing FastAPI process; sqlite =herd.sqlite= next to the memory index
+- [X] =GHOSTHERD_RPC= at spawn; =ghostherd-mode= starts the sidecar;
+  =ghostherd-mail/rpc.url= + =PROTOCOL.md=
+- [X] Poll drains =herd_tick= asynchronously; =working= holds; overlay
+  =m= stays in-process
+- [X] pytest + ERT; skill in =skills/ghostherd-mail/=
+
+** What is left
+
+- [ ] Dogfood: research agent =herd_message= to a sibling while that
+  sibling is working, then idle
+- [ ] Optional MCP wrapper around the same methods
+
+** Deliberately not done
+
+- Putting =bin/= on PATH
+- Auto-installing the skill into =~/.claude= / =~/.grok=
+- Changing =/health= ="service":"ghostherd-memory"=
+- File outbox as a second bus
 
 * Phase 4 — Ecosystem (only if still useful)
 

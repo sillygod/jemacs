@@ -11,9 +11,10 @@
 ;; process (FastAPI JSON-RPC, the same shape as ecloud) imports them into
 ;; Qdrant with FastEmbed and answers search over HTTP.
 ;;
-;; The sidecar is persistent because FastEmbed's model load is slow.  It
-;; is not started by `ghostherd-mode': the first memory command starts it.
-;; Bind loopback only; there is no transport auth.
+;; The sidecar is persistent because FastEmbed's model load is slow.
+;; `ghostherd-mode' starts it so spawned agents get `GHOSTHERD_RPC';
+;; a memory command also starts it.  Bind loopback only; there is no
+;; transport auth.
 
 ;;; Code:
 
@@ -154,6 +155,12 @@ Search order:
   (format "http://%s:%d/jsonrpc"
           ghostherd-memory-host
           (or port (ghostherd-memory--current-port))))
+
+(defun ghostherd-memory-rpc-url ()
+  "Public JSON-RPC URL if this Emacs has bound or reused a sidecar port.
+Nil until `ghostherd-memory-start' succeeds, so spawn does not advertise
+a port we never opened."
+  (and ghostherd-memory--port (ghostherd-memory--rpc-url)))
 
 (defun ghostherd-memory--health-url (&optional port)
   (format "http://%s:%d/health"
@@ -370,6 +377,7 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
           (setq ghostherd-memory--port existing)
           (message "ghostherd-memory: already running at %s"
                    (ghostherd-memory--rpc-url))
+          (ghostherd-memory--write-rpc-locator)
           t)
       (let ((dir (ghostherd-memory--server-directory)))
         (unless dir
@@ -403,7 +411,20 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
                           ghostherd-memory-port
                           (car (last (ghostherd-memory--port-candidates))))))
           (message "ghostherd-memory: ready on %s" (ghostherd-memory--rpc-url))
+          (ghostherd-memory--write-rpc-locator)
           t)))))
+
+(defun ghostherd-memory--mail-directory ()
+  (expand-file-name "ghostherd-mail" user-emacs-directory))
+
+(defun ghostherd-memory--write-rpc-locator ()
+  "Write the bound RPC URL so a stale spawn env can be recovered."
+  (when-let* ((url (ghostherd-memory-rpc-url)))
+    (let ((dir (ghostherd-memory--mail-directory)))
+      (make-directory dir t)
+      (let ((coding-system-for-write 'utf-8))
+        (with-temp-file (expand-file-name "rpc.url" dir)
+          (insert url))))))
 
 (defun ghostherd-memory--wait-for-health (timeout)
   "Wait until /health is ours, the process dies, or TIMEOUT seconds.

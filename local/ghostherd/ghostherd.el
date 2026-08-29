@@ -17,7 +17,7 @@
 ;; - Spawn claude / grok / agy (or a plain shell) per project
 ;; - Multiple concurrent agents (e.g. implementer + reviewer)
 ;; - Session list (posframe overlay, side window fallback) + consult switcher
-;; - Inter-agent messaging (prompt, send, read, wait, message)
+;; - Inter-agent messaging (prompt, send, read, wait, message, sidecar herd_*)
 ;; - Notifications on blocked / process exit (via alert when available)
 ;; - Shared transcript memory (Python sidecar: import + search)
 ;;
@@ -3316,8 +3316,105 @@ A state change already redraws via `ghostherd--set-state', but the Age
 column advances with no state change at all, so refresh on each tick
 while the sidebar is actually on screen."
   (ghostherd-poll-all)
+  (ghostherd--herd-tick-async)
   (when (ghostherd--sidebar-on-screen-p)
     (ghostherd--sidebar-refresh)))
+
+
+;;; Sidecar herd mail (agents POST /jsonrpc; Emacs delivers to PTYs)
+
+(defvar ghostherd--herd-ack-ids nil
+  "Mail ids delivered this cycle, acked on the next `herd_tick'.")
+
+(defvar ghostherd--herd-tick-inflight nil
+  "Non-nil while an async `herd_tick' is in flight.")
+
+(defconst ghostherd--herd-protocol "\
+Inter-agent mail on this Emacs's ghostherd sidecar.
+
+Environment:
+  GHOSTHERD_SESSION  this agent's name
+  GHOSTHERD_RPC      POST JSON-RPC 2.0 here
+  rpc.url            same URL, in this directory, if the env is stale
+
+curl -sS \"$GHOSTHERD_RPC\" -H 'Content-Type: application/json' \\
+  -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"herd_list\",\"params\":{}}'
+
+{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"herd_message\",\"params\":{
+   \"from\":\"<GHOSTHERD_SESSION>\",
+   \"to\":\"grok-dev\",
+   \"body\":\"Findings:\\n- ...\",
+   \"handoff\":true}}
+
+Emacs pastes into the target PTY.  If that agent is working, the
+sidecar holds the message until it is idle.  Overlay m does not
+use this queue.  Long bodies: method herd_inbox, params session=<name>.
+")
+
+(defun ghostherd--herd-write-protocol ()
+  "Refresh PROTOCOL.md next to rpc.url."
+  (let ((dir (expand-file-name "ghostherd-mail" user-emacs-directory)))
+    (make-directory dir t)
+    (let ((coding-system-for-write 'utf-8))
+      (with-temp-file (expand-file-name "PROTOCOL.md" dir)
+        (insert ghostherd--herd-protocol)))))
+
+(defun ghostherd--herd-snapshot ()
+  "Session list pushed to the sidecar each poll."
+  (mapcar
+   (lambda (s)
+     (list :name (ghostherd-session-name s)
+           :kind (symbol-name (or (ghostherd-session-kind s) 'shell))
+           :state (symbol-name (or (ghostherd-session-state s) 'idle))
+           :notes (or (ghostherd-session-notes s) "")
+           :project (or (ghostherd-session-project s) "")))
+   (hash-table-values ghostherd--sessions)))
+
+(defun ghostherd--herd-deliver-one (msg)
+  "Paste one sidecar mail MSG through `ghostherd-message' / `handoff'."
+  (let* ((from (or (plist-get msg :from) "unknown"))
+         (to (plist-get msg :to))
+         (body (or (plist-get msg :body) ""))
+         (handoff (plist-get msg :handoff))
+         (submit (if (plist-member msg :submit)
+                     (plist-get msg :submit)
+                   t)))
+    (if handoff
+        (ghostherd-handoff to body from)
+      (ghostherd-message from to body :submit submit))))
+
+(defun ghostherd--herd-deliver (result)
+  "Deliver pending mail from a `herd_tick' RESULT plist."
+  (dolist (msg (plist-get result :pending))
+    (let ((id (plist-get msg :id)))
+      (condition-case err
+          (ghostherd--herd-deliver-one msg)
+        (error
+         (message "ghostherd herd mail %s: %s"
+                  id (error-message-string err))))
+      (when id
+        (push id ghostherd--herd-ack-ids)))))
+
+(defun ghostherd--herd-tick-async ()
+  "Push the snapshot and pull deliverable mail.  Never blocks the timer."
+  (when (and (not ghostherd--herd-tick-inflight)
+             (fboundp 'ghostherd-memory-rpc-url)
+             (ghostherd-memory-rpc-url)
+             (fboundp 'ghostherd-memory-request-async))
+    (let ((acks (or ghostherd--herd-ack-ids [])))
+      (setq ghostherd--herd-tick-inflight t)
+      (ghostherd-memory-request-async
+       "herd_tick"
+       (lambda (result)
+         (setq ghostherd--herd-tick-inflight nil
+               ghostherd--herd-ack-ids
+               (seq-difference ghostherd--herd-ack-ids
+                               (append acks nil)))
+         (ghostherd--herd-deliver result))
+       (list :sessions (vconcat (ghostherd--herd-snapshot))
+             :ack_ids (vconcat (append acks nil)))
+       (lambda (_err)
+         (setq ghostherd--herd-tick-inflight nil))))))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."
@@ -3804,6 +3901,8 @@ sweeps every `ghostherd-poll-interval'."
         ;; a previous Emacs is picked up here, before anything asks for
         ;; a session list.
         (ignore-errors (ghostherd-restore))
+        (ignore-errors (ghostherd-memory-start))
+        (ignore-errors (ghostherd--herd-write-protocol))
         (ghostherd--ensure-poll-timer)
         (unless (member '(:eval (ghostherd--mode-line-segment)) mode-line-misc-info)
           (setq mode-line-misc-info

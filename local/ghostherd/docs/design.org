@@ -289,6 +289,28 @@ Arrows rather than the digit because some CLIs accept the number as text
 and some only respond to arrows, and there is no way to tell which you
 are looking at from outside. Arrows work for both.
 
+** Why agent mail is JSON-RPC on the memory sidecar
+
+tmux-hosted agents cannot use =ghostel_cmd= (the integration is in
+ghostel's shell, and here that shell is =tmux attach=).  Putting
+=bin/ghostherd= on PATH would work and is what the CLI is for, but
+spawn execs the agent directly, so the binary is not there unless
+someone configured it.
+
+The sidecar is already a localhost JSON-RPC process Emacs talks to.
+=herd_message= / =herd_tick= reuse it: sqlite next to =sources.sqlite=,
+not a second daemon.  The sidecar still cannot type into a PTY;
+=herd_tick= is Emacs pulling work on the poll it already runs.
+
+Queue-until-idle lives in the sidecar because it has the snapshot.
+Pasting into a =working= TUI is how a research dump lands in the
+middle of a tool call.  Overlay =m= stays in-process and immediate
+on purpose.
+
+=GHOSTHERD_RPC= is injected only after the sidecar has a bound port,
+so spawn does not advertise a URL that was never opened.  A restart
+that changes port writes =ghostherd-mail/rpc.url=.
+
 ** Why handoff is asynchronous
 
 =ghostherd-wait= blocks in a =sit-for= loop, which would freeze you out

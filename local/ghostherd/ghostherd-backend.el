@@ -51,6 +51,7 @@
 (defvar ghostel-command-finish-functions)
 
 ;; server.el's, read for `GHOSTHERD_SOCKET' in `ghostherd-agent-environment'.
+(declare-function ghostherd-memory-rpc-url "ghostherd-memory")
 (defvar server-name)
 
 
@@ -236,6 +237,10 @@ shell ghostel spawns, which there is `tmux attach' -- so the wrapper is
 its only way back into the herd, and it should reach *this* Emacs
 without anyone having configured it.
 
+`GHOSTHERD_RPC' is the sidecar JSON-RPC URL.  Agents mail siblings
+through it so they need neither the binary nor emacsclient.  Omitted
+until the sidecar has a bound port.
+
 It is omitted when server.el has not been loaded, which is not a case
 worth handling: an Emacs `emacsclient' can reach has loaded it, and
 `emacsclient' with no `-s' looks for the same default the variable
@@ -245,7 +250,10 @@ loading a subsystem to read one variable off it would be backwards."
    (list (format "GHOSTHERD_SESSION=%s" (plist-get plist :name))
          (format "GHOSTHERD_BACKEND=%s" backend))
    (when (and (boundp 'server-name) (stringp server-name))
-     (list (format "GHOSTHERD_SOCKET=%s" server-name)))))
+     (list (format "GHOSTHERD_SOCKET=%s" server-name)))
+   (when (and (fboundp 'ghostherd-memory-rpc-url)
+              (ghostherd-memory-rpc-url))
+     (list (format "GHOSTHERD_RPC=%s" (ghostherd-memory-rpc-url))))))
 
 
 ;;; Key names

@@ -272,3 +272,6 @@ def reset_engine() -> None:
             except Exception:
                 pass
             _engine = None
+    from herd import reset_herd
+
+    reset_herd()

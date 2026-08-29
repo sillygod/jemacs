@@ -2154,6 +2154,62 @@ should reach *this* Emacs without being configured."
     (should (member "GHOSTHERD_SOCKET=herd"
                     (ghostherd-agent-environment 'tmux '(:name "a"))))))
 
+(ert-deftest ghostherd-test-agent-environment-advertises-rpc ()
+  (cl-letf (((symbol-function 'ghostherd-memory-rpc-url)
+             (lambda () "http://127.0.0.1:49152/jsonrpc")))
+    (should (member "GHOSTHERD_RPC=http://127.0.0.1:49152/jsonrpc"
+                    (ghostherd-agent-environment 'tmux '(:name "a"))))))
+
+(ert-deftest ghostherd-test-agent-environment-omits-rpc-until-sidecar ()
+  (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () nil)))
+    (should-not
+     (cl-find "GHOSTHERD_RPC="
+              (ghostherd-agent-environment 'tmux '(:name "a"))
+              :test (lambda (pre s) (string-prefix-p pre s))))))
+
+(ert-deftest ghostherd-test-herd-snapshot-json-is-an-array ()
+  "json.el treats a list of plists as one alist.  The sidecar wants
+an array of objects, so the payload must go out as a vector."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)
+    (let* ((json-object-type 'plist)
+           (json-array-type 'list)
+           (json-key-type 'keyword)
+           (payload (json-encode
+                     (list :sessions (vconcat (ghostherd--herd-snapshot))
+                           :ack_ids [])))
+           (parsed (json-read-from-string payload))
+           (sessions (plist-get parsed :sessions)))
+      (should (listp sessions))
+      (should (equal (plist-get (car sessions) :name) "a"))
+      (should (equal (plist-get (car sessions) :kind) "agy")))))
+
+(ert-deftest ghostherd-test-herd-deliver-uses-message ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "grok-dev")
+    (let ((got nil))
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (from to body &rest keys)
+                   (setq got (list from to body keys)))))
+        (ghostherd--herd-deliver-one
+         '(:id "1" :from "claude-research" :to "grok-dev"
+               :body "hi" :handoff nil :submit t)))
+      (should (equal (nth 0 got) "claude-research"))
+      (should (equal (nth 2 got) "hi"))
+      (should (eq (plist-get (nth 3 got) :submit) t)))))
+
+(ert-deftest ghostherd-test-herd-deliver-handoff ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "grok-dev")
+    (let ((got nil))
+      (cl-letf (((symbol-function 'ghostherd-handoff)
+                 (lambda (to text &optional from &rest _)
+                   (setq got (list to text from)))))
+        (ghostherd--herd-deliver-one
+         '(:id "1" :from "claude-research" :to "grok-dev"
+               :body "hi" :handoff t)))
+      (should (equal got '("grok-dev" "hi" "claude-research"))))))
+
 (ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
   "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
 the caller is identifiable with no environment at all."

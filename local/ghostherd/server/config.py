@@ -41,6 +41,7 @@ class Config:
     onnx_provider: str = "auto"
     # tool dumps are rarely what you search for and dominate grok volume.
     index_tools: bool = False
+    mail_inline_limit: int = 4000
 
     @property
     def qdrant_path(self) -> Path:
@@ -49,6 +50,10 @@ class Config:
     @property
     def index_path(self) -> Path:
         return self.data_dir / "sources.sqlite"
+
+    @property
+    def herd_path(self) -> Path:
+        return self.data_dir / "herd.sqlite"
 
     @classmethod
     def from_env(cls) -> "Config":
