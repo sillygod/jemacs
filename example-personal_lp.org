@@ -95,6 +95,13 @@ straight.el, use-package and every module is up.
     (setq groq_api_key "")
     (setq codestral_api_key "")
     (setq gemini_api_key "")
+
+    ;; ghostherd Telegram bot (sidecar reads these at spawn, not from Lisp
+    ;; variables).  After changing them: M-x ghostherd-memory-stop then
+    ;; M-x ghostherd-memory-start.  Chat id: message the bot once and read
+    ;; `telegram ignored chat N' in *ghostherd-memory*.
+    (setenv "GHOSTHERD_TELEGRAM_TOKEN" "")
+    (setenv "GHOSTHERD_TELEGRAM_CHAT_IDS" "")
   #+end_src
 
 * wholly personal packages
