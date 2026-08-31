@@ -42,6 +42,8 @@ class Config:
     # tool dumps are rarely what you search for and dominate grok volume.
     index_tools: bool = False
     mail_inline_limit: int = 4000
+    telegram_token: str = ""
+    telegram_chat_ids: tuple[int, ...] = ()
 
     @property
     def qdrant_path(self) -> Path:
@@ -92,7 +94,24 @@ class Config:
             onnx_provider=os.getenv("GHOSTHERD_MEMORY_ONNX", "auto"),
             index_tools=os.getenv("GHOSTHERD_MEMORY_INDEX_TOOLS", "").lower()
             in ("1", "true", "yes"),
+            telegram_token=os.getenv("GHOSTHERD_TELEGRAM_TOKEN", "").strip(),
+            telegram_chat_ids=_parse_chat_ids(
+                os.getenv("GHOSTHERD_TELEGRAM_CHAT_IDS", "")
+            ),
         )
+
+
+def _parse_chat_ids(raw: str) -> tuple[int, ...]:
+    ids = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return tuple(ids)
 
 
 def get_config() -> Config:

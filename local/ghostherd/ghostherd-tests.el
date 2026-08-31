@@ -2198,6 +2198,45 @@ an array of objects, so the payload must go out as a vector."
       (should (equal (nth 2 got) "hi"))
       (should (eq (plist-get (nth 3 got) :submit) t)))))
 
+(ert-deftest ghostherd-test-poll-tick-does-not-http ()
+  "Typing must not compete with sidecar `url-retrieve'.  Mail/Telegram
+ticks live on the idle timer instead."
+  (let ((http nil))
+    (cl-letf (((symbol-function 'ghostherd--herd-tick-async)
+               (lambda () (setq http t)))
+              ((symbol-function 'ghostherd-poll-all) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-on-screen-p)
+               (lambda () nil)))
+      (ghostherd--poll-tick)
+      (should-not http))))
+
+(ert-deftest ghostherd-test-herd-run-command-interrupt ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a")
+    (let ((got nil))
+      (cl-letf (((symbol-function 'ghostherd-interrupt)
+                 (lambda (s) (setq got s))))
+        (let ((out (ghostherd--herd-run-command
+                    '(:id "1" :op "interrupt" :session "a"))))
+          (should (equal got "a"))
+          (should (equal (plist-get out :id) "1"))
+          (should (equal (plist-get out :text) "interrupted")))))))
+
+(ert-deftest ghostherd-test-herd-run-command-answer ()
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "a")
+    (let ((got nil))
+      (cl-letf (((symbol-function 'ghostherd-answer)
+                 (lambda (s n) (setq got (list s n)))))
+        (ghostherd--herd-run-command
+         '(:id "2" :op "answer" :session "a" :args (:n 3)))
+        (should (equal got '("a" 3)))))))
+
+(ert-deftest ghostherd-test-herd-run-command-unknown-is-text ()
+  (let ((out (ghostherd--herd-run-command
+              '(:id "x" :op "nope" :session "a"))))
+    (should (string-match-p "unknown op" (plist-get out :text)))))
+
 (ert-deftest ghostherd-test-herd-deliver-handoff ()
   (ghostherd-tests--with-herd ()
     (ghostherd-tests--session :name "grok-dev")

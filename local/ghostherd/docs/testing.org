@@ -189,6 +189,18 @@ tmux backend; sidecar already up (=ghostherd-mode=).
 | 4 | Repeat while the sibling is =working= | Held until idle, then pasted |
 | 5 | Overlay =m= | Still immediate; does not wait on the queue |
 
+** T6c — Telegram bot (optional)
+
+Needs =GHOSTHERD_TELEGRAM_TOKEN= and =GHOSTHERD_TELEGRAM_CHAT_IDS=, then a sidecar restart.
+
+| Step | Action | Expected |
+|------+--------+----------|
+| 1 | Message the bot from an unknown chat | No reply; =*ghostherd-memory*= logs =ignored chat= |
+| 2 | Set that chat id, restart sidecar, =/herd= | Session list with glyphs |
+| 3 | Open a =blocked= session, tap =1= | Agent receives answer; bot says =answer → …= |
+| 4 | Open a =working= session | No 1/2/3 buttons |
+| 5 | Prompt while working | Queued until idle |
+
 ** T7 — Exit / kill / notify
 
 | Step | Action                                      | Expected                                |

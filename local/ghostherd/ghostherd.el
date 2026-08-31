@@ -3314,9 +3314,11 @@ is not enough: Age would keep being rewritten after Esc."
   "Timer callback: poll every session, then keep a visible sidebar current.
 A state change already redraws via `ghostherd--set-state', but the Age
 column advances with no state change at all, so refresh on each tick
-while the sidebar is actually on screen."
+while the sidebar is actually on screen.
+
+Sidecar mail/Telegram is not on this timer.  `url-retrieve' on every
+poll hitchs typing; that path is `ghostherd--herd-tick-timer'."
   (ghostherd-poll-all)
-  (ghostherd--herd-tick-async)
   (when (ghostherd--sidebar-on-screen-p)
     (ghostherd--sidebar-refresh)))
 
@@ -3326,8 +3328,35 @@ while the sidebar is actually on screen."
 (defvar ghostherd--herd-ack-ids nil
   "Mail ids delivered this cycle, acked on the next `herd_tick'.")
 
+(defvar ghostherd--herd-replies nil
+  "Command replies to send on the next `herd_tick'.")
+
 (defvar ghostherd--herd-tick-inflight nil
   "Non-nil while an async `herd_tick' is in flight.")
+
+(defcustom ghostherd-herd-tick-idle 0.8
+  "Idle seconds before a sidecar `herd_tick'.
+
+The poll timer runs while you type, so putting HTTP on it made
+keystrokes compete with `url-retrieve'.  This fires only after Emacs
+has been idle, then repeats while it stays idle."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--herd-tick-timer nil
+  "Idle timer that drives `ghostherd--herd-tick-async'.")
+
+(defun ghostherd--ensure-herd-tick-timer ()
+  "Start the idle sidecar tick if `ghostherd-mode' is on."
+  (unless (timerp ghostherd--herd-tick-timer)
+    (setq ghostherd--herd-tick-timer
+          (run-with-idle-timer ghostherd-herd-tick-idle t
+                               #'ghostherd--herd-tick-async))))
+
+(defun ghostherd--stop-herd-tick-timer ()
+  (when (timerp ghostherd--herd-tick-timer)
+    (cancel-timer ghostherd--herd-tick-timer)
+    (setq ghostherd--herd-tick-timer nil)))
 
 (defconst ghostherd--herd-protocol "\
 Inter-agent mail on this Emacs's ghostherd sidecar.
@@ -3367,7 +3396,8 @@ use this queue.  Long bodies: method herd_inbox, params session=<name>.
            :kind (symbol-name (or (ghostherd-session-kind s) 'shell))
            :state (symbol-name (or (ghostherd-session-state s) 'idle))
            :notes (or (ghostherd-session-notes s) "")
-           :project (or (ghostherd-session-project s) "")))
+           :project (or (ghostherd-session-project s) "")
+           :reason (or (ghostherd-session-state-reason s) "")))
    (hash-table-values ghostherd--sessions)))
 
 (defun ghostherd--herd-deliver-one (msg)
@@ -3395,14 +3425,67 @@ use this queue.  Long bodies: method herd_inbox, params session=<name>.
       (when id
         (push id ghostherd--herd-ack-ids)))))
 
+(defun ghostherd--explain-text (session)
+  "One-screen explanation of SESSION state, for Telegram."
+  (setq session (ghostherd-get session))
+  (format "%s %s\n%s"
+          (ghostherd--state-glyph (ghostherd-session-state session))
+          (ghostherd-session-state session)
+          (or (ghostherd-session-state-reason session) "—")))
+
+(defun ghostherd--herd-run-command (cmd)
+  "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT)."
+  (let* ((id (plist-get cmd :id))
+         (op (format "%s" (or (plist-get cmd :op) "")))
+         (name (plist-get cmd :session))
+         (args (plist-get cmd :args))
+         (text "ok"))
+    (condition-case err
+        (pcase op
+          ("prompt"
+           (ghostherd-prompt name (or (plist-get args :body) "") nil)
+           (setq text "prompted"))
+          ("answer"
+           (let ((n (plist-get args :n)))
+             (ghostherd-answer name (truncate (or n 1))))
+           (setq text "answered"))
+          ("interrupt"
+           (ghostherd-interrupt name)
+           (setq text "interrupted"))
+          ("abort"
+           (ghostherd-abort name)
+           (setq text "aborted"))
+          ("kill"
+           (ghostherd-kill name t)
+           (setq text "killed"))
+          ("respawn"
+           (ghostherd-respawn name)
+           (setq text "respawned"))
+          ("screen"
+           (setq text (or (ghostherd-read name 40) "(empty)"))
+           (when (> (length text) 3500)
+             (setq text (concat (substring text 0 3500) "\n…"))))
+          ("explain"
+           (setq text (ghostherd--explain-text name)))
+          (_ (setq text (format "unknown op %s" op))))
+      (error (setq text (error-message-string err))))
+    (list :id id :text text)))
+
+(defun ghostherd--herd-run-commands (result)
+  "Execute Telegram commands from RESULT and queue replies."
+  (dolist (cmd (plist-get result :commands))
+    (push (ghostherd--herd-run-command cmd) ghostherd--herd-replies)))
+
 (defun ghostherd--herd-tick-async ()
-  "Push the snapshot and pull deliverable mail.  Never blocks the timer."
+  "Push the snapshot and pull mail plus Telegram commands.  Never blocks."
   (when (and (not ghostherd--herd-tick-inflight)
              (fboundp 'ghostherd-memory-rpc-url)
              (ghostherd-memory-rpc-url)
              (fboundp 'ghostherd-memory-request-async))
-    (let ((acks (or ghostherd--herd-ack-ids [])))
-      (setq ghostherd--herd-tick-inflight t)
+    (let ((acks (or ghostherd--herd-ack-ids []))
+          (replies ghostherd--herd-replies))
+      (setq ghostherd--herd-tick-inflight t
+            ghostherd--herd-replies nil)
       (ghostherd-memory-request-async
        "herd_tick"
        (lambda (result)
@@ -3410,11 +3493,15 @@ use this queue.  Long bodies: method herd_inbox, params session=<name>.
                ghostherd--herd-ack-ids
                (seq-difference ghostherd--herd-ack-ids
                                (append acks nil)))
-         (ghostherd--herd-deliver result))
+         (ghostherd--herd-deliver result)
+         (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
-             :ack_ids (vconcat (append acks nil)))
+             :ack_ids (vconcat (append acks nil))
+             :replies (vconcat (or replies [])))
        (lambda (_err)
-         (setq ghostherd--herd-tick-inflight nil))))))
+         (setq ghostherd--herd-tick-inflight nil
+               ghostherd--herd-replies
+               (append replies ghostherd--herd-replies)))))))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."
@@ -3904,6 +3991,7 @@ sweeps every `ghostherd-poll-interval'."
         (ignore-errors (ghostherd-memory-start))
         (ignore-errors (ghostherd--herd-write-protocol))
         (ghostherd--ensure-poll-timer)
+        (ghostherd--ensure-herd-tick-timer)
         (unless (member '(:eval (ghostherd--mode-line-segment)) mode-line-misc-info)
           (setq mode-line-misc-info
                 (append mode-line-misc-info
@@ -3912,10 +4000,14 @@ sweeps every `ghostherd-poll-interval'."
     (when (timerp ghostherd--poll-timer)
       (cancel-timer ghostherd--poll-timer)
       (setq ghostherd--poll-timer nil))
+    (ghostherd--stop-herd-tick-timer)
     (setq mode-line-misc-info
           (cl-remove '(:eval (ghostherd--mode-line-segment))
                      mode-line-misc-info
                      :test #'equal))))
+
+(when (bound-and-true-p ghostherd-mode)
+  (ghostherd--ensure-herd-tick-timer))
 
 
 ;;; Transient-ish quick menu (no transient dependency)

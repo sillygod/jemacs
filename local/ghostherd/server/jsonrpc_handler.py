@@ -164,7 +164,14 @@ class JsonRpcHandler:
         ack_ids = params.get("ack_ids") or []
         if not isinstance(ack_ids, list):
             raise ValueError("ack_ids must be a list")
-        return get_herd().tick(sessions=sessions, ack_ids=[str(i) for i in ack_ids])
+        replies = params.get("replies") or []
+        if not isinstance(replies, list):
+            raise ValueError("replies must be a list")
+        return get_herd().tick(
+            sessions=sessions,
+            ack_ids=[str(i) for i in ack_ids],
+            replies=replies,
+        )
 
 
 handler = JsonRpcHandler()

@@ -309,20 +309,48 @@ value is the terminal lagging behind the window while you drag.")
          (directory-file-name
           (file-name-directory (project-root proj))))))
 
+    (defvar switch-terminal-history nil
+      "History for `switch-terminal'.")
+
+    (defun switch-terminal--read (bufs)
+      "Pick one of BUFS with Consult, previewing the terminal like `consult-buffer'."
+      (require 'consult)
+      (let* ((names (mapcar #'buffer-name bufs))
+             (idx (cl-position (current-buffer) bufs))
+             (default (if idx
+                          (nth (mod (1+ idx) (length bufs)) names)
+                        (car names))))
+        (get-buffer
+         (consult--read
+          names
+          :prompt "Ghostel buffer: "
+          :default default
+          :sort nil
+          :require-match t
+          :category 'buffer
+          :history 'switch-terminal-history
+          ;; Same preview as consult-buffer.  Debounce so a TUI is not
+          ;; SIGWINCH-strobed while moving through the list.
+          :state (consult--buffer-preview)
+          :preview-key '(:debounce 0.15 any)))))
+
     (defun switch-terminal ()
       "Pick a ghostel buffer, switch to its jworkspace layer, then display it.
 
     Must list *all* terminals, not `ghostel-project-list-buffers': that
     command is already scoped to the current project, whose layer is the
     one you are on.  Switch the layer *before* displaying the buffer so
-    `window-state-put' does not wipe the selection."
+    `window-state-put' does not wipe the selection.
+
+    The list previews the terminal in the current window, like
+    `consult-buffer'."
       (interactive)
       (require 'ghostel)
       (let* ((bufs (ghostel--all-buffers))
              (buf (progn
                     (unless bufs
                       (user-error "No ghostel buffers"))
-                    (ghostel--read-buffer "Ghostel buffer: " bufs)))
+                    (switch-terminal--read bufs)))
              (dir (buffer-local-value 'default-directory buf))
              (layer (and dir (jemacs-project-layer-name dir))))
         (when layer

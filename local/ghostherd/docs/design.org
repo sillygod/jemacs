@@ -311,6 +311,28 @@ on purpose.
 so spawn does not advertise a URL that was never opened.  A restart
 that changes port writes =ghostherd-mail/rpc.url=.
 
+** Why the Telegram bot is pull and lives in the sidecar
+
+A phone is useful when Emacs is open and an agent is blocked, not as a
+second Emacs.  Push would duplicate =ghostherd--notify= and wake you
+for every =done=.  =/herd= is the overlay's list on a delay of one
+poll.
+
+Long-poll sits in the sidecar because that process already has the
+snapshot and the mail queue.  Telegram is the only extra network
+edge; the sidecar bind stays loopback.  The bot still cannot type
+into a PTY: taps become sqlite commands, =herd_tick= runs them,
+replies come back on the next tick.  Same pull as herd mail.
+
+Allowlisted chat ids, not "anyone who found the token".  Answer
+buttons exist only while the snapshot says =blocked=, so a stale
+keyboard cannot approve a tool call after the agent has moved on.
+
+=herd_tick= is an idle timer, not the 1.5s poll.  Putting
+=url-retrieve= on the poll made every keystroke share the command
+loop with HTTP.  Snapshot freshness for =/herd= can wait until
+Emacs is idle.
+
 ** Why handoff is asynchronous
 
 =ghostherd-wait= blocks in a =sit-for= loop, which would freeze you out

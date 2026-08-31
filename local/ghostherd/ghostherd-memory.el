@@ -344,6 +344,12 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
            (list (format "GHOSTHERD_MEMORY_HOST=%s" ghostherd-memory-host)
                  (format "GHOSTHERD_MEMORY_PORT=%d" port)
                  (format "GHOSTHERD_MEMORY_DIR=%s" data))
+           (when (getenv "GHOSTHERD_TELEGRAM_TOKEN")
+             (list (format "GHOSTHERD_TELEGRAM_TOKEN=%s"
+                           (getenv "GHOSTHERD_TELEGRAM_TOKEN"))))
+           (when (getenv "GHOSTHERD_TELEGRAM_CHAT_IDS")
+             (list (format "GHOSTHERD_TELEGRAM_CHAT_IDS=%s"
+                           (getenv "GHOSTHERD_TELEGRAM_CHAT_IDS"))))
            process-environment))
          (buf (get-buffer-create "*ghostherd-memory*"))
          (proc (start-process

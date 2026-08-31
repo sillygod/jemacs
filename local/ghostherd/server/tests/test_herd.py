@@ -157,3 +157,40 @@ def test_herd_rpc_round_trip(tmp_path: Path, monkeypatch):
         inbox = _rpc(client, "herd_inbox", {"session": "grok-dev"})
         assert inbox["messages"][0]["body"] == "findings"
     reset_engine()
+
+
+def test_command_round_trip(tmp_path: Path):
+    h = _store(tmp_path)
+    h.tick(sessions=[{"name": "agy", "state": "blocked", "reason": "proceed?"}], ack_ids=[])
+    queued = h.enqueue_command("answer", "agy", args={"n": 2}, chat_id=42)
+    first = h.tick(
+        sessions=[{"name": "agy", "state": "blocked"}],
+        ack_ids=[],
+    )
+    assert first["commands"][0]["id"] == queued["id"]
+    assert first["commands"][0]["op"] == "answer"
+    assert first["commands"][0]["args"]["n"] == 2
+    again = h.tick(sessions=[{"name": "agy", "state": "blocked"}], ack_ids=[])
+    assert again["commands"] == []
+    h.tick(
+        sessions=[{"name": "agy", "state": "idle"}],
+        ack_ids=[],
+        replies=[{"id": queued["id"], "text": "answered 2"}],
+    )
+    pending = h.unsent_replies()
+    assert pending[0]["text"] == "answered 2"
+    assert pending[0]["chat_id"] == 42
+    h.mark_replies_sent([queued["id"]])
+    assert h.unsent_replies() == []
+    reset_herd()
+
+
+def test_alias_is_stable(tmp_path: Path):
+    h = _store(tmp_path)
+    h.tick(sessions=[{"name": "agy-ghost-commit", "state": "idle"}], ack_ids=[])
+    listed = h.list_sessions()["sessions"][0]
+    short = listed["short"]
+    assert len(short) == 8
+    assert h.name_for(short) == "agy-ghost-commit"
+    assert h.short_for("agy-ghost-commit") == short
+    reset_herd()

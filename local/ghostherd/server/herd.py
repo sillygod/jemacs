@@ -1,12 +1,16 @@
-"""Inter-agent mail on the sidecar sqlite, not a second process.
+"""Inter-agent mail and Telegram commands on the sidecar sqlite.
 
 Agents POST herd_message.  Emacs herd_tick pushes a session snapshot
 and pulls whatever is deliverable: the target exists and is not
 working.  The sidecar never types into a PTY.
+
+Telegram taps write `commands`; Emacs runs them and returns `replies`.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import threading
 import uuid
@@ -63,6 +67,42 @@ class HerdStore:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aliases (
+                short TEXT PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS commands (
+                id TEXT PRIMARY KEY,
+                op TEXT NOT NULL,
+                session TEXT NOT NULL,
+                args TEXT,
+                chat_id INTEGER,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS replies (
+                id TEXT PRIMARY KEY,
+                chat_id INTEGER,
+                text TEXT NOT NULL,
+                sent INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(snapshot)")
+        }
+        if "reason" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN reason TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -80,7 +120,7 @@ class HerdStore:
             if project:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project
+                    SELECT name, kind, state, notes, project, reason
                     FROM snapshot WHERE project = ?
                     ORDER BY name
                     """,
@@ -89,7 +129,7 @@ class HerdStore:
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project
+                    SELECT name, kind, state, notes, project, reason
                     FROM snapshot ORDER BY name
                     """
                 ).fetchall()
@@ -101,6 +141,8 @@ class HerdStore:
                     "state": r[2] or "",
                     "notes": r[3] or "",
                     "project": r[4] or "",
+                    "reason": r[5] or "",
+                    "short": self.short_for(r[0]),
                 }
                 for r in rows
             ]
@@ -171,9 +213,13 @@ class HerdStore:
         self,
         sessions: list[dict[str, Any]] | None,
         ack_ids: list[str] | None = None,
+        replies: list[dict[str, Any]] | None = None,
+        ack_cmd_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         sessions = sessions or []
         ack_ids = [i for i in (ack_ids or []) if i]
+        ack_cmd_ids = [i for i in (ack_cmd_ids or []) if i]
+        replies = replies or []
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             if ack_ids:
@@ -185,6 +231,38 @@ class HerdStore:
                     """,
                     [now, *ack_ids],
                 )
+            if ack_cmd_ids:
+                placeholders = ",".join("?" * len(ack_cmd_ids))
+                self._conn.execute(
+                    f"""
+                    UPDATE commands SET status = 'taken'
+                    WHERE id IN ({placeholders}) AND status = 'queued'
+                    """,
+                    ack_cmd_ids,
+                )
+            for reply in replies:
+                rid = str(reply.get("id") or "").strip()
+                if not rid:
+                    continue
+                chat = self._conn.execute(
+                    "SELECT chat_id FROM commands WHERE id = ?",
+                    (rid,),
+                ).fetchone()
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO replies (id, chat_id, text, sent)
+                    VALUES (?, ?, ?, 0)
+                    """,
+                    (
+                        rid,
+                        chat[0] if chat else reply.get("chat_id"),
+                        str(reply.get("text") or ""),
+                    ),
+                )
+                self._conn.execute(
+                    "UPDATE commands SET status = 'done' WHERE id = ?",
+                    (rid,),
+                )
             self._conn.execute("DELETE FROM snapshot")
             for row in sessions:
                 name = str(row.get("name") or "").strip()
@@ -192,8 +270,9 @@ class HerdStore:
                     continue
                 self._conn.execute(
                     """
-                    INSERT INTO snapshot (name, kind, state, notes, project)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO snapshot
+                      (name, kind, state, notes, project, reason)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -201,8 +280,10 @@ class HerdStore:
                         str(row.get("state") or ""),
                         str(row.get("notes") or ""),
                         str(row.get("project") or ""),
+                        str(row.get("reason") or ""),
                     ),
                 )
+                self._upsert_alias(name)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (k, v) VALUES ('synced', '1')"
             )
@@ -239,6 +320,39 @@ class HerdStore:
                 if (row[6] or "") in hold:
                     continue
                 deliverable.append(row[:6])
+            cmd_rows = self._conn.execute(
+                """
+                SELECT id, op, session, args, chat_id
+                FROM commands WHERE status = 'queued'
+                ORDER BY created_at
+                """
+            ).fetchall()
+            if cmd_rows:
+                placeholders = ",".join("?" * len(cmd_rows))
+                self._conn.execute(
+                    f"""
+                    UPDATE commands SET status = 'taken'
+                    WHERE id IN ({placeholders})
+                    """,
+                    [r[0] for r in cmd_rows],
+                )
+            commands = []
+            for cid, op, session, args, chat_id in cmd_rows:
+                parsed = {}
+                if args:
+                    try:
+                        parsed = json.loads(args)
+                    except json.JSONDecodeError:
+                        parsed = {}
+                commands.append(
+                    {
+                        "id": cid,
+                        "op": op,
+                        "session": session,
+                        "args": parsed,
+                        "chat_id": chat_id,
+                    }
+                )
             self._conn.commit()
         pending = []
         for mail_id, from_name, to_name, body, submit, handoff in deliverable:
@@ -264,7 +378,131 @@ class HerdStore:
                     "handoff": bool(handoff),
                 }
             )
-        return {"pending": pending}
+        return {"pending": pending, "commands": commands}
+
+    def _upsert_alias(self, name: str) -> str:
+        "Caller holds `_mu`."
+        row = self._conn.execute(
+            "SELECT short FROM aliases WHERE name = ?", (name,)
+        ).fetchone()
+        if row:
+            return row[0]
+        short = hashlib.sha256(name.encode()).hexdigest()[:8]
+        # Rare collision: append until unique.
+        base = short
+        n = 0
+        while True:
+            taken = self._conn.execute(
+                "SELECT name FROM aliases WHERE short = ?", (short,)
+            ).fetchone()
+            if taken is None:
+                self._conn.execute(
+                    "INSERT INTO aliases (short, name) VALUES (?, ?)",
+                    (short, name),
+                )
+                return short
+            if taken[0] == name:
+                return short
+            n += 1
+            short = (base[:6] + f"{n:02x}")[:8]
+
+    def short_for(self, name: str) -> str:
+        name = (name or "").strip()
+        if not name:
+            return ""
+        with self._mu:
+            return self._upsert_alias(name)
+
+    def name_for(self, short: str) -> str | None:
+        short = (short or "").strip()
+        if not len(short) == 8:
+            # still look up
+            pass
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT name FROM aliases WHERE short = ?", (short,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def session(self, name: str) -> dict[str, Any] | None:
+        name = (name or "").strip()
+        with self._mu:
+            row = self._conn.execute(
+                """
+                SELECT name, kind, state, notes, project, reason
+                FROM snapshot WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "name": row[0],
+            "kind": row[1] or "",
+            "state": row[2] or "",
+            "notes": row[3] or "",
+            "project": row[4] or "",
+            "reason": row[5] or "",
+            "short": self.short_for(row[0]),
+        }
+
+    def enqueue_command(
+        self,
+        op: str,
+        session: str,
+        args: dict[str, Any] | None = None,
+        chat_id: int | None = None,
+    ) -> dict[str, Any]:
+        op = (op or "").strip()
+        session = (session or "").strip()
+        if not op:
+            raise ValueError("op is required")
+        if not session:
+            raise ValueError("session is required")
+        cid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                """
+                INSERT INTO commands
+                  (id, op, session, args, chat_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?)
+                """,
+                (
+                    cid,
+                    op,
+                    session,
+                    json.dumps(args or {}),
+                    chat_id,
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return {"id": cid, "queued": True}
+
+    def unsent_replies(self) -> list[dict[str, Any]]:
+        with self._mu:
+            rows = self._conn.execute(
+                """
+                SELECT id, chat_id, text FROM replies WHERE sent = 0
+                ORDER BY id
+                """
+            ).fetchall()
+        return [
+            {"id": r[0], "chat_id": r[1], "text": r[2]} for r in rows
+        ]
+
+    def mark_replies_sent(self, ids: list[str]) -> None:
+        ids = [i for i in ids if i]
+        if not ids:
+            return
+        with self._mu:
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"UPDATE replies SET sent = 1 WHERE id IN ({placeholders})",
+                ids,
+            )
+            self._conn.commit()
 
 
 def get_herd() -> HerdStore:

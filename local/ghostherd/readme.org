@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.9* — sidecar herd mail (JSON-RPC, no binary)              |
+| Phase       | *3.10* — Telegram bot on the sidecar (pull)                  |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -358,6 +358,31 @@ not deliverable; the sidecar holds the row until it is idle.  Overlay
 
 A skill lives in =skills/ghostherd-mail/SKILL.md=; copy or symlink it
 into the CLI's skill directory.  The herd does not install it for you.
+
+* Telegram bot (pull, no push)
+
+The sidecar can long-poll Telegram so a phone can drive the herd
+without a public URL.  There is no push: desktop =osx-notifier= still
+fires; the bot only talks when you open it.
+
+#+begin_src bash
+  export GHOSTHERD_TELEGRAM_TOKEN=123:abc
+  export GHOSTHERD_TELEGRAM_CHAT_IDS=your_chat_id
+#+end_src
+
+Then restart the sidecar (=ghostherd-memory-stop= / enable
+=ghostherd-mode=, or restart Emacs) so uvicorn inherits the env.
+
+=/herd= lists sessions from the last Emacs poll.  Tap a row for
+screen / explain / prompt / interrupt.  A =blocked= session also gets
+=1= / =2= / =3= (=ghostherd-answer=) and abort.  Kill and respawn sit
+behind =more= and a confirm.  Prompt text is queued like herd mail: a
+=working= agent does not receive it until idle.
+
+Unknown chats are dropped.  The first message from a new chat logs
+=telegram ignored chat <id>= in =*ghostherd-memory*= — that id is what
+goes in =GHOSTHERD_TELEGRAM_CHAT_IDS=.  Missing token means the bot
+task is not started; mail and memory keep working.
 
 * Handing work to another agent
 

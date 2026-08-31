@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from contextlib import asynccontextmanager
@@ -23,8 +24,24 @@ from jsonrpc_handler import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    yield
-    reset_engine()
+    cfg = get_config()
+    stop = asyncio.Event()
+    task = None
+    if cfg.telegram_token and cfg.telegram_chat_ids:
+        from telegram import run_bot
+
+        task = asyncio.create_task(run_bot(stop, cfg), name="ghostherd-telegram")
+    try:
+        yield
+    finally:
+        stop.set()
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        reset_engine()
 
 
 app = FastAPI(
