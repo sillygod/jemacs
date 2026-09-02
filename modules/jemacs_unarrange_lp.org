@@ -1494,6 +1494,9 @@
 
        "ao" '(:ignore t :which-key "org")
        "aor" '(org-roam-transient :which-key "org-roam-transient")
+       "aos" '(org-secrets-sidebar :which-key "secrets overlay")
+       "aoc" '(org-secrets :which-key "secrets copy")
+       "aon" '(org-secrets-new :which-key "secrets new")
        "aog" '(:ignore t :which-key "goto")
        "aogj" '((lambda () (interactive) (find-file (expand-file-name "journal" jemacs-org-root))) :which-key "journal note")
        "aogt" '((lambda () (interactive) (org-file-show-headings (expand-file-name "todo.org" (or jemacs-org-roam-directory jemacs-org-root)))) :which-key "todo note"))

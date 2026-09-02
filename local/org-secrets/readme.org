@@ -1,0 +1,93 @@
+#+TITLE: org-secrets
+
+Org+gpg password manager with a GhostHerd-style overlay: tabulated list
+on top, metadata preview underneath, footer of keys.  Consult is the
+jump that copies a password without opening the overlay.
+
+* Status
+
+| Item     | Value                                      |
+|----------+--------------------------------------------|
+| Package  | =local/org-secrets/= (straight =:local-repo=) |
+| Files    | =org-secrets.el= · =org-secrets-tests.el=  |
+| Wired in | =jemacs-note-taking= + leader =SPC a o s=  |
+
+The old =get-secret= block in =jemacs_note_taking_lp.org= stays until
+this has been used in anger.
+
+* Vault
+
+Default file: =management/learning.org.gpg= under =jemacs-org-root=.
+Override with =org-secrets-file=.  Extra vaults go in
+=org-secrets-extra-files=; =s= in the overlay filters to one of them.
+New entries write to the filtered vault if one is set, otherwise the
+primary file.
+
+Headline schema:
+
+#+begin_example
+* Title                                          :tag:
+  :PROPERTIES:
+  :DOMAIN: example.com
+  :USER: name
+  :URL: https://example.com/login
+  :SECRET: <base64>
+  :ENCODING: base64
+  :ID: <org-id>
+  :END:
+  optional notes (visible in preview — do not put secrets here)
+#+end_example
+
+=DOMAIN= / =SECRET= are the historical keys.  =USER=, =URL=, tags and
+=ENCODING= are optional; old headings still load.  Secret values that
+look like base64 are decoded; anything else is treated as plaintext.
+
+* Commands
+
+| Command                        | What it does                          |
+|--------------------------------+---------------------------------------|
+| =M-x org-secrets-sidebar=      | Overlay (posframe, else side window)  |
+| =M-x org-secrets=              | Consult/completing-read, copy password |
+| =M-x org-secrets-new=          | Prompt, write heading, copy password  |
+| =M-x org-secrets-insert-password= | Insert a generated password at point |
+| =M-x org-secrets-forget=       | Drop the in-memory cache              |
+
+Leader keys (jemacs):
+
+| Key         | Command                |
+|-------------+------------------------|
+| =SPC a o s= | =org-secrets-sidebar=  |
+| =SPC a o c= | =org-secrets=          |
+| =SPC a o n= | =org-secrets-new=      |
+
+* Overlay keys
+
+| Key | Action                                      |
+|-----+---------------------------------------------|
+| =RET= | Copy password and dismiss                 |
+| =u=   | Copy user                                 |
+| =y=   | Copy URL (falls back to domain)           |
+| =w=   | Copy =user TAB password= and dismiss      |
+| =b=   | =browse-url=                              |
+| =o=   | Visit the org heading (dismisses overlay) |
+| =N=   | New secret                                |
+| =s=   | Switch vault                              |
+| =/=   | Live-narrow (flex, whitespace is AND)     |
+| =v=   | Toggle preview                            |
+| =?=   | Key legend in the preview pane            |
+| =g= / =gr= | Re-read the vault                    |
+| =q= / =Esc= | Clear query, then dismiss             |
+
+The secret value is never drawn in the overlay buffer.  Preview shows
+=secret   set= or =missing=.  The preview is a split window pinned to
+the bottom of the overlay (not text after the last row), so it stays
+visible in a 70-entry vault.  =?= draws the key legend in that pane.
+
+* Tests
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/org-secrets \
+        -l org-secrets.el -l org-secrets-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src

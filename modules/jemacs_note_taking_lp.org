@@ -371,6 +371,9 @@
 
 * org password manager
 
+  Successor is =local/org-secrets= (=M-x org-secrets-sidebar=, =SPC a o s=).
+  This block stays until that package has been used in anger.
+
   #+begin_src emacs-lisp
     (defvar pair-list nil) ;; a property list
     (defvar secret-file-path
@@ -469,6 +472,27 @@
       (interactive "nPassword length: ")
       (insert (secure-random-password length)))
 
+  #+end_src
+
+* org-secrets
+
+  Overlay + consult password manager.  Vault is
+  =management/learning.org.gpg= under =jemacs-org-root=.  Extra vaults
+  later go in =org-secrets-extra-files=.
+
+  #+begin_src emacs-lisp
+    (eval `(use-package org-secrets
+             :straight (:local-repo ,(concat home-dir "local/org-secrets")
+                                    :files ("org-secrets.el"))
+             :commands (org-secrets
+                        org-secrets-sidebar
+                        org-secrets-new
+                        org-secrets-insert-password
+                        org-secrets-forget)
+             :config
+             (setq org-secrets-file
+                   (expand-file-name "management/learning.org.gpg"
+                                     jemacs-org-root))))
   #+end_src
 
 * org copy subtree's content
