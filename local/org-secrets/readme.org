@@ -52,6 +52,12 @@ look like base64 are decoded; anything else is treated as plaintext.
 | =M-x org-secrets-insert-password= | Insert a generated password at point |
 | =M-x org-secrets-forget=       | Drop the in-memory cache              |
 
+Closing the overlay (and finishing =org-secrets=, even on quit)
+drops the cache when =org-secrets-forget-on-close= is non-nil
+(the default).  The cache still exists while the overlay is open
+so =/= live-narrow does not re-decrypt on every key.  This does
+not clear =gpg-agent='s passphrase; that TTL is separate.
+
 Leader keys (jemacs):
 
 | Key         | Command                |

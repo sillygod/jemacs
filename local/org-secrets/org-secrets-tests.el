@@ -215,6 +215,16 @@ walks over)."
     (should (equal (org-secrets--active-files) '("/tmp/work.org.gpg")))
     (should (equal (org-secrets--write-file) "/tmp/work.org.gpg"))))
 
+(ert-deftest org-secrets-test-maybe-forget-respects-custom ()
+  (let ((org-secrets--cache '(("/tmp/vault.org" now)))
+        (org-secrets-forget-on-close t))
+    (org-secrets--maybe-forget)
+    (should-not org-secrets--cache))
+  (let ((org-secrets--cache '(("/tmp/vault.org" now)))
+        (org-secrets-forget-on-close nil))
+    (org-secrets--maybe-forget)
+    (should org-secrets--cache)))
+
 
 ;;; Write + parse roundtrip
 

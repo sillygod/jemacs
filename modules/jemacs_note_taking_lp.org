@@ -478,7 +478,9 @@
 
   Overlay + consult password manager.  Vault is
   =management/learning.org.gpg= under =jemacs-org-root=.  Extra vaults
-  later go in =org-secrets-extra-files=.
+  later go in =org-secrets-extra-files=.  Closing the overlay (or
+  finishing =org-secrets=) drops the in-memory cache; =gpg-agent=
+  still owns the passphrase TTL.
 
   #+begin_src emacs-lisp
     (eval `(use-package org-secrets

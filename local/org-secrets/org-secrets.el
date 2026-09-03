@@ -27,7 +27,10 @@
 ;;     optional notes
 ;;
 ;; SECRET is never written into the overlay buffer.  Preview shows
-;; metadata and notes only.
+;; metadata and notes only.  Decrypted entries live in
+;; `org-secrets--cache' while the overlay (or a consult session) is
+;; open; dismissing it drops the cache when
+;; `org-secrets-forget-on-close' is non-nil.
 ;;
 ;; Main entry points:
 ;;   M-x org-secrets-sidebar
@@ -130,6 +133,19 @@ The overlay grows with the parent frame (see
 Nil means a fixed `org-secrets-sidebar-posframe-width'."
   :type '(choice (const :tag "Fixed width" nil)
                  (number :tag "Fraction of frame"))
+  :group 'org-secrets)
+
+(defcustom org-secrets-forget-on-close t
+  "If non-nil, drop decrypted vault entries when the UI closes.
+
+The cache still exists while the overlay is open so live-narrow
+and preview do not re-decrypt on every key.  Dismissing the
+overlay, or finishing `org-secrets' (even on quit), clears it.
+
+This does not clear gpg-agent's passphrase cache; that is a
+separate TTL (GnuPG default: 10 minutes, max 2 hours).  Copied
+passwords remain on the kill ring."
+  :type 'boolean
   :group 'org-secrets)
 
 
@@ -309,6 +325,12 @@ skipped."
   (interactive)
   (setq org-secrets--cache nil)
   (message "Forgot cached secrets"))
+
+(defun org-secrets--maybe-forget ()
+  "Drop `org-secrets--cache' when `org-secrets-forget-on-close' is set.
+Silent: the interactive command `org-secrets-forget' still messages."
+  (when org-secrets-forget-on-close
+    (setq org-secrets--cache nil)))
 
 (defun org-secrets--load-file (file &optional force)
   "Return entries for FILE, using the mtime cache unless FORCE.
@@ -605,26 +627,28 @@ Duplicate display strings are disambiguated so `assoc' is unique.
 (defun org-secrets ()
   "Pick a secret and copy its password."
   (interactive)
-  (let ((entries (org-secrets--entries)))
-    (unless entries
-      (user-error "No secrets in vault (%s)"
-                  (org-secrets--write-file)))
-    (let* ((alist (org-secrets--candidate-alist entries))
-           (candidates (mapcar #'car alist))
-           (choice
-            (if (fboundp 'consult--read)
-                (consult--read
-                 candidates
-                 :prompt "Secret: "
-                 :sort nil
-                 :require-match t
-                 :preview-key nil
-                 :category 'org-secrets)
-              (completing-read "Secret: " candidates nil t)))
-           (entry (cdr (assoc choice alist))))
-      (unless entry
-        (user-error "Unknown secret"))
-      (org-secrets-copy-password entry))))
+  (unwind-protect
+      (let ((entries (org-secrets--entries)))
+        (unless entries
+          (user-error "No secrets in vault (%s)"
+                      (org-secrets--write-file)))
+        (let* ((alist (org-secrets--candidate-alist entries))
+               (candidates (mapcar #'car alist))
+               (choice
+                (if (fboundp 'consult--read)
+                    (consult--read
+                     candidates
+                     :prompt "Secret: "
+                     :sort nil
+                     :require-match t
+                     :preview-key nil
+                     :category 'org-secrets)
+                  (completing-read "Secret: " candidates nil t)))
+               (entry (cdr (assoc choice alist))))
+          (unless entry
+            (user-error "Unknown secret"))
+          (org-secrets-copy-password entry)))
+    (org-secrets--maybe-forget)))
 
 
 ;;; Overlay: table, preview, filter
@@ -1108,7 +1132,7 @@ so the preview stays pinned to the bottom while the table scrolls."
   "Visit the heading at point.  Dismisses the overlay first."
   (interactive)
   (let ((entry (org-secrets--sidebar-entry-at-point)))
-    (org-secrets--sidebar-leave-overlay)
+    (org-secrets--sidebar-dismiss)
     (org-secrets-visit entry)))
 
 (defun org-secrets-sidebar-new ()
@@ -1289,7 +1313,8 @@ mode outranks evil, so Enter applies the filter."
 The overlay's window is dedicated and its frame unsplittable, so
 `find-file' from there has nowhere to go."
   (when (org-secrets--sidebar-posframe-showing-p)
-    (org-secrets--sidebar-hide-posframe)))
+    (org-secrets--sidebar-hide-posframe)
+    (org-secrets--maybe-forget)))
 
 (defun org-secrets--sidebar-dismiss ()
   "Hide the overlay or quit the side window."
@@ -1300,7 +1325,8 @@ The overlay's window is dedicated and its frame unsplittable, so
     (org-secrets--sidebar-detach-preview)
     (when-let* ((buf (get-buffer "*org-secrets*"))
                 (win (get-buffer-window buf)))
-      (quit-window nil win))))
+      (quit-window nil win)))
+  (org-secrets--maybe-forget))
 
 (defun org-secrets-sidebar-quit ()
   "Dismiss the secrets list, or the live query first."
