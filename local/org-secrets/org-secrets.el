@@ -157,7 +157,8 @@ passwords remain on the kill ring."
   uid file org-id title domain user url secret notes tags)
 
 (defvar org-secrets-vault-filter nil
-  "When non-nil, an expanded file path; only that vault is listed.")
+  "When non-nil, an expanded file path; only that vault is listed.
+Nil means every file from `org-secrets-vault-files' (the `all' scope).")
 
 (defvar org-secrets--cache nil
   "Alist of (FILE . (MTIME . ENTRIES)).
@@ -200,6 +201,47 @@ created; listing skips files that do not exist yet."
 (defun org-secrets--write-file ()
   "Vault that `org-secrets-new' writes to."
   (or org-secrets-vault-filter (org-secrets--primary-file)))
+
+(defun org-secrets--file-label (file)
+  "Short display name for vault FILE."
+  (if (and file (stringp file) (not (string-empty-p file)))
+      (file-name-nondirectory (expand-file-name file))
+    "-"))
+
+(defun org-secrets--scope-label ()
+  "Short label for the current vault scope.
+A single configured file uses its basename.  Several files with
+no `org-secrets-vault-filter' are labeled `all'."
+  (cond
+   (org-secrets-vault-filter
+    (org-secrets--file-label org-secrets-vault-filter))
+   ((cdr (org-secrets-vault-files))
+    "all")
+   (t
+    (org-secrets--file-label (org-secrets--primary-file)))))
+
+(defun org-secrets--listing-multiple-vaults-p ()
+  "Return non-nil when the active listing spans more than one vault."
+  (cdr (org-secrets--active-files)))
+
+(defun org-secrets--vault-choice-alist ()
+  "Alist of (LABEL . FILE-or-nil) for `org-secrets-sidebar-switch-vault'.
+The first entry is always (\"all\" . nil).  Labels are basenames,
+or `abbreviate-file-name' when two vaults share a basename."
+  (let* ((files (org-secrets-vault-files))
+         (counts (make-hash-table :test 'equal)))
+    (dolist (file files)
+      (let ((base (org-secrets--file-label file)))
+        (puthash base (1+ (gethash base counts 0)) counts)))
+    (cons
+     (cons "all" nil)
+     (mapcar (lambda (file)
+               (let ((base (org-secrets--file-label file)))
+                 (cons (if (> (gethash base counts) 1)
+                           (abbreviate-file-name file)
+                         base)
+                       file)))
+             files))))
 
 
 ;;; Encode / decode
@@ -601,11 +643,16 @@ Empty password generates one.  The password is copied when done."
 ;;; Consult / completing-read
 
 (defun org-secrets--candidate-text (entry)
-  "Return the completing-read display string for ENTRY."
-  (format "%s  %s  %s"
-          (or (org-secrets-entry-title entry) "")
-          (or (org-secrets-entry-domain entry) "")
-          (or (org-secrets-entry-user entry) "")))
+  "Return the completing-read display string for ENTRY.
+When several vaults are listed, the vault basename is appended."
+  (let ((base (format "%s  %s  %s"
+                      (or (org-secrets-entry-title entry) "")
+                      (or (org-secrets-entry-domain entry) "")
+                      (or (org-secrets-entry-user entry) ""))))
+    (if (org-secrets--listing-multiple-vaults-p)
+        (format "%s  %s" base
+                (org-secrets--file-label (org-secrets-entry-file entry)))
+      base)))
 
 (defun org-secrets--candidate-alist (entries)
   "Return an alist of (DISPLAY . ENTRY) for ENTRIES.
@@ -686,7 +733,7 @@ Duplicate display strings are disambiguated so `assoc' is unique.
     ("b"      "Open URL")
     ("o"      "Visit heading")
     ("N"      "New secret")
-    ("s"      "Switch vault")
+    ("s"      "Switch vault (one file, or all)")
     ("/"      "Live-narrow (flex)")
     ("v"      "Toggle preview")
     ("gr"     "Refresh")
@@ -760,12 +807,10 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
                    (format " %d/%d"
                            org-secrets--sidebar-match-count
                            org-secrets--sidebar-total-count)))
-         (vault (when org-secrets-vault-filter
-                  (format " [%s]"
-                          (file-name-nondirectory org-secrets-vault-filter)))))
+         (vault (org-secrets--scope-label)))
     (concat
      "Secrets"
-     (or vault "")
+     (if vault (format "  %s" vault) "")
      (when querying (concat "  /" query))
      (or counts "")
      (cond
@@ -774,14 +819,22 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
       (org-secrets--sidebar-help-visible
        "   ? close help  Esc close")
       (t
-       "   RET copy  u user  / filter  N new  o visit  ? keys  Esc close")))))
+       "   RET copy  u user  / filter  s vault  N new  o visit  ? keys  Esc close")))))
 
 (defconst org-secrets--sidebar-column-specs
   '((title  "Title"  16 mandatory)
     (domain "Domain" 18 mandatory)
     (user   "User"   12)
+    (vault  "Vault"  14)
     (tags   "Tags"   12))
-  "Candidate columns as (KEY HEADER WIDTH [MANDATORY]).")
+  "Candidate columns as (KEY HEADER WIDTH [MANDATORY]).
+Vault is omitted unless the listing spans more than one file.")
+
+(defun org-secrets--sidebar-active-column-specs ()
+  "Column specs, omitting Vault unless several files are listed."
+  (if (org-secrets--listing-multiple-vaults-p)
+      org-secrets--sidebar-column-specs
+    (cl-remove 'vault org-secrets--sidebar-column-specs :key #'car)))
 
 (defun org-secrets--sidebar-available-width ()
   "Columns the secrets list actually has."
@@ -796,7 +849,7 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
   (let ((budget (1- (org-secrets--sidebar-available-width)))
         (used 0)
         (kept nil))
-    (dolist (spec org-secrets--sidebar-column-specs)
+    (dolist (spec (org-secrets--sidebar-active-column-specs))
       (let ((cost (+ (nth 2 spec) (if kept 1 tabulated-list-padding))))
         (when (or (nth 3 spec) (<= (+ used cost) budget))
           (setq used (+ used cost))
@@ -806,7 +859,7 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
 (defun org-secrets--sidebar-grow-columns (columns budget used)
   "Stretch title/domain so leftover width is not empty padding."
   (let ((extra (max 0 (- budget used)))
-        (weights '((title . 3) (domain . 3) (user . 2) (tags . 1))))
+        (weights '((title . 3) (domain . 3) (user . 2) (vault . 1) (tags . 1))))
     (if (zerop extra)
         columns
       (let* ((keys (seq-filter (lambda (k) (assq k columns))
@@ -853,6 +906,8 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
     ('title  (or (org-secrets-entry-title entry) ""))
     ('domain (or (org-secrets-entry-domain entry) ""))
     ('user   (or (org-secrets-entry-user entry) ""))
+    ('vault  (let ((s (org-secrets--file-label (org-secrets-entry-file entry))))
+               (if (equal s "-") "" s)))
     ('tags   (if-let* ((tags (org-secrets-entry-tags entry)))
                  (concat ":" (mapconcat #'identity tags ":") ":")
                ""))
@@ -873,6 +928,8 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
                          (org-secrets-entry-user entry)
                          (org-secrets-entry-url entry)
                          (org-secrets-entry-notes entry)
+                         (when-let* ((file (org-secrets-entry-file entry)))
+                           (org-secrets--file-label file))
                          (when-let* ((tags (org-secrets-entry-tags entry)))
                            (mapconcat #'identity tags " "))))
              " "))
@@ -920,6 +977,8 @@ each of which must flex-match the haystack."
          (lines
           (list
            (or (org-secrets-entry-title entry) "(no title)")
+           (format "vault    %s"
+                   (org-secrets--file-label (org-secrets-entry-file entry)))
            (format "domain   %s" (or (org-secrets-entry-domain entry) "-"))
            (format "user     %s" (or (org-secrets-entry-user entry) "-"))
            (format "url      %s" (or (org-secrets-entry-url entry) "-"))
@@ -1145,18 +1204,21 @@ so the preview stays pinned to the bottom while the table scrolls."
       (org-secrets-sidebar))))
 
 (defun org-secrets-sidebar-switch-vault ()
-  "Restrict the list to one vault, or show all."
+  "Restrict the list to one vault, or show all.
+
+`all' is the default: every file in `org-secrets-vault-files'.
+New secrets still write to the filtered file when one is set,
+otherwise the primary vault."
   (interactive)
-  (let* ((files (org-secrets-vault-files))
-         (cands (cons (cons "all" nil)
-                      (mapcar (lambda (f)
-                                (cons (abbreviate-file-name f) f))
-                              files)))
+  (let* ((cands (org-secrets--vault-choice-alist))
+         (current
+          (if org-secrets-vault-filter
+              (or (car (rassoc (expand-file-name org-secrets-vault-filter)
+                               cands))
+                  (org-secrets--file-label org-secrets-vault-filter))
+            "all"))
          (choice (completing-read
-                  "Vault: " (mapcar #'car cands) nil t nil nil
-                  (if org-secrets-vault-filter
-                      (abbreviate-file-name org-secrets-vault-filter)
-                    "all"))))
+                  "Vault: " (mapcar #'car cands) nil t nil nil current)))
     (setq org-secrets-vault-filter (cdr (assoc choice cands)))
     (org-secrets-sidebar-refresh)))
 

@@ -478,7 +478,8 @@
 
   Overlay + consult password manager.  Vault is
   =management/learning.org.gpg= under =jemacs-org-root=.  Extra vaults
-  later go in =org-secrets-extra-files=.  Closing the overlay (or
+  later go in =org-secrets-extra-files=.  The footer shows the current
+  vault (or =all=); =s= switches scope.  Closing the overlay (or
   finishing =org-secrets=) drops the in-memory cache; =gpg-agent=
   still owns the passphrase TTL.
 

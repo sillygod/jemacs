@@ -19,9 +19,15 @@ this has been used in anger.
 
 Default file: =management/learning.org.gpg= under =jemacs-org-root=.
 Override with =org-secrets-file=.  Extra vaults go in
-=org-secrets-extra-files=; =s= in the overlay filters to one of them.
-New entries write to the filtered vault if one is set, otherwise the
-primary file.
+=org-secrets-extra-files=.
+
+The overlay footer always shows the current scope: the vault
+basename, or =all= when several files are listed together.  =s=
+switches to one file or back to =all= (search every vault).  =/=
+and =M-x org-secrets= both search the active scope.  New entries
+write to the filtered vault if one is set, otherwise the primary
+file.  When =all= is active, a Vault column appears in the table
+and consult candidates include the basename.
 
 Headline schema:
 
@@ -77,7 +83,7 @@ Leader keys (jemacs):
 | =b=   | =browse-url=                              |
 | =o=   | Visit the org heading (dismisses overlay) |
 | =N=   | New secret                                |
-| =s=   | Switch vault                              |
+| =s=   | Switch vault (one file, or all)           |
 | =/=   | Live-narrow (flex, whitespace is AND)     |
 | =v=   | Toggle preview                            |
 | =?=   | Key legend in the preview pane            |
