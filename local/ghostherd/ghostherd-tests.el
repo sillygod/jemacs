@@ -1486,6 +1486,31 @@ project's agy back."
       (ghostherd-sidebar-quit)
       (should hidden))))
 
+(ert-deftest ghostherd-test-return-event-p ()
+  (should (ghostherd--return-event-p 'return))
+  (should (ghostherd--return-event-p 'kp-enter))
+  (should (ghostherd--return-event-p ?\r))
+  (should (ghostherd--return-event-p ?\n))
+  (should-not (ghostherd--return-event-p ?g))
+  (should-not (ghostherd--return-event-p ?\C-g)))
+
+(ert-deftest ghostherd-test-filter-confirm-keeps-query ()
+  "RET while narrowing applies the query; it does not visit.
+j/k and a second RET then belong to the overlay."
+  (let ((ghostherd--sidebar-query "agy")
+        (ghostherd--sidebar-filtering t)
+        (visited nil))
+    (cl-letf (((symbol-function 'ghostherd-sidebar-visit)
+               (lambda () (interactive) (setq visited t))))
+      (ghostherd-sidebar-filter-confirm)
+      (should-not ghostherd--sidebar-filtering)
+      (should (equal ghostherd--sidebar-query "agy"))
+      (should-not visited)
+      (should (eq (lookup-key ghostherd-sidebar-filter-map (kbd "RET"))
+                  #'ghostherd-sidebar-filter-confirm))
+      (should (eq (lookup-key ghostherd-sidebar-mode-map (kbd "RET"))
+                  #'ghostherd-sidebar-visit)))))
+
 ;;; Overlay screen preview
 
 (ert-deftest ghostherd-test-detect-stashes-the-screen ()

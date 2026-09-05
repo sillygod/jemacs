@@ -155,9 +155,11 @@ report. Notes do, because they were written onto the host.
 =M= mark state · =q= / =Esc= quit
 
 =/= flex-matches name, kind, state, project, notes and title. Whitespace
-is AND (=agy idle=). =n= / =p= still move; =Esc= clears the query, and
-closes the list only when the query is already empty. The project
-toggle (=s=) is a pre-filter; both apply together.
+is AND (=agy idle=). While typing, =n= / =p= still move; =RET= *applies*
+the query and returns to overlay keys, so =j= / =k= move and =RET=
+visits the agent. =Esc= clears the query, and closes the list only when
+the query is already empty. The project toggle (=s=) is a pre-filter;
+both apply together.
 
 The overlay grows a snapshot of the row at point under the table --
 =capture-pane= / buffer text, not an attached view. =n= / =p= follow it

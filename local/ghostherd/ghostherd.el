@@ -63,6 +63,7 @@
 (declare-function ghostel-copy-mode "ghostel")
 (declare-function ghostel-readonly-exit "ghostel")
 (declare-function evil-define-key* "evil")
+(declare-function evil-make-intercept-map "evil")
 
 
 ;;; Customization
@@ -2948,7 +2949,7 @@ window, which had nowhere to go except by killing the child frame."
      (or counts "")
      (cond
       (ghostherd--sidebar-filtering
-       "   RET visit  n/p move  Esc clear")
+       "   RET apply  n/p move  Esc clear")
       (ghostherd--sidebar-help-visible
        "   ? close help  Esc close")
       (t
@@ -3637,13 +3638,28 @@ an agent view is still attributed to that agent."
           (posframe-refresh buf)))))
   (force-mode-line-update t))
 
+(defun ghostherd--return-event-p (ev)
+  "Return non-nil if EV is Enter in any GUI/tty encoding.
+
+A catch-all `[t]' on the filter map is looked up *before*
+`function-key-map' translates `<return>' to RET.  The default
+binding then runs instead of the RET command, and a printable-only
+self-insert silently drops it -- which is why Enter appeared to
+do nothing, or jumped straight to visit."
+  (or (memq ev '(return kp-enter newline S-return))
+      (and (characterp ev) (memq ev '(?\r ?\n)))
+      (memq (event-basic-type ev) '(return kp-enter newline))))
+
 (defun ghostherd-sidebar-filter-self-insert ()
-  "Append `last-command-event' to the live query."
+  "Append `last-command-event' to the live query, or apply on Enter."
   (interactive)
-  (let ((char last-command-event))
-    (when (and (characterp char) (>= char 32) (not (eq char 127)))
+  (let ((ev last-command-event))
+    (cond
+     ((ghostherd--return-event-p ev)
+      (ghostherd-sidebar-filter-confirm))
+     ((and (characterp ev) (>= ev 32) (not (eq ev 127)))
       (ghostherd--sidebar-set-query
-       (concat ghostherd--sidebar-query (char-to-string char))))))
+       (concat ghostherd--sidebar-query (char-to-string ev)))))))
 
 (defun ghostherd-sidebar-filter-backspace ()
   "Drop the last character of the live query."
@@ -3657,13 +3673,28 @@ an agent view is still attributed to that agent."
   (interactive)
   (ghostherd--sidebar-set-query ""))
 
+(defun ghostherd--set-filtering (on)
+  "Turn live-narrow on or off, including `ghostherd-filter-mode'."
+  (setq ghostherd--sidebar-filtering (and on t))
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (with-current-buffer buf
+      (ghostherd-filter-mode (if ghostherd--sidebar-filtering 1 -1))))
+  (force-mode-line-update t))
+
+(defun ghostherd-sidebar-filter-confirm ()
+  "Keep the current query and leave live-narrow.
+Returns `j'/`k' and RET to the overlay: move, then visit."
+  (interactive)
+  (ghostherd--set-filtering nil))
+
 (defvar-keymap ghostherd-sidebar-filter-map
-  :doc "Transient keymap while the session list is live-narrowing.
-Printable keys append to the query; `n'/`p' still move so a match can
-be visited without leaving the filter.  `/` itself is how you enter
-this map, so it is not a query character."
-  "RET"         #'ghostherd-sidebar-visit
-  "C-m"         #'ghostherd-sidebar-visit
+  :doc "Keymap while the session list is live-narrowing.
+Printable keys append to the query; `n'/`p' still move.  RET applies
+the query and returns to overlay keys so `j'/`k' move and RET visits.
+`/` itself is how you enter this map, so it is not a query character."
+  "RET"         #'ghostherd-sidebar-filter-confirm
+  "C-m"         #'ghostherd-sidebar-filter-confirm
+  "<return>"    #'ghostherd-sidebar-filter-confirm
   "n"           #'next-line
   "p"           #'previous-line
   "C-n"         #'next-line
@@ -3680,23 +3711,37 @@ this map, so it is not a query character."
 
 (define-key ghostherd-sidebar-filter-map [t]
             #'ghostherd-sidebar-filter-self-insert)
+;; After `[t]': specific events the catch-all would otherwise swallow
+;; before function-key-map translation.
+(define-key ghostherd-sidebar-filter-map [return]
+            #'ghostherd-sidebar-filter-confirm)
+(define-key ghostherd-sidebar-filter-map [kp-enter]
+            #'ghostherd-sidebar-filter-confirm)
+(define-key ghostherd-sidebar-filter-map [S-return]
+            #'ghostherd-sidebar-filter-confirm)
+(define-key ghostherd-sidebar-filter-map (kbd "C-j")
+            #'ghostherd-sidebar-filter-confirm)
+
+(define-minor-mode ghostherd-filter-mode
+  "Live-narrow the ghostherd overlay.
+
+A minor mode rather than `set-transient-map': evil's state maps
+sit in `emulation-mode-map-alists' and can swallow RET before a
+terminal-local transient map sees it.  An intercept keymap on this
+mode outranks evil, so Enter applies the filter."
+  :lighter nil
+  :keymap ghostherd-sidebar-filter-map)
 
 (defun ghostherd-sidebar-filter ()
   "Start live-narrowing the session list.
 
-Printable keys append to the query; `n'/`p'/`RET' still move and
-visit.  Esc clears a non-empty query, and dismisses the list when
-the query is already empty.  Matches name, kind, state, project,
+Printable keys append to the query; `n'/`p' still move.  RET keeps
+the query and returns to overlay keys (`j'/`k' move, RET visits).
+Esc clears a non-empty query, and dismisses the list when the
+query is already empty.  Matches name, kind, state, project,
 notes and title as a flex subsequence; whitespace is AND."
   (interactive)
-  (setq ghostherd--sidebar-filtering t)
-  (force-mode-line-update t)
-  (set-transient-map
-   ghostherd-sidebar-filter-map
-   (lambda () ghostherd--sidebar-filtering)
-   (lambda ()
-     (setq ghostherd--sidebar-filtering nil)
-     (force-mode-line-update t))))
+  (ghostherd--set-filtering t))
 
 (defun ghostherd--posframe-available-p ()
   "Return non-nil when posframe can actually display a child frame.
@@ -3731,10 +3776,10 @@ those are exactly the cases that must fall back."
         (buf (get-buffer "*ghostherd*")))
     (setq ghostherd--sidebar-posframe-parent nil
           ghostherd--sidebar-posframe-fitted-width nil
-          ghostherd--sidebar-filtering nil
           ghostherd--sidebar-query ""
           ghostherd--sidebar-help-visible nil
           ghostherd--sidebar-preview-id nil)
+    (ghostherd--set-filtering nil)
     (when (timerp ghostherd--sidebar-preview-timer)
       (cancel-timer ghostherd--sidebar-preview-timer)
       (setq ghostherd--sidebar-preview-timer nil))
@@ -3766,7 +3811,7 @@ posframe overlay hides, or the side window quits."
    ((and ghostherd--sidebar-query
          (not (string-empty-p ghostherd--sidebar-query)))
     (ghostherd--sidebar-set-query "")
-    (setq ghostherd--sidebar-filtering nil))
+    (ghostherd--set-filtering nil))
    (ghostherd--sidebar-help-visible
     (setq ghostherd--sidebar-help-visible nil)
     (ghostherd--sidebar-draw-preview)
@@ -3774,8 +3819,8 @@ posframe overlay hides, or the side window quits."
       (ghostherd--sidebar-show-posframe (get-buffer "*ghostherd*")))
     (force-mode-line-update t))
    (t
-    (setq ghostherd--sidebar-filtering nil
-          ghostherd--sidebar-query "")
+    (setq ghostherd--sidebar-query "")
+    (ghostherd--set-filtering nil)
     (if (ghostherd--sidebar-posframe-showing-p)
         (ghostherd--sidebar-hide-posframe)
       (quit-window)))))
@@ -3924,9 +3969,9 @@ either way; Esc or `q' dismisses."
   (ghostherd--maybe-restore)
   (ghostherd--ensure-sessions)
   (setq ghostherd--sidebar-query ""
-        ghostherd--sidebar-filtering nil
         ghostherd--sidebar-help-visible nil
         ghostherd--sidebar-preview-id nil)
+  (ghostherd--set-filtering nil)
   (let* ((overlay (ghostherd--use-posframe-p))
          (ghostherd--sidebar-target-width
           (and overlay (ghostherd--sidebar-posframe-char-width)))
@@ -4046,6 +4091,30 @@ sweeps every `ghostherd-poll-interval'."
     (if cmd
         (call-interactively cmd)
       (user-error "Unknown choice %s" key))))
+
+(defun ghostherd--maybe-setup-evil-sidebar ()
+  "Bind overlay keys in evil normal state so they are not shadowed.
+
+Must call `evil-define-key*', the function.  Filter-mode uses an
+intercept map so RET applies the query instead of visiting.  `j'/`k'
+stay as motion; after RET applies, they move and RET visits."
+  (when (fboundp 'evil-make-intercept-map)
+    (evil-make-intercept-map ghostherd-sidebar-filter-map 'normal))
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* 'normal ghostherd-sidebar-filter-map
+      (kbd "RET") #'ghostherd-sidebar-filter-confirm
+      (kbd "<return>") #'ghostherd-sidebar-filter-confirm
+      (kbd "C-m") #'ghostherd-sidebar-filter-confirm
+      (kbd "<escape>") #'ghostherd-sidebar-quit)
+    (evil-define-key* 'normal ghostherd-sidebar-mode-map
+      (kbd "RET") #'ghostherd-sidebar-visit
+      (kbd "<return>") #'ghostherd-sidebar-visit
+      (kbd "/") #'ghostherd-sidebar-filter
+      (kbd "q") #'ghostherd-sidebar-quit
+      (kbd "<escape>") #'ghostherd-sidebar-quit)))
+
+(with-eval-after-load 'evil
+  (ghostherd--maybe-setup-evil-sidebar))
 
 (provide 'ghostherd)
 ;;; ghostherd.el ends here

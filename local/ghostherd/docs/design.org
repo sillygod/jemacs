@@ -225,9 +225,11 @@ frame unsplittable, so a =pop-to-buffer= from there has nowhere to go.
 Finding a row is not =ghostherd-switch=. The switcher is a jump;
 the overlay keeps the table in view, so =/= live-narrows it (flex
 on name/kind/state/project/notes) without stealing the completing-read
-surface or sending keys through the parent minibuffer. =s= remains a
-project pre-filter, AND-ed with the query. Esc clears before it
-dismisses, because a non-empty query is something you are still using.
+surface or sending keys through the parent minibuffer. =RET= applies
+the query (it does not visit); overlay =j=/=k= then move and =RET=
+visits. =s= remains a project pre-filter, AND-ed with the query. Esc
+clears before it dismisses, because a non-empty query is something you
+are still using.
 
 Selecting a row shows a snapshot of that agent's screen under the
 table. It is a capture, not an attach -- attaching would SIGWINCH the
