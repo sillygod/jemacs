@@ -52,3 +52,22 @@ it should contains and remember correspanding settings the following features pe
 
 
 what's the different between (window-state-get) and (current-window-configuration)
+
+* Persistence
+
+Save file: =~/.emacs.d/.jworkspace/save-workspace= (versioned plist).
+=M-x jworkspace-save-workspace= / =M-x jworkspace-load-workspace=.
+=jworkspace-startup= (on =window-setup-hook=) loads that file if it
+exists, otherwise creates =main=.
+
+Load does *not* visit files.  Identities stay in =saved-ids= until you
+switch to that workspace (or list its buffers).  =find-file-hook= is
+inhibited while those files are opened so they are not stolen by the
+workspace that happens to be current.
+
+After load, the frame's =current-workspace= is rebound to the new
+struct of the same name so a subsequent save does not write into a
+stale object.
+
+Maximize is undone before switch/save so the stored layout is the
+real split, not the single window.

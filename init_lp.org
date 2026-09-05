@@ -80,9 +80,7 @@
   #+begin_src emacs-lisp
     (require 'jworkspace)
 
-    (add-hook 'window-setup-hook (lambda ()
-                                   (jworkspace-new-workspace "main")
-                                   (jworkspace-switch-workspace "main")) t)
+    (add-hook 'window-setup-hook #'jworkspace-startup t)
   #+end_src
 
 * loading the custom file
