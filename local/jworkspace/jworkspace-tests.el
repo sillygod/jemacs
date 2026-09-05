@@ -149,6 +149,30 @@
         (should (equal (plist-get plist :current) "main"))
         (should (assoc "main" (plist-get plist :workspaces)))))))
 
+(ert-deftest jworkspace-test-save-file-follows-user-emacs-directory ()
+  (let ((user-emacs-directory (file-name-as-directory
+                               (make-temp-file "jw-emacs-home-" t)))
+        (jworkspace-save-file nil))
+    (unwind-protect
+        (let ((path (jworkspace--save-file t)))
+          (should (equal path (locate-user-emacs-file "jworkspace")))
+          (should (file-in-directory-p path user-emacs-directory)))
+      (ignore-errors (delete-directory user-emacs-directory t)))))
+
+(ert-deftest jworkspace-test-save-file-legacy-fallback ()
+  (let* ((user-emacs-directory (file-name-as-directory
+                                (make-temp-file "jw-emacs-home-" t)))
+         (jworkspace-save-file nil)
+         (legacy (jworkspace--legacy-save-file)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory legacy) t)
+          (write-region "()" nil legacy)
+          (should (equal (jworkspace--save-file) legacy))
+          (should (equal (jworkspace--save-file t)
+                         (locate-user-emacs-file "jworkspace"))))
+      (ignore-errors (delete-directory user-emacs-directory t)))))
+
 (ert-deftest jworkspace-test-load-old-alist-format ()
   (jworkspace-tests--with-clean-map
     (jworkspace--load-printable

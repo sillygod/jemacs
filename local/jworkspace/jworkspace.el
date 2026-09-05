@@ -87,11 +87,16 @@ Buffers still associated with another workspace are never killed."
   :type 'boolean
   :group 'jworkspace)
 
+(defcustom jworkspace-save-file nil
+  "File used to persist workspaces.
+Nil means `locate-user-emacs-file' of \"jworkspace\", which follows
+`user-emacs-directory'."
+  :type '(choice (const :tag "Default under user-emacs-directory" nil)
+                 (file :tag "File"))
+  :group 'jworkspace)
+
 (defvar jworkspace-map (make-hash-table :test 'equal)
   "A hashmap to map workspace's name to itself.")
-
-(defvar jworkspace--save-dir-path (concat user-emacs-directory ".jworkspace")
-  "The dir path for saving the workspaces settings.")
 
 (defvar jworkspace--hooks-installed nil
   "Non-nil after `jworkspace-enable' has installed hooks.")
@@ -434,9 +439,28 @@ buffer membership from displayed windows, and save window state via
 
 ;;; Persistence (printable form)
 
-(defun jworkspace--save-file ()
-  "Return the path of the workspace save file."
-  (concat jworkspace--save-dir-path "/save-workspace"))
+(defun jworkspace--legacy-save-file ()
+  "Old location: `.jworkspace/save-workspace' under `user-emacs-directory'."
+  (expand-file-name "save-workspace"
+                    (expand-file-name ".jworkspace" user-emacs-directory)))
+
+(defun jworkspace--save-file (&optional for-write)
+  "Return the workspace persist path.
+Canonical location is `jworkspace-save-file', or
+`locate-user-emacs-file' of \"jworkspace\".  When reading
+\(FOR-WRITE is nil), fall back to `jworkspace--legacy-save-file'
+if the new file does not exist yet."
+  (let ((canonical (if (and (stringp jworkspace-save-file)
+                            (not (string-empty-p jworkspace-save-file)))
+                       (expand-file-name jworkspace-save-file)
+                     (locate-user-emacs-file "jworkspace"))))
+    (if for-write
+        canonical
+      (let ((legacy (jworkspace--legacy-save-file)))
+        (if (and (not (file-exists-p canonical))
+                 (file-exists-p legacy))
+            legacy
+          canonical)))))
 
 (defun jworkspace--buffer-identity (buffer)
   "Return a printable identity for BUFFER.
@@ -595,26 +619,27 @@ Return the saved current workspace name, or nil."
 
 ;;;###autoload
 (defun jworkspace-save-workspace ()
-  "Persist workspaces into a printable file under `jworkspace--save-dir-path'.
+  "Persist workspaces into `jworkspace-save-file'.
 Saves workspace name, buffer file/buffer names, and window state.
 Uses burly-aware capture for the *current* workspace before writing so
 the on-disk window config is fresh.  Un-maximizes first so the saved
 layout is the real one."
   (interactive)
-  (unless (file-exists-p jworkspace--save-dir-path)
-    (mkdir jworkspace--save-dir-path t))
-  (when-let* ((current (jworkspace--get-current-workspace)))
-    (jworkspace--restore-unmaximized current)
-    (jworkspace-refresh-buffers current)
-    (setf (jworkspace-window-config current)
-          (jworkspace--capture-window-state)))
-  (with-temp-file (jworkspace--save-file)
-    (let ((print-length nil)
-          (print-level nil)
-          (print-circle t))
-      (prin1 (jworkspace--map-to-printable) (current-buffer))))
-  (message "jworkspace: saved %d workspace(s)"
-           (hash-table-count jworkspace-map)))
+  (let ((path (jworkspace--save-file t)))
+    (make-directory (file-name-directory path) t)
+    (when-let* ((current (jworkspace--get-current-workspace)))
+      (jworkspace--restore-unmaximized current)
+      (jworkspace-refresh-buffers current)
+      (setf (jworkspace-window-config current)
+            (jworkspace--capture-window-state)))
+    (with-temp-file path
+      (let ((print-length nil)
+            (print-level nil)
+            (print-circle t))
+        (prin1 (jworkspace--map-to-printable) (current-buffer))))
+    (message "jworkspace: saved %d workspace(s) to %s"
+             (hash-table-count jworkspace-map)
+             path)))
 
 ;;;###autoload
 (defun jworkspace-load-workspace ()

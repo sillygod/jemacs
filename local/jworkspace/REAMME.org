@@ -55,7 +55,11 @@ what's the different between (window-state-get) and (current-window-configuratio
 
 * Persistence
 
-Save file: =~/.emacs.d/.jworkspace/save-workspace= (versioned plist).
+Save file: =(locate-user-emacs-file "jworkspace")= (versioned plist),
+which follows =user-emacs-directory= (in this config,
+=emacs-home/jworkspace=).  Override with =jworkspace-save-file=.
+An older =.jworkspace/save-workspace= under the same directory is
+still read if the new file is missing.
 =M-x jworkspace-save-workspace= / =M-x jworkspace-load-workspace=.
 =jworkspace-startup= (on =window-setup-hook=) loads that file if it
 exists, otherwise creates =main=.

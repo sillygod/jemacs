@@ -1532,6 +1532,7 @@
       (define-leader-key-global
        "l" '(:ignore t :which-key "layout")
        "ll" '(jworkspace-switch-workspace :which-key "switch layout")
+       "lb" '(jworkspace-switch-to-buffer :which-key "switch buffer")
        "lr" '(jworkspace-rename-workspace :which-key "rename layout")
        "ld" '(jworkspace-delete-workspace :which-key "delete layout"))
 
