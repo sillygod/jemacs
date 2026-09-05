@@ -28,6 +28,7 @@
 ;; window-state serialization.  Enable with `jworkspace-enable' (also
 ;; run automatically when this library loads).  `jworkspace-startup'
 ;; restores a save file from `window-setup-hook' when one exists.
+;; Ghostherd tmux views are reattached on switch; ghostel hosts are not.
 
 ;;; Code:
 
@@ -43,6 +44,15 @@
 (declare-function burly-url-buffer "burly" (url))
 (defvar burly-major-mode-alist)
 (defvar burly-window-parameters-translators)
+
+;; Optional ghostherd (tmux agents that outlive Emacs).
+(declare-function ghostherd-get "ghostherd-backend" (id-or-name))
+(declare-function ghostherd-restore "ghostherd" ())
+(declare-function ghostherd--host-view "ghostherd-backend" (session))
+(declare-function ghostherd-session-id "ghostherd-backend" (session))
+(declare-function ghostherd-session-buffer "ghostherd-backend" (session))
+(declare-function ghostherd-session-backend "ghostherd-backend" (session))
+(declare-function ghostherd-backend-view-is-host-p "ghostherd-backend" (backend))
 
 (defgroup jworkspace nil
   "Lightweight workspaces with buffer association."
@@ -462,14 +472,65 @@ if the new file does not exist yet."
             legacy
           canonical)))))
 
+(defun jworkspace--ghostherd-id-from-buffer-name (name)
+  "Return a ghostherd session id encoded in buffer NAME, or nil.
+Matches the default `ghostherd-buffer-name-format' `*ghostherd:%s*'."
+  (and (stringp name)
+       (string-match "\\`\\*ghostherd:\\(.*\\)\\*\\'" name)
+       (match-string 1 name)))
+
+(defun jworkspace--ghostherd-identity (buffer)
+  "Return `(ghostherd . SESSION-ID)' when BUFFER views a ghostherd session."
+  (when (fboundp 'ghostherd-get)
+    (when-let* ((session (ghostherd-get buffer)))
+      (cons 'ghostherd (ghostherd-session-id session)))))
+
 (defun jworkspace--buffer-identity (buffer)
   "Return a printable identity for BUFFER.
-File buffers use the absolute file name; others use the buffer name
-as `(name . BUFFER-NAME)'."
+Ghostherd agent views are `(ghostherd . SESSION-ID)'.  File buffers
+use the absolute file name; others use `(name . BUFFER-NAME)'."
   (when (buffer-live-p buffer)
-    (if-let* ((file (buffer-file-name buffer)))
-        (expand-file-name file)
-      (cons 'name (buffer-name buffer)))))
+    (or (jworkspace--ghostherd-identity buffer)
+        (if-let* ((file (buffer-file-name buffer)))
+            (expand-file-name file)
+          (cons 'name (buffer-name buffer))))))
+
+(defun jworkspace--resolve-ghostherd (session-id visit)
+  "Return a live view buffer for ghostherd SESSION-ID, or nil.
+When VISIT is non-nil, restore the herd registry if needed and
+attach a tmux view via `ghostherd--host-view' (no `pop-to-buffer').
+Ghostel hosts are not reincarnated: if their buffer is gone, so is
+the agent."
+  (when (fboundp 'ghostherd-get)
+    (let ((session (ghostherd-get session-id)))
+      (when (and visit (not session) (fboundp 'ghostherd-restore))
+        (ignore-errors (ghostherd-restore))
+        (setq session (ghostherd-get session-id)))
+      (cond
+       ((not session) nil)
+       ((buffer-live-p (ghostherd-session-buffer session))
+        (ghostherd-session-buffer session))
+       ((not visit) nil)
+       ((and (fboundp 'ghostherd-backend-view-is-host-p)
+             (ghostherd-backend-view-is-host-p
+              (ghostherd-session-backend session)))
+        nil)
+       ((fboundp 'ghostherd--host-view)
+        (condition-case nil
+            (ghostherd--host-view session)
+          (error nil)))))))
+
+(defun jworkspace--keep-unresolved-id-p (id)
+  "Return non-nil if a failed resolve should leave ID in `saved-ids'.
+Ghostherd identities are dropped once ghostherd is loaded and the
+session is gone; files and ordinary named buffers stay pending."
+  (cond
+   ((and (consp id) (eq (car id) 'ghostherd))
+    (not (fboundp 'ghostherd-get)))
+   ((and (consp id) (eq (car id) 'name)
+         (jworkspace--ghostherd-id-from-buffer-name (cdr id)))
+    (not (fboundp 'ghostherd-get)))
+   (t t)))
 
 (defun jworkspace--find-file-quietly (file)
   "Visit FILE without running `find-file-hook'.
@@ -484,15 +545,23 @@ placeholders for missing files."
 
 (defun jworkspace--resolve-buffer-identity (id &optional visit)
   "Resolve a saved buffer ID to a live buffer.
-ID is either a file-name string or (name . BUFFER-NAME).
+ID is a file-name string, `(name . BUFFER-NAME)', or
+`(ghostherd . SESSION-ID)'.
 
-When VISIT is nil, never create or open anything: return an existing
-visiting/named buffer or nil.  When VISIT is non-nil, open existing
-files quietly (no `find-file-hook') and look up named buffers without
-creating placeholders."
+When VISIT is nil, never create or attach anything.  When VISIT is
+non-nil, open existing files quietly (no `find-file-hook'), look up
+named buffers without creating placeholders, and attach tmux
+ghostherd views via `ghostherd--host-view'."
   (cond
+   ((and (consp id) (eq (car id) 'ghostherd))
+    (jworkspace--resolve-ghostherd (cdr id) visit))
    ((and (consp id) (eq (car id) 'name))
-    (get-buffer (cdr id)))
+    (or (get-buffer (cdr id))
+        (and visit
+             (jworkspace--ghostherd-id-from-buffer-name (cdr id))
+             (jworkspace--resolve-ghostherd
+              (jworkspace--ghostherd-id-from-buffer-name (cdr id))
+              visit))))
    ((stringp id)
     (if visit
         (jworkspace--find-file-quietly id)
@@ -504,13 +573,23 @@ creating placeholders."
 (defun jworkspace--open-saved-ids (workspace)
   "Turn WORKSPACE's pending `saved-ids' into live `buffers'.
 Missing files and unknown names are left in `saved-ids' so a later
-attempt can still find them.  Never runs `find-file-hook'."
+attempt can still find them.  Ghostherd ids are attached (tmux) or
+dropped (gone).  Never runs `find-file-hook'."
   (when workspace
+    (when (and (fboundp 'ghostherd-restore)
+               (cl-some (lambda (id)
+                          (or (and (consp id) (eq (car id) 'ghostherd))
+                              (and (consp id) (eq (car id) 'name)
+                                   (jworkspace--ghostherd-id-from-buffer-name
+                                    (cdr id)))))
+                        (jworkspace-saved-ids workspace)))
+      (ignore-errors (ghostherd-restore)))
     (let ((kept nil))
       (dolist (id (jworkspace-saved-ids workspace))
         (if-let* ((buf (jworkspace--resolve-buffer-identity id t)))
             (jworkspace-add-buffer workspace buf)
-          (push id kept)))
+          (when (jworkspace--keep-unresolved-id-p id)
+            (push id kept))))
       (setf (jworkspace-saved-ids workspace) (nreverse kept))
       (jworkspace-buffers workspace))))
 

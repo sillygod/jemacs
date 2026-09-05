@@ -75,3 +75,9 @@ stale object.
 
 Maximize is undone before switch/save so the stored layout is the
 real split, not the single window.
+
+Ghostherd tmux agents are stored as =(ghostherd . SESSION-ID)=.
+Switching to a workspace attaches them with =ghostherd--host-view=
+(no =pop-to-buffer=) before the window layout is restored.  Ghostel
+agents cannot come back after Emacs exits: their process died with
+it.

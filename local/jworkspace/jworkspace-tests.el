@@ -179,5 +179,109 @@
      (list (cons "legacy" (list :name "legacy" :buffers nil :window-config nil))))
     (should (gethash "legacy" jworkspace-map))))
 
+(ert-deftest jworkspace-test-ghostherd-id-from-buffer-name ()
+  (should (equal (jworkspace--ghostherd-id-from-buffer-name
+                  "*ghostherd:agy-emacs-commit*")
+                 "agy-emacs-commit"))
+  (should-not (jworkspace--ghostherd-id-from-buffer-name "*scratch*"))
+  (should-not (jworkspace--ghostherd-id-from-buffer-name "agy-emacs-commit")))
+
+(ert-deftest jworkspace-test-buffer-identity-prefers-ghostherd ()
+  (with-temp-buffer
+    (rename-buffer "*ghostherd:agy-x*" t)
+    (cl-letf (((symbol-function 'ghostherd-get)
+               (lambda (buf)
+                 (and (eq buf (current-buffer)) 'sess)))
+              ((symbol-function 'ghostherd-session-id)
+               (lambda (s) (and (eq s 'sess) "agy-x"))))
+      (should (equal (jworkspace--buffer-identity (current-buffer))
+                     '(ghostherd . "agy-x"))))))
+
+(ert-deftest jworkspace-test-resolve-ghostherd-attaches-on-visit ()
+  (let ((view (get-buffer-create " *jw-gh-view*"))
+        (attached nil)
+        (restored nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-get)
+                   (lambda (id) (and (equal id "agy-x") 'sess)))
+                  ((symbol-function 'ghostherd-restore)
+                   (lambda () (setq restored t)))
+                  ((symbol-function 'ghostherd-session-buffer)
+                   (lambda (_) nil))
+                  ((symbol-function 'ghostherd-session-backend)
+                   (lambda (_) 'tmux))
+                  ((symbol-function 'ghostherd-backend-view-is-host-p)
+                   (lambda (_) nil))
+                  ((symbol-function 'ghostherd--host-view)
+                   (lambda (s)
+                     (setq attached s)
+                     view)))
+          (should-not (jworkspace--resolve-buffer-identity
+                       '(ghostherd . "agy-x") nil))
+          (should-not attached)
+          (should (eq (jworkspace--resolve-buffer-identity
+                       '(ghostherd . "agy-x") t)
+                      view))
+          (should (eq attached 'sess))
+          (should-not restored))
+      (kill-buffer view))))
+
+(ert-deftest jworkspace-test-resolve-legacy-ghostherd-buffer-name ()
+  (let ((view (get-buffer-create " *jw-gh-legacy*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-get)
+                   (lambda (id) (and (equal id "agy-x") 'sess)))
+                  ((symbol-function 'ghostherd-session-buffer)
+                   (lambda (_) nil))
+                  ((symbol-function 'ghostherd-session-backend)
+                   (lambda (_) 'tmux))
+                  ((symbol-function 'ghostherd-backend-view-is-host-p)
+                   (lambda (_) nil))
+                  ((symbol-function 'ghostherd--host-view)
+                   (lambda (_) view)))
+          (should (eq (jworkspace--resolve-buffer-identity
+                       '(name . "*ghostherd:agy-x*") t)
+                      view)))
+      (kill-buffer view))))
+
+(ert-deftest jworkspace-test-open-saved-ids-drops-dead-ghostherd ()
+  (jworkspace-tests--with-clean-map
+    (cl-letf (((symbol-function 'ghostherd-get) (lambda (_) nil))
+              ((symbol-function 'ghostherd-restore) #'ignore))
+      (let ((ws (jworkspace-new-workspace "proj")))
+        (setf (jworkspace-saved-ids ws) '((ghostherd . "gone")))
+        (jworkspace--open-saved-ids ws)
+        (should-not (jworkspace-saved-ids ws))
+        (should-not (jworkspace-buffers ws))))))
+
+(ert-deftest jworkspace-test-open-saved-ids-keeps-ghostherd-if-unloaded ()
+  (jworkspace-tests--with-clean-map
+    (let ((saved (and (fboundp 'ghostherd-get)
+                      (symbol-function 'ghostherd-get))))
+      (when (fboundp 'ghostherd-get)
+        (fmakunbound 'ghostherd-get))
+      (unwind-protect
+          (let ((ws (jworkspace-new-workspace "proj")))
+            (setf (jworkspace-saved-ids ws) '((ghostherd . "agy-x")))
+            (jworkspace--open-saved-ids ws)
+            (should (equal (jworkspace-saved-ids ws)
+                           '((ghostherd . "agy-x")))))
+        (when saved
+          (fset 'ghostherd-get saved))))))
+
+(ert-deftest jworkspace-test-ghostel-host-is-not-reattached ()
+  (cl-letf (((symbol-function 'ghostherd-get)
+             (lambda (id) (and (equal id "dead-cli") 'sess)))
+            ((symbol-function 'ghostherd-session-buffer)
+             (lambda (_) nil))
+            ((symbol-function 'ghostherd-session-backend)
+             (lambda (_) 'ghostel))
+            ((symbol-function 'ghostherd-backend-view-is-host-p)
+             (lambda (backend) (eq backend 'ghostel)))
+            ((symbol-function 'ghostherd--host-view)
+             (lambda (_) (error "should not attach a ghostel host"))))
+    (should-not (jworkspace--resolve-buffer-identity
+                 '(ghostherd . "dead-cli") t))))
+
 (provide 'jworkspace-tests)
 ;;; jworkspace-tests.el ends here
