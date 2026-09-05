@@ -3674,11 +3674,15 @@ do nothing, or jumped straight to visit."
   (ghostherd--sidebar-set-query ""))
 
 (defun ghostherd--set-filtering (on)
-  "Turn live-narrow on or off, including `ghostherd-filter-mode'."
+  "Turn live-narrow on or off, including `ghostherd-filter-mode'.
+Refresh Evil's map alist so the filter intercept map actually
+outranks the overlay's normal-state letters."
   (setq ghostherd--sidebar-filtering (and on t))
   (when-let* ((buf (get-buffer "*ghostherd*")))
     (with-current-buffer buf
-      (ghostherd-filter-mode (if ghostherd--sidebar-filtering 1 -1))))
+      (ghostherd-filter-mode (if ghostherd--sidebar-filtering 1 -1))
+      (when (fboundp 'evil-normalize-keymaps)
+        (evil-normalize-keymaps))))
   (force-mode-line-update t))
 
 (defun ghostherd-sidebar-filter-confirm ()
@@ -3721,6 +3725,23 @@ the query and returns to overlay keys so `j'/`k' move and RET visits.
             #'ghostherd-sidebar-filter-confirm)
 (define-key ghostherd-sidebar-filter-map (kbd "C-j")
             #'ghostherd-sidebar-filter-confirm)
+
+(defun ghostherd--bind-filter-query-keys ()
+  "Bind printable keys on the filter map to self-insert.
+
+Evil looks up a specific binding in the overlay's normal-state
+map (`a' answer, `e' explain, …) before a `[t]' default on a
+lower map is considered.  Explicit letters on the intercept map
+make `/` then `a` search rather than run the overlay command.
+`n'/`p' stay as motion so a match can be highlighted while typing."
+  (let ((c 32))
+    (while (< c 127)
+      (unless (memq c '(?n ?p 127))
+        (define-key ghostherd-sidebar-filter-map (vector c)
+                    #'ghostherd-sidebar-filter-self-insert))
+      (setq c (1+ c)))))
+
+(ghostherd--bind-filter-query-keys)
 
 (define-minor-mode ghostherd-filter-mode
   "Live-narrow the ghostherd overlay.

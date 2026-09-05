@@ -1494,6 +1494,23 @@ project's agy back."
   (should-not (ghostherd--return-event-p ?g))
   (should-not (ghostherd--return-event-p ?\C-g)))
 
+(ert-deftest ghostherd-test-filter-map-letters-self-insert ()
+  "Printable overlay keys must search while narrowing, not fire commands."
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "a")
+              #'ghostherd-sidebar-filter-self-insert))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "e")
+              #'ghostherd-sidebar-filter-self-insert))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "r")
+              #'ghostherd-sidebar-filter-self-insert))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "/")
+              #'ghostherd-sidebar-filter-self-insert))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "n")
+              #'next-line))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map "p")
+              #'previous-line))
+  (should (eq (lookup-key ghostherd-sidebar-filter-map (kbd "RET"))
+              #'ghostherd-sidebar-filter-confirm)))
+
 (ert-deftest ghostherd-test-filter-confirm-keeps-query ()
   "RET while narrowing applies the query; it does not visit.
 j/k and a second RET then belong to the overlay."
