@@ -375,6 +375,10 @@ rather than erroring."
   (should (eq (lookup-key ghostherd-terminal-mode-map (kbd "C-z"))
               #'ghostherd-copy-mode)))
 
+(ert-deftest ghostherd-test-sidebar-mode-map-has-help ()
+  (should (eq (lookup-key ghostherd-sidebar-mode-map "?")
+              #'ghostherd-sidebar-help)))
+
 (ert-deftest ghostherd-test-bind-evil-copy-mode-without-evil ()
   "A no-op when `evil-define-key*' is missing, never a macro call."
   (let ((saved (and (fboundp 'evil-define-key*)

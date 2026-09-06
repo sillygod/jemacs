@@ -2928,7 +2928,9 @@ window, which had nowhere to go except by killing the child frame."
   (setq-local ghostherd--sidebar-preview-start nil)
   (add-hook 'tabulated-list-revert-hook #'ghostherd--sidebar-entries nil t)
   (add-hook 'post-command-hook #'ghostherd--sidebar-preview-on-command nil t)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (when (fboundp 'evil-normalize-keymaps)
+    (evil-normalize-keymaps)))
 
 (defun ghostherd--sidebar-footer ()
   "Mode-line hint row for the session list."
@@ -4118,7 +4120,10 @@ sweeps every `ghostherd-poll-interval'."
 
 Must call `evil-define-key*', the function.  Filter-mode uses an
 intercept map so RET applies the query instead of visiting.  `j'/`k'
-stay as motion; after RET applies, they move and RET visits."
+stay as motion.  `?' is evil-search unless it is on this map; the
+full overlay alphabet has to live here, not only `/'.
+
+`x' is kill and `gr' is refresh: `k' and `g' are evil motion/prefix."
   (when (fboundp 'evil-make-intercept-map)
     (evil-make-intercept-map ghostherd-sidebar-filter-map 'normal))
   (when (fboundp 'evil-define-key*)
@@ -4128,9 +4133,30 @@ stay as motion; after RET applies, they move and RET visits."
       (kbd "C-m") #'ghostherd-sidebar-filter-confirm
       (kbd "<escape>") #'ghostherd-sidebar-quit)
     (evil-define-key* 'normal ghostherd-sidebar-mode-map
+      (kbd "?") #'ghostherd-sidebar-help
+      (kbd "e") #'ghostherd-explain
+      (kbd "R") #'ghostherd-respawn
+      (kbd "c") #'ghostherd-sidebar-notes
+      (kbd "z") #'ghostherd-sidebar-interrupt
+      (kbd "Z") #'ghostherd-sidebar-abort
+      (kbd "a") #'ghostherd-sidebar-answer
       (kbd "RET") #'ghostherd-sidebar-visit
       (kbd "<return>") #'ghostherd-sidebar-visit
+      (kbd "o") #'ghostherd-sidebar-visit
+      (kbd "N") #'ghostherd-new
+      (kbd "P") #'ghostherd-new-pair
+      (kbd "x") #'ghostherd-sidebar-kill
+      (kbd "r") #'ghostherd-sidebar-rename
+      (kbd "m") #'ghostherd-sidebar-message
+      (kbd "i") #'ghostherd-sidebar-prompt
+      (kbd "s") #'ghostherd-sidebar-toggle-project-filter
       (kbd "/") #'ghostherd-sidebar-filter
+      (kbd "v") #'ghostherd-sidebar-toggle-preview
+      (kbd "gr") #'ghostherd-sidebar-refresh
+      (kbd ".") #'ghostherd-next-blocked
+      (kbd "H") #'ghostherd-scrollback
+      (kbd "L") #'ghostherd-log
+      (kbd "M") #'ghostherd-sidebar-mark-state
       (kbd "q") #'ghostherd-sidebar-quit
       (kbd "<escape>") #'ghostherd-sidebar-quit)))
 
