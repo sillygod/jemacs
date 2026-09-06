@@ -1,0 +1,21 @@
+#+TITLE: lisplet
+
+Tiny replacement for the four lispy keys actually used here.  Commands
+fire only at a sexp boundary (point before =(= or after =)=);
+anywhere else the same keys insert themselves.
+
+| Key | Command            | What it does                                      |
+|-----+--------------------+---------------------------------------------------|
+| =%= | =lisplet-different= | Jump to the other side of the current sexp      |
+| =d= | =lisplet-kill=      | Kill complete sexps through EOL (whole list if multiline) |
+| =e= | =lisplet-eval=      | Eval the current sexp                            |
+| =i= | =lisplet-indent=    | Pretty-print / indent the current sexp           |
+
+Wired in =jemacs-unarrange= on emacs-lisp, common-lisp, and scheme.
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/lisplet \
+        -l lisplet.el -l lisplet-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src

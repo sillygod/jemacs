@@ -344,7 +344,6 @@
       :config
       (delete 'wgrep evil-collection-mode-list)
       (delete 'vterm evil-collection-mode-list)
-      (delete 'lispy evil-collection-mode-list)
       (delete 'ivy evil-collection-mode-list)
       (delete 'go-mode evil-collection-mode-list)
       (delete 'view evil-collection-mode-list)

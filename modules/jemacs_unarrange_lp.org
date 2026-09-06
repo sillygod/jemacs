@@ -800,18 +800,12 @@
       (dolist (hook '(emacs-lisp-mode-hook ielm-mode-hook))
         (add-hook hook 'elisp-slime-nav-mode)))
 
-    (use-package lispy
-      :init
-      (setq lispy-key-theme '(special c-digits))
-      :custom
-      (lispy-x-default-verbosity 1)
-      :hook ((common-lisp-mode . lispy-mode)
-             (emacs-lisp-mode . lispy-mode)
-             (scheme-mode . lispy-mode))
-      :config
-      (with-eval-after-load 'evil-matchit
-        (lispy-define-key lispy-mode-map (kbd "%") 'lispy-different)
-        (lispy-define-key lispy-mode-map (kbd "d") 'lispy-kill)))
+    (eval `(use-package lisplet
+             :straight (:local-repo ,(concat home-dir "local/lisplet")
+                                    :files ("lisplet.el"))
+             :hook ((common-lisp-mode . lisplet-mode)
+                    (emacs-lisp-mode . lisplet-mode)
+                    (scheme-mode . lisplet-mode))))
 
   #+end_src
 
