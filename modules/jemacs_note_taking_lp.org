@@ -35,7 +35,10 @@
       (interactive)
       (org-ql-search
         ;; (expand-file-name "todo.org" org-roam-directory)
-        (directory-files org-roam-directory nil ".org")
+        (directory-files (or (bound-and-true-p org-shelf-directory)
+                             (bound-and-true-p jemacs-org-roam-directory)
+                             jemacs-org-root)
+                         t "\\.org\\'")
         '(todo)
         :title "Things to Be Done"
         :sort '(deadline)
@@ -231,77 +234,27 @@
       :defer t)
   #+end_src
 
-* org-roam
+* org-shelf
 
-  This requires =sqlite3=. Ensure it's installed.
-
-  Remember to run =org-roam-db-build-cache= at first time.
+  Homemade replacement for org-roam: same =:ID:= / =#+title= / =#+filetags=
+  headers, in-memory index, no sqlite.  =org-shelf-complete-everywhere=
+  wraps a matching title into =[[id:UUID][title]]= while typing (Corfu).
+  There is no graph UI.
 
   #+begin_src emacs-lisp
-
-    (use-package org-roam
-      :straight
-      (:host github :repo "org-roam/org-roam" :files (:defaults "extensions/*"))
-      :after org
-      :custom
-      ;; Read, never hardcode: `:custom' is `customize-set-variable', which
-      ;; runs unconditionally at load time and would clobber a value set in
-      ;; config.el.  `org-roam-db-location' is derived here and now, so the
-      ;; root has to be right by this point -- overriding it later from
-      ;; settings.el would leave the db pointing at the old directory.
-      (org-roam-directory (or jemacs-org-roam-directory jemacs-org-root))
-      (org-roam-db-location (expand-file-name "org-roam.db" org-roam-directory))
-      (org-roam-completion-everywhere t)
-      :init
-      (setq org-roam-v2-ack t)
-
-      :config
-      (setq org-roam-node-display-template
-            (concat "${title:100}" (propertize "${tags:40}" 'face 'org-tag)))
-      (setq org-roam-dailies-capture-templates
-            `(("d" "default" entry
-               "* %<%H:%M> %?"
-               :target (file+head "%<%Y-%m-%d>.org"
-                                  "#+title: %<%Y-%m-%d>\n#+filetags: :daily:"))))
-      (setq org-roam-capture-templates
-            `(("d" "default" plain "%?" :target
-               (file+head "${slug}.org" "#+title: ${title}\n")
-               :unnarrowed t)
-              ("b" "book" plain
-               "* The book in 3 sentences or 3 points\n* Impresisions\n* How the Book Changed Me\n* Favorite Quotes\n* Summary + Notes for each sections\n "
-               :target
-               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :book:\n\nauthor:"))
-              ("c" "course" plain
-               "* Impressions\n* Summary + Notes for each section\n "
-               :target
-               (file+head "${slug}.org" "#+title: ${title}\n#+filetags: :course:\n\nlink:\n"))))
-      (setq org-roam-dailies-directory "journal/")
-      (org-roam-db-autosync-enable))
-
-
-    (use-package org-roam-ui
-      :straight
-        (:host github :repo "org-roam/org-roam-ui" :branch "main" :files ("*.el" "out"))
-        :after org-roam
-        :config
-        (setq org-roam-ui-sync-theme t
-              org-roam-ui-follow t
-              org-roam-ui-update-on-save t
-              org-roam-ui-open-on-start nil))
-
-
-    (defun ora-org-roam-find-file-action (x)
-      (if (consp x)
-          (let ((file-path (plist-get (cdr x) :path)))
-            (org-roam--find-file file-path))
-        (let* ((title-with-tags x)
-               (org-roam-capture--info
-                `((title . ,title-with-tags)
-                  (slug . ,(funcall org-roam-title-to-slug-function title-with-tags))))
-               (org-roam-capture--context 'title))
-          (setq org-roam-capture-additional-template-props (list :finalize 'find-file))
-          (org-roam-capture--capture))))
-
+    (eval `(use-package org-shelf
+             :straight (:local-repo ,(concat home-dir "local/org-shelf")
+                                    :files ("org-shelf.el"))
+             :after org
+             :custom
+             ;; Read, never hardcode: `:custom' is `customize-set-variable',
+             ;; which runs unconditionally at load time and would clobber a
+             ;; value set in config.el.
+             (org-shelf-directory (or jemacs-org-roam-directory jemacs-org-root))
+             (org-shelf-completion-everywhere t)
+             :config
+             (setq org-shelf-dailies-directory "journal/")
+             (org-shelf-mode 1)))
   #+end_src
 
 * org-transclusion

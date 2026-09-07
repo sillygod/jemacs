@@ -1,0 +1,50 @@
+#+TITLE: org-shelf
+
+Org notes without sqlite.  Same on-disk format as the old org-roam
+files here (=:ID:=, =#+title=, =#+filetags=).  No =roam:= links, no
+graph UI.  Following =[[id:]]= is still org-id.
+
+* Status
+
+| Item     | Value                                         |
+|----------+-----------------------------------------------|
+| Package  | =local/org-shelf/= (straight =:local-repo=)    |
+| Files    | =org-shelf.el= · =org-shelf-tests.el=         |
+| Wired in | =jemacs-note-taking= + leader =SPC a o r=     |
+
+* Completion everywhere
+
+In an Org buffer, type a node title (Corfu auto, prefix 2).  Choosing
+a candidate replaces the token with =[[id:UUID][title]]=.  Skips src
+blocks, keyword lines, property drawers, and existing links.  =:exclusive
+no= so Cape / Org capfs still run.
+
+Inside =[[...]]=, the same titles complete to an id link.
+
+* Commands
+
+| Key in =SPC a o r= | Command                         |
+|--------------------+---------------------------------|
+| =f=                | =org-shelf-find=                |
+| =i=                | =org-shelf-insert=              |
+| =n=                | =org-shelf-new=                 |
+| =d=                | =org-shelf-dailies-goto-today=  |
+| =l=                | =org-shelf-backlinks=           |
+| =t=                | =org-shelf-tag-add=             |
+| =c=                | =org-shelf-id-get-create=       |
+| =r=                | =org-shelf-refresh=             |
+
+New notes keep the existing templates: default / book / course.
+Dailies still live in =journal/%Y-%m-%d.org= with =#+filetags: :daily:=.
+
+The notes directory is =org-shelf-directory=, set from
+=jemacs-org-roam-directory= (the config.el name is unchanged).  Old
+=.dir-locals.el= that =setq org-roam-directory= still work via
+=defvaralias=.
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/org-shelf \
+        -l org-shelf.el -l org-shelf-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src

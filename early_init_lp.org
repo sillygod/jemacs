@@ -81,8 +81,8 @@ Everything under it -- the agenda files, the journal, the notes file --
 is derived from this, so only this one value is machine-specific.")
 
     (defvar jemacs-org-roam-directory nil
-      "Directory org-roam indexes.  Defaults to `jemacs-org-root' when nil.
-Set this only if your roam notes live in a subdirectory of the root.")
+      "Directory org-shelf indexes.  Defaults to `jemacs-org-root' when nil.
+Set this only if your notes live in a subdirectory of the root.")
 
     (when (file-exists-p jemacs-config-file)
       (load jemacs-config-file nil 'nomessage))

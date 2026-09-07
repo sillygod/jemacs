@@ -1178,21 +1178,21 @@
          ])
 
 
-      (with-eval-after-load 'org-roam
-        (transient-define-prefix org-roam-transient ()
-          "Org roam operation transient."
+      (with-eval-after-load 'org-shelf
+        (transient-define-prefix org-shelf-transient ()
+          "Org-shelf note operations."
           :transient-suffix 'transient--do-exit
           [["Action"
-            ("a" "add alias for node" org-roam-alias-add)
-            ;; this is used for whening the name is conflict. It mostly happens in the header name
-            ("c" "create node" org-id-get-create)
-            ("i" "insert" org-roam-node-insert)
-            ("f" "find file" org-roam-node-find)
-            ("d" "dailies" org-roam-dailies-goto-today)
-            ("l" "back link buffer" org-roam-buffer-toggle)
-            ("g" "graph" my-org-roam-ui-open)
-            ("r" "db refresh" my-refresh-org-roam-db-cache)
-            ("t" "add tag" org-roam-tag-add)
+            ;; create node: used when a heading name conflicts; file-level
+            ;; notes already have an ID in the PROPERTIES drawer.
+            ("c" "create node" org-shelf-id-get-create)
+            ("i" "insert" org-shelf-insert)
+            ("f" "find file" org-shelf-find)
+            ("n" "new note" org-shelf-new)
+            ("d" "dailies" org-shelf-dailies-goto-today)
+            ("l" "backlinks" org-shelf-backlinks)
+            ("r" "refresh" org-shelf-refresh)
+            ("t" "add tag" org-shelf-tag-add)
             ("<escape>" "quit" transient-quit-all)
             ("q" "quit" transient-quit-all)]
            ]))
@@ -1395,7 +1395,7 @@
                                    "ns" "narrow subtree" 'org-narrow-to-subtree
                                    "nN" "widen" 'widen
 
-                                   "r" "org roam transient" 'org-roam-transient
+                                   "r" "org-shelf transient" 'org-shelf-transient
 
                                    "s" "schedule" nil
                                    "ss" "org-schedule" 'org-schedule
@@ -1487,7 +1487,7 @@
        "alx" '(open-with-xwidget :which-key "open with xwidget")
 
        "ao" '(:ignore t :which-key "org")
-       "aor" '(org-roam-transient :which-key "org-roam-transient")
+       "aor" '(org-shelf-transient :which-key "org-shelf")
        "aos" '(org-secrets-sidebar :which-key "secrets overlay")
        "aoc" '(org-secrets :which-key "secrets copy")
        "aon" '(org-secrets-new :which-key "secrets new")

@@ -27,7 +27,7 @@
 ;; so this is normally the only path you need to set.
 ;; (setq jemacs-org-root "~/Dropbox/myorgs/")
 
-;; Only if your org-roam notes live in a subdirectory of the root.
+;; Only if your org-shelf notes live in a subdirectory of the root.
 ;; (setq jemacs-org-roam-directory "~/Dropbox/myorgs/notes/")
 
 ;; Run this config out of a different directory.

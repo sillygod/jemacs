@@ -977,31 +977,12 @@
                (indent-to (* (/ (- ci 1) yaml-indent-offset) yaml-indent-offset))
              (indent-to need)))))
    #+end_src
-** org roam helper
+** dir-locals helper
 
    #+begin_src emacs-lisp
-
-     (defun org-roam-dailies-capture-and-goto-today (&optional goto)
-       (interactive)
-       (org-roam-dailies--capture (current-time) goto)
-       (org-roam-dailies-capture-today t))
-
      (defun reload-dir-locals ()
        (interactive)
        (hack-dir-local-variables-non-file-buffer))
-
-     (defun my-refresh-org-roam-db-cache ()
-       (interactive)
-       (reload-dir-locals)
-       (org-roam-db-clear-all)
-       (org-roam-db-sync))
-
-     (defun my-org-roam-ui-open ()
-       (interactive)
-       (let ((org-roam-ui-browser-function (if (equal current-prefix-arg '(4))
-                                               #'browse-url
-                                             #'xwidget-webkit-browse-url)))
-         (orui-open)))
    #+end_src
 
 * provide package
