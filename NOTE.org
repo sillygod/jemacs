@@ -1,7 +1,6 @@
 * Some plugins can be referenced
 
   - https://github.com/tecosaur/emacs-everywhere
-  - https://github.com/bling/fzf.el
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://github.com/minad/tempel (another choice for snippet completion)
   - https://github.com/ksqsf/org-xlatex/blob/main/org-xlatex.el
@@ -30,8 +29,6 @@
    - [ ] implement my own run-python-shell (can learn from claude code cli or gemini cli https://github.com/linchen2chris/gemini-cli.el)
    - [ ] my own pdf viewer? (https://github.com/mozilla/pdf.js?utm_source=cdnjs&utm_medium=cdnjs_link&utm_campaign=cdnjs_library)
    - [ ] https://github.com/wbolster/emacs-python-coverage
-   - [ ] [[https://github.com/hlissner/doom-emacs/tree/develop/modules/ui/popup][window management (doom emacs)]] or consider [[https://github.com/bmag/emacs-purpose][this package]]
-   - [ ] https://github.com/techniumlabs/ecloud/blob/master/gcp-overview.el
    - [ ] https://github.com/NicolasPetton/Indium (consider to add this package)
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
    - [ ] asciinema (write utils for this)
