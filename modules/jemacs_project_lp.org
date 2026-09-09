@@ -235,6 +235,8 @@ value is the terminal lagging behind the window while you drag.")
           ;; image paste) and anything an agent TUI bound.  emacs state
           ;; passes them through; C-z toggles copy mode for motions.
           (define-key ghostel-mode-map (kbd "C-z") #'ghostel-copy-mode)
+          (define-key ghostel-mode-map (kbd "C-c c") #'ghostel-project-cmd-run)
+          (define-key ghostel-mode-map (kbd "C-c C") #'ghostel-project-cmd-transient)
           (with-eval-after-load 'evil
             (evil-set-initial-state 'ghostel-mode 'emacs)
             (evil-define-key 'emacs 'ghostel-mode-map (kbd "C-z") #'ghostel-copy-mode)
@@ -365,6 +367,291 @@ value is the terminal lagging behind the window while you drag.")
       (interactive)
       (require 'avy)
       (avy-jump "https?://"))
+  #+end_src
+
+* project ghostel command bookmarks & templates
+
+  Bookmark and template commands per-project for Ghostel terminal.
+  Variables like ={{var}}= or ={{var:default}}= are prompted and substituted.
+  Commands are pasted into the Ghostel terminal without automatic execution.
+
+  #+begin_src emacs-lisp
+    (require 'cl-lib)
+    (require 'subr-x)
+
+    (defcustom ghostel-project-cmd-save-file
+      (locate-user-emacs-file "ghostel-project-commands.eld")
+      "File path for persisting ghostel project command bookmarks.
+Follows `user-emacs-directory', similar to `jworkspace-save-file'."
+      :type 'file
+      :group 'jemacs-project)
+
+    (defvar ghostel-project-cmd--cache nil
+      "In-memory alist of (PROJECT-ROOT . (CMD-RECORD ...)).")
+
+    (defconst ghostel-project-cmd--var-regexp
+      "{{\\s-*\\([^:} \t\n]+\\)\\(?::\\([^}]*\\)\\)?\\s-*}}"
+      "Regexp matching {{var}} or {{var:default}} placeholders.")
+
+    (defun ghostel-project-cmd--current-project-root ()
+      "Return normalized current project root directory or `default-directory'."
+      (file-name-as-directory
+       (expand-file-name
+        (or (when-let* ((proj (project-current nil)))
+              (project-root proj))
+            default-directory))))
+
+    (defun ghostel-project-cmd--load ()
+      "Load project commands from `ghostel-project-cmd-save-file'."
+      (if (file-exists-p ghostel-project-cmd-save-file)
+          (condition-case err
+              (with-temp-buffer
+                (insert-file-contents ghostel-project-cmd-save-file)
+                (goto-char (point-min))
+                (if (= (point-min) (point-max))
+                    nil
+                  (read (current-buffer))))
+            (error
+             (message "ghostel-project-cmd: error loading %s: %s"
+                      ghostel-project-cmd-save-file err)
+             nil))
+        nil))
+
+    (defun ghostel-project-cmd--save ()
+      "Persist `ghostel-project-cmd--cache' to `ghostel-project-cmd-save-file'."
+      (let ((dir (file-name-directory ghostel-project-cmd-save-file)))
+        (when (and dir (not (file-directory-p dir)))
+          (make-directory dir t)))
+      (with-temp-file ghostel-project-cmd-save-file
+        (let ((print-length nil)
+              (print-level nil)
+              (print-circle t))
+          (prin1 (or ghostel-project-cmd--cache '()) (current-buffer)))))
+
+    (defun ghostel-project-cmd--get-commands (&optional root)
+      "Return list of command plists for ROOT (defaults to current project)."
+      (unless ghostel-project-cmd--cache
+        (setq ghostel-project-cmd--cache (ghostel-project-cmd--load)))
+      (let ((r (or root (ghostel-project-cmd--current-project-root))))
+        (alist-get r ghostel-project-cmd--cache nil nil #'equal)))
+
+    (defun ghostel-project-cmd--set-commands (cmds &optional root)
+      "Set list of CMDS for ROOT (defaults to current project) and persist."
+      (unless ghostel-project-cmd--cache
+        (setq ghostel-project-cmd--cache (ghostel-project-cmd--load)))
+      (let ((r (or root (ghostel-project-cmd--current-project-root))))
+        (setq ghostel-project-cmd--cache
+              (assoc-delete-all r ghostel-project-cmd--cache #'equal))
+        (when cmds
+          (push (cons r cmds) ghostel-project-cmd--cache))
+        (ghostel-project-cmd--save)))
+
+    (defun ghostel-project-cmd--builtin-var (var-name root)
+      "Return auto-detected default value for built-in VAR-NAME under ROOT, or nil."
+      (pcase var-name
+        ((or "root" "project-root")
+         (directory-file-name root))
+        ((or "project-name" "project")
+         (file-name-nondirectory (directory-file-name root)))
+        ("branch"
+         (or (when (fboundp 'magit-get-current-branch)
+               (magit-get-current-branch))
+             (when (fboundp 'vc-git--current-branch)
+               (vc-git--current-branch))
+             nil))
+        ("file"
+         (when buffer-file-name
+           (file-relative-name buffer-file-name root)))
+        ("line"
+         (number-to-string (line-number-at-pos)))
+        (_ nil)))
+
+    (defun ghostel-project-cmd--extract-variables (template root)
+      "Extract an ordered alist of (VAR-NAME . DEFAULT-VALUE) from TEMPLATE."
+      (let ((vars nil)
+            (start 0))
+        (while (string-match ghostel-project-cmd--var-regexp template start)
+          (let* ((name (match-string 1 template))
+                 (def-val (match-string 2 template))
+                 (existing (assoc name vars)))
+            (if existing
+                (when (and (null (cdr existing)) def-val)
+                  (setcdr existing def-val))
+              (let ((final-default (or def-val
+                                       (ghostel-project-cmd--builtin-var name root))))
+                (push (cons name final-default) vars))))
+          (setq start (match-end 0)))
+        (nreverse vars)))
+
+    (defun ghostel-project-cmd--interpolate (template root)
+      "Prompt for template variables in TEMPLATE and return resolved string."
+      (let* ((vars (ghostel-project-cmd--extract-variables template root))
+             (result template))
+        (dolist (var-pair vars)
+          (let* ((name (car var-pair))
+                 (default (cdr var-pair))
+                 (prompt (if (and default (not (string-empty-p default)))
+                             (format "%s (default %s): " name default)
+                           (format "%s: " name)))
+                 (val (read-string prompt nil nil default)))
+            (when (string-empty-p val)
+              (setq val (or default "")))
+            (let ((pattern (format "{{\\s-*%s\\(?::[^}]*\\)?\\s-*}}"
+                                   (regexp-quote name))))
+              (setq result (replace-regexp-in-string pattern val result t t)))))
+        result))
+
+    (defun ghostel-project-cmd--paste-to-terminal (cmd-string)
+      "Paste CMD-STRING into current project's ghostel terminal without pressing Enter."
+      (require 'ghostel)
+      (let ((term-buf (if (project-current nil)
+                          (project-run-ghostel)
+                        (new-terminal))))
+        (when (buffer-live-p term-buf)
+          (pop-to-buffer term-buf (append display-buffer--same-window-action
+                                          '((category . comint))))
+          (with-current-buffer term-buf
+            (ghostel-paste-string cmd-string)))))
+
+    (defun ghostel-project-cmd--format-candidates (cmds)
+      "Format list of CMDS plists into an alist of (DISPLAY-STRING . CMD-PLIST)."
+      (let ((max-name-len (if cmds
+                              (apply #'max (mapcar (lambda (c) (length (plist-get c :name))) cmds))
+                            0)))
+        (mapcar
+         (lambda (c)
+           (let* ((name (plist-get c :name))
+                  (cmd (plist-get c :cmd))
+                  (desc (plist-get c :desc))
+                  (padded-name (string-pad name (max 12 (+ max-name-len 2))))
+                  (display (if (and desc (not (string-empty-p desc)))
+                               (format "%s │ %s  (%s)"
+                                       (propertize padded-name 'face 'font-lock-keyword-face)
+                                       cmd
+                                       (propertize desc 'face 'font-lock-comment-face))
+                             (format "%s │ %s"
+                                     (propertize padded-name 'face 'font-lock-keyword-face)
+                                     cmd))))
+             (cons display c)))
+         cmds)))
+
+    (defun ghostel-project-cmd--read (candidates prompt)
+      "Read candidate from CANDIDATES alist using Consult or `completing-read'."
+      (let ((cand-strings (mapcar #'car candidates)))
+        (if (fboundp 'consult--read)
+            (consult--read
+             cand-strings
+             :prompt prompt
+             :require-match t
+             :sort nil
+             :category 'ghostel-project-cmd)
+          (completing-read prompt cand-strings nil t))))
+
+    (defun ghostel-project-cmd-run ()
+      "Select a bookmarked command for current project and paste to ghostel terminal."
+      (interactive)
+      (let* ((root (ghostel-project-cmd--current-project-root))
+             (cmds (ghostel-project-cmd--get-commands root)))
+        (if (null cmds)
+            (if (y-or-n-p (format "No commands saved for %s. Add one now? "
+                                  (file-name-nondirectory (directory-file-name root))))
+                (call-interactively #'ghostel-project-cmd-add)
+              (message "No commands configured for this project."))
+          (let* ((cands (ghostel-project-cmd--format-candidates cmds))
+                 (proj-name (file-name-nondirectory (directory-file-name root)))
+                 (selected (ghostel-project-cmd--read
+                            cands
+                            (format "Project [%s] command: " proj-name)))
+                 (cmd-record (cdr (assoc selected cands)))
+                 (raw-template (plist-get cmd-record :cmd))
+                 (final-cmd (ghostel-project-cmd--interpolate raw-template root)))
+            (ghostel-project-cmd--paste-to-terminal final-cmd)))))
+
+    (defun ghostel-project-cmd-add (&optional initial-cmd)
+      "Add a new command template for the current project.
+  INITIAL-CMD can be passed; if region is active, region text is used."
+      (interactive
+       (list (when (use-region-p)
+               (buffer-substring-no-properties (region-beginning) (region-end)))))
+      (let* ((root (ghostel-project-cmd--current-project-root))
+             (default-cmd (or initial-cmd ""))
+             (cmd (read-string "Command template: " default-cmd))
+             (suggested-name (when (string-match "\\`[ \t]*\\([a-zA-Z0-9_-]+\\)" cmd)
+                               (match-string 1 cmd)))
+             (name (read-string "Name / Alias: " nil nil suggested-name))
+             (desc (read-string "Description (optional): "))
+             (existing (ghostel-project-cmd--get-commands root))
+             (filtered (cl-remove-if (lambda (c) (equal (plist-get c :name) name)) existing))
+             (new-entry (list :name name :cmd cmd :desc desc))
+             (new-list (append filtered (list new-entry))))
+        (when (string-empty-p name)
+          (user-error "Command name cannot be empty"))
+        (when (string-empty-p cmd)
+          (user-error "Command cannot be empty"))
+        (ghostel-project-cmd--set-commands new-list root)
+        (message "Added project command '%s' for %s" name root)))
+
+    (defun ghostel-project-cmd-delete ()
+      "Delete a command template for the current project."
+      (interactive)
+      (let* ((root (ghostel-project-cmd--current-project-root))
+             (cmds (ghostel-project-cmd--get-commands root)))
+        (unless cmds
+          (user-error "No commands configured for this project"))
+        (let* ((cands (ghostel-project-cmd--format-candidates cmds))
+               (selected (ghostel-project-cmd--read cands "Delete command: "))
+               (record (cdr (assoc selected cands)))
+               (target-name (plist-get record :name))
+               (remaining (cl-remove-if (lambda (c) (equal (plist-get c :name) target-name)) cmds)))
+          (when (yes-or-no-p (format "Delete command '%s'? " target-name))
+            (ghostel-project-cmd--set-commands remaining root)
+            (message "Deleted command '%s'" target-name)))))
+
+    (defun ghostel-project-cmd-edit ()
+      "Edit an existing command template for the current project."
+      (interactive)
+      (let* ((root (ghostel-project-cmd--current-project-root))
+             (cmds (ghostel-project-cmd--get-commands root)))
+        (unless cmds
+          (user-error "No commands configured for this project"))
+        (let* ((cands (ghostel-project-cmd--format-candidates cmds))
+               (selected (ghostel-project-cmd--read cands "Edit command: "))
+               (record (cdr (assoc selected cands)))
+               (old-name (plist-get record :name))
+               (old-cmd (plist-get record :cmd))
+               (old-desc (or (plist-get record :desc) ""))
+               (new-name (read-string "Name / Alias: " old-name))
+               (new-cmd (read-string "Command template: " old-cmd))
+               (new-desc (read-string "Description (optional): " old-desc))
+               (remaining (cl-remove-if (lambda (c) (equal (plist-get c :name) old-name)) cmds))
+               (updated-entry (list :name new-name :cmd new-cmd :desc new-desc)))
+          (ghostel-project-cmd--set-commands (append remaining (list updated-entry)) root)
+          (message "Updated command '%s'" new-name))))
+
+    (defun ghostel-project-cmd-open-save-file ()
+      "Open the `ghostel-project-cmd-save-file' in a buffer."
+      (interactive)
+      (find-file ghostel-project-cmd-save-file))
+
+    (require 'transient)
+
+    (transient-define-prefix ghostel-project-cmd-transient ()
+      "Ghostel Project Commands & Terminal."
+      [:description (lambda ()
+                      (format "Project Commands [%s]"
+                              (file-name-nondirectory
+                               (directory-file-name
+                                (ghostel-project-cmd--current-project-root)))))
+       ["Command Templates"
+        ("c" "Run command template" ghostel-project-cmd-run)
+        ("a" "Add command template" ghostel-project-cmd-add)
+        ("e" "Edit command template" ghostel-project-cmd-edit)
+        ("d" "Delete command template" ghostel-project-cmd-delete)
+        ("o" "Open save file" ghostel-project-cmd-open-save-file)]
+       ["Terminal"
+        ("t" "Open terminal" new-terminal)
+        ("l" "Perform last command" terminal-perform-last-command)
+        ("s" "Send region to terminal" send-text-and-move-to-project-terminal)]])
   #+end_src
 
 * search relevant functions
