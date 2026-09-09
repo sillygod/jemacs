@@ -100,3 +100,57 @@ def test_blocked_card_has_answer_keys(tmp_path):
 def test_format_herd_empty():
     text = format_herd([])
     assert "no sessions" in text
+
+
+def test_screen_uses_snapshot_not_queue(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.tick(
+        sessions=[
+            {
+                "name": "agy-commit",
+                "kind": "agy",
+                "state": "blocked",
+                "reason": "proceed?",
+                "screen": "Do you want to proceed?\n❯ 1. Yes",
+            }
+        ],
+        ack_ids=[],
+    )
+    agy = herd.session("agy-commit")
+    msg = bot.handle_callback(99, f"sc:{agy['short']}")
+    assert "Do you want to proceed?" in msg["text"]
+    assert "agy-commit" in msg["text"]
+    assert not msg["text"].startswith("screen →")
+    leftover = herd.tick(
+        sessions=[{"name": "agy-commit", "state": "blocked"}],
+        ack_ids=[],
+    )["commands"]
+    assert leftover == []
+    reset_herd()
+
+
+def test_screen_without_cache_enqueues(tmp_path):
+    bot, herd = _bot(tmp_path)
+    grok = herd.session("grok-dev")
+    msg = bot.handle_callback(99, f"sc:{grok['short']}")
+    assert msg["text"].startswith("screen →")
+    cmds = herd.tick(
+        sessions=[{"name": "grok-dev", "state": "working"}],
+        ack_ids=[],
+    )["commands"]
+    assert cmds[0]["op"] == "screen"
+    reset_herd()
+
+
+def test_explain_uses_snapshot(tmp_path):
+    bot, herd = _bot(tmp_path)
+    agy = herd.session("agy-commit")
+    msg = bot.handle_callback(99, f"ex:{agy['short']}")
+    assert "blocked" in msg["text"]
+    assert "proceed?" in msg["text"]
+    leftover = herd.tick(
+        sessions=[{"name": "agy-commit", "state": "blocked"}],
+        ack_ids=[],
+    )["commands"]
+    assert leftover == []
+    reset_herd()

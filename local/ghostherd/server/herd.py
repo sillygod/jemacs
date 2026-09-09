@@ -103,6 +103,8 @@ class HerdStore:
         }
         if "reason" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN reason TEXT")
+        if "screen" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN screen TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -271,8 +273,8 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -281,6 +283,7 @@ class HerdStore:
                         str(row.get("notes") or ""),
                         str(row.get("project") or ""),
                         str(row.get("reason") or ""),
+                        str(row.get("screen") or ""),
                     ),
                 )
                 self._upsert_alias(name)
@@ -429,7 +432,7 @@ class HerdStore:
         with self._mu:
             row = self._conn.execute(
                 """
-                SELECT name, kind, state, notes, project, reason
+                SELECT name, kind, state, notes, project, reason, screen
                 FROM snapshot WHERE name = ?
                 """,
                 (name,),
@@ -443,6 +446,7 @@ class HerdStore:
             "notes": row[3] or "",
             "project": row[4] or "",
             "reason": row[5] or "",
+            "screen": row[6] or "",
             "short": self.short_for(row[0]),
         }
 

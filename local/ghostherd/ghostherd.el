@@ -3392,7 +3392,9 @@ use this queue.  Long bodies: method herd_inbox, params session=<name>.
         (insert ghostherd--herd-protocol)))))
 
 (defun ghostherd--herd-snapshot ()
-  "Session list pushed to the sidecar each poll."
+  "Session list pushed to the sidecar each poll.
+Includes the last captured pane so Telegram `screen' can reply
+from sqlite instead of waiting for another Emacs round trip."
   (mapcar
    (lambda (s)
      (list :name (ghostherd-session-name s)
@@ -3400,7 +3402,9 @@ use this queue.  Long bodies: method herd_inbox, params session=<name>.
            :state (symbol-name (or (ghostherd-session-state s) 'idle))
            :notes (or (ghostherd-session-notes s) "")
            :project (or (ghostherd-session-project s) "")
-           :reason (or (ghostherd-session-state-reason s) "")))
+           :reason (or (ghostherd-session-state-reason s) "")
+           :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
+                       "")))
    (hash-table-values ghostherd--sessions)))
 
 (defun ghostherd--herd-deliver-one (msg)

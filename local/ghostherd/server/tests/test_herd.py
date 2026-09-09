@@ -185,6 +185,25 @@ def test_command_round_trip(tmp_path: Path):
     reset_herd()
 
 
+def test_snapshot_keeps_screen(tmp_path: Path):
+    h = _store(tmp_path)
+    h.tick(
+        sessions=[
+            {
+                "name": "agy",
+                "state": "working",
+                "screen": "esc to interrupt\n",
+            }
+        ],
+        ack_ids=[],
+    )
+    row = h.session("agy")
+    assert row["screen"] == "esc to interrupt\n"
+    listed = h.list_sessions()["sessions"][0]
+    assert "screen" not in listed
+    reset_herd()
+
+
 def test_alias_is_stable(tmp_path: Path):
     h = _store(tmp_path)
     h.tick(sessions=[{"name": "agy-ghost-commit", "state": "idle"}], ack_ids=[])

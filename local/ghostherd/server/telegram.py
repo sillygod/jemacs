@@ -2,6 +2,10 @@
 
 Taps enqueue sqlite commands; Emacs herd_tick runs them.  This module
 never talks to a PTY.  Unknown chats are ignored.
+
+Screen (and explain) read the last Emacs snapshot immediately — the
+poll already captured the pane.  Typing into a PTY still goes through
+Emacs.
 """
 
 from __future__ import annotations
@@ -125,6 +129,24 @@ def format_session(session: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_screen(session: dict[str, Any]) -> str:
+    """Last polled pane, plus a one-line state header."""
+    body = (session.get("screen") or "").rstrip()
+    if not body:
+        return ""
+    glyph = GLYPH.get(session.get("state") or "", "?")
+    head = (
+        f"{session['name']} · {glyph} {session.get('state') or '?'}"
+    )
+    return f"{head}\n\n{body}"
+
+
+def _clip(text: str, n: int = 3500) -> str:
+    if len(text) > n:
+        return text[:n] + "\n…"
+    return text
+
+
 class TelegramBot:
     def __init__(
         self,
@@ -207,9 +229,9 @@ class TelegramBot:
                 return {"chat_id": chat_id, "text": "bad answer"}
             return self._enqueue(chat_id, "answer", short, {"n": choice})
         if data.startswith("sc:"):
-            return self._enqueue(chat_id, "screen", data[3:])
+            return self._snapshot_view(chat_id, data[3:], "screen")
         if data.startswith("ex:"):
-            return self._enqueue(chat_id, "explain", data[3:])
+            return self._snapshot_view(chat_id, data[3:], "explain")
         if data.startswith("i:"):
             return self._enqueue(chat_id, "interrupt", data[2:])
         if data.startswith("ab:"):
@@ -276,6 +298,34 @@ class TelegramBot:
         self.herd.enqueue_command(op, name, args=args, chat_id=chat_id)
         return {"chat_id": chat_id, "text": f"{op} → {name}"}
 
+    def _snapshot_view(
+        self, chat_id: int, short: str, kind: str
+    ) -> dict[str, Any]:
+        """Serve screen/explain from the last Emacs poll.
+
+        No PTY round-trip.  If this snapshot has no pane yet, fall
+        back to enqueue so Emacs captures once.
+        """
+        name = self.herd.name_for(short)
+        session = self.herd.session(name) if name else None
+        if not session:
+            return {"chat_id": chat_id, "text": "session not in last snapshot"}
+        if kind == "screen":
+            text = format_screen(session)
+            if not text:
+                return self._enqueue(chat_id, "screen", short)
+        else:
+            glyph = GLYPH.get(session.get("state") or "", "?")
+            text = (
+                f"{glyph} {session.get('state') or '?'}\n"
+                f"{session.get('reason') or '—'}"
+            )
+        return {
+            "chat_id": chat_id,
+            "text": _clip(text),
+            "reply_markup": session_keyboard(session),
+        }
+
     async def run(self, stop: asyncio.Event) -> None:
         url = API.format(token=self.token, method="{method}")
         timeout = httpx.Timeout(40.0, connect=10.0)
@@ -329,9 +379,7 @@ class TelegramBot:
             if not self.allowed(chat_id):
                 sent.append(row["id"])
                 continue
-            text = row.get("text") or ""
-            if len(text) > 3500:
-                text = text[:3500] + "\n…"
+            text = _clip(row.get("text") or "")
             await client.post(
                 url.format(method="sendMessage"),
                 json={"chat_id": chat_id, "text": text},

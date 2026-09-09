@@ -55,12 +55,19 @@
 * loading custom settings
 
   #+begin_src emacs-lisp
-    (when (if (fboundp 'native-comp-available-p) (native-comp-available-p))
-      (when (fboundp 'startup-redirect-eln-cache)
-        ;; to make it automatically run startup--update-eln-cache
-        ;; which will set the eln cache directory under the user-emcas-directory
-        (setq startup--original-eln-load-path native-comp-eln-load-path)
-        (startup-redirect-eln-cache (expand-file-name (file-name-as-directory "eln-cache") user-emacs-directory))))
+    (when (and (fboundp 'native-comp-available-p)
+               (native-comp-available-p)
+               (fboundp 'startup-redirect-eln-cache))
+      ;; Relative to `user-emacs-directory', which is emacs-home/ above.
+      ;; Do not touch `startup--original-eln-load-path': Emacs 31 skips
+      ;; its later `startup--update-eln-cache' when the path already
+      ;; differs from the original ~/.emacs.d/eln-cache.
+      ;;
+      ;; `emacs --batch' skips this file (-q), so trampolines from a
+      ;; bare batch Emacs still land in ~/.emacs.d/eln-cache.  Batch
+      ;; jobs that should use emacs-home must pass
+      ;; --init-directory=.../emacs-home/.
+      (startup-redirect-eln-cache "eln-cache"))
 
     (defvar jemacs-config-file (expand-file-name "config.el" home-dir))
     (defvar jemacs-settings-file (expand-file-name "settings.el" home-dir))

@@ -2230,6 +2230,15 @@ an array of objects, so the payload must go out as a vector."
       (should (equal (plist-get (car sessions) :name) "a"))
       (should (equal (plist-get (car sessions) :kind) "agy")))))
 
+(ert-deftest ghostherd-test-herd-snapshot-includes-screen ()
+  "Telegram screen reads this field off sqlite, so the last capture
+has to ride with the snapshot rather than wait for a command round trip."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'idle)))
+      (puthash (ghostherd-session-id s) "hello pane\n" ghostherd--screens)
+      (let ((row (car (ghostherd--herd-snapshot))))
+        (should (equal (plist-get row :screen) "hello pane\n"))))))
+
 (ert-deftest ghostherd-test-herd-deliver-uses-message ()
   (ghostherd-tests--with-herd ()
     (ghostherd-tests--session :name "grok-dev")

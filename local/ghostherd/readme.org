@@ -376,7 +376,9 @@ Then restart the sidecar (=ghostherd-memory-stop= / enable
 =ghostherd-mode=, or restart Emacs) so uvicorn inherits the env.
 
 =/herd= lists sessions from the last Emacs poll.  Tap a row for
-screen / explain / prompt / interrupt.  A =blocked= session also gets
+screen / explain / prompt / interrupt.  =screen= and =explain= reply
+from that snapshot immediately (the pane Emacs already captured);
+they do not wait for another tick.  A =blocked= session also gets
 =1= / =2= / =3= (=ghostherd-answer=) and abort.  Kill and respawn sit
 behind =more= and a confirm.  Prompt text is queued like herd mail: a
 =working= agent does not receive it until idle.
