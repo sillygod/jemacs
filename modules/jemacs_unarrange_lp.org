@@ -1539,7 +1539,9 @@
       (define-leader-key-global
        "p" '(:ignore t :which-key "project")
        "pp" '(consult-switch-project :which-key "switch project")
-       "pf" '(project-find-file :which-key "find-file"))
+       "pf" '(project-find-file :which-key "find-file")
+       "pc" '(ghostel-project-cmd-run :which-key "run command template")
+       "pC" '(ghostel-project-cmd-transient :which-key "project command menu"))
 
       (define-leader-key-global
        "s" '(:ignore t :which-key "search")
