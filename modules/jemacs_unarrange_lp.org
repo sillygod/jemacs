@@ -1540,8 +1540,7 @@
        "p" '(:ignore t :which-key "project")
        "pp" '(consult-switch-project :which-key "switch project")
        "pf" '(project-find-file :which-key "find-file")
-       "pc" '(ghostel-project-cmd-run :which-key "run command template")
-       "pC" '(ghostel-project-cmd-transient :which-key "project command menu"))
+       "pc" '(ghostel-project-cmd-run :which-key "command overlay"))
 
       (define-leader-key-global
        "s" '(:ignore t :which-key "search")

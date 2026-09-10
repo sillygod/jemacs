@@ -1,0 +1,39 @@
+#+TITLE: ghostel-cmd
+
+Per-project Ghostel command bookmarks with a GhostHerd-style overlay.
+
+* Status
+
+| Item     | Value                                            |
+|----------+--------------------------------------------------|
+| Package  | =local/ghostel-cmd/= (straight =:local-repo=)     |
+| Files    | =ghostel-cmd.el= · =ghostel-cmd-tests.el=         |
+| Wired in | =jemacs-project= · =SPC p c= · Ghostel =C-c c=    |
+
+* Overlay
+
+Posframe when available, side window otherwise.
+
+| Key        | Action                                      |
+|------------+---------------------------------------------|
+| =j= / =k=  | Move                                        |
+| =RET=      | Paste (fill ={{vars}}= on the footer first) |
+| =C-RET=    | Paste and press Enter                       |
+| =/=        | Live-narrow (flex, whitespace is AND)       |
+| =a= =e= =d=| Add / edit / delete                         |
+| =q= / Esc  | Quit; during fill, cancel fill              |
+
+Placeholders: ={{file}}=, ={{line}}=, ={{root}}=, ={{project-name}}=,
+={{branch}}=, or ={{name:default}}=.  Filling happens on the overlay
+footer, not a chain of minibuffers.  =RET= never sends Enter unless
+you use =C-RET=.
+
+The overlay is the only menu.  Open a terminal with =SPC '=, replay
+the last command with =SPC TAB=, send a region with =SPC x s=.
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/ghostel-cmd \
+        -l ghostel-cmd.el -l ghostel-cmd-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
