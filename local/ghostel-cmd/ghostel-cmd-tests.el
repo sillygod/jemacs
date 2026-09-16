@@ -102,6 +102,41 @@
     (should (string-match-p "Paste" text))
     (should (string-match-p "Live-narrow" text))))
 
+(ert-deftest ghostel-cmd-test-display-reuses-other-window ()
+  (let ((file-buf (get-buffer-create " *ghostel-cmd-file*"))
+        (term-buf (get-buffer-create " *ghostel-cmd-term*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) file-buf)
+          (let ((other (split-window-right)))
+            (set-window-buffer other term-buf)
+            (select-window (get-buffer-window file-buf))
+            (ghostel-cmd--display-terminal term-buf)
+            (should (eq (window-buffer (selected-window)) term-buf))
+            (should (eq (window-buffer (get-buffer-window file-buf))
+                        file-buf))))
+      (when (buffer-live-p file-buf) (kill-buffer file-buf))
+      (when (buffer-live-p term-buf) (kill-buffer term-buf))
+      (delete-other-windows))))
+
+(ert-deftest ghostel-cmd-test-display-splits-instead-of-stealing ()
+  (let ((file-buf (get-buffer-create " *ghostel-cmd-file2*"))
+        (term-buf (get-buffer-create " *ghostel-cmd-term2*")))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (set-window-buffer (selected-window) file-buf)
+          (ghostel-cmd--display-terminal term-buf)
+          (should (eq (window-buffer (get-buffer-window file-buf))
+                      file-buf))
+          (should (get-buffer-window term-buf))
+          (should-not (eq (get-buffer-window file-buf)
+                          (get-buffer-window term-buf))))
+      (when (buffer-live-p file-buf) (kill-buffer file-buf))
+      (when (buffer-live-p term-buf) (kill-buffer term-buf))
+      (delete-other-windows))))
+
 (ert-deftest ghostel-cmd-test-alias-run-is-sidebar ()
   (should (eq (indirect-function 'ghostel-project-cmd-run)
               (indirect-function 'ghostel-cmd-sidebar))))

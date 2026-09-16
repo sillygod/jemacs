@@ -671,26 +671,56 @@ SUBMIT non-nil also presses Enter in the terminal."
 
 ;;; Deliver / CRUD
 
-(defun ghostel-cmd--terminal-buffer ()
-  (cond
-   ((and (fboundp 'project-run-ghostel) (project-current nil))
-    (project-run-ghostel))
-   ((fboundp 'new-terminal)
-    (new-terminal))
-   ((fboundp 'ghostel)
-    (funcall 'ghostel))
-   (t
-    (user-error "No Ghostel terminal helper loaded"))))
+(defun ghostel-cmd--existing-terminal ()
+  "Return the project Ghostel buffer if it already exists, else any Ghostel.
+Does not display the buffer."
+  (require 'ghostel)
+  (or (when (and (fboundp 'ghostel--find-buffer-by-identity)
+                 (fboundp 'ghostel--project-buffer-name)
+                 (project-current nil))
+        (ghostel--find-buffer-by-identity
+         (ghostel--project-buffer-name
+          (project-root (project-current t)))))
+      (when (fboundp 'ghostel--all-buffers)
+        (car (ghostel--all-buffers)))))
+
+(defun ghostel-cmd--create-terminal ()
+  "Create a Ghostel buffer without replacing the selected window."
+  (let ((display-buffer-overriding-action
+         '((display-buffer-reuse-window
+            display-buffer-pop-up-window)
+           (inhibit-same-window . t)
+           (reusable-frames . visible))))
+    (cond
+     ((and (fboundp 'project-run-ghostel) (project-current nil))
+      (project-run-ghostel))
+     ((fboundp 'new-terminal)
+      (new-terminal))
+     ((fboundp 'ghostel)
+      (funcall 'ghostel))
+     (t
+      (user-error "No Ghostel terminal helper loaded")))))
+
+(defun ghostel-cmd--display-terminal (buf)
+  "Show BUF in a window that already has it, or in a new split.
+Never replaces the selected window."
+  (pop-to-buffer
+   buf
+   '((display-buffer-reuse-window
+      display-buffer-pop-up-window)
+     (inhibit-same-window . t)
+     (reusable-frames . visible))))
 
 (defun ghostel-cmd--deliver (cmd-string submit)
-  "Paste CMD-STRING into Ghostel.  SUBMIT non-nil presses Enter."
+  "Paste CMD-STRING into Ghostel.  SUBMIT non-nil presses Enter.
+Keeps the current file window: reuse a visible terminal window, or
+split if none is showing."
   (ghostel-cmd--hide-overlay)
   (require 'ghostel)
-  (let ((term-buf (ghostel-cmd--terminal-buffer)))
+  (let ((term-buf (or (ghostel-cmd--existing-terminal)
+                      (ghostel-cmd--create-terminal))))
     (when (buffer-live-p term-buf)
-      (pop-to-buffer term-buf
-                     (append display-buffer--same-window-action
-                             '((category . comint))))
+      (ghostel-cmd--display-terminal term-buf)
       (with-current-buffer term-buf
         (ghostel-paste-string cmd-string)
         (when submit
