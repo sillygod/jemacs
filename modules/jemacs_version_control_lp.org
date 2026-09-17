@@ -84,7 +84,8 @@
                         pr-view-github
                         pr-view-bitbucket
                         bitbucket-pr
-                        pr-view-open-in-browser)))
+                        pr-view-open-in-browser
+                        pr-view-copy-url)))
   #+end_src
 
 ** get pull request url from magit process buffer

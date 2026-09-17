@@ -141,6 +141,16 @@
   (let ((s (json-encode '((content . ((raw . "hi")))))))
     (should (string-match-p "\"raw\":\"hi\"" s))))
 
+(ert-deftest pr-view-test-utf8-body-is-unibyte ()
+  (let ((s (pr-view--utf8-bytes (json-encode '((title . "feat → master"))))))
+    (should-not (multibyte-string-p s))
+    (should (string-match-p "feat" s))))
+
+(ert-deftest pr-view-test-scrub-hides-bearer ()
+  (should (string-match-p "\\*\\*\\*"
+                          (pr-view--scrub-error
+                           "Authorization: Bearer ATATT-secret extra"))))
+
 (ert-deftest pr-view-test-reply-payload-has-parent ()
   (let ((s (json-encode '((content . ((raw . "r")))
                           (parent . ((id . 9)))))))
@@ -240,6 +250,79 @@
   (should (equal (alist-get 'states (pr-view--parse-intent
                                      "prview:{\"op\":\"refresh-list\",\"states\":[\"OPEN\",\"MERGED\"]}"))
                  '("OPEN" "MERGED"))))
+
+(ert-deftest pr-view-test-extra-headers-drop-accept ()
+  (let ((h (pr-view--extra-headers
+            '(("Accept" . "application/vnd.github.diff")
+              ("Authorization" . "Bearer x")
+              ("X-GitHub-Api-Version" . "2022-11-28")))))
+    (should-not (assoc "Accept" h))
+    (should (equal (cdr (assoc "Authorization" h)) "Bearer x"))
+    (should (assoc "X-GitHub-Api-Version" h))))
+
+(ert-deftest pr-view-test-extra-headers-json-content-type ()
+  (let ((h (pr-view--extra-headers '(("Accept" . "application/json")) t)))
+    (should (equal (cdr (assoc "Content-Type" h))
+                   "application/json; charset=utf-8"))
+    (should-not (assoc "Accept" h))))
+
+(ert-deftest pr-view-test-gh-files-to-diff ()
+  (let* ((files '(((filename . "a.txt")
+                   (status . "modified")
+                   (patch . "@@ -1 +1 @@\n-old\n+new"))
+                  ((filename . "b.txt")
+                   (status . "added")
+                   (patch . "@@ -0,0 +1 @@\n+hi"))
+                  ((filename . "c.txt")
+                   (previous_filename . "old-c.txt")
+                   (status . "renamed")
+                   (patch . "@@ -1 +1 @@\n-x\n+y"))
+                  ((filename . "bin.dat")
+                   (status . "removed"))))
+         (d (pr-view--gh-files-to-diff files)))
+    (should (string-match-p "diff --git a/a.txt b/a.txt" d))
+    (should (string-match-p "--- a/a.txt" d))
+    (should (string-match-p "\\+new" d))
+    (should (string-match-p "new file mode" d))
+    (should (string-match-p "diff --git a/b.txt b/b.txt" d))
+    (should (string-match-p "rename from old-c.txt" d))
+    (should (string-match-p "diff --git a/old-c.txt b/c.txt" d))
+    (should (string-match-p "deleted file mode" d))
+    (should (string-match-p "diff --git a/bin.dat b/bin.dat" d))))
+
+(ert-deftest pr-view-test-gh-diff-url-media-type ()
+  (let ((pair (pr-view--diff-url-and-accept
+               '(:kind github :owner "acme" :repo "app")
+               'github "1963" nil)))
+    (should (string-match-p "/pulls/1963\\'" (car pair)))
+    (should (equal (cdr pair) "application/vnd.github.diff"))))
+
+(ert-deftest pr-view-test-gh-diff-406-falls-back-to-files ()
+  (let (urls shown)
+    (cl-letf (((symbol-function 'pr-view--headers)
+               (lambda (&rest _) '(("Authorization" . "Bearer x"))))
+              ((symbol-function 'pr-view--http)
+               (lambda (url _headers callback &rest _)
+                 (push url urls)
+                 (cond
+                  ((string-match-p "/pulls/1963/files" url)
+                   (funcall callback
+                            "[{\"filename\":\"a.txt\",\"status\":\"modified\",\"patch\":\"@@ -1 +1 @@\\n-old\\n+new\"}]"
+                            200 nil))
+                  ((string-match-p "/pulls/1963" url)
+                   (funcall callback "too large" 406 nil)))))
+              ((symbol-function 'pr-view--js)
+               (lambda (fn obj)
+                 (when (equal fn "renderPrDetail")
+                   (setq shown obj)))))
+      (pr-view--fetch-diff
+       '(:kind github :owner "acme" :repo "app")
+       'github "1963"
+       '((id . 1963) (title . "t"))
+       "github")
+      (should (cl-some (lambda (u) (string-match-p "/files" u)) urls))
+      (should (string-match-p "diff --git a/a.txt" (alist-get 'diff shown)))
+      (should-not (alist-get 'diff_error shown)))))
 
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

@@ -7,6 +7,7 @@
   const btnRefresh = document.getElementById("btn-refresh");
   const btnCreate = document.getElementById("btn-create");
   const btnBrowser = document.getElementById("btn-browser");
+  const btnCopy = document.getElementById("btn-copy");
 
   let lastList = null;
   let lastDetail = null;
@@ -471,6 +472,7 @@
     btnRefresh.hidden = kind !== "list";
     btnCreate.hidden = kind !== "list";
     btnBrowser.hidden = kind !== "detail";
+    btnCopy.hidden = kind !== "detail";
   }
 
   function matchesSearch(it, q) {
@@ -583,6 +585,11 @@
               "</div>" +
               '<div class="reviewers">' +
               rev +
+              (it.url
+                ? '<button type="button" class="row-copy" data-url="' +
+                  escapeHtml(it.url) +
+                  '" title="Copy PR link">Copy</button>'
+                : "") +
               "</div></article>"
             );
           })
@@ -599,6 +606,12 @@
       "</div></div>" +
       rows;
 
+    app.querySelectorAll(".row-copy").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        emit("copy-url", { url: btn.getAttribute("data-url") || "" });
+      });
+    });
     app.querySelectorAll(".pr-row").forEach((row) => {
       row.addEventListener("click", () => {
         const id = Number(row.getAttribute("data-id"));
@@ -747,6 +760,7 @@
     const forge = (payload && payload.forge) || (lastList && lastList.forge) || "";
     setChrome("detail");
     btnBrowser.hidden = !pr.url;
+    btnCopy.hidden = !pr.url;
     contextEl.textContent = "#" + (pr.id || "") + " · " + (pr.state || "");
     const open = String(pr.state || "").toUpperCase() === "OPEN" && !isDraft(pr);
     const strategies = mergeOptions(forge)
@@ -999,6 +1013,7 @@
     btnRefresh.hidden = true;
     btnCreate.hidden = true;
     btnBrowser.hidden = true;
+    btnCopy.hidden = true;
     const branches = payload.branches || [];
     const src = payload.source || "";
     const dst = payload.destination || "main";
@@ -1006,7 +1021,7 @@
     app.innerHTML =
       '<form class="form" id="create-form">' +
       "<label>Title<input name='title' required placeholder='Short summary' value='" +
-      escapeHtml(src ? src + " → " + dst : "") +
+      escapeHtml(src ? src + " -> " + dst : "") +
       "'></label>" +
       "<label>Description<textarea name='description' placeholder='What does this change?'></textarea></label>" +
       '<div class="form-row">' +
@@ -1108,6 +1123,10 @@
   btnBrowser.addEventListener("click", () => {
     const url = lastDetail && lastDetail.pr && lastDetail.pr.url;
     emit("open-browser", { url: url || "" });
+  });
+  btnCopy.addEventListener("click", () => {
+    const url = lastDetail && lastDetail.pr && lastDetail.pr.url;
+    emit("copy-url", { url: url || "" });
   });
 
   document.addEventListener("keydown", (ev) => {

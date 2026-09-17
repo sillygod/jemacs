@@ -257,19 +257,39 @@ App passwords can no longer be created; use an API token with scopes
       (format "%s://%s%s" (or (url-type u) "https") (url-host u) loc)))
    (t loc)))
 
+(defun pr-view--utf8-bytes (s)
+  "UTF-8 unibyte bytes of S.  url.el errors on multibyte request bodies."
+  (let ((out (encode-coding-string s 'utf-8)))
+    (if (multibyte-string-p out)
+        (encode-coding-string out 'iso-latin-1)
+      out)))
+
+(defun pr-view--scrub-error (msg)
+  "Strip secrets and huge url.el dumps from MSG."
+  (setq msg (replace-regexp-in-string
+             "Authorization: Bearer [^ \n]+" "Authorization: Bearer ***" msg t t))
+  (if (string-match-p "Multibyte text in HTTP request" msg)
+      "HTTP encoding error (non-ASCII in request). Retry after reload."
+    msg))
+
+(defun pr-view--extra-headers (headers &optional json-body)
+  "HEADERS for `url-request-extra-headers'.
+Drop Accept — `url-http-create-request' always emits Accept from
+`url-mime-accept-string', and a second Accept can make GitHub 406."
+  (let ((h (assoc-delete-all "Accept" (copy-alist headers))))
+    (when json-body
+      (push '("Content-Type" . "application/json; charset=utf-8") h))
+    h))
+
 (defun pr-view--http (url headers callback &optional method json-body hops)
   "Request URL with HEADERS.  CALLBACK is (lambda (body status-code err)).
 METHOD defaults to GET.  JSON-BODY is an Elisp object json-encoded as the body.
 3xx redirects are followed with Authorization kept (url.el would drop it)."
   (let ((url-request-method (or method "GET"))
-        (url-request-extra-headers
-         (let ((h (copy-alist headers)))
-           (when json-body
-             (push '("Content-Type" . "application/json") h))
-           h))
+        (url-request-extra-headers (pr-view--extra-headers headers json-body))
         (url-request-data
          (when json-body
-           (encode-coding-string (json-encode json-body) 'utf-8)))
+           (pr-view--utf8-bytes (json-encode json-body))))
         (url-mime-accept-string (or (cdr (assoc "Accept" headers))
                                     "application/json"))
         (url-max-redirections 0)
@@ -324,7 +344,7 @@ METHOD defaults to GET.  JSON-BODY is an Elisp object json-encoded as the body.
                            :false-object nil))
          (error
           (setq pr-view--inflight nil)
-          (pr-view--js "showError" (error-message-string e)))))))
+          (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
    method json-body))
 
 (defun pr-view--fail (code err body &optional url)
@@ -340,7 +360,7 @@ METHOD defaults to GET.  JSON-BODY is an Elisp object json-encoded as the body.
                               "")))
               (err (format "Network error: %s" (error-message-string err)))
               (t "Request failed"))))
-    (pr-view--js "showError" msg)))
+    (pr-view--js "showError" (pr-view--scrub-error msg))))
 
 
 ;;; Normalize
@@ -533,6 +553,7 @@ turns that keyword into the string \"false\", which is truthy in JS."
       ("open-browser"
        (let ((url (or (alist-get 'url intent) pr-view--last-url)))
          (when url (browse-url url))))
+      ("copy-url" (pr-view--copy-url (alist-get 'url intent)))
       ("create-form" (pr-view--fetch-create-form))
       ("create-pr" (pr-view--create-pr intent))
       ("approve-pr" (pr-view--approve-pr (alist-get 'id intent)))
@@ -658,7 +679,7 @@ turns that keyword into the string \"false\", which is truthy in JS."
                (pr-view--js "renderPrList" payload)))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (error-message-string e))))))
+       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
 
 (defun pr-view--detail-from (kind raw)
   (pcase kind
@@ -685,6 +706,104 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
      ;; ourselves and keep the Bearer token (needed for merged PRs).
      (cons (pr-view--url host (format "/pullrequests/%s/diff" id-str))
            "*/*"))))
+
+(defun pr-view--gh-file-fragment (file)
+  "Unified-diff fragment for one GitHub /pulls/{id}/files item."
+  (let* ((status (format "%s" (or (alist-get 'status file) "modified")))
+         (new (or (alist-get 'filename file) "unknown"))
+         (old (or (alist-get 'previous_filename file) new))
+         (patch (alist-get 'patch file))
+         (lines (list (format "diff --git a/%s b/%s" old new))))
+    (pcase status
+      ("added"
+       (push "new file mode 100644" lines)
+       (push "--- /dev/null" lines)
+       (push (format "+++ b/%s" new) lines))
+      ("removed"
+       (push "deleted file mode 100644" lines)
+       (push (format "--- a/%s" old) lines)
+       (push "+++ /dev/null" lines))
+      ("renamed"
+       (push (format "rename from %s" old) lines)
+       (push (format "rename to %s" new) lines)
+       (push (format "--- a/%s" old) lines)
+       (push (format "+++ b/%s" new) lines))
+      (_
+       (push (format "--- a/%s" old) lines)
+       (push (format "+++ b/%s" new) lines)))
+    (when (and patch (stringp patch) (not (string-empty-p patch)))
+      (push (string-trim-right patch) lines))
+    (concat (mapconcat #'identity (nreverse lines) "\n") "\n")))
+
+(defun pr-view--gh-files-to-diff (files)
+  "Stitch GitHub pull-file alists into a unified diff."
+  (mapconcat #'pr-view--gh-file-fragment (or files '()) ""))
+
+(defun pr-view--show-diff (pr forge diff)
+  (pr-view--js "renderPrDetail"
+               (pr-view--detail-payload pr forge `((diff . ,(or diff ""))))))
+
+(defun pr-view--show-diff-error (pr forge code)
+  (pr-view--js "renderPrDetail"
+               (pr-view--detail-payload
+                pr forge
+                `((diff . "")
+                  (diff_error . ,(format "HTTP %s" (or code "?")))))))
+
+(defun pr-view--gh-fetch-files-diff (host id-str ok-fn fail-fn)
+  "GET /pulls/{id}/files (paginated) and stitch patches.  GitHub 406s
+the unified diff on PRs over ~20k lines or 300 files."
+  (pr-view--gh-files-pages host id-str 1 nil ok-fn fail-fn))
+
+(defun pr-view--gh-files-pages (host id-str page acc ok-fn fail-fn)
+  (pr-view--http
+   (pr-view--url host (format "/pulls/%s/files?per_page=100&page=%d" id-str page))
+   (pr-view--headers host)
+   (lambda (body code err)
+     (cond
+      ((or err (and code (>= code 400)))
+       (funcall fail-fn code))
+      (t
+       (condition-case nil
+           (let* ((rows (json-parse-string
+                         (if (and body (not (string-empty-p (string-trim body))))
+                             body "[]")
+                         :object-type 'alist
+                         :array-type 'list
+                         :null-object nil
+                         :false-object nil))
+                  (rows (if (and (listp rows)
+                                 (or (null rows)
+                                     (consp (car-safe (car-safe rows)))))
+                            rows
+                          '()))
+                  (acc (append acc rows))
+                  (n (length rows)))
+             (if (and (= n 100) (< page 30))
+                 (pr-view--gh-files-pages host id-str (1+ page) acc ok-fn fail-fn)
+               (funcall ok-fn (pr-view--gh-files-to-diff acc))))
+         (error (funcall fail-fn code))))))))
+
+(defun pr-view--fetch-diff (host kind id-str pr forge)
+  (let* ((pair (pr-view--diff-url-and-accept host kind id-str pr))
+         (diff-url (car pair))
+         (diff-accept (cdr pair)))
+    (pr-view--http
+     diff-url
+     (pr-view--headers host diff-accept)
+     (lambda (diff code err)
+       (cond
+        ;; GitHub refuses application/vnd.github.diff with 406 when the
+        ;; PR is too large.  Fall back to per-file patches.
+        ((and (eq kind 'github) (memq code '(406 415)))
+         (pr-view--gh-fetch-files-diff
+          host id-str
+          (lambda (stitched) (pr-view--show-diff pr forge stitched))
+          (lambda (code2) (pr-view--show-diff-error pr forge code2))))
+        ((or err (and code (>= code 400)))
+         (pr-view--show-diff-error pr forge code))
+        (t
+         (pr-view--show-diff pr forge diff)))))))
 
 (defun pr-view--bb-comment (raw)
   (unless (eq (alist-get 'deleted raw) t)
@@ -784,7 +903,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
              "POST" body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--comment-item-url (host kind pr-id comment-id)
   (pcase kind
@@ -815,7 +934,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
              method body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--delete-comment (intent)
   (let ((id (alist-get 'id intent))
@@ -834,7 +953,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
              "DELETE"))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--like-comment (intent)
   (let ((id (alist-get 'id intent))
@@ -865,7 +984,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
                 "POST"))))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--member-person (raw)
   (pr-view--person (or (alist-get 'user raw) raw)))
@@ -932,7 +1051,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
                (pr-view--bb-put-reviewers host id-str who op))))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--refresh-reviewers (host kind id-str)
   (pr-view--http-json
@@ -1007,10 +1126,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
            (pr-view--headers host)
            (lambda (raw)
              (let* ((pr (pr-view--detail-from kind raw))
-                    (forge (symbol-name kind))
-                    (pair (pr-view--diff-url-and-accept host kind id-str pr))
-                    (diff-url (car pair))
-                    (diff-accept (cdr pair)))
+                    (forge (symbol-name kind)))
                (setq pr-view--last-url (alist-get 'url pr)
                      pr-view--inflight nil
                      pr-view--last-comments nil)
@@ -1021,25 +1137,10 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
                                (diff_loading . t))))
                (pr-view--fetch-comments host kind id-str)
                (pr-view--fetch-members host)
-               (pr-view--http
-                diff-url
-                (pr-view--headers host diff-accept)
-                (lambda (diff code err)
-                  (cond
-                   ((or err (and code (>= code 400)))
-                    (pr-view--js "renderPrDetail"
-                                 (pr-view--detail-payload
-                                  pr forge
-                                  `((diff . "")
-                                    (diff_error . ,(format "HTTP %s" (or code "?")))))))
-                   (t
-                    (pr-view--js "renderPrDetail"
-                                 (pr-view--detail-payload
-                                  pr forge
-                                  `((diff . ,(or diff "")))))))))))))
+               (pr-view--fetch-diff host kind id-str pr forge)))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (error-message-string e))))))
+       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
 
 (defun pr-view--branch-names (kind raw)
   (mapcar (lambda (row)
@@ -1072,7 +1173,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
                             (branches . ,(vconcat (pr-view--branch-names kind raw))))))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (error-message-string e))))))
+       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
 
 (defun pr-view--create-payload (kind title desc source dest close)
   (pcase kind
@@ -1124,7 +1225,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
              body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 (defun pr-view--approve-pr (id)
   (unless (and pr-view--host id)
@@ -1151,7 +1252,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
            body))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (error-message-string e))))))
+       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
 
 (defun pr-view--merge-strategy (kind raw)
   (let ((s (upcase (format "%s" (or raw "merge_commit")))))
@@ -1200,7 +1301,7 @@ and Emacs url.el strips Authorization on redirect (private repos 404)."
              body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (error-message-string e)))))))
+         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
 
 
 ;;; Commands
@@ -1265,12 +1366,34 @@ KIND is `github' or `bitbucket'; nil auto-detects from origin."
 ;;;###autoload
 (defalias 'bitbucket-pr #'pr-view-bitbucket)
 
+(defun pr-view--copy-url (&optional url)
+  "Copy URL (or last PR URL) to the kill ring and clipboard."
+  (let ((url (or url pr-view--last-url)))
+    (if (or (not url) (string-empty-p (format "%s" url)))
+        (pr-view--js "showError" "No PR URL yet.")
+      (setq url (format "%s" url))
+      (kill-new url)
+      (when (fboundp 'gui-set-selection)
+        (gui-set-selection 'CLIPBOARD url)
+        (ignore-errors (gui-set-selection 'PRIMARY url)))
+      (pr-view--js "setStatus" "Copied PR link"))))
+
 ;;;###autoload
 (defun pr-view-open-in-browser ()
   "Open the last viewed PR (or repo PRs page) in the system browser."
   (interactive)
   (if pr-view--last-url
       (browse-url pr-view--last-url)
+    (user-error "No PR URL yet — open a pull request first")))
+
+;;;###autoload
+(defun pr-view-copy-url ()
+  "Copy the last viewed PR URL to the clipboard."
+  (interactive)
+  (if pr-view--last-url
+      (progn
+        (pr-view--copy-url pr-view--last-url)
+        (message "Copied %s" pr-view--last-url))
     (user-error "No PR URL yet — open a pull request first")))
 
 (provide 'pr-view)

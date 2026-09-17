@@ -253,7 +253,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .arrow { color: var(--meta); }
 .col { color: var(--muted); font-size: 12px; }
 .activity { display: flex; align-items: center; gap: 5px; }
-.reviewers { display: flex; align-items: center; }
+.reviewers { display: flex; align-items: center; gap: 8px; }
+.row-copy {
+  margin-left: auto;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.row-copy:hover { color: var(--accent); border-color: var(--accent); }
 .reviewers .avatar {
   width: 22px;
   height: 22px;
