@@ -1556,6 +1556,7 @@
        "gbl" '(blamer-show-commit-info :which-key "this line")
        "gbb" '(magit-blame-addition :which-key "this buffer")
        "gs" '(magit-status :which-key "magit status")
+       "gp" '(pr-view :which-key "PR view")
        "gt" '((lambda () (interactive) (git-timemachine) (git-timemachine-transient)) :which-key "magit time machine"))
 
       (define-leader-key-global

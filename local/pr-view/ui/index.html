@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR View</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">PR</span>
+      <span id="context" class="context">detecting…</span>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-back" class="ghost" hidden>← List</button>
+      <button type="button" id="btn-refresh" class="ghost">Refresh</button>
+      <button type="button" id="btn-create" class="primary">Create</button>
+      <button type="button" id="btn-browser" class="ghost" hidden>Open in browser</button>
+    </div>
+  </header>
+  <div id="status" class="status" hidden></div>
+  <main id="app" class="app">
+    <p class="muted">Waiting for Emacs…</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

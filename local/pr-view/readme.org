@@ -1,0 +1,86 @@
+#+TITLE: pr-view
+
+Bitbucket Cloud *and* GitHub pull requests inside an Emacs xwidget.
+Elisp owns HTTP and tokens; =ui/= only renders.  List (Open / Draft /
+Merged / Declined), description, unified diff, create, approve, merge.
+
+* Status
+
+| Item    | Value |
+|---------+-------|
+| Package | =local/pr-view/= |
+| Entry   | =M-x pr-view= · =SPC g p= · alias =M-x bitbucket-pr= |
+| Needs   | GUI Emacs with xwidgets |
+
+* Try it
+
+1. GUI Emacs built with xwidgets (this config's emacs-plus@31 is).
+2. Put credentials in =~/.authinfo.gpg= (or env vars below).
+3. Open a file in a GitHub or Bitbucket repo and run =M-x pr-view=
+   (or =SPC g p= after tangle/reload).
+4. Click a row for description + diff; ← List / Esc goes back.
+5. =M-x pr-view-open-in-browser= opens the last PR on the forge.
+
+Force a forge: =M-x pr-view-github= / =M-x pr-view-bitbucket=.
+
+After editing this package, drop straight's build cache and restart:
+
+#+begin_src emacs-lisp :tangle no
+  (delete-directory (expand-file-name "straight/build/pr-view" user-emacs-directory) t)
+#+end_src
+
+* Auth
+
+GitHub (first match wins):
+
+- =GITHUB_TOKEN=
+- auth-source host =api.github.com=
+- =gh auth token=
+
+Token scopes: =repo= (private) or public read; fine-grained needs
+Pull requests: Read and Write (create / approve / merge).
+
+Bitbucket Cloud (API token; App passwords are gone):
+
+- =BITBUCKET_TOKEN= (same as the bitbucket-pr-manager skill)
+- auth-source host =api.bitbucket.org= (password = API token)
+- optional =BITBUCKET_USER= / =pr-view-bitbucket-username= = Atlassian email, only to pick the auth-source line
+
+Create the token at Atlassian account → API tokens with scopes.  Requests use
+=Authorization: Bearer <token>= (email is not sent).  Scopes for v0.1:
+
+- =read:repository:bitbucket=
+- =read:pullrequest:bitbucket=
+- =write:pullrequest:bitbucket= (create / approve / merge)
+
+~/.authinfo.gpg example:
+
+#+begin_example
+machine api.github.com password ghp_...
+machine api.bitbucket.org login you@example.com password ATATT3xFfGF0...
+#+end_example
+
+Workspace/repo default from =origin=. Override with
+=pr-view-github-owner= / =pr-view-github-repo= or
+=pr-view-bitbucket-workspace= / =pr-view-bitbucket-repo=.
+
+* Keys
+
+| Binding | Command |
+|---------+---------|
+| =SPC g p= | =pr-view= (detect origin) |
+| page: click row | open detail |
+| page: filter chips | Open / Draft / Merged / Declined |
+| page: Create | new PR (source → dest, title, body) |
+| detail: Approve / Merge | write actions (confirm on merge) |
+| page: ← List / Esc | back to list |
+| page: Refresh / =r= | reload list |
+
+* Tests
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/pr-view \
+        -l pr-view.el -l pr-view-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src

@@ -74,14 +74,17 @@
           ("~/Desktop/go-playground" . 1)
           ("~/Desktop/spacemacs-private" . 1)))))
 
-    (use-package forge
-      :defer 2
-      :after magit)
 
-    ;; https://github.com/doomemacs/doomemacs/issues/7191
-    (use-package code-review
-      :defer 2
-      :after forge)
+    ;; GUI xwidget PR list + description + unified diff (GitHub + Bitbucket Cloud).
+    ;; Entry: M-x pr-view / SPC g p.  Tokens stay in Elisp; ui/ only renders.
+    (eval `(use-package pr-view
+             :straight (:local-repo ,(concat home-dir "local/pr-view")
+                                    :files ("pr-view.el" "ui"))
+             :commands (pr-view
+                        pr-view-github
+                        pr-view-bitbucket
+                        bitbucket-pr
+                        pr-view-open-in-browser)))
   #+end_src
 
 ** get pull request url from magit process buffer
