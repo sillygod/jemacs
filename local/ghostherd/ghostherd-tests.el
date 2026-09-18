@@ -3225,7 +3225,7 @@ itself changing its mind about a flag."
       (ghostherd-cmd-memory-import)
       (should (equal (cadr got) nil)))))
 
-;;; Account remaining quota
+;;; Account usage
 
 (ert-deftest ghostherd-test-usage-remaining-from-used ()
   (should (= (ghostherd-usage--remaining 89.0) 11.0))
@@ -3282,10 +3282,46 @@ Quota available")
     (should (= (plist-get (nth 2 wins) :remaining) 100))
     (should (= (plist-get (nth 3 wins) :remaining) 100))))
 
+(ert-deftest ghostherd-test-usage-used-from-remaining ()
+  (should (= (ghostherd-usage--used 78.0) 22.0))
+  (should (= (ghostherd-usage--used 0) 100.0))
+  (should (= (ghostherd-usage--used 100) 0.0)))
+
 (ert-deftest ghostherd-test-usage-bar-and-mode-line-safe ()
   (should (string-match-p "█" (ghostherd-usage--bar 80 5)))
   (should (string-match-p "░" (ghostherd-usage--bar 80 5)))
   (should (equal (ghostherd-usage--mode-line-safe "78% 5h") "78%% 5h")))
+
+(ert-deftest ghostherd-test-usage-bar-fills-with-what-is-spent ()
+  "Filled cells are the used share, like the provider panels."
+  (should (equal (substring-no-properties (ghostherd-usage--bar 100 4)) "░░░░"))
+  (should (equal (substring-no-properties (ghostherd-usage--bar 0 4)) "████"))
+  (should (equal (substring-no-properties (ghostherd-usage--bar 50 4)) "██░░")))
+
+(ert-deftest ghostherd-test-usage-window-bar-prints-used ()
+  "78% left reads as 22, the number claude.ai shows."
+  (let ((w (ghostherd-usage--window "5h" 78.0)))
+    (should (string-match-p "22 5h"
+                            (substring-no-properties
+                             (ghostherd-usage--window-bar w nil))))
+    (should-not (string-match-p "78"
+                                (substring-no-properties
+                                 (ghostherd-usage--window-bar w nil))))))
+
+(ert-deftest ghostherd-test-usage-help-spells-out-both-sides ()
+  "The bare integer is ambiguous; the tooltip is not."
+  (let* ((wins (list (ghostherd-usage--window
+                      "5h" 78.0 (+ (float-time) (* 3600 1.05)))))
+         (help (ghostherd-usage--help 'claude wins)))
+    (should (string-match-p "22% used" help))
+    (should (string-match-p "78% left" help))
+    (should (string-match-p "resets in 1h0[23]m" help))))
+
+(ert-deftest ghostherd-test-usage-eta ()
+  (should (equal (ghostherd-usage--eta (+ (float-time) 125)) "2m"))
+  (should (equal (ghostherd-usage--eta (+ (float-time) 3725)) "1h02m"))
+  (should-not (ghostherd-usage--eta (- (float-time) 60)))
+  (should-not (ghostherd-usage--eta nil)))
 
 (ert-deftest ghostherd-test-usage-line-in-footer ()
   (let ((ghostherd-usage--cache
@@ -3293,7 +3329,8 @@ Quota available")
            (grok . (:windows ((:label "wk" :remaining 11.0)) :error nil)))))
     (let ((line (substring-no-properties (ghostherd-usage-line 120))))
       (should (string-match-p "claude" line))
-      (should (string-match-p "62" line))
+      ;; 62% left of the 5h window is 38% used.
+      (should (string-match-p "38" line))
       (should (string-match-p "█\\|░" line))
       (should-not (string-match-p "%" line))
       (should (string-match-p "grok" line)))
@@ -3303,6 +3340,104 @@ Quota available")
         (should (string-match-p "claude"
                                 (substring-no-properties
                                  (ghostherd--sidebar-footer))))))))
+
+(ert-deftest ghostherd-test-usage-401-does-not-prompt ()
+  "A 401 from our own hosts must reach our callback, not the minibuffer.
+t is url.el\'s \"already tried, give up\" answer; nil would make it
+retry and never activate the callback."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'url-http-handle-authentication)
+               (lambda (&rest _) (setq called t) 'orig)))
+      ;; Our request: answered without consulting url.el.
+      (let ((url-current-object (url-generic-parse-url
+                                 "https://oauth2.googleapis.com/token")))
+        (should (eq (ghostherd-usage--no-auth-prompt
+                     (symbol-function 'url-http-handle-authentication) nil)
+                    t))
+        (should-not called))
+      ;; Somebody else\'s request: untouched.
+      (let ((url-current-object (url-generic-parse-url "https://example.com/")))
+        (should (eq (ghostherd-usage--no-auth-prompt
+                     (symbol-function 'url-http-handle-authentication) nil)
+                    'orig))
+        (should called)))))
+
+(ert-deftest ghostherd-test-usage-http-deadline-fires-callback-once ()
+  "A response that never lands must still finish the request.
+Without this the batch counter stays pinned and gates every
+later refresh."
+  (let ((got nil) (deadline nil) (buf nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (&rest _)
+                 (setq buf (generate-new-buffer " *gh-usage-test*"))))
+              ((symbol-function 'run-with-timer)
+               (lambda (_secs _repeat fn &rest args)
+                 (setq deadline (lambda () (apply fn args)))
+                 nil)))
+      (ghostherd-usage--http "https://api.anthropic.com/api/oauth/usage" nil
+                             (lambda (code body) (push (list code body) got)))
+      (should-not got)
+      (funcall deadline)
+      (funcall deadline)
+      (should (equal got '((0 "")))))
+    (when (buffer-live-p buf) (kill-buffer buf))))
+
+(ert-deftest ghostherd-test-usage-agy-failure-is-visible ()
+  "agy must never render as a bare dash when the fetch failed.
+No cache entry reads as \"not wired up\"; `agy ?\' carries the reason."
+  (let ((ghostherd-usage--cache nil))
+    (cl-letf (((symbol-function 'ghostherd-usage--agy-probe) (lambda () nil)))
+      (ghostherd-usage--agy-fail "refresh 401"))
+    (let ((pl (alist-get 'agy ghostherd-usage--cache)))
+      (should pl)
+      (should (equal (plist-get pl :error) "refresh 401")))
+    (let ((s (ghostherd-usage--entry-string 'agy nil)))
+      (should (string-match-p "agy \\?" (substring-no-properties s)))
+      (should (equal (get-text-property 0 'help-echo s) "refresh 401")))))
+
+(ert-deftest ghostherd-test-usage-failure-keeps-last-good-numbers ()
+  "A failed poll reads as stale numbers, not as no numbers."
+  (let ((ghostherd-usage--cache nil))
+    (ghostherd-usage--put 'agy (list (ghostherd-usage--window "gem-5h" 94.0)))
+    (let ((fetched (plist-get (alist-get 'agy ghostherd-usage--cache) :fetched)))
+      (cl-letf (((symbol-function 'ghostherd-usage--agy-probe) (lambda () nil)))
+        (ghostherd-usage--agy-fail "refresh 401"))
+      (let ((pl (alist-get 'agy ghostherd-usage--cache)))
+        (should (= (length (plist-get pl :windows)) 1))
+        (should (equal (plist-get pl :error) "refresh 401"))
+        ;; Stale means stale: the age must not be reset by the failure.
+        (should (= (plist-get pl :fetched) fetched))))
+    (let ((s (ghostherd-usage--entry-string 'agy nil)))
+      (should (string-match-p "6 gem-5h" (substring-no-properties s)))
+      (should (string-match-p "stale: refresh 401"
+                              (get-text-property 0 'help-echo s))))))
+
+(ert-deftest ghostherd-test-usage-stale-batch-unblocks-refresh ()
+  "A batch older than every deadline is a dropped callback, not work."
+  (let ((fetched 0))
+    (cl-letf (((symbol-function 'ghostherd-usage--grok-from-log) #'ignore)
+              ((symbol-function 'ghostherd-usage--redraw) #'ignore)
+              ((symbol-function 'ghostherd-usage--fetch-claude)
+               (lambda () (cl-incf fetched)))
+              ((symbol-function 'ghostherd-usage--fetch-grok)
+               (lambda () (cl-incf fetched)))
+              ((symbol-function 'ghostherd-usage--fetch-agy)
+               (lambda () (cl-incf fetched))))
+      (let ((noninteractive nil)
+            (ghostherd-usage-timeout 15)
+            (ghostherd-usage--inflight 1)
+            (ghostherd-usage--inflight-at (- (float-time) 1000)))
+        (ghostherd-usage-refresh)
+        (should (= fetched 3))
+        (should (= ghostherd-usage--inflight 3)))
+      ;; A batch still inside its deadline keeps gating.
+      (setq fetched 0)
+      (let ((noninteractive nil)
+            (ghostherd-usage-timeout 15)
+            (ghostherd-usage--inflight 1)
+            (ghostherd-usage--inflight-at (float-time)))
+        (ghostherd-usage-refresh)
+        (should (= fetched 0))))))
 
 (ert-deftest ghostherd-test-poll-tick-does-not-refresh-usage ()
   "Usage HTTP must not ride the 1.5s poll (same reason as herd mail)."

@@ -4,9 +4,13 @@
 
 ;;; Commentary:
 ;;
-;; Remaining quota for claude / grok / agy, shown on the sidebar footer.
+;; Account usage for claude / grok / agy, shown on the sidebar footer.
 ;; Account-wide, not per session.  HTTP is async and never on the 1.5s
 ;; poll timer (that timer must not compete with typing).
+;;
+;; Windows are stored as *remaining* percent (that is what agy reports)
+;; but rendered as *used*, so the footer reads the same way round as the
+;; claude.ai and agy usage panels: a bar that fills as you spend.
 ;;
 ;; claude  GET api.anthropic.com/api/oauth/usage
 ;; grok    last `billing: fetched credits config` in ~/.grok/logs, then
@@ -22,11 +26,12 @@
 (require 'seq)
 (require 'subr-x)
 (require 'url)
+(require 'url-parse)
 (require 'url-util)
 (require 'iso8601)
 
 (defgroup ghostherd-usage nil
-  "Account remaining-quota readout for ghostherd."
+  "Account usage readout for ghostherd."
   :group 'ghostherd
   :prefix "ghostherd-usage-")
 
@@ -35,11 +40,21 @@
   :type 'number
   :group 'ghostherd-usage)
 
+(defcustom ghostherd-usage-timeout 15
+  "Seconds before a usage request is given up on.
+A request whose callback never runs used to leave
+`ghostherd-usage--inflight' pinned above zero, which gates every
+later refresh; the deadline makes that unreachable."
+  :type 'number
+  :group 'ghostherd-usage)
+
 (defvar ghostherd-usage--cache nil
   "Alist of (KIND . PLIST).  PLIST keys: :windows :fetched :error.
 Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
 
 (defvar ghostherd-usage--inflight nil)
+(defvar ghostherd-usage--inflight-at nil
+  "`float-time' when the current in-flight batch started.")
 (defvar ghostherd-usage--timer nil)
 (defvar ghostherd-usage--agy-client nil
   "Cached (CLIENT-ID . CLIENT-SECRET) extracted from the agy binary.")
@@ -58,6 +73,11 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
   (when (numberp used)
     (ghostherd-usage--round1 (max 0.0 (min 100.0 (- 100.0 used))))))
 
+(defun ghostherd-usage--used (remaining)
+  "REMAINING percent -> used percent."
+  (when (numberp remaining)
+    (ghostherd-usage--round1 (max 0.0 (min 100.0 (- 100.0 remaining))))))
+
 (defun ghostherd-usage--pct-n (n)
   (max 0 (min 100 (truncate (+ n 0.5)))))
 
@@ -67,10 +87,14 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
         (t 'success)))
 
 (defun ghostherd-usage--bar (remaining &optional width)
-  "HP bar for REMAINING percent.  No `%' (mode-line would eat it)."
+  "Bar for a window with REMAINING percent left.
+Filled cells are the *used* share, to match the provider panels;
+the colour still tracks what is left.  No `%' in the output (the
+mode-line would eat it)."
   (let* ((width (or width 6))
+         (used (ghostherd-usage--used remaining))
          (n (max 0 (min width
-                        (truncate (+ (/ (* remaining width) 100.0) 0.5)))))
+                        (truncate (+ (/ (* used width) 100.0) 0.5)))))
          (s (concat (make-string n ?█) (make-string (- width n) ?░))))
     (propertize s 'face (ghostherd-usage--face remaining))))
 
@@ -183,6 +207,23 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
                           :error err))
               (assq-delete-all kind ghostherd-usage--cache))))
 
+(defun ghostherd-usage--put-error (kind reason)
+  "Record REASON for KIND, keeping the last good windows if there are any.
+One failed poll should read as stale numbers, not as no numbers:
+agy in particular answers from a `/usage' probe that only runs
+once a minute, and dropping its windows on the next expired-token
+refresh would blank a perfectly good readout."
+  (let* ((old (alist-get kind ghostherd-usage--cache))
+         (wins (plist-get old :windows)))
+    (setq ghostherd-usage--cache
+          (cons (cons kind
+                      (list :windows wins
+                            :fetched (if wins
+                                         (plist-get old :fetched)
+                                       (float-time))
+                            :error reason))
+                (assq-delete-all kind ghostherd-usage--cache)))))
+
 
 ;;; Format
 ;;
@@ -193,17 +234,32 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
 (defun ghostherd-usage--mode-line-safe (s)
   (replace-regexp-in-string "%" "%%" (or s "")))
 
-(defun ghostherd-usage--help (kind wins)
+(defun ghostherd-usage--eta (resets-at)
+  "Human `1h03m' until RESETS-AT, or nil if it is not ahead of now."
+  (when (and (numberp resets-at) (> resets-at (float-time)))
+    (let* ((secs (- resets-at (float-time)))
+           (h (floor secs 3600))
+           (m (floor (mod secs 3600) 60)))
+      (if (> h 0) (format "%dh%02dm" h m) (format "%dm" m)))))
+
+(defun ghostherd-usage--help (_kind wins)
   (mapconcat
    (lambda (w)
-     (format "%s %s left"
-             (plist-get w :label)
-             (format "%d%%" (ghostherd-usage--pct-n (plist-get w :remaining)))))
+     (let* ((rem (plist-get w :remaining))
+            (eta (ghostherd-usage--eta (plist-get w :resets-at))))
+       (concat (format "%s %d%% used, %d%% left"
+                       (plist-get w :label)
+                       (ghostherd-usage--pct-n (ghostherd-usage--used rem))
+                       (ghostherd-usage--pct-n rem))
+               (and eta (format ", resets in %s" eta)))))
    wins
    "  "))
 
 (defun ghostherd-usage--window-bar (w compact)
-  (let* ((n (ghostherd-usage--pct-n (plist-get w :remaining)))
+  "Render window W as `<bar><used> <label>'.
+The number is the used percent, like the provider panels print."
+  (let* ((n (ghostherd-usage--pct-n
+             (ghostherd-usage--used (plist-get w :remaining))))
          (bar (ghostherd-usage--bar (plist-get w :remaining) (if compact 4 6)))
          (s (if compact
                 (format "%s%d" bar n)
@@ -230,10 +286,12 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
              (body (mapconcat (lambda (w) (ghostherd-usage--window-bar w compact))
                               show " "))
              (s (concat name " " body)))
-        (propertize s 'help-echo (ghostherd-usage--help kind wins)))))))
+        (propertize s 'help-echo
+                    (concat (ghostherd-usage--help kind wins)
+                            (and err (format "  (stale: %s)" err)))))))))
 
 (defun ghostherd-usage-line (&optional width)
-  "Footer fragment: remaining quota per kind as HP bars."
+  "Footer fragment: per-kind usage bars, filled by what is spent."
   (when ghostherd-usage--cache
     (let* ((width (or width 80))
            (wide (mapconcat (lambda (k) (ghostherd-usage--entry-string k nil))
@@ -298,44 +356,102 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
 
 ;;; HTTP
 
+(defconst ghostherd-usage--hosts
+  '("api.anthropic.com" "platform.claude.com" "cli-chat-proxy.grok.com"
+    "oauth2.googleapis.com" "daily-cloudcode-pa.googleapis.com")
+  "Hosts `ghostherd-usage--http' talks to.")
+
+(defvar-local ghostherd-usage--own-request nil
+  "Non-nil in a url buffer opened by `ghostherd-usage--http'.")
+
+(defun ghostherd-usage--own-request-p ()
+  "Non-nil if the current url buffer is one of ours."
+  (or ghostherd-usage--own-request
+      (and (boundp 'url-current-object)
+           url-current-object
+           (member (url-host url-current-object) ghostherd-usage--hosts)
+           t)))
+
+(defun ghostherd-usage--no-auth-prompt (orig &rest args)
+  "Let a 401 reach our own callback instead of asking for a password.
+url.el only skips the minibuffer prompt when the request already
+carried an `Authorization' header -- which the token refreshes do
+not -- and that prompt runs inside a process filter, where the
+quit it raises kills the callback: the fetch then never finishes
+and `ghostherd-usage--inflight' stays pinned.  t is url.el's own
+\"already tried, give up\" answer, so our callback sees the 401;
+nil would make it retry and never activate the callback at all.
+
+A `cl-letf' around `url-retrieve' cannot do this -- it is long
+unwound by the time the response lands."
+  (if (ghostherd-usage--own-request-p) t (apply orig args)))
+
+(advice-add 'url-http-handle-authentication :around
+            #'ghostherd-usage--no-auth-prompt)
+
 (defun ghostherd-usage--http (url headers callback &optional method json-body form)
-  "CALLBACK is (lambda (code body)).  BODY is a string.  Never logs headers."
-  (let ((url-request-method (or method "GET"))
-        (url-request-extra-headers
-         (let ((h (copy-alist headers)))
-           (when json-body
-             (push '("Content-Type" . "application/json") h))
-           h))
-        (url-request-data
-         (cond
-          (form (encode-coding-string form 'utf-8))
-          (json-body (encode-coding-string (json-encode json-body) 'utf-8))))
-        (url-show-status nil)
-        (url-mime-accept-string "application/json"))
-    ;; 401 must not pop a username prompt (Google/Anthropic).
-    (cl-letf (((symbol-function 'url-http-handle-authentication)
-               (lambda (&rest _) nil)))
-    (url-retrieve
-     url
-     (lambda (status callback)
-       (let ((err (plist-get status :error))
-             (buf (current-buffer))
-             code body)
-         (unwind-protect
-             (progn
-               (goto-char (point-min))
-               (setq code (and (re-search-forward "^HTTP/[^ ]+ \\([0-9]+\\)" nil t)
-                               (string-to-number (match-string 1))))
-               (goto-char (point-min))
-               (when (re-search-forward "\n\n" nil t)
-                 (setq body (decode-coding-string
-                             (buffer-substring-no-properties (point) (point-max))
-                             'utf-8)))
-               (funcall callback (or code (and err 0)) (or body "")))
-           (when (buffer-live-p buf)
-             (kill-buffer buf)))))
-     (list callback)
-     t t))))
+  "CALLBACK is (lambda (code body)).  BODY is a string.  Never logs headers.
+CALLBACK runs exactly once: with the response, or with code 0
+after `ghostherd-usage-timeout' if none arrives."
+  (let* ((fired nil)
+         (buf nil)
+         (fire
+          (lambda (code body)
+            (unless fired
+              (setq fired t)
+              (condition-case err
+                  (funcall callback code body)
+                (error (message "ghostherd-usage: callback failed: %S" err))))))
+         (url-request-method (or method "GET"))
+         (url-request-extra-headers
+          (let ((h (copy-alist headers)))
+            (when json-body
+              (push '("Content-Type" . "application/json") h))
+            h))
+         (url-request-data
+          (cond
+           (form (encode-coding-string form 'utf-8))
+           (json-body (encode-coding-string (json-encode json-body) 'utf-8))))
+         (url-show-status nil)
+         (url-mime-accept-string "application/json"))
+    (setq buf
+          (url-retrieve
+           url
+           (lambda (_status)
+             ;; A connection-level failure leaves no status line, so it
+             ;; arrives as code 0 -- same shape as the deadline.
+             (let ((this (current-buffer))
+                   code body)
+               (unwind-protect
+                   (ignore-errors
+                     (goto-char (point-min))
+                     (setq code (and (re-search-forward
+                                      "^HTTP/[^ ]+ \\([0-9]+\\)" nil t)
+                                     (string-to-number (match-string 1))))
+                     (goto-char (point-min))
+                     (when (re-search-forward "\n\n" nil t)
+                       (setq body (decode-coding-string
+                                   (buffer-substring-no-properties
+                                    (point) (point-max))
+                                   'utf-8))))
+                 (when (buffer-live-p this)
+                   (kill-buffer this)))
+               ;; After the unwind, so it fires even when parsing blew
+               ;; up, and outside the dead buffer.
+               (funcall fire (or code 0) (or body ""))))
+           nil t t))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf (setq ghostherd-usage--own-request t)))
+    (run-with-timer
+     (max 1 ghostherd-usage-timeout) nil
+     (lambda ()
+       (unless fired
+         (when (buffer-live-p buf)
+           (when-let* ((proc (get-buffer-process buf)))
+             (ignore-errors (delete-process proc)))
+           (kill-buffer buf))
+         (funcall fire 0 ""))))
+    buf))
 
 (defun ghostherd-usage--http-json (url headers ok-fn &optional method json-body form)
   (ghostherd-usage--http
@@ -379,7 +495,8 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
   (when ghostherd-usage--inflight
     (setq ghostherd-usage--inflight (1- ghostherd-usage--inflight))
     (when (<= ghostherd-usage--inflight 0)
-      (setq ghostherd-usage--inflight nil)))
+      (setq ghostherd-usage--inflight nil
+            ghostherd-usage--inflight-at nil)))
   (ghostherd-usage--redraw))
 
 (defun ghostherd-usage--fetch-claude ()
@@ -402,9 +519,10 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
                `(("Authorization" . ,(concat "Bearer " tok))
                  ("anthropic-beta" . "oauth-2025-04-20")
                  ("User-Agent" . "claude-cli/1.0"))
-               (lambda (raw &optional _code)
+               (lambda (raw &optional code)
                  (if raw (apply-usage raw)
-                   (ghostherd-usage--put 'claude nil "http")
+                   (ghostherd-usage--put-error
+                    'claude (format "http %s" (or code "?")))
                    (ghostherd-usage--done))))))
           (if (and (ghostherd-usage--expired-p
                     (ghostherd-usage--alist oauth 'expiresAt))
@@ -467,14 +585,22 @@ print(cid+'\\t'+sec)"
                       (cons (nth 0 parts) (nth 1 parts))))))))))
 
 (defun ghostherd-usage--agy-refresh (refresh cb)
-  (let ((pair (ghostherd-usage--agy-client)))
+  "Swap REFRESH for an access token.  CB is (lambda (TOKEN REASON)).
+REASON is nil on success, else a short string for the help-echo:
+the client id/secret are scraped out of the `agy' binary, so a
+pair that no longer matches the stored token shows up here as a
+401 rather than as a blank readout."
+  (let ((pair (and refresh (ghostherd-usage--agy-client))))
     (if (not pair)
-        (funcall cb nil)
+        (funcall cb nil "no oauth client")
       (ghostherd-usage--http-json
        "https://oauth2.googleapis.com/token"
        '(("Content-Type" . "application/x-www-form-urlencoded"))
-       (lambda (raw &optional _code)
-         (funcall cb (ghostherd-usage--alist raw 'access_token)))
+       (lambda (raw &optional code)
+         (let ((tok (ghostherd-usage--alist raw 'access_token)))
+           (funcall cb tok
+                    (and (not tok)
+                         (format "refresh %s" (or code "failed"))))))
        "POST" nil
        (concat "grant_type=refresh_token"
                "&refresh_token=" (url-hexify-string refresh)
@@ -522,18 +648,27 @@ OAuth API is a fallback and is often expired."
        (ghostherd-session-id s))
       t)))
 
+(defun ghostherd-usage--agy-fail (reason)
+  "Record REASON against agy, kicking the `/usage' probe if it can run.
+Always leaves a cache entry.  With none, the footer renders a
+bare `agy —', which reads as \"not wired up\" and hides the real
+answer; `agy ?' carries REASON in its help-echo instead."
+  (ghostherd-usage--put-error 'agy
+                              (if (ghostherd-usage--agy-probe)
+                                  (concat reason "; asking /usage")
+                                reason)))
+
 (defun ghostherd-usage--agy-quota (token)
   (ghostherd-usage--http-json
    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
    `(("Authorization" . ,(concat "Bearer " token))
      ("User-Agent" . "antigravity/darwin/arm64")
      ("Content-Type" . "application/json"))
-   (lambda (raw &optional _code)
+   (lambda (raw &optional code)
      (let ((wins (and raw (ghostherd-usage--parse-agy-groups raw))))
-       (cond
-        (wins (ghostherd-usage--put 'agy wins))
-        ((ghostherd-usage--agy-probe))
-        (t (ghostherd-usage--put 'agy nil "empty")))
+       (if wins
+           (ghostherd-usage--put 'agy wins)
+         (ghostherd-usage--agy-fail (format "quota %s" (or code "empty"))))
        (ghostherd-usage--done)))
    "POST" (make-hash-table)))
 
@@ -544,8 +679,7 @@ OAuth API is a fallback and is often expired."
     (let ((blob (ghostherd-usage--agy-token-blob)))
       (if (not blob)
           (progn
-            (unless (ghostherd-usage--agy-probe)
-              (ghostherd-usage--put 'agy nil "no credentials"))
+            (ghostherd-usage--agy-fail "no credentials")
             (ghostherd-usage--done))
         (let ((tok (ghostherd-usage--alist blob 'access_token))
               (refresh (ghostherd-usage--alist blob 'refresh_token))
@@ -554,11 +688,10 @@ OAuth API is a fallback and is often expired."
               (ghostherd-usage--agy-quota tok)
             (ghostherd-usage--agy-refresh
              refresh
-             (lambda (fresh)
+             (lambda (fresh &optional reason)
                (if fresh
                    (ghostherd-usage--agy-quota fresh)
-                 (unless (ghostherd-usage--agy-probe)
-                   (ghostherd-usage--put 'agy nil "expired"))
+                 (ghostherd-usage--agy-fail (or reason "expired"))
                  (ghostherd-usage--done))))))))))
 
 
@@ -592,9 +725,18 @@ OAuth API is a fallback and is often expired."
   (interactive "P")
   (ghostherd-usage--grok-from-log)
   (ghostherd-usage--redraw)
+  ;; A batch that outlived every request's deadline can only be a
+  ;; dropped callback; it must not gate refreshes for ever.
+  (when (and ghostherd-usage--inflight
+             (or (null ghostherd-usage--inflight-at)
+                 (> (- (float-time) ghostherd-usage--inflight-at)
+                    (* 3 (max 1 ghostherd-usage-timeout)))))
+    (setq ghostherd-usage--inflight nil
+          ghostherd-usage--inflight-at nil))
   (when (and (or force (not noninteractive))
              (or force (not ghostherd-usage--inflight)))
-    (setq ghostherd-usage--inflight 3)
+    (setq ghostherd-usage--inflight 3
+          ghostherd-usage--inflight-at (float-time))
     (ghostherd-usage--fetch-claude)
     (ghostherd-usage--fetch-grok)
     (ghostherd-usage--fetch-agy)))

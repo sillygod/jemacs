@@ -29,7 +29,7 @@ readers and different lifetimes:
 
 - Spawn *claude* / *grok* / *agy* (or a plain shell) as named sessions
 - Multiple concurrent agents per project (e.g. implementer + reviewer)
-- Session list (=ghostherd-sidebar=): posframe overlay when available, side window otherwise, plus consult switcher (=ghostherd-switch=). Footer shows remaining account quota for claude / grok / agy (=U= to refresh).
+- Session list (=ghostherd-sidebar=): posframe overlay when available, side window otherwise, plus consult switcher (=ghostherd-switch=). Footer shows account usage for claude / grok / agy -- bars fill as you spend, the number is the used percent, and the tooltip spells out used / left / reset (=U= to refresh).
 - State polling: =working= / =blocked= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
@@ -151,7 +151,7 @@ report. Notes do, because they were written onto the host.
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
-=s= toggle project filter · =/= live-narrow · =v= preview · =g= refresh · =U= remaining quota · =.= next blocked ·
+=s= toggle project filter · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
 =M= mark state · =q= / =Esc= quit
 
 =/= flex-matches name, kind, state, project, notes and title. Whitespace
