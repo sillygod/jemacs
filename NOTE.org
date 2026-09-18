@@ -37,7 +37,6 @@
 
 ** program relavant config
 
-   - [ ] how to copy in the xwidget mode with evil yank
    - [ ] add re builder mode shorcuts
 
 ** better to have

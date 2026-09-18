@@ -64,6 +64,7 @@
       :bind (:map minibuffer-local-map
                   ("C-k" . vertico-previous)
                   ("C-j" . vertico-next)
+                  ("C-p" . consult-yank-from-kill-ring)
                   ("C-r" . consult-history))
       :config
       (consult-customize
@@ -350,6 +351,22 @@
       ;; this will bind a global esc key for minibuffer-keyboard-quit so I remove it.
       (setq evil-collection-company-use-tng nil)
       (evil-collection-init))
+  #+end_src
+
+  xwidget: evil-collection already maps hjkl / history / yy.
+  =jwebkit= adds in-page search, ace hints, and typing into the page.
+  After editing, drop straight's build cache:
+
+  #+begin_src emacs-lisp :tangle no
+    (delete-directory (expand-file-name "straight/build/jwebkit" user-emacs-directory) t)
+  #+end_src
+
+  #+begin_src emacs-lisp
+    (eval `(use-package jwebkit
+             :straight (:local-repo ,(concat home-dir "local/jwebkit"))
+             :after evil-collection
+             :config
+             (jwebkit-setup)))
   #+end_src
 
   evil-nerd-commenter provide the quick comment util functions.

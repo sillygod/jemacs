@@ -1,2 +1,57 @@
-https://github.com/kchanqvq/xwwp/tree/xwwp-ace-dev
-https://github.com/ksqsf/org-xlatex
+#+TITLE: jwebkit
+
+Vim-like keys for Emacs =xwidget-webkit=.  Search, link hints, and
+typing into the page.  Does not use =document.title= (that belongs to
+=pr-view=).
+
+* Status
+
+| Item    | Value |
+|---------+-------|
+| Package | =local/jwebkit/= (straight =:local-repo=) |
+| Wired in | =jemacs-ux= after =evil-collection= |
+| Needs   | GUI Emacs with xwidgets |
+
+=evil-collection= already maps hjkl / H L / o r yy / C-d C-u / zoom.
+This package fills the TODOs it left: find, =f=, edit-mode.
+
+* Keys (normal)
+
+| Key | Command |
+|-----+---------|
+| =/= =n= =N= | in-page search (=window.find=; NS =xwidget-webkit-search= is a stub) |
+| =*= | search for the current selection |
+| =f= | ace hints, click |
+| =F= | ace hints, open =<a>= in a new session |
+| =gf= | pick a visible link with completion |
+| =i= | send keys to the page (forms, PR comments). ESC / C-g back |
+| =gi= | focus first input, then edit |
+| =Y= | yank the page selection |
+| =&= | open current URL in the system browser |
+
+Existing collection bindings stay: =j k gg G d u H L r yy o t x= …
+
+* Reload
+
+#+begin_src emacs-lisp :tangle no
+  (load-file "~/.emacs.d/local/jwebkit/jwebkit.el")
+  (setq jwebkit--setup-done nil)
+  (jwebkit-setup)
+#+end_src
+
+Kill =*xwidget-webkit*= (and =*pr-view*=) if cookies or JS injection
+look stale.
+
+* Tests
+
+#+begin_src bash :tangle no
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/jwebkit \
+        -l jwebkit.el -l jwebkit-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
+
+* Related
+
+- https://github.com/kchanqvq/xwwp (ace + follow-link; we stay small and title-free)
+- https://github.com/ksqsf/org-xlatex
