@@ -710,6 +710,123 @@ whether or not anything is running."
                  "? for shortcuts                 Gemini 3.8 Flash \u00b7 high\n")))
     (should (eq (car (ghostherd--match-rules screen rules)) 'idle))))
 
+(defconst ghostherd-tests--claude-footer-idle
+  (concat
+   "  • claude / grok 我沒有動。它們的 esc to interrupt 實際是印成\n"
+   "    (esc to interrupt · ctrl+t …) 這種形式。\n"
+   "\n"
+   "✻ Sautéed for 3m 23s · done 5:51 PM\n"
+   "                                 ✔ Update installed · Restart to update\n"
+   "──────────\n"
+   "❯ commit 這個\n"
+   "──────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n")
+  "claude parked, having just printed an explanation about these rules.
+Its footer drops `esc to interrupt' when nothing is running; the words
+on screen are the ones it wrote.")
+
+(defconst ghostherd-tests--claude-footer-working
+  (concat
+   "  • claude / grok 我沒有動。\n"
+   "\n"
+   "· Crafting… (18s · ↓ 996 tokens)\n"
+   "                                 ✔ Update installed · Restart to update\n"
+   "──────────\n"
+   "❯ \n"
+   "──────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents\n")
+  "The same claude mid-task, captured from its own pane.
+The hint is back, mid-line inside the footer -- which is why anchoring
+to the start of a line cannot be the discriminator for this kind.")
+
+(ert-deftest ghostherd-test-claude-footer-decides-working ()
+  "Stuck at `working' while idle: the only match was `esc to interrupt'
+inside prose the agent had printed about these very rules.  The footer
+is the evidence -- claude drops the hint from it when nothing runs."
+  (let ((rules (plist-get (ghostherd--spec 'claude) :screen-rules)))
+    ;; The prompt has half-typed text in it, so no rule fires at all and
+    ;; detection falls back to idle -- what matters is that `working'
+    ;; is not among them.
+    (should-not (eq (car (ghostherd--match-rules
+                          ghostherd-tests--claude-footer-idle rules))
+                    'working))
+    (should-not (cl-find 'working
+                         (ghostherd--match-all-rules
+                          ghostherd-tests--claude-footer-idle rules)
+                         :key #'car))
+    (should (eq (car (ghostherd--match-rules
+                      ghostherd-tests--claude-footer-working rules))
+                'working))))
+
+(ert-deftest ghostherd-test-status-region-is-the-bottom ()
+  "The region is the live status area, not the scrollback above it."
+  (let ((ghostherd-status-lines 3))
+    (should (equal (ghostherd--status-region "a\nb\nc\nd\ne") "c\nd\ne"))
+    ;; A capture is padded to the pane height; the padding is not status.
+    (should (equal (ghostherd--status-region "a\nb\nc\nd\ne\n\n   \n\n")
+                   "c\nd\ne"))
+    (should (equal (ghostherd--status-region "only") "only"))
+    (should (equal (ghostherd--status-region "") ""))))
+
+(ert-deftest ghostherd-test-reason-quotes-the-deciding-line ()
+  "The reason used to quote the first line matching the pattern, which
+after this change is a line that did not decide anything."
+  (let* ((rules (plist-get (ghostherd--spec 'claude) :screen-rules))
+         (hit (ghostherd--match-rules
+               ghostherd-tests--claude-footer-working rules))
+         (reason (ghostherd--rule-reason
+                  ghostherd-tests--claude-footer-working hit)))
+    (should (eq (car hit) 'working))
+    (should (string-match-p "auto mode on" reason))
+    (should-not (string-match-p "我沒有動" reason))))
+
+(defconst ghostherd-tests--agy-talks-about-its-own-rules
+  (concat
+   "\u25cf Bash(git commit -m \"fix(ghostherd): recognize agy busy indicators\")\n"
+   "\n"
+   "  The changes have been committed directly to master.\n"
+   "\n"
+   "  \u2022 ghostherd.el:\n"
+   "      \u2022 Updated agy working screen rules to include \"Generating\",\n"
+   "      \"esc to cancel\" (which agy prints instead of \"esc to interrupt\"),\n"
+   "      and the full Unicode braille range \"[\u2801-\u28ff]\" (covering the\n"
+   "      8-dot braille spinner family used by agy).\n"
+   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+   ">\n"
+   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+   "? for shortcuts                            Gemini 3.8 Flash \u00b7 high\n")
+  "agy idle, having just written a commit summary about these rules.
+Every working indicator is on screen -- as prose it quoted, not as its
+own status line.")
+
+(ert-deftest ghostherd-test-agy-writing-about-a-spinner-is-not-a-spinner ()
+  "Stuck at `working' for as long as the summary stayed on screen.
+The agent had committed a change to these very rules and quoted them
+back; the tail keeps everything it ever printed, so a substring match
+read the transcript instead of the state."
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules)))
+    (should (eq (car (ghostherd--match-rules
+                      ghostherd-tests--agy-talks-about-its-own-rules rules))
+                'idle))
+    (should-not (cl-find 'working
+                         (ghostherd--match-all-rules
+                          ghostherd-tests--agy-talks-about-its-own-rules rules)
+                         :key #'car))))
+
+(ert-deftest ghostherd-test-agy-status-line-survives-a-box-edge ()
+  "Anchoring must allow the indentation a TUI actually uses: leading
+whitespace and a box edge, and nothing else -- a bullet is prose."
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules)))
+    (dolist (line '("\u28ff Generating\u2026\n>\n"
+                    "   \u28ff Generating\u2026\n>\n"
+                    "\u2502  \u28ff Generating\u2026\n>\n"
+                    "\u2503 esc to cancel\n>\n"))
+      (should (eq (car (ghostherd--match-rules line rules)) 'working)))
+    (dolist (line '("  \u2022 it prints \u28ff Generating\u2026 while busy\n>\n"
+                    "  \u2022 Generating is the label agy uses\n>\n"
+                    "  say \"esc to cancel\" to stop it\n>\n"))
+      (should (eq (car (ghostherd--match-rules line rules)) 'idle)))))
+
 (defconst ghostherd-tests--agy-permissions-json-idle
   (concat
    "  我已經幫你把 settings.json 更新好了\n"

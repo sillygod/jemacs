@@ -602,6 +602,31 @@ so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
 
+=working= rules read only the bottom =ghostherd-status-lines= of the
+capture (6). These agents scroll, so the tail holds everything the agent
+ever printed --- and an agent that writes *about* its own interface puts
+every indicator on screen without being busy. It happened twice in a
+row: agy quoted =Generating= and =esc to cancel= into a commit summary
+about these rules, then claude quoted =esc to interrupt= into an
+explanation of that fix. Both sat at =working= until the text scrolled
+off.
+
+The bottom six lines are where all three TUIs draw live status --- the
+spinner, the input box, and the footer beneath it --- and nothing else.
+Both directions cost something, which is why it is a setting: more lines
+reads scrollback as status; fewer misses a spinner drawn above a tall
+box, survivable only because claude and agy each repeat the hint in the
+footer one line from the bottom. =blocked= and =idle= still read the
+whole tail --- a permission box can be tall, and =idle= is the fallback
+rather than positive evidence.
+
+agy's rules are additionally anchored to the start of a line, which is
+where a TUI draws a status line and prose quoting one does not. claude
+is *not*: its hint lives mid-line, in
+=⏵⏵ auto mode on … · esc to interrupt · ← for agents=. Same bug, two
+kinds, two different discriminators --- which is why the region matters
+more than the patterns.
+
 A kind's =working= rules have to cover *every* indicator that CLI shows
 while busy. These TUIs draw their input box the whole time, so the
 empty-prompt =idle= rule matches during a task too --- precedence is the

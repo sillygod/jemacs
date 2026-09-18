@@ -80,6 +80,23 @@ idle, so the row stayed ⚠.  Character classes rather than `\\\\<' `\\\\>'
 because those consult the current buffer's syntax table, the same
 class of ambient that `case-fold-search' used to be.")
 
+(defconst ghostherd--rule-status-line "^[ \t│┃┆┊▌▐▏▕]*"
+  "Prefix making a rule match a TUI *status line*, not the transcript.
+
+These agents scroll, so the tail holds everything they have ever
+printed, and an agent that writes *about* its own spinner puts the
+words on screen without being busy.  That is not hypothetical: agy
+summarising a commit to these very rules quoted `Generating\=',
+`esc to cancel\=' and a braille range into its own transcript, and sat
+at `working\=' for as long as the summary stayed on screen.
+
+The discriminator is position.  A TUI draws its status line at the
+start of a line, indented at most by whitespace or a box edge; prose
+quoting the same words has them mid-line, behind a bullet or a
+quotation mark.  Anchoring costs nothing a real status line has, which
+is why the `idle\=' rules have always been anchored -- the same scroll
+made an unanchored `> \=' match the transcript.")
+
 (defcustom ghostherd-agent-specs
   `((claude
      :command "claude"
@@ -140,19 +157,20 @@ class of ambient that `case-fold-search' used to be.")
                   "Approve"
                   "\\[y/N\\]"
                   "\\(y/n\\)"))
-      (working . ("Working"
-                  "Thinking"
-                  "Generating"
-                  "Running"
-                  "esc to interrupt"
-                  ;; agy's own wording, and the only hint it prints
-                  ;; that is exclusive to a task in flight.
-                  "esc to cancel"
-                  ;; Any braille pattern, rather than the ten frames
-                  ;; the other two enumerate: agy spins the 8-dot
-                  ;; family, and a list of frames is a list of ways to
-                  ;; miss one.  Nothing else here draws braille.
-                  "[⠁-⣿]"))
+      ;; Anchored -- see `ghostherd--rule-status-line'.  agy is the kind
+      ;; that talks about its own interface, so it is the kind where a
+      ;; substring match reads the transcript instead of the state.
+      (working . (,(concat ghostherd--rule-status-line "Working")
+                  ,(concat ghostherd--rule-status-line "Thinking")
+                  ,(concat ghostherd--rule-status-line "Generating")
+                  ,(concat ghostherd--rule-status-line "Running")
+                  ;; agy's own wording; the other two say "interrupt".
+                  ,(concat ghostherd--rule-status-line "esc to cancel")
+                  ,(concat ghostherd--rule-status-line "esc to interrupt")
+                  ;; Any braille pattern, rather than the ten frames the
+                  ;; other two enumerate: agy spins the 8-dot family, and
+                  ;; a list of frames is a list of ways to miss one.
+                  ,(concat ghostherd--rule-status-line "[⠁-⣿]")))
       (idle . ("^❯ *$"
                "^> *$"
                "^› *$"))))
@@ -180,6 +198,10 @@ them apart: miss one working indicator and the agent reads `idle' mid
 task.  agy cost three of them -- it labels the spinner `Generating',
 says `esc to cancel' rather than `esc to interrupt', and spins the
 8-dot braille family.
+
+Cover them *anchored*, though: see `ghostherd--rule-status-line'.  The
+same scroll that makes the idle rules demand an empty line makes an
+unanchored working rule match an agent merely writing about a spinner.
 
 An `idle' rule must match an *empty* prompt: ^> *$ rather than ^> with
 anything allowed after it.  These agents scroll rather than repaint, so
@@ -904,18 +926,60 @@ A rule that genuinely wants both cases says so: \\=[Pp]ermission."
   (let ((case-fold-search nil))
     (string-match-p pattern text)))
 
+(defcustom ghostherd-status-lines 6
+  "Lines at the bottom of a capture that count as the agent's status area.
+
+`working' rules are matched against these lines alone.  Everything
+above them is scrollback: these agents scroll rather than repaint, so
+the tail holds every line the agent has ever printed, and an agent that
+writes *about* a spinner is not a spinner.  That is how a claude
+session sat at `working' while idle -- it had printed an explanation
+containing the words `esc to interrupt'.
+
+Six is the tallest status area observed, not a margin on it:
+
+  spinner        · Crafting… (18s · ↓ 996 tokens)
+  banner                        ✔ Update installed · Restart
+  box            ─────────────────────────────────────────
+  prompt         ❯
+  box            ─────────────────────────────────────────
+  footer           ⏵⏵ auto mode on … · esc to interrupt · ←
+
+Both directions cost something, which is why this is a setting.  Too
+many lines reads scrollback as status, the bug above.  Too few misses a
+spinner drawn above a tall box -- survivable here, because claude and
+agy each also print a hint in the footer, one line from the bottom.
+
+Anchoring the patterns cannot replace this: claude prints its hint
+mid-line, in the middle of that footer."
+  :type 'integer
+  :group 'ghostherd)
+
+(defun ghostherd--status-region (text)
+  "The bottom of TEXT: where a TUI draws live status, not scrollback.
+Trailing blank lines are dropped first -- a capture is padded to the
+pane height, and the padding would otherwise be the whole region."
+  (let* ((lines (split-string (or text "") "\n"))
+         (lines (nreverse (seq-drop-while #'string-blank-p (nreverse lines)))))
+    (string-join (last lines (max 1 ghostherd-status-lines)) "\n")))
+
 (defun ghostherd--match-rules (text rules)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
 RULES is an alist of (STATE . REGEXP-LIST).  Prefer blocked over
-working over idle (strict blocked detection, herdr-style)."
-  (cl-labels ((try (state)
+working over idle (strict blocked detection, herdr-style).
+
+`working' is asked of the status area only; see
+`ghostherd-status-lines'.  `blocked' and `idle' still read the whole
+tail: a permission box can be tall, and `idle' is the fallback rather
+than positive evidence."
+  (cl-labels ((try (state haystack)
                 (when-let* ((patterns (alist-get state rules)))
                   (cl-loop for pat in patterns
-                           when (ghostherd--rule-matches-p pat text)
+                           when (ghostherd--rule-matches-p pat haystack)
                            return (cons state pat)))))
-    (or (try 'blocked)
-        (try 'working)
-        (try 'idle))))
+    (or (try 'blocked text)
+        (try 'working (ghostherd--status-region text))
+        (try 'idle text))))
 
 (defun ghostherd--progress-fresh-p (session)
   "Return non-nil if SESSION reported OSC progress recently enough to trust.
@@ -938,11 +1002,15 @@ which is exactly when the screen rules should take back over."
   "Return every (STATE . PATTERN) in RULES matching TEXT.
 `ghostherd--match-rules' stops at the first winner, which is what the
 state machine wants but hides why a rule lost.  This reports the lot, in
-precedence order, for `ghostherd-explain'."
-  (cl-loop for state in '(blocked working idle)
-           append (cl-loop for pattern in (alist-get state rules)
-                           when (ghostherd--rule-matches-p pattern text)
-                           collect (cons state pattern))))
+precedence order, for `ghostherd-explain' -- against the same regions
+the state machine used, or the explanation would not explain it."
+  (let ((status (ghostherd--status-region text)))
+    (cl-loop for state in '(blocked working idle)
+             append (cl-loop for pattern in (alist-get state rules)
+                             when (ghostherd--rule-matches-p
+                                   pattern
+                                   (if (eq state 'working) status text))
+                             collect (cons state pattern)))))
 
 (defcustom ghostherd-reason-width 90
   "Characters of screen text kept as a session's state reason."
@@ -1046,8 +1114,15 @@ is decided by the pattern alone."
 (defun ghostherd--rule-reason (text hit)
   "Return the human-readable reason for rule HIT against TEXT.
 Falls back to the pattern when the matched line cleans up to nothing --
-an anchored prompt like \"^> \" is all furniture."
-  (or (ghostherd--matched-line text (cdr hit)) (cdr hit)))
+an anchored prompt like \"^> \" is all furniture.
+
+Reads the same region the rule was matched against, so the reason
+quotes the line that decided the state rather than an earlier
+coincidence further up the scrollback."
+  (let ((haystack (if (eq (car-safe hit) 'working)
+                      (ghostherd--status-region text)
+                    text)))
+    (or (ghostherd--matched-line haystack (cdr hit)) (cdr hit))))
 
 (defun ghostherd--detect-state (session &optional screen)
   "Return (STATE . REASON) for SESSION from screen rules / buffer liveness.
