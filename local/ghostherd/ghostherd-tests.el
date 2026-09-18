@@ -651,6 +651,65 @@ sat in the sidebar asking for attention it did not want."
                  "  \u2570\u2500\u2500 Grok 4.6 (xhigh) \u00b7 always-approve \u2500\u256f\n")))
     (should (eq (car (ghostherd--match-rules screen rules)) 'working))))
 
+(defconst ghostherd-tests--agy-generating
+  (concat
+   "\u25cf Bash(git status)\n"
+   "\u25cf Bash(git diff local/pr-view/readme.org)\n"
+   "\u283f  Generating\u2026\n"
+   "\u2514 Tip: Press ctrl+b to send a long task to the background.\n"
+   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+   ">\n"
+   "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+   "esc to cancel                              Gemini 3.8 Flash \u00b7 high\n")
+  "agy midway through a task.
+Its input box is drawn the whole time, so the empty-prompt idle rule
+matches here too -- only precedence keeps the two apart.")
+
+(ert-deftest ghostherd-test-agy-generating-is-working ()
+  "Reported as idle while the agent was visibly generating.
+Three separate working signals were on screen and the rules knew none
+of them: agy labels its spinner `Generating', says `esc to cancel'
+rather than `esc to interrupt', and spins the 8-dot braille family."
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules)))
+    (should (eq (car (ghostherd--match-rules
+                      ghostherd-tests--agy-generating rules))
+                'working))
+    ;; The empty prompt still matches; precedence is what decides.
+    (should (cl-find 'idle
+                     (ghostherd--match-all-rules
+                      ghostherd-tests--agy-generating rules)
+                     :key #'car))))
+
+(ert-deftest ghostherd-test-agy-working-signals-stand-alone ()
+  "Each signal has to carry the screen on its own -- agy does not
+always print all three, and the spinner frame changes every tick."
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules)))
+    (dolist (line '("\u28ff  Generating\u2026\n>\n"
+                    "still going\n>\nesc to cancel\n"
+                    ;; every 8-dot spinner frame, and a 6-dot one
+                    "\u28fe x\n>\n"
+                    "\u28fd x\n>\n"
+                    "\u28fb x\n>\n"
+                    "\u28bf x\n>\n"
+                    "\u287f x\n>\n"
+                    "\u28df x\n>\n"
+                    "\u28ef x\n>\n"
+                    "\u28f7 x\n>\n"
+                    "\u280b x\n>\n"))
+      (should (eq (car (ghostherd--match-rules line rules)) 'working)))))
+
+(ert-deftest ghostherd-test-agy-idle-screen-is-still-idle ()
+  "The new rules must not make a parked agy look busy.
+`? for shortcuts\' and the model footer are chrome: they are on screen
+whether or not anything is running."
+  (let ((rules (plist-get (ghostherd--spec 'agy) :screen-rules))
+        (screen (concat
+                 "\u25cf Bash(git status)\n"
+                 "  The changes have been committed.\n"
+                 ">\n"
+                 "? for shortcuts                 Gemini 3.8 Flash \u00b7 high\n")))
+    (should (eq (car (ghostherd--match-rules screen rules)) 'idle))))
+
 (defconst ghostherd-tests--agy-permissions-json-idle
   (concat
    "  我已經幫你把 settings.json 更新好了\n"

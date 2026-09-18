@@ -602,6 +602,17 @@ so what has been observed against which version is recorded in the
 dogfood log in [[file:docs/testing.org][docs/testing.org]]. Prefer a *missed* =blocked= over a
 false one.
 
+A kind's =working= rules have to cover *every* indicator that CLI shows
+while busy. These TUIs draw their input box the whole time, so the
+empty-prompt =idle= rule matches during a task too --- precedence is the
+only thing keeping them apart, and one missed working signal reports a
+generating agent as =idle=. agy cost three of them at once: it labels
+its spinner =Generating=, says =esc to cancel= where the others say
+=esc to interrupt=, and spins the 8-dot braille family rather than the
+6-dot one. Its spinner rule is now the whole braille block ---
+enumerating frames is a list of ways to miss one, and nothing else on
+these screens draws braille.
+
 * When you get told
 
 =blocked= and =dead= always notify.  =done= is different: it means

@@ -142,9 +142,17 @@ class of ambient that `case-fold-search' used to be.")
                   "\\(y/n\\)"))
       (working . ("Working"
                   "Thinking"
+                  "Generating"
                   "Running"
                   "esc to interrupt"
-                  "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
+                  ;; agy's own wording, and the only hint it prints
+                  ;; that is exclusive to a task in flight.
+                  "esc to cancel"
+                  ;; Any braille pattern, rather than the ten frames
+                  ;; the other two enumerate: agy spins the 8-dot
+                  ;; family, and a list of frames is a list of ways to
+                  ;; miss one.  Nothing else here draws braille.
+                  "[⠁-⣿]"))
       (idle . ("^❯ *$"
                "^> *$"
                "^› *$"))))
@@ -164,6 +172,14 @@ Each entry is (KIND . PLIST) with keys:
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
+
+A kind's `working' rules must cover *every* indicator that CLI shows
+while busy, because its input box is on screen the whole time and the
+`idle' rule therefore always matches too.  Precedence is all that keeps
+them apart: miss one working indicator and the agent reads `idle' mid
+task.  agy cost three of them -- it labels the spinner `Generating',
+says `esc to cancel' rather than `esc to interrupt', and spins the
+8-dot braille family.
 
 An `idle' rule must match an *empty* prompt: ^> *$ rather than ^> with
 anything allowed after it.  These agents scroll rather than repaint, so
