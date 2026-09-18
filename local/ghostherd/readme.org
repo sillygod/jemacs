@@ -154,6 +154,13 @@ report. Notes do, because they were written onto the host.
 =s= filter by project · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
 =M= mark state · =q= / =Esc= quit
 
+=s= opens a project picker in the same pane =?= and =v= use: one row per
+project the herd is actually in, with its session count. It starts on the
+project of the row under point (or =All projects= when a filter is already
+on, so =s RET= still just clears it); =n= / =p= move, =1=-=9= jump straight
+to a row, =RET= applies, =Esc= cancels. Every other key is swallowed while
+it is open, so =x= cannot kill the session under point by accident.
+
 =/= flex-matches name, kind, state, project, notes and title. Whitespace
 is AND (=agy idle=). While typing, =n= / =p= still move; =RET= *applies*
 the query and returns to overlay keys, so =j= / =k= move and =RET=

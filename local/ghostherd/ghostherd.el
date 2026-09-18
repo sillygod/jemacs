@@ -2768,6 +2768,14 @@ line that says so; `C' forgets the lot."
 (defvar ghostherd--sidebar-help-visible nil
   "Non-nil when the overlay preview pane is showing the key legend.")
 
+(defvar ghostherd--sidebar-picking nil
+  "Frozen (DISPLAY ROOT COUNT) candidates while the project picker is open.
+Frozen because a poll landing mid-pick would otherwise renumber
+the rows under the key you are about to press.  Nil when closed.")
+
+(defvar ghostherd--sidebar-pick-index 0
+  "Selected row in the project picker.")
+
 (defvar ghostherd--sidebar-target-width nil
   "Column budget that wins over the live window's width.
 
@@ -2961,6 +2969,8 @@ hints when `ghostherd-usage' has a cache."
      (when querying (concat "  /" query))
      (or counts "")
      (cond
+      (ghostherd--sidebar-picking
+       "   RET choose  n/p move  Esc cancel")
       (ghostherd--sidebar-filtering
        "   RET apply  n/p move  Esc clear")
       (ghostherd--sidebar-help-visible
@@ -3208,6 +3218,7 @@ Used by the interactive refresh and `tabulated-list-revert-hook'."
     (let ((inhibit-read-only t)
           (inhibit-modification-hooks t)
           (session (and (not ghostherd--sidebar-help-visible)
+                        (not ghostherd--sidebar-picking)
                         ghostherd-sidebar-show-preview
                         (ghostherd--sidebar-session-at-point)))
           (width (max 10 (or (ignore-errors (window-body-width))
@@ -3215,12 +3226,15 @@ Used by the interactive refresh and `tabulated-list-revert-hook'."
       (save-excursion
         (ghostherd--sidebar-erase-preview)
         (when (or ghostherd-sidebar-show-preview
-                  ghostherd--sidebar-help-visible)
+                  ghostherd--sidebar-help-visible
+                  ghostherd--sidebar-picking)
           (goto-char (point-max))
           (unless (bolp) (insert "\n"))
           (setq ghostherd--sidebar-preview-start (point-marker))
           (insert (propertize (make-string width ?─) 'face 'shadow) "\n")
           (insert (cond
+                   (ghostherd--sidebar-picking
+                    (ghostherd--sidebar-pick-text))
                    (ghostherd--sidebar-help-visible
                     (ghostherd--sidebar-help-text))
                    (session
@@ -3635,7 +3649,7 @@ an agent view is still attributed to that agent."
 (defconst ghostherd--sidebar-all-projects "All projects"
   "Candidate that clears the project filter.")
 
-(defun ghostherd--sidebar-project-choices ()
+(defun ghostherd--sidebar-project-table ()
   "List of (DISPLAY ROOT COUNT) for the projects the herd has sessions in."
   (let ((seen nil))
     (dolist (s (ghostherd-sessions))
@@ -3663,52 +3677,201 @@ project you were actually looking at."
         (with-current-buffer buf (ghostherd--project-root))
       (ghostherd--project-root))))
 
-(defun ghostherd--sidebar-project-default (choices)
-  "Display name from CHOICES that `s' should offer first.
-The row under point wins: it is the one thing on screen that says
-which project you mean.  Failing that, the project you were in."
-  (let* ((s (ghostherd--sidebar-session-at-point))
-         (root (or (and s (ghostherd-session-project s))
-                   (ghostherd--sidebar-caller-project))))
-    (or (car (seq-find (lambda (c)
-                         (and root
-                              (ignore-errors (file-equal-p (nth 1 c) root))))
-                       choices))
-        (caar choices))))
+(defun ghostherd--sidebar-pick-candidates ()
+  "Picker candidates: `All projects' first, then one row per project."
+  (cons (list ghostherd--sidebar-all-projects nil
+              (length (ghostherd-sessions)))
+        (ghostherd--sidebar-project-table)))
+
+(defun ghostherd--sidebar-pick-initial (candidates)
+  "Index in CANDIDATES the picker should open on.
+The row under point when nothing is filtered -- it is the one
+thing on screen that says which project you mean -- and `All
+projects' when something is, so `s RET' still just clears."
+  (if ghostherd--sidebar-filter-project
+      0
+    (let* ((s (ghostherd--sidebar-session-at-point))
+           (root (or (and s (ghostherd-session-project s))
+                     (ghostherd--sidebar-caller-project))))
+      (or (and root
+               (seq-position candidates root
+                             (lambda (c r)
+                               (and (nth 1 c)
+                                    (ignore-errors (file-equal-p (nth 1 c) r))))))
+          0))))
+
+(defun ghostherd--sidebar-pick-text ()
+  "Render the project picker for the overlay pane."
+  (let* ((cands ghostherd--sidebar-picking)
+         (width (max 24 (1- (ghostherd--sidebar-available-width))))
+         (namew (max 12 (min (apply #'max 0 (mapcar (lambda (c) (length (car c)))
+                                                    cands))
+                             (- width 20)))))
+    (concat
+     (propertize "Show project   RET choose · n/p move · 1-9 jump · Esc cancel"
+                 'face 'shadow)
+     "\n"
+     (string-join
+      (cl-loop
+       for c in cands
+       for i from 0
+       collect
+       (let* ((selected (= i ghostherd--sidebar-pick-index))
+              (n (nth 2 c))
+              (line (format "%s%2d  %s  %s"
+                            (if selected "›" " ")
+                            (1+ i)
+                            (string-pad
+                             (truncate-string-to-width (car c) namew nil nil t)
+                             namew)
+                            (if (nth 1 c)
+                                (format "%d session%s" n (if (= n 1) "" "s"))
+                              (format "%d in all" n)))))
+         (if selected
+             (propertize line 'face 'highlight)
+           line)))
+      "\n"))))
+
+(defun ghostherd--sidebar-pick-redraw ()
+  "Redraw the pane and refit the overlay around it."
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (with-current-buffer buf
+      (ghostherd--sidebar-draw-preview)
+      (when (ghostherd--sidebar-posframe-showing-p)
+        (ghostherd--sidebar-show-posframe buf))))
+  (force-mode-line-update t))
+
+(defun ghostherd--set-picking (candidates)
+  "Open the picker on CANDIDATES, or close it when nil.
+State and keymap only -- the caller redraws.  Refreshes Evil's map
+alist for the same reason live-narrow does: the intercept map has
+to outrank the overlay's normal-state letters."
+  (setq ghostherd--sidebar-picking candidates)
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (with-current-buffer buf
+      (ghostherd-pick-mode (if candidates 1 -1))
+      (when (fboundp 'evil-normalize-keymaps)
+        (evil-normalize-keymaps)))))
+
+(defun ghostherd--sidebar-apply-filter (root)
+  "Show only sessions under ROOT, or all of them when ROOT is nil."
+  (setq ghostherd--sidebar-filter-project root)
+  (when-let* ((buf (get-buffer "*ghostherd*")))
+    (with-current-buffer buf
+      (when (derived-mode-p 'ghostherd-sidebar-mode)
+        (ghostherd--sidebar-build-entries)
+        (ghostherd--sidebar-print t)
+        (when (ghostherd--sidebar-posframe-showing-p)
+          (ghostherd--sidebar-show-posframe buf)))))
+  (force-mode-line-update t)
+  (message "Project filter: %s" (if root (ghostherd--abbreviate root) "off")))
 
 (defun ghostherd-sidebar-project-filter ()
-  "Filter the session list to one project, or clear the filter.
+  "Choose which project the session list shows.
 
-Candidates are the projects the herd actually has sessions in.
-`s' used to offer only `project-current' of the buffer the list
-was opened over -- which is ghostherd's own directory as often as
-not -- so the filter pinned itself to that one repo with no way to
-reach the others.
+The picker draws in the pane `?' and `v' already use and takes its
+keys there, like live-narrow.  It used to be a `completing-read':
+in the posframe overlay that put the prompt at the bottom of the
+parent frame, nowhere near the floating list you were reading, and
+left the order to whatever completion UI happened to be installed.
 
-RET takes the default: the project of the row under point, or
-`All projects' when a filter is already on, which keeps the old
-one-key toggle-off."
+`s' again closes it; RET applies the highlighted row."
   (interactive)
-  (let* ((choices (ghostherd--sidebar-project-choices))
-         (table (cons (list ghostherd--sidebar-all-projects nil 0) choices)))
-    (when (and (null choices) (not ghostherd--sidebar-filter-project))
-      (user-error "No sessions with a project"))
-    (let* ((default (if ghostherd--sidebar-filter-project
-                        ghostherd--sidebar-all-projects
-                      (ghostherd--sidebar-project-default choices)))
-           (completion-extra-properties
-            (list :annotation-function
-                  (lambda (d)
-                    (when-let* ((n (nth 2 (assoc d table))))
-                      (and (> n 0)
-                           (format "   %d session%s" n (if (= n 1) "" "s")))))))
-           (pick (completing-read (format-prompt "Show project" default)
-                                  (mapcar #'car table) nil t nil nil default))
-           (root (nth 1 (assoc pick table))))
-      (setq ghostherd--sidebar-filter-project root)
-      (ghostherd-sidebar-refresh)
-      (message "Project filter: %s"
-               (if root (ghostherd--abbreviate root) "off")))))
+  (if ghostherd--sidebar-picking
+      (ghostherd-sidebar-pick-cancel)
+    (let ((cands (ghostherd--sidebar-pick-candidates)))
+      (when (and (null (cdr cands)) (not ghostherd--sidebar-filter-project))
+        (user-error "No sessions with a project"))
+      (setq ghostherd--sidebar-pick-index (ghostherd--sidebar-pick-initial cands))
+      (ghostherd--set-picking cands)
+      (ghostherd--sidebar-pick-redraw))))
+
+(defun ghostherd-sidebar-pick-cancel ()
+  "Close the project picker, leaving the filter as it was."
+  (interactive)
+  (ghostherd--set-picking nil)
+  (ghostherd--sidebar-pick-redraw))
+
+(defun ghostherd-sidebar-pick-confirm ()
+  "Apply the selected project and close the picker."
+  (interactive)
+  (let ((root (nth 1 (nth ghostherd--sidebar-pick-index
+                          ghostherd--sidebar-picking))))
+    (ghostherd--set-picking nil)
+    (ghostherd--sidebar-apply-filter root)))
+
+(defun ghostherd--sidebar-pick-move (delta)
+  "Move the picker selection by DELTA, wrapping at both ends."
+  (when ghostherd--sidebar-picking
+    (setq ghostherd--sidebar-pick-index
+          (mod (+ ghostherd--sidebar-pick-index delta)
+               (length ghostherd--sidebar-picking)))
+    (ghostherd--sidebar-pick-redraw)))
+
+(defun ghostherd-sidebar-pick-next ()
+  "Select the next project."
+  (interactive)
+  (ghostherd--sidebar-pick-move 1))
+
+(defun ghostherd-sidebar-pick-previous ()
+  "Select the previous project."
+  (interactive)
+  (ghostherd--sidebar-pick-move -1))
+
+(defun ghostherd-sidebar-pick-digit ()
+  "Apply the numbered project straight away."
+  (interactive)
+  (let ((n (- (event-basic-type last-command-event) ?0)))
+    (if (and (>= n 1) (<= n (length ghostherd--sidebar-picking)))
+        (progn (setq ghostherd--sidebar-pick-index (1- n))
+               (ghostherd-sidebar-pick-confirm))
+      (message "No project %d" n))))
+
+(defun ghostherd-sidebar-pick-ignore ()
+  "Swallow a key that means nothing to the picker.
+Without this, `x' while picking would reach the overlay map and
+kill the session under point."
+  (interactive)
+  nil)
+
+(defvar-keymap ghostherd-sidebar-pick-map
+  :doc "Keymap while the project picker owns the overlay pane.
+Modal on purpose: every other key is swallowed rather than run as
+an overlay command.  Esc, C-g, q and `s' all close it."
+  "RET"         #'ghostherd-sidebar-pick-confirm
+  "C-m"         #'ghostherd-sidebar-pick-confirm
+  "<return>"    #'ghostherd-sidebar-pick-confirm
+  "SPC"         #'ghostherd-sidebar-pick-confirm
+  "n"           #'ghostherd-sidebar-pick-next
+  "p"           #'ghostherd-sidebar-pick-previous
+  "j"           #'ghostherd-sidebar-pick-next
+  "k"           #'ghostherd-sidebar-pick-previous
+  "C-n"         #'ghostherd-sidebar-pick-next
+  "C-p"         #'ghostherd-sidebar-pick-previous
+  "<down>"      #'ghostherd-sidebar-pick-next
+  "<up>"        #'ghostherd-sidebar-pick-previous
+  "s"           #'ghostherd-sidebar-pick-cancel
+  "q"           #'ghostherd-sidebar-pick-cancel
+  "C-g"         #'ghostherd-sidebar-pick-cancel
+  "<escape>"    #'ghostherd-sidebar-pick-cancel)
+
+(define-key ghostherd-sidebar-pick-map [t] #'ghostherd-sidebar-pick-ignore)
+;; After `[t]': events the catch-all would otherwise swallow before
+;; `function-key-map' translates them (see the filter map).
+(define-key ghostherd-sidebar-pick-map [return] #'ghostherd-sidebar-pick-confirm)
+(define-key ghostherd-sidebar-pick-map [kp-enter] #'ghostherd-sidebar-pick-confirm)
+(define-key ghostherd-sidebar-pick-map [escape] #'ghostherd-sidebar-pick-cancel)
+(dotimes (i 9)
+  (define-key ghostherd-sidebar-pick-map (vector (+ ?1 i))
+              #'ghostherd-sidebar-pick-digit))
+
+(define-minor-mode ghostherd-pick-mode
+  "Pick a project filter inside the ghostherd overlay.
+A minor mode for the same reason `ghostherd-filter-mode' is one:
+Evil's state maps sit in `emulation-mode-map-alists' and would
+swallow RET before a transient map saw it."
+  :lighter nil
+  :keymap ghostherd-sidebar-pick-map)
 
 (define-obsolete-function-alias 'ghostherd-sidebar-toggle-project-filter
   'ghostherd-sidebar-project-filter "2026-09-18")
@@ -3889,6 +4052,7 @@ those are exactly the cases that must fall back."
           ghostherd--sidebar-help-visible nil
           ghostherd--sidebar-preview-id nil)
     (ghostherd--set-filtering nil)
+    (ghostherd--set-picking nil)
     (when (timerp ghostherd--sidebar-preview-timer)
       (cancel-timer ghostherd--sidebar-preview-timer)
       (setq ghostherd--sidebar-preview-timer nil))
@@ -3917,6 +4081,8 @@ key is a command again (`z', `k').  An empty query dismisses: the
 posframe overlay hides, or the side window quits."
   (interactive)
   (cond
+   (ghostherd--sidebar-picking
+    (ghostherd-sidebar-pick-cancel))
    ((and ghostherd--sidebar-query
          (not (string-empty-p ghostherd--sidebar-query)))
     (ghostherd--sidebar-set-query "")
@@ -4214,8 +4380,23 @@ full overlay alphabet has to live here, not only `/'.
 
 `x' is kill and `gr' is refresh: `k' and `g' are evil motion/prefix."
   (when (fboundp 'evil-make-intercept-map)
-    (evil-make-intercept-map ghostherd-sidebar-filter-map 'normal))
+    (evil-make-intercept-map ghostherd-sidebar-filter-map 'normal)
+    (evil-make-intercept-map ghostherd-sidebar-pick-map 'normal))
   (when (fboundp 'evil-define-key*)
+    (evil-define-key* 'normal ghostherd-sidebar-pick-map
+      (kbd "RET") #'ghostherd-sidebar-pick-confirm
+      (kbd "<return>") #'ghostherd-sidebar-pick-confirm
+      (kbd "C-m") #'ghostherd-sidebar-pick-confirm
+      (kbd "j") #'ghostherd-sidebar-pick-next
+      (kbd "k") #'ghostherd-sidebar-pick-previous
+      (kbd "n") #'ghostherd-sidebar-pick-next
+      (kbd "p") #'ghostherd-sidebar-pick-previous
+      (kbd "s") #'ghostherd-sidebar-pick-cancel
+      (kbd "q") #'ghostherd-sidebar-pick-cancel
+      (kbd "<escape>") #'ghostherd-sidebar-pick-cancel)
+    (dotimes (i 9)
+      (evil-define-key* 'normal ghostherd-sidebar-pick-map
+        (kbd (number-to-string (1+ i))) #'ghostherd-sidebar-pick-digit))
     (evil-define-key* 'normal ghostherd-sidebar-filter-map
       (kbd "RET") #'ghostherd-sidebar-filter-confirm
       (kbd "<return>") #'ghostherd-sidebar-filter-confirm
