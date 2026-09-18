@@ -2,7 +2,8 @@
 
 Bitbucket Cloud *and* GitHub pull requests inside an Emacs xwidget.
 Elisp owns HTTP and tokens; =ui/= only renders.  List (Open / Draft /
-Merged / Declined), description, unified diff, create, approve, merge.
+Merged / Declined), description, unified diff, commits, reviewer
+approvals, create, approve, merge.
 
 * Status
 
@@ -72,9 +73,24 @@ Workspace/repo default from =origin=. Override with
 | page: click row | open detail |
 | page: filter chips | Open / Draft / Merged / Declined |
 | page: Create | new PR (source → dest, title, body) |
+| detail: Overview / Files changed / Commits | tabs |
+| detail: commit hash | open that commit on the forge |
 | detail: Approve / Merge | write actions (confirm on merge) |
 | page: ← List / Esc | back to list |
 | page: Refresh / =r= | reload list |
+
+* Reviewer approvals
+
+Each reviewer chip carries its verdict -- ✓ approved (green),
+✘ changes requested (red), · still waiting -- with an =n/m approved=
+count in front.  The two forges keep that verdict in different places:
+
+- Bitbucket: in =participants=, never in =reviewers=.  It rides along
+  with the PR, so the chips are right on first paint.
+- GitHub: in =/pulls/{id}/reviews=, and a reviewer is *dropped* from
+  =requested_reviewers= the moment they review.  pr-view fetches the
+  reviews separately and adds those people back, so an approval is
+  visible at all; the chips settle a moment after the view opens.
 
 * Tests
 

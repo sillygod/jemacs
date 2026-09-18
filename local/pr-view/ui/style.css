@@ -317,8 +317,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   display: flex;
   flex-direction: column;
 }
+.panel-commits { flex: 1; overflow: auto; min-height: 0; padding: 12px 0; }
 .panel-files[hidden],
-.panel-overview[hidden] {
+.panel-overview[hidden],
+.panel-commits[hidden] {
   display: none !important;
 }
 .panel-files .diff-split { flex: 1; }
@@ -401,6 +403,22 @@ button.linkish:hover { color: var(--accent); }
   font-size: 12px;
 }
 .rev-chip .avatar { width: 20px; height: 20px; font-size: 9px; }
+.rev-chip.approved { border-color: var(--merged); }
+.rev-chip.changes_requested { border-color: var(--declined); }
+.rev-mark {
+  font-size: 11px;
+  line-height: 1;
+  width: 14px;
+  text-align: center;
+  color: var(--muted);
+}
+.rev-mark.ok { color: var(--plus); }
+.rev-mark.no { color: var(--minus); }
+.rev-count {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 4px;
+}
 .rev-x {
   background: none;
   border: 0;
@@ -641,3 +659,51 @@ button.linkish:hover { color: var(--accent); }
   }
   .form-row { grid-template-columns: 1fr; }
 }
+
+/* Commits tab */
+.commits {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.commits th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+}
+.commits td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+  vertical-align: top;
+}
+.commits tr:hover td { background: var(--row-hover); }
+.commits .c-author {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.commits .c-author .avatar { width: 20px; height: 20px; font-size: 9px; }
+.commits .c-hash { white-space: nowrap; }
+.commits .c-msg { width: 100%; }
+.commits .c-msg pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+.commits .c-msg summary { color: var(--muted); cursor: pointer; }
+.commits .c-date { white-space: nowrap; color: var(--muted); }
+.linkish {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.linkish:hover { text-decoration: underline; }
+.empty { color: var(--muted); padding: 12px 10px; }

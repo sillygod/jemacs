@@ -18,6 +18,8 @@
   let viewedFiles = {};
   let selectedTab = "overview";
   let lastMembers = [];
+  let lastCommits = [];
+  let commitsFor = null;
 
   function emit(op, extra) {
     const payload = Object.assign({ op: op }, extra || {});
@@ -707,14 +709,28 @@
     return roots.map(tree).join("");
   }
 
+  function verdictMark(status) {
+    if (status === "approved") {
+      return '<span class="rev-mark ok" title="Approved">\u2713</span>';
+    }
+    if (status === "changes_requested") {
+      return '<span class="rev-mark no" title="Changes requested">\u2718</span>';
+    }
+    return '<span class="rev-mark pending" title="Awaiting review">\u00b7</span>';
+  }
+
   function reviewersHtml(pr) {
     const revs = pr.reviewers || [];
     const chips = revs
       .map((r) => {
         const name = r.name || r;
         const uuid = r.uuid || r.nickname || name;
+        const status = r.status || "";
         return (
-          '<span class="rev-chip">' +
+          '<span class="rev-chip ' +
+          escapeHtml(status || "pending") +
+          '">' +
+          verdictMark(status) +
           avatarHtml(name, r.avatar) +
           "<span>" +
           escapeHtml(name) +
@@ -724,18 +740,73 @@
         );
       })
       .join("");
+    const okN = revs.filter((r) => r.status === "approved").length;
+    const count = revs.length
+      ? '<span class="rev-count">' + okN + "/" + revs.length + " approved</span>"
+      : "";
     const opts = lastMembers
       .map((m) => '<option value="' + escapeHtml(m.nickname || m.name) + '">')
       .join("");
     return (
       '<div class="reviewer-bar" id="reviewer-bar">' +
       '<span class="rev-label">Reviewers</span>' +
+      count +
       chips +
       '<input id="add-reviewer" list="member-list" placeholder="Add reviewer">' +
       '<datalist id="member-list">' +
       opts +
       "</datalist>" +
       '<button type="button" class="ghost" id="btn-add-reviewer">Add</button></div>'
+    );
+  }
+
+  function commitsHtml(rows) {
+    if (!rows.length) {
+      return '<p class="empty">No commits in this pull request.</p>';
+    }
+    return (
+      '<table class="commits"><thead><tr>' +
+      "<th>Author</th><th>Commit</th><th>Message</th><th>Date</th>" +
+      "</tr></thead><tbody>" +
+      rows
+        .map((c) => {
+          const msg = String(c.message || "");
+          const nl = msg.indexOf("\n");
+          const subject = nl === -1 ? msg : msg.slice(0, nl);
+          const body = nl === -1 ? "" : msg.slice(nl + 1).trim();
+          const name = c.author || "";
+          const hash = c.short || "";
+          return (
+            "<tr>" +
+            '<td class="c-author">' +
+            avatarHtml(name, c.avatar) +
+            "<span>" +
+            escapeHtml(name) +
+            "</span></td>" +
+            '<td class="c-hash">' +
+            (c.url
+              ? '<button type="button" class="linkish" data-url="' +
+                escapeHtml(c.url) +
+                '">' +
+                escapeHtml(hash) +
+                "</button>"
+              : escapeHtml(hash)) +
+            "</td>" +
+            '<td class="c-msg">' +
+            escapeHtml(subject) +
+            (body
+              ? "<details><summary>more</summary><pre>" +
+                escapeHtml(body) +
+                "</pre></details>"
+              : "") +
+            "</td>" +
+            '<td class="c-date">' +
+            escapeHtml(relTime(c.date)) +
+            "</td></tr>"
+          );
+        })
+        .join("") +
+      "</tbody></table>"
     );
   }
 
@@ -779,8 +850,14 @@
     const badge = badgeFor(pr);
     const comments = payload.comments || [];
     const filesN = payload.diff ? parseUnifiedDiff(payload.diff).length : 0;
-    const ovOn = selectedTab !== "files" ? " on" : "";
+    // Commits arrive after the detail; drop the previous PR's rather
+    // than count them against this one.
+    if (commitsFor !== null && commitsFor !== pr.id) lastCommits = [];
+    commitsFor = pr.id;
+    const commitsN = lastCommits.length;
+    const ovOn = selectedTab === "overview" ? " on" : "";
     const fiOn = selectedTab === "files" ? " on" : "";
+    const coOn = selectedTab === "commits" ? " on" : "";
     app.innerHTML =
       '<div class="detail-wrap"><section class="detail-head">' +
       "<h1>" +
@@ -811,9 +888,14 @@
       fiOn +
       '" data-tab="files">Files changed' +
       (filesN ? " " + filesN : "") +
+      "</button>" +
+      '<button type="button" class="tab' +
+      coOn +
+      '" data-tab="commits">Commits' +
+      (commitsN ? " " + commitsN : "") +
       "</button></nav></section>" +
       '<div id="panel-overview" class="panel-overview"' +
-      (selectedTab === "files" ? " hidden" : "") +
+      (selectedTab === "overview" ? "" : " hidden") +
       ">" +
       '<section class="description">' +
       renderMarkdown(pr.description || "") +
@@ -830,6 +912,11 @@
       (selectedTab === "files"
         ? '<div id="panel-files" class="panel-files">' +
           renderFileDiff(payload) +
+          "</div>"
+        : "") +
+      (selectedTab === "commits"
+        ? '<div id="panel-commits" class="panel-commits">' +
+          commitsHtml(lastCommits) +
           "</div>"
         : "") +
       "</div>";
@@ -864,6 +951,14 @@
         if (!selectedDiffPath) return;
         if (viewedEl.checked) viewedFiles[selectedDiffPath] = true;
         else delete viewedFiles[selectedDiffPath];
+      });
+    }
+    const commitPanel = document.getElementById("panel-commits");
+    if (commitPanel) {
+      commitPanel.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".linkish");
+        if (!btn) return;
+        emit("open-browser", { url: btn.getAttribute("data-url") || "" });
       });
     }
     app.querySelectorAll(".tab").forEach((btn) => {
@@ -1067,6 +1162,20 @@
       if (lastDetail) lastDetail.comments = items;
       const el = document.getElementById("comments-list");
       if (el) el.innerHTML = commentsHtml(items);
+    },
+    setCommits: (payload) => {
+      lastCommits = (payload && payload.items) || [];
+      commitsFor = lastDetail && lastDetail.pr ? lastDetail.pr.id : null;
+      // Patch the tab and its panel in place: a full re-render here
+      // would wipe a half-typed comment out of the overview.
+      const tab = app.querySelector('.tab[data-tab="commits"]');
+      const panel = document.getElementById("panel-commits");
+      if (tab) {
+        tab.textContent =
+          "Commits" + (lastCommits.length ? " " + lastCommits.length : "");
+      }
+      if (panel) panel.innerHTML = commitsHtml(lastCommits);
+      if (!tab && lastDetail) renderDetail(lastDetail);
     },
     setMembers: (payload) => {
       lastMembers = (payload && payload.items) || [];

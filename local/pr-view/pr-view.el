@@ -102,6 +102,9 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
   "PR states currently shown in the list (OPEN, MERGED, DECLINED, DRAFT).")
 (defvar pr-view--last-comments nil)
 (defvar pr-view--last-members nil)
+(defvar pr-view--last-detail-raw nil
+  "Raw detail JSON of the open PR, kept so a later verdict fetch can
+rebuild the reviewer chips without asking for the PR again.")
 
 
 ;;; Remote detection
@@ -390,7 +393,7 @@ turns that keyword into the string \"false\", which is truthy in JS."
       (alist-get 'avatar_url user)
       ""))
 
-(defun pr-view--person (user)
+(defun pr-view--person (user &optional status)
   (let ((name (or (alist-get 'display_name user)
                   (alist-get 'nickname user)
                   (alist-get 'login user)
@@ -400,14 +403,90 @@ turns that keyword into the string \"false\", which is truthy in JS."
       (uuid . ,(or (alist-get 'uuid user) ""))
       (nickname . ,(or (alist-get 'nickname user)
                        (alist-get 'login user)
-                       "")))))
+                       ""))
+      (status . ,(or status "")))))
 
-(defun pr-view--reviewers (raw)
+(defun pr-view--person-key (user)
+  "Stable identity for USER across the reviewer and verdict arrays.
+Bitbucket keys on `uuid', GitHub on `login'; neither forge repeats
+the other's field, so one lookup covers both."
+  (let ((k (or (alist-get 'uuid user)
+               (alist-get 'account_id user)
+               (alist-get 'login user)
+               (alist-get 'nickname user)
+               (alist-get 'display_name user))))
+    (and k (format "%s" k))))
+
+(defun pr-view--reviewers (raw &optional verdicts)
+  "Reviewer list from RAW, each tagged with its verdict from VERDICTS."
   (vconcat
-   (mapcar #'pr-view--person
+   (mapcar (lambda (u)
+             (pr-view--person
+              u (cdr (assoc (pr-view--person-key u) verdicts))))
            (or (alist-get 'reviewers raw)
                (alist-get 'requested_reviewers raw)
                '()))))
+
+(defun pr-view--bb-verdicts (raw)
+  "Reviewer key -> verdict, read from Bitbucket's `participants'.
+The `reviewers' array carries no verdict at all -- who approved is
+only ever in the participant entry, which is why the chips used to
+look the same whether or not anyone had approved."
+  (let ((map nil))
+    (dolist (part (or (alist-get 'participants raw) '()))
+      (let* ((user (alist-get 'user part))
+             (key (pr-view--person-key user))
+             (state (downcase (format "%s" (or (alist-get 'state part) ""))))
+             (verdict (cond
+                       ((eq (alist-get 'approved part) t) "approved")
+                       ((string-equal state "changes_requested")
+                        "changes_requested")
+                       (t nil))))
+        (when (and key verdict)
+          (setf (alist-get key map nil nil #'equal) verdict))))
+    map))
+
+(defun pr-view--gh-verdicts (reviews)
+  "Reviewer key -> latest verdict from GitHub /pulls/{id}/reviews.
+Reviews come back oldest first, so a later entry wins.  COMMENTED
+carries no verdict and must not clear an earlier approval;
+DISMISSED does clear one."
+  (let ((map nil))
+    (dolist (review (or reviews '()))
+      (let* ((user (alist-get 'user review))
+             (key (pr-view--person-key user))
+             (state (upcase (format "%s" (or (alist-get 'state review) ""))))
+             (verdict (cond
+                       ((string-equal state "APPROVED") "approved")
+                       ((string-equal state "CHANGES_REQUESTED")
+                        "changes_requested")
+                       ((string-equal state "DISMISSED") "")
+                       (t nil))))
+        (when (and key verdict)
+          (setf (alist-get key map nil nil #'equal) verdict))))
+    map))
+
+(defun pr-view--gh-reviewers (raw reviews)
+  "Reviewer chips for GitHub: still-requested reviewers, plus verdicts.
+GitHub drops a reviewer from `requested_reviewers' the moment they
+review, so that list on its own can never show an approval -- the
+people who already answered have to be added back from REVIEWS."
+  (let* ((verdicts (pr-view--gh-verdicts reviews))
+         (requested (or (alist-get 'requested_reviewers raw) '()))
+         (seen (delq nil (mapcar #'pr-view--person-key requested)))
+         (out (mapcar (lambda (u)
+                        (pr-view--person
+                         u (cdr (assoc (pr-view--person-key u) verdicts))))
+                      requested)))
+    (dolist (review (or reviews '()))
+      (let* ((user (alist-get 'user review))
+             (key (pr-view--person-key user))
+             (verdict (cdr (assoc key verdicts))))
+        (when (and key verdict (not (string-empty-p verdict))
+                   (not (member key seen)))
+          (push key seen)
+          (setq out (append out (list (pr-view--person user verdict)))))))
+    (vconcat out)))
 
 (defun pr-view--bb-item (raw)
   (let ((author (alist-get 'author raw)))
@@ -426,7 +505,7 @@ turns that keyword into the string \"false\", which is truthy in JS."
        (author_avatar . ,(pr-view--avatar author))
        (created_on . ,(or (alist-get 'created_on raw) ""))
        (comment_count . ,(or (alist-get 'comment_count raw) 0))
-       (reviewers . ,(pr-view--reviewers raw))))))
+       (reviewers . ,(pr-view--reviewers raw (pr-view--bb-verdicts raw)))))))
 
 (defun pr-view--gh-state (raw)
   (cond
@@ -473,7 +552,7 @@ turns that keyword into the string \"false\", which is truthy in JS."
       (created_on . ,(or (alist-get 'created_on raw) ""))
       (updated_on . ,(or (alist-get 'updated_on raw) ""))
       (comment_count . ,(or (alist-get 'comment_count raw) 0))
-      (reviewers . ,(pr-view--reviewers raw))
+      (reviewers . ,(pr-view--reviewers raw (pr-view--bb-verdicts raw)))
       (mergeable . t)
       (url . ,(or (alist-get 'href (alist-get 'html (alist-get 'links raw))) "")))))
 
@@ -869,6 +948,109 @@ the unified diff on PRs over ~20k lines or 300 files."
                (pr-view--js "setComments" `((items . ,(vconcat acc))))))
          (error nil))))))
 
+(defun pr-view--commit-raw-name (raw)
+  "Author name out of a git ident like \"Jing Ye <jing@example.com>\"."
+  (when (stringp raw)
+    (let ((name (string-trim (car (split-string raw "<")))))
+      (and (not (string-empty-p name)) name))))
+
+(defun pr-view--short-hash (hash)
+  (substring hash 0 (min 8 (length hash))))
+
+(defun pr-view--bb-commit (raw)
+  (let* ((author (alist-get 'author raw))
+         (user (alist-get 'user author))
+         (hash (format "%s" (or (alist-get 'hash raw) ""))))
+    `((hash . ,hash)
+      (short . ,(pr-view--short-hash hash))
+      (message . ,(or (alist-get 'message raw) ""))
+      (author . ,(or (alist-get 'display_name user)
+                     (alist-get 'nickname user)
+                     (pr-view--commit-raw-name (alist-get 'raw author))
+                     ""))
+      (avatar . ,(pr-view--avatar user))
+      (date . ,(or (alist-get 'date raw) ""))
+      (url . ,(or (alist-get 'href (alist-get 'html (alist-get 'links raw)))
+                  "")))))
+
+(defun pr-view--gh-commit (raw)
+  (let* ((commit (alist-get 'commit raw))
+         (ident (alist-get 'author commit))
+         (user (alist-get 'author raw))
+         (hash (format "%s" (or (alist-get 'sha raw) ""))))
+    `((hash . ,hash)
+      (short . ,(pr-view--short-hash hash))
+      (message . ,(or (alist-get 'message commit) ""))
+      (author . ,(or (alist-get 'login user)
+                     (alist-get 'name ident)
+                     ""))
+      (avatar . ,(pr-view--avatar user))
+      (date . ,(or (alist-get 'date ident) ""))
+      (url . ,(or (alist-get 'html_url raw) "")))))
+
+(defun pr-view--fetch-commits (host kind id-str)
+  (pr-view--commits-page
+   host kind
+   (pcase kind
+     ('github
+      (pr-view--url host (format "/pulls/%s/commits?per_page=100" id-str)))
+     ('bitbucket
+      (pr-view--url host (format "/pullrequests/%s/commits?pagelen=50" id-str))))
+   nil))
+
+(defun pr-view--commits-page (host kind url acc)
+  "Collect PR commits, newest first.  Failures stay silent: the tab is
+supplementary, and `pr-view--http-json' would turn a 403 on it into
+an error banner over a detail view that is otherwise fine."
+  (pr-view--http
+   url (pr-view--headers host)
+   (lambda (body code err)
+     (when (and (not err) code (< code 400) body)
+       (condition-case nil
+           (let* ((raw (json-parse-string body
+                                          :object-type 'alist
+                                          :array-type 'list
+                                          :null-object nil
+                                          :false-object nil))
+                  (rows (pcase kind
+                          ('github raw)
+                          ('bitbucket (alist-get 'values raw))))
+                  (norm (if (eq kind 'github)
+                            #'pr-view--gh-commit
+                          #'pr-view--bb-commit))
+                  (acc (append acc (mapcar norm (or rows '()))))
+                  (next (and (eq kind 'bitbucket) (alist-get 'next raw))))
+             (if (and next (stringp next) (not (string-empty-p next)))
+                 (pr-view--commits-page host kind next acc)
+               (pr-view--js
+                "setCommits"
+                ;; GitHub answers oldest first, Bitbucket newest first.
+                `((items . ,(vconcat (if (eq kind 'github)
+                                         (reverse acc)
+                                       acc)))))))
+         (error nil))))))
+
+(defun pr-view--fetch-reviews (host id-str)
+  "GitHub only: fetch verdicts and repaint the reviewer chips.
+Bitbucket ships them inside the PR itself; GitHub keeps them in a
+separate collection, so the chips arrive a moment after the view."
+  (pr-view--http
+   (pr-view--url host (format "/pulls/%s/reviews?per_page=100" id-str))
+   (pr-view--headers host)
+   (lambda (body code err)
+     (when (and (not err) code (< code 400) body pr-view--last-detail-raw)
+       (condition-case nil
+           (let ((reviews (json-parse-string body
+                                             :object-type 'alist
+                                             :array-type 'list
+                                             :null-object nil
+                                             :false-object nil)))
+             (pr-view--js
+              "setReviewers"
+              `((items . ,(pr-view--gh-reviewers pr-view--last-detail-raw
+                                                 reviews)))))
+         (error nil))))))
+
 (defun pr-view--after-comment (host kind id-str)
   (setq pr-view--inflight nil)
   (pr-view--js "setStatus" "")
@@ -1060,9 +1242,14 @@ the unified diff on PRs over ~20k lines or 300 files."
                         ('bitbucket (format "/pullrequests/%s" id-str))))
    (pr-view--headers host)
    (lambda (raw)
+     (setq pr-view--last-detail-raw raw)
      (let ((pr (pr-view--detail-from kind raw)))
        (pr-view--js "setReviewers"
-                    `((items . ,(or (alist-get 'reviewers pr) []))))))))
+                    `((items . ,(or (alist-get 'reviewers pr) []))))
+       ;; GitHub keeps verdicts in a separate collection, so the PR on
+       ;; its own would repaint the chips with every approval erased.
+       (when (eq kind 'github)
+         (pr-view--fetch-reviews host id-str))))))
 
 (defun pr-view--bb-put-reviewers (host id-str who op)
   (pr-view--http-json
@@ -1100,7 +1287,9 @@ the unified diff on PRs over ~20k lines or 300 files."
           (setq pr-view--inflight nil)
           (pr-view--js "setStatus" "")
           (pr-view--js "setReviewers"
-                       `((items . ,(pr-view--reviewers updated)))))
+                       `((items . ,(pr-view--reviewers
+                                    updated
+                                    (pr-view--bb-verdicts updated))))))
         "PUT"
         `((title . ,title)
           (description . ,desc)
@@ -1129,7 +1318,8 @@ the unified diff on PRs over ~20k lines or 300 files."
                     (forge (symbol-name kind)))
                (setq pr-view--last-url (alist-get 'url pr)
                      pr-view--inflight nil
-                     pr-view--last-comments nil)
+                     pr-view--last-comments nil
+                     pr-view--last-detail-raw raw)
                (pr-view--js "renderPrDetail"
                             (pr-view--detail-payload
                              pr forge
@@ -1137,6 +1327,9 @@ the unified diff on PRs over ~20k lines or 300 files."
                                (diff_loading . t))))
                (pr-view--fetch-comments host kind id-str)
                (pr-view--fetch-members host)
+               (pr-view--fetch-commits host kind id-str)
+               (when (eq kind 'github)
+                 (pr-view--fetch-reviews host id-str))
                (pr-view--fetch-diff host kind id-str pr forge)))))
       ((error user-error)
        (setq pr-view--inflight nil)

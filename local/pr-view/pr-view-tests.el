@@ -157,6 +157,129 @@
     (should (string-match-p "\"parent\"" s))
     (should (string-match-p "\"id\":9" s))))
 
+(ert-deftest pr-view-test-bb-reviewer-approval-from-participants ()
+  "Bitbucket puts the verdict in `participants', never in `reviewers'."
+  (let* ((raw (json-parse-string
+               "{\"id\":1,\"title\":\"t\",\"state\":\"OPEN\",\"author\":{\"display_name\":\"A\"},\"source\":{\"branch\":{\"name\":\"f\"}},\"destination\":{\"branch\":{\"name\":\"main\"}},\"reviewers\":[{\"display_name\":\"Jing Ye\",\"uuid\":\"{jy}\"},{\"display_name\":\"Jim Lee\",\"uuid\":\"{jl}\"},{\"display_name\":\"Ernie\",\"uuid\":\"{er}\"}],\"participants\":[{\"user\":{\"uuid\":\"{jy}\"},\"role\":\"REVIEWER\",\"approved\":true,\"state\":\"approved\"},{\"user\":{\"uuid\":\"{er}\"},\"role\":\"REVIEWER\",\"approved\":false,\"state\":\"changes_requested\"},{\"user\":{\"uuid\":\"{jl}\"},\"role\":\"REVIEWER\",\"approved\":false,\"state\":null}]}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (revs (alist-get 'reviewers (pr-view--bb-detail raw))))
+    (should (equal (alist-get 'status (aref revs 0)) "approved"))
+    (should (equal (alist-get 'status (aref revs 1)) ""))
+    (should (equal (alist-get 'status (aref revs 2)) "changes_requested"))))
+
+(ert-deftest pr-view-test-bb-reviewers-without-participants ()
+  "No participants array is not an approval."
+  (let* ((raw (json-parse-string
+               "{\"reviewers\":[{\"display_name\":\"Ken\",\"uuid\":\"{k}\"}]}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (revs (pr-view--reviewers raw (pr-view--bb-verdicts raw))))
+    (should (equal (alist-get 'status (aref revs 0)) ""))))
+
+(ert-deftest pr-view-test-gh-reviewers-keep-approvers ()
+  "GitHub drops a reviewer from `requested_reviewers' once they review,
+so the chips have to come back from the reviews collection."
+  (let* ((raw (json-parse-string
+               "{\"requested_reviewers\":[{\"login\":\"pending\"}]}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (reviews (json-parse-string
+                   "[{\"user\":{\"login\":\"ada\"},\"state\":\"COMMENTED\"},{\"user\":{\"login\":\"ada\"},\"state\":\"APPROVED\"},{\"user\":{\"login\":\"ada\"},\"state\":\"COMMENTED\"},{\"user\":{\"login\":\"bob\"},\"state\":\"CHANGES_REQUESTED\"}]"
+                   :object-type 'alist :array-type 'list
+                   :null-object nil :false-object nil))
+         (revs (pr-view--gh-reviewers raw reviews)))
+    (should (= (length revs) 3))
+    (should (equal (alist-get 'name (aref revs 0)) "pending"))
+    (should (equal (alist-get 'status (aref revs 0)) ""))
+    ;; A later COMMENTED must not erase the approval it follows.
+    (should (equal (alist-get 'name (aref revs 1)) "ada"))
+    (should (equal (alist-get 'status (aref revs 1)) "approved"))
+    (should (equal (alist-get 'status (aref revs 2)) "changes_requested"))))
+
+(ert-deftest pr-view-test-gh-dismissed-review-clears-approval ()
+  (let* ((reviews (json-parse-string
+                   "[{\"user\":{\"login\":\"ada\"},\"state\":\"APPROVED\"},{\"user\":{\"login\":\"ada\"},\"state\":\"DISMISSED\"}]"
+                   :object-type 'alist :array-type 'list
+                   :null-object nil :false-object nil))
+         (revs (pr-view--gh-reviewers '() reviews)))
+    ;; Nothing left to say, so no chip is invented for them.
+    (should (= (length revs) 0))
+    (should (equal (cdr (assoc "ada" (pr-view--gh-verdicts reviews))) ""))))
+
+(ert-deftest pr-view-test-bb-commit-normalize ()
+  (let* ((raw (json-parse-string
+               "{\"hash\":\"34ef91addeadbeef\",\"message\":\"fix: subject\\n\\nbody line\",\"date\":\"2026-09-18T01:00:00+00:00\",\"author\":{\"raw\":\"Jing Ye <jing@example.com>\",\"user\":{\"display_name\":\"Jing Ye\",\"links\":{\"avatar\":{\"href\":\"http://a\"}}}},\"links\":{\"html\":{\"href\":\"http://c\"}}}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (c (pr-view--bb-commit raw)))
+    (should (equal (alist-get 'short c) "34ef91ad"))
+    (should (equal (alist-get 'author c) "Jing Ye"))
+    (should (equal (alist-get 'avatar c) "http://a"))
+    (should (equal (alist-get 'url c) "http://c"))
+    (should (string-prefix-p "fix: subject" (alist-get 'message c)))))
+
+(ert-deftest pr-view-test-bb-commit-falls-back-to-git-ident ()
+  "A commit by somebody with no Bitbucket account still has a name."
+  (let* ((raw (json-parse-string
+               "{\"hash\":\"abc1234567\",\"message\":\"m\",\"author\":{\"raw\":\"Jing Ye <jing@example.com>\"}}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (c (pr-view--bb-commit raw)))
+    (should (equal (alist-get 'author c) "Jing Ye"))))
+
+(ert-deftest pr-view-test-gh-commit-normalize ()
+  (let* ((raw (json-parse-string
+               "{\"sha\":\"deadbeefcafe\",\"html_url\":\"http://c\",\"commit\":{\"message\":\"feat: x\",\"author\":{\"name\":\"Ada\",\"date\":\"2026-09-18T01:00:00Z\"}},\"author\":{\"login\":\"ada\",\"avatar_url\":\"http://a\"}}"
+               :object-type 'alist :array-type 'list
+               :null-object nil :false-object nil))
+         (c (pr-view--gh-commit raw)))
+    (should (equal (alist-get 'short c) "deadbeef"))
+    (should (equal (alist-get 'author c) "ada"))
+    (should (equal (alist-get 'date c) "2026-09-18T01:00:00Z"))
+    (should (equal (alist-get 'url c) "http://c"))))
+
+(ert-deftest pr-view-test-commits-are-newest-first ()
+  "Bitbucket answers newest first and GitHub oldest first; the tab
+must not flip order depending on the forge."
+  (dolist (case '((github . "[{\"sha\":\"a\",\"commit\":{\"message\":\"old\",\"author\":{\"date\":\"2026-01-01T00:00:00Z\"}}},{\"sha\":\"b\",\"commit\":{\"message\":\"new\",\"author\":{\"date\":\"2026-02-01T00:00:00Z\"}}}]")
+                  (bitbucket . "{\"values\":[{\"hash\":\"b\",\"message\":\"new\",\"date\":\"2026-02-01T00:00:00+00:00\"},{\"hash\":\"a\",\"message\":\"old\",\"date\":\"2026-01-01T00:00:00+00:00\"}]}")))
+    (let (sent)
+      (cl-letf (((symbol-function 'pr-view--http)
+                 (lambda (_url _headers cb) (funcall cb (cdr case) 200 nil)))
+                ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+                ((symbol-function 'pr-view--url) (lambda (&rest _) "u"))
+                ((symbol-function 'pr-view--js)
+                 (lambda (fn obj)
+                   (when (equal fn "setCommits") (setq sent obj)))))
+        (pr-view--fetch-commits nil (car case) "1"))
+      (let ((items (alist-get 'items sent)))
+        (should (= (length items) 2))
+        (should (equal (alist-get 'message (aref items 0)) "new"))
+        (should (equal (alist-get 'message (aref items 1)) "old"))))))
+
+(ert-deftest pr-view-test-commits-failure-is-silent ()
+  "The commits tab is supplementary: a 403 on it must not paint an
+error over a detail view that is otherwise fine."
+  (let (calls)
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_url _headers cb) (funcall cb "{}" 403 nil)))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--url) (lambda (&rest _) "u"))
+              ((symbol-function 'pr-view--js)
+               (lambda (fn obj) (push (cons fn obj) calls))))
+      (pr-view--fetch-commits nil 'bitbucket "1"))
+    (should-not calls)))
+
+(ert-deftest pr-view-test-ui-renders-commits-and-verdicts ()
+  "The UI has to know about both, or the elisp side talks to nobody."
+  (let ((js (with-temp-buffer
+              (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
+              (buffer-string))))
+    (should (string-match-p "setCommits" js))
+    (should (string-match-p "data-tab=.commits." js))
+    (should (string-match-p "changes_requested" js))))
+
 (ert-deftest pr-view-test-ui-has-no-secrets-or-api ()
   (dolist (rel '("ui/app.js" "ui/index.html" "ui/style.css"))
     (let ((s (with-temp-buffer
