@@ -151,7 +151,7 @@ report. Notes do, because they were written onto the host.
 =r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
-=s= toggle project filter · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
+=s= filter by project · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
 =M= mark state · =q= / =Esc= quit
 
 =/= flex-matches name, kind, state, project, notes and title. Whitespace

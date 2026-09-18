@@ -2800,7 +2800,7 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-answer                . "Answer menu prompt")
     (ghostherd-sidebar-message               . "Message agent")
     (ghostherd-sidebar-prompt                . "Prompt agent")
-    (ghostherd-sidebar-toggle-project-filter . "Toggle project filter")
+    (ghostherd-sidebar-project-filter        . "Filter by project")
     (ghostherd-sidebar-filter                . "Live-narrow (flex)")
     (ghostherd-sidebar-toggle-preview        . "Toggle screen preview")
     (ghostherd-sidebar-refresh               . "Refresh")
@@ -2906,7 +2906,7 @@ window, which had nowhere to go except by killing the child frame."
   "r" #'ghostherd-sidebar-rename
   "m" #'ghostherd-sidebar-message
   "i" #'ghostherd-sidebar-prompt
-  "s" #'ghostherd-sidebar-toggle-project-filter
+  "s" #'ghostherd-sidebar-project-filter
   "/" #'ghostherd-sidebar-filter
   "v" #'ghostherd-sidebar-toggle-preview
   "g" #'ghostherd-sidebar-refresh
@@ -3632,17 +3632,86 @@ an agent view is still attributed to that agent."
               '("auto" "working" "blocked" "idle" "done" "dead")
               nil t)))))
 
-(defun ghostherd-sidebar-toggle-project-filter ()
-  "Toggle filtering the sidebar to the current project."
+(defconst ghostherd--sidebar-all-projects "All projects"
+  "Candidate that clears the project filter.")
+
+(defun ghostherd--sidebar-project-choices ()
+  "List of (DISPLAY ROOT COUNT) for the projects the herd has sessions in."
+  (let ((seen nil))
+    (dolist (s (ghostherd-sessions))
+      (when-let* ((p (ghostherd-session-project s)))
+        (let* ((root (file-name-as-directory (expand-file-name p)))
+               (cell (assoc root seen)))
+          (if cell
+              (cl-incf (nth 1 cell))
+            (push (list root 1) seen)))))
+    (mapcar (lambda (c) (list (ghostherd--abbreviate (car c)) (car c) (nth 1 c)))
+            (cl-sort seen #'string< :key #'car))))
+
+(defun ghostherd--sidebar-caller-project ()
+  "Project root of the buffer the list was opened over, or nil.
+
+The overlay buffer's own `default-directory' is wherever the
+posframe happened to be created, so `project-current' asked from
+inside it answers for ghostherd's own directory no matter which
+project you were actually looking at."
+  (let ((buf (and ghostherd--sidebar-posframe-parent
+                  (frame-live-p ghostherd--sidebar-posframe-parent)
+                  (window-buffer (frame-selected-window
+                                  ghostherd--sidebar-posframe-parent)))))
+    (if (buffer-live-p buf)
+        (with-current-buffer buf (ghostherd--project-root))
+      (ghostherd--project-root))))
+
+(defun ghostherd--sidebar-project-default (choices)
+  "Display name from CHOICES that `s' should offer first.
+The row under point wins: it is the one thing on screen that says
+which project you mean.  Failing that, the project you were in."
+  (let* ((s (ghostherd--sidebar-session-at-point))
+         (root (or (and s (ghostherd-session-project s))
+                   (ghostherd--sidebar-caller-project))))
+    (or (car (seq-find (lambda (c)
+                         (and root
+                              (ignore-errors (file-equal-p (nth 1 c) root))))
+                       choices))
+        (caar choices))))
+
+(defun ghostherd-sidebar-project-filter ()
+  "Filter the session list to one project, or clear the filter.
+
+Candidates are the projects the herd actually has sessions in.
+`s' used to offer only `project-current' of the buffer the list
+was opened over -- which is ghostherd's own directory as often as
+not -- so the filter pinned itself to that one repo with no way to
+reach the others.
+
+RET takes the default: the project of the row under point, or
+`All projects' when a filter is already on, which keeps the old
+one-key toggle-off."
   (interactive)
-  (setq ghostherd--sidebar-filter-project
-        (if ghostherd--sidebar-filter-project
-            nil
-          (or (ghostherd--project-root)
-              (user-error "Not in a project"))))
-  (ghostherd-sidebar-refresh)
-  (message "Project filter: %s"
-           (or ghostherd--sidebar-filter-project "off")))
+  (let* ((choices (ghostherd--sidebar-project-choices))
+         (table (cons (list ghostherd--sidebar-all-projects nil 0) choices)))
+    (when (and (null choices) (not ghostherd--sidebar-filter-project))
+      (user-error "No sessions with a project"))
+    (let* ((default (if ghostherd--sidebar-filter-project
+                        ghostherd--sidebar-all-projects
+                      (ghostherd--sidebar-project-default choices)))
+           (completion-extra-properties
+            (list :annotation-function
+                  (lambda (d)
+                    (when-let* ((n (nth 2 (assoc d table))))
+                      (and (> n 0)
+                           (format "   %d session%s" n (if (= n 1) "" "s")))))))
+           (pick (completing-read (format-prompt "Show project" default)
+                                  (mapcar #'car table) nil t nil nil default))
+           (root (nth 1 (assoc pick table))))
+      (setq ghostherd--sidebar-filter-project root)
+      (ghostherd-sidebar-refresh)
+      (message "Project filter: %s"
+               (if root (ghostherd--abbreviate root) "off")))))
+
+(define-obsolete-function-alias 'ghostherd-sidebar-toggle-project-filter
+  'ghostherd-sidebar-project-filter "2026-09-18")
 
 (defun ghostherd--sidebar-set-query (query)
   "Set the live-narrow QUERY and redraw, keeping point on the same row."
@@ -4169,7 +4238,7 @@ full overlay alphabet has to live here, not only `/'.
       (kbd "r") #'ghostherd-sidebar-rename
       (kbd "m") #'ghostherd-sidebar-message
       (kbd "i") #'ghostherd-sidebar-prompt
-      (kbd "s") #'ghostherd-sidebar-toggle-project-filter
+      (kbd "s") #'ghostherd-sidebar-project-filter
       (kbd "/") #'ghostherd-sidebar-filter
       (kbd "v") #'ghostherd-sidebar-toggle-preview
       (kbd "gr") #'ghostherd-sidebar-refresh

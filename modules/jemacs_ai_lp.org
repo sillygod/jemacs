@@ -599,7 +599,7 @@
                (kbd "r") #'ghostherd-sidebar-rename
                (kbd "m") #'ghostherd-sidebar-message
                (kbd "i") #'ghostherd-sidebar-prompt
-               (kbd "s") #'ghostherd-sidebar-toggle-project-filter
+               (kbd "s") #'ghostherd-sidebar-project-filter
                (kbd "/") #'ghostherd-sidebar-filter
                (kbd "v") #'ghostherd-sidebar-toggle-preview
                (kbd ".") #'ghostherd-next-blocked

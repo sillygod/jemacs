@@ -1454,6 +1454,99 @@ the 36-column dashboard drops -- otherwise the extra width is wasted."
         (should (= ghostherd--sidebar-match-count 1))
         (should (= ghostherd--sidebar-total-count 2))))))
 
+(defmacro ghostherd-tests--with-projects (names &rest body)
+  "Run BODY with NAMES bound to fresh real directories.
+`file-equal-p\' is only dependable on files that exist, and both
+the filter and its candidate list lean on it."
+  (declare (indent 1) (debug t))
+  `(let ,(mapcar (lambda (n)
+                   `(,n (file-name-as-directory
+                         (make-temp-file ,(format "gh-%s-" n) t))))
+                 names)
+     (unwind-protect (progn ,@body)
+       ,@(mapcar (lambda (n) `(delete-directory ,n t)) names))))
+
+(ert-deftest ghostherd-test-sidebar-project-choices-count-sessions ()
+  "The candidates are the projects the herd is actually in."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-projects (a b)
+      (ghostherd-tests--session :name "one" :id "one" :project a)
+      (ghostherd-tests--session :name "two" :id "two" :project a)
+      (ghostherd-tests--session :name "three" :id "three" :project b)
+      (ghostherd-tests--session :name "loose" :id "loose")
+      (let ((choices (ghostherd--sidebar-project-choices)))
+        (should (= (length choices) 2))
+        (should (equal (sort (mapcar (lambda (c) (nth 2 c)) choices) #'<)
+                       '(1 2)))
+        ;; A session with no project cannot be filtered to, so it is
+        ;; not offered.
+        (should (equal (sort (mapcar #'car choices) #'string<)
+                       (sort (list (ghostherd--abbreviate a)
+                                   (ghostherd--abbreviate b))
+                             #'string<)))))))
+
+(ert-deftest ghostherd-test-sidebar-project-filter-offers-every-project ()
+  "`s\' must reach the other projects, not just the one it was opened over."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-projects (a b)
+      (ghostherd-tests--session :name "one" :id "one" :project a)
+      (ghostherd-tests--session :name "two" :id "two" :project b)
+      (let ((ghostherd--sidebar-filter-project nil)
+            (offered nil))
+        (cl-letf (((symbol-function 'ghostherd-sidebar-refresh) #'ignore)
+                  ((symbol-function 'ghostherd--sidebar-session-at-point)
+                   (lambda () nil))
+                  ((symbol-function 'ghostherd--sidebar-caller-project)
+                   (lambda () a))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt coll &rest _)
+                     (setq offered coll)
+                     (ghostherd--abbreviate b))))
+          (ghostherd-sidebar-project-filter))
+        (should (member ghostherd--sidebar-all-projects offered))
+        (should (member (ghostherd--abbreviate a) offered))
+        (should (member (ghostherd--abbreviate b) offered))
+        (should (file-equal-p ghostherd--sidebar-filter-project b))))))
+
+(ert-deftest ghostherd-test-sidebar-project-filter-defaults-to-row-under-point ()
+  "The row under point is the one thing on screen that says which project."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-projects (a b)
+      (ghostherd-tests--session :name "one" :id "one" :project a)
+      (let ((two (ghostherd-tests--session :name "two" :id "two" :project b))
+            (ghostherd--sidebar-filter-project nil)
+            (given nil))
+        (cl-letf (((symbol-function 'ghostherd-sidebar-refresh) #'ignore)
+                  ((symbol-function 'ghostherd--sidebar-session-at-point)
+                   (lambda () two))
+                  ((symbol-function 'ghostherd--sidebar-caller-project)
+                   (lambda () a))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt _coll &optional _pred _req _init _hist def
+                                    &rest _)
+                     (setq given def)
+                     def)))
+          (ghostherd-sidebar-project-filter))
+        (should (equal given (ghostherd--abbreviate b)))
+        (should (file-equal-p ghostherd--sidebar-filter-project b))))))
+
+(ert-deftest ghostherd-test-sidebar-project-filter-clears-with-one-key ()
+  "With a filter on, RET still just turns it off."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-projects (a)
+      (ghostherd-tests--session :name "one" :id "one" :project a)
+      (let ((ghostherd--sidebar-filter-project a)
+            (given nil))
+        (cl-letf (((symbol-function 'ghostherd-sidebar-refresh) #'ignore)
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt _coll &optional _pred _req _init _hist def
+                                    &rest _)
+                     (setq given def)
+                     def)))
+          (ghostherd-sidebar-project-filter))
+        (should (equal given ghostherd--sidebar-all-projects))
+        (should-not ghostherd--sidebar-filter-project)))))
+
 (ert-deftest ghostherd-test-sidebar-query-ands-project-filter ()
   "The live query runs on whatever the project filter already kept,
 not on the whole herd -- otherwise `/agy` would bring the other
