@@ -592,6 +592,7 @@
                (kbd "RET") #'ghostherd-sidebar-visit
                (kbd "o") #'ghostherd-sidebar-visit
                (kbd "gr") #'ghostherd-sidebar-refresh
+               (kbd "U") #'ghostherd-usage-refresh
                (kbd "x") #'ghostherd-sidebar-kill
                (kbd "N") #'ghostherd-new
                (kbd "P") #'ghostherd-new-pair

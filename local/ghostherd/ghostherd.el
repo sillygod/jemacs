@@ -41,6 +41,7 @@
 (require 'ghostherd-backend)
 (require 'ghostherd-tmux)
 (require 'ghostherd-memory)
+(require 'ghostherd-usage)
 
 (declare-function alert "alert" (message &rest kwargs))
 (declare-function posframe-workable-p "posframe")
@@ -2803,6 +2804,7 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-filter                . "Live-narrow (flex)")
     (ghostherd-sidebar-toggle-preview        . "Toggle screen preview")
     (ghostherd-sidebar-refresh               . "Refresh")
+    (ghostherd-usage-refresh                 . "Refresh remaining quota")
     (ghostherd-next-blocked                  . "Next blocked / done")
     (ghostherd-sidebar-mark-state            . "Mark state (manual / auto)")
     (ghostherd-explain                       . "Explain how state was decided")
@@ -2908,6 +2910,7 @@ window, which had nowhere to go except by killing the child frame."
   "/" #'ghostherd-sidebar-filter
   "v" #'ghostherd-sidebar-toggle-preview
   "g" #'ghostherd-sidebar-refresh
+  "U" #'ghostherd-usage-refresh
   "q" #'ghostherd-sidebar-quit
   "C-g" #'ghostherd-sidebar-quit
   "<escape>" #'ghostherd-sidebar-quit
@@ -2933,15 +2936,23 @@ window, which had nowhere to go except by killing the child frame."
     (evil-normalize-keymaps)))
 
 (defun ghostherd--sidebar-footer ()
-  "Mode-line hint row for the session list."
+  "Mode-line hint row for the session list.
+Remaining account quota (claude / grok / agy) sits in front of the
+hints when `ghostherd-usage' has a cache."
   (let* ((query ghostherd--sidebar-query)
          (querying (or ghostherd--sidebar-filtering
                        (and query (not (string-empty-p query)))))
          (counts (when querying
                    (format " %d/%d"
                            ghostherd--sidebar-match-count
-                           ghostherd--sidebar-total-count))))
+                           ghostherd--sidebar-total-count)))
+         (usage (and (fboundp 'ghostherd-usage-line)
+                     (ghostherd-usage-line
+                      (ghostherd--sidebar-available-width))))
+         (usage (and usage (not (string-empty-p usage)) usage)))
     (concat
+     (or usage "")
+     (if usage "  ·  " "")
      "GhostHerd"
      (when ghostherd--sidebar-filter-project
        (format " [%s]"
@@ -3515,6 +3526,8 @@ from sqlite instead of waiting for another Emacs round trip."
   (interactive)
   (ghostherd--sidebar-entries)
   (ghostherd--sidebar-print t)
+  (when (fboundp 'ghostherd-usage-refresh)
+    (ghostherd-usage-refresh))
   (when (and (ghostherd--sidebar-posframe-showing-p)
              (fboundp 'posframe-refresh))
     (posframe-refresh (current-buffer)))
@@ -4006,6 +4019,9 @@ either way; Esc or `q' dismisses."
     (if overlay
         (ghostherd--sidebar-show-posframe buf)
       (ghostherd--sidebar-show-side-window buf))
+    (when (fboundp 'ghostherd-usage-refresh)
+      (ghostherd-usage-refresh)
+      (ghostherd-usage--ensure-timer))
     buf))
 
 
@@ -4157,6 +4173,7 @@ full overlay alphabet has to live here, not only `/'.
       (kbd "/") #'ghostherd-sidebar-filter
       (kbd "v") #'ghostherd-sidebar-toggle-preview
       (kbd "gr") #'ghostherd-sidebar-refresh
+      (kbd "U") #'ghostherd-usage-refresh
       (kbd ".") #'ghostherd-next-blocked
       (kbd "H") #'ghostherd-scrollback
       (kbd "L") #'ghostherd-log

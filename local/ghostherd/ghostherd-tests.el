@@ -3225,5 +3225,96 @@ itself changing its mind about a flag."
       (ghostherd-cmd-memory-import)
       (should (equal (cadr got) nil)))))
 
+;;; Account remaining quota
+
+(ert-deftest ghostherd-test-usage-remaining-from-used ()
+  (should (= (ghostherd-usage--remaining 89.0) 11.0))
+  (should (= (ghostherd-usage--remaining 0) 100.0))
+  (should (= (ghostherd-usage--remaining 100) 0.0)))
+
+(ert-deftest ghostherd-test-usage-parse-grok-config ()
+  (let* ((raw (json-parse-string
+               "{\"creditUsagePercent\":89.0,\"currentPeriod\":{\"type\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"end\":\"2026-09-20T14:57:40Z\"}}"
+               :object-type 'alist :null-object nil))
+         (wins (ghostherd-usage--parse-grok-config raw)))
+    (should (= (length wins) 1))
+    (should (equal (plist-get (car wins) :label) "wk"))
+    (should (= (plist-get (car wins) :remaining) 11.0))))
+
+(ert-deftest ghostherd-test-usage-parse-claude ()
+  (let* ((raw (json-parse-string
+               "{\"five_hour\":{\"utilization\":38.0,\"resets_at\":\"2026-09-18T12:00:00Z\"},\"seven_day\":{\"utilization\":12.0}}"
+               :object-type 'alist :null-object nil))
+         (wins (ghostherd-usage--parse-claude raw)))
+    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
+                   '("5h" "7d")))
+    (should (= (plist-get (nth 0 wins) :remaining) 62.0))
+    (should (= (plist-get (nth 1 wins) :remaining) 88.0))))
+
+(ert-deftest ghostherd-test-usage-parse-agy-groups ()
+  (let* ((raw (json-parse-string
+               "{\"groups\":[{\"displayName\":\"Gemini Models\",\"buckets\":[{\"window\":\"5h\",\"remainingFraction\":0.8},{\"window\":\"weekly\",\"remainingFraction\":0.55}]}]}"
+               :object-type 'alist :array-type 'list :null-object nil))
+         (wins (ghostherd-usage--parse-agy-groups raw)))
+    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
+                   '("5h" "wk")))
+    (should (= (plist-get (nth 0 wins) :remaining) 80.0))
+    (should (= (plist-get (nth 1 wins) :remaining) 55.0))))
+
+(ert-deftest ghostherd-test-usage-parse-agy-usage-screen ()
+  (let* ((text "GEMINI MODELS
+Weekly Limit Remaining
+98.49%]
+98% remaining · Refreshes in 117h 48m
+Five Hour Limit Remaining
+96.49%]
+96% remaining · Refreshes in 2h 20m
+CLAUDE AND GPT MODELS
+Weekly Limit Remaining
+Quota available
+Five Hour Limit Remaining
+Quota available")
+         (wins (ghostherd-usage--parse-agy-usage-screen text)))
+    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
+                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h")))
+    (should (= (plist-get (nth 0 wins) :remaining) 98))
+    (should (= (plist-get (nth 1 wins) :remaining) 96))
+    (should (= (plist-get (nth 2 wins) :remaining) 100))
+    (should (= (plist-get (nth 3 wins) :remaining) 100))))
+
+(ert-deftest ghostherd-test-usage-bar-and-mode-line-safe ()
+  (should (string-match-p "█" (ghostherd-usage--bar 80 5)))
+  (should (string-match-p "░" (ghostherd-usage--bar 80 5)))
+  (should (equal (ghostherd-usage--mode-line-safe "78% 5h") "78%% 5h")))
+
+(ert-deftest ghostherd-test-usage-line-in-footer ()
+  (let ((ghostherd-usage--cache
+         '((claude . (:windows ((:label "5h" :remaining 62.0)) :error nil))
+           (grok . (:windows ((:label "wk" :remaining 11.0)) :error nil)))))
+    (let ((line (substring-no-properties (ghostherd-usage-line 120))))
+      (should (string-match-p "claude" line))
+      (should (string-match-p "62" line))
+      (should (string-match-p "█\\|░" line))
+      (should-not (string-match-p "%" line))
+      (should (string-match-p "grok" line)))
+    (ghostherd-tests--with-herd ()
+      (let ((ghostherd-sidebar-width 80)
+            (ghostherd--sidebar-target-width 80))
+        (should (string-match-p "claude"
+                                (substring-no-properties
+                                 (ghostherd--sidebar-footer))))))))
+
+(ert-deftest ghostherd-test-poll-tick-does-not-refresh-usage ()
+  "Usage HTTP must not ride the 1.5s poll (same reason as herd mail)."
+  (let ((usage nil))
+    (cl-letf (((symbol-function 'ghostherd-usage-refresh)
+               (lambda (&rest _) (setq usage t)))
+              ((symbol-function 'ghostherd-poll-all) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-on-screen-p)
+               (lambda () t))
+              ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+      (ghostherd--poll-tick)
+      (should-not usage))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here
