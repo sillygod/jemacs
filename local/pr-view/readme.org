@@ -79,6 +79,38 @@ Workspace/repo default from =origin=. Override with
 | page: ← List / Esc | back to list |
 | page: Refresh / =r= | reload list |
 
+* Merge conflicts
+
+The =Merge= button asks for confirmation *in the page*. It used to call
+=window.confirm=, which inside xwidget's WebKit returns =false=
+immediately without drawing anything --- so the click was cancelled in
+silence and Merge had never worked at all. Comment deletion had the same
+guard and the same problem.
+
+Conflicts show up before you click, as a banner listing the files, a
+=⚠ Conflicts n= chip, a =⚠= on the Files changed tab, and a
+=Conflicted= badge per file. Each forge says it differently:
+
+- GitHub: =mergeable_state= is =dirty= on a conflicted PR. No file list.
+  (=mergeable= itself is a JSON boolean, and this parser maps =false=
+  and =null= alike to nil --- reading *that* field is how the old check
+  managed to be true always.)
+- Bitbucket: =GET /pullrequests/{id}/conflicts=, which answers per file
+  with a sentence --- =frontend/public/releases.json — File modified in
+  both source and destination=. Neither the pull request nor =diffstat=
+  carries this: diffstat's =status= enum is only
+  added/removed/modified/renamed, and a conflicted file comes back
+  =modified=.
+
+There is deliberately no pre-flight merge call. Bitbucket's merge
+endpoint takes no =dry_run= --- its published spec lists only =async= ---
+so asking whether a merge would work would *be* the merge. A refused
+merge still paints the banner, as a backstop: the forge is the only
+authority on whether a merge is actually allowed.
+
+API errors now show the forge's own sentence (=error.message= on
+Bitbucket, =message= on GitHub) rather than 180 characters of raw JSON.
+
 * Reviewer approvals
 
 Each reviewer chip carries its verdict -- ✓ approved (green),

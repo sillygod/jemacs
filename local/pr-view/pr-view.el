@@ -350,11 +350,29 @@ METHOD defaults to GET.  JSON-BODY is an Elisp object json-encoded as the body.
           (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
    method json-body))
 
+(defun pr-view--error-message (body)
+  "The human sentence out of an API error BODY, if it has one.
+Bitbucket answers `{\"error\":{\"message\":...}}\' and GitHub
+`{\"message\":...}\'; both are worth more than 180 characters of the
+raw JSON, which is what a merge refused for conflicts used to show."
+  (when (and body (not (string-empty-p (string-trim body))))
+    (ignore-errors
+      (let* ((raw (json-parse-string body
+                                     :object-type 'alist
+                                     :array-type 'list
+                                     :null-object nil
+                                     :false-object nil))
+             (msg (or (alist-get 'message (alist-get 'error raw))
+                      (alist-get 'message raw))))
+        (and (stringp msg) (not (string-empty-p msg)) (string-trim msg))))))
+
 (defun pr-view--fail (code err body &optional url)
   (setq pr-view--inflight nil)
   (let ((msg (cond
               ((memq code '(401 403))
                "Auth failed (401/403). Check token scopes (GitHub: repo; Bitbucket: read/write:pullrequest:bitbucket + read:repository:bitbucket).")
+              ((and code (pr-view--error-message body))
+               (format "HTTP %s — %s" code (pr-view--error-message body)))
               (code (format "HTTP %s%s%s" code
                             (if url (format " · %s" url) "")
                             (if (and body (> (length body) 0))
@@ -553,6 +571,13 @@ people who already answered have to be added back from REVIEWS."
       (updated_on . ,(or (alist-get 'updated_on raw) ""))
       (comment_count . ,(or (alist-get 'comment_count raw) 0))
       (reviewers . ,(pr-view--reviewers raw (pr-view--bb-verdicts raw)))
+      ;; Filled in by `pr-view--fetch-conflicts': the pull request
+      ;; itself says nothing about mergeability, and diffstat calls a
+      ;; conflicted file plain `modified'.  /conflicts is the endpoint
+      ;; that knows.
+      (merge_state . "")
+      (conflict . ,(pr-view--json-bool nil))
+      (conflict_files . [])
       (mergeable . t)
       (url . ,(or (alist-get 'href (alist-get 'html (alist-get 'links raw))) "")))))
 
@@ -573,7 +598,18 @@ people who already answered have to be added back from REVIEWS."
       (updated_on . ,(or (alist-get 'updated_at raw) ""))
       (comment_count . ,(or (alist-get 'comments raw) 0))
       (reviewers . ,(pr-view--reviewers raw))
-      (mergeable . ,(not (eq (alist-get 'mergeable raw) :false)))
+      ;; `mergeable' is a JSON boolean, and this parser maps both false
+      ;; and null to nil -- so the old (not (eq ... :false)) test was
+      ;; always true and no PR ever looked unmergeable.  The state is a
+      ;; string and survives: "dirty" is GitHub's word for conflicts.
+      (conflict_files . [])
+      (merge_state . ,(format "%s" (or (alist-get 'mergeable_state raw) "")))
+      (conflict . ,(pr-view--json-bool
+                    (equal (format "%s" (alist-get 'mergeable_state raw))
+                           "dirty")))
+      (mergeable . ,(pr-view--json-bool
+                     (not (equal (format "%s" (alist-get 'mergeable_state raw))
+                                 "dirty"))))
       (url . ,(or (alist-get 'html_url raw) "")))))
 
 
@@ -1030,6 +1066,51 @@ an error banner over a detail view that is otherwise fine."
                                        acc)))))))
          (error nil))))))
 
+(defun pr-view--bb-conflict (raw)
+  "One entry of Bitbucket's /pullrequests/{id}/conflicts."
+  `((path . ,(or (alist-get 'path raw) ""))
+    (scenario . ,(format "%s" (or (alist-get 'scenario raw) "")))
+    (message . ,(or (alist-get 'message raw) ""))))
+
+(defun pr-view--fetch-conflicts (host id-str)
+  "Bitbucket only: which files conflict, and why.
+
+The pull request carries no mergeability at all and diffstat reports a
+conflicted file as plain `modified\' -- both checked against a PR whose
+web UI was badging one.  /conflicts is the endpoint that answers, and
+it answers per file: `File modified in both source and destination\'."
+  (pr-view--conflicts-page
+   host
+   (pr-view--url host (format "/pullrequests/%s/conflicts" id-str))
+   nil))
+
+(defun pr-view--conflicts-page (host url acc)
+  "Collect conflicts.  Silent on failure: a detail view that loaded is
+worth more than an error banner about the badge on it."
+  (pr-view--http
+   url (pr-view--headers host)
+   (lambda (body code err)
+     (when (and (not err) code (< code 400) body)
+       (condition-case nil
+           (let* ((raw (json-parse-string body
+                                          :object-type 'alist
+                                          :array-type 'list
+                                          :null-object nil
+                                          :false-object nil))
+                  (acc (append acc (mapcar #'pr-view--bb-conflict
+                                           (or (alist-get 'values raw) '()))))
+                  (next (alist-get 'next raw)))
+             (if (and next (stringp next) (not (string-empty-p next)))
+                 (pr-view--conflicts-page host next acc)
+               (pr-view--js
+                "setConflicts"
+                `((conflict . ,(pr-view--json-bool (and acc t)))
+                  (files . ,(vconcat acc))
+                  (message . ,(if acc
+                                  "This pull request can't be merged. Resolve the conflicts first."
+                                ""))))))
+         (error nil))))))
+
 (defun pr-view--fetch-reviews (host id-str)
   "GitHub only: fetch verdicts and repaint the reviewer chips.
 Bitbucket ships them inside the PR itself; GitHub keeps them in a
@@ -1330,6 +1411,8 @@ separate collection, so the chips arrive a moment after the view."
                (pr-view--fetch-commits host kind id-str)
                (when (eq kind 'github)
                  (pr-view--fetch-reviews host id-str))
+               (when (eq kind 'bitbucket)
+                 (pr-view--fetch-conflicts host id-str))
                (pr-view--fetch-diff host kind id-str pr forge)))))
       ((error user-error)
        (setq pr-view--inflight nil)
@@ -1461,6 +1544,35 @@ separate collection, so the chips arrive a moment after the view."
          ((or "REBASE" "FAST_FORWARD") "fast_forward")
          (_ "merge_commit"))))))
 
+(defconst pr-view--conflict-codes '(409 412)
+  "HTTP codes a forge uses to refuse a merge it cannot perform.")
+
+(defun pr-view--merge-conflict-p (code message)
+  "Non-nil when a refused merge was refused for conflicts.
+The code alone is enough on GitHub; Bitbucket answers 400 with the
+reason in the message, so the text decides there."
+  (or (memq code pr-view--conflict-codes)
+      (and message
+           (let ((case-fold-search t))
+             (string-match-p "conflict\\|not mergeable\\|cannot be merged"
+                             message))
+           t)))
+
+(defun pr-view--merge-refused (code resp err url)
+  "Show why a merge did not happen, and mark the PR if it was conflicts.
+A backstop for /conflicts, not a replacement: the forge is the only
+authority on whether a merge will actually be allowed, and its refusal
+has to survive on screen rather than scroll past in a status line.
+There is deliberately no pre-flight merge call -- Bitbucket's merge
+endpoint takes no `dry_run\', so asking would be doing."
+  (let* ((message (pr-view--error-message resp))
+         (conflict (pr-view--merge-conflict-p code message)))
+    (when conflict
+      (pr-view--js "setConflicts"
+                   `((conflict . t)
+                     (message . ,(or message "The merge was refused.")))))
+    (pr-view--fail code err resp url)))
+
 (defun pr-view--merge-pr (intent)
   (let ((id (alist-get 'id intent)))
     (unless (and pr-view--host id)
@@ -1484,12 +1596,17 @@ separate collection, so the chips arrive a moment after the view."
                          (_ `((type . "pullrequest")
                               (close_source_branch . ,(if close t json-false))
                               (merge_strategy . ,strategy))))))
-            (pr-view--http-json
+            (pr-view--http
              (pr-view--url host path)
-             (pr-view--headers host)
-             (lambda (_raw)
+             (let ((h (copy-alist (pr-view--headers host))))
+               (push '("Content-Type" . "application/json") h)
+               h)
+             (lambda (resp code err)
                (setq pr-view--inflight nil)
-               (pr-view--fetch-detail id))
+               (if (and code (< code 400) (not err))
+                   (pr-view--fetch-detail id)
+                 (pr-view--merge-refused code resp err
+                                         (pr-view--url host path))))
              method
              body))
         ((error user-error)

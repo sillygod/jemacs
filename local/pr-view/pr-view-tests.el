@@ -280,6 +280,157 @@ error over a detail view that is otherwise fine."
     (should (string-match-p "data-tab=.commits." js))
     (should (string-match-p "changes_requested" js))))
 
+(ert-deftest pr-view-test-ui-never-calls-window-confirm ()
+  "`window.confirm' returns false immediately inside xwidget's WebKit --
+no dialog is drawn and nothing is asked.  Every guarded action was
+therefore cancelled in silence, which is why Merge did nothing at all."
+  ;; Comments stripped first: the note explaining this names the call it
+  ;; forbids, and a rule that reads prose is the bug one directory over.
+  (let ((js (with-temp-buffer
+              (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
+              (goto-char (point-min))
+              (while (re-search-forward "^[ \t]*//.*$" nil t)
+                (replace-match ""))
+              (buffer-string))))
+    (should-not (string-match-p "window\\.confirm" js))
+    (should-not (string-match-p "window\\.alert" js))
+    (should-not (string-match-p "window\\.prompt" js))
+    (should (string-match-p "askConfirm" js))))
+
+(ert-deftest pr-view-test-gh-conflict-from-merge-state ()
+  "`mergeable' is a JSON boolean and this parser maps false and null
+alike to nil, so the old test could never be false.  The state is a
+string: GitHub calls a conflicted PR `dirty'."
+  (let* ((dirty (json-parse-string
+                 "{\"number\":1,\"mergeable\":false,\"mergeable_state\":\"dirty\",\"user\":{\"login\":\"a\"},\"head\":{\"ref\":\"f\"},\"base\":{\"ref\":\"m\"}}"
+                 :object-type 'alist :array-type 'list
+                 :null-object nil :false-object nil))
+         (clean (json-parse-string
+                 "{\"number\":1,\"mergeable\":true,\"mergeable_state\":\"clean\",\"user\":{\"login\":\"a\"},\"head\":{\"ref\":\"f\"},\"base\":{\"ref\":\"m\"}}"
+                 :object-type 'alist :array-type 'list
+                 :null-object nil :false-object nil))
+         (unknown (json-parse-string
+                   "{\"number\":1,\"user\":{\"login\":\"a\"},\"head\":{\"ref\":\"f\"},\"base\":{\"ref\":\"m\"}}"
+                   :object-type 'alist :array-type 'list
+                   :null-object nil :false-object nil)))
+    (should (eq (alist-get 'conflict (pr-view--gh-detail dirty)) t))
+    (should (equal (alist-get 'merge_state (pr-view--gh-detail dirty)) "dirty"))
+    (should-not (eq (alist-get 'conflict (pr-view--gh-detail clean)) t))
+    ;; GitHub is still computing: not a conflict, and not a claim either.
+    (should-not (eq (alist-get 'conflict (pr-view--gh-detail unknown)) t))
+    (should (string-match-p "\"conflict\":false"
+                            (json-encode (pr-view--gh-detail clean))))))
+
+(ert-deftest pr-view-test-bb-conflicts-endpoint ()
+  "Bitbucket answers per file, with a sentence.  Neither the pull
+request nor diffstat carries this -- diffstat's `status' enum is only
+added/removed/modified/renamed, and a conflicted file comes back
+`modified'."
+  (let (sent)
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_url _headers cb)
+                 (funcall cb
+                          "{\"values\":[{\"path\":\"frontend/public/releases.json\",\"scenario\":\"content\",\"message\":\"File modified in both source and destination\"}],\"pagelen\":500,\"size\":1,\"page\":1}"
+                          200 nil)))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--url) (lambda (&rest _) "u"))
+              ((symbol-function 'pr-view--js)
+               (lambda (fn obj)
+                 (when (equal fn "setConflicts") (setq sent obj)))))
+      (pr-view--fetch-conflicts nil "322"))
+    (should (eq (alist-get 'conflict sent) t))
+    (let ((files (alist-get 'files sent)))
+      (should (= (length files) 1))
+      (should (equal (alist-get 'path (aref files 0))
+                     "frontend/public/releases.json"))
+      (should (equal (alist-get 'scenario (aref files 0)) "content"))
+      (should (string-match-p "both source and destination"
+                              (alist-get 'message (aref files 0)))))))
+
+(ert-deftest pr-view-test-bb-no-conflicts-says-so ()
+  (let (sent)
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_url _headers cb)
+                 (funcall cb "{\"values\":[],\"size\":0}" 200 nil)))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--url) (lambda (&rest _) "u"))
+              ((symbol-function 'pr-view--js)
+               (lambda (fn obj)
+                 (when (equal fn "setConflicts") (setq sent obj)))))
+      (pr-view--fetch-conflicts nil "1"))
+    (should (equal (alist-get 'files sent) []))
+    (should (string-match-p "\"conflict\":false" (json-encode sent)))))
+
+(ert-deftest pr-view-test-no-preflight-merge-call ()
+  "Bitbucket's merge endpoint takes no `dry_run' -- its published spec
+lists only `async' -- so a pre-flight merge would be a merge.  Nothing
+may POST to /merge except the user pressing Merge."
+  (let ((src (with-temp-buffer
+               (insert-file-contents (expand-file-name "pr-view.el" pr-view--dir))
+               (buffer-string))))
+    ;; The query-string form is the dangerous one; the docstring
+    ;; explaining why it is absent is not.
+    (should-not (string-match-p "dry_run=" src))
+    (should-not (string-match-p "(dry_run" src))))
+
+(ert-deftest pr-view-test-refused-merge-reports-the-conflict ()
+  "A merge is the only thing that can answer `would this merge' on
+Bitbucket, so its refusal has to land somewhere that stays on screen."
+  (let (calls)
+    (cl-letf (((symbol-function 'pr-view--js)
+               (lambda (fn obj) (push (cons fn obj) calls))))
+      (pr-view--merge-refused
+       409 "{\"error\":{\"message\":\"The pull request has conflicts\"}}" nil "u"))
+    (let ((conf (cdr (assoc "setConflicts" calls))))
+      (should conf)
+      (should (eq (alist-get 'conflict conf) t))
+      (should (equal (alist-get 'message conf) "The pull request has conflicts")))
+    (should (assoc "showError" calls))))
+
+(ert-deftest pr-view-test-refused-merge-that-is-not-a-conflict ()
+  "Not every refusal is a conflict; only a conflict gets the badge."
+  (let (calls)
+    (cl-letf (((symbol-function 'pr-view--js)
+               (lambda (fn obj) (push (cons fn obj) calls))))
+      (pr-view--merge-refused
+       403 "{\"error\":{\"message\":\"You do not have permission\"}}" nil "u"))
+    (should-not (assoc "setConflicts" calls))
+    (should (assoc "showError" calls))))
+
+(ert-deftest pr-view-test-merge-conflict-detection ()
+  (should (pr-view--merge-conflict-p 409 nil))
+  (should (pr-view--merge-conflict-p 412 nil))
+  ;; Bitbucket answers 400 and puts the reason in the message.
+  (should (pr-view--merge-conflict-p 400 "The pull request has conflicts"))
+  (should (pr-view--merge-conflict-p 405 "Pull Request is not mergeable"))
+  (should-not (pr-view--merge-conflict-p 403 "You do not have permission"))
+  (should-not (pr-view--merge-conflict-p 500 nil)))
+
+(ert-deftest pr-view-test-api-error-message-is-readable ()
+  "A merge refused for conflicts used to show 180 characters of JSON."
+  (should (equal (pr-view--error-message
+                  "{\"type\":\"error\",\"error\":{\"message\":\"The pull request has conflicts\"}}")
+                 "The pull request has conflicts"))
+  (should (equal (pr-view--error-message "{\"message\":\"Pull Request is not mergeable\"}")
+                 "Pull Request is not mergeable"))
+  (should-not (pr-view--error-message "not json"))
+  (should-not (pr-view--error-message ""))
+  (let (shown)
+    (cl-letf (((symbol-function 'pr-view--js)
+               (lambda (fn obj) (when (equal fn "showError") (setq shown obj)))))
+      (pr-view--fail 409 nil "{\"error\":{\"message\":\"The pull request has conflicts\"}}" "u"))
+    (should (string-match-p "409" shown))
+    (should (string-match-p "has conflicts" shown))
+    (should-not (string-match-p "{" shown))))
+
+(ert-deftest pr-view-test-ui-shows-conflicts ()
+  (let ((js (with-temp-buffer
+              (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
+              (buffer-string))))
+    (should (string-match-p "setConflicts" js))
+    (should (string-match-p "conflictChip" js))
+    (should (string-match-p "conflictBanner" js))))
+
 (ert-deftest pr-view-test-ui-has-no-secrets-or-api ()
   (dolist (rel '("ui/app.js" "ui/index.html" "ui/style.css"))
     (let ((s (with-temp-buffer

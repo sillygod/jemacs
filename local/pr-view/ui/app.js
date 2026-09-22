@@ -20,6 +20,8 @@
   let lastMembers = [];
   let lastCommits = [];
   let commitsFor = null;
+  let conflictMessage = "";
+  let conflictFiles = [];
 
   function emit(op, extra) {
     const payload = Object.assign({ op: op }, extra || {});
@@ -34,6 +36,38 @@
       '"': "&quot;",
       "'": "&#39;",
     })[c]);
+  }
+
+  // window.confirm() returns false immediately inside xwidget's WebKit:
+  // no dialog is drawn and nothing is asked, so every guarded action was
+  // silently cancelled -- Merge could never have fired.  Ask in the page.
+  function askConfirm(message, detail, onYes) {
+    const wrap = document.createElement("div");
+    wrap.className = "ask-wrap";
+    wrap.innerHTML =
+      '<div class="ask"><p class="ask-msg"></p>' +
+      '<p class="ask-detail"></p>' +
+      '<div class="ask-buttons">' +
+      '<button type="button" class="ghost" data-ask="no">Cancel</button>' +
+      '<button type="button" class="primary" data-ask="yes">Confirm</button>' +
+      "</div></div>";
+    wrap.querySelector(".ask-msg").textContent = message;
+    const det = wrap.querySelector(".ask-detail");
+    if (detail) det.textContent = detail;
+    else det.remove();
+    const close = () => wrap.remove();
+    wrap.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-ask]");
+      if (!btn) {
+        if (ev.target === wrap) close();
+        return;
+      }
+      close();
+      if (btn.getAttribute("data-ask") === "yes") onYes();
+    });
+    document.body.appendChild(wrap);
+    const yes = wrap.querySelector('[data-ask="yes"]');
+    if (yes) yes.focus();
   }
 
   function relTime(iso) {
@@ -340,16 +374,22 @@
       .forEach((ent) => {
         if (!match(ent.file.path)) return;
         const sel = ent.file.path === selectedDiffPath ? " selected" : "";
+        const bad = isConflicted(ent.file.path);
         html +=
           '<button type="button" class="tree-file' +
           sel +
+          (bad ? " conflicted" : "") +
           '" data-path="' +
           escapeHtml(ent.file.path) +
           '">' +
           statusMark(ent.file.status) +
           '<span class="tree-name">' +
           escapeHtml(ent.name) +
-          "</span></button>";
+          "</span>" +
+          (bad
+            ? '<span class="file-conflict" title="Conflicted">Conflicted</span>'
+            : "") +
+          "</button>";
       });
     return html;
   }
@@ -810,6 +850,61 @@
     );
   }
 
+  function hasConflict(pr) {
+    return !!((pr && pr.conflict === true) || conflictFiles.length);
+  }
+
+  function conflictNote(pr) {
+    if (!hasConflict(pr)) return null;
+    return (
+      conflictMessage ||
+      "This pull request conflicts with " +
+        (pr.destination || "the target branch") +
+        ". The merge will be refused until it is resolved."
+    );
+  }
+
+  function conflictChip(pr) {
+    if (!hasConflict(pr)) return "";
+    const n = conflictFiles.length;
+    return (
+      '<span class="chip conflict" title="' +
+      escapeHtml(conflictNote(pr) || "") +
+      '">\u26a0 Conflicts' +
+      (n ? " " + n : "") +
+      "</span>"
+    );
+  }
+
+  function conflictBanner(pr) {
+    if (!hasConflict(pr)) return "";
+    const files = conflictFiles.length
+      ? "<ul class='conflict-files'>" +
+        conflictFiles
+          .map(
+            (c) =>
+              "<li><code>" +
+              escapeHtml(c.path || "") +
+              "</code>" +
+              (c.message ? " — " + escapeHtml(c.message) : "") +
+              "</li>"
+          )
+          .join("") +
+        "</ul>"
+      : "";
+    return (
+      '<div class="conflict-banner"><strong>\u26a0 ' +
+      escapeHtml(conflictNote(pr) || "") +
+      "</strong>" +
+      files +
+      "</div>"
+    );
+  }
+
+  function isConflicted(path) {
+    return conflictFiles.some((c) => c.path === path);
+  }
+
   function mergeOptions(forge) {
     if (forge === "github") {
       return [
@@ -844,7 +939,11 @@
         strategies +
         "</select>" +
         '<label class="check"><input type="checkbox" id="act-close" checked> Close source</label>' +
-        '<button type="button" class="success" id="act-merge">Merge</button>' +
+        '<button type="button" class="' +
+        (hasConflict(pr) ? "warn" : "success") +
+        '" id="act-merge">' +
+        (hasConflict(pr) ? "\u26a0 Merge" : "Merge") +
+        "</button>" +
         "</div>"
       : "";
     const badge = badgeFor(pr);
@@ -852,8 +951,15 @@
     const filesN = payload.diff ? parseUnifiedDiff(payload.diff).length : 0;
     // Commits arrive after the detail; drop the previous PR's rather
     // than count them against this one.
-    if (commitsFor !== null && commitsFor !== pr.id) lastCommits = [];
+    if (commitsFor !== null && commitsFor !== pr.id) {
+      lastCommits = [];
+      conflictMessage = "";
+      conflictFiles = [];
+    }
     commitsFor = pr.id;
+    if (pr.conflict_files && pr.conflict_files.length) {
+      conflictFiles = pr.conflict_files;
+    }
     const commitsN = lastCommits.length;
     const ovOn = selectedTab === "overview" ? " on" : "";
     const fiOn = selectedTab === "files" ? " on" : "";
@@ -877,8 +983,10 @@
       " → " +
       escapeHtml(pr.destination || "") +
       "</span>" +
+      conflictChip(pr) +
       actions +
       "</div>" +
+      conflictBanner(pr) +
       reviewersHtml(pr) +
       '<nav class="tabs">' +
       '<button type="button" class="tab' +
@@ -888,6 +996,7 @@
       fiOn +
       '" data-tab="files">Files changed' +
       (filesN ? " " + filesN : "") +
+      (conflictFiles.length ? ' <span class="tab-warn">\u26a0</span>' : "") +
       "</button>" +
       '<button type="button" class="tab' +
       coOn +
@@ -988,9 +1097,10 @@
         const act = btn.getAttribute("data-act");
         if (!cid) return;
         if (act === "delete") {
-          if (!window.confirm("Delete this comment?")) return;
-          setStatus("Deleting comment…");
-          emit("delete-comment", { id: pr.id, comment_id: cid });
+          askConfirm("Delete this comment?", null, () => {
+            setStatus("Deleting comment…");
+            emit("delete-comment", { id: pr.id, comment_id: cid });
+          });
         } else if (act === "like") {
           setStatus("Liking comment…");
           emit("like-comment", { id: pr.id, comment_id: cid });
@@ -1068,15 +1178,18 @@
       mg.addEventListener("click", () => {
         const strategy = (document.getElementById("act-strategy") || {}).value;
         const close = !!(document.getElementById("act-close") || {}).checked;
-        if (
-          !window.confirm(
-            "Merge pull request #" + pr.id + " into " + (pr.destination || "") + "?"
-          )
-        ) {
-          return;
-        }
-        setStatus("Merging #" + pr.id + "…");
-        emit("merge-pr", { id: pr.id, strategy: strategy, close_source: close });
+        askConfirm(
+          "Merge pull request #" + pr.id + " into " + (pr.destination || "") + "?",
+          conflictNote(pr),
+          () => {
+            setStatus("Merging #" + pr.id + "…");
+            emit("merge-pr", {
+              id: pr.id,
+              strategy: strategy,
+              close_source: close,
+            });
+          }
+        );
       });
     }
     setStatus("");
@@ -1162,6 +1275,15 @@
       if (lastDetail) lastDetail.comments = items;
       const el = document.getElementById("comments-list");
       if (el) el.innerHTML = commentsHtml(items);
+    },
+    setConflicts: (payload) => {
+      conflictMessage = (payload && payload.message) || "";
+      conflictFiles = (payload && payload.files) || [];
+      if (lastDetail && lastDetail.pr) {
+        lastDetail.pr.conflict = !!(payload && payload.conflict);
+        lastDetail.pr.conflict_files = conflictFiles;
+        renderDetail(lastDetail);
+      }
     },
     setCommits: (payload) => {
       lastCommits = (payload && payload.items) || [];
