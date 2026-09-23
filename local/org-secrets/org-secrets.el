@@ -55,6 +55,7 @@
 (declare-function posframe-poshandler-frame-center "posframe")
 (declare-function evil-define-key* "evil")
 (declare-function evil-make-intercept-map "evil")
+(declare-function evil-normalize-keymaps "evil")
 
 
 ;;; Customization
@@ -796,7 +797,9 @@ whatever `where-is-internal' finds on `next-line' (C-n, <down>, …).")
   (hl-line-mode 1)
   (add-hook 'tabulated-list-revert-hook #'org-secrets--sidebar-build-entries nil t)
   (add-hook 'post-command-hook #'org-secrets--sidebar-preview-on-command nil t)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (when (fboundp 'evil-normalize-keymaps)
+    (evil-normalize-keymaps)))
 
 (defun org-secrets--sidebar-footer ()
   "Mode-line hint row for the secrets list."
@@ -1269,11 +1272,15 @@ do nothing."
   (org-secrets--sidebar-set-query ""))
 
 (defun org-secrets--set-filtering (on)
-  "Turn live-narrow on or off, including `org-secrets-filter-mode'."
+  "Turn live-narrow on or off, including `org-secrets-filter-mode'.
+Refresh Evil's map alist so the filter intercept map actually
+outranks the overlay's normal-state letters."
   (setq org-secrets--sidebar-filtering (and on t))
   (when-let* ((buf (get-buffer "*org-secrets*")))
     (with-current-buffer buf
-      (org-secrets-filter-mode (if org-secrets--sidebar-filtering 1 -1))))
+      (org-secrets-filter-mode (if org-secrets--sidebar-filtering 1 -1))
+      (when (fboundp 'evil-normalize-keymaps)
+        (evil-normalize-keymaps))))
   (force-mode-line-update t))
 
 (defun org-secrets-sidebar-filter-confirm ()
@@ -1313,6 +1320,24 @@ Returns j/k and RET to the overlay: move, then copy."
             #'org-secrets-sidebar-filter-confirm)
 (define-key org-secrets-sidebar-filter-map (kbd "C-j")
             #'org-secrets-sidebar-filter-confirm)
+
+(defun org-secrets--bind-filter-query-keys ()
+  "Bind printable keys on the filter map to self-insert.
+
+Evil looks up a specific binding in the overlay's normal-state
+map (`s' vault, `o' visit, `u' copy user, …) before a `[t]'
+default on a lower map is considered.  Explicit letters on the
+intercept map make `/' then `a' search rather than run the
+overlay command or `evil-append'.  `n'/`p' stay as motion so a
+match can be highlighted while typing."
+  (let ((c 32))
+    (while (< c 127)
+      (unless (memq c '(?n ?p 127))
+        (define-key org-secrets-sidebar-filter-map (vector c)
+                    #'org-secrets-sidebar-filter-self-insert))
+      (setq c (1+ c)))))
+
+(org-secrets--bind-filter-query-keys)
 
 (define-minor-mode org-secrets-filter-mode
   "Live-narrow the org-secrets overlay.

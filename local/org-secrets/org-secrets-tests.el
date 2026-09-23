@@ -161,6 +161,39 @@ walks over)."
   (should-not (org-secrets--return-event-p ?g))
   (should-not (org-secrets--return-event-p ?\C-g)))
 
+(ert-deftest org-secrets-test-filter-map-letters-self-insert ()
+  "Printable overlay keys must search while narrowing, not fire commands.
+Evil matches a concrete normal-state binding before `[t]', so `/'
+then `a' (or `s', `o', `u') has to be an explicit filter binding."
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "a")
+              #'org-secrets-sidebar-filter-self-insert))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "s")
+              #'org-secrets-sidebar-filter-self-insert))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "o")
+              #'org-secrets-sidebar-filter-self-insert))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "u")
+              #'org-secrets-sidebar-filter-self-insert))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "/")
+              #'org-secrets-sidebar-filter-self-insert))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "n")
+              #'next-line))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "p")
+              #'previous-line))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map (kbd "RET"))
+              #'org-secrets-sidebar-filter-confirm)))
+
+(ert-deftest org-secrets-test-filter-self-insert-appends-query ()
+  (let ((org-secrets--sidebar-query "")
+        (last-command-event ?b))
+    (unwind-protect
+        (progn
+          (org-secrets-sidebar-filter-self-insert)
+          (should (equal org-secrets--sidebar-query "b"))
+          (setq last-command-event ?i)
+          (org-secrets-sidebar-filter-self-insert)
+          (should (equal org-secrets--sidebar-query "bi")))
+      (setq org-secrets--sidebar-query ""))))
+
 (ert-deftest org-secrets-test-help-text-lists-bindings ()
   (let ((text (org-secrets--sidebar-help-text)))
     (should (string-match-p "Copy password" text))
