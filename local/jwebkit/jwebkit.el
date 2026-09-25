@@ -20,6 +20,7 @@
 ;;   *       search for the current selection
 ;;   Y       yank page selection
 ;;   &       open current URL in the system browser
+;;   gp gO   PDF page / outline (pdf.js viewer; see jwebkit-pdf.el)
 
 ;;; Code:
 
@@ -27,6 +28,7 @@
 (require 'json)
 (require 'subr-x)
 (require 'xwidget)
+(require 'jwebkit-pdf)
 
 (declare-function evil-define-key* "evil")
 (declare-function evil-emacs-state "evil")
@@ -109,6 +111,14 @@ instead of continuing from the current selection."
    (if reverse "true" "false")
    (if fresh "true" "false")))
 
+(defun jwebkit--search-js (xw query reverse &optional fresh)
+  "JS searching XW for QUERY.
+In the pdf.js viewer this goes through pdf.js's find controller:
+window.find only sees pages whose text layer has been rendered."
+  (if (jwebkit-pdf-viewer-p xw)
+      (jwebkit-pdf--find-js query (not fresh) reverse)
+    (jwebkit--find-js query reverse fresh)))
+
 (defun jwebkit-find-start (query)
   "Search the page for QUERY.  Empty QUERY clears the selection."
   (interactive
@@ -118,9 +128,11 @@ instead of continuing from the current selection."
     (if (string-empty-p query)
         (progn
           (xwidget-webkit-execute-script
-           xw "window.getSelection && window.getSelection().removeAllRanges();")
+           xw (if (jwebkit-pdf-viewer-p xw)
+                  "window.jwebkitPdf && window.jwebkitPdf.clear();"
+                "window.getSelection && window.getSelection().removeAllRanges();"))
           (message "Search cleared"))
-      (xwidget-webkit-execute-script xw (jwebkit--find-js query nil t))
+      (xwidget-webkit-execute-script xw (jwebkit--search-js xw query nil t))
       (message "Search: %s  (n/N)" query))))
 
 (defun jwebkit-find-next ()
@@ -128,16 +140,18 @@ instead of continuing from the current selection."
   (interactive)
   (if (string-empty-p jwebkit--query)
       (call-interactively #'jwebkit-find-start)
-    (xwidget-webkit-execute-script
-     (jwebkit--session) (jwebkit--find-js jwebkit--query nil))))
+    (let ((xw (jwebkit--session)))
+      (xwidget-webkit-execute-script
+       xw (jwebkit--search-js xw jwebkit--query nil)))))
 
 (defun jwebkit-find-prev ()
   "Previous match of the last `/` query."
   (interactive)
   (if (string-empty-p jwebkit--query)
       (call-interactively #'jwebkit-find-start)
-    (xwidget-webkit-execute-script
-     (jwebkit--session) (jwebkit--find-js jwebkit--query t))))
+    (let ((xw (jwebkit--session)))
+      (xwidget-webkit-execute-script
+       xw (jwebkit--search-js xw jwebkit--query t)))))
 
 (defun jwebkit-find-selection ()
   "Search for the current page selection."
@@ -190,12 +204,16 @@ instead of continuing from the current selection."
 ;;; Yank / external
 
 (defun jwebkit-open-external ()
-  "Open the current page in the system browser."
+  "Open the current page in the system browser.
+A pdf.js page opens the PDF it came from, not the local viewer."
   (interactive)
-  (let ((url (xwidget-webkit-uri (jwebkit--session))))
+  (let* ((xw (jwebkit--session))
+         (url (or (jwebkit-pdf-source xw) (xwidget-webkit-uri xw))))
     (unless (and url (not (string-empty-p url)))
       (user-error "No URL"))
-    (browse-url url)))
+    (if (file-name-absolute-p url)
+        (browse-url-of-file url)
+      (browse-url url))))
 
 
 ;;; Follow link (completing-read)
@@ -372,8 +390,9 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
 
 ;;;###autoload
 (defun jwebkit-setup ()
-  "Install jwebkit keys and cookie file.  Safe to call more than once."
+  "Install jwebkit keys, cookie file and PDF routing.  Safe to call more than once."
   (interactive)
+  (jwebkit-pdf-enable)
   (when (and jwebkit-cookie-file
              (boundp 'xwidget-webkit-cookie-file)
              (null xwidget-webkit-cookie-file))
@@ -402,6 +421,10 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
                    (kbd "Y") #'xwidget-webkit-copy-selection-as-kill)
     (jwebkit--bind '(normal motion)
                    (kbd "&") #'jwebkit-open-external)
+    (jwebkit--bind '(normal motion)
+                   (kbd "gp") #'jwebkit-pdf-goto-page)
+    (jwebkit--bind '(normal motion)
+                   (kbd "gO") #'jwebkit-pdf-outline)
     (jwebkit--bind 'emacs
                    (kbd "<escape>") #'jwebkit-stop-edit)
     (jwebkit--bind 'emacs

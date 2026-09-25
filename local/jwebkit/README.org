@@ -27,13 +27,40 @@ This package fills the TODOs it left: find, =f=, edit-mode.
 | =i= | send keys to the page (forms, PR comments). ESC / C-g back |
 | =gi= | focus first input, then edit |
 | =Y= | yank the page selection |
-| =&= | open current URL in the system browser |
+| =&= | open current URL in the system browser (a PDF opens its source) |
+| =gp= | PDF: go to page |
+| =gO= | PDF: toggle outline (thumbnails if the PDF has none) |
 
 Existing collection bindings stay: =j k gg G d u H L r yy o t x= …
+
+* PDF (pdf.js)
+
+WebKit's own PDF view is a plugin with no DOM, so =/ f Y= do nothing
+in it.  =jwebkit-pdf.el= reopens PDFs met in xwidget with pdf.js, whose
+text layer is DOM: those keys work again, and =/= goes through pdf.js's
+find so it also sees pages not rendered yet.
+
+- =M-x jwebkit-open-pdf= opens a file or URL (=C-u= for a new session).
+- The first use asks to download the pdf.js dist (~6 MB) into
+  =emacs-home/jwebkit/pdfjs/<version>/=; =M-x jwebkit-pdf-install= does
+  it by hand.  Not in git.
+- A loopback server (127.0.0.1 only) serves the viewer and the PDF
+  from one origin; a file:// viewer can fetch neither.  PDFs are served
+  by random token, never by path.
+- =jwebkit-pdf-port= nil (default) lets the OS pick a free port.  A set
+  port that is taken falls back to a free one.  Binding is the check,
+  so there is no probe-then-bind race.
+- Remote PDFs are downloaded by Emacs, which does not have WebKit's
+  cookies.  A PDF behind a login comes back as HTML and stays in
+  WebKit's view.
+- NS xwidget has no response hook, so WebKit's view flashes before
+  pdf.js takes over.  =jwebkit-pdf-auto= nil turns the takeover off.
+- Local =.pdf= files opened with =find-file= are left alone.
 
 * Reload
 
 #+begin_src emacs-lisp :tangle no
+  (load-file "~/.emacs.d/local/jwebkit/jwebkit-pdf.el")
   (load-file "~/.emacs.d/local/jwebkit/jwebkit.el")
   (setq jwebkit--setup-done nil)
   (jwebkit-setup)
