@@ -615,8 +615,9 @@ The bottom six lines are where all three TUIs draw live status --- the
 spinner, the input box, and the footer beneath it --- and nothing else.
 Both directions cost something, which is why it is a setting: more lines
 reads scrollback as status; fewer misses a spinner drawn above a tall
-box, survivable only because claude and agy each repeat the hint in the
-footer one line from the bottom. =blocked= and =idle= still read the
+box, survivable only because every kind repeats the hint in the footer
+one line from the bottom (grok's spinner sits seven lines up, so its
+=Ctrl+c:cancel= footer hint is the only one inside the region). =blocked= and =idle= still read the
 whole tail --- a permission box can be tall, and =idle= is the fallback
 rather than positive evidence.
 

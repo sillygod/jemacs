@@ -140,6 +140,10 @@ made an unanchored `> \=' match the transcript.")
                   "Running"
                   "esc to interrupt"
                   "ctrl\\+c to interrupt"
+                  ;; grok's footer hint, present only while a turn runs.
+                  ;; Its spinner sits above a three-line input box, out
+                  ;; of `ghostherd-status-lines', so this is what counts.
+                  "Ctrl\\+c:cancel"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
       (idle . ("^› *$"
                "^❯ *$"
@@ -947,8 +951,10 @@ Six is the tallest status area observed, not a margin on it:
 
 Both directions cost something, which is why this is a setting.  Too
 many lines reads scrollback as status, the bug above.  Too few misses a
-spinner drawn above a tall box -- survivable here, because claude and
-agy each also print a hint in the footer, one line from the bottom.
+spinner drawn above a tall box -- survivable here, because every kind
+also prints a hint in the footer, one line from the bottom.  grok
+depends on it: its spinner sits seven lines up, above the input box,
+and only `Ctrl+c:cancel' in the footer is inside the region.
 
 Anchoring the patterns cannot replace this: claude prints its hint
 mid-line, in the middle of that footer."

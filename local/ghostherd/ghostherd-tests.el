@@ -758,6 +758,50 @@ is the evidence -- claude drops the hint from it when nothing runs."
                       ghostherd-tests--claude-footer-working rules))
                 'working))))
 
+(defconst ghostherd-tests--grok-working
+  (concat
+   "  ┃  ◆ Thinking…\n"
+   "  ┃\n"
+   "  ┃  Shioaji isn't logged in because the stack was down.\n"
+   "                                                             █\n"
+   "\n"
+   "    ⠦ Thinking… 3.1s                     12m12s ⇣281k [stop]\n"
+   "\n"
+   "  ╭──────────────────────────────────────────────────────────╮\n"
+   "  │ ❯                                                        │\n"
+   "  ╰─────────────────────── Grok 4.7 (high) · always-approve ─╯\n"
+   "\n"
+   "  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts\n")
+  "grok mid-turn, captured from its pane.
+The spinner is seven lines from the bottom -- above the input box and
+outside the status area -- so only the footer can say `working'.")
+
+(defconst ghostherd-tests--grok-idle
+  (concat
+   "     按眼睛即可。它現在的狀態是已停止。\n"
+   "\n"
+   "     Worked for 13m10s\n"
+   "                                                             █\n"
+   "\n"
+   "  ╭──────────────────────────────────────────────────────────╮\n"
+   "  │ ❯                                                        │\n"
+   "  ╰─────────────────────── Grok 4.7 (high) · always-approve ─╯\n"
+   "\n"
+   "  Shift+Tab:mode  │  Ctrl+x:shortcuts\n")
+  "The same grok after the turn ended: the footer drops `Ctrl+c:cancel'.")
+
+(ert-deftest ghostherd-test-grok-footer-decides-working ()
+  "Reported idle mid-turn: the spinner fell outside the status area and
+no working rule knew grok's footer hint."
+  (let ((rules (plist-get (ghostherd--spec 'grok) :screen-rules)))
+    (should (eq (car (ghostherd--match-rules
+                      ghostherd-tests--grok-working rules))
+                'working))
+    (should-not (cl-find 'working
+                         (ghostherd--match-all-rules
+                          ghostherd-tests--grok-idle rules)
+                         :key #'car))))
+
 (ert-deftest ghostherd-test-status-region-is-the-bottom ()
   "The region is the live status area, not the scrollback above it."
   (let ((ghostherd-status-lines 3))
