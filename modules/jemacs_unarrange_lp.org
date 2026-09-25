@@ -532,6 +532,13 @@
       (flycheck-emacs-lisp-load-path 'inherit)
       (flycheck-javascript-eslint-executable "./node_modules/.bin/eslint")
       :config
+      ;; The elisp checkers spawn `emacs -Q --batch', which skips
+      ;; early-init.el, so native-comp trampolines (e.g. from
+      ;; doom-modeline advising `rename-buffer') would land in
+      ;; ~/.emacs.d/eln-cache.  --init-directory keeps them in emacs-home.
+      (setq flycheck-emacs-args
+            (append flycheck-emacs-args
+                    (list (concat "--init-directory=" user-emacs-directory))))
       (add-hook 'org-src-mode-hook #'(lambda ()
                                        (setq-local flycheck-disabled-checkers '(emacs-lisp-checkdoc)))))
   #+end_src
