@@ -58,6 +58,7 @@
   (declare (indent 0))
   `(let* ((jwebkit-pdf-directory (make-temp-file "jwebkit-pdfjs-" t))
           (jwebkit-pdf-version "0.0.0")
+          (jwebkit-pdf-build 'modern)
           (jwebkit-pdf--server nil)
           (jwebkit-pdf--docs (make-hash-table :test #'equal))
           (web (expand-file-name "0.0.0/web" jwebkit-pdf-directory)))
@@ -163,6 +164,21 @@ instead of an error."
   (should (equal (jwebkit-pdf--name "https://ex.com/") "document.pdf"))
   (should (jwebkit-pdf--pdf-url-p "https://ex.com/x.PDF?dl=1"))
   (should-not (jwebkit-pdf--pdf-url-p "https://ex.com/x.pdf.html")))
+
+(ert-deftest jwebkit-test-pdf-legacy-is-default-and-separate ()
+  "xwidget runs the system WebKit, which the modern build outruns: on
+macOS 15.0 its pdf.mjs dies on `Iterator'.  Each build installs apart."
+  (should (eq (default-value 'jwebkit-pdf-build) 'legacy))
+  (let ((jwebkit-pdf-version "6.3.289"))
+    (let ((jwebkit-pdf-build 'legacy))
+      (should (equal (jwebkit-pdf--release) "6.3.289-legacy")))
+    (let ((jwebkit-pdf-build 'modern))
+      (should (equal (jwebkit-pdf--release) "6.3.289")))))
+
+(ert-deftest jwebkit-test-pdf-shim-polyfills-stream-iteration ()
+  "getTextContent iterates a ReadableStream, which WebKit 20619 cannot."
+  (should (string-match-p "RS\\.prototype\\[Symbol\\.asyncIterator\\] = " jwebkit-pdf--shim-js))
+  (should (string-match-p "getReader()" jwebkit-pdf--shim-js)))
 
 (ert-deftest jwebkit-test-pdf-find-js ()
   (let ((js (jwebkit-pdf--find-js "a\"b" t nil)))

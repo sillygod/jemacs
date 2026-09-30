@@ -40,9 +40,19 @@
   :type 'string
   :group 'jwebkit)
 
+(defcustom jwebkit-pdf-build 'legacy
+  "Which pdf.js build to install: `legacy' or `modern'.
+xwidget renders with the system WebKit, which trails Safari by however
+far macOS is behind.  The modern build assumes current engines -- 6.x
+calls Iterator helpers at load time, and on macOS 15.0 (WebKit 20619)
+pdf.mjs dies with `Can't find variable: Iterator', leaving an empty
+toolbar.  The legacy build is the same viewer transpiled and polyfilled."
+  :type '(choice (const legacy) (const modern))
+  :group 'jwebkit)
+
 (defcustom jwebkit-pdf-directory
   (expand-file-name "jwebkit/pdfjs" user-emacs-directory)
-  "Where pdf.js releases are unpacked, one directory per version."
+  "Where pdf.js releases are unpacked, one directory per version and build."
   :type 'directory
   :group 'jwebkit)
 
@@ -69,25 +79,31 @@ server cannot be talked into reading an arbitrary local file.")
 
 ;;; Install
 
+(defun jwebkit-pdf--release ()
+  "Release name, e.g. 6.3.289-legacy; also the install directory's name."
+  (if (eq jwebkit-pdf-build 'modern)
+      jwebkit-pdf-version
+    (concat jwebkit-pdf-version "-legacy")))
+
 (defun jwebkit-pdf--root ()
   (file-name-as-directory
-   (expand-file-name jwebkit-pdf-version jwebkit-pdf-directory)))
+   (expand-file-name (jwebkit-pdf--release) jwebkit-pdf-directory)))
 
 (defun jwebkit-pdf--installed-p ()
   (file-exists-p (expand-file-name "web/viewer.html" (jwebkit-pdf--root))))
 
 (defun jwebkit-pdf-install ()
-  "Download and unpack pdf.js `jwebkit-pdf-version'."
+  "Download and unpack pdf.js `jwebkit-pdf-version' (`jwebkit-pdf-build')."
   (interactive)
   (unless (executable-find "unzip")
     (user-error "jwebkit-pdf: `unzip' not found"))
   (let* ((url (format "https://github.com/mozilla/pdf.js/releases/download/v%s/pdfjs-%s-dist.zip"
-                      jwebkit-pdf-version jwebkit-pdf-version))
+                      jwebkit-pdf-version (jwebkit-pdf--release)))
          (zip (make-temp-file "pdfjs-" nil ".zip"))
          (root (jwebkit-pdf--root)))
     (unwind-protect
         (progn
-          (message "jwebkit-pdf: downloading pdf.js %s…" jwebkit-pdf-version)
+          (message "jwebkit-pdf: downloading pdf.js %s…" (jwebkit-pdf--release))
           (url-copy-file url zip t)
           (make-directory root t)
           (unless (zerop (call-process "unzip" nil nil nil "-q" "-o" zip "-d" root))
@@ -97,8 +113,8 @@ server cannot be talked into reading an arbitrary local file.")
 
 (defun jwebkit-pdf--ensure-installed ()
   (unless (jwebkit-pdf--installed-p)
-    (if (y-or-n-p (format "Download pdf.js %s (~6 MB) into %s? "
-                          jwebkit-pdf-version jwebkit-pdf-directory))
+    (if (y-or-n-p (format "Download pdf.js %s (~7 MB) into %s? "
+                          (jwebkit-pdf--release) jwebkit-pdf-directory))
         (jwebkit-pdf-install)
       (user-error "jwebkit-pdf: pdf.js not installed"))))
 
@@ -239,6 +255,27 @@ Either (STATUS CONTENT-TYPE BODY) or (STATUS CONTENT-TYPE :file FILE)."
 (defconst jwebkit-pdf--shim-js
   "(function(){
   if (window.jwebkitPdf) return;
+  // getTextContent does `for await (x of readableStream)'.  WebKit before
+  // Safari 26 (macOS 15.0 ships 20619) cannot iterate a ReadableStream
+  // and the legacy build does not polyfill it, so find and text
+  // extraction fail with `undefined is not a function'.
+  var RS = window.ReadableStream;
+  if (RS && !RS.prototype[Symbol.asyncIterator]) {
+    RS.prototype.values = RS.prototype.values || function(opts){
+      var reader = this.getReader();
+      var keep = opts && opts.preventCancel;
+      return {
+        next: function(){ return reader.read(); },
+        return: function(v){
+          var done = keep ? Promise.resolve() : reader.cancel(v);
+          reader.releaseLock();
+          return done.then(function(){ return {done: true, value: v}; });
+        },
+        [Symbol.asyncIterator]: function(){ return this; }
+      };
+    };
+    RS.prototype[Symbol.asyncIterator] = RS.prototype.values;
+  }
   function app(){ return window.PDFViewerApplication; }
   function box(){ return document.getElementById('viewerContainer'); }
   // xwidget scrolls with window.scrollBy / scrollTo, but pdf.js scrolls

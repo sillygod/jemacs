@@ -41,9 +41,15 @@ text layer is DOM: those keys work again, and =/= goes through pdf.js's
 find so it also sees pages not rendered yet.
 
 - =M-x jwebkit-open-pdf= opens a file or URL (=C-u= for a new session).
-- The first use asks to download the pdf.js dist (~6 MB) into
-  =emacs-home/jwebkit/pdfjs/<version>/=; =M-x jwebkit-pdf-install= does
-  it by hand.  Not in git.
+- The first use asks to download the pdf.js dist (~7 MB) into
+  =emacs-home/jwebkit/pdfjs/<version>-legacy/=; =M-x jwebkit-pdf-install=
+  does it by hand.  Not in git.
+- =jwebkit-pdf-build= defaults to =legacy=.  xwidget renders with the
+  system WebKit, not Safari's latest: on macOS 15.0 (WebKit 20619) the
+  modern build's =pdf.mjs= dies on =Iterator= and leaves an empty
+  toolbar.  The shim also polyfills =ReadableStream= async iteration,
+  which that WebKit lacks and the legacy build does not cover; without
+  it find and text extraction fail.
 - A loopback server (127.0.0.1 only) serves the viewer and the PDF
   from one origin; a file:// viewer can fetch neither.  PDFs are served
   by random token, never by path.
