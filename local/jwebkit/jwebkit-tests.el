@@ -194,5 +194,159 @@ macOS 15.0 its pdf.mjs dies on `Iterator'.  Each build installs apart."
     (insert "HTTP/1.1 200 OK\r\n\r\n%PDF-1.7")
     (should (jwebkit-pdf--pdf-bytes-p 20))))
 
+
+;;; Markdown
+
+(defmacro jwebkit-tests--with-md (&rest body)
+  "Run BODY against a fake md-libs tree, shipped viewer, and a fresh server."
+  (declare (indent 0))
+  `(let* ((jwebkit-md-directory (make-temp-file "jwebkit-mdlibs-" t))
+          (jwebkit-md-marked-version "0.0.0")
+          (jwebkit-md-mermaid-version "0.0.0")
+          (jwebkit-md-css-version "0.0.0")
+          (jwebkit-md-port nil)
+          (jwebkit-md--server nil)
+          (jwebkit-md--docs (make-hash-table :test #'equal))
+          (root (jwebkit-md--root)))
+     (make-directory root t)
+     (with-temp-file (expand-file-name "marked.min.js" root)
+       (insert "window.marked={use:function(){},parse:function(s){return s;}};"))
+     (with-temp-file (expand-file-name "mermaid.min.js" root)
+       (insert "window.mermaid={initialize:function(){},run:function(){return Promise.resolve();}};"))
+     (with-temp-file (expand-file-name "github-markdown.css" root)
+       (insert "/* test */"))
+     (unwind-protect (progn ,@body)
+       (jwebkit-md-stop)
+       (delete-directory jwebkit-md-directory t))))
+
+(defun jwebkit-tests--md-get (path)
+  "Body of GET PATH from the jwebkit-md server, as unibyte."
+  (let ((buf (url-retrieve-synchronously
+              (concat (jwebkit-md--origin) path) t t 5)))
+    (unwind-protect
+        (with-current-buffer buf
+          (set-buffer-multibyte nil)
+          (list url-http-response-status
+                (buffer-substring-no-properties
+                 (1+ url-http-end-of-headers) (point-max))))
+      (kill-buffer buf))))
+
+(ert-deftest jwebkit-test-md-request-target ()
+  (should (equal (jwebkit-md--request-target
+                  "GET /md/viewer/viewer.html?src=%2Fmd%2Fx HTTP/1.1\r\nHost: h\r\n\r\n")
+                 '("GET" . "/md/viewer/viewer.html")))
+  (should (equal (jwebkit-md--request-target "HEAD /md/a%20b HTTP/1.1\r\n\r\n")
+                 '("HEAD" . "/md/a b")))
+  (should-not (jwebkit-md--request-target "garbage")))
+
+(ert-deftest jwebkit-test-md-route-stays-in-root ()
+  "Viewer/libs paths cannot climb out; documents are reachable only by token."
+  (jwebkit-tests--with-md
+    (should (eq 200 (car (jwebkit-md--route "/md/libs/marked.min.js"))))
+    (should (eq 200 (car (jwebkit-md--route "/md/viewer/viewer.html"))))
+    (should (eq 404 (car (jwebkit-md--route "/md/libs/../../../../etc/passwd"))))
+    (should (eq 404 (car (jwebkit-md--route "/md/viewer/../../jwebkit.el"))))
+    (should (eq 404 (car (jwebkit-md--route "/md/nope"))))
+    (should (eq 404 (car (jwebkit-md--route "/etc/passwd"))))))
+
+(ert-deftest jwebkit-test-md-token-serves-file-and-buffer ()
+  "End to end: registered file is re-read; buffer uses live string."
+  (jwebkit-tests--with-md
+    (let* ((md (make-temp-file "jwebkit-md-" nil ".md"))
+           (buf (generate-new-buffer " *jwebkit-md-test*")))
+      (unwind-protect
+          (progn
+            (with-temp-file md (insert "# from-file\n"))
+            (with-current-buffer buf (insert "# from-buffer\n"))
+            (let* ((ftok (jwebkit-md--register (list :file md)))
+                   (btok (jwebkit-md--register (list :buffer buf)))
+                   (url (jwebkit-md--viewer-url ftok)))
+              (should (string-match-p
+                       "\\`http://127\\.0\\.0\\.1:[0-9]+/md/viewer/viewer\\.html\\?src="
+                       url))
+              (should (string-match-p "\\`[0-9a-f]\\{64\\}\\'" ftok))
+              (pcase-let ((`(,status ,body) (jwebkit-tests--md-get
+                                             (format "/md/%s" ftok))))
+                (should (eq status 200))
+                (should (equal body "# from-file\n")))
+              ;; Live re-read after save.
+              (with-temp-file md (insert "# saved-again\n"))
+              (pcase-let ((`(,status ,body) (jwebkit-tests--md-get
+                                             (format "/md/%s" ftok))))
+                (should (eq status 200))
+                (should (equal body "# saved-again\n")))
+              (pcase-let ((`(,status ,body) (jwebkit-tests--md-get
+                                             (format "/md/%s" btok))))
+                (should (eq status 200))
+                (should (equal body "# from-buffer\n")))
+              (with-current-buffer buf
+                (erase-buffer)
+                (insert "# edited\n"))
+              (pcase-let ((`(,status ,body) (jwebkit-tests--md-get
+                                             (format "/md/%s" btok))))
+                (should (eq status 200))
+                (should (equal body "# edited\n")))
+              (should (eq 404 (car (jwebkit-tests--md-get "/md/deadbeef"))))
+              (pcase-let ((`(,status ,body)
+                           (jwebkit-tests--md-get "/md/viewer/viewer.html")))
+                (should (eq status 200))
+                (should (string-match-p "markdown-body" body))
+                (should-not (string-match-p "document\\.title" body)))))
+        (delete-file md)
+        (kill-buffer buf)))))
+
+(ert-deftest jwebkit-test-md-busy-port-falls-back ()
+  (jwebkit-tests--with-md
+    (let* ((squatter (make-network-process
+                      :name "jwebkit-md-squatter" :server t :host 'local
+                      :family 'ipv4 :service t :noquery t))
+           (taken (process-contact squatter :service)))
+      (unwind-protect
+          (let* ((jwebkit-md-port taken)
+                 (inhibit-message t)
+                 (port (jwebkit-md--port)))
+            (should (integerp port))
+            (should-not (eq port taken))
+            (should (process-live-p jwebkit-md--server)))
+        (delete-process squatter)))))
+
+(ert-deftest jwebkit-test-md-release-pin ()
+  (let ((jwebkit-md-marked-version "11.2.0")
+        (jwebkit-md-mermaid-version "10.9.3")
+        (jwebkit-md-css-version "5.8.1"))
+    (should (equal (jwebkit-md--release)
+                   "marked-11.2.0_mermaid-10.9.3_css-5.8.1"))))
+
+(ert-deftest jwebkit-test-md-package-root-follows-straight-symlink ()
+  "Build dir symlinks the .el only; md-viewer/ stays next to the source.
+That mismatch made `jwebkit-open-markdown' serve a plain-text 404."
+  (let* ((source (jwebkit-md--library-file))
+         (build (make-temp-file "jwebkit-build-" t))
+         (link (expand-file-name "jwebkit-md.el" build)))
+    (unwind-protect
+        (progn
+          (make-symbolic-link source link)
+          (let ((load-path (cons build load-path)))
+            (should (file-equal-p (jwebkit-md--library-file) source))
+            (should (file-regular-p
+                     (expand-file-name "viewer.html" (jwebkit-md--viewer-root))))
+            (should (eq 200 (car (jwebkit-md--route "/md/viewer/viewer.html"))))))
+      (delete-directory build t))))
+
+(ert-deftest jwebkit-test-md-no-title-bridge ()
+  "Viewer JS must not touch document.title (pr-view owns that)."
+  (let* ((root (jwebkit-md--viewer-root))
+         (js (with-temp-buffer
+               (insert-file-contents (expand-file-name "viewer.js" root))
+               (buffer-string)))
+         (html (with-temp-buffer
+                 (insert-file-contents (expand-file-name "viewer.html" root))
+                 (buffer-string))))
+    (should-not (string-match-p "document\\.title" js))
+    (should-not (string-match-p "document\\.title\\s*=" html))
+    (should (string-match-p "mermaid\\.run" js))
+    (should (string-match-p "marked\\.use" js))))
+
+
 (provide 'jwebkit-tests)
 ;;; jwebkit-tests.el ends here

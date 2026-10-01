@@ -21,6 +21,7 @@
 ;;   Y       yank page selection
 ;;   &       open current URL in the system browser
 ;;   gp gO   PDF page / outline (pdf.js viewer; see jwebkit-pdf.el)
+;;   gr      Markdown reload (see jwebkit-md.el)
 
 ;;; Code:
 
@@ -29,6 +30,7 @@
 (require 'subr-x)
 (require 'xwidget)
 (require 'jwebkit-pdf)
+(require 'jwebkit-md)
 
 (declare-function evil-define-key* "evil")
 (declare-function evil-emacs-state "evil")
@@ -390,9 +392,10 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
 
 ;;;###autoload
 (defun jwebkit-setup ()
-  "Install jwebkit keys, cookie file and PDF routing.  Safe to call more than once."
+  "Install jwebkit keys, cookie file, PDF routing and Markdown preview.  Safe to call more than once."
   (interactive)
   (jwebkit-pdf-enable)
+  (jwebkit-md-enable)
   (when (and jwebkit-cookie-file
              (boundp 'xwidget-webkit-cookie-file)
              (null xwidget-webkit-cookie-file))
@@ -425,6 +428,8 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
                    (kbd "gp") #'jwebkit-pdf-goto-page)
     (jwebkit--bind '(normal motion)
                    (kbd "gO") #'jwebkit-pdf-outline)
+    (jwebkit--bind '(normal motion)
+                   (kbd "gr") #'jwebkit-md-reload)
     (jwebkit--bind 'emacs
                    (kbd "<escape>") #'jwebkit-stop-edit)
     (jwebkit--bind 'emacs

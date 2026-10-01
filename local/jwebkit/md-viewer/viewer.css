@@ -1,0 +1,56 @@
+/* jwebkit markdown viewer layout. Theme colors come from github-markdown-css. */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-canvas-default, #ffffff);
+}
+
+@media (prefers-color-scheme: dark) {
+  html, body {
+    background: var(--color-canvas-default, #0d1117);
+  }
+}
+
+.markdown-body {
+  box-sizing: border-box;
+  min-width: 200px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 32px 40px 64px;
+}
+
+.jw-status {
+  color: #57606a;
+  font-style: italic;
+}
+
+@media (prefers-color-scheme: dark) {
+  .jw-status {
+    color: #8b949e;
+  }
+}
+
+.jw-error {
+  color: #cf222e;
+  white-space: pre-wrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .jw-error {
+    color: #ff7b72;
+  }
+}
+
+/* Mermaid draws into these; keep diagrams readable and centered. */
+.markdown-body pre.mermaid {
+  background: transparent;
+  text-align: center;
+  overflow-x: auto;
+  line-height: normal;
+}
+
+.markdown-body pre.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}

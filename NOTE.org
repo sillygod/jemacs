@@ -26,7 +26,6 @@
 
 ** things needed to be done or enahnced
 
-   - [ ] implement my own run-python-shell (can learn from claude code cli or gemini cli https://github.com/linchen2chris/gemini-cli.el)
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
    - [ ] asciinema (write utils for this)
