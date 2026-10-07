@@ -10,9 +10,9 @@ HTTP and the token, =ui/= only renders.
 | Item    | Value |
 |---------+-------|
 | Package | =local/clickup-view/= |
-| Entry   | =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
+| Entry   | =SPC g c= / =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
 | Needs   | =CLICKUP_API_TOKEN=; GUI Emacs with xwidgets for the page |
-| State   | Elisp layer done; the page (=ui/=) is next |
+| State   | Task page done; Space ▸ Folder ▸ List browsing is next |
 
 * Auth
 
@@ -65,11 +65,32 @@ Probed against the workspace, October 2026.
   token is =Token invalid= (=OAUTH_025=).
 - Attachment images (=*.clickup-attachments.com=) load without auth.
 
+* The page
+
+=ui/index.html=, =app.js=, =style.css=, and =vendor/marked.min.js=
+(marked 11.2.0, identical to jsdelivr's; vendored because jwebkit's copy
+is a gitignored download that may not exist yet).
+
+- Keys: =s= status menu (arrows, Enter, Esc), =r= refresh, =Esc= back,
+  =⌘↩= / =C-↩= sends the comment or reply being typed.
+- Comments are newest first with the composer on top; a thread reads
+  oldest first.  Drafts survive re-renders and moving between tasks.
+- Every link is caught: a task link (or =data-task=) opens in the page,
+  anything else http(s) / mailto goes to =browse-url=.  Left alone, a
+  click would navigate the xwidget away from the page and its bridge.
+- The description is ClickUp's markdown through marked, then a
+  whitelist sanitizer (inert =DOMParser= document; allowed tags and
+  attributes only, http(s) links, no inline styles).  Comment HTML from
+  Elisp is already escaped and passes through the same sanitizer.
+
 * Page contract
 
-Intents, page → Emacs, as =document.title = "clickup:" + JSON=.  Add a
-counter field to each: =xwapp= ignores a title identical to the last
-one, so a second Refresh would otherwise be dropped.
+Intents, page → Emacs, as =document.title = "clickup:" + JSON=.  The
+page queues them and sets the next title only after Emacs has reset the
+last one: a title replaced within a poll interval is never read.  Each
+carries a counter =n=, seeded from the clock: =xwapp= ignores a title
+identical to the last one, so a second Refresh would otherwise be
+dropped, and a reloaded page's first intent mistaken for the old one's.
 
 | op               | fields                           |
 |------------------+----------------------------------|
@@ -77,7 +98,7 @@ one, so a second Refresh would otherwise be dropped.
 | =refresh-spaces= |                                  |
 | =open-space=     | id, force                        |
 | =open-list=      | id, page, closed, mine           |
-| =open-task=      | id                               |
+| =open-task=      | id (also a link or CU-id)        |
 | =more-comments=  | task_id, start, start_id         |
 | =load-replies=   | comment_id                       |
 | =set-status=     | task_id, status                  |
@@ -101,6 +122,7 @@ Calls, Emacs → page, as =CU.fn(payload)=:
 | =setComments=   | task_id, items (newest first, with html), has_more, append    |
 | =setReplies=    | comment_id, items                                             |
 | =statusChanged= | task_id, status                                               |
+| =posted=        | task_id, comment_id (null for a comment): clear that box      |
 
 Every payload names its task, list or comment.  The page drops one that
 is not for what it is showing, so a slow reply for one task cannot paint
@@ -108,8 +130,16 @@ over the next.
 
 * Tests
 
+The Elisp layer, against stubbed HTTP and page calls:
+
 #+begin_src sh
   emacs --batch -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/clickup-view \
         -l clickup-view.el -l clickup-view-tests.el \
         -f ert-run-tests-batch-and-exit
 #+end_src
+
+The page was checked in WebKit (Playwright) against this Elisp running
+in a batch Emacs on the live API, writes faked: status menu, threads,
+posting, paging, subtask and Back, links, a hostile description and
+comment, and a 760px window.  Not part of the suite: it needs a browser
+and the token.

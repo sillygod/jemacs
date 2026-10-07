@@ -391,18 +391,34 @@ holds (FN . OBJ) page calls, oldest first."
                      '(((text . "done") (attributes (bold . t)))
                        ((text . "\n") (attributes)))))
       (should (string-match-p "\"notify_all\":false" (json-encode (nth 2 post)))))
-    ;; Reloaded after posting.
+    ;; The page is told before the reload, so it clears the box once.
+    (should (equal (clickup-view-test--call (calls) "posted")
+                   '((task_id . "abc123") (comment_id))))
     (should (equal (car (car requests)) "GET"))
     (should (clickup-view-test--call (calls) "setComments"))))
 
-(ert-deftest clickup-view-test-post-reply-reloads-thread-and-counts ()
+(ert-deftest clickup-view-test-post-reply-reloads-only-the-thread ()
+  "Reloading the comments too would drop older pages the page loaded."
   (clickup-view-test--with-api
       `(("POST" "/comment/90/reply" 200 "{}")
-        ("GET" "/comment/90/reply" 200 "{\"comments\":[]}")
-        ("GET" "/task/abc123/comment" 200 "{\"comments\":[]}"))
+        ("GET" "/comment/90/reply" 200 "{\"comments\":[]}"))
     (clickup-view--handle-intent '((op . "post-reply") (task_id . "abc123") (comment_id . "90") (text . "ok")))
+    (should (equal (clickup-view-test--call (calls) "posted")
+                   '((task_id . "abc123") (comment_id . "90"))))
     (should (clickup-view-test--call (calls) "setReplies"))
-    (should (clickup-view-test--call (calls) "setComments"))))
+    (should-not (clickup-view-test--call (calls) "setComments"))
+    (should-not (seq-find (lambda (r) (string-match-p "/task/" (nth 1 r))) requests))))
+
+(ert-deftest clickup-view-test-open-task-accepts-links ()
+  (clickup-view-test--with-api
+      `(("GET" "/task/abc123\\?" 200 ,clickup-view-test--task-json)
+        ("GET" "/list/L1\\'" 200 ,clickup-view-test--list-json)
+        ("GET" "/task/abc123/comment" 200 "{\"comments\":[]}"))
+    (clickup-view--handle-intent '((op . "open-task") (id . "https://app.clickup.com/t/abc123")))
+    (should (clickup-view-test--call (calls) "renderTask"))
+    (clickup-view--handle-intent '((op . "open-task") (id . "no such thing")))
+    (should (string-match-p "Not a ClickUp task id"
+                            (clickup-view-test--call (calls) "showError")))))
 
 (ert-deftest clickup-view-test-empty-comment-is-refused ()
   (clickup-view-test--with-api nil

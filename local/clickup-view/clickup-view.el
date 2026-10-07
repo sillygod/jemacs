@@ -973,6 +973,7 @@ on its own (divider, table)."
     (clickup-view--request
      "POST" (format "/task/%s/comment" task-id)
      (lambda (_)
+       (clickup-view--js "posted" `((task_id . ,task-id) (comment_id)))
        (clickup-view--flash "Comment posted")
        (clickup-view--load-comments task-id))
      nil (clickup-view--comment-body text))))
@@ -983,10 +984,11 @@ on its own (divider, table)."
     (clickup-view--request
      "POST" (format "/comment/%s/reply" comment-id)
      (lambda (_)
+       (clickup-view--js "posted" `((task_id . ,task-id) (comment_id . ,comment-id)))
        (clickup-view--flash "Reply posted")
-       (clickup-view--load-replies comment-id)
-       ;; The parent's reply count lives in the comment list.
-       (clickup-view--load-comments task-id))
+       ;; Only the thread: reloading the comments would drop the older
+       ;; pages the page has loaded.  The page counts the replies itself.
+       (clickup-view--load-replies comment-id))
      nil (clickup-view--comment-body text))))
 
 
@@ -1001,7 +1003,10 @@ on its own (divider, table)."
         ("open-space" (clickup-view--load-space (alist-get 'id intent)
                                                 (clickup-view--truthy (alist-get 'force intent))))
         ("open-list" (clickup-view--load-list intent))
-        ("open-task" (clickup-view--load-task (alist-get 'id intent)))
+        ("open-task"
+         (clickup-view--load-task
+          (or (clickup-view--normalize-id (alist-get 'id intent))
+              (user-error "Not a ClickUp task id: %s" (alist-get 'id intent)))))
         ("more-comments" (clickup-view--load-comments (alist-get 'task_id intent)
                                                       (alist-get 'start intent)
                                                       (alist-get 'start_id intent)))

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClickUp</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">CU</span>
+      <nav id="crumbs" class="crumbs">ClickUp</nav>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-back" class="ghost" hidden title="Back (Esc)">← Back</button>
+      <button type="button" id="btn-refresh" class="ghost" title="Refresh (r)">Refresh</button>
+      <button type="button" id="btn-copy" class="ghost" hidden>Copy link</button>
+      <button type="button" id="btn-browser" class="ghost" hidden>Open in browser</button>
+    </div>
+  </header>
+  <div id="progress" class="progress" hidden></div>
+  <div id="status" class="status" hidden></div>
+  <main id="app" class="app">
+    <p class="muted pad">Waiting for Emacs…</p>
+  </main>
+  <script src="vendor/marked.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
