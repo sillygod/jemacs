@@ -128,7 +128,7 @@ count in front.  The two forges keep that verdict in different places:
 
 #+begin_src sh
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-        -L ~/.emacs.d/local/pr-view \
+        -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/pr-view \
         -l pr-view.el -l pr-view-tests.el \
         -f ert-run-tests-batch-and-exit
 #+end_src

@@ -28,17 +28,7 @@
 (require 'subr-x)
 (require 'url)
 (require 'auth-source)
-
-(declare-function xwidget-webkit-new-session "xwidget")
-(declare-function xwidget-webkit-goto-uri "xwidget")
-(declare-function xwidget-webkit-execute-script "xwidget")
-(declare-function xwidget-webkit-title "xwidget")
-(declare-function xwidget-webkit-current-session "xwidget")
-(declare-function xwidget-webkit-last-session "xwidget")
-(declare-function xwidget-webkit--create-new-session-buffer "xwidget")
-(declare-function xwidget-buffer "xwidget")
-(declare-function get-buffer-xwidgets "xwidget")
-(declare-function xwidget-live-p "xwidget")
+(require 'xwapp)
 
 
 ;;; Customization
@@ -90,14 +80,11 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
 (defconst pr-view--buffer-name "*pr-view*")
 (defconst pr-view--intent-prefix "prview:")
 
-(defvar-local pr-view--xw nil)
-(defvar pr-view--poll-timer nil)
 (defvar pr-view--host nil
   "Plist :kind :owner :repo.")
 (defvar pr-view--list-cache nil)
 (defvar pr-view--last-url nil)
 (defvar pr-view--inflight nil)
-(defvar pr-view--last-title nil)
 (defvar pr-view--list-states '("OPEN" "MERGED")
   "PR states currently shown in the list (OPEN, MERGED, DECLINED, DRAFT).")
 (defvar pr-view--last-comments nil)
@@ -105,6 +92,16 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
 (defvar pr-view--last-detail-raw nil
   "Raw detail JSON of the open PR, kept so a later verdict fetch can
 rebuild the reviewer chips without asking for the PR again.")
+
+(defvar pr-view--app
+  (xwapp-create :buffer-name pr-view--buffer-name
+                :index (expand-file-name "ui/index.html" pr-view--dir)
+                :prefixes (list pr-view--intent-prefix "bbpr:")
+                :namespace "BB"
+                :idle-title "PR View"
+                :handler #'pr-view--handle-intent
+                :on-kill #'pr-view--on-kill)
+  "The page, buffer and intent channel; see `xwapp'.")
 
 
 ;;; Remote detection
@@ -249,106 +246,14 @@ App passwords can no longer be created; use an API token with scopes
      (format "https://api.bitbucket.org/2.0/repositories/%s/%s%s"
              (plist-get host :owner) (plist-get host :repo) path))))
 
-(defun pr-view--absolutize (loc base)
-  "Turn possibly-relative LOC into an absolute URL using BASE."
-  (cond
-   ((and loc (string-match-p "\\`https?://" loc)) loc)
-   ((and loc (string-prefix-p "//" loc))
-    (concat "https:" loc))
-   ((and loc (string-prefix-p "/" loc))
-    (let ((u (url-generic-parse-url base)))
-      (format "%s://%s%s" (or (url-type u) "https") (url-host u) loc)))
-   (t loc)))
-
-(defun pr-view--utf8-bytes (s)
-  "UTF-8 unibyte bytes of S.  url.el errors on multibyte request bodies."
-  (let ((out (encode-coding-string s 'utf-8)))
-    (if (multibyte-string-p out)
-        (encode-coding-string out 'iso-latin-1)
-      out)))
-
-(defun pr-view--scrub-error (msg)
-  "Strip secrets and huge url.el dumps from MSG."
-  (setq msg (replace-regexp-in-string
-             "Authorization: Bearer [^ \n]+" "Authorization: Bearer ***" msg t t))
-  (if (string-match-p "Multibyte text in HTTP request" msg)
-      "HTTP encoding error (non-ASCII in request). Retry after reload."
-    msg))
-
-(defun pr-view--extra-headers (headers &optional json-body)
-  "HEADERS for `url-request-extra-headers'.
-Drop Accept — `url-http-create-request' always emits Accept from
-`url-mime-accept-string', and a second Accept can make GitHub 406."
-  (let ((h (assoc-delete-all "Accept" (copy-alist headers))))
-    (when json-body
-      (push '("Content-Type" . "application/json; charset=utf-8") h))
-    h))
-
-(defun pr-view--http (url headers callback &optional method json-body hops)
-  "Request URL with HEADERS.  CALLBACK is (lambda (body status-code err)).
-METHOD defaults to GET.  JSON-BODY is an Elisp object json-encoded as the body.
-3xx redirects are followed with Authorization kept (url.el would drop it)."
-  (let ((url-request-method (or method "GET"))
-        (url-request-extra-headers (pr-view--extra-headers headers json-body))
-        (url-request-data
-         (when json-body
-           (pr-view--utf8-bytes (json-encode json-body))))
-        (url-mime-accept-string (or (cdr (assoc "Accept" headers))
-                                    "application/json"))
-        (url-max-redirections 0)
-        (url-show-status nil)
-        (hops (or hops 0)))
-    (url-retrieve
-     url
-     (lambda (status)
-       (let ((err (plist-get status :error))
-             (buf (current-buffer))
-             code body location)
-         (unwind-protect
-             (progn
-               (goto-char (point-min))
-               (setq code (and (re-search-forward "^HTTP/[^ ]+ \\([0-9]+\\)" nil t)
-                               (string-to-number (match-string 1))))
-               (goto-char (point-min))
-               (when (re-search-forward "^[Ll]ocation:[ \t]*\\(.*\\)$" nil t)
-                 (setq location (string-trim (match-string 1))))
-               (goto-char (point-min))
-               (when (re-search-forward "\n\n" nil t)
-                 (setq body (decode-coding-string
-                             (buffer-substring-no-properties (point) (point-max))
-                             'utf-8)))
-               (if (and location
-                        (memq code '(301 302 303 307 308))
-                        (< hops 5))
-                   (pr-view--http (pr-view--absolutize location url)
-                                  headers callback method json-body
-                                  (1+ hops))
-                 (funcall callback body code err)))
-           (when (buffer-live-p buf)
-             (kill-buffer buf))))))))
+(defun pr-view--http (url headers callback &optional method json-body)
+  "Request URL; see `xwapp-http'.  Kept as pr-view's seam for tests."
+  (xwapp-http url headers callback method json-body))
 
 (defun pr-view--http-json (url headers ok-fn &optional method json-body)
-  (pr-view--http
-   url headers
-   (lambda (body code err)
-     (cond
-      ((and code (>= code 400))
-       (pr-view--fail code err body url))
-      (err
-       (pr-view--fail code err body url))
-      (t
-       (condition-case e
-           (funcall ok-fn (json-parse-string
-                           (if (and body (not (string-empty-p (string-trim body))))
-                               body "{}")
-                           :object-type 'alist
-                           :array-type 'list
-                           :null-object nil
-                           :false-object nil))
-         (error
-          (setq pr-view--inflight nil)
-          (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
-   method json-body))
+  (pr-view--http url headers
+                 (xwapp-json-callback url ok-fn #'pr-view--fail)
+                 method json-body))
 
 (defun pr-view--error-message (body)
   "The human sentence out of an API error BODY, if it has one.
@@ -369,6 +274,9 @@ raw JSON, which is what a merge refused for conflicts used to show."
 (defun pr-view--fail (code err body &optional url)
   (setq pr-view--inflight nil)
   (let ((msg (cond
+              ((and err code (< code 300))
+               ;; The reply arrived but could not be handled.
+               (error-message-string err))
               ((memq code '(401 403))
                "Auth failed (401/403). Check token scopes (GitHub: repo; Bitbucket: read/write:pullrequest:bitbucket + read:repository:bitbucket).")
               ((and code (pr-view--error-message body))
@@ -381,7 +289,7 @@ raw JSON, which is what a merge refused for conflicts used to show."
                               "")))
               (err (format "Network error: %s" (error-message-string err)))
               (t "Request failed"))))
-    (pr-view--js "showError" (pr-view--scrub-error msg))))
+    (pr-view--js "showError" (xwapp-scrub-error msg))))
 
 
 ;;; Normalize
@@ -615,40 +523,13 @@ people who already answered have to be added back from REVIEWS."
 
 ;;; Bridge
 
-(defun pr-view--session ()
-  (when-let* ((buf (get-buffer pr-view--buffer-name)))
-    (with-current-buffer buf
-      (or (and pr-view--xw (xwidget-live-p pr-view--xw) pr-view--xw)
-          (car (ignore-errors (get-buffer-xwidgets buf)))
-          (ignore-errors (xwidget-webkit-current-session))))))
-
 (defun pr-view--js (fn obj)
   "Call BB.FN with JSON-encoded OBJ in the widget."
-  (when-let* ((xw (pr-view--session)))
-    (xwidget-webkit-execute-script
-     xw
-     (format "window.BB && BB[%s](%s);"
-             (json-encode fn)
-             (json-encode obj)))))
+  (xwapp-js pr-view--app fn obj))
 
 (defun pr-view--parse-intent (title)
   "Parse TITLE of the form prview:{json} or bbpr:{json}.  Return alist or nil."
-  (when (and title (stringp title))
-    (cond
-     ((string-prefix-p pr-view--intent-prefix title)
-      (ignore-errors
-        (json-parse-string (substring title (length pr-view--intent-prefix))
-                           :object-type 'alist
-                           :array-type 'list)))
-     ((string-prefix-p "bbpr:" title)
-      (ignore-errors
-        (json-parse-string (substring title 5)
-                           :object-type 'alist
-                           :array-type 'list))))))
-
-(defun pr-view--clear-title ()
-  (when-let* ((xw (pr-view--session)))
-    (xwidget-webkit-execute-script xw "document.title = 'PR View';")))
+  (xwapp-parse-intent title (xwapp-prefixes pr-view--app)))
 
 (defun pr-view--handle-intent (intent)
   (let ((op (alist-get 'op intent)))
@@ -681,28 +562,7 @@ people who already answered have to be added back from REVIEWS."
       ("merge-pr" (pr-view--merge-pr intent))
       (_ nil))))
 
-(defun pr-view--poll-title ()
-  (when (and (get-buffer pr-view--buffer-name)
-             (pr-view--session))
-    (let* ((xw (pr-view--session))
-           (title (ignore-errors (xwidget-webkit-title xw)))
-           (intent (pr-view--parse-intent title)))
-      (when (and intent (not (equal title pr-view--last-title)))
-        (setq pr-view--last-title title)
-        (pr-view--clear-title)
-        (pr-view--handle-intent intent)))))
 
-(defun pr-view--start-poll ()
-  (pr-view--stop-poll)
-  (setq pr-view--poll-timer
-        (run-at-time 0.4 pr-view-poll-interval #'pr-view--poll-title)))
-
-(defun pr-view--stop-poll ()
-  (when (timerp pr-view--poll-timer)
-    (cancel-timer pr-view--poll-timer)
-    (setq pr-view--poll-timer nil)))
-
-
 ;;; Fetch
 
 (defun pr-view--start-request (msg)
@@ -794,7 +654,7 @@ people who already answered have to be added back from REVIEWS."
                (pr-view--js "renderPrList" payload)))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
+       (pr-view--js "showError" (xwapp-scrub-error (error-message-string e)))))))
 
 (defun pr-view--detail-from (kind raw)
   (pcase kind
@@ -1166,7 +1026,7 @@ separate collection, so the chips arrive a moment after the view."
              "POST" body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--comment-item-url (host kind pr-id comment-id)
   (pcase kind
@@ -1197,7 +1057,7 @@ separate collection, so the chips arrive a moment after the view."
              method body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--delete-comment (intent)
   (let ((id (alist-get 'id intent))
@@ -1216,7 +1076,7 @@ separate collection, so the chips arrive a moment after the view."
              "DELETE"))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--like-comment (intent)
   (let ((id (alist-get 'id intent))
@@ -1247,7 +1107,7 @@ separate collection, so the chips arrive a moment after the view."
                 "POST"))))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--member-person (raw)
   (pr-view--person (or (alist-get 'user raw) raw)))
@@ -1314,7 +1174,7 @@ separate collection, so the chips arrive a moment after the view."
                (pr-view--bb-put-reviewers host id-str who op))))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--refresh-reviewers (host kind id-str)
   (pr-view--http-json
@@ -1416,7 +1276,7 @@ separate collection, so the chips arrive a moment after the view."
                (pr-view--fetch-diff host kind id-str pr forge)))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
+       (pr-view--js "showError" (xwapp-scrub-error (error-message-string e)))))))
 
 (defun pr-view--branch-names (kind raw)
   (mapcar (lambda (row)
@@ -1449,7 +1309,7 @@ separate collection, so the chips arrive a moment after the view."
                             (branches . ,(vconcat (pr-view--branch-names kind raw))))))))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
+       (pr-view--js "showError" (xwapp-scrub-error (error-message-string e)))))))
 
 (defun pr-view--create-payload (kind title desc source dest close)
   (pcase kind
@@ -1501,7 +1361,7 @@ separate collection, so the chips arrive a moment after the view."
              body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 (defun pr-view--approve-pr (id)
   (unless (and pr-view--host id)
@@ -1528,7 +1388,7 @@ separate collection, so the chips arrive a moment after the view."
            body))
       ((error user-error)
        (setq pr-view--inflight nil)
-       (pr-view--js "showError" (pr-view--scrub-error (error-message-string e)))))))
+       (pr-view--js "showError" (xwapp-scrub-error (error-message-string e)))))))
 
 (defun pr-view--merge-strategy (kind raw)
   (let ((s (upcase (format "%s" (or raw "merge_commit")))))
@@ -1611,54 +1471,27 @@ endpoint takes no `dry_run\', so asking would be doing."
              body))
         ((error user-error)
          (setq pr-view--inflight nil)
-         (pr-view--js "showError" (pr-view--scrub-error (error-message-string e))))))))
+         (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 
 ;;; Commands
 
-(defun pr-view--ui-index ()
-  (expand-file-name "ui/index.html" pr-view--dir))
-
-(defun pr-view--file-url ()
-  (concat "file://" (pr-view--ui-index)))
-
 (defun pr-view--on-kill ()
-  (pr-view--stop-poll)
-  (setq pr-view--xw nil
-        pr-view--inflight nil
-        pr-view--last-title nil))
+  (setq pr-view--inflight nil))
 
 ;;;###autoload
 (defun pr-view (&optional kind)
   "Open the pull-request viewer for the current repository.
 KIND is `github' or `bitbucket'; nil auto-detects from origin."
   (interactive)
-  (unless (featurep 'xwidget-internal)
-    (user-error "xwidget-webkit required. Rebuild Emacs with xwidgets"))
-  (require 'xwidget)
-  (unless (file-readable-p (pr-view--ui-index))
-    (user-error "Missing UI at %s" (pr-view--ui-index)))
   (let ((host (pr-view--resolve-host kind)))
     (unless (and host (plist-get host :owner) (plist-get host :repo))
       (user-error "Cannot detect GitHub/Bitbucket repo. Set pr-view-github-* or pr-view-bitbucket-*"))
     (setq pr-view--host host
           pr-view--list-cache nil
-          pr-view--inflight nil
-          pr-view--last-title nil)
-    (if-let* ((buf (get-buffer pr-view--buffer-name)))
-        (progn
-          (pop-to-buffer buf)
-          (when-let* ((xw (pr-view--session)))
-            (xwidget-webkit-goto-uri xw (pr-view--file-url))))
-      (let ((buf (xwidget-webkit--create-new-session-buffer (pr-view--file-url))))
-        (switch-to-buffer buf)
-        (setq-local xwidget-webkit-buffer-name-format pr-view--buffer-name)
-        (rename-buffer pr-view--buffer-name t)
-        (setq-local pr-view--xw (or (xwidget-webkit-current-session)
-                                    (xwidget-webkit-last-session)))
-        (add-hook 'kill-buffer-hook #'pr-view--on-kill nil t)
-        (xwidget-webkit-goto-uri pr-view--xw (pr-view--file-url))))
-    (pr-view--start-poll)
+          pr-view--inflight nil)
+    (setf (xwapp-poll-interval pr-view--app) pr-view-poll-interval)
+    (xwapp-open pr-view--app)
     (pr-view--js "setStatus" "Loading…")))
 
 ;;;###autoload
@@ -1682,10 +1515,7 @@ KIND is `github' or `bitbucket'; nil auto-detects from origin."
     (if (or (not url) (string-empty-p (format "%s" url)))
         (pr-view--js "showError" "No PR URL yet.")
       (setq url (format "%s" url))
-      (kill-new url)
-      (when (fboundp 'gui-set-selection)
-        (gui-set-selection 'CLIPBOARD url)
-        (ignore-errors (gui-set-selection 'PRIMARY url)))
+      (xwapp-copy url)
       (pr-view--js "setStatus" "Copied PR link"))))
 
 ;;;###autoload

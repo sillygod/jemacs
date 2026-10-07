@@ -75,6 +75,13 @@
           ("~/Desktop/spacemacs-private" . 1)))))
 
 
+    ;; Title-intent bridge + url.el HTTP shared by the xwidget apps below.
+    ;; Registered first so pr-view's (require 'xwapp) finds it.
+    (eval `(use-package xwapp
+             :straight (:local-repo ,(concat home-dir "local/xwapp")
+                                    :files ("xwapp.el"))
+             :defer t))
+
     ;; GUI xwidget PR list + description + unified diff (GitHub + Bitbucket Cloud).
     ;; Entry: M-x pr-view / SPC g p.  Tokens stay in Elisp; ui/ only renders.
     (eval `(use-package pr-view

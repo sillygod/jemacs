@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;;
 ;;   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-;;         -L ~/.emacs.d/local/pr-view \
+;;         -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/pr-view \
 ;;         -l pr-view.el -l pr-view-tests.el \
 ;;         -f ert-run-tests-batch-and-exit
 
@@ -116,16 +116,6 @@
     (should (string-match-p "topic=true" path))
     (should-not (string-match-p "pullrequests" path))))
 
-(ert-deftest pr-view-test-absolutize-location ()
-  (should (equal (pr-view--absolutize
-                  "https://api.bitbucket.org/2.0/x"
-                  "https://api.bitbucket.org/2.0/y")
-                 "https://api.bitbucket.org/2.0/x"))
-  (should (equal (pr-view--absolutize
-                  "/2.0/repositories/ws/r/diff/aa..bb"
-                  "https://api.bitbucket.org/2.0/repositories/ws/r/pullrequests/1/diff")
-                 "https://api.bitbucket.org/2.0/repositories/ws/r/diff/aa..bb")))
-
 (ert-deftest pr-view-test-bb-comment-normalize ()
   (let* ((raw (json-parse-string
                "{\"id\":9,\"created_on\":\"c\",\"deleted\":false,\"content\":{\"raw\":\"hello\"},\"user\":{\"display_name\":\"Ada\"},\"parent\":null}"
@@ -140,16 +130,6 @@
 (ert-deftest pr-view-test-comment-payload-bb ()
   (let ((s (json-encode '((content . ((raw . "hi")))))))
     (should (string-match-p "\"raw\":\"hi\"" s))))
-
-(ert-deftest pr-view-test-utf8-body-is-unibyte ()
-  (let ((s (pr-view--utf8-bytes (json-encode '((title . "feat → master"))))))
-    (should-not (multibyte-string-p s))
-    (should (string-match-p "feat" s))))
-
-(ert-deftest pr-view-test-scrub-hides-bearer ()
-  (should (string-match-p "\\*\\*\\*"
-                          (pr-view--scrub-error
-                           "Authorization: Bearer ATATT-secret extra"))))
 
 (ert-deftest pr-view-test-reply-payload-has-parent ()
   (let ((s (json-encode '((content . ((raw . "r")))
@@ -525,21 +505,6 @@ Bitbucket, so its refusal has to land somewhere that stays on screen."
                                      "prview:{\"op\":\"refresh-list\",\"states\":[\"OPEN\",\"MERGED\"]}"))
                  '("OPEN" "MERGED"))))
 
-(ert-deftest pr-view-test-extra-headers-drop-accept ()
-  (let ((h (pr-view--extra-headers
-            '(("Accept" . "application/vnd.github.diff")
-              ("Authorization" . "Bearer x")
-              ("X-GitHub-Api-Version" . "2022-11-28")))))
-    (should-not (assoc "Accept" h))
-    (should (equal (cdr (assoc "Authorization" h)) "Bearer x"))
-    (should (assoc "X-GitHub-Api-Version" h))))
-
-(ert-deftest pr-view-test-extra-headers-json-content-type ()
-  (let ((h (pr-view--extra-headers '(("Accept" . "application/json")) t)))
-    (should (equal (cdr (assoc "Content-Type" h))
-                   "application/json; charset=utf-8"))
-    (should-not (assoc "Accept" h))))
-
 (ert-deftest pr-view-test-gh-files-to-diff ()
   (let* ((files '(((filename . "a.txt")
                    (status . "modified")
@@ -597,6 +562,19 @@ Bitbucket, so its refusal has to land somewhere that stays on screen."
       (should (cl-some (lambda (u) (string-match-p "/files" u)) urls))
       (should (string-match-p "diff --git a/a.txt" (alist-get 'diff shown)))
       (should-not (alist-get 'diff_error shown)))))
+
+(ert-deftest pr-view-test-handler-error-reaches-page ()
+  "A reply that arrives but breaks the handler shows its own message,
+not \"HTTP 200\" or \"Network error\", and frees the next request."
+  (let (shown)
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_url _headers cb &rest _) (funcall cb "{}" 200 nil)))
+              ((symbol-function 'pr-view--js)
+               (lambda (fn obj) (when (equal fn "showError") (setq shown obj)))))
+      (setq pr-view--inflight t)
+      (pr-view--http-json "u" nil (lambda (_) (error "Boom in handler")))
+      (should (equal shown "Boom in handler"))
+      (should-not pr-view--inflight))))
 
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

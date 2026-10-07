@@ -1,0 +1,52 @@
+#+TITLE: xwapp
+
+Plumbing for Elisp-backed pages in an xwidget: a local HTML page
+renders, Elisp owns HTTP and secrets.  Used by =pr-view= (and
+=clickup-view=).
+
+* Shape
+
+- Page → Emacs: the page sets =document.title= to =PREFIX + JSON=; a
+  timer polls the title and hands the parsed intent to the app's handler.
+  xwidget-webkit gives Emacs no message channel it can listen on.
+- Emacs → page: =xwapp-js= calls =NAMESPACE[fn](json)=.
+- One =xwapp= struct per app: buffer name, =index.html=, title prefixes,
+  JS namespace, idle title, handler, optional on-kill.
+
+#+begin_src emacs-lisp :tangle no
+  (defvar my-app
+    (xwapp-create :buffer-name "*my-app*"
+                  :index (expand-file-name "ui/index.html" my-dir)
+                  :prefixes '("myapp:")
+                  :namespace "APP"
+                  :idle-title "My App"
+                  :handler #'my-app--handle-intent))
+
+  (xwapp-open my-app)                 ; show the page, start polling
+  (xwapp-js my-app "render" payload)  ; APP.render(payload)
+#+end_src
+
+* HTTP
+
+=xwapp-http= is url.el with the fixes pr-view paid for: 3xx redirects
+keep =Authorization= (url.el drops it), =Accept= is not sent twice
+(GitHub answers 406), bodies go out as UTF-8 bytes (url.el refuses
+multibyte), and =xwapp-parse-json= reads JSON =false= and =null= both
+as nil.
+
+=xwapp-http-json= hands parsed JSON to =OK-FN=.  =FAIL-FN= gets
+=(CODE ERR BODY URL)= for a failed request, and also for a 2xx it could
+not handle (bad JSON, or =OK-FN= signalled) --- then with =ERR= the
+condition and =BODY= nil, so a handler bug shows in the page instead of
+dying in a url.el timer.
+
+=xwapp-scrub-error= masks any =Authorization= value, Bearer or bare
+(ClickUp's =pk_= token).
+
+* Tests
+
+#+begin_src sh
+  emacs --batch -L ~/.emacs.d/local/xwapp \
+        -l xwapp.el -l xwapp-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
