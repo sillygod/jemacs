@@ -1,0 +1,115 @@
+#+TITLE: clickup-view
+
+ClickUp inside Emacs: read a task (description, checklists, subtasks,
+attachments, comments and their threads), change its status, comment and
+reply, and browse Space ▸ Folder ▸ List.  Built on =xwapp=: Elisp owns
+HTTP and the token, =ui/= only renders.
+
+* Status
+
+| Item    | Value |
+|---------+-------|
+| Package | =local/clickup-view/= |
+| Entry   | =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
+| Needs   | =CLICKUP_API_TOKEN=; GUI Emacs with xwidgets for the page |
+| State   | Elisp layer done; the page (=ui/=) is next |
+
+* Auth
+
+=CLICKUP_API_TOKEN=, a personal token (=pk_...=), sent in =Authorization=
+bare, without =Bearer=.  GUI Emacs does not read shell rc files, so set
+it in =settings.el= as =BITBUCKET_TOKEN= is:
+
+#+begin_src emacs-lisp :tangle no
+  (setenv "CLICKUP_API_TOKEN" "pk_...")
+#+end_src
+
+The workspace is the token's first; set =clickup-view-team-id= to pick
+another.
+
+* Finding the task
+
+=clickup-view= and =clickup-set-status= read the branch name and the
+commits not yet on the remote default branch (=origin/HEAD=, else
+=origin/main=, =master=, =develop=; at most =clickup-view-scan-commits=)
+for =app.clickup.com/t/<id>= links and =CU-<id>=.  One task opens
+directly, several are offered with where each was found, none opens the
+browser (=clickup-view=) or asks (=clickup-set-status=).  =C-u M-x
+clickup-view= always opens the browser.
+
+* What ClickUp actually sends
+
+Probed against the workspace, October 2026.
+
+- Statuses belong to a list, not a space: BACKLOG has Open / in progress
+  / testing / wait for testing / ready to release / Closed while its
+  space's default is to do / in progress / complete.  Read from
+  =GET /list/{id}= and cached for the session.
+- Comments are Quill delta ops, not markdown: newest first, 25 a page,
+  older ones via =start= + =start_id=.  Op types seen: =text=, =image=,
+  =divider=, =table-embed=, =tag= (@mention), =task_mention=,
+  =link_mention=, =view_mention=.  A =table-embed= cell is its own small
+  delta under =content=, keyed ="row:col"=.
+- They become HTML in Elisp, not in the page: the page can issue intents
+  (change a status, post a comment), so a comment must never reach it
+  unescaped.  Every text run is escaped and only http(s) / mailto links
+  survive.
+- Replies: =GET /comment/{id}/reply=, same shape, newest first.
+- Outgoing comments and replies are markdown converted to delta ops ---
+  a port of the clickup-task-manager skill's =markdown_delta.py=, tested
+  op for op against its output.  ClickUp stores =comment_text= verbatim,
+  raw =**= and all.  Replies send the same body as task comments; that
+  has not yet been exercised by a live write.
+- 401 is not always the token: a task id outside the workspace, or one
+  that does not exist, is =Team not authorized= (=OAUTH_027=).  A bad
+  token is =Token invalid= (=OAUTH_025=).
+- Attachment images (=*.clickup-attachments.com=) load without auth.
+
+* Page contract
+
+Intents, page → Emacs, as =document.title = "clickup:" + JSON=.  Add a
+counter field to each: =xwapp= ignores a title identical to the last
+one, so a second Refresh would otherwise be dropped.
+
+| op               | fields                           |
+|------------------+----------------------------------|
+| =ready=          |                                  |
+| =refresh-spaces= |                                  |
+| =open-space=     | id, force                        |
+| =open-list=      | id, page, closed, mine           |
+| =open-task=      | id                               |
+| =more-comments=  | task_id, start, start_id         |
+| =load-replies=   | comment_id                       |
+| =set-status=     | task_id, status                  |
+| =post-comment=   | task_id, text (markdown)         |
+| =post-reply=     | task_id, comment_id, text        |
+| =open-browser=   | url (http(s) / mailto only)      |
+| =copy-url=       | url                              |
+
+Calls, Emacs → page, as =CU.fn(payload)=:
+
+| fn              | payload                                                       |
+|-----------------+---------------------------------------------------------------|
+| =flash=         | message                                                       |
+| =showError=     | message                                                       |
+| =setContext=    | me, team, spaces                                              |
+| =showHome=      |                                                               |
+| =renderSpace=   | id, folders (each with lists), lists                          |
+| =renderList=    | id, name, statuses, page, last_page, closed, mine, tasks      |
+| =renderTask=    | task, statuses (null until =setStatuses=)                     |
+| =setStatuses=   | list_id, statuses                                             |
+| =setComments=   | task_id, items (newest first, with html), has_more, append    |
+| =setReplies=    | comment_id, items                                             |
+| =statusChanged= | task_id, status                                               |
+
+Every payload names its task, list or comment.  The page drops one that
+is not for what it is showing, so a slow reply for one task cannot paint
+over the next.
+
+* Tests
+
+#+begin_src sh
+  emacs --batch -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/clickup-view \
+        -l clickup-view.el -l clickup-view-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src

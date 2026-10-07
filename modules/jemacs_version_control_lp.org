@@ -93,6 +93,15 @@
                         bitbucket-pr
                         pr-view-open-in-browser
                         pr-view-copy-url)))
+
+    ;; ClickUp task view, statuses, comments and list browser in an xwidget.
+    ;; Token: CLICKUP_API_TOKEN.  clickup-set-status needs no page.
+    (eval `(use-package clickup-view
+             :straight (:local-repo ,(concat home-dir "local/clickup-view")
+                                    :files ("clickup-view.el" "ui"))
+             :commands (clickup-view
+                        clickup-view-task
+                        clickup-set-status)))
   #+end_src
 
 ** get pull request url from magit process buffer
