@@ -376,7 +376,7 @@ push, without cloning the overlay.
 - spawn / memory search
 - Webhook / public URL
 
-* Phase 3.11 — The sidecar answers only its token holders  *(this tree)*
+* Phase 3.11 — The sidecar answers only its token holders  *(done)*
 
 Goal: close a hole Phase 3.8 opened and 3.9 widened.  Loopback kept
 other machines out, not other origins: any web page could read the
@@ -401,6 +401,40 @@ there: "Why the sidecar wants a token" in [[file:design.org][design.org]].
 
 - [ ] Agents spawned before this hold a bare =GHOSTHERD_RPC= until
   respawned; they recover through =rpc.url= if they follow the skill
+
+* Phase 3.12 — The memory page  *(this tree)*
+
+Goal: read what claude / grok / agy did before, the way it was
+written --- markdown, whole messages, the hit in its context --- rather
+than chunks between dashed lines.  How it behaves is under "The memory
+page" in [[file:../readme.org][readme.org]].
+
+** What shipped
+
+- [X] =ghostherd-memory-page= / =ghostherd-memory-sessions= on xwapp;
+  =ui/= with marked 11.2.0 vendored (as clickup-view does)
+- [X] Live search, agent and project filters, recent sessions when empty
+- [X] Open at the hit, 160-chunk windows, Earlier / Later keeping the
+  reading position, =n= / =N= between matches
+- [X] Chunks joined back into messages, the overlap dropped
+- [X] Sanitized markdown without images; agy plain; tool-call chips
+- [X] The sidecar's source index answers from any worker thread: =SPC a
+  h v= failed whenever =asyncio.to_thread= handed =memory_list= another
+  thread than the one that opened the sqlite connection
+- [X] Import embeds only changed chunks: a changed transcript used to
+  be deleted and embedded whole, which every five minutes would mean
+  re-embedding every active session
+- [X] The page shows the sidecar's import progress, read every 5s
+- [X] 9 ERT tests, 2 pytest; 38 WebKit checks against the real handler
+  and a throwaway sidecar on synthetic transcripts
+
+** What is left
+
+- [ ] The herd log as a second tab (step 3 of the web-UI plan)
+- [ ] The sanitizer, marked and the base colours are now in two pages;
+  a third would make them worth moving into =xwapp/ui/=
+- [ ] Resume a past session from the page (=claude -r <id>= through
+  =ghostherd-new=)
 
 * Phase 4 — Ecosystem (only if still useful)
 

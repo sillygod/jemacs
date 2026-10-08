@@ -10,7 +10,7 @@
 ;; Run:
 ;;
 ;;   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-;;         -L . -l ghostherd.el -l ghostherd-tests.el \
+;;         -L . -L ../xwapp -l ghostherd.el -l ghostherd-tests.el \
 ;;         -f ert-run-tests-batch-and-exit
 
 ;;; Code:
@@ -3914,6 +3914,173 @@ No cache entry reads as \"not wired up\"; `agy ?\' carries the reason."
               ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
       (ghostherd--poll-tick)
       (should-not usage))))
+
+
+;;; Memory page (pure: no xwidget, no sidecar)
+
+(defmacro ghostherd-test--with-page (&rest body)
+  "Run BODY with sidecar requests and page calls recorded.
+`requests' holds (METHOD PARAMS) oldest first; REPLY, a function of
+METHOD and PARAMS, answers them.  `calls' holds (FN . OBJ) oldest first."
+  (declare (indent 0))
+  `(progn
+     (skip-unless (require 'ghostherd-memory-page nil t))
+     (let ((requests nil) (calls nil) (reply (lambda (_m _p) nil)) (fail nil) (watched 0)
+           (ghostherd-memory-page--importing nil)
+           (ghostherd-memory-page--progress-shown nil)
+           (ghostherd-memory-page--progress-inflight nil)
+           (ghostherd-memory-page--progress-timer nil))
+       (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                  (lambda (method cb &optional params err-cb)
+                    (setq requests (append requests (list (list method params))))
+                    (if fail (funcall err-cb fail) (funcall cb (funcall reply method params)))))
+                 ((symbol-function 'ghostherd-memory-page--js)
+                  (lambda (fn obj) (setq calls (append calls (list (cons fn obj))))))
+                 ;; The tick is called by hand; no timer outlives a test.
+                 ((symbol-function 'ghostherd-memory-page--watch-import)
+                  (lambda () (setq watched (1+ watched)))))
+         ,@body))))
+
+(defun ghostherd-test--call (calls fn)
+  (cdr (car (last (seq-filter (lambda (c) (equal (car c) fn)) calls)))))
+
+(ert-deftest ghostherd-test-memory-page-search ()
+  "Empty asks nothing; a query goes with its filters, its seq comes back."
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m _p) '(:hits ((:text "a" :chunk_index 3) (:text "b" :chunk_index 9)))))
+    (ghostherd-memory-page--handle '((op . "search") (seq . 7) (q . "  ") (agent . "") (project . "")))
+    (should-not requests)
+    (should (equal (ghostherd-test--call calls "renderHits") '(:seq 7 :q "" :hits [])))
+    (ghostherd-memory-page--handle '((op . "search") (seq . 8) (q . " retry ") (agent . "claude")
+                                     (project . "") (limit . 500)))
+    (should (equal requests '(("memory_search" (:query "retry" :limit 120 :agent "claude")))))
+    (let ((hits (ghostherd-test--call calls "renderHits")))
+      (should (equal (plist-get hits :seq) 8))
+      (should (vectorp (plist-get hits :hits)))
+      (should (= (length (plist-get hits :hits)) 2)))))
+
+(ert-deftest ghostherd-test-memory-page-search-failure-names-its-seq ()
+  (ghostherd-test--with-page
+    (setq fail "connection refused")
+    (ghostherd-memory-page--handle '((op . "search") (seq . 4) (q . "x")))
+    (should (equal (ghostherd-test--call calls "searchFailed")
+                   '(:seq 4 :error "connection refused")))))
+
+(ert-deftest ghostherd-test-memory-page-open-source ()
+  "The page places the window; Emacs clamps it and hands focus back."
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m _p) '(:total 900 :chunks ((:chunk_index 40) (:chunk_index 41)))))
+    (ghostherd-memory-page--handle '((op . "open-source") (source_path . "/s.jsonl") (offset . 40)
+                                     (limit . 5000) (focus . 80) (mode . "open")))
+    (should (equal requests '(("memory_chunks" (:source_path "/s.jsonl" :offset 40 :limit 400)))))
+    (let ((p (ghostherd-test--call calls "renderSource")))
+      (should (equal (plist-get p :focus) 80))
+      (should (equal (plist-get p :mode) "open"))
+      (should (equal (plist-get p :total) 900))
+      (should (vectorp (plist-get p :chunks))))
+    ;; JSON null reads as :null, which json-encode refuses: it must not
+    ;; reach the reply.
+    (ghostherd-memory-page--handle '((op . "open-source") (source_path . "/s.jsonl") (focus . :null)))
+    (should (json-encode (ghostherd-test--call calls "renderSource")))
+    (should-not (plist-get (ghostherd-test--call calls "renderSource") :focus))))
+
+(ert-deftest ghostherd-test-memory-page-context-is-arrays ()
+  "json.el reads a list of plists as one alist: the sessions must
+reach the page as an array of objects."
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m _p) '(:total 2 :sources ((:source_path "/a" :agent "claude")
+                                                     (:source_path "/b" :agent "grok")))))
+    (let ((ghostherd-memory-page--project "/p")
+          (ghostherd-memory-page--pending '(:view "sessions" :query nil :project nil)))
+      (ghostherd-memory-page--handle '((op . "ready")))
+      (should-not ghostherd-memory-page--pending))
+    (let* ((ctx (ghostherd-test--call calls "setContext"))
+           (back (json-parse-string (json-encode ctx) :object-type 'alist :array-type 'list)))
+      (should (equal (plist-get ctx :view) "sessions"))
+      (should (equal (plist-get ctx :current_project) "/p"))
+      (should (equal (mapcar (lambda (s) (alist-get 'source_path s)) (alist-get 'sources back))
+                     '("/a" "/b"))))))
+
+(ert-deftest ghostherd-test-memory-page-links-and-copy ()
+  (ghostherd-test--with-page
+    (let (browsed copied)
+      (cl-letf (((symbol-function 'browse-url) (lambda (u &rest _) (setq browsed u)))
+                ((symbol-function 'xwapp-copy) (lambda (s) (setq copied s))))
+        (ghostherd-memory-page--handle '((op . "open-browser") (url . "file:///etc/passwd")))
+        (ghostherd-memory-page--handle '((op . "open-browser") (url . "javascript:alert(1)")))
+        (should-not browsed)
+        (ghostherd-memory-page--handle '((op . "open-browser") (url . "https://example.com/x")))
+        (should (equal browsed "https://example.com/x"))
+        (ghostherd-memory-page--handle '((op . "copy") (text . "a message")))
+        (should (equal copied "a message"))
+        (should (equal (ghostherd-test--call calls "flash") "Copied"))))))
+
+(ert-deftest ghostherd-test-memory-page-errors-reach-the-page ()
+  (ghostherd-test--with-page
+    (ghostherd-memory-page--handle '((op . "open-source") (source_path . "")))
+    (should (string-match-p "No source" (ghostherd-test--call calls "showError")))))
+
+
+(ert-deftest ghostherd-test-memory-page-import-progress ()
+  "Progress while the sidecar imports; the end of a background import
+is announced and lists the sessions again."
+  (ghostherd-test--with-page
+    (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_) t)))
+      (setq reply (lambda (m _p)
+                    (if (equal m "memory_status")
+                        '(:import (:running t :files 3 :imported 223 :agent "claude"
+                                   :current "/Users/x/.claude/projects/p/a0c6b62b-e1d2.jsonl"))
+                      '(:sources nil :total 0))))
+      (ghostherd-memory-page--progress-tick)
+      (should (equal (ghostherd-test--call calls "importProgress")
+                     '(:files 3 :imported 223 :agent "claude" :current "a0c6b62b-e1d2.jsonl")))
+      (should ghostherd-memory-page--progress-shown)
+      ;; It ends.
+      (setq reply (lambda (m _p) (if (equal m "memory_status") '(:import nil) '(:sources nil))))
+      (setq calls nil)
+      (ghostherd-memory-page--progress-tick)
+      (should (assoc "importProgress" calls))
+      (should-not (ghostherd-test--call calls "importProgress"))
+      (should (equal (ghostherd-test--call calls "flash") "Import finished"))
+      (should (assoc "setContext" calls))
+      (should-not ghostherd-memory-page--progress-shown)
+      ;; Nothing running and nothing shown: quiet.
+      (setq calls nil)
+      (ghostherd-memory-page--progress-tick)
+      (should-not calls))))
+
+(ert-deftest ghostherd-test-memory-page-import-waits-for-the-sidecar ()
+  "An import just asked for may not have begun at the first read; the
+watch must not end before the answer comes."
+  (ghostherd-test--with-page
+    (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_) t))
+              ((symbol-function 'ghostherd-memory-page--unwatch)
+               (lambda () (push "unwatch" calls))))
+      (setq reply (lambda (_m _p) '(:import nil)))
+      (let ((ghostherd-memory-page--importing t))
+        (ghostherd-memory-page--progress-tick))
+      (should-not calls))))
+
+(ert-deftest ghostherd-test-memory-page-import-flow ()
+  (ghostherd-test--with-page
+    (setq reply (lambda (m _p)
+                  (if (equal m "memory_import") '(:imported 3 :sessions 1) '(:sources nil :total 0))))
+    (ghostherd-memory-page--handle '((op . "import")))
+    (should (equal (mapcar #'car requests) '("memory_import" "memory_list")))
+    (should (equal (plist-get (cdr (assoc "importProgress" calls)) :current) "starting"))
+    (should-not (ghostherd-test--call calls "importProgress"))
+    (should (equal (ghostherd-test--call calls "flash") "Imported 3 new chunks from 1 sessions"))
+    (should-not ghostherd-memory-page--importing)
+    (should (>= watched 2))
+    ;; A background import already running.
+    (setq reply (lambda (m _p) (if (equal m "memory_import") '(:busy t) '(:sources nil))))
+    (ghostherd-memory-page--handle '((op . "import")))
+    (should (equal (ghostherd-test--call calls "flash") "A background import is already running"))
+    ;; A failure.
+    (setq fail "sidecar gone")
+    (ghostherd-memory-page--handle '((op . "import")))
+    (should (string-match-p "Import: sidecar gone" (ghostherd-test--call calls "showError")))
+    (should-not ghostherd-memory-page--importing)))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herd memory</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="mark">MEM</span>
+      <nav class="tabs">
+        <button type="button" class="tab" data-tab="search">Search</button>
+        <button type="button" class="tab" data-tab="sessions">Sessions <span id="sessions-n" class="count"></span></button>
+      </nav>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-back" class="ghost" hidden title="Back (Esc)">← Back</button>
+      <button type="button" id="btn-import" class="ghost" title="Import transcripts that changed since the last import">Import</button>
+      <button type="button" id="btn-refresh" class="ghost" title="List the sessions again">Refresh</button>
+    </div>
+  </header>
+  <div id="status" class="status" hidden></div>
+  <main id="app" class="app">
+    <p class="muted pad">Waiting for Emacs…</p>
+  </main>
+  <script src="vendor/marked.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

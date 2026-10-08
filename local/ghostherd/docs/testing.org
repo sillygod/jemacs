@@ -8,11 +8,22 @@ How the suite is built and what still needs a human. The manual is
 #+begin_src bash
   cd local/ghostherd
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-        -L . -l ghostherd.el -l ghostherd-tests.el \
+        -L . -L ../xwapp -l ghostherd.el -l ghostherd-tests.el \
         -f ert-run-tests-batch-and-exit
 
   cd server && uv sync --extra dev && GHOSTHERD_MEMORY_FAKE_EMBED=1 uv run pytest
 #+end_src
+
+=-L ../xwapp= is for the memory page's tests; without it they skip.
+The page itself was driven in WebKit (Playwright) against the real
+handler and a throwaway sidecar on synthetic transcripts, fake
+embeddings, writes none: search with debounce and a stale answer,
+agent and project filters, a hit opened at its chunk in a 302-chunk
+session, Earlier keeping the reading position, a 4249-character reply
+joined from three chunks with no sentence repeated at the cuts,
+hostile text (no img, no script, only the https link), links to
+=browse-url=, copy, Esc back to the hit, sessions, import, 600px.  Not
+part of the suite: it needs a browser.
 
 The sidecar tests live in =server/tests=. They never download FastEmbed:
 =GHOSTHERD_MEMORY_FAKE_EMBED=1= hashes tokens into vectors. That is
@@ -88,8 +99,9 @@ In a shell:
 #+begin_src bash
   cd ~/.emacs.d/local/ghostherd
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-        -L . -f batch-byte-compile \
-        ghostherd-backend.el ghostherd-tmux.el ghostherd.el
+        -L . -L ../xwapp -f batch-byte-compile \
+        ghostherd-backend.el ghostherd-tmux.el ghostherd.el \
+        ghostherd-memory.el ghostherd-memory-page.el
 #+end_src
 
 Expect: no errors (warnings about free vars from ghostel internals are OK if any).

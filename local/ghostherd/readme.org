@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.11* — the sidecar answers only its token holders         |
+| Phase       | *3.12* — the memory page                                    |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -122,7 +122,9 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-restore=             | Re-adopt agents that outlived Emacs  |
 | =M-x ghostherd-log=                 | What the herd did while you were away |
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
-| =M-x ghostherd-memory-search=       | Search imported transcripts          |
+| =M-x ghostherd-memory-page=         | Search and read past sessions (page) |
+| =M-x ghostherd-memory-sessions=     | The sessions, newest first (page)    |
+| =M-x ghostherd-memory-search=       | Search imported transcripts (text)   |
 | =M-x ghostherd-memory-view=         | Browse imported sources (text)       |
 | =M-x ghostherd-memory-import=       | Import claude / grok / agy stores    |
 | =M-x ghostherd-memory-status=       | Sidecar health + point count         |
@@ -141,8 +143,8 @@ report. Notes do, because they were written onto the host.
 | =ahk= | kill           |
 | =ahr= | rename         |
 | =ahl= | herd log       |
-| =ah/= | search memory  |
-| =ahv= | view memory    |
+| =ah/= | memory page    |
+| =ahv= | memory sessions |
 | =ahI= | import memory  |
 
 ** Sidebar keys
@@ -829,13 +831,46 @@ does not touch those.
 #+end_src
 
 Then =SPC a h I= (or =M-x ghostherd-memory-import=) once, then =SPC a h /=
-to search, or =SPC a h v= to browse sources (text only — images never
-entered the index).  Import is CPU-heavy (FastEmbed) and runs *in the
-sidecar*, not inside Emacs: watch =*ghostherd-memory*= for per-file
-progress; a second =I= while one is running is a no-op.  Already-imported
-files are skipped.  =C-u SPC a h /= or =C-u SPC a h v= restrict to the
-current project; the default is all of them, because the usual failure
-is "I forgot which project".
+to search, or =SPC a h v= to browse the sessions.  Import is CPU-heavy
+(FastEmbed) and runs *in the sidecar*, not inside Emacs: watch
+=*ghostherd-memory*= for per-file progress; a second =I= while one is
+running is a no-op.  Already-imported files are skipped.  =C-u SPC a h
+/= starts filtered to the current project; the default is all of them,
+because the usual failure is "I forgot which project".
+
+** The memory page
+
+=SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=
+(=ghostherd-memory-sessions=) open a page in an xwidget, built on
+=xwapp= like pr-view and clickup-view.  =M-x ghostherd-memory-search=
+and =ghostherd-memory-view= are still there, as text, for an Emacs
+without xwidgets.
+
+- Search as you type, with agent chips and a project menu (this
+  project first).  Hits show the passage around the match, terms
+  marked.  Empty, it shows the most recent sessions.
+- A hit opens its session *at the hit*: a window of 160 chunks around
+  it, Earlier / Later for the rest (49 sessions here have over 400
+  chunks, the largest 4617), the hit highlighted, =n= / =N= between
+  matches.
+- Messages are put back together.  The importer splits a long turn
+  into ~1800-character chunks, each starting with the last ~120
+  characters of the one before, and records no turn number; the page
+  joins a chunk that starts with the previous one's tail, in the same
+  role, and drops the repeat.
+- claude and grok render as markdown, through a whitelist sanitizer
+  with no images: a transcript holds whatever an agent ever read.
+  agy's text is salvaged from protobuf and full of tag-like noise, so
+  it stays plain.  Tool calls show as =⚙ Bash= chips.
+- Links go to =browse-url=; Copy takes a whole message; Import runs
+  without popping the log up beside the page.
+- While the sidecar imports --- from this page or not --- the status
+  line reads its progress every five seconds: agent, files, new chunks,
+  the file at hand.
+- The page holds no token and asks the sidecar nothing itself: every
+  request goes through Emacs.
+- Keys: =/= search, =↑= / =↓= between results, =RET= open, =Esc= back,
+  =n= / =N= matches.
 
 An agent can ask the same index:
 
@@ -920,7 +955,7 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
         ghostherd-tmux-fetch-timeout 10        ; give up on a wedged server
         ghostherd-tmux-config nil)             ; nil = generate one
 
-  ;; Shared transcript memory.  Not started by ghostherd-mode.
+  ;; Shared transcript memory.  ghostherd-mode starts the sidecar.
   (setq ghostherd-memory-port 49152
         ghostherd-memory-port-tries 32
         ghostherd-memory-search-limit 8)

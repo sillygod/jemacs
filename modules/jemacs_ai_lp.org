@@ -519,7 +519,8 @@
                                     ;; ecloud's recipe copies server/ into the
                                     ;; straight build; without this, locate-library
                                     ;; sees only .elc and the sidecar is invisible.
-                                    :files ("*.el" "server"))
+                                    ;; ui/ is the memory page.
+                                    :files ("*.el" "server" "ui"))
              :commands (ghostherd-new
                         ghostherd-new-pair
                         ghostherd-switch
@@ -540,6 +541,8 @@
                         ghostherd-log
                         ghostherd-scrollback
                         ghostherd-visit
+                        ghostherd-memory-page
+                        ghostherd-memory-sessions
                         ghostherd-memory-search
                         ghostherd-memory-view
                         ghostherd-memory-import

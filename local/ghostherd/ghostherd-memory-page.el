@@ -1,0 +1,316 @@
+;;; ghostherd-memory-page.el --- Search and read past sessions in an xwidget -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Jing
+
+;; This file is part of ghostherd.
+
+;;; Commentary:
+
+;; The page for `ghostherd-memory': live search with agent and project
+;; filters, the sessions the index holds, and the transcript a hit came
+;; from, opened at the hit.  Built on xwapp like pr-view and
+;; clickup-view: Elisp asks the sidecar, ui/ only renders.  The page
+;; holds no token and makes no request of its own, so nothing it renders
+;; -- and transcripts carry whatever an agent ever read -- can reach the
+;; sidecar.
+;;
+;;   M-x ghostherd-memory-page       search (C-u: this project only)
+;;   M-x ghostherd-memory-sessions   the sessions, newest first
+;;
+;; The text commands `ghostherd-memory-search' and `ghostherd-memory-view'
+;; stay: they need no xwidget.
+
+;;; Code:
+
+(require 'subr-x)
+(require 'seq)
+(require 'project)
+(require 'xwapp)
+(require 'ghostherd-memory)
+
+(defgroup ghostherd-memory-page nil
+  "The memory page."
+  :group 'ghostherd-memory
+  :prefix "ghostherd-memory-page-")
+
+(defcustom ghostherd-memory-page-poll-interval 0.2
+  "Seconds between title-intent polls."
+  :type 'number
+  :group 'ghostherd-memory-page)
+
+(defconst ghostherd-memory-page--dir
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory containing this file and ui/.")
+
+(defconst ghostherd-memory-page--max-chunks 400
+  "Most chunks one request may ask for; the page asks for windows.")
+
+(defvar ghostherd-memory-page--pending nil
+  "What to show once the page says it is ready: plist :view :query :project.")
+
+(defvar ghostherd-memory-page--project nil
+  "The project the page was opened from, offered as a filter.")
+
+(defconst ghostherd-memory-page--progress-every 5
+  "Seconds between reads of the sidecar's import progress.")
+
+(defvar ghostherd-memory-page--progress-timer nil)
+(defvar ghostherd-memory-page--progress-inflight nil)
+(defvar ghostherd-memory-page--progress-shown nil
+  "Non-nil while the page shows progress it read from the sidecar.")
+(defvar ghostherd-memory-page--importing nil
+  "Non-nil while an import the page asked for has not answered.")
+
+(defvar ghostherd-memory-page--app
+  (xwapp-create :buffer-name "*herd memory*"
+                :index (expand-file-name "ui/index.html" ghostherd-memory-page--dir)
+                :prefixes '("ghmem:")
+                :namespace "GM"
+                :idle-title "Herd memory"
+                :handler #'ghostherd-memory-page--handle
+                :on-kill (lambda ()
+                           (setq ghostherd-memory-page--pending nil
+                                 ghostherd-memory-page--importing nil)
+                           (ghostherd-memory-page--unwatch)))
+  "The page, buffer and intent channel; see `xwapp'.")
+
+
+;;; Helpers
+
+(defun ghostherd-memory-page--js (fn obj)
+  (xwapp-js ghostherd-memory-page--app fn obj))
+
+(defun ghostherd-memory-page--truthy (v)
+  "Non-nil when V is true: intents parse JSON false as `:false'."
+  (and v (not (memq v '(:false :null)))))
+
+(defun ghostherd-memory-page--int (v default)
+  (if (numberp v) (truncate v) default))
+
+(defun ghostherd-memory-page--str (v)
+  "V as a non-empty string, or nil."
+  (and (stringp v) (not (string-empty-p (string-trim v))) (string-trim v)))
+
+(defun ghostherd-memory-page--vec (xs)
+  "XS as a vector.  json.el reads a list of plists as one alist, so
+every list going to the page goes as a vector."
+  (vconcat xs))
+
+(defun ghostherd-memory-page--current-project ()
+  "The current project's root as the importer records it, or nil."
+  (when-let* ((p (project-current)))
+    (directory-file-name (expand-file-name (project-root p)))))
+
+(defun ghostherd-memory-page--fail (what)
+  "An error callback reporting WHAT went wrong in the page."
+  (lambda (err)
+    (ghostherd-memory-page--js "showError" (format "%s: %s" what err))))
+
+
+;;; Import progress
+
+(defun ghostherd-memory-page--watch-import ()
+  "Send the sidecar's import progress to the page until the import ends.
+Also how a background import already running shows up on the page."
+  (unless (timerp ghostherd-memory-page--progress-timer)
+    (setq ghostherd-memory-page--progress-timer
+          (run-at-time 0 ghostherd-memory-page--progress-every
+                       #'ghostherd-memory-page--progress-tick))))
+
+(defun ghostherd-memory-page--unwatch ()
+  (when (timerp ghostherd-memory-page--progress-timer)
+    (cancel-timer ghostherd-memory-page--progress-timer))
+  (setq ghostherd-memory-page--progress-timer nil
+        ghostherd-memory-page--progress-inflight nil))
+
+(defun ghostherd-memory-page--progress (p)
+  "The page's view of the sidecar's import progress P."
+  (list :files (or (plist-get p :files) 0)
+        :imported (or (plist-get p :imported) 0)
+        :agent (or (plist-get p :agent) "")
+        :current (let ((c (plist-get p :current)))
+                   (if (stringp c) (file-name-nondirectory c) ""))))
+
+(defun ghostherd-memory-page--progress-tick ()
+  "Read the import progress once and pass it on."
+  (cond
+   ((not (xwapp-buffer ghostherd-memory-page--app))
+    (ghostherd-memory-page--unwatch))
+   (ghostherd-memory-page--progress-inflight nil)
+   (t
+    (setq ghostherd-memory-page--progress-inflight t)
+    (ghostherd-memory-request-async
+     "memory_status"
+     (lambda (status)
+       (setq ghostherd-memory-page--progress-inflight nil)
+       (let ((p (plist-get status :import)))
+         (cond
+          ((and p (plist-get p :running))
+           (setq ghostherd-memory-page--progress-shown t)
+           (ghostherd-memory-page--js "importProgress" (ghostherd-memory-page--progress p)))
+          ;; Asked, not yet begun: the sidecar has not picked it up.
+          (ghostherd-memory-page--importing nil)
+          (t
+           (ghostherd-memory-page--unwatch)
+           (when ghostherd-memory-page--progress-shown
+             ;; A background import ended; ours report their own result.
+             (setq ghostherd-memory-page--progress-shown nil)
+             (ghostherd-memory-page--js "importProgress" nil)
+             (ghostherd-memory-page--js "flash" "Import finished")
+             (ghostherd-memory-page--send-context))))))
+     nil
+     (lambda (_err) (setq ghostherd-memory-page--progress-inflight nil))))))
+
+
+;;; Intents
+
+(defun ghostherd-memory-page--send-context ()
+  "Send the sessions the index holds, and what to show first."
+  (ghostherd-memory-page--watch-import)
+  (ghostherd-memory-request-async
+   "memory_list"
+   (lambda (result)
+     (let ((pending ghostherd-memory-page--pending))
+       (setq ghostherd-memory-page--pending nil)
+       (ghostherd-memory-page--js
+        "setContext"
+        (list :sources (ghostherd-memory-page--vec (plist-get result :sources))
+              :total (or (plist-get result :total) 0)
+              :current_project (or ghostherd-memory-page--project "")
+              :view (or (plist-get pending :view) "")
+              :query (or (plist-get pending :query) "")
+              :project (or (plist-get pending :project) "")))))
+   (list :limit 5000)
+   (ghostherd-memory-page--fail "Listing sessions")))
+
+(defun ghostherd-memory-page--search (intent)
+  "Run INTENT's search: seq, q, agent, project, limit.
+SEQ comes back with the hits, so the page can drop a slow answer to
+an older query."
+  (let ((seq (let ((n (alist-get 'seq intent))) (and (numberp n) n)))
+        (q (or (ghostherd-memory-page--str (alist-get 'q intent)) ""))
+        (agent (ghostherd-memory-page--str (alist-get 'agent intent)))
+        (project (ghostherd-memory-page--str (alist-get 'project intent)))
+        (limit (min 120 (max 1 (ghostherd-memory-page--int (alist-get 'limit intent) 30)))))
+    (if (string-empty-p q)
+        (ghostherd-memory-page--js "renderHits" (list :seq seq :q "" :hits []))
+      (ghostherd-memory-request-async
+       "memory_search"
+       (lambda (result)
+         (ghostherd-memory-page--js
+          "renderHits"
+          (list :seq seq :q q :hits (ghostherd-memory-page--vec (plist-get result :hits)))))
+       (append (list :query q :limit limit)
+               (and agent (list :agent agent))
+               (and project (list :project project)))
+       (lambda (err)
+         (ghostherd-memory-page--js "searchFailed" (list :seq seq :error (format "%s" err))))))))
+
+(defun ghostherd-memory-page--open-source (intent)
+  "Send a window of INTENT's source: source_path, offset, limit.
+Focus and mode ride along untouched; the page placed the window."
+  (let ((path (ghostherd-memory-page--str (alist-get 'source_path intent)))
+        (offset (max 0 (ghostherd-memory-page--int (alist-get 'offset intent) 0)))
+        (limit (min ghostherd-memory-page--max-chunks
+                    (max 1 (ghostherd-memory-page--int (alist-get 'limit intent) 160))))
+        ;; Intents read JSON null as `:null', which json-encode refuses.
+        (focus (let ((f (alist-get 'focus intent))) (and (numberp f) f)))
+        (mode (or (ghostherd-memory-page--str (alist-get 'mode intent)) "open")))
+    (unless path (user-error "No source to open"))
+    (ghostherd-memory-request-async
+     "memory_chunks"
+     (lambda (result)
+       (ghostherd-memory-page--js
+        "renderSource"
+        (list :source_path path
+              :offset offset
+              :total (or (plist-get result :total) 0)
+              :chunks (ghostherd-memory-page--vec (plist-get result :chunks))
+              :focus focus
+              :mode mode)))
+     (list :source_path path :offset offset :limit limit)
+     (ghostherd-memory-page--fail "Opening the session"))))
+
+(defun ghostherd-memory-page--import ()
+  "Import new transcripts in the sidecar, then send the sessions again.
+Not `ghostherd-memory-import': that pops up the log beside the page."
+  (setq ghostherd-memory-page--importing t)
+  (ghostherd-memory-page--js "importProgress"
+                             '(:files 0 :imported 0 :agent "" :current "starting"))
+  (ghostherd-memory-page--watch-import)
+  (let ((done (lambda ()
+                (setq ghostherd-memory-page--importing nil
+                      ghostherd-memory-page--progress-shown nil)
+                (ghostherd-memory-page--unwatch)
+                (ghostherd-memory-page--js "importProgress" nil))))
+    (ghostherd-memory-request-async
+     "memory_import"
+     (lambda (result)
+       (funcall done)
+       (ghostherd-memory-page--js
+        "flash"
+        (if (plist-get result :busy)
+            "A background import is already running"
+          (format "Imported %s new chunks from %s sessions"
+                  (or (plist-get result :imported) 0)
+                  (or (plist-get result :sessions) 0))))
+       ;; Watches again: a busy answer means the other import goes on.
+       (ghostherd-memory-page--send-context))
+     nil
+     (lambda (err)
+       (funcall done)
+       (ghostherd-memory-page--js "showError" (format "Import: %s" err))))))
+
+(defun ghostherd-memory-page--handle (intent)
+  "Dispatch INTENT from the page.  Errors are shown there, not lost."
+  (condition-case e
+      (pcase (alist-get 'op intent)
+        ("ready" (ghostherd-memory-page--send-context))
+        ("refresh" (ghostherd-memory-page--send-context))
+        ("search" (ghostherd-memory-page--search intent))
+        ("open-source" (ghostherd-memory-page--open-source intent))
+        ("import" (ghostherd-memory-page--import))
+        ("copy"
+         (when-let* ((text (alist-get 'text intent)))
+           (xwapp-copy text)
+           (ghostherd-memory-page--js "flash" "Copied")))
+        ("open-browser"
+         (let ((url (alist-get 'url intent)))
+           (when (and (stringp url) (string-match-p "\\`https?://" url))
+             (browse-url url))))
+        (_ nil))
+    (error (ghostherd-memory-page--js
+            "showError" (xwapp-scrub-error (error-message-string e))))))
+
+
+;;; Commands
+
+(defun ghostherd-memory-page--open (view &optional query project)
+  "Show the page on VIEW, with QUERY and PROJECT as the first search."
+  ;; Here, not in the page's ready: a missing `uv' or a stale sidecar
+  ;; reads better in the echo area than in a page that never filled.
+  (ghostherd-memory-ensure)
+  (setq ghostherd-memory-page--project (ghostherd-memory-page--current-project)
+        ghostherd-memory-page--pending (list :view view :query query :project project))
+  (setf (xwapp-poll-interval ghostherd-memory-page--app)
+        ghostherd-memory-page-poll-interval)
+  (xwapp-open ghostherd-memory-page--app))
+
+;;;###autoload
+(defun ghostherd-memory-page (&optional this-project)
+  "Search past claude / grok / agy sessions in a page.
+With a prefix argument THIS-PROJECT, start filtered to the current
+project.  The default is every project: the usual failure is \"I
+forgot which project\"."
+  (interactive "P")
+  (ghostherd-memory-page--open
+   "search" nil (and this-project (ghostherd-memory-page--current-project))))
+
+;;;###autoload
+(defun ghostherd-memory-sessions ()
+  "Browse the sessions the memory index holds, newest first."
+  (interactive)
+  (ghostherd-memory-page--open "sessions"))
+
+(provide 'ghostherd-memory-page)
+;;; ghostherd-memory-page.el ends here

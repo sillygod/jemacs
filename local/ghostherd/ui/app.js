@@ -1,0 +1,937 @@
+(() => {
+  "use strict";
+
+  const PREFIX = "ghmem:";
+  const $ = (id) => document.getElementById(id);
+  const app = $("app");
+  const statusEl = $("status");
+  const btnBack = $("btn-back");
+
+  // ---- Intents ---------------------------------------------------------
+  //
+  // Emacs polls document.title and resets it once read.  A title set
+  // before then would overwrite the unread one, so intents queue and go
+  // out one per reset.  The counter keeps two identical intents apart;
+  // seeded with the clock so a reloaded page's first intent is new.
+
+  const outbox = [];
+  let seq = Date.now();
+  let sentAt = 0;
+
+  function pump() {
+    if (!outbox.length) return;
+    if (document.title.startsWith(PREFIX) && Date.now() - sentAt < 2000) return;
+    document.title = PREFIX + JSON.stringify(outbox.shift());
+    sentAt = Date.now();
+  }
+
+  function emit(op, extra) {
+    outbox.push(Object.assign({ op: op, n: ++seq }, extra || {}));
+    pump();
+  }
+
+  setInterval(pump, 50);
+
+  // ---- Small helpers ---------------------------------------------------
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    })[c]);
+  }
+
+  // A transcript's ts is ISO text (or ""); a source's mtime is seconds.
+  function stamp(v) {
+    if (typeof v === "number" && v > 0) return v * 1000;
+    if (typeof v === "string" && v) {
+      const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(v) ? v : v.replace(" ", "T") + "Z");
+      return Number.isNaN(t) ? null : t;
+    }
+    return null;
+  }
+
+  function when(v) {
+    const t = stamp(v);
+    if (!t) return "";
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    if (s < 604800) return Math.floor(s / 86400) + "d ago";
+    const d = new Date(t);
+    const opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  function fullTime(v) {
+    const t = stamp(v);
+    return t ? new Date(t).toLocaleString() : "";
+  }
+
+  function leaf(project) {
+    const p = String(project || "").replace(/\/+$/, "");
+    return p ? p.slice(p.lastIndexOf("/") + 1) || p : "—";
+  }
+
+  function baseName(path) {
+    const p = String(path || "");
+    return p.slice(p.lastIndexOf("/") + 1);
+  }
+
+  const AGENTS = ["claude", "grok", "agy"];
+  const AGENT_NAME = { claude: "Claude", grok: "Grok", agy: "Agy" };
+
+  function agentBadge(agent) {
+    const a = AGENTS.includes(agent) ? agent : "other";
+    return '<span class="agent a-' + a + '">' + esc(agent || "?") + "</span>";
+  }
+
+  let flashTimer = null;
+  function setStatus(msg, kind) {
+    clearTimeout(flashTimer);
+    if (!msg) {
+      statusEl.hidden = true;
+      return;
+    }
+    statusEl.hidden = false;
+    statusEl.textContent = msg;
+    statusEl.className = "status" + (kind ? " " + kind : "");
+    if (!kind) flashTimer = setTimeout(() => (statusEl.hidden = true), 3500);
+  }
+
+  function shortName(name) {
+    const s = String(name || "");
+    return s.length > 24 ? s.slice(0, 12) + "…" + s.slice(-8) : s;
+  }
+
+  // ---- Sanitizer -------------------------------------------------------
+  //
+  // clickup-view's whitelist, minus images: a transcript holds whatever
+  // an agent ever read, and a remote <img> would be fetched just by
+  // opening it.  Parsed in an inert DOMParser document, so nothing in it
+  // runs before it is cleaned.
+
+  const KEEP = {
+    A: ["href", "title"],
+    P: [], BR: [], HR: [], DIV: [], SPAN: [],
+    STRONG: [], B: [], EM: [], I: [], U: [], S: [], DEL: [], INS: [],
+    MARK: [], SUB: [], SUP: [], SMALL: [], KBD: [],
+    CODE: ["class"], PRE: [], BLOCKQUOTE: [],
+    H1: [], H2: [], H3: [], H4: [], H5: [], H6: [],
+    UL: [], OL: ["start"], LI: [],
+    TABLE: [], THEAD: [], TBODY: [], TR: [],
+    TH: ["align", "colspan", "rowspan"], TD: ["align", "colspan", "rowspan"],
+    INPUT: ["type", "checked"],
+    DETAILS: [], SUMMARY: [],
+  };
+  const DROP = new Set([
+    "SCRIPT", "STYLE", "IFRAME", "FRAME", "FRAMESET", "OBJECT", "EMBED", "APPLET",
+    "TEMPLATE", "NOSCRIPT", "SVG", "MATH", "FORM", "TEXTAREA", "SELECT", "OPTION",
+    "BUTTON", "LINK", "META", "BASE", "TITLE", "HEAD", "AUDIO", "VIDEO", "SOURCE",
+    "TRACK", "CANVAS", "PORTAL", "IMG", "PICTURE",
+  ]);
+  const ATTR_OK = {
+    href: (v) => /^(https?:|mailto:)/i.test(v),
+    class: (v) => /^language-[\w+#-]+$/.test(v),
+    align: (v) => /^(left|right|center)$/.test(v),
+    colspan: (v) => /^\d{1,3}$/.test(v),
+    rowspan: (v) => /^\d{1,3}$/.test(v),
+    start: (v) => /^\d{1,6}$/.test(v),
+    type: (v) => v === "checkbox",
+  };
+
+  function cleanNode(node, out) {
+    if (node.nodeType === 3) {
+      out.appendChild(document.createTextNode(node.data));
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toUpperCase();
+    if (DROP.has(tag)) return;
+    const keep = KEEP[tag];
+    if (
+      !keep ||
+      (tag === "INPUT" && node.getAttribute("type") !== "checkbox") ||
+      (tag === "A" && !ATTR_OK.href((node.getAttribute("href") || "").trim()))
+    ) {
+      node.childNodes.forEach((k) => cleanNode(k, out));
+      return;
+    }
+    const el = document.createElement(tag.toLowerCase());
+    keep.forEach((name) => {
+      if (!node.hasAttribute(name)) return;
+      const v = node.getAttribute(name).trim();
+      if (name === "checked") el.setAttribute(name, "");
+      else if (v && (ATTR_OK[name] || (() => true))(v)) el.setAttribute(name, v);
+    });
+    if (tag === "INPUT") el.setAttribute("disabled", "");
+    node.childNodes.forEach((k) => cleanNode(k, el));
+    out.appendChild(el);
+  }
+
+  function sanitize(html) {
+    const doc = new DOMParser().parseFromString(
+      "<!DOCTYPE html><body>" + String(html || "") + "</body>",
+      "text/html"
+    );
+    const box = document.createElement("div");
+    doc.body.childNodes.forEach((k) => cleanNode(k, box));
+    return box.innerHTML;
+  }
+
+  // "[tool Bash] npm test" is how the importers note a tool call.
+  function toolMarks(src) {
+    return src.replace(/^\[tool ([^\]\n`]{1,80})\]/gm, (m, name) => "`⚙ " + name + "`");
+  }
+
+  function markdown(src) {
+    if (!src || !String(src).trim()) return "";
+    if (window.marked && typeof window.marked.parse === "function") {
+      try {
+        return sanitize(window.marked.parse(toolMarks(String(src)), { gfm: true, breaks: true }));
+      } catch (e) {
+        /* fall through to plain text */
+      }
+    }
+    return '<div class="plain">' + esc(src) + "</div>";
+  }
+
+  // ---- Query terms -----------------------------------------------------
+
+  function termRe(q) {
+    const terms = String(q || "")
+      .split(/\s+/)
+      .filter((t) => t.length >= 2 || /[^\x00-\x7f]/.test(t))
+      .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return terms.length ? new RegExp("(" + terms.join("|") + ")", "gi") : null;
+  }
+
+  // TEXT with RE's matches in <mark>, everything escaped.
+  function hl(text, re) {
+    const s = String(text || "");
+    if (!re) return esc(s);
+    let out = "";
+    let last = 0;
+    s.replace(re, (m, _g, at) => {
+      out += esc(s.slice(last, at)) + "<mark>" + esc(m) + "</mark>";
+      last = at + m.length;
+      return m;
+    });
+    return out + esc(s.slice(last));
+  }
+
+  // Up to ~300 characters of TEXT around RE's first match.
+  function snippet(text, re) {
+    const s = String(text || "").replace(/\s+/g, " ").trim();
+    let at = 0;
+    if (re) {
+      re.lastIndex = 0;
+      const m = re.exec(s);
+      re.lastIndex = 0;
+      if (m) at = m.index;
+    }
+    const start = Math.max(0, at - 90);
+    const end = Math.min(s.length, start + 300);
+    return (start > 0 ? "…" : "") + hl(s.slice(start, end), re) + (end < s.length ? "…" : "");
+  }
+
+  // Wrap RE's matches in ROOT's text in <mark>, for a rendered message.
+  function markTerms(root, re) {
+    if (!re) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((node) => {
+      re.lastIndex = 0;
+      if (!re.test(node.data)) return;
+      re.lastIndex = 0;
+      const span = document.createElement("span");
+      span.innerHTML = hl(node.data, re);
+      node.replaceWith(...span.childNodes);
+    });
+  }
+
+  // ---- Chunks back into messages ---------------------------------------
+  //
+  // The importer splits a long turn into ~1800-character chunks, each
+  // starting with the last ~120 characters of the one before (so a
+  // sentence across a cut is findable from either side), and records no
+  // turn number.  A chunk that begins with the previous one's tail, in
+  // the same role, is a continuation: join it and drop the repeat.
+
+  function overlap(prev, next) {
+    const max = Math.min(200, prev.length, next.length);
+    for (let k = max; k >= 12; k--) {
+      if (next.startsWith(prev.slice(prev.length - k))) return k;
+    }
+    return 0;
+  }
+
+  function messagesOf(chunks) {
+    const out = [];
+    chunks.forEach((c) => {
+      const text = String(c.text || "");
+      const prev = out[out.length - 1];
+      const same =
+        prev && prev.role === c.role && (!prev.ts || !c.ts || prev.ts === c.ts) &&
+        prev.last === c.chunk_index - 1;
+      const k = same ? overlap(prev.tail, text) : 0;
+      if (k) {
+        prev.text += text.slice(k);
+        prev.last = c.chunk_index;
+        prev.tail = text;
+      } else {
+        out.push({
+          role: c.role || "",
+          ts: c.ts || "",
+          title: c.title || "",
+          first: c.chunk_index,
+          last: c.chunk_index,
+          text: text,
+          tail: text,
+        });
+      }
+    });
+    return out;
+  }
+
+  // ---- State -----------------------------------------------------------
+
+  let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [] };
+  let filters = { agent: "", project: "" };
+  let view = "boot"; // search | sessions | source
+  let tab = "search"; // the list view a source returns to
+  let query = "";
+  let searchSeq = 0; // the search whose answer the page wants
+  let limit = 30;
+  let hits = null; // { q, items } once answered
+  let searching = false;
+  let sessionsFilter = "";
+  let src = null; // the session on screen: { path, meta, total, offset, chunks, focus, re, marks, at }
+  let listScroll = { search: 0, sessions: 0 };
+  let lastOpened = null; // key of the card a source was opened from
+
+  function sourceMeta(path) {
+    return ctx.byPath[path] || { source_path: path, agent: "", project: "", kind: "", chunks: 0 };
+  }
+
+  // ---- Chrome ----------------------------------------------------------
+
+  function chrome() {
+    document.querySelectorAll(".tab").forEach((b) => {
+      b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
+    });
+    btnBack.hidden = view !== "source";
+    $("sessions-n").textContent = ctx.sources.length ? String(ctx.sources.length) : "";
+    app.setAttribute("data-view", view);
+  }
+
+  function filtersHtml() {
+    const counts = {};
+    ctx.sources.forEach((s) => (counts[s.agent] = (counts[s.agent] || 0) + 1));
+    const chip = (value, label, n) =>
+      '<button type="button" class="chip' + (filters.agent === value ? " on" : "") +
+      '" data-act="agent" data-agent="' + esc(value) + '">' + esc(label) +
+      (n ? ' <span class="count">' + n + "</span>" : "") + "</button>";
+    const chips = chip("", "All") + AGENTS.map((a) => chip(a, a, counts[a] || 0)).join("");
+    const opt = (value, label, title) =>
+      '<option value="' + esc(value) + '"' + (filters.project === value ? " selected" : "") +
+      (title ? ' title="' + esc(title) + '"' : "") + ">" + esc(label) + "</option>";
+    let opts = opt("", "All projects");
+    const cur = ctx.projects.find((p) => p.project === ctx.currentProject);
+    if (cur) opts += opt(cur.project, "This project · " + cur.leaf, cur.project);
+    ctx.projects.forEach((p) => {
+      if (p !== cur) opts += opt(p.project, p.leaf + " (" + p.n + ")", p.project);
+    });
+    return (
+      '<div class="filters"><div class="chips">' + chips + "</div>" +
+      '<select id="project" title="Project">' + opts + "</select></div>"
+    );
+  }
+
+  // ---- Search ----------------------------------------------------------
+
+  function showSearch() {
+    view = tab = "search";
+    chrome();
+    app.innerHTML =
+      '<div class="page">' +
+      '<div class="searchbar"><input id="q" type="search" autocomplete="off" spellcheck="false" ' +
+      'placeholder="Search past sessions — 中文 or English  ( / )" value="' + esc(query) + '"></div>' +
+      filtersHtml() +
+      '<div id="results" class="results"></div></div>';
+    renderResults();
+    app.scrollTop = listScroll.search;
+    refocus();
+  }
+
+  function hitCard(h, i, re) {
+    const meta = sourceMeta(h.source_path);
+    const t = h.ts || meta.mtime;
+    const title = h.title || (h.session_id ? h.session_id.slice(0, 8) : baseName(h.source_path));
+    return (
+      '<div class="card hit" tabindex="0" role="button" data-act="open-hit" data-i="' + i + '" ' +
+      'data-key="' + esc(h.source_path + "#" + h.chunk_index) + '">' +
+      '<div class="card-head">' + agentBadge(h.agent) +
+      '<span class="proj" title="' + esc(h.project) + '">' + esc(leaf(h.project)) + "</span>" +
+      '<span class="role r-' + esc(h.role) + '">' + esc(h.role || "") + "</span>" +
+      '<span class="title">' + esc(title) + "</span>" +
+      '<span class="when" title="' + esc(fullTime(t)) + '">' + esc(when(t)) + "</span></div>" +
+      '<div class="snip">' + snippet(h.text, re) + "</div></div>"
+    );
+  }
+
+  function renderResults() {
+    const box = $("results");
+    if (!box) return;
+    if (!query.trim()) {
+      const recent = ctx.sources.filter(matchesFilters).slice(0, 12);
+      box.innerHTML =
+        '<h2 class="section">Recent sessions</h2>' +
+        (recent.length
+          ? recent.map(sessionRow).join("")
+          : '<p class="empty">Nothing imported yet. Import reads claude, grok and agy transcripts.</p>');
+      return;
+    }
+    if (!hits || hits.q !== query.trim()) {
+      box.innerHTML = '<p class="empty">' + (searching ? "Searching…" : "") + "</p>";
+      return;
+    }
+    const re = termRe(hits.q);
+    const items = hits.items;
+    box.innerHTML = items.length
+      ? '<div class="sum">' + items.length + (items.length === 1 ? " hit" : " hits") +
+        (searching ? " · searching…" : "") + "</div>" +
+        items.map((h, i) => hitCard(h, i, re)).join("") +
+        (items.length >= limit && limit < 120
+          ? '<div class="foot"><button type="button" class="ghost" data-act="more-hits">More</button></div>'
+          : "")
+      : '<p class="empty">No hits for “' + esc(hits.q) + "”" +
+        (filters.agent || filters.project ? " with these filters" : "") + ".</p>";
+  }
+
+  let searchTimer = null;
+  function search(now) {
+    clearTimeout(searchTimer);
+    const run = () => {
+      searchSeq = ++seq;
+      searching = !!query.trim();
+      emit("search", {
+        seq: searchSeq,
+        q: query.trim(),
+        agent: filters.agent,
+        project: filters.project,
+        limit: limit,
+      });
+      renderResults();
+    };
+    if (now) run();
+    else searchTimer = setTimeout(run, 250);
+  }
+
+  // ---- Sessions --------------------------------------------------------
+
+  function matchesFilters(s) {
+    return (!filters.agent || s.agent === filters.agent) &&
+      (!filters.project || s.project === filters.project);
+  }
+
+  function sessionRow(s) {
+    const id = s.session_id ? s.session_id.slice(0, 8) : "";
+    return (
+      '<div class="card srow" tabindex="0" role="button" data-act="open-source" ' +
+      'data-path="' + esc(s.source_path) + '" data-key="' + esc(s.source_path) + '">' +
+      '<div class="card-head">' + agentBadge(s.agent) +
+      '<span class="proj" title="' + esc(s.project) + '">' + esc(leaf(s.project)) + "</span>" +
+      (s.kind && s.kind !== "transcript" ? '<span class="kind">' + esc(s.kind) + "</span>" : "") +
+      '<span class="title">' + esc(id || baseName(s.source_path)) + "</span>" +
+      '<span class="n">' + (s.chunks || 0) + " chunks</span>" +
+      '<span class="when" title="' + esc(fullTime(s.mtime)) + '">' + esc(when(s.mtime)) + "</span></div>" +
+      '<div class="path" title="' + esc(s.source_path) + '">' + esc(s.source_path) + "</div></div>"
+    );
+  }
+
+  function showSessions() {
+    view = tab = "sessions";
+    chrome();
+    app.innerHTML =
+      '<div class="page">' +
+      '<div class="searchbar"><input id="sess-filter" type="search" autocomplete="off" spellcheck="false" ' +
+      'placeholder="Filter by project, path or session id  ( / )" value="' + esc(sessionsFilter) + '"></div>' +
+      filtersHtml() + '<div id="sess-list" class="results"></div></div>';
+    renderSessionList();
+    app.scrollTop = listScroll.sessions;
+    refocus();
+  }
+
+  function renderSessionList() {
+    const box = $("sess-list");
+    if (!box) return;
+    const f = sessionsFilter.trim().toLowerCase();
+    const rows = ctx.sources.filter((s) =>
+      matchesFilters(s) &&
+      (!f || [s.project, s.source_path, s.session_id, s.agent].some((x) => String(x || "").toLowerCase().includes(f))));
+    box.innerHTML =
+      '<div class="sum">' + rows.length + " of " + ctx.sources.length + " sessions</div>" +
+      (rows.length ? rows.map(sessionRow).join("") : '<p class="empty">No session matches.</p>');
+  }
+
+  // ---- A session -------------------------------------------------------
+
+  const WINDOW = 160;
+
+  function openSource(path, focus, re) {
+    const from = document.activeElement && document.activeElement.closest && document.activeElement.closest(".card");
+    lastOpened = from ? from.getAttribute("data-key") : null;
+    listScroll[view === "sessions" ? "sessions" : "search"] = app.scrollTop;
+    const offset = focus == null ? 0 : Math.max(0, focus - 40);
+    src = {
+      path: path,
+      meta: sourceMeta(path),
+      total: 0,
+      offset: offset,
+      chunks: [],
+      focus: focus == null ? null : focus,
+      re: re || null,
+      marks: [],
+      at: -1,
+      here: null,
+      loading: "open",
+    };
+    view = "source";
+    chrome();
+    app.innerHTML = '<p class="muted pad">Opening…</p>';
+    emit("open-source", { source_path: path, offset: offset, limit: WINDOW, focus: src.focus, mode: "open" });
+  }
+
+  function loadMore(dir) {
+    if (!src || src.loading) return;
+    if (dir === "earlier") {
+      const offset = Math.max(0, src.offset - WINDOW);
+      src.loading = "earlier";
+      emit("open-source", { source_path: src.path, offset: offset, limit: src.offset - offset, mode: "earlier" });
+    } else {
+      src.loading = "later";
+      emit("open-source", {
+        source_path: src.path,
+        offset: src.offset + src.chunks.length,
+        limit: WINDOW,
+        mode: "later",
+      });
+    }
+    renderSourceChrome();
+  }
+
+  function sourceTitle() {
+    const m = src.meta;
+    const first = src.chunks[0] || {};
+    const title = first.title || (m.session_id ? m.session_id.slice(0, 8) : baseName(src.path));
+    return agentBadge(m.agent || first.agent) +
+      '<span class="proj" title="' + esc(m.project || first.project) + '">' + esc(leaf(m.project || first.project)) + "</span>" +
+      '<span class="title">' + esc(title) + "</span>";
+  }
+
+  function whoOf(role, agent) {
+    if (role === "user") return "User";
+    if (role === "assistant") return AGENT_NAME[agent] || agent || "Assistant";
+    return role ? role.charAt(0).toUpperCase() + role.slice(1) : "Note";
+  }
+
+  function messageHtml(m, agent) {
+    // agy's text is UTF-8 salvaged from protobuf, full of tag-like noise:
+    // as markdown the sanitizer would eat half of it.
+    const body = agent === "agy" ? '<div class="plain">' + esc(m.text) + "</div>" : markdown(m.text);
+    const range = m.first === m.last ? "#" + m.first : "#" + m.first + "–" + m.last;
+    return (
+      '<section class="msg r-' + esc(m.role || "note") + '" data-first="' + m.first + '" data-last="' + m.last + '">' +
+      '<div class="msg-head"><span class="who">' + esc(whoOf(m.role, agent)) + "</span>" +
+      (m.ts ? '<span class="when" title="' + esc(fullTime(m.ts)) + '">' + esc(when(m.ts)) + "</span>" : "") +
+      '<span class="range">' + range + "</span>" +
+      '<button type="button" class="linkish" data-act="copy-msg" title="Copy this message">Copy</button></div>' +
+      '<div class="msg-body">' + body + "</div></section>"
+    );
+  }
+
+  function renderSourceChrome() {
+    const head = $("src-head");
+    if (!head || !src) return;
+    const end = src.offset + src.chunks.length;
+    const n = src.marks.length;
+    head.innerHTML =
+      '<div class="card-head">' + sourceTitle() +
+      '<span class="n">' + (src.total ? src.offset + 1 + "–" + end + " of " + src.total + " chunks" : "") + "</span>" +
+      (src.re
+        ? '<span class="matches">' + (n ? src.at + 1 + " / " + n : "no matches here") +
+          '<button type="button" class="linkish" data-act="match-prev" title="Previous match (N)"' + (n ? "" : " disabled") + ">↑</button>" +
+          '<button type="button" class="linkish" data-act="match-next" title="Next match (n)"' + (n ? "" : " disabled") + ">↓</button></span>"
+        : "") +
+      '<button type="button" class="linkish" data-act="copy-path" title="' + esc(src.path) + '">Copy path</button></div>';
+    const top = $("src-earlier");
+    const bottom = $("src-later");
+    if (top) {
+      top.hidden = src.offset <= 0;
+      top.innerHTML = '<button type="button" class="ghost" data-act="earlier"' + (src.loading ? " disabled" : "") + ">" +
+        (src.loading === "earlier" ? "Loading…" : "Earlier · " + src.offset + " more") + "</button>";
+    }
+    if (bottom) {
+      bottom.hidden = end >= src.total;
+      bottom.innerHTML = '<button type="button" class="ghost" data-act="later"' + (src.loading ? " disabled" : "") + ">" +
+        (src.loading === "later" ? "Loading…" : "Later · " + (src.total - end) + " more") + "</button>";
+    }
+  }
+
+  function renderSourceBody() {
+    const agent = src.meta.agent || (src.chunks[0] || {}).agent || "";
+    const msgs = messagesOf(src.chunks);
+    $("src-body").innerHTML = msgs.length
+      ? msgs.map((m) => messageHtml(m, agent)).join("")
+      : '<p class="empty">This session has no chunks.</p>';
+    src.messages = msgs;
+    if (src.re) {
+      document.querySelectorAll("#src-body .msg-body").forEach((el) => markTerms(el, src.re));
+    }
+    src.marks = Array.from(document.querySelectorAll("#src-body mark"));
+    // A re-render (Earlier, Later) rebuilds every message: put the hit's
+    // highlight and the current match back where they were.
+    const els = Array.from(document.querySelectorAll("#src-body .msg"));
+    const focusEl = src.focus == null ? null : els.find((m) => holds(m, src.focus));
+    if (focusEl) focusEl.classList.add("focus");
+    src.at = -1;
+    if (src.here) {
+      const home = els.find((m) => m.getAttribute("data-first") === src.here.first);
+      const mk = home && home.querySelectorAll("mark")[src.here.k];
+      if (mk) setHere(src.marks.indexOf(mk));
+    }
+  }
+
+  function holds(msgEl, chunk) {
+    return +msgEl.getAttribute("data-first") <= chunk && chunk <= +msgEl.getAttribute("data-last");
+  }
+
+  // Make match I the current one, remembered by its message and its
+  // place there, since indexes shift when Earlier prepends.
+  function setHere(i) {
+    if (src.at >= 0 && src.marks[src.at]) src.marks[src.at].classList.remove("here");
+    src.at = i;
+    const mk = src.marks[i];
+    if (!mk) return;
+    mk.classList.add("here");
+    const home = mk.closest(".msg");
+    src.here = { first: home.getAttribute("data-first"), k: Array.from(home.querySelectorAll("mark")).indexOf(mk) };
+  }
+
+  function showSource() {
+    view = "source";
+    chrome();
+    app.innerHTML =
+      '<div class="page source"><div id="src-head" class="src-head"></div>' +
+      '<div id="src-earlier" class="foot"></div><div id="src-body"></div>' +
+      '<div id="src-later" class="foot"></div></div>';
+    renderSourceBody();
+    renderSourceChrome();
+  }
+
+  function focusMessage() {
+    const el = document.querySelector("#src-body .msg.focus");
+    if (!el) {
+      app.scrollTop = 0;
+      return;
+    }
+    el.scrollIntoView({ block: "start" });
+    app.scrollTop = Math.max(0, app.scrollTop - 60);
+    // The first match inside the hit, so n / N continue from there.
+    const first = src.marks.findIndex((mk) => el.contains(mk));
+    if (first >= 0) setHere(first);
+  }
+
+  function jumpMatch(step) {
+    if (!src || !src.marks.length) return;
+    setHere((src.at + step + src.marks.length) % src.marks.length);
+    src.marks[src.at].scrollIntoView({ block: "center" });
+    renderSourceChrome();
+  }
+
+  function back() {
+    if (view !== "source") return;
+    src = null;
+    if (tab === "sessions") showSessions();
+    else showSearch();
+    if (lastOpened) {
+      const card = Array.from(app.querySelectorAll(".card")).find((c) => c.getAttribute("data-key") === lastOpened);
+      if (card) card.focus({ preventScroll: true });
+    }
+  }
+
+  // ---- Focus -----------------------------------------------------------
+
+  function refocus() {
+    if (lastOpened) return;
+    const input = $("q") || $("sess-filter");
+    if (input && document.activeElement !== input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  function cards() {
+    return Array.from(app.querySelectorAll(".card"));
+  }
+
+  // ---- Events ----------------------------------------------------------
+
+  app.addEventListener("input", (ev) => {
+    if (ev.target.id === "q") {
+      query = ev.target.value;
+      limit = 30;
+      lastOpened = null;
+      search(false);
+    } else if (ev.target.id === "sess-filter") {
+      sessionsFilter = ev.target.value;
+      renderSessionList();
+    }
+  });
+
+  app.addEventListener("change", (ev) => {
+    if (ev.target.id !== "project") return;
+    filters.project = ev.target.value;
+    onFilters();
+  });
+
+  function onFilters() {
+    if (view === "sessions") {
+      renderSessionList();
+      app.querySelectorAll('[data-act="agent"]').forEach((b) =>
+        b.classList.toggle("on", b.getAttribute("data-agent") === filters.agent));
+      return;
+    }
+    app.querySelectorAll('[data-act="agent"]').forEach((b) =>
+      b.classList.toggle("on", b.getAttribute("data-agent") === filters.agent));
+    limit = 30;
+    if (query.trim()) search(true);
+    else renderResults();
+  }
+
+  app.addEventListener("click", (ev) => {
+    const t = ev.target instanceof Element ? ev.target : null;
+    if (!t) return;
+    // A link would navigate the xwidget off the page and its bridge.
+    const a = t.closest("a[href]");
+    if (a) {
+      ev.preventDefault();
+      const href = a.getAttribute("href") || "";
+      if (/^https?:/i.test(href)) emit("open-browser", { url: href });
+      return;
+    }
+    const el = t.closest("[data-act]");
+    if (!el || el.disabled) return;
+    const act = el.getAttribute("data-act");
+    if (act === "agent") {
+      filters.agent = el.getAttribute("data-agent") || "";
+      onFilters();
+    } else if (act === "open-hit") {
+      const h = hits && hits.items[+el.getAttribute("data-i")];
+      if (h) {
+        el.focus({ preventScroll: true });
+        openSource(h.source_path, h.chunk_index, termRe(hits.q));
+      }
+    } else if (act === "open-source") {
+      el.focus({ preventScroll: true });
+      openSource(el.getAttribute("data-path"), null, null);
+    } else if (act === "more-hits") {
+      limit = Math.min(120, limit + 30);
+      search(true);
+    } else if (act === "earlier" || act === "later") {
+      loadMore(act);
+    } else if (act === "match-next") {
+      jumpMatch(1);
+    } else if (act === "match-prev") {
+      jumpMatch(-1);
+    } else if (act === "copy-msg") {
+      const sec = el.closest(".msg");
+      const m = src && src.messages.find((x) => String(x.first) === sec.getAttribute("data-first"));
+      if (m) emit("copy", { text: m.text });
+    } else if (act === "copy-path") {
+      if (src) emit("copy", { text: src.path });
+    }
+  });
+
+  document.querySelectorAll(".tab").forEach((b) =>
+    b.addEventListener("click", () => {
+      lastOpened = null;
+      src = null;
+      if (b.getAttribute("data-tab") === "sessions") showSessions();
+      else showSearch();
+    }));
+  btnBack.addEventListener("click", back);
+  $("btn-refresh").addEventListener("click", () => emit("refresh"));
+  $("btn-import").addEventListener("click", () => {
+    $("btn-import").disabled = true;
+    emit("import");
+  });
+
+  document.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    const inInput = t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName);
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (inInput) {
+      if (ev.key === "Escape") {
+        if (t.value && t.tagName === "INPUT") {
+          t.value = "";
+          t.dispatchEvent(new Event("input", { bubbles: true }));
+        } else t.blur();
+        ev.preventDefault();
+      } else if (ev.key === "ArrowDown" && t.tagName === "INPUT") {
+        const c = cards()[0];
+        if (c) {
+          c.focus();
+          ev.preventDefault();
+        }
+      } else if (ev.key === "Enter" && t.id === "q") {
+        search(true);
+      }
+      return;
+    }
+    if (ev.key === "/" && view !== "source") {
+      const input = $("q") || $("sess-filter");
+      if (input) {
+        input.focus();
+        ev.preventDefault();
+      }
+    } else if (ev.key === "Escape" && view === "source") {
+      back();
+      ev.preventDefault();
+    } else if ((ev.key === "n" || ev.key === "N") && view === "source") {
+      jumpMatch(ev.key === "n" ? 1 : -1);
+    } else if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      const cs = cards();
+      if (!cs.length || view === "source") return;
+      const i = cs.indexOf(document.activeElement);
+      if (ev.key === "ArrowUp" && i <= 0) {
+        const input = $("q") || $("sess-filter");
+        if (input) input.focus();
+      } else {
+        const next = cs[Math.max(0, Math.min(cs.length - 1, i + (ev.key === "ArrowDown" ? 1 : -1)))];
+        next.focus();
+        next.scrollIntoView({ block: "nearest" });
+      }
+      ev.preventDefault();
+    } else if (ev.key === "Enter" && document.activeElement && document.activeElement.classList.contains("card")) {
+      document.activeElement.click();
+      ev.preventDefault();
+    }
+  });
+
+  // ---- Calls from Emacs -------------------------------------------------
+
+  window.GM = {
+    flash: (msg) => setStatus(msg),
+
+    // The sidecar's import, read every few seconds; null once it ends.
+    importProgress: (p) => {
+      $("btn-import").disabled = !!p;
+      if (!p) {
+        if (statusEl.classList.contains("busy")) setStatus("");
+        return;
+      }
+      const parts = ["Importing"];
+      if (p.agent) parts.push(p.agent);
+      parts.push(p.files + (p.files === 1 ? " file" : " files"));
+      parts.push(p.imported + " new chunks");
+      if (p.current) parts.push(shortName(p.current));
+      setStatus(parts.join(" · "), "busy");
+    },
+    showError: (msg) => {
+      if (src) {
+        src.loading = null;
+        renderSourceChrome();
+      }
+      searching = false;
+      setStatus(String(msg || "Something went wrong"), "error");
+    },
+
+    setContext: (p) => {
+      const sources = (p && p.sources) || [];
+      sources.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+      const byPath = {};
+      const counts = {};
+      sources.forEach((s) => {
+        byPath[s.source_path] = s;
+        if (s.project) counts[s.project] = (counts[s.project] || 0) + 1;
+      });
+      ctx = {
+        sources: sources,
+        byPath: byPath,
+        total: (p && p.total) || sources.length,
+        currentProject: (p && p.current_project) || "",
+        projects: Object.keys(counts)
+          .map((k) => ({ project: k, leaf: leaf(k), n: counts[k] }))
+          .sort((a, b) => b.n - a.n || a.leaf.localeCompare(b.leaf)),
+      };
+      if (p && p.project) filters.project = p.project;
+      if (filters.project && !counts[filters.project]) filters.project = "";
+      if (p && p.query) query = p.query;
+      if (p && p.view === "sessions") showSessions();
+      else if (p && p.view === "search") showSearch();
+      else if (view === "sessions") showSessions();
+      else if (view === "source") chrome();
+      else showSearch();
+      if (p && p.query) search(true);
+    },
+
+    renderHits: (p) => {
+      if (!p || p.seq !== searchSeq) return; // an older query's answer
+      searching = false;
+      hits = { q: p.q || "", items: p.hits || [] };
+      if (view === "search") renderResults();
+    },
+
+    searchFailed: (p) => {
+      if (!p || p.seq !== searchSeq) return;
+      searching = false;
+      setStatus("Search failed: " + (p.error || ""), "error");
+      if (view === "search") renderResults();
+    },
+
+    renderSource: (p) => {
+      if (!p || !src || p.source_path !== src.path || view !== "source") return;
+      const chunks = p.chunks || [];
+      src.total = p.total || 0;
+      if (p.mode === "open") {
+        if (src.loading !== "open") return;
+        src.offset = p.offset || 0;
+        src.chunks = chunks;
+        src.loading = null;
+        showSource();
+        focusMessage();
+        renderSourceChrome();
+        return;
+      }
+      if (p.mode !== src.loading) return;
+      src.loading = null;
+      if (p.mode === "earlier") {
+        const have = new Set(src.chunks.map((c) => c.chunk_index));
+        const fresh = chunks.filter((c) => !have.has(c.chunk_index));
+        const fromBottom = app.scrollHeight - app.scrollTop;
+        src.chunks = fresh.concat(src.chunks);
+        src.offset = p.offset || 0;
+        renderSourceBody();
+        renderSourceChrome();
+        app.scrollTop = app.scrollHeight - fromBottom; // stay on what was read
+      } else {
+        const have = new Set(src.chunks.map((c) => c.chunk_index));
+        src.chunks = src.chunks.concat(chunks.filter((c) => !have.has(c.chunk_index)));
+        const top = app.scrollTop;
+        renderSourceBody();
+        renderSourceChrome();
+        app.scrollTop = top;
+      }
+    },
+  };
+
+  emit("ready");
+})();
