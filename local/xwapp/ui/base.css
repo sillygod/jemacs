@@ -1,0 +1,26 @@
+/* xwapp page kit: the colours every xwapp page shares, and two resets.
+   Linked before the page's own style.css, which adds its own tokens:
+
+     <link rel="stylesheet" href="../../xwapp/ui/base.css"> */
+
+:root {
+  --bg: #0e1116;
+  --panel: #161b22;
+  --row-hover: #1c2330;
+  --line: #2d3542;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #79c0ff;
+  --plus: #3fb950;
+  --minus: #f85149;
+  --warn: #d29922;
+  --open: #1f6feb;
+  --meta: #a371f7;
+  --chip: #21262d;
+  --code: #0b0e12;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+/* Elements that set display would otherwise beat [hidden]. */
+[hidden] { display: none !important; }

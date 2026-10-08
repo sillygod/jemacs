@@ -14,42 +14,13 @@
 
   // ---- Intents ---------------------------------------------------------
   //
-  // Emacs polls document.title and resets it once read.  A title set
-  // before then would overwrite the unread one, so intents queue and go
-  // out one per reset.  The counter keeps two identical intents (a second
-  // Refresh) apart; seeding it with the clock keeps a reloaded page's
-  // first intent apart from the last page's.
+  // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).
 
-  const outbox = [];
-  let seq = Date.now();
-  let sentAt = 0;
-
-  function pump() {
-    if (!outbox.length) return;
-    // Unread: wait, unless Emacs has evidently stopped reading it.
-    if (document.title.startsWith(PREFIX) && Date.now() - sentAt < 2000) return;
-    document.title = PREFIX + JSON.stringify(outbox.shift());
-    sentAt = Date.now();
-  }
-
-  function emit(op, extra) {
-    outbox.push(Object.assign({ op: op, n: ++seq }, extra || {}));
-    pump();
-  }
-
-  setInterval(pump, 50);
+  const emit = XW.bridge(PREFIX);
 
   // ---- Small helpers ---------------------------------------------------
 
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
-  }
+  const esc = XW.esc;
 
   // Colours from ClickUp go into style attributes: hex only.
   function hex(c, fallback) {
@@ -167,93 +138,19 @@
   //
   // The page can change statuses and post comments, so nothing from
   // ClickUp may run in it.  Markdown goes through marked, which keeps raw
-  // HTML; comment HTML is escaped in Elisp but passes here too.  Parse
-  // into an inert document (no scripts run, no images load), keep a
-  // whitelist of tags and attributes, unwrap the rest.
+  // HTML; comment HTML is escaped in Elisp but passes here too.  xwapp's
+  // whitelist, plus what ClickUp content needs: attachment images, its
+  // own classes, task links and checklist marks.
 
-  const KEEP = {
-    A: ["href", "title", "class", "data-task"],
-    IMG: ["src", "alt", "title", "class"],
-    P: [], BR: [], HR: [], DIV: [], SPAN: ["class"],
-    STRONG: [], B: [], EM: [], I: [], U: [], S: [], DEL: [], INS: [],
-    MARK: [], SUB: [], SUP: [], SMALL: [], KBD: [],
-    CODE: ["class"], PRE: [], BLOCKQUOTE: [],
-    H1: [], H2: [], H3: [], H4: [], H5: [], H6: [],
-    UL: ["class"], OL: ["start", "class"], LI: ["class", "data-check"],
-    TABLE: [], THEAD: [], TBODY: [], TR: [],
-    TH: ["align", "colspan", "rowspan"], TD: ["align", "colspan", "rowspan"],
-    INPUT: ["type", "checked"],
-    DETAILS: [], SUMMARY: [],
-  };
-  const DROP = new Set([
-    "SCRIPT", "STYLE", "IFRAME", "FRAME", "FRAMESET", "OBJECT", "EMBED", "APPLET",
-    "TEMPLATE", "NOSCRIPT", "SVG", "MATH", "FORM", "TEXTAREA", "SELECT", "OPTION",
-    "BUTTON", "LINK", "META", "BASE", "TITLE", "HEAD", "AUDIO", "VIDEO", "SOURCE",
-    "TRACK", "CANVAS", "PORTAL",
-  ]);
-  const ATTR_OK = {
-    href: (v) => /^(https?:|mailto:)/i.test(v),
-    src: (v) => /^(https?:|data:image\/(png|jpe?g|gif|webp);)/i.test(v),
-    class: () => true,
-    "data-task": (v) => /^[0-9a-z]+$/.test(v),
-    "data-check": (v) => v === "done" || v === "todo",
-    align: (v) => /^(left|right|center)$/.test(v),
-    colspan: (v) => /^\d{1,3}$/.test(v),
-    rowspan: (v) => /^\d{1,3}$/.test(v),
-    start: (v) => /^\d{1,6}$/.test(v),
-    type: (v) => v === "checkbox",
-  };
-
-  function cleanClass(v) {
-    return v
-      .split(/\s+/)
-      .filter((c) => /^(cu-[a-z-]+|indent-\d|language-[\w+#-]+)$/.test(c))
-      .join(" ");
-  }
-
-  function cleanNode(node, out) {
-    if (node.nodeType === 3) {
-      out.appendChild(document.createTextNode(node.data));
-      return;
-    }
-    if (node.nodeType !== 1) return;
-    const tag = node.tagName.toUpperCase();
-    if (DROP.has(tag)) return;
-    const keep = KEEP[tag];
-    // Unwrap what is not kept, and a link whose target is not: an anchor
-    // left without its href would still look clickable.
-    if (
-      !keep ||
-      (tag === "INPUT" && node.getAttribute("type") !== "checkbox") ||
-      (tag === "A" && !ATTR_OK.href((node.getAttribute("href") || "").trim()))
-    ) {
-      node.childNodes.forEach((k) => cleanNode(k, out));
-      return;
-    }
-    const el = document.createElement(tag.toLowerCase());
-    keep.forEach((name) => {
-      if (!node.hasAttribute(name)) return;
-      let v = node.getAttribute(name).trim();
-      if (name === "class") v = cleanClass(v);
-      if (name === "checked") v = "";
-      else if (!v || !(ATTR_OK[name] || (() => true))(v)) return;
-      el.setAttribute(name, v);
-    });
-    if (tag === "INPUT") el.setAttribute("disabled", "");
-    if (tag === "IMG") el.setAttribute("loading", "lazy");
-    node.childNodes.forEach((k) => cleanNode(k, el));
-    out.appendChild(el);
-  }
-
-  function sanitize(html) {
-    const doc = new DOMParser().parseFromString(
-      "<!DOCTYPE html><body>" + String(html || "") + "</body>",
-      "text/html"
-    );
-    const box = document.createElement("div");
-    doc.body.childNodes.forEach((k) => cleanNode(k, box));
-    return box.innerHTML;
-  }
+  const sanitize = XW.sanitizer({
+    images: true,
+    classes: /^(cu-[a-z-]+|indent-\d|language-[\w+#-]+)$/,
+    attrs: { A: ["data-task"], LI: ["data-check"] },
+    checks: {
+      "data-task": (v) => /^[0-9a-z]+$/.test(v),
+      "data-check": (v) => v === "done" || v === "todo",
+    },
+  });
 
   // Blank lines a comment starts or ends with.
   function trimBlank(html) {

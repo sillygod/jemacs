@@ -1,24 +1,7 @@
+/* Shared colours and resets: ../../xwapp/ui/base.css.  ClickUp's own: */
 :root {
-  --bg: #0e1116;
-  --panel: #161b22;
-  --row-hover: #1c2330;
-  --line: #2d3542;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #79c0ff;
   --brand: #7b68ee;
-  --plus: #3fb950;
-  --minus: #f85149;
-  --warn: #d29922;
-  --open: #1f6feb;
-  --chip: #21262d;
-  --code: #0b0e12;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-
-* { box-sizing: border-box; }
-/* Elements below set display, which would otherwise beat [hidden]. */
-[hidden] { display: none !important; }
 
 html, body {
   margin: 0;

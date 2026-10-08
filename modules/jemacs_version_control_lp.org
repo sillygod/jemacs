@@ -79,7 +79,8 @@
     ;; Registered first so pr-view's (require 'xwapp) finds it.
     (eval `(use-package xwapp
              :straight (:local-repo ,(concat home-dir "local/xwapp")
-                                    :files ("xwapp.el"))
+                                    ;; ui/ is the page kit pages load as ../../xwapp/ui/.
+                                    :files ("xwapp.el" "ui"))
              :defer t))
 
     ;; GUI xwidget PR list + description + unified diff (GitHub + Bitbucket Cloud).

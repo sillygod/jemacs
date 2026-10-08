@@ -1,8 +1,8 @@
 #+TITLE: xwapp
 
 Plumbing for Elisp-backed pages in an xwidget: a local HTML page
-renders, Elisp owns HTTP and secrets.  Used by =pr-view= (and
-=clickup-view=).
+renders, Elisp owns HTTP and secrets.  Used by =pr-view=,
+=clickup-view= and ghostherd's herd page.
 
 * Shape
 
@@ -25,6 +25,40 @@ renders, Elisp owns HTTP and secrets.  Used by =pr-view= (and
   (xwapp-open my-app)                 ; show the page, start polling
   (xwapp-js my-app "render" payload)  ; APP.render(payload)
 #+end_src
+
+* Page kit (=ui/=)
+
+What the pages share on the browser side, so it is fixed once:
+
+| File                    | Gives                                                |
+|-------------------------+------------------------------------------------------|
+| =xwapp.js=              | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=  |
+| =base.css=              | the shared colours, =box-sizing=, =[hidden]=         |
+| =vendor/marked.min.js=  | marked 11.2.0 (identical to jsdelivr's)              |
+
+A page loads them as =../../xwapp/ui/…=.  That path holds both in the
+repo (=local/<pkg>/ui=) and in straight's build (=build/<pkg>/ui=),
+because the browser resolves =..= on the URL, not on a symlink's
+target; it needs =ui= in xwapp's own =:files=.
+
+- =XW.bridge(prefix)= returns an =emit(op, extra)= that queues intents
+  and sets the next title only once Emacs has reset the last, with a
+  counter seeded from the clock.  Without the queue, two intents within
+  a poll overwrite each other; without the counter, a second identical
+  one (a second Refresh) is taken for the one already read.  pr-view
+  had neither until it moved here.
+- =XW.sanitizer(opts)= returns a =sanitize(html)=: an inert
+  =DOMParser= document, a whitelist of tags and attributes, the rest
+  unwrapped, links only http(s) and mailto.  Options per page: =images=
+  (off by default --- a remote image is fetched just by being shown),
+  =classes= (a RegExp per class token; default =language-*=), =attrs=
+  and =checks= for page-specific attributes.  clickup-view turns images
+  on and adds =data-task= / =data-check=; the herd page takes the
+  default.
+- Every page also carries a Content-Security-Policy: no inline script or
+  handler, no =javascript:= link, no fetch.  The sanitizer is the first
+  line; the CSP is what holds if it ever lets something through.  A
+  page therefore has no =onerror= / =onclick= attributes of its own.
 
 * HTTP
 
@@ -50,3 +84,8 @@ dying in a url.el timer.
         -l xwapp.el -l xwapp-tests.el \
         -f ert-run-tests-batch-and-exit
 #+end_src
+
+The page kit was checked in WebKit (Playwright): the sanitizer's
+default and per-page options against hostile markup, and three intents
+emitted in one tick all reaching a reader that behaves as xwapp does.
+Each page's own harness then ran on the kit, under its CSP.

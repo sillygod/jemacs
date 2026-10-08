@@ -9,40 +9,13 @@
 
   // ---- Intents ---------------------------------------------------------
   //
-  // Emacs polls document.title and resets it once read.  A title set
-  // before then would overwrite the unread one, so intents queue and go
-  // out one per reset.  The counter keeps two identical intents apart;
-  // seeded with the clock so a reloaded page's first intent is new.
+  // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).
 
-  const outbox = [];
-  let seq = Date.now();
-  let sentAt = 0;
-
-  function pump() {
-    if (!outbox.length) return;
-    if (document.title.startsWith(PREFIX) && Date.now() - sentAt < 2000) return;
-    document.title = PREFIX + JSON.stringify(outbox.shift());
-    sentAt = Date.now();
-  }
-
-  function emit(op, extra) {
-    outbox.push(Object.assign({ op: op, n: ++seq }, extra || {}));
-    pump();
-  }
-
-  setInterval(pump, 50);
+  const emit = XW.bridge(PREFIX);
 
   // ---- Small helpers ---------------------------------------------------
 
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
-  }
+  const esc = XW.esc;
 
   // A transcript's ts is ISO text (or ""); a source's mtime is seconds.
   function stamp(v) {
@@ -111,78 +84,11 @@
 
   // ---- Sanitizer -------------------------------------------------------
   //
-  // clickup-view's whitelist, minus images: a transcript holds whatever
-  // an agent ever read, and a remote <img> would be fetched just by
-  // opening it.  Parsed in an inert DOMParser document, so nothing in it
-  // runs before it is cleaned.
+  // xwapp's whitelist as it comes: no images, since a transcript holds
+  // whatever an agent ever read and a remote <img> would be fetched just
+  // by opening it; classes only for code blocks.
 
-  const KEEP = {
-    A: ["href", "title"],
-    P: [], BR: [], HR: [], DIV: [], SPAN: [],
-    STRONG: [], B: [], EM: [], I: [], U: [], S: [], DEL: [], INS: [],
-    MARK: [], SUB: [], SUP: [], SMALL: [], KBD: [],
-    CODE: ["class"], PRE: [], BLOCKQUOTE: [],
-    H1: [], H2: [], H3: [], H4: [], H5: [], H6: [],
-    UL: [], OL: ["start"], LI: [],
-    TABLE: [], THEAD: [], TBODY: [], TR: [],
-    TH: ["align", "colspan", "rowspan"], TD: ["align", "colspan", "rowspan"],
-    INPUT: ["type", "checked"],
-    DETAILS: [], SUMMARY: [],
-  };
-  const DROP = new Set([
-    "SCRIPT", "STYLE", "IFRAME", "FRAME", "FRAMESET", "OBJECT", "EMBED", "APPLET",
-    "TEMPLATE", "NOSCRIPT", "SVG", "MATH", "FORM", "TEXTAREA", "SELECT", "OPTION",
-    "BUTTON", "LINK", "META", "BASE", "TITLE", "HEAD", "AUDIO", "VIDEO", "SOURCE",
-    "TRACK", "CANVAS", "PORTAL", "IMG", "PICTURE",
-  ]);
-  const ATTR_OK = {
-    href: (v) => /^(https?:|mailto:)/i.test(v),
-    class: (v) => /^language-[\w+#-]+$/.test(v),
-    align: (v) => /^(left|right|center)$/.test(v),
-    colspan: (v) => /^\d{1,3}$/.test(v),
-    rowspan: (v) => /^\d{1,3}$/.test(v),
-    start: (v) => /^\d{1,6}$/.test(v),
-    type: (v) => v === "checkbox",
-  };
-
-  function cleanNode(node, out) {
-    if (node.nodeType === 3) {
-      out.appendChild(document.createTextNode(node.data));
-      return;
-    }
-    if (node.nodeType !== 1) return;
-    const tag = node.tagName.toUpperCase();
-    if (DROP.has(tag)) return;
-    const keep = KEEP[tag];
-    if (
-      !keep ||
-      (tag === "INPUT" && node.getAttribute("type") !== "checkbox") ||
-      (tag === "A" && !ATTR_OK.href((node.getAttribute("href") || "").trim()))
-    ) {
-      node.childNodes.forEach((k) => cleanNode(k, out));
-      return;
-    }
-    const el = document.createElement(tag.toLowerCase());
-    keep.forEach((name) => {
-      if (!node.hasAttribute(name)) return;
-      const v = node.getAttribute(name).trim();
-      if (name === "checked") el.setAttribute(name, "");
-      else if (v && (ATTR_OK[name] || (() => true))(v)) el.setAttribute(name, v);
-    });
-    if (tag === "INPUT") el.setAttribute("disabled", "");
-    node.childNodes.forEach((k) => cleanNode(k, el));
-    out.appendChild(el);
-  }
-
-  function sanitize(html) {
-    const doc = new DOMParser().parseFromString(
-      "<!DOCTYPE html><body>" + String(html || "") + "</body>",
-      "text/html"
-    );
-    const box = document.createElement("div");
-    doc.body.childNodes.forEach((k) => cleanNode(k, box));
-    return box.innerHTML;
-  }
+  const sanitize = XW.sanitizer();
 
   // "[tool Bash] npm test" is how the importers note a tool call.
   function toolMarks(src) {
@@ -309,6 +215,7 @@
   let tab = "search"; // the list view a source returns to
   let query = "";
   let searchSeq = 0; // the search whose answer the page wants
+  let searchN = Date.now();
   let limit = 30;
   let hits = null; // { q, items } once answered
   let searching = false;
@@ -424,7 +331,7 @@
   function search(now) {
     clearTimeout(searchTimer);
     const run = () => {
-      searchSeq = ++seq;
+      searchSeq = ++searchN;
       searching = !!query.trim();
       emit("search", {
         seq: searchSeq,

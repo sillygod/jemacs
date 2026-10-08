@@ -706,14 +706,21 @@ Inside BODY, `lookups' holds (ID . CALLBACK) oldest first and
       (should-not opened))))
 
 (ert-deftest pr-view-test-ui-knows-tasks ()
-  "The page renders setTasks and asks for open-task, and every intent
-carries a counter so a repeated click is not taken for the last one."
+  "The page renders setTasks and asks for open-task, and its intents go
+through xwapp's bridge, whose counter keeps a repeated click from being
+taken for the last one."
   (let ((js (with-temp-buffer
               (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
-              (buffer-string))))
+              (buffer-string)))
+        (html (with-temp-buffer
+                (insert-file-contents (expand-file-name "ui/index.html" pr-view--dir))
+                (buffer-string))))
     (should (string-match-p "setTasks" js))
     (should (string-match-p "\"open-task\"" js))
-    (should (string-search "n: ++intentN" js))))
+    (should (string-search "XW.bridge(PREFIX)" js))
+    (should (string-search "../../xwapp/ui/xwapp.js" html))
+    ;; The CSP refuses inline handlers, so the page must not have any.
+    (should-not (string-match-p "on\\(error\\|click\\|load\\)=" js))))
 
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

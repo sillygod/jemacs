@@ -3,7 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The page renders PR descriptions and comments and can approve and
+       merge.  Nothing inline runs and nothing leaves: no inline script
+       or handler, no fetch.  Images are avatars, https or data:. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src https: data:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <title>PR View</title>
+  <link rel="stylesheet" href="../../xwapp/ui/base.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -24,6 +29,7 @@
   <main id="app" class="app">
     <p class="muted">Waiting for Emacs…</p>
   </main>
+  <script src="../../xwapp/ui/xwapp.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

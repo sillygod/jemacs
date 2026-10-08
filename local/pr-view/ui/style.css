@@ -1,25 +1,11 @@
+/* Shared colours and resets: ../../xwapp/ui/base.css.  PR View's own: */
 :root {
-  --bg: #0e1116;
-  --panel: #161b22;
   --row: #161b22;
-  --row-hover: #1c2330;
   --row-alt: #12171e;
-  --line: #2d3542;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #79c0ff;
-  --plus: #3fb950;
-  --minus: #f85149;
-  --meta: #a371f7;
-  --warn: #d29922;
-  --open: #1f6feb;
   --merged: #238636;
   --declined: #da3633;
   --draft: #8b949e;
-  --chip: #21262d;
 }
-
-* { box-sizing: border-box; }
 
 html, body {
   margin: 0;

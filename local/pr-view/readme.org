@@ -154,6 +154,17 @@ Every intent the page sends now carries a counter =n=.  =xwapp= ignores
 a title identical to the last one it read, so clicking the same chip
 twice --- or Refresh twice --- used to do nothing the second time.
 
+* The page
+
+=ui/= runs on xwapp's page kit (=../../xwapp/ui/=, see xwapp's
+README): the shared colours, and the intent bridge, which queues
+intents and counts them.  Before it, two clicks within one poll lost
+the first, and a second identical one (Refresh twice) was taken for
+the one already read.  The page carries a Content-Security-Policy ---
+no inline script or handler, no fetch, images https or data: --- so an
+avatar that fails to load is dropped by a listener, not an =onerror=
+attribute.
+
 * Tests
 
 #+begin_src sh

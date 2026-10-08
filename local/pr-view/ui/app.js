@@ -27,26 +27,12 @@
   const TASKS_SHOWN = 6;
   const CLICKUP_TASK_LINK = /^https?:\/\/app\.clickup\.com\/t\//i;
 
-  // xwapp ignores a title identical to the last one it read, so a second
-  // click on the same task chip, or a second Refresh, would be dropped.
-  // A counter makes each intent new; seeded from the clock so a reloaded
-  // page's first intent is not mistaken for the old page's.
-  let intentN = Date.now();
-
-  function emit(op, extra) {
-    const payload = Object.assign({ op: op }, extra || {}, { n: ++intentN });
-    document.title = PREFIX + JSON.stringify(payload);
-  }
-
-  function escapeHtml(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
-  }
+  // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).
+  // The count is what keeps a second click on the same task chip, or a
+  // second Refresh, from being taken for the last intent; the queue is
+  // what keeps two quick ones from overwriting each other in the title.
+  const emit = XW.bridge(PREFIX);
+  const escapeHtml = XW.esc;
 
   // window.confirm() returns false immediately inside xwidget's WebKit:
   // no dialog is drawn and nothing is asked, so every guarded action was
@@ -498,7 +484,7 @@
       (url
         ? '<img src="' +
           escapeHtml(url) +
-          '" alt="" onerror="this.remove()">'
+          '" alt="">'
         : "") +
       "<span>" +
       escapeHtml(initials(n)) +
@@ -1447,6 +1433,14 @@
       emit("open-task", { ref: a.getAttribute("href") });
     }
   });
+
+  // An avatar that fails to load leaves its initials showing.  Not an
+  // inline onerror: the page's CSP refuses inline handlers.  Capture,
+  // since error does not bubble.
+  document.addEventListener("error", (ev) => {
+    const t = ev.target;
+    if (t && t.tagName === "IMG" && t.parentElement && t.parentElement.classList.contains("avatar")) t.remove();
+  }, true);
 
   btnBack.addEventListener("click", () => emit("back-list"));
   btnRefresh.addEventListener("click", () =>

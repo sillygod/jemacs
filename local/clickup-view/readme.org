@@ -77,8 +77,9 @@ Probed against the workspace, October 2026.
 
 * The page
 
-=ui/index.html=, =app.js=, =style.css=, and =vendor/marked.min.js=
-(marked 11.2.0, identical to jsdelivr's; vendored because jwebkit's copy
+=ui/index.html=, =app.js= and =style.css=, on xwapp's page kit
+(=../../xwapp/ui/=: the intent bridge, the sanitizer, the colours, and
+marked 11.2.0 --- identical to jsdelivr's; vendored because jwebkit's copy
 is a gitignored download that may not exist yet).
 
 Views: home (open a task by link, the spaces), a space (its folderless
@@ -110,6 +111,8 @@ up from any of them; a folder crumb opens its space at that folder.
   whitelist sanitizer (inert =DOMParser= document; allowed tags and
   attributes only, http(s) links, no inline styles).  Comment HTML from
   Elisp is already escaped and passes through the same sanitizer.
+- A Content-Security-Policy behind the sanitizer: no inline script or
+  handler, no =javascript:= link, no fetch; images https or data:.
 
 * Page contract
 
