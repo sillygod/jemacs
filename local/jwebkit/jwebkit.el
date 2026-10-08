@@ -388,7 +388,40 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
         (evil-define-key* st xwidget-webkit-mode-map key fn)
       (define-key xwidget-webkit-mode-map key fn))))
 
+;; evil-collection binds f and gi to `undefined' in xwidget (its TODO
+;; for link hints), and does so whenever `evil-collection-init' gets to
+;; xwidget.  With evil on `:defer 0' that is *after* `jwebkit-setup':
+;; `:after evil-collection' fires when the feature is provided, before
+;; evil-collection's own `:config' calls init.  Binding again from its
+;; setup hook makes the order irrelevant.
+
 (defvar jwebkit--setup-done nil)
+
+(defun jwebkit--bind-keys ()
+  "Bind jwebkit's keys in `xwidget-webkit-mode-map'."
+  (jwebkit--bind '(normal motion) (kbd "/") #'jwebkit-find-start)
+  (jwebkit--bind '(normal motion) (kbd "n") #'jwebkit-find-next)
+  (jwebkit--bind '(normal motion) (kbd "N") #'jwebkit-find-prev)
+  (jwebkit--bind '(normal motion) (kbd "*") #'jwebkit-find-selection)
+  (jwebkit--bind '(normal motion) (kbd "f") #'jwebkit-ace)
+  (jwebkit--bind '(normal motion) (kbd "F") #'jwebkit-ace-new)
+  (jwebkit--bind '(normal motion) (kbd "gf") #'jwebkit-follow-link)
+  (jwebkit--bind '(normal motion) (kbd "i") #'jwebkit-edit)
+  (jwebkit--bind '(normal motion) (kbd "gi") #'jwebkit-focus-input)
+  (jwebkit--bind '(normal motion) (kbd "Y") #'xwidget-webkit-copy-selection-as-kill)
+  (jwebkit--bind '(normal motion) (kbd "&") #'jwebkit-open-external)
+  (jwebkit--bind '(normal motion) (kbd "gp") #'jwebkit-pdf-goto-page)
+  (jwebkit--bind '(normal motion) (kbd "gO") #'jwebkit-pdf-outline)
+  (jwebkit--bind '(normal motion) (kbd "gr") #'jwebkit-md-reload)
+  (jwebkit--bind 'emacs (kbd "<escape>") #'jwebkit-stop-edit)
+  (jwebkit--bind 'emacs (kbd "C-g") #'jwebkit-stop-edit)
+  (define-key xwidget-webkit-edit-mode-map (kbd "<escape>") #'jwebkit-stop-edit)
+  (define-key xwidget-webkit-edit-mode-map (kbd "C-g") #'jwebkit-stop-edit))
+
+(defun jwebkit--after-evil-collection (mode _keymaps)
+  "Bind again once evil-collection has set MODE up, if MODE is xwidget."
+  (when (eq mode 'xwidget)
+    (jwebkit--bind-keys)))
 
 ;;;###autoload
 (defun jwebkit-setup ()
@@ -402,40 +435,8 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
     (setq xwidget-webkit-cookie-file jwebkit-cookie-file))
   (unless jwebkit--setup-done
     (setq jwebkit--setup-done t)
-    (jwebkit--bind '(normal motion)
-                   (kbd "/") #'jwebkit-find-start)
-    (jwebkit--bind '(normal motion)
-                   (kbd "n") #'jwebkit-find-next)
-    (jwebkit--bind '(normal motion)
-                   (kbd "N") #'jwebkit-find-prev)
-    (jwebkit--bind '(normal motion)
-                   (kbd "*") #'jwebkit-find-selection)
-    (jwebkit--bind '(normal motion)
-                   (kbd "f") #'jwebkit-ace)
-    (jwebkit--bind '(normal motion)
-                   (kbd "F") #'jwebkit-ace-new)
-    (jwebkit--bind '(normal motion)
-                   (kbd "gf") #'jwebkit-follow-link)
-    (jwebkit--bind '(normal motion)
-                   (kbd "i") #'jwebkit-edit)
-    (jwebkit--bind '(normal motion)
-                   (kbd "gi") #'jwebkit-focus-input)
-    (jwebkit--bind '(normal motion)
-                   (kbd "Y") #'xwidget-webkit-copy-selection-as-kill)
-    (jwebkit--bind '(normal motion)
-                   (kbd "&") #'jwebkit-open-external)
-    (jwebkit--bind '(normal motion)
-                   (kbd "gp") #'jwebkit-pdf-goto-page)
-    (jwebkit--bind '(normal motion)
-                   (kbd "gO") #'jwebkit-pdf-outline)
-    (jwebkit--bind '(normal motion)
-                   (kbd "gr") #'jwebkit-md-reload)
-    (jwebkit--bind 'emacs
-                   (kbd "<escape>") #'jwebkit-stop-edit)
-    (jwebkit--bind 'emacs
-                   (kbd "C-g") #'jwebkit-stop-edit)
-    (define-key xwidget-webkit-edit-mode-map (kbd "<escape>") #'jwebkit-stop-edit)
-    (define-key xwidget-webkit-edit-mode-map (kbd "C-g") #'jwebkit-stop-edit)))
+    (jwebkit--bind-keys)
+    (add-hook 'evil-collection-setup-hook #'jwebkit--after-evil-collection)))
 
 (provide 'jwebkit)
 ;;; jwebkit.el ends here

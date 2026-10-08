@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'json)
 (require 'jwebkit)
 
@@ -20,6 +21,30 @@
     (should (string-match-p ",false,true)" js)))
   (should (string-match-p ",true,false)" (jwebkit--find-js "x" t)))
   (should (string-match-p ",false,true)" (jwebkit--find-js "x" nil t))))
+
+(ert-deftest jwebkit-test-keys-survive-evil-collection ()
+  "evil-collection binds f and gi to `undefined' in xwidget whenever its
+init reaches xwidget, which with evil on `:defer 0' is after
+`jwebkit-setup'.  Its setup hook must put them back, for xwidget only."
+  (let ((evil-collection-setup-hook nil)
+        (jwebkit--setup-done nil)
+        (bound nil))
+    (cl-letf (((symbol-function 'jwebkit-pdf-enable) #'ignore)
+              ((symbol-function 'jwebkit-md-enable) #'ignore)
+              ;; Evil's per-state maps are not loaded here; record instead.
+              ((symbol-function 'jwebkit--bind)
+               (lambda (_states key fn)
+                 (setf (alist-get key bound nil nil #'equal) fn))))
+      (jwebkit-setup)
+      (should (eq (alist-get "f" bound nil nil #'equal) #'jwebkit-ace))
+      ;; What evil-collection-xwidget-setup does, then its hook.
+      (setf (alist-get "f" bound nil nil #'equal) #'undefined
+            (alist-get "gi" bound nil nil #'equal) #'undefined)
+      (run-hook-with-args 'evil-collection-setup-hook 'dired '(dired-mode-map))
+      (should (eq (alist-get "f" bound nil nil #'equal) #'undefined))
+      (run-hook-with-args 'evil-collection-setup-hook 'xwidget '(xwidget-webkit-mode-map))
+      (should (eq (alist-get "f" bound nil nil #'equal) #'jwebkit-ace))
+      (should (eq (alist-get "gi" bound nil nil #'equal) #'jwebkit-focus-input)))))
 
 (ert-deftest jwebkit-test-parse-labels-json-string ()
   (should (equal (jwebkit--parse-labels "[\"a\",\"s\",\"d\"]")
