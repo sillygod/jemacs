@@ -4155,6 +4155,127 @@ entries reach an open page only."
     (should (equal (ghostherd-log-entry-text (car ghostherd--log)) "idle → working"))))
 
 
+;;; Resuming a past conversation
+
+(ert-deftest ghostherd-test-resume-args ()
+  (should (equal (ghostherd--resume-args 'claude "a0c6b62b-e1d2") '("-r" "a0c6b62b-e1d2")))
+  (should (equal (ghostherd--resume-args 'claude "a0c6" t) '("-r" "a0c6" "--fork-session")))
+  (should (equal (ghostherd--resume-args 'grok "g1" t) '("-r" "g1" "--fork-session")))
+  (should (equal (ghostherd--resume-args 'agy "c9") '("--conversation" "c9")))
+  (should-not (ghostherd--resume-args 'agy "c9" t))
+  (should-not (ghostherd--resume-args 'shell "x"))
+  ;; An id comes from an index of files: one that reads as a flag is refused.
+  (should-not (ghostherd--resume-args 'claude "-rf"))
+  (should-not (ghostherd--resume-args 'claude "a b"))
+  (should-not (ghostherd--resume-args 'claude nil)))
+
+(ert-deftest ghostherd-test-resume-spawns-in-the-directory ()
+  (let ((ghostherd--sessions (make-hash-table :test #'equal))
+        (dir (make-temp-file "gh-proj-" t))
+        spawned)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-spawn)
+                   (lambda (kind &rest plist) (setq spawned (cons kind plist))))
+                  ((symbol-function 'ghostherd-project-defaults)
+                   (lambda (&rest _) '(claude "--permission-mode" "acceptEdits")))
+                  ((symbol-function 'ghostherd--project-root) (lambda (&rest _) nil)))
+          (ghostherd-resume 'claude "a0c6b62b-e1d2-4371" dir :title "Sentry triage")
+          (should (eq (car spawned) 'claude))
+          (should (equal (plist-get (cdr spawned) :args)
+                         '("--permission-mode" "acceptEdits" "-r" "a0c6b62b-e1d2-4371")))
+          (should (equal (plist-get (cdr spawned) :directory) (file-name-as-directory dir)))
+          (should (equal (plist-get (cdr spawned) :name)
+                         (format "claude-%s" (file-name-nondirectory dir))))
+          (should (equal (plist-get (cdr spawned) :notes) "resumed a0c6b62b: Sentry triage"))
+          (ghostherd-resume 'claude "a0c6b62b" dir :fork t)
+          (should (member "--fork-session" (plist-get (cdr spawned) :args)))
+          (should (string-prefix-p "forked from" (plist-get (cdr spawned) :notes)))
+          (should-error (ghostherd-resume 'agy "c9" dir :fork t) :type 'user-error)
+          (should-error (ghostherd-resume 'claude "a0c6" (expand-file-name "gone" dir)) :type 'user-error))
+      (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-resumed-by-finds-the-agent-on-it ()
+  (let ((ghostherd--sessions (make-hash-table :test #'equal)))
+    (puthash "claude-x" (ghostherd-session--create :id "claude-x" :name "claude-x" :kind 'claude
+                                                   :args '("-r" "id-1"))
+             ghostherd--sessions)
+    ;; A fork of id-1 is a conversation of its own.
+    (puthash "claude-x-2" (ghostherd-session--create :id "claude-x-2" :name "claude-x-2" :kind 'claude
+                                                     :args '("-r" "id-1" "--fork-session"))
+             ghostherd--sessions)
+    (puthash "claude-y" (ghostherd-session--create :id "claude-y" :name "claude-y" :kind 'claude
+                                                   :args '("-r" "id-3" "--fork-session"))
+             ghostherd--sessions)
+    (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_) t)))
+      (should (equal (ghostherd-session-name (ghostherd--resumed-by "id-1")) "claude-x"))
+      (should-not (ghostherd--resumed-by "id-3"))
+      (should-not (ghostherd--resumed-by "id-2")))
+    (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_) nil)))
+      (should-not (ghostherd--resumed-by "id-1")))))
+
+(ert-deftest ghostherd-test-memory-page-resume-info ()
+  "Resumable only when the CLI can, the file and the directory are
+there, and it is a conversation; otherwise the page is told why."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((root (make-temp-file "gh-resume-" t))
+         (proj (expand-file-name "proj" root))
+         (file (expand-file-name "a0c6b62b-e1d2.jsonl" root))
+         (ghostherd-memory-page--resumable (make-hash-table :test #'equal))
+         (chunk (lambda (&rest kv)
+                  (append kv (list :agent "claude" :session_id "inside-id" :project proj
+                                   :source_kind "transcript" :title "T")))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd--resumed-by) (lambda (_) nil)))
+          (make-directory proj)
+          (write-region "{}" nil file)
+          (let ((ok (ghostherd-memory-page--resume-info file (list (funcall chunk)))))
+            (should (eq (plist-get ok :ok) t))
+            ;; claude resumes by the file's name, not a sessionId inside it.
+            (should (equal (plist-get ok :session) "a0c6b62b"))
+            (should (eq (plist-get ok :fork) t))
+            (should (numberp (plist-get ok :recent)))
+            (should (equal (gethash file ghostherd-memory-page--resumable)
+                           (list 'claude "a0c6b62b-e1d2" proj "T"))))
+          (set-file-times file (time-subtract nil 3600))
+          (should-not (plist-get (ghostherd-memory-page--resume-info file (list (funcall chunk))) :recent))
+          (cl-flet ((why (path chunks) (plist-get (ghostherd-memory-page--resume-info path chunks) :why)))
+            (should (string-match-p "Notes" (why file (list (append '(:source_kind "memory") (funcall chunk))))))
+            (should (string-match-p "cleanupPeriodDays" (why (expand-file-name "gone.jsonl" root) (list (funcall chunk)))))
+            (should (string-match-p "directory .* is gone"
+                                    (why file (list (append (list :project (expand-file-name "nope" root)) (funcall chunk))))))
+            (should (string-match-p "cannot resume" (why file (list (append '(:agent "shell") (funcall chunk))))))
+            (should-not (gethash (expand-file-name "gone.jsonl" root) ghostherd-memory-page--resumable))))
+      (delete-directory root t))))
+
+(ert-deftest ghostherd-test-memory-page-resume-uses-what-emacs-stored ()
+  "The page names a source; the kind, id and directory are Emacs's."
+  (ghostherd-test--with-page
+    (let ((ghostherd-memory-page--resumable (make-hash-table :test #'equal))
+          resumed visited (running nil))
+      (puthash "/s.jsonl" (list 'claude "id-1" "/proj" "T") ghostherd-memory-page--resumable)
+      (cl-letf (((symbol-function 'ghostherd-resume)
+                 (lambda (kind id dir &rest kw)
+                   (setq resumed (list kind id dir (plist-get kw :fork)))
+                   (ghostherd-session--create :name "claude-proj")))
+                ((symbol-function 'ghostherd--resumed-by) (lambda (_) running))
+                ((symbol-function 'ghostherd-visit) (lambda (s) (setq visited s))))
+        (ghostherd-memory-page--handle '((op . "resume") (source_path . "/s.jsonl") (fork . :false)
+                                         (session_id . "-rf") (directory . "/etc")))
+        (should (equal resumed '(claude "id-1" "/proj" nil)))
+        (should (equal (ghostherd-test--call calls "flash") "Resumed as claude-proj"))
+        (should (assoc "setResume" calls))
+        (ghostherd-memory-page--handle '((op . "resume") (source_path . "/s.jsonl") (fork . t)))
+        (should (equal (nth 3 resumed) t))
+        ;; An agent already on it: go there, never a second writer.
+        (setq resumed nil running (ghostherd-session--create :name "claude-proj"))
+        (ghostherd-memory-page--handle '((op . "resume") (source_path . "/s.jsonl") (fork . :false)))
+        (should-not resumed)
+        (should visited)
+        ;; A source Emacs never found resumable.
+        (ghostherd-memory-page--handle '((op . "resume") (source_path . "/other.jsonl")))
+        (should (string-match-p "cannot be resumed" (ghostherd-test--call calls "showError")))))))
+
+
 ;;; Background import
 
 (defmacro ghostherd-test--with-auto (&rest body)

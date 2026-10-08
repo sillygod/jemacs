@@ -557,6 +557,67 @@
     );
   }
 
+  // Resume / Fork, or why not.  Emacs decided; the page only shows it.
+  function resumeHtml() {
+    const r = src && src.resume;
+    if (!r) return "";
+    if (!r.ok) return '<span class="noresume" title="' + esc(r.why || "") + '">⊘ ' + esc(r.why || "Not resumable") + "</span>";
+    let html = "";
+    if (r.running) {
+      html += '<button type="button" class="ghost small" data-act="visit-agent" title="An agent is on this conversation already">Open ' +
+        esc(r.running) + "</button>";
+    } else {
+      html += '<button type="button" class="primary small" data-act="resume" title="Continue this conversation in a new ' +
+        esc(r.agent) + ' agent">Resume</button>';
+    }
+    if (r.fork) {
+      html += '<button type="button" class="ghost small" data-act="fork" title="Branch a new conversation off this one">Fork</button>';
+    }
+    return '<span class="resume">' + html + "</span>";
+  }
+
+  // In-page, as pr-view learned: window.confirm() returns false at once
+  // inside xwidget's WebKit, without drawing anything.
+  function ask(message, detail, choices) {
+    const wrap = document.createElement("div");
+    wrap.className = "ask-wrap";
+    wrap.innerHTML = '<div class="ask" role="dialog"><p class="ask-msg"></p><p class="ask-detail"></p><div class="ask-buttons"></div></div>';
+    wrap.querySelector(".ask-msg").textContent = message;
+    wrap.querySelector(".ask-detail").textContent = detail || "";
+    const row = wrap.querySelector(".ask-buttons");
+    const close = () => wrap.remove();
+    choices.forEach(([label, cls, fn]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls;
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        close();
+        if (fn) fn();
+      });
+      row.appendChild(b);
+    });
+    wrap.addEventListener("click", (ev) => { if (ev.target === wrap) close(); });
+    wrap.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { close(); ev.stopPropagation(); } });
+    document.body.appendChild(wrap);
+    const last = row.lastElementChild;
+    if (last) last.focus();
+  }
+
+  function resume(fork) {
+    const r = src && src.resume;
+    if (!r || !r.ok) return;
+    const go = (f) => emit("resume", { source_path: src.path, fork: !!f });
+    if (fork || r.recent == null) return go(fork);
+    const choices = [["Cancel", "ghost", null]];
+    if (r.fork) choices.push(["Fork instead", "ghost", () => go(true)]);
+    choices.push(["Resume anyway", "primary", () => go(false)]);
+    ask("This conversation was written to " + (r.recent < 60 ? r.recent + "s" : span(r.recent * 1000)) + " ago.",
+      "It may still be open in an agent; resuming it there too would give it two writers." +
+        (r.fork ? " Fork continues from here in a new conversation instead." : ""),
+      choices);
+  }
+
   function renderSourceChrome() {
     const head = $("src-head");
     if (!head || !src) return;
@@ -570,6 +631,7 @@
           '<button type="button" class="linkish" data-act="match-prev" title="Previous match (N)"' + (n ? "" : " disabled") + ">↑</button>" +
           '<button type="button" class="linkish" data-act="match-next" title="Next match (n)"' + (n ? "" : " disabled") + ">↓</button></span>"
         : "") +
+      resumeHtml() +
       '<button type="button" class="linkish" data-act="copy-path" title="' + esc(src.path) + '">Copy path</button></div>';
     const top = $("src-earlier");
     const bottom = $("src-later");
@@ -1003,6 +1065,12 @@
       if (m) emit("copy", { text: m.text });
     } else if (act === "copy-path") {
       if (src) emit("copy", { text: src.path });
+    } else if (act === "resume") {
+      resume(false);
+    } else if (act === "fork") {
+      resume(true);
+    } else if (act === "visit-agent") {
+      if (src) emit("visit-agent", { source_path: src.path });
     } else if (act === "range") {
       herd.range = +el.getAttribute("data-range");
       renderLog();
@@ -1150,6 +1218,12 @@
       if (p && p.query) search(true);
     },
 
+    setResume: (p) => {
+      if (!p || !src || p.source_path !== src.path) return;
+      src.resume = p.resume || null;
+      renderSourceChrome();
+    },
+
     showView: (v) => {
       if (v === "log") showLog();
       else if (v === "sessions") showSessions();
@@ -1194,6 +1268,7 @@
         if (src.loading !== "open") return;
         src.offset = p.offset || 0;
         src.chunks = chunks;
+        src.resume = p.resume || null;
         src.loading = null;
         showSource();
         focusMessage();

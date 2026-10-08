@@ -110,6 +110,91 @@ every list going to the page goes as a vector."
     (ghostherd-memory-page--js "showError" (format "%s: %s" what err))))
 
 
+;;; Resuming a session
+
+(defconst ghostherd-memory-page--recent 600
+  "Seconds within which a transcript written to may still be open in an agent.")
+
+(defvar ghostherd-memory-page--resumable (make-hash-table :test #'equal)
+  "Source path -> (KIND ID DIRECTORY TITLE), as Emacs worked it out.
+The page only names a source; what a resume runs comes from here,
+never from the page.")
+
+(defun ghostherd-memory-page--conversation-id (agent path chunk)
+  "The id AGENT's CLI resumes the session at PATH by."
+  (if (equal agent "claude")
+      ;; `claude -r ID' opens ID.jsonl, and a transcript that was itself
+      ;; resumed can carry another sessionId inside it.
+      (file-name-base path)
+    (plist-get chunk :session_id)))
+
+(defun ghostherd-memory-page--resume-info (path chunks)
+  "Whether the session at PATH can be resumed, as a plist for the page.
+CHUNKS carry its agent, id and project.  When it can, remembers what a
+resume runs."
+  (remhash path ghostherd-memory-page--resumable)
+  (let* ((c (car chunks))
+         (agent (and c (plist-get c :agent)))
+         (kind (and agent (intern-soft agent)))
+         (id (and c (ghostherd-memory-page--conversation-id agent path c)))
+         (dir (and c (ghostherd-memory-page--str (plist-get c :project))))
+         (why
+          (cond
+           ((not c) "Nothing in this session")
+           ((not (equal (plist-get c :source_kind) "transcript")) "Notes, not a conversation")
+           ((not (and kind (assq kind ghostherd-agent-specs)
+                      (ghostherd--resume-args kind id)))
+            (format "%s cannot resume a conversation by id" agent))
+           ((not (file-exists-p path))
+            (if (equal agent "claude")
+                "Claude Code deleted this transcript (cleanupPeriodDays); only the index is left"
+              (format "%s no longer has this conversation; only the index is left" agent)))
+           ((not (and dir (file-directory-p dir)))
+            (format "Its directory %s is gone" (or dir "?"))))))
+    (if why
+        (list :ok :json-false :why why)
+      (let ((age (float-time (time-subtract
+                              nil (file-attribute-modification-time (file-attributes path))))))
+        (puthash path (list kind id dir (plist-get c :title)) ghostherd-memory-page--resumable)
+        (ghostherd-memory-page--resume-state path age)))))
+
+(defun ghostherd-memory-page--resume-state (path &optional age)
+  "The page's resume buttons for PATH, already found resumable.
+AGE is how many seconds ago its transcript was written."
+  (pcase-let* ((`(,kind ,id ,_dir ,_title) (gethash path ghostherd-memory-page--resumable))
+               (running (ghostherd--resumed-by id)))
+    (list :ok t
+          :agent (symbol-name kind)
+          :session (substring id 0 (min 8 (length id)))
+          :fork (if (ghostherd--resume-args kind id t) t :json-false)
+          :running (and running (ghostherd-session-name running))
+          :recent (and age (< age ghostherd-memory-page--recent) (round age)))))
+
+(defun ghostherd-memory-page--resume (path fork)
+  "Resume (or with FORK, fork) the session at PATH in a new agent."
+  (pcase-let ((`(,kind ,id ,dir ,title)
+               (or (gethash path ghostherd-memory-page--resumable)
+                   (user-error "That session cannot be resumed from here"))))
+    (let ((running (and (not fork) (ghostherd--resumed-by id))))
+      (if running
+          ;; Already an agent on it: a second would be two writers.
+          (ghostherd-visit running)
+        (let ((session (ghostherd-resume kind id dir :fork fork :title title)))
+          (ghostherd-memory-page--js
+           "flash" (format "%s as %s" (if fork "Forked" "Resumed")
+                           (ghostherd-session-name session)))
+          (ghostherd-memory-page--js
+           "setResume" (list :source_path path
+                             :resume (ghostherd-memory-page--resume-state path))))))))
+
+(defun ghostherd-memory-page--visit-agent (path)
+  "Show the agent already running the session at PATH."
+  (pcase-let ((`(,_kind ,id . ,_) (gethash path ghostherd-memory-page--resumable)))
+    (if-let* ((running (and id (ghostherd--resumed-by id))))
+        (ghostherd-visit running)
+      (user-error "No agent is running that session now"))))
+
+
 ;;; Import progress
 
 (defun ghostherd-memory-page--watch-import ()
@@ -273,14 +358,18 @@ Focus and mode ride along untouched; the page placed the window."
     (ghostherd-memory-request-async
      "memory_chunks"
      (lambda (result)
-       (ghostherd-memory-page--js
-        "renderSource"
-        (list :source_path path
-              :offset offset
-              :total (or (plist-get result :total) 0)
-              :chunks (ghostherd-memory-page--vec (plist-get result :chunks))
-              :focus focus
-              :mode mode)))
+       (let ((chunks (plist-get result :chunks)))
+         (ghostherd-memory-page--js
+          "renderSource"
+          (append
+           (list :source_path path
+                 :offset offset
+                 :total (or (plist-get result :total) 0)
+                 :chunks (ghostherd-memory-page--vec chunks)
+                 :focus focus
+                 :mode mode)
+           (and (equal mode "open")
+                (list :resume (ghostherd-memory-page--resume-info path chunks)))))))
      (list :source_path path :offset offset :limit limit)
      (ghostherd-memory-page--fail "Opening the session"))))
 
@@ -324,6 +413,10 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("search" (ghostherd-memory-page--search intent))
         ("open-source" (ghostherd-memory-page--open-source intent))
         ("import" (ghostherd-memory-page--import))
+        ("resume" (ghostherd-memory-page--resume
+                   (alist-get 'source_path intent)
+                   (ghostherd-memory-page--truthy (alist-get 'fork intent))))
+        ("visit-agent" (ghostherd-memory-page--visit-agent (alist-get 'source_path intent)))
         ("copy"
          (when-let* ((text (alist-get 'text intent)))
            (xwapp-copy text)

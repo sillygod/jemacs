@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.13* — the herd log on the page                           |
+| Phase       | *3.14* — resume a past session from the page                |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -115,6 +115,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-report=              | Record what an agent says about itself |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
+| =ghostherd-resume=                  | Agent on a past conversation by id (the page's Resume) |
 | =M-x ghostherd-set-notes=           | Set an agent's role / note           |
 | =M-x ghostherd-interrupt=           | Send Escape ("esc to interrupt")     |
 | =M-x ghostherd-abort=               | Send C-c                             |
@@ -899,8 +900,20 @@ without xwidgets.
 - While the sidecar imports --- from this page or in the background ---
   the status line reads its progress every five seconds: agent, files,
   new chunks, the file at hand.
+- A session can be picked up again: *Resume* starts a new agent in its
+  directory on that conversation (=claude -r=, =grok -r=, =agy
+  --conversation=), *Fork* (claude, grok) branches a new conversation
+  off it.  The agent is named =<kind>-<project>= with the project's
+  default args, and its notes say where it came from.  When an agent is
+  already on the conversation, the button opens it instead; a
+  transcript written to in the last ten minutes asks first, since it
+  may be open in an agent the herd did not start.  When it cannot be
+  resumed the page says why --- most often that Claude Code deleted the
+  transcript after 30 days and only the index is left.
 - The page holds no token and asks the sidecar nothing itself: every
-  request goes through Emacs.
+  request goes through Emacs.  For Resume it only names a source; the
+  kind, id and directory are the ones Emacs worked out, and an id that
+  could read as a flag is refused.
 - Keys: =/= search, =↑= / =↓= between results, =RET= open, =Esc= back,
   =n= / =N= matches.
 

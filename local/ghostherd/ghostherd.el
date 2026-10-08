@@ -104,6 +104,8 @@ made an unanchored `> \=' match the transcript.")
      :description "Claude Code"
      :process-names ("claude")
      :continue-args ("--continue")
+     :resume-args ("-r" "%s")
+     :fork-args ("--fork-session")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Do you want to make this edit"
@@ -128,6 +130,8 @@ made an unanchored `> \=' match the transcript.")
      :description "Grok Build TUI"
      :process-names ("grok")
      :continue-args ("--continue")
+     :resume-args ("-r" "%s")
+     :fork-args ("--fork-session")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -154,6 +158,7 @@ made an unanchored `> \=' match the transcript.")
      :description "agy CLI"
      :process-names ("agy")
      :continue-args ("--continue")
+     :resume-args ("--conversation" "%s")
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -191,6 +196,10 @@ Each entry is (KIND . PLIST) with keys:
 :args           default argument list (strings)
 :continue-args  flag that resumes the CLI's previous conversation, used by
                 `ghostherd-respawn'.  nil when the CLI has no such flag.
+:resume-args    arguments that resume one conversation by id, %s the id;
+                used by `ghostherd-resume'.  nil when the CLI cannot.
+:fork-args      added to :resume-args to branch a new conversation off
+                that one instead of continuing it.  nil when it cannot.
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
@@ -1790,6 +1799,62 @@ With prefix or KIND, skip the kind prompt."
      :directory directory
      :args args
      :notes (and (not (string-empty-p notes)) notes))))
+
+(defconst ghostherd--session-id-re "\\`[A-Za-z0-9][A-Za-z0-9_.-]*\\'"
+  "What a CLI's conversation id looks like: a UUID, or a plain token.
+Checked before it becomes an argument: it arrives from an index of
+files, and an id starting with \"-\" would read as a flag.")
+
+(defun ghostherd--resume-args (kind id &optional fork)
+  "Arguments that make KIND resume conversation ID, or nil if it cannot.
+With FORK, branch a new conversation off it; nil if KIND cannot fork."
+  (let* ((spec (ghostherd--spec kind))
+         (resume (plist-get spec :resume-args))
+         (forking (plist-get spec :fork-args)))
+    (when (and resume (stringp id) (string-match-p ghostherd--session-id-re id)
+               (or (not fork) forking))
+      (append (mapcar (lambda (a) (format a id)) resume)
+              (and fork forking)))))
+
+(defun ghostherd--resumed-by (id)
+  "The live herd agent that was started on conversation ID, or nil.
+Found by its arguments, which the recipe keeps across restarts.  An
+agent forked from ID is on a conversation of its own and does not
+count.  One that reached ID some other way is not found:
+`ghostherd-memory-page' warns about a transcript written to recently."
+  (seq-find (lambda (s)
+              (let ((args (ghostherd-session-args s))
+                    (fork (ignore-errors
+                            (plist-get (ghostherd--spec (ghostherd-session-kind s)) :fork-args))))
+                (and (member id args)
+                     (not (seq-some (lambda (f) (member f args)) fork))
+                     (ghostherd--session-live-p s))))
+            (hash-table-values ghostherd--sessions)))
+
+(cl-defun ghostherd-resume (kind id directory &key fork title)
+  "Spawn a KIND agent in DIRECTORY on conversation ID, and show it.
+With FORK, branch a new conversation off it.  TITLE goes in the
+notes.  The agent is named KIND-<project>, made unique, and takes the
+project's own default args before the resume ones."
+  (let* ((args (or (ghostherd--resume-args kind id fork)
+                   (user-error "%s cannot %s a conversation by id" kind
+                               (if fork "fork" "resume"))))
+         (directory (if (and (stringp directory) (file-directory-p directory))
+                        (file-name-as-directory (expand-file-name directory))
+                      (user-error "No directory %s to resume in" directory)))
+         (defaults (ghostherd-project-defaults directory))
+         (base (or (and (eq (car defaults) kind) (cdr defaults))
+                   (plist-get (ghostherd--spec kind) :args)))
+         (leaf (file-name-nondirectory (directory-file-name directory)))
+         (short (substring id 0 (min 8 (length id)))))
+    (ghostherd-spawn
+     kind
+     :name (ghostherd--unique-name (format "%s-%s" kind leaf))
+     :project (or (ghostherd--project-root directory) directory)
+     :directory directory
+     :args (append base args)
+     :notes (format "%s %s%s" (if fork "forked from" "resumed") short
+                    (if (and title (not (string-empty-p title))) (concat ": " title) "")))))
 
 ;;;###autoload
 (defun ghostherd-new-pair ()

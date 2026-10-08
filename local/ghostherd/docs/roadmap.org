@@ -440,10 +440,9 @@ page" in [[file:../readme.org][readme.org]].
 - [ ] The herd log as a second tab (step 3 of the web-UI plan)
 - [ ] The sanitizer, marked and the base colours are now in two pages;
   a third would make them worth moving into =xwapp/ui/=
-- [ ] Resume a past session from the page (=claude -r <id>= through
-  =ghostherd-new=)
+- [X] Resume a past session from the page --- Phase 3.14
 
-* Phase 3.13 — The herd log on the page  *(this tree)*
+* Phase 3.13 — The herd log on the page  *(done)*
 
 Goal: "what happened while you were away" as something you take in at
 a glance, not read line by line.  Step 3 of the web-UI plan.
@@ -470,6 +469,30 @@ a glance, not read line by line.  Step 3 of the web-UI plan.
 - [ ] The overlay's =L= still opens the text log; whether it should
   jump to the page is a question of habit
 - [ ] The sanitizer, marked and the base colours are in two pages now
+
+* Phase 3.14 — Resume a past session from the page  *(this tree)*
+
+Goal: from "what did I do before" straight to "carry on with it".
+
+** What shipped
+
+- [X] =:resume-args= / =:fork-args= per kind beside =:continue-args=:
+  claude and grok =-r ID= (+ =--fork-session=), agy =--conversation ID=
+- [X] =ghostherd-resume=: a =<kind>-<project>= agent in the
+  conversation's directory, the project's default args first, notes
+  saying where it came from; an id that could read as a flag refused
+- [X] Resume / Fork in the page's session header, or why not: notes not
+  a conversation, transcript deleted (Claude Code's 30 days), directory
+  gone, a CLI that cannot
+- [X] No second writer: an agent already on the conversation is opened
+  instead; a forked one does not count, being on its own; a transcript
+  written to in the last ten minutes asks first, in the page
+- [X] claude is resumed by the transcript's file name: =claude -r ID=
+  opens ID.jsonl, and a transcript resumed before can carry another
+  sessionId inside
+- [X] The page names a source only; kind, id and directory are what
+  Emacs worked out when it opened the session
+- [X] 5 ERT tests; 9 more WebKit checks with spawning recorded, not done
 
 * Phase 4 — Ecosystem (only if still useful)
 
