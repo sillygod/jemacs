@@ -13,6 +13,7 @@ from qdrant_client.models import (
     Filter,
     FilterSelector,
     MatchValue,
+    PointIdsList,
     PointStruct,
     SparseVector,
     SparseVectorParams,
@@ -27,6 +28,23 @@ NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 
 def point_id(source_path: str, chunk_index: int) -> str:
     return str(uuid.uuid5(NAMESPACE, f"{source_path}:{chunk_index}"))
+
+
+def payload_for(turn: Turn) -> dict[str, Any]:
+    """What a chunk stores besides its vectors.  Import compares this to
+    tell a chunk that changed from one already embedded."""
+    return {
+        "text": turn.text,
+        "agent": turn.agent,
+        "role": turn.role,
+        "project": turn.project or "",
+        "session_id": turn.session_id or "",
+        "source_path": turn.source_path,
+        "source_kind": turn.source_kind,
+        "ts": turn.ts or "",
+        "title": turn.title or "",
+        "chunk_index": turn.chunk_index,
+    }
 
 
 def rrf_merge(
@@ -119,6 +137,36 @@ class Store:
             ),
         )
 
+    def payloads_of(self, source_path: str) -> dict[int, dict[str, Any]]:
+        """chunk_index -> stored payload for every chunk of SOURCE_PATH."""
+        if not self.collection_exists():
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        offset = None
+        while True:
+            batch, offset = self.client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="source_path", match=MatchValue(value=source_path))]
+                ),
+                limit=512,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for rec in batch:
+                payload = rec.payload or {}
+                out[int(payload.get("chunk_index") or 0)] = payload
+            if offset is None:
+                return out
+
+    def delete_chunks(self, source_path: str, indexes: list[int]) -> None:
+        if indexes and self.collection_exists():
+            self.client.delete(
+                collection_name=COLLECTION,
+                points_selector=PointIdsList(points=[point_id(source_path, i) for i in indexes]),
+            )
+
     def upsert(
         self,
         turns: list[Turn],
@@ -139,18 +187,7 @@ class Store:
                         "dense": dvec,
                         "sparse": SparseVector(indices=indices, values=values),
                     },
-                    payload={
-                        "text": turn.text,
-                        "agent": turn.agent,
-                        "role": turn.role,
-                        "project": turn.project or "",
-                        "session_id": turn.session_id or "",
-                        "source_path": turn.source_path,
-                        "source_kind": turn.source_kind,
-                        "ts": turn.ts or "",
-                        "title": turn.title or "",
-                        "chunk_index": turn.chunk_index,
-                    },
+                    payload=payload_for(turn),
                 )
             )
         self.client.upsert(collection_name=COLLECTION, points=points)

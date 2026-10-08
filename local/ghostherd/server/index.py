@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,10 +22,18 @@ class SourceMeta:
 
 
 class SourceIndex:
+    """One connection shared by every thread, behind a lock.
+
+    JSON-RPC runs each method via asyncio.to_thread, so the index is
+    opened on one worker thread and asked on another -- which sqlite3
+    refuses unless told otherwise.  Same arrangement as herd.py.
+    """
+
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
+        self._mu = threading.Lock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS sources (
@@ -43,16 +52,22 @@ class SourceIndex:
         self._conn.commit()
 
     def unchanged(self, meta: SourceMeta) -> bool:
-        row = self._conn.execute(
-            "SELECT mtime, size FROM sources WHERE source_path = ?",
-            (meta.path,),
-        ).fetchone()
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT mtime, size FROM sources WHERE source_path = ?",
+                (meta.path,),
+            ).fetchone()
         if row is None:
             return False
         return abs(row[0] - meta.mtime) < 1e-6 and row[1] == meta.size
 
     def record(self, meta: SourceMeta, chunks: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._record(meta, chunks, now)
+
+    def _record(self, meta: SourceMeta, chunks: int, now: str) -> None:
+        "Caller holds `_mu`."
         self._conn.execute(
             """
             INSERT INTO sources (
@@ -84,9 +99,10 @@ class SourceIndex:
         self._conn.commit()
 
     def counts_by_agent(self) -> dict[str, int]:
-        rows = self._conn.execute(
-            "SELECT agent, COUNT(*) FROM sources GROUP BY agent"
-        ).fetchall()
+        with self._mu:
+            rows = self._conn.execute(
+                "SELECT agent, COUNT(*) FROM sources GROUP BY agent"
+            ).fetchall()
         return {agent or "unknown": n for agent, n in rows}
 
     def list_sources(
@@ -105,20 +121,8 @@ class SourceIndex:
             where.append("(project = ? OR project LIKE ?)")
             args.extend([project, project.rstrip("/") + "/%"])
         clause = " AND ".join(where)
-        total = self._conn.execute(
-            f"SELECT COUNT(*) FROM sources WHERE {clause}", args
-        ).fetchone()[0]
-        rows = self._conn.execute(
-            f"""
-            SELECT source_path, mtime, size, agent, session_id, project,
-                   kind, chunks, imported_at
-            FROM sources
-            WHERE {clause}
-            ORDER BY imported_at DESC
-            LIMIT ? OFFSET ?
-            """,
-            [*args, int(limit), int(offset)],
-        ).fetchall()
+        with self._mu:
+            total, rows = self._list(clause, args, limit, offset)
         sources = [
             {
                 "source_path": r[0],
@@ -135,5 +139,24 @@ class SourceIndex:
         ]
         return sources, int(total)
 
+    def _list(self, clause: str, args: list, limit: int, offset: int) -> tuple[int, list]:
+        "Caller holds `_mu`."
+        total = self._conn.execute(
+            f"SELECT COUNT(*) FROM sources WHERE {clause}", args
+        ).fetchone()[0]
+        rows = self._conn.execute(
+            f"""
+            SELECT source_path, mtime, size, agent, session_id, project,
+                   kind, chunks, imported_at
+            FROM sources
+            WHERE {clause}
+            ORDER BY imported_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*args, int(limit), int(offset)],
+        ).fetchall()
+        return total, rows
+
     def close(self) -> None:
-        self._conn.close()
+        with self._mu:
+            self._conn.close()

@@ -155,3 +155,99 @@ def test_import_and_search_roundtrip(tmp_path: Path):
     finally:
         engine.close()
         reset_engine()
+
+
+def test_source_index_answers_from_any_thread(tmp_path):
+    """JSON-RPC runs each method via asyncio.to_thread, so the index is
+    opened on one worker thread and asked on another.  sqlite3 refuses
+    that by default; memory_list (SPC a h v) failed whenever the pool
+    handed it a different thread."""
+    import threading
+
+    from index import SourceIndex, SourceMeta
+
+    idx = SourceIndex(tmp_path / "sources.sqlite")
+    idx.record(SourceMeta("a.jsonl", 1.0, 10, "claude", "s", "/p", "chat"), 3)
+    out, errors = [], []
+
+    def ask():
+        try:
+            out.append(idx.list_sources())
+            out.append(idx.counts_by_agent())
+            idx.record(SourceMeta("b.jsonl", 2.0, 20, "grok", "t", "/p", "chat"), 1)
+        except Exception as exc:  # noqa: BLE001 -- the failure is the point
+            errors.append(exc)
+
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert out[0][1] >= 1
+    assert idx.list_sources()[1] == 2
+    idx.close()
+
+
+def test_reimport_embeds_only_what_changed(tmp_path, monkeypatch):
+    """A session being worked in grows by a few turns between imports.
+    Only the new chunks may be embedded again, or a five-minute import
+    re-embeds every active session whole."""
+    import json
+
+    from config import Config
+    from engine import MemoryEngine, reset_engine
+
+    root = tmp_path / "claude" / "p"
+    root.mkdir(parents=True)
+    path = root / "s.jsonl"
+
+    def write(n, edit_first=False):
+        with path.open("w") as f:
+            for i in range(n):
+                text = f"turn {i}: a sentence about the retry loop number {i}"
+                if edit_first and i == 0:
+                    text = "turn 0 rewritten: the first turn says something else now"
+                f.write(json.dumps({"type": "user", "sessionId": "s", "cwd": "/p",
+                                    "message": {"role": "user", "content": text}}) + "\n")
+
+    reset_engine()
+    cfg = Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "claude",
+                 grok_root=tmp_path / "g", agy_root=tmp_path / "a")
+    cfg.grok_root.mkdir()
+    cfg.agy_root.mkdir()
+    eng = MemoryEngine(cfg)
+    embedded = []
+    real_dense = eng.embedder.dense
+
+    def counting(texts):
+        embedded.append(len(texts))
+        return real_dense(texts)
+
+    monkeypatch.setattr(eng.embedder, "dense", counting)
+    try:
+        write(10)
+        assert eng.import_transcripts(agents=["claude"])["imported"] == 10
+        write(13)  # three turns appended
+        os_mtime_bump(path)
+        assert eng.import_transcripts(agents=["claude"])["imported"] == 3
+        assert embedded[-1] == 3
+        write(13, edit_first=True)  # an earlier turn changed
+        os_mtime_bump(path)
+        assert eng.import_transcripts(agents=["claude"])["imported"] == 1
+        write(5)  # cut short: the tail goes
+        os_mtime_bump(path)
+        assert eng.import_transcripts(agents=["claude"])["imported"] == 1  # turn 0 is back to the original
+        assert eng.store.point_count() == 5
+        assert eng.import_transcripts(agents=["claude"], force=True)["imported"] == 5
+    finally:
+        eng.close()
+        reset_engine()
+
+
+def os_mtime_bump(path):
+    """Give PATH a new mtime even within the same clock tick."""
+    import os
+
+    st = os.stat(path)
+    os.utime(path, (st.st_atime, st.st_mtime + 5))

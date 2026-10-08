@@ -15,7 +15,7 @@ from config import Config, get_config
 from embedder import Embedder
 from importers import IMPORTERS, ROOT_ATTR
 from index import SourceIndex, SourceMeta
-from store import Store
+from store import Store, payload_for
 
 _lock = threading.Lock()
 _engine: "MemoryEngine | None" = None
@@ -201,7 +201,7 @@ class MemoryEngine:
                         continue
                     if was_skip:
                         skipped += 1
-                    else:
+                    elif n:
                         imported += n
                         if meta.session_id:
                             sessions.add(meta.session_id)
@@ -233,16 +233,23 @@ class MemoryEngine:
             min_chars=self.cfg.min_chars,
             overlap=self.cfg.overlap,
         )
-        self.store.delete_source(meta.path)
-        if not chunks:
-            self.index.record(meta, 0)
-            return 0, False
-        texts = [c.text for c in chunks]
-        dense = self.embedder.dense(texts)
-        sparse = self.embedder.sparse(texts)
-        n = self.store.upsert(chunks, dense, sparse)
-        self.index.record(meta, n)
-        return n, False
+        # Embed only what changed.  A session being worked in grows by a
+        # few turns between imports, and its chunk ids are fixed by
+        # (path, index): re-embedding all of it every five minutes would
+        # cost tens of seconds of CPU per active session, every time.
+        if force:
+            self.store.delete_source(meta.path)
+            stored = {}
+        else:
+            stored = self.store.payloads_of(meta.path)
+        fresh = [c for c in chunks if stored.get(c.chunk_index) != payload_for(c)]
+        gone = [i for i in stored if i >= len(chunks)]
+        self.store.delete_chunks(meta.path, gone)
+        if fresh:
+            texts = [c.text for c in fresh]
+            self.store.upsert(fresh, self.embedder.dense(texts), self.embedder.sparse(texts))
+        self.index.record(meta, len(chunks))
+        return len(fresh), False
 
 
 def _project_matches(have: str, wanted: str) -> bool:
