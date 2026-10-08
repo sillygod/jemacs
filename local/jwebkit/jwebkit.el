@@ -388,6 +388,55 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
         (evil-define-key* st xwidget-webkit-mode-map key fn)
       (define-key xwidget-webkit-mode-map key fn))))
 
+;;; Keyboard focus when a page goes (macOS)
+;;
+;; A click in a page makes WebKit's view the window's first responder;
+;; keys then reach Emacs through it, forwarded unless an input has focus.
+;; Killing the buffer runs nsxwidget_kill, which removes that view
+;; without handing first responder back.  Keys land on the bare
+;; NSWindow: nobody takes them, macOS beeps -- Esc is where one notices
+;; -- and Emacs sees none of them until a click on Emacs restores it.
+;;
+;; No Lisp primitive sets the first responder.  The one path in
+;; nsxwidget.m that hands it back is the page's own C-g message
+;; (xwKeyDown posts it; the handler calls makeFirstResponder with the
+;; Emacs view), and `kill-buffer-hook' runs before the xwidget is
+;; killed.  So post that message from the page and let the run loop
+;; deliver it.
+;;
+;; The handler reads the xwidget's view pointer, which is NULL once the
+;; view is gone: posting then would crash Emacs.  Hence only for a page
+;; shown in the selected window with a live view -- the only case where
+;; it can hold focus anyway -- and a wait that does not redisplay, so
+;; the view cannot go in between.  Late delivery is safe: nsxwidget_kill
+;; removes the handler before anything else.  Switching away from a page
+;; loses focus the same way, but there the view is deleted inside
+;; redisplay, with no moment for Lisp to step in; that one wants a fix in
+;; nsxwidget.m itself.
+
+(defconst jwebkit--give-focus-back-js
+  "window.webkit && window.webkit.messageHandlers.keyDown && window.webkit.messageHandlers.keyDown.postMessage('C-g');"
+  "What xwidget's own script sends on C-g in a page.")
+
+(defun jwebkit--give-focus-back ()
+  "Before a page's buffer dies, hand keyboard focus back to Emacs."
+  (when (and (eq (framep (selected-frame)) 'ns)
+             (derived-mode-p 'xwidget-webkit-mode)
+             (eq (window-buffer (selected-window)) (current-buffer))
+             ;; One view only: deleting one of two views clears the
+             ;; pointer the handler reads while the other is still up.
+             (= 1 (length (get-buffer-window-list (current-buffer) nil t))))
+    (let ((posted nil))
+      (dolist (xw (ignore-errors (get-buffer-xwidgets (current-buffer))))
+        (when (and (xwidget-live-p xw)
+                   (xwidget-view-lookup xw (selected-window)))
+          (ignore-errors
+            (xwidget-webkit-execute-script xw jwebkit--give-focus-back-js)
+            (setq posted t))))
+      ;; Not `sit-for': a redisplay here could delete the view.
+      (when posted
+        (accept-process-output nil 0.1)))))
+
 ;; evil-collection binds f and gi to `undefined' in xwidget (its TODO
 ;; for link hints), and does so whenever `evil-collection-init' gets to
 ;; xwidget.  With evil on `:defer 0' that is *after* `jwebkit-setup':
@@ -436,7 +485,8 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
   (unless jwebkit--setup-done
     (setq jwebkit--setup-done t)
     (jwebkit--bind-keys)
-    (add-hook 'evil-collection-setup-hook #'jwebkit--after-evil-collection)))
+    (add-hook 'evil-collection-setup-hook #'jwebkit--after-evil-collection)
+    (add-hook 'kill-buffer-hook #'jwebkit--give-focus-back)))
 
 (provide 'jwebkit)
 ;;; jwebkit.el ends here

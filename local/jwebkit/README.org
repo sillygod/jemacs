@@ -34,6 +34,25 @@ This package fills the TODOs it left: find, =f=, edit-mode.
 
 Existing collection bindings stay: =j k gg G d u H L r yy o t x= …
 
+* Keyboard focus after killing a page (macOS)
+
+After a click in a page, killing its buffer (=SPC b d=) used to leave
+the keyboard with nobody: Esc beeped and Emacs saw no keys until a
+click on Emacs.  A click makes WebKit's view the window's first
+responder, and =nsxwidget_kill= removes that view without handing it
+back.  No Lisp primitive sets the first responder; the one path that
+does is xwidget's own C-g message from the page.  So
+=jwebkit--give-focus-back= (on =kill-buffer-hook=, which runs before the
+xwidget dies) posts it and lets the run loop deliver it.
+
+Only for a page in the selected window with a live view, and nowhere
+else: the handler reads the view pointer, NULL once the view is gone,
+and posting then would crash Emacs.  The wait does not redisplay, so
+the view cannot go in between.  Switching away from a page (rather
+than killing it) loses focus the same way, but the view is deleted
+inside redisplay with no moment for Lisp to step in --- that one needs
+=nsxwidget.m= itself to hand focus back.
+
 * PDF (pdf.js)
 
 WebKit's own PDF view is a plugin with no DOM, so =/ f Y= do nothing

@@ -22,6 +22,41 @@
   (should (string-match-p ",true,false)" (jwebkit--find-js "x" t)))
   (should (string-match-p ",false,true)" (jwebkit--find-js "x" nil t))))
 
+(ert-deftest jwebkit-test-give-focus-back ()
+  "Killing a page posts xwidget's own C-g message, which hands keyboard
+focus back to Emacs -- but only when the page has a live view in the
+selected window and nowhere else: the handler reads a view pointer that
+is NULL once the view is gone, and posting then would crash Emacs."
+  (let ((posted 0) (waited nil)
+        (ns 'ns) (mode t) (selected t) (windows 1) (view t))
+    (cl-letf (((symbol-function 'framep) (lambda (_) ns))
+              ((symbol-function 'derived-mode-p) (lambda (&rest _) mode))
+              ((symbol-function 'window-buffer) (lambda (&rest _) (if selected (current-buffer) 'other)))
+              ((symbol-function 'get-buffer-window-list) (lambda (&rest _) (make-list windows 'w)))
+              ((symbol-function 'get-buffer-xwidgets) (lambda (_) '(xw)))
+              ((symbol-function 'xwidget-live-p) (lambda (_) t))
+              ((symbol-function 'xwidget-view-lookup) (lambda (&rest _) view))
+              ((symbol-function 'xwidget-webkit-execute-script)
+               (lambda (_xw js &rest _)
+                 (should (string-match-p "messageHandlers.keyDown.postMessage('C-g')" js))
+                 (setq posted (1+ posted))))
+              ((symbol-function 'accept-process-output) (lambda (&rest _) (setq waited t))))
+      (with-temp-buffer
+        (jwebkit--give-focus-back)
+        (should (= posted 1))
+        (should waited)
+        ;; Each condition off in turn (`set' would miss these lexical vars).
+        (dolist (off '(ns mode selected windows view))
+          (setq posted 0 ns 'ns mode t selected t windows 1 view t)
+          (pcase off
+            ('ns (setq ns 'x))
+            ('mode (setq mode nil))
+            ('selected (setq selected nil))
+            ('windows (setq windows 2))
+            ('view (setq view nil)))
+          (jwebkit--give-focus-back)
+          (should (= posted 0)))))))
+
 (ert-deftest jwebkit-test-keys-survive-evil-collection ()
   "evil-collection binds f and gi to `undefined' in xwidget whenever its
 init reaches xwidget, which with evil on `:defer 0' is after
