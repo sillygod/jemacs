@@ -403,7 +403,7 @@ there: "Why the sidecar wants a token" in [[file:design.org][design.org]].
 - [ ] Agents spawned before this hold a bare =GHOSTHERD_RPC= until
   respawned; they recover through =rpc.url= if they follow the skill
 
-* Phase 3.12 — The memory page  *(this tree)*
+* Phase 3.12 — The memory page  *(done)*
 
 Goal: read what claude / grok / agy did before, the way it was
 written --- markdown, whole messages, the hit in its context --- rather
@@ -442,6 +442,34 @@ page" in [[file:../readme.org][readme.org]].
   a third would make them worth moving into =xwapp/ui/=
 - [ ] Resume a past session from the page (=claude -r <id>= through
   =ghostherd-new=)
+
+* Phase 3.13 — The herd log on the page  *(this tree)*
+
+Goal: "what happened while you were away" as something you take in at
+a glance, not read line by line.  Step 3 of the web-UI plan.
+
+** What shipped
+
+- [X] A Log tab: one state lane per agent, segments rebuilt from the
+  transitions, blocked count and time per lane; ranges 6h / 24h / 7d /
+  all; a segment leads to its entry
+- [X] Entries newest first by day; agent, text and blocked-only
+  filters; kept screens open in place, escaped
+- [X] =ghostherd-log-functions=: each new entry, as it is logged, so
+  the page updates live.  Each listener runs on its own and demoted:
+  the first version ran them through one =with-demoted-errors=, and the
+  test of a broken listener showed it silencing the ones after it
+- [X] =ghostherd-log-page= / =SPC a h l=; the log needs no sidecar, so
+  the page shows it before the sessions answer
+- [X] 4 ERT tests; 18 more WebKit checks on a synthetic log (lanes and
+  their widths, ranges, filters, screens, a hostile reason and screen,
+  a live entry)
+
+** What is left
+
+- [ ] The overlay's =L= still opens the text log; whether it should
+  jump to the page is a question of habit
+- [ ] The sanitizer, marked and the base colours are in two pages now
 
 * Phase 4 — Ecosystem (only if still useful)
 

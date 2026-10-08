@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.12* — the memory page                                    |
+| Phase       | *3.13* — the herd log on the page                           |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -124,6 +124,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-mode=                | Global mode (modeline + hooks)       |
 | =M-x ghostherd-memory-page=         | Search and read past sessions (page) |
 | =M-x ghostherd-memory-sessions=     | The sessions, newest first (page)    |
+| =M-x ghostherd-log-page=            | The herd log as lanes + entries (page) |
 | =M-x ghostherd-memory-search=       | Search imported transcripts (text)   |
 | =M-x ghostherd-memory-view=         | Browse imported sources (text)       |
 | =M-x ghostherd-memory-import=       | Import claude / grok / agy stores    |
@@ -142,7 +143,7 @@ report. Notes do, because they were written onto the host.
 | =ahi= | prompt agent   |
 | =ahk= | kill           |
 | =ahr= | rename         |
-| =ahl= | herd log       |
+| =ahl= | herd log (page) |
 | =ah/= | memory page    |
 | =ahv= | memory sessions |
 | =ahI= | import memory  |
@@ -719,6 +720,20 @@ never saved --- so for those this shows the current screen, and the
 agent's own keys (=ctrl+o=, its pager) are what scroll it.
 
 * What happened while you were away (=ghostherd-log=)
+
+=SPC a h l= opens it as the Log tab of the herd page
+(=ghostherd-log-page=); =M-x ghostherd-log= and the overlay's =L= are
+the text buffer described below.  The page puts one lane per agent
+above the entries: its states as coloured segments across the range
+(6h, 24h, 7d, all) --- working blue, blocked orange, idle grey, done
+green, dead red --- rebuilt from the transitions, with a count of how
+often and how long it sat blocked.  Back from an absence, who was stuck
+and since when is one look.  A segment's tooltip has its span and
+reason, and a click goes to its entry.  Entries are newest first by
+day, filterable by agent, text, or blocked only, and a kept screen
+opens in place.  New entries arrive as they are logged
+(=ghostherd-log-functions=), and the page needs no sidecar for any of
+it.
 
 =SPC a h l=, or =L= in the sidebar. Every state transition and every
 prompt sent, oldest first, with a timestamp:

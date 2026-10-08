@@ -4083,6 +4083,78 @@ watch must not end before the answer comes."
     (should-not ghostherd-memory-page--importing)))
 
 
+(ert-deftest ghostherd-test-memory-page-log-entry ()
+  "A state entry comes apart into old, new and reason; others pass as text."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((t0 (encode-time '(0 14 2 8 10 2026)))
+         (blocked (ghostherd-memory-page--log-entry
+                   (ghostherd-log-entry--create
+                    :time t0 :session "reviewer" :kind 'state
+                    :text "working → blocked  Bash(rm -rf build/) — proceed?\n  1. Yes"
+                    :screen "the screen")))
+         (plain (ghostherd-memory-page--log-entry
+                 (ghostherd-log-entry--create :time t0 :session "a" :kind 'state :text "starting → idle")))
+         (input (ghostherd-memory-page--log-entry
+                 (ghostherd-log-entry--create :time t0 :session "a" :kind 'input :text "← review the diff"))))
+    (should (equal (plist-get blocked :t) (* 1000 (float-time t0))))
+    (should (equal (plist-get blocked :old) "working"))
+    (should (equal (plist-get blocked :new) "blocked"))
+    (should (equal (plist-get blocked :reason) "Bash(rm -rf build/) — proceed?\n  1. Yes"))
+    (should (equal (plist-get blocked :screen) "the screen"))
+    (should (equal (plist-get plain :new) "idle"))
+    (should (equal (plist-get plain :reason) ""))
+    (should-not (plist-member plain :screen))
+    (should (equal (plist-get input :kind) "input"))
+    (should-not (plist-member input :new))))
+
+(ert-deftest ghostherd-test-memory-page-log-flow ()
+  "The log is sent oldest first, read from the file if need be; new
+entries reach an open page only."
+  (ghostherd-test--with-page
+    (let ((ghostherd--log nil) (ghostherd--log-loaded nil) (loaded nil))
+      (cl-letf (((symbol-function 'ghostherd-log-load)
+                 (lambda ()
+                   (setq loaded t ghostherd--log-loaded t
+                         ghostherd--log
+                         (list (ghostherd-log-entry--create :session "b" :kind 'state :text "idle → working")
+                               (ghostherd-log-entry--create :session "a" :kind 'life :text "spawned claude on tmux"))))))
+        (ghostherd-memory-page--handle '((op . "log")))
+        (should loaded)
+        (let ((entries (plist-get (ghostherd-test--call calls "renderLog") :entries)))
+          (should (vectorp entries))
+          (should (equal (mapcar (lambda (e) (plist-get e :session)) entries) '("a" "b")))))
+      (setq calls nil)
+      (let ((e (ghostherd-log-entry--create :session "c" :kind 'state :text "working → done")))
+        (cl-letf (((symbol-function 'xwapp-session) (lambda (_) nil)))
+          (ghostherd-memory-page--on-log e))
+        (should-not calls)
+        (cl-letf (((symbol-function 'xwapp-session) (lambda (_) t)))
+          (ghostherd-memory-page--on-log e))
+        (should (equal (plist-get (ghostherd-test--call calls "logAdd") :new) "done"))))))
+
+(ert-deftest ghostherd-test-memory-page-log-needs-no-sidecar ()
+  "Asked for the log, the page shows it before the sessions answer."
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m _p) '(:sources nil :total 0)))
+    (let ((ghostherd-memory-page--pending '(:view "log")))
+      (ghostherd-memory-page--handle '((op . "ready")))
+      (should-not ghostherd-memory-page--pending))
+    (should (equal (car (car calls)) "showView"))
+    (should (equal (cdr (car calls)) "log"))
+    (should (assoc "setContext" calls))))
+
+(ert-deftest ghostherd-test-log-functions-hear-each-entry ()
+  "Listeners get each entry; a broken one costs the herd nothing."
+  (let ((ghostherd--log nil) (ghostherd-log-file nil) (heard nil)
+        (ghostherd-log-functions nil))
+    (add-hook 'ghostherd-log-functions (lambda (e) (push (ghostherd-log-entry-text e) heard)))
+    (add-hook 'ghostherd-log-functions (lambda (_) (error "Listener bug")))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (ghostherd--log-add "a" 'state "idle → working"))
+    (should (equal heard '("idle → working")))
+    (should (equal (ghostherd-log-entry-text (car ghostherd--log)) "idle → working"))))
+
+
 ;;; Background import
 
 (defmacro ghostherd-test--with-auto (&rest body)

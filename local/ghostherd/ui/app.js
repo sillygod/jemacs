@@ -304,7 +304,7 @@
 
   let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [] };
   let filters = { agent: "", project: "" };
-  let view = "boot"; // search | sessions | source
+  let view = "boot"; // search | sessions | source | log
   let tab = "search"; // the list view a source returns to
   let query = "";
   let searchSeq = 0; // the search whose answer the page wants
@@ -667,6 +667,244 @@
     }
   }
 
+  // ---- The herd log -----------------------------------------------------
+  //
+  // One lane per agent: its states as coloured segments across the
+  // range, rebuilt from the state transitions (old -> new, with when and
+  // why).  Below, the entries, newest first.  The lanes are the point:
+  // back from an absence, who sat blocked, since when, is one look.
+
+  const HOUR = 3600e3;
+  const RANGES = [[6 * HOUR, "6h"], [24 * HOUR, "24h"], [7 * 24 * HOUR, "7d"], [0, "All"]];
+  let herd = { entries: null, range: 24 * HOUR, session: "", blocked: false, filter: "", open: new Set() };
+
+  function sessionColor(name) {
+    let h = 0;
+    for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return "hsl(" + (h % 360) + ", 55%, 62%)";
+  }
+
+  function clock(t) {
+    const d = new Date(t);
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  }
+
+  function dayLabel(t) {
+    const d = new Date(t);
+    const today = new Date();
+    const y = new Date(today);
+    y.setDate(today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return "Today";
+    if (d.toDateString() === y.toDateString()) return "Yesterday";
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+
+  function span(ms) {
+    const m = Math.round(ms / 60000);
+    if (m < 60) return m + "m";
+    const h = Math.floor(m / 60);
+    return h < 48 ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : Math.round(h / 24) + "d";
+  }
+
+  function logWindow() {
+    const now = Date.now();
+    const entries = herd.entries || [];
+    const first = entries.length ? entries[0].t : now - HOUR;
+    return { start: herd.range ? now - herd.range : first, end: now };
+  }
+
+  // Segments per session from the state transitions; the state a range
+  // opens in is whatever the last transition before it left.
+  function lanes(start, end) {
+    const by = new Map();
+    (herd.entries || []).forEach((e, i) => {
+      if (e.session === "herd") return; // the seam between Emacsen
+      if (!by.has(e.session)) by.set(e.session, []);
+      by.get(e.session).push(Object.assign({ i: i }, e));
+    });
+    const out = [];
+    by.forEach((list, name) => {
+      if (herd.session && name !== herd.session) return;
+      let state = null, since = start, reason = "", from = -1;
+      const segs = [];
+      const marks = [];
+      for (const e of list) {
+        if (e.t > end) break;
+        if (e.kind === "state" && e.new) {
+          if (e.t >= start && state) segs.push({ state, a: since, b: e.t, reason, i: from });
+          state = e.new;
+          since = Math.max(e.t, start);
+          reason = e.reason || "";
+          from = e.i;
+        } else if (e.kind === "life") {
+          if (e.t >= start) marks.push({ t: e.t, text: e.text, i: e.i });
+          if (/^(killed|released)/.test(e.text)) {
+            if (state && e.t >= start) segs.push({ state, a: since, b: e.t, reason, i: from });
+            state = null;
+          }
+        }
+      }
+      if (state) segs.push({ state, a: since, b: end, reason, i: from, open: true });
+      if (segs.length || marks.length) out.push({ name, segs, marks, last: list[list.length - 1].t });
+    });
+    return out.sort((a, b) => b.last - a.last);
+  }
+
+  function laneHtml(l, start, end) {
+    const w = Math.max(1, end - start);
+    const pct = (t) => (100 * (t - start)) / w;
+    const segs = l.segs
+      .map((s) => {
+        const tip = s.state + " · " + clock(s.a) + (s.open ? " – now" : " – " + clock(s.b)) +
+          " (" + span(s.b - s.a) + ")" + (s.reason ? "\n" + s.reason : "");
+        return '<span class="seg st-' + esc(s.state) + '" data-act="seg" data-i="' + s.i + '" style="left:' +
+          pct(s.a).toFixed(3) + "%;width:" + Math.max(0, pct(s.b) - pct(s.a)).toFixed(3) + '%" title="' + esc(tip) + '"></span>';
+      })
+      .join("");
+    const marks = l.marks
+      .map((m) => '<span class="life" data-act="seg" data-i="' + m.i + '" style="left:' + pct(m.t).toFixed(3) +
+        '%" title="' + esc(clock(m.t) + " · " + m.text) + '"></span>')
+      .join("");
+    const blocked = l.segs.filter((s) => s.state === "blocked");
+    const note = blocked.length
+      ? '<span class="lane-note">' + blocked.length + "× blocked · " + span(blocked.reduce((n, s) => n + s.b - s.a, 0)) + "</span>"
+      : "";
+    return '<div class="lane"><button type="button" class="lane-name" data-act="log-session" data-session="' +
+      esc(l.name) + '" title="Show only ' + esc(l.name) + '"><span class="dot" style="background:' + sessionColor(l.name) +
+      '"></span>' + esc(l.name) + "</button>" + '<div class="lane-bar">' + segs + marks + "</div>" + note + "</div>";
+  }
+
+  function axisHtml(start, end) {
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+      const t = start + f * (end - start);
+      const label = f === 1 ? "now" : end - start > 2 * 24 * HOUR ? dayLabel(t) : clock(t).slice(0, 5);
+      return '<span style="left:' + f * 100 + '%">' + esc(label) + "</span>";
+    });
+    return '<div class="lane axis"><span class="lane-name"></span><div class="lane-bar">' + ticks.join("") + "</div><span class=\"lane-note\"></span></div>";
+  }
+
+  function showLog() {
+    view = tab = "log";
+    src = null;
+    chrome();
+    const counts = {};
+    (herd.entries || []).forEach((e) => { if (e.session !== "herd") counts[e.session] = (counts[e.session] || 0) + 1; });
+    const opts = ['<option value="">All agents</option>']
+      .concat(Object.keys(counts).sort().map((s) =>
+        '<option value="' + esc(s) + '"' + (herd.session === s ? " selected" : "") + ">" + esc(s) + " (" + counts[s] + ")</option>"))
+      .join("");
+    app.innerHTML =
+      '<div class="page wide">' +
+      '<div class="filters log-tools"><div class="chips">' +
+      RANGES.map(([ms, label]) => '<button type="button" class="chip' + (herd.range === ms ? " on" : "") +
+        '" data-act="range" data-range="' + ms + '">' + label + "</button>").join("") +
+      '<button type="button" class="chip' + (herd.blocked ? " on" : "") + '" data-act="blocked-only">Blocked only</button>' +
+      "</div>" +
+      '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter  ( / )" value="' + esc(herd.filter) + '">' +
+      '<select id="log-session" title="Agent">' + opts + "</select></div>" +
+      '<div id="lanes" class="lanes"></div><div id="log-list" class="results"></div></div>';
+    if (!herd.entries) {
+      $("log-list").innerHTML = '<p class="empty">Reading the log…</p>';
+      emit("log");
+      return;
+    }
+    renderLanes();
+    renderLogList();
+  }
+
+  function renderLog() {
+    if (view !== "log") return;
+    if (!$("lanes")) return showLog();
+    // The toolbar has the agents and the chips: rebuild it all.
+    const keep = app.scrollTop;
+    showLog();
+    app.scrollTop = keep;
+  }
+
+  function renderLanes() {
+    const box = $("lanes");
+    if (!box) return;
+    const { start, end } = logWindow();
+    const ls = lanes(start, end);
+    box.innerHTML = ls.length
+      ? axisHtml(start, end) + ls.map((l) => laneHtml(l, start, end)).join("")
+      : '<p class="empty">No agent did anything in this range.</p>';
+  }
+
+  function stateBadge(s) {
+    return '<span class="st st-' + esc(s) + '">' + esc(s) + "</span>";
+  }
+
+  function entryRow(e, i, re) {
+    let body;
+    if (e.kind === "state" && e.new) {
+      body = stateBadge(e.old) + '<span class="arrow">→</span>' + stateBadge(e.new) +
+        (e.reason ? '<span class="reason">' + hl(e.reason, re) + "</span>" : "");
+    } else {
+      body = '<span class="k-' + esc(e.kind) + '">' + hl(e.text, re) + "</span>";
+    }
+    const screen = e.screen
+      ? '<button type="button" class="linkish" data-act="screen" data-i="' + i + '">' +
+        (herd.open.has(i) ? "Hide screen" : "Screen") + "</button>"
+      : "";
+    return (
+      '<div class="lrow" data-i="' + i + '"><span class="lt" title="' + esc(new Date(e.t).toLocaleString()) + '">' +
+      esc(clock(e.t)) + "</span>" +
+      '<button type="button" class="ls" data-act="log-session" data-session="' + esc(e.session) + '">' +
+      '<span class="dot" style="background:' + sessionColor(e.session) + '"></span>' + esc(e.session) + "</button>" +
+      '<span class="lx">' + body + "</span>" + screen + "</div>" +
+      (e.screen && herd.open.has(i) ? '<pre class="screen">' + esc(e.screen) + "</pre>" : "")
+    );
+  }
+
+  function renderLogList() {
+    const box = $("log-list");
+    if (!box) return;
+    const { start } = logWindow();
+    const re = termRe(herd.filter);
+    const f = herd.filter.trim().toLowerCase();
+    const rows = [];
+    const entries = herd.entries || [];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e.t < start) break;
+      if (herd.session && e.session !== herd.session) continue;
+      if (herd.blocked && !(e.kind === "state" && e.new === "blocked")) continue;
+      if (f && !(e.text + " " + e.session).toLowerCase().includes(f)) continue;
+      rows.push([e, i]);
+    }
+    let day = "";
+    box.innerHTML = rows.length
+      ? '<div class="sum">' + rows.length + (rows.length === 1 ? " entry" : " entries") + "</div>" +
+        rows.map(([e, i]) => {
+          const d = dayLabel(e.t);
+          const head = d !== day ? '<h2 class="section">' + esc(d) + "</h2>" : "";
+          day = d;
+          return head + entryRow(e, i, re);
+        }).join("")
+      : '<p class="empty">' + (entries.length ? "Nothing matches in this range." : "Nothing logged yet.") + "</p>";
+  }
+
+  function goToEntry(i) {
+    if (i < 0 || !herd.entries || !herd.entries[i]) return;
+    let row = app.querySelector('.lrow[data-i="' + i + '"]');
+    if (!row) {
+      herd.blocked = false;
+      herd.filter = "";
+      if (herd.range && herd.entries[i].t < Date.now() - herd.range) herd.range = 0;
+      renderLog();
+      row = app.querySelector('.lrow[data-i="' + i + '"]');
+    }
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    row.classList.remove("flash");
+    void row.offsetWidth;
+    row.classList.add("flash");
+  }
+
+  // "now" moves: redraw the open segments now and then.
+  setInterval(() => { if (view === "log") renderLanes(); }, 60000);
+
   // ---- Focus -----------------------------------------------------------
 
   function refocus() {
@@ -693,10 +931,18 @@
     } else if (ev.target.id === "sess-filter") {
       sessionsFilter = ev.target.value;
       renderSessionList();
+    } else if (ev.target.id === "log-filter") {
+      herd.filter = ev.target.value;
+      renderLogList();
     }
   });
 
   app.addEventListener("change", (ev) => {
+    if (ev.target.id === "log-session") {
+      herd.session = ev.target.value;
+      renderLog();
+      return;
+    }
     if (ev.target.id !== "project") return;
     filters.project = ev.target.value;
     onFilters();
@@ -757,6 +1003,22 @@
       if (m) emit("copy", { text: m.text });
     } else if (act === "copy-path") {
       if (src) emit("copy", { text: src.path });
+    } else if (act === "range") {
+      herd.range = +el.getAttribute("data-range");
+      renderLog();
+    } else if (act === "blocked-only") {
+      herd.blocked = !herd.blocked;
+      renderLog();
+    } else if (act === "log-session") {
+      herd.session = herd.session === el.getAttribute("data-session") ? "" : el.getAttribute("data-session");
+      renderLog();
+    } else if (act === "screen") {
+      const i = +el.getAttribute("data-i");
+      if (herd.open.has(i)) herd.open.delete(i);
+      else herd.open.add(i);
+      renderLogList();
+    } else if (act === "seg") {
+      goToEntry(+el.getAttribute("data-i"));
     }
   });
 
@@ -764,11 +1026,16 @@
     b.addEventListener("click", () => {
       lastOpened = null;
       src = null;
-      if (b.getAttribute("data-tab") === "sessions") showSessions();
+      const which = b.getAttribute("data-tab");
+      if (which === "sessions") showSessions();
+      else if (which === "log") showLog();
       else showSearch();
     }));
   btnBack.addEventListener("click", back);
-  $("btn-refresh").addEventListener("click", () => emit("refresh"));
+  $("btn-refresh").addEventListener("click", () => {
+    if (view === "log") emit("log");
+    else emit("refresh");
+  });
   $("btn-import").addEventListener("click", () => {
     $("btn-import").disabled = true;
     emit("import");
@@ -797,7 +1064,7 @@
       return;
     }
     if (ev.key === "/" && view !== "source") {
-      const input = $("q") || $("sess-filter");
+      const input = $("q") || $("sess-filter") || $("log-filter");
       if (input) {
         input.focus();
         ev.preventDefault();
@@ -878,9 +1145,31 @@
       if (p && p.view === "sessions") showSessions();
       else if (p && p.view === "search") showSearch();
       else if (view === "sessions") showSessions();
-      else if (view === "source") chrome();
+      else if (view === "source" || view === "log") chrome();
       else showSearch();
       if (p && p.query) search(true);
+    },
+
+    showView: (v) => {
+      if (v === "log") showLog();
+      else if (v === "sessions") showSessions();
+      else showSearch();
+    },
+
+    renderLog: (p) => {
+      herd.entries = (p && p.entries) || [];
+      if (view === "log") renderLog();
+    },
+
+    logAdd: (e) => {
+      if (!herd.entries || !e) return;
+      herd.entries.push(e);
+      if (view !== "log") return;
+      // New entries go on top: keep what is being read where it is.
+      const before = app.scrollHeight;
+      const top = app.scrollTop;
+      renderLog();
+      if (top > 0) app.scrollTop = top + (app.scrollHeight - before);
     },
 
     renderHits: (p) => {

@@ -1,4 +1,4 @@
-;;; ghostherd-memory-page.el --- Search and read past sessions in an xwidget -*- lexical-binding: t; -*-
+;;; ghostherd-memory-page.el --- The herd's page: memory and log in an xwidget -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jing
 
@@ -6,19 +6,21 @@
 
 ;;; Commentary:
 
-;; The page for `ghostherd-memory': live search with agent and project
+;; The herd's page.  Memory: live search with agent and project
 ;; filters, the sessions the index holds, and the transcript a hit came
-;; from, opened at the hit.  Built on xwapp like pr-view and
-;; clickup-view: Elisp asks the sidecar, ui/ only renders.  The page
-;; holds no token and makes no request of its own, so nothing it renders
-;; -- and transcripts carry whatever an agent ever read -- can reach the
-;; sidecar.
+;; from, opened at the hit.  Log: what the herd did, as one state lane
+;; per agent above the entries.  Built on xwapp like pr-view and
+;; clickup-view: Elisp asks the sidecar and reads the log, ui/ only
+;; renders.  The page holds no token and makes no request of its own,
+;; so nothing it renders -- and transcripts carry whatever an agent
+;; ever read -- can reach the sidecar.
 ;;
 ;;   M-x ghostherd-memory-page       search (C-u: this project only)
 ;;   M-x ghostherd-memory-sessions   the sessions, newest first
+;;   M-x ghostherd-log-page          the herd log
 ;;
-;; The text commands `ghostherd-memory-search' and `ghostherd-memory-view'
-;; stay: they need no xwidget.
+;; The text commands `ghostherd-memory-search', `ghostherd-memory-view'
+;; and `ghostherd-log' stay: they need no xwidget.
 
 ;;; Code:
 
@@ -27,6 +29,7 @@
 (require 'project)
 (require 'xwapp)
 (require 'ghostherd-memory)
+(require 'ghostherd)
 
 (defgroup ghostherd-memory-page nil
   "The memory page."
@@ -62,11 +65,11 @@
   "Non-nil while an import the page asked for has not answered.")
 
 (defvar ghostherd-memory-page--app
-  (xwapp-create :buffer-name "*herd memory*"
+  (xwapp-create :buffer-name "*herd*"
                 :index (expand-file-name "ui/index.html" ghostherd-memory-page--dir)
                 :prefixes '("ghmem:")
                 :namespace "GM"
-                :idle-title "Herd memory"
+                :idle-title "Herd"
                 :handler #'ghostherd-memory-page--handle
                 :on-kill (lambda ()
                            (setq ghostherd-memory-page--pending nil
@@ -162,7 +165,57 @@ Also how a background import already running shows up on the page."
      (lambda (_err) (setq ghostherd-memory-page--progress-inflight nil))))))
 
 
+;;; The log
+
+(defconst ghostherd-memory-page--transition-re
+  "\\`\\(\\S-+\\) → \\(\\S-+\\)\\(?:  \\(\\(?:.\\|\n\\)*\\)\\)?\\'"
+  "A state entry's text, as `ghostherd--log-transition' writes it.")
+
+(defun ghostherd-memory-page--log-entry (entry)
+  "ENTRY, a `ghostherd-log-entry', as the page wants it.
+A state entry comes apart into old, new and reason here, so the page
+draws lanes from fields rather than parsing prose."
+  (let* ((kind (ghostherd-log-entry-kind entry))
+         (text (or (ghostherd-log-entry-text entry) ""))
+         (screen (ghostherd-log-entry-screen entry)))
+    (append (list :t (* 1000 (float-time (ghostherd-log-entry-time entry)))
+                  :session (format "%s" (or (ghostherd-log-entry-session entry) ""))
+                  :kind (format "%s" (or kind ""))
+                  :text text)
+            (and (eq kind 'state)
+                 (string-match ghostherd-memory-page--transition-re text)
+                 (list :old (match-string 1 text)
+                       :new (match-string 2 text)
+                       :reason (or (match-string 3 text) "")))
+            (and screen (list :screen screen)))))
+
+(defun ghostherd-memory-page--send-log ()
+  "Send the whole herd log, oldest first."
+  ;; Reachable before `ghostherd-mode' has read the file, as `ghostherd-log' is.
+  (unless ghostherd--log-loaded
+    (ghostherd-log-load))
+  (ghostherd-memory-page--js
+   "renderLog"
+   (list :entries (ghostherd-memory-page--vec
+                   (mapcar #'ghostherd-memory-page--log-entry (reverse ghostherd--log))))))
+
+(defun ghostherd-memory-page--on-log (entry)
+  "Pass a new log ENTRY to the page, if it is open."
+  (when (xwapp-session ghostherd-memory-page--app)
+    (ghostherd-memory-page--js "logAdd" (ghostherd-memory-page--log-entry entry))))
+
+(add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-log)
+
+
 ;;; Intents
+
+(defun ghostherd-memory-page--ready ()
+  "The page has loaded: show the log at once if asked, then the sessions.
+The log needs no sidecar, so it does not wait for one."
+  (when (equal (plist-get ghostherd-memory-page--pending :view) "log")
+    (setq ghostherd-memory-page--pending nil)
+    (ghostherd-memory-page--js "showView" "log"))
+  (ghostherd-memory-page--send-context))
 
 (defun ghostherd-memory-page--send-context ()
   "Send the sessions the index holds, and what to show first."
@@ -265,7 +318,8 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
   "Dispatch INTENT from the page.  Errors are shown there, not lost."
   (condition-case e
       (pcase (alist-get 'op intent)
-        ("ready" (ghostherd-memory-page--send-context))
+        ("ready" (ghostherd-memory-page--ready))
+        ("log" (ghostherd-memory-page--send-log))
         ("refresh" (ghostherd-memory-page--send-context))
         ("search" (ghostherd-memory-page--search intent))
         ("open-source" (ghostherd-memory-page--open-source intent))
@@ -289,7 +343,11 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
   "Show the page on VIEW, with QUERY and PROJECT as the first search."
   ;; Here, not in the page's ready: a missing `uv' or a stale sidecar
   ;; reads better in the echo area than in a page that never filled.
-  (ghostherd-memory-ensure)
+  ;; The log needs no sidecar, so for it a failure only demotes.
+  (if (equal view "log")
+      (with-demoted-errors "ghostherd: memory sidecar: %S"
+        (ghostherd-memory-ensure))
+    (ghostherd-memory-ensure))
   (setq ghostherd-memory-page--project (ghostherd-memory-page--current-project)
         ghostherd-memory-page--pending (list :view view :query query :project project))
   (setf (xwapp-poll-interval ghostherd-memory-page--app)
@@ -311,6 +369,13 @@ forgot which project\"."
   "Browse the sessions the memory index holds, newest first."
   (interactive)
   (ghostherd-memory-page--open "sessions"))
+
+;;;###autoload
+(defun ghostherd-log-page ()
+  "What the herd did: a state lane per agent, the log entries below.
+Kept screens open in place; new entries arrive as they are logged."
+  (interactive)
+  (ghostherd-memory-page--open "log"))
 
 (provide 'ghostherd-memory-page)
 ;;; ghostherd-memory-page.el ends here

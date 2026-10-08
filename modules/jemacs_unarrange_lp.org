@@ -1481,7 +1481,7 @@
        "ahi" '(ghostherd-prompt-interactive :which-key "prompt agent")
        "ahk" '(ghostherd-kill :which-key "kill")
        "ahr" '(ghostherd-rename :which-key "rename")
-       "ahl" '(ghostherd-log :which-key "herd log")
+       "ahl" '(ghostherd-log-page :which-key "herd log")
        "ah/" '(ghostherd-memory-page :which-key "search memory")
        "ahv" '(ghostherd-memory-sessions :which-key "memory sessions")
        "ahI" '(ghostherd-memory-import :which-key "import memory")

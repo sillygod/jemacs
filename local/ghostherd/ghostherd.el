@@ -637,6 +637,10 @@ tends to fall inside."
 (defvar ghostherd--log nil
   "Herd log entries, newest first.")
 
+(defvar ghostherd-log-functions nil
+  "Functions called with each new herd log entry, as it is recorded.
+The herd page uses it to show transitions as they happen.")
+
 (defvar ghostherd--log-loaded nil
   "Non-nil once `ghostherd-log-file' has been read this session.")
 
@@ -793,6 +797,14 @@ something has to do it on purpose."
   (when-let* ((buf (get-buffer "*ghostherd-log*")))
     (when (get-buffer-window buf t)
       (ghostherd--log-render buf)))
+  ;; Each listener on its own, demoted: one listener's bug must neither
+  ;; cost the herd its log nor keep the next listener from hearing.
+  (run-hook-wrapped 'ghostherd-log-functions
+                    (lambda (fn entry)
+                      (with-demoted-errors "ghostherd: log listener: %S"
+                        (funcall fn entry))
+                      nil)
+                    (car ghostherd--log))
   nil)
 
 (defun ghostherd--log-transition (session old new reason)
