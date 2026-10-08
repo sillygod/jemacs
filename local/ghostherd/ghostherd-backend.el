@@ -237,9 +237,9 @@ shell ghostel spawns, which there is `tmux attach' -- so the wrapper is
 its only way back into the herd, and it should reach *this* Emacs
 without anyone having configured it.
 
-`GHOSTHERD_RPC' is the sidecar JSON-RPC URL.  Agents mail siblings
-through it so they need neither the binary nor emacsclient.  Omitted
-until the sidecar has a bound port.
+`GHOSTHERD_RPC' is the sidecar JSON-RPC URL, its token included.
+Agents mail siblings through it so they need neither the binary nor
+emacsclient.  Omitted until the sidecar has a bound port.
 
 It is omitted when server.el has not been loaded, which is not a case
 worth handling: an Emacs `emacsclient' can reach has loaded it, and

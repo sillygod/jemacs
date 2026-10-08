@@ -12,7 +12,7 @@ def _rpc(client, method, params=None, id=1):
     body = {"jsonrpc": "2.0", "id": id, "method": method}
     if params is not None:
         body["params"] = params
-    resp = client.post("/jsonrpc", json=body)
+    resp = client.post("/jsonrpc/" + client.app.state.token, json=body)
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("error") is None, data
@@ -23,7 +23,7 @@ def test_health_and_ping(tmp_path: Path, monkeypatch):
     reset_engine()
     monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
     monkeypatch.setenv("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         health = client.get("/health").json()
         assert health["status"] == "ok"
         assert _rpc(client, "ping")["ok"] is True
@@ -59,7 +59,7 @@ def test_import_search_via_rpc(tmp_path: Path, monkeypatch):
     (tmp_path / "empty-g").mkdir()
     (tmp_path / "empty-a").mkdir()
     reset_engine()
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         imported = _rpc(client, "memory_import", {"agents": ["claude"]})
         assert imported["imported"] >= 1
         hits = _rpc(
@@ -78,7 +78,7 @@ def test_import_search_via_rpc(tmp_path: Path, monkeypatch):
         assert any("ghost-commit" in (c.get("text") or "") for c in body["chunks"])
         assert body["chunks"][0]["chunk_index"] <= body["chunks"][-1]["chunk_index"]
         missing = client.post(
-            "/jsonrpc",
+            "/jsonrpc/" + client.app.state.token,
             json={"jsonrpc": "2.0", "id": 9, "method": "nope"},
         ).json()
         assert missing["error"]["code"] == -32601

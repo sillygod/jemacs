@@ -1,8 +1,11 @@
 # ghostherd-memory sidecar
 
 Local FastAPI process that imports claude / grok / agy transcripts into
-Qdrant and answers JSON-RPC search. Same shape as ecloud: `POST /jsonrpc`,
-`GET /health`, `uv run uvicorn`, bind loopback.
+Qdrant and answers JSON-RPC search. Same shape as ecloud — `GET /health`,
+`uv run uvicorn`, bind loopback — except that JSON-RPC is
+`POST /jsonrpc/<token>`, with the token in `rpc.token` (0600) under the
+data directory, created on first start.  Loopback alone lets any web page
+in a local browser call in; see `auth.py`.
 
 ```bash
 uv sync

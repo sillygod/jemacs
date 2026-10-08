@@ -1,6 +1,7 @@
 """Sidecar configuration from the environment.
 
-Bind loopback only: there is no transport auth, same as ecloud.
+Bind loopback only.  Loopback is not the auth: the token in
+data_dir/rpc.token is (see auth.py).
 """
 
 from __future__ import annotations

@@ -110,7 +110,7 @@ def _rpc(client, method, params=None, id=1):
     body = {"jsonrpc": "2.0", "id": id, "method": method}
     if params is not None:
         body["params"] = params
-    resp = client.post("/jsonrpc", json=body)
+    resp = client.post("/jsonrpc/" + client.app.state.token, json=body)
     assert resp.status_code == 200
     data = resp.json()
     assert data.get("error") is None, data
@@ -121,7 +121,7 @@ def test_herd_rpc_round_trip(tmp_path: Path, monkeypatch):
     reset_engine()
     monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
     monkeypatch.setenv("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
         queued = _rpc(
             client,
             "herd_message",

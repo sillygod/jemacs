@@ -3488,8 +3488,10 @@ Inter-agent mail on this Emacs's ghostherd sidecar.
 
 Environment:
   GHOSTHERD_SESSION  this agent's name
-  GHOSTHERD_RPC      POST JSON-RPC 2.0 here
+  GHOSTHERD_RPC      POST JSON-RPC 2.0 here; the URL carries a token,
+                     so use the variable and do not print its value
   rpc.url            same URL, in this directory, if the env is stale
+                     (a 401 means it is: the sidecar now wants a token)
 
 curl -sS \"$GHOSTHERD_RPC\" -H 'Content-Type: application/json' \\
   -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"herd_list\",\"params\":{}}'
@@ -4408,7 +4410,11 @@ sweeps every `ghostherd-poll-interval'."
         ;; a previous Emacs is picked up here, before anything asks for
         ;; a session list.
         (ignore-errors (ghostherd-restore))
-        (ignore-errors (ghostherd-memory-start))
+        ;; Demoted, not ignored: a sidecar on an old token makes start
+        ;; refuse, and without a word agents would just spawn with no
+        ;; GHOSTHERD_RPC.
+        (with-demoted-errors "ghostherd: memory sidecar: %S"
+          (ghostherd-memory-start))
         (ignore-errors (ghostherd--herd-write-protocol))
         (ghostherd--ensure-poll-timer)
         (ghostherd--ensure-herd-tick-timer)

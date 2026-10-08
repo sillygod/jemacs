@@ -12,9 +12,12 @@ agents on the same machine. Talk to them over HTTP JSON-RPC — not
 ## Environment
 
 - `GHOSTHERD_SESSION` — your name (use this as `from`)
-- `GHOSTHERD_RPC` — `http://127.0.0.1:<port>/jsonrpc`
-- If that env is missing or stale, read `ghostherd-mail/rpc.url`
-  under Emacs's `user-emacs-directory`.
+- `GHOSTHERD_RPC` — `http://127.0.0.1:<port>/jsonrpc/<token>`.  The
+  token is what lets you in; use `"$GHOSTHERD_RPC"` as below and never
+  echo, log or paste its value.
+- If that env is missing or stale (an HTTP 401 says so), read
+  `ghostherd-mail/rpc.url` under Emacs's `user-emacs-directory`.
+- Always send `Content-Type: application/json`; anything else is refused.
 
 ## List siblings
 

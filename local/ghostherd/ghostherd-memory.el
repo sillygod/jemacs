@@ -13,8 +13,12 @@
 ;;
 ;; The sidecar is persistent because FastEmbed's model load is slow.
 ;; `ghostherd-mode' starts it so spawned agents get `GHOSTHERD_RPC';
-;; a memory command also starts it.  Bind loopback only; there is no
-;; transport auth.
+;; a memory command also starts it.  It binds loopback, but loopback
+;; is not the auth: any web page in a browser here can POST to
+;; 127.0.0.1.  The sidecar answers only /jsonrpc/<token>, the token in
+;; rpc.token (0600) under the data directory, which it creates on its
+;; first start.  Emacs reads it from there; agents get it inside
+;; `GHOSTHERD_RPC'.
 
 ;;; Code:
 
@@ -151,16 +155,42 @@ Search order:
          (last (min 65535 (+ start n -1))))
     (number-sequence start last)))
 
+(defun ghostherd-memory--token-file ()
+  (expand-file-name "rpc.token" (ghostherd-memory--data-directory)))
+
+(defun ghostherd-memory--token ()
+  "The sidecar's token from `rpc.token', or nil before its first start.
+Read each time rather than cached: it is 64 bytes, and a cache would
+outlive a deleted file."
+  (let ((file (ghostherd-memory--token-file)))
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((token (string-trim (buffer-string))))
+          (and (not (string-empty-p token)) token))))))
+
+(defun ghostherd-memory--token-id (token)
+  "TOKEN's public name, as the sidecar's /health reports it."
+  (substring (secure-hash 'sha256 token) 0 12))
+
 (defun ghostherd-memory--rpc-url (&optional port)
-  (format "http://%s:%d/jsonrpc"
+  (format "http://%s:%d/jsonrpc/%s"
           ghostherd-memory-host
-          (or port (ghostherd-memory--current-port))))
+          (or port (ghostherd-memory--current-port))
+          (or (ghostherd-memory--token)
+              (user-error "ghostherd-memory: no token in %s; start the sidecar (M-x ghostherd-memory-start)"
+                          (ghostherd-memory--token-file)))))
+
+(defun ghostherd-memory--where ()
+  "Host and port, for messages: the RPC URL carries the token."
+  (format "%s:%d" ghostherd-memory-host (ghostherd-memory--current-port)))
 
 (defun ghostherd-memory-rpc-url ()
-  "Public JSON-RPC URL if this Emacs has bound or reused a sidecar port.
+  "Public JSON-RPC URL, token included, once this Emacs has a sidecar.
 Nil until `ghostherd-memory-start' succeeds, so spawn does not advertise
 a port we never opened."
-  (and ghostherd-memory--port (ghostherd-memory--rpc-url)))
+  (and ghostherd-memory--port (ghostherd-memory--token)
+       (ghostherd-memory--rpc-url)))
 
 (defun ghostherd-memory--health-url (&optional port)
   (format "http://%s:%d/health"
@@ -182,8 +212,12 @@ gap until uvicorn listens is closed by retrying on a dead process."
       (delete-process proc)
       t)))
 
-(defun ghostherd-memory--health-body-ours-p (body)
-  "Return non-nil if BODY is this sidecar's /health JSON."
+(defun ghostherd-memory--health-kind (body)
+  "What BODY, a /health reply, says is listening.
+`ours': this sidecar, on the token in `rpc.token'.  `stale': a
+ghostherd sidecar on another token, or from before tokens -- it would
+refuse every call, and it holds the Qdrant lock on its data
+directory.  Nil: something else."
   (let* ((json-object-type 'plist)
          (json-array-type 'list)
          (json-key-type 'keyword)
@@ -191,10 +225,20 @@ gap until uvicorn listens is closed by retrying on a dead process."
          (json-null nil)
          (data (ignore-errors (json-read-from-string
                                (ghostherd-memory--utf8 body)))))
-    (and data (equal (plist-get data :service) "ghostherd-memory"))))
+    (when (and data (equal (plist-get data :service) "ghostherd-memory"))
+      (let ((token (ghostherd-memory--token)))
+        (if (and token
+                 (equal (plist-get data :token_id)
+                        (ghostherd-memory--token-id token)))
+            'ours
+          'stale)))))
 
-(defun ghostherd-memory--health-ours-p (&optional port)
-  "Return non-nil if PORT (or the current one) answers as this sidecar.
+(defun ghostherd-memory--health-body-ours-p (body)
+  "Return non-nil if BODY is this sidecar's /health JSON, on our token."
+  (eq (ghostherd-memory--health-kind body) 'ours))
+
+(defun ghostherd-memory--health-kind-at (&optional port)
+  "`ghostherd-memory--health-kind' of PORT (or the current one).
 A 200 from some other local service must not count: we would then
 reuse the wrong process instead of walking to a free port."
   (let ((url (ghostherd-memory--health-url port)))
@@ -205,10 +249,14 @@ reuse the wrong process instead of walking to a free port."
                 (with-current-buffer buf
                   (goto-char (point-min))
                   (and (re-search-forward "HTTP/[0-9.]+ 200" nil t)
-                       (ghostherd-memory--health-body-ours-p
+                       (ghostherd-memory--health-kind
                         (ghostherd-memory--body-from-url-buffer))))
               (kill-buffer buf))))
       (error nil))))
+
+(defun ghostherd-memory--health-ours-p (&optional port)
+  "Return non-nil if PORT (or the current one) answers as this sidecar."
+  (eq (ghostherd-memory--health-kind-at port) 'ours))
 
 (defun ghostherd-memory--find-running ()
   "Return a candidate port that already speaks ghostherd-memory, or nil."
@@ -321,7 +369,7 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
          (buf (url-retrieve-synchronously
                (ghostherd-memory--rpc-url) nil nil timeout)))
     (unless buf
-      (error "ghostherd-memory: no response from %s" (ghostherd-memory--rpc-url)))
+      (error "ghostherd-memory: no response from %s" (ghostherd-memory--where)))
     (unwind-protect
         (with-current-buffer buf
           (ghostherd-memory--parse-response
@@ -375,6 +423,14 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
   (interactive)
   (unless (executable-find "uv")
     (user-error "ghostherd-memory: `uv' is not on PATH"))
+  ;; Our own process from before tokens (or before rpc.token was
+  ;; replaced) refuses every call now: restart it rather than walk past
+  ;; it, since it still holds the Qdrant lock a new one would need.
+  (when (and (ghostherd-memory--process-live-p)
+             (eq (ghostherd-memory--health-kind-at) 'stale))
+    (message "ghostherd-memory: restarting a sidecar on an old token")
+    (ghostherd-memory-stop)
+    (sleep-for 0.5))
   (let ((existing (or (and (ghostherd-memory-healthy-p)
                            (ghostherd-memory--current-port))
                       (ghostherd-memory--find-running))))
@@ -382,7 +438,7 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
         (progn
           (setq ghostherd-memory--port existing)
           (message "ghostherd-memory: already running at %s"
-                   (ghostherd-memory--rpc-url))
+                   (ghostherd-memory--where))
           (ghostherd-memory--write-rpc-locator)
           t)
       (let ((dir (ghostherd-memory--server-directory)))
@@ -396,9 +452,14 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
               (cond
                ((ghostherd-memory--listening-p port)
                 ;; Occupied: reuse only if it became ours since the scan.
-                (when (ghostherd-memory--health-ours-p port)
-                  (setq ghostherd-memory--port port
-                        ok t)))
+                (pcase (ghostherd-memory--health-kind-at port)
+                  ('ours (setq ghostherd-memory--port port
+                               ok t))
+                  ('stale
+                   ;; Not ours to kill, and a new sidecar beside it would
+                   ;; fail on the Qdrant lock with a less useful message.
+                   (user-error "ghostherd-memory: port %d has a ghostherd sidecar on another token (or from before tokens).  Stop it: lsof -ti tcp:%d | xargs kill"
+                               port port))))
                (t
                 (ghostherd-memory--spawn dir port)
                 (setq last-wait (ghostherd-memory--wait-for-health
@@ -416,7 +477,7 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
               (user-error "ghostherd-memory: no free port in %d–%d (see *ghostherd-memory*)"
                           ghostherd-memory-port
                           (car (last (ghostherd-memory--port-candidates))))))
-          (message "ghostherd-memory: ready on %s" (ghostherd-memory--rpc-url))
+          (message "ghostherd-memory: ready on %s" (ghostherd-memory--where))
           (ghostherd-memory--write-rpc-locator)
           t)))))
 
@@ -424,13 +485,17 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
   (expand-file-name "ghostherd-mail" user-emacs-directory))
 
 (defun ghostherd-memory--write-rpc-locator ()
-  "Write the bound RPC URL so a stale spawn env can be recovered."
+  "Write the bound RPC URL so a stale spawn env can be recovered.
+Mode 0600: the URL carries the token.  `set-file-modes' as well,
+because writing over an existing file keeps its old mode."
   (when-let* ((url (ghostherd-memory-rpc-url)))
-    (let ((dir (ghostherd-memory--mail-directory)))
-      (make-directory dir t)
+    (let ((dir (ghostherd-memory--mail-directory))
+          (file (expand-file-name "rpc.url" (ghostherd-memory--mail-directory))))
+      (with-file-modes #o700 (make-directory dir t))
       (let ((coding-system-for-write 'utf-8))
-        (with-temp-file (expand-file-name "rpc.url" dir)
-          (insert url))))))
+        (with-file-modes #o600
+          (write-region url nil file nil 'silent)))
+      (set-file-modes file #o600))))
 
 (defun ghostherd-memory--wait-for-health (timeout)
   "Wait until /health is ours, the process dies, or TIMEOUT seconds.

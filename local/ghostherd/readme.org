@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.10* — Telegram bot on the sidecar (pull)                  |
+| Phase       | *3.11* — the sidecar answers only its token holders         |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -349,10 +349,12 @@ the file it just wrote.
 tmux-hosted agents have no =ghostel_cmd=, and =bin/ghostherd= is not on
 their PATH.  The sidecar they already share for memory is the bus.
 
-At spawn they get =GHOSTHERD_RPC= (JSON-RPC URL).  =ghostherd-mode=
-starts the sidecar so that URL exists.  The same URL is written to
-=ghostherd-mail/rpc.url= under =user-emacs-directory=, with
-=PROTOCOL.md= next to it.
+At spawn they get =GHOSTHERD_RPC= (JSON-RPC URL, token included).
+=ghostherd-mode= starts the sidecar so that URL exists.  The same URL
+is written to =ghostherd-mail/rpc.url= (0600) under
+=user-emacs-directory=, with =PROTOCOL.md= next to it.  An agent spawned
+before tokens holds a bare URL and gets a 401 that points it at
+=rpc.url=; respawning it fixes the environment for good.
 
 #+begin_src bash
   curl -sS "$GHOSTHERD_RPC" -H 'Content-Type: application/json' \
@@ -789,13 +791,27 @@ already did, including in another project, without merging their on-disk
 stores.
 
 A Python sidecar (the same shape as ecloud: FastAPI, JSON-RPC 2.0 over
-=POST /jsonrpc=, =uv run uvicorn=, Emacs =url.el=) imports those
-transcripts into a local Qdrant and embeds them with FastEmbed.  It is
-a persistent process because the model load is slow; it is *not* started
-by =ghostherd-mode=.  The first memory command starts it.  Loopback only,
-no auth.  The port starts at *49152* (IANA dynamic/private, well above
+=POST=, =uv run uvicorn=, Emacs =url.el=) imports those transcripts
+into a local Qdrant and embeds them with FastEmbed.  It is a persistent
+process because the model load is slow; =ghostherd-mode= starts it (so
+spawned agents get =GHOSTHERD_RPC=), and so does the first memory
+command.  The port starts at *49152* (IANA dynamic/private, well above
 ecloud's 8765); if that is taken by something else, the next 31 ports
-are tried.  A leftover sidecar in that range is reused.
+are tried.  A leftover sidecar in that range is reused when it is on
+our token.
+
+It binds loopback, and loopback is not the auth: any web page in a
+browser on this machine can POST to =127.0.0.1=.  JSON-RPC is
+=POST /jsonrpc/<token>= with =Content-Type: application/json=, the
+token in =rpc.token= (0600) under the data directory, created on the
+sidecar's first start.  No CORS, and a =Host= other than loopback is
+refused.  Why each of those: "Why the sidecar wants a token" in
+[[file:docs/design.org][docs/design.org]].
+
+A ghostherd sidecar on a different token --- or from before tokens ---
+cannot be used and is not walked past either, since it holds the
+Qdrant lock.  One this Emacs started is restarted; any other gets a
+message with the command to stop it.
 
 | Store   | What is imported                                      | What is skipped                          |
 |---------+-------------------------------------------------------+------------------------------------------|

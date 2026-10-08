@@ -3503,12 +3503,13 @@ itself changing its mind about a flag."
   (let ((ghostherd-memory-host "127.0.0.1")
         (ghostherd-memory-port 49152)
         (ghostherd-memory--port 49160))
-    (should (equal (ghostherd-memory--rpc-url)
-                   "http://127.0.0.1:49160/jsonrpc"))
-    (should (equal (ghostherd-memory--health-url)
-                   "http://127.0.0.1:49160/health"))
-    (should (equal (ghostherd-memory--rpc-url 49153)
-                   "http://127.0.0.1:49153/jsonrpc"))))
+    (cl-letf (((symbol-function 'ghostherd-memory--token) (lambda () "tok")))
+      (should (equal (ghostherd-memory--rpc-url)
+                     "http://127.0.0.1:49160/jsonrpc/tok"))
+      (should (equal (ghostherd-memory--health-url)
+                     "http://127.0.0.1:49160/health"))
+      (should (equal (ghostherd-memory--rpc-url 49153)
+                     "http://127.0.0.1:49153/jsonrpc/tok")))))
 
 (ert-deftest ghostherd-test-memory-port-candidates-start-high ()
   (let ((ghostherd-memory-port 49152)
@@ -3537,12 +3538,103 @@ itself changing its mind about a flag."
       (should (equal (ghostherd-memory--find-running) 49153)))))
 
 (ert-deftest ghostherd-test-memory-health-body-is-this-sidecar ()
-  (should (ghostherd-memory--health-body-ours-p
-           "{\"status\":\"ok\",\"service\":\"ghostherd-memory\"}"))
-  (should-not (ghostherd-memory--health-body-ours-p
-               "{\"status\":\"ok\"}"))
-  (should-not (ghostherd-memory--health-body-ours-p
-               "not json")))
+  "Ours means our service *on our token*: a sidecar on another token,
+or from before tokens, would refuse every call."
+  (cl-letf (((symbol-function 'ghostherd-memory--token) (lambda () "abc")))
+    (should (ghostherd-memory--health-body-ours-p
+             "{\"status\":\"ok\",\"service\":\"ghostherd-memory\",\"token_id\":\"ba7816bf8f01\"}"))
+    (should (eq (ghostherd-memory--health-kind
+                 "{\"status\":\"ok\",\"service\":\"ghostherd-memory\",\"token_id\":\"000000000000\"}")
+                'stale))
+    (should (eq (ghostherd-memory--health-kind
+                 "{\"status\":\"ok\",\"service\":\"ghostherd-memory\"}")
+                'stale))
+    (should-not (ghostherd-memory--health-body-ours-p
+                 "{\"status\":\"ok\"}"))
+    (should-not (ghostherd-memory--health-kind "not json")))
+  (cl-letf (((symbol-function 'ghostherd-memory--token) (lambda () nil)))
+    (should (eq (ghostherd-memory--health-kind
+                 "{\"service\":\"ghostherd-memory\",\"token_id\":\"ba7816bf8f01\"}")
+                'stale))))
+
+(ert-deftest ghostherd-test-memory-token-from-the-data-directory ()
+  "Read from rpc.token, which the sidecar writes; fingerprinted the way
+its /health does (sha256(\"abc\") starts ba7816bf8f01)."
+  (let* ((dir (make-temp-file "gh-mem-" t))
+         (ghostherd-memory-data-directory dir))
+    (unwind-protect
+        (progn
+          (should-not (ghostherd-memory--token))
+          (should-error (ghostherd-memory--rpc-url 49152) :type 'user-error)
+          (let ((ghostherd-memory--port 49152))
+            (should-not (ghostherd-memory-rpc-url)))
+          (write-region "abc\n" nil (expand-file-name "rpc.token" dir))
+          (should (equal (ghostherd-memory--token) "abc"))
+          (should (equal (ghostherd-memory--token-id "abc") "ba7816bf8f01"))
+          (let ((ghostherd-memory--port 49152)
+                (ghostherd-memory-host "127.0.0.1"))
+            (should (equal (ghostherd-memory-rpc-url)
+                           "http://127.0.0.1:49152/jsonrpc/abc"))))
+      (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-memory-rpc-locator-is-private ()
+  "rpc.url carries the token: 0600, even over a file that was 0644."
+  (let* ((home (make-temp-file "gh-home-" t))
+         (user-emacs-directory (file-name-as-directory home))
+         (file (expand-file-name "ghostherd-mail/rpc.url" home)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-memory-rpc-url)
+                   (lambda () "http://127.0.0.1:49152/jsonrpc/abc")))
+          (make-directory (file-name-directory file) t)
+          (write-region "old" nil file)
+          (set-file-modes file #o644)
+          (ghostherd-memory--write-rpc-locator)
+          (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string))
+                         "http://127.0.0.1:49152/jsonrpc/abc"))
+          (should (= (file-modes file) #o600)))
+      (delete-directory home t))))
+
+(ert-deftest ghostherd-test-memory-start-refuses-a-foreign-stale-sidecar ()
+  "Walking past it would start a second sidecar on the same Qdrant lock."
+  (let ((ghostherd-memory-port 49152)
+        (ghostherd-memory-port-tries 2)
+        (ghostherd-memory--process nil)
+        (ghostherd-memory--port nil)
+        spawned)
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/uv"))
+              ((symbol-function 'ghostherd-memory-healthy-p) #'ignore)
+              ((symbol-function 'ghostherd-memory--find-running) #'ignore)
+              ((symbol-function 'ghostherd-memory--server-directory) (lambda () "/tmp"))
+              ((symbol-function 'ghostherd-memory--listening-p) (lambda (p) (= p 49152)))
+              ((symbol-function 'ghostherd-memory--health-kind-at)
+               (lambda (&optional p) (and (eql p 49152) 'stale)))
+              ((symbol-function 'ghostherd-memory--spawn)
+               (lambda (&rest _) (setq spawned t))))
+      (let ((err (should-error (ghostherd-memory-start) :type 'user-error)))
+        (should (string-match-p "port 49152" (cadr err)))
+        (should (string-match-p "lsof -ti tcp:49152" (cadr err))))
+      (should-not spawned))))
+
+(ert-deftest ghostherd-test-memory-start-restarts-its-own-stale-sidecar ()
+  (let ((ghostherd-memory-port 49152)
+        (ghostherd-memory--port 49152)
+        stopped messages)
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/uv"))
+              ((symbol-function 'ghostherd-memory--process-live-p) (lambda () (not stopped)))
+              ((symbol-function 'ghostherd-memory--health-kind-at)
+               (lambda (&optional _) (if stopped 'ours 'stale)))
+              ((symbol-function 'ghostherd-memory-stop) (lambda () (setq stopped t)))
+              ((symbol-function 'sleep-for) #'ignore)
+              ((symbol-function 'ghostherd-memory-healthy-p) (lambda () stopped))
+              ((symbol-function 'ghostherd-memory--write-rpc-locator) #'ignore)
+              ((symbol-function 'ghostherd-memory--token) (lambda () "s3cret"))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (should (ghostherd-memory-start))
+      (should stopped)
+      ;; Messages name the port, never the URL: it carries the token.
+      (should messages)
+      (should-not (cl-some (lambda (m) (string-search "s3cret" m)) messages)))))
 
 (ert-deftest ghostherd-test-memory-build-request-is-jsonrpc-2 ()
   (let ((ghostherd-memory--request-id 0)

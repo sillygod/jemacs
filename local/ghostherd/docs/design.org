@@ -313,6 +313,46 @@ on purpose.
 so spawn does not advertise a URL that was never opened.  A restart
 that changes port writes =ghostherd-mail/rpc.url=.
 
+** Why the sidecar wants a token, when it only listens on loopback
+
+Loopback keeps other machines out.  It does not keep out other
+*origins*: any web page open in a browser on this machine can POST
+to =127.0.0.1=.  The sidecar used to take that at face value.  Its
+CORS middleware allowed every origin, with credentials, and it parsed
+a body as JSON whatever its =Content-Type=, so a =text/plain= POST
+needed no preflight.  So a page could read the whole transcript index
+through =memory_search=, or send =herd_message= with ="from": "user"=
+and have Emacs paste the text into an agent and press Enter --- into
+agents that often run with =acceptEdits= or no permission prompts at
+all.  Checked against the running sidecar in October 2026 with a
+harmless =ping= from =Origin: https://evil.example=: 200, and the
+origin echoed back as allowed.
+
+Now, four layers, each with a test that fails without it:
+
+- *A token in the path*, =POST /jsonrpc/<token>=.  The sidecar
+  creates =rpc.token= (0600) under the data directory on its first
+  start, with Python's CSPRNG, and reads it after that.  In the path
+  rather than a header so that agents' ="$GHOSTHERD_RPC"= calls did
+  not change at all; uvicorn's access log has it redacted, since that
+  log is the buffer one pastes when something breaks.
+- *=application/json= only.*  Cross-origin, that needs a preflight,
+  and nothing here answers one.
+- *No CORS middleware.*  Emacs and curl never ask for it; a browser
+  page is exactly the caller to refuse.
+- *A loopback =Host= header.*  DNS rebinding makes a page's own
+  hostname resolve to =127.0.0.1=; then it is same-origin and only
+  =Host= tells it apart.
+
+=/health= stays open, since the port search needs it before it knows
+anything, and reports =token_id=: the first 12 hex digits of the
+token's SHA-256.  That is how Emacs tells *its* sidecar from a stale
+one (another token, or from before tokens) without a second request.
+A stale sidecar that this Emacs started is restarted; one it did not
+start is reported with the command to stop it, rather than walked past
+--- a second sidecar on the same data directory would only fail on the
+Qdrant lock, further from the cause.
+
 ** Why the Telegram bot is pull and lives in the sidecar
 
 A phone is useful when Emacs is open and an agent is blocked, not as a
@@ -647,3 +687,4 @@ purpose now that nothing does.
 | Memory search default | All projects, =C-u= for this one            | The failure is "I forgot which project"  |
 | Memory viewer         | Emacs text buffer; list+chunks RPC          | The index is text; no images to render   |
 | Memory port           | 49152+, skip occupied, reuse ours           | 8766 collides with local-dev; ecloud is 8765 |
+| Sidecar auth          | Token in the URL path, JSON only, no CORS, loopback Host | Loopback stops machines, not web pages |

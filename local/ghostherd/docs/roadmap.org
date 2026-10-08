@@ -357,7 +357,7 @@ Goal: tmux-hosted agents mail each other without =bin/ghostherd= or
 - Changing =/health= ="service":"ghostherd-memory"=
 - File outbox as a second bus
 
-* Phase 3.10 — Telegram bot  *(this tree)*
+* Phase 3.10 — Telegram bot  *(done)*
 
 Goal: drive the herd from a phone without a public webhook, without
 push, without cloning the overlay.
@@ -375,6 +375,32 @@ push, without cloning the overlay.
 - Push on blocked/done/dead
 - spawn / memory search
 - Webhook / public URL
+
+* Phase 3.11 — The sidecar answers only its token holders  *(this tree)*
+
+Goal: close a hole Phase 3.8 opened and 3.9 widened.  Loopback kept
+other machines out, not other origins: any web page could read the
+transcript index or queue a prompt into an agent.  Why each layer is
+there: "Why the sidecar wants a token" in [[file:design.org][design.org]].
+
+** What shipped
+
+- [X] =POST /jsonrpc/<token>=; =rpc.token= (0600) created by the
+  sidecar on first start.  Agents' ="$GHOSTHERD_RPC"= calls unchanged
+- [X] =application/json= only, no CORS middleware, loopback =Host= only
+- [X] =/health= reports a =token_id= fingerprint, so Emacs tells its
+  sidecar from a stale one in the request it already made; its own
+  stale one is restarted, any other is named with the command to stop it
+- [X] The token stays out of =*Messages*=, the uvicorn access log and
+  error text; =rpc.url= is 0600
+- [X] An old agent's bare URL gets a 401 pointing at =rpc.url=
+- [X] 8 pytest and 4 ERT tests, each guard mutation-checked; plus a
+  real sidecar attacked with curl the ways a page could
+
+** What is left
+
+- [ ] Agents spawned before this hold a bare =GHOSTHERD_RPC= until
+  respawned; they recover through =rpc.url= if they follow the skill
 
 * Phase 4 — Ecosystem (only if still useful)
 

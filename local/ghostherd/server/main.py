@@ -1,16 +1,22 @@
-"""FastAPI entry point.  JSON-RPC 2.0 over HTTP POST /jsonrpc, like ecloud."""
+"""FastAPI entry point.  JSON-RPC 2.0 over HTTP POST /jsonrpc/<token>.
+
+The ecloud shape (one POST /jsonrpc, loopback) with the token ecloud
+does without: see auth.py for why loopback alone is not enough.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import ValidationError
 
+from auth import RedactToken, fingerprint, load_or_create_token, token_ok
 from config import get_config
 from engine import reset_engine
 from jsonrpc_handler import (
@@ -22,9 +28,18 @@ from jsonrpc_handler import (
     handler,
 )
 
+VERSION = "0.2.0"
+UNAUTHORIZED = -32001
+UNSUPPORTED_MEDIA = -32002
+
+logging.getLogger("uvicorn.access").addFilter(RedactToken())
+
+
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     cfg = get_config()
+    app.state.token = load_or_create_token(cfg.data_dir)
+    app.state.token_file = str(cfg.data_dir / "rpc.token")
     stop = asyncio.Event()
     task = None
     if cfg.telegram_token and cfg.telegram_chat_ids:
@@ -47,26 +62,62 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="ghostherd-memory",
     description="Local transcript memory for ghostherd (Qdrant + FastEmbed)",
-    version="0.1.0",
+    version=VERSION,
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware: Emacs and curl never ask, and a browser page is
+# exactly the caller to refuse.  The Host check stops DNS rebinding,
+# where a page's own hostname resolves to 127.0.0.1 and same-origin
+# rules no longer apply.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
 
 @app.get("/health")
-async def health_check() -> dict:
-    return {"status": "ok", "version": "0.1.0", "service": "ghostherd-memory"}
+async def health_check(request: Request) -> dict:
+    return {
+        "status": "ok",
+        "version": VERSION,
+        "service": "ghostherd-memory",
+        "token_id": fingerprint(request.app.state.token),
+    }
+
+
+def _refuse(status: int, code: int, message: str) -> Response:
+    body = JsonRpcResponse(error=JsonRpcError(code=code, message=message))
+    return Response(
+        content=body.model_dump_json(exclude_none=True),
+        status_code=status,
+        media_type="application/json; charset=utf-8",
+    )
+
+
+def _no_token(request: Request) -> Response:
+    # Says where the URL is, never what it is: an agent spawned before
+    # the token, holding a bare GHOSTHERD_RPC, can recover from this.
+    return _refuse(
+        401,
+        UNAUTHORIZED,
+        "This sidecar needs its token in the URL.  Use $GHOSTHERD_RPC, or "
+        "the URL in ghostherd-mail/rpc.url under Emacs's user-emacs-directory "
+        "(the token itself is " + request.app.state.token_file + ").",
+    )
 
 
 @app.post("/jsonrpc")
-async def jsonrpc_endpoint(request: Request) -> Response:
+async def jsonrpc_without_token(request: Request) -> Response:
+    return _no_token(request)
+
+
+@app.post("/jsonrpc/{token}")
+async def jsonrpc_endpoint(token: str, request: Request) -> Response:
+    if not token_ok(token, request.app.state.token):
+        return _no_token(request)
+    # A cross-origin page can send text/plain without asking first;
+    # application/json needs a CORS preflight, which nothing here grants.
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return _refuse(415, UNSUPPORTED_MEDIA, "Content-Type must be application/json")
     try:
         data = json.loads(await request.body())
     except json.JSONDecodeError as exc:
