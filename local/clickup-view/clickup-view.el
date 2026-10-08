@@ -116,16 +116,21 @@ Intents parse JSON false as `:false', which Lisp counts as true."
 
 ;;; Task references
 
+(defconst clickup-view--id-re "[0-9a-z]*[0-9][0-9a-z]*"
+  "A native task id: lowercase letters and digits, at least one digit.
+Every id in the workspace has digits (600 sampled, 9-10 characters);
+words do not, so \"CU-ids\" in a commit message is not a task.")
+
 (defconst clickup-view--ref-re
   (concat
    ;; https://app.clickup.com/t/<id>, or /t/<team>/<id>.  The id must not
    ;; be followed by "/": that segment would be the team, and a custom id
    ;; after it (ABC-12) is not a native id.
-   "app\\.clickup\\.com/t/\\(?:[0-9]+/\\)?\\([0-9a-z]+\\)\\(?:[^/0-9a-zA-Z-]\\|\\'\\)"
+   "app\\.clickup\\.com/t/\\(?:[0-9]+/\\)?\\(" clickup-view--id-re "\\)\\(?:[^/0-9a-zA-Z-]\\|\\'\\)"
    ;; CU-<id> on its own, not inside a word.  Spelled out rather than
    ;; \\_< \\_>, which follow the current buffer's syntax table: in
-   ;; elisp-mode "-" is a symbol char and feature/fix-CU-abc would miss.
-   "\\|\\(?:\\`\\|[^0-9A-Za-z_]\\)CU-\\([0-9a-z]+\\)\\(?:[^0-9A-Za-z_]\\|\\'\\)")
+   ;; elisp-mode "-" is a symbol char and feature/fix-CU-abc1 would miss.
+   "\\|\\(?:\\`\\|[^0-9A-Za-z_]\\)CU-\\(" clickup-view--id-re "\\)\\(?:[^0-9A-Za-z_]\\|\\'\\)")
   "Matches a ClickUp task link or a CU-<id> reference.")
 
 (defun clickup-view--task-refs (text)
@@ -147,7 +152,7 @@ Intents parse JSON false as `:false', which Lisp counts as true."
     (let ((s (string-trim s))
           (case-fold-search nil))
       (or (car (clickup-view--task-refs s))
-          (and (string-match-p "\\`[0-9a-z]+\\'" s) s)))))
+          (and (string-match-p (concat "\\`" clickup-view--id-re "\\'") s) s)))))
 
 (defun clickup-view--git (&rest args)
   "Run git ARGS in the current repo.  Return trimmed stdout or nil."
@@ -379,14 +384,34 @@ Signals a `user-error' on failure."
     (fg . ,(or (alist-get 'tag_fg raw) ""))
     (bg . ,(or (alist-get 'tag_bg raw) ""))))
 
+(defun clickup-view--space-by-id (id)
+  (seq-find (lambda (s) (equal (alist-get 'id s) id)) clickup-view--spaces))
+
 (defun clickup-view--space-name (id)
-  (alist-get 'name (seq-find (lambda (s) (equal (alist-get 'id s) id))
-                             clickup-view--spaces)))
+  (alist-get 'name (clickup-view--space-by-id id)))
+
+(defun clickup-view--folder-ref (folder)
+  "FOLDER as its id and name; nil for a folderless list's hidden folder.
+That one is not a folder to the reader: no breadcrumb for it."
+  (unless (or (null folder) (clickup-view--truthy (alist-get 'hidden folder)))
+    `((id . ,(alist-get 'id folder))
+      (name . ,(or (alist-get 'name folder) "")))))
+
+(defun clickup-view--list-info (list-id raw)
+  "LIST-ID's name, statuses, space and folder, from GET /list RAW."
+  (let ((space (alist-get 'space raw)))
+    `((id . ,list-id)
+      (name . ,(or (alist-get 'name raw) ""))
+      (statuses . ,(clickup-view--statuses raw))
+      (space . ((id . ,(alist-get 'id space))
+                (name . ,(or (alist-get 'name space)
+                             (clickup-view--space-name (alist-get 'id space))
+                             ""))))
+      (folder . ,(clickup-view--folder-ref (alist-get 'folder raw))))))
 
 (defun clickup-view--task (raw)
   "A task for the detail page."
-  (let ((folder (alist-get 'folder raw))
-        (space-id (alist-get 'id (alist-get 'space raw))))
+  (let ((space-id (alist-get 'id (alist-get 'space raw))))
     (append
      (clickup-view--row raw)
      `((custom_id . ,(alist-get 'custom_id raw))
@@ -400,10 +425,7 @@ Signals a `user-error' on failure."
        (created . ,(or (alist-get 'date_created raw) ""))
        (list . ((id . ,(alist-get 'id (alist-get 'list raw)))
                 (name . ,(or (alist-get 'name (alist-get 'list raw)) ""))))
-       ;; A folderless list sits in a hidden folder: no breadcrumb for it.
-       (folder . ,(unless (clickup-view--truthy (alist-get 'hidden folder))
-                    `((id . ,(alist-get 'id folder))
-                      (name . ,(or (alist-get 'name folder) "")))))
+       (folder . ,(clickup-view--folder-ref (alist-get 'folder raw)))
        (space . ((id . ,space-id)
                  (name . ,(or (clickup-view--space-name space-id) ""))))
        (top_parent . ,(alist-get 'top_level_parent raw))
@@ -855,6 +877,9 @@ on its own (divider, table)."
           "GET" (format "/space/%s/list" space-id)
           (lambda (lists)
             (let ((payload `((id . ,space-id)
+                             (name . ,(or (clickup-view--space-name space-id) ""))
+                             (color . ,(or (alist-get 'color (clickup-view--space-by-id space-id))
+                                           ""))
                              (folders . ,(clickup-view--vec #'clickup-view--folder
                                                             (alist-get 'folders folders)))
                              (lists . ,(clickup-view--vec #'clickup-view--list
@@ -865,25 +890,23 @@ on its own (divider, table)."
        '((archived . :json-false))))))
 
 (defun clickup-view--with-list (list-id then)
-  "Call THEN with LIST-ID's name and statuses, fetched once per session."
+  "Call THEN with LIST-ID's `clickup-view--list-info', fetched once per session."
   (if-let* ((cached (gethash list-id clickup-view--list-cache)))
       (funcall then cached)
     (clickup-view--request
      "GET" (format "/list/%s" list-id)
      (lambda (raw)
-       (let ((info `((id . ,list-id)
-                     (name . ,(or (alist-get 'name raw) ""))
-                     (statuses . ,(clickup-view--statuses raw)))))
-         (puthash list-id info clickup-view--list-cache)
-         (funcall then info))))))
+       (funcall then (puthash list-id (clickup-view--list-info list-id raw)
+                              clickup-view--list-cache))))))
 
 (defun clickup-view--load-list (intent)
-  "Send one page of a list's tasks.  INTENT: id, page, closed, mine."
+  "Send one page of a list's tasks.  INTENT: id, page, closed, mine.
+No flash: the page fetches the pages after the first by itself and
+shows its own progress."
   (let* ((list-id (alist-get 'id intent))
          (page (clickup-view--int (alist-get 'page intent)))
          (closed (clickup-view--truthy (alist-get 'closed intent)))
          (mine (clickup-view--truthy (alist-get 'mine intent))))
-    (clickup-view--flash "Loading tasks…")
     (clickup-view--with-list
      list-id
      (lambda (info)
@@ -895,6 +918,8 @@ on its own (divider, table)."
            `((id . ,list-id)
              (name . ,(alist-get 'name info))
              (statuses . ,(alist-get 'statuses info))
+             (space . ,(alist-get 'space info))
+             (folder . ,(alist-get 'folder info))
              (page . ,page)
              (last_page . ,(clickup-view--bool (alist-get 'last_page raw)))
              (closed . ,(clickup-view--bool closed))
@@ -1068,12 +1093,10 @@ ID defaults to the task the current branch references."
          (now (alist-get 'status (alist-get 'status raw)))
          (list-id (alist-get 'id (alist-get 'list raw)))
          (info (or (gethash list-id clickup-view--list-cache)
-                   (let ((l (clickup-view--request-sync "GET" (format "/list/%s" list-id))))
-                     (puthash list-id
-                              `((id . ,list-id)
-                                (name . ,(or (alist-get 'name l) ""))
-                                (statuses . ,(clickup-view--statuses l)))
-                              clickup-view--list-cache))))
+                   (puthash list-id
+                            (clickup-view--list-info
+                             list-id (clickup-view--request-sync "GET" (format "/list/%s" list-id)))
+                            clickup-view--list-cache)))
          (choices (seq-remove (lambda (s) (equal s now))
                               (mapcar (lambda (s) (alist-get 'name s))
                                       (alist-get 'statuses info))))

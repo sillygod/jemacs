@@ -81,7 +81,8 @@ holds (FN . OBJ) page calls, oldest first."
     \"url\":\"https://app.clickup.com/t/abc123\"}")
 
 (defconst clickup-view-test--list-json
-  "{\"id\":\"L1\",\"name\":\"BACKLOG\",\"statuses\":[
+  "{\"id\":\"L1\",\"name\":\"BACKLOG\",\"space\":{\"id\":\"s1\",\"name\":\"Back-End\"},
+    \"folder\":{\"id\":\"F9\",\"name\":\"hidden\",\"hidden\":true},\"statuses\":[
      {\"status\":\"Closed\",\"type\":\"closed\",\"orderindex\":5,\"color\":\"#000\"},
      {\"status\":\"Open\",\"type\":\"open\",\"orderindex\":0,\"color\":\"#aaa\"},
      {\"status\":\"in progress\",\"type\":\"custom\",\"orderindex\":1,\"color\":\"#1090e0\"}]}")
@@ -105,6 +106,10 @@ holds (FN . OBJ) page calls, oldest first."
 
 (ert-deftest clickup-view-test-refs-ignore-lookalikes ()
   (should-not (clickup-view--task-refs "xCU-abc ACU-1 CU-ABC custom CU-"))
+  ;; Prose: an id has a digit, a word does not.
+  (should-not (clickup-view--task-refs "open-task accepts links and CU-ids, or a CU-id."))
+  (should-not (clickup-view--task-refs "pasted as CU-xxx, see app.clickup.com/t/abc"))
+  (should-not (clickup-view--normalize-id "ids"))
   ;; /t/<team>/<custom id>: neither the team nor the custom id is native.
   (should-not (clickup-view--task-refs "https://app.clickup.com/t/9008039987/ABC-123"))
   (should-not (clickup-view--task-refs nil)))
@@ -209,6 +214,24 @@ holds (FN . OBJ) page calls, oldest first."
 (ert-deftest clickup-view-test-empty-arrays-encode-as-arrays ()
   (let ((js (json-encode (clickup-view--row '((id . "x") (status . ((status . "Open"))))))))
     (should (string-match-p "\"assignees\":\\[\\]" js))))
+
+(ert-deftest clickup-view-test-list-info-crumbs ()
+  "A list knows its space and folder, for the breadcrumbs; a folderless
+list's hidden folder is none."
+  (let ((clickup-view--spaces '(((id . "s1") (name . "Back-End")))))
+    (let ((info (clickup-view--list-info
+                 "L1" (clickup-view-test--json clickup-view-test--list-json))))
+      (should (equal (alist-get 'space info) '((id . "s1") (name . "Back-End"))))
+      (should-not (alist-get 'folder info))
+      (should (= (length (alist-get 'statuses info)) 3)))
+    (let ((info (clickup-view--list-info
+                 "L2" (clickup-view-test--json
+                       "{\"name\":\"Horus\",\"statuses\":[],\"space\":{\"id\":\"s1\"},
+                         \"folder\":{\"id\":\"F1\",\"name\":\"Crypto\",\"hidden\":false}}"))))
+      (should (equal (alist-get 'id info) "L2"))
+      (should (equal (alist-get 'folder info) '((id . "F1") (name . "Crypto"))))
+      ;; GET /list may leave the space's name out: the cached spaces have it.
+      (should (equal (alist-get 'name (alist-get 'space info)) "Back-End")))))
 
 (ert-deftest clickup-view-test-statuses-in-list-order ()
   (should (equal (mapcar (lambda (s) (alist-get 'name s))
@@ -354,6 +377,9 @@ holds (FN . OBJ) page calls, oldest first."
       (should (string-match-p "assignees%5B%5D=7" url)))
     (let ((l (clickup-view-test--call (calls) "renderList")))
       (should (equal (alist-get 'name l) "BACKLOG"))
+      (should (equal (alist-get 'name (alist-get 'space l)) "Back-End"))
+      (should (assq 'folder l))
+      (should-not (alist-get 'folder l))
       (should (eq (alist-get 'last_page l) t))
       (should (eq (alist-get 'closed l) :json-false))
       (should (equal (alist-get 'tasks l) [])))))
@@ -366,6 +392,7 @@ holds (FN . OBJ) page calls, oldest first."
     (clickup-view--handle-intent '((op . "open-space") (id . "s1")))
     (should (= (length requests) 2))
     (let ((sp (clickup-view-test--call (calls) "renderSpace")))
+      (should (equal (alist-get 'name sp) "Back-End"))
       (should (equal (alist-get 'name (aref (alist-get 'folders sp) 0)) "Crypto"))
       (should (= (alist-get 'count (aref (alist-get 'lists sp) 0)) 70)))
     (clickup-view--handle-intent '((op . "open-space") (id . "s1") (force . t)))

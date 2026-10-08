@@ -81,10 +81,12 @@ code { font-family: var(--mono); font-size: 12px; }
   font-size: 11px;
   color: #fff;
   background: var(--brand);
+  border: 0;
   padding: 2px 6px;
   border-radius: 3px;
   flex-shrink: 0;
 }
+.mark:hover { filter: brightness(1.15); }
 .crumbs {
   color: var(--muted);
   min-width: 0;
@@ -93,6 +95,9 @@ code { font-family: var(--mono); font-size: 12px; }
   white-space: nowrap;
 }
 .crumbs .sep { margin: 0 6px; opacity: 0.6; }
+.crumb { background: none; border: 0; padding: 0; color: var(--muted); }
+button.crumb:hover { color: var(--accent); }
+.crumb.here { color: var(--text); }
 .actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 .progress {
@@ -133,13 +138,33 @@ code { font-family: var(--mono); font-size: 12px; }
 .muted { color: var(--muted); }
 .pad { padding: 16px 14px; }
 
-/* ---- Home ------------------------------------------------------------- */
+/* ---- Pages: home, space, list ----------------------------------------- */
 
-.home { max-width: 40em; padding: 28px 18px; }
-.home h2 { font-size: 15px; margin: 0 0 10px; }
-.open-row { display: flex; gap: 8px; }
-.open-row input {
-  flex: 1;
+.page { padding: 14px 18px 28px; max-width: 1100px; }
+.page > :first-child { margin-top: 0; }
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.page-head h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: 19px;
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.sum { font-size: 12px; margin: 6px 0 0; }
+
+.open-row { display: flex; gap: 8px; max-width: 40em; }
+.open-row input, #list-filter {
   min-width: 0;
   background: var(--bg);
   color: var(--text);
@@ -147,9 +172,89 @@ code { font-family: var(--mono); font-size: 12px; }
   border-radius: 6px;
   padding: 7px 10px;
   font: inherit;
-  font-family: var(--mono);
 }
-.open-row input:focus { border-color: var(--accent); outline: none; }
+.open-row input { flex: 1; font-family: var(--mono); }
+#list-filter { width: 17em; padding: 4px 9px; }
+.open-row input:focus, #list-filter:focus { border-color: var(--accent); outline: none; }
+.home .hint { margin: 8px 0 0; }
+
+.toggle {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-size: 12px;
+}
+.toggle:hover { color: var(--text); border-color: var(--accent); }
+.toggle.on {
+  color: #fff;
+  background: color-mix(in srgb, var(--brand) 35%, transparent);
+  border-color: var(--brand);
+}
+
+/* A space's colour, with its initial. */
+.sq {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--c);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.page-head h1 .sq { width: 26px; height: 26px; font-size: 14px; }
+.go, .li-mark { color: var(--muted); }
+.li-mark { width: 1em; text-align: center; flex-shrink: 0; }
+.row-count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row.quiet .row-name { color: var(--muted); }
+
+/* A list's status groups and task rows. */
+.group { margin-top: 14px; }
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text);
+  padding: 3px 2px;
+  margin-bottom: 5px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.group-head:hover .g-name { color: var(--accent); }
+.group-head .chev { color: var(--muted); margin: 0 4px 0 3px; }
+.group-head .count { margin-left: 0; }
+.row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.row-main .row-name { flex: 0 1 auto; }
+.sub-mark { color: var(--muted); flex-shrink: 0; }
+.subs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  background: var(--chip);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 17px;
+}
+.subs:hover { color: var(--accent); border-color: var(--accent); }
+.row-prio { color: var(--c); font-size: 12px; }
+.row-due.late { color: var(--minus); }
+.foot { margin: 12px 2px 0; }
+.empty-note { margin: 16px 2px; }
 
 /* ---- Task layout ------------------------------------------------------ */
 /* One column in a split Emacs window; side-by-side when there is room. */
@@ -159,7 +264,8 @@ code { font-family: var(--mono); font-size: 12px; }
 .task-side { padding: 6px 18px 28px; min-width: 0; border-top: 1px solid var(--line); }
 
 @media (min-width: 1000px) {
-  .app { overflow: hidden; }
+  /* The two task columns scroll on their own; other views scroll whole. */
+  .app[data-view="task"] { overflow: hidden; }
   .task-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(340px, 38%);
@@ -204,6 +310,18 @@ code { font-family: var(--mono); font-size: 12px; }
   border: 1px solid color-mix(in srgb, var(--c) 60%, transparent);
 }
 
+/* A chevron: points right, down when its control is open. */
+.chev {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateX(-1px) rotate(-45deg);
+  flex-shrink: 0;
+}
+[aria-expanded="true"] > .chev, .chev.down { transform: translateY(-2px) rotate(45deg); }
+
 .dot {
   display: inline-block;
   width: 9px;
@@ -231,7 +349,7 @@ code { font-family: var(--mono); font-size: 12px; }
   letter-spacing: 0.03em;
 }
 .status-btn .dot { background: var(--c); }
-.status-btn .caret { color: var(--muted); font-size: 10px; }
+.status-btn .chev { color: var(--muted); }
 .status-btn:hover:not(:disabled) { filter: brightness(1.15); }
 
 .menu {
@@ -294,7 +412,7 @@ code { font-family: var(--mono); font-size: 12px; }
 .row:last-child { border-bottom: 0; }
 .row:hover, .row:focus { background: var(--row-hover); outline: none; }
 .row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row.done .row-name { color: var(--muted); text-decoration: line-through; }
+.row.closed .row-name { color: var(--muted); }
 .row-status, .row-due { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .row-status { text-transform: uppercase; letter-spacing: 0.03em; }
 .stack { display: inline-flex; }

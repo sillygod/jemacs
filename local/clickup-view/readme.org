@@ -12,7 +12,7 @@ HTTP and the token, =ui/= only renders.
 | Package | =local/clickup-view/= |
 | Entry   | =SPC g c= / =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
 | Needs   | =CLICKUP_API_TOKEN=; GUI Emacs with xwidgets for the page |
-| State   | Task page done; Space ▸ Folder ▸ List browsing is next |
+| State   | Task page and Space ▸ Folder ▸ List browser done; a ClickUp chip in pr-view is next |
 
 * Auth
 
@@ -32,7 +32,9 @@ another.
 =clickup-view= and =clickup-set-status= read the branch name and the
 commits not yet on the remote default branch (=origin/HEAD=, else
 =origin/main=, =master=, =develop=; at most =clickup-view-scan-commits=)
-for =app.clickup.com/t/<id>= links and =CU-<id>=.  One task opens
+for =app.clickup.com/t/<id>= links and =CU-<id>=.  An id has a digit
+(every one sampled does, 9--10 characters): =CU-ids= in prose is a word,
+not a task.  One task opens
 directly, several are offered with where each was found, none opens the
 browser (=clickup-view=) or asks (=clickup-set-status=).  =C-u M-x
 clickup-view= always opens the browser.
@@ -64,6 +66,14 @@ Probed against the workspace, October 2026.
   that does not exist, is =Team not authorized= (=OAUTH_027=).  A bad
   token is =Token invalid= (=OAUTH_025=).
 - Attachment images (=*.clickup-attachments.com=) load without auth.
+- A list's tasks come 100 a page, subtasks included as rows of their
+  own (=parent= set), newest created first.  A parent and its subtasks
+  arrive on the same page.  BACKLOG: 70 top-level + 47 subtasks, two
+  pages; 34 of the 47 have a status other than their parent's.
+- A list's =task_count= is its open top-level tasks.
+- Status types: =open=, =custom=, =done=, =closed=.  =done= is not
+  closed: BACKLOG's "wait for testing" is one.  =include_closed= adds only
+  =closed=.
 
 * The page
 
@@ -71,8 +81,26 @@ Probed against the workspace, October 2026.
 (marked 11.2.0, identical to jsdelivr's; vendored because jwebkit's copy
 is a gitignored download that may not exist yet).
 
+Views: home (open a task by link, the spaces), a space (its folderless
+lists first, then each folder's), a list, a task.  The breadcrumbs go
+up from any of them; a folder crumb opens its space at that folder.
+=CU= goes home.
+
+- A list groups its tasks by status, in the list's own order.  Subtasks
+  fold under their parent (→ / ← or the chip); a subtask whose parent
+  is not shown (Mine) stands alone, marked ↳.  The filter matches names
+  and ids (a link or CU-id works) and shows every match flat.  Mine and
+  Closed load the list again and carry over to the next list.
+- The page fetches a list's pages itself, up to 5 (500 rows), so status
+  counts and the filter see the whole list; past that, Load more.
+- Going forward always loads fresh.  Back shows a space or list as it
+  was left, at the same scroll, with the row of the task just left
+  focused; a task loads again.  A status changed here updates the lists
+  the page keeps.
+- Only closed tasks are muted.
 - Keys: =s= status menu (arrows, Enter, Esc), =r= refresh, =Esc= back,
-  =⌘↩= / =C-↩= sends the comment or reply being typed.
+  =/= filter, =↑= / =↓= between rows, =→= / =←= subtasks, =⌘↩= / =C-↩=
+  sends the comment or reply being typed.
 - Comments are newest first with the composer on top; a thread reads
   oldest first.  Drafts survive re-renders and moving between tasks.
 - Every link is caught: a task link (or =data-task=) opens in the page,
@@ -115,8 +143,9 @@ Calls, Emacs → page, as =CU.fn(payload)=:
 | =showError=     | message                                                       |
 | =setContext=    | me, team, spaces                                              |
 | =showHome=      |                                                               |
-| =renderSpace=   | id, folders (each with lists), lists                          |
-| =renderList=    | id, name, statuses, page, last_page, closed, mine, tasks      |
+| =renderSpace=   | id, name, color, folders (each with lists), lists             |
+| =renderList=    | id, name, statuses, space, folder, page, last_page, closed,   |
+|                 | mine, tasks                                                   |
 | =renderTask=    | task, statuses (null until =setStatuses=)                     |
 | =setStatuses=   | list_id, statuses                                             |
 | =setComments=   | task_id, items (newest first, with html), has_more, append    |
@@ -124,9 +153,11 @@ Calls, Emacs → page, as =CU.fn(payload)=:
 | =statusChanged= | task_id, status                                               |
 | =posted=        | task_id, comment_id (null for a comment): clear that box      |
 
-Every payload names its task, list or comment.  The page drops one that
-is not for what it is showing, so a slow reply for one task cannot paint
-over the next.
+Every payload names its space, list, task or comment.  The page drops
+one that is not for what it is showing or on its way to, so a slow
+reply for one task cannot paint over the next; a list page also has to
+match the Mine / Closed it was asked with.  =folder= is null for a
+folderless list.
 
 * Tests
 
@@ -139,7 +170,9 @@ The Elisp layer, against stubbed HTTP and page calls:
 #+end_src
 
 The page was checked in WebKit (Playwright) against this Elisp running
-in a batch Emacs on the live API, writes faked: status menu, threads,
-posting, paging, subtask and Back, links, a hostile description and
-comment, and a 760px window.  Not part of the suite: it needs a browser
-and the token.
+in a batch Emacs on the live API, writes faked.  Task page: status menu,
+threads, posting, paging, subtask and Back, links, a hostile description
+and comment, a 760px window.  Browser: home, space, a list's two pages,
+status groups, subtasks, filter, Mine / Closed and quick toggles, Back
+from the page's copy, breadcrumbs, stale replies dropped.  Not part of
+the suite: it needs a browser and the token.
