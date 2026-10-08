@@ -1,5 +1,7 @@
 .credentials
 *.elc
+# flycheck's copies of a buffer; one of settings.el carries its tokens
+flycheck_*.el
 .DS_Store
 
 .vscode
