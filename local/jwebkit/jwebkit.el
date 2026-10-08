@@ -410,9 +410,9 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
 ;; it can hold focus anyway -- and a wait that does not redisplay, so
 ;; the view cannot go in between.  Late delivery is safe: nsxwidget_kill
 ;; removes the handler before anything else.  Switching away from a page
-;; loses focus the same way, but there the view is deleted inside
-;; redisplay, with no moment for Lisp to step in; that one wants a fix in
-;; nsxwidget.m itself.
+;; is fine: redisplay only moves its view off screen
+;; (nsxwidget_hide_view), where it stays first responder and passes keys
+;; it does not use on to Emacs.
 
 (defconst jwebkit--give-focus-back-js
   "window.webkit && window.webkit.messageHandlers.keyDown && window.webkit.messageHandlers.keyDown.postMessage('C-g');"

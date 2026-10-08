@@ -48,10 +48,9 @@ xwidget dies) posts it and lets the run loop deliver it.
 Only for a page in the selected window with a live view, and nowhere
 else: the handler reads the view pointer, NULL once the view is gone,
 and posting then would crash Emacs.  The wait does not redisplay, so
-the view cannot go in between.  Switching away from a page (rather
-than killing it) loses focus the same way, but the view is deleted
-inside redisplay with no moment for Lisp to step in --- that one needs
-=nsxwidget.m= itself to hand focus back.
+the view cannot go in between.  Switching away from a page is fine:
+redisplay only moves its view off screen (=nsxwidget_hide_view=), where
+it stays first responder and passes keys it does not use on to Emacs.
 
 * PDF (pdf.js)
 
