@@ -96,29 +96,29 @@ holds (FN . OBJ) page calls, oldest first."
 ;;; Task references
 
 (ert-deftest clickup-view-test-refs-from-links-and-cu-ids ()
-  (should (equal (clickup-view--task-refs
+  (should (equal (clickup-view-task-refs
                   "fix: retry (https://app.clickup.com/t/z90hj32fg8) and CU-86abc123, again CU-86abc123")
                  '("z90hj32fg8" "86abc123")))
-  (should (equal (clickup-view--task-refs "feature/fix-CU-86abc123-retry")
+  (should (equal (clickup-view-task-refs "feature/fix-CU-86abc123-retry")
                  '("86abc123")))
-  (should (equal (clickup-view--task-refs "see app.clickup.com/t/abc123?comment=9")
+  (should (equal (clickup-view-task-refs "see app.clickup.com/t/abc123?comment=9")
                  '("abc123"))))
 
 (ert-deftest clickup-view-test-refs-ignore-lookalikes ()
-  (should-not (clickup-view--task-refs "xCU-abc ACU-1 CU-ABC custom CU-"))
+  (should-not (clickup-view-task-refs "xCU-abc ACU-1 CU-ABC custom CU-"))
   ;; Prose: an id has a digit, a word does not.
-  (should-not (clickup-view--task-refs "open-task accepts links and CU-ids, or a CU-id."))
-  (should-not (clickup-view--task-refs "pasted as CU-xxx, see app.clickup.com/t/abc"))
+  (should-not (clickup-view-task-refs "open-task accepts links and CU-ids, or a CU-id."))
+  (should-not (clickup-view-task-refs "pasted as CU-xxx, see app.clickup.com/t/abc"))
   (should-not (clickup-view--normalize-id "ids"))
   ;; /t/<team>/<custom id>: neither the team nor the custom id is native.
-  (should-not (clickup-view--task-refs "https://app.clickup.com/t/9008039987/ABC-123"))
-  (should-not (clickup-view--task-refs nil)))
+  (should-not (clickup-view-task-refs "https://app.clickup.com/t/9008039987/ABC-123"))
+  (should-not (clickup-view-task-refs nil)))
 
 (ert-deftest clickup-view-test-refs-same-in-any-buffer ()
   "The CU- match must not depend on the current buffer's syntax table."
   (with-temp-buffer
     (emacs-lisp-mode)
-    (should (equal (clickup-view--task-refs "feature/fix-CU-86abc123-retry")
+    (should (equal (clickup-view-task-refs "feature/fix-CU-86abc123-retry")
                    '("86abc123")))))
 
 (ert-deftest clickup-view-test-normalize-id ()
@@ -498,6 +498,36 @@ list's hidden folder is none."
       (clickup-view--handle-intent '((op . "ready")))
       (should (assoc "showHome" (calls)))
       (should-not requests))))
+
+
+;;; For pr-view
+
+(ert-deftest clickup-view-test-task-brief ()
+  "Name and status for another package, and nothing in the page."
+  (clickup-view-test--with-api
+      `(("GET" "/task/abc123\\'" 200 ,clickup-view-test--task-json)
+        ("GET" "/task/zz9\\'" 401 "{\"err\":\"Team not authorized\",\"ECODE\":\"OAUTH_027\"}"))
+    (let (got)
+      (clickup-view-task-brief "abc123" (lambda (b) (push b got)))
+      (clickup-view-task-brief "zz9" (lambda (b) (push b got)))
+      (setq got (nreverse got))
+      (should (equal (alist-get 'name (nth 0 got)) "Fix retry <loop>"))
+      (should (equal (alist-get 'name (alist-get 'status (nth 0 got))) "in progress"))
+      (should (equal (alist-get 'color (alist-get 'status (nth 0 got))) "#1090e0"))
+      (should-not (alist-get 'error (nth 0 got)))
+      (should (equal (alist-get 'id (nth 1 got)) "zz9"))
+      (should (string-match-p "Not found" (alist-get 'error (nth 1 got))))
+      (should-not (calls)))))
+
+(ert-deftest clickup-view-test-task-brief-without-token ()
+  "No token is an answer, not an error out of another package's code."
+  (clickup-view-test--with-api nil
+    (cl-letf (((symbol-function 'clickup-view--token)
+               (lambda () (user-error "CLICKUP_API_TOKEN is not set"))))
+      (let (got)
+        (clickup-view-task-brief "abc123" (lambda (b) (setq got b)))
+        (should (string-match-p "CLICKUP_API_TOKEN" (alist-get 'error got)))
+        (should-not requests)))))
 
 (provide 'clickup-view-tests)
 ;;; clickup-view-tests.el ends here

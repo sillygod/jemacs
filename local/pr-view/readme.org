@@ -75,6 +75,7 @@ Workspace/repo default from =origin=. Override with
 | page: Create | new PR (source → dest, title, body) |
 | detail: Overview / Files changed / Commits | tabs |
 | detail: commit hash | open that commit on the forge |
+| detail: ClickUp chip / task link | open the task in clickup-view |
 | detail: Approve / Merge | write actions (confirm on merge) |
 | page: ← List / Esc | back to list |
 | page: Refresh / =r= | reload list |
@@ -124,11 +125,43 @@ count in front.  The two forges keep that verdict in different places:
   reviews separately and adds those people back, so an approval is
   visible at all; the chips settle a moment after the view opens.
 
+* ClickUp tasks
+
+With =clickup-view= installed, the detail view has a ClickUp row: the
+tasks the PR cites, each with its status and name.  A click opens the
+task in clickup-view, where it can be read, moved or commented on; a
+ClickUp task link in the description or a comment does the same.
+Without clickup-view the row never appears.
+
+- Found in the title, the source branch, the description, then the
+  commits as they arrive (a task keeps the first place it was seen;
+  the tooltip says which).  The rule is clickup-view's own
+  =clickup-view-task-refs=: a task link or =CU-<id>=, and an id has a
+  digit, so =CU-ids= in prose is not a task.
+- Each task is one =GET /task/{id}= through =clickup-view-task-brief=,
+  for at most 20 a PR: ClickUp allows 100 requests a minute on most
+  plans, and a release PR can cite dozens.  The rest show their id.
+- Six chips show; =+N more= shows the rest.  A task that cannot be read
+  (another workspace, no token) keeps its id, dashed, with the reason
+  in the tooltip.  Closed tasks are muted.
+- When clickup-view cannot open a task (no token, no xwidgets, a custom
+  id) the browser gets it.
+- Lookups and commits arrive late; the page drops any meant for a PR
+  that is no longer open, and patches the row in place so a comment
+  being typed survives.
+
+Every intent the page sends now carries a counter =n=.  =xwapp= ignores
+a title identical to the last one it read, so clicking the same chip
+twice --- or Refresh twice --- used to do nothing the second time.
+
 * Tests
 
 #+begin_src sh
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
         -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/pr-view \
+        -L ~/.emacs.d/local/clickup-view \
         -l pr-view.el -l pr-view-tests.el \
         -f ert-run-tests-batch-and-exit
 #+end_src
+
+Without clickup-view on the load path the ClickUp task tests skip.

@@ -12,7 +12,7 @@ HTTP and the token, =ui/= only renders.
 | Package | =local/clickup-view/= |
 | Entry   | =SPC g c= / =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
 | Needs   | =CLICKUP_API_TOKEN=; GUI Emacs with xwidgets for the page |
-| State   | Task page and Space ▸ Folder ▸ List browser done; a ClickUp chip in pr-view is next |
+| State   | Task page, Space ▸ Folder ▸ List browser, and the tasks a PR cites in pr-view: done |
 
 * Auth
 
@@ -158,6 +158,20 @@ one that is not for what it is showing or on its way to, so a slow
 reply for one task cannot paint over the next; a list page also has to
 match the Mine / Closed it was asked with.  =folder= is null for a
 folderless list.
+
+* For other packages
+
+pr-view uses these to show the tasks a PR cites; they are the public
+surface, everything with =--= is not.
+
+| Function                  | Does                                                   |
+|---------------------------+--------------------------------------------------------|
+| =clickup-view-task-refs=  | task ids a text cites, in order: links and =CU-<id>=   |
+| =clickup-view-task-brief= | one =GET /task/{id}=; calls back with name and status, |
+|                           | or with =error= (the token missing included)           |
+| =clickup-view-task=       | open a task in the page (id, link or =CU-<id>=)        |
+
+A brief never touches the page.
 
 * Tests
 

@@ -19,6 +19,9 @@
 ;; `pr-view-github-owner' / `pr-view-bitbucket-workspace'.
 ;; Bitbucket Cloud: API token (BITBUCKET_TOKEN / Bearer). App passwords
 ;; are deprecated.
+;;
+;; With clickup-view installed, a PR also shows the ClickUp tasks it
+;; cites, and opens them there.
 
 ;;; Code:
 
@@ -560,6 +563,7 @@ people who already answered have to be added back from REVIEWS."
       ("add-reviewer" (pr-view--change-reviewer intent 'add))
       ("remove-reviewer" (pr-view--change-reviewer intent 'remove))
       ("merge-pr" (pr-view--merge-pr intent))
+      ("open-task" (pr-view--open-task (alist-get 'ref intent)))
       (_ nil))))
 
 
@@ -886,7 +890,7 @@ the unified diff on PRs over ~20k lines or 300 files."
 
 (defun pr-view--fetch-commits (host kind id-str)
   (pr-view--commits-page
-   host kind
+   host kind id-str
    (pcase kind
      ('github
       (pr-view--url host (format "/pulls/%s/commits?per_page=100" id-str)))
@@ -894,10 +898,11 @@ the unified diff on PRs over ~20k lines or 300 files."
       (pr-view--url host (format "/pullrequests/%s/commits?pagelen=50" id-str))))
    nil))
 
-(defun pr-view--commits-page (host kind url acc)
-  "Collect PR commits, newest first.  Failures stay silent: the tab is
-supplementary, and `pr-view--http-json' would turn a 403 on it into
-an error banner over a detail view that is otherwise fine."
+(defun pr-view--commits-page (host kind id-str url acc)
+  "Collect PR ID-STR's commits, newest first, and the tasks they cite.
+Failures stay silent: the tab is supplementary, and
+`pr-view--http-json' would turn a 403 on it into an error banner
+over a detail view that is otherwise fine."
   (pr-view--http
    url (pr-view--headers host)
    (lambda (body code err)
@@ -917,13 +922,11 @@ an error banner over a detail view that is otherwise fine."
                   (acc (append acc (mapcar norm (or rows '()))))
                   (next (and (eq kind 'bitbucket) (alist-get 'next raw))))
              (if (and next (stringp next) (not (string-empty-p next)))
-                 (pr-view--commits-page host kind next acc)
-               (pr-view--js
-                "setCommits"
-                ;; GitHub answers oldest first, Bitbucket newest first.
-                `((items . ,(vconcat (if (eq kind 'github)
-                                         (reverse acc)
-                                       acc)))))))
+                 (pr-view--commits-page host kind id-str next acc)
+               ;; GitHub answers oldest first, Bitbucket newest first.
+               (let ((newest-first (if (eq kind 'github) (reverse acc) acc)))
+                 (pr-view--js "setCommits" `((items . ,(vconcat newest-first))))
+                 (pr-view--cite-tasks id-str (pr-view--commit-sources newest-first)))))
          (error nil))))))
 
 (defun pr-view--bb-conflict (raw)
@@ -1266,6 +1269,10 @@ separate collection, so the chips arrive a moment after the view."
                              pr forge
                              `((diff . "")
                                (diff_loading . t))))
+               ;; Before the commits are asked for: they add to these.
+               ;; Demoted: ClickUp is extra and must not stop the rest.
+               (with-demoted-errors "pr-view: ClickUp tasks: %S"
+                 (pr-view--detail-tasks id-str pr))
                (pr-view--fetch-comments host kind id-str)
                (pr-view--fetch-members host)
                (pr-view--fetch-commits host kind id-str)
@@ -1474,6 +1481,115 @@ endpoint takes no `dry_run\', so asking would be doing."
          (pr-view--js "showError" (xwapp-scrub-error (error-message-string e))))))))
 
 
+;;; ClickUp tasks
+;;
+;; With clickup-view installed, a PR shows the ClickUp tasks its title,
+;; branch, description and commits cite, each with its status, and a
+;; click opens one there.  Without it, a PR looks as it always did.
+
+(declare-function clickup-view-task-refs "clickup-view" (text))
+(declare-function clickup-view-task-brief "clickup-view" (id callback))
+(declare-function clickup-view-task "clickup-view" (id))
+
+(defconst pr-view--task-lookups 20
+  "Most ClickUp tasks looked up for one PR; the rest show their id only.
+ClickUp allows 100 requests a minute on most plans, and a release PR
+can cite dozens of tasks across its commits.")
+
+(defvar pr-view--tasks nil
+  "The open PR's ClickUp tasks as (PR-ID ITEM...), in the order found.
+Each ITEM has id, where and loading, then name, status and url, or
+error, once looked up.")
+
+(defun pr-view--clickup-p ()
+  "Non-nil when clickup-view can be loaded."
+  (require 'clickup-view nil t))
+
+(defun pr-view--task-item (id)
+  (seq-find (lambda (it) (equal (alist-get 'id it) id)) (cdr pr-view--tasks)))
+
+(defun pr-view--send-tasks ()
+  (pr-view--js "setTasks" `((pr_id . ,(car pr-view--tasks))
+                            (items . ,(vconcat (cdr pr-view--tasks))))))
+
+(defun pr-view--cite-tasks (pr-id sources)
+  "Add the tasks SOURCES cite to PR-ID's, and look up the new ones.
+SOURCES is ((TEXT . WHERE) ...); a task keeps the first WHERE it is
+found in.  Ignored once another PR is open: commits arrive late."
+  (when (and (equal (car pr-view--tasks) pr-id) (pr-view--clickup-p))
+    (let ((known (length (cdr pr-view--tasks)))
+          new)
+      (pcase-dolist (`(,text . ,where) sources)
+        (dolist (id (clickup-view-task-refs text))
+          (unless (or (pr-view--task-item id) (assoc id new))
+            (push (cons id where) new))))
+      (when new
+        (let ((items (seq-map-indexed
+                      (lambda (ref i)
+                        `((id . ,(car ref))
+                          (where . ,(cdr ref))
+                          (loading . ,(pr-view--json-bool
+                                       (< (+ known i) pr-view--task-lookups)))))
+                      (nreverse new))))
+          (setcdr pr-view--tasks (append (cdr pr-view--tasks) items))
+          (pr-view--send-tasks)
+          (dolist (it items)
+            (when (eq (alist-get 'loading it) t)
+              (clickup-view-task-brief
+               (alist-get 'id it)
+               (lambda (brief) (pr-view--task-looked-up pr-id brief))))))))))
+
+(defun pr-view--task-looked-up (pr-id brief)
+  "Put BRIEF, from `clickup-view-task-brief', on PR-ID's task."
+  (when (equal (car pr-view--tasks) pr-id)
+    (let ((id (alist-get 'id brief)))
+      (setcdr pr-view--tasks
+              (mapcar (lambda (it)
+                        (if (equal (alist-get 'id it) id)
+                            `((where . ,(alist-get 'where it))
+                              (loading . ,json-false)
+                              ,@brief)
+                          it))
+                      (cdr pr-view--tasks)))
+      (pr-view--send-tasks))))
+
+(defun pr-view--detail-tasks (pr-id pr)
+  "Start PR-ID's tasks afresh from PR's title, branch and description."
+  (setq pr-view--tasks (list pr-id))
+  (pr-view--cite-tasks pr-id `((,(alist-get 'title pr) . "the title")
+                               (,(alist-get 'source pr) . "the branch name")
+                               (,(alist-get 'description pr) . "the description"))))
+
+(defun pr-view--commit-sources (newest-first)
+  "NEWEST-FIRST commits as sources for `pr-view--cite-tasks', oldest first."
+  (mapcar (lambda (c)
+            (let ((msg (or (alist-get 'message c) "")))
+              (cons msg (format "commit %s: %s" (alist-get 'short c)
+                                (car (split-string msg "\n"))))))
+          (reverse newest-first)))
+
+(defun pr-view--open-task (ref)
+  "Open ClickUp task REF, an id or a task link, in clickup-view.
+The browser gets it when clickup-view cannot: not installed, no token,
+no xwidgets, or a custom id it does not read."
+  (let ((url (cond ((not (stringp ref)) nil)
+                   ((string-match-p "\\`https?://app\\.clickup\\.com/" ref) ref)
+                   ((string-match-p "\\`[0-9a-z]+\\'" ref)
+                    (concat "https://app.clickup.com/t/" ref)))))
+    (when url
+      (if (pr-view--clickup-p)
+          (condition-case nil
+              ;; From pr-view's window, which the click came from: a
+              ;; click in the xwidget need not have selected it.
+              (progn
+                (when-let* ((buf (xwapp-buffer pr-view--app))
+                            (win (get-buffer-window buf)))
+                  (select-window win))
+                (clickup-view-task ref))
+            (user-error (browse-url url)))
+        (browse-url url)))))
+
+
 ;;; Commands
 
 (defun pr-view--on-kill ()

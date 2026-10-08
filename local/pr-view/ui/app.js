@@ -22,9 +22,19 @@
   let commitsFor = null;
   let conflictMessage = "";
   let conflictFiles = [];
+  // ClickUp tasks the open PR cites (setTasks), and whether all show.
+  let tasks = { pr: null, items: [], all: false };
+  const TASKS_SHOWN = 6;
+  const CLICKUP_TASK_LINK = /^https?:\/\/app\.clickup\.com\/t\//i;
+
+  // xwapp ignores a title identical to the last one it read, so a second
+  // click on the same task chip, or a second Refresh, would be dropped.
+  // A counter makes each intent new; seeded from the clock so a reloaded
+  // page's first intent is not mistaken for the old page's.
+  let intentN = Date.now();
 
   function emit(op, extra) {
-    const payload = Object.assign({ op: op }, extra || {});
+    const payload = Object.assign({ op: op }, extra || {}, { n: ++intentN });
     document.title = PREFIX + JSON.stringify(payload);
   }
 
@@ -905,6 +915,70 @@
     return conflictFiles.some((c) => c.path === path);
   }
 
+  function safeColor(c) {
+    return /^#[0-9a-f]{3,8}$/i.test(String(c || "")) ? String(c) : "";
+  }
+
+  function taskChip(t) {
+    const st = t.status || null;
+    const cls = ["task-chip"];
+    if (t.loading) cls.push("loading");
+    if (t.error) cls.push("failed");
+    if (st && st.type === "closed") cls.push("closed");
+    const tip = [];
+    if (t.name) tip.push(t.name);
+    tip.push("CU-" + t.id + (t.where ? ", cited in " + t.where : ""));
+    if (t.error) tip.push(t.error);
+    const color = safeColor(st && st.color);
+    const status =
+      st && st.name
+        ? '<span class="task-status"' +
+          (color ? ' style="--st: ' + color + '"' : "") +
+          ">" +
+          escapeHtml(st.name) +
+          "</span>"
+        : "";
+    const label = t.name
+      ? '<span class="task-name">' + escapeHtml(t.name) + "</span>"
+      : '<span class="task-id">CU-' + escapeHtml(t.id) + "</span>";
+    return (
+      '<button type="button" class="' +
+      cls.join(" ") +
+      '" data-task="' +
+      escapeHtml(t.id) +
+      '" title="' +
+      escapeHtml(tip.join("\n")) +
+      '">' +
+      status +
+      label +
+      "</button>"
+    );
+  }
+
+  // Always present, hidden while empty, so setTasks can patch it in place.
+  function tasksHtml() {
+    const items = tasks.items || [];
+    if (!items.length) return '<div class="task-bar" id="task-bar" hidden></div>';
+    const shown = tasks.all ? items : items.slice(0, TASKS_SHOWN);
+    const more =
+      items.length > TASKS_SHOWN
+        ? '<button type="button" class="task-more">' +
+          (tasks.all ? "Show fewer" : "+" + (items.length - shown.length) + " more") +
+          "</button>"
+        : "";
+    return (
+      '<div class="task-bar" id="task-bar"><span class="rev-label">ClickUp</span>' +
+      shown.map(taskChip).join("") +
+      more +
+      "</div>"
+    );
+  }
+
+  function patchTasks() {
+    const bar = document.getElementById("task-bar");
+    if (bar) bar.outerHTML = tasksHtml();
+  }
+
   function mergeOptions(forge) {
     if (forge === "github") {
       return [
@@ -960,6 +1034,7 @@
     if (pr.conflict_files && pr.conflict_files.length) {
       conflictFiles = pr.conflict_files;
     }
+    if (tasks.pr !== String(pr.id)) tasks = { pr: String(pr.id), items: [], all: false };
     const commitsN = lastCommits.length;
     const ovOn = selectedTab === "overview" ? " on" : "";
     const fiOn = selectedTab === "files" ? " on" : "";
@@ -987,6 +1062,7 @@
       actions +
       "</div>" +
       conflictBanner(pr) +
+      tasksHtml() +
       reviewersHtml(pr) +
       '<nav class="tabs">' +
       '<button type="button" class="tab' +
@@ -1299,6 +1375,12 @@
       if (panel) panel.innerHTML = commitsHtml(lastCommits);
       if (!tab && lastDetail) renderDetail(lastDetail);
     },
+    setTasks: (payload) => {
+      const pr = lastDetail && lastDetail.pr;
+      if (!pr || !payload || String(payload.pr_id) !== String(pr.id)) return;
+      tasks.items = payload.items || [];
+      patchTasks();
+    },
     setMembers: (payload) => {
       lastMembers = (payload && payload.items) || [];
       const dl = document.getElementById("member-list");
@@ -1342,6 +1424,29 @@
       }
     },
   };
+
+  // Task chips, and ClickUp task links in the description or comments,
+  // open in clickup-view.  Bound once: the detail view is rebuilt, #app
+  // is not.  Other links are left as they were.
+  app.addEventListener("click", (ev) => {
+    const t = ev.target instanceof Element ? ev.target : null;
+    if (!t) return;
+    const chip = t.closest(".task-chip");
+    if (chip) {
+      emit("open-task", { ref: chip.getAttribute("data-task") || "" });
+      return;
+    }
+    if (t.closest(".task-more")) {
+      tasks.all = !tasks.all;
+      patchTasks();
+      return;
+    }
+    const a = t.closest("a[href]");
+    if (a && CLICKUP_TASK_LINK.test(a.getAttribute("href") || "")) {
+      ev.preventDefault();
+      emit("open-task", { ref: a.getAttribute("href") });
+    }
+  });
 
   btnBack.addEventListener("click", () => emit("back-list"));
   btnRefresh.addEventListener("click", () =>

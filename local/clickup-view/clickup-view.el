@@ -133,8 +133,9 @@ words do not, so \"CU-ids\" in a commit message is not a task.")
    "\\|\\(?:\\`\\|[^0-9A-Za-z_]\\)CU-\\(" clickup-view--id-re "\\)\\(?:[^0-9A-Za-z_]\\|\\'\\)")
   "Matches a ClickUp task link or a CU-<id> reference.")
 
-(defun clickup-view--task-refs (text)
-  "Native task ids TEXT references, in order of first appearance."
+(defun clickup-view-task-refs (text)
+  "Native task ids TEXT references, in order of first appearance.
+Public: pr-view finds a pull request's tasks with it."
   (let ((case-fold-search nil)
         (pos 0)
         ids)
@@ -151,7 +152,7 @@ words do not, so \"CU-ids\" in a commit message is not a task.")
   (when (stringp s)
     (let ((s (string-trim s))
           (case-fold-search nil))
-      (or (car (clickup-view--task-refs s))
+      (or (car (clickup-view-task-refs s))
           (and (string-match-p (concat "\\`" clickup-view--id-re "\\'") s) s)))))
 
 (defun clickup-view--git (&rest args)
@@ -182,11 +183,11 @@ from old history on main do not leak in."
                                      (concat base "..HEAD"))
                 (clickup-view--git "log" "--format=%x1e%s%n%b" "-n1")))
          refs)
-    (dolist (id (clickup-view--task-refs branch))
+    (dolist (id (clickup-view-task-refs branch))
       (push (cons id (format "branch %s" branch)) refs))
     (dolist (commit (and log (split-string log "\x1e" t)))
       (let ((subject (car (split-string (string-trim commit) "\n"))))
-        (dolist (id (clickup-view--task-refs commit))
+        (dolist (id (clickup-view-task-refs commit))
           (unless (assoc id refs)
             (push (cons id subject) refs)))))
     (nreverse refs)))
@@ -1106,6 +1107,27 @@ ID defaults to the task the current branch references."
          (st (clickup-view--status (alist-get 'status done))))
     (clickup-view--js "statusChanged" `((task_id . ,id) (status . ,st)))
     (message "ClickUp: %s  %s → %s" name now (alist-get 'name st))))
+
+(defun clickup-view-task-brief (id callback)
+  "Look up task ID's name and status for another package to show.
+CALLBACK gets ((id . ID) (name . NAME) (status . STATUS) (url . URL)),
+STATUS with name, color and type; or ((id . ID) (error . TEXT)) when
+the task cannot be read, the token missing included.  Nothing goes to
+the ClickUp page."
+  (let ((failed (lambda (text) (funcall callback `((id . ,id) (error . ,text))))))
+    (condition-case e
+        (clickup-view--request
+         "GET" (format "/task/%s" id)
+         (lambda (raw)
+           (funcall callback
+                    `((id . ,id)
+                      (name . ,(or (alist-get 'name raw) ""))
+                      (status . ,(clickup-view--status (alist-get 'status raw)))
+                      (url . ,(or (alist-get 'url raw) "")))))
+         nil nil
+         (lambda (&rest args)
+           (funcall failed (apply #'clickup-view--error-text args))))
+      (user-error (funcall failed (error-message-string e))))))
 
 (provide 'clickup-view)
 ;;; clickup-view.el ends here

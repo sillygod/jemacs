@@ -4,8 +4,11 @@
 ;;
 ;;   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
 ;;         -L ~/.emacs.d/local/xwapp -L ~/.emacs.d/local/pr-view \
+;;         -L ~/.emacs.d/local/clickup-view \
 ;;         -l pr-view.el -l pr-view-tests.el \
 ;;         -f ert-run-tests-batch-and-exit
+;;
+;; Without clickup-view on the load path the ClickUp task tests skip.
 
 ;;; Code:
 
@@ -575,6 +578,142 @@ not \"HTTP 200\" or \"Network error\", and frees the next request."
       (pr-view--http-json "u" nil (lambda (_) (error "Boom in handler")))
       (should (equal shown "Boom in handler"))
       (should-not pr-view--inflight))))
+
+;;; ClickUp tasks
+
+(defmacro pr-view-test--with-tasks (&rest body)
+  "Run BODY with ClickUp lookups and page calls recorded, not sent.
+Inside BODY, `lookups' holds (ID . CALLBACK) oldest first and
+`sent' the setTasks payloads, oldest first."
+  (declare (indent 0))
+  `(progn
+     (skip-unless (pr-view--clickup-p))
+     (let ((pr-view--tasks nil) (lookups nil) (sent nil))
+       (cl-letf (((symbol-function 'clickup-view-task-brief)
+                  (lambda (id cb) (setq lookups (append lookups (list (cons id cb))))))
+                 ((symbol-function 'pr-view--js)
+                  (lambda (fn obj)
+                    (when (equal fn "setTasks") (setq sent (append sent (list obj)))))))
+         ,@body))))
+
+(defun pr-view-test--task-ids (payload)
+  (mapcar (lambda (it) (alist-get 'id it)) (alist-get 'items payload)))
+
+(ert-deftest pr-view-test-tasks-from-detail-then-commits ()
+  "The title, branch and description first; commits add only new ones."
+  (pr-view-test--with-tasks
+    (pr-view--detail-tasks
+     "7" '((title . "CU-86abc1 Fix retry")
+           (source . "feature/CU-86abc1-retry")
+           (description . "See https://app.clickup.com/t/86zz9 -- accepts CU-ids")))
+    (should (equal (pr-view-test--task-ids (car (last sent))) '("86abc1" "86zz9")))
+    (should (equal (alist-get 'where (aref (alist-get 'items (car (last sent))) 0)) "the title"))
+    (should (equal (mapcar #'car lookups) '("86abc1" "86zz9")))
+    (pr-view--cite-tasks "7" (pr-view--commit-sources
+                              '(((short . "b2") (message . "Retry CU-86new2\n\nAlso CU-86abc1"))
+                                ((short . "a1") (message . "Start CU-86abc1")))))
+    (let ((last (car (last sent))))
+      (should (equal (alist-get 'pr_id last) "7"))
+      (should (equal (pr-view-test--task-ids last) '("86abc1" "86zz9" "86new2")))
+      (should (equal (alist-get 'where (aref (alist-get 'items last) 2))
+                     "commit b2: Retry CU-86new2")))
+    (should (equal (mapcar #'car lookups) '("86abc1" "86zz9" "86new2")))
+    ;; A lookup lands on its own task and keeps where it was found.
+    (funcall (cdr (nth 1 lookups))
+             '((id . "86zz9") (name . "Retry loop")
+               (status . ((name . "in progress") (color . "#1090e0") (type . "custom")))))
+    (let ((it (aref (alist-get 'items (car (last sent))) 1)))
+      (should (equal (alist-get 'name it) "Retry loop"))
+      (should (equal (alist-get 'where it) "the description"))
+      (should (eq (alist-get 'loading it) json-false)))))
+
+(ert-deftest pr-view-test-tasks-of-a-closed-pr-are-dropped ()
+  "Commits and lookups for the PR left behind must not reach the next."
+  (pr-view-test--with-tasks
+    (pr-view--detail-tasks "7" '((title . "CU-86abc1")))
+    (pr-view--detail-tasks "8" '((title . "no task")))
+    (setq sent nil)
+    (funcall (cdr (car lookups)) '((id . "86abc1") (name . "old")))
+    (pr-view--cite-tasks "7" '(("CU-86late1" . "commit")))
+    (should-not sent)
+    (should (equal pr-view--tasks '("8")))))
+
+(ert-deftest pr-view-test-task-lookups-are-capped ()
+  "A release PR citing dozens of tasks must not spend the rate limit."
+  (pr-view-test--with-tasks
+    (pr-view--detail-tasks
+     "7" `((description . ,(mapconcat (lambda (i) (format "CU-86t%d" i))
+                                      (number-sequence 1 25) " "))))
+    (should (= (length lookups) pr-view--task-lookups))
+    (let ((items (alist-get 'items (car (last sent)))))
+      (should (= (length items) 25))
+      (should (eq (alist-get 'loading (aref items 19)) t))
+      (should (eq (alist-get 'loading (aref items 20)) json-false)))))
+
+(ert-deftest pr-view-test-commits-cite-tasks ()
+  "The commits fetch hands its messages on, for the PR it was asked for."
+  (pr-view-test--with-tasks
+    (setq pr-view--tasks (list "1"))
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_url _headers cb)
+                 (funcall cb "{\"values\":[{\"hash\":\"b2c3\",\"message\":\"Fix CU-86abc1\"}]}" 200 nil)))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--url) (lambda (&rest _) "u")))
+      (pr-view--fetch-commits nil 'bitbucket "1"))
+    (should (equal (pr-view-test--task-ids (car (last sent))) '("86abc1")))))
+
+(ert-deftest pr-view-test-clickup-failure-does-not-stop-the-pr ()
+  "ClickUp is extra: if finding tasks breaks, the PR still loads."
+  (let (fetched)
+    (cl-letf (((symbol-function 'pr-view--http)
+               (lambda (_u _h cb &rest _) (funcall cb "{\"id\":7,\"title\":\"t\"}" 200 nil)))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--js) #'ignore)
+              ((symbol-function 'message) #'ignore)
+              ((symbol-function 'pr-view--detail-tasks) (lambda (&rest _) (error "Boom")))
+              ((symbol-function 'pr-view--fetch-comments) (lambda (&rest _) (push 'comments fetched)))
+              ((symbol-function 'pr-view--fetch-members) #'ignore)
+              ((symbol-function 'pr-view--fetch-commits) (lambda (&rest _) (push 'commits fetched)))
+              ((symbol-function 'pr-view--fetch-conflicts) #'ignore)
+              ((symbol-function 'pr-view--fetch-diff) (lambda (&rest _) (push 'diff fetched))))
+      (let ((pr-view--host '(:kind bitbucket :owner "w" :repo "r"))
+            (pr-view--inflight nil))
+        (pr-view--fetch-detail 7)))
+    (should (memq 'comments fetched))
+    (should (memq 'commits fetched))
+    (should (memq 'diff fetched))))
+
+(ert-deftest pr-view-test-open-task ()
+  "clickup-view opens a task; the browser gets it when that refuses."
+  (skip-unless (pr-view--clickup-p))
+  (let (opened browsed (refuse nil))
+    (cl-letf (((symbol-function 'clickup-view-task)
+               (lambda (ref)
+                 (if refuse (user-error "CLICKUP_API_TOKEN is not set") (setq opened ref))))
+              ((symbol-function 'browse-url) (lambda (u &rest _) (setq browsed u))))
+      (pr-view--handle-intent '((op . "open-task") (ref . "86abc1") (n . 1)))
+      (should (equal opened "86abc1"))
+      (setq refuse t)
+      (pr-view--handle-intent '((op . "open-task") (ref . "86abc1")))
+      (should (equal browsed "https://app.clickup.com/t/86abc1"))
+      (setq browsed nil opened nil)
+      (pr-view--open-task "https://app.clickup.com/t/9008/ABC-12")
+      (should (equal browsed "https://app.clickup.com/t/9008/ABC-12"))
+      (setq browsed nil)
+      (pr-view--open-task "javascript:alert(1)")
+      (pr-view--open-task "https://evil.example/t/86abc1")
+      (should-not browsed)
+      (should-not opened))))
+
+(ert-deftest pr-view-test-ui-knows-tasks ()
+  "The page renders setTasks and asks for open-task, and every intent
+carries a counter so a repeated click is not taken for the last one."
+  (let ((js (with-temp-buffer
+              (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
+              (buffer-string))))
+    (should (string-match-p "setTasks" js))
+    (should (string-match-p "\"open-task\"" js))
+    (should (string-search "n: ++intentN" js))))
 
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here
