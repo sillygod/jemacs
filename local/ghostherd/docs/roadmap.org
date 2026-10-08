@@ -494,7 +494,7 @@ Goal: from "what did I do before" straight to "carry on with it".
   Emacs worked out when it opened the session
 - [X] 5 ERT tests; 9 more WebKit checks with spawning recorded, not done
 
-* Phase 3.15 — The herd page: usage, agents by project, operations  *(this tree)*
+* Phase 3.15 — The herd page: usage, agents by project, operations  *(done)*
 
 Goal: the overlay's overview and operations in the page, for when the
 mouse is in hand -- with the account usage and which agents belong to
@@ -521,6 +521,38 @@ which project in one view.  Overlaps the overlay on purpose.
 - The step-4 board of every agent's live screen: Screen opens one at
   a time, the Log tab answers "who was stuck", and a dashboard to keep
   open is what the overlay was built to avoid
+
+* Phase 3.16 — Asks: hand work to another agent, get the answer back  *(this tree)*
+
+Goal: Claude asks the agy in its project to fetch, review or commit,
+and gets the result as data inside the task that asked.
+
+** What shipped
+
+- [X] =herd_ask= / =herd_reply= / =herd_await= / =herd_cancel= /
+  =herd_settle= / =herd_asks= on the sidecar; asks ride the mail queue
+- [X] =bin/herd=, a stdlib client: =ask [--wait]=, =reply=, =status=,
+  =cancel=, =list=, =asks=; =GHOSTHERD_HERD= and =GHOSTHERD_RPC_FILE=
+  at spawn
+- [X] A kind resolves to a free agent of it in the asker's project
+- [X] The paste carries the exact answering command
+- [X] A taker that stops unanswered is answered with its screen; one
+  that dies fails the ask; a real answer later replaces the screen
+- [X] Uncollected answers and non-waiting askers get mail
+- [X] One open ask per agent; no asking while answering
+- [X] Asks on the Agents tab and in the herd log
+- [X] =skills/ghostherd-ask=
+- [X] 33 pytest (store, RPC, the client against a live sidecar, the
+  thread pool), 8 ERT, an end-to-end run (real sidecar, real tick,
+  the pasted reply command run as written), 8 WebKit checks
+
+** Deliberately not done
+
+- The answer from a transcript rather than the screen: a forgetful
+  taker's screen is good enough to act on, and the transcript would
+  mean mapping each session to its file per CLI
+- Asks from Telegram or the page: both are the human, who has the
+  prompt already
 
 * Phase 4 — Ecosystem (only if still useful)
 

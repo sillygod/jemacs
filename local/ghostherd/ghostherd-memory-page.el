@@ -344,12 +344,27 @@ draws lanes from fields rather than parsing prose."
     (sort (copy-sequence ghostherd-usage--cache)
           (lambda (a b) (string< (format "%s" (car a)) (format "%s" (car b))))))))
 
+(defun ghostherd-memory-page--ask (a)
+  "Ask A, from the last `herd_tick', as the page shows it."
+  (list :id (ghostherd-memory-page--str (plist-get a :id))
+        :from (ghostherd-memory-page--str (plist-get a :from))
+        :to (ghostherd-memory-page--str (plist-get a :to))
+        :status (ghostherd-memory-page--str (plist-get a :status))
+        :auto (if (plist-get a :auto) t :json-false)
+        :error (ghostherd-memory-page--str (plist-get a :error))
+        :head (ghostherd-memory-page--str (plist-get a :head))
+        :replyHead (ghostherd-memory-page--str (plist-get a :reply_head))
+        :created (plist-get a :created_ms)
+        :answered (plist-get a :answered_ms)))
+
 (defun ghostherd-memory-page--send-herd ()
-  "Send the herd and the usage to the page."
+  "Send the herd, its asks and the usage to the page."
   (ghostherd-memory-page--js
    "renderHerd"
    (list :agents (ghostherd-memory-page--vec
                   (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
+         :asks (ghostherd-memory-page--vec
+                (mapcar #'ghostherd-memory-page--ask ghostherd--herd-asks))
          :usage (ghostherd-memory-page--usage)
          :kinds (ghostherd-memory-page--vec
                  (mapcar #'symbol-name

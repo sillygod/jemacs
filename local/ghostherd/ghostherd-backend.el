@@ -52,6 +52,8 @@
 
 ;; server.el's, read for `GHOSTHERD_SOCKET' in `ghostherd-agent-environment'.
 (declare-function ghostherd-memory-rpc-url "ghostherd-memory")
+(declare-function ghostherd-memory--mail-directory "ghostherd-memory")
+(declare-function ghostherd-herd-client "ghostherd-memory")
 (defvar server-name)
 
 
@@ -240,6 +242,9 @@ without anyone having configured it.
 `GHOSTHERD_RPC' is the sidecar JSON-RPC URL, its token included.
 Agents mail siblings through it so they need neither the binary nor
 emacsclient.  Omitted until the sidecar has a bound port.
+`GHOSTHERD_RPC_FILE' is where Emacs keeps the same URL, for an agent
+that outlives a sidecar restart, and `GHOSTHERD_HERD' is the client
+that asks and answers through it (`bin/herd').
 
 It is omitted when server.el has not been loaded, which is not a case
 worth handling: an Emacs `emacsclient' can reach has loaded it, and
@@ -253,7 +258,13 @@ loading a subsystem to read one variable off it would be backwards."
      (list (format "GHOSTHERD_SOCKET=%s" server-name)))
    (when (and (fboundp 'ghostherd-memory-rpc-url)
               (ghostherd-memory-rpc-url))
-     (list (format "GHOSTHERD_RPC=%s" (ghostherd-memory-rpc-url))))))
+     (list (format "GHOSTHERD_RPC=%s" (ghostherd-memory-rpc-url))))
+   (when (fboundp 'ghostherd-memory--mail-directory)
+     (list (format "GHOSTHERD_RPC_FILE=%s"
+                   (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))
+   (when-let* (((fboundp 'ghostherd-herd-client))
+               (client (ghostherd-herd-client)))
+     (list (format "GHOSTHERD_HERD=%s" client)))))
 
 
 ;;; Key names

@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""herd -- ask another agent in this Emacs's herd, or answer an ask.
+
+Usage:
+  herd ask TO [TEXT|-] [--wait] [--timeout SECS]
+  herd reply ID [TEXT|-]
+  herd status ID
+  herd cancel ID
+  herd list
+  herd asks
+
+TO is an agent's name, or a kind -- claude, grok, agy -- to take that
+kind's agent in your project.  TEXT `-', or left out, reads stdin.
+
+`ask' without --wait prints the ask's id and returns; the answer comes
+back to you as a message once you are idle.  With --wait it prints the
+answer itself when it arrives.  Run that in the background if your CLI
+can: you are told when it finishes.
+
+Exit status: 0 answered, 1 error, 2 usage, 3 still open when --timeout
+ran out (the answer then comes to you as a message), 4 failed or
+cancelled.
+
+Env, set by ghostherd at spawn:
+  GHOSTHERD_RPC       the sidecar's URL.  It carries a token: never
+                      print it, and do not paste it anywhere.
+  GHOSTHERD_RPC_FILE  where Emacs keeps the same URL, for a stale env
+  GHOSTHERD_SESSION   your name; `user' when unset
+
+Python's standard library only, and nothing newer than 3.8: this runs
+under whatever python3 the agent's shell finds.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+AWAIT_STEP = 50
+DEFAULT_TIMEOUT = 1800
+
+
+class HerdError(Exception):
+    pass
+
+
+def _env_url():
+    return os.environ.get("GHOSTHERD_RPC", "").strip()
+
+
+def _file_url():
+    path = os.environ.get("GHOSTHERD_RPC_FILE", "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _where(url):
+    "host:port of URL, for messages.  The path holds the token."
+    parts = urllib.parse.urlsplit(url)
+    return parts.netloc or "the sidecar"
+
+
+def _post(url, method, params, timeout):
+    body = json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def rpc(method, params=None, timeout=15):
+    """Call METHOD; return its result or raise HerdError.
+
+    The env URL first, then the file's: an agent spawned before the
+    sidecar's last restart holds a URL that is refused (401) or dead.
+    """
+    tried = []
+    last = None
+    for url in (_env_url(), _file_url()):
+        if not url or url in tried:
+            continue
+        tried.append(url)
+        try:
+            data = _post(url, method, params or {}, timeout)
+        except urllib.error.HTTPError as exc:
+            last = "the sidecar at %s refused the call (HTTP %d)" % (_where(url), exc.code)
+            continue
+        except (urllib.error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            last = "cannot reach the sidecar at %s: %s" % (_where(url), reason)
+            continue
+        err = data.get("error")
+        if err:
+            raise HerdError(err.get("message") or "error")
+        return data.get("result")
+    if not tried:
+        raise HerdError(
+            "no sidecar URL: GHOSTHERD_RPC is unset (not an agent the herd "
+            "started?) and so is GHOSTHERD_RPC_FILE"
+        )
+    raise HerdError(last)
+
+
+def me():
+    return os.environ.get("GHOSTHERD_SESSION", "").strip() or "user"
+
+
+def text_arg(text):
+    "TEXT, or stdin when it is `-' or missing."
+    if text is not None and text != "-":
+        return text
+    if sys.stdin.isatty():
+        raise HerdError("give the text as an argument, or pipe it in")
+    return sys.stdin.read()
+
+
+def say(msg):
+    print("herd: " + msg, file=sys.stderr)
+
+
+def show_answer(ask):
+    if ask["status"] == "answered":
+        if ask.get("auto"):
+            say("%s stopped without answering; this is its screen" % ask["to"])
+        sys.stdout.write(ask.get("reply") or "")
+        if not (ask.get("reply") or "").endswith("\n"):
+            sys.stdout.write("\n")
+        return 0
+    say("ask %s %s: %s" % (ask["id"], ask["status"], ask.get("error") or ""))
+    return 4
+
+
+def wait_for(ask_id, to, timeout):
+    deadline = time.monotonic() + timeout
+    seen = None
+    try:
+        while True:
+            left = deadline - time.monotonic()
+            step = max(0, min(AWAIT_STEP, int(left)))
+            ask = rpc("herd_await", {"id": ask_id, "timeout": step}, timeout=step + 15)
+            if ask["status"] in ("answered", "failed", "cancelled"):
+                return show_answer(ask)
+            now = (ask.get("status"), ask.get("taker_state"), ask.get("taker_reason"))
+            if now != seen:
+                seen = now
+                state = ask.get("taker_state") or "?"
+                reason = ask.get("taker_reason") or ""
+                if ask["status"] == "queued":
+                    say("%s is %s; the ask waits until it is free" % (to, state))
+                else:
+                    say("%s has it: %s%s" % (to, state, ("  " + reason) if reason else ""))
+            if time.monotonic() >= deadline:
+                break
+    except KeyboardInterrupt:
+        rpc("herd_detach", {"id": ask_id})
+        say("stopped waiting; the answer will come to you as a message")
+        return 130
+    rpc("herd_detach", {"id": ask_id})
+    say(
+        "ask %s still open after %ds; the answer will come to you as a "
+        "message (or: herd status %s)" % (ask_id, timeout, ask_id)
+    )
+    return 3
+
+
+def cmd_ask(args):
+    body = text_arg(args.text)
+    out = rpc(
+        "herd_ask",
+        {"to": args.to, "body": body, "from": me(), "wait": bool(args.wait)},
+    )
+    say("asked %s (ask %s)" % (out["to"], out["id"]))
+    if not args.wait:
+        print(out["id"])
+        return 0
+    return wait_for(out["id"], out["to"], args.timeout)
+
+
+def cmd_reply(args):
+    out = rpc(
+        "herd_reply", {"id": args.id, "body": text_arg(args.text), "from": me()}
+    )
+    say("answered ask %s" % out["id"])
+    return 0
+
+
+def cmd_status(args):
+    print(json.dumps(rpc("herd_await", {"id": args.id, "timeout": 0}), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_cancel(args):
+    out = rpc("herd_cancel", {"id": args.id})
+    say("ask %s %s" % (out["id"], out["status"]))
+    return 0
+
+
+def cmd_list(_args):
+    print(json.dumps(rpc("herd_list"), indent=2, ensure_ascii=False))
+    return 0
+
+
+def cmd_asks(_args):
+    print(json.dumps(rpc("herd_asks"), indent=2, ensure_ascii=False))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="herd",
+        description="Ask another agent in the herd, or answer an ask.",
+        epilog=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="cmd")
+    p = sub.add_parser("ask", help="ask an agent; --wait for the answer")
+    p.add_argument("to")
+    p.add_argument("text", nargs="?")
+    p.add_argument("--wait", action="store_true")
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    p.set_defaults(fn=cmd_ask)
+    p = sub.add_parser("reply", help="answer an ask")
+    p.add_argument("id")
+    p.add_argument("text", nargs="?")
+    p.set_defaults(fn=cmd_reply)
+    for name, fn, what in (
+        ("status", cmd_status, "an ask as it stands"),
+        ("cancel", cmd_cancel, "withdraw an ask"),
+    ):
+        p = sub.add_parser(name, help=what)
+        p.add_argument("id")
+        p.set_defaults(fn=fn)
+    sub.add_parser("list", help="the herd").set_defaults(fn=cmd_list)
+    sub.add_parser("asks", help="open and recent asks").set_defaults(fn=cmd_asks)
+    args = parser.parse_args(argv)
+    if not getattr(args, "fn", None):
+        parser.print_help(sys.stderr)
+        return 2
+    try:
+        return args.fn(args)
+    except HerdError as exc:
+        say(str(exc))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

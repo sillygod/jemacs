@@ -394,6 +394,42 @@ Two things it has to get right:
   stacking a timer on it, and a callback that throws cancels the watch
   rather than leaving it polling forever.
 
+** Why an ask's answer is the asker's own command output
+
+The first version of "Claude asks agy" needs nothing new: agy mails
+the result back, and it is pasted into Claude.  But a paste is a new
+prompt --- it only lands once Claude has stopped, so the answer can
+never feed the task that asked for it, and Claude has to remember why
+it asked.  An answer is wanted /inside/ the task.
+
+So the asker runs =herd ask --wait=, a command that lasts until the
+answer exists and prints it.  Claude Code runs a command in the
+background and wakes the agent when it exits; the answer arrives as
+that tool call's output, in the context that asked.  Other CLIs block
+on it, or skip =--wait= and get mail as before.
+
+The rest follows from the asker waiting on something that may never
+come:
+
+- *The sidecar keeps the ask*, not Emacs, because both clients talk to
+  it and it outlives an Emacs restart.  =herd_await= is async: a sync
+  method holds one of the sidecar's few worker threads for the whole
+  wait; made sync, forty waiting askers held a plain =herd_list= for
+  seven seconds in the test that now guards it.
+- *Emacs answers for a taker that forgets.*  It already watches state:
+  the taker's first idle after the paste closes the ask with its
+  screen.  A real =herd reply= is a command the taker runs during its
+  turn, so it is in before the idle that would settle it, and the
+  sidecar keeps it.  A late real answer replaces the screen.
+- *An answer nobody collected goes out as mail* after two minutes, so a
+  killed =--wait= does not swallow it.
+- *No chains.*  An agent answering an ask cannot ask: depth one is the
+  rule that makes "A waits on B waits on A" impossible rather than
+  detected.
+- *A kind resolves within the asker's project only.*  "agy" from a
+  claude in one checkout must not reach the agy in another: a commit
+  there is a commit in the wrong repository.
+
 ** What bin/ghostherd had to get right
 
 Two things, both learned the hard way:

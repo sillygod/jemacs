@@ -703,7 +703,35 @@
     }).join("");
   }
 
-  function agentRow(a, kinds) {
+  // The asks an agent is in: open ones either way, and for an asker the
+  // answers of the last ten minutes.
+  function asksFor(name, asks) {
+    const recent = Date.now() - 10 * 60 * 1000;
+    return (asks || []).filter((k) => {
+      const open = k.status === "queued" || k.status === "delivered";
+      if (k.to === name) return open;
+      return k.from === name && (open || (k.answered || 0) > recent);
+    });
+  }
+
+  function askLine(k, name) {
+    const open = k.status === "queued" || k.status === "delivered";
+    const queued = k.status === "queued" ? " (queued)" : "";
+    let what;
+    if (open && k.to === name) what = "⇠ ask from " + k.from + queued;
+    else if (open) what = "⇢ asked " + k.to + queued;
+    else if (k.status === "answered") what = k.auto ? "⇠ " + k.to + " stopped without answering" : "⇠ " + k.to + " answered";
+    else what = "⇢ ask to " + k.to + " " + k.status + (k.error ? ": " + k.error : "");
+    const text = k.status === "answered" ? k.replyHead : open ? k.head : "";
+    const t = open ? k.created : k.answered;
+    return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + '" title="' +
+      esc("ask " + k.id + ": " + (k.head || "")) + '">' +
+      '<span class="awhat">' + esc(what) + "</span>" +
+      (text ? '<span class="atext">' + esc(text) + "</span>" : "") +
+      '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
+  }
+
+  function agentRow(a, kinds, asks) {
     const name = a.name;
     const blocked = a.state === "blocked";
     const acts = [];
@@ -746,6 +774,7 @@
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
       (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
     );
   }
@@ -791,7 +820,7 @@
             '<span class="pname" title="' + esc(g.project) + '">' + esc(g.project ? leaf(g.project) : "No project") + "</span>" +
             '<span class="ppath">' + esc(g.project) + "</span>" + summary +
             (g.project ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
-            "</div>" + form + g.list.map((a) => agentRow(a, kinds)).join("") + "</section>";
+            "</div>" + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
       : '<p class="empty">No agents in the herd.  SPC a h n starts one; so does + New agent once there is a project here.</p>';
     app.scrollTop = keep;

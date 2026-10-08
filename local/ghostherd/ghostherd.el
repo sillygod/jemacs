@@ -2822,6 +2822,7 @@ pastes an image."
     ('state  'default)
     ('input  'font-lock-string-face)
     ('report 'font-lock-keyword-face)
+    ('ask    'font-lock-type-face)
     ('life   'shadow)
     (_       'default)))
 
@@ -3582,6 +3583,20 @@ curl -sS \"$GHOSTHERD_RPC\" -H 'Content-Type: application/json' \\
 Emacs pastes into the target PTY.  If that agent is working, the
 sidecar holds the message until it is idle.  Overlay m does not
 use this queue.  Long bodies: method herd_inbox, params session=<name>.
+
+Asks want an answer back.  $GHOSTHERD_HERD is a client for them:
+
+  \"$GHOSTHERD_HERD\" ask agy 'Fetch X and sum it up' --wait
+  \"$GHOSTHERD_HERD\" reply <id> 'the answer'
+
+Text given as `-', or left out, is read from stdin.
+
+`to' is a name, or a kind (claude, grok, agy) for that kind's agent
+in your project.  --wait prints the answer when it comes; without it
+the answer comes back to you as a message once you are idle.  An
+agent answering an ask cannot ask in turn.  Methods: herd_ask {to,
+body, from, wait}, herd_reply {id, body, from}, herd_await {id,
+timeout}, herd_cancel {id}, herd_asks.
 ")
 
 (defun ghostherd--herd-write-protocol ()
@@ -3614,12 +3629,14 @@ from sqlite instead of waiting for another Emacs round trip."
          (to (plist-get msg :to))
          (body (or (plist-get msg :body) ""))
          (handoff (plist-get msg :handoff))
+         (ask (plist-get msg :ask))
          (submit (if (plist-member msg :submit)
                      (plist-get msg :submit)
                    t)))
-    (if handoff
-        (ghostherd-handoff to body from)
-      (ghostherd-message from to body :submit submit))))
+    (cond
+     (ask (ghostherd--ask-deliver ask from to body))
+     (handoff (ghostherd-handoff to body from))
+     (t (ghostherd-message from to body :submit submit)))))
 
 (defun ghostherd--herd-deliver (result)
   "Deliver pending mail from a `herd_tick' RESULT plist."
@@ -3632,6 +3649,140 @@ from sqlite instead of waiting for another Emacs round trip."
                   id (error-message-string err))))
       (when id
         (push id ghostherd--herd-ack-ids)))))
+
+
+;;; Asks: mail that wants an answer
+;;
+;; The sidecar keeps the ask; Emacs pastes it, with the line that
+;; answers it, and closes it when the taker stops without answering.
+;; A taker's own `herd reply' happens before it goes idle -- it is a
+;; command it runs during its turn -- so by the time a settled state
+;; reaches Emacs a real answer is already in, and the sidecar keeps it.
+
+(defcustom ghostherd-ask-screen-lines 60
+  "Screen lines sent back as the answer when a taker forgets to answer."
+  :type 'integer
+  :group 'ghostherd)
+
+(defvar ghostherd--asks-open (make-hash-table :test 'equal)
+  "Asks delivered and not yet closed: ask id -> taker's session id.")
+
+(defvar ghostherd--asks-settled (make-hash-table :test 'equal)
+  "Ask ids this Emacs has closed, so a stale tick does not reopen them.")
+
+(defvar ghostherd--herd-asks nil
+  "Open and recent asks from the last `herd_tick', newest first.")
+
+(defun ghostherd--ask-head (text)
+  "First non-blank line of TEXT, shortened for the log."
+  (let ((line (or (seq-find (lambda (l) (not (string-blank-p l)))
+                            (split-string (or text "") "\n"))
+                  "")))
+    (truncate-string-to-width (string-trim line) 80 nil nil "…")))
+
+(defun ghostherd--ask-text (id body)
+  "BODY as the taker sees ask ID: the work, then how to answer it.
+The answer line is spelled out in full, the client by its absolute
+name, so a taker needs no skill installed and no PATH of ours."
+  (format "[ask %s -- whoever asked is waiting for your answer]\n%s\n\n\
+When you are done, send your answer with:\n\
+%s reply %s <<'HERD'\n\
+<your answer>\n\
+HERD\n\
+Answer even if you could not do it, and say why.  Do not ask other\n\
+agents while you work on this; the herd refuses that."
+          id body
+          (shell-quote-argument (or (and (fboundp 'ghostherd-herd-client)
+                                         (ghostherd-herd-client))
+                                    "herd"))
+          id))
+
+(defun ghostherd--ask-deliver (id from to body)
+  "Paste ask ID from FROM into TO, and watch for TO to stop."
+  (let ((session (or (ghostherd-get to)
+                     (user-error "Unknown target session"))))
+    (ghostherd-message from session (ghostherd--ask-text id body) :submit t)
+    (puthash id (ghostherd-session-id session) ghostherd--asks-open)
+    (ghostherd--log-add session 'ask
+                        (format "ask %s from %s: %s" id from
+                                (ghostherd--ask-head body)))))
+
+(defun ghostherd--ask-settle (id session dead)
+  "Tell the sidecar the taker of ask ID stopped, or died when DEAD.
+The sidecar ignores this for an ask already answered."
+  (remhash id ghostherd--asks-open)
+  (puthash id t ghostherd--asks-settled)
+  (let ((screen (and (not dead)
+                     (ignore-errors
+                       (ghostherd--host-capture session ghostherd-ask-screen-lines)))))
+    (when (fboundp 'ghostherd-memory-request-async)
+      (ghostherd-memory-request-async
+       "herd_settle" #'ignore
+       (list :id id
+             :screen (string-trim-right (or screen ""))
+             :dead (if dead t :json-false))
+       (lambda (err) (message "ghostherd: closing ask %s: %s" id err))))))
+
+(defun ghostherd--asks-of (session)
+  "Ids of the open asks SESSION is answering."
+  (let ((sid (ghostherd-session-id session))
+        ids)
+    (maphash (lambda (id taker) (when (equal taker sid) (push id ids)))
+             ghostherd--asks-open)
+    ids))
+
+(defun ghostherd--ask-on-state (session _old new)
+  "A taker that stopped closes its open ask."
+  (when (memq new '(idle done dead))
+    (dolist (id (ghostherd--asks-of session))
+      (ghostherd--ask-settle id session (eq new 'dead)))))
+
+(defun ghostherd--ask-on-removed (session)
+  "A taker killed outright fails its open ask."
+  (dolist (id (ghostherd--asks-of session))
+    (ghostherd--ask-settle id session t)))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--ask-on-state)
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--ask-on-removed)
+
+(defun ghostherd--ask-outcome (ask)
+  "Log text for ASK, a `herd_tick' plist that has just closed."
+  (let ((id (plist-get ask :id))
+        (from (plist-get ask :from)))
+    (pcase (plist-get ask :status)
+      ("answered" (if (plist-get ask :auto)
+                      (format "stopped without answering ask %s; %s got the screen"
+                              id from)
+                    (format "answered ask %s for %s: %s" id from
+                            (or (plist-get ask :reply_head) ""))))
+      ("failed" (format "ask %s from %s failed: %s" id from
+                        (or (plist-get ask :error) "")))
+      (status (format "ask %s from %s %s" id from status)))))
+
+(defun ghostherd--herd-take-asks (asks)
+  "Keep ASKS from a `herd_tick': log what closed, adopt what is ours.
+Adopting is for asks delivered before this Emacs started: watched
+from here on, and closed now if the taker is already sitting idle."
+  (let ((before (make-hash-table :test 'equal)))
+    (dolist (a ghostherd--herd-asks)
+      (puthash (plist-get a :id) (plist-get a :status) before))
+    (dolist (a asks)
+      (let* ((id (plist-get a :id))
+             (status (plist-get a :status))
+             (was (gethash id before)))
+        (when (and was (not (equal was status))
+                   (member status '("answered" "failed" "cancelled")))
+          (remhash id ghostherd--asks-open)
+          (ghostherd--log-add (plist-get a :to) 'ask (ghostherd--ask-outcome a)))
+        (when-let* (((equal status "delivered"))
+                    ((not (gethash id ghostherd--asks-open)))
+                    ((not (gethash id ghostherd--asks-settled)))
+                    (session (ghostherd-get (plist-get a :to))))
+          (puthash id (ghostherd-session-id session) ghostherd--asks-open)
+          (when (memq (ghostherd-session-state session) '(idle done dead))
+            (ghostherd--ask-settle id session
+                                   (eq (ghostherd-session-state session) 'dead))))))
+    (setq ghostherd--herd-asks asks)))
 
 (defun ghostherd--explain-text (session)
   "One-screen explanation of SESSION state, for Telegram."
@@ -3702,6 +3853,7 @@ from sqlite instead of waiting for another Emacs round trip."
                (seq-difference ghostherd--herd-ack-ids
                                (append acks nil)))
          (ghostherd--herd-deliver result)
+         (ghostherd--herd-take-asks (plist-get result :asks))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :ack_ids (vconcat (append acks nil))

@@ -2676,6 +2676,131 @@ ticks live on the idle timer instead."
                :body "hi" :handoff t)))
       (should (equal got '("grok-dev" "hi" "claude-research"))))))
 
+;;; Asks
+
+(defmacro ghostherd-tests--with-asks (&rest body)
+  "BODY in a clean herd with ask state of its own.
+Sidecar requests are recorded in `requests' as (METHOD PARAMS), oldest
+first, and the client is at /p/bin/herd."
+  (declare (indent 0))
+  `(ghostherd-tests--with-herd
+       ((ghostherd--asks-open (make-hash-table :test 'equal))
+        (ghostherd--asks-settled (make-hash-table :test 'equal))
+        (ghostherd--herd-asks nil)
+        (ghostherd--log nil)
+        (requests nil))
+     (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+               ((symbol-function 'ghostherd-memory-request-async)
+                (lambda (method _cb &optional params _err)
+                  (setq requests (append requests (list (list method params)))))))
+       ,@body)))
+
+(ert-deftest ghostherd-test-ask-deliver-says-how-to-answer ()
+  "The taker needs no skill: the paste carries the exact command, the
+heredoc's closing line at column 0 so a copy of it works."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'idle))
+          got)
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (from to body &rest keys) (setq got (list from to body keys)))))
+        (ghostherd--herd-deliver-one
+         '(:id "m1" :from "claude-main" :to "agy-a" :body "fetch the docs\nall of them"
+               :handoff nil :submit t :ask "a1b2c3d4")))
+      (should (equal (nth 0 got) "claude-main"))
+      (should (eq (nth 1 got) taker))
+      (let ((text (nth 2 got)))
+        (should (string-prefix-p "[ask a1b2c3d4 " text))
+        (should (string-search "\nfetch the docs\nall of them\n" text))
+        (should (string-search "\n/p/bin/herd reply a1b2c3d4 <<'HERD'\n<your answer>\nHERD\n" text)))
+      (should (eq (plist-get (nth 3 got) :submit) t))
+      (should (equal (gethash "a1b2c3d4" ghostherd--asks-open) "agy-a"))
+      (let ((entry (car ghostherd--log)))
+        (should (eq (ghostherd-log-entry-kind entry) 'ask))
+        (should (equal (ghostherd-log-entry-session entry) "agy-a"))
+        (should (equal (ghostherd-log-entry-text entry)
+                       "ask a1b2c3d4 from claude-main: fetch the docs"))))))
+
+(ert-deftest ghostherd-test-ask-settles-when-the-taker-stops ()
+  "Idle after the paste closes the ask with the screen, once.  Working
+and blocked do not: the taker is still at it."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'idle
+                                           :backend 'fake)))
+      (setq ghostherd-tests--fake-screen "the page says X\n\n")
+      (puthash "a1" "agy-a" ghostherd--asks-open)
+      (ghostherd--set-state taker 'working)
+      (ghostherd--set-state taker 'blocked)
+      (should-not requests)
+      (ghostherd--set-state taker 'idle)
+      (should (equal requests
+                     '(("herd_settle" (:id "a1" :screen "the page says X" :dead :json-false)))))
+      (should-not (gethash "a1" ghostherd--asks-open))
+      (ghostherd--set-state taker 'working)
+      (ghostherd--set-state taker 'done)
+      (should (= (length requests) 1)))))
+
+(ert-deftest ghostherd-test-ask-fails-when-the-taker-dies ()
+  (ghostherd-tests--with-asks
+    (let ((a (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'working))
+          (b (ghostherd-tests--session :name "agy-b" :kind 'agy :state 'working)))
+      (puthash "a1" "agy-a" ghostherd--asks-open)
+      (puthash "b1" "agy-b" ghostherd--asks-open)
+      (ghostherd--set-state a 'dead)
+      (run-hook-with-args 'ghostherd-session-removed-hook b)
+      (should (equal requests
+                     '(("herd_settle" (:id "a1" :screen "" :dead t))
+                       ("herd_settle" (:id "b1" :screen "" :dead t))))))))
+
+(ert-deftest ghostherd-test-ask-tick-logs-what-closed ()
+  (ghostherd-tests--with-asks
+    (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'working)
+    (puthash "a1" "agy-a" ghostherd--asks-open)
+    (ghostherd--herd-take-asks
+     '((:id "a1" :from "claude-main" :to "agy-a" :status "delivered")
+       (:id "a2" :from "claude-main" :to "agy-a" :status "queued")))
+    (should-not ghostherd--log)
+    (ghostherd--herd-take-asks
+     '((:id "a1" :from "claude-main" :to "agy-a" :status "answered"
+            :auto nil :reply_head "the docs say X")
+       (:id "a2" :from "claude-main" :to "agy-a" :status "failed" :error "agy-a is gone")))
+    (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
+                   '("answered ask a1 for claude-main: the docs say X"
+                     "ask a2 from claude-main failed: agy-a is gone")))
+    (should-not (gethash "a1" ghostherd--asks-open))
+    (should (= (length ghostherd--herd-asks) 2))))
+
+(ert-deftest ghostherd-test-ask-tick-adopts-asks-from-before ()
+  "An ask delivered by an earlier Emacs: watched from now, and closed
+at once when its taker already sits idle."
+  (ghostherd-tests--with-asks
+    (ghostherd-tests--session :name "agy-busy" :kind 'agy :state 'working)
+    (ghostherd-tests--session :name "agy-idle" :kind 'agy :state 'idle :backend 'fake)
+    (setq ghostherd-tests--fake-screen "done it")
+    (puthash "old" t ghostherd--asks-settled)
+    (ghostherd--herd-take-asks
+     '((:id "b1" :from "c" :to "agy-busy" :status "delivered")
+       (:id "i1" :from "c" :to "agy-idle" :status "delivered")
+       (:id "old" :from "c" :to "agy-idle" :status "delivered")))
+    (should (equal (gethash "b1" ghostherd--asks-open) "agy-busy"))
+    (should (equal requests '(("herd_settle" (:id "i1" :screen "done it" :dead :json-false)))))))
+
+(ert-deftest ghostherd-test-agent-environment-gives-the-herd-client ()
+  (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+            ((symbol-function 'ghostherd-memory--mail-directory) (lambda () "/m/ghostherd-mail")))
+    (let ((env (ghostherd-agent-environment 'tmux '(:name "a"))))
+      (should (member "GHOSTHERD_HERD=/p/bin/herd" env))
+      (should (member "GHOSTHERD_RPC_FILE=/m/ghostherd-mail/rpc.url" env))))
+  (cl-letf (((symbol-function 'ghostherd-herd-client) #'ignore))
+    (should-not (cl-find "GHOSTHERD_HERD=" (ghostherd-agent-environment 'tmux '(:name "a"))
+                         :test (lambda (pre s) (string-prefix-p pre s))))))
+
+(ert-deftest ghostherd-test-herd-client-is-the-checkouts ()
+  (let ((client (ghostherd-herd-client)))
+    (should client)
+    (should (file-name-absolute-p client))
+    (should (string-suffix-p "/bin/herd" client))
+    (should (file-executable-p client))))
+
 (ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
   "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
 the caller is identifiable with no environment at all."
@@ -4312,6 +4437,21 @@ there, and it is a conversation; otherwise the page is told why."
       (should (member "claude" (append (plist-get p :kinds) nil)))
       (should-not (member "shell" (append (plist-get p :kinds) nil)))
       (should (json-encode p)))))
+
+(ert-deftest ghostherd-test-herd-page-sends-asks ()
+  (ghostherd-test--with-herd
+    (let ((ghostherd--herd-asks
+           '((:id "a1" :from "claude-api" :to "agy-a" :status "answered" :auto t
+                  :error nil :head "fetch the docs" :reply_head "screen line"
+                  :created_ms 1791450000000.0 :answered_ms 1791450060000.0))))
+      (ghostherd-memory-page--send-herd)
+      (let ((k (aref (plist-get (ghostherd-test--call calls "renderHerd") :asks) 0)))
+        (should (equal (plist-get k :id) "a1"))
+        (should (equal (plist-get k :status) "answered"))
+        (should (eq (plist-get k :auto) t))
+        (should (equal (plist-get k :replyHead) "screen line"))
+        (should (equal (plist-get k :answered) 1791450060000.0))
+        (should (json-encode k))))))
 
 (ert-deftest ghostherd-test-herd-page-operations ()
   "Each operation reaches the herd function with the session, then the

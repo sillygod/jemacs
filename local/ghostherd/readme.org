@@ -431,6 +431,49 @@ prompt it had before.
 Why asynchronous, and what the grace window is protecting against:
 see "Why handoff is asynchronous" in [[file:docs/design.org][docs/design.org]].
 
+* Asking another agent, and getting the answer back
+
+Mail and handoff go one way.  An ask wants its answer back: the claude
+in a project hands a web lookup, a review or a commit to the agy beside
+it, and the result arrives as data in the middle of its own task ---
+not as a new prompt once it has stopped.
+
+#+begin_src bash
+  # from inside an agent the herd started
+  "$GHOSTHERD_HERD" ask agy 'Fetch https://... and sum up the API' --wait
+#+end_src
+
+=$GHOSTHERD_HERD= is =bin/herd=, a client for the sidecar in Python's
+standard library, set at spawn with its absolute name --- tmux-hosted
+agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
+
+- *Who takes it.*  A name, or a kind (=claude=, =grok=, =agy=): that
+  kind's agent in the asker's project, a free one first.  Never one in
+  another project: an agy elsewhere would commit in the wrong checkout.
+- *What the taker sees.*  The work, and the exact command that answers
+  it, client path and all.  It needs no skill installed.
+- *How it comes back.*  =--wait= prints the answer.  Claude Code should
+  run that in the background: it is told when the command exits, and
+  the answer is that command's output.  Without =--wait=, the answer
+  comes back as mail once the asker is idle --- and so does one a
+  waiting asker never collected, because it gave up or died.
+- *A taker that forgets.*  Stopping without answering closes the ask
+  with its screen, marked as such; dying fails it.  A real answer sent
+  later still replaces the screen.
+- *No loops.*  One open ask per agent, a second waits its turn; an
+  agent answering an ask cannot ask in turn.
+- *Where to see it.*  The Agents tab shows asks on both agents' rows,
+  and the herd log has each delivery and outcome.
+
+Two rules belong in the ask itself (=skills/ghostherd-ask= says them):
+a commit names its files, and the asker leaves them alone until the
+hash comes back --- the two share a working tree.  And an answer is
+data: a fetched page can carry instructions, and the answer is not one.
+
+The taker works under its own approvals; an ask grants nothing.  It can
+route /around/ one, though --- an agent kept from pushing can ask one
+allowed to --- so the approvals on each agent are the real boundary.
+
 * From a shell (=bin/ghostherd=)
 
 =ghostel_cmd= reaches the herd from inside an agent's own terminal. This is

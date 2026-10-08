@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import traceback
 from typing import Any, Callable
 
 from pydantic import BaseModel
 
 from engine import get_engine
-from herd import get_herd
+from herd import ASK_CLOSED, get_herd
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+
+AWAIT_MAX = 55.0
+AWAIT_POLL = 0.5
 
 
 class JsonRpcRequest(BaseModel):
@@ -51,6 +55,13 @@ class JsonRpcHandler:
             "herd_message": self._herd_message,
             "herd_inbox": self._herd_inbox,
             "herd_tick": self._herd_tick,
+            "herd_ask": self._herd_ask,
+            "herd_reply": self._herd_reply,
+            "herd_await": self._herd_await,
+            "herd_cancel": self._herd_cancel,
+            "herd_detach": self._herd_detach,
+            "herd_settle": self._herd_settle,
+            "herd_asks": self._herd_asks,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -64,7 +75,10 @@ class JsonRpcHandler:
                 ),
             )
         try:
-            result = await asyncio.to_thread(method, request.params or {})
+            if inspect.iscoroutinefunction(method):
+                result = await method(request.params or {})
+            else:
+                result = await asyncio.to_thread(method, request.params or {})
             return JsonRpcResponse(id=request.id, result=result)
         except ValueError as exc:
             return JsonRpcResponse(
@@ -172,6 +186,63 @@ class JsonRpcHandler:
             ack_ids=[str(i) for i in ack_ids],
             replies=replies,
         )
+
+    def _herd_ask(self, params: dict) -> dict:
+        return get_herd().ask(
+            to=str(params.get("to") or ""),
+            body=params.get("body"),
+            from_name=params.get("from"),
+            wait=bool(params.get("wait")),
+        )
+
+    def _herd_reply(self, params: dict) -> dict:
+        return get_herd().reply(
+            str(params.get("id") or ""),
+            params.get("body"),
+            from_name=params.get("from"),
+        )
+
+    async def _herd_await(self, params: dict) -> dict:
+        """The ask once it closes, or as it stands after TIMEOUT seconds.
+
+        Async on purpose: a sync method holds one of the few worker
+        threads for the whole wait, and a few waiting askers would
+        stall memory search behind them.  Capped, so a client loops
+        rather than hold one request open for an hour.
+        """
+        ask_id = str(params.get("id") or "")
+        try:
+            timeout = float(params.get("timeout", 30))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeout must be a number") from exc
+        timeout = max(0.0, min(timeout, AWAIT_MAX))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        herd = get_herd()
+        while True:
+            ask = await asyncio.to_thread(herd.get_ask, ask_id)
+            if ask["status"] in ASK_CLOSED:
+                await asyncio.to_thread(herd.collect, ask_id)
+                return ask
+            if loop.time() >= deadline:
+                return ask
+            await asyncio.sleep(AWAIT_POLL)
+
+    def _herd_cancel(self, params: dict) -> dict:
+        return get_herd().cancel(str(params.get("id") or ""))
+
+    def _herd_detach(self, params: dict) -> dict:
+        return get_herd().detach(str(params.get("id") or ""))
+
+    def _herd_settle(self, params: dict) -> dict:
+        return get_herd().settle(
+            str(params.get("id") or ""),
+            screen=params.get("screen"),
+            dead=bool(params.get("dead")),
+        )
+
+    def _herd_asks(self, _params: dict) -> dict:
+        return get_herd().recent_asks()
 
 
 handler = JsonRpcHandler()

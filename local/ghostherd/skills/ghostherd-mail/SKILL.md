@@ -5,6 +5,9 @@ description: Send work to another ghostherd agent via the sidecar JSON-RPC URL i
 
 # ghostherd-mail
 
+Mail goes one way.  To hand work over and get the answer back, use
+the ghostherd-ask skill (`"$GHOSTHERD_HERD" ask ...`) instead.
+
 You are one named session in an Emacs ghostherd. Siblings are other
 agents on the same machine. Talk to them over HTTP JSON-RPC — not
 `bin/ghostherd`, not `emacsclient`.

@@ -166,6 +166,16 @@ Search order:
         (when (file-exists-p (expand-file-name "main.py" dir))
           (throw 'found dir))))))
 
+(defun ghostherd-herd-client ()
+  "Absolute name of `bin/herd', the client agents ask and answer with.
+Found the way `server/' is, next to the checkout, or nil.  Absolute
+because an agent's shell profile may rebuild PATH."
+  (catch 'found
+    (dolist (root (ghostherd-memory--elisp-roots))
+      (let ((file (expand-file-name "bin/herd" root)))
+        (when (file-executable-p file)
+          (throw 'found file))))))
+
 (defun ghostherd-memory--data-directory ()
   (expand-file-name
    (or ghostherd-memory-data-directory
