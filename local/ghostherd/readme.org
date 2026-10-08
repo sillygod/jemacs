@@ -7,7 +7,7 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.14* — resume a past session from the page                |
+| Phase       | *3.15* — the herd page: usage, agents by project, operations |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
 | Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
 | Branch      | developed on =chore/extract-personal-config=                |
@@ -126,6 +126,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-memory-page=         | Search and read past sessions (page) |
 | =M-x ghostherd-memory-sessions=     | The sessions, newest first (page)    |
 | =M-x ghostherd-log-page=            | The herd log as lanes + entries (page) |
+| =M-x ghostherd-herd-page=           | Usage, agents by project, operations (page) |
 | =M-x ghostherd-memory-search=       | Search imported transcripts (text)   |
 | =M-x ghostherd-memory-view=         | Browse imported sources (text)       |
 | =M-x ghostherd-memory-import=       | Import claude / grok / agy stores    |
@@ -145,6 +146,7 @@ report. Notes do, because they were written onto the host.
 | =ahk= | kill           |
 | =ahr= | rename         |
 | =ahl= | herd log (page) |
+| =ahp= | herd page (agents) |
 | =ah/= | memory page    |
 | =ahv= | memory sessions |
 | =ahI= | import memory  |
@@ -870,6 +872,31 @@ ones between that import and the cutoff had vanished unindexed.  It
 never runs the first import (that downloads a model and embeds
 everything) and never starts the sidecar; a failure tries again within
 the hour.  Raising =cleanupPeriodDays= as well keeps the originals.
+
+** The herd page
+
+=SPC a h p= (=ghostherd-herd-page=) opens the page on its Agents tab,
+the overlay's overview with the mouse in hand.  Search, Sessions and Log
+are the other tabs (below, and "What happened while you were away").
+
+- Usage per CLI on top: each window as a bar of what is used, with its
+  reset; a stale or failed reading says why.  It is the sidebar
+  footer's cache, refreshed every =ghostherd-usage-interval= while the
+  page can be seen.
+- The herd grouped by project, the project with a blocked agent first,
+  each group summing its states.  A row has the state, kind, notes,
+  reason, how long ago it last moved, and whether a view is attached.
+- What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
+  Esc, 1 / 2 / 3 on a blocked agent, the screen; under /more/ C-c,
+  notes, respawn (fresh or continuing) and kill, the last two asked
+  first.  /+ New agent/ starts one in that project, kind and name
+  given, without leaving the page.
+- Sent every five seconds while the tab is on screen and at once when a
+  state changes; a prompt being typed holds the refresh back.
+- The page renders text from transcripts and screens and can drive
+  agents, so beyond the sanitizer it carries a Content-Security-Policy:
+  no inline script or handler, no fetch, no remote image.  Something
+  that got past the sanitizer still could not run.
 
 ** The memory page
 

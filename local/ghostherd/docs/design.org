@@ -691,5 +691,6 @@ purpose now that nothing does.
 | Memory page           | xwapp page beside the text views; Emacs makes every request | Transcripts are markdown and long; the page must not hold the token |
 | Log on the page       | Lanes per agent above the entries; live via a hook | Who sat blocked, since when, is a shape, not a line to find |
 | Resume from the page  | Emacs decides kind/id/dir; the page names a source | A page that can start processes must not choose their arguments |
+| Operations on the page | Beside the overlay, not instead; a CSP on top of the sanitizer | One page renders untrusted text and drives agents |
 | Memory port           | 49152+, skip occupied, reuse ours           | 8766 collides with local-dev; ecloud is 8765 |
 | Sidecar auth          | Token in the URL path, JSON only, no CORS, loopback Host | Loopback stops machines, not web pages |

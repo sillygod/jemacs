@@ -304,7 +304,8 @@
 
   let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [] };
   let filters = { agent: "", project: "" };
-  let view = "boot"; // search | sessions | source | log
+  let view = "boot"; // agents | search | sessions | source | log
+  let watching = false; // Emacs is sending the herd every few seconds
   let tab = "search"; // the list view a source returns to
   let query = "";
   let searchSeq = 0; // the search whose answer the page wants
@@ -323,6 +324,10 @@
   // ---- Chrome ----------------------------------------------------------
 
   function chrome() {
+    if (watching && view !== "agents") {
+      watching = false;
+      emit("herd-unwatch");
+    }
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
     });
@@ -729,6 +734,269 @@
     }
   }
 
+  // ---- The agents --------------------------------------------------------
+  //
+  // Usage per CLI on top, then the herd grouped by project, with what the
+  // overlay can do.  Emacs sends the herd every few seconds while this
+  // tab is on screen, and at once when a state changes.
+
+  const RANK = { blocked: 0, working: 1, starting: 2, done: 3, idle: 4, dead: 5 };
+  let herdNow = {
+    data: null, screens: {}, open: new Set(), more: new Set(),
+    compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
+  };
+
+  function cssName(n) {
+    return String(n).replace(/["\\]/g, "\\$&");
+  }
+
+  function busyEditing() {
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest(".agent-compose, .newform, .notes-edit"));
+  }
+
+  function showAgents() {
+    view = tab = "agents";
+    src = null;
+    chrome();
+    if (!watching) {
+      watching = true;
+      emit("herd-watch");
+    }
+    app.innerHTML = '<div class="page wide"><div id="usage" class="usage"></div><div id="herd"></div></div>';
+    renderAgents();
+  }
+
+  function untilText(ms) {
+    if (!ms) return "";
+    const d = ms - Date.now();
+    return d <= 0 ? "reset due" : "resets in " + span(d);
+  }
+
+  function usageHtml(list) {
+    if (!list || !list.length) {
+      return '<p class="empty">No usage yet: the first reading arrives a few seconds after the page opens.</p>';
+    }
+    return list.map((k) => {
+      const wins = (k.windows || []).map((w) => {
+        const lvl = w.used >= 90 ? "hot" : w.used >= 70 ? "warm" : "ok";
+        return '<div class="uwin" title="' + esc(w.label + ": " + w.used + "% used, " + (100 - w.used) + "% left" +
+          (w.resets ? ", resets " + new Date(w.resets).toLocaleString() : "")) + '">' +
+          '<span class="ulabel">' + esc(w.label) + "</span>" +
+          '<span class="ubar"><span class="lvl-' + lvl + '" style="width:' + Math.max(0, Math.min(100, w.used)) + '%"></span></span>' +
+          '<span class="upct">' + w.used + "%</span>" +
+          '<span class="ureset">' + esc(untilText(w.resets)) + "</span></div>";
+      }).join("");
+      const err = k.error
+        ? '<div class="uerr" title="' + esc(k.error) + '">' + (wins ? "stale · " : "") + esc(k.error) + "</div>"
+        : "";
+      return '<div class="ucard"><div class="uhead">' + agentBadge(k.kind) +
+        '<span class="when">' + (k.fetched ? esc(when(k.fetched / 1000)) : "") + "</span></div>" +
+        (wins || (err ? "" : '<p class="muted">No windows reported.</p>')) + err + "</div>";
+    }).join("");
+  }
+
+  function agentRow(a, kinds) {
+    const name = a.name;
+    const blocked = a.state === "blocked";
+    const acts = [];
+    if (blocked) {
+      [1, 2, 3].forEach((n) => acts.push('<button type="button" class="ghost small answer" data-act="a:agent-answer" data-n="' + n +
+        '" title="Answer ' + n + '">' + n + "</button>"));
+    }
+    acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
+    acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
+    acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
+    acts.push('<button type="button" class="linkish" data-act="a:more" title="More">' + (herdNow.more.has(name) ? "less" : "more") + "</button>");
+    const more = herdNow.more.has(name)
+      ? '<div class="aacts more">' +
+        '<button type="button" class="ghost small" data-act="a:agent-abort" title="Send C-c">C-c</button>' +
+        '<button type="button" class="ghost small" data-act="a:notes">Notes</button>' +
+        '<button type="button" class="ghost small" data-act="a:respawn">Respawn</button>' +
+        '<button type="button" class="ghost small danger" data-act="a:kill">Kill</button></div>'
+      : "";
+    const compose = herdNow.composing.has(name)
+      ? '<div class="agent-compose"><textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + '  (⌘↩ / C-↩ sends)">' +
+        esc(herdNow.compose[name] || "") + '</textarea><button type="button" class="primary small" data-act="a:send">Send</button></div>'
+      : "";
+    const notes = herdNow.notes === name
+      ? '<div class="notes-edit"><input class="notes-text" value="' + esc(a.notes) + '" placeholder="Role / notes">' +
+        '<button type="button" class="primary small" data-act="a:notes-save">Save</button>' +
+        '<button type="button" class="ghost small" data-act="a:notes-cancel">Cancel</button></div>'
+      : "";
+    const screen = herdNow.open.has(name)
+      ? '<pre class="screen">' + esc(herdNow.screens[name] || "Capturing…") + "</pre>"
+      : "";
+    return (
+      '<div class="arow s-' + esc(a.state) + '" data-name="' + esc(name) + '">' +
+      '<div class="amain">' + stateBadge(a.state) +
+      '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
+      agentBadge(a.kind) +
+      (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
+      (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
+      (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") +
+      (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
+      '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
+      esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
+      (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
+    );
+  }
+
+  function renderAgents() {
+    herdNow.pending = false;
+    const u = $("usage");
+    const box = $("herd");
+    if (!u || !box) return;
+    const d = herdNow.data;
+    if (!d) {
+      box.innerHTML = '<p class="empty">Asking Emacs for the herd…</p>';
+      return;
+    }
+    u.innerHTML = usageHtml(d.usage);
+    const kinds = d.kinds || [];
+    const by = new Map();
+    (d.agents || []).forEach((a) => {
+      const k = a.project || "";
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(a);
+    });
+    const rank = (s) => (s in RANK ? RANK[s] : 9);
+    const groups = [...by.entries()].map(([project, list]) => ({
+      project,
+      list: list.sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name)),
+    }));
+    groups.sort((a, b) => rank(a.list[0].state) - rank(b.list[0].state) || leaf(a.project).localeCompare(leaf(b.project)));
+    const keep = app.scrollTop;
+    box.innerHTML = groups.length
+      ? groups.map((g) => {
+          const counts = {};
+          g.list.forEach((a) => (counts[a.state] = (counts[a.state] || 0) + 1));
+          const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
+            .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
+          const form = herdNow.newFor === g.project
+            ? '<div class="newform"><select class="new-kind">' + kinds.map((k) => '<option value="' + esc(k) + '">' + esc(k) + "</option>").join("") +
+              '</select><input class="new-name" placeholder="name (default: kind-' + esc(leaf(g.project)) + ')">' +
+              '<button type="button" class="primary small" data-act="a:new-go">Start</button>' +
+              '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button></div>'
+            : "";
+          return '<section class="pgroup" data-project="' + esc(g.project) + '"><div class="phead">' +
+            '<span class="pname" title="' + esc(g.project) + '">' + esc(g.project ? leaf(g.project) : "No project") + "</span>" +
+            '<span class="ppath">' + esc(g.project) + "</span>" + summary +
+            (g.project ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
+            "</div>" + form + g.list.map((a) => agentRow(a, kinds)).join("") + "</section>";
+        }).join("")
+      : '<p class="empty">No agents in the herd.  SPC a h n starts one; so does + New agent once there is a project here.</p>';
+    app.scrollTop = keep;
+  }
+
+  function onAgentAction(act, el) {
+    const row = el.closest(".arow");
+    const name = row && row.getAttribute("data-name");
+    const group = el.closest(".pgroup");
+    const project = group && group.getAttribute("data-project");
+    if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
+    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort") return emit(act, { name });
+    if (act === "screen") {
+      if (herdNow.open.has(name)) herdNow.open.delete(name);
+      else {
+        herdNow.open.add(name);
+        emit("agent-screen", { name });
+      }
+      return renderAgents();
+    }
+    if (act === "more") {
+      if (herdNow.more.has(name)) herdNow.more.delete(name);
+      else herdNow.more.add(name);
+      return renderAgents();
+    }
+    if (act === "compose") {
+      if (herdNow.composing.has(name)) herdNow.composing.delete(name);
+      else herdNow.composing.add(name);
+      renderAgents();
+      const ta = app.querySelector('.arow[data-name="' + cssName(name) + '"] textarea');
+      if (ta) ta.focus();
+      return;
+    }
+    if (act === "send") return sendPrompt(name);
+    if (act === "notes") {
+      herdNow.notes = name;
+      renderAgents();
+      const inp = app.querySelector(".notes-text");
+      if (inp) inp.focus();
+      return;
+    }
+    if (act === "notes-save") {
+      const inp = row.querySelector(".notes-text");
+      herdNow.notes = null;
+      emit("agent-notes", { name, text: inp ? inp.value : "" });
+      return renderAgents();
+    }
+    if (act === "notes-cancel") {
+      herdNow.notes = null;
+      return renderAgents();
+    }
+    if (act === "respawn") {
+      return ask("Respawn " + name + "?", "It is relaunched from its recipe. Continue picks the conversation up again; Fresh starts it cold.",
+        [["Cancel", "ghost", null], ["Fresh", "ghost", () => emit("agent-respawn", { name, continue: false })],
+         ["Continue", "primary", () => emit("agent-respawn", { name, continue: true })]]);
+    }
+    if (act === "kill") {
+      return ask("Kill " + name + "?", "The agent stops and leaves the herd. Its transcript stays.",
+        [["Cancel", "ghost", null], ["Kill", "primary danger", () => emit("agent-kill", { name })]]);
+    }
+    if (act === "new-agent") {
+      herdNow.newFor = project;
+      renderAgents();
+      const sel = app.querySelector(".newform select");
+      if (sel) sel.focus();
+      return;
+    }
+    if (act === "new-go") {
+      const form = el.closest(".newform");
+      herdNow.newFor = null;
+      emit("agent-new", { project, kind: form.querySelector(".new-kind").value, name: form.querySelector(".new-name").value.trim() });
+      return renderAgents();
+    }
+    if (act === "new-cancel") {
+      herdNow.newFor = null;
+      return renderAgents();
+    }
+  }
+
+  function sendPrompt(name) {
+    const ta = app.querySelector('.arow[data-name="' + cssName(name) + '"] textarea');
+    const text = ta ? ta.value : herdNow.compose[name] || "";
+    if (!text.trim()) return;
+    emit("agent-prompt", { name, text });
+    herdNow.compose[name] = "";
+    herdNow.composing.delete(name);
+    if (ta) ta.blur();
+    renderAgents();
+  }
+
+  app.addEventListener("input", (ev) => {
+    if (ev.target.classList && ev.target.classList.contains("agent-text")) {
+      const row = ev.target.closest(".arow");
+      if (row) herdNow.compose[row.getAttribute("data-name")] = ev.target.value;
+    }
+  });
+  app.addEventListener("keydown", (ev) => {
+    const t = ev.target;
+    if (!t.classList) return;
+    if (t.classList.contains("agent-text") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault();
+      sendPrompt(t.closest(".arow").getAttribute("data-name"));
+    } else if (t.classList.contains("notes-text") && ev.key === "Enter") {
+      ev.preventDefault();
+      onAgentAction("notes-save", t);
+    }
+  });
+  // An edit in progress holds the 5s refresh back; let it through after.
+  app.addEventListener("focusout", () => {
+    setTimeout(() => { if (herdNow.pending && view === "agents" && !busyEditing()) renderAgents(); }, 0);
+  });
+
   // ---- The herd log -----------------------------------------------------
   //
   // One lane per agent: its states as coloured segments across the
@@ -1065,6 +1333,8 @@
       if (m) emit("copy", { text: m.text });
     } else if (act === "copy-path") {
       if (src) emit("copy", { text: src.path });
+    } else if (act.startsWith("a:")) {
+      onAgentAction(act.slice(2), el);
     } else if (act === "resume") {
       resume(false);
     } else if (act === "fork") {
@@ -1097,11 +1367,13 @@
       const which = b.getAttribute("data-tab");
       if (which === "sessions") showSessions();
       else if (which === "log") showLog();
+      else if (which === "agents") showAgents();
       else showSearch();
     }));
   btnBack.addEventListener("click", back);
   $("btn-refresh").addEventListener("click", () => {
     if (view === "log") emit("log");
+    else if (view === "agents") emit("usage-refresh");
     else emit("refresh");
   });
   $("btn-import").addEventListener("click", () => {
@@ -1213,7 +1485,7 @@
       if (p && p.view === "sessions") showSessions();
       else if (p && p.view === "search") showSearch();
       else if (view === "sessions") showSessions();
-      else if (view === "source" || view === "log") chrome();
+      else if (view === "source" || view === "log" || view === "agents") chrome();
       else showSearch();
       if (p && p.query) search(true);
     },
@@ -1225,9 +1497,24 @@
     },
 
     showView: (v) => {
-      if (v === "log") showLog();
+      if (v === "agents") showAgents();
+      else if (v === "log") showLog();
       else if (v === "sessions") showSessions();
       else showSearch();
+    },
+
+    renderHerd: (p) => {
+      herdNow.data = p || null;
+      if (view !== "agents") return;
+      if (busyEditing()) herdNow.pending = true;
+      else renderAgents();
+    },
+
+    setScreen: (p) => {
+      if (!p) return;
+      herdNow.screens[p.name] = p.text || "(no screen yet)";
+      const pre = app.querySelector('.arow[data-name="' + cssName(p.name) + '"] pre.screen');
+      if (pre) pre.textContent = herdNow.screens[p.name];
     },
 
     renderLog: (p) => {

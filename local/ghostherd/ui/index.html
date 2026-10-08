@@ -3,6 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The page renders text from transcripts and agents' screens, and can
+       prompt and kill agents.  Past the sanitizer, nothing inline runs
+       and nothing leaves: no inline script or handler, no fetch, no
+       remote image. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src 'none'; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Herd</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -11,6 +16,7 @@
     <div class="brand">
       <span class="mark">HERD</span>
       <nav class="tabs">
+        <button type="button" class="tab" data-tab="agents">Agents</button>
         <button type="button" class="tab" data-tab="search">Search</button>
         <button type="button" class="tab" data-tab="sessions">Sessions <span id="sessions-n" class="count"></span></button>
         <button type="button" class="tab" data-tab="log">Log</button>

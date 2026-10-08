@@ -4276,6 +4276,143 @@ there, and it is a conversation; otherwise the page is told why."
         (should (string-match-p "cannot be resumed" (ghostherd-test--call calls "showError")))))))
 
 
+;;; The agents tab
+
+(defmacro ghostherd-test--with-herd (&rest body)
+  "BODY with a fresh herd of one blocked claude agent and page calls recorded."
+  (declare (indent 0))
+  `(ghostherd-test--with-page
+     (let ((ghostherd--sessions (make-hash-table :test #'equal))
+           (ghostherd-usage--cache
+            '((claude :windows ((:label "5h" :remaining 38 :resets-at 1791460000.0)
+                                (:label "7d" :remaining 100 :resets-at nil))
+                      :fetched 1791450000.0 :error nil)
+              (agy :windows nil :fetched 1791450000.0 :error "token expired")))
+           (ghostherd-memory-page--herd-timer nil))
+       (puthash "claude-api"
+                (ghostherd-session--create :id "claude-api" :name "claude-api" :kind 'claude
+                                           :state 'blocked :state-reason "Bash(x) — proceed?"
+                                           :project "/p/" :backend 'tmux :notes "api work")
+                ghostherd--sessions)
+       ,@body)))
+
+(ert-deftest ghostherd-test-herd-page-snapshot ()
+  (ghostherd-test--with-herd
+    (ghostherd-memory-page--send-herd)
+    (let* ((p (ghostherd-test--call calls "renderHerd"))
+           (a (aref (plist-get p :agents) 0))
+           (claude (seq-find (lambda (u) (equal (plist-get u :kind) "claude")) (plist-get p :usage)))
+           (agy (seq-find (lambda (u) (equal (plist-get u :kind) "agy")) (plist-get p :usage))))
+      (should (equal (plist-get a :state) "blocked"))
+      (should (equal (plist-get a :project) "/p/"))
+      (should (eq (plist-get a :detached) t))
+      (should (equal (mapcar (lambda (w) (plist-get w :used)) (plist-get claude :windows)) '(62 0)))
+      (should (equal (plist-get (aref (plist-get claude :windows) 0) :resets) 1791460000000.0))
+      (should (equal (plist-get agy :error) "token expired"))
+      (should (member "claude" (append (plist-get p :kinds) nil)))
+      (should-not (member "shell" (append (plist-get p :kinds) nil)))
+      (should (json-encode p)))))
+
+(ert-deftest ghostherd-test-herd-page-operations ()
+  "Each operation reaches the herd function with the session, then the
+herd is sent again; bad input is refused before anything is done."
+  (ghostherd-test--with-herd
+    (let (did)
+      (cl-letf (((symbol-function 'ghostherd-prompt) (lambda (s text &rest _) (push (list 'prompt (ghostherd-session-name s) text) did)))
+                ((symbol-function 'ghostherd-interrupt) (lambda (s) (push (list 'esc (ghostherd-session-name s)) did)))
+                ((symbol-function 'ghostherd-abort) (lambda (s) (push (list 'abort (ghostherd-session-name s)) did)))
+                ((symbol-function 'ghostherd-answer) (lambda (s n) (push (list 'answer (ghostherd-session-name s) n) did)))
+                ((symbol-function 'ghostherd-respawn) (lambda (s c) (push (list 'respawn (ghostherd-session-name s) c) did)))
+                ((symbol-function 'ghostherd-kill) (lambda (s k) (push (list 'kill (ghostherd-session-name s) k) did)))
+                ((symbol-function 'ghostherd-set-notes) (lambda (s n) (push (list 'notes (ghostherd-session-name s) n) did)))
+                ((symbol-function 'ghostherd-visit) (lambda (s) (push (list 'visit (ghostherd-session-name s)) did)))
+                ((symbol-function 'ghostherd--host-capture) (lambda (_s &rest _) "SCREEN")))
+        (dolist (intent '(((op . "agent-prompt") (name . "claude-api") (text . "run the tests"))
+                          ((op . "agent-interrupt") (name . "claude-api"))
+                          ((op . "agent-abort") (name . "claude-api"))
+                          ((op . "agent-answer") (name . "claude-api") (n . 2))
+                          ((op . "agent-respawn") (name . "claude-api") (continue . t))
+                          ((op . "agent-notes") (name . "claude-api") (text . "reviewer"))
+                          ((op . "agent-visit") (name . "claude-api"))
+                          ((op . "agent-kill") (name . "claude-api"))))
+          (ghostherd-memory-page--handle intent))
+        (should (equal (reverse did)
+                       '((prompt "claude-api" "run the tests") (esc "claude-api") (abort "claude-api")
+                         (answer "claude-api" 2) (respawn "claude-api" t) (notes "claude-api" "reviewer")
+                         (visit "claude-api") (kill "claude-api" t))))
+        (should (equal (ghostherd-test--call calls "flash") "Killed claude-api"))
+        (should (>= (length (seq-filter (lambda (c) (equal (car c) "renderHerd")) calls)) 8))
+        (ghostherd-memory-page--handle '((op . "agent-screen") (name . "claude-api")))
+        (should (equal (ghostherd-test--call calls "setScreen") '(:name "claude-api" :text "SCREEN")))
+        ;; Refused, and nothing done.
+        (setq did nil)
+        (dolist (bad '(((op . "agent-prompt") (name . "claude-api") (text . "   "))
+                       ((op . "agent-answer") (name . "claude-api") (n . 12))
+                       ((op . "agent-answer") (name . "claude-api") (n . "2"))
+                       ((op . "agent-kill") (name . "nobody"))))
+          (setq calls nil)
+          (ghostherd-memory-page--handle bad)
+          (should (ghostherd-test--call calls "showError")))
+        (should-not did)))))
+
+(ert-deftest ghostherd-test-herd-page-new-agent ()
+  (ghostherd-test--with-herd
+    (let ((dir (make-temp-file "gh-new-" t)) spawned)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostherd-spawn)
+                     (lambda (kind &rest plist)
+                       (setq spawned (cons kind plist))
+                       (ghostherd-session--create :name (plist-get plist :name))))
+                    ((symbol-function 'ghostherd-project-defaults) (lambda (&rest _) nil))
+                    ((symbol-function 'ghostherd--project-root) (lambda (&rest _) nil)))
+            (ghostherd-memory-page--handle `((op . "agent-new") (project . ,dir) (kind . "grok") (name . "")))
+            (should (eq (car spawned) 'grok))
+            (should (equal (plist-get (cdr spawned) :name) (format "grok-%s" (file-name-nondirectory dir))))
+            (should (null (plist-get (cdr spawned) :display)))
+            (should (plist-member (cdr spawned) :display))
+            (should (string-prefix-p "Started grok-" (ghostherd-test--call calls "flash")))
+            (setq spawned nil)
+            (dolist (bad `(((op . "agent-new") (project . ,dir) (kind . "shell"))
+                           ((op . "agent-new") (project . ,dir) (kind . "rm"))
+                           ((op . "agent-new") (project . "/nope/here") (kind . "claude"))
+                           ((op . "agent-new") (project . ,dir) (kind . "claude") (name . "-t evil"))
+                           ((op . "agent-new") (project . ,dir) (kind . "claude") (name . "a;b"))))
+              (setq calls nil)
+              (ghostherd-memory-page--handle bad)
+              (should (ghostherd-test--call calls "showError")))
+            (should-not spawned))
+        (delete-directory dir t)))))
+
+(ert-deftest ghostherd-test-herd-page-watch ()
+  "The herd is sent while the tab is on screen, at once on a change."
+  (ghostherd-test--with-herd
+    (unwind-protect
+        (progn
+          (ghostherd-memory-page--handle '((op . "herd-watch")))
+          (should (timerp ghostherd-memory-page--herd-timer))
+          (setq calls nil)
+          (ghostherd-memory-page--on-herd-change nil)
+          (should (assoc "renderHerd" calls))
+          (ghostherd-memory-page--handle '((op . "herd-unwatch")))
+          (should-not ghostherd-memory-page--herd-timer)
+          (setq calls nil)
+          (ghostherd-memory-page--on-herd-change nil)
+          (should-not calls)
+          ;; No page any more: the next tick stops the timer.
+          (ghostherd-memory-page--handle '((op . "herd-watch")))
+          (cl-letf (((symbol-function 'xwapp-session) (lambda (_) nil)))
+            (ghostherd-memory-page--herd-tick))
+          (should-not ghostherd-memory-page--herd-timer))
+      (ghostherd-memory-page--herd-unwatch))))
+
+(ert-deftest ghostherd-test-herd-page-opens-without-the-sidecar ()
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m _p) '(:sources nil)))
+    (let ((ghostherd-memory-page--pending '(:view "agents")))
+      (ghostherd-memory-page--handle '((op . "ready"))))
+    (should (equal (car calls) '("showView" . "agents")))))
+
+
 ;;; Background import
 
 (defmacro ghostherd-test--with-auto (&rest body)

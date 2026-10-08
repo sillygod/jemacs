@@ -269,6 +269,102 @@ mark.here { background: var(--warn); color: #0e1116; }
 .msg-body h1, .msg-body h2, .msg-body h3 { font-size: 14px; margin: 10px 0 4px; }
 .plain { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; margin: 6px 0; }
 
+/* ---- Agents ------------------------------------------------------------ */
+
+.usage {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16em, 1fr));
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.ucard { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.uhead { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+.uhead .when { margin-left: auto; }
+.uwin {
+  display: grid;
+  grid-template-columns: 5.5em 1fr 3em;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  margin: 3px 0;
+}
+.ulabel { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ubar { height: 7px; background: rgba(110, 118, 129, 0.2); border-radius: 4px; overflow: hidden; }
+.ubar span { display: block; height: 100%; border-radius: 4px; }
+.lvl-ok { background: var(--st-working); }
+.lvl-warm { background: var(--st-blocked); }
+.lvl-hot { background: var(--st-dead); }
+.upct { text-align: right; font-family: var(--mono); font-size: 11.5px; }
+.ureset { grid-column: 2 / 4; font-size: 11px; color: var(--muted); }
+.uerr { font-size: 11px; color: var(--warn); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.pgroup { margin: 0 0 16px; }
+.phead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+.pname { font-weight: 650; font-size: 14px; }
+.ppath { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40em; }
+.phead .st { font-size: 10.5px; }
+.phead .linkish { margin-left: auto; }
+
+.arow {
+  border-left: 3px solid var(--line);
+  padding: 6px 0 6px 10px;
+  margin: 6px 0;
+}
+.arow.s-blocked { border-left-color: var(--st-blocked); background: rgba(210, 153, 34, 0.05); }
+.arow.s-working { border-left-color: var(--st-working); }
+.arow.s-done { border-left-color: var(--st-done); }
+.arow.s-dead { border-left-color: var(--st-dead); }
+.amain { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.aname {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+}
+.aname:hover { color: var(--accent); text-decoration: underline; }
+.det { font-size: 11px; color: var(--muted); }
+.anotes { color: var(--muted); font-style: italic; max-width: 30em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.amain .when { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.areason {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 4.5em;
+  overflow: hidden;
+}
+.arow.s-blocked .areason { color: var(--text); }
+.aacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+.aacts.more { margin-top: 4px; }
+.answer { min-width: 2.2em; font-weight: 600; }
+button.danger { color: var(--minus); border-color: rgba(248, 81, 73, 0.5); }
+button.primary.danger { background: #da3633; border-color: #f85149; color: #fff; }
+.agent-compose, .notes-edit, .newform { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; flex-wrap: wrap; }
+.agent-compose textarea, .notes-edit input, .newform input, .newform select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.agent-compose textarea { flex: 1; min-width: 14em; resize: vertical; }
+.notes-edit input { flex: 1; min-width: 12em; }
+.newform { padding: 6px 0; }
+.arow pre.screen { margin-left: 0; max-height: 26em; overflow: auto; }
+
 /* ---- Resume ----------------------------------------------------------- */
 
 button.primary {

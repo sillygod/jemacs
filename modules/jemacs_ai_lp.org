@@ -544,6 +544,7 @@
                         ghostherd-memory-page
                         ghostherd-memory-sessions
                         ghostherd-log-page
+                        ghostherd-herd-page
                         ghostherd-memory-search
                         ghostherd-memory-view
                         ghostherd-memory-import

@@ -470,7 +470,7 @@ a glance, not read line by line.  Step 3 of the web-UI plan.
   jump to the page is a question of habit
 - [ ] The sanitizer, marked and the base colours are in two pages now
 
-* Phase 3.14 — Resume a past session from the page  *(this tree)*
+* Phase 3.14 — Resume a past session from the page  *(done)*
 
 Goal: from "what did I do before" straight to "carry on with it".
 
@@ -493,6 +493,34 @@ Goal: from "what did I do before" straight to "carry on with it".
 - [X] The page names a source only; kind, id and directory are what
   Emacs worked out when it opened the session
 - [X] 5 ERT tests; 9 more WebKit checks with spawning recorded, not done
+
+* Phase 3.15 — The herd page: usage, agents by project, operations  *(this tree)*
+
+Goal: the overlay's overview and operations in the page, for when the
+mouse is in hand -- with the account usage and which agents belong to
+which project in one view.  Overlaps the overlay on purpose.
+
+** What shipped
+
+- [X] An Agents tab, first; =ghostherd-herd-page= / =SPC a h p=
+- [X] Usage cards from =ghostherd-usage--cache=: used percent per
+  window, reset, stale or failed readings named
+- [X] Agents grouped by project, blocked projects first, state sums
+- [X] Open, prompt, Esc, answer 1-3, screen, C-c, notes, respawn
+  (fresh / continue), kill (asked), new agent in a project (no focus
+  taken); a page-given name must be a tmux-safe token
+- [X] Live: every 5s while the tab is on screen, at once on a state
+  change (=ghostherd-log-functions=); a draft holds the refresh back
+- [X] A Content-Security-Policy on the page: it now renders untrusted
+  text and can drive agents, so a sanitizer miss must still not run
+- [X] 5 ERT tests; 22 more WebKit checks, every operation recorded not
+  done, the CSP probed with an inline handler and a javascript: link
+
+** Deliberately not done
+
+- The step-4 board of every agent's live screen: Screen opens one at
+  a time, the Log tab answers "who was stuck", and a dashboard to keep
+  open is what the overlay was built to avoid
 
 * Phase 4 — Ecosystem (only if still useful)
 

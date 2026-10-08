@@ -1482,6 +1482,7 @@
        "ahk" '(ghostherd-kill :which-key "kill")
        "ahr" '(ghostherd-rename :which-key "rename")
        "ahl" '(ghostherd-log-page :which-key "herd log")
+       "ahp" '(ghostherd-herd-page :which-key "herd page")
        "ah/" '(ghostherd-memory-page :which-key "search memory")
        "ahv" '(ghostherd-memory-sessions :which-key "memory sessions")
        "ahI" '(ghostherd-memory-import :which-key "import memory")
