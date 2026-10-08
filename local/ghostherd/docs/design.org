@@ -684,6 +684,7 @@ purpose now that nothing does.
 | Memory embed          | FastEmbed multilingual MiniLM               | Queries here are 中文 mixed with English |
 | Memory import         | Turns from chat, skip grok recap/updates    | Those files are history dumps, not chat  |
 | Memory lifetime       | Started on first search/import, not mode    | A model load does not belong on enable   |
+| Memory freshness      | Idle import every 5 min once an index exists | Claude Code deletes transcripts after 30 days; a manual-only index lost a month |
 | Re-import             | Embed only chunks whose payload changed     | Chunk ids are (path, index) and transcripts append; whole files every 5 min would not be cheap |
 | Memory search default | All projects, =C-u= for this one            | The failure is "I forgot which project"  |
 | Memory viewer         | Emacs text buffer; list+chunks RPC          | The index is text; no images to render   |

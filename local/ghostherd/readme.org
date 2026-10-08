@@ -838,6 +838,23 @@ running is a no-op.  Already-imported files are skipped.  =C-u SPC a h
 /= starts filtered to the current project; the default is all of them,
 because the usual failure is "I forgot which project".
 
+After that first import, the herd keeps the index current by itself:
+every five minutes, after a minute of idle, an incremental import runs
+in the sidecar (=ghostherd-memory-auto-import-interval=, nil to stop
+it).  It is cheap because only chunks that changed are embedded again:
+a session being worked in grows by a few turns between imports, and
+re-embedding it whole every time would cost tens of seconds of CPU per
+active session.  Success goes to =*Messages*= without the echo area; a
+failure is said once.
+This is not a convenience.  Claude Code deletes a transcript 30 days
+after it last changed (=cleanupPeriodDays= in =~/.claude/settings.json=),
+and on 2026-10-08 the index here --- imported once, on 2026-08-27 --- held
+21 deploy-platform sessions whose files were already gone, while the
+ones between that import and the cutoff had vanished unindexed.  It
+never runs the first import (that downloads a model and embeds
+everything) and never starts the sidecar; a failure tries again within
+the hour.  Raising =cleanupPeriodDays= as well keeps the originals.
+
 ** The memory page
 
 =SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=
@@ -864,9 +881,9 @@ without xwidgets.
   it stays plain.  Tool calls show as =⚙ Bash= chips.
 - Links go to =browse-url=; Copy takes a whole message; Import runs
   without popping the log up beside the page.
-- While the sidecar imports --- from this page or not --- the status
-  line reads its progress every five seconds: agent, files, new chunks,
-  the file at hand.
+- While the sidecar imports --- from this page or in the background ---
+  the status line reads its progress every five seconds: agent, files,
+  new chunks, the file at hand.
 - The page holds no token and asks the sidecar nothing itself: every
   request goes through Emacs.
 - Keys: =/= search, =↑= / =↓= between results, =RET= open, =Esc= back,
@@ -958,7 +975,10 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
   ;; Shared transcript memory.  ghostherd-mode starts the sidecar.
   (setq ghostherd-memory-port 49152
         ghostherd-memory-port-tries 32
-        ghostherd-memory-search-limit 8)
+        ghostherd-memory-search-limit 8
+        ;; Background import once the index exists: nil to stop it.
+        ghostherd-memory-auto-import-interval 300
+        ghostherd-memory-auto-import-idle 60)
 
   ;; Permanent default args example:
   (setf (alist-get 'claude ghostherd-agent-specs)

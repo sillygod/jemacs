@@ -4082,5 +4082,110 @@ watch must not end before the answer comes."
     (should (string-match-p "Import: sidecar gone" (ghostherd-test--call calls "showError")))
     (should-not ghostherd-memory-page--importing)))
 
+
+;;; Background import
+
+(defmacro ghostherd-test--with-auto (&rest body)
+  "Run BODY with a temp data directory and sidecar requests recorded.
+`methods' lists the methods asked, oldest first; POINTS is what
+memory_status reports; FAIL, when a string, fails every request."
+  (declare (indent 0))
+  `(let* ((dir (make-temp-file "gh-auto-" t))
+          (ghostherd-memory-data-directory dir)
+          (ghostherd-memory-auto-import-interval 86400)
+          (ghostherd-memory--port 49152)
+          (ghostherd-memory--auto-inflight nil)
+          (ghostherd-memory--auto-failing nil)
+          (methods nil) (points 5) (fail nil) (said nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                    (lambda (method cb &optional _params err-cb)
+                      (setq methods (append methods (list method)))
+                      (cond (fail (funcall err-cb fail))
+                            ((equal method "memory_status") (funcall cb (list :points points)))
+                            (t (funcall cb '(:imported 12 :sessions 3))))))
+                   ((symbol-function 'message)
+                    (lambda (fmt &rest args) (push (apply #'format fmt args) said))))
+           ,@body)
+       (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-memory-auto-import-when-due ()
+  "Once a day, stamped on disk so restarts do not repeat it."
+  (ghostherd-test--with-auto
+    (should (ghostherd-memory--auto-due-p))
+    (ghostherd-memory--auto-import-maybe)
+    (should (equal methods '("memory_status" "memory_import")))
+    (should-not ghostherd-memory--auto-inflight)
+    (should (string-match-p "added 12 chunks from 3 sessions" (car said)))
+    (should-not (ghostherd-memory--auto-due-p))
+    (should (ghostherd-memory--auto-due-p (time-add (current-time) 86401)))
+    (setq methods nil)
+    (ghostherd-memory--auto-import-maybe)
+    (should-not methods)))
+
+(ert-deftest ghostherd-test-memory-auto-import-never-the-first ()
+  "An empty index waits for a deliberate first import: that one
+downloads a model and embeds everything."
+  (ghostherd-test--with-auto
+    (setq points 0)
+    (ghostherd-memory--auto-import-maybe)
+    (should (equal methods '("memory_status")))
+    (should-not (file-exists-p (ghostherd-memory--auto-stamp)))
+    (should-not ghostherd-memory--auto-inflight)))
+
+(ert-deftest ghostherd-test-memory-auto-import-retries-in-an-hour ()
+  "A missed day is how transcripts are lost, so a failure is not a day."
+  (ghostherd-test--with-auto
+    (setq fail "connection refused")
+    (ghostherd-memory--auto-import-maybe)
+    (should-not ghostherd-memory--auto-inflight)
+    (should (string-match-p "background import failed" (car said)))
+    (should-not (ghostherd-memory--auto-due-p))
+    (should-not (ghostherd-memory--auto-due-p (time-add (current-time) 3500)))
+    (should (ghostherd-memory--auto-due-p (time-add (current-time) 3700)))
+    ;; Said once: a sidecar that stays down is not news every 5 minutes.
+    (set-file-times (ghostherd-memory--auto-stamp) (time-subtract (current-time) 90000))
+    (ghostherd-memory--auto-import-maybe)
+    (should (= (length said) 1))
+    ;; A short interval retries within it, not an hour later.
+    (let ((ghostherd-memory-auto-import-interval 300))
+      (set-file-times (ghostherd-memory--auto-stamp) (time-subtract (current-time) 90000))
+      (ghostherd-memory--auto-import-maybe)
+      (should-not (ghostherd-memory--auto-due-p (time-add (current-time) 250)))
+      (should (ghostherd-memory--auto-due-p (time-add (current-time) 310))))
+    ;; A success clears it, so the next failure is reported again.
+    (setq fail nil)
+    (set-file-times (ghostherd-memory--auto-stamp) (time-subtract (current-time) 90000))
+    (ghostherd-memory--auto-import-maybe)
+    (should-not ghostherd-memory--auto-failing)))
+
+(ert-deftest ghostherd-test-memory-auto-import-holds-back ()
+  "Not while one runs, not without a sidecar, not when switched off."
+  (ghostherd-test--with-auto
+    (let ((ghostherd-memory--auto-inflight t))
+      (ghostherd-memory--auto-import-maybe))
+    (let ((ghostherd-memory--port nil))
+      (ghostherd-memory--auto-import-maybe))
+    (let ((ghostherd-memory-auto-import-interval nil))
+      (ghostherd-memory--auto-import-maybe)
+      (should-not (ghostherd-memory--auto-due-p)))
+    (should-not methods)))
+
+(ert-deftest ghostherd-test-memory-auto-import-timer ()
+  (let ((ghostherd-memory--auto-timer nil)
+        (ghostherd-memory-auto-import-interval 86400))
+    (unwind-protect
+        (progn
+          (ghostherd-memory-auto-import-start)
+          (should (timerp ghostherd-memory--auto-timer))
+          (should (eq (timer--function ghostherd-memory--auto-timer)
+                      #'ghostherd-memory--auto-import-maybe))
+          (ghostherd-memory-auto-import-stop)
+          (should-not ghostherd-memory--auto-timer)
+          (let ((ghostherd-memory-auto-import-interval nil))
+            (ghostherd-memory-auto-import-start)
+            (should-not ghostherd-memory--auto-timer)))
+      (ghostherd-memory-auto-import-stop))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

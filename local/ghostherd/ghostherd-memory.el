@@ -85,6 +85,33 @@ The first call after a cold start may load FastEmbed."
   :type 'integer
   :group 'ghostherd-memory)
 
+(defcustom ghostherd-memory-auto-import-interval 300
+  "Seconds between background imports, or nil for none.
+
+Claude Code deletes a transcript 30 days after its last change
+\(`cleanupPeriodDays'), so an index refreshed only by hand loses what
+was not imported in time.  On 2026-10-08 the index here held 21
+deploy-platform sessions whose files were already gone, and those
+between its one import (2026-08-27) and the cutoff had vanished
+without ever being indexed.
+
+Five minutes keeps today's sessions searchable while they happen.
+It is cheap because the sidecar embeds only the chunks that changed: a
+session being worked in grows by a few turns between imports.
+
+Only an index that already has points is kept current: the first
+import downloads a model and embeds everything, and stays a deliberate
+`ghostherd-memory-import'.  The sidecar is never started for this;
+`ghostherd-mode' starts it."
+  :type '(choice (const :tag "Never" nil) integer)
+  :group 'ghostherd-memory)
+
+(defcustom ghostherd-memory-auto-import-idle 60
+  "Idle seconds before a due background import starts.
+Import is CPU-heavy (FastEmbed), so it waits for a pause."
+  :type 'integer
+  :group 'ghostherd-memory)
+
 (defcustom ghostherd-memory-search-limit 8
   "Default number of hits to return."
   :type 'integer
@@ -580,6 +607,98 @@ progress is printed in `*ghostherd-memory*'."
                     "")))))
    (and force (list :force t))
    (lambda (err) (message "ghostherd-memory: import failed: %s" err))))
+
+
+;;; Background import
+
+(defvar ghostherd-memory--auto-timer nil
+  "Idle timer that runs `ghostherd-memory--auto-import-maybe'.")
+
+(defvar ghostherd-memory--auto-inflight nil
+  "Non-nil while a background import is running.")
+
+(defvar ghostherd-memory--auto-failing nil
+  "Non-nil after a background import failed, until one succeeds.
+So a sidecar that is down says so once, not every five minutes.")
+
+(defun ghostherd-memory--auto-stamp ()
+  "File whose modification time is when the last background import began.
+On disk, not in a variable: restarting Emacs five times a day must not
+mean five imports."
+  (expand-file-name "auto-import.stamp" (ghostherd-memory--data-directory)))
+
+(defun ghostherd-memory--auto-due-p (&optional now)
+  "Non-nil when the last background import is an interval old, or never ran."
+  (and ghostherd-memory-auto-import-interval
+       (let ((attrs (file-attributes (ghostherd-memory--auto-stamp))))
+         (or (null attrs)
+             (>= (float-time (time-subtract (or now (current-time))
+                                            (file-attribute-modification-time attrs)))
+                 ghostherd-memory-auto-import-interval)))))
+
+(defun ghostherd-memory--auto-mark (&optional retry-in)
+  "Stamp a background import as begun now, or due again in RETRY-IN seconds."
+  (let ((file (ghostherd-memory--auto-stamp)))
+    (make-directory (file-name-directory file) t)
+    (unless (file-exists-p file)
+      (write-region "" nil file nil 'silent))
+    (set-file-times file (if retry-in
+                             (time-subtract (current-time)
+                                            (- ghostherd-memory-auto-import-interval retry-in))
+                           (current-time)))))
+
+(defun ghostherd-memory--auto-import-maybe ()
+  "Import in the background if one is due and the index is not empty.
+Runs from an idle timer, so only after a pause; never starts the sidecar."
+  (when (and (not ghostherd-memory--auto-inflight)
+             ghostherd-memory--port
+             (ghostherd-memory--auto-due-p))
+    (setq ghostherd-memory--auto-inflight t)
+    (let ((failed (lambda (err)
+                    (setq ghostherd-memory--auto-inflight nil)
+                    ;; At most an hour: a missed day is how transcripts
+                    ;; are lost.
+                    (ghostherd-memory--auto-mark
+                     (min 3600 ghostherd-memory-auto-import-interval))
+                    (unless ghostherd-memory--auto-failing
+                      (setq ghostherd-memory--auto-failing t)
+                      (message "ghostherd-memory: background import failed (%s); will retry" err)))))
+      (ghostherd-memory-request-async
+       "memory_status"
+       (lambda (status)
+         (if (<= (or (plist-get status :points) 0) 0)
+             (setq ghostherd-memory--auto-inflight nil)
+           (ghostherd-memory--auto-mark)
+           (ghostherd-memory-request-async
+            "memory_import"
+            (lambda (result)
+              (setq ghostherd-memory--auto-inflight nil
+                    ghostherd-memory--auto-failing nil)
+              (let ((n (or (plist-get result :imported) 0)))
+                (when (and (not (plist-get result :busy)) (> n 0))
+                  ;; Logged, not shown: every five minutes in the echo
+                  ;; area would be noise.
+                  (let ((inhibit-message t))
+                    (message "ghostherd-memory: background import added %d chunks from %s sessions"
+                             n (or (plist-get result :sessions) 0))))))
+            nil
+            failed)))
+       nil
+       failed))))
+
+(defun ghostherd-memory-auto-import-start ()
+  "Keep the index current in the background.
+See `ghostherd-memory-auto-import-interval'."
+  (ghostherd-memory-auto-import-stop)
+  (when ghostherd-memory-auto-import-interval
+    (setq ghostherd-memory--auto-timer
+          (run-with-idle-timer ghostherd-memory-auto-import-idle t
+                               #'ghostherd-memory--auto-import-maybe))))
+
+(defun ghostherd-memory-auto-import-stop ()
+  (when (timerp ghostherd-memory--auto-timer)
+    (cancel-timer ghostherd-memory--auto-timer))
+  (setq ghostherd-memory--auto-timer nil))
 
 (defvar-local ghostherd-memory--view-source nil
   "Source path currently shown in a memory view buffer, or nil for search hits.")

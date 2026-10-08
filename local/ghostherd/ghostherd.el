@@ -4415,6 +4415,7 @@ sweeps every `ghostherd-poll-interval'."
         ;; GHOSTHERD_RPC.
         (with-demoted-errors "ghostherd: memory sidecar: %S"
           (ghostherd-memory-start))
+        (ghostherd-memory-auto-import-start)
         (ignore-errors (ghostherd--herd-write-protocol))
         (ghostherd--ensure-poll-timer)
         (ghostherd--ensure-herd-tick-timer)
@@ -4427,6 +4428,7 @@ sweeps every `ghostherd-poll-interval'."
       (cancel-timer ghostherd--poll-timer)
       (setq ghostherd--poll-timer nil))
     (ghostherd--stop-herd-tick-timer)
+    (ghostherd-memory-auto-import-stop)
     (setq mode-line-misc-info
           (cl-remove '(:eval (ghostherd--mode-line-segment))
                      mode-line-misc-info

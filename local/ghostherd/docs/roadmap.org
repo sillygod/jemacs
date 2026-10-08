@@ -327,7 +327,8 @@ inside Emacs.
 - English-only bge-small
 - Merging or rewriting the CLI transcript directories
 - Importing grok =recap_requests/=, =updates.jsonl=, or images
-- Auto-import on a timer
+- Auto-import on a timer --- reversed in 3.12: Claude Code deletes
+  transcripts after 30 days, so a manual-only index loses sessions
 
 * Phase 3.9 — Sidecar herd mail  *(done)*
 
@@ -421,12 +422,18 @@ page" in [[file:../readme.org][readme.org]].
 - [X] The sidecar's source index answers from any worker thread: =SPC a
   h v= failed whenever =asyncio.to_thread= handed =memory_list= another
   thread than the one that opened the sqlite connection
+- [X] Background import, every five minutes after a minute idle, for
+  an index that already exists.  Claude Code deletes transcripts 30
+  days after their last change; the index here had been imported once
+  (2026-08-27) and had already lost every session between then and the
+  cutoff
 - [X] Import embeds only changed chunks: a changed transcript used to
   be deleted and embedded whole, which every five minutes would mean
   re-embedding every active session
 - [X] The page shows the sidecar's import progress, read every 5s
-- [X] 9 ERT tests, 2 pytest; 38 WebKit checks against the real handler
-  and a throwaway sidecar on synthetic transcripts
+- [X] 14 ERT tests, 2 pytest; 38 WebKit checks against the real handler
+  and a throwaway sidecar on synthetic transcripts; background import
+  checked against a real sidecar
 
 ** What is left
 
