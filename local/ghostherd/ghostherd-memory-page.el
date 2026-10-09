@@ -676,13 +676,43 @@ their screen.  The same room again only changes which those are."
     (when said (ghostherd-memory-page--js "flash" said))
     (ghostherd-memory-page--send-herd)))
 
+(defconst ghostherd-memory-page--thumb-size 240
+  "Longest side, in pixels, of an attached image's preview.")
+
+(defun ghostherd-memory-page--thumb (file)
+  "A small PNG of image FILE as a data URL, or nil when none can be made.
+`sips' (macOS) scales it; without it, a file small enough is its own
+preview.  A data URL because the page loads no image from anywhere."
+  (let ((data
+         (if (executable-find "sips")
+             (let ((thumb (make-temp-file "ghostherd-thumb" nil ".png")))
+               (unwind-protect
+                   (and (eq 0 (call-process "sips" nil nil nil
+                                            "-Z" (number-to-string ghostherd-memory-page--thumb-size)
+                                            "-s" "format" "png" file "--out" thumb))
+                        (with-temp-buffer
+                          (set-buffer-multibyte nil)
+                          (insert-file-contents-literally thumb)
+                          (buffer-string)))
+                 (ignore-errors (delete-file thumb))))
+           (and (< (or (file-attribute-size (file-attributes file)) most-positive-fixnum)
+                   (* 200 1024))
+                (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (insert-file-contents-literally file)
+                  (buffer-string))))))
+    (and data (string-prefix-p "\x89PNG" data)
+         (concat "data:image/png;base64," (base64-encode-string data t)))))
+
 (defun ghostherd-memory-page--agent-image (intent)
-  "Save the clipboard's image for the agent INTENT names; give the page its file.
+  "Save the clipboard's image for the agent INTENT names, and attach it.
 The page cannot write a file, and an image is too big for the title it
-speaks through, so Emacs reads the clipboard itself."
-  (let ((name (ghostherd-session-name (ghostherd-memory-page--session intent))))
+speaks through, so Emacs reads the clipboard itself; the page gets the
+file's name and a preview."
+  (let* ((name (ghostherd-session-name (ghostherd-memory-page--session intent)))
+         (path (ghostherd-save-clipboard-image name)))
     (ghostherd-memory-page--js
-     "insertImage" (list :name name :path (ghostherd-save-clipboard-image name)))))
+     "attachImage" (list :name name :path path :thumb (ghostherd-memory-page--thumb path)))))
 
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus."
@@ -853,6 +883,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-memory-page--send-herd))
         ("agent-new" (ghostherd-memory-page--agent-new intent))
         ("agent-image" (ghostherd-memory-page--agent-image intent))
+        ("paste" (ghostherd-memory-page-paste))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))
         ("copy"
@@ -870,6 +901,25 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
 
 ;;; Commands
 
+(defun ghostherd-memory-page-paste ()
+  "Paste the clipboard into the page's focused box.
+The page never gets a paste of its own: Cmd-V reaches the web view as a
+key, the paste being the menu's to send, and with Emacs's keys it is
+Emacs's.  So the page asks, and Emacs hands it the clipboard's text --
+which goes in where the cursor is -- or none, and the clipboard's image
+is attached to the prompt box the cursor is in."
+  (interactive)
+  (ghostherd-memory-page--js
+   "paste" (list :text (or (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING)) ""))))
+
+(defvar-keymap ghostherd-memory-page-keys-mode-map
+  :doc "Keys the herd page takes before Emacs does."
+  "s-v" #'ghostherd-memory-page-paste)
+
+(define-minor-mode ghostherd-memory-page-keys-mode
+  "Cmd-V pastes into the herd page, an image included."
+  :keymap ghostherd-memory-page-keys-mode-map)
+
 (defun ghostherd-memory-page--open (view &optional query project)
   "Show the page on VIEW, with QUERY and PROJECT as the first search."
   ;; Here, not in the page's ready: a missing `uv' or a stale sidecar
@@ -883,7 +933,10 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ghostherd-memory-page--pending (list :view view :query query :project project))
   (setf (xwapp-poll-interval ghostherd-memory-page--app)
         ghostherd-memory-page-poll-interval)
-  (xwapp-open ghostherd-memory-page--app))
+  (xwapp-open ghostherd-memory-page--app)
+  (when-let* ((buf (xwapp-buffer ghostherd-memory-page--app)))
+    (with-current-buffer buf
+      (ghostherd-memory-page-keys-mode 1))))
 
 ;;;###autoload
 (defun ghostherd-memory-page (&optional this-project)

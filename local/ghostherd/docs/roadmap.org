@@ -662,8 +662,12 @@ Goal: show an agent a screenshot from the page, whichever CLI it is.
 ** What shipped
 
 - [X] ⌘V an image into any prompt box on the Agents tab or in a room,
-  or /Image/ beside it: Emacs saves the clipboard's image and the
-  file's name goes where the cursor was
+  or /Image/ beside it: Emacs saves the clipboard's image, and the box
+  shows it as an attachment with a preview; sending puts the file's
+  name after the text
+- [X] ⌘V itself pasted nothing, text included: the web view got the key
+  but never the paste, which Emacs's menu does not send it.  The page
+  takes ⌘V in a box and asks Emacs for the clipboard
 - [X] =ghostherd-save-clipboard-image=: the first of
   =ghostherd-clipboard-image-commands= installed (=pngpaste=,
   =wl-paste=, =xclip=), checked to be a PNG, written byte for byte,

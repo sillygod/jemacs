@@ -654,6 +654,8 @@
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
+    // Images attached to each agent's next prompt: [{path, thumb}].
+    attach: {},
     // The room: its project, each agent's conversation, the agents shown
     // by their screen instead, and the tool lines opened.
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
@@ -801,7 +803,8 @@
         '<button type="button" class="ghost small danger" data-act="a:kill">Kill</button></div>'
       : "";
     const compose = herdNow.composing.has(name)
-      ? '<div class="agent-compose"><textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + '  (⌘↩ / C-↩ sends)">' +
+      ? '<div class="agent-compose"><div class="attach">' + attachHtml(name) + '</div>' +
+        '<textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + '  (⌘↩ / C-↩ sends)">' +
         esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
       : "";
     const notes = herdNow.notes === name
@@ -1054,7 +1057,8 @@
         (agents.length
           ? '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
-              '<div class="rfoot"><textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
+              '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
+              '<textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
               esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>"
           : '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>') + "</div>";
       room = app.querySelector(".room");
@@ -1130,6 +1134,10 @@
       if (ta) askImage(ta);
       return;
     }
+    if (act === "unattach") {
+      (herdNow.attach[name] || []).splice(+el.getAttribute("data-i"), 1);
+      return renderAttach(name);
+    }
     if (act === "notes") {
       herdNow.notes = name;
       renderAgents();
@@ -1177,29 +1185,56 @@
 
   function sendPrompt(name) {
     const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
-    const text = ta ? ta.value : herdNow.compose[name] || "";
-    if (!text.trim()) return;
-    emit("agent-prompt", { name, text });
+    const text = (ta ? ta.value : herdNow.compose[name] || "").trim();
+    const files = (herdNow.attach[name] || []).map((a) => a.path);
+    if (!text && !files.length) return;
+    // The images go after what you wrote, a file name a line.
+    emit("agent-prompt", { name, text: [text, files.join("\n")].filter(Boolean).join("\n\n") });
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);
+    delete herdNow.attach[name];
     if (herdNow.room) {
       if (ta) ta.value = "";
+      renderAttach(name);
       return;
     }
     if (ta) ta.blur();
     renderAgents();
   }
 
-  // An image goes into a prompt as a file: Emacs reads the clipboard,
-  // saves it, and hands its name back for the box.  Every CLI can read a
-  // file, and the page can neither write one nor carry an image through
-  // the title it speaks to Emacs by.
-  const imageAt = {};
+  // An image goes with a prompt as a file: Emacs reads the clipboard,
+  // saves it, and hands back its name and a preview, shown above the box
+  // until the prompt is sent.  Every CLI can read a file, and the page
+  // can neither write one nor carry an image through the title it speaks
+  // to Emacs by.
   function askImage(ta) {
-    const name = ta.closest(".arow, .rcol").getAttribute("data-name");
-    imageAt[name] = [ta.selectionStart, ta.selectionEnd];
-    emit("agent-image", { name });
+    emit("agent-image", { name: ta.closest(".arow, .rcol").getAttribute("data-name") });
   }
+
+  const THUMB = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
+  function attachHtml(name) {
+    return (herdNow.attach[name] || []).map((a, i) =>
+      '<span class="chip" title="' + esc(a.path) + '">' +
+      (THUMB.test(a.thumb || "") ? '<img src="' + a.thumb + '" alt="">' : '<span class="noimg">▧</span>') +
+      '<span class="cname">' + esc(a.path.split("/").pop()) + "</span>" +
+      '<button type="button" class="linkish" data-act="a:unattach" data-i="' + i + '" title="Remove">×</button></span>').join("");
+  }
+  function renderAttach(name) {
+    const strip = app.querySelector('[data-name="' + cssName(name) + '"] .attach');
+    if (strip) strip.innerHTML = attachHtml(name);
+  }
+  // In Emacs, Cmd-V never becomes a paste: the paste is the menu's to
+  // send, and Emacs's menu does not send it to the web view, so the page
+  // sees the keydown and nothing after -- not for text either.  Emacs
+  // reads the clipboard instead, and answers with `paste' below.
+  document.addEventListener("keydown", (ev) => {
+    if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.key.toLowerCase() !== "v") return;
+    const el = document.activeElement;
+    if (!el || (el.tagName !== "TEXTAREA" && el.tagName !== "INPUT")) return;
+    ev.preventDefault();
+    emit("paste");
+  }, true);
+
   // A paste with no text in it holds the clipboard's image, or nothing a
   // textarea would take anyway; Emacs says which.
   app.addEventListener("paste", (ev) => {
@@ -1673,28 +1708,33 @@
   window.GM = {
     flash: (msg) => setStatus(msg),
 
-    // The file an image was saved to, for the prompt it was pasted in:
-    // where the cursor is now, or was when it was asked for.
-    insertImage: (p) => {
+    // An image saved for NAME's next prompt: shown above its box, sent
+    // with it.  A box that is shut opens.
+    attachImage: (p) => {
       const name = p && p.name;
-      const path = p && p.path;
-      if (!name || !path) return;
+      if (!name || !p.path) return;
+      (herdNow.attach[name] = herdNow.attach[name] || []).push({ path: String(p.path), thumb: p.thumb || null });
       const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
-      const v = ta ? ta.value : herdNow.compose[name] || "";
-      const at = ta && document.activeElement === ta ? [ta.selectionStart, ta.selectionEnd] : imageAt[name] || [v.length, v.length];
-      delete imageAt[name];
-      const before = v.slice(0, at[0]);
-      const after = v.slice(at[1]);
-      const text = (before && !/\s$/.test(before) ? " " : "") + path + (/^\s/.test(after) ? "" : " ");
-      herdNow.compose[name] = before + text + after;
       if (!ta) {
         herdNow.composing.add(name);
         if (view === "agents") renderAgents();
         return;
       }
-      ta.value = herdNow.compose[name];
+      renderAttach(name);
       ta.focus();
-      ta.selectionStart = ta.selectionEnd = before.length + text.length;
+    },
+
+    // The clipboard, for Cmd-V: text goes in at the cursor; with none,
+    // the clipboard's image goes to the prompt box the cursor is in.
+    paste: (p) => {
+      const el = document.activeElement;
+      const text = (p && p.text) || "";
+      if (text) {
+        if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) document.execCommand("insertText", false, text);
+        return;
+      }
+      if (el && el.classList && el.classList.contains("agent-text")) askImage(el);
+      else setStatus("To attach an image, click into a prompt box first");
     },
 
     // The sidecar's import, read every few seconds; null once it ends.

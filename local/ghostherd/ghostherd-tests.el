@@ -5357,22 +5357,76 @@ nothing else: not other files, not the one just saved.  nil keeps all."
 
 (ert-deftest ghostherd-test-page-pastes-an-image ()
   "The page asks for the clipboard's image for an agent; Emacs saves it
-and gives the page its file -- or says why not."
+and attaches it, file and preview -- or says why not."
   (ghostherd-test--with-herd
     (ghostherd-test--with-clipboard ghostherd-test--png-sh
-      (ghostherd-memory-page--handle '((op . "agent-image") (name . "claude-api")))
-      (let ((p (ghostherd-test--call calls "insertImage")))
+      (cl-letf (((symbol-function 'ghostherd-memory-page--thumb) (lambda (f) (concat "thumb of " f))))
+        (ghostherd-memory-page--handle '((op . "agent-image") (name . "claude-api"))))
+      (let ((p (ghostherd-test--call calls "attachImage")))
         (should (equal (plist-get p :name) "claude-api"))
         (should (file-exists-p (plist-get p :path)))
+        (should (equal (plist-get p :thumb) (concat "thumb of " (plist-get p :path))))
         (should (equal (file-name-directory (plist-get p :path))
                        (expand-file-name ghostherd-image-directory)))))
     (setq calls nil)
     (ghostherd-test--with-clipboard "printf text"
       (ghostherd-memory-page--handle '((op . "agent-image") (name . "claude-api"))))
-    (should-not (ghostherd-test--call calls "insertImage"))
+    (should-not (ghostherd-test--call calls "attachImage"))
     (should (equal (ghostherd-test--call calls "showError") "No image on the clipboard"))
     (ghostherd-memory-page--handle '((op . "agent-image") (name . "nobody")))
     (should (string-match-p "No agent named nobody" (ghostherd-test--call calls "showError")))))
+
+(defconst ghostherd-test--pixel
+  (base64-decode-string
+   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
+  "A real PNG: one pixel.")
+
+(ert-deftest ghostherd-test-an-attached-image-has-a-preview ()
+  "A preview is a PNG data URL: scaled by sips, or without it the file
+itself when small.  Nothing that is not a PNG becomes one."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((dir (make-temp-file "gh-thumb" t))
+         (png (expand-file-name "a.png" dir))
+         (junk (expand-file-name "b.png" dir))
+         (big (expand-file-name "c.png" dir))
+         (decode (lambda (url) (and url (string-prefix-p "data:image/png;base64," url)
+                                    (base64-decode-string (substring url 22))))))
+    (unwind-protect
+        (let ((coding-system-for-write 'binary))
+          (write-region ghostherd-test--pixel nil png nil 'silent)
+          (write-region "not an image" nil junk nil 'silent)
+          (write-region (concat ghostherd-test--pixel (make-string (* 300 1024) ?x)) nil big nil 'silent)
+          (when (executable-find "sips")
+            (should (string-prefix-p "\x89PNG" (funcall decode (ghostherd-memory-page--thumb png))))
+            (should-not (ghostherd-memory-page--thumb junk)))
+          (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+            (should (equal (funcall decode (ghostherd-memory-page--thumb png)) ghostherd-test--pixel))
+            (should-not (ghostherd-memory-page--thumb junk))
+            (should-not (ghostherd-memory-page--thumb big))))
+      (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-cmd-v-pastes-into-the-page ()
+  "Cmd-V never becomes a paste in the web view: the page asks, or Emacs
+gets the key, and Emacs hands the page the clipboard's text, or nothing
+-- the page then asks for an image."
+  (ghostherd-test--with-page
+    (dolist (clip '("some text" nil))
+      (setq calls nil)
+      (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) clip)))
+        (ghostherd-memory-page--handle '((op . "paste"))))
+      (should (equal (ghostherd-test--call calls "paste") (list :text (or clip ""))))))
+  (should (eq (lookup-key ghostherd-memory-page-keys-mode-map (kbd "s-v")) #'ghostherd-memory-page-paste))
+  (let ((ghostherd-memory-page--project nil)
+        (ghostherd-memory-page--pending nil))
+    (cl-letf (((symbol-function 'ghostherd-memory-ensure) #'ignore)
+              ((symbol-function 'xwapp-open) (lambda (app) (get-buffer-create (xwapp-buffer-name app)))))
+      (unwind-protect
+          (progn
+            (ghostherd-memory-page--open "agents")
+            (with-current-buffer "*herd*"
+              (should ghostherd-memory-page-keys-mode)
+              (should (eq (key-binding (kbd "s-v")) #'ghostherd-memory-page-paste))))
+        (kill-buffer "*herd*")))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

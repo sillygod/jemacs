@@ -994,13 +994,15 @@ are the other tabs (below, and "What happened while you were away").
   its screen and says why.  Emacs looks every two seconds; the sidecar
   reads a transcript, from its tail, only when it has changed.  Esc or
   Back leaves.
-- An image goes into a prompt as a file.  ⌘V an image into a prompt
+- An image goes with a prompt as a file.  ⌘V an image into a prompt
   box, or press /Image/ beside it: Emacs saves the clipboard's image
   (=pngpaste=, or =wl-paste= / =xclip=) under
-  =ghostherd-image-directory=, readable only by you, and puts the
-  file's name where the cursor is.  Every CLI can read a file; the
-  transcript keeps the name, so images are kept
-  =ghostherd-image-keep-days= (30) and then go.
+  =ghostherd-image-directory=, readable only by you, and the box shows
+  it above what you are writing, a preview with × to take it back.
+  Sending puts each file's name on a line after your text.  Every CLI
+  can read a file; the transcript keeps the name, so images are kept
+  =ghostherd-image-keep-days= (30) and then go.  ⌘V with text on the
+  clipboard pastes the text, there and in any box on the page.
 - What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
   Esc, 1 / 2 / 3 on a blocked agent, the screen; under /more/ C-c,
   notes, respawn (fresh or continuing) and kill, the last two asked
@@ -1010,8 +1012,9 @@ are the other tabs (below, and "What happened while you were away").
   state changes; a prompt being typed holds the refresh back.
 - The page renders text from transcripts and screens and can drive
   agents, so beyond the sanitizer it carries a Content-Security-Policy:
-  no inline script or handler, no fetch, no remote image.  Something
-  that got past the sanitizer still could not run.
+  no inline script or handler, no fetch, no image but a =data:= one
+  (an attached image's preview, which Emacs makes).  Something that
+  got past the sanitizer still could not run, nor load anything.
 
 ** The memory page
 

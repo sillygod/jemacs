@@ -545,6 +545,19 @@ carry.  So a paste with no text in it is a question --- is there an
 image? --- that Emacs answers with a file name or with why not.  A
 paste with text is the browser's, as ever.
 
+The first version put the file's name in the box where the cursor was,
+and a long path in the middle of a sentence is a poor thing to write
+around.  The image is an attachment now: a preview above the box, the
+names after the text when it is sent.  The preview is a PNG data URL
+Emacs makes with =sips= --- the page's policy loads no image from
+anywhere, and a data URL loads nothing, so letting those in is all that
+changed.  And Cmd-V pasted nothing, text included: the web view gets the
+key, but a paste is the menu's to send, and Emacs's menu does not send
+it to the web view.  So the page takes Cmd-V in a box and asks Emacs,
+which hands back the clipboard's text, or none --- and with none the
+page asks for the image.  (=s-v= in the page's buffer, for when Emacs
+has the keys, does the same.)
+
 ** What bin/ghostherd had to get right
 
 Two things, both learned the hard way:
