@@ -8,6 +8,9 @@ Usage:
   herd cancel ID
   herd list
   herd asks
+  herd hook [EVENT]                (from a CLI's lifecycle hook)
+  herd hooks install|uninstall|status [--dry-run]
+  herd hooks list [--json] [--project DIR]...
 
 TO is an agent's name, or a kind -- claude, grok, agy -- to take that
 kind's agent in your project.  TEXT `-', or left out, reads stdin.
@@ -27,6 +30,11 @@ Env, set by ghostherd at spawn:
   GHOSTHERD_RPC_FILE  where Emacs keeps the same URL, for a stale env
   GHOSTHERD_SESSION   your name; `user' when unset
 
+`hook' is what claude's, grok's and agy's lifecycle hooks run: it tells
+the herd what the agent is doing, which conversation it is on and, when
+a turn ends, what it said.  `hooks install' wires it into each CLI's
+settings; it does nothing in a CLI the herd did not start.
+
 Python's standard library only, and nothing newer than 3.8: this runs
 under whatever python3 the agent's shell finds.
 """
@@ -34,9 +42,13 @@ under whatever python3 the agent's shell finds.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -135,7 +147,8 @@ def say(msg):
 def show_answer(ask):
     if ask["status"] == "answered":
         if ask.get("auto"):
-            say("%s stopped without answering; this is its screen" % ask["to"])
+            what = "last message" if ask.get("auto_source") == "message" else "screen"
+            say("%s stopped without answering; this is its %s" % (ask["to"], what))
         sys.stdout.write(ask.get("reply") or "")
         if not (ask.get("reply") or "").endswith("\n"):
             sys.stdout.write("\n")
@@ -219,6 +232,586 @@ def cmd_asks(_args):
     return 0
 
 
+# ---- Hooks ---------------------------------------------------------------
+#
+# One command for every CLI's lifecycle hooks.  `herd hook [EVENT]' reads
+# the hook's JSON on stdin and tells the sidecar what the agent is doing,
+# which conversation it is on, and -- when a turn ends -- what it said.
+#
+# A hook must never get in its CLI's way: this always exits 0, prints
+# nothing a CLI would act on (agy wants `{}', so it gets exactly that),
+# and does nothing at all in a CLI the herd did not start.
+
+LAST_MAX = 32768
+TAIL_BYTES = 512 * 1024
+# A turn fires `working' often (agy: before every model call); the herd
+# needs it again only before its report expires (120s).
+WORKING_EVERY = 30
+# Events whose hooks agy runs: it wants a JSON object back from each.
+AGY_EVENTS = ("PreInvocation", "PostInvocation")
+
+
+def _payload():
+    if sys.stdin.isatty():
+        return {}
+    raw = sys.stdin.read()
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _cli(p):
+    "Which CLI sent payload P, from the keys only it uses."
+    if "conversationId" in p:
+        return "agy"
+    if "sessionId" in p or "hookEventName" in p:
+        return "grok"
+    if "session_id" in p:
+        return "claude"
+    return ""
+
+
+def _tail(path):
+    "PATH's last lines, newest first; [] when it cannot be read."
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").splitlines()
+    if size > TAIL_BYTES:
+        lines = lines[1:]  # cut mid-line
+    return [l for l in reversed(lines) if l.strip()]
+
+
+def _records(path):
+    for line in _tail(path):
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(o, dict):
+            yield o
+
+
+def claude_last(path):
+    """The answer that ended claude's turn, from its transcript, or None.
+
+    Walks back from the end.  A prompt of the user's met before any
+    answer means this turn's answer is not there, and what lies beyond
+    it is an older turn's -- the wrong answer, so None instead.  An
+    answer is every text block of the last assistant message: claude
+    writes one record per block.
+    """
+    found = None
+    parts = []
+    for o in _records(path):
+        if o.get("isSidechain"):
+            continue
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        content = msg.get("content")
+        if o.get("type") == "assistant":
+            texts = [b.get("text", "") for b in content or []
+                     if isinstance(b, dict) and b.get("type") == "text"] \
+                if isinstance(content, list) else []
+            text = "\n".join(t for t in texts if t.strip())
+            if found is None:
+                if text:
+                    found = msg.get("id") or ""
+                    parts.append(text)
+            elif (msg.get("id") or "") == found:
+                if text:
+                    parts.append(text)
+            else:
+                break
+        elif o.get("type") == "user" and not o.get("isMeta"):
+            prompt = (isinstance(content, str) and content.strip()) or (
+                isinstance(content, list)
+                and any(isinstance(b, dict) and b.get("type") == "text" for b in content)
+            )
+            if prompt:
+                break
+            if found is not None:
+                break
+    return "\n\n".join(reversed(parts)) or None
+
+
+def agy_last(path):
+    "The answer that ended agy's turn, from its transcript, or None."
+    for o in _records(path):
+        if o.get("type") == "USER_INPUT":
+            return None
+        if (o.get("source") == "MODEL" and o.get("type") == "PLANNER_RESPONSE"
+                and o.get("content") and not o.get("tool_calls")):
+            return o["content"]
+    return None
+
+
+def hook_report(p, event=None):
+    """What hook payload P says about the agent.
+
+    A dict of state, reason, last (its answer, when a turn ended), cli,
+    conversation and transcript; the falsy ones are not news.
+    """
+    cli = _cli(p)
+    event = p.get("hook_event_name") or event or ""
+    transcript = p.get("transcript_path") or p.get("transcriptPath") or ""
+    out = {
+        "cli": cli,
+        "conversation": p.get("session_id") or p.get("sessionId") or p.get("conversationId") or "",
+        "transcript": transcript,
+        "state": None,
+        "reason": None,
+        "last": None,
+    }
+    if event in ("UserPromptSubmit", "PreInvocation"):
+        out["state"] = "working"
+    elif event == "Notification":
+        kind = p.get("notification_type") or p.get("notificationType") or ""
+        msg = (p.get("message") or "").strip()
+        if kind == "permission_prompt" or (not kind and re.search(r"permission|approv", msg, re.I)):
+            out["state"], out["reason"] = "blocked", msg or "waiting for permission"
+    elif event == "Stop":
+        # grok fires one more Stop as the session closes: not a turn.
+        if cli == "grok" and p.get("reason") not in (None, "end_turn"):
+            return out
+        if cli == "agy" and p.get("terminationReason") == "error":
+            out["state"], out["reason"] = "done", "stopped: " + (p.get("error") or "error")
+        else:
+            out["state"], out["reason"] = "done", "finished its turn"
+        last = p.get("lastAssistantMessage") or p.get("last_assistant_message")
+        if not last and transcript:
+            last = (agy_last if cli == "agy" else claude_last)(transcript)
+        out["last"] = last[:LAST_MAX] if last else None
+    elif event == "StopFailure":
+        out["state"], out["reason"] = "done", "stopped: " + (p.get("error") or "error")
+    elif event == "StopCancelled":
+        out["state"] = "auto"  # interrupted: the screen knows better now
+    return out
+
+
+def _stamp_file(session):
+    key = hashlib.sha1(session.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(tempfile.gettempdir(), "ghostherd-hook-%s.json" % key)
+
+
+def _repeat(session, news):
+    "True when NEWS only repeats a `working' sent moments ago."
+    if news.get("state") != "working" or news.get("last"):
+        return False
+    try:
+        with open(_stamp_file(session), encoding="utf-8") as f:
+            was = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return (was.get("state") == "working"
+            and was.get("conversation") == news.get("conversation")
+            and time.time() - float(was.get("at") or 0) < WORKING_EVERY)
+
+
+def _remember(session, news):
+    try:
+        with open(_stamp_file(session), "w", encoding="utf-8") as f:
+            json.dump({"state": news.get("state"), "conversation": news.get("conversation"),
+                       "at": time.time()}, f)
+    except OSError:
+        pass
+
+
+def cmd_hook(args):
+    p = _payload()
+    agy = _cli(p) == "agy" or args.event in AGY_EVENTS
+    session = os.environ.get("GHOSTHERD_SESSION", "").strip()
+    try:
+        if session:
+            news = {k: v for k, v in hook_report(p, args.event).items() if v}
+            if (news.get("state") or news.get("conversation")) and not _repeat(session, news):
+                rpc("herd_report", dict(news, session=session), timeout=3)
+                _remember(session, news)
+    except Exception as exc:  # noqa: BLE001 -- a hook must never fail its CLI
+        say("hook: %s" % exc)
+    if agy:
+        print("{}")
+    return 0
+
+
+# ---- Installing the hooks ------------------------------------------------
+#
+# claude reads ~/.claude/settings.json, and grok reads the same file
+# unless told not to, with the same event names -- one entry serves
+# both.  agy reads ~/.gemini/config/hooks.json, as named hook specs.
+# Each command does nothing outside the herd, so it is safe in settings
+# every session of the CLI reads.
+
+MARK = '"$GHOSTHERD_HERD" hook'
+CLAUDE_EVENTS = ("SessionStart", "UserPromptSubmit", "Notification", "Stop")
+AGY_HOOKS = ("PreInvocation", "Stop")
+
+
+def claude_settings():
+    return os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+
+
+def agy_hooks_file():
+    return os.path.join(os.path.expanduser("~"), ".gemini", "config", "hooks.json")
+
+
+def _claude_command():
+    return '[ -z "$GHOSTHERD_HERD" ] || ' + MARK
+
+
+def _agy_command(event):
+    return ('if [ -n "$GHOSTHERD_HERD" ]; then %s %s; else echo \'{}\'; fi'
+            % (MARK, event))
+
+
+def _ours(handler):
+    return isinstance(handler, dict) and MARK in str(handler.get("command") or "")
+
+
+def _load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        raise HerdError("%s is not valid JSON (%s); fix it first" % (path, exc))
+    if not isinstance(data, dict):
+        raise HerdError("%s is not a JSON object" % path)
+    return data
+
+
+def _save(path, data, dry_run, preview):
+    """Write DATA to PATH, backing the old file up; with DRY_RUN, show
+    PREVIEW instead -- only the entries that change, never the rest of
+    a settings file, which may hold keys."""
+    if dry_run:
+        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        return
+    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    if os.path.exists(path):
+        backup = "%s.ghostherd-%s.bak" % (path, time.strftime("%Y%m%d%H%M%S"))
+        shutil.copy2(path, backup)
+        say("backed up %s" % backup)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".ghostherd-tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    say("wrote %s" % path)
+
+
+def claude_installed(data):
+    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    return [ev for ev in CLAUDE_EVENTS
+            if any(_ours(h) for g in hooks.get(ev) or [] if isinstance(g, dict)
+                   for h in g.get("hooks") or [])]
+
+
+def agy_installed(data):
+    spec = data.get("ghostherd") if isinstance(data.get("ghostherd"), dict) else {}
+    return [ev for ev in AGY_HOOKS if any(_ours(h) for h in spec.get(ev) or [])]
+
+
+def install_claude(data):
+    hooks = data.setdefault("hooks", {})
+    have = claude_installed(data)
+    for ev in CLAUDE_EVENTS:
+        if ev not in have:
+            hooks.setdefault(ev, []).append(
+                {"hooks": [{"type": "command", "command": _claude_command(), "timeout": 10}]})
+    return [ev for ev in CLAUDE_EVENTS if ev not in have]
+
+
+def uninstall_claude(data):
+    hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
+    removed = []
+    for ev in list(hooks):
+        groups = hooks[ev] if isinstance(hooks[ev], list) else []
+        kept = []
+        for g in groups:
+            if isinstance(g, dict) and isinstance(g.get("hooks"), list):
+                left = [h for h in g["hooks"] if not _ours(h)]
+                if len(left) != len(g["hooks"]):
+                    removed.append(ev)
+                if left:
+                    kept.append(dict(g, hooks=left))
+            else:
+                kept.append(g)
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    if "hooks" in data and not data["hooks"]:
+        del data["hooks"]
+    return removed
+
+
+def install_agy(data):
+    have = agy_installed(data)
+    data["ghostherd"] = {
+        ev: [{"type": "command", "command": _agy_command(ev), "timeout": 10}]
+        for ev in AGY_HOOKS
+    }
+    return [ev for ev in AGY_HOOKS if ev not in have]
+
+
+def cmd_hooks(args):
+    claude_entry = {"hooks": [{"type": "command", "command": _claude_command(), "timeout": 10}]}
+    targets = (
+        ("claude/grok", claude_settings(), claude_installed, install_claude, uninstall_claude,
+         lambda evs: {"hooks": {ev: [claude_entry] for ev in evs}}),
+        ("agy", agy_hooks_file(), agy_installed, install_agy,
+         lambda d: list(d.pop("ghostherd", {}) or {}),
+         lambda evs: {"ghostherd": {ev: [{"type": "command", "command": _agy_command(ev),
+                                          "timeout": 10}] for ev in evs}}),
+    )
+    for name, path, installed, install, uninstall, preview in targets:
+        data = _load(path)
+        if args.action == "status":
+            have = installed(data)
+            print("%-12s %s: %s" % (name, path, ", ".join(have) if have else "not installed"))
+            continue
+        changed = install(data) if args.action == "install" else uninstall(data)
+        if changed:
+            verb = {"install": "add", "uninstall": "remove"}[args.action]
+            print("%-12s %s %s: %s" % (
+                name, ("would " + verb + " in") if args.dry_run else (verb + "ed in"),
+                path, ", ".join(changed)))
+            _save(path, data, args.dry_run, preview(changed))
+        else:
+            print("%-12s %s: nothing to do" % (name, path))
+    return 0
+
+
+# ---- Every hook each CLI runs ----------------------------------------------
+#
+# `herd hooks list' reads every place claude, grok and agy look for hooks
+# -- user settings, a project's, plugins, grok's own directory and its
+# Claude/Cursor compatibility -- and lists each handler with the file and
+# line it is on, and which CLIs run it.  Read-only.
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _line(text, needle, start=0):
+    "1-based line of NEEDLE in TEXT at or after START, or None."
+    i = text.find(needle, max(0, start))
+    return None if i < 0 else text.count("\n", 0, i) + 1
+
+
+def _toml(text):
+    try:
+        import tomllib  # 3.11+
+    except ImportError:
+        return None
+    try:
+        return tomllib.loads(text)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _grok_compat(vendor):
+    "Whether grok reads VENDOR's hooks (on unless its config says not)."
+    data = _toml(_read(os.path.expanduser("~/.grok/config.toml")) or "") or {}
+    cell = ((data.get("compat") or {}).get(vendor) or {}) if isinstance(data, dict) else {}
+    return cell.get("hooks", True) is not False
+
+
+def _entries(path, text, events, readers, scope, source, enabled=True):
+    """Handlers in EVENTS, a {event: [group or handler]} map from PATH.
+
+    A group is {matcher, hooks: [handler]}; a bare handler (agy's flat
+    events, Cursor's) stands for itself."""
+    out = []
+    for ev, items in (events or {}).items():
+        if not isinstance(items, list):
+            continue
+        at = _line(text, '"%s"' % ev) or _line(text, ev) or 1
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            group = isinstance(item.get("hooks"), list)
+            for h in item["hooks"] if group else [item]:
+                if not isinstance(h, dict):
+                    continue
+                cmd = str(h.get("command") or h.get("url") or "")
+                escaped = json.dumps(cmd, ensure_ascii=False)[1:-1]
+                line = (cmd and (_line(text, escaped, _line_offset(text, at))
+                                 or _line(text, cmd, _line_offset(text, at)))) or at
+                out.append({
+                    "file": path, "line": line, "readers": readers, "scope": scope,
+                    "source": source, "event": ev,
+                    "matcher": str(item.get("matcher") or "") if group else "",
+                    "command": cmd, "ours": _ours(h), "enabled": enabled,
+                })
+    return out
+
+
+def _line_offset(text, line):
+    "Character offset where 1-based LINE starts."
+    off = 0
+    for _ in range(line - 1):
+        nl = text.find("\n", off)
+        if nl < 0:
+            break
+        off = nl + 1
+    return off
+
+
+def _claude_style(path, readers, scope, source, enabled=True):
+    text = _read(path)
+    if text is None:
+        return []
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return [{"file": path, "line": 1, "readers": readers, "scope": scope, "source": source,
+                 "event": "", "matcher": "", "command": "", "ours": False, "enabled": enabled,
+                 "error": "not valid JSON"}]
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    return _entries(path, text, hooks if isinstance(hooks, dict) else {}, readers, scope, source, enabled)
+
+
+def _agy_file(path, scope, source):
+    "agy's hooks.json: named specs, each {enabled?, Event: [...]}."
+    text = _read(path)
+    if text is None:
+        return []
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return [{"file": path, "line": 1, "readers": ["agy"], "scope": scope, "source": source,
+                 "event": "", "matcher": "", "command": "", "ours": False, "enabled": True,
+                 "error": "not valid JSON"}]
+    out = []
+    for name, spec in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(spec, dict):
+            continue
+        events = {k: v for k, v in spec.items() if k != "enabled"}
+        out += _entries(path, text, events, ["agy"], scope, "%s · %s" % (source, name),
+                        spec.get("enabled", True) is not False)
+    return out
+
+
+def _claude_plugins(settings_path):
+    "hooks.json of each plugin claude's settings enable."
+    data = {}
+    text = _read(settings_path)
+    try:
+        data = json.loads(text) if text else {}
+    except ValueError:
+        pass
+    found = []
+    cache = os.path.expanduser("~/.claude/plugins/cache")
+    for key, on in ((data.get("enabledPlugins") or {}).items() if isinstance(data, dict) else []):
+        if not on or "@" not in key:
+            continue
+        name, market = key.split("@", 1)
+        base = os.path.join(cache, market, name)
+        try:
+            versions = sorted((os.path.join(base, v) for v in os.listdir(base)),
+                              key=os.path.getmtime, reverse=True)
+        except OSError:
+            continue
+        for v in versions[:1]:
+            hooks = os.path.join(v, "hooks", "hooks.json")
+            if os.path.exists(hooks):
+                found.append((hooks, name))
+    return found
+
+
+def _glob(pattern):
+    import glob
+    return sorted(glob.glob(os.path.expanduser(pattern)))
+
+
+def inventory(projects=()):
+    """Every hook claude, grok and agy would run, and every file looked in."""
+    claude_readers = ["claude"] + (["grok"] if _grok_compat("claude") else [])
+    places = []  # (kind, path, readers, scope, source, enabled)
+    for scope, root in [("global", "~")] + [(p, p) for p in projects]:
+        for name in ("settings.json", "settings.local.json"):
+            path = os.path.join(os.path.expanduser(root), ".claude", name)
+            places.append(("claude", path, claude_readers, scope, "claude " + name, True))
+    for path, name in _claude_plugins(claude_settings()):
+        places.append(("claude", path, ["claude"], "global", "plugin " + name, True))
+    for path in _glob("~/.grok/hooks/*.json"):
+        places.append(("claude", path, ["grok"], "global", "grok hooks", True))
+    for path in _glob("~/.grok/hooks-disabled/*.json"):
+        places.append(("claude", path, ["grok"], "global", "grok hooks (disabled)", False))
+    for p in projects:
+        for path in _glob(os.path.join(p, ".grok", "hooks", "*.json")):
+            places.append(("claude", path, ["grok"], p, "grok hooks", True))
+    if _grok_compat("cursor"):
+        for scope, root in [("global", "~")] + [(p, p) for p in projects]:
+            places.append(("claude", os.path.join(os.path.expanduser(root), ".cursor", "hooks.json"),
+                           ["grok"], scope, "cursor hooks", True))
+    places.append(("toml", os.path.expanduser("~/.grok/config.toml"), ["grok"], "global", "grok config", True))
+    places.append(("agy", agy_hooks_file(), ["agy"], "global", "agy hooks.json", True))
+    for path in _glob("~/.gemini/config/plugins/*/hooks.json"):
+        places.append(("agy", path, ["agy"], "global", "agy plugin", True))
+    for p in projects:
+        places.append(("agy", os.path.join(p, ".agents", "hooks.json"), ["agy"], p, "agy hooks.json", True))
+        for path in _glob(os.path.join(p, ".agents", "plugins", "*", "hooks.json")):
+            places.append(("agy", path, ["agy"], p, "agy plugin", True))
+
+    hooks, files = [], []
+    for kind, path, readers, scope, source, enabled in places:
+        exists = os.path.exists(path)
+        files.append({"file": path, "readers": readers, "scope": scope, "source": source,
+                      "exists": exists, "enabled": enabled})
+        if not exists:
+            continue
+        if kind == "agy":
+            hooks += _agy_file(path, scope, source)
+        elif kind == "toml":
+            text = _read(path) or ""
+            data = _toml(text)
+            if isinstance(data, dict) and isinstance(data.get("hooks"), dict):
+                hooks += _entries(path, text, data["hooks"], readers, scope, source)
+            elif data is None and re.search(r"^\s*\[\[?hooks", text, re.M):
+                hooks.append({"file": path, "line": _line(text, "hooks") or 1, "readers": readers,
+                              "scope": scope, "source": source, "event": "", "matcher": "",
+                              "command": "", "ours": False, "enabled": True,
+                              "error": "has hooks this python3 cannot read (TOML needs 3.11)"})
+        else:
+            hooks += _claude_style(path, readers, scope, source, enabled)
+
+    want = {"claude": list(CLAUDE_EVENTS), "grok": list(CLAUDE_EVENTS), "agy": list(AGY_HOOKS)}
+    ghostherd = {}
+    for cli, events in want.items():
+        have = sorted({h["event"] for h in hooks
+                       if h["ours"] and h["enabled"] and cli in h["readers"]})
+        ghostherd[cli] = {"have": [e for e in events if e in have], "want": events}
+    return {"hooks": hooks, "files": files, "ghostherd": ghostherd}
+
+
+def cmd_hooks_list(args):
+    inv = inventory([os.path.expanduser(p) for p in args.project or []])
+    if args.json:
+        print(json.dumps(inv, ensure_ascii=False))
+        return 0
+    for cli, g in inv["ghostherd"].items():
+        print("%-7s ghostherd %d/%d" % (cli, len(g["have"]), len(g["want"])))
+    for h in inv["hooks"]:
+        print("%-16s %-16s %-12s %s  %s:%s%s" % (
+            ",".join(h["readers"]), h["event"], h["matcher"] or "-", h["command"][:60],
+            h["file"], h["line"], "" if h["enabled"] else "  (disabled)"))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="herd",
@@ -246,6 +839,15 @@ def main(argv=None):
         p.set_defaults(fn=fn)
     sub.add_parser("list", help="the herd").set_defaults(fn=cmd_list)
     sub.add_parser("asks", help="open and recent asks").set_defaults(fn=cmd_asks)
+    p = sub.add_parser("hook", help="run by a CLI's lifecycle hook, payload on stdin")
+    p.add_argument("event", nargs="?")
+    p.set_defaults(fn=cmd_hook)
+    p = sub.add_parser("hooks", help="wire `hook' into claude, grok and agy, or list every hook")
+    p.add_argument("action", choices=("install", "uninstall", "status", "list"))
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--project", action="append", help="also a project's own hooks (repeatable)")
+    p.set_defaults(fn=lambda a: cmd_hooks_list(a) if a.action == "list" else cmd_hooks(a))
     args = parser.parse_args(argv)
     if not getattr(args, "fn", None):
         parser.print_help(sys.stderr)

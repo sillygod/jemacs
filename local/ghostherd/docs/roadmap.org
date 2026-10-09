@@ -522,7 +522,7 @@ which project in one view.  Overlaps the overlay on purpose.
   a time, the Log tab answers "who was stuck", and a dashboard to keep
   open is what the overlay was built to avoid
 
-* Phase 3.16 — Asks: hand work to another agent, get the answer back  *(this tree)*
+* Phase 3.16 — Asks: hand work to another agent, get the answer back  *(done)*
 
 Goal: Claude asks the agy in its project to fetch, review or commit,
 and gets the result as data inside the task that asked.
@@ -553,6 +553,43 @@ and gets the result as data inside the task that asked.
   mean mapping each session to its file per CLI
 - Asks from Telegram or the page: both are the human, who has the
   prompt already
+
+* Phase 3.17 — Agents report through their hooks; the herd knows their conversations  *(this tree)*
+
+Goal: state from the CLIs themselves rather than their screens, for all
+three, without an Emacs server; and each agent's conversation and last
+answer, for asks, respawn and the page.
+
+** What shipped
+
+- [X] =herd hook [EVENT]=: claude, grok and agy payloads to state,
+  conversation, transcript and last answer; fails open, silent
+  outside the herd, =working= at most every 30s
+- [X] =herd hooks install|uninstall|status [--dry-run]= and
+  =ghostherd-install-hooks=: adds to =~/.claude/settings.json= (claude
+  and grok) and =~/.gemini/config/hooks.json= (agy), backs up, dry run
+  shows only the entries it adds
+- [X] =herd_report= on the sidecar; reports to Emacs on the tick through
+  =ghostherd-report=; links kept by the sidecar and sent each tick
+- [X] =herd hooks list= and the Agents tab's hook list: every hook each
+  CLI runs, where it lives, ghostherd's marked; a click opens the file
+  at the line (by index -- the page never names a path)
+- [X] An unanswered ask closes with the taker's last answer
+- [X] Respawn resumes the exact conversation; =ghostherd--resumed-by=
+  trusts the hooks; explain and the Agents tab show the conversation
+  and the last answer
+- [X] 25 pytest (every CLI's payloads, transcripts read from the tail,
+  the installer on a fake home, the hook inventory), 12 ERT, 9 more
+  end-to-end checks, WebKit checks of the hook list and of a page with
+  nothing installed; each guard mutation-tested
+
+** What is left
+
+- [ ] Run the hooks on the real CLIs for a few days: whether claude's
+  transcript holds the last answer by the time =Stop= fires is the one
+  thing the tests cannot answer, and a =Stop= that beats it costs only
+  the screen fallback
+- [ ] agy has no permission event; its =blocked= is still the screen's
 
 * Phase 4 — Ecosystem (only if still useful)
 

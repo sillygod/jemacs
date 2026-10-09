@@ -1740,10 +1740,13 @@ one, and otherwise prompts."
                        (ghostherd--read-session "Respawn agent: ")))
           (spec (ignore-errors
                   (ghostherd--spec (ghostherd-session-kind session))))
-          (continuable (plist-get spec :continue-args)))
+          (exact (ghostherd--resume-args (ghostherd-session-kind session)
+                                         (ghostherd-session-conversation session)))
+          (continuable (or exact (plist-get spec :continue-args))))
      (list session
            (and continuable
-                (y-or-n-p (format "Resume the previous conversation (%s)? "
+                (y-or-n-p (format "Resume %s (%s)? "
+                                  (if exact "its conversation" "the previous conversation")
                                   (string-join continuable " ")))))))
   (setq session (ghostherd-get session))
   (unless session
@@ -1751,9 +1754,17 @@ one, and otherwise prompts."
   (let* ((kind (ghostherd-session-kind session))
          (spec (ghostherd--spec kind))
          (recipe (ghostherd-session-recipe session))
-         (args (append (plist-get recipe :args)
-                       (and continue (plist-get spec :continue-args)))))
-    (when (and continue (null (plist-get spec :continue-args)))
+         ;; The conversation its hooks named, exactly, rather than
+         ;; `--continue' -- the most recent one in the directory, which
+         ;; with two agents of a kind in one project may be the other's.
+         (exact (and continue
+                     (ghostherd--resume-args kind (ghostherd-session-conversation session))))
+         (args (cond (exact (append (ghostherd--without-resume kind (plist-get recipe :args))
+                                    exact))
+                     (continue (append (plist-get recipe :args)
+                                       (plist-get spec :continue-args)))
+                     (t (plist-get recipe :args)))))
+    (when (and continue (not exact) (null (plist-get spec :continue-args)))
       (user-error "%s has no resume flag" kind))
     ;; Free both the buffer name and the registry id before respawning:
     ;; `ghostherd-spawn' refuses to clobber an existing buffer.
@@ -1822,14 +1833,20 @@ Found by its arguments, which the recipe keeps across restarts.  An
 agent forked from ID is on a conversation of its own and does not
 count.  One that reached ID some other way is not found:
 `ghostherd-memory-page' warns about a transcript written to recently."
-  (seq-find (lambda (s)
-              (let ((args (ghostherd-session-args s))
-                    (fork (ignore-errors
-                            (plist-get (ghostherd--spec (ghostherd-session-kind s)) :fork-args))))
-                (and (member id args)
-                     (not (seq-some (lambda (f) (member f args)) fork))
-                     (ghostherd--session-live-p s))))
-            (hash-table-values ghostherd--sessions)))
+  (let ((live (seq-filter #'ghostherd--session-live-p
+                         (hash-table-values ghostherd--sessions))))
+    ;; An agent's hooks name the conversation it is on, however it got
+    ;; there; its arguments only say where it started.
+    (or (seq-find (lambda (s) (equal (ghostherd-session-conversation s) id)) live)
+        (seq-find (lambda (s)
+                    (let ((args (ghostherd-session-args s))
+                          (fork (ignore-errors
+                                  (plist-get (ghostherd--spec (ghostherd-session-kind s))
+                                             :fork-args))))
+                      (and (member id args)
+                           (not (seq-some (lambda (f) (member f args)) fork))
+                           (not (ghostherd-session-conversation s)))))
+                  live))))
 
 (cl-defun ghostherd-resume (kind id directory &key fork title)
   "Spawn a KIND agent in DIRECTORY on conversation ID, and show it.
@@ -1976,6 +1993,14 @@ otherwise prompts."
                             ghostherd-report-ttl))
             (unless (ghostherd--fresh-report session)
               (insert "           expired — detection has it back\n"))))
+        (when-let* ((link (ghostherd--link session)))
+          (insert (format "  talks    %s  (%s, by its hooks)\n"
+                          (let ((c (plist-get link :conversation)))
+                            (if (and c (not (string-empty-p c))) c "—"))
+                          (plist-get link :cli)))
+          (let ((said (plist-get link :last_head)))
+            (when (and said (not (string-empty-p said)))
+              (insert (format "  said     %s\n" said)))))
         (insert (format "  host     %s  (%s)\n"
                         (or (ghostherd-session-host-id session) "—")
                         (ghostherd-session-backend session)))
@@ -3597,7 +3622,35 @@ the answer comes back to you as a message once you are idle.  An
 agent answering an ask cannot ask in turn.  Methods: herd_ask {to,
 body, from, wait}, herd_reply {id, body, from}, herd_await {id,
 timeout}, herd_cancel {id}, herd_asks.
+
+Hooks: `\"$GHOSTHERD_HERD\" hook [EVENT]' reads a CLI hook's JSON on
+stdin and posts herd_report {session, state, reason, cli,
+conversation, transcript, last}.  `herd hooks install' wires it in.
 ")
+
+;;;###autoload
+(defun ghostherd-install-hooks (&optional uninstall)
+  "Wire `herd hook' into claude, grok and agy, after showing the change.
+claude and grok share ~/.claude/settings.json; agy reads
+~/.gemini/config/hooks.json.  The commands do nothing in a CLI the
+herd did not start, so every session of each CLI can carry them.
+With prefix UNINSTALL, take them out again."
+  (interactive "P")
+  (let* ((client (or (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client))
+                     (user-error "No bin/herd next to ghostherd")))
+         (action (if uninstall "uninstall" "install"))
+         (run (lambda (&rest args)
+                (with-temp-buffer
+                  (cons (apply #'call-process client nil t nil "hooks" action args)
+                        (string-trim (buffer-string)))))))
+    (pcase-let ((`(,status . ,plan) (funcall run "--dry-run")))
+      (unless (eq status 0)
+        (user-error "herd hooks %s: %s" action plan))
+      (with-help-window "*ghostherd hooks*"
+        (princ plan))
+      (when (yes-or-no-p (format "%s ghostherd's hooks as shown? " (capitalize action)))
+        (pcase-let ((`(,status . ,out) (funcall run)))
+          (message "%s%s" out (if (eq status 0) "" "  (failed)")))))))
 
 (defun ghostherd--herd-write-protocol ()
   "Refresh PROTOCOL.md next to rpc.url."
@@ -3751,8 +3804,11 @@ The sidecar ignores this for an ask already answered."
         (from (plist-get ask :from)))
     (pcase (plist-get ask :status)
       ("answered" (if (plist-get ask :auto)
-                      (format "stopped without answering ask %s; %s got the screen"
-                              id from)
+                      (format "stopped without answering ask %s; %s got %s"
+                              id from
+                              (if (equal (plist-get ask :auto_source) "message")
+                                  "its last message"
+                                "the screen"))
                     (format "answered ask %s for %s: %s" id from
                             (or (plist-get ask :reply_head) ""))))
       ("failed" (format "ask %s from %s failed: %s" id from
@@ -3783,6 +3839,64 @@ from here on, and closed now if the taker is already sitting idle."
             (ghostherd--ask-settle id session
                                    (eq (ghostherd-session-state session) 'dead))))))
     (setq ghostherd--herd-asks asks)))
+
+;;; What agents say about themselves, through their CLI's hooks
+;;
+;; `herd hook' runs in claude's, grok's and agy's lifecycle hooks and
+;; posts to the sidecar: the state the agent is in, the conversation it
+;; is on, and the answer that ended its turn.  States come here on the
+;; tick and go through `ghostherd-report', so they keep its TTL and its
+;; place in the authority order.  The rest stays in the sidecar, and a
+;; copy of it rides each tick.
+
+(defvar ghostherd--herd-links (make-hash-table :test 'equal)
+  "Session name -> what its hooks last said, from the last `herd_tick'.
+A plist of :cli, :conversation, :transcript, :last_head (first line of
+its last answer) and :last_ms.  Keyed by name because that is what the
+agent's environment carries.")
+
+(defun ghostherd--herd-take-reports (reports)
+  "Apply REPORTS from a `herd_tick': each agent's own word on its state."
+  (dolist (r reports)
+    (let ((session (ghostherd-get (plist-get r :session)))
+          (state (intern-soft (or (plist-get r :state) "")))
+          (reason (plist-get r :reason)))
+      (when (and session (or (eq state 'auto) (memq state ghostherd-report-states)))
+        (ghostherd-report session state
+                          (and reason (not (string-empty-p reason)) reason))))))
+
+(defun ghostherd--herd-take-links (links)
+  "Keep LINKS from a `herd_tick', replacing the last set."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (l links)
+      (puthash (plist-get l :session) l table))
+    (setq ghostherd--herd-links table)))
+
+(defun ghostherd--link (session)
+  "What SESSION's hooks last said, or nil."
+  (when-let* ((s (ghostherd-get session)))
+    (gethash (ghostherd-session-name s) ghostherd--herd-links)))
+
+(defun ghostherd-session-conversation (session)
+  "The conversation SESSION is on, as its own hooks named it, or nil."
+  (let ((id (plist-get (ghostherd--link session) :conversation)))
+    (and (stringp id) (not (string-empty-p id)) id)))
+
+(defun ghostherd--without-resume (kind args)
+  "ARGS less any flag that picks a conversation for KIND.
+A respawn onto a known conversation adds its own; the recipe's
+`--continue', or the `-r' of the conversation it was first started
+on, would contradict it."
+  (let* ((spec (ignore-errors (ghostherd--spec kind)))
+         (resume (car (plist-get spec :resume-args)))
+         (drop (append (plist-get spec :continue-args) (plist-get spec :fork-args)))
+         out)
+    (while args
+      (let ((a (pop args)))
+        (cond ((and resume (equal a resume)) (pop args))
+              ((member a drop))
+              (t (push a out)))))
+    (nreverse out)))
 
 (defun ghostherd--explain-text (session)
   "One-screen explanation of SESSION state, for Telegram."
@@ -3854,6 +3968,8 @@ from here on, and closed now if the taker is already sitting idle."
                                (append acks nil)))
          (ghostherd--herd-deliver result)
          (ghostherd--herd-take-asks (plist-get result :asks))
+         (ghostherd--herd-take-links (plist-get result :links))
+         (ghostherd--herd-take-reports (plist-get result :reports))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :ack_ids (vconcat (append acks nil))

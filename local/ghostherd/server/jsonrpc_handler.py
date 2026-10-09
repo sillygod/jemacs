@@ -62,6 +62,8 @@ class JsonRpcHandler:
             "herd_detach": self._herd_detach,
             "herd_settle": self._herd_settle,
             "herd_asks": self._herd_asks,
+            "herd_report": self._herd_report,
+            "herd_link": self._herd_link,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -243,6 +245,23 @@ class JsonRpcHandler:
 
     def _herd_asks(self, _params: dict) -> dict:
         return get_herd().recent_asks()
+
+    def _herd_report(self, params: dict) -> dict:
+        def text(key):
+            v = params.get(key)
+            return str(v) if v not in (None, "") else None
+        return get_herd().report(
+            session=str(params.get("session") or ""),
+            state=text("state"),
+            reason=text("reason"),
+            cli=text("cli"),
+            conversation=text("conversation"),
+            transcript=text("transcript"),
+            last=text("last"),
+        )
+
+    def _herd_link(self, params: dict) -> dict:
+        return {"link": get_herd().link(str(params.get("session") or ""))}
 
 
 handler = JsonRpcHandler()

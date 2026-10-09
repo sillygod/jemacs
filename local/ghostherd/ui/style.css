@@ -281,6 +281,21 @@ mark.here { background: var(--warn); color: #0e1116; }
 .lvl-hot { background: var(--st-dead); }
 .upct { text-align: right; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
 .ureset { grid-column: 2 / 4; font-size: 11px; color: var(--muted); }
+#herd .error { color: var(--minus); margin: 12px 0; }
+.uhooks { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 11.5px; }
+.hstat.ok { color: var(--plus); }
+.hstat.miss { color: var(--warn); }
+.hlist { margin-top: 2px; }
+.hrow { padding: 4px 0; border-top: 1px dashed var(--line); min-width: 0; font-size: 11px; }
+.hrow:first-child { border-top: 0; }
+.hrow.off { opacity: 0.55; }
+.hhead { display: flex; flex-wrap: wrap; column-gap: 6px; align-items: baseline; min-width: 0; }
+.hev { color: var(--text); font-weight: 600; }
+.hmatch { color: var(--muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.hmine { color: var(--accent); }
+.hfile { margin-left: auto; flex-shrink: 0; font-size: 11px; }
+.hcmd { font-family: var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcmd.herr { color: var(--warn); font-family: inherit; }
 .uerr { font-size: 11px; color: var(--warn); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pgroup { margin: 0 0 16px; }
@@ -338,6 +353,8 @@ mark.here { background: var(--warn); color: #0e1116; }
 .aask.ask-failed .awhat, .aask.ask-cancelled .awhat { color: var(--minus); }
 .aask .atext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .aask .when { margin-left: auto; flex-shrink: 0; }
+.aask.said { margin-top: 3px; }
+.aask.said .awhat { color: var(--muted); }
 .aacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
 .aacts.more { margin-top: 4px; }
 .answer { min-width: 2.2em; font-weight: 600; }

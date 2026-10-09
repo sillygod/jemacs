@@ -649,7 +649,7 @@
 
   const RANK = { blocked: 0, working: 1, starting: 2, done: 3, idle: 4, dead: 5 };
   let herdNow = {
-    data: null, screens: {}, open: new Set(), more: new Set(),
+    data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
   };
 
@@ -680,7 +680,39 @@
     return d <= 0 ? "reset due" : "resets in " + span(d);
   }
 
-  function usageHtml(list) {
+  // A CLI's hooks, under its usage: whether ghostherd's are in, and on
+  // a click every hook it runs, each opening its file at its line.
+  function hooksHtml(kind, hooks) {
+    if (!hooks || !hooks.status) return "";
+    const raw = hooks.status[kind];
+    const st = raw && { have: raw.have || [], want: raw.want || [] };
+    const mine = (hooks.list || []).filter((h) => (h.readers || []).includes(kind));
+    if (!st && !mine.length) return "";
+    const full = st && st.want.length > 0 && st.have.length === st.want.length;
+    const stat = st
+      ? '<span class="hstat ' + (full ? "ok" : "miss") + '" title="' +
+        esc(full ? "ghostherd's hooks: " + st.have.join(", ")
+                 : "Missing: " + st.want.filter((e) => !st.have.includes(e)).join(", ") + ".  M-x ghostherd-install-hooks") + '">' +
+        (full ? "ghostherd ✓" : st.have.length ? "ghostherd " + st.have.length + "/" + st.want.length : "ghostherd not installed") + "</span>"
+      : "";
+    const open = herdNow.hooksOpen.has(kind);
+    const rows = open ? '<div class="hlist">' + (mine.length ? mine.map((h) =>
+      '<div class="hrow' + (h.ours ? " ours" : "") + (h.enabled === false ? " off" : "") + '">' +
+      '<div class="hhead"><span class="hev">' + esc(h.event || "?") + "</span>" +
+      (h.matcher ? '<span class="hmatch">' + esc(h.matcher) + "</span>" : "") +
+      (h.ours ? '<span class="hmine">ghostherd</span>' : "") +
+      (h.enabled === false ? '<span class="hmatch">disabled</span>' : "") +
+      '<button type="button" class="linkish hfile" data-act="a:hook-open" data-i="' + h.i + '" title="' +
+      esc(h.file + ":" + h.line + (h.scope && h.scope !== "global" ? "  (" + h.scope + ")" : "")) + '">' +
+      esc(h.name + ":" + h.line) + "</button></div>" +
+      (h.error ? '<div class="hcmd herr">' + esc(h.error) + "</div>"
+               : '<div class="hcmd" title="' + esc(h.command) + '">' + esc(h.command) + "</div>") +
+      "</div>").join("") : '<p class="muted">No hooks.</p>') + "</div>" : "";
+    return '<div class="uhooks"><button type="button" class="linkish" data-act="a:hooks" data-kind="' + esc(kind) + '">' +
+      (open ? "hide hooks" : "hooks · " + mine.length) + "</button>" + stat + "</div>" + rows;
+  }
+
+  function usageHtml(list, hooks) {
     if (!list || !list.length) {
       return '<p class="empty">No usage yet: the first reading arrives a few seconds after the page opens.</p>';
     }
@@ -704,7 +736,7 @@
         : "";
       return '<div class="ucard"><div class="uhead">' + agentBadge(k.kind) +
         '<span class="when">' + (k.fetched ? esc(when(k.fetched / 1000)) : "") + "</span></div>" +
-        (wins || (err ? "" : '<p class="muted">No windows reported.</p>')) + err + "</div>";
+        (wins || (err ? "" : '<p class="muted">No windows reported.</p>')) + err + hooksHtml(k.kind, hooks) + "</div>";
     }).join("");
   }
 
@@ -779,6 +811,9 @@
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
       (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
+        '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
+        '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
     );
@@ -794,7 +829,7 @@
       box.innerHTML = '<p class="empty">Asking Emacs for the herd…</p>';
       return;
     }
-    u.innerHTML = usageHtml(d.usage);
+    u.innerHTML = usageHtml(d.usage, d.hooks);
     const kinds = d.kinds || [];
     const by = new Map();
     (d.agents || []).forEach((a) => {
@@ -836,6 +871,13 @@
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
     const project = group && group.getAttribute("data-project");
+    if (act === "hooks") {
+      const kind = el.getAttribute("data-kind");
+      if (herdNow.hooksOpen.has(kind)) herdNow.hooksOpen.delete(kind);
+      else herdNow.hooksOpen.add(kind);
+      return renderAgents();
+    }
+    if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
     if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort") return emit(act, { name });
     if (act === "screen") {
@@ -1448,7 +1490,15 @@
       herdNow.data = p || null;
       if (view !== "agents") return;
       if (busyEditing()) herdNow.pending = true;
-      else renderAgents();
+      else {
+        // A bug in drawing must say so, not leave "Asking Emacs…" up.
+        try {
+          renderAgents();
+        } catch (e) {
+          const box = $("herd");
+          if (box) box.innerHTML = '<p class="error">Could not draw the herd: ' + esc(String(e)) + "</p>";
+        }
+      }
     },
 
     setScreen: (p) => {

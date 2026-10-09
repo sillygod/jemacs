@@ -2801,6 +2801,104 @@ at once when its taker already sits idle."
     (should (string-suffix-p "/bin/herd" client))
     (should (file-executable-p client))))
 
+;;; What agents say about themselves
+
+(defconst ghostherd-tests--conv "c0ffee00-1111-2222-3333-444455556666")
+
+(ert-deftest ghostherd-test-hook-reports-go-through-report ()
+  "A hook's state keeps the report's TTL and authority: it is a report."
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (let ((s (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'idle)))
+      (cl-letf (((symbol-function 'run-with-timer) #'ignore))
+        (ghostherd--herd-take-reports
+         '((:session "agy-a" :state "blocked" :reason "Approve run_command?")
+           (:session "agy-a" :state "sleeping" :reason "")
+           (:session "nobody" :state "done" :reason ""))))
+      (should (equal (seq-take (gethash "agy-a" ghostherd--reports) 2)
+                     '(blocked "Approve run_command?")))
+      (should (equal (ghostherd--fresh-report s) '(blocked . "Approve run_command?")))
+      (cl-letf (((symbol-function 'run-with-timer) #'ignore))
+        (ghostherd--herd-take-reports '((:session "agy-a" :state "auto" :reason ""))))
+      (should-not (gethash "agy-a" ghostherd--reports)))))
+
+(ert-deftest ghostherd-test-hook-links-name-the-conversation ()
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "claude-a" :kind 'claude)))
+      (ghostherd--herd-take-links
+       `((:session "claude-a" :cli "claude" :conversation ,ghostherd-tests--conv
+                   :transcript "/t.jsonl" :last_head "Done." :last_ms 1.0)))
+      (should (equal (ghostherd-session-conversation s) ghostherd-tests--conv))
+      (should (equal (plist-get (ghostherd--link s) :last_head) "Done."))
+      (ghostherd--herd-take-links '((:session "claude-a" :cli "claude" :conversation "")))
+      (should-not (ghostherd-session-conversation s)))))
+
+(ert-deftest ghostherd-test-respawn-resumes-its-own-conversation ()
+  "`--continue' takes the newest conversation in the directory -- with two
+claudes in one project, possibly the other's.  The hooks know which."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "claude-a" :kind 'claude
+                                       :args '("--model" "opus" "-r" "old-one" "--fork-session")))
+          spawned)
+      (ghostherd--herd-take-links
+       `((:session "claude-a" :cli "claude" :conversation ,ghostherd-tests--conv)))
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (_kind &rest plist) (setq spawned plist) nil)))
+        (ghostherd-respawn s t))
+      (should (equal (plist-get spawned :args)
+                     (list "--model" "opus" "-r" ghostherd-tests--conv))))))
+
+(ert-deftest ghostherd-test-respawn-falls-back-to-continue ()
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "claude-a" :kind 'claude :args '("--model" "opus")))
+          spawned)
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (_kind &rest plist) (setq spawned plist) nil)))
+        (ghostherd-respawn s t))
+      (should (equal (plist-get spawned :args) '("--model" "opus" "--continue"))))))
+
+(ert-deftest ghostherd-test-resumed-by-trusts-the-hooks ()
+  "An agent that got onto a conversation by itself is found by its hooks;
+one whose hooks name another conversation is not found by stale args."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (ghostherd-tests--session :name "claude-a" :kind 'claude :args nil)
+    (ghostherd-tests--session :name "claude-b" :kind 'claude :args '("-r" "id-1"))
+    (ghostherd--herd-take-links
+     '((:session "claude-a" :conversation "id-1")
+       (:session "claude-b" :conversation "id-2")))
+    (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_) t)))
+      (should (equal (ghostherd-session-name (ghostherd--resumed-by "id-1")) "claude-a"))
+      (should (equal (ghostherd-session-name (ghostherd--resumed-by "id-2")) "claude-b")))))
+
+(ert-deftest ghostherd-test-explain-names-the-conversation ()
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "agy-a" :kind 'agy :backend 'fake)))
+      (setq ghostherd-tests--fake-screen "")
+      (ghostherd--herd-take-links
+       '((:session "agy-a" :cli "agy" :conversation "a-456" :last_head "Committed ee5fee6.")))
+      (save-window-excursion (ghostherd-explain s))
+      (with-current-buffer "*ghostherd explain*"
+        (should (string-search "talks    a-456  (agy, by its hooks)" (buffer-string)))
+        (should (string-search "said     Committed ee5fee6." (buffer-string)))))))
+
+(ert-deftest ghostherd-test-ask-outcome-says-whose-words ()
+  (should (equal (ghostherd--ask-outcome
+                  '(:id "a1" :from "claude-main" :status "answered" :auto t :auto_source "message"))
+                 "stopped without answering ask a1; claude-main got its last message"))
+  (should (equal (ghostherd--ask-outcome
+                  '(:id "a1" :from "claude-main" :status "answered" :auto t :auto_source "screen"))
+                 "stopped without answering ask a1; claude-main got the screen")))
+
+(ert-deftest ghostherd-test-install-hooks-shows-then-asks ()
+  "Nothing is written unless the plan shown is accepted."
+  (let (calls)
+    (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+              ((symbol-function 'call-process)
+               (lambda (_prog _in _buf _disp &rest args)
+                 (push args calls) (insert "plan") 0))
+              ((symbol-function 'yes-or-no-p) (lambda (_) nil)))
+      (save-window-excursion (ghostherd-install-hooks)))
+    (should (equal calls '(("hooks" "install" "--dry-run"))))))
+
 (ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
   "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
 the caller is identifiable with no environment at all."
@@ -4517,6 +4615,84 @@ there, and it is a conversation; otherwise the page is told why."
         (should (equal (plist-get k :replyHead) "screen line"))
         (should (equal (plist-get k :answered) 1791450060000.0))
         (should (json-encode k))))))
+
+(ert-deftest ghostherd-test-herd-page-shows-what-each-said ()
+  (ghostherd-test--with-herd
+    (let ((ghostherd--herd-links (make-hash-table :test 'equal)))
+      (ghostherd--herd-take-links
+       '((:session "claude-api" :cli "claude" :conversation "c-1"
+                   :last_head "Tests pass." :last_ms 1791450000000.0)))
+      (ghostherd-memory-page--send-herd)
+      (let ((a (aref (plist-get (ghostherd-test--call calls "renderHerd") :agents) 0)))
+        (should (equal (plist-get a :said) "Tests pass."))
+        (should (equal (plist-get a :saidAt) 1791450000000.0))
+        (should (equal (plist-get a :conversation) "c-1"))))))
+
+(ert-deftest ghostherd-test-herd-page-hooks ()
+  "The page gets each hook with an index, and opens only by that index."
+  (ghostherd-test--with-herd
+    (let* ((file (make-temp-file "gh-settings" nil ".json" "{\n  \"hooks\": {\n    \"Stop\": [\n      \"cmd\"\n    ]\n  }\n}\n"))
+           (ghostherd-memory-page--hooks
+            `(:ghostherd (:claude (:have ("Stop") :want ("SessionStart" "Stop")))
+              :hooks ((:file ,file :line 4 :readers ("claude" "grok") :scope "global"
+                             :source "claude settings.json" :event "Stop" :matcher ""
+                             :command "cmd" :ours :json-false :enabled t)))))
+      (unwind-protect
+          (progn
+            (ghostherd-memory-page--send-herd)
+            (let* ((hooks (plist-get (ghostherd-test--call calls "renderHerd") :hooks))
+                   (h (aref (plist-get hooks :list) 0)))
+              (should (equal (plist-get h :i) 0))
+              (should (equal (plist-get h :name) (file-name-nondirectory file)))
+              (should (equal (plist-get h :readers) ["claude" "grok"]))
+              (should (equal (plist-get (plist-get (plist-get hooks :status) :claude) :have) ["Stop"]))
+              (should (json-encode hooks)))
+            (save-window-excursion
+              (ghostherd-memory-page--hook-open '((i . 0)))
+              (should (equal (buffer-file-name) file))
+              (should (= (line-number-at-pos) 4))
+              (kill-buffer))
+            (should-error (ghostherd-memory-page--hook-open '((i . 7))) :type 'user-error)
+            (should-error (ghostherd-memory-page--hook-open `((i . ,file))) :type 'user-error))
+        (delete-file file)))))
+
+(ert-deftest ghostherd-test-herd-page-hooks-nothing-installed ()
+  "Nothing installed is an empty list, and an empty list must reach the
+page as [] -- json.el writes nil as null, and the page stopped drawing."
+  (ghostherd-test--with-herd
+    (let ((ghostherd-memory-page--hooks
+           (json-parse-string
+            "{\"ghostherd\":{\"claude\":{\"have\":[],\"want\":[\"Stop\"]}},\"hooks\":[],\"files\":[]}"
+            :object-type 'plist :array-type 'list :null-object nil :false-object :json-false)))
+      (ghostherd-memory-page--send-herd)
+      (let ((json (json-encode (plist-get (ghostherd-test--call calls "renderHerd") :hooks))))
+        (should (string-search "\"have\":[]" json))
+        (should (string-search "\"want\":[\"Stop\"]" json))
+        (should (string-search "\"list\":[]" json))))))
+
+(ert-deftest ghostherd-test-herd-page-hooks-refresh-asks-for-each-project ()
+  "The inventory runs in the background, with every herd project's own."
+  (ghostherd-test--with-herd
+    (let* ((dir (make-temp-file "gh-client" t))
+           (client (expand-file-name "herd" dir))
+           (ghostherd-memory-page--hooks nil)
+           (ghostherd-memory-page--hooks-proc nil))
+      (with-temp-file client
+        (insert "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$(dirname \"$0\")/args\"\n"
+                "echo '{\"ghostherd\":{},\"hooks\":[{\"file\":\"/f\",\"line\":1,\"readers\":[\"agy\"],\"ours\":false,\"enabled\":true}],\"files\":[]}'\n"))
+      (set-file-modes client #o755)
+      (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () client))
+                ((symbol-function 'xwapp-session) (lambda (&rest _) t)))
+        (ghostherd-memory-page--hooks-refresh)
+        (let ((end (+ (float-time) 10)))
+          (while (and (not ghostherd-memory-page--hooks) (< (float-time) end))
+            (accept-process-output nil 0.05))))
+      (should (equal (plist-get (car (plist-get ghostherd-memory-page--hooks :hooks)) :file) "/f"))
+      (should (equal (with-temp-buffer (insert-file-contents (expand-file-name "args" dir))
+                                       (string-trim (buffer-string)))
+                     "hooks list --json --project /p/"))
+      (should (ghostherd-test--call calls "renderHerd"))
+      (delete-directory dir t))))
 
 (ert-deftest ghostherd-test-herd-page-operations ()
   "Each operation reaches the herd function with the session, then the

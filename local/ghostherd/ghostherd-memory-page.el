@@ -323,7 +323,10 @@ draws lanes from fields rather than parsing prose."
           :since (let ((t0 (or (ghostherd-session-last-active s)
                                (ghostherd-session-started-at s))))
                    (and t0 (* 1000 (float-time t0))))
-          :progress (ghostherd-session-progress-percent s))))
+          :progress (ghostherd-session-progress-percent s)
+          :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
+          :saidAt (plist-get (ghostherd--link s) :last_ms)
+          :conversation (ghostherd-session-conversation s))))
 
 (defun ghostherd-memory-page--usage ()
   "The usage cache, one entry per CLI, windows as used percent."
@@ -358,6 +361,100 @@ draws lanes from fields rather than parsing prose."
         :created (plist-get a :created_ms)
         :answered (plist-get a :answered_ms)))
 
+;;; The hooks each CLI runs
+
+(defconst ghostherd-memory-page--hooks-every 30
+  "Seconds between hook inventories while the Agents tab is on screen.")
+
+(defvar ghostherd-memory-page--hooks nil
+  "The last `herd hooks list', as a plist; its :hooks are what the page
+may ask to open, by index.")
+(defvar ghostherd-memory-page--hooks-at 0)
+(defvar ghostherd-memory-page--hooks-proc nil)
+
+(defun ghostherd-memory-page--hooks-refresh ()
+  "Take a fresh hook inventory in the background, then show it.
+A subprocess, not a call: it reads a dozen files and must not stall
+Emacs while it does."
+  (when-let* ((client (and (not (process-live-p ghostherd-memory-page--hooks-proc))
+                           (fboundp 'ghostherd-herd-client)
+                           (ghostherd-herd-client))))
+    (setq ghostherd-memory-page--hooks-at (float-time))
+    (let* ((projects (delete-dups
+                      (delq nil (mapcar (lambda (s)
+                                          (let ((p (ghostherd-session-project s)))
+                                            (and p (expand-file-name p))))
+                                        (ghostherd-sessions)))))
+           (out (generate-new-buffer " *ghostherd hooks*")))
+      (setq ghostherd-memory-page--hooks-proc
+            (make-process
+             :name "ghostherd-hooks" :buffer out :noquery t
+             :connection-type 'pipe
+             :command (append (list client "hooks" "list" "--json")
+                              (mapcan (lambda (p) (list "--project" p)) projects))
+             :sentinel
+             (lambda (proc _event)
+               (unless (process-live-p proc)
+                 (unwind-protect
+                     (when (eq (process-exit-status proc) 0)
+                       (setq ghostherd-memory-page--hooks
+                             (ignore-errors
+                               (with-current-buffer (process-buffer proc)
+                                 (json-parse-string (buffer-string)
+                                                    :object-type 'plist :array-type 'list
+                                                    :null-object nil :false-object :json-false))))
+                       (when (xwapp-session ghostherd-memory-page--app)
+                         (ghostherd-memory-page--send-herd)))
+                   (kill-buffer (process-buffer proc))))))))))
+
+(defun ghostherd-memory-page--hooks-status ()
+  "Whether ghostherd's hooks are in, per CLI, with every list a vector.
+json.el writes an empty list as null, and a page reading `.length' of
+null stopped drawing the Agents tab -- exactly when nothing is
+installed, which is when this is worth reading."
+  (let ((status (plist-get ghostherd-memory-page--hooks :ghostherd))
+        out)
+    (while status
+      (let ((cli (pop status)) (st (pop status)))
+        (setq out (append out (list cli (list :have (vconcat (plist-get st :have))
+                                              :want (vconcat (plist-get st :want))))))))
+    out))
+
+(defun ghostherd-memory-page--hooks-payload ()
+  "The inventory as the page wants it: each hook with its index."
+  (let ((i -1))
+    (list :status (ghostherd-memory-page--hooks-status)
+          :list (ghostherd-memory-page--vec
+                 (mapcar (lambda (h)
+                           (setq i (1+ i))
+                           (list :i i
+                                 :file (plist-get h :file)
+                                 :name (file-name-nondirectory (or (plist-get h :file) ""))
+                                 :line (plist-get h :line)
+                                 :readers (ghostherd-memory-page--vec (plist-get h :readers))
+                                 :scope (plist-get h :scope)
+                                 :source (plist-get h :source)
+                                 :event (plist-get h :event)
+                                 :matcher (plist-get h :matcher)
+                                 :command (plist-get h :command)
+                                 :ours (plist-get h :ours)
+                                 :enabled (plist-get h :enabled)
+                                 :error (plist-get h :error)))
+                         (plist-get ghostherd-memory-page--hooks :hooks))))))
+
+(defun ghostherd-memory-page--hook-open (intent)
+  "Open the file of the hook INTENT names by index, at its line.
+By index into the inventory Emacs took itself: the page never names a
+path to open."
+  (let* ((i (alist-get 'i intent))
+         (h (and (natnump i) (nth i (plist-get ghostherd-memory-page--hooks :hooks))))
+         (file (plist-get h :file)))
+    (unless (and file (file-exists-p file))
+      (user-error "No such hook"))
+    (find-file-other-window file)
+    (goto-char (point-min))
+    (forward-line (1- (or (plist-get h :line) 1)))))
+
 (defun ghostherd-memory-page--send-herd ()
   "Send the herd, its asks and the usage to the page."
   (ghostherd-memory-page--js
@@ -366,6 +463,7 @@ draws lanes from fields rather than parsing prose."
                   (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
          :asks (ghostherd-memory-page--vec
                 (mapcar #'ghostherd-memory-page--ask ghostherd--herd-asks))
+         :hooks (ghostherd-memory-page--hooks-payload)
          :usage (ghostherd-memory-page--usage)
          :kinds (ghostherd-memory-page--vec
                  (mapcar #'symbol-name
@@ -380,6 +478,8 @@ draws lanes from fields rather than parsing prose."
                (get-buffer-window (xwapp-buffer ghostherd-memory-page--app) t))
       (setq ghostherd-memory-page--usage-at (float-time))
       (ghostherd-usage-refresh))
+    (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
+      (ghostherd-memory-page--hooks-refresh))
     (ghostherd-memory-page--send-herd)))
 
 (defun ghostherd-memory-page--herd-watch ()
@@ -597,7 +697,10 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
                    (alist-get 'source_path intent)
                    (ghostherd-memory-page--truthy (alist-get 'fork intent))))
         ("visit-agent" (ghostherd-memory-page--visit-agent (alist-get 'source_path intent)))
-        ("herd-watch" (ghostherd-memory-page--herd-watch))
+        ("herd-watch"
+         (setq ghostherd-memory-page--hooks-at 0)
+         (ghostherd-memory-page--herd-watch))
+        ("hook-open" (ghostherd-memory-page--hook-open intent))
         ("herd-unwatch" (ghostherd-memory-page--herd-unwatch))
         ("usage-refresh"
          (setq ghostherd-memory-page--usage-at (float-time))

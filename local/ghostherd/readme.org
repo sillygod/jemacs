@@ -572,19 +572,58 @@ Under tmux that is =bin/ghostherd=; in a ghostel-hosted agent
 =ghostel_cmd ghostherd-report self blocked "…"= does the same without
 emacsclient. Both need identity, which is why it exists.
 
-For claude, whose hooks hand their payload to the command as JSON on
-stdin, the wiring is three entries:
+claude, grok and agy all run commands from lifecycle hooks, and one
+command serves the three: =herd hook= ($GHOSTHERD_HERD, set at spawn).
+It reads the hook's JSON on stdin and tells the herd three things ---
+the state, the conversation the agent is on, and, when a turn ends,
+the answer it ended with.  It goes through the sidecar, so it needs no
+emacsclient and no Emacs server.
 
-#+begin_src js
-  // .claude/settings.json — hook names are the CLI's own; check its docs
-  {"hooks": {
-     "Notification":     [{"hooks": [{"type": "command",
-       "command": "ghostherd report self blocked \"$(jq -r '.message // empty')\""}]}],
-     "UserPromptSubmit": [{"hooks": [{"type": "command",
-       "command": "ghostherd report self working"}]}],
-     "Stop":             [{"hooks": [{"type": "command",
-       "command": "ghostherd report self done"}]}]}}
+#+begin_src emacs-lisp
+  M-x ghostherd-install-hooks     ; shows the change, then asks
 #+end_src
+
+or =herd hooks install= (=status=, =uninstall=, =--dry-run=) from a
+shell.  To see what is there first --- every hook each CLI runs, from
+user settings, a project's, plugins, grok's own directory and its
+Claude/Cursor compatibility --- open the Agents tab: each CLI's usage
+card lists them under =hooks=, and a click opens the file at the line.
+=herd hooks list= prints the same.  Install adds entries --- never
+replaces --- and backs each file up:
+
+| CLI    | Read from                    | Events                                              |
+|--------+------------------------------+-----------------------------------------------------|
+| claude | =~/.claude/settings.json=    | SessionStart, UserPromptSubmit, Notification, Stop  |
+| grok   | the same file (its default)  | the same names                                      |
+| agy    | =~/.gemini/config/hooks.json= | PreInvocation, Stop                                 |
+
+The command does nothing in a CLI the herd did not start, so every
+session of each CLI can carry it.  A CLI reads its hooks when it
+starts: respawn agents to pick them up.
+
+What each event means:
+
+- =UserPromptSubmit=, =PreInvocation= → =working=
+- =Notification= of a permission prompt → =blocked=, with its message.
+  agy has no such event: its prompts are still the screen rules' job
+- =Stop= → =done=, with the turn's last answer --- grok hands it over;
+  for claude and agy it is read from the end of the transcript, and
+  only when it is past the prompt, so an earlier turn's answer is never
+  taken for this one's.  grok's =StopCancelled= withdraws the report
+- every event names the conversation, kept by the sidecar
+
+What the herd does with them:
+
+- a state goes through =ghostherd-report= (below): same TTL, same
+  place in the authority order
+- an ask its taker finished without answering is closed with that last
+  answer, not its screen (see "Asking another agent")
+- =ghostherd-respawn= with continue resumes /that/ conversation rather
+  than =--continue='s newest one in the directory, which with two agents
+  of a kind in one project may be the other's
+- the Agents tab shows what each agent last said; =ghostherd-explain=
+  shows its conversation; the memory page finds the agent on a
+  conversation however it got there
 
 A report is *not* =ghostherd-mark-state=. A manual mark is sticky, which
 is right for a human overriding detection and wrong for a hook: one

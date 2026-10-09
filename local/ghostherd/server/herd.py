@@ -11,6 +11,12 @@ gives it an id; the target answers with herd_reply; the asker either
 waits on herd_await or, when it does not, gets the answer back as mail.
 Emacs closes an ask the target finished without answering (herd_settle),
 so an asker is never left waiting on an agent that forgot.
+
+Agents report on themselves through their CLI's hooks (herd_report): a
+state, which conversation they are on, and the answer that ended a
+turn.  Emacs takes the states on its tick; the sidecar keeps the rest
+(`links'), and closes an unanswered ask with the taker's own last
+answer rather than its screen.
 """
 
 from __future__ import annotations
@@ -152,6 +158,30 @@ class HerdStore:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                session TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                reason TEXT,
+                at TEXT NOT NULL,
+                taken INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS links (
+                session TEXT PRIMARY KEY,
+                cli TEXT,
+                conversation TEXT,
+                transcript TEXT,
+                last_message TEXT,
+                last_at TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(snapshot)")
         }
@@ -164,6 +194,11 @@ class HerdStore:
         }
         if "ask_id" not in mail_cols:
             self._conn.execute("ALTER TABLE mail ADD COLUMN ask_id TEXT")
+        ask_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(asks)")
+        }
+        if "auto_source" not in ask_cols:
+            self._conn.execute("ALTER TABLE asks ADD COLUMN auto_source TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -379,7 +414,7 @@ class HerdStore:
 
     _ASK_COLS = (
         "id, from_name, to_name, body, wait, status, reply, auto, replied_by, "
-        "error, collected, created_at, delivered_at, answered_at"
+        "error, collected, created_at, delivered_at, answered_at, auto_source"
     )
 
     def _ask_row(self, ask_id: str) -> dict[str, Any]:
@@ -411,6 +446,7 @@ class HerdStore:
             "body": row["body"],
             "reply": row["reply"],
             "auto": bool(row["auto"]),
+            "auto_source": row["auto_source"] if row["auto"] else None,
             "replied_by": row["replied_by"],
             "error": row["error"],
             "created_at": row["created_at"],
@@ -475,13 +511,19 @@ class HerdStore:
                 )
                 status = "failed"
             else:
+                last = self._last_since(row["to_name"], row["delivered_at"])
                 self._conn.execute(
                     """
                     UPDATE asks SET status = 'answered', reply = ?, auto = 1,
-                      answered_at = ?
+                      auto_source = ?, answered_at = ?
                     WHERE id = ?
                     """,
-                    ((screen or "").strip() or "(empty screen)", now, row["id"]),
+                    (
+                        last or (screen or "").strip() or "(empty screen)",
+                        "message" if last else "screen",
+                        now,
+                        row["id"],
+                    ),
                 )
                 status = "answered"
             self._mail_back(row["id"])
@@ -551,7 +593,9 @@ class HerdStore:
             text = f"Ask {row['id']} failed: {row['error']}"
         else:
             note = (
-                " -- no answer was sent; this is its screen when it stopped"
+                " -- no answer was sent; this is "
+                + ("its last message" if row["auto_source"] == "message"
+                   else "its screen when it stopped")
                 if row["auto"] else ""
             )
             text = (
@@ -596,7 +640,7 @@ class HerdStore:
         for r in self._conn.execute(
             """
             SELECT id, from_name, to_name, status, auto, error, body, reply,
-                   created_at, delivered_at, answered_at
+                   created_at, delivered_at, answered_at, auto_source
             FROM asks ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -611,6 +655,7 @@ class HerdStore:
                     "to": r[2],
                     "status": r[3],
                     "auto": bool(r[4]),
+                    "auto_source": (r[11] or "screen") if r[4] else None,
                     "error": r[5] or "",
                     "head": _head(r[6]),
                     "reply_head": _head(r[7]),
@@ -623,6 +668,132 @@ class HerdStore:
             )
             if len(out) >= 50:
                 break
+        return out
+
+
+    # ---- What agents say about themselves ----------------------------------
+
+    REPORT_STATES = ("working", "blocked", "idle", "done", "auto")
+
+    def report(
+        self,
+        session: str,
+        state: str | None = None,
+        reason: str | None = None,
+        cli: str | None = None,
+        conversation: str | None = None,
+        transcript: str | None = None,
+        last: str | None = None,
+    ) -> dict[str, Any]:
+        """An agent's hook: what it is doing, and on which conversation.
+
+        STATE waits for Emacs's next tick, newest per session.  The rest
+        is kept here.  A turn ending in `done' with LAST closes the
+        agent's unanswered ask with that answer: the taker's own words,
+        where Emacs's fallback has only its screen.
+        """
+        session = (session or "").strip()
+        if not session:
+            raise ValueError("session is required")
+        if state is not None and state not in self.REPORT_STATES:
+            raise ValueError(f"state must be one of {', '.join(self.REPORT_STATES)}")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            if state:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO reports (session, state, reason, at, taken)
+                    VALUES (?, ?, ?, ?, 0)
+                    """,
+                    (session, state, reason or None, now),
+                )
+            if cli or conversation or transcript or last:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
+                    (session, now),
+                )
+                # A new conversation's transcript and answer replace the
+                # old one's; a hook that only names the state keeps them.
+                same = self._conn.execute(
+                    "SELECT conversation FROM links WHERE session = ?", (session,)
+                ).fetchone()[0]
+                if conversation and same and conversation != same:
+                    self._conn.execute(
+                        """
+                        UPDATE links SET transcript = NULL, last_message = NULL,
+                          last_at = NULL WHERE session = ?
+                        """,
+                        (session,),
+                    )
+                self._conn.execute(
+                    """
+                    UPDATE links SET
+                      cli = COALESCE(?, cli),
+                      conversation = COALESCE(?, conversation),
+                      transcript = COALESCE(?, transcript),
+                      last_message = COALESCE(?, last_message),
+                      last_at = CASE WHEN ? IS NULL THEN last_at ELSE ? END,
+                      updated_at = ?
+                    WHERE session = ?
+                    """,
+                    (cli or None, conversation or None, transcript or None,
+                     last or None, last or None, now, now, session),
+                )
+            closed = None
+            if state == "done" and last:
+                open_ask = self._conn.execute(
+                    "SELECT id FROM asks WHERE to_name = ? AND status = 'delivered'",
+                    (session,),
+                ).fetchone()
+                if open_ask:
+                    self._conn.execute(
+                        """
+                        UPDATE asks SET status = 'answered', reply = ?, auto = 1,
+                          auto_source = 'message', answered_at = ?
+                        WHERE id = ?
+                        """,
+                        (last, now, open_ask[0]),
+                    )
+                    self._mail_back(open_ask[0])
+                    closed = open_ask[0]
+            self._conn.commit()
+        return {"session": session, "closed_ask": closed}
+
+    def _last_since(self, session: str, since: str | None) -> str | None:
+        "SESSION's last answer if it came after SINCE.  Caller holds `_mu`."
+        row = self._conn.execute(
+            "SELECT last_message, last_at FROM links WHERE session = ?", (session,)
+        ).fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        if since and datetime.fromisoformat(row[1]) <= datetime.fromisoformat(since):
+            return None
+        return row[0]
+
+    def link(self, session: str) -> dict[str, Any] | None:
+        with self._mu:
+            row = self._conn.execute(
+                """
+                SELECT session, cli, conversation, transcript, last_message,
+                       last_at, updated_at
+                FROM links WHERE session = ?
+                """,
+                ((session or "").strip(),),
+            ).fetchone()
+        return self._link_dict(row, full=True) if row else None
+
+    @staticmethod
+    def _link_dict(r, full: bool = False) -> dict[str, Any]:
+        out = {
+            "session": r[0],
+            "cli": r[1] or "",
+            "conversation": r[2] or "",
+            "transcript": r[3] or "",
+            "last_head": _head(r[4]),
+            "last_ms": _ms(r[5]),
+        }
+        if full:
+            out["last"] = r[4] or ""
         return out
 
     def tick(
@@ -766,6 +937,24 @@ class HerdStore:
                     answering.add(row[2])
                 deliverable.append(row[:7])
             asks = self._recent_asks()
+            reports = [
+                {"session": r[0], "state": r[1], "reason": r[2] or ""}
+                for r in self._conn.execute(
+                    "SELECT session, state, reason FROM reports WHERE taken = 0 ORDER BY at"
+                ).fetchall()
+            ]
+            self._conn.execute("UPDATE reports SET taken = 1 WHERE taken = 0")
+            links = [
+                self._link_dict(r)
+                for r in self._conn.execute(
+                    """
+                    SELECT session, cli, conversation, transcript, last_message,
+                           last_at, updated_at
+                    FROM links ORDER BY session
+                    """
+                ).fetchall()
+                if r[0] in names
+            ]
             cmd_rows = self._conn.execute(
                 """
                 SELECT id, op, session, args, chat_id
@@ -825,7 +1014,13 @@ class HerdStore:
                     "ask": ask_id,
                 }
             )
-        return {"pending": pending, "commands": commands, "asks": asks}
+        return {
+            "pending": pending,
+            "commands": commands,
+            "asks": asks,
+            "reports": reports,
+            "links": links,
+        }
 
     def _upsert_alias(self, name: str) -> str:
         "Caller holds `_mu`."

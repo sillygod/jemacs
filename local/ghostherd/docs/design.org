@@ -430,6 +430,40 @@ come:
   claude in one checkout must not reach the agy in another: a commit
   there is a commit in the wrong repository.
 
+** Why hooks report through the sidecar, and what they carry
+
+=bin/ghostherd report= was the first path: a hook calls emacsclient.
+It needs an Emacs server, which is not a default --- the herd this was
+written on had none, so no agent reported anything and every state was
+the screen's guess.  Every agent already holds =GHOSTHERD_RPC=; =herd
+hook= posts there, and Emacs takes reports on the tick it runs anyway.
+
+One command for three CLIs, because their hooks are nearly one thing:
+claude's and grok's share event names and a settings file, agy's are
+named differently and name no event in the payload, so its command
+line carries the event.  The command maps each to a state and does
+nothing outside the herd --- which is what makes it safe in settings
+every session of the CLI reads.
+
+What a hook knows beyond the state is what made it worth doing now:
+
+- *The conversation.*  Every payload names it.  =--continue= resumes
+  the newest conversation in a directory; with two claudes in one
+  project that is a coin toss.  Knowing the id makes respawn exact.
+- *The last answer.*  grok passes it on =Stop=; claude's and agy's are
+  at the end of the transcript the payload points to.  Read backwards,
+  and only up to the prompt that started the turn: a =Stop= that beats
+  the transcript write would otherwise hand back the previous turn's
+  answer, which is worse than none.  An ask a taker forgot to answer
+  now closes with its words rather than a screen with box drawing in
+  it.
+
+Reports stay reports.  A hook that stops firing halfway through a
+session must not freeze a row, so its states go through
+=ghostherd-report= and expire like any other.  =working= fires often
+(agy: before each model call) and is only needed again before that
+expiry, so the client sends it at most every 30 seconds.
+
 ** What bin/ghostherd had to get right
 
 Two things, both learned the hard way:
