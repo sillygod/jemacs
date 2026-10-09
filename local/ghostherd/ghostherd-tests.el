@@ -582,6 +582,55 @@ at yet."
         (setf (ghostherd-session-seen s) t)
         (should (eq (ghostherd-poll-session s) 'idle))))))
 
+(ert-deftest ghostherd-test-done-is-seen-where-else-it-shows ()
+  "An agent with no view of its own -- detached -- is seen where another
+place shows it: `ghostherd-watched-functions', asked of it alone."
+  (ghostherd-tests--with-herd ()
+    (let ((a (ghostherd-tests--session :name "a" :kind 'claude :backend 'fake :state 'working))
+          (b (ghostherd-tests--session :name "b" :kind 'claude :backend 'fake :state 'working))
+          (ghostherd-tests--fake-screen "> \n")
+          (ghostherd-idle-settle 0)
+          (ghostherd-watched-functions nil))
+      (setf (ghostherd-session-seen a) nil (ghostherd-session-seen b) nil)
+      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil))
+                ((symbol-function 'get-buffer-window) (lambda (&rest _) nil)))
+        (should (eq (ghostherd-poll-session a) 'done))
+        (should (eq (ghostherd-poll-session b) 'done))
+        (should (eq (ghostherd-poll-session a) 'done))
+        (add-hook 'ghostherd-watched-functions (lambda (s) (equal (ghostherd-session-name s) "a")))
+        (should (eq (ghostherd-poll-session a) 'idle))
+        (should (equal (ghostherd-session-state-reason a) "seen"))
+        (should (eq (ghostherd-poll-session b) 'done))))))
+
+(ert-deftest ghostherd-test-the-room-shows-its-agents ()
+  "The page in front of you on a project's room shows its agents: each
+in the columns, those with a transcript in the chat; no other project's,
+and none when the page is not where you are looking."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake :project "/p/")
+    (ghostherd-tests--session :name "qa" :kind 'claude :backend 'fake :project "/p/")
+    (ghostherd-tests--session :name "x" :kind 'claude :backend 'fake :project "/q/")
+    (let ((ghostherd-memory-page--room nil)
+          (ghostherd-memory-page--room-chat nil)
+          (looking t))
+      (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_app) (current-buffer)))
+                ((symbol-function 'ghostherd--buffer-watched-p) (lambda (b) (and looking (eq b (current-buffer)))))
+                ((symbol-function 'ghostherd-session-transcript)
+                 (lambda (s) (and (equal (ghostherd-session-name (ghostherd-get s)) "rd") "/t/rd.jsonl"))))
+        (let ((shown (lambda () (sort (mapcar #'ghostherd-session-name
+                                              (seq-filter #'ghostherd-memory-page--room-shows-p (ghostherd-sessions)))
+                                      #'string<))))
+          (should-not (funcall shown))
+          (setq ghostherd-memory-page--room (ghostherd--project-name "/p/"))
+          (should (equal (funcall shown) '("qa" "rd")))
+          (should (ghostherd--watched-p (ghostherd-get "qa")))
+          (setq ghostherd-memory-page--room-chat t)
+          (should (equal (funcall shown) '("rd")))
+          (setq looking nil)
+          (should-not (funcall shown))
+          (should-not (ghostherd--watched-p (ghostherd-get "rd"))))))))
+
 ;;; Not idle, just slow
 
 (ert-deftest ghostherd-test-fresh-prompt-is-not-idle ()

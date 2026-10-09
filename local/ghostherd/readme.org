@@ -757,6 +757,14 @@ frame counts as watched, and being merely displayed does not, since a
 frame that is iconified or on another desktop is exactly when a banner
 earns its place.
 
+The herd page's room counts too, on the same terms: the page in front
+of you on a project's room watches its agents --- each in the columns,
+which show its conversation or its screen; in the chat, those whose
+conversation is in it.  So a =done= agent with no view of its own, a
+detached one, turns =idle= (=seen=) once you have looked at its room,
+not only once you have opened it.  The rows of the Agents tab do not
+count: a line of what it said is not having read it.
+
 If nothing arrived and you expected it, the herd log says why: a
 transition to =idle= rather than =done= means you were watching.
 

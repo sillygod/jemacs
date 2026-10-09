@@ -834,6 +834,20 @@ whose answer is stale."
 (defvar ghostherd-memory-page--chat-reading nil
   "Non-nil while the sidecar builds the chat.")
 
+(defun ghostherd-memory-page--room-shows-p (s)
+  "Non-nil when the page's room shows agent S and you could be looking:
+the page in front of you, on S's project's room.  The columns show
+every agent's conversation, or its screen when its transcript is not
+known; the chat only those whose transcript is.  So a `done' S there is
+seen, as it is when its buffer is in front of you."
+  (and ghostherd-memory-page--room
+       (equal (ghostherd--project-name (ghostherd-session-project s)) ghostherd-memory-page--room)
+       (or (not ghostherd-memory-page--room-chat) (ghostherd-session-transcript s))
+       (when-let* ((buffer (xwapp-buffer ghostherd-memory-page--app)))
+         (ghostherd--buffer-watched-p buffer))))
+
+(add-hook 'ghostherd-watched-functions #'ghostherd-memory-page--room-shows-p)
+
 (defun ghostherd-memory-page--room-sessions ()
   "The herd's agents in the room's project."
   (seq-filter (lambda (s) (equal (or (ghostherd--project-name (ghostherd-session-project s)) "")
