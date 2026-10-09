@@ -21,6 +21,7 @@ def file_meta(
     project: str,
     kind: str = "transcript",
     title: str | None = None,
+    parser: int = 1,
 ) -> SourceMeta:
     st = path.stat()
     return SourceMeta(
@@ -32,6 +33,7 @@ def file_meta(
         project=project,
         kind=kind,
         title=title,
+        parser=parser,
     )
 
 

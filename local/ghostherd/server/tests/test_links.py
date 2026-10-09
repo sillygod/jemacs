@@ -102,11 +102,12 @@ def test_owner_and_repo_are_one_spelling(home):
     assert prs(r) == [("github", "me", "notes", 9)] and r["prs"][0]["count"] == 2
 
 
-def test_side_conversations_and_meta_do_not_count(home):
+def test_side_conversations_meta_and_summaries_do_not_count(home):
     path = _claude(home, [
         u("CU-86side1", isSidechain=True),
         a(text("https://github.com/me/x/pull/5"), isSidechain=True),
         u("CU-86meta1", isMeta=True),
+        u("CU-86summ1", isCompactSummary=True),
         u("CU-86real1"),
     ])
     r = links.scan(str(path))

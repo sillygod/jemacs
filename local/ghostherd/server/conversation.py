@@ -289,6 +289,10 @@ class Thread:
         if e:
             self.entries.append(e)
 
+    def note(self, text: str, ts: Any = None) -> None:
+        "Something that happened to the conversation, said by no one."
+        self.entries.append({"role": "user", "who": "", "kind": "note", "text": text, "ts": ts})
+
     def say(self, text: str, ts: Any = None, key: Any = None) -> None:
         text = (text or "").strip()
         if not text:
@@ -354,6 +358,9 @@ def _claude(records, thread: Thread) -> None:
         content = msg.get("content")
         ts = o.get("timestamp")
         if o.get("type") == "user":
+            if o.get("isCompactSummary"):
+                thread.note("the conversation was compacted", ts)
+                continue
             if isinstance(content, str):
                 thread.user(content, ts)
                 continue
@@ -396,6 +403,8 @@ def _grok(records, thread: Thread) -> None:
     for o in records:
         kind = o.get("type")
         if kind == "user":
+            if o.get("synthetic_reason") == "compaction_meta":
+                thread.note("the conversation was compacted")
             if o.get("synthetic_reason"):
                 continue
             thread.user(grok_user_text(content_to_text(o.get("content"))))

@@ -961,7 +961,8 @@ Then =SPC a h I= (or =M-x ghostherd-memory-import=) once, then =SPC a h /=
 to search, or =SPC a h v= to browse the sessions.  Import is CPU-heavy
 (FastEmbed) and runs *in the sidecar*, not inside Emacs: watch
 =*ghostherd-memory*= for per-file progress; a second =I= while one is
-running is a no-op.  Already-imported files are skipped.  =C-u SPC a h
+running is a no-op.  Already-imported files are skipped, unless the
+importer has since changed how it reads them (below).  =C-u SPC a h
 /= starts filtered to the current project; the default is all of them,
 because the usual failure is "I forgot which project".
 
@@ -1092,6 +1093,17 @@ without xwidgets.
   characters of the one before, and records no turn number; the page
   joins a chunk that starts with the previous one's tail, in the same
   role, and drops the repeat.
+- What is under /User/ is what you said.  Claude Code writes more than
+  your prompts as user turns: every tool's output, the text of a skill
+  or command it loaded (=isMeta=), the summary a compaction carries on
+  from.  A tool's output is the tool's, and not indexed, as grok's is
+  not (=GHOSTHERD_MEMORY_INDEX_TOOLS=1= keeps both); the others are left
+  out --- what a summary sums up is in the turns before it.  The room
+  shows a compaction as a note.  An importer that reads a transcript
+  differently has a new version, and the files it read before are read
+  again on the next import, every chunk after the first change embedded
+  again: for Claude's version 2, here, about twenty minutes --- 120
+  files, 15,283 chunks.
 - claude and grok render as markdown, through a whitelist sanitizer
   with no images: a transcript holds whatever an agent ever read.
   agy's text is salvaged from protobuf and full of tag-like noise, so

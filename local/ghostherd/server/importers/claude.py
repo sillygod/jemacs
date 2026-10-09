@@ -10,6 +10,12 @@ from chunk import Turn
 from importers.textutil import content_to_text, file_meta, project_from_claude_cwd
 from index import SourceMeta
 
+# Bumped when a transcript is read differently; files read before are
+# read again.  2: what Claude Code writes as a user turn but you did not
+# type -- a tool's output, a skill's or command's text, a compaction's
+# summary -- is no longer yours.
+VERSION = 2
+
 SKIP_TYPES = {
     "mode",
     "permission-mode",
@@ -85,7 +91,8 @@ def _from_jsonl(
         project = project_from_claude_cwd(None, path.parent)
         for turn in turns:
             turn.project = project
-    meta = file_meta(path, "claude", session_id, project, title=title if isinstance(title, str) else None)
+    meta = file_meta(path, "claude", session_id, project, title=title if isinstance(title, str) else None,
+                     parser=VERSION)
     return meta, turns
 
 
@@ -107,15 +114,26 @@ def _from_memory(path: Path) -> tuple[SourceMeta, list[Turn]]:
                 title=path.stem,
             )
         )
-    return file_meta(path, "claude", session_id, project, kind="memory", title=path.stem), turns
+    return file_meta(path, "claude", session_id, project, kind="memory", title=path.stem, parser=VERSION), turns
 
 
 def _turn_from_obj(obj: dict, tool_truncate: int) -> tuple[str, str]:
     kind = obj.get("type")
     message = obj.get("message") if isinstance(obj.get("message"), dict) else None
     if kind in ("user", "assistant") and message:
+        # A user turn you did not type: text Claude Code loaded for a skill
+        # or a command (isMeta), and the summary a compaction carries on
+        # from -- what it sums up is in the turns before.
+        if obj.get("isMeta") or obj.get("isCompactSummary"):
+            return "", ""
+        content = message.get("content")
+        text = content_to_text(content, tool_truncate)
+        # ...and a tool's output, which comes back as one.
+        if kind == "user" and isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        ):
+            return "tool", text
         role = message.get("role") or kind
-        text = content_to_text(message.get("content"), tool_truncate)
         return str(role), text
     if kind == "summary":
         summary = obj.get("summary")

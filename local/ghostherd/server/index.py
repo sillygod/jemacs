@@ -19,6 +19,9 @@ class SourceMeta:
     project: str
     kind: str
     title: str | None = None
+    # Which reading of the file this is: the importer's VERSION.  A file
+    # read by an older one is read again, unchanged or not.
+    parser: int = 1
 
 
 class SourceIndex:
@@ -49,17 +52,19 @@ class SourceIndex:
             )
             """
         )
+        if "parser" not in {r[1] for r in self._conn.execute("PRAGMA table_info(sources)")}:
+            self._conn.execute("ALTER TABLE sources ADD COLUMN parser INTEGER NOT NULL DEFAULT 1")
         self._conn.commit()
 
     def unchanged(self, meta: SourceMeta) -> bool:
         with self._mu:
             row = self._conn.execute(
-                "SELECT mtime, size FROM sources WHERE source_path = ?",
+                "SELECT mtime, size, parser FROM sources WHERE source_path = ?",
                 (meta.path,),
             ).fetchone()
         if row is None:
             return False
-        return abs(row[0] - meta.mtime) < 1e-6 and row[1] == meta.size
+        return abs(row[0] - meta.mtime) < 1e-6 and row[1] == meta.size and row[2] == meta.parser
 
     def record(self, meta: SourceMeta, chunks: int) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -72,8 +77,8 @@ class SourceIndex:
             """
             INSERT INTO sources (
                 source_path, mtime, size, agent, session_id, project,
-                kind, chunks, imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                kind, chunks, imported_at, parser
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_path) DO UPDATE SET
                 mtime=excluded.mtime,
                 size=excluded.size,
@@ -82,7 +87,8 @@ class SourceIndex:
                 project=excluded.project,
                 kind=excluded.kind,
                 chunks=excluded.chunks,
-                imported_at=excluded.imported_at
+                imported_at=excluded.imported_at,
+                parser=excluded.parser
             """,
             (
                 meta.path,
@@ -94,6 +100,7 @@ class SourceIndex:
                 meta.kind,
                 chunks,
                 now,
+                meta.parser,
             ),
         )
         self._conn.commit()

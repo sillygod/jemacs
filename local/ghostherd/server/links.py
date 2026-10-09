@@ -67,7 +67,8 @@ def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
     """The texts of record O that count: given to the agent, or by it."""
     out: list[tuple[str, Any]] = []
     if cli == "claude":
-        if o.get("isSidechain") or o.get("isMeta"):
+        # A compaction's summary names again what the turns before it did.
+        if o.get("isSidechain") or o.get("isMeta") or o.get("isCompactSummary"):
             return out
         ts = o.get("timestamp")
         content = (o.get("message") or {}).get("content")

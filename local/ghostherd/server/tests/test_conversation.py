@@ -273,9 +273,27 @@ def test_grok(home):
         {"type": "assistant", "content": "Done."},
     ])
     e = conv.read(path)["entries"]
-    assert [(x["role"], x.get("text")) for x in e] == [
-        ("user", "run the tests"), ("assistant", "On it."), ("herd", "check"), ("tools", None), ("assistant", "Done.")]
-    assert e[2]["answer"] == "Looks good." and e[3]["tools"] == [{"name": "read_file", "hint": "/x/a.py"}]
+    assert [(x["role"], x.get("kind"), x.get("text")) for x in e] == [
+        ("user", "prompt", "run the tests"), ("user", "note", "the conversation was compacted"),
+        ("assistant", None, "On it."), ("herd", "ask", "check"), ("tools", None, None), ("assistant", None, "Done.")]
+    assert e[3]["answer"] == "Looks good." and e[4]["tools"] == [{"name": "read_file", "hint": "/x/a.py"}]
+
+
+def test_claude_what_it_wrote_as_you_is_not_you(home):
+    """A tool's output, a skill's text (isMeta) and a compaction's summary
+    come as user turns; only the summary shows, as what happened."""
+    path = _claude_file(home, [
+        u("load the skill"),
+        a("m1", {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "clickup"}}),
+        u([{"type": "tool_result", "tool_use_id": "t1", "content": "Launching skill: clickup"}]),
+        u([text("Base directory for this skill: /x\n# ClickUp")], isMeta=True, sourceToolUseID="t1"),
+        u("This session is being continued from a previous conversation.", isCompactSummary=True),
+        u("go on"),
+    ])
+    e = conv.read(path)["entries"]
+    assert [(x["role"], x.get("kind"), x.get("text")) for x in e] == [
+        ("user", "prompt", "load the skill"), ("tools", None, None),
+        ("user", "note", "the conversation was compacted"), ("user", "prompt", "go on")]
 
 
 def test_only_transcripts_are_read(home, tmp_path):

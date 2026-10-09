@@ -251,3 +251,33 @@ def os_mtime_bump(path):
 
     st = os.stat(path)
     os.utime(path, (st.st_atime, st.st_mtime + 5))
+
+
+def test_a_file_read_by_an_older_importer_is_read_again(tmp_path):
+    """An importer that reads a transcript differently says so by its
+    VERSION; a file it read before, though unchanged, is read again.  An
+    index from before versions has them all as the first."""
+    import sqlite3
+    from dataclasses import replace
+
+    from index import SourceIndex, SourceMeta
+
+    db = tmp_path / "sources.sqlite"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE sources (source_path TEXT PRIMARY KEY, mtime REAL NOT NULL, size INTEGER NOT NULL,"
+        " agent TEXT, session_id TEXT, project TEXT, kind TEXT, chunks INTEGER, imported_at TEXT)"
+    )
+    conn.execute("INSERT INTO sources VALUES ('a.jsonl', 1.0, 10, 'claude', 's', '/p', 'transcript', 3, 'x')")
+    conn.commit()
+    conn.close()
+
+    idx = SourceIndex(db)
+    first = SourceMeta("a.jsonl", 1.0, 10, "claude", "s", "/p", "transcript")
+    second = replace(first, parser=2)
+    assert idx.unchanged(first)
+    assert not idx.unchanged(second)
+    idx.record(second, 2)
+    assert idx.unchanged(second) and not idx.unchanged(first)
+    assert idx.list_sources()[0][0]["chunks"] == 2
+    assert SourceIndex(db).unchanged(second)
