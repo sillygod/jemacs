@@ -122,9 +122,10 @@ made an unanchored `> \=' match the transcript.")
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
       ;; An *empty* prompt.  A scrolling agent keeps every line you ever
       ;; typed, so "^> " matches the transcript rather than the cursor --
-      ;; see the note under :screen-rules below.
-      (idle . ("^❯ *$"
-               "^> *$"))))
+      ;; see the note under :screen-rules below.  Blank, not space:
+      ;; claude follows its ❯ with a no-break space.
+      (idle . ("^❯[[:blank:]]*$"
+               "^>[[:blank:]]*$"))))
     (grok
      :command "grok"
      :args nil
@@ -151,9 +152,9 @@ made an unanchored `> \=' match the transcript.")
                   ;; of `ghostherd-status-lines', so this is what counts.
                   "Ctrl\\+c:cancel"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
-      (idle . ("^› *$"
-               "^❯ *$"
-               "^> *$"))))
+      (idle . ("^›[[:blank:]]*$"
+               "^❯[[:blank:]]*$"
+               "^>[[:blank:]]*$"))))
     (agy
      :command "agy"
      :args nil
@@ -183,9 +184,9 @@ made an unanchored `> \=' match the transcript.")
                   ;; other two enumerate: agy spins the 8-dot family, and
                   ;; a list of frames is a list of ways to miss one.
                   ,(concat ghostherd--rule-status-line "[⠁-⣿]")))
-      (idle . ("^❯ *$"
-               "^> *$"
-               "^› *$"))))
+      (idle . ("^❯[[:blank:]]*$"
+               "^>[[:blank:]]*$"
+               "^›[[:blank:]]*$"))))
     (shell
      :command nil
      :args nil
@@ -2245,7 +2246,15 @@ Not on an agent that is working or on a menu: Return there is an answer."
                      (not (memq (car-safe hit) '(working blocked)))
                      (ghostherd--unsent-p screen text))
             (if (<= tries 0)
-                (ghostherd--log-add session 'input "← still in its input box: not submitted" screen)
+                (progn
+                  (ghostherd--log-add session 'input "← still in its input box: not submitted" screen)
+                  ;; An ask it was: fail it, so the asker hears now rather
+                  ;; than waiting on an agent that never read it.
+                  (when-let* ((id (ghostherd--ask-in session text)))
+                    (ghostherd--ask-settle
+                     id session nil
+                     (format "not submitted: it sat in %s's input box"
+                             (ghostherd-session-name session)))))
               (ghostherd--host-send-keys session '("return"))
               (ghostherd--log-add session 'input "↵ again: it was still in the input box" screen)
               (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
@@ -3895,21 +3904,28 @@ agents while you work on this; the herd refuses that."
                         (format "ask %s from %s: %s" id from
                                 (ghostherd--ask-head body)))))
 
-(defun ghostherd--ask-settle (id session dead)
+(defun ghostherd--ask-settle (id session dead &optional error)
   "Tell the sidecar the taker of ask ID stopped, or died when DEAD.
-The sidecar ignores this for an ask already answered."
+With ERROR, it never got the ask, and that says why.  The sidecar
+ignores this for an ask already answered."
   (remhash id ghostherd--asks-open)
   (puthash id t ghostherd--asks-settled)
-  (let ((screen (and (not dead)
+  (let ((screen (and (not dead) (not error)
                      (ignore-errors
                        (ghostherd--host-capture session ghostherd-ask-screen-lines)))))
     (when (fboundp 'ghostherd-memory-request-async)
       (ghostherd-memory-request-async
        "herd_settle" #'ignore
-       (list :id id
-             :screen (string-trim-right (or screen ""))
-             :dead (if dead t :json-false))
+       (append (list :id id
+                     :screen (string-trim-right (or screen ""))
+                     :dead (if dead t :json-false))
+               (and error (list :error error)))
        (lambda (err) (message "ghostherd: closing ask %s: %s" id err))))))
+
+(defun ghostherd--ask-in (session text)
+  "The open ask SESSION was handed in TEXT, or nil."
+  (seq-find (lambda (id) (string-search (format "[ask %s " id) text))
+            (ghostherd--asks-of session)))
 
 (defun ghostherd--asks-of (session)
   "Ids of the open asks SESSION is answering."

@@ -454,20 +454,26 @@ class HerdStore:
             "answered_at": row["answered_at"],
             "taker_state": (taker[0] or "") if taker else "",
             "taker_reason": (taker[1] or "") if taker else "",
+            # Its outcome went out as mail: nobody was waiting for it, or
+            # the waiting asker was gone for longer than the herd holds it.
+            "mailed": not row["wait"] and bool(row["collected"]),
         }
 
     def reply(
         self, ask_id: str, body: str, from_name: str | None = None
     ) -> dict[str, Any]:
-        """Answer an ask.  A real answer replaces one Emacs settled."""
+        """Answer an ask.  A real answer replaces what Emacs settled it
+        with -- a screen, or a failure: an ask whose paste was never
+        submitted can be by hand, and a taker can come back.  Only the
+        asker's cancel is final."""
         if body is None or not str(body).strip():
             raise ValueError("body is required")
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             row = self._ask_row(ask_id)
-            if row["status"] in ("failed", "cancelled"):
+            if row["status"] == "cancelled":
                 why = f": {row['error']}" if row["error"] else ""
-                raise ValueError(f"ask {row['id']} is {row['status']}{why}")
+                raise ValueError(f"ask {row['id']} is cancelled{why}")
             if row["status"] == "answered" and not row["auto"]:
                 raise ValueError(f"ask {row['id']} is already answered")
             self._conn.execute(
@@ -491,23 +497,25 @@ class HerdStore:
         return {"id": row["id"], "status": "answered"}
 
     def settle(
-        self, ask_id: str, screen: str | None = None, dead: bool = False
+        self, ask_id: str, screen: str | None = None, dead: bool = False,
+        error: str | None = None,
     ) -> dict[str, Any]:
         """Emacs: the taker stopped (or died) without answering.
 
-        Close the ask with the taker's screen as its answer, marked auto,
-        or as failed when it died.  A no-op once the ask is closed: the
-        taker's own reply, made before it went idle, always wins.
+        Close the ask with the taker's screen as its answer, marked auto;
+        as failed when it died, or with ERROR when Emacs could not hand it
+        the ask at all.  A no-op once the ask is closed: the taker's own
+        reply, made before it went idle, always wins.
         """
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             row = self._ask_row(ask_id)
             if row["status"] != "delivered":
                 return {"id": row["id"], "status": row["status"]}
-            if dead:
+            if dead or error:
                 self._close_ask(
                     row["id"], "failed", now,
-                    error=f"{row['to_name']} exited before answering",
+                    error=error or f"{row['to_name']} exited before answering",
                 )
                 status = "failed"
             else:

@@ -466,10 +466,16 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   run that in the background: it is told when the command exits, and
   the answer is that command's output.  Without =--wait=, the answer
   comes back as mail once the asker is idle --- and so does one a
-  waiting asker never collected, because it gave up or died.
+  waiting asker never collected, because it gave up or died.  A wait
+  that loses the sidecar --- Emacs restarting --- waits for it to come
+  back, five minutes at most; an answer mailed meanwhile is not
+  printed as well.
 - *A taker that forgets.*  Stopping without answering closes the ask
-  with its screen, marked as such; dying fails it.  A real answer sent
-  later still replaces the screen.
+  with its screen, marked as such; dying fails it, and so does an ask
+  that never left the taker's input box, Return pressed and pressed
+  again --- saying so, so the asker hears at once.  A real answer sent
+  later still replaces the screen or the failure; only a cancel is
+  final.
 - *No loops.*  One open ask per agent, a second waits its turn; an
   agent answering an ask cannot ask in turn.
 - *Where to see it.*  The Agents tab shows asks on both agents' rows,

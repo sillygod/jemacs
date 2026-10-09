@@ -645,9 +645,7 @@ builds, one tests, back and forth --- as one conversation, on the page.
 
 ** What is left
 
-- [ ] An ask whose paste never reached the taker now stays open, not
-  wrongly answered --- but it waits for someone to press Return: when
-  the look after Return gives up, hand it back to the queue instead
+- [X] An ask whose paste never reached the taker: see Phase 3.20
 - [ ] The loop itself: two agents handing work back and forth until
   one says it is done --- today each turn is an ask the agent decides
   to make; a herd-run loop (who goes next, when it stops, a turn cap)
@@ -675,6 +673,36 @@ Goal: show an agent a screenshot from the page, whichever CLI it is.
   =ghostherd-image-keep-days= go when the next is saved
 - [X] 4 ERT, WebKit checks of the paste, the button and where the name
   lands; each guard mutation-tested
+
+* Phase 3.20 — A loop that runs with nobody at Emacs  *(this tree)*
+
+Goal: start two agents on a QA <-> RD loop, walk away, and come back to
+it finished --- or stopped for a reason the room states.
+
+** What shipped
+
+- [X] =herd ask --wait= outlives the sidecar: Emacs restarting used to
+  fail the wait (rd's second round, "cannot reach the sidecar").  It
+  waits for the sidecar to come back, five minutes at most, and an
+  answer mailed while it was away is not printed as well
+  (=herd_await='s =mailed=)
+- [X] An ask whose paste never left the taker's input box, Return
+  pressed again and again, fails with why --- not back to the queue,
+  where the next delivery would paste a second copy on top of the
+  first.  A real answer still replaces any failure the herd declared;
+  only the asker's cancel is final
+- [X] claude's idle rule reads its prompt's no-break space: an idle
+  claude no longer logs "no rule matched"
+- [X] 6 pytest (an outage taken and given back on a live sidecar,
+  answered and mailed meanwhile, never back; settle's reason over the
+  RPC; replies after a failure and a cancel), 2 ERT; each guard
+  mutation-tested
+
+** What is left
+
+- [ ] A loop in one command: the pair spawned with their roles and the
+  rules (rounds, the word that ends it), and the room's header saying
+  where it is --- "round 3/4, waiting on qa", "done: no problems"
 
 * Phase 4 — Ecosystem (only if still useful)
 

@@ -635,6 +635,18 @@ quoting a command sent half a minute earlier."
         ;; the echoed command on its own is not
         (should-not (ghostherd--match-rules echo-only rules))))))
 
+(ert-deftest ghostherd-test-claudes-empty-prompt-is-idle-by-rule ()
+  "claude follows its ❯ with a no-break space.  With an ordinary one in
+the rule, its empty prompt matched nothing, and every idle claude in
+the log said \"no rule matched\" -- the line that means the rules do
+not know this screen."
+  (let ((rules (plist-get (ghostherd--spec 'claude) :screen-rules))
+        (rule (lambda (box) (concat "  Done.\n\n" (make-string 40 ?─) "\n" box "\n"
+                                    (make-string 40 ?─) "\n  ⏵⏵ auto mode on\n"))))
+    (should (eq (car (ghostherd--match-rules (funcall rule "❯\u00a0") rules)) 'idle))
+    (should (eq (car (ghostherd--match-rules (funcall rule "❯ ") rules)) 'idle))
+    (should-not (ghostherd--match-rules (funcall rule "❯\u00a0half typed") rules))))
+
 (ert-deftest ghostherd-test-a-mode-banner-is-not-a-permission-prompt ()
   "grok draws its permission mode into the border of the input box, so
 `always-approve\=' -- the mode in which it does *not* stop to ask -- was
@@ -2757,6 +2769,26 @@ answer, so the ask stays open -- until the box is empty."
       (setq ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ "))
       (ghostherd--set-state taker 'idle)
       (should (equal (mapcar #'car requests) '("herd_settle")))
+      (should-not (gethash "a1" ghostherd--asks-open)))))
+
+(ert-deftest ghostherd-test-an-ask-never-submitted-fails-with-why ()
+  "Return pressed again and again, and the ask still in the input box:
+fail it, saying so, so the asker hears now instead of waiting on an
+agent that never read it.  Other text, or tries left, fails nothing."
+  (ghostherd-tests--with-asks
+    (let* ((taker (ghostherd-tests--session :name "qa" :kind 'claude :state 'idle :backend 'fake))
+           (ask (concat (format ghostherd-message-template "rd" "qa" "[ask a1 -- whoever asked is waiting]\nTest it.")))
+           (ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ [Pasted text #2 +20 lines]")))
+      (puthash "a1" "qa" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'ghostherd--host-send-keys) #'ignore)
+                ((symbol-function 'run-at-time) #'ignore))
+        (ghostherd--confirm-submit taker ask 1)
+        (ghostherd--confirm-submit taker "[Pasted text, not an ask]" 0)
+        (should-not requests)
+        (ghostherd--confirm-submit taker ask 0))
+      (should (equal requests
+                     '(("herd_settle" (:id "a1" :screen "" :dead :json-false
+                                       :error "not submitted: it sat in qa's input box")))))
       (should-not (gethash "a1" ghostherd--asks-open)))))
 
 (ert-deftest ghostherd-test-ask-fails-when-the-taker-dies ()

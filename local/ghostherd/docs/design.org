@@ -522,8 +522,12 @@ words), so Return never submits something you were typing there.
 The first version of that look never fired: claude follows its =❯= with
 a no-break space, and the pattern, like the test screens it was written
 against, had an ordinary one.  The tests now draw claude's prompt as
-claude does.  The same run showed the cost of the lost Return further
-on: a taker going idle closes its ask with its screen, and qa went idle
+claude does.  When Return never takes, the ask fails rather than
+going back to the queue: the text is still in the box, and delivering
+it again would paste a second copy on top.  The asker hears at once,
+and a real answer --- once someone does press Return --- still reaches
+it, since only a cancel is final.  The same run showed the cost of the
+lost Return further on: a taker going idle closes its ask with its screen, and qa went idle
 without ever having read the ask --- so rd got qa's first-round report
 as the second round's answer, twice.  An ask still sitting in the
 taker's input box is now left open instead.

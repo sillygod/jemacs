@@ -190,8 +190,32 @@ def test_settle_dead_fails(tmp_path):
     h.settle(ask["id"], dead=True)
     got = h.get_ask(ask["id"])
     assert (got["status"], got["error"]) == ("failed", "agy-a2 exited before answering")
-    with pytest.raises(ValueError, match="is failed"):
-        h.reply(ask["id"], "late")
+    # A taker that comes back can still answer: the herd's verdict was
+    # about what it could see.
+    h.reply(ask["id"], "late", from_name="agy-a2")
+    assert (h.get_ask(ask["id"])["status"], h.get_ask(ask["id"])["reply"]) == ("answered", "late")
+
+
+def test_settle_can_say_why_it_failed(tmp_path):
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")
+    _deliver(h)
+    h.settle(ask["id"], screen="ignored", error="not submitted: it sat in agy-a2's input box")
+    got = h.get_ask(ask["id"])
+    assert (got["status"], got["error"]) == ("failed", "not submitted: it sat in agy-a2's input box")
+    assert _mail_to(h, "claude-main")[0]["body"].startswith(f"Ask {ask['id']} failed: not submitted")
+    _deliver(h)
+    # Submitted by hand after all, and answered: that reaches the asker too.
+    h.reply(ask["id"], "here it is", from_name="agy-a2")
+    assert _mail_to(h, "claude-main")[0]["body"].endswith("here it is")
+
+
+def test_only_a_cancel_refuses_a_reply(tmp_path):
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")
+    h.cancel(ask["id"])
+    with pytest.raises(ValueError, match="is cancelled"):
+        h.reply(ask["id"], "too late")
 
 
 def test_settle_before_delivery_is_a_no_op(tmp_path):
@@ -317,6 +341,14 @@ def test_await_returns_open_then_answered(client):
     assert (done["status"], done["reply"]) == ("answered", "Y")
 
 
+def test_rpc_settle_says_why(client):
+    ask = _rpc(client, "herd_ask", {"to": "agy", "body": "x", "from": "claude-main", "wait": True})["result"]
+    _deliver(herd_mod.get_herd())
+    _rpc(client, "herd_settle", {"id": ask["id"], "error": "not submitted: it sat in agy-a2's input box"})
+    got = _rpc(client, "herd_await", {"id": ask["id"], "timeout": 0})["result"]
+    assert (got["status"], got["error"]) == ("failed", "not submitted: it sat in agy-a2's input box")
+
+
 def test_rpc_errors_are_invalid_params(client):
     err = _rpc(client, "herd_ask", {"to": "nope", "body": "x", "from": "claude-main"})["error"]
     assert err["code"] == -32602 and "no agent or kind named nope" in err["message"]
@@ -438,6 +470,72 @@ def test_client_wait_timeout_detaches(live):
     _deliver(h)
     h.reply(ask_id, "late but here")
     assert _mail_to(h, "claude-main")[0]["body"].endswith("late but here")
+
+
+class _Outage:
+    """A `herd ask --wait' that finds the sidecar only through a URL file,
+    so the test can take the sidecar away and give it back -- what
+    Emacs restarting does to an agent's wait."""
+
+    def __init__(self, live, tmp_path, monkeypatch, *args):
+        import jsonrpc_handler
+        monkeypatch.setattr(jsonrpc_handler, "AWAIT_MAX", 0.5)  # notice soon
+        self.live, self.url_file = live, tmp_path / "rpc.url"
+        self.url_file.write_text(live["url"])
+        env = dict(live["env"], GHOSTHERD_RPC_FILE=str(self.url_file),
+                   GHOSTHERD_RPC=live["url"].rsplit("/", 1)[0] + "/stale-token")
+        self.h = herd_mod.get_herd()
+        self.proc = subprocess.Popen([str(HERD), "ask", "agy", "the work", "--wait", *args],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        for _ in range(100):
+            asks = self.h.recent_asks()["asks"]
+            if asks:
+                self.ask_id = asks[0]["id"]
+                break
+            time.sleep(0.05)
+        _deliver(self.h)
+
+    def away(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        self.url_file.write_text("http://127.0.0.1:%d/rpc/gone" % port)
+        time.sleep(1.5)
+
+    def back(self):
+        self.url_file.write_text(self.live["url"])
+        out, err = self.proc.communicate(timeout=30)
+        return self.proc.returncode, out, err
+
+
+def test_client_wait_outlives_the_sidecar_going_away(live, tmp_path, monkeypatch):
+    o = _Outage(live, tmp_path, monkeypatch)
+    o.away()
+    o.h.reply(o.ask_id, "done while you were away")
+    code, out, err = o.back()
+    assert code == 0, err
+    assert out == "done while you were away\n"
+    assert "waiting for it to come back" in err and "the sidecar is back" in err
+    assert _mail_to(o.h, "claude-main") == []  # collected: not mailed as well
+
+
+def test_client_wait_says_so_when_the_answer_went_as_mail(live, tmp_path, monkeypatch):
+    o = _Outage(live, tmp_path, monkeypatch)
+    o.away()
+    o.h.reply(o.ask_id, "done long ago")
+    monkeypatch.setattr(herd_mod, "UNCOLLECTED_SECONDS", 0)
+    assert _mail_to(o.h, "claude-main")[0]["body"].endswith("done long ago")
+    code, out, err = o.back()
+    assert code == 3 and out == "", err
+    assert "came to you as a message" in err
+
+
+def test_client_wait_gives_up_on_a_sidecar_that_stays_away(live, tmp_path, monkeypatch):
+    o = _Outage(live, tmp_path, monkeypatch, "--timeout", "3")
+    o.away()
+    out, err = o.proc.communicate(timeout=30)
+    assert o.proc.returncode == 1
+    assert "waiting for it to come back" in err and "cannot reach the sidecar" in err
 
 
 def test_client_failure_exit_codes(live):

@@ -20,9 +20,11 @@ back to you as a message once you are idle.  With --wait it prints the
 answer itself when it arrives.  Run that in the background if your CLI
 can: you are told when it finishes.
 
-Exit status: 0 answered, 1 error, 2 usage, 3 still open when --timeout
-ran out (the answer then comes to you as a message), 4 failed or
-cancelled.
+Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
+as a message instead (still open when --timeout ran out, or answered
+while the sidecar was away), 4 failed or cancelled.  A wait that loses
+the sidecar -- Emacs restarting -- waits for it to come back, five
+minutes at most.
 
 Env, set by ghostherd at spawn:
   GHOSTHERD_RPC       the sidecar's URL.  It carries a token: never
@@ -60,6 +62,16 @@ DEFAULT_TIMEOUT = 1800
 
 class HerdError(Exception):
     pass
+
+
+class Unreachable(HerdError):
+    "The sidecar could not be reached, or refused the call -- not its answer."
+
+
+# Emacs restarting restarts the sidecar, which keeps its asks: a wait
+# that loses it waits for it to come back, this long at most.
+RECONNECT_SECONDS = 300
+RECONNECT_STEP = 1
 
 
 def _env_url():
@@ -124,7 +136,7 @@ def rpc(method, params=None, timeout=15):
             "no sidecar URL: GHOSTHERD_RPC is unset (not an agent the herd "
             "started?) and so is GHOSTHERD_RPC_FILE"
         )
-    raise HerdError(last)
+    raise Unreachable(last)
 
 
 def me():
@@ -160,12 +172,30 @@ def show_answer(ask):
 def wait_for(ask_id, to, timeout):
     deadline = time.monotonic() + timeout
     seen = None
+    lost = None  # since when the sidecar has been out of reach
     try:
         while True:
             left = deadline - time.monotonic()
             step = max(0, min(AWAIT_STEP, int(left)))
-            ask = rpc("herd_await", {"id": ask_id, "timeout": step}, timeout=step + 15)
+            try:
+                ask = rpc("herd_await", {"id": ask_id, "timeout": step}, timeout=step + 15)
+            except Unreachable as exc:
+                now = time.monotonic()
+                if lost is None:
+                    lost = now
+                    say("%s; waiting for it to come back" % exc)
+                if now - lost >= RECONNECT_SECONDS or now >= deadline:
+                    raise
+                time.sleep(RECONNECT_STEP)
+                continue
+            if lost is not None:
+                lost = None
+                say("the sidecar is back")
             if ask["status"] in ("answered", "failed", "cancelled"):
+                if ask.get("mailed"):
+                    say("ask %s closed while the sidecar was away; its answer came to "
+                        "you as a message" % ask_id)
+                    return 3
                 return show_answer(ask)
             now = (ask.get("status"), ask.get("taker_state"), ask.get("taker_reason"))
             if now != seen:
@@ -179,7 +209,10 @@ def wait_for(ask_id, to, timeout):
             if time.monotonic() >= deadline:
                 break
     except KeyboardInterrupt:
-        rpc("herd_detach", {"id": ask_id})
+        try:
+            rpc("herd_detach", {"id": ask_id})
+        except Unreachable:
+            pass
         say("stopped waiting; the answer will come to you as a message")
         return 130
     rpc("herd_detach", {"id": ask_id})

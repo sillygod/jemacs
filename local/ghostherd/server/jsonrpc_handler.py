@@ -243,6 +243,7 @@ class JsonRpcHandler:
             str(params.get("id") or ""),
             screen=params.get("screen"),
             dead=bool(params.get("dead")),
+            error=str(params.get("error") or "").strip() or None,
         )
 
     def _herd_asks(self, _params: dict) -> dict:
