@@ -5092,5 +5092,95 @@ downloads a model and embeds everything."
             (should-not ghostherd-memory--auto-timer)))
       (ghostherd-memory-auto-import-stop))))
 
+;;; Images pasted into a prompt
+
+(defconst ghostherd-test--png "\x89PNG\r\n\x1a\n\0\303\251\377 \n rest"
+  "A PNG's signature, then bytes a text coding would change: UTF-8 to
+decode, a lone newline to turn into CRLF.")
+(defconst ghostherd-test--png-sh "printf '\\211PNG\\r\\n\\032\\n\\000\\303\\251\\377 \\n rest'"
+  "A clipboard command that prints `ghostherd-test--png'.")
+
+(defmacro ghostherd-test--with-clipboard (script &rest body)
+  "BODY with the clipboard's image printed by SCRIPT, images saved under a temp dir."
+  (declare (indent 1))
+  `(let* ((root (make-temp-file "gh-images" t))
+          (ghostherd-image-directory (expand-file-name "images/" root))
+          (ghostherd-image-keep-days 30)
+          (ghostherd-clipboard-image-commands (list (list "sh" "-c" ,script))))
+     (unwind-protect (progn ,@body)
+       (delete-directory root t))))
+
+(ert-deftest ghostherd-test-clipboard-image-is-saved ()
+  "The clipboard's PNG lands byte for byte in a file named for the agent,
+readable only by you, in a directory only you can list."
+  (ghostherd-test--with-clipboard ghostherd-test--png-sh
+    (let ((file (ghostherd-save-clipboard-image "claude api/x")))
+      (should (equal (file-name-directory file) (expand-file-name ghostherd-image-directory)))
+      (should (string-match-p "\\`claude-api-x-[0-9]\\{8\\}-[0-9]\\{6\\}-[0-9]\\{3\\}\\.png\\'"
+                              (file-name-nondirectory file)))
+      (should (equal (with-temp-buffer
+                       (set-buffer-multibyte nil)
+                       (insert-file-contents-literally file)
+                       (buffer-string))
+                     ghostherd-test--png))
+      (should (= (file-modes file) #o600))
+      (should (= (file-modes ghostherd-image-directory) #o700))
+      (should (string-prefix-p "image-" (file-name-nondirectory (ghostherd-save-clipboard-image)))))))
+
+(ert-deftest ghostherd-test-clipboard-without-an-image ()
+  "Text, an empty clipboard or a failing command save nothing, and say so;
+with no command installed, it names the one to install."
+  (dolist (script '("printf 'just text'" "exit 1" "printf '\\211PNG\\r\\n\\032\\n'; exit 1"))
+    (ghostherd-test--with-clipboard script
+      (should (equal (cadr (should-error (ghostherd-save-clipboard-image "a") :type 'user-error))
+                     "No image on the clipboard"))
+      (should-not (file-exists-p ghostherd-image-directory))))
+  (let ((ghostherd-clipboard-image-commands '(("ghostherd-no-such-program" "-"))))
+    (should (string-match-p "pngpaste" (cadr (should-error (ghostherd-save-clipboard-image)
+                                                           :type 'user-error))))))
+
+(ert-deftest ghostherd-test-old-pasted-images-go ()
+  "Saving an image removes pasted images older than the days kept, and
+nothing else: not other files, not the one just saved.  nil keeps all."
+  (ghostherd-test--with-clipboard ghostherd-test--png-sh
+    (make-directory ghostherd-image-directory t)
+    (let* ((at (lambda (f) (expand-file-name f ghostherd-image-directory)))
+           (month-ago (time-subtract nil (* 31 86400))))
+      (dolist (f '("a-old.png" "a-recent.png" "notes.txt"))
+        (write-region "x" nil (funcall at f) nil 'silent))
+      (set-file-times (funcall at "a-old.png") month-ago)
+      (set-file-times (funcall at "notes.txt") month-ago)
+      (let ((ghostherd-image-keep-days nil))
+        (ghostherd-save-clipboard-image "a")
+        (should (file-exists-p (funcall at "a-old.png"))))
+      (let ((new (ghostherd-save-clipboard-image "a")))
+        (should-not (file-exists-p (funcall at "a-old.png")))
+        (should (file-exists-p (funcall at "a-recent.png")))
+        (should (file-exists-p (funcall at "notes.txt")))
+        (should (file-exists-p new)))
+      (let* ((ghostherd-image-keep-days 0)
+             (new (ghostherd-save-clipboard-image "a")))
+        (should (file-exists-p new))
+        (should-not (file-exists-p (funcall at "a-recent.png")))))))
+
+(ert-deftest ghostherd-test-page-pastes-an-image ()
+  "The page asks for the clipboard's image for an agent; Emacs saves it
+and gives the page its file -- or says why not."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-clipboard ghostherd-test--png-sh
+      (ghostherd-memory-page--handle '((op . "agent-image") (name . "claude-api")))
+      (let ((p (ghostherd-test--call calls "insertImage")))
+        (should (equal (plist-get p :name) "claude-api"))
+        (should (file-exists-p (plist-get p :path)))
+        (should (equal (file-name-directory (plist-get p :path))
+                       (expand-file-name ghostherd-image-directory)))))
+    (setq calls nil)
+    (ghostherd-test--with-clipboard "printf text"
+      (ghostherd-memory-page--handle '((op . "agent-image") (name . "claude-api"))))
+    (should-not (ghostherd-test--call calls "insertImage"))
+    (should (equal (ghostherd-test--call calls "showError") "No image on the clipboard"))
+    (ghostherd-memory-page--handle '((op . "agent-image") (name . "nobody")))
+    (should (string-match-p "No agent named nobody" (ghostherd-test--call calls "showError")))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

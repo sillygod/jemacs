@@ -506,6 +506,23 @@ it read is the answer --- or, when the client failed, the client's
 error, shown as a failure, not as the other agent's reply.  And an
 agent reading =herd ask --help= is not asking anyone.
 
+** Why a pasted image goes as a file
+
+An image pasted into a prompt box reaches the agent as the name of a
+file Emacs saved, not as the image.  Only claude takes an image from
+its terminal (its own C-v reads the clipboard), and only with the
+keystroke landing at the right moment through tmux; every CLI can read
+a file with its own tools.  The name stays in the transcript, so the
+room shows which turn had which image, and the file outlives the paste
+--- for a month, by default.
+
+Emacs reads the clipboard, not the page.  The page cannot write a file,
+and the only way it speaks to Emacs is a document title: a screenshot
+is hundreds of kilobytes of base64, which that channel was not made to
+carry.  So a paste with no text in it is a question --- is there an
+image? --- that Emacs answers with a file name or with why not.  A
+paste with text is the browser's, as ever.
+
 ** What bin/ghostherd had to get right
 
 Two things, both learned the hard way:

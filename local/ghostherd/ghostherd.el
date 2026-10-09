@@ -2248,6 +2248,64 @@ seconds elapse (default 120)."
     (ghostherd-wait session '(idle done blocked) (or timeout 120)))
   session)
 
+(defcustom ghostherd-image-directory (locate-user-emacs-file "ghostherd-images/")
+  "Where an image pasted into an agent's prompt is saved.
+The prompt carries the file's name, not the image: every CLI can read
+a file, while only claude takes an image from the terminal.  The
+agent's transcript keeps that name, so the file outlives the paste."
+  :type 'directory
+  :group 'ghostherd)
+
+(defcustom ghostherd-image-keep-days 30
+  "Days a pasted image is kept, or nil to keep them all.
+Older ones go when the next image is saved."
+  :type '(choice (const :tag "Keep them all" nil) natnum)
+  :group 'ghostherd)
+
+(defcustom ghostherd-clipboard-image-commands
+  '(("pngpaste" "-")
+    ("wl-paste" "--no-newline" "--type" "image/png")
+    ("xclip" "-selection" "clipboard" "-t" "image/png" "-o"))
+  "Commands that print the clipboard's image as PNG; the first installed is used."
+  :type '(repeat (repeat string))
+  :group 'ghostherd)
+
+(defun ghostherd--prune-images (dir keep)
+  "Remove pasted images in DIR older than `ghostherd-image-keep-days', but KEEP."
+  (when ghostherd-image-keep-days
+    (let ((before (- (float-time) (* ghostherd-image-keep-days 86400))))
+      (dolist (f (directory-files dir t "\\.png\\'" t))
+        (unless (equal f keep)
+          (when-let* ((attrs (file-attributes f)))
+            (when (< (float-time (file-attribute-modification-time attrs)) before)
+              (ignore-errors (delete-file f)))))))))
+
+(defun ghostherd-save-clipboard-image (&optional name)
+  "Save the clipboard's image as a PNG, and return the file's name.
+NAME, an agent's, begins the file's name.  The file is readable only by
+you: a screenshot holds whatever was on the screen."
+  (let* ((cmd (or (seq-find (lambda (c) (executable-find (car c)))
+                            ghostherd-clipboard-image-commands)
+                  (user-error "Pasting an image needs %s (brew install pngpaste)"
+                              (mapconcat #'car ghostherd-clipboard-image-commands " or "))))
+         (dir (file-name-as-directory (expand-file-name ghostherd-image-directory)))
+         (stem (replace-regexp-in-string "[^[:alnum:]._-]+" "-" (or name "")))
+         (file (expand-file-name
+                (format "%s-%s.png" (if (string-empty-p stem) "image" stem)
+                        (format-time-string "%Y%m%d-%H%M%S-%3N"))
+                dir)))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (let ((coding-system-for-read 'binary))
+        (unless (and (eq (apply #'call-process (car cmd) nil '(t nil) nil (cdr cmd)) 0)
+                     (string-prefix-p "\x89PNG\r\n\x1a\n" (buffer-string)))
+          (user-error "No image on the clipboard")))
+      (with-file-modes #o700 (make-directory dir t))
+      (let ((coding-system-for-write 'binary))
+        (with-file-modes #o600 (write-region nil nil file nil 'silent))))
+    (ghostherd--prune-images dir file)
+    file))
+
 (defun ghostherd-read (session &optional n-lines)
   "Return the last N-LINES of SESSION's screen."
   (setq session (ghostherd-get session))

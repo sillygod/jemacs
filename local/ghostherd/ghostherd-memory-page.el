@@ -676,6 +676,14 @@ their screen.  The same room again only changes which those are."
     (when said (ghostherd-memory-page--js "flash" said))
     (ghostherd-memory-page--send-herd)))
 
+(defun ghostherd-memory-page--agent-image (intent)
+  "Save the clipboard's image for the agent INTENT names; give the page its file.
+The page cannot write a file, and an image is too big for the title it
+speaks through, so Emacs reads the clipboard itself."
+  (let ((name (ghostherd-session-name (ghostherd-memory-page--session intent))))
+    (ghostherd-memory-page--js
+     "insertImage" (list :name name :path (ghostherd-save-clipboard-image name)))))
+
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus."
   (let* ((kind (intern-soft (or (alist-get 'kind intent) "")))
@@ -844,6 +852,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-usage-refresh t)
          (ghostherd-memory-page--send-herd))
         ("agent-new" (ghostherd-memory-page--agent-new intent))
+        ("agent-image" (ghostherd-memory-page--agent-image intent))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))
         ("copy"

@@ -637,6 +637,23 @@ builds, one tests, back and forth --- as one conversation, on the page.
 - [ ] Earlier turns: the room shows the tail; the whole conversation is
   on the Sessions tab once imported
 
+* Phase 3.19 — An image in a prompt  *(this tree)*
+
+Goal: show an agent a screenshot from the page, whichever CLI it is.
+
+** What shipped
+
+- [X] ⌘V an image into any prompt box on the Agents tab or in a room,
+  or /Image/ beside it: Emacs saves the clipboard's image and the
+  file's name goes where the cursor was
+- [X] =ghostherd-save-clipboard-image=: the first of
+  =ghostherd-clipboard-image-commands= installed (=pngpaste=,
+  =wl-paste=, =xclip=), checked to be a PNG, written byte for byte,
+  mode 600 in a 700 directory; images older than
+  =ghostherd-image-keep-days= go when the next is saved
+- [X] 4 ERT, WebKit checks of the paste, the button and where the name
+  lands; each guard mutation-tested
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

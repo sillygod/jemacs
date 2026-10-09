@@ -659,6 +659,9 @@
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
   };
 
+  const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
+    'title="Put the clipboard\'s image in the prompt, as a file (⌘V does too)">Image</button>';
+
   function cssName(n) {
     return String(n).replace(/["\\]/g, "\\$&");
   }
@@ -799,7 +802,7 @@
       : "";
     const compose = herdNow.composing.has(name)
       ? '<div class="agent-compose"><textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + '  (⌘↩ / C-↩ sends)">' +
-        esc(herdNow.compose[name] || "") + '</textarea><button type="button" class="primary small" data-act="a:send">Send</button></div>'
+        esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
       : "";
     const notes = herdNow.notes === name
       ? '<div class="notes-edit"><input class="notes-text" value="' + esc(a.notes) + '" placeholder="Role / notes">' +
@@ -1052,7 +1055,7 @@
           ? '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
               '<div class="rfoot"><textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
-              esc(herdNow.compose[a.name] || "") + '</textarea><button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>"
+              esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>"
           : '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>') + "</div>";
       room = app.querySelector(".room");
       room.setAttribute("data-key", key);
@@ -1122,6 +1125,11 @@
       return;
     }
     if (act === "send") return sendPrompt(name);
+    if (act === "image") {
+      const ta = row && row.querySelector("textarea.agent-text");
+      if (ta) askImage(ta);
+      return;
+    }
     if (act === "notes") {
       herdNow.notes = name;
       renderAgents();
@@ -1181,6 +1189,26 @@
     if (ta) ta.blur();
     renderAgents();
   }
+
+  // An image goes into a prompt as a file: Emacs reads the clipboard,
+  // saves it, and hands its name back for the box.  Every CLI can read a
+  // file, and the page can neither write one nor carry an image through
+  // the title it speaks to Emacs by.
+  const imageAt = {};
+  function askImage(ta) {
+    const name = ta.closest(".arow, .rcol").getAttribute("data-name");
+    imageAt[name] = [ta.selectionStart, ta.selectionEnd];
+    emit("agent-image", { name });
+  }
+  // A paste with no text in it holds the clipboard's image, or nothing a
+  // textarea would take anyway; Emacs says which.
+  app.addEventListener("paste", (ev) => {
+    const t = ev.target;
+    if (!t.classList || !t.classList.contains("agent-text")) return;
+    if (Array.from((ev.clipboardData && ev.clipboardData.types) || []).includes("text/plain")) return;
+    ev.preventDefault();
+    askImage(t);
+  });
 
   app.addEventListener("input", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("agent-text")) {
@@ -1644,6 +1672,30 @@
 
   window.GM = {
     flash: (msg) => setStatus(msg),
+
+    // The file an image was saved to, for the prompt it was pasted in:
+    // where the cursor is now, or was when it was asked for.
+    insertImage: (p) => {
+      const name = p && p.name;
+      const path = p && p.path;
+      if (!name || !path) return;
+      const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
+      const v = ta ? ta.value : herdNow.compose[name] || "";
+      const at = ta && document.activeElement === ta ? [ta.selectionStart, ta.selectionEnd] : imageAt[name] || [v.length, v.length];
+      delete imageAt[name];
+      const before = v.slice(0, at[0]);
+      const after = v.slice(at[1]);
+      const text = (before && !/\s$/.test(before) ? " " : "") + path + (/^\s/.test(after) ? "" : " ");
+      herdNow.compose[name] = before + text + after;
+      if (!ta) {
+        herdNow.composing.add(name);
+        if (view === "agents") renderAgents();
+        return;
+      }
+      ta.value = herdNow.compose[name];
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = before.length + text.length;
+    },
 
     // The sidecar's import, read every few seconds; null once it ends.
     importProgress: (p) => {
