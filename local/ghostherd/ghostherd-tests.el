@@ -2739,6 +2739,26 @@ and blocked do not: the taker is still at it."
       (ghostherd--set-state taker 'done)
       (should (= (length requests) 1)))))
 
+(ert-deftest ghostherd-test-an-ask-stuck-in-the-input-box-stays-open ()
+  "The Return that submits an ask can be lost: the taker goes idle with
+the ask in its input box, never having read it.  That screen is no
+answer, so the ask stays open -- until the box is empty."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "qa" :kind 'claude :state 'working
+                                           :backend 'fake)))
+      (setq ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ [Pasted text #3 +22 lines]"))
+      (puthash "a1" "qa" ghostherd--asks-open)
+      (ghostherd--set-state taker 'done)
+      (should-not requests)
+      (should (gethash "a1" ghostherd--asks-open))
+      (should (string-match-p "a1 is still in its input box"
+                              (ghostherd-log-entry-text (car ghostherd--log))))
+      (ghostherd--set-state taker 'working)
+      (setq ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ "))
+      (ghostherd--set-state taker 'idle)
+      (should (equal (mapcar #'car requests) '("herd_settle")))
+      (should-not (gethash "a1" ghostherd--asks-open)))))
+
 (ert-deftest ghostherd-test-ask-fails-when-the-taker-dies ()
   (ghostherd-tests--with-asks
     (let ((a (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'working))
@@ -5091,6 +5111,178 @@ downloads a model and embeds everything."
             (ghostherd-memory-auto-import-start)
             (should-not ghostherd-memory--auto-timer)))
       (ghostherd-memory-auto-import-stop))))
+
+;;; The sidecar tick
+
+(ert-deftest ghostherd-test-herd-tick-keeps-coming-while-emacs-is-idle ()
+  "Mail and reports come on the tick.  It waits while you type, and goes
+on however long Emacs is left alone: an idle timer fired once per idle
+spell, and an ask answered in an empty room reached its asker only when
+someone came back 36 minutes later."
+  (let ((ghostherd--herd-tick-timer nil)
+        (ticks 0)
+        idle)
+    (cl-letf (((symbol-function 'ghostherd--herd-tick-async) (lambda () (setq ticks (1+ ticks))))
+              ((symbol-function 'current-idle-time) (lambda () (and idle (seconds-to-time idle)))))
+      (dolist (i '(nil 0.2 2 2400))
+        (setq idle i)
+        (ghostherd--herd-tick-when-idle))
+      (should (= ticks 2))
+      (unwind-protect
+          (progn
+            (ghostherd--ensure-herd-tick-timer)
+            (should-not (timer--idle-delay ghostherd--herd-tick-timer))
+            (should (equal (timer--repeat-delay ghostherd--herd-tick-timer) ghostherd-herd-tick-idle)))
+        (ghostherd--stop-herd-tick-timer)))))
+
+;;; A paste that must really be submitted
+
+(ert-deftest ghostherd-test-a-big-paste-settles-before-return ()
+  "A multi-line or long paste gets a moment before Return, on both
+backends; a short line, or text not submitted, does not wait."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--tmux-session :name "a"))
+          (slept (lambda () (assoc "sleep" ghostherd-tests--tmux-calls))))
+      (cl-letf (((symbol-function 'sleep-for)
+                 (lambda (sec &rest _) (push (list "sleep" sec) ghostherd-tests--tmux-calls))))
+        (ghostherd-tests--with-tmux nil
+          (ghostherd--host-send-text s "line 1\nline 2" t))
+        (should (equal (mapcar #'car ghostherd-tests--tmux-calls)
+                       '("set-buffer" "paste-buffer" "sleep" "send-keys")))
+        (should (equal (cadr (funcall slept)) ghostherd-submit-delay))
+        (ghostherd-tests--with-tmux nil
+          (ghostherd--host-send-text s (make-string 300 ?x) t))
+        (should (funcall slept))
+        (dolist (args '(("hi" t) ("line 1\nline 2" nil)))
+          (ghostherd-tests--with-tmux nil
+            (apply #'ghostherd--host-send-text s args))
+          (should-not (funcall slept)))
+        (let ((ghostherd-submit-delay 0))
+          (ghostherd-tests--with-tmux nil
+            (ghostherd--host-send-text s "a\nb" t))
+          (should-not (funcall slept)))))
+    (let ((g (ghostherd-tests--session :name "g")))
+      (should (equal (ghostherd-tests--recording-keys
+                       (cl-letf (((symbol-function 'sleep-for) (lambda (&rest _) (push '(:sleep) sent))))
+                         (ghostherd--host-send-text g "a\nb" t)))
+                     '((:text . "a\nb") (:sleep) ("return" . nil)))))))
+
+(defconst ghostherd-test--rule (make-string 60 ?─))
+
+(defun ghostherd-test--claude-screen (box &optional above)
+  "A claude screen whose input box holds BOX, with ABOVE over it.
+As claude draws it: its ❯ is followed by a no-break space, which a
+test written with an ordinary one once hid."
+  (concat (or above "  The tests pass.\n\n✻ Crunched for 3m 42s\n\n")
+          ghostherd-test--rule "\n"
+          (replace-regexp-in-string "\\`❯ " "❯\u00a0" box) "\n"
+          ghostherd-test--rule
+          "\n  ⏵⏵ auto mode on (shift+tab to cycle)"))
+
+(ert-deftest ghostherd-test-unsent-text-is-seen-in-the-input-box ()
+  "Text pasted and never submitted sits in the box between the last two
+rules: claude's fold of a big paste, or its first words.  Not the same
+words up in the history, not an empty box, not what you typed."
+  (let ((msg "[ghostherd message from rd → qa]\n[ask 26910956 -- whoever asked is waiting]\nRound 2."))
+    (should (ghostherd--unsent-p (ghostherd-test--claude-screen "❯ [Pasted text #2 +20 lines]") msg))
+    (should (ghostherd--unsent-p (ghostherd-test--claude-screen "❯ please review the diff")
+                                 "please review the diff"))
+    (should-not (ghostherd--unsent-p (ghostherd-test--claude-screen "❯ ") msg))
+    (should-not (ghostherd--unsent-p (ghostherd-test--claude-screen "❯ my own half-typed words") msg))
+    (should-not (ghostherd--unsent-p
+                 (ghostherd-test--claude-screen "❯ " "> please review the diff\n\n  Reviewing.\n\n")
+                 "please review the diff"))
+    ;; grok draws a box, not two rules.
+    (should (ghostherd--unsent-p (concat "╭" (make-string 40 ?─) "╮\n│ › please review the diff │\n╰"
+                                         (make-string 40 ?─) "╯")
+                                 "please review the diff"))
+    ;; No box to read: no claim.
+    (should-not (ghostherd--unsent-p "❯ please review the diff" "please review the diff"))))
+
+(defmacro ghostherd-test--confirming (screen &rest body)
+  "BODY with claude agent `s' showing SCREEN; keys sent in `keys', timers in `later'."
+  (declare (indent 1))
+  `(ghostherd-tests--with-herd ()
+     (ghostherd-tests--with-log
+       (let* ((ghostherd-tests--fake-screen ,screen)
+              (ghostherd-tests--fake-live t)
+              (keys nil)
+              (later nil)
+              (s (ghostherd-tests--session :name "qa" :kind 'claude :backend 'fake)))
+         (cl-letf (((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k keys)))
+                   ((symbol-function 'run-at-time) (lambda (_t _r f &rest args) (push (cons f args) later))))
+           ,@body)))))
+
+(ert-deftest ghostherd-test-unsent-text-gets-return-again ()
+  "Left in the input box of an idle agent: Return again, logged with the
+screen, and a look once more -- one try fewer each time, then a warning."
+  (let ((msg "[ghostherd message from rd → qa]\nRound 2.\n"))
+    (ghostherd-test--confirming (ghostherd-test--claude-screen "❯ [Pasted text #2 +20 lines]")
+      (ghostherd--confirm-submit s msg 2)
+      (should (equal keys '(("return"))))
+      (should (equal later (list (list #'ghostherd--confirm-submit s msg 1))))
+      (should (string-match-p "again" (ghostherd-log-entry-text (car ghostherd--log))))
+      (should (ghostherd-log-entry-screen (car ghostherd--log)))
+      (setq keys nil later nil)
+      (ghostherd--confirm-submit s msg 0)
+      (should-not (or keys later))
+      (should (string-match-p "not submitted" (ghostherd-log-entry-text (car ghostherd--log)))))))
+
+(ert-deftest ghostherd-test-return-is-not-pressed-unless-it-submits ()
+  "Return on a menu is an answer and on a working agent a second prompt;
+submitted text, or an agent no longer in the herd, wants nothing."
+  (let ((msg "please review the diff"))
+    (dolist (screen (list (ghostherd-test--claude-screen "❯ please review the diff"
+                                                         "  ⠋ Thinking… (esc to interrupt)\n\n")
+                          (ghostherd-test--claude-screen "❯ please review the diff"
+                                                         "  Do you want to proceed?\n")
+                          (ghostherd-test--claude-screen "❯ ")))
+      (ghostherd-test--confirming screen
+        (ghostherd--confirm-submit s msg 2)
+        (should-not (or keys later))))
+    (ghostherd-test--confirming (ghostherd-test--claude-screen "❯ please review the diff")
+      (remhash (ghostherd-session-id s) ghostherd--sessions)
+      (ghostherd--confirm-submit s msg 2)
+      (should-not keys))))
+
+(ert-deftest ghostherd-test-submitting-looks-again-later ()
+  "Text sent with Return is looked at once more; without Return, or with
+the look turned off, it is not."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a"))
+          (later nil))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (time _r f &rest args)
+                   (when (eq f #'ghostherd--confirm-submit) (push (cons time args) later)))))
+        (ghostherd-tests--recording-keys
+          (ghostherd-send s "go" t)
+          (ghostherd-send s "draft" nil)
+          (let ((ghostherd-submit-check-after nil))
+            (ghostherd-send s "go" t))))
+      (should (equal later (list (list ghostherd-submit-check-after s "go" ghostherd-submit-retries)))))))
+
+(ert-deftest ghostherd-test-a-pair-is-not-labelled-against-its-names ()
+  "The pair's names say their roles; notes that said otherwise once told
+the herd the agent called qa was the implementer."
+  (ghostherd-tests--with-herd ()
+    (let (spawned)
+      (cl-letf (((symbol-function 'ghostherd--project-root) (lambda (&rest _) "/p/"))
+                ((symbol-function 'completing-read) (lambda (&rest _) "claude"))
+                ((symbol-function 'read-string) (let ((names '("qa" "rd"))) (lambda (&rest _) (pop names))))
+                ((symbol-function 'ghostherd-spawn)
+                 (lambda (_k &rest pl)
+                   (push pl spawned)
+                   (ghostherd-tests--session :name (plist-get pl :name))))
+                ((symbol-function 'ghostherd--sidebar-leave-overlay) #'ignore)
+                ((symbol-function 'ghostherd--host-view) (lambda (&rest _) (current-buffer)))
+                ((symbol-function 'ghostherd--sync-view-size) #'ignore)
+                ((symbol-function 'delete-other-windows) #'ignore)
+                ((symbol-function 'split-window-right) #'ignore)
+                ((symbol-function 'other-window) #'ignore)
+                ((symbol-function 'switch-to-buffer) #'ignore))
+        (ghostherd-new-pair))
+      (should (equal (mapcar (lambda (pl) (plist-get pl :name)) (reverse spawned)) '("qa" "rd")))
+      (should-not (seq-some (lambda (pl) (plist-member pl :notes)) spawned)))))
 
 ;;; Images pasted into a prompt
 

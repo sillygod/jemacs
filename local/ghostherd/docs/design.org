@@ -506,6 +506,28 @@ it read is the answer --- or, when the client failed, the client's
 error, shown as a failure, not as the other agent's reply.  And an
 agent reading =herd ask --help= is not asking anyone.
 
+** Why a paste is looked at again after Return
+
+The same run lost an ask: rd's second round was pasted into qa, the
+Return that should have submitted it landed while claude was still
+folding the paste, and the text sat in qa's input box.  The herd had
+it as delivered; rd waited for an answer qa never saw.  Waiting before
+Return makes that rarer.  Looking afterwards is what makes it visible:
+the text still in the box between the last two rules, on an agent the
+screen rules call neither working nor blocked, gets Return again ---
+the guard matters, because Return on a menu is an answer.  Only the
+text ghostherd sent is matched (claude's fold of it, or its first
+words), so Return never submits something you were typing there.
+
+The first version of that look never fired: claude follows its =❯= with
+a no-break space, and the pattern, like the test screens it was written
+against, had an ordinary one.  The tests now draw claude's prompt as
+claude does.  The same run showed the cost of the lost Return further
+on: a taker going idle closes its ask with its screen, and qa went idle
+without ever having read the ask --- so rd got qa's first-round report
+as the second round's answer, twice.  An ask still sitting in the
+taker's input box is now left open instead.
+
 ** Why a pasted image goes as a file
 
 An image pasted into a prompt box reaches the agent as the name of a

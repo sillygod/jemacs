@@ -68,6 +68,16 @@ with, so switching does not strand the herd you already have, and
 =ghostherd-restore= sweeps *every* backend rather than just the current
 one.
 
+Text goes in as one bracketed paste, then Return.  A CLI takes a big
+paste in for a moment --- claude folds it into =[Pasted text #2 +20
+lines]= --- and a Return inside that moment is lost, so a multi-line or
+long paste waits =ghostherd-submit-delay= (0.3s) first.  Then, after
+=ghostherd-submit-check-after= (1.5s), ghostherd looks: text still in
+the input box of an agent neither working nor on a menu gets Return
+again, =ghostherd-submit-retries= (2) times at most, each one in the
+herd log with the screen; still there after that, the log says so.
+Only the text it sent counts, so it never submits what you were typing.
+
 Why tmux, why one session per agent, and what the nesting costs are in
 [[file:docs/design.org][docs/design.org]].
 

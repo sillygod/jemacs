@@ -105,6 +105,20 @@ command into it.  Backends that exec the agent directly ignore it."
   :type 'integer
   :group 'ghostherd)
 
+(defcustom ghostherd-submit-delay 0.3
+  "Seconds between pasting a long or multi-line text and pressing Return.
+A CLI takes a big paste in for a moment -- claude folds it into
+\"[Pasted text #2 +20 lines]\" -- and a Return that lands inside that
+moment can be lost, leaving the text in the input box, unsent."
+  :type 'number
+  :group 'ghostherd)
+
+(defun ghostherd--let-paste-settle (text)
+  "Wait `ghostherd-submit-delay' after pasting TEXT, when it is a big paste."
+  (when (and (> ghostherd-submit-delay 0)
+             (or (string-search "\n" text) (> (length text) 200)))
+    (sleep-for ghostherd-submit-delay)))
+
 
 ;;; Session model
 
@@ -537,6 +551,7 @@ _KIND is reserved for kind-specific quoting later."
         (ghostel-paste-string text)
       (ghostel-send-string text))
     (when submit
+      (ghostherd--let-paste-settle text)
       (ghostel-send-key "return"))))
 
 (cl-defmethod ghostherd-backend-send-keys

@@ -1900,12 +1900,10 @@ Prompts for left/right kinds and names (defaults: implementer + reviewer)."
          (left (ghostherd-spawn left-kind
                                 :name left-name
                                 :project project
-                                :notes "implementer"
                                 :display nil))
          (right (ghostherd-spawn right-kind
                                  :name right-name
                                  :project project
-                                 :notes "reviewer"
                                  :display nil)))
     ;; Two Emacs windows, each showing one agent.  On tmux that is two
     ;; attach clients; it is emphatically not a tmux split -- pane layout
@@ -2170,6 +2168,25 @@ STATE is one of working, blocked, idle, done, dead, or auto (clear)."
 
 ;;; Inter-agent communication
 
+(defcustom ghostherd-submit-check-after 1.5
+  "Seconds after submitting text to make sure it left the input box, or nil.
+The Return that submits a paste can be lost (see
+`ghostherd-submit-delay'); the text then sits in the agent's input box
+while the herd counts it as sent -- an ask delivered that nobody will
+ever answer.  Seeing it still there, on an agent neither working nor
+on a menu, ghostherd presses Return again, up to
+`ghostherd-submit-retries' times, and logs it."
+  :type '(choice (const :tag "Never look" nil) number)
+  :group 'ghostherd)
+
+(defcustom ghostherd-submit-retries 2
+  "How many more times to press Return on text left in an input box."
+  :type 'natnum
+  :group 'ghostherd)
+
+(defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
+  "A horizontal rule of the kind the CLIs draw around their input box.")
+
 (defun ghostherd-send (session text &optional submit)
   "Send TEXT to SESSION's terminal.
 When SUBMIT is non-nil, also send RET (Enter)."
@@ -2187,7 +2204,53 @@ When SUBMIT is non-nil, also send RET (Enter)."
                               (if submit "" "  (not submitted)")))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
+  (when (and submit ghostherd-submit-check-after)
+    (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
+                 session text ghostherd-submit-retries))
   text)
+
+(defun ghostherd--input-box (screen)
+  "The lines of SCREEN's input box, between its last two rules; or nil."
+  (let* ((lines (split-string screen "\n"))
+         (rules (cl-loop for l in lines for i from 0
+                         when (string-match-p ghostherd--input-rule-re l) collect i)))
+    (when (cdr rules)
+      (cl-subseq lines (1+ (car (last rules 2))) (car (last rules))))))
+
+(defun ghostherd--unsent-p (screen text)
+  "Non-nil when SCREEN's input box still holds TEXT, pasted but not submitted.
+Only TEXT counts -- claude's fold of a big paste, or its first words --
+so a Return pressed for it never submits something you were typing."
+  (let* ((first (car (split-string text "\n" t "[ \t]+")))
+         (head (and first (substring first 0 (min 20 (length first))))))
+    (seq-some (lambda (line)
+                ;; claude follows its ❯ with a no-break space.
+                (and (string-match "^[[:blank:]│|]*[❯›>][[:blank:]]+\\(.*\\)" line)
+                     (let ((in (match-string 1 line)))
+                       (or (string-prefix-p "[Pasted text #" in)
+                           (and head (string-search head in))))))
+              (ghostherd--input-box screen))))
+
+(defun ghostherd--confirm-submit (session text tries)
+  "Press Return again while SESSION's input box still holds TEXT, TRIES more times.
+Not on an agent that is working or on a menu: Return there is an answer."
+  (condition-case err
+      (when (and (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)
+                 (ghostherd--session-live-p session))
+        (let* ((rules (plist-get (ignore-errors (ghostherd--spec (ghostherd-session-kind session)))
+                                 :screen-rules))
+               (screen (and rules (ghostherd--host-capture session 20)))
+               (hit (and screen (ghostherd--match-rules screen rules))))
+          (when (and screen
+                     (not (memq (car-safe hit) '(working blocked)))
+                     (ghostherd--unsent-p screen text))
+            (if (<= tries 0)
+                (ghostherd--log-add session 'input "← still in its input box: not submitted" screen)
+              (ghostherd--host-send-keys session '("return"))
+              (ghostherd--log-add session 'input "↵ again: it was still in the input box" screen)
+              (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
+                           session text (1- tries))))))
+    (error (message "ghostherd: checking a submit: %s" (error-message-string err)))))
 
 ;;;###autoload
 (defun ghostherd-send-keys (session &rest keys)
@@ -3626,23 +3689,32 @@ poll hitchs typing; that path is `ghostherd--herd-tick-timer'."
   "Non-nil while an async `herd_tick' is in flight.")
 
 (defcustom ghostherd-herd-tick-idle 0.8
-  "Idle seconds before a sidecar `herd_tick'.
+  "Idle seconds before a sidecar `herd_tick', and seconds between them.
 
 The poll timer runs while you type, so putting HTTP on it made
-keystrokes compete with `url-retrieve'.  This fires only after Emacs
-has been idle, then repeats while it stays idle."
+keystrokes compete with `url-retrieve'.  A tick waits until Emacs has
+been idle this long, and keeps coming while it stays idle.  An idle
+timer does not: it fires once per spell of idleness, so an Emacs left
+alone stopped delivering the herd's mail until someone touched it ---
+and two agents asking each other in an empty room stopped with it."
   :type 'number
   :group 'ghostherd)
 
 (defvar ghostherd--herd-tick-timer nil
-  "Idle timer that drives `ghostherd--herd-tick-async'.")
+  "Timer that drives `ghostherd--herd-tick-async' while Emacs is idle.")
+
+(defun ghostherd--herd-tick-when-idle ()
+  "Tick the sidecar, unless you are typing."
+  (let ((idle (current-idle-time)))
+    (when (and idle (>= (float-time idle) ghostherd-herd-tick-idle))
+      (ghostherd--herd-tick-async))))
 
 (defun ghostherd--ensure-herd-tick-timer ()
   "Start the idle sidecar tick if `ghostherd-mode' is on."
   (unless (timerp ghostherd--herd-tick-timer)
     (setq ghostherd--herd-tick-timer
-          (run-with-idle-timer ghostherd-herd-tick-idle t
-                               #'ghostherd--herd-tick-async))))
+          (run-at-time ghostherd-herd-tick-idle ghostherd-herd-tick-idle
+                       #'ghostherd--herd-tick-when-idle))))
 
 (defun ghostherd--stop-herd-tick-timer ()
   (when (timerp ghostherd--herd-tick-timer)
@@ -3847,11 +3919,26 @@ The sidecar ignores this for an ask already answered."
              ghostherd--asks-open)
     ids))
 
+(defun ghostherd--ask-unsent-p (session)
+  "Non-nil when an ask still sits unsent in SESSION's input box."
+  (when-let* ((screen (ignore-errors (ghostherd--host-capture session 20))))
+    (ghostherd--unsent-p screen (substring ghostherd-message-template 0
+                                          (string-search "%s" ghostherd-message-template)))))
+
 (defun ghostherd--ask-on-state (session _old new)
-  "A taker that stopped closes its open ask."
+  "A taker that stopped closes its open ask -- unless it never started.
+Delivery marks the taker `working' itself; when the Return was lost the
+ask is still in its input box, and the taker goes idle without having
+read it.  Its screen then answers nothing, so the ask stays open."
   (when (memq new '(idle done dead))
-    (dolist (id (ghostherd--asks-of session))
-      (ghostherd--ask-settle id session (eq new 'dead)))))
+    (let ((ids (ghostherd--asks-of session)))
+      (when (and ids (not (eq new 'dead)) (ghostherd--ask-unsent-p session))
+        (ghostherd--log-add session 'ask
+                            (format "ask %s is still in its input box: left open"
+                                    (string-join ids ", ")))
+        (setq ids nil))
+      (dolist (id ids)
+        (ghostherd--ask-settle id session (eq new 'dead))))))
 
 (defun ghostherd--ask-on-removed (session)
   "A taker killed outright fails its open ask."

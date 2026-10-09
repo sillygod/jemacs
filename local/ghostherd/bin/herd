@@ -848,7 +848,15 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.add_argument("--project", action="append", help="also a project's own hooks (repeatable)")
     p.set_defaults(fn=lambda a: cmd_hooks_list(a) if a.action == "list" else cmd_hooks(a))
-    args = parser.parse_args(argv)
+    args, extra = parser.parse_known_args(argv)
+    # argparse settles an optional TEXT before it has read the options,
+    # so `ask qa --wait -' or `ask qa --wait "text"' would leave the text
+    # over -- the order the usage line suggests.
+    if (len(extra) == 1 and getattr(args, "text", "") is None
+            and (extra[0] == "-" or not extra[0].startswith("-"))):
+        args.text = extra.pop()
+    if extra:
+        parser.error("unrecognized arguments: %s" % " ".join(extra))
     if not getattr(args, "fn", None):
         parser.print_help(sys.stderr)
         return 2

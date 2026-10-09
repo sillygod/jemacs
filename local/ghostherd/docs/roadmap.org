@@ -624,12 +624,30 @@ builds, one tests, back and forth --- as one conversation, on the page.
   "running in background" as the answer; the ask now waits for the
   call that reads its output, and a failed client call shows as a
   failure with its error.  =herd ask --help= is no longer an ask
+- [X] =herd ask qa --wait -= was refused: argparse left TEXT given
+  after the options over.  The client takes it in either place
+- [X] A big paste's Return was lost and the ask sat unsubmitted in the
+  taker's input box: a moment before Return, and a look afterwards
+  that presses it again (=ghostherd-submit-check-after=) --- the look
+  reading claude's =❯= with its no-break space
+- [X] The taker then went idle and the ask closed with its screen: rd
+  got qa's first-round report as the second round's answer.  An ask
+  still in the taker's input box stays open
+- [X] The herd's tick, which carries mail and hook reports, ran on an
+  idle timer: once per spell of idleness.  With nobody at Emacs, qa's
+  answer reached rd 36 minutes late, when someone came back.  It now
+  ticks every 0.8s while Emacs is idle, and waits while you type
 - [X] The room read an answer only when Claude Code's end-of-output
   marker ended the text; an asker that ran more after =cat= (rd did)
   left its asks waiting forever
+- [X] =ghostherd-new-pair= labelled its agents implementer / reviewer
+  whatever they were called; the names say the roles now
 
 ** What is left
 
+- [ ] An ask whose paste never reached the taker now stays open, not
+  wrongly answered --- but it waits for someone to press Return: when
+  the look after Return gives up, hand it back to the queue instead
 - [ ] The loop itself: two agents handing work back and forth until
   one says it is done --- today each turn is an ask the agent decides
   to make; a herd-run loop (who goes next, when it stops, a turn cap)

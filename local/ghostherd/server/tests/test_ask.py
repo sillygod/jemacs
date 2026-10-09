@@ -414,6 +414,21 @@ def test_client_wait_prints_the_answer(live):
     assert _mail_to(h, "claude-main") == []
 
 
+def test_client_takes_the_text_after_the_options(live):
+    # `ask qa --wait -' is the order an agent reaches for first; argparse
+    # used to leave the text over as unrecognized.
+    out = run(live, "ask", "agy", "--wait", "--timeout", "1", "-", stdin="from stdin\n")
+    assert out.returncode == 3, out.stderr
+    out = run(live, "ask", "agy", "--timeout", "1", "--wait", "as an argument")
+    assert out.returncode == 3, out.stderr
+    heads = [a["head"] for a in herd_mod.get_herd().recent_asks()["asks"]]
+    assert {"from stdin", "as an argument"} <= set(heads)
+    # Still refused: a second text, an unknown option.
+    for args in (("ask", "agy", "one", "two"), ("ask", "agy", "--nope", "x"), ("reply", "1a2b3c4d", "x", "y")):
+        out = run(live, *args)
+        assert out.returncode == 2 and "unrecognized arguments" in out.stderr, args
+
+
 def test_client_wait_timeout_detaches(live):
     out = run(live, "ask", "agy", "slow one", "--wait", "--timeout", "1")
     assert out.returncode == 3, out.stderr

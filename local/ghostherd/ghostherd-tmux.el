@@ -745,6 +745,7 @@ must not touch `state' -- the agent is still running."
     (ghostherd-tmux--run "paste-buffer" "-d" "-p" "-r"
                          "-b" "ghostherd-paste" "-t" target)
     (when submit
+      (ghostherd--let-paste-settle text)
       (ghostherd-tmux--run "send-keys" "-t" target "Enter"))))
 
 (cl-defmethod ghostherd-backend-send-keys
