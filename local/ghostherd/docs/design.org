@@ -506,6 +506,27 @@ it read is the answer --- or, when the client failed, the client's
 error, shown as a failure, not as the other agent's reply.  And an
 agent reading =herd ask --help= is not asking anyone.
 
+** Why the chat is the transcripts, at the level of turns
+
+A project's chat is the room's conversations as one timeline, and it
+is built from the same transcripts, by the sidecar, rather than from
+events the herd records as they happen.  Recording would order things
+exactly, but only from the day it started, and only what passes
+through the herd: a prompt typed into an agent's own terminal, or
+answered from a phone, would need a hook of its own.  The transcripts
+have all of it, history included, for every CLI the room can already
+read; and the timeline is the sidecar's, where Telegram can read it
+too.  What it costs is grok, which writes no times: its messages keep
+their order and end at the file's mtime, which places them among the
+others only roughly.
+
+It shows turns, not everything said.  An ask appears once, as its
+taker received it, answered by the taker's reply; the asker's side of
+it appears only for what the taker never saw --- an ask that failed on
+the way, or the herd's answer in place of a reply.  Of what an agent
+said in a turn only the last message stays: "now running the tests"
+is the room's to show, "done, two failures" the chat's.
+
 ** Why a paste is looked at again after Return
 
 The same run lost an ask: rd's second round was pasted into qa, the

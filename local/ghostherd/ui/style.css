@@ -646,3 +646,16 @@ pre.screen {
 .chip img, .chip .noimg { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
 .chip .noimg { display: inline-flex; align-items: center; justify-content: center; font-size: 22px; background: var(--line); }
 .chip .cname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 14em; }
+
+/* The room as one chat. */
+.rview { display: inline-flex; gap: 4px; margin-left: auto; }
+.rview button.on { border-color: var(--accent, #58a6ff); color: var(--text); }
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cbody { flex: 1; min-height: 0; overflow: auto; padding: 10px 16px; }
+.cfoot { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; padding: 8px 16px; border-top: 1px solid var(--line); flex-shrink: 0; }
+.cfoot textarea { flex: 1; min-width: 0; resize: vertical; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.cfoot select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font: inherit; align-self: stretch; }
+.cmsg { max-width: 920px; }
+.cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
+.cmore { margin-top: 2px; font-size: 12px; }

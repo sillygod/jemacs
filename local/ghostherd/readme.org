@@ -1000,6 +1000,14 @@ are the other tabs (below, and "What happened while you were away").
   its screen and says why.  Emacs looks every two seconds; the sidecar
   reads a transcript, from its tail, only when it has changed.  Esc or
   Back leaves.
+- /Chat/ in the room's header shows it as one conversation instead:
+  who said what to whom --- your prompts, the asks and answers between
+  agents, how each agent's every turn ended --- in the speakers'
+  colours, long messages folded.  What an agent did on the way stays in
+  its column.  The box below writes to the agent picked beside it, or to
+  the one named by =@name= at its start, images and ⌘V as in any box.
+  The sidecar builds the timeline from the agents' transcripts, so it
+  starts with everything they already said.
 - An image goes with a prompt as a file.  ⌘V an image into a prompt
   box, or press /Image/ beside it: Emacs saves the clipboard's image
   (=pngpaste=, or =wl-paste= / =xclip=) under

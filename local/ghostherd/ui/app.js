@@ -659,6 +659,9 @@
     // The room: its project, each agent's conversation, the agents shown
     // by their screen instead, and the tool lines opened.
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
+    // The room as one chat: the view shown, the timeline Emacs sent, who
+    // the box writes to in each project, and the long messages opened.
+    roomView: "columns", chat: null, chatTo: {}, chatOpen: new Set(),
   };
 
   const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
@@ -900,10 +903,17 @@
     herdNow.room = project;
     herdNow.roomScreen = new Set();
     herdNow.convs = {};
+    herdNow.chat = null;
     app.innerHTML = "";
     chrome();
-    emit("room-watch", { project, screens: [] });
+    watchRoom();
     renderRoom();
+  }
+
+  // What Emacs should send for the room: each column's conversation and
+  // the screens shown instead, or the chat.
+  function watchRoom() {
+    emit("room-watch", { project: herdNow.room, screens: [...herdNow.roomScreen], view: herdNow.roomView });
   }
 
   function closeRoom() {
@@ -1040,6 +1050,91 @@
     body.scrollTop = first || atBottom ? body.scrollHeight : keep;
   }
 
+  // ---- The room as one chat ----------------------------------------------
+  //
+  // The same conversations at the level of who said what to whom: your
+  // prompts, the asks and answers between agents, and how each turn of
+  // each agent ended -- built by the sidecar from their transcripts.
+  // What an agent did along the way stays in its column.  The box writes
+  // to one agent, picked above it or by @name at its start.
+
+  function chatTo(agents) {
+    const want = herdNow.chatTo[herdNow.room];
+    return agents.some((a) => a.name === want) ? want : agents[0].name;
+  }
+
+  function chatHtml(agents) {
+    const to = chatTo(agents);
+    return '<div class="chat"><div class="cbody"></div>' +
+      '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
+      '<select class="chat-to" title="Who it goes to (or start with @name)">' +
+      agents.map((a) => '<option value="' + esc(a.name) + '"' + (a.name === to ? " selected" : "") + ">" + esc(a.name) + "</option>").join("") +
+      '</select><textarea class="agent-text" rows="2" placeholder="Message ' + esc(to) + '  (@name for another · ⌘↩ sends)">' +
+      esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON +
+      '<button type="button" class="primary small" data-act="a:send">Send</button></div></div>';
+  }
+
+  // The box writes to TO now: what it held, words and images, goes along.
+  function setChatTo(to) {
+    const foot = app.querySelector(".chat .cfoot");
+    if (!foot) return;
+    const was = foot.getAttribute("data-name");
+    herdNow.chatTo[herdNow.room] = to;
+    if (was === to) return;
+    const ta = foot.querySelector("textarea");
+    herdNow.compose[to] = ta.value;
+    delete herdNow.compose[was];
+    herdNow.attach[to] = (herdNow.attach[to] || []).concat(herdNow.attach[was] || []);
+    delete herdNow.attach[was];
+    foot.setAttribute("data-name", to);
+    foot.querySelector(".chat-to").value = to;
+    ta.placeholder = "Message " + to + "  (@name for another · ⌘↩ sends)";
+    renderAttach(to);
+  }
+
+  const CHAT_LONG = 900;
+  function chatItemHtml(e) {
+    const you = e.who === "user";
+    const color = you ? "" : sessionColor(e.who || "");
+    const tag = e.kind === "ask" ? " · ask" + (e.ask ? " " + e.ask : "")
+      : e.kind === "reply" ? " · answers " + (e.ask || "")
+      : e.kind === "answer" ? (e.failed ? " · the ask failed" : e.auto ? " · no answer; the herd sent what it last showed" : " · answers " + (e.ask || ""))
+      : "";
+    const head = (you ? "You" : e.who || "?") + (e.to ? " → " + e.to : "") + tag;
+    const key = [e.agent, e.ts, e.kind, e.ask, e.who].join("|");
+    const long = (e.text || "").length > CHAT_LONG || (e.text || "").split("\n").length > 14;
+    const open = herdNow.chatOpen.has(key);
+    const body = e.kind === "turn" ? '<div class="ebody msg-body">' + markdown(e.text) + "</div>" : plainBody(e.text);
+    // An ask its taker never saw carries what came of it.
+    const outcome = e.kind !== "ask" || !(e.failed || e.answer || e.waiting) ? ""
+      : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null) + plainBody(e.answer) + "</div>"
+      : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || "")) + plainBody(e.answer) + "</div>"
+      : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
+    return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '"' +
+      (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
+      entHead(head, you ? "" : "", e.ts, color) + body + outcome +
+      (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
+      "</div>";
+  }
+
+  // Redraw the timeline, staying at the bottom if it was there.
+  function renderChatBody() {
+    const body = app.querySelector(".chat .cbody");
+    if (!body) return;
+    const c = herdNow.chat;
+    const first = !body.hasAttribute("data-drawn");
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const keep = body.scrollTop;
+    const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
+    body.innerHTML = !c ? '<p class="rnote">Reading the conversations…</p>'
+      : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
+      : (c.earlier ? '<p class="rnote">Earlier messages are in each agent\'s column, not shown here.</p>' : "") +
+        ((c.entries || []).length ? c.entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
+        (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
+    body.setAttribute("data-drawn", "1");
+    body.scrollTop = first || atBottom ? body.scrollHeight : keep;
+  }
+
   function renderRoom() {
     const project = herdNow.room;
     const agents = roomAgents();
@@ -1049,23 +1144,30 @@
     const rank = (s) => (s in RANK ? RANK[s] : 9);
     const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
       .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
-    const key = project + "\n" + agents.map((a) => a.name).join("\n");
+    const chat = herdNow.roomView === "chat";
+    const key = project + "\n" + herdNow.roomView + "\n" + agents.map((a) => a.name).join("\n");
     let room = app.querySelector(".room");
     if (!room || room.getAttribute("data-key") !== key) {
+      const views = [["columns", "Columns"], ["chat", "Chat"]].map(([v, label]) =>
+        '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
+        label + "</button>").join("");
       app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
-        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span></div>' +
-        (agents.length
-          ? '<div class="rcols">' + agents.map((a) =>
+        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + "</span></div>" +
+        (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
+          : chat ? chatHtml(agents)
+          : '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
               '<textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
-              esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>"
-          : '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>') + "</div>";
+              esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>") +
+        "</div>";
       room = app.querySelector(".room");
       room.setAttribute("data-key", key);
-      agents.forEach(renderRoomBody);
+      if (chat) renderChatBody();
+      else agents.forEach(renderRoomBody);
     }
     room.querySelector(".rsum").innerHTML = summary;
+    if (chat) return;
     agents.forEach((a) => {
       const col = roomColumn(a.name);
       col.className = "rcol s-" + a.state;
@@ -1074,7 +1176,7 @@
   }
 
   function onAgentAction(act, el) {
-    const row = el.closest(".arow, .rcol");
+    const row = el.closest(".arow, .rcol, .cfoot");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
     const project = group && group.getAttribute("data-project");
@@ -1086,10 +1188,27 @@
     }
     if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
     if (act === "room") return openRoom(project);
+    if (act === "room-view") {
+      const v = el.getAttribute("data-view");
+      if (v === herdNow.roomView) return;
+      herdNow.roomView = v;
+      watchRoom();
+      return renderRoom();
+    }
+    if (act === "chat-more") {
+      const key = el.getAttribute("data-key");
+      if (herdNow.chatOpen.has(key)) herdNow.chatOpen.delete(key);
+      else herdNow.chatOpen.add(key);
+      const body = app.querySelector(".chat .cbody");
+      const keep = body ? body.scrollTop : 0;
+      renderChatBody();
+      if (body) body.scrollTop = keep;
+      return;
+    }
     if (act === "room-screen") {
       if (herdNow.roomScreen.has(name)) herdNow.roomScreen.delete(name);
       else herdNow.roomScreen.add(name);
-      emit("room-watch", { project: herdNow.room, screens: [...herdNow.roomScreen] });
+      watchRoom();
       const a = roomAgents().find((x) => x.name === name);
       if (a) renderRoomBody(a);
       return renderRoom();
@@ -1185,11 +1304,18 @@
 
   function sendPrompt(name) {
     const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
-    const text = (ta ? ta.value : herdNow.compose[name] || "").trim();
+    let text = (ta ? ta.value : herdNow.compose[name] || "").trim();
+    let to = name;
+    // In the chat, @name at the start writes to that agent instead.
+    const at = ta && ta.closest(".cfoot") && /^@(\S+)\s+/.exec(text);
+    if (at && roomAgents().some((a) => a.name === at[1])) {
+      to = at[1];
+      text = text.slice(at[0].length).trim();
+    }
     const files = (herdNow.attach[name] || []).map((a) => a.path);
     if (!text && !files.length) return;
     // The images go after what you wrote, a file name a line.
-    emit("agent-prompt", { name, text: [text, files.join("\n")].filter(Boolean).join("\n\n") });
+    emit("agent-prompt", { name: to, text: [text, files.join("\n")].filter(Boolean).join("\n\n") });
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);
     delete herdNow.attach[name];
@@ -1208,7 +1334,7 @@
   // can neither write one nor carry an image through the title it speaks
   // to Emacs by.
   function askImage(ta) {
-    emit("agent-image", { name: ta.closest(".arow, .rcol").getAttribute("data-name") });
+    emit("agent-image", { name: ta.closest(".arow, .rcol, .cfoot").getAttribute("data-name") });
   }
 
   const THUMB = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
@@ -1245,9 +1371,13 @@
     askImage(t);
   });
 
+  app.addEventListener("change", (ev) => {
+    if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
+  });
+
   app.addEventListener("input", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("agent-text")) {
-      const row = ev.target.closest(".arow, .rcol");
+      const row = ev.target.closest(".arow, .rcol, .cfoot");
       if (row) herdNow.compose[row.getAttribute("data-name")] = ev.target.value;
     }
   });
@@ -1256,7 +1386,7 @@
     if (!t.classList) return;
     if (t.classList.contains("agent-text") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
       ev.preventDefault();
-      sendPrompt(t.closest(".arow, .rcol").getAttribute("data-name"));
+      sendPrompt(t.closest(".arow, .rcol, .cfoot").getAttribute("data-name"));
     } else if (t.classList.contains("notes-text") && ev.key === "Enter") {
       ev.preventDefault();
       onAgentAction("notes-save", t);
@@ -1707,6 +1837,13 @@
 
   window.GM = {
     flash: (msg) => setStatus(msg),
+
+    // The room's chat: its timeline, for the project it is of.
+    setChat: (p) => {
+      if (!p || !herdNow.room || p.project !== herdNow.room) return;
+      herdNow.chat = p;
+      if (herdNow.roomView === "chat") renderChatBody();
+    },
 
     // An image saved for NAME's next prompt: shown above its box, sent
     // with it.  A box that is shut opens.

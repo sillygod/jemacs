@@ -704,6 +704,37 @@ it finished --- or stopped for a reason the room states.
   rules (rounds, the word that ends it), and the room's header saying
   where it is --- "round 3/4, waiting on qa", "done: no problems"
 
+* Phase 3.21 — A project's chat, and a lead to run it  *(this tree)*
+
+Goal: one conversation per project between you, the agents, and a lead
+that plans the work and hands it out --- in place of a loop command
+(3.20's last item), since "rd builds, qa tests, four rounds" said to a
+lead is that, and every other flow besides.
+
+** What shipped
+
+- [X] The room's /Chat/ view: one timeline of who said what to whom,
+  turns rather than every message, an ask once with its answer; the
+  box writes to a picked agent or to =@name=
+- [X] =herd_chat= on the sidecar: the project's transcripts merged;
+  an agent whose transcript cannot be read is named, not dropped
+- [X] 5 pytest (the merge, what a taker never saw, grok without times,
+  the tail of a long day, the RPC), 1 ERT, WebKit checks of the view
+  and the box; each guard mutation-tested
+
+** What is left
+
+- [ ] The lead: an ordinary herd agent with the lead's role, claude by
+  default; =@lead /model sonnet= changes its model, a lead of another
+  CLI takes over from a handoff summary.  Spawned the first time a
+  project's chat is opened; a message with no =@name= goes to it
+- [ ] Asks may nest --- lead to rd, rd to qa --- but never back up
+  their chain, which keeps the rule against loops and lets the lead
+  hand out outcomes rather than relay every message
+- [ ] What you say to an agent directly reaches the lead as a summary
+  the next time it is asked, not as an interruption
+- [ ] The chat on Telegram: read it, and talk to the lead, from a phone
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

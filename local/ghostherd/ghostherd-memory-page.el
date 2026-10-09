@@ -521,6 +521,12 @@ path to open."
   "Agent name -> the transcript signature last sent for it, or `none'.")
 (defvar ghostherd-memory-page--room-reading (make-hash-table :test 'equal)
   "Agent name -> t while the sidecar reads its transcript.")
+(defvar ghostherd-memory-page--room-chat nil
+  "Non-nil while the page shows the room as one chat, not in columns.")
+(defvar ghostherd-memory-page--chat-sent nil
+  "The transcripts' signatures the chat was last sent for.")
+(defvar ghostherd-memory-page--chat-reading nil
+  "Non-nil while the sidecar builds the chat.")
 
 (defun ghostherd-memory-page--room-sessions ()
   "The herd's agents in the room's project."
@@ -553,6 +559,64 @@ Field by field: what reaches the page is what is named here."
                   (mapcar (lambda (tl) (list :name (funcall str (plist-get tl :name))
                                              :hint (funcall str (plist-get tl :hint))))
                           (plist-get e :tools))))))
+
+(defun ghostherd-memory-page--sidecar-error (e)
+  "What the page says when the sidecar failed with E."
+  (if (string-match-p "Method not found" (format "%s" e))
+      ;; Emacs reloaded, the sidecar did not.
+      "the sidecar is older than the room: M-x ghostherd-memory-stop, then M-x ghostherd-memory-start"
+    (format "%s" e)))
+
+(defun ghostherd-memory-page--chat-entry (e)
+  "Chat item E, from the sidecar, as the page takes it, field by field."
+  (let ((str #'ghostherd-memory-page--str))
+    (list :who (funcall str (plist-get e :who))
+          :to (funcall str (plist-get e :to))
+          :kind (funcall str (plist-get e :kind))
+          :ask (funcall str (plist-get e :ask))
+          :text (funcall str (plist-get e :text))
+          :answer (plist-get e :answer)
+          :ts (plist-get e :ts)
+          :agent (funcall str (plist-get e :agent))
+          :auto (if (plist-get e :auto) t :json-false)
+          :failed (if (plist-get e :failed) t :json-false)
+          :waiting (if (plist-get e :waiting) t :json-false))))
+
+(defun ghostherd-memory-page--chat-read ()
+  "Send the room's chat if any of its agents' transcripts changed.
+One timeline for the project, which the sidecar builds from them all."
+  (let* ((room ghostherd-memory-page--room)
+         (sessions (ghostherd-memory-page--room-sessions))
+         (known (delq nil (mapcar (lambda (s)
+                                    (when-let* ((path (ghostherd-session-transcript s)))
+                                      (cons (ghostherd-session-name s) path)))
+                                  sessions)))
+         (absent (seq-remove (lambda (n) (assoc n known))
+                             (mapcar #'ghostherd-session-name sessions)))
+         (sig (cons absent (mapcar (lambda (a) (cons (car a) (ghostherd-memory-page--room-signature (cdr a))))
+                                   known))))
+    (unless (or (equal sig ghostherd-memory-page--chat-sent) ghostherd-memory-page--chat-reading)
+      (setq ghostherd-memory-page--chat-reading t)
+      (let ((done (lambda (&rest fields)
+                    (setq ghostherd-memory-page--chat-reading nil
+                          ghostherd-memory-page--chat-sent sig)
+                    (when (and (equal room ghostherd-memory-page--room) ghostherd-memory-page--room-chat)
+                      (ghostherd-memory-page--js
+                       "setChat" (append (list :project room :absent (ghostherd-memory-page--vec absent))
+                                         fields))))))
+        (condition-case err
+            (ghostherd-memory-request-async
+             "herd_chat"
+             (lambda (r)
+               (funcall done
+                        :earlier (if (plist-get r :earlier) t :json-false)
+                        :missing (ghostherd-memory-page--vec
+                                  (mapcar #'ghostherd-memory-page--str (plist-get r :missing)))
+                        :entries (ghostherd-memory-page--vec
+                                  (mapcar #'ghostherd-memory-page--chat-entry (plist-get r :entries)))))
+             (list :agents (vconcat (mapcar (lambda (a) (list :name (car a) :path (cdr a))) known)))
+             (lambda (e) (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
+          (error (funcall done :entries [] :error (error-message-string err))))))))
 
 (defun ghostherd-memory-page--room-send (name &rest fields)
   (ghostherd-memory-page--js "setConversation" (append (list :name name) fields)))
@@ -590,11 +654,7 @@ screen if that is what the page shows of it."
                                           (plist-get r :entries)))))
              (list :path path)
              (lambda (e)
-               (funcall done :entries []
-                        :error (if (string-match-p "Method not found" (format "%s" e))
-                                   ;; Emacs reloaded, the sidecar did not.
-                                   "the sidecar is older than the room: M-x ghostherd-memory-stop, then M-x ghostherd-memory-start"
-                                 (format "%s" e)))))
+               (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
           (error (funcall done :entries [] :error (error-message-string err)))))))
     (when (or (null sig) (member name ghostherd-memory-page--room-screens))
       (ghostherd-memory-page--js
@@ -606,18 +666,28 @@ screen if that is what the page shows of it."
 (defun ghostherd-memory-page--room-tick ()
   (if (not (and ghostherd-memory-page--room (xwapp-session ghostherd-memory-page--app)))
       (ghostherd-memory-page--room-close)
-    (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions))))
+    (if ghostherd-memory-page--room-chat
+        (ghostherd-memory-page--chat-read)
+      (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions)))))
 
 (defun ghostherd-memory-page--room-open (intent)
   "Show the room INTENT names, its agents in the screens it lists by
-their screen.  The same room again only changes which those are."
+their screen, or as one chat when its view is \"chat\".  The same room
+again only changes which those are."
   (let ((project (alist-get 'project intent))
-        (screens (seq-filter #'stringp (append (alist-get 'screens intent) nil))))
+        (screens (seq-filter #'stringp (append (alist-get 'screens intent) nil)))
+        (chat (equal (alist-get 'view intent) "chat")))
     (unless (and (stringp project) (not (string-empty-p project)))
       (user-error "No project"))
     (unless (equal project ghostherd-memory-page--room)
       (ghostherd-memory-page--room-close)
       (setq ghostherd-memory-page--room project))
+    ;; A view the page had not been sent is sent whole: the columns it
+    ;; left were not kept up while it showed the chat.
+    (unless (eq chat ghostherd-memory-page--room-chat)
+      (setq ghostherd-memory-page--room-chat chat
+            ghostherd-memory-page--chat-sent nil)
+      (clrhash ghostherd-memory-page--room-sent))
     (setq ghostherd-memory-page--room-screens screens)
     (unless (timerp ghostherd-memory-page--room-timer)
       (setq ghostherd-memory-page--room-timer
@@ -630,7 +700,10 @@ their screen.  The same room again only changes which those are."
     (cancel-timer ghostherd-memory-page--room-timer))
   (setq ghostherd-memory-page--room-timer nil
         ghostherd-memory-page--room nil
-        ghostherd-memory-page--room-screens nil)
+        ghostherd-memory-page--room-screens nil
+        ghostherd-memory-page--room-chat nil
+        ghostherd-memory-page--chat-sent nil
+        ghostherd-memory-page--chat-reading nil)
   (clrhash ghostherd-memory-page--room-sent))
 
 (defun ghostherd-memory-page--session (intent)

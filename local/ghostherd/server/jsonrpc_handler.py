@@ -66,6 +66,7 @@ class JsonRpcHandler:
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
             "herd_conversation": self._herd_conversation,
+            "herd_chat": self._herd_chat,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -272,6 +273,25 @@ class JsonRpcHandler:
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
         return conversation.read(str(params.get("path") or ""), limit)
+
+    def _herd_chat(self, params: dict) -> dict:
+        """A project's agents' conversations as one timeline.  AGENTS is a
+        list of {name, path}; a path that is not a transcript leaves that
+        agent out, named in `missing'."""
+        agents = params.get("agents")
+        if not isinstance(agents, list):
+            raise ValueError("agents must be a list")
+        pairs = []
+        for a in agents:
+            if not (isinstance(a, dict) and isinstance(a.get("name"), str)
+                    and isinstance(a.get("path"), str)):
+                raise ValueError("each agent is {name, path}")
+            pairs.append((a["name"], a["path"]))
+        try:
+            limit = max(1, min(500, int(params.get("limit") or conversation.CHAT_LIMIT)))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        return conversation.chat(pairs, limit)
 
 
 handler = JsonRpcHandler()

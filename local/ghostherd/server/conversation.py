@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shlex
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -318,7 +319,7 @@ class Thread:
             self.entries.append(last)
         last["tools"].append({"name": str(name or "tool"), "hint": hint(args)})
 
-    def result(self, call_id: Any, content: Any, error: bool = False) -> None:
+    def result(self, call_id: Any, content: Any, error: bool = False, ts: Any = None) -> None:
         herd = self._calls.pop(str(call_id), None) if call_id else None
         if not (herd and herd["kind"] == "ask"):
             return
@@ -333,6 +334,8 @@ class Thread:
         reading = herd.pop("waiting", False)
         out = ask_outcome(text, error, final=not reading)
         herd.update(out)
+        if not out.get("waiting"):
+            herd["answered_ts"] = ts
         if not (reading and out.get("waiting") and not EXITED.search(text)):
             for f in [f for f, a in self._outputs.items() if a is herd]:
                 del self._outputs[f]
@@ -357,7 +360,7 @@ def _claude(records, thread: Thread) -> None:
             blocks = [b for b in content or [] if isinstance(b, dict)]
             results = [b for b in blocks if b.get("type") == "tool_result"]
             for b in results:
-                thread.result(b.get("tool_use_id"), b.get("content"), bool(b.get("is_error")))
+                thread.result(b.get("tool_use_id"), b.get("content"), bool(b.get("is_error")), ts)
             if not results:
                 thread.user("\n".join(b.get("text", "") for b in blocks if b.get("type") == "text"), ts)
         elif o.get("type") == "assistant":
@@ -446,3 +449,117 @@ def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
         _cache.pop(next(iter(_cache)))
     _cache[key] = (st.st_size, st.st_mtime_ns, out)
     return out
+
+
+# ---- A project's chat ------------------------------------------------------
+#
+# The room shows each agent's conversation in a column; the chat is the
+# same conversations as one timeline, at the level of who said what to
+# whom: your prompts, the asks and answers between agents, and how each
+# turn of each agent ended.  Its working -- tool calls, what an agent
+# says on the way -- stays in the room.
+
+CHAT_LIMIT = 200
+CHAT_PER_AGENT = 150
+
+
+def _epoch(ts: Any) -> float | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
+                replied: set[str]) -> list[dict[str, Any]]:
+    """NAME's ENTRIES as chat items.  An ask is shown as its taker received
+    it, and answered by the taker's reply: the asker's side of the same
+    ask appears only for what its taker never saw -- an ask that failed
+    on the way, or an outcome the herd gave instead of a reply."""
+    out: list[dict[str, Any]] = []
+    said: dict[str, Any] | None = None
+
+    def add(**item: Any) -> None:
+        out.append({k: v for k, v in item.items() if v not in (None, "", False)})
+
+    def turn() -> None:
+        nonlocal said
+        if said:
+            add(who=name, kind="turn", text=said["text"], ts=said.get("ts"))
+        said = None
+
+    for e in entries:
+        role, kind, ask = e.get("role"), e.get("kind"), e.get("ask")
+        if role == "assistant":
+            said = e
+        elif role == "user":
+            turn()
+            if kind == "prompt":
+                add(who="user", to=name, kind="prompt", text=e.get("text"), ts=e.get("ts"))
+            elif kind in ("ask", "message"):
+                add(who=e.get("who"), to=name, kind=kind, ask=ask, text=e.get("text"), ts=e.get("ts"))
+            elif kind == "answer" and ask not in replied:
+                add(who=e.get("who"), to=name, kind="answer", ask=ask, text=e.get("text"),
+                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("ts"))
+        elif role == "herd" and kind == "reply":
+            add(who=name, to=taken.get(ask, ""), kind="reply", ask=ask, text=e.get("text"), ts=e.get("ts"))
+        elif role == "herd" and kind == "ask":
+            if ask not in taken:
+                add(who=name, to=e.get("to"), kind="ask", ask=ask, text=e.get("text"), ts=e.get("ts"),
+                    answer=e.get("answer"), auto=e.get("auto"), failed=e.get("failed"),
+                    waiting=e.get("waiting"))
+            elif ask not in replied and (e.get("answer") or e.get("failed")):
+                add(who=e.get("to"), to=name, kind="answer", ask=ask, text=e.get("answer"),
+                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("answered_ts") or e.get("ts"))
+    turn()
+    return out
+
+
+def _keys(items: list[dict[str, Any]], mtime: float) -> list[float]:
+    """When each of a stream's ITEMS happened.  One without a time (grok
+    writes none) has its predecessor's; a stream with none at all ends at
+    its file's MTIME, a second apart, which orders it against the others
+    only roughly."""
+    known = [_epoch(i.get("ts")) for i in items]
+    if not any(k is not None for k in known):
+        return [mtime - (len(items) - 1 - n) for n in range(len(items))]
+    last = next(k for k in known if k is not None)
+    keys = []
+    for k in known:
+        last = k if k is not None else last
+        keys.append(last)
+    return keys
+
+
+def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT) -> dict[str, Any]:
+    """The conversations of AGENTS -- (name, transcript) pairs -- as one
+    timeline, its last LIMIT items, each saying which agent's it is."""
+    streams, missing, earlier = [], [], False
+    for name, path in agents:
+        try:
+            r = read(path, CHAT_PER_AGENT)
+        except ValueError:
+            missing.append(name)
+            continue
+        streams.append((name, r))
+        earlier = earlier or r["earlier"]
+    taken: dict[str, str] = {}
+    replied: set[str] = set()
+    for name, r in streams:
+        for e in r["entries"]:
+            if e.get("role") == "user" and e.get("kind") == "ask" and e.get("ask"):
+                taken[e["ask"]] = e.get("who") or ""
+            elif e.get("role") == "herd" and e.get("kind") == "reply" and e.get("ask"):
+                replied.add(e["ask"])
+    merged = []
+    for order, (name, r) in enumerate(streams):
+        items = _chat_items(name, r["entries"], taken, replied)
+        for n, (item, key) in enumerate(zip(items, _keys(items, r["mtime"]))):
+            item["agent"] = name
+            merged.append(((key, order, n), item))
+    merged.sort(key=lambda m: m[0])
+    entries = [item for _, item in merged]
+    return {"entries": entries[-limit:], "earlier": earlier or len(entries) > limit,
+            "missing": missing}

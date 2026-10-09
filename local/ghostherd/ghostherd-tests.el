@@ -4836,7 +4836,10 @@ page as [] -- json.el writes nil as null, and the page stopped drawing."
             (ghostherd-memory-page--room-screens nil)
             (ghostherd-memory-page--room-timer nil)
             (ghostherd-memory-page--room-sent (make-hash-table :test 'equal))
-            (ghostherd-memory-page--room-reading (make-hash-table :test 'equal)))
+            (ghostherd-memory-page--room-reading (make-hash-table :test 'equal))
+            (ghostherd-memory-page--room-chat nil)
+            (ghostherd-memory-page--chat-sent nil)
+            (ghostherd-memory-page--chat-reading nil))
        (cl-letf (((symbol-function 'ghostherd-session-transcript) (lambda (_s) transcript))
                  ((symbol-function 'ghostherd--host-capture) (lambda (&rest _) "the screen"))
                  ((symbol-function 'xwapp-session) (lambda (&rest _) t)))
@@ -4873,6 +4876,58 @@ gets each entry's known fields, lists as arrays."
     (write-region "more\n" nil file t 'silent)
     (ghostherd-memory-page--room-tick)
     (should (= (length requests) 2))))
+
+(ert-deftest ghostherd-test-room-as-one-chat ()
+  "Shown as a chat, the room asks the sidecar for the project's timeline
+when any transcript changed -- once, not per agent -- naming the agents
+it knows none for; the page gets each item's known fields.  Back to
+columns, every column is sent afresh: they were not kept up meanwhile."
+  (ghostherd-test--with-room
+    (puthash "claude-web" (ghostherd-session--create :id "claude-web" :name "claude-web" :kind 'claude
+                                                     :state 'idle :project "/p/" :backend 'tmux)
+             ghostherd--sessions)
+    (cl-letf (((symbol-function 'ghostherd-session-transcript)
+               (lambda (s) (and (equal (ghostherd-session-name s) "claude-api") transcript))))
+      (setq reply (lambda (m _p)
+                    (when (equal m "herd_chat")
+                      '(:earlier t :missing ("gone")
+                        :entries ((:who "user" :to "claude-api" :kind "prompt" :text "hi"
+                                   :ts "2026-10-09T01:00:00Z" :agent "claude-api" :secret "x"))))))
+      ;; In columns first, then the chat.
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])))
+      (should (ghostherd-test--call calls "setConversation"))
+      (setq calls nil requests nil)
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat")))
+      (should (equal (mapcar #'car requests) '("herd_chat")))
+      (should (equal (plist-get (cadr (car requests)) :agents) (vector (list :name "claude-api" :path file))))
+      (let* ((p (ghostherd-test--call calls "setChat"))
+             (e (aref (plist-get p :entries) 0)))
+        (should (equal (list (plist-get p :project) (plist-get p :absent) (plist-get p :missing) (plist-get p :earlier))
+                       '("/p/" ["claude-web"] ["gone"] t)))
+        (should (equal (list (plist-get e :who) (plist-get e :to) (plist-get e :text) (plist-get e :failed))
+                       '("user" "claude-api" "hi" :json-false)))
+        (should-not (plist-member e :secret))
+        (should (string-match-p "\"entries\":\\[{" (json-encode p))))
+      (should-not (ghostherd-test--call calls "setConversation"))
+      (ghostherd-memory-page--room-tick)
+      (should (= (length requests) 1))
+      (write-region "more\n" nil file t 'silent)
+      (ghostherd-memory-page--room-tick)
+      (should (= (length requests) 2))
+      ;; Back to columns: each column again, though its transcript is as it was.
+      (setq calls nil requests nil)
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "columns")))
+      (should (equal (mapcar #'car requests) '("herd_conversation")))
+      (should (ghostherd-test--call calls "setConversation"))
+      ;; And with the transcript as it was, too.
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat")))
+      (setq calls nil)
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "columns")))
+      (should (ghostherd-test--call calls "setConversation"))
+      ;; A sidecar older than the chat says how to fix it.
+      (setq calls nil fail "JSON-RPC -32601: Method not found: herd_chat")
+      (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat")))
+      (should (string-match-p "older than the room" (plist-get (ghostherd-test--call calls "setChat") :error))))))
 
 (ert-deftest ghostherd-test-room-without-a-transcript-shows-the-screen ()
   (ghostherd-test--with-room

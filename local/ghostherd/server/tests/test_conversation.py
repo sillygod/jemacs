@@ -347,6 +347,105 @@ def test_rpc(home):
     assert call({"path": path, "limit": "lots"}).error.message == "limit must be a number"
 
 
+# ---- A project's chat ------------------------------------------------------
+
+def at(minute):
+    return "2026-10-09T01:%02d:00Z" % minute
+
+
+def _agent(home, name, records):
+    return _write(home / ".claude" / "projects" / "-x-proj" / (name + ".jsonl"), records)
+
+
+def _view(r):
+    return [(e.get("who"), e.get("to"), e["kind"], e.get("agent")) for e in r["entries"]]
+
+
+def test_chat_is_the_projects_conversations_as_one(home):
+    ask = "\"$GHOSTHERD_HERD\" ask qa --wait <<'HERD'\nTest the login flow.\nBoth browsers.\nHERD"
+    rd = _agent(home, "rd", [
+        u("build it", timestamp=at(0)),
+        a("m1", text("Built."), use("t1", "Bash", command=ask), timestamp=at(1)),
+        u([result("t1", "herd: asked qa (ask 1a2b3c4d)\nTwo failures.")], timestamp=at(4)),
+        a("m2", text("Fixing both."), timestamp=at(5)),
+        # The answer mailed as well: the taker's reply already says it.
+        u(ANSWER_TEXT, timestamp=at(6)),
+    ])
+    qa = _agent(home, "qa", [
+        u(ASK_TEXT, timestamp=at(2)),
+        a("q1", use("q1t", "Bash", command="herd reply 1a2b3c4d <<'H'\nTwo failures.\nH"), timestamp=at(3)),
+        a("q2", text("Replied."), timestamp=at(3)),
+    ])
+    r = conv.chat([("rd", rd), ("qa", qa)])
+    assert _view(r) == [
+        ("user", "rd", "prompt", "rd"),
+        ("rd", "qa", "ask", "qa"),      # as its taker received it
+        ("qa", "rd", "reply", "qa"),
+        ("qa", None, "turn", "qa"),
+        ("rd", None, "turn", "rd"),     # how its turn ended, not what it said on the way
+    ]
+    assert [e.get("text") for e in r["entries"]] == [
+        "build it", "Test the login flow.\nBoth browsers.", "Two failures.", "Replied.", "Fixing both."]
+    assert r["entries"][1]["ask"] == "1a2b3c4d" and r["missing"] == []
+
+
+def test_chat_shows_what_the_taker_never_saw(home):
+    rd = _agent(home, "rd", [
+        u("go", timestamp=at(0)),
+        a("m1", use("t1", "Bash", command="herd ask qa --wait - <<'EOF'\nfirst try\nEOF"), timestamp=at(1)),
+        u([dict(result("t1", "Exit code 2\nusage: herd ...\nherd: error: unrecognized arguments: -"), is_error=True)],
+          timestamp=at(1)),
+        a("m2", use("t2", "Bash", command="herd ask qa --wait 'second try'"), timestamp=at(2)),
+        u([result("t2", "herd: asked qa (ask 99887766)\nherd: qa stopped without answering; this is its screen\n> idle")],
+          timestamp=at(9)),
+    ])
+    qa = _agent(home, "qa", [
+        u(ASK_TEXT.replace("1a2b3c4d", "99887766").replace("Test the login flow.\nBoth browsers.", "second try"),
+          timestamp=at(3)),
+        a("q1", text("Looking."), timestamp=at(4)),
+    ])
+    ops = _write(home / ".grok" / "sessions" / "%2Fx%2Fproj" / "s1" / "chat_history.jsonl", [
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>watch the deploy</user_query>"}]},
+        {"type": "assistant", "content": "Watching."},
+    ])
+    # grok writes no times: its stream ends when its file was last written.
+    os.utime(ops, (conv._epoch(at(5)), conv._epoch(at(5))))
+    r = conv.chat([("rd", rd), ("qa", qa), ("ops", ops), ("gone", str(home / "nowhere.jsonl"))])
+    view = [(e.get("who"), e.get("to"), e["kind"], e.get("text")) for e in r["entries"]]
+    assert view == [
+        ("user", "rd", "prompt", "go"),
+        ("rd", "qa", "ask", "first try"),       # failed on the way: only rd saw it
+        ("rd", "qa", "ask", "second try"),
+        ("qa", None, "turn", "Looking."),
+        ("user", "ops", "prompt", "watch the deploy"),
+        ("ops", None, "turn", "Watching."),
+        ("qa", "rd", "answer", "> idle"),       # the herd's answer for qa, when rd got it
+    ]
+    assert r["entries"][1]["failed"] is True and "unrecognized arguments" in r["entries"][1]["answer"]
+    assert r["entries"][-1]["auto"] is True and r["entries"][-1]["ask"] == "99887766"
+    assert r["missing"] == ["gone"]
+
+
+def test_chat_keeps_the_last_of_a_long_day(home):
+    rd = _agent(home, "rd", [u("p%d" % n, timestamp=at(n)) for n in range(30)])
+    r = conv.chat([("rd", rd)], limit=5)
+    assert [e["text"] for e in r["entries"]] == ["p25", "p26", "p27", "p28", "p29"]
+    assert r["earlier"] is True
+
+
+def test_chat_rpc(home):
+    rd = _agent(home, "rd", [u("hello", timestamp=at(0))])
+
+    def call(params):
+        return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_chat", params=params)))
+
+    r = call({"agents": [{"name": "rd", "path": rd}, {"name": "x", "path": "/etc/passwd"}]})
+    assert r.error is None and r.result["entries"][0]["text"] == "hello" and r.result["missing"] == ["x"]
+    assert call({"agents": "rd"}).error.message == "agents must be a list"
+    assert call({"agents": [{"name": "rd"}]}).error.message == "each agent is {name, path}"
+    assert call({"agents": [], "limit": "lots"}).error.message == "limit must be a number"
+
+
 # ---- What ghostherd writes, read back -------------------------------------
 #
 # The room tells the herd's traffic from yours by its framing, which
