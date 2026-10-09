@@ -761,6 +761,38 @@ rounds, and the lead reported.  Three things went wrong on the way.
   summary from the old, the new one starting from it
 - [ ] The chat on Telegram: read it, and talk to the lead, from a phone
 
+* Phase 3.22 — What a project works on: its PR and its tickets  *(this tree)*
+
+Goal: see at a glance which pull request and which ClickUp tickets a
+project's agents are on, and open them from there.
+
+** What shipped
+
+- [X] Each agent's checkout --- =ghostherd-session-directory=, the
+  tmux pane's own path, so an agent in a worktree is on its branch ---
+  and the project's
+- [X] The branch's pull request from pr-view (=pr-view-branch-pr=,
+  new, asking the checkout's own remote), and the ClickUp tasks it
+  cites from clickup-view; kept five minutes, looked at once a minute
+- [X] Under the project and in the room's header: branch, PR, two
+  tasks and +N; an agent's own only where it differs.  A click opens
+  the PR in pr-view (=pr-view-open-pr=, new) or the task in
+  clickup-view
+- [X] What a conversation names --- the way most tickets reach a
+  project whose branches do not name them: =herd_links= reads a
+  transcript for PR and ClickUp links, counting only what the agent was
+  given, ran or wrote, never what went by in a tool's output; read on
+  from where it stopped.  Its repository's PRs looked up by number
+  (=pr-view-pr-brief=, =pr-view-remote=, new), its tasks by clickup-view;
+  on its row, the open ones first, the rest behind +N
+- [X] 4 ERT, 5 pr-view ERT and 11 pytest; WebKit checks of the chips;
+  each guard mutation-tested
+
+** What is left
+
+- [ ] The lead told its project's PR and tickets when it starts; never
+  changing a ticket on its own
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

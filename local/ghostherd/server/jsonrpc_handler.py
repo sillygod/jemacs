@@ -10,6 +10,7 @@ from typing import Any, Callable
 from pydantic import BaseModel
 
 import conversation
+import links
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
 
@@ -67,6 +68,7 @@ class JsonRpcHandler:
             "herd_link": self._herd_link,
             "herd_conversation": self._herd_conversation,
             "herd_chat": self._herd_chat,
+            "herd_links": self._herd_links,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -296,6 +298,11 @@ class JsonRpcHandler:
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
         return conversation.chat(pairs, limit)
+
+    def _herd_links(self, params: dict) -> dict:
+        """The pull requests and ClickUp tasks a transcript names, as given
+        to its agent or by it; most recent first."""
+        return links.scan(str(params.get("path") or ""))
 
 
 handler = JsonRpcHandler()

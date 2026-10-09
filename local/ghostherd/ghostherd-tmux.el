@@ -794,6 +794,15 @@ buffer name back."
       (ghostherd-tmux--meaningful-title
        (cdr (ghostherd-tmux--status session)))))
 
+(cl-defmethod ghostherd-backend-directory ((_backend (eql tmux)) session)
+  ;; The agent's own working directory, which the pane follows.
+  (when-let* ((out (ghostherd-tmux--try
+                    "display-message" "-p" "-t"
+                    (ghostherd-tmux--target (ghostherd-session-host-id session))
+                    "#{pane_current_path}")))
+    (let ((dir (string-trim out)))
+      (and (not (string-empty-p dir)) (file-name-as-directory dir)))))
+
 (cl-defmethod ghostherd-backend-view ((_backend (eql tmux)) session)
   (let ((buffer (ghostherd-session-buffer session)))
     (if (and (buffer-live-p buffer)

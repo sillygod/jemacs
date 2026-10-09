@@ -992,6 +992,27 @@ are the other tabs (below, and "What happened while you were away").
 - The herd grouped by project, the project with a blocked agent first,
   each group summing its states.  A row has the state, kind, notes,
   reason, how long ago it last moved, and whether a view is attached.
+- What each project works on, under its name and in its room's
+  header: its branch, the branch's pull request (=#87 Open=, a click
+  opens it in pr-view) and the ClickUp tasks the PR cites (two, the
+  rest behind =+N=; a click opens one in clickup-view).  An agent in
+  another of the project's worktrees shows its own.  pr-view and
+  clickup-view hold the tokens and do the asking; without them nothing
+  shows, and a default branch with no PR shows nothing either.  Looked
+  at once a minute while the tab is watched, an answer kept five.
+- What each agent's conversation names, on its row and its room
+  column (=↳ named=): the pull requests of its project's repository and
+  the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,
+  that it ran a command on, or that it wrote of.  One that only went by
+  in a tool's output --- a search, a list --- is not counted.  Up to
+  four still open show, PRs and tasks two each; merged, declined,
+  closed and the rest wait behind =+N=.  One that could not be looked
+  up is not shown --- most often an id in a test or a file --- and what
+  the branch line already shows is not said twice.  The sidecar reads the transcript
+  from where it last stopped, when it has grown; the twelve most
+  recently named of each are looked up, a merged or declined PR kept an
+  hour.  It needs the agent's transcript, so its hooks (an agent
+  started before them: Respawn, Continue).
 - A project's name opens its room: its agents side by side, a column
   each with its conversation --- what you said to it, what another
   agent asked or answered it through the herd, what it said back, its

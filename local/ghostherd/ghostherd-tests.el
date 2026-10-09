@@ -4271,7 +4271,11 @@ with when, and nothing is sent."
       (ghostherd-usage--fetch-agy))
     (should-not requests)
     (should (= done 1))
-    (should (string-match-p "\\`agy's saved token expired [0-9][0-9]:[0-9][0-9]\\'"
+    ;; An hour ago is yesterday in the hour after midnight: the day then shows.
+    (should (string-match-p (if (equal (format-time-string "%F" (- (float-time) 3600))
+                                       (format-time-string "%F"))
+                                "\\`agy's saved token expired [0-9][0-9]:[0-9][0-9]\\'"
+                              "\\`agy's saved token expired [0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]\\'")
                             (plist-get (alist-get 'agy ghostherd-usage--cache) :error)))))
 
 (ert-deftest ghostherd-test-usage-agy-fresh-token-asks-the-api ()
@@ -5562,6 +5566,210 @@ for it.  The page knows the lead by its role."
         (remhash "lead-x" ghostherd--roles)
         (clrhash ghostherd--lead-unheard)
         (delete-directory dir t)))))
+
+;;; What a project works on
+
+(defmacro ghostherd-test--with-checkouts (&rest body)
+  "BODY with `repo', a git repository on feat/x, and `wt', a worktree of
+it on feat/y; the work caches its own, and `asked' recording what
+pr-view, clickup-view and the sidecar are asked, which answer as `prs',
+`briefs', `by-id', `remote' and `said' say.  An agent's transcript is
+as `transcripts' says."
+  (declare (indent 0))
+  `(let* ((_ (skip-unless (require 'ghostherd-memory-page nil t)))
+          ;; Its true name: git answers with it, and /var is /private/var.
+          (base (file-name-as-directory (file-truename (make-temp-file "gh-work" t))))
+          (repo (concat base "repo/"))
+          (wt (concat base "wt/"))
+          (git (lambda (dir &rest args)
+                 (let ((default-directory dir))
+                   (apply #'call-process "git" nil nil nil
+                          "-c" "user.email=t@t" "-c" "user.name=t" args))))
+          (asked nil)
+          (prs nil)
+          (briefs nil)
+          (by-id nil)
+          (remote nil)
+          (said nil)
+          (transcripts nil)
+          (ghostherd-memory-page--work-at 0)
+          (ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
+          (ghostherd-memory-page--prs (make-hash-table :test 'equal))
+          (ghostherd-memory-page--task-briefs (make-hash-table :test 'equal))
+          (ghostherd-memory-page--links (make-hash-table :test 'equal))
+          (ghostherd-memory-page--pr-briefs (make-hash-table :test 'equal))
+          (ghostherd-memory-page--remotes (make-hash-table :test 'equal)))
+     (make-directory repo t)
+     (funcall git repo "init" "-q" "-b" "main")
+     (funcall git repo "commit" "-q" "--allow-empty" "-m" "start")
+     (funcall git repo "checkout" "-q" "-b" "feat/x")
+     (funcall git repo "worktree" "add" "-q" "-b" "feat/y" wt)
+     (unwind-protect
+         (cl-letf (((symbol-function 'pr-view-branch-pr)
+                    (lambda (dir cb) (push (list 'pr dir) asked)
+                      (funcall cb (cdr (assoc (abbreviate-file-name dir) prs)))))
+                   ((symbol-function 'clickup-view-task-brief)
+                    (lambda (id cb) (push (list 'task id) asked)
+                      (funcall cb (or (cdr (assoc id briefs)) `((id . ,id) (error . "no such task"))))))
+                   ((symbol-function 'pr-view-remote) (lambda (_dir) remote))
+                   ((symbol-function 'pr-view-pr-brief)
+                    (lambda (dir id cb) (push (list 'brief dir id) asked)
+                      (funcall cb (or (cdr (assoc id by-id)) '((error . "no such pull request"))))))
+                   ((symbol-function 'ghostherd-session-transcript)
+                    (lambda (s) (cdr (assoc (ghostherd-session-name (ghostherd-get s)) transcripts))))
+                   ((symbol-function 'ghostherd-memory-request-async)
+                    (lambda (method cb &optional params _err)
+                      (push (list 'links method (plist-get params :path)) asked)
+                      (funcall cb (cdr (assoc (plist-get params :path) said))))))
+           ,@body)
+       (delete-directory base t))))
+
+(ert-deftest ghostherd-test-a-checkout-is-its-root-and-branch ()
+  "Its root and branch, a worktree's own; not a repository, or one with
+no commit yet, is none."
+  (ghostherd-test--with-checkouts
+    (should (equal (ghostherd-memory-page--checkout (concat repo "")) (cons (abbreviate-file-name repo) "feat/x")))
+    (should (equal (ghostherd-memory-page--checkout wt) (cons (abbreviate-file-name wt) "feat/y")))
+    (should-not (ghostherd-memory-page--checkout base))
+    (let ((fresh (concat base "fresh/")))
+      (make-directory fresh)
+      (funcall git fresh "init" "-q")
+      (should-not (ghostherd-memory-page--checkout fresh)))
+    (should-not (ghostherd-memory-page--checkout "/no/such/dir"))))
+
+(ert-deftest ghostherd-test-the-herd-shows-what-each-project-works-on ()
+  "Each project's branch, its PR and the tasks the PR cites; an agent's
+only where it is not its project's -- in a worktree.  Asked once while
+the answer is fresh; a PR not looked up says so and asks no tasks."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (setq prs `((,(abbreviate-file-name repo)
+                   (id . 87) (title . "Sentry fix") (state . "OPEN") (draft . nil) (url . "u87")
+                   (tasks . ("86abc1def" "86xyz9876")))
+                  (,(abbreviate-file-name wt) (error . "HTTP 500")))
+            briefs '(("86abc1def" (id . "86abc1def") (name . "Sentry AI fix")
+                      (status . ((name . "in progress") (color . "#4194f6"))) (url . "cu1"))))
+      (clrhash ghostherd--sessions)
+      (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'idle)
+      (ghostherd-tests--session :name "qa" :kind 'claude :project repo :state 'idle)
+      (cl-letf (((symbol-function 'ghostherd-session-directory)
+                 (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
+                ((symbol-function 'ghostherd--project-name)
+                 (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
+        (ghostherd-memory-page--work-look)
+        (should (equal (sort (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'pr)) asked)) #'string<)
+                       (sort (list (abbreviate-file-name repo) (abbreviate-file-name wt)) #'string<)))
+        (should (equal (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'task)) asked))
+                       '("86xyz9876" "86abc1def")))
+        (ghostherd-memory-page--send-herd)
+        (let* ((p (ghostherd-test--call calls "renderHerd"))
+               (w (aref (plist-get p :work) 0))
+               (agents (append (plist-get p :agents) nil))
+               (of (lambda (n) (plist-get (seq-find (lambda (a) (equal (plist-get a :name) n)) agents) :work))))
+          (should (equal (list (plist-get w :project) (plist-get w :branch)) (list (abbreviate-file-name repo) "feat/x")))
+          (should (equal (plist-get (plist-get w :pr) :id) 87))
+          (should (equal (mapcar (lambda (tk) (list (plist-get tk :id) (plist-get tk :name) (plist-get tk :color) (plist-get tk :error)))
+                                 (append (plist-get w :tasks) nil))
+                         '(("86abc1def" "Sentry AI fix" "#4194f6" nil) ("86xyz9876" nil nil "no such task"))))
+          (should (eq (funcall of "rd") :json-false))
+          (let ((qa (funcall of "qa")))
+            (should (equal (plist-get qa :branch) "feat/y"))
+            (should (equal (plist-get qa :error) "HTTP 500"))
+            (should (eq (plist-get qa :pr) :json-false))))
+        ;; Fresh: not asked again.  Stale: asked again.
+        (setq asked nil)
+        (ghostherd-memory-page--work-look)
+        (should-not asked)
+        (maphash (lambda (k v) (puthash k (plist-put v :at 0) ghostherd-memory-page--prs)) ghostherd-memory-page--prs)
+        (ghostherd-memory-page--work-look)
+        (should (= (length (seq-filter (lambda (a) (eq (car a) 'pr)) asked)) 2))))))
+
+(ert-deftest ghostherd-test-an-agent-shows-what-its-conversation-names ()
+  "The PRs of its project's repository its conversation names, and its
+tasks, each looked up; read again only when the transcript changed,
+looked up again when stale -- a merged one much later."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let ((path (concat base "rd.jsonl"))
+            (root (abbreviate-file-name repo)))
+        (with-temp-file path (insert "{}\n"))
+        (setq transcripts `(("rd" . ,path))
+              remote '(:kind bitbucket :owner "Team" :repo "Deploy")
+              said `((,path :prs ((:host "bitbucket" :owner "team" :repo "deploy" :id 371 :count 2 :last "t3")
+                                  (:host "github" :owner "team" :repo "deploy" :id 5 :count 1 :last "t2")
+                                  (:host "bitbucket" :owner "other" :repo "deploy" :id 6 :count 1 :last "t2")
+                                  (:host "bitbucket" :owner "team" :repo "deploy" :id 360 :count 1 :last "t1"))
+                            :tasks ((:id "86abc1def" :count 1 :last "t3") (:id "86done001" :count 1 :last "t0"))))
+              by-id '((371 (id . 371) (title . "Retry alerts") (state . "OPEN") (draft . t) (url . "b371"))
+                      (360 (id . 360) (title . "Sentry fix") (state . "MERGED") (draft . nil) (url . "b360")))
+              briefs '(("86abc1def" (id . "86abc1def") (name . "Sentry AI fix")
+                        (status . ((name . "in progress") (color . "#4194f6") (type . "custom"))) (url . "cu1"))
+                       ("86done001" (id . "86done001") (name . "Old one")
+                        (status . ((name . "complete") (color . "#008844") (type . "closed"))) (url . "cu2"))))
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'idle)
+        (ghostherd-tests--session :name "qa" :kind 'claude :project repo :state 'idle)
+        (cl-letf (((symbol-function 'ghostherd-session-directory) (lambda (_s) repo))
+                  ((symbol-function 'ghostherd--project-name)
+                   (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
+          (ghostherd-memory-page--work-look)
+          (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
+          (should (equal (sort (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) #'<) '(360 371)))
+          (should (seq-every-p (lambda (a) (equal (cadr a) root)) (seq-filter (lambda (a) (eq (car a) 'brief)) asked)))
+          (should (equal (sort (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'task)) asked)) #'string<)
+                         '("86abc1def" "86done001")))
+          (ghostherd-memory-page--send-herd)
+          (let* ((agents (append (plist-get (ghostherd-test--call calls "renderHerd") :agents) nil))
+                 (of (lambda (n) (plist-get (seq-find (lambda (a) (equal (plist-get a :name) n)) agents) :links)))
+                 (rd (funcall of "rd")))
+            (should (eq (funcall of "qa") :json-false))
+            (should (equal (plist-get rd :root) root))
+            (should (equal (mapcar (lambda (pr) (list (plist-get pr :id) (plist-get pr :state) (plist-get pr :draft)
+                                                      (plist-get pr :title) (plist-get pr :url) (plist-get pr :last)))
+                                   (append (plist-get rd :prs) nil))
+                           '((371 "OPEN" t "Retry alerts" "b371" "t3") (360 "MERGED" :json-false "Sentry fix" "b360" "t1"))))
+            (should (equal (mapcar (lambda (tk) (list (plist-get tk :id) (plist-get tk :done) (plist-get tk :last)))
+                                   (append (plist-get rd :tasks) nil))
+                           '(("86abc1def" :json-false "t3") ("86done001" t "t0")))))
+          ;; The same transcript: not read again; its answers fresh: not asked.
+          (setq asked nil)
+          (ghostherd-memory-page--work-look)
+          (should-not (seq-filter (lambda (a) (memq (car a) '(links brief task))) asked))
+          ;; Stale: an open PR is asked again, a merged one not yet.
+          (maphash (lambda (k v) (puthash k (plist-put v :at (- (float-time) 600)) ghostherd-memory-page--pr-briefs))
+                   ghostherd-memory-page--pr-briefs)
+          (ghostherd-memory-page--work-look)
+          (should (equal (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) '(371)))
+          ;; It grew: read again.
+          (setq asked nil)
+          (with-temp-buffer (insert "{}\n") (append-to-file (point-min) (point-max) path))
+          (ghostherd-memory-page--work-look)
+          (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
+          ;; A PR it names opens in pr-view.
+          (let (opened)
+            (cl-letf (((symbol-function 'pr-view-open-pr) (lambda (dir id) (push (list dir id) opened))))
+              (clrhash ghostherd-memory-page--prs)
+              (ghostherd-memory-page--handle `((op . "open-pr") (root . ,root) (id . 360)))
+              (should (equal opened `((,root 360)))))))))))
+
+(ert-deftest ghostherd-test-the-page-opens-a-pr-or-a-task ()
+  "A PR of a checkout the herd is in opens in pr-view, a task in
+clickup-view; anything else the page names is refused."
+  (ghostherd-test--with-herd
+    (let ((ghostherd-memory-page--prs (make-hash-table :test 'equal)) opened)
+      (puthash '("~/p/" . "feat/x") '(:at 0 :pr nil) ghostherd-memory-page--prs)
+      (cl-letf (((symbol-function 'pr-view-open-pr) (lambda (dir id) (push (list 'pr dir id) opened)))
+                ((symbol-function 'clickup-view-task) (lambda (id) (push (list 'task id) opened))))
+        (ghostherd-memory-page--handle '((op . "open-pr") (root . "~/p/") (id . 87)))
+        (ghostherd-memory-page--handle '((op . "open-task") (id . "86abc1def")))
+        (should (equal (reverse opened) '((pr "~/p/" 87) (task "86abc1def"))))
+        (setq calls nil)
+        (dolist (bad '(((op . "open-pr") (root . "/etc/") (id . 1))
+                       ((op . "open-pr") (root . "~/p/") (id . "87; rm"))
+                       ((op . "open-task") (id . "../x"))))
+          (ghostherd-memory-page--handle bad))
+        (should (= (length opened) 2))
+        (should (= (length (seq-filter (lambda (c) (equal (car c) "showError")) calls)) 3))))))
 
 ;;; Images pasted into a prompt
 

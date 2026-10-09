@@ -390,6 +390,12 @@ answer the state machine cannot recover from."
   "Return SESSION's terminal title, or nil."
   nil)
 
+(cl-defgeneric ghostherd-backend-directory (_backend _session)
+  "Return the directory SESSION's agent works in, or nil when unknown.
+Not its project: an agent in one of the project's worktrees is on that
+worktree's branch."
+  nil)
+
 (cl-defgeneric ghostherd-backend-spawn (backend plist)
   "Start an agent described by PLIST on BACKEND.
 
@@ -483,6 +489,11 @@ agent buffers are left alone -- or restart Emacs"
 (defun ghostherd--host-title (session)
   "Return SESSION's terminal title, or nil."
   (ghostherd-backend-title (ghostherd--backend-of session) session))
+
+(defun ghostherd-session-directory (session)
+  "The directory SESSION's agent works in: its host's word, else its project."
+  (or (ignore-errors (ghostherd-backend-directory (ghostherd--backend-of session) session))
+      (ghostherd-session-project session)))
 
 (defun ghostherd--host-kill (session)
   "Kill SESSION's host process."
@@ -581,6 +592,10 @@ _KIND is reserved for kind-specific quoting later."
 
 (cl-defmethod ghostherd-backend-title ((_backend (eql ghostel)) session)
   (ghostherd--buffer-title (ghostherd-session-buffer session)))
+
+(cl-defmethod ghostherd-backend-directory ((_backend (eql ghostel)) session)
+  (when-let* ((buf (ghostherd-session-buffer session)))
+    (and (buffer-live-p buf) (buffer-local-value 'default-directory buf))))
 
 (cl-defmethod ghostherd-backend-view ((_backend (eql ghostel)) session)
   (ghostherd--ghostel-buffer session))

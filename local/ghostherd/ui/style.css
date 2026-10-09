@@ -660,3 +660,24 @@ pre.screen {
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
 .cmore { margin-top: 2px; font-size: 12px; }
 .leadb { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid #a371f7; color: #d2a8ff; }
+
+/* What a project works on: its branch, PR and tasks. */
+.work { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 6px; font-size: 12px; }
+.rwork { flex-basis: 100%; }
+.rwork .work { margin: 2px 0 0; }
+.wbranch { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.wnote { color: var(--muted); }
+/* A chip is no wider than its line; a long name is cut short inside it. */
+.wchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: min(24em, 100%); overflow: hidden;
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font: inherit;
+  cursor: pointer; }
+.wchip:hover { border-color: var(--muted); }
+.wchip .wname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wchip .tst { flex-shrink: 0; max-width: 9em; overflow: hidden; text-overflow: ellipsis; color: var(--muted); white-space: nowrap; }
+.tdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.pr-open { border-color: #2ea043; color: #3fb950; }
+.pr-merged { border-color: #8957e5; color: #a371f7; }
+.pr-declined { border-color: #da3633; color: #f85149; }
+.pr-draft { color: var(--muted); }
+.links .wbranch { font-family: inherit; }
+.wchip.wdone { opacity: 0.6; }

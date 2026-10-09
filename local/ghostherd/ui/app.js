@@ -662,6 +662,8 @@
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: "columns", chat: null, chatTo: {}, chatOpen: new Set(),
+    // Checkouts whose every task is shown, not two.
+    workOpen: new Set(),
   };
 
   const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
@@ -786,6 +788,104 @@
       '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
   }
 
+  // ---- What a project works on -------------------------------------------
+  //
+  // Its branch's pull request and the ClickUp tasks the PR cites, which
+  // Emacs looks up with pr-view and clickup-view -- they hold the tokens.
+  // A default branch without a PR says nothing; two tasks show, the rest
+  // behind +N.  A click opens the PR in pr-view, a task in clickup-view.
+
+  const QUIET_BRANCHES = ["main", "master", "develop", "HEAD"];
+
+  function workFor(project) {
+    const d = herdNow.data;
+    return ((d && d.work) || []).find((w) => w.project === project) || null;
+  }
+
+  function safeColor(c) {
+    return /^#[0-9a-fA-F]{3,8}$/.test(c || "") ? c : "#8b949e";
+  }
+
+  function prState(pr) {
+    if (!pr.state) return "";
+    return pr.draft && pr.state === "OPEN" ? "Draft" : pr.state.charAt(0) + pr.state.slice(1).toLowerCase();
+  }
+
+  function prChip(root, pr, done) {
+    const state = prState(pr);
+    const tip = pr.error || pr.title || (state ? "" : "Being looked up");
+    return '<button type="button" class="wchip pr' + (state ? " pr-" + esc(state.toLowerCase()) : "") + (done ? " wdone" : "") +
+      '" data-act="a:work-pr" data-root="' + esc(root) + '" data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '">#' +
+      esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")) + "</button>";
+  }
+
+  function taskChip(t, done) {
+    return '<button type="button" class="wchip task' + (done ? " wdone" : "") + '" data-act="a:work-task" data-id="' + esc(t.id) +
+      '" title="' + esc(t.error || [t.name, t.status].filter(Boolean).join(" · ") || t.id) + '">' +
+      (t.status ? '<span class="tdot" style="background:' + safeColor(t.color) + '"></span>' : "") +
+      '<span class="wname">' + esc(t.name || t.id) + "</span>" +
+      (t.status ? '<span class="tst">' + esc(t.status) + "</span>" : "") + "</button>";
+  }
+
+  function moreButton(key, open, n) {
+    return '<button type="button" class="linkish wmore" data-act="a:work-more" data-key="' + esc(key) + '">' +
+      (open ? "less" : "+" + n) + "</button>";
+  }
+
+  function workHtml(w) {
+    if (!w || !w.branch) return "";
+    const pr = w.pr || null;
+    const tasks = w.tasks || [];
+    if (!pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch)) return "";
+    const key = w.root + "|" + w.branch;
+    const open = herdNow.workOpen.has(key);
+    const prPart = pr ? prChip(w.root, pr)
+      : w.error ? '<span class="wnote" title="' + esc(w.error) + '">PR not looked up</span>'
+      : w.pending ? '<span class="wnote">PR…</span>'
+      : '<span class="wnote">no PR</span>';
+    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart +
+      (open ? tasks : tasks.slice(0, 2)).map((t) => taskChip(t)).join("") +
+      (tasks.length > 2 ? moreButton(key, open, tasks.length - 2) : "") + "</div>";
+  }
+
+  // What an agent's conversation names, beyond its branch: the PRs of its
+  // repository and the tasks, most recently named first.  A few of those
+  // still open show; merged, declined or closed wait behind +N with the
+  // others.  One that could not be looked up is not shown: most often an
+  // id in a test or a file, not a real one.  What the branch line already
+  // shows is not said twice.
+  const LINKS_SHOWN = 4;
+
+  function linksHtml(a) {
+    const l = a.links;
+    if (!l) return "";
+    const w = a.work || workFor(a.project);
+    const onBranch = w && w.root === l.root && w.pr ? w.pr.id : null;
+    const branchTasks = new Set(((w && w.tasks) || []).map((t) => t.id));
+    const prs = (l.prs || []).filter((p) => p.id !== onBranch && !p.error).map((p) => {
+      const live = !p.state || p.state === "OPEN";
+      return { live, html: prChip(l.root, p, !live) };
+    });
+    const tasks = (l.tasks || []).filter((t) => !branchTasks.has(t.id) && !t.error).map((t) => {
+      const live = !t.done;
+      return { live, html: taskChip(t, !live) };
+    });
+    const items = prs.concat(tasks);
+    if (!items.length) return "";
+    // Half the room for each, the rest for whichever has more.
+    const livePrs = prs.filter((i) => i.live), liveTasks = tasks.filter((i) => i.live);
+    const half = LINKS_SHOWN / 2;
+    const first = livePrs.slice(0, half).concat(liveTasks.slice(0, half));
+    const shown = first.concat(livePrs.slice(half).concat(liveTasks.slice(half)).slice(0, LINKS_SHOWN - first.length))
+      .sort((x, y) => items.indexOf(x) - items.indexOf(y));
+    const rest = items.filter((i) => !shown.includes(i));
+    const key = "links|" + a.name;
+    const open = herdNow.workOpen.has(key);
+    return '<div class="work links"><span class="wbranch" title="Named in its conversation">↳ named</span>' +
+      shown.concat(open ? rest : []).map((i) => i.html).join("") +
+      (rest.length ? moreButton(key, open, rest.length) : "") + "</div>";
+  }
+
   function agentRow(a, kinds, asks) {
     const name = a.name;
     const blocked = a.state === "blocked";
@@ -834,6 +934,7 @@
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
+      (a.work ? workHtml(a.work) : "") + linksHtml(a) +
       '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
     );
   }
@@ -883,7 +984,7 @@
               : '<span class="pname">No project</span>') +
             '<span class="ppath">' + esc(g.project) + "</span>" + summary +
             (g.project ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
-            "</div>" + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
+            "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
       : '<p class="empty">No agents in the herd.  SPC a h n starts one; so does + New agent once there is a project here.</p>';
     app.scrollTop = keep;
@@ -957,6 +1058,7 @@
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
       (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
+      (a.work ? workHtml(a.work) : "") + linksHtml(a) +
       '<div class="aacts">' + acts.join("") + "</div>";
   }
 
@@ -1166,7 +1268,7 @@
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
       app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
-        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + "</span></div>" +
+        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + '</span><div class="rwork"></div></div>' +
         (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
@@ -1181,6 +1283,8 @@
       else agents.forEach(renderRoomBody);
     }
     room.querySelector(".rsum").innerHTML = summary;
+    const rwork = room.querySelector(".rwork");
+    if (rwork) rwork.innerHTML = workHtml(workFor(project));
     if (chat) return;
     agents.forEach((a) => {
       const col = roomColumn(a.name);
@@ -1202,6 +1306,14 @@
     }
     if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
     if (act === "room") return openRoom(project);
+    if (act === "work-pr") return emit("open-pr", { root: el.getAttribute("data-root"), id: +el.getAttribute("data-id") });
+    if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
+    if (act === "work-more") {
+      const key = el.getAttribute("data-key");
+      if (herdNow.workOpen.has(key)) herdNow.workOpen.delete(key);
+      else herdNow.workOpen.add(key);
+      return herdNow.room ? renderRoom() : renderAgents();
+    }
     if (act === "room-view") {
       const v = el.getAttribute("data-view");
       if (v === herdNow.roomView) return;
