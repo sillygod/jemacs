@@ -42,6 +42,10 @@ ASK_CLOSED = ("answered", "failed", "cancelled")
 # waiting on the human.  A state not listed (dead) never takes one.
 _TAKER_RANK = {"idle": 0, "done": 0, "working": 1, "starting": 1, "blocked": 2}
 
+# How many asks may wait on one another, lead to rd to qa: one may be
+# asked while a third of its chain waits on it, and asks no further.
+ASK_DEPTH = 3
+
 # An answer a waiting asker has not collected after this long is mailed
 # to it instead: the `herd ask --wait' that would have printed it died.
 UNCOLLECTED_SECONDS = 120
@@ -189,6 +193,8 @@ class HerdStore:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN reason TEXT")
         if "screen" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN screen TEXT")
+        if "role" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN role TEXT")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -216,7 +222,7 @@ class HerdStore:
             if project:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason
+                    SELECT name, kind, state, notes, project, reason, role
                     FROM snapshot WHERE project = ?
                     ORDER BY name
                     """,
@@ -225,7 +231,7 @@ class HerdStore:
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason
+                    SELECT name, kind, state, notes, project, reason, role
                     FROM snapshot ORDER BY name
                     """
                 ).fetchall()
@@ -238,6 +244,7 @@ class HerdStore:
                     "notes": r[3] or "",
                     "project": r[4] or "",
                     "reason": r[5] or "",
+                    "role": r[6] or "",
                     "short": self.short_for(r[0]),
                 }
                 for r in rows
@@ -328,21 +335,22 @@ class HerdStore:
                 raise ValueError(
                     "Emacs has not shared the herd yet; is ghostherd-mode on?"
                 )
-            # An agent answering an ask may not ask in turn: that is how
-            # two agents end up waiting on each other.
-            busy = self._conn.execute(
-                """
-                SELECT id, from_name FROM asks
-                WHERE to_name = ? AND status = 'delivered'
-                """,
-                (sender,),
-            ).fetchone()
-            if busy:
+            # An agent answering an ask may hand part of it on -- the lead
+            # asks rd, rd asks qa -- but never to one waiting on it, which
+            # is how two agents end up waiting on each other; and only so
+            # deep.
+            chain = self._chain(sender)
+            if len(chain) >= ASK_DEPTH:
                 raise ValueError(
-                    f"{sender} is answering ask {busy[0]} from {busy[1]}; "
-                    f"reply to it (herd reply {busy[0]}) rather than ask further"
+                    f"{sender} is answering for {' <- '.join(chain)}, {len(chain)} asks deep; "
+                    "answer rather than ask further"
                 )
-            target = self._resolve_taker(to, sender)
+            target = self._resolve_taker(to, sender, exclude=chain)
+            if target in chain:
+                raise ValueError(
+                    f"{target} is waiting on {sender} ({sender} <- {' <- '.join(chain)}); "
+                    "answer its ask rather than ask it"
+                )
             ask_id = self._new_ask_id()
             self._conn.execute(
                 """
@@ -364,11 +372,27 @@ class HerdStore:
             self._conn.commit()
         return {"id": ask_id, "to": target, "queued": True}
 
-    def _resolve_taker(self, to: str, sender: str) -> str:
+    def _chain(self, name: str) -> list[str]:
+        """Who NAME is answering for, nearest first: the askers of the
+        asks it has open, and theirs in turn.  Caller holds `_mu`."""
+        chain: list[str] = []
+        frontier = [name]
+        while frontier and len(chain) <= ASK_DEPTH:
+            marks = ",".join("?" * len(frontier))
+            rows = self._conn.execute(
+                f"SELECT from_name FROM asks WHERE status = 'delivered' AND to_name IN ({marks})",
+                frontier,
+            ).fetchall()
+            frontier = [r[0] for r in rows if r[0] != name and r[0] not in chain]
+            chain.extend(dict.fromkeys(frontier))
+        return chain
+
+    def _resolve_taker(self, to: str, sender: str, exclude: list[str] = ()) -> str:
         """The session TO names, or the best one of kind TO.
 
         A kind picks among agents in the asker's project only: an agy in
-        another checkout would commit there.  Caller holds `_mu`.
+        another checkout would commit there.  Nor a lead, which plans the
+        work rather than takes it, nor one in EXCLUDE.  Caller holds `_mu`.
         """
         want = (to or "").strip()
         if not want:
@@ -376,9 +400,9 @@ class HerdStore:
         if want == sender:
             raise ValueError("an agent cannot ask itself")
         rows = self._conn.execute(
-            "SELECT name, kind, state, project FROM snapshot"
+            "SELECT name, kind, state, project, role FROM snapshot"
         ).fetchall()
-        for name, _kind, state, _project in rows:
+        for name, _kind, state, _project, _role in rows:
             if name == want:
                 if state not in _TAKER_RANK:
                     raise ValueError(f"{want} is {state or 'not running'}")
@@ -389,6 +413,7 @@ class HerdStore:
         alive = [
             r for r in rows
             if r[1] == want and r[0] != sender and r[2] in _TAKER_RANK
+            and r[4] != "lead" and r[0] not in exclude
         ]
         here = [r for r in alive if r[3] == mine] if mine else alive
         if not here:
@@ -505,13 +530,22 @@ class HerdStore:
         Close the ask with the taker's screen as its answer, marked auto;
         as failed when it died, or with ERROR when Emacs could not hand it
         the ask at all.  A no-op once the ask is closed: the taker's own
-        reply, made before it went idle, always wins.
+        reply, made before it went idle, always wins.  And a no-op while
+        the taker waits on asks of its own: it handed part of the work on
+        and ended its turn to wait, which is not stopping.
         """
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             row = self._ask_row(ask_id)
             if row["status"] != "delivered":
                 return {"id": row["id"], "status": row["status"]}
+            if not dead and not error:
+                waiting = [r[0] for r in self._conn.execute(
+                    f"SELECT id FROM asks WHERE from_name = ? AND status IN {ASK_OPEN}",
+                    (row["to_name"],),
+                ).fetchall()]
+                if waiting:
+                    return {"id": row["id"], "status": "delivered", "waiting_on": waiting}
             if dead or error:
                 self._close_ask(
                     row["id"], "failed", now,
@@ -565,16 +599,31 @@ class HerdStore:
             self._conn.commit()
         return {"id": row["id"], "status": row["status"]}
 
-    def collect(self, ask_id: str) -> None:
-        "A waiting asker has the answer: do not mail it as well."
+    def collect(self, ask_id: str, asker: bool = False) -> None:
+        """A waiting asker has the answer: do not mail it as well.  When
+        ASKER says it is the asker itself that has it -- not someone
+        looking on -- an answer already mailed and not yet handed to it is
+        taken back: it would be the second time it reads it."""
+        ask_id = (ask_id or "").strip()
         with self._mu:
             self._conn.execute(
                 f"""
                 UPDATE asks SET collected = 1
                 WHERE id = ? AND status IN {ASK_CLOSED}
                 """,
-                ((ask_id or "").strip(),),
+                (ask_id,),
             )
+            if asker:
+                row = self._ask_row(ask_id)
+                # The mail `_mail_back' writes, by the words it opens with.
+                self._conn.execute(
+                    """
+                    UPDATE mail SET status = 'cancelled', error = 'collected'
+                    WHERE to_name = ? AND status = 'queued' AND ask_id IS NULL
+                      AND (body LIKE ? OR body LIKE ?)
+                    """,
+                    (row["from_name"], f"Answer to ask {ask_id} (%", f"Ask {ask_id} failed:%"),
+                )
             self._conn.commit()
 
     def recent_asks(self) -> dict[str, Any]:
@@ -875,8 +924,8 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason, screen)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen, role)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -886,6 +935,7 @@ class HerdStore:
                         str(row.get("project") or ""),
                         str(row.get("reason") or ""),
                         str(row.get("screen") or ""),
+                        str(row.get("role") or ""),
                     ),
                 )
                 self._upsert_alias(name)

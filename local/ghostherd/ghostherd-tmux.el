@@ -340,7 +340,8 @@ the name we are about to take."
     (:project . "@ghostherd-project")
     (:command . "@ghostherd-command")
     (:args    . "@ghostherd-args")
-    (:notes   . "@ghostherd-notes"))
+    (:notes   . "@ghostherd-notes")
+    (:role    . "@ghostherd-role"))
   "Recipe fields and the tmux user options that hold them.
 
 On the session itself rather than in a sidecar file: a file can be
@@ -386,7 +387,7 @@ may legitimately end in blank lines."
 (defun ghostherd-tmux--read-recipe (id)
   "Return the recipe plist stashed on tmux session ID.
 
-Six calls rather than one `list-sessions -F': two of these fields are
+A call a field rather than one `list-sessions -F': two of these are
 free text that may contain the very newlines and tabs a single
 formatted line would be split on.  Restore runs once, for a handful of
 sessions."

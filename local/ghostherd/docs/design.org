@@ -527,6 +527,38 @@ the way, or the herd's answer in place of a reply.  Of what an agent
 said in a turn only the last message stays: "now running the tests"
 is the room's to show, "done, two failures" the chat's.
 
+** Why the lead is an agent, and asks are a tree
+
+A project's lead is an ordinary herd agent with a role, not a bot the
+sidecar runs.  A CLI agent already has tools, memory, a transcript the
+room can read, and a model the user can change; a bot in the sidecar
+would need a key and a runtime of its own to do what claude does.  The
+first QA <-> RD run showed an agent can run a loop: rd kept to its four
+rounds and told a real answer from the herd's screen.
+
+Asks became a tree for it.  The old rule --- an agent answering an ask
+may not ask --- meant the lead would relay every message between rd
+and qa, its context filling with reports it only passes on.  Now an
+agent answering an ask may hand parts of it on, never to one waiting
+on it, three deep at most: the rule was there against two agents
+waiting on each other, and a chain that never turns back cannot.  A
+kind never picks the lead, which plans rather than takes work, nor one
+waiting on the asker.
+
+The lead starts the first time you write to it, not when you open the
+chat: a look at a project should cost nothing.  Its role goes in as it
+starts where the CLI takes one --- claude's appended system prompt,
+grok's rules --- and with its first message where not.  What you write
+to another agent directly reaches it as a note before your next word,
+not as an interruption of what it is doing.
+
+Nesting changed what stopping means.  A taker used to stop when it
+went idle, and its last words were the answer.  With asks below it, a
+taker ends its turn to wait --- the lead's first run had rd's progress
+note taken for its answer --- so the sidecar declines to settle an ask
+while its taker has asks of its own open, and Emacs watches it again
+for the next stop.
+
 ** Why a paste is looked at again after Return
 
 The same run lost an ask: rd's second round was pasted into qa, the

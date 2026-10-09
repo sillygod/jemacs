@@ -216,6 +216,7 @@ class JsonRpcHandler:
         rather than hold one request open for an hour.
         """
         ask_id = str(params.get("id") or "")
+        who = str(params.get("from") or "").strip()
         try:
             timeout = float(params.get("timeout", 30))
         except (TypeError, ValueError) as exc:
@@ -227,7 +228,10 @@ class JsonRpcHandler:
         while True:
             ask = await asyncio.to_thread(herd.get_ask, ask_id)
             if ask["status"] in ASK_CLOSED:
-                await asyncio.to_thread(herd.collect, ask_id)
+                # Collected by the asker, or by a client that does not say
+                # who it is; one looking on at another's ask is not it.
+                if not who or who == ask["from"]:
+                    await asyncio.to_thread(herd.collect, ask_id, who == ask["from"])
                 return ask
             if loop.time() >= deadline:
                 return ask

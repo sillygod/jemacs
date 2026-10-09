@@ -659,3 +659,4 @@ pre.screen {
 .cmsg { max-width: 920px; }
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
 .cmore { margin-top: 2px; font-size: 12px; }
+.leadb { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid #a371f7; color: #d2a8ff; }

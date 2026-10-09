@@ -315,7 +315,8 @@ draws lanes from fields rather than parsing prose."
           :kind (format "%s" (or (ghostherd-session-kind s) "shell"))
           :state (format "%s" (or (ghostherd-session-state s) "idle"))
           :reason (or (ghostherd-session-state-reason s) "")
-          :project (or (ghostherd-session-project s) "")
+          :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
+          :role (or (ghostherd-session-role s) "")
           :notes (or (ghostherd-session-notes s) "")
           :backend (format "%s" (ghostherd-session-backend s))
           :detached (if (buffer-live-p buf) :json-false t)
@@ -530,7 +531,7 @@ path to open."
 
 (defun ghostherd-memory-page--room-sessions ()
   "The herd's agents in the room's project."
-  (seq-filter (lambda (s) (equal (or (ghostherd-session-project s) "")
+  (seq-filter (lambda (s) (equal (or (ghostherd--project-name (ghostherd-session-project s)) "")
                                  ghostherd-memory-page--room))
               (ghostherd-sessions)))
 
@@ -723,7 +724,7 @@ again only changes which those are."
              (let ((text (alist-get 'text intent)))
                (unless (and (stringp text) (not (string-empty-p (string-trim text))))
                  (user-error "Nothing to send"))
-               (ghostherd-prompt s text)
+               (ghostherd-tell s text)
                (format "Sent to %s" name)))
             ("agent-interrupt" (ghostherd-interrupt s) (format "Esc to %s" name))
             ("agent-abort" (ghostherd-abort s) (format "C-c to %s" name))
@@ -782,10 +783,29 @@ preview.  A data URL because the page loads no image from anywhere."
 The page cannot write a file, and an image is too big for the title it
 speaks through, so Emacs reads the clipboard itself; the page gets the
 file's name and a preview."
-  (let* ((name (ghostherd-session-name (ghostherd-memory-page--session intent)))
+  (let* ((name (if (equal (alist-get 'name intent) "@lead")
+                   "@lead"            ; a lead not started yet: it will be
+                 (ghostherd-session-name (ghostherd-memory-page--session intent))))
          (path (ghostherd-save-clipboard-image name)))
     (ghostherd-memory-page--js
      "attachImage" (list :name name :path path :thumb (ghostherd-memory-page--thumb path)))))
+
+(defun ghostherd-memory-page--lead-say (intent)
+  "Say INTENT's text to its project's lead, starting the lead if need be."
+  (let ((project (alist-get 'project intent))
+        (text (alist-get 'text intent)))
+    (unless (and (stringp project) (file-directory-p (expand-file-name project)))
+      (user-error "No project %s" project))
+    (unless (and (stringp text) (not (string-empty-p (string-trim text))))
+      (user-error "Nothing to send"))
+    (let* ((had (ghostherd-project-lead project))
+           (lead (ghostherd-lead-say project text)))
+      (ghostherd-memory-page--js
+       "flash" (if had
+                   (format "Sent to %s" (ghostherd-session-name lead))
+                 (format "Started %s; it gets your message once it is ready"
+                         (ghostherd-session-name lead))))
+      (ghostherd-memory-page--send-herd))))
 
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus."
@@ -956,6 +976,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-memory-page--send-herd))
         ("agent-new" (ghostherd-memory-page--agent-new intent))
         ("agent-image" (ghostherd-memory-page--agent-image intent))
+        ("lead-say" (ghostherd-memory-page--lead-say intent))
         ("paste" (ghostherd-memory-page-paste))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))

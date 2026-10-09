@@ -497,6 +497,23 @@ around it, not for that case."
   "Abbreviate PATH for display."
   (if path (abbreviate-file-name path) "~"))
 
+(defun ghostherd--project-name (path)
+  "PATH as a project is always written: a directory, under ~ when it is.
+An agent spawned here carries the absolute name and a restored one the
+abbreviated name; the page and the sidecar compare them as strings."
+  (and path (not (string-empty-p path))
+       (abbreviate-file-name (file-name-as-directory (expand-file-name path)))))
+
+(defvar ghostherd--roles (make-hash-table :test 'equal)
+  "Session id -> its role in the herd: \"lead\" for a project's lead.
+A table rather than a slot, for the reason `ghostherd--input-at' gives;
+written onto the host with the recipe, so a lead is still one after a
+restart.")
+
+(defun ghostherd-session-role (session)
+  "SESSION's role in the herd, or nil."
+  (gethash (ghostherd-session-id session) ghostherd--roles))
+
 (defun ghostherd--session-title (session)
   "Return SESSION's terminal title, or nil when it says nothing new.
 Which OSC 2 stream that comes from is the backend's business: a ghostel
@@ -1562,6 +1579,7 @@ PLIST keys:
   :command   override executable
   :args      override argument list
   :notes     free-form note / role description
+  :role      its role in the herd: \"lead\" for a project's lead
   :directory working directory (defaults to project or `default-directory')
   :backend   host to start it on (defaults to `ghostherd-backend')
   :display   when non-nil (default t), pop to the buffer"
@@ -1582,6 +1600,7 @@ PLIST keys:
                    (plist-get plist :args)
                  (plist-get spec :args)))
          (notes (plist-get plist :notes))
+         (role (plist-get plist :role))
          (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
@@ -1589,7 +1608,8 @@ PLIST keys:
          (started (ghostherd-backend-spawn
                    backend
                    (list :name name :kind kind :command command :args args
-                         :directory directory :project project :notes notes)))
+                         :directory directory :project project :notes notes
+                         :role role)))
          session)
     (setq session
           (ghostherd-session--create
@@ -1607,6 +1627,9 @@ PLIST keys:
            :notes notes
            :last-active (current-time)))
     (puthash name session ghostherd--sessions)
+    (if role
+        (puthash name role ghostherd--roles)
+      (remhash name ghostherd--roles))
     (ghostherd--log-add session 'life
                         (format "spawned %s on %s" kind backend))
     (ghostherd--ensure-poll-timer)
@@ -1701,6 +1724,9 @@ running, and a session keeps the backend it was born with anyway."
                     :seen t
                     :last-active (current-time))
                    ghostherd--sessions)
+          (if-let* ((role (plist-get recipe :role)))
+              (puthash name role ghostherd--roles)
+            (remhash name ghostherd--roles))
           (ghostherd--log-add name 'life
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
@@ -1726,7 +1752,8 @@ session around a process that never stopped."
         :backend (ghostherd-session-backend session)
         :command (ghostherd-session-command session)
         :args (ghostherd-session-args session)
-        :notes (ghostherd-session-notes session)))
+        :notes (ghostherd-session-notes session)
+        :role (ghostherd-session-role session)))
 
 ;;;###autoload
 (defun ghostherd-respawn (session &optional continue)
@@ -3763,7 +3790,9 @@ Text given as `-', or left out, is read from stdin.
 `to' is a name, or a kind (claude, grok, agy) for that kind's agent
 in your project.  --wait prints the answer when it comes; without it
 the answer comes back to you as a message once you are idle.  An
-agent answering an ask cannot ask in turn.  Methods: herd_ask {to,
+agent answering an ask may hand parts of it on, three asks deep at
+most, but never to one waiting on it; a kind never picks a project's
+lead.  Methods: herd_ask {to,
 body, from, wait}, herd_reply {id, body, from}, herd_await {id,
 timeout}, herd_cancel {id}, herd_asks.
 
@@ -3814,7 +3843,8 @@ from sqlite instead of waiting for another Emacs round trip."
            :kind (symbol-name (or (ghostherd-session-kind s) 'shell))
            :state (symbol-name (or (ghostherd-session-state s) 'idle))
            :notes (or (ghostherd-session-notes s) "")
-           :project (or (ghostherd-session-project s) "")
+           :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
+           :role (or (ghostherd-session-role s) "")
            :reason (or (ghostherd-session-state-reason s) "")
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        "")))
@@ -3886,8 +3916,8 @@ When you are done, send your answer with:\n\
 %s reply %s <<'HERD'\n\
 <your answer>\n\
 HERD\n\
-Answer even if you could not do it, and say why.  Do not ask other\n\
-agents while you work on this; the herd refuses that."
+Answer even if you could not do it, and say why.  You may ask other\n\
+agents for parts of it, but not whoever is waiting on you."
           id body
           (shell-quote-argument (or (and (fboundp 'ghostherd-herd-client)
                                          (ghostherd-herd-client))
@@ -3907,7 +3937,9 @@ agents while you work on this; the herd refuses that."
 (defun ghostherd--ask-settle (id session dead &optional error)
   "Tell the sidecar the taker of ask ID stopped, or died when DEAD.
 With ERROR, it never got the ask, and that says why.  The sidecar
-ignores this for an ask already answered."
+ignores this for an ask already answered, and leaves it open while the
+taker waits on asks of its own: it ended its turn to wait, not to stop.
+Such an ask is watched again, for the next time it stops."
   (remhash id ghostherd--asks-open)
   (puthash id t ghostherd--asks-settled)
   (let ((screen (and (not dead) (not error)
@@ -3915,7 +3947,15 @@ ignores this for an ask already answered."
                        (ghostherd--host-capture session ghostherd-ask-screen-lines)))))
     (when (fboundp 'ghostherd-memory-request-async)
       (ghostherd-memory-request-async
-       "herd_settle" #'ignore
+       "herd_settle"
+       (lambda (r)
+         (when (equal (plist-get r :status) "delivered")
+           (remhash id ghostherd--asks-settled)
+           (puthash id (ghostherd-session-id session) ghostherd--asks-open)
+           (ghostherd--log-add session 'ask
+                               (format "ask %s left open: %s waits on %s"
+                                       id (ghostherd-session-name session)
+                                       (mapconcat #'identity (plist-get r :waiting_on) ", ")))))
        (append (list :id id
                      :screen (string-trim-right (or screen ""))
                      :dead (if dead t :json-false))
@@ -4005,6 +4045,155 @@ from here on, and closed now if the taker is already sitting idle."
             (ghostherd--ask-settle id session
                                    (eq (ghostherd-session-state session) 'dead))))))
     (setq ghostherd--herd-asks asks)))
+
+;;; A project's lead
+;;
+;; One agent per project plans the work and hands it out: you talk to
+;; it in the project's chat, it asks the others, and what it says at
+;; the end of a turn is its report.  It is an ordinary agent with a
+;; role -- its own CLI, transcript and column -- not a bot of the
+;; sidecar's.  It starts the first time you write to it.
+
+(defcustom ghostherd-lead-kind 'claude
+  "The CLI a project's lead runs on.
+Its model is the CLI's to change: tell a claude lead `/model sonnet'."
+  :type 'symbol
+  :group 'ghostherd)
+
+(defconst ghostherd--lead-role "\
+You are the lead of this project's herd of agents: you plan the work,
+hand it out to the other agents, and report to the user.
+
+The user talks to you in the project's chat.  What you say at the end of
+a turn is what they read there: say what you decided, who is doing what,
+what came back, and what you need from them -- briefly, and in the
+language they write to you in.
+
+Your team: \"$GHOSTHERD_HERD\" list shows every agent with its kind,
+state, notes and project; yours are the ones in this project.  You see
+what an agent does only through what it answers you.
+
+Hand work out as an ask, run in the background so you can go on:
+
+  \"$GHOSTHERD_HERD\" ask NAME --wait <<'HERD'
+  the work, and what you want back
+  HERD
+
+You are told when it finishes; its output is the answer.  Ask several
+agents at once when the work allows.
+
+Hand out outcomes, not steps: \"build it and get it through qa, four
+rounds at most\" to rd lets rd and qa go back and forth without you in
+the middle, and you get the result.  An agent you asked may ask others;
+nobody may ask you back while you wait on them -- the herd refuses it.
+
+Do small things yourself: read a file to plan, answer from what you
+know.  Do not do an agent's work for it.  When the team has nobody for
+a job, say so and ask the user to start one.
+
+When an ask fails, or comes back as the herd's answer rather than the
+agent's, say what happened and decide: ask again, ask someone else, or
+ask the user.
+
+The user may also write to an agent directly.  When they have since you
+last heard from them, their next message to you starts with a note
+saying so: take it into account rather than undoing it.
+"
+  "The lead's role: given to it as it starts, or with its first message.")
+
+(defun ghostherd--lead-args (kind)
+  "Arguments that give a KIND agent the lead's role as it starts.
+nil for a CLI that takes none: its first message carries the role.
+The text itself rather than a file: claude records the system prompt
+with the conversation's first request and resumes with that record,
+so a file read afresh would buy nothing, and its -file flag is not one
+it lists."
+  (pcase kind
+    ('claude (list "--append-system-prompt" ghostherd--lead-role))
+    ('grok (list "--rules" ghostherd--lead-role))))
+
+(defun ghostherd-project-lead (project)
+  "PROJECT's lead, or nil."
+  (let ((key (ghostherd--project-name project)))
+    (seq-find (lambda (s)
+                (and (equal (ghostherd-session-role s) "lead")
+                     (equal (ghostherd--project-name (ghostherd-session-project s)) key)))
+              (ghostherd-sessions))))
+
+(defun ghostherd-start-lead (project &optional kind)
+  "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default)."
+  (let* ((kind (or kind ghostherd-lead-kind))
+         (dir (file-name-as-directory (expand-file-name project))))
+    (ghostherd-spawn kind
+                     :name (ghostherd--unique-name
+                            (format "lead-%s" (file-name-nondirectory (directory-file-name dir))))
+                     :project project
+                     :directory dir
+                     :args (append (plist-get (ghostherd--spec kind) :args)
+                                   (ghostherd--lead-args kind))
+                     :notes "lead: plans the work, hands it out"
+                     :role "lead"
+                     :display nil)))
+
+(defvar ghostherd--lead-unheard (make-hash-table :test 'equal)
+  "Project -> what the user said to its agents directly since its lead
+last heard from them, newest first, as (NAME . TEXT).")
+
+(defun ghostherd--lead-unheard-note (project)
+  "What PROJECT's lead has not heard, as the note its next message opens
+with; or the empty string."
+  (if-let* ((said (reverse (gethash project ghostherd--lead-unheard))))
+      (concat "[Since you last heard from me, I wrote to the team directly:\n"
+              (mapconcat (lambda (c)
+                           (format "- to %s: %s" (car c)
+                                   (truncate-string-to-width
+                                    (replace-regexp-in-string "[\n\t ]+" " " (string-trim (cdr c)))
+                                    300 nil nil "…")))
+                         said "\n")
+              "]\n\n")
+    ""))
+
+(defun ghostherd-tell (session text)
+  "Prompt SESSION with TEXT from the user.
+A project's lead hears first what the user said to its agents directly
+since it last heard from them; said to another agent of a project that
+has a lead, TEXT is kept for that."
+  (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
+         (lead (and project (ghostherd-project-lead project))))
+    (if (eq lead session)
+        (progn
+          (ghostherd-prompt session (concat (ghostherd--lead-unheard-note project) text))
+          (remhash project ghostherd--lead-unheard))
+      (ghostherd-prompt session text)
+      (when lead
+        (push (cons (ghostherd-session-name session) text)
+              (gethash project ghostherd--lead-unheard))))))
+
+(defun ghostherd--when-ready (session fn &optional tries)
+  "Call FN once SESSION is at its prompt, looking every second.
+Two minutes at most, TRIES counting down; a session that never gets
+there is logged, and one gone is let be."
+  (let ((tries (or tries 120)))
+    (cond
+     ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)))
+     ((memq (ghostherd-session-state session) '(idle done))
+      (funcall fn))
+     ((<= tries 0)
+      (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent"))
+     (t (run-at-time 1 nil #'ghostherd--when-ready session fn (1- tries))))))
+
+(defun ghostherd-lead-say (project text)
+  "Say TEXT to PROJECT's lead, starting one when it has none.
+A lead just started hears TEXT once it is ready -- after its role, on a
+CLI that took none as it started.  Return the lead."
+  (if-let* ((lead (ghostherd-project-lead project)))
+      (progn (ghostherd-tell lead text) lead)
+    (let* ((lead (ghostherd-start-lead project))
+           (role (if (ghostherd--lead-args (ghostherd-session-kind lead))
+                     ""
+                   (concat ghostherd--lead-role "\n---\n\n"))))
+      (ghostherd--when-ready lead (lambda () (ghostherd-tell lead (concat role text))))
+      lead)))
 
 ;;; What agents say about themselves, through their CLI's hooks
 ;;

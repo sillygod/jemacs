@@ -473,11 +473,14 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
 - *A taker that forgets.*  Stopping without answering closes the ask
   with its screen, marked as such; dying fails it, and so does an ask
   that never left the taker's input box, Return pressed and pressed
-  again --- saying so, so the asker hears at once.  A real answer sent
-  later still replaces the screen or the failure; only a cancel is
-  final.
-- *No loops.*  One open ask per agent, a second waits its turn; an
-  agent answering an ask cannot ask in turn.
+  again --- saying so, so the asker hears at once.  A taker that ended
+  its turn to wait on asks of its own has not stopped: its ask stays
+  open until it stops with none.  A real answer sent later still
+  replaces the screen or the failure; only a cancel is final.
+- *No loops.*  One open ask per agent, a second waits its turn.  An
+  agent answering an ask may hand parts of it on --- the lead asks rd,
+  rd asks qa --- three asks deep at most, but never to one waiting on
+  it.  A kind never picks a project's lead.
 - *Where to see it.*  The Agents tab shows asks on both agents' rows,
   and the herd log has each delivery and outcome.
 
@@ -1008,6 +1011,16 @@ are the other tabs (below, and "What happened while you were away").
   the one named by =@name= at its start, images and ⌘V as in any box.
   The sidecar builds the timeline from the agents' transcripts, so it
   starts with everything they already said.
+- The chat writes to the project's /lead/ unless you pick another: an
+  agent that plans the work, hands it out as asks, and reports back.
+  It is an ordinary agent --- =ghostherd-lead-kind=, claude by default
+  --- with the lead's role given as it starts (=--append-system-prompt=
+  for claude, =--rules= for grok, the first message for agy), and it
+  starts the first time you write to it.  =@lead= is it, whatever it is
+  called; =@lead /model sonnet= changes its model.  What you write to
+  another agent of the project directly, it hears as a note before
+  your next message to it.  It comes first in the room, marked /lead/,
+  and stays one across a restart.
 - An image goes with a prompt as a file.  ⌘V an image into a prompt
   box, or press /Image/ beside it: Emacs saves the clipboard's image
   (=pngpaste=, or =wl-paste= / =xclip=) under

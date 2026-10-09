@@ -127,14 +127,100 @@ def test_one_open_ask_per_agent(tmp_path):
     assert [p["ask"] for p in pending if p["to"] == "agy-a2"] == [second["id"]]
 
 
-def test_an_agent_answering_an_ask_may_not_ask(tmp_path):
+def test_an_agent_answering_an_ask_may_not_ask_back(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "one", from_name="claude-main")
     _deliver(h)
-    with pytest.raises(ValueError, match=f"agy-a2 is answering ask {ask['id']}"):
+    with pytest.raises(ValueError, match="claude-main is waiting on agy-a2"):
         h.ask("claude-main", "back at you", from_name="agy-a2")
     h.reply(ask["id"], "done")
     assert h.ask("claude-main", "now fine", from_name="agy-a2")["to"] == "claude-main"
+
+
+NESTED = [
+    {"name": "lead-a", "kind": "claude", "state": "idle", "project": "/src/a/", "role": "lead"},
+    {"name": "rd", "kind": "claude", "state": "idle", "project": "/src/a/"},
+    {"name": "qa", "kind": "claude", "state": "idle", "project": "/src/a/"},
+    {"name": "web", "kind": "agy", "state": "idle", "project": "/src/a/"},
+    {"name": "doc", "kind": "agy", "state": "idle", "project": "/src/a/"},
+]
+
+
+def test_asks_nest_down_a_chain_but_never_back_up(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    top = h.ask("rd", "build it and get it through qa", from_name="lead-a")
+    _deliver(h, NESTED)
+    # rd, answering the lead, hands part of it on.
+    mid = h.ask("qa", "test it", from_name="rd")
+    _deliver(h, NESTED)
+    # qa may ask further, once; nobody above it.
+    for back in ("rd", "lead-a"):
+        with pytest.raises(ValueError, match=f"{back} is waiting on qa"):
+            h.ask(back, "help", from_name="qa")
+    low = h.ask("web", "look this up", from_name="qa")
+    _deliver(h, NESTED)
+    with pytest.raises(ValueError, match="3 asks deep"):
+        h.ask("doc", "and this", from_name="web")
+    # The chain unwinds as it is answered.
+    for ask in (low, mid, top):
+        h.reply(ask["id"], "done")
+    assert h.ask("lead-a", "a question", from_name="web")["to"] == "lead-a"
+
+
+def test_a_taker_waiting_on_its_own_ask_has_not_stopped(tmp_path):
+    # rd handed part of the lead's ask to qa and ended its turn to wait:
+    # its last words then were not its answer -- as the first lead run
+    # showed, when they were taken for it.
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    top = h.ask("rd", "build it and get it through qa", from_name="lead-a", wait=True)
+    _deliver(h, NESTED)
+    mid = h.ask("qa", "test it", from_name="rd", wait=True)
+    r = h.settle(top["id"], screen="handed it to qa, waiting")
+    assert (r["status"], r["waiting_on"]) == ("delivered", [mid["id"]])
+    assert h.get_ask(top["id"])["status"] == "delivered"
+    _deliver(h, NESTED)
+    h.reply(mid["id"], "all green", from_name="qa")
+    # Stopped again with nothing it waits on: that is stopping.
+    assert h.settle(top["id"], screen="done here")["status"] == "answered"
+    assert h.get_ask(top["id"])["auto"] is True
+    # And dying is dying, waiting or not.
+    again = h.ask("rd", "once more", from_name="lead-a")
+    _deliver(h, NESTED)
+    h.ask("qa", "and test", from_name="rd")
+    assert h.settle(again["id"], dead=True)["status"] == "failed"
+
+
+def test_an_answer_the_asker_has_read_is_not_mailed_again(client):
+    h = herd_mod.get_herd()
+    ask = _rpc(client, "herd_ask", {"to": "agy", "body": "x", "from": "claude-main"})["result"]
+    _deliver(h)
+    h.reply(ask["id"], "here", from_name="agy-a2")
+    # Not waiting, so mailed; someone else looking at the ask leaves it so,
+    # and so does a client that does not say who it is.
+    _rpc(client, "herd_await", {"id": ask["id"], "timeout": 0, "from": "agy-a2"})
+    _rpc(client, "herd_await", {"id": ask["id"], "timeout": 0})
+    assert _mail_to(h, "claude-main")[0]["body"].startswith(f"Answer to ask {ask['id']} (")
+    # The asker reads it: the mail would be the second time.
+    got = _rpc(client, "herd_await", {"id": ask["id"], "timeout": 0, "from": "claude-main"})["result"]
+    assert got["reply"] == "here"
+    assert _mail_to(h, "claude-main") == []
+
+
+def test_a_kind_never_picks_the_lead_or_one_waiting(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    # "claude" from web: rd and qa are free, the lead is not a taker.
+    assert h.ask("claude", "x", from_name="web")["to"] in ("rd", "qa")
+    h2 = _store(tmp_path / "two")
+    h2.tick(sessions=NESTED)
+    first = h2.ask("qa", "test", from_name="rd")
+    _deliver(h2, NESTED)
+    # qa asks "claude": not rd, who waits on it; not the lead; none left.
+    with pytest.raises(ValueError, match="no claude agent"):
+        h2.ask("claude", "help", from_name="qa")
+    assert h2.list_sessions()["sessions"][1]["role"] == "lead"
 
 
 def test_a_taker_that_leaves_fails_the_ask(tmp_path):
@@ -459,6 +545,16 @@ def test_client_takes_the_text_after_the_options(live):
     for args in (("ask", "agy", "one", "two"), ("ask", "agy", "--nope", "x"), ("reply", "1a2b3c4d", "x", "y")):
         out = run(live, *args)
         assert out.returncode == 2 and "unrecognized arguments" in out.stderr, args
+
+
+def test_client_status_by_the_asker_takes_its_mail_back(live):
+    h = herd_mod.get_herd()
+    ask_id = run(live, "ask", "agy", "look it up").stdout.strip()  # mailed, not waited on
+    _deliver(h)
+    h.reply(ask_id, "found it", from_name="agy-a2")
+    out = run(live, "status", ask_id)  # as claude-main, the asker
+    assert json.loads(out.stdout)["reply"] == "found it"
+    assert _mail_to(h, "claude-main") == []
 
 
 def test_client_wait_timeout_detaches(live):

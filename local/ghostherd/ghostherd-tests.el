@@ -2791,6 +2791,24 @@ agent that never read it.  Other text, or tries left, fails nothing."
                                        :error "not submitted: it sat in qa's input box")))))
       (should-not (gethash "a1" ghostherd--asks-open)))))
 
+(ert-deftest ghostherd-test-a-taker-waiting-on-its-own-ask-is-watched-again ()
+  "rd ended its turn to wait on qa: the sidecar leaves the lead's ask
+open, and Emacs watches it again for the next time rd stops."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake)))
+      (setq ghostherd-tests--fake-screen "handed it to qa\n")
+      (puthash "a1" "rd" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method cb &optional params _err)
+                   (setq requests (append requests (list (list method params))))
+                   (funcall cb '(:id "a1" :status "delivered" :waiting_on ("b2"))))))
+        (ghostherd--set-state taker 'done))
+      (should (equal (mapcar #'car requests) '("herd_settle")))
+      (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
+      (should-not (gethash "a1" ghostherd--asks-settled))
+      (should (string-match-p "a1 left open: rd waits on b2"
+                              (ghostherd-log-entry-text (car ghostherd--log)))))))
+
 (ert-deftest ghostherd-test-ask-fails-when-the-taker-dies ()
   (ghostherd-tests--with-asks
     (let ((a (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'working))
@@ -5370,6 +5388,180 @@ the herd the agent called qa was the implementer."
         (ghostherd-new-pair))
       (should (equal (mapcar (lambda (pl) (plist-get pl :name)) (reverse spawned)) '("qa" "rd")))
       (should-not (seq-some (lambda (pl) (plist-member pl :notes)) spawned)))))
+
+;;; A project's lead
+
+(defmacro ghostherd-tests--with-leads (&rest body)
+  "BODY with roles and unheard notes of its own, `ghostherd-spawn' making
+a test session in state `starting', and timers asked for in `later'."
+  (declare (indent 0))
+  `(ghostherd-tests--with-herd ((ghostherd--roles (make-hash-table :test 'equal))
+                                (ghostherd--lead-unheard (make-hash-table :test 'equal)))
+     (let ((spawned nil) (later nil))
+       (cl-letf (((symbol-function 'ghostherd-spawn)
+                  (lambda (kind &rest pl)
+                    (push (cons kind pl) spawned)
+                    (let ((s (ghostherd-tests--session :name (plist-get pl :name) :kind kind
+                                                       :project (plist-get pl :project) :state 'starting)))
+                      (when (plist-get pl :role)
+                        (puthash (plist-get pl :name) (plist-get pl :role) ghostherd--roles))
+                      s)))
+                 ((symbol-function 'run-at-time)
+                  (lambda (_time _repeat f &rest args) (push (cons f args) later))))
+         ,@body))))
+
+(ert-deftest ghostherd-test-a-project-is-one-spelling ()
+  "Spawned here an agent's project is absolute; restored, it is under ~.
+The page and the sidecar compare them as strings, so both go as one."
+  (should (equal (ghostherd--project-name (expand-file-name "~/tmp/room-trial")) "~/tmp/room-trial/"))
+  (should (equal (ghostherd--project-name "~/tmp/room-trial/") "~/tmp/room-trial/"))
+  (should-not (ghostherd--project-name ""))
+  (should-not (ghostherd--project-name nil)))
+
+(ert-deftest ghostherd-test-a-lead-stays-a-lead ()
+  "The role goes onto the host with the recipe, and comes back with a
+restore, a respawn's recipe and the herd's snapshot."
+  (ghostherd-tests--with-herd ((ghostherd--roles (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-tmux '(("has-session" . (1 . "")))
+      (ghostherd-backend-spawn 'tmux (list :name "lead-p" :kind 'claude :command "claude"
+                                           :directory "/tmp/" :project "/tmp/" :role "lead")))
+    (should (equal (alist-get "@ghostherd-role" (ghostherd-tests--tmux-options) nil nil #'equal) "lead"))
+    (let ((ghostherd-known-backends '(fake))
+          (ghostherd-tests--fake-recipes
+           '((:host-id "gh-1" :name "lead-p" :kind claude :project "~/p/" :role "lead")
+             (:host-id "gh-2" :name "rd" :kind claude :project "~/p/"))))
+      (should (= (ghostherd-restore) 2))
+      ;; One spawned here carries the absolute name: the same project.
+      (ghostherd-tests--session :name "qa" :kind 'claude :project (expand-file-name "~/p"))
+      (let ((lead (ghostherd-get "lead-p")))
+        (should (equal (ghostherd-session-role lead) "lead"))
+        (should-not (ghostherd-session-role (ghostherd-get "rd")))
+        (should (equal (plist-get (ghostherd-session-recipe lead) :role) "lead"))
+        (should (eq (ghostherd-project-lead (expand-file-name "~/p")) lead))
+        (should (equal (sort (mapcar (lambda (r) (list (plist-get r :name) (plist-get r :role) (plist-get r :project)))
+                                     (ghostherd--herd-snapshot))
+                             (lambda (a b) (string< (car a) (car b))))
+                       '(("lead-p" "lead" "~/p/") ("qa" "" "~/p/") ("rd" "" "~/p/"))))))))
+
+(ert-deftest ghostherd-test-a-lead-starts-with-its-role ()
+  "claude takes the role as an appended system prompt, grok as rules;
+agy takes none, and gets it with its first message."
+  (ghostherd-tests--with-leads
+    (let ((ghostherd-lead-kind 'claude))
+      (ghostherd-start-lead "/tmp/room-trial/")
+      (let ((pl (cdar spawned)))
+        (should (eq (caar spawned) 'claude))
+        (should (equal (list (plist-get pl :name) (plist-get pl :role) (plist-get pl :display))
+                       '("lead-room-trial" "lead" nil)))
+        (should (equal (last (plist-get pl :args) 2)
+                       (list "--append-system-prompt" ghostherd--lead-role))))
+      (should (equal (ghostherd--lead-args 'grok) (list "--rules" ghostherd--lead-role)))
+      (should-not (ghostherd--lead-args 'agy))
+      ;; The first run's lead reported in English to a user writing Chinese.
+      (should (string-match-p "in the\nlanguage they write to you in" ghostherd--lead-role))
+      ;; A second lead elsewhere does not take the first one's name.
+      (ghostherd-start-lead "/other/room-trial/")
+      (should (equal (plist-get (cdar spawned) :name) "lead-room-trial-2")))))
+
+(ert-deftest ghostherd-test-the-page-sees-one-project-and-tells-the-lead ()
+  "However its agents spell their project, the page and the room see one;
+and what the page sends an agent of a project with a lead is kept for
+the lead."
+  (ghostherd-test--with-herd
+    (let ((ghostherd--roles (make-hash-table :test 'equal))
+          (ghostherd--lead-unheard (make-hash-table :test 'equal))
+          (ghostherd-memory-page--room "~/p/"))
+      (ghostherd-tests--session :name "lead-p" :kind 'claude :project "~/p/" :state 'idle)
+      (puthash "lead-p" "lead" ghostherd--roles)
+      (ghostherd-tests--session :name "qa" :kind 'claude :project (expand-file-name "~/p") :state 'idle)
+      (ghostherd-memory-page--send-herd)
+      (should (equal (seq-keep (lambda (a) (and (member (plist-get a :name) '("lead-p" "qa"))
+                                                 (plist-get a :project)))
+                               (plist-get (ghostherd-test--call calls "renderHerd") :agents))
+                     '("~/p/" "~/p/")))
+      (should (equal (sort (mapcar #'ghostherd-session-name (ghostherd-memory-page--room-sessions)) #'string<)
+                     '("lead-p" "qa")))
+      (cl-letf (((symbol-function 'ghostherd-prompt) #'ignore))
+        (ghostherd-memory-page--handle '((op . "agent-prompt") (name . "qa") (text . "run it"))))
+      (should (equal (gethash "~/p/" ghostherd--lead-unheard) '(("qa" . "run it")))))))
+
+(ert-deftest ghostherd-test-the-first-word-to-a-lead-starts-it ()
+  "Saying something to a project's lead starts one when it has none; the
+words reach it once it is at its prompt -- after its role, on a CLI that
+took none.  The next go straight to it, after what the user said to the
+team directly meanwhile, and that only once."
+  (ghostherd-tests--with-leads
+    (let ((ghostherd-lead-kind 'agy) (said nil))
+      (ghostherd-tests--session :name "rd" :kind 'claude :project "~/p/" :state 'idle)
+      (cl-letf (((symbol-function 'ghostherd-prompt)
+                 (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) said))))
+        ;; Before there is a lead, there is no one to tell.
+        (ghostherd-tell (ghostherd-get "rd") "before any lead")
+        (should (= (hash-table-count ghostherd--lead-unheard) 0))
+        (setq said nil)
+        (let ((lead (ghostherd-lead-say "~/p/" "plan the login page")))
+          (should (equal (ghostherd-session-name lead) "lead-p"))
+          (should-not said)
+          (setf (ghostherd-session-state lead) 'idle)
+          (let ((next (pop later))) (apply (car next) (cdr next)))
+          (should (equal (car said) (cons "lead-p" (concat ghostherd--lead-role "\n---\n\nplan the login page"))))
+          (ghostherd-tell (ghostherd-get "rd") "use the old API\nfor now")
+          (should (equal (car said) '("rd" . "use the old API\nfor now")))
+          (should (eq (ghostherd-lead-say (expand-file-name "~/p") "status?") lead))
+          (should (equal (cdar said)
+                         "[Since you last heard from me, I wrote to the team directly:\n- to rd: use the old API for now]\n\nstatus?"))
+          (ghostherd-tell lead "and now?")
+          (should (equal (cdar said) "and now?"))
+          (should (= (length spawned) 1)))))))
+
+(ert-deftest ghostherd-test-waiting-for-a-prompt-gives-up ()
+  "A session that never comes to its prompt is logged, its message not
+sent; one gone is let be."
+  (ghostherd-tests--with-leads
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "a" :state 'starting)) (ran 0))
+        (ghostherd--when-ready s (lambda () (cl-incf ran)) 1)
+        (let ((next (pop later))) (apply (car next) (cdr next)))
+        (should (= ran 0))
+        (should-not later)
+        (should (string-match-p "never came to its prompt" (ghostherd-log-entry-text (car ghostherd--log))))
+        (remhash "a" ghostherd--sessions)
+        (setf (ghostherd-session-state s) 'idle)
+        (ghostherd--when-ready s (lambda () (cl-incf ran)))
+        (should (= ran 0))))))
+
+(ert-deftest ghostherd-test-the-page-starts-a-lead ()
+  "The page's word to a project with no lead yet starts one and says so;
+with one, it goes to it.  An image for the lead not yet started is kept
+for it.  The page knows the lead by its role."
+  (ghostherd-test--with-herd
+    (let ((dir (file-name-as-directory (make-temp-file "gh-proj" t))) (asked nil) (lead nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostherd-lead-say)
+                     (lambda (project text) (push (list project text) asked)
+                       (setq lead (or lead (ghostherd-tests--session :name "lead-x" :project project))))))
+            (ghostherd-memory-page--handle `((op . "lead-say") (project . ,dir) (text . "plan it")))
+            (should (equal asked (list (list dir "plan it"))))
+            (should (string-match-p "Started lead-x" (ghostherd-test--call calls "flash")))
+            (puthash "lead-x" "lead" ghostherd--roles)
+            (cl-letf (((symbol-function 'ghostherd-project-lead) (lambda (_p) lead)))
+              (ghostherd-memory-page--handle `((op . "lead-say") (project . ,dir) (text . "again"))))
+            (should (equal (ghostherd-test--call calls "flash") "Sent to lead-x"))
+            (ghostherd-memory-page--handle '((op . "lead-say") (project . "/no/such/dir") (text . "x")))
+            (should (string-match-p "No project" (ghostherd-test--call calls "showError")))
+            (let ((a (seq-find (lambda (x) (equal (plist-get x :name) "lead-x"))
+                               (append (plist-get (progn (ghostherd-memory-page--send-herd)
+                                                         (ghostherd-test--call calls "renderHerd"))
+                                                  :agents)
+                                       nil))))
+              (should (equal (plist-get a :role) "lead")))
+            (ghostherd-test--with-clipboard ghostherd-test--png-sh
+              (cl-letf (((symbol-function 'ghostherd-memory-page--thumb) #'ignore))
+                (ghostherd-memory-page--handle '((op . "agent-image") (name . "@lead")))))
+            (should (equal (plist-get (ghostherd-test--call calls "attachImage") :name) "@lead")))
+        (remhash "lead-x" ghostherd--roles)
+        (clrhash ghostherd--lead-unheard)
+        (delete-directory dir t)))))
 
 ;;; Images pasted into a prompt
 

@@ -721,18 +721,44 @@ lead is that, and every other flow besides.
 - [X] 5 pytest (the merge, what a taker never saw, grok without times,
   the tail of a long day, the RPC), 1 ERT, WebKit checks of the view
   and the box; each guard mutation-tested
+- [X] The lead: an ordinary herd agent with the lead's role, claude by
+  default (=ghostherd-lead-kind=); =@lead /model sonnet= changes its
+  model.  Started the first time you write to it --- not when the chat
+  is opened, so a look costs nothing --- and the box's default
+- [X] A role in the herd, written onto the host with the recipe: a
+  lead is one again after a restore or a respawn, and the sidecar's
+  snapshot and =herd list= say who it is
+- [X] Asks nest --- lead to rd, rd to qa --- three deep at most, never
+  back up their chain; a kind never picks the lead, nor one waiting on
+  the asker
+- [X] What you write to an agent directly reaches the lead as a note
+  before your next message to it
+- [X] A project is one spelling for the page and the sidecar: an agent
+  spawned here carried the absolute name and a restored one ~, and the
+  page drew them as two projects
+- [X] 2 pytest (the chain, the kinds), 7 ERT, WebKit checks of the
+  box and the room with and without a lead; each guard mutation-tested
+
+** From the lead's first run
+
+The lead handed =--max-length= to rd, rd took it through qa in three
+rounds, and the lead reported.  Three things went wrong on the way.
+
+- [X] rd handed part of the lead's ask to qa and ended its turn to
+  wait; the herd took that as stopping and closed the lead's ask with
+  rd's progress note.  An ask whose taker waits on asks of its own is
+  left open, and watched again for the next time it stops
+- [X] rd then kept its turn alive by polling =herd status= on asks
+  without =--wait=, and got each answer again as mail after it had
+  read it.  The asker reading an answer takes the mail of it back ---
+  the asker only, which the client now says it is
+- [X] The lead reported in English to a user writing Chinese: it
+  answers in the language it is written to in
 
 ** What is left
 
-- [ ] The lead: an ordinary herd agent with the lead's role, claude by
-  default; =@lead /model sonnet= changes its model, a lead of another
-  CLI takes over from a handoff summary.  Spawned the first time a
-  project's chat is opened; a message with no =@name= goes to it
-- [ ] Asks may nest --- lead to rd, rd to qa --- but never back up
-  their chain, which keeps the rule against loops and lets the lead
-  hand out outcomes rather than relay every message
-- [ ] What you say to an agent directly reaches the lead as a summary
-  the next time it is asked, not as an interruption
+- [ ] A lead on another CLI taking over from this one: a handoff
+  summary from the old, the new one starting from it
 - [ ] The chat on Telegram: read it, and talk to the lead, from a phone
 
 * Phase 4 — Ecosystem (only if still useful)

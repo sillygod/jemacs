@@ -178,7 +178,8 @@ def wait_for(ask_id, to, timeout):
             left = deadline - time.monotonic()
             step = max(0, min(AWAIT_STEP, int(left)))
             try:
-                ask = rpc("herd_await", {"id": ask_id, "timeout": step}, timeout=step + 15)
+                ask = rpc("herd_await", {"id": ask_id, "timeout": step, "from": me()},
+                          timeout=step + 15)
             except Unreachable as exc:
                 now = time.monotonic()
                 if lost is None:
@@ -245,7 +246,8 @@ def cmd_reply(args):
 
 
 def cmd_status(args):
-    print(json.dumps(rpc("herd_await", {"id": args.id, "timeout": 0}), indent=2, ensure_ascii=False))
+    print(json.dumps(rpc("herd_await", {"id": args.id, "timeout": 0, "from": me()}),
+                     indent=2, ensure_ascii=False))
     return 0
 
 

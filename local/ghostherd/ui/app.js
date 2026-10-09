@@ -822,7 +822,7 @@
       '<div class="arow s-' + esc(a.state) + '" data-name="' + esc(name) + '">' +
       '<div class="amain">' + stateBadge(a.state) +
       '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
-      agentBadge(a.kind) +
+      agentBadge(a.kind) + leadBadge(a) +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
       (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") +
@@ -923,11 +923,16 @@
     showAgents();
   }
 
+  // The room's agents, its lead first.
   function roomAgents() {
     const d = herdNow.data;
     return ((d && d.agents) || [])
       .filter((a) => (a.project || "") === herdNow.room)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => (b.role === "lead") - (a.role === "lead") || a.name.localeCompare(b.name));
+  }
+
+  function leadBadge(a) {
+    return a.role === "lead" ? '<span class="leadb" title="Plans the work and hands it out">lead</span>' : "";
   }
 
   function roomTop(a, asks) {
@@ -946,7 +951,7 @@
     return '<div class="amain">' + stateBadge(a.state) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
       '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
-      agentBadge(a.kind) +
+      agentBadge(a.kind) + leadBadge(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
@@ -1058,18 +1063,27 @@
   // What an agent did along the way stays in its column.  The box writes
   // to one agent, picked above it or by @name at its start.
 
+  // Who the box can write to: the lead first -- or, with none yet, the
+  // lead that writing to it starts -- then the others.
+  function chatTargets(agents) {
+    const lead = agents.find((a) => a.role === "lead");
+    return (lead ? [[lead.name, "lead · " + lead.name]] : [["@lead", "lead (starts when you write)"]])
+      .concat(agents.filter((a) => a !== lead).map((a) => [a.name, a.name]));
+  }
+
   function chatTo(agents) {
     const want = herdNow.chatTo[herdNow.room];
-    return agents.some((a) => a.name === want) ? want : agents[0].name;
+    const targets = chatTargets(agents);
+    return targets.some(([v]) => v === want) ? want : targets[0][0];
   }
 
   function chatHtml(agents) {
     const to = chatTo(agents);
     return '<div class="chat"><div class="cbody"></div>' +
       '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
-      '<select class="chat-to" title="Who it goes to (or start with @name)">' +
-      agents.map((a) => '<option value="' + esc(a.name) + '"' + (a.name === to ? " selected" : "") + ">" + esc(a.name) + "</option>").join("") +
-      '</select><textarea class="agent-text" rows="2" placeholder="Message ' + esc(to) + '  (@name for another · ⌘↩ sends)">' +
+      '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
+      chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
+      '</select><textarea class="agent-text" rows="2" placeholder="Message ' + esc(to === "@lead" ? "the lead" : to) + '  (@name for another · ⌘↩ sends)">' +
       esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON +
       '<button type="button" class="primary small" data-act="a:send">Send</button></div></div>';
   }
@@ -1088,7 +1102,7 @@
     delete herdNow.attach[was];
     foot.setAttribute("data-name", to);
     foot.querySelector(".chat-to").value = to;
-    ta.placeholder = "Message " + to + "  (@name for another · ⌘↩ sends)";
+    ta.placeholder = "Message " + (to === "@lead" ? "the lead" : to) + "  (@name for another · ⌘↩ sends)";
     renderAttach(to);
   }
 
@@ -1306,16 +1320,25 @@
     const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
     let text = (ta ? ta.value : herdNow.compose[name] || "").trim();
     let to = name;
-    // In the chat, @name at the start writes to that agent instead.
+    // In the chat, @name at the start writes to that agent instead, and
+    // @lead to the project's lead, or the one it starts.
     const at = ta && ta.closest(".cfoot") && /^@(\S+)\s+/.exec(text);
-    if (at && roomAgents().some((a) => a.name === at[1])) {
-      to = at[1];
-      text = text.slice(at[0].length).trim();
+    if (at) {
+      const agents = roomAgents();
+      const lead = agents.find((a) => a.role === "lead");
+      const named = at[1] === "lead" ? (lead ? lead.name : "@lead")
+        : agents.some((a) => a.name === at[1]) ? at[1] : null;
+      if (named) {
+        to = named;
+        text = text.slice(at[0].length).trim();
+      }
     }
     const files = (herdNow.attach[name] || []).map((a) => a.path);
     if (!text && !files.length) return;
     // The images go after what you wrote, a file name a line.
-    emit("agent-prompt", { name: to, text: [text, files.join("\n")].filter(Boolean).join("\n\n") });
+    const body = [text, files.join("\n")].filter(Boolean).join("\n\n");
+    if (to === "@lead") emit("lead-say", { project: herdNow.room, text: body });
+    else emit("agent-prompt", { name: to, text: body });
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);
     delete herdNow.attach[name];
