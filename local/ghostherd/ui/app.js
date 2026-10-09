@@ -684,14 +684,19 @@
     if (!list || !list.length) {
       return '<p class="empty">No usage yet: the first reading arrives a few seconds after the page opens.</p>';
     }
+    // Whole numbers bare, the rest to one place: a float is not a label.
+    const pct = (n) => {
+      const v = Math.round((Number(n) || 0) * 10) / 10;
+      return Number.isInteger(v) ? String(v) : v.toFixed(1);
+    };
     return list.map((k) => {
       const wins = (k.windows || []).map((w) => {
         const lvl = w.used >= 90 ? "hot" : w.used >= 70 ? "warm" : "ok";
-        return '<div class="uwin" title="' + esc(w.label + ": " + w.used + "% used, " + (100 - w.used) + "% left" +
+        return '<div class="uwin" title="' + esc(w.label + ": " + pct(w.used) + "% used, " + pct(100 - w.used) + "% left" +
           (w.resets ? ", resets " + new Date(w.resets).toLocaleString() : "")) + '">' +
           '<span class="ulabel">' + esc(w.label) + "</span>" +
           '<span class="ubar"><span class="lvl-' + lvl + '" style="width:' + Math.max(0, Math.min(100, w.used)) + '%"></span></span>' +
-          '<span class="upct">' + w.used + "%</span>" +
+          '<span class="upct">' + pct(w.used) + "%</span>" +
           '<span class="ureset">' + esc(untilText(w.resets)) + "</span></div>";
       }).join("");
       const err = k.error

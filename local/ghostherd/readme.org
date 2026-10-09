@@ -925,7 +925,12 @@ are the other tabs (below, and "What happened while you were away").
 - Usage per CLI on top: each window as a bar of what is used, with its
   reset; a stale or failed reading says why.  It is the sidebar
   footer's cache, refreshed every =ghostherd-usage-interval= while the
-  page can be seen.
+  page can be seen.  agy's quota comes from the token agy saved, which
+  lasts an hour --- agy refreshes it in memory only, and its client
+  secret is not ours to use --- and after that from the =/usage= panel
+  of an idle agy session, which ghostherd types and Escapes out of.
+  =ghostherd-usage-agy-probe= nil stops that; the numbers then stay
+  as last read, stale, with when the token expired.
 - The herd grouped by project, the project with a blocked agent first,
   each group summing its states.  A row has the state, kind, notes,
   reason, how long ago it last moved, and whether a view is attached.

@@ -3840,6 +3840,23 @@ its /health does (sha256(\"abc\") starts ba7816bf8f01)."
     (should (= (plist-get (nth 0 wins) :remaining) 62.0))
     (should (= (plist-get (nth 1 wins) :remaining) 88.0))))
 
+(ert-deftest ghostherd-test-usage-parse-agy-groups-names-each-group ()
+  "Two groups each with a `wk' read as two identical rows unless named."
+  (let* ((raw (json-parse-string
+               "{\"groups\":[{\"displayName\":\"Gemini Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":0.993},{\"window\":\"5h\",\"remainingFraction\":1}]},{\"displayName\":\"Third-Party Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":1},{\"window\":\"5h\",\"remainingFraction\":1}]}]}"
+               :object-type 'alist :array-type 'list :null-object nil))
+         (wins (ghostherd-usage--parse-agy-groups raw)))
+    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
+                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h")))))
+
+(ert-deftest ghostherd-test-herd-page-usage-is-rounded ()
+  "100 - 99.3 in floating point is 0.7000000000000028, and the page
+printed every digit of it across the next column."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-usage--cache '((agy :windows ((:label "gem-wk" :remaining 99.3)) :fetched 1.0))))
+    (let ((w (aref (plist-get (aref (ghostherd-memory-page--usage) 0) :windows) 0)))
+      (should (equal (plist-get w :used) 0.7)))))
+
 (ert-deftest ghostherd-test-usage-parse-agy-groups ()
   (let* ((raw (json-parse-string
                "{\"groups\":[{\"displayName\":\"Gemini Models\",\"buckets\":[{\"window\":\"5h\",\"remainingFraction\":0.8},{\"window\":\"weekly\",\"remainingFraction\":0.55}]}]}"
@@ -3939,7 +3956,7 @@ retry and never activate the callback."
                (lambda (&rest _) (setq called t) 'orig)))
       ;; Our request: answered without consulting url.el.
       (let ((url-current-object (url-generic-parse-url
-                                 "https://oauth2.googleapis.com/token")))
+                                 "https://daily-cloudcode-pa.googleapis.com/v1internal:x")))
         (should (eq (ghostherd-usage--no-auth-prompt
                      (symbol-function 'url-http-handle-authentication) nil)
                     t))
@@ -3983,6 +4000,54 @@ No cache entry reads as \"not wired up\"; `agy ?\' carries the reason."
     (let ((s (ghostherd-usage--entry-string 'agy nil)))
       (should (string-match-p "agy \\?" (substring-no-properties s)))
       (should (equal (get-text-property 0 'help-echo s) "refresh 401")))))
+
+(defmacro ghostherd-tests--with-agy-token (blob &rest body)
+  "BODY with agy's saved token read as BLOB, and every request recorded."
+  (declare (indent 1))
+  `(let ((ghostherd-usage--cache nil) (requests nil) (done 0))
+     (cl-letf (((symbol-function 'ghostherd-usage--agy-from-screens) #'ignore)
+               ((symbol-function 'ghostherd-usage--agy-token-blob) (lambda () ,blob))
+               ((symbol-function 'ghostherd-usage--http-json)
+                (lambda (url &rest _) (push url requests)))
+               ((symbol-function 'ghostherd-usage--done) (lambda () (cl-incf done))))
+       ,@body)))
+
+(ert-deftest ghostherd-test-usage-agy-expired-token-is-said-not-refreshed ()
+  "agy refreshes its token in memory only; refreshing it ourselves needs a
+client secret Google no longer takes.  An expired token is reported,
+with when, and nothing is sent."
+  (ghostherd-tests--with-agy-token
+      `((access_token . "a") (refresh_token . "r")
+        (expiry . ,(format-time-string "%FT%T%z" (- (float-time) 3600))))
+    (let ((ghostherd-usage-agy-probe nil))
+      (ghostherd-usage--fetch-agy))
+    (should-not requests)
+    (should (= done 1))
+    (should (string-match-p "\\`agy's saved token expired [0-9][0-9]:[0-9][0-9]\\'"
+                            (plist-get (alist-get 'agy ghostherd-usage--cache) :error)))))
+
+(ert-deftest ghostherd-test-usage-agy-fresh-token-asks-the-api ()
+  (ghostherd-tests--with-agy-token
+      `((access_token . "a") (expiry . ,(format-time-string "%FT%T%z" (+ (float-time) 3600))))
+    (ghostherd-usage--fetch-agy)
+    (should (equal requests
+                   '("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary")))))
+
+(ert-deftest ghostherd-test-usage-agy-probe-can-be-switched-off ()
+  "The probe types into your session: off means it never does."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "agy-a" :kind 'agy :state 'idle)
+    (let (typed (ghostherd-usage--agy-probe-at 0))
+      (cl-letf (((symbol-function 'ghostherd--host-send-text)
+                 (lambda (_s text &rest _) (push text typed)))
+                ((symbol-function 'ghostherd--session-live-p) (lambda (_) t))
+                ((symbol-function 'run-with-timer) #'ignore))
+        (let ((ghostherd-usage-agy-probe nil))
+          (should-not (ghostherd-usage--agy-probe)))
+        (should-not typed)
+        (let ((ghostherd-usage-agy-probe t))
+          (should (ghostherd-usage--agy-probe)))
+        (should (equal typed '("/usage")))))))
 
 (ert-deftest ghostherd-test-usage-failure-keeps-last-good-numbers ()
   "A failed poll reads as stale numbers, not as no numbers."
@@ -4431,7 +4496,7 @@ there, and it is a conversation; otherwise the page is told why."
       (should (equal (plist-get a :state) "blocked"))
       (should (equal (plist-get a :project) "/p/"))
       (should (eq (plist-get a :detached) t))
-      (should (equal (mapcar (lambda (w) (plist-get w :used)) (plist-get claude :windows)) '(62 0)))
+      (should (equal (mapcar (lambda (w) (plist-get w :used)) (plist-get claude :windows)) '(62.0 0.0)))
       (should (equal (plist-get (aref (plist-get claude :windows) 0) :resets) 1791460000000.0))
       (should (equal (plist-get agy :error) "token expired"))
       (should (member "claude" (append (plist-get p :kinds) nil)))

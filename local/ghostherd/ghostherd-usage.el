@@ -15,7 +15,15 @@
 ;; claude  GET api.anthropic.com/api/oauth/usage
 ;; grok    last `billing: fetched credits config` in ~/.grok/logs, then
 ;;         live cli-chat-proxy billing if the token is still fresh
-;; agy     `/usage` TUI on a live session, else Cloud Code quota API
+;; agy     Cloud Code quota API with the token agy saved, while it is
+;;         fresh; after that the `/usage' panel of an idle agy session
+;;
+;; agy saves its token once and refreshes it only in memory, so the
+;; saved one is good for an hour.  Refreshing it ourselves would take
+;; agy's OAuth client secret, which is not in the binary any more:
+;; Google refuses both client ids found there with the one secret
+;; found there (`invalid_client').  So an expired token is reported as
+;; such, and the panel is read instead.
 ;;
 ;; Tokens are read, never written back, never printed.
 
@@ -56,8 +64,6 @@ Each window is (:label STRING :remaining NUMBER :resets-at NUMBER-or-nil).")
 (defvar ghostherd-usage--inflight-at nil
   "`float-time' when the current in-flight batch started.")
 (defvar ghostherd-usage--timer nil)
-(defvar ghostherd-usage--agy-client nil
-  "Cached (CLIENT-ID . CLIENT-SECRET) extracted from the agy binary.")
 
 (defvar ghostherd-usage--agy-probe-at 0
   "When we last submitted `/usage` to an idle agy session.")
@@ -151,11 +157,22 @@ mode-line would eat it)."
             (ghostherd-usage--remaining (ghostherd-usage--alist w 'utilization))
             (ghostherd-usage--parse-time (ghostherd-usage--alist w 'resets_at)))))))
 
+(defun ghostherd-usage--agy-group-prefix (name)
+  "Short name for agy quota group NAME, as the `/usage' panel's labels go."
+  (cond ((string-match-p "gemini" (downcase name)) "gem")
+        ((string-match-p "third\\|party\\|claude\\|anthropic\\|openai\\|gpt" (downcase name)) "3p")
+        (t (let ((word (car (split-string (downcase name) "[^a-z0-9]+" t))))
+             (if word (substring word 0 (min 4 (length word))) "grp")))))
+
 (defun ghostherd-usage--parse-agy-groups (raw)
-  "Parse retrieveUserQuotaSummary.  remainingFraction is remaining 0–1."
+  "Parse retrieveUserQuotaSummary.  remainingFraction is remaining 0–1.
+With more than one group each label names its group (`gem-wk',
+`3p-5h'), as the `/usage' panel's do: two groups' `wk' side by side
+cannot be told apart."
   (let* ((groups (or (ghostherd-usage--alist raw 'groups)
                      (ghostherd-usage--alist
                       (ghostherd-usage--alist raw 'response) 'groups)))
+         (several (cdr groups))
          (out nil))
     (dolist (g groups)
       (let ((gname (or (ghostherd-usage--alist g 'displayName) "")))
@@ -164,12 +181,15 @@ mode-line would eat it)."
                  (win (format "%s" (or (ghostherd-usage--alist b 'window)
                                        (ghostherd-usage--alist b 'bucketId)
                                        "")))
-                 (label
+                 (span
                   (cond
                    ((string-match-p "weekly\\|WEEKLY" win) "wk")
                    ((string-match-p "5h\\|five" win) "5h")
-                   ((string-match-p "Gemini" gname) "gem")
+                   ((and (not several) (string-match-p "Gemini" gname)) "gem")
                    (t "lim")))
+                 (label (if several
+                            (concat (ghostherd-usage--agy-group-prefix gname) "-" span)
+                          span))
                  (rem (and (numberp frac)
                            (ghostherd-usage--round1 (* 100.0 frac)))))
             (when rem
@@ -345,12 +365,16 @@ The number is the used percent, like the provider panels print."
                                                   (expand-file-name ".gemini" "~"))))))
     (or (ghostherd-usage--alist raw 'token) raw)))
 
+(defun ghostherd-usage--expiry-time (expiry)
+  "EXPIRY -- epoch seconds or milliseconds, or ISO text -- as epoch seconds."
+  (cond
+   ((numberp expiry)
+    (if (> expiry 1e12) (/ expiry 1000.0) (float expiry)))
+   ((stringp expiry) (ghostherd-usage--parse-time expiry))
+   (t nil)))
+
 (defun ghostherd-usage--expired-p (expiry)
-  (let ((ts (cond
-             ((numberp expiry)
-              (if (> expiry 1e12) (/ expiry 1000.0) (float expiry)))
-             ((stringp expiry) (ghostherd-usage--parse-time expiry))
-             (t nil))))
+  (let ((ts (ghostherd-usage--expiry-time expiry)))
     (and ts (< ts (+ (float-time) 60)))))
 
 
@@ -358,7 +382,7 @@ The number is the used percent, like the provider panels print."
 
 (defconst ghostherd-usage--hosts
   '("api.anthropic.com" "platform.claude.com" "cli-chat-proxy.grok.com"
-    "oauth2.googleapis.com" "daily-cloudcode-pa.googleapis.com")
+    "daily-cloudcode-pa.googleapis.com")
   "Hosts `ghostherd-usage--http' talks to.")
 
 (defvar-local ghostherd-usage--own-request nil
@@ -561,52 +585,6 @@ after `ghostherd-usage-timeout' if none arrives."
              (when wins (ghostherd-usage--put 'grok wins))
              (ghostherd-usage--done))))))))
 
-(defun ghostherd-usage--agy-client ()
-  (or ghostherd-usage--agy-client
-      (when-let* ((bin (executable-find "agy"))
-                  (py (or (executable-find "python3") (executable-find "python"))))
-        (with-temp-buffer
-          (when (eq 0 (call-process
-                       py nil t nil "-c"
-                       "import re,sys
-p=open(sys.argv[1],'rb').read()
-ids=re.findall(rb'(\\d{10,}-[a-z0-9]+\\.apps\\.googleusercontent\\.com)', p)
-secs=re.findall(rb'GOCSPX-[A-Za-z0-9_-]{20,}', p)
-cid=next((i.decode() for i in ids if i.startswith(b'1071')), ids[0].decode() if ids else '')
-sec=secs[0].decode() if secs else ''
-print(cid+'\\t'+sec)"
-                       bin))
-            (let* ((line (string-trim (buffer-string)))
-                   (parts (split-string line "\t")))
-              (when (and (= (length parts) 2)
-                         (not (string-empty-p (nth 0 parts)))
-                         (not (string-empty-p (nth 1 parts))))
-                (setq ghostherd-usage--agy-client
-                      (cons (nth 0 parts) (nth 1 parts))))))))))
-
-(defun ghostherd-usage--agy-refresh (refresh cb)
-  "Swap REFRESH for an access token.  CB is (lambda (TOKEN REASON)).
-REASON is nil on success, else a short string for the help-echo:
-the client id/secret are scraped out of the `agy' binary, so a
-pair that no longer matches the stored token shows up here as a
-401 rather than as a blank readout."
-  (let ((pair (and refresh (ghostherd-usage--agy-client))))
-    (if (not pair)
-        (funcall cb nil "no oauth client")
-      (ghostherd-usage--http-json
-       "https://oauth2.googleapis.com/token"
-       '(("Content-Type" . "application/x-www-form-urlencoded"))
-       (lambda (raw &optional code)
-         (let ((tok (ghostherd-usage--alist raw 'access_token)))
-           (funcall cb tok
-                    (and (not tok)
-                         (format "refresh %s" (or code "failed"))))))
-       "POST" nil
-       (concat "grant_type=refresh_token"
-               "&refresh_token=" (url-hexify-string refresh)
-               "&client_id=" (url-hexify-string (car pair))
-               "&client_secret=" (url-hexify-string (cdr pair)))))))
-
 (defun ghostherd-usage--agy-from-screens ()
   "Read a live agy pane if the `/usage` panel is already up."
   (when (and (boundp 'ghostherd--sessions)
@@ -621,11 +599,22 @@ pair that no longer matches the stored token shows up here as a
                                   (ghostherd-usage--parse-agy-usage-screen text))))
                   (when wins (cl-return wins))))))
 
+(defcustom ghostherd-usage-agy-probe t
+  "Non-nil to read agy's quota by typing `/usage' into an idle agy session.
+Once the token agy saved has expired -- an hour after agy wrote it --
+the `/usage' panel is the only reading there is.  It types into your
+session, and Escapes out after it paints, so it is yours to switch
+off: agy's numbers then stay as last read, marked stale, until agy
+saves a fresh token."
+  :type 'boolean
+  :group 'ghostherd-usage)
+
 (defun ghostherd-usage--agy-probe ()
   "Type `/usage` into one idle agy session, then Esc after it paints.
-The slash command is how the CLI itself shows remaining quota; the
-OAuth API is a fallback and is often expired."
-  (when (and (fboundp 'ghostherd--host-send-text)
+The slash command is how the CLI itself shows remaining quota, and
+the only reading left once agy's saved token has expired."
+  (when (and ghostherd-usage-agy-probe
+             (fboundp 'ghostherd--host-send-text)
              (boundp 'ghostherd--sessions)
              (> (- (float-time) ghostherd-usage--agy-probe-at) 60))
     (when-let* ((s (seq-find
@@ -672,27 +661,36 @@ answer; `agy ?' carries REASON in its help-echo instead."
        (ghostherd-usage--done)))
    "POST" (make-hash-table)))
 
+(defun ghostherd-usage--agy-expired (expiry)
+  "Why agy cannot be read: its saved token ran out at EXPIRY."
+  (let ((ts (ghostherd-usage--expiry-time expiry)))
+    (if (not ts)
+        "agy's saved token has expired"
+      (format "agy's saved token expired %s"
+              (format-time-string
+               (if (equal (format-time-string "%F" ts) (format-time-string "%F"))
+                   "%H:%M"
+                 "%m-%d %H:%M")
+               ts)))))
+
 (defun ghostherd-usage--fetch-agy ()
+  "Read agy's quota: a `/usage' panel on screen, else the API while
+agy's saved token is fresh, else say it has expired (and ask an idle
+session for the panel, if `ghostherd-usage-agy-probe' allows)."
   (if-let* ((wins (ghostherd-usage--agy-from-screens)))
       (progn (ghostherd-usage--put 'agy wins)
              (ghostherd-usage--done))
-    (let ((blob (ghostherd-usage--agy-token-blob)))
-      (if (not blob)
-          (progn
-            (ghostherd-usage--agy-fail "no credentials")
-            (ghostherd-usage--done))
-        (let ((tok (ghostherd-usage--alist blob 'access_token))
-              (refresh (ghostherd-usage--alist blob 'refresh_token))
-              (expiry (ghostherd-usage--alist blob 'expiry)))
-          (if (and tok (not (ghostherd-usage--expired-p expiry)))
-              (ghostherd-usage--agy-quota tok)
-            (ghostherd-usage--agy-refresh
-             refresh
-             (lambda (fresh &optional reason)
-               (if fresh
-                   (ghostherd-usage--agy-quota fresh)
-                 (ghostherd-usage--agy-fail (or reason "expired"))
-                 (ghostherd-usage--done))))))))))
+    (let* ((blob (ghostherd-usage--agy-token-blob))
+           (tok (and blob (ghostherd-usage--alist blob 'access_token)))
+           (expiry (and blob (ghostherd-usage--alist blob 'expiry))))
+      (cond
+       ((not tok)
+        (ghostherd-usage--agy-fail "no agy token saved")
+        (ghostherd-usage--done))
+       ((ghostherd-usage--expired-p expiry)
+        (ghostherd-usage--agy-fail (ghostherd-usage--agy-expired expiry))
+        (ghostherd-usage--done))
+       (t (ghostherd-usage--agy-quota tok))))))
 
 
 ;;; Timer / public

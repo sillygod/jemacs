@@ -337,7 +337,8 @@ draws lanes from fields rather than parsing prose."
               :windows (ghostherd-memory-page--vec
                         (mapcar (lambda (w)
                                   (list :label (or (plist-get w :label) "")
-                                        :used (max 0 (min 100 (- 100 (or (plist-get w :remaining) 100))))
+                                        ;; Rounded: 100 - 99.3 is 0.7000000000000028.
+                                        :used (or (ghostherd-usage--used (plist-get w :remaining)) 0)
                                         :resets (and (plist-get w :resets-at)
                                                      (* 1000 (plist-get w :resets-at)))))
                                 (plist-get p :windows))))))
