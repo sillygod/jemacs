@@ -2899,6 +2899,86 @@ one whose hooks name another conversation is not found by stale args."
       (save-window-excursion (ghostherd-install-hooks)))
     (should (equal calls '(("hooks" "install" "--dry-run"))))))
 
+(defmacro ghostherd-tests--with-transcripts (&rest body)
+  "BODY with each kind's transcripts at ROOT/KIND/*/ID.jsonl, ROOT temporary."
+  (declare (indent 0))
+  `(let* ((root (file-name-as-directory (make-temp-file "gh-transcripts" t)))
+          (ghostherd--transcripts (make-hash-table :test 'equal))
+          (ghostherd-agent-specs
+           (mapcar (lambda (e)
+                     (let ((p (copy-sequence (cdr e))))
+                       (cons (car e)
+                             (if (plist-get p :transcript)
+                                 (plist-put p :transcript
+                                            (concat root (symbol-name (car e)) "/*/%s.jsonl"))
+                               p))))
+                   ghostherd-agent-specs)))
+     (unwind-protect (progn ,@body)
+       (delete-directory root t))))
+
+(defun ghostherd-tests--touch (file)
+  (make-directory (file-name-directory file) t)
+  (write-region "" nil file nil 'silent)
+  file)
+
+(ert-deftest ghostherd-test-args-name-the-conversation ()
+  (should (equal (ghostherd--args-conversation 'claude '("--model" "opus" "-r" "abc-1")) "abc-1"))
+  (should (equal (ghostherd--args-conversation 'agy '("--conversation" "c1")) "c1"))
+  ;; A fork writes a conversation of its own.
+  (should-not (ghostherd--args-conversation 'claude '("-r" "abc-1" "--fork-session")))
+  (should-not (ghostherd--args-conversation 'claude '("-r" "--evil")))
+  (should-not (ghostherd--args-conversation 'claude '("--continue")))
+  (should-not (ghostherd--args-conversation 'shell '("-r" "x"))))
+
+(ert-deftest ghostherd-test-transcript-from-hooks-then-from-args ()
+  "Hooks name the transcript; without them, the conversation an agent was
+started on finds it; a fresh agent without hooks has none."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-transcripts
+      (let* ((resumed (ghostherd-tests--session :name "claude-r" :kind 'claude :args '("-r" "abc-1")))
+             (fresh (ghostherd-tests--session :name "claude-f" :kind 'claude :args nil))
+             (hooked (ghostherd-tests--session :name "agy-h" :kind 'agy :args '("--conversation" "old")))
+             (file (ghostherd-tests--touch (concat root "claude/-x-proj/abc-1.jsonl")))
+             (linked (ghostherd-tests--touch (concat root "elsewhere/t.jsonl"))))
+        (ghostherd-tests--touch (concat root "agy/x/old.jsonl"))
+        (should (equal (ghostherd-session-transcript resumed) file))
+        (should-not (ghostherd-session-transcript fresh))
+        (ghostherd--herd-take-links
+         `((:session "agy-h" :cli "agy" :conversation "new" :transcript ,linked)))
+        (should (equal (ghostherd-session-transcript hooked) linked))
+        ;; Hooks that name the conversation but not its file: found by id,
+        ;; the new one, not the one its arguments started it on.
+        (let ((agy-file (ghostherd-tests--touch (concat root "agy/x/new.jsonl"))))
+          (ghostherd--herd-take-links '((:session "agy-h" :cli "agy" :conversation "new")))
+          (should (equal (ghostherd-session-transcript hooked) agy-file)))))))
+
+(ert-deftest ghostherd-test-transcript-missing-is-not-sought-every-tick ()
+  "The room asks every 2s; a transcript not there is looked for every 30."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-transcripts
+      (let* ((s (ghostherd-tests--session :name "claude-r" :kind 'claude :args '("-r" "late-1")))
+             (globs 0)
+             (inside nil)
+             (orig (symbol-function 'file-expand-wildcards)))
+        ;; It calls itself for a wildcard in a directory: count the outer.
+        (cl-letf (((symbol-function 'file-expand-wildcards)
+                   (lambda (&rest a)
+                     (if inside
+                         (apply orig a)
+                       (cl-incf globs)
+                       (setq inside t)
+                       (unwind-protect (apply orig a) (setq inside nil))))))
+          (should-not (ghostherd-session-transcript s))
+          (ghostherd-tests--touch (concat root "claude/p/late-1.jsonl"))
+          (should-not (ghostherd-session-transcript s))
+          (should (= globs 1))
+          (setcdr (gethash '(claude . "late-1") ghostherd--transcripts) 0)
+          (should (ghostherd-session-transcript s))
+          (should (= globs 2))
+          ;; Found, it is not looked for again.
+          (ghostherd-session-transcript s)
+          (should (= globs 2)))))))
+
 (ert-deftest ghostherd-test-cmd-self-is-the-calling-terminal ()
   "`ghostel_cmd' is dispatched from the asking terminal's VT parser, so
 the caller is identifiable with no environment at all."
@@ -4693,6 +4773,120 @@ page as [] -- json.el writes nil as null, and the page stopped drawing."
                      "hooks list --json --project /p/"))
       (should (ghostherd-test--call calls "renderHerd"))
       (delete-directory dir t))))
+
+(defmacro ghostherd-test--with-room (&rest body)
+  "BODY in the room of /p/, claude-api's transcript at `transcript'."
+  (declare (indent 0))
+  `(ghostherd-test--with-herd
+     (let* ((file (make-temp-file "gh-room" nil ".jsonl" "{}\n"))
+            (transcript file)
+            (ghostherd-memory-page--room "/p/")
+            (ghostherd-memory-page--room-screens nil)
+            (ghostherd-memory-page--room-timer nil)
+            (ghostherd-memory-page--room-sent (make-hash-table :test 'equal))
+            (ghostherd-memory-page--room-reading (make-hash-table :test 'equal)))
+       (cl-letf (((symbol-function 'ghostherd-session-transcript) (lambda (_s) transcript))
+                 ((symbol-function 'ghostherd--host-capture) (lambda (&rest _) "the screen"))
+                 ((symbol-function 'xwapp-session) (lambda (&rest _) t)))
+         (unwind-protect (progn ,@body)
+           (ghostherd-memory-page--room-close)
+           (delete-file file))))))
+
+(ert-deftest ghostherd-test-room-reads-a-conversation-once-per-change ()
+  "The sidecar reads a transcript when it changed, not every 2s; the page
+gets each entry's known fields, lists as arrays."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:cli "claude" :earlier t
+                    :entries ((:role "user" :kind "prompt" :text "hi" :ts "2026-10-09T01:00:00Z" :secret "x")
+                              (:role "tools" :tools ((:name "Bash" :hint "ls")))
+                              (:role "herd" :kind "ask" :to "qa" :ask "26910956" :text "round 2" :waiting t)))))
+    (ghostherd-memory-page--room-tick)
+    (should (equal requests `(("herd_conversation" (:path ,file)))))
+    (let* ((p (ghostherd-test--call calls "setConversation"))
+           (e (aref (plist-get p :entries) 0))
+           (tools (plist-get (aref (plist-get p :entries) 1) :tools)))
+      (should (equal (plist-get p :name) "claude-api"))
+      (should (eq (plist-get p :earlier) t))
+      (should (equal (plist-get e :text) "hi"))
+      (should-not (plist-member e :secret))
+      (should (equal (plist-get (aref tools 0) :hint) "ls"))
+      (let ((ask (aref (plist-get p :entries) 2)))
+        (should (equal (list (plist-get ask :ask) (plist-get ask :waiting) (plist-get ask :failed))
+                       '("26910956" t :json-false))))
+      (should (string-match-p "\"entries\":\\[{.*\"tools\":\\[{\"name\":\"Bash\"" (json-encode p))))
+    (should-not (ghostherd-test--call calls "setScreen"))
+    (ghostherd-memory-page--room-tick)
+    (should (= (length requests) 1))
+    (write-region "more\n" nil file t 'silent)
+    (ghostherd-memory-page--room-tick)
+    (should (= (length requests) 2))))
+
+(ert-deftest ghostherd-test-room-without-a-transcript-shows-the-screen ()
+  (ghostherd-test--with-room
+    (setq transcript nil)
+    (ghostherd-memory-page--room-tick)
+    (ghostherd-memory-page--room-tick)
+    (should-not requests)
+    (should (equal (mapcar #'cdr (seq-filter (lambda (c) (equal (car c) "setConversation")) calls))
+                   '((:name "claude-api" :entries [] :none t))))
+    (should (equal (length (seq-filter (lambda (c) (equal (car c) "setScreen")) calls)) 2))
+    (should (equal (plist-get (ghostherd-test--call calls "setScreen") :text) "the screen"))))
+
+(ert-deftest ghostherd-test-room-screens-and-failures ()
+  "A column the page shows by its screen gets the screen; a sidecar that
+cannot read says why, and is not asked again until the file changes."
+  (ghostherd-test--with-room
+    (setq ghostherd-memory-page--room-screens '("claude-api")
+          fail "connection refused")
+    (ghostherd-memory-page--room-tick)
+    (should (equal (plist-get (ghostherd-test--call calls "setConversation") :error) "connection refused"))
+    (should (ghostherd-test--call calls "setScreen"))
+    (ghostherd-memory-page--room-tick)
+    (should (= (length requests) 1))
+    ;; A sidecar from before the room: say what to do about it.
+    (setq fail "ghostherd-memory JSON-RPC -32601: Method not found: herd_conversation")
+    (write-region "more\n" nil file t 'silent)
+    (ghostherd-memory-page--room-tick)
+    (should (string-match-p "ghostherd-memory-stop" (plist-get (ghostherd-test--call calls "setConversation") :error)))))
+
+(ert-deftest ghostherd-test-room-drops-a-late-answer ()
+  "The room was left while the sidecar read: its answer goes nowhere."
+  (ghostherd-test--with-room
+    (let (pending)
+      (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m cb &rest _) (setq pending cb))))
+        (ghostherd-memory-page--room-tick)
+        (ghostherd-memory-page--room-tick)
+        (ghostherd-memory-page--room-close)
+        (funcall pending '(:entries ((:role "user" :text "late"))))
+        (should-not (ghostherd-test--call calls "setConversation"))
+        (should (= (hash-table-count ghostherd-memory-page--room-reading) 0))))))
+
+(ert-deftest ghostherd-test-room-intents ()
+  "Opening watches the room; the same room again only changes its screens;
+closing, or leaving the tab, stops; a page gone stops it too."
+  (ghostherd-test--with-room
+    (setq ghostherd-memory-page--room nil)
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . [])))
+    (should (equal ghostherd-memory-page--room "/p/"))
+    (should (timerp ghostherd-memory-page--room-timer))
+    (should (= (length requests) 1))
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . ["claude-api" 3])))
+    (should (equal ghostherd-memory-page--room-screens '("claude-api")))
+    (should (= (length requests) 1))
+    (ghostherd-memory-page--handle '((op . "room-close")))
+    (should-not (or ghostherd-memory-page--room ghostherd-memory-page--room-timer))
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/")))
+    (ghostherd-memory-page--handle '((op . "herd-unwatch")))
+    (should-not ghostherd-memory-page--room-timer)
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "")))
+    (should (ghostherd-test--call calls "showError"))
+    (should-not ghostherd-memory-page--room)
+    (setq ghostherd-memory-page--room "/p/")
+    (cl-letf (((symbol-function 'xwapp-session) (lambda (&rest _) nil)))
+      (ghostherd-memory-page--room-tick))
+    (should-not ghostherd-memory-page--room)))
 
 (ert-deftest ghostherd-test-herd-page-operations ()
   "Each operation reaches the herd function with the session, then the

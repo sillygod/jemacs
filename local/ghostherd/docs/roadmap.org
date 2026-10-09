@@ -554,7 +554,7 @@ and gets the result as data inside the task that asked.
 - Asks from Telegram or the page: both are the human, who has the
   prompt already
 
-* Phase 3.17 — Agents report through their hooks; the herd knows their conversations  *(this tree)*
+* Phase 3.17 — Agents report through their hooks; the herd knows their conversations  *(done)*
 
 Goal: state from the CLIs themselves rather than their screens, for all
 three, without an Emacs server; and each agent's conversation and last
@@ -590,6 +590,52 @@ answer, for asks, respawn and the page.
   thing the tests cannot answer, and a =Stop= that beats it costs only
   the screen fallback
 - [ ] agy has no permission event; its =blocked= is still the screen's
+
+* Phase 3.18 — A project's room: its agents' conversations side by side  *(this tree)*
+
+Goal: follow two or more agents working one thing together --- one
+builds, one tests, back and forth --- as one conversation, on the page.
+
+** What shipped
+
+- [X] A project's name on the Agents tab opens its room: a column per
+  agent, its transcript as turns --- yours, the herd's (an ask or an
+  answer, named, in the other agent's colour), its own, tool calls
+  folded --- with a prompt box, Esc, 1 / 2 / 3 and Screen per column
+- [X] =herd_conversation= on the sidecar: the tail of a claude, agy or
+  grok transcript as entries, further back until there are enough;
+  cached by size and mtime; only under the CLIs' transcript directories
+- [X] =ghostherd-session-transcript=: the hooks' transcript, else the
+  conversation the agent was started on, located by each kind's
+  =:transcript= pattern; a miss is looked for again after 30s
+- [X] Emacs stats the room's transcripts every 2s and asks only about
+  one that changed; an agent without one sends its screen
+- [X] 20 pytest (each CLI's records, the herd's framing read from
+  =ghostherd.el= and the sidecar's mail, herd client calls, the path
+  guard, the tail, the cache), 8 ERT, an end-to-end run on a real
+  sidecar with a fake home, WebKit checks of the room; each guard
+  mutation-tested
+
+** From the first QA ↔ RD run
+
+- [X] An ask pasted into claude arrived wrapped in =<pasted_content>=
+  and read as yours; the room now reads the framing inside it
+- [X] An =ask --wait= run in the background showed Claude Code's
+  "running in background" as the answer; the ask now waits for the
+  call that reads its output, and a failed client call shows as a
+  failure with its error.  =herd ask --help= is no longer an ask
+- [X] The room read an answer only when Claude Code's end-of-output
+  marker ended the text; an asker that ran more after =cat= (rd did)
+  left its asks waiting forever
+
+** What is left
+
+- [ ] The loop itself: two agents handing work back and forth until
+  one says it is done --- today each turn is an ask the agent decides
+  to make; a herd-run loop (who goes next, when it stops, a turn cap)
+  is the experiment this room was built to watch
+- [ ] Earlier turns: the room shows the tail; the whole conversation is
+  on the Sessions tab once imported
 
 * Phase 4 — Ecosystem (only if still useful)
 

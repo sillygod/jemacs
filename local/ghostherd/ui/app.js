@@ -238,9 +238,11 @@
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
     });
-    btnBack.hidden = view !== "source";
+    btnBack.hidden = !(view === "source" || (view === "agents" && herdNow.room));
     $("sessions-n").textContent = ctx.sources.length ? String(ctx.sources.length) : "";
     app.setAttribute("data-view", view);
+    // A room scrolls in its columns, not as a page.
+    app.classList.toggle("in-room", view === "agents" && !!herdNow.room);
   }
 
   function filtersHtml() {
@@ -631,6 +633,7 @@
   }
 
   function back() {
+    if (view === "agents" && herdNow.room) return closeRoom();
     if (view !== "source") return;
     src = null;
     if (tab === "sessions") showSessions();
@@ -651,6 +654,9 @@
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
+    // The room: its project, each agent's conversation, the agents shown
+    // by their screen instead, and the tool lines opened.
+    room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
   };
 
   function cssName(n) {
@@ -663,6 +669,10 @@
   }
 
   function showAgents() {
+    if (herdNow.room) {
+      herdNow.room = null;
+      emit("room-close");
+    }
     view = tab = "agents";
     src = null;
     chrome();
@@ -821,6 +831,7 @@
 
   function renderAgents() {
     herdNow.pending = false;
+    if (herdNow.room) return renderRoom();
     const u = $("usage");
     const box = $("herd");
     if (!u || !box) return;
@@ -857,7 +868,10 @@
               '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button></div>'
             : "";
           return '<section class="pgroup" data-project="' + esc(g.project) + '"><div class="phead">' +
-            '<span class="pname" title="' + esc(g.project) + '">' + esc(g.project ? leaf(g.project) : "No project") + "</span>" +
+            (g.project
+              ? '<button type="button" class="pname" data-act="a:room" title="Open the room: ' + esc(g.project) +
+                '\nits agents\' conversations side by side">' + esc(leaf(g.project)) + "</button>"
+              : '<span class="pname">No project</span>') +
             '<span class="ppath">' + esc(g.project) + "</span>" + summary +
             (g.project ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
             "</div>" + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
@@ -866,8 +880,194 @@
     app.scrollTop = keep;
   }
 
+  // ---- A project's room ---------------------------------------------------
+  //
+  // Its agents side by side, each a column of its conversation: what was
+  // said to it -- by you, or by another agent through the herd -- and what
+  // it answered, its tool calls folded to a line.  Emacs sends a column
+  // when its transcript changes, and the screen of an agent whose
+  // transcript it does not know.  Columns keep their order and are patched
+  // in place: a column being read or typed into stays as it is.
+
+  function openRoom(project) {
+    if (!project) return;
+    herdNow.room = project;
+    herdNow.roomScreen = new Set();
+    herdNow.convs = {};
+    app.innerHTML = "";
+    chrome();
+    emit("room-watch", { project, screens: [] });
+    renderRoom();
+  }
+
+  function closeRoom() {
+    if (!herdNow.room) return;
+    herdNow.room = null;
+    emit("room-close");
+    showAgents();
+  }
+
+  function roomAgents() {
+    const d = herdNow.data;
+    return ((d && d.agents) || [])
+      .filter((a) => (a.project || "") === herdNow.room)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function roomTop(a, asks) {
+    const name = a.name;
+    const acts = [];
+    if (a.state === "blocked") {
+      [1, 2, 3].forEach((n) => acts.push('<button type="button" class="ghost small answer" data-act="a:agent-answer" data-n="' + n +
+        '" title="Answer ' + n + '">' + n + "</button>"));
+    }
+    acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
+    const conv = herdNow.convs[name];
+    if (!(conv && conv.none)) {
+      acts.push('<button type="button" class="ghost small" data-act="a:room-screen">' +
+        (herdNow.roomScreen.has(name) ? "Conversation" : "Screen") + "</button>");
+    }
+    return '<div class="amain">' + stateBadge(a.state) +
+      '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
+      '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
+      agentBadge(a.kind) +
+      (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
+      '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
+      esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
+      (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
+      '<div class="aacts">' + acts.join("") + "</div>";
+  }
+
+  function toolsSummary(tools) {
+    const counts = new Map();
+    tools.forEach((t) => counts.set(t.name, (counts.get(t.name) || 0) + 1));
+    return [...counts.entries()].map(([n, k]) => (k > 1 ? n + " ×" + k : n)).join(" · ");
+  }
+
+  function entHead(who, cls, ts, color) {
+    return '<div class="ehead"><span class="who' + (cls ? " " + cls : "") + '"' +
+      (color ? ' style="color:' + color + '"' : "") + ">" + esc(who) + "</span>" +
+      (ts ? '<span class="when" title="' + esc(fullTime(ts)) + '">' + esc(when(ts)) + "</span>" : "") + "</div>";
+  }
+
+  function plainBody(text) {
+    return '<div class="ebody plain">' + esc(text || "") + "</div>";
+  }
+
+  // Each agent has one colour wherever it speaks, the Log's lane colour:
+  // an entry's bar is whoever said it.  You are the blue.
+  function entryHtml(e, i, name, kind) {
+    const from = e.who && e.who !== "user" ? e.who : "";
+    const color = from ? sessionColor(from) : "";
+    const bar = color ? ' style="border-left-color:' + color + '"' : "";
+    const own = sessionColor(name);
+    if (e.role === "assistant") {
+      return '<div class="ent me" style="border-left-color:' + own + '">' + entHead(name, "", e.ts, own) +
+        '<div class="ebody msg-body">' + markdown(e.text) + "</div></div>";
+    }
+    if (e.role === "tools") {
+      const tools = e.tools || [];
+      const key = name + ":" + i;
+      const open = herdNow.toolsOpen.has(key);
+      return '<div class="ent tools"><button type="button" class="linkish" data-act="a:room-tools" data-key="' + esc(key) + '">' +
+        (open ? "▾ " : "▸ ") + esc(toolsSummary(tools)) + "</button>" +
+        (open ? '<div class="tlist">' + tools.map((t) => '<div class="trow"><span class="tname">' + esc(t.name) + "</span>" +
+          '<span class="thint">' + esc(t.hint || "") + "</span></div>").join("") + "</div>" : "") + "</div>";
+    }
+    if (e.role === "herd") {
+      const what = e.kind === "ask" ? "⇢ asks " + (e.to || "?") + (e.ask ? " · ask " + e.ask : "") : "⇢ answers ask " + (e.ask || "");
+      const tcolor = e.to ? sessionColor(e.to) : "";
+      // What came of an ask: its answer, the client's error, or nothing yet.
+      const outcome = e.kind !== "ask" ? ""
+        : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null) + plainBody(e.answer) + "</div>"
+        : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered" + (e.auto ? " — stopped without answering" : ""), "", null, tcolor) +
+          plainBody(e.answer) + "</div>"
+        : e.waiting ? '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>"
+        : "";
+      return '<div class="ent herd" style="border-left-color:' + own + '">' +
+        entHead(name + " " + what, "", e.ts, own) + plainBody(e.text) + outcome + "</div>";
+    }
+    // Said to it: by you, or through the herd.
+    if (e.kind === "command") return '<div class="ent small">› ' + esc(e.text) + "</div>";
+    if (e.kind === "note") return '<div class="ent small">' + esc(e.text) + "</div>";
+    if (e.kind === "ask") return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " asks", "", e.ts, color) + plainBody(e.text) + "</div>";
+    if (e.kind === "answer") {
+      const how = e.failed ? " — ask failed" : e.auto ? " — stopped without answering" : "";
+      return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color) + plainBody(e.text) + "</div>";
+    }
+    if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color) + plainBody(e.text) + "</div>";
+    return '<div class="ent you">' + entHead("You", "", e.ts) + plainBody(e.text) + "</div>";
+  }
+
+  function roomBodyHtml(a) {
+    const name = a.name;
+    const conv = herdNow.convs[name];
+    const screen = '<pre class="screen">' + esc(herdNow.screens[name] || "Capturing…") + "</pre>";
+    if (conv && conv.none) {
+      return '<p class="rnote">No conversation known for ' + esc(name) + " yet: its hooks name it once they are in " +
+        "(M-x ghostherd-install-hooks, then respawn it), and one started on a conversation by id is found without them. " +
+        "Its screen meanwhile:</p>" + screen;
+    }
+    if (herdNow.roomScreen.has(name)) return screen;
+    if (!conv) return '<p class="rnote">Reading its conversation…</p>';
+    if (conv.error) return '<p class="rnote error">Could not read its conversation: ' + esc(conv.error) + "</p>";
+    const entries = conv.entries || [];
+    return (conv.earlier ? '<p class="rnote">Earlier turns are in the transcript, not shown here.</p>' : "") +
+      (entries.length ? entries.map((e, i) => entryHtml(e, i, name, a.kind)).join("") : '<p class="rnote">Nothing said yet.</p>');
+  }
+
+  function roomColumn(name) {
+    return app.querySelector('.rcol[data-name="' + cssName(name) + '"]');
+  }
+
+  // Redraw one column's body, staying at the bottom if it was there.
+  function renderRoomBody(a) {
+    const col = roomColumn(a.name);
+    const body = col && col.querySelector(".rbody");
+    if (!body) return;
+    const first = !body.hasAttribute("data-drawn");
+    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    const keep = body.scrollTop;
+    body.innerHTML = roomBodyHtml(a);
+    body.setAttribute("data-drawn", "1");
+    body.scrollTop = first || atBottom ? body.scrollHeight : keep;
+  }
+
+  function renderRoom() {
+    const project = herdNow.room;
+    const agents = roomAgents();
+    const asks = (herdNow.data && herdNow.data.asks) || [];
+    const counts = {};
+    agents.forEach((a) => (counts[a.state] = (counts[a.state] || 0) + 1));
+    const rank = (s) => (s in RANK ? RANK[s] : 9);
+    const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
+      .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
+    const key = project + "\n" + agents.map((a) => a.name).join("\n");
+    let room = app.querySelector(".room");
+    if (!room || room.getAttribute("data-key") !== key) {
+      app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
+        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span></div>' +
+        (agents.length
+          ? '<div class="rcols">' + agents.map((a) =>
+              '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
+              '<div class="rfoot"><textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
+              esc(herdNow.compose[a.name] || "") + '</textarea><button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>"
+          : '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>') + "</div>";
+      room = app.querySelector(".room");
+      room.setAttribute("data-key", key);
+      agents.forEach(renderRoomBody);
+    }
+    room.querySelector(".rsum").innerHTML = summary;
+    agents.forEach((a) => {
+      const col = roomColumn(a.name);
+      col.className = "rcol s-" + a.state;
+      col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
+    });
+  }
+
   function onAgentAction(act, el) {
-    const row = el.closest(".arow");
+    const row = el.closest(".arow, .rcol");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
     const project = group && group.getAttribute("data-project");
@@ -878,6 +1078,26 @@
       return renderAgents();
     }
     if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
+    if (act === "room") return openRoom(project);
+    if (act === "room-screen") {
+      if (herdNow.roomScreen.has(name)) herdNow.roomScreen.delete(name);
+      else herdNow.roomScreen.add(name);
+      emit("room-watch", { project: herdNow.room, screens: [...herdNow.roomScreen] });
+      const a = roomAgents().find((x) => x.name === name);
+      if (a) renderRoomBody(a);
+      return renderRoom();
+    }
+    if (act === "room-tools") {
+      const key = el.getAttribute("data-key");
+      if (herdNow.toolsOpen.has(key)) herdNow.toolsOpen.delete(key);
+      else herdNow.toolsOpen.add(key);
+      const a = roomAgents().find((x) => x.name === name);
+      const body = row && row.querySelector(".rbody");
+      const keep = body ? body.scrollTop : 0;
+      if (a) renderRoomBody(a);
+      if (body) body.scrollTop = keep;
+      return;
+    }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
     if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort") return emit(act, { name });
     if (act === "screen") {
@@ -948,19 +1168,23 @@
   }
 
   function sendPrompt(name) {
-    const ta = app.querySelector('.arow[data-name="' + cssName(name) + '"] textarea');
+    const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
     const text = ta ? ta.value : herdNow.compose[name] || "";
     if (!text.trim()) return;
     emit("agent-prompt", { name, text });
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);
+    if (herdNow.room) {
+      if (ta) ta.value = "";
+      return;
+    }
     if (ta) ta.blur();
     renderAgents();
   }
 
   app.addEventListener("input", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("agent-text")) {
-      const row = ev.target.closest(".arow");
+      const row = ev.target.closest(".arow, .rcol");
       if (row) herdNow.compose[row.getAttribute("data-name")] = ev.target.value;
     }
   });
@@ -969,7 +1193,7 @@
     if (!t.classList) return;
     if (t.classList.contains("agent-text") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
       ev.preventDefault();
-      sendPrompt(t.closest(".arow").getAttribute("data-name"));
+      sendPrompt(t.closest(".arow, .rcol").getAttribute("data-name"));
     } else if (t.classList.contains("notes-text") && ev.key === "Enter") {
       ev.preventDefault();
       onAgentAction("notes-save", t);
@@ -1392,7 +1616,7 @@
         input.focus();
         ev.preventDefault();
       }
-    } else if (ev.key === "Escape" && view === "source") {
+    } else if (ev.key === "Escape" && (view === "source" || (view === "agents" && herdNow.room))) {
       back();
       ev.preventDefault();
     } else if ((ev.key === "n" || ev.key === "N") && view === "source") {
@@ -1504,8 +1728,24 @@
     setScreen: (p) => {
       if (!p) return;
       herdNow.screens[p.name] = p.text || "(no screen yet)";
-      const pre = app.querySelector('.arow[data-name="' + cssName(p.name) + '"] pre.screen');
-      if (pre) pre.textContent = herdNow.screens[p.name];
+      const pre = app.querySelector('[data-name="' + cssName(p.name) + '"] pre.screen');
+      if (!pre) return;
+      // A screen in a room follows its bottom, as a terminal does.
+      const body = pre.closest(".rbody");
+      const atBottom = body && body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+      pre.textContent = herdNow.screens[p.name];
+      if (atBottom) body.scrollTop = body.scrollHeight;
+    },
+
+    setConversation: (p) => {
+      if (!p || !p.name || !herdNow.room) return;
+      herdNow.convs[p.name] = p;
+      if (view !== "agents") return;
+      const a = roomAgents().find((x) => x.name === p.name);
+      if (!a) return;
+      renderRoomBody(a);
+      // Whether it has a conversation decides its Screen button.
+      roomColumn(a.name).querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
     },
 
     renderLog: (p) => {

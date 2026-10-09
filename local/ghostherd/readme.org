@@ -973,6 +973,17 @@ are the other tabs (below, and "What happened while you were away").
 - The herd grouped by project, the project with a blocked agent first,
   each group summing its states.  A row has the state, kind, notes,
   reason, how long ago it last moved, and whether a view is attached.
+- A project's name opens its room: its agents side by side, a column
+  each with its conversation --- what you said to it, what another
+  agent asked or answered it through the herd, what it said back, its
+  tool calls folded to a line.  Each agent has one colour wherever it
+  speaks (the Log's lane colour).  A column has its own prompt box, Esc
+  and 1 / 2 / 3, and can show the screen instead.  The transcript is
+  the one the agent's hooks name, or the conversation it was started
+  on (=-r ID=, =--conversation ID=); a fresh agent without hooks shows
+  its screen and says why.  Emacs looks every two seconds; the sidecar
+  reads a transcript, from its tail, only when it has changed.  Esc or
+  Back leaves.
 - What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
   Esc, 1 / 2 / 3 on a blocked agent, the screen; under /more/ C-c,
   notes, respawn (fresh or continuing) and kill, the last two asked

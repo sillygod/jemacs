@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+import conversation
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
 
@@ -64,6 +65,7 @@ class JsonRpcHandler:
             "herd_asks": self._herd_asks,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
+            "herd_conversation": self._herd_conversation,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -262,6 +264,13 @@ class JsonRpcHandler:
 
     def _herd_link(self, params: dict) -> dict:
         return {"link": get_herd().link(str(params.get("session") or ""))}
+
+    def _herd_conversation(self, params: dict) -> dict:
+        try:
+            limit = max(1, min(200, int(params.get("limit") or conversation.LIMIT)))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        return conversation.read(str(params.get("path") or ""), limit)
 
 
 handler = JsonRpcHandler()

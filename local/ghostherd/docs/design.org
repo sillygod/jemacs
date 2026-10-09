@@ -464,6 +464,48 @@ session must not freeze a row, so its states go through
 (agy: before each model call) and is only needed again before that
 expiry, so the client sends it at most every 30 seconds.
 
+** Why the room reads transcripts, not screens
+
+A project's room puts its agents side by side so that two of them
+working on one thing --- one builds, one tests, back and forth --- can
+be followed as one conversation.  A screen is the last fifty lines of a
+TUI, redrawn; that exchange spans turns.  The transcript has every
+turn, and ghostherd's own framing (=ghostherd-message-template=,
+=ghostherd--ask-text=, the sidecar's mail of an answer) marks what the
+herd wrote into it, so an ask reads as the asking agent's, not yours.
+The asker's side is a shell command running the herd client; that is
+read out of the tool call, with its output as the answer.
+
+The sidecar reads them, not Emacs.  A turn of tool calls can write
+megabytes of output, and parsing that on Emacs's thread every two
+seconds, per agent, is a stutter.  The sidecar reads the tail, further
+back only until it has enough turns (8 MB at most), and keeps what it
+read by size and mtime; Emacs stats the files and asks only about one
+that changed.  The path arrives over the RPC, so the sidecar reads only
+under the CLIs' own transcript directories.
+
+Which transcript is not guessed.  The hooks name it; failing them, the
+conversation an agent was started on does.  A fresh agent without
+hooks has written /a/ file in its project's directory --- the newest
+one, likely, but with two claudes in one project the newest is a coin
+toss, and the other agent's conversation shown under this one's name is
+worse than none.  So that column shows the screen, and says why.
+
+The framing is parsed in Python and written in Elisp.  A test reads it
+from =ghostherd.el= and the sidecar's mail and checks the room still
+reads it: a change to either fails there, not silently on the page.
+
+The first QA ↔ RD run showed what else a transcript holds.  Claude Code
+keeps a paste wrapped in =<pasted_content id=...>=, the herd's included,
+so the framing is looked for inside it --- without that, every ask
+arrived as yours.  An asker runs =ask --wait= in the background, as the
+readme tells it to: the command's result is then only Claude Code's
+word that it went there, and the answer is in the output file, read by
+a later call.  So an ask waits until a call reads that file, and what
+it read is the answer --- or, when the client failed, the client's
+error, shown as a failure, not as the other agent's reply.  And an
+agent reading =herd ask --help= is not asking anyone.
+
 ** What bin/ghostherd had to get right
 
 Two things, both learned the hard way:

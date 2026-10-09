@@ -500,6 +500,139 @@ path to open."
 
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-herd-change)
 
+
+;;; A project's room: its agents' conversations side by side
+;;
+;; Each agent's transcript, read by the sidecar from its tail: what was
+;; said to it -- by you, or by another agent through the herd -- and
+;; what it answered.  Emacs only stats the files; it asks the sidecar
+;; again when one has changed, and never parses a transcript itself.
+;; An agent whose transcript is not known shows its screen instead.
+
+(defconst ghostherd-memory-page--room-every 2
+  "Seconds between looks at the room's transcripts and screens.")
+
+(defvar ghostherd-memory-page--room nil
+  "The project whose room the page shows, as the page names it, or nil.")
+(defvar ghostherd-memory-page--room-screens nil
+  "Names of the room's agents the page shows by their screen.")
+(defvar ghostherd-memory-page--room-timer nil)
+(defvar ghostherd-memory-page--room-sent (make-hash-table :test 'equal)
+  "Agent name -> the transcript signature last sent for it, or `none'.")
+(defvar ghostherd-memory-page--room-reading (make-hash-table :test 'equal)
+  "Agent name -> t while the sidecar reads its transcript.")
+
+(defun ghostherd-memory-page--room-sessions ()
+  "The herd's agents in the room's project."
+  (seq-filter (lambda (s) (equal (or (ghostherd-session-project s) "")
+                                 ghostherd-memory-page--room))
+              (ghostherd-sessions)))
+
+(defun ghostherd-memory-page--room-signature (path)
+  "PATH with its size and mtime: a change in any is a new conversation."
+  (when-let* ((a (and path (file-attributes path))))
+    (list path (file-attribute-size a)
+          (float-time (file-attribute-modification-time a)))))
+
+(defun ghostherd-memory-page--room-entry (e)
+  "Conversation entry E, from the sidecar, as the page takes it.
+Field by field: what reaches the page is what is named here."
+  (let ((str #'ghostherd-memory-page--str))
+    (list :role (funcall str (plist-get e :role))
+          :kind (funcall str (plist-get e :kind))
+          :who (funcall str (plist-get e :who))
+          :to (funcall str (plist-get e :to))
+          :ask (funcall str (plist-get e :ask))
+          :text (funcall str (plist-get e :text))
+          :answer (plist-get e :answer)
+          :ts (plist-get e :ts)
+          :auto (if (plist-get e :auto) t :json-false)
+          :failed (if (plist-get e :failed) t :json-false)
+          :waiting (if (plist-get e :waiting) t :json-false)
+          :tools (ghostherd-memory-page--vec
+                  (mapcar (lambda (tl) (list :name (funcall str (plist-get tl :name))
+                                             :hint (funcall str (plist-get tl :hint))))
+                          (plist-get e :tools))))))
+
+(defun ghostherd-memory-page--room-send (name &rest fields)
+  (ghostherd-memory-page--js "setConversation" (append (list :name name) fields)))
+
+(defun ghostherd-memory-page--room-read (s)
+  "Send S's conversation to the page if its transcript changed, and its
+screen if that is what the page shows of it."
+  (let* ((name (ghostherd-session-name s))
+         (room ghostherd-memory-page--room)
+         (path (ghostherd-session-transcript s))
+         (sig (ghostherd-memory-page--room-signature path)))
+    (cond
+     ((null sig)
+      (unless (eq (gethash name ghostherd-memory-page--room-sent) 'none)
+        (puthash name 'none ghostherd-memory-page--room-sent)
+        (ghostherd-memory-page--room-send name :entries [] :none t)))
+     ((or (equal sig (gethash name ghostherd-memory-page--room-sent))
+          (gethash name ghostherd-memory-page--room-reading)))
+     (t
+      (puthash name t ghostherd-memory-page--room-reading)
+      (let ((done (lambda (&rest fields)
+                    (remhash name ghostherd-memory-page--room-reading)
+                    (puthash name sig ghostherd-memory-page--room-sent)
+                    (when (equal room ghostherd-memory-page--room)
+                      (apply #'ghostherd-memory-page--room-send name :path path fields)))))
+        (condition-case err
+            (ghostherd-memory-request-async
+             "herd_conversation"
+             (lambda (r)
+               (funcall done
+                        :cli (ghostherd-memory-page--str (plist-get r :cli))
+                        :earlier (if (plist-get r :earlier) t :json-false)
+                        :entries (ghostherd-memory-page--vec
+                                  (mapcar #'ghostherd-memory-page--room-entry
+                                          (plist-get r :entries)))))
+             (list :path path)
+             (lambda (e)
+               (funcall done :entries []
+                        :error (if (string-match-p "Method not found" (format "%s" e))
+                                   ;; Emacs reloaded, the sidecar did not.
+                                   "the sidecar is older than the room: M-x ghostherd-memory-stop, then M-x ghostherd-memory-start"
+                                 (format "%s" e)))))
+          (error (funcall done :entries [] :error (error-message-string err)))))))
+    (when (or (null sig) (member name ghostherd-memory-page--room-screens))
+      (ghostherd-memory-page--js
+       "setScreen" (list :name name
+                         :text (or (ignore-errors (ghostherd--host-capture s))
+                                   (gethash (ghostherd-session-id s) ghostherd--screens)
+                                   ""))))))
+
+(defun ghostherd-memory-page--room-tick ()
+  (if (not (and ghostherd-memory-page--room (xwapp-session ghostherd-memory-page--app)))
+      (ghostherd-memory-page--room-close)
+    (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions))))
+
+(defun ghostherd-memory-page--room-open (intent)
+  "Show the room INTENT names, its agents in the screens it lists by
+their screen.  The same room again only changes which those are."
+  (let ((project (alist-get 'project intent))
+        (screens (seq-filter #'stringp (append (alist-get 'screens intent) nil))))
+    (unless (and (stringp project) (not (string-empty-p project)))
+      (user-error "No project"))
+    (unless (equal project ghostherd-memory-page--room)
+      (ghostherd-memory-page--room-close)
+      (setq ghostherd-memory-page--room project))
+    (setq ghostherd-memory-page--room-screens screens)
+    (unless (timerp ghostherd-memory-page--room-timer)
+      (setq ghostherd-memory-page--room-timer
+            (run-at-time 0 ghostherd-memory-page--room-every
+                         #'ghostherd-memory-page--room-tick)))
+    (ghostherd-memory-page--room-tick)))
+
+(defun ghostherd-memory-page--room-close ()
+  (when (timerp ghostherd-memory-page--room-timer)
+    (cancel-timer ghostherd-memory-page--room-timer))
+  (setq ghostherd-memory-page--room-timer nil
+        ghostherd-memory-page--room nil
+        ghostherd-memory-page--room-screens nil)
+  (clrhash ghostherd-memory-page--room-sent))
+
 (defun ghostherd-memory-page--session (intent)
   "The live herd session INTENT names, or a `user-error'."
   (let ((name (alist-get 'name intent)))
@@ -701,7 +834,11 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (setq ghostherd-memory-page--hooks-at 0)
          (ghostherd-memory-page--herd-watch))
         ("hook-open" (ghostherd-memory-page--hook-open intent))
-        ("herd-unwatch" (ghostherd-memory-page--herd-unwatch))
+        ("herd-unwatch"
+         (ghostherd-memory-page--room-close)
+         (ghostherd-memory-page--herd-unwatch))
+        ("room-watch" (ghostherd-memory-page--room-open intent))
+        ("room-close" (ghostherd-memory-page--room-close))
         ("usage-refresh"
          (setq ghostherd-memory-page--usage-at (float-time))
          (ghostherd-usage-refresh t)

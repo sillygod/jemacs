@@ -106,6 +106,7 @@ made an unanchored `> \=' match the transcript.")
      :continue-args ("--continue")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
+     :transcript "~/.claude/projects/*/%s.jsonl"
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Do you want to make this edit"
@@ -132,6 +133,7 @@ made an unanchored `> \=' match the transcript.")
      :continue-args ("--continue")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
+     :transcript "~/.grok/sessions/*/%s/chat_history.jsonl"
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -159,6 +161,7 @@ made an unanchored `> \=' match the transcript.")
      :process-names ("agy")
      :continue-args ("--continue")
      :resume-args ("--conversation" "%s")
+     :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -200,6 +203,8 @@ Each entry is (KIND . PLIST) with keys:
                 used by `ghostherd-resume'.  nil when the CLI cannot.
 :fork-args      added to :resume-args to branch a new conversation off
                 that one instead of continuing it.  nil when it cannot.
+:transcript     where conversation %s is written, a wildcard pattern;
+                the herd page's room reads it.  nil when unknown.
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
@@ -3881,6 +3886,50 @@ agent's environment carries.")
   "The conversation SESSION is on, as its own hooks named it, or nil."
   (let ((id (plist-get (ghostherd--link session) :conversation)))
     (and (stringp id) (not (string-empty-p id)) id)))
+
+(defun ghostherd--args-conversation (kind args)
+  "The conversation ARGS start KIND on, by its resume flag, or nil.
+Nil for a fork: that writes a conversation of its own, whose id only
+its hooks can name."
+  (let* ((spec (ignore-errors (ghostherd--spec kind)))
+         (flag (car (plist-get spec :resume-args)))
+         (id (and flag (cadr (member flag args)))))
+    (and (stringp id)
+         (string-match-p ghostherd--session-id-re id)
+         (not (seq-some (lambda (f) (member f args)) (plist-get spec :fork-args)))
+         id)))
+
+(defconst ghostherd--transcript-retry 30
+  "Seconds before looking again for a transcript that was not there.")
+
+(defvar ghostherd--transcripts (make-hash-table :test 'equal)
+  "(KIND . ID) -> (PATH-or-nil . WHEN): where a conversation was found.")
+
+(defun ghostherd-session-transcript (session)
+  "The transcript file SESSION writes, or nil when it is not known.
+Its hooks name it.  Failing that, the conversation it was started on
+does, for a kind whose spec says where (`:transcript').  A fresh agent
+without hooks has no name for its conversation yet, so none."
+  (when-let* ((s (ghostherd-get session)))
+    (let ((linked (plist-get (ghostherd--link s) :transcript)))
+      (if (and (stringp linked) (not (string-empty-p linked)) (file-readable-p linked))
+          linked
+        (let* ((kind (ghostherd-session-kind s))
+               (id (or (ghostherd-session-conversation s)
+                       (ghostherd--args-conversation kind (ghostherd-session-args s))))
+               (place (plist-get (ignore-errors (ghostherd--spec kind)) :transcript))
+               (key (cons kind id))
+               (seen (gethash key ghostherd--transcripts)))
+          (when (and id place (string-match-p ghostherd--session-id-re id))
+            (if (and seen (if (car seen)
+                              (file-exists-p (car seen))
+                            (< (- (float-time) (cdr seen)) ghostherd--transcript-retry)))
+                (car seen)
+              (let ((found (car (sort (file-expand-wildcards
+                                       (expand-file-name (format place id)) t)
+                                      #'file-newer-than-file-p))))
+                (puthash key (cons found (float-time)) ghostherd--transcripts)
+                found))))))))
 
 (defun ghostherd--without-resume (kind args)
   "ARGS less any flag that picks a conversation for KIND.
