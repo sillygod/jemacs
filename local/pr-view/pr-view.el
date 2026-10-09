@@ -90,6 +90,9 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
 (defvar pr-view--inflight nil)
 (defvar pr-view--list-states '("OPEN" "MERGED")
   "PR states currently shown in the list (OPEN, MERGED, DECLINED, DRAFT).")
+(defvar pr-view--pending-pr nil
+  "A PR for the page to open once it is ready, in place of the list.
+`pr-view-open-pr' sets it, for another package.")
 (defvar pr-view--last-comments nil)
 (defvar pr-view--last-members nil)
 (defvar pr-view--last-detail-raw nil
@@ -539,7 +542,10 @@ people who already answered have to be added back from REVIEWS."
     (pcase op
       ("ready"
        (setq pr-view--list-states '("OPEN" "MERGED"))
-       (pr-view--fetch-list))
+       (if-let* ((id pr-view--pending-pr))
+           (progn (setq pr-view--pending-pr nil)
+                  (pr-view--fetch-detail id))
+         (pr-view--fetch-list)))
       ("refresh-list"
        (setq pr-view--list-states
              (pr-view--normalize-states (alist-get 'states intent)))
@@ -1588,6 +1594,122 @@ no xwidgets, or a custom id it does not read."
                 (clickup-view-task ref))
             (user-error (browse-url url)))
         (browse-url url)))))
+
+
+;;; For other packages
+;;
+;; Another package -- ghostherd's herd page -- shows the PR an agent's
+;; branch is on, and opens it here.  The lookup goes to DIR's own
+;; remote, not to `pr-view-github-owner' and its kind: those name the
+;; repository pr-view itself opens, which need not be DIR's.
+
+(defun pr-view--branch-pr-path (host branch)
+  "The query for BRANCH's pull requests on HOST, newest first."
+  (pcase (plist-get host :kind)
+    ('github
+     (format "/pulls?state=all&per_page=10&head=%s"
+             (url-hexify-string (concat (plist-get host :owner) ":" branch))))
+    ('bitbucket
+     (concat "/pullrequests?state=OPEN&state=MERGED&state=DECLINED&pagelen=10&sort=-updated_on&q="
+             (url-hexify-string (format "source.branch.name=\"%s\"" branch))))))
+
+(defun pr-view--branch-pr-pick (host branch raw)
+  "Of RAW's pull requests, the one to show for BRANCH: an open one, else
+the newest.  As `pr-view-branch-pr' gives it, or nil."
+  (let* ((rows (if (eq (plist-get host :kind) 'github)
+                   (and (listp raw) raw)
+                 (alist-get 'values raw)))
+         (rows (seq-filter
+                (lambda (r) (equal (if (eq (plist-get host :kind) 'github)
+                                       (alist-get 'ref (alist-get 'head r))
+                                     (alist-get 'name (alist-get 'branch (alist-get 'source r))))
+                                   branch))
+                rows))
+         (item (lambda (r) (if (eq (plist-get host :kind) 'github) (pr-view--gh-item r) (pr-view--bb-item r))))
+         (raw-pr (or (seq-find (lambda (r) (equal (alist-get 'state (funcall item r)) "OPEN")) rows)
+                     (car rows))))
+    (when raw-pr
+      (pr-view--brief host raw-pr))))
+
+(defun pr-view--brief (host raw)
+  "HOST's pull request RAW, a list row or its detail, as another package
+gets it: id, title, state, draft, url, source, and the ClickUp tasks its
+title, branch and description cite."
+  (let* ((it (if (eq (plist-get host :kind) 'github) (pr-view--gh-item raw) (pr-view--bb-item raw)))
+         (description (or (alist-get 'description raw) (alist-get 'body raw) "")))
+    `((id . ,(alist-get 'id it))
+      (title . ,(alist-get 'title it))
+      (state . ,(alist-get 'state it))
+      (draft . ,(alist-get 'draft it))
+      (url . ,(alist-get 'url it))
+      (source . ,(alist-get 'source it))
+      (tasks . ,(and (require 'clickup-view nil t)
+                     (clickup-view-task-refs
+                      (string-join (list (alist-get 'title it) (alist-get 'source it) description)
+                                   "\n")))))))
+
+(defun pr-view--brief-failed (callback)
+  "A fail function for `xwapp-json-callback' that tells CALLBACK why."
+  (lambda (code err _body &optional _url)
+    (funcall callback
+             `((error . ,(cond ((memq code '(401 403)) "the forge refused the token")
+                               ((eq code 404) "no such pull request")
+                               (code (format "HTTP %s" code))
+                               (err (error-message-string err))
+                               (t "request failed")))))))
+
+(defun pr-view-remote (dir)
+  "The forge repository DIR's origin is: (:kind KIND :owner OWNER :repo
+REPO), KIND `github' or `bitbucket'; or nil."
+  (let ((default-directory (file-name-as-directory (expand-file-name dir))))
+    (pr-view--parse-remote (pr-view--git-remote-url))))
+
+(defun pr-view-pr-brief (dir id callback)
+  "Look up pull request ID of DIR's repository, for another package.
+CALLBACK gets it as `pr-view-branch-pr' gives one, or ((error . TEXT)).
+Nothing goes to pr-view's page."
+  (if-let* ((host (pr-view-remote dir)))
+      (condition-case e
+          (pr-view--http
+           (pr-view--url host (format (if (eq (plist-get host :kind) 'github) "/pulls/%s" "/pullrequests/%s")
+                                      (pr-view--id-str id)))
+           (pr-view--headers host)
+           (xwapp-json-callback
+            "PR" (lambda (raw) (funcall callback (pr-view--brief host raw)))
+            (pr-view--brief-failed callback)))
+        (error (funcall callback `((error . ,(error-message-string e))))))
+    (funcall callback '((error . "not a GitHub or Bitbucket repository")))))
+
+(defun pr-view-branch-pr (dir callback)
+  "Look up the pull request of the branch checked out at DIR.
+For another package to show.  CALLBACK gets the PR as ((id . N)
+(title . T) (state . OPEN|MERGED|DECLINED) (draft . BOOL) (url . U)
+(source . BRANCH) (tasks . IDS)) -- TASKS the ClickUp tasks its title,
+branch and description cite, when clickup-view is there -- an open one
+before a closed one, then the newest; nil when DIR is not on a branch
+of a GitHub or Bitbucket repository, or is on its default branch, or
+the branch has none; ((error . TEXT)) when the forge could not be read.
+Nothing goes to pr-view's page."
+  (let* ((default-directory (file-name-as-directory (expand-file-name dir)))
+         (host (pr-view--parse-remote (pr-view--git-remote-url)))
+         (branch (pr-view--git-current-branch)))
+    (if (not (and host branch (not (member branch (list "HEAD" (pr-view--git-default-branch))))))
+        (funcall callback nil)
+      (condition-case e
+          (pr-view--http
+           (pr-view--url host (pr-view--branch-pr-path host branch))
+           (pr-view--headers host)
+           (xwapp-json-callback
+            "branch PR"
+            (lambda (raw) (funcall callback (pr-view--branch-pr-pick host branch raw)))
+            (pr-view--brief-failed callback)))
+        (error (funcall callback `((error . ,(error-message-string e)))))))))
+
+(defun pr-view-open-pr (dir id)
+  "Open pull request ID of the repository at DIR in pr-view."
+  (let ((default-directory (file-name-as-directory (expand-file-name dir))))
+    (setq pr-view--pending-pr id)
+    (pr-view)))
 
 
 ;;; Commands

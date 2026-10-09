@@ -722,5 +722,118 @@ taken for the last one."
     ;; The CSP refuses inline handlers, so the page must not have any.
     (should-not (string-match-p "on\\(error\\|click\\|load\\)=" js))))
 
+;;; For other packages
+
+(defmacro pr-view-tests--on-branch (remote branch &rest body)
+  "BODY in a repository whose origin is REMOTE, on BRANCH (default main)."
+  (declare (indent 2))
+  `(cl-letf (((symbol-function 'pr-view--git-remote-url) (lambda () ,remote))
+             ((symbol-function 'pr-view--git-current-branch) (lambda () ,branch))
+             ((symbol-function 'pr-view--git-default-branch) (lambda () "main"))
+             ((symbol-function 'pr-view--headers) (lambda (&rest _) nil)))
+     ,@body))
+
+(ert-deftest pr-view-test-branch-pr-asks-the-branch-own-forge ()
+  "The query names the branch on DIR's own remote, encoded."
+  (should (equal (pr-view--branch-pr-path '(:kind github :owner "me" :repo "r") "feat/a b")
+                 "/pulls?state=all&per_page=10&head=me%3Afeat%2Fa%20b"))
+  (should (equal (pr-view--branch-pr-path '(:kind bitbucket :owner "w" :repo "r") "feat/x")
+                 (concat "/pullrequests?state=OPEN&state=MERGED&state=DECLINED&pagelen=10&sort=-updated_on&q="
+                         "source.branch.name%3D%22feat%2Fx%22")))
+  (let ((pr-view-github-owner "someone-else") asked)
+    (pr-view-tests--on-branch "git@github.com:me/r.git" "feat/x"
+      (cl-letf (((symbol-function 'pr-view--http) (lambda (url &rest _) (setq asked url))))
+        (pr-view-branch-pr "/tmp/" #'ignore)))
+    (should (string-prefix-p "https://api.github.com/repos/me/r/pulls?" asked))))
+
+(ert-deftest pr-view-test-branch-pr-picks-the-open-one ()
+  "Of the branch's PRs an open one, else the newest; another branch's
+are not it.  The ClickUp tasks its title and description cite go with it."
+  (let ((rows `(((number . 9) (title . "Old try") (state . "closed") (merged_at . nil)
+                 (head . ((ref . "feat/x"))) (base . ((ref . "main"))) (html_url . "u9") (user . ((login . "a"))))
+                ((number . 12) (title . "Login, CU-86abc1def") (state . "open")
+                 (body . "See https://app.clickup.com/t/86xyz9876")
+                 (head . ((ref . "feat/x"))) (base . ((ref . "main"))) (html_url . "u12") (user . ((login . "a"))))
+                ((number . 13) (title . "Other") (state . "open")
+                 (head . ((ref . "feat/y"))) (base . ((ref . "main"))) (html_url . "u13") (user . ((login . "a")))))))
+    (let ((pr (pr-view--branch-pr-pick '(:kind github) "feat/x" rows)))
+      (should (equal (list (alist-get 'id pr) (alist-get 'state pr) (alist-get 'url pr) (alist-get 'source pr))
+                     '(12 "OPEN" "u12" "feat/x")))
+      (when (require 'clickup-view nil t)
+        (should (equal (alist-get 'tasks pr) '("86abc1def" "86xyz9876")))))
+    (should (equal (alist-get 'id (pr-view--branch-pr-pick '(:kind github) "feat/x" (list (car rows)))) 9))
+    (should-not (pr-view--branch-pr-pick '(:kind github) "feat/z" rows)))
+  (let ((pr (pr-view--branch-pr-pick
+             '(:kind bitbucket) "feat/x"
+             '((values . (((id . 87) (title . "Sentry") (state . "MERGED")
+                           (source . ((branch . ((name . "feat/x")))))
+                           (destination . ((branch . ((name . "main")))))
+                           (links . ((html . ((href . "b87"))))))))))))
+    (should (equal (list (alist-get 'id pr) (alist-get 'state pr) (alist-get 'url pr)) '(87 "MERGED" "b87")))))
+
+(ert-deftest pr-view-test-branch-pr-says-nothing-or-why ()
+  "No PR is looked for on the default branch, a detached head or a repo on
+no forge; a forge that refuses says so, to the caller and not the page."
+  (let (asked got)
+    (cl-letf (((symbol-function 'pr-view--http) (lambda (&rest _) (setq asked t)))
+              ((symbol-function 'pr-view--js) (lambda (&rest _) (error "Not the page's"))))
+      (dolist (case '(("git@github.com:me/r.git" "main") ("git@github.com:me/r.git" "HEAD")
+                      ("git@gitlab.com:me/r.git" "feat/x") (nil "feat/x")))
+        (setq got 'unset)
+        (pr-view-tests--on-branch (car case) (cadr case)
+          (pr-view-branch-pr "/tmp/" (lambda (r) (setq got r))))
+        (should-not got))
+      (should-not asked))
+    (pr-view-tests--on-branch "git@bitbucket.org:w/r.git" "feat/x"
+      (cl-letf (((symbol-function 'pr-view--http)
+                 (lambda (_url _headers cb &rest _) (funcall cb "{}" 401 nil)))
+                ((symbol-function 'pr-view--js) (lambda (&rest _) (error "Not the page's"))))
+        (pr-view-branch-pr "/tmp/" (lambda (r) (setq got r)))))
+    (should (equal got '((error . "the forge refused the token"))))))
+
+(ert-deftest pr-view-test-pr-brief-by-id ()
+  "A PR by its number, on DIR's own forge: its state and the tasks it
+cites; a missing one, or a repo on no forge, says why."
+  (let (got asked)
+    (pr-view-tests--on-branch "git@bitbucket.org:w/r.git" "feat/x"
+      (should (equal (pr-view-remote "/tmp/") '(:kind bitbucket :owner "w" :repo "r")))
+      (cl-letf (((symbol-function 'pr-view--http)
+                 (lambda (url _headers cb &rest _)
+                   (setq asked url)
+                   (funcall cb (json-encode '((id . 371) (title . "Retry CU-86abc1def") (state . "MERGED")
+                                               (description . "")
+                                               (source . ((branch . ((name . "fix/retry")))))
+                                               (destination . ((branch . ((name . "main")))))
+                                               (links . ((html . ((href . "b371")))))))
+                            200 nil))))
+        (pr-view-pr-brief "/tmp/" 371 (lambda (r) (setq got r)))))
+    (should (string-suffix-p "/repositories/w/r/pullrequests/371" asked))
+    (should (equal (list (alist-get 'id got) (alist-get 'state got) (alist-get 'source got) (alist-get 'url got))
+                   '(371 "MERGED" "fix/retry" "b371")))
+    (when (require 'clickup-view nil t)
+      (should (equal (alist-get 'tasks got) '("86abc1def"))))
+    (pr-view-tests--on-branch "git@github.com:me/r.git" "feat/x"
+      (cl-letf (((symbol-function 'pr-view--http)
+                 (lambda (_url _headers cb &rest _) (funcall cb "{\"message\":\"Not Found\"}" 404 nil))))
+        (pr-view-pr-brief "/tmp/" 9 (lambda (r) (setq got r)))))
+    (should (equal got '((error . "no such pull request"))))
+    (pr-view-tests--on-branch nil "feat/x"
+      (pr-view-pr-brief "/tmp/" 9 (lambda (r) (setq got r))))
+    (should (equal got '((error . "not a GitHub or Bitbucket repository"))))))
+
+(ert-deftest pr-view-test-open-pr-opens-it-once-ready ()
+  "Opened for another package, the page shows that PR once ready, not
+the list; the next time it is ready, the list again."
+  (let (opened fetched)
+    (cl-letf (((symbol-function 'pr-view) (lambda (&rest _) (setq opened default-directory)))
+              ((symbol-function 'pr-view--fetch-detail) (lambda (id) (push (list 'detail id) fetched)))
+              ((symbol-function 'pr-view--fetch-list) (lambda () (push 'list fetched))))
+      (let ((pr-view--pending-pr nil))
+        (pr-view-open-pr "/tmp/repo" 87)
+        (should (equal opened "/tmp/repo/"))
+        (pr-view--handle-intent '((op . "ready")))
+        (pr-view--handle-intent '((op . "ready")))
+        (should (equal (reverse fetched) '((detail 87) list)))))))
+
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

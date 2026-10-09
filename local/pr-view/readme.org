@@ -165,6 +165,26 @@ no inline script or handler, no fetch, images https or data: --- so an
 avatar that fails to load is dropped by a listener, not an =onerror=
 attribute.
 
+* For other packages
+
+ghostherd's herd page shows the PR an agent's branch is on.  Two
+functions serve it, and anything else that wants the same:
+
+- =pr-view-branch-pr= =DIR CALLBACK=: the pull request of the branch
+  checked out at =DIR=, asked of =DIR='s own remote (not the
+  =pr-view-github-*= / =pr-view-bitbucket-*= repository).  An open PR
+  before a closed one, then the newest; with the ClickUp tasks its
+  title, branch and description cite when clickup-view is there.
+  =nil= on the default branch, a detached head, a repository on no
+  forge, or a branch with no PR; =((error . TEXT))= when the forge
+  could not be read.  Nothing goes to pr-view's page.
+- =pr-view-pr-brief= =DIR ID CALLBACK=: pull request =ID= of =DIR='s
+  repository, the same way; =((error . TEXT))= when it cannot be read.
+- =pr-view-remote= =DIR=: the forge repository =DIR='s origin is, as
+  =(:kind :owner :repo)=.
+- =pr-view-open-pr= =DIR ID=: open PR =ID= of =DIR='s repository here,
+  its detail rather than the list.
+
 * Tests
 
 #+begin_src sh
