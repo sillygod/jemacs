@@ -1437,6 +1437,36 @@ firing at the moment the CLI stops needs none, and would be ruined by it."
         (ghostherd-report s 'done)
         (should (eq (ghostherd-poll-session s) 'idle))))))
 
+(ert-deftest ghostherd-test-a-reported-done-once-seen-stays-seen ()
+  "Seen in the room, or in its buffer, an agent's own `done' is seen for
+good: looking away while its report is still trusted does not make it
+`done' again, nor announce it twice.  The next report is news."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working
+                                       :seen nil))
+          (watching t)
+          (told 0))
+      (with-current-buffer (ghostherd-session-buffer s) (insert "> \n"))
+      (cl-letf (((symbol-function 'run-with-timer) (lambda (&rest _) nil))
+                ((symbol-function 'ghostherd--watched-p) (lambda (_s) watching))
+                ((symbol-function 'ghostherd--maybe-notify-state)
+                 (lambda (_s _old new) (when (eq new 'done) (cl-incf told)))))
+        (ghostherd-report s 'done "finished its turn")
+        (should (eq (ghostherd-poll-session s) 'idle))
+        ;; Still its own word -- now that it is idle -- for the time left.
+        (should (eq (car (ghostherd--fresh-report s)) 'idle))
+        (setq watching nil)
+        (should (eq (ghostherd-poll-session s) 'idle))
+        (should (eq (ghostherd-poll-session s) 'idle))
+        (should (= told 0))
+        ;; Its next turn ends: that is done, and said.
+        (ghostherd-report s 'done "finished its turn")
+        (should (eq (ghostherd-poll-session s) 'done))
+        (should (= told 1))
+        ;; Unseen, it is held past the report's trust, as before.
+        (puthash (ghostherd-session-id s) (list 'done "old" (time-subtract nil 3600)) ghostherd--reports)
+        (should (eq (ghostherd-poll-session s) 'done))))))
+
 (ert-deftest ghostherd-test-rename-carries-the-report ()
   "The report is keyed by id, and a rename changes the id -- which used to
 drop the input grace and the settle timestamp silently."

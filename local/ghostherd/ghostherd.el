@@ -940,6 +940,15 @@ capture is a subprocess in the middle of drawing a terminal."
     (run-with-timer 0 nil #'ghostherd-poll-session id)
     state))
 
+(defun ghostherd--report-seen (session)
+  "SESSION's own report of `done', now seen: `idle' while it is trusted.
+Else, looked away from within `ghostherd-report-ttl' of the report, the
+agent was `done' again -- seen no more, so held there after the report
+expired, and announced a second time."
+  (let ((id (ghostherd-session-id session)))
+    (when-let* ((entry (gethash id ghostherd--reports)))
+      (puthash id (cons 'idle (cdr entry)) ghostherd--reports))))
+
 (defun ghostherd--fresh-report (session)
   "Return SESSION's own last report as (STATE . REASON) while it is trusted."
   (when-let* ((entry (gethash (ghostherd-session-id session) ghostherd--reports)))
@@ -1414,7 +1423,8 @@ SCREEN is SESSION's screen if the caller already fetched it; see
         ;; tells you to read when a banner does not arrive.
         (when (and (eq state 'done) watched)
           (setq state 'idle
-                reason "done, but you are watching"))
+                reason "done, but you are watching")
+          (ghostherd--report-seen session))
         ;; Once viewed, demote done back to plain idle.
         (when (and (eq state 'idle)
                    (eq (ghostherd-session-state session) 'done)
