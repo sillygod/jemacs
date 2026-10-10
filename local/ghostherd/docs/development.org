@@ -5,12 +5,12 @@ How to change ghostherd while the herd runs on it.  How it is tested is
 
 * What runs where
 
-| Part     | Files                    | Runs in                                       | A change takes effect                 |
-|----------+--------------------------+-----------------------------------------------+---------------------------------------|
-| Elisp    | =ghostherd*.el=          | the Emacs you work in                         | =bin/reload FILE.el=, or a restart    |
-| Page     | =ui/= (HTML, JS, CSS)    | the =*herd*= xwidget, through =xwapp=         | =bin/reload ui/app.js=                |
-| Sidecar  | =server/= (Python)       | a child process of that Emacs, port 49152 up  | =bin/reload server/x.py=              |
-| Agents   | ---                      | tmux sessions                                 | never touched by any of the above     |
+| Part    | Files                 | Runs in                                      | A change takes effect              |
+|---------+-----------------------+----------------------------------------------+------------------------------------|
+| Elisp   | =ghostherd*.el=       | the Emacs you work in                        | =bin/reload FILE.el=, or a restart |
+| Page    | =ui/= (HTML, JS, CSS) | the =*herd*= xwidget, or a browser tab       | =bin/reload ui/app.js=             |
+| Sidecar | =server/= (Python)    | a child process of that Emacs, port 49152 up | =bin/reload server/x.py=           |
+| Agents  | ---                   | tmux sessions                                | never touched by any of the above  |
 
 The agents live in tmux, so neither a restart of Emacs nor of the
 sidecar stops one; the ghostel buffers are only views of them.  Mail
@@ -44,11 +44,13 @@ started at top level would run twice.  In Emacs, =C-M-x= on a defun
 does the same for one function --- but on a =defvar= it resets the
 value, which =bin/reload= never does.
 
-For a =ui/= file it loads the herd page again, back on the Agents tab
-if that was showing; a room is not reopened.  For a =server/= file it
-restarts the sidecar, and refuses while an ask is open (=--force= does
-it anyway): the taker would answer into a sidecar that no longer holds
-the ask.  A sidecar this Emacs did not start is left alone and named.
+For a =ui/= file, or one of xwapp's, it loads the herd page again
+where it is --- in Emacs or in a browser tab (=xwapp-reload=) --- back
+on the Agents tab if that was showing; a room is not reopened.  For a
+=server/= file it restarts the sidecar, and refuses while an ask is
+open (=--force= does it anyway): the taker would answer into a sidecar
+that no longer holds the ask.  A sidecar this Emacs did not start is
+left alone and named.
 
 What it defines is interpreted, not compiled: slower, and not what to
 measure.  Measure after a restart.

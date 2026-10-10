@@ -614,8 +614,7 @@ and none when the page is not where you are looking."
     (let ((ghostherd-memory-page--room nil)
           (ghostherd-memory-page--room-chat nil)
           (looking t))
-      (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_app) (current-buffer)))
-                ((symbol-function 'ghostherd--buffer-watched-p) (lambda (b) (and looking (eq b (current-buffer)))))
+      (cl-letf (((symbol-function 'xwapp-seen-p) (lambda (_app) looking))
                 ((symbol-function 'ghostherd-session-transcript)
                  (lambda (s) (and (equal (ghostherd-session-name (ghostherd-get s)) "rd") "/t/rd.jsonl"))))
         (let ((shown (lambda () (sort (mapcar #'ghostherd-session-name
@@ -4640,7 +4639,7 @@ reach the page as an array of objects."
   "Progress while the sidecar imports; the end of a background import
 is announced and lists the sessions again."
   (ghostherd-test--with-page
-    (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_) t)))
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_) t)))
       (setq reply (lambda (m _p)
                     (if (equal m "memory_status")
                         '(:import (:running t :files 3 :imported 223 :agent "claude"
@@ -4668,7 +4667,7 @@ is announced and lists the sessions again."
   "An import just asked for may not have begun at the first read; the
 watch must not end before the answer comes."
   (ghostherd-test--with-page
-    (cl-letf (((symbol-function 'xwapp-buffer) (lambda (_) t))
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_) t))
               ((symbol-function 'ghostherd-memory-page--unwatch)
                (lambda () (push "unwatch" calls))))
       (setq reply (lambda (_m _p) '(:import nil)))

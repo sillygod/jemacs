@@ -12,6 +12,7 @@
  *   XW.esc(s)            text for HTML, quotes included
  *   XW.bridge(prefix)    an emit(op, extra) that queues intents for Emacs
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
+ *   XW.browser           true in a web browser, false in Emacs's xwidget
  */
 (function () {
   "use strict";
@@ -35,7 +36,7 @@
   // -- and seeding it with the clock keeps a reloaded page's first intent
   // apart from the last page's.
 
-  function bridge(prefix) {
+  function titleBridge(prefix) {
     const outbox = [];
     let n = Date.now();
     let sentAt = 0;
@@ -51,6 +52,122 @@
       outbox.push(Object.assign({ op: op, n: ++n }, extra || {}));
       pump();
     };
+  }
+
+  // ---- In a web browser -------------------------------------------------
+  //
+  // Served by Emacs (xwapp-browse), the page has no title Emacs reads and
+  // runs no script Emacs sends, so it asks.  hello makes it the app's
+  // page; one request for Emacs's calls is always waiting; intents go as
+  // POSTs, one at a time, so they arrive in order.  Every URL starts with
+  // the app's secret, the first segment of the page's own.  A 410 means
+  // this page is no longer the app's: another took over, or Emacs let it
+  // go when it stopped asking.
+
+  const BROWSER = location.protocol === "http:";
+  const ROOT = "/" + location.pathname.split("/")[1] + "/";
+
+  function notice(msg) {
+    let el = document.getElementById("xw-notice");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "xw-notice";
+      el.className = "xw-notice";
+      el.setAttribute("role", "alert");
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+  }
+
+  let served = null;
+  function servedBridge() {
+    if (served) return served;
+    const page = Array.from(crypto.getRandomValues(new Uint8Array(8)),
+      (b) => b.toString(16).padStart(2, "0")).join("");
+    const outbox = [];
+    let hello = false, sending = false, over = false;
+
+    function ask(path, body) {
+      const opts = body === undefined ? {} : {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      };
+      return fetch(ROOT + path + "?page=" + page, opts).then((r) => {
+        if (!r.ok) throw new Error(r.status === 410 ? "gone" : "HTTP " + r.status);
+        return r;
+      });
+    }
+    function stop(e) {
+      if (over) return;
+      over = true;
+      notice(e && e.message === "gone"
+        ? "This page is open elsewhere now, or Emacs let it go. Reload to use it here."
+        : "Emacs is not answering. Open the page again from Emacs.");
+    }
+    function pump() {
+      if (!hello || sending || over || !outbox.length) return;
+      sending = true;
+      ask("intent", outbox[0]).then(() => {
+        outbox.shift();
+        sending = false;
+        pump();
+      }, stop);
+    }
+    // One call failing must not keep the next from running: in the
+    // xwidget each call is a script of its own.
+    function run(call) {
+      if (call.xwapp === "reload") {
+        over = true;
+        location.reload();
+        return;
+      }
+      const ns = window[call.ns];
+      if (!ns || typeof ns[call.fn] !== "function") return;
+      try {
+        ns[call.fn](call.arg);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    // A chain of promises, no timer: a background tab throttles timers.
+    function next() {
+      if (over) return;
+      ask("next").then((r) => r.json()).then((calls) => {
+        calls.forEach(run);
+        next();
+      }, stop);
+    }
+
+    // Whether you could be looking, for Emacs to ask with xwapp-seen-p.
+    let seen = null;
+    function look() {
+      const now = document.visibilityState === "visible" && document.hasFocus();
+      if (now === seen) return;
+      seen = now;
+      outbox.push({ op: "xwapp-seen", seen: now });
+      pump();
+    }
+    document.addEventListener("visibilitychange", look);
+    window.addEventListener("focus", look);
+    window.addEventListener("blur", look);
+    look();
+
+    ask("hello", {}).then(() => {
+      hello = true;
+      next();
+      pump();
+    }, stop);
+
+    served = function emit(op, extra) {
+      outbox.push(Object.assign({ op: op }, extra || {}));
+      pump();
+    };
+    return served;
+  }
+
+  function bridge(prefix) {
+    return BROWSER ? servedBridge() : titleBridge(prefix);
   }
 
   // ---- Sanitizer -------------------------------------------------------
@@ -163,5 +280,10 @@
     };
   }
 
-  window.XW = Object.freeze({ esc: esc, bridge: bridge, sanitizer: sanitizer });
+  window.XW = Object.freeze({
+    esc: esc,
+    bridge: bridge,
+    sanitizer: sanitizer,
+    browser: BROWSER,
+  });
 })();

@@ -1,8 +1,8 @@
 #+TITLE: xwapp
 
-Plumbing for Elisp-backed pages in an xwidget: a local HTML page
-renders, Elisp owns HTTP and secrets.  Used by =pr-view=,
-=clickup-view= and ghostherd's herd page.
+Plumbing for Elisp-backed pages in an xwidget --- or in a web browser:
+a local HTML page renders, Elisp owns HTTP and secrets.  Used by
+=pr-view=, =clickup-view= and ghostherd's herd page.
 
 * Shape
 
@@ -26,15 +26,59 @@ renders, Elisp owns HTTP and secrets.  Used by =pr-view=,
   (xwapp-js my-app "render" payload)  ; APP.render(payload)
 #+end_src
 
+Whether the page is open, and whether you could be looking at it,
+wherever it is:
+
+| =(xwapp-live-p app)= | open: its xwidget, or a browser tab                    |
+| =(xwapp-seen-p app)= | in front of you: a window of a focused, visible frame, |
+|                      | or the tab in front of a focused browser window        |
+| =(xwapp-reload app)= | load it again where it is (edited =ui/= files)         |
+
+* In a web browser
+
+=M-x xwapp-browse= in an app's buffer moves its page to a tab of the
+web browser; with =xwapp-browser= non-nil, =xwapp-open= puts every
+page there.  The page and the app are unchanged: =xwapp.js= picks the
+channel by the page's URL, =file:= or =http:=, and gives the page the
+same =emit=.
+
+Emacs serves the page on 127.0.0.1, at a port of its choosing, under a
+secret per app that only the tab knows: =/SECRET/<pkg>/ui/index.html=,
+and the kit as =/SECRET/xwapp/ui/…=, as the page reaches it from the
+xwidget.  Nothing else is served, and a request naming another host,
+or from another site's page, gets nothing.
+
+| =POST hello=  | the page has loaded: it is the app's page now            |
+| =GET next=    | Emacs's calls as a JSON array, held until there are some |
+| =POST intent= | one intent; the page sends them one at a time, in order  |
+
+- *Emacs never writes to a tab that has not asked.*  A stream pushed
+  to the page would block Emacs in =process-send-string= the moment a
+  tab stopped reading --- a frozen background tab, a sleeping window.
+  So a =next= is always waiting, and Emacs answers it; held 25s, it is
+  answered empty and asked again.
+- *One page per app,* as an app has one state in Emacs.  The page that
+  said hello last is the app's: the tab before it, or the xwidget, is
+  let go --- the tab gets 410 and shows that it moved, the xwidget's
+  buffer is killed without its on-kill (the app has moved, not
+  closed).  =xwapp-open= in Emacs takes the page back the same way.
+- *A tab that stops asking is closed.*  Ten seconds without a =next=
+  (the tab closed, or frozen) and the app's on-kill runs.  A reload is
+  not a close: its hello comes within the ten.
+- The tab tells Emacs whether it is visible and focused, for
+  =xwapp-seen-p=.  An intent arrives on the next turn, from a timer, as
+  the title's does.
+
 * Page kit (=ui/=)
 
 What the pages share on the browser side, so it is fixed once:
 
-| File                    | Gives                                                |
-|-------------------------+------------------------------------------------------|
-| =xwapp.js=              | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=  |
-| =base.css=              | the shared colours, =box-sizing=, =[hidden]=         |
-| =vendor/marked.min.js=  | marked 11.2.0 (identical to jsdelivr's)              |
+| File                   | Gives                                                |
+|------------------------+------------------------------------------------------|
+| =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
+|                        | =XW.browser=                                         |
+| =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
+| =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
 
 A page loads them as =../../xwapp/ui/…=.  That path holds both in the
 repo (=local/<pkg>/ui=) and in straight's build (=build/<pkg>/ui=),
@@ -56,7 +100,8 @@ target; it needs =ui= in xwapp's own =:files=.
   on and adds =data-task= / =data-check=; the herd page takes the
   default.
 - Every page also carries a Content-Security-Policy: no inline script or
-  handler, no =javascript:= link, no fetch.  The sanitizer is the first
+  handler, no =javascript:= link, no fetch but to ='self'= --- the Emacs
+  that served it, in a browser.  The sanitizer is the first
   line; the CSP is what holds if it ever lets something through.  A
   page therefore has no =onerror= / =onclick= attributes of its own.
 
@@ -89,3 +134,11 @@ The page kit was checked in WebKit (Playwright): the sanitizer's
 default and per-page options against hostile markup, and three intents
 emitted in one tick all reaching a reader that behaves as xwapp does.
 Each page's own harness then ran on the kit, under its CSP.
+
+The browser channel is tested twice.  =xwapp-tests.el= runs the server
+and a client speaking HTTP in batch: what is and is not served, a round
+trip with non-ASCII text both ways, one page at a time, a closed tab, a
+reload.  It was then driven in Chrome (Playwright, the system Chrome):
+the same, plus five intents in one tick arriving in order, a call that
+throws not stopping the next, and the three real pages loading under
+their CSP with no error.

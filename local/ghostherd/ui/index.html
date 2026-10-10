@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- The page renders text from transcripts and agents' screens, and can
        prompt and kill agents.  Past the sanitizer, nothing inline runs
-       and nothing leaves: no inline script or handler, no fetch, no
-       remote image. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'">
+       and nothing leaves: no inline script or handler, no fetch but to
+       the Emacs that served the page to a browser, no remote image. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src data:; connect-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Herd</title>
   <link rel="stylesheet" href="../../xwapp/ui/base.css">
   <link rel="stylesheet" href="style.css">

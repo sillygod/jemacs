@@ -24,3 +24,17 @@
 * { box-sizing: border-box; }
 /* Elements that set display would otherwise beat [hidden]. */
 [hidden] { display: none !important; }
+
+/* What xwapp.js shows when a page in a web browser has lost Emacs. */
+.xw-notice {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  padding: 10px 16px;
+  text-align: center;
+  font-weight: 600;
+  background: var(--warn);
+  color: var(--bg);
+}

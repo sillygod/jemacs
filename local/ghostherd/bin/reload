@@ -10,7 +10,8 @@
 #             top-level forms are not run, and are named: a new add-hook
 #             or advice-add is yours to evaluate, a changed struct or
 #             mode wants a restart.
-#   ui/...    the herd page loaded again, back on Agents if it was there.
+#   ui/...    the herd page loaded again -- in Emacs or in a browser tab
+#             -- back on Agents if it was there.  xwapp's ui/ too.
 #   server/.. the sidecar restarted -- not while an ask is open, whose
 #             answer would have nowhere to go; --force restarts it anyway.
 #
@@ -19,6 +20,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
+kit=$(dirname "$here")/xwapp/ui
 force=
 el=()
 ui=
@@ -29,14 +31,14 @@ for arg in "$@"; do
   [ -e "$arg" ] || { echo "reload: no such file: $arg" >&2; exit 2; }
   path=$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")
   case $path in
-    "$here"/ui/*) ui=1 ;;
+    "$here"/ui/* | "$kit"/*) ui=1 ;;
     "$here"/server/*) server=1 ;;
     *.el) el+=("$path") ;;
     *) echo "reload: not an .el, ui/ or server/ file: $arg" >&2; exit 2 ;;
   esac
 done
 [ ${#el[@]} -gt 0 ] || [ -n "$ui" ] || [ -n "$server" ] || {
-  sed -n '5,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+  sed -n '5,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 say() { sed 's/^"//; s/"$//'; }
 
@@ -86,11 +88,12 @@ done
 
 if [ -n "$ui" ]; then
   emacsclient --eval '
-(if (not (get-buffer "*herd*"))
+(if (not (and (boundp (quote ghostherd-memory-page--app))
+              (xwapp-live-p ghostherd-memory-page--app)))
     "herd page: not open"
   (when (timerp ghostherd-memory-page--herd-timer)
     (setq ghostherd-memory-page--pending (list :view "agents")))
-  (with-current-buffer "*herd*" (xwidget-webkit-reload))
+  (xwapp-reload ghostherd-memory-page--app)
   "herd page: loaded again")' | say
 fi
 

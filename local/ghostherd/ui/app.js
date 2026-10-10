@@ -1487,8 +1487,10 @@
   // In Emacs, Cmd-V never becomes a paste: the paste is the menu's to
   // send, and Emacs's menu does not send it to the web view, so the page
   // sees the keydown and nothing after -- not for text either.  Emacs
-  // reads the clipboard instead, and answers with `paste' below.
+  // reads the clipboard instead, and answers with `paste' below.  In a
+  // web browser Cmd-V is a paste, and an image in it is asked for below.
   document.addEventListener("keydown", (ev) => {
+    if (XW.browser) return;
     if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.key.toLowerCase() !== "v") return;
     const el = document.activeElement;
     if (!el || (el.tagName !== "TEXTAREA" && el.tagName !== "INPUT")) return;

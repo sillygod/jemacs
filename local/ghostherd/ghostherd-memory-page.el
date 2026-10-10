@@ -233,7 +233,7 @@ Also how a background import already running shows up on the page."
 (defun ghostherd-memory-page--progress-tick ()
   "Read the import progress once and pass it on."
   (cond
-   ((not (xwapp-buffer ghostherd-memory-page--app))
+   ((not (xwapp-live-p ghostherd-memory-page--app))
     (ghostherd-memory-page--unwatch))
    (ghostherd-memory-page--progress-inflight nil)
    (t
@@ -297,7 +297,7 @@ draws lanes from fields rather than parsing prose."
 
 (defun ghostherd-memory-page--on-log (entry)
   "Pass a new log ENTRY to the page, if it is open."
-  (when (xwapp-session ghostherd-memory-page--app)
+  (when (xwapp-live-p ghostherd-memory-page--app)
     (ghostherd-memory-page--js "logAdd" (ghostherd-memory-page--log-entry entry))))
 
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-log)
@@ -413,7 +413,7 @@ Emacs while it does."
                                  (json-parse-string (buffer-string)
                                                     :object-type 'plist :array-type 'list
                                                     :null-object nil :false-object :json-false))))
-                       (when (xwapp-session ghostherd-memory-page--app)
+                       (when (xwapp-live-p ghostherd-memory-page--app)
                          (ghostherd-memory-page--send-herd)))
                    (kill-buffer (process-buffer proc))))))))))
 
@@ -856,12 +856,12 @@ until they are done, the page shows the last look."
 
 (defun ghostherd-memory-page--herd-tick ()
   "One snapshot; usage too when it is due and the page can be seen."
-  (if (not (xwapp-session ghostherd-memory-page--app))
+  (if (not (xwapp-live-p ghostherd-memory-page--app))
       (ghostherd-memory-page--herd-unwatch)
     (when (> (- (float-time) ghostherd-memory-page--work-at) ghostherd-memory-page--work-every)
       (ghostherd-memory-page--work-look))
     (when (and (> (- (float-time) ghostherd-memory-page--usage-at) ghostherd-usage-interval)
-               (get-buffer-window (xwapp-buffer ghostherd-memory-page--app) t))
+               (xwapp-seen-p ghostherd-memory-page--app))
       (setq ghostherd-memory-page--usage-at (float-time))
       (ghostherd-memory-page--chore #'ghostherd-usage-refresh))
     (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
@@ -924,8 +924,7 @@ seen, as it is when its buffer is in front of you."
   (and ghostherd-memory-page--room
        (equal (ghostherd--project-name (ghostherd-session-project s)) ghostherd-memory-page--room)
        (or (not ghostherd-memory-page--room-chat) (ghostherd-session-transcript s))
-       (when-let* ((buffer (xwapp-buffer ghostherd-memory-page--app)))
-         (ghostherd--buffer-watched-p buffer))))
+       (xwapp-seen-p ghostherd-memory-page--app)))
 
 (add-hook 'ghostherd-watched-functions #'ghostherd-memory-page--room-shows-p)
 
@@ -1065,7 +1064,7 @@ screen if that is what the page shows of it."
                                    ""))))))
 
 (defun ghostherd-memory-page--room-tick ()
-  (if (not (and ghostherd-memory-page--room (xwapp-session ghostherd-memory-page--app)))
+  (if (not (and ghostherd-memory-page--room (xwapp-live-p ghostherd-memory-page--app)))
       (ghostherd-memory-page--room-close)
     (if ghostherd-memory-page--room-chat
         (ghostherd-memory-page--chat-read)

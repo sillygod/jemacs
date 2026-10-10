@@ -192,5 +192,241 @@ global last session, which may be another app's page."
             (should-not (xwapp-session app)))
         (kill-buffer)))))
 
+;;; In a web browser
+;;
+;; A real server on 127.0.0.1 and a client that speaks HTTP to it, as a
+;; browser would.  The page tree is a temp directory: app/ui is the
+;; app's page, xwapp/ui the kit, the rest is what must not be served.
+
+(defmacro xwapp-test--with-browser (&rest body)
+  "Run BODY with `app' on a page tree under `root', served afresh.
+`intents' gathers what its handler gets, `closed' counts its on-kill."
+  (declare (indent 0))
+  `(let* ((root (file-name-as-directory (make-temp-file "xwapp" t)))
+          (xwapp--server nil)
+          (xwapp--served (make-hash-table :test 'eq))
+          (intents nil)
+          (closed 0)
+          (app (progn
+                 (dolist (f '("app/ui/index.html" "app/ui/app.js" "app/notes.txt"
+                              "xwapp/ui/xwapp.js" "other/ui/x.js"))
+                   (make-directory (file-name-directory (expand-file-name f root)) t)
+                   (with-temp-file (expand-file-name f root) (insert "<" f ">")))
+                 (xwapp-test--app :index (expand-file-name "app/ui/index.html" root)
+                                  :handler (lambda (i) (push i intents))
+                                  :on-kill (lambda () (setq closed (1+ closed)))))))
+     (ignore intents closed)
+     (unwind-protect (progn (xwapp-url app) ,@body)
+       (maphash (lambda (a _) (dolist (k '(:hold :flush :gone)) (xwapp--untimer a k)))
+                xwapp--served)
+       (when (get-buffer " *xwapp-test*")
+         (let ((kill-buffer-hook nil)) (kill-buffer " *xwapp-test*")))
+       (when xwapp--server (delete-process xwapp--server))
+       (delete-directory root t))))
+
+(defun xwapp-test--ask (method path &optional body headers)
+  "Send METHOD PATH with BODY and HEADERS.  Return a cell whose car
+becomes (CODE . BODY) once the server closes; its cdr is the client."
+  (let* ((cell (list nil))
+         (port (process-contact xwapp--server :service))
+         (out "")
+         (proc (make-network-process
+                :name "xwapp-test-client" :host "127.0.0.1" :service port
+                :coding 'binary :noquery t
+                :filter (lambda (_p s) (setq out (concat out s)))
+                :sentinel
+                (lambda (_p _e)
+                  (unless (car cell)
+                    (setcar cell
+                            (if (string-match "\\`HTTP/1.1 \\([0-9]+\\)" out)
+                                (cons (string-to-number (match-string 1 out))
+                                      (decode-coding-string
+                                       (substring out (+ 4 (string-search "\r\n\r\n" out)))
+                                       'utf-8))
+                              (cons 0 out)))))))
+         (bytes (encode-coding-string (or body "") 'utf-8)))
+    (setcdr cell proc)
+    (process-send-string
+     proc
+     (concat method " " path " HTTP/1.1\r\n"
+             (unless (assoc "Host" headers) (format "Host: 127.0.0.1:%d\r\n" port))
+             (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
+             (format "Content-Length: %d\r\n\r\n" (length bytes))
+             bytes))
+    cell))
+
+(defun xwapp-test--answer (cell)
+  "The (CODE . BODY) CELL is to get, waiting for it."
+  (with-timeout (5 (error "No answer"))
+    (while (not (car cell))
+      (accept-process-output nil 0.02)))
+  (car cell))
+
+(defun xwapp-test--do (method path &optional body headers)
+  (xwapp-test--answer (xwapp-test--ask method path body headers)))
+
+(defun xwapp-test--turn (&optional secs)
+  "Let the server and its timers run for SECS, 0.1 by default."
+  (let ((end (+ (float-time) (or secs 0.1))))
+    (while (< (float-time) end)
+      (accept-process-output nil 0.02))))
+
+(defun xwapp-test--at (app path)
+  (concat "/" (xwapp--secret app) "/" path))
+
+(ert-deftest xwapp-test-browser-serves-the-page-and-the-kit-only ()
+  "The page's own files and xwapp's kit, under the app's secret, to this
+host; nothing else, whatever the path says."
+  (xwapp-test--with-browser
+    (should (string-match-p "\\`http://127\\.0\\.0\\.1:[0-9]+/[0-9a-f]\\{32\\}/app/ui/index\\.html\\'"
+                            (xwapp-url app)))
+    (should (equal (xwapp-test--do "GET" (xwapp-test--at app "app/ui/index.html"))
+                   '(200 . "<app/ui/index.html>")))
+    (should (equal (xwapp-test--do "GET" (xwapp-test--at app "xwapp/ui/xwapp.js"))
+                   '(200 . "<xwapp/ui/xwapp.js>")))
+    (dolist (path (list (xwapp-test--at app "app/notes.txt")
+                        (xwapp-test--at app "app/ui/../notes.txt")
+                        (xwapp-test--at app "other/ui/x.js")
+                        (xwapp-test--at app "app/ui/")
+                        "/0123456789abcdef0123456789abcdef/app/ui/index.html"
+                        "/app/ui/index.html"))
+      (should (equal (car (xwapp-test--do "GET" path)) 404)))
+    ;; Another name rebound to this host, or another site's page.
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app "app/ui/index.html") nil
+                                        '(("Host" . "evil.example"))))
+                   404))
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}"
+                                        '(("Origin" . "http://evil.example"))))
+                   404))
+    ;; Before any page: an intent naming none is not one.
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent") "{\"op\":\"x\"}")) 410))
+    (xwapp-test--turn)
+    (should-not intents)
+    (should-not (xwapp-live-p app))))
+
+(ert-deftest xwapp-test-browser-round-trip ()
+  "hello makes the page the app's.  Its intents reach the handler in
+order, read as the title's are; the app's calls wait for its next, and
+go together."
+  (xwapp-test--with-browser
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")) 204))
+    (should (xwapp-live-p app))
+    (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1")))
+          (said "{\"op\":\"say\",\"text\":\"你好\",\"n\":[1,2],\"f\":false}"))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") said)) 204))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1")
+                                          "{\"op\":\"refresh\"}"))
+                     204))
+      (xwapp-test--turn)
+      (should (equal (reverse intents)
+                     (list (xwapp-parse-intent (concat "t:" said) '("t:"))
+                           '((op . "refresh")))))
+      (should (equal (alist-get 'text (car (last intents))) "你好"))
+      (should-not (car next))
+      (xwapp-js app "render" '(:title "標題" :items [1 2]))
+      (xwapp-js app "flash" "done")
+      (should (equal (xwapp-test--answer next)
+                     '(200 . "[{\"ns\":\"T\",\"fn\":\"render\",\"arg\":{\"title\":\"標題\",\"items\":[1,2]}},{\"ns\":\"T\",\"fn\":\"flash\",\"arg\":\"done\"}]"))))))
+
+(ert-deftest xwapp-test-browser-idle-next-is-answered-empty ()
+  (xwapp-test--with-browser
+    (let ((xwapp--hold 0.1))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (should (equal (xwapp-test--do "GET" (xwapp-test--at app "next?page=p1"))
+                     '(200 . "[]"))))))
+
+(ert-deftest xwapp-test-browser-one-page-at-a-time ()
+  "The page that said hello last is the app's: the one before is told,
+and its intents are refused.  Moving is not closing."
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.3))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((old (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (xwapp-test--turn)
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")) 204))
+        (should (equal (car (xwapp-test--answer old)) 410)))
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p2"))))
+        (dolist (path '("intent?page=p1" "intent?page=" "intent"))
+          (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app path) "{\"op\":\"x\"}")) 410)))
+        (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app "next?page=p1"))) 410))
+        ;; Long enough for a stray timer from the page let go to fire.
+        (xwapp-test--turn 0.5)
+        (should-not (car next)))
+      (should-not intents)
+      (should (= closed 0))
+      (should (xwapp-live-p app)))))
+
+(ert-deftest xwapp-test-browser-let-go-is-not-closed ()
+  "A tab let go -- as `xwapp-open' does, the page moving into Emacs -- is
+told so, and the app is not closed: not then, nor when the tab's
+request is gone."
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.2))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (xwapp-test--turn)
+        (xwapp--let-go app)
+        (should (equal (car (xwapp-test--answer next)) 410)))
+      (xwapp-test--turn 0.5)
+      (should (= closed 0))
+      (should-not (xwapp-live-p app)))))
+
+(ert-deftest xwapp-test-browser-takes-the-page-from-emacs ()
+  "A tab's hello kills the app's buffer in Emacs, and the app is not
+closed: it has moved.  Killed with no tab holding the page, it is."
+  (xwapp-test--with-browser
+    (let ((make (lambda ()
+                  (with-current-buffer (get-buffer-create " *xwapp-test*")
+                    (add-hook 'kill-buffer-hook (lambda () (xwapp--on-kill app)) nil t)))))
+      (funcall make)
+      (kill-buffer " *xwapp-test*")
+      (should (= closed 1))
+      (funcall make)
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (should-not (get-buffer " *xwapp-test*"))
+      (should (= closed 1))
+      (should (xwapp-live-p app)))))
+
+(ert-deftest xwapp-test-browser-a-closed-tab-closes-the-app ()
+  "A tab that hangs up and does not come back is closed; one that comes
+back -- a reload -- is not."
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.3))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (xwapp-test--turn)
+        (delete-process (cdr next)))
+      (xwapp-test--turn)
+      ;; The reload: hello, then at once the next a page always has.
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p2"))))
+        (xwapp-test--turn 0.5)
+        (should (= closed 0))
+        (should (xwapp-live-p app))
+        (delete-process (cdr next)))
+      (xwapp-test--turn 0.5)
+      (should (= closed 1))
+      (should-not (xwapp-live-p app)))))
+
+(ert-deftest xwapp-test-browser-says-whether-you-look ()
+  "What the tab says of itself is xwapp's, not the app's."
+  (xwapp-test--with-browser
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (should-not (xwapp-seen-p app))
+    (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"xwapp-seen\",\"seen\":true}")
+    (should (xwapp-seen-p app))
+    (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"xwapp-seen\",\"seen\":false}")
+    (should-not (xwapp-seen-p app))
+    (xwapp-test--turn)
+    (should-not intents)))
+
+(ert-deftest xwapp-test-browser-reload ()
+  (xwapp-test--with-browser
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+      (xwapp-test--turn)
+      (xwapp-reload app)
+      (should (equal (xwapp-test--answer next) '(200 . "[{\"xwapp\":\"reload\"}]"))))))
+
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

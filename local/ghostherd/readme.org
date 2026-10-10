@@ -1076,9 +1076,18 @@ are the other tabs (below, and "What happened while you were away").
   state changes; a prompt being typed holds the refresh back.
 - The page renders text from transcripts and screens and can drive
   agents, so beyond the sanitizer it carries a Content-Security-Policy:
-  no inline script or handler, no fetch, no image but a =data:= one
-  (an attached image's preview, which Emacs makes).  Something that
-  got past the sanitizer still could not run, nor load anything.
+  no inline script or handler, no fetch but to the Emacs that served
+  it, no image but a =data:= one (an attached image's preview, which
+  Emacs makes).  Something that got past the sanitizer still could not
+  run, nor load anything.
+- In a web browser: =M-x xwapp-browse= in =*herd*= moves the page to a
+  tab --- its own window, another screen --- and =(setq xwapp-browser
+  t)= opens it there every time, pr-view's and clickup-view's pages
+  too.  It is the same page and Emacs does the same work; Emacs serves
+  it on 127.0.0.1, under a secret only the tab has.  An app has one
+  page at a time: opening it in Emacs again takes it from the tab,
+  which says so.  ⌘V there is the browser's own paste; an image in it
+  is still saved by Emacs, as above.
 
 ** The memory page
 
