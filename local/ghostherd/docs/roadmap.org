@@ -646,10 +646,10 @@ builds, one tests, back and forth --- as one conversation, on the page.
 ** What is left
 
 - [X] An ask whose paste never reached the taker: see Phase 3.20
-- [ ] The loop itself: two agents handing work back and forth until
-  one says it is done --- today each turn is an ask the agent decides
-  to make; a herd-run loop (who goes next, when it stops, a turn cap)
-  is the experiment this room was built to watch
+- [X] The loop itself: two agents handing work back and forth until
+  one says it is done --- by the lead (3.21), the turn cap and where it
+  stands by the herd (3.24); a herd-run loop choosing who goes next was
+  not built
 - [ ] Earlier turns: the room shows the tail; the whole conversation is
   on the Sessions tab once imported
 
@@ -700,9 +700,9 @@ it finished --- or stopped for a reason the room states.
 
 ** What is left
 
-- [ ] A loop in one command: the pair spawned with their roles and the
-  rules (rounds, the word that ends it), and the room's header saying
-  where it is --- "round 3/4, waiting on qa", "done: no problems"
+- [X] A loop in one command: said to the lead instead (3.21), the
+  rounds held by the herd and the room's header saying where it is
+  (3.24)
 
 * Phase 3.21 — A project's chat, and a lead to run it  *(this tree)*
 
@@ -836,6 +836,66 @@ of Emacs.  How it is built is under "In a web browser" in
 - [ ] pr-view's and clickup-view's tabs do not come back after a
   restart: neither has a =:reopen= --- pr-view would need the
   repository it was opened on
+
+* Phase 3.24 — Rounds the herd holds  *(this tree)*
+
+Goal: a loop said in words --- "rd builds, qa tests, four rounds" ---
+that stops at four whatever the agents remember, and a room that says
+where it is.  The rest of 3.20's loop command, now that the lead runs
+loops.
+
+** What shipped
+
+- [X] =herd ask --rounds N=: while it answers the ask, the taker may
+  ask any one agent N times; the next is refused with what to do ---
+  answer with where it stands.  5 when not given; the user is not held
+  to rounds
+- [X] An agent nobody asked is held to 5 with each agent in one run:
+  from its first ask until it finishes a turn with nothing open and no
+  answer on its way --- seen on the tick, so with or without hooks
+- [X] The taker is told its rounds in the ask; the asker sees its round
+  as it asks (=asked qa (ask …), round 2 of 4=); the lead's role says
+  to give the rounds to the herd
+- [X] Each ask carries the ask it answers, its run and its round.  The
+  room's header follows them: =lead → rd → qa · round 3/4 · waiting on
+  qa=, =qa answered round 3/4 · waiting on rd=, then =done: lead: …=
+  with the lead's report and the rounds it took --- or why it stopped.
+  The columns show the round on each ask
+- [X] A respawned lead gets the role as it is now, not the one its
+  recipe kept from when it started --- or a lead from before
+  =--rounds= would never hear of it
+- [X] A press holds the page's refresh back as an edit does.  On
+  WebKit --- Emacs's own page, Safari --- a button takes no focus, so
+  pressing Save on an agent's notes took the focus out of the box, a
+  refresh held while you typed was drawn, and the click fell on a
+  button no longer there: the notes went back.  Start on a new agent
+  and Send lost their click the same way
+- [X] A =done= seen stays seen.  Seen in the room --- or in its buffer
+  --- within the two minutes an agent's own report of =done= is
+  trusted, it was =done= again as soon as you looked away, announced a
+  second time, and held there once the report ran out: the herd page
+  said =done= after the room had said =idle=.  Seen, the report now
+  says =idle= for the time it has left
+- [X] 8 new pytest and 3 extended; 3 new ERT and 2 extended; 16
+  WebKit checks of the header, 13 of edits a refresh comes into; 50
+  guards broken on purpose (29 in the sidecar, the client and the
+  Elisp, 21 in the page), each caught
+- [X] A real loop through the lead: "rd 寫、qa 測，最多 2 輪" in
+  room-trial.  The lead asked rd with =--rounds 2=; qa failed round 1,
+  passed round 2 with suggestions; rd took them, asked no third time,
+  and answered that the last version went untested --- which the lead
+  told the user.  No answer mailed twice; both runs ended
+
+** What is left
+
+- [ ] See the herd refuse a round in a real loop: in the trial, rd
+  stopped at its rounds by itself, as it was told to
+- [ ] A lead on a CLI that takes its role with its first message (agy)
+  is respawned fresh without it; a resumed claude keeps the system
+  prompt its conversation was recorded with
+- [ ] The run of an agent nobody asked ends on the tick's view of its
+  state: a turn that ends and starts again within a tick is not seen
+  to end, and its next asks count with the last
 
 * Phase 4 — Ecosystem (only if still useful)
 
