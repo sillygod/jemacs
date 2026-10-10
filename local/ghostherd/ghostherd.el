@@ -2,7 +2,7 @@
 
 ;; Author: Jing
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (ghostel "0.32"))
+;; Package-Requires: ((emacs "28.1") (ghostel "0.32") (xwapp "0.1.0"))
 ;; Keywords: tools, terminals, ai
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 

@@ -2,7 +2,7 @@
 
 ;; Author: Jing
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (xwapp "0.1.0"))
 ;; Keywords: tools, convenience
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
