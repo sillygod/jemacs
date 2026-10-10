@@ -437,7 +437,7 @@ page" in [[file:../readme.org][readme.org]].
 
 ** What is left
 
-- [ ] The herd log as a second tab (step 3 of the web-UI plan)
+- [X] The herd log as a second tab (step 3 of the web-UI plan) --- Phase 3.13
 - [X] The sanitizer, marked and the base colours moved into xwapp's
   page kit (=xwapp/ui/=), with a CSP on every page
 - [X] Resume a past session from the page --- Phase 3.14
@@ -792,6 +792,50 @@ project's agents are on, and open them from there.
 
 - [ ] The lead told its project's PR and tickets when it starts; never
   changing a ticket on its own
+
+* Phase 3.23 — The herd page in a web browser  *(this tree)*
+
+Goal: the herd page in a browser tab --- its own window, another
+screen --- doing what it does in the xwidget, and outliving a restart
+of Emacs.  How it is built is under "In a web browser" in
+[[file:../../xwapp/README.org][xwapp's README]].
+
+** What shipped
+
+- [X] xwapp serves a page on 127.0.0.1 under a secret per app;
+  =M-x xwapp-browse= moves a page there, =xwapp-browser= opens every
+  page there.  The page asks, Emacs never writes to a tab that has not
+  (=next= held, intents as POSTs): a tab that stops reading cannot
+  hold Emacs
+- [X] One page per app: the page that says hello last takes it, the
+  tab before is told; moving between a tab and the xwidget is not
+  closing.  A tab that stops asking for ten seconds is closed
+- [X] =xwapp-live-p=, =xwapp-seen-p=, =xwapp-reload=: the herd asks the
+  page wherever it is.  Usage refreshes only while the page can be
+  seen --- its window on a focused, visible frame, or its tab in front
+- [X] A PR or task clicked in a tab opens in the browser too
+- [X] A tab comes back by itself: after a restart of Emacs (the
+  address kept in =xwapp-state-file=, the herd page loaded once Emacs
+  is up) and after the browser froze it.  It comes back softly,
+  taking nothing another page has; a tab taken from stays put
+- [X] The page keeps its tab, a room and the room's view in its URL,
+  and goes back there when loaded again --- =bin/reload= included
+- [X] =bin/reload= reads an =.el= through to its end: it stopped at
+  the first form that signalled, with nothing said
+- [X] 18 xwapp ERT, 1 ghostherd; 33 checks in Chrome (Playwright)
+  against throwaway Emacs processes: a tab across a killed Emacs and a
+  new one, a frozen tab, two tabs, the three real pages under their
+  CSP, the herd page's tab and room restored, served and from
+  =file://=; each guard mutation-tested
+
+** What is left
+
+- [ ] A PR or task clicked in a tab opens a new tab each time: Emacs
+  cannot bring a tab it opened to the front, and the one before only
+  says it was taken
+- [ ] pr-view's and clickup-view's tabs do not come back after a
+  restart: neither has a =:reopen= --- pr-view would need the
+  repository it was opened on
 
 * Phase 4 — Ecosystem (only if still useful)
 
