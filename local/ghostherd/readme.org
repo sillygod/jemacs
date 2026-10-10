@@ -379,7 +379,10 @@ before tokens holds a bare URL and gets a 401 that points it at
 
 =herd_message= queues ={from, to, body, handoff}=.  Each poll Emacs
 calls =herd_tick=: push the session snapshot, ack what it already
-pasted, pull whatever is deliverable.  A target that is =working= is
+pasted, pull whatever is deliverable.  A tick with no answer in
+=ghostherd-memory-request-timeout= seconds (60) is given up, and the
+next one asks again: url.el now and then drops a request, and the mail
+used to stop there.  A target that is =working= is
 not deliverable; the sidecar holds the row until it is idle.  Overlay
 =m= still pastes immediately and does not use the queue.
 

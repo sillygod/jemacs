@@ -361,36 +361,74 @@ json.el then keeps 你 as raw bytes, which a UTF-8 buffer shows as
   "Return non-nil if the current port answers as this sidecar."
   (ghostherd-memory--health-ours-p))
 
+(defconst ghostherd-memory--unbounded-methods '("memory_import")
+  "Methods that answer when their work is done, however long it takes.")
+
 (defun ghostherd-memory-request-async (method callback &optional params error-callback)
   "POST METHOD asynchronously; CALLBACK gets the JSON-RPC result.
-Import is CPU-heavy and must not freeze Emacs on `url-retrieve-synchronously'."
+Import is CPU-heavy and must not freeze Emacs on `url-retrieve-synchronously'.
+
+The answer is read and its buffer killed: url.el leaves that to us,
+and left alone they piled up in the tens of thousands, every one of
+them walked by each garbage collection --- a pause you feel as you
+type.  A request with no answer in `ghostherd-memory-request-timeout'
+seconds is given up, to ERROR-CALLBACK: url.el can drop one whose
+retry fails inside its sentinel, and a caller holding an in-flight
+flag, like the herd tick, would wait on it forever.  Methods in
+`ghostherd-memory--unbounded-methods' are waited on."
   (let* ((url-request-method "POST")
          (url-request-extra-headers
           '(("Content-Type" . "application/json")))
          (url-request-data (encode-coding-string
                             (json-encode
                              (ghostherd-memory--build-request method params))
-                            'utf-8)))
-    (url-retrieve
-     (ghostherd-memory--rpc-url)
-     (lambda (status callback error-callback)
-       (let ((err (plist-get status :error)))
-         (cond
-          (err
-           (if error-callback
-               (funcall error-callback (format "%s" err))
-             (message "ghostherd-memory: %s" err)))
-          (t
-           (let ((body (ghostherd-memory--body-from-url-buffer)))
-             (condition-case parse-err
-                 (funcall callback (ghostherd-memory--parse-response body))
-               (error
-                (if error-callback
-                    (funcall error-callback (error-message-string parse-err))
-                  (message "ghostherd-memory: %s"
-                           (error-message-string parse-err))))))))))
-     (list callback error-callback)
-     t t)))
+                            'utf-8))
+         (fail (lambda (why)
+                 (if error-callback
+                     (funcall error-callback why)
+                   (message "ghostherd-memory: %s" why))))
+         (done nil)
+         (deadline nil)
+         (buf
+          (condition-case err
+              (url-retrieve
+               (ghostherd-memory--rpc-url)
+               (lambda (status)
+                 (let ((this (current-buffer)))
+                   (unwind-protect
+                       (unless done
+                         (setq done t)
+                         (when deadline (cancel-timer deadline))
+                         (let ((err (plist-get status :error)))
+                           (if err
+                               (funcall fail (format "%s" err))
+                             (let ((body (ghostherd-memory--body-from-url-buffer)))
+                               (condition-case parse-err
+                                   (funcall callback (ghostherd-memory--parse-response body))
+                                 (error
+                                  (funcall fail (error-message-string parse-err))))))))
+                     (when (buffer-live-p this)
+                       (kill-buffer this)))))
+               nil t t)
+            ;; Answered later, as any answer is: a caller may mark
+            ;; itself in flight only once this returns.
+            (error (setq done t)
+                   (run-at-time 0 nil fail (error-message-string err))
+                   nil))))
+    (unless (or done (member method ghostherd-memory--unbounded-methods))
+      (setq deadline
+            (run-with-timer
+             ghostherd-memory-request-timeout nil
+             (lambda ()
+               (unless done
+                 (setq done t)
+                 (when (buffer-live-p buf)
+                   (when-let* ((proc (get-buffer-process buf)))
+                     (ignore-errors (delete-process proc)))
+                   (kill-buffer buf))
+                 (funcall fail (format "%s: no answer in %ss"
+                                       method ghostherd-memory-request-timeout)))))))
+    buf))
 
 (defun ghostherd-memory-request (method &optional params timeout)
   "Synchronous JSON-RPC METHOD with PARAMS plist.

@@ -4082,6 +4082,92 @@ its /health does (sha256(\"abc\") starts ba7816bf8f01)."
    (ghostherd-memory--parse-response
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"nope\"}}")))
 
+(defmacro ghostherd-tests--with-sidecar-http (&rest body)
+  "BODY with url.el faked: `answer' lands a reply on the last request.
+Each request's buffer is in `bufs'; `timers' holds the deadlines set,
+as (SECS . FN), and `later' what was put off until next tick."
+  (declare (indent 0))
+  `(let ((bufs nil) (timers nil) (later nil) (landing nil) (refuse nil))
+     (cl-letf (((symbol-function 'ghostherd-memory--rpc-url) (lambda () "http://127.0.0.1:1/rpc"))
+               ((symbol-function 'url-retrieve)
+                (lambda (_url cb &rest _)
+                  (when refuse (signal 'wrong-type-argument (list 'stringp nil)))
+                  (let ((b (generate-new-buffer " *gh-sidecar-test*")))
+                    (push b bufs)
+                    (setq landing cb)
+                    b)))
+               ((symbol-function 'run-with-timer)
+                (lambda (secs _repeat fn &rest args)
+                  (push (cons secs (lambda () (apply fn args))) timers)
+                  (car timers)))
+               ((symbol-function 'cancel-timer)
+                (lambda (timer) (setq timers (delq timer timers))))
+               ((symbol-function 'run-at-time)
+                (lambda (_secs _repeat fn &rest args)
+                  (push (lambda () (apply fn args)) later))))
+       (cl-flet ((answer (status &optional body)
+                   (with-current-buffer (car bufs)
+                     (insert "HTTP/1.1 200 OK\r\n\r\n" (or body ""))
+                     (funcall landing status))))
+         (unwind-protect (progn ,@body)
+           (mapc #'kill-buffer (seq-filter #'buffer-live-p bufs)))))))
+
+(ert-deftest ghostherd-test-memory-async-answer-leaves-no-buffer ()
+  "Every answer's buffer goes, read or failed.  Kept, they piled up in
+the tens of thousands, and each garbage collection walked them all."
+  (ghostherd-tests--with-sidecar-http
+    (let (got failed)
+      (ghostherd-memory-request-async
+       "herd_tick" (lambda (r) (push r got)) nil (lambda (e) (push e failed)))
+      (answer nil "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}")
+      (should (equal got '((:ok t))))
+      (should-not (buffer-live-p (car bufs)))
+      (should-not timers)
+      (ghostherd-memory-request-async
+       "herd_tick" (lambda (r) (push r got)) nil (lambda (e) (push e failed)))
+      (answer '(:error (error connection-failed "refused")))
+      (should (equal failed '("(error connection-failed refused)")))
+      (should-not (buffer-live-p (car bufs)))
+      (should (= (length got) 1)))))
+
+(ert-deftest ghostherd-test-memory-async-unanswered-is-given-up-once ()
+  "url.el can drop a request; the herd tick would then wait forever."
+  (ghostherd-tests--with-sidecar-http
+    (let (got failed)
+      (ghostherd-memory-request-async
+       "herd_tick" (lambda (r) (push r got)) nil (lambda (e) (push e failed)))
+      (should (equal (mapcar #'car timers) (list ghostherd-memory-request-timeout)))
+      (funcall (cdar timers))
+      (should (equal failed (list (format "herd_tick: no answer in %ss"
+                                          ghostherd-memory-request-timeout))))
+      (should-not (buffer-live-p (car bufs)))
+      ;; Too late: it was given up.
+      (let ((b (generate-new-buffer " *gh-sidecar-test*")))
+        (push b bufs)
+        (answer nil "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}"))
+      (funcall (cdar timers))
+      (should-not got)
+      (should (= (length failed) 1)))))
+
+(ert-deftest ghostherd-test-memory-async-import-is-waited-on ()
+  "An import answers when it is done; twenty minutes is not a failure."
+  (ghostherd-tests--with-sidecar-http
+    (ghostherd-memory-request-async "memory_import" #'ignore nil #'ignore)
+    (should-not timers)))
+
+(ert-deftest ghostherd-test-memory-async-refused-at-once-fails-later ()
+  "url.el can fail the call itself; the caller still hears, once,
+and only after the call returns, as from any answer."
+  (ghostherd-tests--with-sidecar-http
+    (setq refuse t)
+    (let (failed)
+      (should-not (ghostherd-memory-request-async
+                   "herd_tick" #'ignore nil (lambda (e) (push e failed))))
+      (should-not failed)
+      (should-not timers)
+      (mapc #'funcall later)
+      (should (equal failed '("Wrong type argument: stringp, nil"))))))
+
 (ert-deftest ghostherd-test-memory-menu-lists-search ()
   (should (equal (nth 2 (assoc "/" ghostherd-menu-choices))
                  'ghostherd-memory-search))
