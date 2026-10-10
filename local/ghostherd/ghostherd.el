@@ -1812,6 +1812,10 @@ one, and otherwise prompts."
                      (t (plist-get recipe :args)))))
     (when (and continue (not exact) (null (plist-get spec :continue-args)))
       (user-error "%s has no resume flag" kind))
+    ;; The recipe holds the role as it was when the lead started; it
+    ;; goes back with the role as it is now.
+    (when (equal (plist-get recipe :role) "lead")
+      (setq args (ghostherd--with-lead-role kind args)))
     ;; Free both the buffer name and the registry id before respawning:
     ;; `ghostherd-spawn' refuses to clobber an existing buffer.
     (ghostherd-kill session t)
@@ -4136,6 +4140,18 @@ it lists."
   (pcase kind
     ('claude (list "--append-system-prompt" ghostherd--lead-role))
     ('grok (list "--rules" ghostherd--lead-role))))
+
+(defun ghostherd--with-lead-role (kind args)
+  "ARGS with the lead's role as it is now, for a KIND agent.
+Whatever role ARGS gave it -- the text after the flag that takes one
+-- is dropped, and the current one appended."
+  (if-let* ((role (ghostherd--lead-args kind)))
+      (let (out)
+        (while args
+          (let ((a (pop args)))
+            (if (equal a (car role)) (pop args) (push a out))))
+        (append (nreverse out) role))
+    args))
 
 (defun ghostherd-project-lead (project)
   "PROJECT's lead, or nil."

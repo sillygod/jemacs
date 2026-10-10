@@ -5647,6 +5647,33 @@ agy takes none, and gets it with its first message."
       (ghostherd-start-lead "/other/room-trial/")
       (should (equal (plist-get (cdar spawned) :name) "lead-room-trial-2")))))
 
+(ert-deftest ghostherd-test-a-respawned-lead-gets-the-role-as-it-is-now ()
+  "A lead started before its role changed is respawned with the new one,
+fresh or resumed; an agent that is not a lead keeps its args."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal))
+                               (ghostherd--roles (make-hash-table :test 'equal)))
+    (puthash "lead-p" "lead" ghostherd--roles)
+    (let ((lead (ghostherd-tests--session :name "lead-p" :kind 'claude
+                                          :args '("--model" "opus" "--append-system-prompt" "old role")))
+          (rd (ghostherd-tests--session :name "rd" :kind 'claude
+                                        :args '("--append-system-prompt" "be terse")))
+          spawned)
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (_kind &rest plist) (setq spawned plist) nil)))
+        (ghostherd-respawn lead)
+        (should (equal (plist-get spawned :args)
+                       (list "--model" "opus" "--append-system-prompt" ghostherd--lead-role)))
+        (ghostherd-respawn (ghostherd-tests--session :name "lead-p" :kind 'claude
+                                                     :args '("--append-system-prompt" "old role"))
+                           t)
+        (should (equal (plist-get spawned :args)
+                       (list "--continue" "--append-system-prompt" ghostherd--lead-role)))
+        (ghostherd-respawn rd)
+        (should (equal (plist-get spawned :args) '("--append-system-prompt" "be terse")))))
+    (should (equal (ghostherd--with-lead-role 'grok '("--rules" "old" "-x"))
+                   (list "-x" "--rules" ghostherd--lead-role)))
+    (should (equal (ghostherd--with-lead-role 'agy '("-x")) '("-x")))))
+
 (ert-deftest ghostherd-test-the-page-sees-one-project-and-tells-the-lead ()
   "However its agents spell their project, the page and the room see one;
 and what the page sends an agent of a project with a lead is kept for
