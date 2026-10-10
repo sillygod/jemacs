@@ -98,13 +98,14 @@ In a shell:
 
 #+begin_src bash
   cd ~/.emacs.d/local/ghostherd
+  d=$(mktemp -d) && cp ghostherd*.el "$d"/ && rm "$d"/ghostherd-tests.el
   emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
-        -L . -L ../xwapp -f batch-byte-compile \
-        ghostherd-backend.el ghostherd-tmux.el ghostherd.el \
-        ghostherd-memory.el ghostherd-memory-page.el
+        -L . -L ../xwapp -f batch-byte-compile "$d"/*.el
 #+end_src
 
 Expect: no errors (warnings about free vars from ghostel internals are OK if any).
+A copy, because an =.elc= left here is loaded instead of its =.el=
+(see [[file:development.org][development.org]]).
 
 In Emacs:
 

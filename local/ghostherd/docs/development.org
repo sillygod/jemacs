@@ -1,0 +1,148 @@
+#+TITLE: ghostherd — development
+
+How to change ghostherd while the herd runs on it.  How it is tested is
+[[file:testing.org][testing.org]]; why it is shaped as it is, [[file:design.org][design.org]].
+
+* What runs where
+
+| Part     | Files                    | Runs in                                       | A change takes effect                 |
+|----------+--------------------------+-----------------------------------------------+---------------------------------------|
+| Elisp    | =ghostherd*.el=          | the Emacs you work in                         | =bin/reload FILE.el=, or a restart    |
+| Page     | =ui/= (HTML, JS, CSS)    | the =*herd*= xwidget, through =xwapp=         | =bin/reload ui/app.js=                |
+| Sidecar  | =server/= (Python)       | a child process of that Emacs, port 49152 up  | =bin/reload server/x.py=              |
+| Agents   | ---                      | tmux sessions                                 | never touched by any of the above     |
+
+The agents live in tmux, so neither a restart of Emacs nor of the
+sidecar stops one; the ghostel buffers are only views of them.  Mail
+and asks are in the sidecar's sqlite and outlive it too.
+
+* Changing it while it runs: =bin/reload=
+
+#+begin_src bash
+  bin/reload ghostherd-memory-page.el ui/app.js     # Elisp and the page
+  bin/reload server/links.py                         # the sidecar
+#+end_src
+
+For an =.el= file it reads the file form by form in the running Emacs,
+through =emacsclient=:
+
+- every =defun=, =defmacro=, =cl-defmethod= and the like is defined
+  again, and every =defconst= set again: they are code;
+- a =defvar= or =defcustom= that is bound keeps its value: the sessions,
+  the timers, the caches and your settings are the running herd, not
+  code.  Only a new one is defined;
+- every other top-level form is not run, and is named in the answer.
+  An =add-hook= or =advice-add= already in place needs nothing; a new
+  one is yours to evaluate.  A changed =cl-defstruct= or mode wants a
+  restart: the live sessions are records of the old one.
+
+That is also why it is not =load-file=: loading sets every constant
+too, but it runs every top-level form again, and a =setq= or a timer
+started at top level would run twice.  In Emacs, =C-M-x= on a defun
+does the same for one function --- but on a =defvar= it resets the
+value, which =bin/reload= never does.
+
+For a =ui/= file it loads the herd page again, back on the Agents tab
+if that was showing; a room is not reopened.  For a =server/= file it
+restarts the sidecar, and refuses while an ask is open (=--force= does
+it anyway): the taker would answer into a sidecar that no longer holds
+the ask.  A sidecar this Emacs did not start is left alone and named.
+
+What it defines is interpreted, not compiled: slower, and not what to
+measure.  Measure after a restart.
+
+* The build
+
+ghostherd is a straight package built from this directory: straight
+links the =.el= files into =emacs-home/straight/build/ghostherd/= and
+byte-compiles them there, at startup, when one changed.  A restart is
+therefore always the whole, compiled change.
+
+Two things about that build bite:
+
+- It compiles in a separate Emacs that has only the packages in
+  =Package-Requires= (=ghostherd.el='s header) on its load path.  A file
+  that requires anything else --- =xwapp=, say --- fails to compile, and
+  runs interpreted from its =.el=, with nothing said.  A new =require= of
+  a package outside Emacs goes into =Package-Requires= too.
+- Never byte-compile into this directory: =load-prefer-newer= is nil,
+  so an =.elc= next to its =.el= is loaded instead of it, stale or not.
+  To see the compiler's warnings, compile a copy:
+
+#+begin_src bash
+  d=$(mktemp -d) && cp ghostherd-memory-page.el "$d"/ && \
+    emacs -Q --batch -L . -L ../xwapp -f batch-byte-compile "$d"/ghostherd-memory-page.el
+#+end_src
+
+* The sidecar
+
+=server/= runs under =uv= from this directory; its output is in the
+=*ghostherd-memory*= buffer.  The tests are =server/tests= (see
+[[file:testing.org][testing.org]]).
+
+- An importer that now reads a transcript differently bumps its
+  =VERSION=: the index keeps, per file, the version that read it, and
+  reads again a file an older one read.  Without it, nothing already
+  imported changes.
+- The RPC URL carries the token.  A message names the sidecar with
+  =ghostherd-memory--where=, never with the URL; nothing prints
+  =rpc.token=.
+
+* Rules the bugs taught
+
+These are not style.  Each was a stall, a leak or a silent failure
+first.
+
+- *Kill every =url-retrieve= buffer* in its callback, whether the
+  request succeeded or not.  url.el leaves it to you, and 54,000 of
+  them made each garbage collection take half a second.
+- *Give a request a deadline* when anything waits on it.  url.el can
+  drop a callback; a caller holding an in-flight flag then waits
+  forever (the herd tick did, and the mail stopped).
+  =ghostherd-memory-request-async= gives up after
+  =ghostherd-memory-request-timeout=, once.
+- *Nothing that blocks runs from a timer.*  git takes 7--10ms; setting
+  up an HTTPS request blocks 14--39ms; a dozen of either in one tick is
+  a keystroke held.  Make it a chore
+  (=ghostherd-memory-page--chore=: done while you are not typing, a
+  few at a time) or a subprocess.
+- *The page gets vectors and =:json-false=.*  A list sent to the page
+  must be a vector, false is =:json-false=, absent is nil.
+- *JSON is read with =json-parse-string=* (=:object-type 'plist
+  :array-type 'list :null-object nil :false-object nil= reads as
+  =json-read= did, with a fifth of the garbage).  It is written with
+  =json-serialize= only where the payload is ghostherd's own and
+  =json-encode= catches what it cannot write: it writes =(a 1)= as an
+  object where =json-encode= wrote an array, and keeps the first of a
+  repeated key where the page would read the last --- without an
+  error.
+
+* Measuring
+
+Before changing anything for speed, find what holds Emacs.  Time the
+timers' functions with an advice --- an =:around= advice gets the
+original first:
+
+#+begin_src emacs-lisp
+  (defvar my/times (make-hash-table))
+  (dolist (f '(ghostherd--poll-tick ghostherd-memory-page--herd-tick))
+    (let ((name f))
+      (advice-add f :around
+                  (lambda (orig &rest args)
+                    (let ((t0 (float-time)))
+                      (unwind-protect (apply orig args)
+                        (push (- (float-time) t0) (gethash name my/times)))))
+                  '((name . my/timed)))))
+  ;; ... later:
+  (dolist (f '(ghostherd--poll-tick ghostherd-memory-page--herd-tick))
+    (advice-remove f 'my/timed))
+#+end_src
+
+- Garbage: =(memory-use-counts)= before and after a call counts what it
+  allocated; =gcs-done= and =gc-elapsed= over a minute say how often
+  collection runs and what each costs.  =(length (buffer-list))= going
+  up is a leak.
+- Who allocates: =(profiler-start 'mem)=, then =(profiler-stop)= and
+  =M-x profiler-report=.
+- Watch it a few minutes, not one tick: the PR and task lookups go
+  stale every five minutes, and that tick is the one that stalls.

@@ -16,14 +16,15 @@ control plane bound to the Emacs session.
 | Wired in    | =jemacs-ai= + leader =SPC a h=                              |
 
 This file is the manual: what it does, how to drive it, what to do when
-it misbehaves. Three things live next door, because they have different
+it misbehaves. Four things live next door, because they have different
 readers and different lifetimes:
 
-| Document                                    | For                                                 |
-|---------------------------------------------+-----------------------------------------------------|
-| [[file:docs/design.org][docs/design.org]]    | why it is shaped this way, and what was traded away |
-| [[file:docs/testing.org][docs/testing.org]]   | the ERT approach and the manual plan, T1–T15        |
-| [[file:docs/roadmap.org][docs/roadmap.org]]  | phase history, what shipped, what is left           |
+| Document             | For                                                 |
+|----------------------+-----------------------------------------------------|
+| [[file:docs/design.org][docs/design.org]]      | why it is shaped this way, and what was traded away |
+| [[file:docs/testing.org][docs/testing.org]]     | the ERT approach and the manual plan, T1–T15        |
+| [[file:docs/development.org][docs/development.org]] | changing it while the herd runs on it: =bin/reload= |
+| [[file:docs/roadmap.org][docs/roadmap.org]]     | phase history, what shipped, what is left           |
 
 * Features
 

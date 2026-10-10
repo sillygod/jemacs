@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# reload — put edited ghostherd files into the running Emacs, without
+# restarting it.  See docs/development.org.
+#
+# Usage: bin/reload [--force] FILE...
+#
+#   *.el      every function and macro defined again, every constant set
+#             again; a variable keeps its value -- the sessions, timers
+#             and caches are the running herd, not code.  Other
+#             top-level forms are not run, and are named: a new add-hook
+#             or advice-add is yours to evaluate, a changed struct or
+#             mode wants a restart.
+#   ui/...    the herd page loaded again, back on Agents if it was there.
+#   server/.. the sidecar restarted -- not while an ask is open, whose
+#             answer would have nowhere to go; --force restarts it anyway.
+#
+# Needs emacsclient to reach the Emacs the herd runs in.
+
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")/.." && pwd)
+force=
+el=()
+ui=
+server=
+
+for arg in "$@"; do
+  if [ "$arg" = --force ]; then force=1; continue; fi
+  [ -e "$arg" ] || { echo "reload: no such file: $arg" >&2; exit 2; }
+  path=$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")
+  case $path in
+    "$here"/ui/*) ui=1 ;;
+    "$here"/server/*) server=1 ;;
+    *.el) el+=("$path") ;;
+    *) echo "reload: not an .el, ui/ or server/ file: $arg" >&2; exit 2 ;;
+  esac
+done
+[ ${#el[@]} -gt 0 ] || [ -n "$ui" ] || [ -n "$server" ] || {
+  sed -n '5,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+
+say() { sed 's/^"//; s/"$//'; }
+
+lisp_string() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; }
+
+for file in ${el[@]+"${el[@]}"}; do
+  emacsclient --eval "
+(let ((file $(lisp_string "$file")) (done 0) (kept 0) (skipped nil))
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (condition-case nil
+        (while t
+          (let* ((form (read (current-buffer)))
+                 (head (car-safe form)))
+            (cond
+             ((memq head '(defun defmacro defsubst define-inline defalias
+                           cl-defun cl-defmacro cl-defgeneric cl-defmethod defconst))
+              (eval form t) (setq done (1+ done)))
+             ((memq head '(defvar defvar-local defcustom))
+              (if (boundp (cadr form)) (setq kept (1+ kept))
+                (eval form t) (setq done (1+ done))))
+             ((eq head 'defface)
+              (if (facep (cadr form)) (setq kept (1+ kept))
+                (eval form t) (setq done (1+ done))))
+             ((memq head '(require provide declare-function eval-when-compile defgroup)))
+             (head (push head skipped)))))
+      (end-of-file nil)))
+  (format \"%s: %d defined, %d kept%s\"
+          (file-name-nondirectory file) done kept
+          (if skipped
+              (concat \", not run: \"
+                      (mapconcat #'symbol-name (delete-dups (nreverse skipped)) \" \"))
+            \"\")))" | say
+done
+
+if [ -n "$ui" ]; then
+  emacsclient --eval '
+(if (not (get-buffer "*herd*"))
+    "herd page: not open"
+  (when (timerp ghostherd-memory-page--herd-timer)
+    (setq ghostherd-memory-page--pending (list :view "agents")))
+  (with-current-buffer "*herd*" (xwidget-webkit-reload))
+  "herd page: loaded again")' | say
+fi
+
+if [ -n "$server" ]; then
+  if open=$("$here/bin/herd" asks 2>/dev/null | python3 -c '
+import json, sys
+print(sum(a.get("status") in ("queued", "delivered") for a in json.load(sys.stdin)["asks"]))'); then
+    if [ "$open" != 0 ] && [ -z "$force" ]; then
+      echo "sidecar: $open ask(s) open, left running (--force restarts it)" >&2
+      exit 1
+    fi
+  fi
+  emacsclient --eval '
+(if (and (ghostherd-memory-healthy-p) (not (ghostherd-memory--process-live-p)))
+    (format "sidecar: the one on %s was not started by this Emacs; stop it, then reload again"
+            (ghostherd-memory--where))
+  (ghostherd-memory-stop)
+  (sleep-for 0.5)
+  (ghostherd-memory-start)
+  (format "sidecar: restarted on %s" (ghostherd-memory--where)))' | say
+fi
