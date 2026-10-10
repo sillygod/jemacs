@@ -708,7 +708,13 @@
     return String(n).replace(/["\\]/g, "\\$&");
   }
 
+  // A press holds a refresh as an edit does: on WebKit a button takes no
+  // focus, so pressing Save takes it out of the box being edited before
+  // the click -- and a refresh drawn in between takes the button away.
+  let pressing = false;
+
   function busyEditing() {
+    if (pressing) return true;
     const a = document.activeElement;
     return !!(a && a.closest && a.closest(".agent-compose, .newform, .notes-edit"));
   }
@@ -1666,10 +1672,23 @@
       onAgentAction("notes-save", t);
     }
   });
-  // An edit in progress holds the 5s refresh back; let it through after.
-  app.addEventListener("focusout", () => {
+  // An edit in progress holds the 5s refresh back; let it through after
+  // -- after the click, when a press ended it.
+  function drawHeld() {
     setTimeout(() => { if (herdNow.pending && view === "agents" && !busyEditing()) renderAgents(); }, 0);
-  });
+  }
+  const released = () => {
+    if (!pressing) return;
+    pressing = false;
+    drawHeld();
+  };
+  app.addEventListener("focusout", drawHeld);
+  window.addEventListener("pointerdown", () => { pressing = true; }, true);
+  window.addEventListener("pointerup", released, true);
+  window.addEventListener("pointercancel", released, true);
+  window.addEventListener("blur", released);
+  // A release the page never heard of, outside it.
+  window.addEventListener("pointermove", (ev) => { if (ev.buttons === 0) released(); }, true);
 
   // ---- The herd log -----------------------------------------------------
   //
