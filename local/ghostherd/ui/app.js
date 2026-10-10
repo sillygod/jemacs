@@ -243,6 +243,41 @@
     app.setAttribute("data-view", view);
     // A room scrolls in its columns, not as a page.
     app.classList.toggle("in-room", view === "agents" && !!herdNow.room);
+    remember();
+  }
+
+  // Where the page is, kept in its URL: loaded again -- reloaded, or
+  // come back after Emacs restarted -- it goes back there.  A page
+  // Emacs opens has no hash, and shows what Emacs asks for.
+  function remember() {
+    let where = view === "source" ? tab : view;
+    if (where === "boot") return;
+    if (where === "agents" && herdNow.room)
+      where = "room/" + herdNow.roomView + "/" + encodeURIComponent(herdNow.room);
+    try {
+      history.replaceState(null, "", "#" + where);
+    } catch (e) {
+      // Not kept: loaded again, the page starts where Emacs says.
+    }
+  }
+
+  function restore() {
+    const where = location.hash.slice(1);
+    const room = /^room\/(columns|chat)\/(.+)$/.exec(where);
+    if (room) {
+      let project = null;
+      try {
+        project = decodeURIComponent(room[2]);
+      } catch (e) {
+        return showAgents();
+      }
+      showAgents();
+      herdNow.roomView = room[1];
+      openRoom(project);
+    } else if (where === "agents") showAgents();
+    else if (where === "log") showLog();
+    else if (where === "sessions") showSessions();
+    else if (where === "search") showSearch();
   }
 
   function filtersHtml() {
@@ -1318,6 +1353,7 @@
       const v = el.getAttribute("data-view");
       if (v === herdNow.roomView) return;
       herdNow.roomView = v;
+      remember();
       watchRoom();
       return renderRoom();
     }
@@ -2182,4 +2218,5 @@
   };
 
   emit("ready");
+  restore();
 })();

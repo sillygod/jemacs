@@ -200,13 +200,19 @@ global last session, which may be another app's page."
 
 (defmacro xwapp-test--with-browser (&rest body)
   "Run BODY with `app' on a page tree under `root', served afresh.
-`intents' gathers what its handler gets, `closed' counts its on-kill."
+`intents' gathers what its handler gets, `closed' counts its on-kill,
+`reopened' its reopen, once BODY gives it one.  Addresses are kept in
+`root', and only when BODY binds `xwapp--keep'."
   (declare (indent 0))
   `(let* ((root (file-name-as-directory (make-temp-file "xwapp" t)))
           (xwapp--server nil)
           (xwapp--served (make-hash-table :test 'eq))
+          (xwapp-state-file (expand-file-name "state.eld" root))
+          (xwapp--keep nil)
+          (xwapp--state-ours nil)
           (intents nil)
           (closed 0)
+          (reopened 0)
           (app (progn
                  (dolist (f '("app/ui/index.html" "app/ui/app.js" "app/notes.txt"
                               "xwapp/ui/xwapp.js" "other/ui/x.js"))
@@ -215,9 +221,9 @@ global last session, which may be another app's page."
                  (xwapp-test--app :index (expand-file-name "app/ui/index.html" root)
                                   :handler (lambda (i) (push i intents))
                                   :on-kill (lambda () (setq closed (1+ closed)))))))
-     (ignore intents closed)
+     (ignore intents closed reopened)
      (unwind-protect (progn (xwapp-url app) ,@body)
-       (maphash (lambda (a _) (dolist (k '(:hold :flush :gone)) (xwapp--untimer a k)))
+       (maphash (lambda (a _) (dolist (k '(:hold :flush :gone :forget)) (xwapp--untimer a k)))
                 xwapp--served)
        (when (get-buffer " *xwapp-test*")
          (let ((kill-buffer-hook nil)) (kill-buffer " *xwapp-test*")))
@@ -427,6 +433,226 @@ back -- a reload -- is not."
       (xwapp-test--turn)
       (xwapp-reload app)
       (should (equal (xwapp-test--answer next) '(200 . "[{\"xwapp\":\"reload\"}]"))))))
+
+(defun xwapp-test--why (answer)
+  "The why of a 410 ANSWER."
+  (and (equal (car answer) 410)
+       (alist-get 'why (json-parse-string (cdr answer) :object-type 'alist))))
+
+(defmacro xwapp-test--reopens (app)
+  "Give APP a reopen that counts in `reopened'."
+  `(xwapp--put ,app :reopen (lambda () (cl-incf reopened))))
+
+(ert-deftest xwapp-test-browser-says-why ()
+  "A page that is not the app's is told why: taken while another page
+is, then free if the app can open again, else closed."
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.2))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should (equal (xwapp-test--why (xwapp-test--do "GET" (xwapp-test--at app "next?page=p1")))
+                     "taken"))
+      (should (equal (xwapp-test--why (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{}"))
+                     "taken"))
+      ;; p2 never asks: let go, and closed.
+      (xwapp-test--turn 0.4)
+      (should (= closed 1))
+      (should (equal (xwapp-test--why (xwapp-test--do "GET" (xwapp-test--at app "next?page=p2")))
+                     "closed"))
+      (xwapp-test--reopens app)
+      (should (equal (xwapp-test--why (xwapp-test--do "GET" (xwapp-test--at app "next?page=p2")))
+                     "free"))
+      (should (= reopened 0)))))
+
+(ert-deftest xwapp-test-browser-a-page-comes-back-softly ()
+  "A page coming back on its own takes the app only when it is free,
+and the app is opened again for it.  A fresh load takes it anyway."
+  (xwapp-test--with-browser
+    (should (equal (xwapp-test--why (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1&soft=1") "{}"))
+                   "closed"))
+    (xwapp-test--reopens app)
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1&soft=1") "{}")) 204))
+    (xwapp-test--turn)
+    (should (= reopened 1))
+    (should (equal (xwapp-test--why (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2&soft=1") "{}"))
+                   "taken"))
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")) 204))
+    (xwapp-test--turn)
+    (should (= reopened 1))
+    (should (xwapp--current-p app "p2"))))
+
+(ert-deftest xwapp-test-browser-what-emacs-opened-is-not-reopened ()
+  "The tab `xwapp-browse' opened finds the app ready: its command did
+that.  A reload of a tab whose app is free, not opened by Emacs, finds
+it opened again."
+  (xwapp-test--with-browser
+    (let ((urls nil)
+          (xwapp--gone-after 0.2))
+      (xwapp-test--reopens app)
+      (let ((xwapp-browse-function (lambda (url) (push url urls))))
+        (with-temp-buffer
+          (xwapp-browse app)))
+      (should (equal urls (list (xwapp-url app))))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (xwapp-test--turn)
+      (should (= reopened 0))
+      (xwapp-test--turn 0.4)
+      (should (= closed 1))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (xwapp-test--turn)
+      (should (= reopened 1))
+      ;; A tab Emacs opened that never loads: the app, closed meanwhile,
+      ;; is opened again for the next tab that comes.
+      (let ((xwapp-browse-function #'ignore))
+        (xwapp-browse app))
+      (xwapp-test--turn 0.3)
+      (should (= closed 1))
+      (xwapp-test--turn 0.5)
+      (should (= closed 2))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p3&soft=1") "{}")
+      (xwapp-test--turn)
+      (should (= reopened 2)))))
+
+(ert-deftest xwapp-test-browser-opens-where-it-was-asked ()
+  "A page opened by an intent from a browser tab opens in the browser,
+whatever `xwapp-browser' says."
+  (xwapp-test--with-browser
+    (let* ((urls nil)
+           (xwapp-browser nil)
+           (xwapp-browse-function (lambda (url) (push url urls)))
+           (other (xwapp-test--app :buffer-name " *xwapp-other*"
+                                   :index (expand-file-name "other/ui/x.js" root))))
+      (setf (xwapp-handler app) (lambda (_intent) (xwapp-open other)))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      ;; Opened in Emacs instead, it fails here, not in a batch WebKit.
+      (when (featurep 'xwidget-internal) (require 'xwidget))
+      (cl-letf (((symbol-function 'xwidget-webkit--create-new-session-buffer)
+                 (lambda (&rest _) (error "Opened in Emacs"))))
+        (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"open\"}")
+        (xwapp-test--turn))
+      (should (equal urls (list (xwapp-url other))))
+      (should-not xwapp--from-browser))))
+
+(defmacro xwapp-test--keeping (&rest body)
+  "Run BODY in `xwapp-test--with-browser', addresses kept."
+  (declare (indent 0))
+  `(xwapp-test--with-browser
+     (let ((xwapp--keep t))
+       ,@body)))
+
+(defun xwapp-test--free-port ()
+  "A port nothing listens on."
+  (let* ((p (xwapp--listen t))
+         (port (process-contact p :service)))
+    (delete-process p)
+    port))
+
+(defun xwapp-test--keep-reopen () "A reopen with a name." nil)
+
+(ert-deftest xwapp-test-browser-keeps-the-address-of-a-tab ()
+  "While a page of an app that can open again is in a tab, its address
+is kept, readable by you alone; when it leaves, it is not.  An app that
+cannot open again keeps nothing."
+  (xwapp-test--keeping
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (should-not (file-exists-p xwapp-state-file))
+    (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+    (should (= (file-modes xwapp-state-file) #o600))
+    (should (equal (xwapp--state)
+                   (list :port (process-contact xwapp--server :service)
+                         :pages (list (list " *xwapp-test*" (xwapp--secret app)
+                                            'xwapp-test--keep-reopen)))))
+    (xwapp--gone app)
+    (should-not (file-exists-p xwapp-state-file))))
+
+(ert-deftest xwapp-test-browser-leaves-another-emacss-address ()
+  (xwapp-test--keeping
+    (with-temp-file xwapp-state-file (insert "(:port 1 :pages ())"))
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (xwapp--gone app)
+    (should (file-exists-p xwapp-state-file))))
+
+(ert-deftest xwapp-test-browser-a-tab-comes-back-after-a-restart ()
+  "After a restart, an app made with a kept address listens there under
+its old secret: the tab's next finds it free, and its soft hello takes
+it.  The address is kept until the tab is gone again."
+  (xwapp-test--keeping
+    (let ((port (xwapp-test--free-port))
+          (secret "0123456789abcdef0123456789abcdef"))
+      (delete-process xwapp--server)
+      (with-temp-file xwapp-state-file
+        (prin1 (list :port port :pages (list (list " *xwapp-again*" secret 'xwapp-test--keep-reopen)))
+               (current-buffer)))
+      (let ((again (xwapp-create :buffer-name " *xwapp-again*"
+                                 :index (expand-file-name "app/ui/index.html" root)
+                                 :prefixes '("t:") :namespace "T"
+                                 :handler #'ignore
+                                 :reopen (lambda () (cl-incf reopened)))))
+        (should (equal (process-contact xwapp--server :service) port))
+        (should (equal (xwapp--secret again) secret))
+        (should (string-prefix-p (format "http://127.0.0.1:%d/%s/" port secret) (xwapp-url again)))
+        (should (equal (xwapp-test--why (xwapp-test--do "GET" (xwapp-test--at again "next?page=old")))
+                       "free"))
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at again "hello?page=p1&soft=1") "{}"))
+                       204))
+        (xwapp-test--turn)
+        (should (= reopened 1))
+        (should (equal (caar (plist-get (xwapp--state) :pages)) " *xwapp-again*"))
+        (xwapp--gone again)
+        (should-not (file-exists-p xwapp-state-file))))))
+
+(ert-deftest xwapp-test-browser-a-tab-that-does-not-come-back ()
+  "A kept address whose tab does not come back is not kept; one whose
+port another Emacs has is not taken at all."
+  (xwapp-test--keeping
+    (let* ((port (xwapp-test--free-port))
+           (secret "0123456789abcdef0123456789abcdef")
+           (keep (lambda ()
+                   (with-temp-file xwapp-state-file
+                     (prin1 (list :port port :pages (list (list " *xwapp-again*" secret nil)))
+                            (current-buffer)))))
+           (make (lambda ()
+                   (xwapp-create :buffer-name " *xwapp-again*" :index "/nonexistent"
+                                 :prefixes '("t:") :namespace "T" :handler #'ignore
+                                 :reopen #'ignore))))
+      (delete-process xwapp--server)
+      (funcall keep)
+      (let ((xwapp--come-back-within 0.2))
+        (funcall make))
+      (xwapp-test--turn 0.4)
+      (should-not (file-exists-p xwapp-state-file))
+      ;; Another Emacs listens on the port.
+      (delete-process xwapp--server)
+      (clrhash xwapp--served)
+      (setq xwapp--state-ours nil)
+      (funcall keep)
+      (let ((theirs (xwapp--listen port)))
+        (unwind-protect
+            (let ((again (funcall make)))
+              (should-not (equal (xwapp--secret again) secret))
+              (should (file-exists-p xwapp-state-file)))
+          (delete-process theirs))))))
+
+(ert-deftest xwapp-test-browser-resume-loads-the-apps ()
+  "Once Emacs is up, each kept page's app is loaded through its reopen."
+  (xwapp-test--keeping
+    (let ((file (expand-file-name "xwapp-test-resumed.el" root)))
+      (with-temp-file file
+        (insert "(defvar xwapp-test--resumed-here t)\n"
+                "(defun xwapp-test--resumed-reopen () nil)\n"))
+      (autoload 'xwapp-test--resumed-reopen file)
+      (with-temp-file xwapp-state-file
+        (prin1 (list :port 1 :pages (list (list "x" "0123456789abcdef0123456789abcdef"
+                                                'xwapp-test--resumed-reopen)))
+               (current-buffer)))
+      (unwind-protect
+          (progn
+            (xwapp-resume)
+            (should (boundp 'xwapp-test--resumed-here))
+            (should-not (autoloadp (symbol-function 'xwapp-test--resumed-reopen))))
+        (makunbound 'xwapp-test--resumed-here)
+        (fmakunbound 'xwapp-test--resumed-reopen)))))
 
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

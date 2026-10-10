@@ -6164,5 +6164,19 @@ gets the key, and Emacs hands the page the clipboard's text, or nothing
               (should (eq (key-binding (kbd "s-v")) #'ghostherd-memory-page-paste))))
         (kill-buffer "*herd*")))))
 
+(ert-deftest ghostherd-test-a-browser-tab-reopens-the-page ()
+  "A tab that comes back to the herd page -- after a restart, say -- finds
+it made ready as the command would, but for what to show: the tab knows
+that.  A sidecar that does not start is only said."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (should (eq (xwapp-reopen ghostherd-memory-page--app) 'ghostherd-memory-page-reopen))
+  (let ((ghostherd-memory-page--project nil)
+        (ghostherd-memory-page--pending '(:view "search")))
+    (cl-letf (((symbol-function 'ghostherd-memory-ensure) (lambda () (error "No uv")))
+              ((symbol-function 'ghostherd-memory-page--current-project) (lambda () "/p")))
+      (ghostherd-memory-page-reopen))
+    (should-not ghostherd-memory-page--pending)
+    (should (equal ghostherd-memory-page--project "/p"))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

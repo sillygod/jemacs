@@ -1088,6 +1088,14 @@ are the other tabs (below, and "What happened while you were away").
   page at a time: opening it in Emacs again takes it from the tab,
   which says so.  ⌘V there is the browser's own paste; an image in it
   is still saved by Emacs, as above.
+  - A PR or a task clicked there opens in the browser too.
+  - The tab outlives Emacs: restart it, and once it is up the tab
+    comes back by itself, as it does when the browser has frozen it
+    a while.  The address it needs is kept in
+    =emacs-home/xwapp-browser.eld= meanwhile.
+  - The page keeps where it is in its URL --- the tab, a room and its
+    view --- and goes back there when it is loaded again, in a tab or
+    in Emacs.
 
 ** The memory page
 

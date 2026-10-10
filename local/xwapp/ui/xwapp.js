@@ -60,15 +60,35 @@
   // runs no script Emacs sends, so it asks.  hello makes it the app's
   // page; one request for Emacs's calls is always waiting; intents go as
   // POSTs, one at a time, so they arrive in order.  Every URL starts with
-  // the app's secret, the first segment of the page's own.  A 410 means
-  // this page is no longer the app's: another took over, or Emacs let it
-  // go when it stopped asking.
+  // the app's secret, the first segment of the page's own.
+  //
+  // A 410 means this page is not the app's, and says why:
+  //   taken   another page is: this one stops; reloading takes it back
+  //   free    none is, and Emacs can open the app again -- it restarted,
+  //           or let this page go while the browser had it frozen.  The
+  //           page loads again, and comes back with a soft hello, which
+  //           takes nothing another page has meanwhile
+  //   closed  none is, and Emacs cannot open the app again by itself
+  // When Emacs does not answer at all -- restarting -- the page asks
+  // again, less often each time, until it does.
 
   const BROWSER = location.protocol === "http:";
   const ROOT = "/" + location.pathname.split("/")[1] + "/";
+  const SOFT = "xwapp-soft"; // sessionStorage: this load is the page coming back
+
+  const SAY = {
+    taken: "This page is open elsewhere now. Reload to use it here.",
+    closed: "Emacs closed this page. Reload to use it here.",
+    unknown: "Emacs does not know this page any more. Open it again from Emacs.",
+    waiting: "Emacs is not answering. Trying again\u2026 (or open the page again from Emacs)",
+  };
 
   function notice(msg) {
     let el = document.getElementById("xw-notice");
+    if (!msg) {
+      if (el) el.remove();
+      return;
+    }
     if (!el) {
       el = document.createElement("div");
       el.id = "xw-notice";
@@ -79,13 +99,25 @@
     el.textContent = msg;
   }
 
+  function comingBack() {
+    try {
+      const soft = sessionStorage.getItem(SOFT) === "1";
+      sessionStorage.removeItem(SOFT);
+      return soft;
+    } catch (e) {
+      return false;
+    }
+  }
+
   let served = null;
   function servedBridge() {
     if (served) return served;
     const page = Array.from(crypto.getRandomValues(new Uint8Array(8)),
       (b) => b.toString(16).padStart(2, "0")).join("");
+    const soft = comingBack();
     const outbox = [];
-    let hello = false, sending = false, over = false;
+    let hello = false, sending = false, polling = false, over = false;
+    let retry = null, delay = 0;
 
     function ask(path, body) {
       const opts = body === undefined ? {} : {
@@ -93,26 +125,75 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       };
-      return fetch(ROOT + path + "?page=" + page, opts).then((r) => {
-        if (!r.ok) throw new Error(r.status === 410 ? "gone" : "HTTP " + r.status);
-        return r;
+      const also = path === "hello" && soft ? "&soft=1" : "";
+      return fetch(ROOT + path + "?page=" + page + also, opts).then((r) => {
+        if (r.ok) return r;
+        return r.json().catch(() => ({})).then((said) => {
+          const e = new Error("HTTP " + r.status);
+          e.status = r.status;
+          e.why = said && said.why;
+          throw e;
+        });
       });
     }
-    function stop(e) {
-      if (over) return;
+    function stop(msg) {
       over = true;
-      notice(e && e.message === "gone"
-        ? "This page is open elsewhere now, or Emacs let it go. Reload to use it here."
-        : "Emacs is not answering. Open the page again from Emacs.");
+      notice(msg);
+    }
+    // A request failed: do what Emacs said, or ask again later.
+    function trouble(e) {
+      if (over || retry) return;
+      if (e.status === 410 && e.why === "free") {
+        over = true;
+        try {
+          sessionStorage.setItem(SOFT, "1");
+        } catch (_) {
+          // Without it the page comes back as a fresh load, taking the app.
+        }
+        location.reload();
+      } else if (e.status === 410) {
+        stop(e.why === "closed" ? SAY.closed : SAY.taken);
+      } else if (e.status === 404) {
+        stop(SAY.unknown);
+      } else {
+        notice(SAY.waiting);
+        delay = Math.min(10000, delay * 2 || 1000);
+        retry = setTimeout(() => {
+          retry = null;
+          connect();
+        }, delay);
+      }
+    }
+    function answered() {
+      if (!delay) return;
+      delay = 0;
+      notice(null);
+    }
+    function connect() {
+      if (hello) {
+        next();
+        pump();
+        return;
+      }
+      ask("hello", {}).then(() => {
+        hello = true;
+        answered();
+        next();
+        pump();
+      }, trouble);
     }
     function pump() {
-      if (!hello || sending || over || !outbox.length) return;
+      if (!hello || sending || over || retry || !outbox.length) return;
       sending = true;
       ask("intent", outbox[0]).then(() => {
         outbox.shift();
         sending = false;
+        answered();
         pump();
-      }, stop);
+      }, (e) => {
+        sending = false;
+        trouble(e);
+      });
     }
     // One call failing must not keep the next from running: in the
     // xwidget each call is a script of its own.
@@ -132,11 +213,17 @@
     }
     // A chain of promises, no timer: a background tab throttles timers.
     function next() {
-      if (over) return;
+      if (over || polling || retry) return;
+      polling = true;
       ask("next").then((r) => r.json()).then((calls) => {
+        polling = false;
+        answered();
         calls.forEach(run);
         next();
-      }, stop);
+      }, (e) => {
+        polling = false;
+        trouble(e);
+      });
     }
 
     // Whether you could be looking, for Emacs to ask with xwapp-seen-p.
@@ -153,11 +240,7 @@
     window.addEventListener("blur", look);
     look();
 
-    ask("hello", {}).then(() => {
-      hello = true;
-      next();
-      pump();
-    }, stop);
+    connect();
 
     served = function emit(op, extra) {
       outbox.push(Object.assign({ op: op }, extra || {}));

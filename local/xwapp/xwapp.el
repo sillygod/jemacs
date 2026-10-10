@@ -178,7 +178,12 @@ FAIL-FN is called as `xwapp-json-callback' describes."
 
 ;;; Page bridge
 
-(cl-defstruct (xwapp (:constructor xwapp-create)
+;; Its layout is compiled into every package that uses it -- the
+;; constructor and the accessors inline -- and straight rebuilds a
+;; package only when its own files change.  A slot added here would
+;; shift every slot after it under a pr-view.elc built before, so what
+;; an app gains goes into `xwapp--served' instead, as :reopen did.
+(cl-defstruct (xwapp (:constructor xwapp--make)
                      (:copier nil))
   "One page-backed app: its buffer, page and intent channel."
   (buffer-name nil :documentation "Name of the app's xwidget buffer.")
@@ -191,6 +196,32 @@ FAIL-FN is called as `xwapp-json-callback' describes."
   (poll-interval 0.2 :documentation "Seconds between title polls.")
   (timer nil :documentation "The running poll timer.")
   (last-title nil :documentation "Last intent title handled."))
+
+(defun xwapp-create (&rest slots)
+  "A new app, of SLOTS: the keywords of `xwapp''s slots, and :reopen.
+
+:reopen is a function that does what the app's command does before
+showing its page, for a browser tab that comes back to an app that is
+not open: one left open while Emacs restarted, or let go while the
+browser had it frozen.  The tab then loads again, on its own.  Without
+one, such a tab says to reload it, or to open it from Emacs.
+
+While the page of an app with :reopen is in a browser tab, its address
+outlives Emacs (`xwapp-state-file'), so the tab can find it after a
+restart.  Name an autoloaded function there: once Emacs is up,
+`xwapp-resume' loads the app through it, to listen for the tab."
+  (let ((app (apply #'xwapp--make
+                     (cl-loop for (key value) on slots by #'cddr
+                              unless (eq key :reopen) append (list key value))))
+        (reopen (plist-get slots :reopen)))
+    (when reopen
+      (xwapp--put app :reopen reopen)
+      (xwapp--restore app))
+    app))
+
+(defun xwapp-reopen (app)
+  "APP's :reopen, or nil; see `xwapp-create'."
+  (xwapp--get app :reopen))
 
 (defvar-local xwapp--xw nil
   "The xwidget this app buffer was created with.")
@@ -288,12 +319,16 @@ window system cannot report counts as focus."
   (when (and (xwapp-on-kill app) (not (xwapp--get app :page)))
     (funcall (xwapp-on-kill app))))
 
+(defvar xwapp--from-browser nil
+  "Non-nil while an intent from a page in a browser tab is handled.")
+
 (defun xwapp-open (app)
   "Show APP's page on a fresh load: in Emacs, or in the web browser
-when `xwapp-browser' is non-nil.
+when `xwapp-browser' is non-nil -- or when a page in the browser asked
+for it: a page opens where the page you clicked in is.
 In Emacs the xwidget is created on first use and reused after that, and
 a page open in a browser tab is let go: an app has one page at a time."
-  (if xwapp-browser
+  (if (or xwapp-browser xwapp--from-browser)
       (xwapp-browse app)
     (unless (featurep 'xwidget-internal)
       (user-error "xwidget-webkit required. Rebuild Emacs with xwidgets"))
@@ -304,6 +339,7 @@ a page open in a browser tab is let go: an app has one page at a time."
       (unless (file-readable-p index)
         (user-error "Missing UI at %s" index))
       (xwapp--let-go app)
+      (xwapp--save)
       (setf (xwapp-last-title app) nil)
       (if-let* ((buf (xwapp-buffer app)))
           (progn
@@ -343,6 +379,21 @@ a page open in a browser tab is let go: an app has one page at a time."
 ;; Every URL starts with the app's secret, which only Emacs and the
 ;; page know: another site open in the browser can neither read the
 ;; page nor send it an intent.
+;;
+;; A page that is not the app's is answered 410, with why:
+;;
+;;   taken    another page is the app's, in a tab or in Emacs.  The tab
+;;            says so; reloading it takes the app back.
+;;   free     no page is, and the app can open again (`xwapp-create's
+;;            :reopen).  The tab loads again on its own, and comes back
+;;            with a soft hello, which takes nothing another page has.
+;;   closed   no page is, and the app cannot open again: reloading the
+;;            tab opens it, or Emacs does.
+;;
+;; While a tab is the page of an app that can open again, the app's
+;; secret and the port are kept in `xwapp-state-file'.  After a
+;; restart, Emacs listens there again (`xwapp-resume'), so the tab,
+;; which asks again while Emacs does not answer, finds it free.
 
 (defconst xwapp--hold 25
   "Seconds a `next' is held before it is answered empty.")
@@ -358,17 +409,33 @@ a page open in a browser tab is let go: an app has one page at a time."
     (404 . "Not Found") (410 . "Gone") (413 . "Content Too Large")
     (500 . "Internal Server Error")))
 
+(defconst xwapp--come-back-within 60
+  "Seconds a restored address waits for its tab before it is not kept.")
+
+;;;###autoload
+(defvar xwapp-state-file (locate-user-emacs-file "xwapp-browser.eld")
+  "Where the address of a page in a browser tab is kept while it is there,
+for the tab to find Emacs again after a restart.  It holds the page's
+secret: Emacs makes it readable by you alone.")
+
+(defvar xwapp--keep (not noninteractive)
+  "Non-nil when addresses outlive Emacs.  A batch Emacs has no tabs.")
+
 (defvar xwapp--server nil
   "The process listening for browsers, or nil.")
 
 (defvar xwapp--served (make-hash-table :test 'eq)
   "App -> plist of its life in a browser:
+:reopen   what `xwapp-create' was given as :reopen
 :secret   the first segment of its URLs
 :page     the id of the page that said hello last, or nil
 :waiting  that page's `next', held, or nil
 :outbox   calls not yet sent to it, newest first
 :seen     non-nil when it last said you could be looking at it
-:hold :flush :gone   its timers.")
+:asked    non-nil from `xwapp-browse' until a tab says hello: that tab
+          is the one Emacs opened, and the app is ready for it
+:restored non-nil from a restart until its tab comes back, or does not
+:hold :flush :gone :forget   its timers.")
 
 (defun xwapp--get (app key)
   (plist-get (gethash app xwapp--served) key))
@@ -410,21 +477,115 @@ a page open in a browser tab is let go: an app has one page at a time."
 The page reaches the kit as ../../xwapp/ui, there and here alike."
   (expand-file-name "../../" (file-name-directory (xwapp-index app))))
 
+(defun xwapp--listen (port)
+  "Listen for browsers on PORT, t for any."
+  (make-network-process :name "xwapp" :server t :noquery t
+                        :host "127.0.0.1" :service port :family 'ipv4
+                        :coding 'binary
+                        :filter #'xwapp--filter
+                        :sentinel #'xwapp--sentinel))
+
 (defun xwapp--port ()
-  "The port pages are served on, listening first if need be."
+  "The port pages are served on, listening first if need be: on the one
+kept in `xwapp-state-file' while it is free, which a tab from before a
+restart still asks."
   (unless (process-live-p xwapp--server)
-    (setq xwapp--server
-          (make-network-process :name "xwapp" :server t :noquery t
-                                :host "127.0.0.1" :service t :family 'ipv4
-                                :coding 'binary
-                                :filter #'xwapp--filter
-                                :sentinel #'xwapp--sentinel)))
+    (let ((kept (plist-get (xwapp--state) :port)))
+      (setq xwapp--server (or (and kept (ignore-errors (xwapp--listen kept)))
+                              (xwapp--listen t)))))
   (process-contact xwapp--server :service))
 
 (defun xwapp-url (app)
   "The address of APP's page in the web browser.  It holds APP's secret."
   (format "http://127.0.0.1:%d/%s/%s" (xwapp--port) (xwapp--secret app)
           (file-relative-name (xwapp-index app) (xwapp--root app))))
+
+;; Over a restart
+
+(defun xwapp--state ()
+  "What `xwapp-state-file' holds: (:port PORT :pages ((NAME SECRET
+REOPEN) ...)), each page an app's buffer name, secret and :reopen.
+Nil when there is none, or nothing sound in it."
+  (when (and xwapp--keep (file-readable-p xwapp-state-file))
+    (let ((state (ignore-errors
+                   (with-temp-buffer
+                     (insert-file-contents xwapp-state-file)
+                     (read (current-buffer))))))
+      (when (and (plistp state) (natnump (plist-get state :port)))
+        (list :port (plist-get state :port)
+              :pages (seq-filter
+                      (lambda (page)
+                        (pcase page
+                          (`(,(pred stringp) ,(and (pred stringp) secret) ,(pred symbolp))
+                           (string-match-p "\\`[0-9a-f]\\{32\\}\\'" secret))))
+                      (plist-get state :pages)))))))
+
+(defvar xwapp--state-ours nil
+  "Non-nil once this Emacs has kept or restored `xwapp-state-file':
+another Emacs's is not its to remove.")
+
+(defun xwapp--save ()
+  "Keep in `xwapp-state-file' the address of each page in a browser tab
+whose app can open again, or remove it when there is none."
+  (when xwapp--keep
+    (let (pages)
+      (maphash (lambda (app plist)
+                 (when (and (xwapp-reopen app) (plist-get plist :secret)
+                            (or (plist-get plist :page) (plist-get plist :restored)))
+                   (push (list (xwapp-buffer-name app) (plist-get plist :secret)
+                               (and (symbolp (xwapp-reopen app)) (xwapp-reopen app)))
+                         pages)))
+               xwapp--served)
+      (condition-case err
+          (cond
+           ((and pages (process-live-p xwapp--server))
+            (with-file-modes #o600
+              (with-temp-file xwapp-state-file
+                (prin1 (list :port (process-contact xwapp--server :service)
+                             :pages (sort pages (lambda (a b) (string< (car a) (car b)))))
+                       (current-buffer))))
+            (setq xwapp--state-ours t))
+           (xwapp--state-ours
+            (when (file-exists-p xwapp-state-file)
+              (delete-file xwapp-state-file))
+            (setq xwapp--state-ours nil)))
+        (error (message "xwapp: %s" (error-message-string err)))))))
+
+(defun xwapp--restore (app)
+  "Give APP the address its page had in a browser tab as Emacs last
+exited, and listen there, so that tab can come back.  Not when another
+Emacs has the port: the tab is that one's."
+  (when-let* ((state (xwapp--state))
+              (page (assoc (xwapp-buffer-name app) (plist-get state :pages)))
+              (port (with-demoted-errors "xwapp: %S" (xwapp--port))))
+    (when (and (eql port (plist-get state :port))
+               (not (xwapp--get app :secret)))
+      (setq xwapp--state-ours t)
+      (xwapp--put app :secret (nth 1 page))
+      (xwapp--put app :restored t)
+      (xwapp--timer app :forget xwapp--come-back-within #'xwapp--forget))))
+
+(defun xwapp--forget (app)
+  "APP's tab has not come back since the restart: its address is not kept."
+  (xwapp--put app :forget nil)
+  (xwapp--put app :restored nil)
+  (xwapp--save))
+
+;;;###autoload
+(defun xwapp-resume ()
+  "Load the apps whose pages were in browser tabs as Emacs last exited.
+Each listens again where its tab asks, and the tab comes back.  Run once
+Emacs is up, when there is a `xwapp-state-file'."
+  (interactive)
+  (dolist (page (plist-get (xwapp--state) :pages))
+    (let ((reopen (nth 2 page)))
+      (when (and reopen (autoloadp (symbol-function reopen)))
+        (with-demoted-errors "xwapp: %S"
+          (autoload-do-load (symbol-function reopen) reopen))))))
+
+;;;###autoload
+(add-hook 'emacs-startup-hook
+          (lambda () (when (file-exists-p xwapp-state-file) (xwapp-resume))))
 
 (defun xwapp-browse (app)
   "Show APP's page in the web browser, on a fresh load.
@@ -433,8 +594,10 @@ takes it once loaded, and this buffer is killed."
   (interactive (list (or xwapp--app (user-error "No xwapp page in this buffer"))))
   (unless (file-readable-p (xwapp-index app))
     (user-error "Missing UI at %s" (xwapp-index app)))
-  ;; A tab closed a moment ago is not to close the app on the new one.
-  (xwapp--untimer app :gone)
+  ;; A tab closed a moment ago is not to close the app on the new one,
+  ;; which has a while to load; one that never does closes it.
+  (xwapp--timer app :gone (* 3 xwapp--gone-after) #'xwapp--gone)
+  (xwapp--put app :asked t)
   (funcall xwapp-browse-function (xwapp-url app)))
 
 ;; Serving
@@ -488,11 +651,12 @@ a page of another site that has the secret."
                (`(,path ,query) (split-string (or target "") "?"))
                (`(,secret . ,rest) (split-string path "/" t))
                (app (and secret (xwapp--app-of secret)))
-               (page (cadr (assoc "page" (url-parse-query-string (or query ""))))))
+               (args (url-parse-query-string (or query "")))
+               (page (cadr (assoc "page" args))))
     (cond
      ((not (and app (xwapp--from-here-p headers))) (xwapp--respond proc 404))
      ((and (equal method "POST") (equal rest '("hello")) page)
-      (xwapp--hello app proc page))
+      (xwapp--hello app proc page (equal (cadr (assoc "soft" args)) "1")))
      ((and (equal method "GET") (equal rest '("next")))
       (xwapp--next app proc page))
      ((and (equal method "POST") (equal rest '("intent")))
@@ -545,21 +709,44 @@ a page of another site that has the secret."
   "Non-nil when PAGE is APP's page: the one that said hello last."
   (and page (equal page (xwapp--get app :page))))
 
-(defun xwapp--hello (app proc page)
-  "PAGE has loaded in a browser tab: it is APP's page now."
-  (xwapp--let-go app)
-  (xwapp--put app :page page)
-  (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
-  ;; Moved, not closed: with :page set, the buffer's death runs no on-kill.
-  (when-let* ((buf (xwapp-buffer app)))
-    (let ((kill-buffer-query-functions nil))
-      (kill-buffer buf)))
-  (xwapp--respond proc 204))
+(defun xwapp--why (app)
+  "Why a page is not APP's: \"taken\", \"free\" or \"closed\".
+See \"In a web browser\" above."
+  (cond ((xwapp-live-p app) "taken")
+        ((xwapp-reopen app) "free")
+        (t "closed")))
+
+(defun xwapp--refuse (proc why)
+  "Answer PROC that its page is not the app's, and WHY."
+  (xwapp--respond proc 410 "application/json" (format "{\"why\":\"%s\"}" why)))
+
+(defun xwapp--hello (app proc page soft)
+  "PAGE has loaded in a browser tab: it is APP's page now.
+A SOFT hello is a page coming back on its own: it takes APP only when
+APP is free."
+  (let ((why (xwapp--why app))
+        (asked (xwapp--get app :asked)))
+    (if (and soft (not (equal why "free")))
+        (xwapp--refuse proc why)
+      (xwapp--put app :asked nil)
+      (xwapp--let-go app)
+      (xwapp--put app :page page)
+      (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
+      ;; Moved, not closed: with :page set, the buffer's death runs no on-kill.
+      (when-let* ((buf (xwapp-buffer app)))
+        (let ((kill-buffer-query-functions nil))
+          (kill-buffer buf)))
+      (xwapp--respond proc 204)
+      (xwapp--save)
+      ;; Open nowhere until now, and not by Emacs: made ready as its
+      ;; command would have.
+      (when (and (equal why "free") (not asked))
+        (run-at-time 0 nil (xwapp-reopen app))))))
 
 (defun xwapp--next (app proc page)
   "Hold PROC, PAGE's request for calls, until there are some."
   (if (not (xwapp--current-p app page))
-      (xwapp--respond proc 410)
+      (xwapp--refuse proc (xwapp--why app))
     (xwapp--untimer app :gone)
     (when-let* ((old (xwapp--get app :waiting)))
       (xwapp--put app :waiting nil)
@@ -596,14 +783,20 @@ a page of another site that has the secret."
                   (json-parse-string (decode-coding-string body 'utf-8)
                                      :object-type 'alist :array-type 'list))))
     (cond
-     ((not (xwapp--current-p app page)) (xwapp--respond proc 410))
+     ((not (xwapp--current-p app page)) (xwapp--refuse proc (xwapp--why app)))
      ((not (consp intent)) (xwapp--respond proc 400))
      (t
       (xwapp--respond proc 204)
       (if (equal (alist-get 'op intent) "xwapp-seen")
           (xwapp--put app :seen (eq (alist-get 'seen intent) t))
         ;; As the title's intents are: from a timer, not this filter.
-        (run-at-time 0 nil (xwapp-handler app) intent))))))
+        (run-at-time 0 nil #'xwapp--handle app intent))))))
+
+(defun xwapp--handle (app intent)
+  "Hand APP INTENT, from its page in a browser tab: a page it opens
+opens there too."
+  (let ((xwapp--from-browser t))
+    (funcall (xwapp-handler app) intent)))
 
 (defun xwapp--sentinel (proc _event)
   "A held `next' whose tab hung up: the page may be gone."
@@ -616,20 +809,24 @@ a page of another site that has the secret."
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone))))
 
 (defun xwapp--let-go (app)
-  "Let APP's browser page go: told so if it is waiting, forgotten anyway."
-  (dolist (key '(:hold :flush :gone))
+  "Let APP's browser page go: told so if it is waiting, forgotten anyway.
+Only another page, in a tab or in Emacs, takes it from one that waits."
+  (dolist (key '(:hold :flush :gone :forget))
     (xwapp--untimer app key))
   (let ((proc (xwapp--get app :waiting)))
     ;; Before answering: the sentinel must not take the hang-up for a
     ;; page that went.
-    (dolist (key '(:waiting :page :outbox :seen))
+    (dolist (key '(:waiting :page :outbox :seen :restored))
       (xwapp--put app key nil))
     (when proc
-      (xwapp--respond proc 410))))
+      (xwapp--refuse proc "taken"))))
 
 (defun xwapp--gone (app)
-  "APP's browser page has stopped asking: it was closed."
+  "APP's browser page has stopped asking: it was closed.  What Emacs
+made ready for a tab it opened is undone with it."
   (xwapp--let-go app)
+  (xwapp--put app :asked nil)
+  (xwapp--save)
   (when (and (xwapp-on-kill app) (not (xwapp-session app)))
     (funcall (xwapp-on-kill app))))
 

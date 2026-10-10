@@ -11,7 +11,7 @@
 #             or advice-add is yours to evaluate, a changed struct or
 #             mode wants a restart.
 #   ui/...    the herd page loaded again -- in Emacs or in a browser tab
-#             -- back on Agents if it was there.  xwapp's ui/ too.
+#             -- back on the tab it was on, a room too.  xwapp's ui/ too.
 #   server/.. the sidecar restarted -- not while an ask is open, whose
 #             answer would have nowhere to go; --force restarts it anyway.
 #
@@ -91,8 +91,6 @@ if [ -n "$ui" ]; then
 (if (not (and (boundp (quote ghostherd-memory-page--app))
               (xwapp-live-p ghostherd-memory-page--app)))
     "herd page: not open"
-  (when (timerp ghostherd-memory-page--herd-timer)
-    (setq ghostherd-memory-page--pending (list :view "agents")))
   (xwapp-reload ghostherd-memory-page--app)
   "herd page: loaded again")' | say
 fi

@@ -45,12 +45,12 @@ does the same for one function --- but on a =defvar= it resets the
 value, which =bin/reload= never does.
 
 For a =ui/= file, or one of xwapp's, it loads the herd page again
-where it is --- in Emacs or in a browser tab (=xwapp-reload=) --- back
-on the Agents tab if that was showing; a room is not reopened.  For a
-=server/= file it restarts the sidecar, and refuses while an ask is
-open (=--force= does it anyway): the taker would answer into a sidecar
-that no longer holds the ask.  A sidecar this Emacs did not start is
-left alone and named.
+where it is --- in Emacs or in a browser tab (=xwapp-reload=) --- and
+the page goes back to the tab it was on, a room too: it keeps that in
+its URL.  For a =server/= file it restarts the sidecar, and refuses
+while an ask is open (=--force= does it anyway): the taker would answer
+into a sidecar that no longer holds the ask.  A sidecar this Emacs did
+not start is left alone and named.
 
 What it defines is interpreted, not compiled: slower, and not what to
 measure.  Measure after a restart.
@@ -62,13 +62,19 @@ links the =.el= files into =emacs-home/straight/build/ghostherd/= and
 byte-compiles them there, at startup, when one changed.  A restart is
 therefore always the whole, compiled change.
 
-Two things about that build bite:
+Three things about that build bite:
 
 - It compiles in a separate Emacs that has only the packages in
   =Package-Requires= (=ghostherd.el='s header) on its load path.  A file
   that requires anything else --- =xwapp=, say --- fails to compile, and
   runs interpreted from its =.el=, with nothing said.  A new =require= of
   a package outside Emacs goes into =Package-Requires= too.
+- A package is rebuilt only when its own files change.  What it
+  compiled in from another package stays as that package was: a
+  =cl-defstruct='s constructor and accessors are inlined by slot
+  position, so a slot added to =xwapp= would shift every slot after it
+  under a pr-view built before.  xwapp's struct gains no slot for that
+  reason; change what others compile in only with them rebuilt.
 - Never byte-compile into this directory: =load-prefer-newer= is nil,
   so an =.elc= next to its =.el= is loaded instead of it, stale or not.
   To see the compiler's warnings, compile a copy:

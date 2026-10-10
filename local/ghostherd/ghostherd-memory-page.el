@@ -85,7 +85,8 @@
                            (setq ghostherd-memory-page--pending nil
                                  ghostherd-memory-page--importing nil)
                            (ghostherd-memory-page--unwatch)
-                           (ghostherd-memory-page--herd-unwatch)))
+                           (ghostherd-memory-page--herd-unwatch))
+                :reopen #'ghostherd-memory-page-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
 
@@ -1432,6 +1433,18 @@ is attached to the prompt box the cursor is in."
   (when-let* ((buf (xwapp-buffer ghostherd-memory-page--app)))
     (with-current-buffer buf
       (ghostherd-memory-page-keys-mode 1))))
+
+;;;###autoload
+(defun ghostherd-memory-page-reopen ()
+  "Make the herd page ready for a browser tab that comes back to it:
+after a restart of Emacs, or once Emacs let it go.  It shows the tab
+it was on, so nothing is asked of it here, and a sidecar that does not
+start is only said.  xwapp calls this; autoloaded, so that once Emacs
+is up xwapp can load the package through it, for that tab to find."
+  (with-demoted-errors "ghostherd: memory sidecar: %S"
+    (ghostherd-memory-ensure))
+  (setq ghostherd-memory-page--project (ghostherd-memory-page--current-project)
+        ghostherd-memory-page--pending nil))
 
 ;;;###autoload
 (defun ghostherd-memory-page (&optional this-project)

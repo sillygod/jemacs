@@ -11,7 +11,10 @@ a local HTML page renders, Elisp owns HTTP and secrets.  Used by
   xwidget-webkit gives Emacs no message channel it can listen on.
 - Emacs → page: =xwapp-js= calls =NAMESPACE[fn](json)=.
 - One =xwapp= struct per app: buffer name, =index.html=, title prefixes,
-  JS namespace, idle title, handler, optional on-kill.
+  JS namespace, idle title, handler, optional on-kill; =xwapp-create=
+  takes an optional =:reopen= too (see "A tab that comes back").  The
+  struct gains no slot: its layout is compiled into the packages that
+  use it, and straight does not rebuild them when xwapp changes.
 
 #+begin_src emacs-lisp :tangle no
   (defvar my-app
@@ -65,9 +68,41 @@ or from another site's page, gets nothing.
 - *A tab that stops asking is closed.*  Ten seconds without a =next=
   (the tab closed, or frozen) and the app's on-kill runs.  A reload is
   not a close: its hello comes within the ten.
+- *A page opens where you clicked.*  A page opened while an intent
+  from a tab is handled --- a PR from the herd page --- opens in the
+  browser too, whatever =xwapp-browser= says.  (In a new tab each
+  time: a tab Emacs opened is not one it can bring to the front.)
 - The tab tells Emacs whether it is visible and focused, for
   =xwapp-seen-p=.  An intent arrives on the next turn, from a timer, as
   the title's does.
+
+** A tab that comes back
+
+A page that is not the app's is answered 410, with why:
+
+| =taken=  | another page is, in a tab or in Emacs: the tab says so, and reloading it takes the app back |
+| =free=   | none is, and the app can open again: the tab loads again on its own, and takes it          |
+| =closed= | none is, and the app cannot: reloading the tab opens it, or Emacs does                     |
+
+An app can open again when it has =:reopen=: a function that does
+what its command does before showing the page, for a tab Emacs did not
+open.  Two tabs come back that way:
+
+- *After a restart of Emacs.*  While a tab is the page of such an app,
+  its secret and the port are kept in =xwapp-state-file= (yours alone,
+  =0600=).  Once Emacs is up, =xwapp-resume= loads the app through its
+  =:reopen= --- autoloaded, for that --- and Emacs listens where the tab
+  asks.  The tab, which has kept asking ("Emacs is not answering"),
+  finds the app free.  A tab that does not come back within a minute
+  is not waited for; another Emacs on the port is left alone.
+- *After the browser froze it.*  Emacs let it go and closed the app;
+  thawed, the tab finds it free.
+
+The tab comes back with a /soft/ hello: one that takes nothing another
+page has meanwhile.  A tab that was taken from stays where it is, even
+once the app is free --- it was left on purpose.  An app without
+=:reopen= keeps no address: after a restart its tab says to open it
+again from Emacs.
 
 * Page kit (=ui/=)
 
@@ -138,7 +173,11 @@ Each page's own harness then ran on the kit, under its CSP.
 The browser channel is tested twice.  =xwapp-tests.el= runs the server
 and a client speaking HTTP in batch: what is and is not served, a round
 trip with non-ASCII text both ways, one page at a time, a closed tab, a
-reload.  It was then driven in Chrome (Playwright, the system Chrome):
-the same, plus five intents in one tick arriving in order, a call that
-throws not stopping the next, and the three real pages loading under
-their CSP with no error.
+reload; why a page is refused, a soft hello, the address kept and given
+back after a restart, and pages opened from a tab.  It was then driven
+in Chrome (Playwright, the system Chrome): the same, plus five intents
+in one tick arriving in order, a call that throws not stopping the
+next, and the three real pages loading under their CSP with no error;
+a tab coming back to a second Emacs started after the first was
+killed, and to the same Emacs after its requests were held past the
+gone (headless Chrome will not freeze a page).
