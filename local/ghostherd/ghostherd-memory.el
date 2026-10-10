@@ -327,6 +327,17 @@ reuse the wrong process instead of walking to a free port."
       (setq request (plist-put request :params params)))
     request))
 
+(defun ghostherd-memory--request-body (method params)
+  "The JSON-RPC request for METHOD with PARAMS, as UTF-8 bytes.
+`json-serialize' writes it as `json-encode' would -- nil null,
+`:json-false' false -- in C, with half the garbage: the herd tick's
+runs about once a second.  What it cannot write, `json-encode' does: a
+list for an array, a symbol for a string, a screen's stray bytes."
+  (let ((request (ghostherd-memory--build-request method params)))
+    (condition-case nil
+        (json-serialize request :null-object nil :false-object :json-false)
+      (error (encode-coding-string (json-encode request) 'utf-8)))))
+
 (defun ghostherd-memory--utf8 (s)
   "Decode S as UTF-8.
 
@@ -336,14 +347,12 @@ json.el then keeps 你 as raw bytes, which a UTF-8 buffer shows as
   (decode-coding-string (encode-coding-string (or s "") 'raw-text) 'utf-8))
 
 (defun ghostherd-memory--parse-response (response-string)
-  "Parse RESPONSE-STRING as a JSON-RPC body.  Signal on error."
-  (let* ((json-object-type 'plist)
-         (json-array-type 'list)
-         (json-key-type 'keyword)
-         (json-false nil)
-         (json-null nil)
-         (response (json-read-from-string
-                    (ghostherd-memory--utf8 response-string)))
+  "Parse RESPONSE-STRING as a JSON-RPC body.  Signal on error.
+With `json-parse-string': `json-read' left five times the garbage --
+half a megabyte for a room's conversation, read again as it grows."
+  (let* ((response (json-parse-string (ghostherd-memory--utf8 response-string)
+                                      :object-type 'plist :array-type 'list
+                                      :null-object nil :false-object nil))
          (error-obj (plist-get response :error)))
     (if error-obj
         (error "ghostherd-memory JSON-RPC %s: %s"
@@ -379,10 +388,7 @@ flag, like the herd tick, would wait on it forever.  Methods in
   (let* ((url-request-method "POST")
          (url-request-extra-headers
           '(("Content-Type" . "application/json")))
-         (url-request-data (encode-coding-string
-                            (json-encode
-                             (ghostherd-memory--build-request method params))
-                            'utf-8))
+         (url-request-data (ghostherd-memory--request-body method params))
          (fail (lambda (why)
                  (if error-callback
                      (funcall error-callback why)
@@ -436,10 +442,7 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
   (let* ((url-request-method "POST")
          (url-request-extra-headers
           '(("Content-Type" . "application/json")))
-         (url-request-data (encode-coding-string
-                            (json-encode
-                             (ghostherd-memory--build-request method params))
-                            'utf-8))
+         (url-request-data (ghostherd-memory--request-body method params))
          (timeout (or timeout ghostherd-memory-request-timeout))
          (buf (url-retrieve-synchronously
                (ghostherd-memory--rpc-url) nil nil timeout)))

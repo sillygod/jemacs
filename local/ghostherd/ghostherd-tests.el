@@ -4082,6 +4082,44 @@ its /health does (sha256(\"abc\") starts ba7816bf8f01)."
    (ghostherd-memory--parse-response
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"nope\"}}")))
 
+(ert-deftest ghostherd-test-memory-request-body-is-what-json-encode-writes ()
+  "Written in C where it can be, by `json-encode' where it cannot; the
+same JSON either way, in UTF-8 bytes."
+  (let ((ghostherd-memory--request-id 0)
+        (encoded nil)
+        (real-encode (symbol-function 'json-encode)))
+    (cl-letf (((symbol-function 'json-encode)
+               (lambda (o) (setq encoded t) (funcall real-encode o))))
+      (dolist (case `((nil (:sessions [(:name "rd" :screen "你好 ✓\n" :notes nil)] :ack_ids [] :replies []))
+                      (nil (:id "a1" :dead :json-false :done t :n 2.5 :agents [(:name "x" :path "/p")]))
+                      (nil nil)
+                      (t (:agents ("claude" "grok")))
+                      (t (:kind claude))
+                      (t (:screen ,(string-to-multibyte "bad \377 byte")))))
+        (setq encoded nil)
+        (let* ((params (cadr case))
+               (body (ghostherd-memory--request-body "herd_tick" params))
+               (read (lambda (s) (json-parse-string (decode-coding-string s 'utf-8)
+                                                    :object-type 'alist :null-object :null
+                                                    :false-object :false))))
+          (should (eq encoded (car case)))
+          (should-not (multibyte-string-p body))
+          (setq ghostherd-memory--request-id 0)
+          (should (equal (funcall read body)
+                         (funcall read (encode-coding-string
+                                        (funcall real-encode
+                                                 (ghostherd-memory--build-request "herd_tick" params))
+                                        'utf-8))))
+          (setq ghostherd-memory--request-id 0))))))
+
+(ert-deftest ghostherd-test-memory-response-reads-as-json-read-did ()
+  "Objects plists with keyword keys, arrays lists, null and false nil."
+  (let ((body "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"pending\":[{\"id\":1,\"to\":\"rd\",\"submit\":false}],\"asks\":[],\"links\":{},\"n\":1.5,\"ok\":true,\"none\":null}}"))
+    (should (equal (ghostherd-memory--parse-response body)
+                   '(:pending ((:id 1 :to "rd" :submit nil)) :asks nil :links nil :n 1.5 :ok t :none nil))))
+  (should-error (ghostherd-memory--parse-response ""))
+  (should-error (ghostherd-memory--parse-response "{\"result\":")))
+
 (defmacro ghostherd-tests--with-sidecar-http (&rest body)
   "BODY with url.el faked: `answer' lands a reply on the last request.
 Each request's buffer is in `bufs'; `timers' holds the deadlines set,
