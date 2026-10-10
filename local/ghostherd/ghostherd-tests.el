@@ -5728,6 +5728,9 @@ as `transcripts' says."
           (said nil)
           (transcripts nil)
           (ghostherd-memory-page--work-at 0)
+          (ghostherd-memory-page--look nil)
+          (ghostherd-memory-page--chores nil)
+          (ghostherd-memory-page--chore-timer nil)
           (ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
           (ghostherd-memory-page--prs (make-hash-table :test 'equal))
           (ghostherd-memory-page--task-briefs (make-hash-table :test 'equal))
@@ -5757,7 +5760,16 @@ as `transcripts' says."
                       (push (list 'links method (plist-get params :path)) asked)
                       (funcall cb (cdr (assoc (plist-get params :path) said))))))
            ,@body)
+       (when (timerp ghostherd-memory-page--chore-timer)
+         (cancel-timer ghostherd-memory-page--chore-timer))
        (delete-directory base t))))
+
+(defun ghostherd-test--look ()
+  "Look at the herd's work, and do every chore it gives, as a pause in
+your typing would."
+  (ghostherd-memory-page--work-look)
+  (while ghostherd-memory-page--chores
+    (ghostherd-memory-page--chore-next)))
 
 (ert-deftest ghostherd-test-a-checkout-is-its-root-and-branch ()
   "Its root and branch, a worktree's own; not a repository, or one with
@@ -5791,7 +5803,7 @@ the answer is fresh; a PR not looked up says so and asks no tasks."
                  (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
                 ((symbol-function 'ghostherd--project-name)
                  (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
-        (ghostherd-memory-page--work-look)
+        (ghostherd-test--look)
         (should (equal (sort (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'pr)) asked)) #'string<)
                        (sort (list (abbreviate-file-name repo) (abbreviate-file-name wt)) #'string<)))
         (should (equal (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'task)) asked))
@@ -5813,11 +5825,76 @@ the answer is fresh; a PR not looked up says so and asks no tasks."
             (should (eq (plist-get qa :pr) :json-false))))
         ;; Fresh: not asked again.  Stale: asked again.
         (setq asked nil)
-        (ghostherd-memory-page--work-look)
+        (ghostherd-test--look)
         (should-not asked)
         (maphash (lambda (k v) (puthash k (plist-put v :at 0) ghostherd-memory-page--prs)) ghostherd-memory-page--prs)
-        (ghostherd-memory-page--work-look)
+        (ghostherd-test--look)
         (should (= (length (seq-filter (lambda (a) (eq (car a) 'pr)) asked)) 2))))))
+
+(ert-deftest ghostherd-test-chores-wait-for-a-pause-in-typing ()
+  "Done once you stop typing, a moment's worth at a time, each once
+however often asked; nothing left, nothing keeps looking."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--chores nil)
+        (ghostherd-memory-page--chore-timer nil)
+        (idle nil) (clock 100.0) (done nil)
+        (real-float-time (symbol-function 'float-time)))
+    (cl-letf (((symbol-function 'current-idle-time)
+               (lambda () (and idle (seconds-to-time idle))))
+              ((symbol-function 'float-time)
+               (lambda (&optional time) (if time (funcall real-float-time time) clock))))
+      (unwind-protect
+          (let ((chore (lambda (n) (push n done) (cl-incf clock 0.015))))
+            (dolist (n '(1 2 1 3)) (ghostherd-memory-page--chore chore n))
+            (should (timerp ghostherd-memory-page--chore-timer))
+            (should (= (length ghostherd-memory-page--chores) 3))
+            ;; Typing, or a command running: nothing.
+            (dolist (i (list nil 0.1 (- ghostherd-memory-page--chore-idle 0.01)))
+              (setq idle i)
+              (ghostherd-memory-page--chores-work))
+            (should-not done)
+            ;; A pause: as many as fit, the first always.
+            (setq idle ghostherd-memory-page--chore-idle)
+            (ghostherd-memory-page--chores-work)
+            (should (equal done '(2 1)))
+            (should (timerp ghostherd-memory-page--chore-timer))
+            (ghostherd-memory-page--chores-work)
+            (should (equal done '(3 2 1)))
+            (should-not ghostherd-memory-page--chore-timer))
+        (when (timerp ghostherd-memory-page--chore-timer)
+          (cancel-timer ghostherd-memory-page--chore-timer))))))
+
+(ert-deftest ghostherd-test-a-look-is-made-in-pauses ()
+  "A look runs nothing at once; the page shows the last one until it is
+done; another look meanwhile adds nothing; git is asked once a
+directory, the agents and their project being in one."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (clrhash ghostherd--sessions)
+      (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'idle)
+      (ghostherd-tests--session :name "qa" :kind 'claude :project repo :state 'idle)
+      (puthash "~/old/" '("~/old/" . "main") ghostherd-memory-page--checkouts)
+      (let ((real (symbol-function 'ghostherd-memory-page--checkout))
+            (gits nil))
+        (cl-letf (((symbol-function 'ghostherd-session-directory) (lambda (_s) repo))
+                  ((symbol-function 'ghostherd--project-name)
+                   (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p))))))
+                  ((symbol-function 'ghostherd-memory-page--checkout)
+                   (lambda (dir) (push dir gits) (funcall real dir))))
+          (ghostherd-memory-page--work-look)
+          (let ((chores (copy-sequence ghostherd-memory-page--chores)))
+            (ghostherd-memory-page--work-look)
+            (should (equal ghostherd-memory-page--chores chores)))
+          (should-not gits)
+          (should-not asked)
+          (should (equal (hash-table-keys ghostherd-memory-page--checkouts) '("~/old/")))
+          (while ghostherd-memory-page--chores
+            (ghostherd-memory-page--chore-next))
+          (should (= (length gits) 1))
+          (should-not (gethash "~/old/" ghostherd-memory-page--checkouts))
+          (should (equal (gethash (abbreviate-file-name repo) ghostherd-memory-page--checkouts)
+                         (cons (abbreviate-file-name repo) "feat/x")))
+          (should (equal (mapcar #'car asked) '(pr))))))))
 
 (ert-deftest ghostherd-test-an-agent-shows-what-its-conversation-names ()
   "The PRs of its project's repository its conversation names, and its
@@ -5847,7 +5924,7 @@ looked up again when stale -- a merged one much later."
         (cl-letf (((symbol-function 'ghostherd-session-directory) (lambda (_s) repo))
                   ((symbol-function 'ghostherd--project-name)
                    (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
-          (ghostherd-memory-page--work-look)
+          (ghostherd-test--look)
           (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
           (should (equal (sort (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) #'<) '(360 371)))
           (should (seq-every-p (lambda (a) (equal (cadr a) root)) (seq-filter (lambda (a) (eq (car a) 'brief)) asked)))
@@ -5868,17 +5945,17 @@ looked up again when stale -- a merged one much later."
                            '(("86abc1def" :json-false "t3") ("86done001" t "t0")))))
           ;; The same transcript: not read again; its answers fresh: not asked.
           (setq asked nil)
-          (ghostherd-memory-page--work-look)
+          (ghostherd-test--look)
           (should-not (seq-filter (lambda (a) (memq (car a) '(links brief task))) asked))
           ;; Stale: an open PR is asked again, a merged one not yet.
           (maphash (lambda (k v) (puthash k (plist-put v :at (- (float-time) 600)) ghostherd-memory-page--pr-briefs))
                    ghostherd-memory-page--pr-briefs)
-          (ghostherd-memory-page--work-look)
+          (ghostherd-test--look)
           (should (equal (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) '(371)))
           ;; It grew: read again.
           (setq asked nil)
           (with-temp-buffer (insert "{}\n") (append-to-file (point-min) (point-max) path))
-          (ghostherd-memory-page--work-look)
+          (ghostherd-test--look)
           (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
           ;; A PR it names opens in pr-view.
           (let (opened)

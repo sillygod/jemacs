@@ -1012,6 +1012,9 @@ are the other tabs (below, and "What happened while you were away").
   clickup-view hold the tokens and do the asking; without them nothing
   shows, and a default branch with no PR shows nothing either.  Looked
   at once a minute while the tab is watched, an answer kept five.
+  Each git call and each request is done when you stop typing, a few
+  at a time, so the looking never holds a keystroke; meanwhile the
+  page shows the last look.
 - What each agent's conversation names, on its row and its room
   column (=↳ named=): the pull requests of its project's repository and
   the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,

@@ -465,6 +465,58 @@ path to open."
     (goto-char (point-min))
     (forward-line (1- (or (plist-get h :line) 1)))))
 
+;;; Chores: the lookups, done while you are not typing
+;;
+;; A look at the herd's work is dozens of small calls that each hold
+;; Emacs: git for a checkout, and for a pull request or a task an HTTPS
+;; request whose setting up blocks some milliseconds.  Made at once they
+;; held it a quarter of a second every minute, over half of one when the
+;; answers went stale -- typing or not.  Each is a chore instead, and
+;; the chores are done while you are not typing, a few milliseconds'
+;; worth at a time.  An answer comes a little later; nothing waits on it.
+
+(defconst ghostherd-memory-page--chore-idle 0.5
+  "Seconds without a key before chores are done.")
+(defconst ghostherd-memory-page--chore-budget 0.02
+  "Seconds of chores done at a time; the first is always done.")
+(defconst ghostherd-memory-page--chore-every 0.1
+  "Seconds between looks at whether chores can be done.")
+
+(defvar ghostherd-memory-page--chores nil
+  "Chores waiting, oldest first, each (FN . ARGS).")
+(defvar ghostherd-memory-page--chore-timer nil
+  "Timer that does the chores while there are some.")
+
+(defun ghostherd-memory-page--chore (fn &rest args)
+  "Call FN with ARGS once you are not typing.
+Asked again before then, it is still done once."
+  (let ((chore (cons fn args)))
+    (unless (member chore ghostherd-memory-page--chores)
+      (setq ghostherd-memory-page--chores
+            (nconc ghostherd-memory-page--chores (list chore)))))
+  (unless (timerp ghostherd-memory-page--chore-timer)
+    (setq ghostherd-memory-page--chore-timer
+          (run-with-timer ghostherd-memory-page--chore-every ghostherd-memory-page--chore-every
+                          #'ghostherd-memory-page--chores-work))))
+
+(defun ghostherd-memory-page--chore-next ()
+  "Do the oldest chore."
+  (let ((chore (pop ghostherd-memory-page--chores)))
+    (with-demoted-errors "ghostherd: %S"
+      (apply (car chore) (cdr chore)))))
+
+(defun ghostherd-memory-page--chores-work ()
+  "Do chores for a moment, unless you are typing; stop when none are left."
+  (let ((idle (current-idle-time)))
+    (when (and idle (>= (float-time idle) ghostherd-memory-page--chore-idle))
+      (let ((until (+ (float-time) ghostherd-memory-page--chore-budget)))
+        (while (and ghostherd-memory-page--chores (< (float-time) until))
+          (ghostherd-memory-page--chore-next)))))
+  (unless ghostherd-memory-page--chores
+    (when (timerp ghostherd-memory-page--chore-timer)
+      (cancel-timer ghostherd-memory-page--chore-timer))
+    (setq ghostherd-memory-page--chore-timer nil)))
+
 ;;; What a project works on: its branch's pull request, the tasks it cites
 ;;
 ;; The project's checkout, and an agent's where it differs -- an agent in
@@ -486,6 +538,10 @@ path to open."
   "When the herd's checkouts were last looked at.")
 (defvar ghostherd-memory-page--checkouts (make-hash-table :test 'equal)
   "Project or (agent . NAME) -> the checkout it is in, (ROOT . BRANCH).")
+(defvar ghostherd-memory-page--look nil
+  "The look at the checkouts under way, as (CHECKOUTS . DIRS): what
+becomes `ghostherd-memory-page--checkouts', and directory -> checkout,
+so git is asked once a directory.  nil when none is.")
 (defvar ghostherd-memory-page--prs (make-hash-table :test 'equal)
   "(ROOT . BRANCH) -> (:at WHEN :pr PR :pending BOOL), PR as
 `pr-view-branch-pr' gave it.")
@@ -554,8 +610,8 @@ is fresh; then the tasks it cites."
        (lambda (pr)
          (puthash co (list :at (float-time) :pr pr) ghostherd-memory-page--prs)
          (unless (alist-get 'error pr)
-           (mapc #'ghostherd-memory-page--task-ask
-                 (seq-take (alist-get 'tasks pr) ghostherd-memory-page--work-tasks)))
+           (dolist (id (seq-take (alist-get 'tasks pr) ghostherd-memory-page--work-tasks))
+             (ghostherd-memory-page--chore #'ghostherd-memory-page--task-ask id)))
          (ghostherd-memory-page--work-changed))))))
 
 (defun ghostherd-memory-page--pr-brief-ask (root id)
@@ -575,7 +631,8 @@ is fresh; then the tasks it cites."
                           (ghostherd-memory-page--work-changed))))))
 
 (defun ghostherd-memory-page--remote (root)
-  "The forge repository of checkout ROOT, asked of git once a while."
+  "The forge repository of checkout ROOT, asked of git once a while.
+For a chore: the page is shown what the last one asked."
   (let ((had (gethash root ghostherd-memory-page--remotes)))
     (if (and had (< (- (float-time) (car had)) ghostherd-memory-page--work-ttl))
         (cdr had)
@@ -598,45 +655,48 @@ is fresh; then the tasks it cites."
                          ghostherd-memory-page--checkouts))))
     (and (consp co) (car co))))
 
-(defun ghostherd-memory-page--links-look (s)
-  "Have the sidecar read what S's transcript names, when it changed; and
-look up those of its pull requests and tasks not looked up lately."
-  (let* ((name (ghostherd-session-name s))
-         (path (ghostherd-session-transcript s))
-         (sig (ghostherd-memory-page--room-signature path))
-         (had (gethash name ghostherd-memory-page--links)))
-    (when (and sig (not (equal sig (plist-get had :sig))) (not (plist-get had :pending)))
-      (puthash name (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--links)
-      (ghostherd-memory-request-async
-       "herd_links"
-       (lambda (r)
-         (puthash name (list :sig sig :links r) ghostherd-memory-page--links)
-         (ghostherd-memory-page--links-ask s)
-         (ghostherd-memory-page--work-changed))
-       (list :path path)
-       (lambda (_e) (puthash name had ghostherd-memory-page--links))))
-    (ghostherd-memory-page--links-ask s)))
+(defun ghostherd-memory-page--links-look (id)
+  "Have the sidecar read what session ID's transcript names, when it
+changed; and look up those of its pull requests and tasks not looked up
+lately."
+  (when-let* ((s (ghostherd-get id)))
+    (let* ((name (ghostherd-session-name s))
+           (path (ghostherd-session-transcript s))
+           (sig (ghostherd-memory-page--room-signature path))
+           (had (gethash name ghostherd-memory-page--links)))
+      (when (and sig (not (equal sig (plist-get had :sig))) (not (plist-get had :pending)))
+        (puthash name (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--links)
+        (ghostherd-memory-request-async
+         "herd_links"
+         (lambda (r)
+           (puthash name (list :sig sig :links r) ghostherd-memory-page--links)
+           (ghostherd-memory-page--chore #'ghostherd-memory-page--links-ask id)
+           (ghostherd-memory-page--work-changed))
+         (list :path path)
+         (lambda (_e) (puthash name had ghostherd-memory-page--links))))
+      (ghostherd-memory-page--links-ask id))))
 
-(defun ghostherd-memory-page--links-ask (s)
-  "Look up S's conversation's pull requests -- of its own repository --
-and its tasks, the most recently named first."
-  (let* ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
-         (root (ghostherd-memory-page--links-root s))
-         (remote (and root (ghostherd-memory-page--remote root))))
-    (when root
-      (dolist (pr (seq-take (seq-filter (lambda (pr) (ghostherd-memory-page--repo-p pr remote))
-                                        (plist-get links :prs))
-                            ghostherd-memory-page--links-max))
-        (ghostherd-memory-page--pr-brief-ask root (plist-get pr :id))))
-    (dolist (task (seq-take (plist-get links :tasks) ghostherd-memory-page--links-max))
-      (ghostherd-memory-page--task-ask (plist-get task :id)))))
+(defun ghostherd-memory-page--links-ask (id)
+  "Look up session ID's conversation's pull requests -- of its own
+repository -- and its tasks, the most recently named first."
+  (when-let* ((s (ghostherd-get id)))
+    (let* ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
+           (root (ghostherd-memory-page--links-root s))
+           (remote (and root (ghostherd-memory-page--remote root))))
+      (when root
+        (dolist (pr (seq-take (seq-filter (lambda (pr) (ghostherd-memory-page--repo-p pr remote))
+                                          (plist-get links :prs))
+                              ghostherd-memory-page--links-max))
+          (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-brief-ask root (plist-get pr :id))))
+      (dolist (task (seq-take (plist-get links :tasks) ghostherd-memory-page--links-max))
+        (ghostherd-memory-page--chore #'ghostherd-memory-page--task-ask (plist-get task :id))))))
 
 (defun ghostherd-memory-page--agent-links (s)
   "What S's conversation names, as the page shows it: its repository's
 pull requests and its tasks, most recently named first."
   (let* ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
          (root (ghostherd-memory-page--links-root s))
-         (remote (and root (ghostherd-memory-page--remote root)))
+         (remote (and root (cdr (gethash root ghostherd-memory-page--remotes))))
          (prs (and root (seq-take (seq-filter (lambda (pr) (ghostherd-memory-page--repo-p pr remote))
                                               (plist-get links :prs))
                                   ghostherd-memory-page--links-max)))
@@ -663,26 +723,47 @@ pull requests and its tasks, most recently named first."
                             tasks))))))
 
 (defun ghostherd-memory-page--work-look ()
-  "Look at the herd's checkouts, and ask after the pull requests of those
-whose answer is stale."
+  "Look at the herd's checkouts, then ask after the pull requests of those
+whose answer is stale; and at what each conversation names.  As chores:
+until they are done, the page shows the last look."
   (setq ghostherd-memory-page--work-at (float-time))
-  (when (ghostherd-memory-page--have 'pr-view-branch-pr 'pr-view)
-    (clrhash ghostherd-memory-page--checkouts)
+  (when (and (not ghostherd-memory-page--look)
+             (ghostherd-memory-page--have 'pr-view-branch-pr 'pr-view))
+    (setq ghostherd-memory-page--look (cons (make-hash-table :test 'equal)
+                                            (make-hash-table :test 'equal)))
     (dolist (s (ghostherd-sessions))
-      (let ((project (ghostherd--project-name (ghostherd-session-project s))))
-        (when (and project (not (gethash project ghostherd-memory-page--checkouts)))
-          (puthash project (or (ghostherd-memory-page--checkout project) 'none)
-                   ghostherd-memory-page--checkouts))
-        (puthash (cons 'agent (ghostherd-session-name s))
-                 (or (ghostherd-memory-page--checkout (ghostherd-session-directory s)) 'none)
-                 ghostherd-memory-page--checkouts)))
+      (ghostherd-memory-page--chore #'ghostherd-memory-page--look-at (ghostherd-session-id s)))
+    (ghostherd-memory-page--chore #'ghostherd-memory-page--look-done))
+  (dolist (s (ghostherd-sessions))
+    (ghostherd-memory-page--chore #'ghostherd-memory-page--links-look (ghostherd-session-id s))))
+
+(defun ghostherd-memory-page--look-at (id)
+  "Put the checkouts of session ID, and of its project, in the look."
+  (when-let* ((look ghostherd-memory-page--look)
+              (s (ghostherd-get id)))
+    (let ((checkout (lambda (dir)
+                      (let ((key (and (stringp dir) (file-name-as-directory (expand-file-name dir)))))
+                        (with-memoization (gethash key (cdr look))
+                          (or (ghostherd-memory-page--checkout dir) 'none)))))
+          (project (ghostherd--project-name (ghostherd-session-project s))))
+      (when (and project (not (gethash project (car look))))
+        (puthash project (funcall checkout project) (car look)))
+      (puthash (cons 'agent (ghostherd-session-name s))
+               (funcall checkout (ghostherd-session-directory s))
+               (car look)))))
+
+(defun ghostherd-memory-page--look-done ()
+  "The look's checkouts are the herd's now; ask after their pull requests."
+  (when-let* ((look ghostherd-memory-page--look))
+    (setq ghostherd-memory-page--checkouts (car look)
+          ghostherd-memory-page--look nil)
     (let (seen)
       (maphash (lambda (_k co)
                  (when (and (consp co) (not (member co seen)))
                    (push co seen)
-                   (ghostherd-memory-page--pr-ask co)))
-               ghostherd-memory-page--checkouts)))
-  (mapc #'ghostherd-memory-page--links-look (ghostherd-sessions)))
+                   (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-ask co)))
+               ghostherd-memory-page--checkouts))
+    (ghostherd-memory-page--work-changed)))
 
 (defun ghostherd-memory-page--task (id)
   "Task ID as the page shows it."
@@ -782,7 +863,7 @@ whose answer is stale."
     (when (and (> (- (float-time) ghostherd-memory-page--usage-at) ghostherd-usage-interval)
                (get-buffer-window (xwapp-buffer ghostherd-memory-page--app) t))
       (setq ghostherd-memory-page--usage-at (float-time))
-      (ghostherd-usage-refresh))
+      (ghostherd-memory-page--chore #'ghostherd-usage-refresh))
     (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
       (ghostherd-memory-page--hooks-refresh))
     (ghostherd-memory-page--send-herd)))
