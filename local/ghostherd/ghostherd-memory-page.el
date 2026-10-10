@@ -370,7 +370,13 @@ draws lanes from fields rather than parsing prose."
         :head (ghostherd-memory-page--str (plist-get a :head))
         :replyHead (ghostherd-memory-page--str (plist-get a :reply_head))
         :created (plist-get a :created_ms)
-        :answered (plist-get a :answered_ms)))
+        :answered (plist-get a :answered_ms)
+        ;; Where it stands in its run: the ask its asker was answering,
+        ;; the run's first ask, its round with its taker, and how many.
+        :parent (plist-get a :parent)
+        :run (plist-get a :run)
+        :round (plist-get a :round)
+        :of (plist-get a :of)))
 
 ;;; The hooks each CLI runs
 

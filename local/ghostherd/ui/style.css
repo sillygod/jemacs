@@ -664,6 +664,15 @@ pre.screen {
 /* What a project works on: its branch, PR and tasks. */
 .work { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 6px; font-size: 12px; }
 .rwork { flex-basis: 100%; }
+.rruns { flex-basis: 100%; min-width: 0; }
+.rruns:empty { display: none; }
+.rrun { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); min-width: 0; }
+.rrun .rpath { color: var(--accent); white-space: nowrap; flex-shrink: 0; }
+.rrun.run-done .rpath { color: var(--plus); }
+.rrun.run-auto .rpath { color: var(--warn); }
+.rrun.run-failed .rpath { color: var(--minus); }
+.rrun .rparts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.rrun .when { margin-left: auto; flex-shrink: 0; }
 .rwork .work { margin: 2px 0 0; }
 .wbranch { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .wnote { color: var(--muted); }

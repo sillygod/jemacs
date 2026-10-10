@@ -2,7 +2,7 @@
 """herd -- ask another agent in this Emacs's herd, or answer an ask.
 
 Usage:
-  herd ask TO [TEXT|-] [--wait] [--timeout SECS]
+  herd ask TO [TEXT|-] [--wait] [--timeout SECS] [--rounds N]
   herd reply ID [TEXT|-]
   herd status ID
   herd cancel ID
@@ -19,6 +19,12 @@ kind's agent in your project.  TEXT `-', or left out, reads stdin.
 back to you as a message once you are idle.  With --wait it prints the
 answer itself when it arrives.  Run that in the background if your CLI
 can: you are told when it finishes.
+
+Rounds: while it answers your ask, its taker may ask any one agent N
+times at most -- --rounds N, 5 when not given; past that the herd
+refuses, and the taker answers you with where it stands.  You are held
+to the same with each agent you ask: for the ask you are answering, or,
+asked by nobody, until you finish a turn with no ask open.
 
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
@@ -226,11 +232,13 @@ def wait_for(ask_id, to, timeout):
 
 def cmd_ask(args):
     body = text_arg(args.text)
-    out = rpc(
-        "herd_ask",
-        {"to": args.to, "body": body, "from": me(), "wait": bool(args.wait)},
-    )
-    say("asked %s (ask %s)" % (out["to"], out["id"]))
+    params = {"to": args.to, "body": body, "from": me(), "wait": bool(args.wait)}
+    if args.rounds is not None:
+        params["rounds"] = args.rounds
+    out = rpc("herd_ask", params)
+    say("asked %s (ask %s)%s" % (
+        out["to"], out["id"],
+        ", round %d of %d" % (out["round"], out["of"]) if out.get("round") else ""))
     if not args.wait:
         print(out["id"])
         return 0
@@ -860,6 +868,8 @@ def main(argv=None):
     p.add_argument("text", nargs="?")
     p.add_argument("--wait", action="store_true")
     p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    p.add_argument("--rounds", type=int, metavar="N",
+                   help="how many times the taker may ask any one agent for this")
     p.set_defaults(fn=cmd_ask)
     p = sub.add_parser("reply", help="answer an ask")
     p.add_argument("id")

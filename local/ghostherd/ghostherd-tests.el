@@ -2765,13 +2765,18 @@ heredoc's closing line at column 0 so a copy of it works."
                  (lambda (from to body &rest keys) (setq got (list from to body keys)))))
         (ghostherd--herd-deliver-one
          '(:id "m1" :from "claude-main" :to "agy-a" :body "fetch the docs\nall of them"
-               :handoff nil :submit t :ask "a1b2c3d4")))
+               :handoff nil :submit t :ask "a1b2c3d4" :rounds 4)))
       (should (equal (nth 0 got) "claude-main"))
       (should (eq (nth 1 got) taker))
       (let ((text (nth 2 got)))
         (should (string-prefix-p "[ask a1b2c3d4 " text))
         (should (string-search "\nfetch the docs\nall of them\n" text))
-        (should (string-search "\n/p/bin/herd reply a1b2c3d4 <<'HERD'\n<your answer>\nHERD\n" text)))
+        (should (string-search "\n/p/bin/herd reply a1b2c3d4 <<'HERD'\n<your answer>\nHERD\n" text))
+        ;; How many rounds it has, after what the room shows of an ask.
+        (should (string-suffix-p ",\nand any one of them 4 times at most." text))
+        (should (< (string-search "When you are done" text)
+                   (string-search "any one of them" text))))
+      (should-not (string-search "any one of them" (ghostherd--ask-text "a1" "x")))
       (should (eq (plist-get (nth 3 got) :submit) t))
       (should (equal (gethash "a1b2c3d4" ghostherd--asks-open) "agy-a"))
       (let ((entry (car ghostherd--log)))
@@ -4932,7 +4937,8 @@ there, and it is a conversation; otherwise the page is told why."
     (let ((ghostherd--herd-asks
            '((:id "a1" :from "claude-api" :to "agy-a" :status "answered" :auto t
                   :error nil :head "fetch the docs" :reply_head "screen line"
-                  :created_ms 1791450000000.0 :answered_ms 1791450060000.0))))
+                  :created_ms 1791450000000.0 :answered_ms 1791450060000.0
+                  :parent "a0" :run "a0" :round 2 :of 4))))
       (ghostherd-memory-page--send-herd)
       (let ((k (aref (plist-get (ghostherd-test--call calls "renderHerd") :asks) 0)))
         (should (equal (plist-get k :id) "a1"))
@@ -4940,6 +4946,8 @@ there, and it is a conversation; otherwise the page is told why."
         (should (eq (plist-get k :auto) t))
         (should (equal (plist-get k :replyHead) "screen line"))
         (should (equal (plist-get k :answered) 1791450060000.0))
+        (should (equal (list (plist-get k :parent) (plist-get k :run) (plist-get k :round) (plist-get k :of))
+                       '("a0" "a0" 2 4)))
         (should (json-encode k))))))
 
 (ert-deftest ghostherd-test-herd-page-shows-what-each-said ()

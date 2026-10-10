@@ -559,6 +559,43 @@ note taken for its answer --- so the sidecar declines to settle an ask
 while its taker has asks of its own open, and Emacs watches it again
 for the next stop.
 
+** Why the herd counts rounds
+
+The lead's first run kept to its four rounds because rd remembered the
+number; nothing held it to it.  A loop is the herd's to bound, then,
+not the agents': the asker gives the number with the ask
+(=--rounds=), the sidecar counts each asker's asks of each taker under
+the ask it is answering, and refuses the one past --- an error the
+asker reads, saying to answer with where the work stands, so a loop
+ends in an answer rather than in silence.
+
+Under the ask, and per pair: "four rounds" is rd and qa while rd does
+the lead's work.  The lead's next ask is new work, and rd looking
+something up with web is not a round with qa.  Without a number an
+ask allows five: past a loop anyone states, so it stops a runaway and
+not real work.
+
+An agent nobody asked has no ask to count under.  Its turn would be
+the natural bound, but the herd cannot see where a turn the user
+started ends: a turn ended to wait on an ask, and an answer coming
+back as mail, look like any other.  So it counts a run: from the
+agent's first ask until the tick sees it come to idle or done with no
+ask of its own open, no answer a wait has yet to collect, and no
+answer's mail queued for it.  Only a change counts --- an agent
+already idle when its wait in the background collects is about to be
+woken, not finished.  The user is not counted at all.
+
+The room's header is drawn from the asks alone: each carries the ask
+its asker answered, its run and its round, and the page follows them
+down to the ask the rest waits on.  Once the run is over, "done" is
+the asker's own last words if they came after the answer --- the
+lead's report --- and the answer it got if not.
+
+A herd-run loop --- 3.20's loop in one command, the herd choosing who
+goes next --- was not built.  Choosing is the lead's, with judgment
+and in your words; what the lead lacked was a bound it could not
+forget.
+
 ** Why a paste is looked at again after Return
 
 The same run lost an ask: rd's second round was pasted into qa, the

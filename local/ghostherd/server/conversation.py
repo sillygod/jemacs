@@ -60,7 +60,7 @@ TARGET = re.compile(r"\A[A-Za-z0-9][\w.@-]*\Z")  # an agent, a kind or an ask id
 # What the client says around an answer (bin/herd's `say', on stderr),
 # and how Claude Code reports a command that failed or went to the
 # background -- where the answer is in the output file, read later.
-ASKED = re.compile(r"^herd: asked \S+ \(ask ([0-9A-Za-z]{4,32})\)$", re.M)
+ASKED = re.compile(r"^herd: asked \S+ \(ask ([0-9A-Za-z]{4,32})\)(?:, round \d+ of \d+)?$", re.M)
 FAILED_RUN = re.compile(r"\AExit code (\d+)\n")
 BACKGROUND = re.compile(
     r"\ACommand running in background with ID: \S+? Output is being written to: (\S+?)\.?(?:\s|\Z)"
@@ -195,7 +195,7 @@ def herd_call(command: str) -> dict[str, Any] | None:
     for w in words:
         if skip:
             skip = False
-        elif w == "--timeout":
+        elif w in ("--timeout", "--rounds"):
             skip = True
         elif not w.startswith("-"):
             positional.append(w)

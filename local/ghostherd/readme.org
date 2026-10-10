@@ -485,8 +485,19 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   agent answering an ask may hand parts of it on --- the lead asks rd,
   rd asks qa --- three asks deep at most, but never to one waiting on
   it.  A kind never picks a project's lead.
+- *Rounds.*  While it answers an ask, an agent may ask any one agent
+  only so many times: =--rounds N= on the ask it answers, 5 without.
+  The next is refused, saying to answer with where it stands.  "rd
+  builds, qa tests, four rounds" said to the lead becomes =herd ask rd
+  --rounds 4=, and rd's fifth ask of qa never goes out.  An agent nobody
+  asked is held to 5 with each agent in one run: from its first ask
+  until it finishes a turn with no ask open and no answer on its way.
+  You are not held to rounds.
 - *Where to see it.*  The Agents tab shows asks on both agents' rows,
-  and the herd log has each delivery and outcome.
+  with their round; a project's room says in its header where each run
+  stands --- =lead → rd → qa · round 3/4 · waiting on qa=, then
+  =done: lead: …= with its report --- and the herd log has each
+  delivery and outcome.
 
 Two rules belong in the ask itself (=skills/ghostherd-ask= says them):
 a commit names its files, and the asker leaves them alone until the

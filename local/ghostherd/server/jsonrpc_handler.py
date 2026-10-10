@@ -200,6 +200,7 @@ class JsonRpcHandler:
             body=params.get("body"),
             from_name=params.get("from"),
             wait=bool(params.get("wait")),
+            rounds=params.get("rounds"),
         )
 
     def _herd_reply(self, params: dict) -> dict:

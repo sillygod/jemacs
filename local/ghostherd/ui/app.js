@@ -814,6 +814,7 @@
     else if (open) what = "⇢ asked " + k.to + queued;
     else if (k.status === "answered") what = k.auto ? "⇠ " + k.to + " stopped without answering" : "⇠ " + k.to + " answered";
     else what = "⇢ ask to " + k.to + " " + k.status + (k.error ? ": " + k.error : "");
+    if (k.round && (k.parent || k.round > 1)) what += " · round " + k.round + "/" + k.of;
     const text = k.status === "answered" ? k.replyHead : open ? k.head : "";
     const t = open ? k.created : k.answered;
     return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + '" title="' +
@@ -821,6 +822,104 @@
       '<span class="awhat">' + esc(what) + "</span>" +
       (text ? '<span class="atext">' + esc(text) + "</span>" : "") +
       '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
+  }
+
+  // ---- Where a run of asks stands ----------------------------------------
+  //
+  // A run: the asks of an agent nobody asked, and those made to answer
+  // them, down the chain -- the lead's ask of rd, rd's rounds with qa.
+  // The room's header says where the latest run of each agent stands:
+  // who waits on whom, at which round, and once over, how it ended.
+
+  const isOpen = (k) => k.status === "queued" || k.status === "delivered";
+
+  // The room's runs, the latest of each agent that started one, newest
+  // first: { from, asks } with ASKS newest first, as the herd sends them.
+  function roomRuns(agents, asks) {
+    const here = new Set(agents.map((a) => a.name));
+    const runs = new Map();
+    (asks || []).forEach((k) => {
+      if (!k.run || !(here.has(k.from) || here.has(k.to))) return;
+      if (!runs.has(k.run)) runs.set(k.run, []);
+      runs.get(k.run).push(k);
+    });
+    const latest = new Map();
+    runs.forEach((ks, id) => {
+      const from = (ks.find((k) => k.id === id) || ks[ks.length - 1]).from;
+      if (!latest.has(from)) latest.set(from, { from, asks: ks });
+    });
+    return [...latest.values()];
+  }
+
+  // The asks from the run's first down to K.
+  function chainTo(k, ks) {
+    const chain = [k];
+    for (let p; chain[0].parent && (p = ks.find((x) => x.id === chain[0].parent)); ) chain.unshift(p);
+    return chain;
+  }
+
+  function roundOf(k) {
+    return k.round ? "round " + k.round + "/" + k.of : "";
+  }
+
+  // Each pair that went more than one round, as "rd → qa 3/4".
+  function roundsUsed(ks) {
+    const most = new Map();
+    ks.forEach((k) => {
+      const key = k.from + " → " + k.to;
+      if (k.round > 1 && !(most.get(key) && most.get(key).round >= k.round)) most.set(key, k);
+    });
+    return [...most].map(([key, k]) => key + " " + k.round + "/" + k.of).join(", ");
+  }
+
+  function runLine(run, agents) {
+    const ks = run.asks;
+    const open = ks.filter(isOpen);
+    const parts = [];
+    let cls = "run-on", path, at;
+    if (open.length) {
+      // Deepest first, then newest: the ask everything above waits on.
+      const deepest = open.map((k) => chainTo(k, ks)).sort((a, b) => b.length - a.length)[0];
+      const d = deepest[deepest.length - 1];
+      path = [deepest[0].from].concat(deepest.map((k) => k.to));
+      const below = ks.find((k) => k.parent === d.id);  // its latest round with someone
+      if (below) {
+        parts.push(below.status !== "answered" ? below.to + " " + below.status
+          : below.auto ? below.to + " stopped without answering"
+          : (below.to + " answered " + roundOf(below)).trim());
+      } else if (d.round && (d.parent || d.round > 1)) parts.push(roundOf(d));
+      parts.push(d.status === "queued" ? d.to + " is busy; the ask waits" : "waiting on " + d.to);
+      at = d.created;
+    } else {
+      const top = ks.find((k) => !k.parent) || ks[0];
+      const asker = agents.find((a) => a.name === run.from);
+      path = [top.from, top.to];
+      const used = roundsUsed(ks);
+      at = top.answered;
+      if (top.status === "failed" || top.status === "cancelled") {
+        cls = "run-failed";
+        parts.push("stopped: ask to " + top.to + " " + top.status + (top.error ? " (" + top.error + ")" : ""));
+      } else if (top.auto) {
+        cls = "run-auto";
+        parts.push(top.to + " stopped without answering");
+      } else if (asker && (asker.state === "working" || asker.state === "starting")) {
+        parts.push(top.to + " answered; " + run.from + " at work");
+      } else {
+        cls = "run-done";
+        // The asker's last word, when it came after the run: its report.
+        const said = asker && asker.said && asker.saidAt && asker.saidAt >= (top.answered || 0);
+        parts.push("done: " + (said ? run.from + ": " + asker.said : top.replyHead || "answered"));
+      }
+      if (used) parts.splice(parts.length - 1, 0, used);
+    }
+    return '<div class="rrun ' + cls + '" title="' + esc("run " + ks[ks.length - 1].run) + '">' +
+      '<span class="rpath">' + path.map(esc).join(" → ") + "</span>" +
+      '<span class="rparts">' + esc(parts.join(" · ")) + "</span>" +
+      '<span class="when">' + esc(at ? when(at / 1000) : "") + "</span></div>";
+  }
+
+  function runsHtml(agents, asks) {
+    return roomRuns(agents, asks).map((r) => runLine(r, agents)).join("");
   }
 
   // ---- What a project works on -------------------------------------------
@@ -1303,7 +1402,8 @@
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
       app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
-        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + '</span><div class="rwork"></div></div>' +
+        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + '</span><div class="rwork"></div>' +
+        '<div class="rruns"></div></div>' +
         (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
@@ -1320,6 +1420,7 @@
     room.querySelector(".rsum").innerHTML = summary;
     const rwork = room.querySelector(".rwork");
     if (rwork) rwork.innerHTML = workHtml(workFor(project));
+    room.querySelector(".rruns").innerHTML = runsHtml(agents, asks);
     if (chat) return;
     agents.forEach((a) => {
       const col = roomColumn(a.name);

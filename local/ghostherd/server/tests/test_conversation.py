@@ -131,6 +131,7 @@ def test_what_the_herd_said_is_attributed(home):
     ("\"$GHOSTHERD_HERD\" ask qa --wait - <<'EOF'\nRound 2.\nEOF",
      {"kind": "ask", "to": "qa", "text": "Round 2."}),
     ("got=$(herd ask qa --wait \"hi\")", {"kind": "ask", "to": "qa", "text": "hi"}),
+    ("herd ask --rounds 4 rd --wait 'build it'", {"kind": "ask", "to": "rd", "text": "build it"}),
     ("herd ask qa \"is a > b?\" >out.txt", {"kind": "ask", "to": "qa", "text": "is a > b?"}),
     # Piped in: the text is not on the line, and what follows `;' is not it.
     ("cat q.txt | herd ask qa; echo asked", {"kind": "ask", "to": "qa", "text": ""}),
@@ -192,10 +193,10 @@ def test_an_ask_in_the_background_is_answered_from_its_output(home):
     # Claude Code's word that it went to the background is no answer.
     assert entry()["waiting"] is True and "answer" not in entry()
     records += [a("m2", use("t2", "Bash", command="tail -3 " + OUT)),
-                u([result("t2", "herd: asked qa (ask 26910956)\nherd: qa has it: working")])]
+                u([result("t2", "herd: asked qa (ask 26910956), round 2 of 4\nherd: qa has it: working")])]
     assert (entry()["waiting"], entry()["ask"], "answer" in entry()) == (True, "26910956", False)
     records += [a("m3", use("t3", "Read", file_path=OUT)),
-                u([result("t3", "     1→herd: asked qa (ask 26910956)\n     2→All green.\n     3→\n"
+                u([result("t3", "     1→herd: asked qa (ask 26910956), round 2 of 4\n     2→All green.\n     3→\n"
                                 "     4→[exited with code 0]")])]
     e = entry()
     assert (e["answer"], e["ask"], "waiting" in e) == ("All green.", "26910956", False)
@@ -505,7 +506,9 @@ def test_the_room_reads_what_ghostherd_writes(tmp_path):
     body = "fetch the docs\nand more"
     ask = h.ask("agy-a2", body, from_name="claude-main")
     _deliver(h)
-    pasted = message("claude-main", "agy-a2", ask_text % (ask["id"], body, "'/x/bin/herd'", ask["id"]))
+    # With the rounds the taker has, which the room leaves out.
+    pasted = message("claude-main", "agy-a2", ask_text % (ask["id"], body, "'/x/bin/herd'", ask["id"],
+                                                          ",\nand any one of them 4 times at most"))
     e = conv.user_entry(pasted, None)
     assert (e["kind"], e["who"], e["ask"], e["text"]) == ("ask", "claude-main", ask["id"], body)
 

@@ -29,6 +29,9 @@ HERD
   It can take minutes; it gives up after `--timeout` seconds (1800).
 - Without `--wait` it prints the ask's id and returns.  The answer then
   comes to you as a message, pasted once you are idle.
+- `--rounds N` bounds a back-and-forth: while it answers you, the agent
+  you ask may ask any one agent N times at most (5 without it) --- "get
+  it through qa, four rounds at most" is `--rounds 4`.
 
 Exit status: 0 answered (the answer is on stdout), 1 error, 3 still open
 when the timeout ran out (the answer will come to you as a message), 4
@@ -50,8 +53,9 @@ such.
 
 An ask pasted to you shows its id and the exact command to answer it.
 Run that command when you are done, even if you could not do the work
-(say why).  While you have an ask open you cannot ask anyone else; the
-herd refuses it.
+(say why).  You may ask others for parts of it, but never one waiting
+on you, and any one agent only as many times as the ask says.  When
+the herd refuses a round, answer with where the work stands.
 
 ## Other commands
 

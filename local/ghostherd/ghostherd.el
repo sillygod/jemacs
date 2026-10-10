@@ -3805,8 +3805,10 @@ in your project.  --wait prints the answer when it comes; without it
 the answer comes back to you as a message once you are idle.  An
 agent answering an ask may hand parts of it on, three asks deep at
 most, but never to one waiting on it; a kind never picks a project's
-lead.  Methods: herd_ask {to,
-body, from, wait}, herd_reply {id, body, from}, herd_await {id,
+lead.  And it may ask any one agent only so many times for it: what
+the asker gave as --rounds, 5 when it gave none -- one nobody asked,
+until it finishes a turn with no ask open.  Methods: herd_ask {to,
+body, from, wait, rounds}, herd_reply {id, body, from}, herd_await {id,
 timeout}, herd_cancel {id}, herd_asks.
 
 Hooks: `\"$GHOSTHERD_HERD\" hook [EVENT]' reads a CLI hook's JSON on
@@ -3874,7 +3876,7 @@ from sqlite instead of waiting for another Emacs round trip."
                      (plist-get msg :submit)
                    t)))
     (cond
-     (ask (ghostherd--ask-deliver ask from to body))
+     (ask (ghostherd--ask-deliver ask from to body (plist-get msg :rounds)))
      (handoff (ghostherd-handoff to body from))
      (t (ghostherd-message from to body :submit submit)))))
 
@@ -3920,28 +3922,34 @@ from sqlite instead of waiting for another Emacs round trip."
                   "")))
     (truncate-string-to-width (string-trim line) 80 nil nil "…")))
 
-(defun ghostherd--ask-text (id body)
+(defun ghostherd--ask-text (id body &optional rounds)
   "BODY as the taker sees ask ID: the work, then how to answer it.
 The answer line is spelled out in full, the client by its absolute
-name, so a taker needs no skill installed and no PATH of ours."
+name, so a taker needs no skill installed and no PATH of ours.
+ROUNDS, when the sidecar says, is how many times the taker may ask
+any one agent for it."
   (format "[ask %s -- whoever asked is waiting for your answer]\n%s\n\n\
 When you are done, send your answer with:\n\
 %s reply %s <<'HERD'\n\
 <your answer>\n\
 HERD\n\
 Answer even if you could not do it, and say why.  You may ask other\n\
-agents for parts of it, but not whoever is waiting on you."
+agents for parts of it, but not whoever is waiting on you%s."
           id body
           (shell-quote-argument (or (and (fboundp 'ghostherd-herd-client)
                                          (ghostherd-herd-client))
                                     "herd"))
-          id))
+          id
+          (if (natnump rounds)
+              (format ",\nand any one of them %d time%s at most" rounds (if (= rounds 1) "" "s"))
+            "")))
 
-(defun ghostherd--ask-deliver (id from to body)
-  "Paste ask ID from FROM into TO, and watch for TO to stop."
+(defun ghostherd--ask-deliver (id from to body &optional rounds)
+  "Paste ask ID from FROM into TO, and watch for TO to stop.
+ROUNDS is how many times TO may ask any one agent for it."
   (let ((session (or (ghostherd-get to)
                      (user-error "Unknown target session"))))
-    (ghostherd-message from session (ghostherd--ask-text id body) :submit t)
+    (ghostherd-message from session (ghostherd--ask-text id body rounds) :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
     (ghostherd--log-add session 'ask
                         (format "ask %s from %s: %s" id from
@@ -4097,8 +4105,12 @@ agents at once when the work allows.
 
 Hand out outcomes, not steps: \"build it and get it through qa, four
 rounds at most\" to rd lets rd and qa go back and forth without you in
-the middle, and you get the result.  An agent you asked may ask others;
-nobody may ask you back while you wait on them -- the herd refuses it.
+the middle, and you get the result.  Give the rounds to the herd as
+well -- ask rd with --rounds 4 -- and it holds rd to them: past four
+asks of qa it refuses the fifth, and rd answers you with where it
+stands.  Without --rounds it allows five.  An agent you asked may ask
+others; nobody may ask you back while you wait on them -- the herd
+refuses it.
 
 Do small things yourself: read a file to plan, answer from what you
 know.  Do not do an agent's work for it.  When the team has nobody for

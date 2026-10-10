@@ -46,6 +46,15 @@ _TAKER_RANK = {"idle": 0, "done": 0, "working": 1, "starting": 1, "blocked": 2}
 # asked while a third of its chain waits on it, and asks no further.
 ASK_DEPTH = 3
 
+# Rounds: how many times an agent may ask one other agent while it
+# answers one ask -- rd taking the lead's work through qa.  The asker
+# of that ask says how many (`rounds'); this many when it does not, and
+# for an agent nobody asked, in one run: from its first ask until it
+# finishes a turn with none open.  What stops a loop is the herd, then,
+# not the agents remembering the number they were given.
+ASK_ROUNDS = 5
+ASK_ROUNDS_MAX = 20
+
 # An answer a waiting asker has not collected after this long is mailed
 # to it instead: the `herd ask --wait' that would have printed it died.
 UNCOLLECTED_SECONDS = 120
@@ -186,6 +195,15 @@ class HerdStore:
             )
             """
         )
+        # The run of asks an agent nobody asked is on: the first ask's id.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runs (
+                session TEXT PRIMARY KEY,
+                run TEXT NOT NULL
+            )
+            """
+        )
         cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(snapshot)")
         }
@@ -205,6 +223,13 @@ class HerdStore:
         }
         if "auto_source" not in ask_cols:
             self._conn.execute("ALTER TABLE asks ADD COLUMN auto_source TEXT")
+        # The ask its asker was answering, the run it belongs to, its round
+        # with its taker and how many it may have; and how many its own
+        # taker may have with any one agent (NULL: ASK_ROUNDS).
+        for col, typ in (("parent", "TEXT"), ("run", "TEXT"), ("round", "INTEGER"),
+                         ("round_of", "INTEGER"), ("rounds", "INTEGER")):
+            if col not in ask_cols:
+                self._conn.execute(f"ALTER TABLE asks ADD COLUMN {col} {typ}")
         self._conn.commit()
 
     def close(self) -> None:
@@ -320,14 +345,25 @@ class HerdStore:
         body: str,
         from_name: str | None = None,
         wait: bool = False,
+        rounds: int | None = None,
     ) -> dict[str, Any]:
         """Queue BODY for TO as an ask.  TO is a session or a kind.
 
         WAIT says the asker will collect the answer with herd_await;
-        otherwise the answer comes back to it as mail.
+        otherwise the answer comes back to it as mail.  ROUNDS is how
+        many times the taker may ask any one agent while it answers this
+        (ASK_ROUNDS when not given).
         """
         if body is None or not str(body).strip():
             raise ValueError("body is required")
+        if rounds is not None:
+            try:
+                ok = int(rounds) == rounds and 1 <= rounds <= ASK_ROUNDS_MAX
+            except (TypeError, ValueError):
+                ok = False
+            if not ok or isinstance(rounds, bool):
+                raise ValueError(f"rounds must be a whole number from 1 to {ASK_ROUNDS_MAX}")
+            rounds = int(rounds)
         sender = (from_name or "").strip() or "user"
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
@@ -352,13 +388,33 @@ class HerdStore:
                     "answer its ask rather than ask it"
                 )
             ask_id = self._new_ask_id()
+            parent, run, n, cap = self._round(sender, target, ask_id)
+            if cap is not None and n >= cap:
+                if parent:
+                    raise ValueError(
+                        f"{sender} has asked {target} {n} times for ask {parent['id']}, "
+                        f"{cap} at most; answer {parent['from_name']} with where it stands "
+                        "rather than ask again"
+                    )
+                raise ValueError(
+                    f"{sender} has asked {target} {n} times in this run of asks, {cap} at most "
+                    f"(it ends when {sender} finishes a turn with no ask open); "
+                    "say where it stands rather than ask again"
+                )
+            if run == ask_id:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO runs (session, run) VALUES (?, ?)", (sender, run)
+                )
             self._conn.execute(
                 """
                 INSERT INTO asks (id, from_name, to_name, body, wait,
-                                  status, created_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?)
+                                  status, created_at, parent, run, round,
+                                  round_of, rounds)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
-                (ask_id, sender, target, str(body), 1 if wait else 0, now),
+                (ask_id, sender, target, str(body), 1 if wait else 0, now,
+                 parent["id"] if parent else None, run,
+                 n + 1 if cap is not None else None, cap, rounds),
             )
             self._conn.execute(
                 """
@@ -370,7 +426,79 @@ class HerdStore:
                 (str(uuid.uuid4()), sender, target, str(body), now, ask_id),
             )
             self._conn.commit()
-        return {"id": ask_id, "to": target, "queued": True}
+        out: dict[str, Any] = {"id": ask_id, "to": target, "queued": True}
+        if cap is not None:
+            out.update(round=n + 1, of=cap)
+        return out
+
+    def _round(self, sender: str, target: str, ask_id: str):
+        """Where SENDER asking TARGET stands: (PARENT, RUN, N, CAP) --
+        the ask it is answering (a dict, or None), the run the new ask
+        ASK_ID joins, how many times it has asked TARGET in it already,
+        and how many it may.  CAP is None for one outside the herd: the
+        user is not held to rounds.  Caller holds `_mu`."""
+        row = self._conn.execute(
+            """
+            SELECT id, from_name, run, rounds FROM asks
+            WHERE to_name = ? AND status = 'delivered'
+            ORDER BY delivered_at DESC LIMIT 1
+            """,
+            (sender,),
+        ).fetchone()
+        if row:
+            parent = {"id": row[0], "from_name": row[1]}
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM asks WHERE from_name = ? AND to_name = ? AND parent = ?",
+                (sender, target, row[0]),
+            ).fetchone()[0]
+            return parent, row[2] or row[0], n, row[3] or ASK_ROUNDS
+        if not self._conn.execute(
+            "SELECT 1 FROM snapshot WHERE name = ?", (sender,)
+        ).fetchone():
+            return None, ask_id, 0, None
+        run = self._conn.execute(
+            "SELECT run FROM runs WHERE session = ?", (sender,)
+        ).fetchone()
+        if not run:
+            return None, ask_id, 0, ASK_ROUNDS
+        n = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM asks
+            WHERE from_name = ? AND to_name = ? AND parent IS NULL AND run = ?
+            """,
+            (sender, target, run[0]),
+        ).fetchone()[0]
+        return None, run[0], n, ASK_ROUNDS
+
+    def _waiting(self, name: str) -> bool:
+        """NAME has an ask of its own open, or an outcome on its way to
+        it: its run of asks goes on.  Caller holds `_mu`."""
+        return bool(self._conn.execute(
+            f"""
+            SELECT 1 FROM asks WHERE from_name = ? AND (
+              status IN {ASK_OPEN}
+              OR (wait = 1 AND collected = 0 AND status IN ('answered', 'failed')))
+            UNION ALL
+            SELECT 1 FROM mail WHERE to_name = ? AND status = 'queued'
+              AND ask_id IS NULL AND (body LIKE 'Answer to ask %' OR body LIKE 'Ask % failed:%')
+            LIMIT 1
+            """,
+            (name, name),
+        ).fetchone())
+
+    def _end_runs(self, old: dict[str, str], new: dict[str, str]) -> None:
+        """End the run of each agent that just finished a turn -- came to
+        idle or done -- with nothing open, and of each gone or dead.
+        OLD and NEW are the snapshot's states before and after this tick.
+        Caller holds `_mu`."""
+        settled = ("idle", "done")
+        for (name,) in self._conn.execute("SELECT session FROM runs").fetchall():
+            state = new.get(name)
+            if state in (None, "dead") or (
+                state in settled and old.get(name) not in settled
+                and not self._waiting(name)
+            ):
+                self._conn.execute("DELETE FROM runs WHERE session = ?", (name,))
 
     def _chain(self, name: str) -> list[str]:
         """Who NAME is answering for, nearest first: the askers of the
@@ -697,7 +825,8 @@ class HerdStore:
         for r in self._conn.execute(
             """
             SELECT id, from_name, to_name, status, auto, error, body, reply,
-                   created_at, delivered_at, answered_at, auto_source
+                   created_at, delivered_at, answered_at, auto_source,
+                   parent, run, round, round_of
             FROM asks ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -721,6 +850,10 @@ class HerdStore:
                     "answered_at": r[10],
                     "created_ms": _ms(r[8]),
                     "answered_ms": _ms(r[10]),
+                    "parent": r[12],
+                    "run": r[13],
+                    "round": r[14],
+                    "of": r[15],
                 }
             )
             if len(out) >= 50:
@@ -916,6 +1049,7 @@ class HerdStore:
                     "UPDATE commands SET status = 'done' WHERE id = ?",
                     (rid,),
                 )
+            was = dict(self._conn.execute("SELECT name, state FROM snapshot").fetchall())
             self._conn.execute("DELETE FROM snapshot")
             for row in sessions:
                 name = str(row.get("name") or "").strip()
@@ -967,6 +1101,10 @@ class HerdStore:
             # Before collecting what to deliver, so a swept answer goes
             # out in this tick rather than the next.
             self._sweep_uncollected(now)
+            self._end_runs(was, {
+                str(row.get("name") or "").strip(): str(row.get("state") or "")
+                for row in sessions
+            })
             hold = {"working", "starting"}
             # One ask at a time per agent: a second one pasted on top of
             # the first would leave it unsure which it is answering.
@@ -980,9 +1118,10 @@ class HerdStore:
             for row in self._conn.execute(
                 """
                 SELECT m.id, m.from_name, m.to_name, m.body,
-                       m.submit, m.handoff, m.ask_id, s.state
+                       m.submit, m.handoff, m.ask_id, s.state, a.rounds
                 FROM mail m
                 JOIN snapshot s ON s.name = m.to_name
+                LEFT JOIN asks a ON a.id = m.ask_id
                 WHERE m.status = 'queued'
                 ORDER BY m.created_at
                 """
@@ -993,7 +1132,7 @@ class HerdStore:
                     if row[2] in answering:
                         continue
                     answering.add(row[2])
-                deliverable.append(row[:7])
+                deliverable.append(row[:7] + row[8:])
             asks = self._recent_asks()
             reports = [
                 {"session": r[0], "state": r[1], "reason": r[2] or ""}
@@ -1048,7 +1187,7 @@ class HerdStore:
                 )
             self._conn.commit()
         pending = []
-        for mail_id, from_name, to_name, body, submit, handoff, ask_id in deliverable:
+        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds in deliverable:
             text = body or ""
             truncated = len(text) > self.inline_limit
             if truncated:
@@ -1072,6 +1211,9 @@ class HerdStore:
                     "ask": ask_id,
                 }
             )
+            if ask_id:
+                # How many times its taker may ask any one agent for it.
+                pending[-1]["rounds"] = rounds or ASK_ROUNDS
         return {
             "pending": pending,
             "commands": commands,

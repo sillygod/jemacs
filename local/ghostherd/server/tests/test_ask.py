@@ -192,6 +192,130 @@ def test_a_taker_waiting_on_its_own_ask_has_not_stopped(tmp_path):
     assert h.settle(again["id"], dead=True)["status"] == "failed"
 
 
+# ---- Rounds --------------------------------------------------------------
+
+
+def _nested(**states):
+    return [dict(r, state=states.get(r["name"], r["state"])) for r in NESTED]
+
+
+def _round_trip(h, to, asker, snap=None, **kw):
+    "ASKER asks TO, which gets it and answers: one round."
+    ask = h.ask(to, "test it", from_name=asker, wait=True, **kw)
+    _deliver(h, snap or NESTED)
+    h.reply(ask["id"], "two failures", from_name=to)
+    return ask
+
+
+def test_rounds_hold_a_taker_to_what_its_asker_said(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    top = h.ask("rd", "build it and get it through qa", from_name="lead-a", rounds=2)
+    assert (top["round"], top["of"]) == (1, 5)  # the lead's own, with rd
+    _deliver(h, NESTED)
+    assert [(a["round"], a["of"]) for a in (_round_trip(h, "qa", "rd"), _round_trip(h, "qa", "rd"))] == [
+        (1, 2), (2, 2)]
+    with pytest.raises(ValueError, match=r"rd has asked qa 2 times for ask \w+, 2 at most; answer lead-a"):
+        h.ask("qa", "once more", from_name="rd")
+    # Rounds are with one agent: another may still be asked.
+    assert h.ask("web", "look this up", from_name="rd")["round"] == 1
+    # The lead's next ask is a new count.
+    h.reply(top["id"], "done in two rounds", from_name="rd")
+    _deliver(h, NESTED)
+    h.ask("rd", "and the next one", from_name="lead-a")
+    _deliver(h, NESTED)
+    assert h.ask("qa", "test this", from_name="rd")["round"] == 1
+
+
+def test_rounds_default_when_the_asker_says_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 3)
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    h.ask("rd", "build it", from_name="lead-a")
+    pending = _deliver(h, NESTED)
+    assert pending[0]["rounds"] == 3  # what the taker is told
+    for _ in range(3):
+        _round_trip(h, "qa", "rd")
+    with pytest.raises(ValueError, match="3 at most"):
+        h.ask("qa", "once more", from_name="rd")
+
+
+def test_rounds_of_an_agent_nobody_asked_last_a_run(tmp_path, monkeypatch):
+    "From its first ask until it finishes a turn with none open."
+    monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 2)
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    working = _nested(rd="working")
+    first = h.ask("qa", "test it", from_name="rd")  # no --wait: answered by mail
+    _deliver(h, working)
+    # rd ends its turn to wait: the run goes on.
+    h.tick(sessions=NESTED)
+    h.reply(first["id"], "two failures", from_name="qa")
+    h.tick(sessions=working)
+    # Its turn ends again before the answer reaches it: still on.
+    h.tick(sessions=NESTED)
+    assert [p["body"][:13] for p in _deliver(h, NESTED)] == ["Answer to ask"]
+    h.tick(sessions=working)  # at work on it
+    second = h.ask("qa", "again", from_name="rd", wait=True)
+    assert (second["round"], h.recent_asks()["asks"][0]["run"]) == (2, first["id"])
+    with pytest.raises(ValueError, match="2 times in this run of asks, 2 at most"):
+        h.ask("qa", "and again", from_name="rd")
+    _deliver(h, working)
+    h.reply(second["id"], "all green", from_name="qa")
+    # Answered but not yet read by its waiting asker: still on.
+    h.tick(sessions=NESTED)
+    with pytest.raises(ValueError, match="in this run"):
+        h.ask("qa", "and again", from_name="rd")
+    h.collect(second["id"], asker=True)
+    # Read, by a wait in the background: rd, still idle, is about to be
+    # told.  Not a turn it finished.
+    h.tick(sessions=NESTED)
+    with pytest.raises(ValueError, match="in this run"):
+        h.ask("qa", "and again", from_name="rd")
+    h.tick(sessions=working)
+    # Now it finishes a turn with nothing open: the run is over.
+    h.tick(sessions=NESTED)
+    third = h.ask("qa", "a new thing", from_name="rd")
+    assert third["round"] == 1
+    assert h.recent_asks()["asks"][0]["run"] == third["id"]
+    # Counted in this run, not with the last one's.
+    assert h.ask("qa", "and its second round", from_name="rd")["round"] == 2
+    # And so it is for one that dies.
+    h.tick(sessions=_nested(rd="dead"))
+    h.tick(sessions=NESTED)
+    assert h.ask("qa", "after a respawn", from_name="rd")["round"] == 1
+
+
+def test_the_user_is_not_held_to_rounds(tmp_path, monkeypatch):
+    monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 1)
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    for _ in range(2):
+        assert "round" not in _round_trip(h, "qa", "user")
+
+
+def test_rounds_must_be_a_sane_number(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    for bad in (0, -1, herd_mod.ASK_ROUNDS_MAX + 1, 2.5, "3", True):
+        with pytest.raises(ValueError, match="rounds must be a whole number"):
+            h.ask("rd", "x", from_name="lead-a", rounds=bad)
+    assert h.ask("rd", "x", from_name="lead-a", rounds=herd_mod.ASK_ROUNDS_MAX)["id"]
+
+
+def test_asks_say_where_they_stand_in_their_run(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    top = h.ask("rd", "build it", from_name="lead-a", rounds=4)
+    _deliver(h, NESTED)
+    mid = h.ask("qa", "test it", from_name="rd")
+    asks = {a["id"]: a for a in h.tick(sessions=NESTED)["asks"]}
+    assert {k: asks[top["id"]][k] for k in ("parent", "run", "round", "of")} == {
+        "parent": None, "run": top["id"], "round": 1, "of": 5}
+    assert {k: asks[mid["id"]][k] for k in ("parent", "run", "round", "of")} == {
+        "parent": top["id"], "run": top["id"], "round": 1, "of": 4}
+
+
 def test_an_answer_the_asker_has_read_is_not_mailed_again(client):
     h = herd_mod.get_herd()
     ask = _rpc(client, "herd_ask", {"to": "agy", "body": "x", "from": "claude-main"})["result"]
@@ -502,6 +626,17 @@ def test_client_ask_and_reply_round_trip(live):
     assert out.returncode == 0, out.stderr
     got = json.loads(run(live, "status", ask_id).stdout)
     assert (got["status"], got["reply"]) == ("answered", "line 1\n'quoted' \"too\"\n")
+
+
+def test_client_gives_rounds_and_says_which_this_is(live):
+    out = run(live, "ask", "agy-a2", "build it", "--rounds", "2")
+    assert out.returncode == 0, out.stderr
+    ask_id = out.stdout.strip()
+    assert f"asked agy-a2 (ask {ask_id}), round 1 of 5" in out.stderr
+    pending = herd_mod.get_herd().tick(sessions=SNAP)["pending"]
+    assert [(p["ask"], p["rounds"]) for p in pending] == [(ask_id, 2)]
+    out = run(live, "ask", "agy-a2", "x", "--rounds", "0")
+    assert out.returncode == 1 and "rounds must be a whole number" in out.stderr
 
 
 def test_client_wait_prints_the_answer(live):
