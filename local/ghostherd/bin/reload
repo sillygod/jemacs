@@ -44,7 +44,15 @@ lisp_string() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; }
 
 for file in ${el[@]+"${el[@]}"}; do
   emacsclient --eval "
-(let ((file $(lisp_string "$file")) (done 0) (kept 0) (skipped nil))
+(let* ((file $(lisp_string "$file"))
+       ;; As \`load' would: a constant may be made from where its file is.
+       (load-file-name file) (load-true-file-name file)
+       (done 0) (kept 0) (skipped nil) (failed nil)
+       (run (lambda (form)
+              (condition-case err
+                  (progn (eval form t) (setq done (1+ done)))
+                (error (push (format \"%s (%s)\" (cadr form) (error-message-string err))
+                             failed))))))
   (with-temp-buffer
     (insert-file-contents file)
     (goto-char (point-min))
@@ -55,21 +63,24 @@ for file in ${el[@]+"${el[@]}"}; do
             (cond
              ((memq head '(defun defmacro defsubst define-inline defalias
                            cl-defun cl-defmacro cl-defgeneric cl-defmethod defconst))
-              (eval form t) (setq done (1+ done)))
+              (funcall run form))
              ((memq head '(defvar defvar-local defcustom))
               (if (boundp (cadr form)) (setq kept (1+ kept))
-                (eval form t) (setq done (1+ done))))
+                (funcall run form)))
              ((eq head 'defface)
               (if (facep (cadr form)) (setq kept (1+ kept))
-                (eval form t) (setq done (1+ done))))
+                (funcall run form)))
              ((memq head '(require provide declare-function eval-when-compile defgroup)))
              (head (push head skipped)))))
       (end-of-file nil)))
-  (format \"%s: %d defined, %d kept%s\"
+  (format \"%s: %d defined, %d kept%s%s\"
           (file-name-nondirectory file) done kept
           (if skipped
               (concat \", not run: \"
                       (mapconcat #'symbol-name (delete-dups (nreverse skipped)) \" \"))
+            \"\")
+          (if failed
+              (concat \", FAILED: \" (string-join (nreverse failed) \"; \"))
             \"\")))" | say
 done
 

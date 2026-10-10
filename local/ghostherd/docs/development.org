@@ -23,14 +23,16 @@ and asks are in the sidecar's sqlite and outlive it too.
   bin/reload server/links.py                         # the sidecar
 #+end_src
 
-For an =.el= file it reads the file form by form in the running Emacs,
-through =emacsclient=:
+For an =.el= file --- ghostherd's or xwapp's --- it reads the file form
+by form in the running Emacs, through =emacsclient=, with
+=load-file-name= the file as =load= would have it:
 
 - every =defun=, =defmacro=, =cl-defmethod= and the like is defined
   again, and every =defconst= set again: they are code;
 - a =defvar= or =defcustom= that is bound keeps its value: the sessions,
   the timers, the caches and your settings are the running herd, not
   code.  Only a new one is defined;
+- a form that signals is named in the answer, and the rest still run;
 - every other top-level form is not run, and is named in the answer.
   An =add-hook= or =advice-add= already in place needs nothing; a new
   one is yours to evaluate.  A changed =cl-defstruct= or mode wants a
