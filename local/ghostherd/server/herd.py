@@ -195,6 +195,31 @@ class HerdStore:
             )
             """
         )
+        # What Emacs pushes to your phone, as it handed it over; sent by the
+        # Telegram bot.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pushes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                push TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sent INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        # Which project a push to a chat was about: a reply to it goes to
+        # that project's lead.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pushed (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                project TEXT NOT NULL,
+                at TEXT NOT NULL,
+                PRIMARY KEY (chat_id, message_id)
+            )
+            """
+        )
         # The run of asks an agent nobody asked is on: the first ask's id.
         self._conn.execute(
             """
@@ -992,8 +1017,10 @@ class HerdStore:
         ack_ids: list[str] | None = None,
         replies: list[dict[str, Any]] | None = None,
         ack_cmd_ids: list[str] | None = None,
+        pushes: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         sessions = sessions or []
+        pushes = [p for p in (pushes or []) if isinstance(p, dict) and p.get("kind") and p.get("session")]
         ack_ids = [i for i in (ack_ids or []) if i]
         ack_cmd_ids = [i for i in (ack_cmd_ids or []) if i]
         replies = replies or []
@@ -1048,6 +1075,11 @@ class HerdStore:
                 self._conn.execute(
                     "UPDATE commands SET status = 'done' WHERE id = ?",
                     (rid,),
+                )
+            for push in pushes:
+                self._conn.execute(
+                    "INSERT INTO pushes (push, created_at) VALUES (?, ?)",
+                    (json.dumps(push), now),
                 )
             was = dict(self._conn.execute("SELECT name, state FROM snapshot").fetchall())
             self._conn.execute("DELETE FROM snapshot")
@@ -1334,6 +1366,54 @@ class HerdStore:
         return [
             {"id": r[0], "chat_id": r[1], "text": r[2]} for r in rows
         ]
+
+    def unsent_pushes(self) -> list[dict[str, Any]]:
+        """Pushes not sent yet, oldest first: each as Emacs gave it, with
+        its id and when it came."""
+        with self._mu:
+            rows = self._conn.execute(
+                "SELECT id, push, created_at FROM pushes WHERE sent = 0 ORDER BY id"
+            ).fetchall()
+        return [dict(json.loads(r[1]), id=r[0], created_at=r[2]) for r in rows]
+
+    def mark_pushes_sent(self, ids: list[int]) -> None:
+        ids = [i for i in ids if i]
+        if not ids:
+            return
+        with self._mu:
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"UPDATE pushes SET sent = 1 WHERE id IN ({placeholders})", ids
+            )
+            self._conn.commit()
+
+    PUSHED_KEPT = 500
+
+    def remember_pushed(self, chat_id: int, message_id: int, project: str) -> None:
+        "Message MESSAGE_ID, pushed to CHAT_ID, was about PROJECT."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO pushed (chat_id, message_id, project, at) VALUES (?, ?, ?, ?)",
+                (chat_id, message_id, project, now),
+            )
+            self._conn.execute(
+                """
+                DELETE FROM pushed WHERE rowid NOT IN (
+                  SELECT rowid FROM pushed ORDER BY at DESC LIMIT ?)
+                """,
+                (self.PUSHED_KEPT,),
+            )
+            self._conn.commit()
+
+    def pushed_project(self, chat_id: int, message_id: int) -> str | None:
+        "The project the push MESSAGE_ID to CHAT_ID was about, or None."
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT project FROM pushed WHERE chat_id = ? AND message_id = ?",
+                (chat_id, message_id),
+            ).fetchone()
+        return row[0] if row else None
 
     def mark_replies_sent(self, ids: list[str]) -> None:
         ids = [i for i in ids if i]

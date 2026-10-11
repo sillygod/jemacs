@@ -754,6 +754,52 @@ its secret is renewed.  Only a page that can open again has one."
             (should (string-match-p "Copied the address of \\*xwapp-test\\*" (car said)))
             (should-not (string-match-p (xwapp--secret again) (car said)))))))))
 
+(ert-deftest xwapp-test-browser-an-address-without-the-secret ()
+  "`xwapp-remote-open-url' holds no secret: asked from your other
+devices, by your login, it sends the browser on to the page under its
+secret, the fragment left to the browser to keep.  From this machine,
+another login, another package or a page that cannot open again, 404."
+  (xwapp-test--keeping
+    (let* ((xwapp-remote-hosts (list xwapp-test--box))
+           (xwapp-remote-users (list "me@example.com"))
+           (url nil))
+      (should-error (xwapp-remote-open-url app) :type 'user-error)
+      (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+      (setq url (xwapp-remote-open-url app "room/chat/%7Ew%2Fx%2F"))
+      (should (equal url (format "https://%s/open/app#room/chat/%%7Ew%%2Fx%%2F" xwapp-test--box)))
+      (should-not (string-match-p (xwapp--secret app) url))
+      (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret app)))
+      (let ((raw (lambda (headers)
+                   (let* ((port (process-contact xwapp--server :service))
+                          (out "")
+                          (proc (make-network-process
+                                 :name "xwapp-test-raw" :host "127.0.0.1" :service port :coding 'binary :noquery t
+                                 :filter (lambda (_p s) (setq out (concat out s))))))
+                     (process-send-string
+                      proc (concat "GET /open/app HTTP/1.1\r\n"
+                                   (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
+                                   "\r\n"))
+                     (with-timeout (5 (error "No answer"))
+                       (while (process-live-p proc) (accept-process-output nil 0.02)))
+                     out))))
+        (let ((out (funcall raw (xwapp-test--from-box "me@example.com"))))
+          (should (string-prefix-p "HTTP/1.1 302 Found\r\n" out))
+          (should (string-match-p (format "\r\nLocation: /%s/app/ui/index\\.html\r\n" (xwapp--secret app)) out)))
+        (dolist (h (list `(("Host" . ,(format "127.0.0.1:%d" (process-contact xwapp--server :service))))
+                         (xwapp-test--from-box "someone@else.com")
+                         (xwapp-test--from-box nil)))
+          (should (string-prefix-p "HTTP/1.1 404" (funcall raw h)))))
+      (dolist (path '("/open/other" "/open/ap" "/open/app/ui" "/open"))
+        (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com"))) 404)))
+      (should (equal (car (xwapp-test--do "POST" "/open/app" "{}" (xwapp-test--from-box "me@example.com"))) 404))
+      ;; A page given no address yet gets one there, kept as any is.
+      (xwapp--put app :secret nil)
+      (delete-file xwapp-state-file)
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com"))) 302))
+      (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret app)))
+      (xwapp--put app :reopen nil)
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com"))) 404)))))
+
 (defun xwapp-test--json (s)
   (json-parse-string s :object-type 'alist :array-type 'list))
 

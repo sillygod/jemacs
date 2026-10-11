@@ -3942,6 +3942,10 @@ from sqlite instead of waiting for another Emacs round trip."
 (defvar ghostherd--herd-asks nil
   "Open and recent asks from the last `herd_tick', newest first.")
 
+(defvar ghostherd--herd-asks-taken nil
+  "Non-nil once a `herd_tick' has given this Emacs the herd's asks: an
+ask new after that is new to the herd, not to this Emacs.")
+
 (defun ghostherd--ask-head (text)
   "First non-blank line of TEXT, shortened for the log."
   (let ((line (or (seq-find (lambda (l) (not (string-blank-p l)))
@@ -4084,6 +4088,14 @@ from here on, and closed now if the taker is already sitting idle."
                    (member status '("answered" "failed" "cancelled")))
           (remhash id ghostherd--asks-open)
           (ghostherd--log-add (plist-get a :to) 'ask (ghostherd--ask-outcome a)))
+        ;; Failed since the last tick -- or before it, when the ask is new
+        ;; to a herd that has seen asks already, not at Emacs's start.
+        (when-let* (((equal status "failed"))
+                    ((not (equal was "failed")))
+                    ((or was ghostherd--herd-asks-taken))
+                    (asker (ghostherd-get (plist-get a :from))))
+          (ghostherd--push 'ask-failed asker :ask id :to (or (plist-get a :to) "")
+                           :error (or (plist-get a :error) "") :head (or (plist-get a :head) "")))
         (when-let* (((equal status "delivered"))
                     ((not (gethash id ghostherd--asks-open)))
                     ((not (gethash id ghostherd--asks-settled)))
@@ -4092,7 +4104,8 @@ from here on, and closed now if the taker is already sitting idle."
           (when (memq (ghostherd-session-state session) '(idle done dead))
             (ghostherd--ask-settle id session
                                    (eq (ghostherd-session-state session) 'dead))))))
-    (setq ghostherd--herd-asks asks)))
+    (setq ghostherd--herd-asks asks
+          ghostherd--herd-asks-taken t)))
 
 ;;; A project's lead
 ;;
@@ -4448,6 +4461,14 @@ on, would contradict it."
              (setq text (concat (substring text 0 3500) "\n…"))))
           ("explain"
            (setq text (ghostherd--explain-text name)))
+          ("lead-say"
+           (let ((project (plist-get args :project))
+                 (body (string-trim (or (plist-get args :body) ""))))
+             (unless (and (stringp project) (file-directory-p (expand-file-name project)))
+               (error "No project %s" project))
+             (when (string-empty-p body)
+               (error "Nothing to send"))
+             (setq text (format "sent to %s" (ghostherd-session-name (ghostherd-lead-say project body))))))
           (_ (setq text (format "unknown op %s" op))))
       (error (setq text (error-message-string err))))
     (list :id id :text text)))
@@ -4457,6 +4478,102 @@ on, would contradict it."
   (dolist (cmd (plist-get result :commands))
     (push (ghostherd--herd-run-command cmd) ghostherd--herd-replies)))
 
+;;; Pushes to your phone
+;;
+;; The herd page shows everything -- while you look at it.  Telegram is
+;; for when you do not: the sidecar's bot pushes what wants you, an agent
+;; blocked, a lead's report at the end of its turn, an ask that failed.
+;; Emacs decides when one is worth it -- you are looking at neither the
+;; agent nor the herd page, and have left this machine -- and the bot
+;; words it: it has the lead's last message, and the buttons to answer.
+
+(defcustom ghostherd-push '(blocked report ask-failed)
+  "What the herd pushes to Telegram while you are away: an agent
+`blocked', a lead's `report' at the end of its turn, an `ask-failed'.
+Nil pushes nothing.  The sidecar's bot sends them to the chats of
+GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one goes to that project's lead."
+  :type '(set (const blocked) (const report) (const ask-failed))
+  :group 'ghostherd)
+
+(defcustom ghostherd-push-away-after 120
+  "Seconds without a key or the mouse on this Mac after which you count
+as away from it, which is when a push goes out.  Nil: whenever you look
+at neither the agent nor the herd page, at the desk too.  Where the idle
+time cannot be read (no ioreg), you count as away."
+  :type '(choice (const :tag "Whenever not looking" nil) natnum)
+  :group 'ghostherd)
+
+(defvar ghostherd-present-functions nil
+  "Functions of no arguments saying whether the herd page is in front of
+you now.  The first non-nil answer holds pushes back.")
+
+(defvar ghostherd-room-url-function nil
+  "Function of a project giving the address of its room from your phone,
+for a push to link to; nil, or a function giving nil, links none.")
+
+(defvar ghostherd--herd-pushes nil
+  "Pushes not yet handed to the sidecar, newest first.")
+
+(defvar ghostherd--working-since (make-hash-table :test 'equal)
+  "Session id -> when it last began working: a lead's report is what it
+said after that.")
+
+(defun ghostherd--idle-seconds ()
+  "Seconds since a key or the mouse was last touched on this Mac, or nil."
+  (when (executable-find "ioreg")
+    (with-temp-buffer
+      (when (and (eq 0 (ignore-errors
+                         (call-process "ioreg" nil t nil "-c" "IOHIDSystem" "-d" "4" "-k" "HIDIdleTime")))
+                 (re-search-backward "\"HIDIdleTime\" = \\([0-9]+\\)" nil t))
+        (/ (string-to-number (match-string 1)) 1e9)))))
+
+(defun ghostherd--away-p ()
+  "Non-nil when you count as away from this machine; see
+`ghostherd-push-away-after'."
+  (or (null ghostherd-push-away-after)
+      (let ((idle (ghostherd--idle-seconds)))
+        (or (null idle) (>= idle ghostherd-push-away-after)))))
+
+(defun ghostherd--push (kind session &rest fields)
+  "Hand the sidecar a push of KIND about SESSION, with FIELDS (a plist),
+when it is worth one: see `ghostherd-push'."
+  (when (and (memq kind ghostherd-push)
+             (getenv "GHOSTHERD_TELEGRAM_TOKEN")
+             (getenv "GHOSTHERD_TELEGRAM_CHAT_IDS")
+             (not (ghostherd--watched-p session))
+             (not (run-hook-with-args-until-success 'ghostherd-present-functions))
+             (ghostherd--away-p))
+    (let ((project (ghostherd--project-name (ghostherd-session-project session))))
+      (push (append (list :kind (symbol-name kind)
+                          :session (ghostherd-session-name session)
+                          :project (or project "")
+                          :url (or (and project ghostherd-room-url-function
+                                        (ignore-errors (funcall ghostherd-room-url-function project)))
+                                   ""))
+                    fields)
+            ghostherd--herd-pushes))))
+
+(defun ghostherd--push-state (session _old new)
+  "Push SESSION's turning NEW: blocked, or a lead done with its turn."
+  (pcase new
+    ('working (puthash (ghostherd-session-id session) (float-time) ghostherd--working-since))
+    ('blocked (ghostherd--push 'blocked session :reason (or (ghostherd-session-state-reason session) "")))
+    ('done (when (equal (ghostherd-session-role session) "lead")
+             (ghostherd--push 'report session
+                              :since (gethash (ghostherd-session-id session) ghostherd--working-since 0))))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--push-state)
+
+;;;###autoload
+(defun ghostherd-push-test ()
+  "Push a message to your phone now, away or not: to see that the herd
+reaches you there."
+  (interactive)
+  (unless (and (getenv "GHOSTHERD_TELEGRAM_TOKEN") (getenv "GHOSTHERD_TELEGRAM_CHAT_IDS"))
+    (user-error "No Telegram bot: GHOSTHERD_TELEGRAM_TOKEN and GHOSTHERD_TELEGRAM_CHAT_IDS"))
+  (push (list :kind "test" :session "ghostherd" :project "" :url "") ghostherd--herd-pushes)
+  (message "A test push goes to Telegram with the herd's next tick"))
+
 (defun ghostherd--herd-tick-async ()
   "Push the snapshot and pull mail plus Telegram commands.  Never blocks."
   (when (and (not ghostherd--herd-tick-inflight)
@@ -4464,9 +4581,11 @@ on, would contradict it."
              (ghostherd-memory-rpc-url)
              (fboundp 'ghostherd-memory-request-async))
     (let ((acks (or ghostherd--herd-ack-ids []))
-          (replies ghostherd--herd-replies))
+          (replies ghostherd--herd-replies)
+          (pushes ghostherd--herd-pushes))
       (setq ghostherd--herd-tick-inflight t
-            ghostherd--herd-replies nil)
+            ghostherd--herd-replies nil
+            ghostherd--herd-pushes nil)
       (ghostherd-memory-request-async
        "herd_tick"
        (lambda (result)
@@ -4481,11 +4600,14 @@ on, would contradict it."
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :ack_ids (vconcat (append acks nil))
-             :replies (vconcat (or replies [])))
+             :replies (vconcat (or replies []))
+             :pushes (vconcat (reverse pushes)))
        (lambda (_err)
          (setq ghostherd--herd-tick-inflight nil
                ghostherd--herd-replies
-               (append replies ghostherd--herd-replies)))))))
+               (append replies ghostherd--herd-replies)
+               ghostherd--herd-pushes
+               (append ghostherd--herd-pushes pushes)))))))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."

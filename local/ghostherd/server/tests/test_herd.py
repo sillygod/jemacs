@@ -213,3 +213,25 @@ def test_alias_is_stable(tmp_path: Path):
     assert h.name_for(short) == "agy-ghost-commit"
     assert h.short_for("agy-ghost-commit") == short
     reset_herd()
+
+
+def test_herd_tick_takes_pushes_over_rpc(tmp_path: Path, monkeypatch):
+    "What Emacs pushes comes in its herd_tick, a list or refused."
+    reset_engine()
+    reset_herd()
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
+    # No bot polling Telegram from a test.
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_CHAT_IDS", raising=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _rpc(client, "herd_tick", {"sessions": [], "pushes": [
+            {"kind": "blocked", "session": "rd", "project": "/p/", "url": "", "reason": "proceed?"}]})
+        from herd import get_herd
+        got = get_herd().unsent_pushes()
+        assert [(p["kind"], p["session"], p["reason"]) for p in got] == [("blocked", "rd", "proceed?")]
+        resp = client.post("/jsonrpc/" + client.app.state.token, json={
+            "jsonrpc": "2.0", "id": 2, "method": "herd_tick", "params": {"sessions": [], "pushes": "rd"}})
+        assert "pushes must be a list" in resp.json()["error"]["message"]
+    reset_engine()
+    reset_herd()

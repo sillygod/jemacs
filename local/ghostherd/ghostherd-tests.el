@@ -6430,5 +6430,202 @@ that.  A sidecar that does not start is only said."
     (should-not ghostherd-memory-page--pending)
     (should (equal ghostherd-memory-page--project "/p"))))
 
+;;; Pushes to your phone
+
+(defmacro ghostherd-test--pushing (&rest body)
+  "BODY with pushes on: the bot set up, you away from the desk and from
+the page; rooms linked as \"room:PROJECT\"; `idle' the seconds since you
+touched this machine."
+  (declare (indent 0))
+  `(ghostherd-tests--with-herd
+       ((ghostherd--herd-pushes nil)
+        (ghostherd--working-since (make-hash-table :test 'equal))
+        (ghostherd--roles (make-hash-table :test 'equal))
+        (ghostherd-push '(blocked report ask-failed))
+        (ghostherd-push-away-after 120)
+        (ghostherd-present-functions nil)
+        (ghostherd-watched-functions nil)
+        (ghostherd-room-url-function (lambda (p) (concat "room:" p)))
+        (process-environment (append '("GHOSTHERD_TELEGRAM_TOKEN=t" "GHOSTHERD_TELEGRAM_CHAT_IDS=1")
+                                     process-environment))
+        (idle 600))
+     (cl-letf (((symbol-function 'ghostherd--idle-seconds) (lambda () idle))
+               ((symbol-function 'ghostherd--maybe-notify-state) #'ignore))
+       ,@body)))
+
+(ert-deftest ghostherd-test-push-only-while-you-are-away ()
+  "A blocked agent is pushed -- with its reason, project and room -- only
+when the bot is set up, you look at neither it nor the herd page, and
+this machine has gone untouched; nil `ghostherd-push-away-after' leaves
+the last out, and an idle time that cannot be read counts as away."
+  (ghostherd-test--pushing
+    (let* ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :project "/p/shop/"))
+           (project (ghostherd--project-name "/p/shop/"))
+           (block (lambda ()
+                    (setq ghostherd--herd-pushes nil)
+                    (ghostherd--set-state rd 'idle)
+                    (ghostherd--set-state rd 'blocked "Allow npm test?")
+                    ghostherd--herd-pushes)))
+      (should (equal (funcall block)
+                     `((:kind "blocked" :session "rd" :project ,project :url ,(concat "room:" project)
+                              :reason "Allow npm test?"))))
+      (setq idle 30)
+      (should-not (funcall block))
+      (setq idle 600)
+      (let ((ghostherd-present-functions (list (lambda () t)))) (should-not (funcall block)))
+      (let ((ghostherd-watched-functions (list (lambda (s) (eq s rd))))) (should-not (funcall block)))
+      (let ((ghostherd-push '(report))) (should-not (funcall block)))
+      (let ((process-environment (cons "GHOSTHERD_TELEGRAM_CHAT_IDS" process-environment)))
+        (should-not (funcall block)))
+      (let ((process-environment (cons "GHOSTHERD_TELEGRAM_TOKEN" process-environment)))
+        (should-not (funcall block)))
+      (setq idle 0)
+      (let ((ghostherd-push-away-after nil)) (should (funcall block)))
+      (setq idle nil)
+      (should (funcall block))
+      (setq idle 600)
+      (let ((ghostherd-room-url-function (lambda (_) (error "no address"))))
+        (should (equal (plist-get (car (funcall block)) :url) ""))))))
+
+(ert-deftest ghostherd-test-push-a-leads-report ()
+  "A lead done with its turn is pushed as a report, with when that turn
+began: its words are what it said after.  Another agent done is not."
+  (ghostherd-test--pushing
+    (let ((lead (ghostherd-tests--session :name "lead-shop" :kind 'claude :state 'idle :project "/p/shop/"))
+          (rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :project "/p/shop/")))
+      (puthash "lead-shop" "lead" ghostherd--roles)
+      (dolist (s (list lead rd)) (ghostherd--set-state s 'working))
+      (let ((began (gethash "lead-shop" ghostherd--working-since)))
+        (should (numberp began))
+        (dolist (s (list rd lead)) (ghostherd--set-state s 'done))
+        (should (equal (mapcar (lambda (p) (list (plist-get p :kind) (plist-get p :session) (plist-get p :since)))
+                               ghostherd--herd-pushes)
+                       `(("report" "lead-shop" ,began))))))))
+
+(ert-deftest ghostherd-test-push-a-failed-ask ()
+  "An agent's ask that fails is pushed once, with whom it asked, why it
+failed and what it asked -- also one failed before a tick saw it, but
+not those already failed when this Emacs first hears of the asks, nor
+one a person asked."
+  (ghostherd-test--pushing
+    (let ((ghostherd--asks-open (make-hash-table :test 'equal))
+          (ghostherd--asks-settled (make-hash-table :test 'equal))
+          (ghostherd--herd-asks nil)
+          (ghostherd--herd-asks-taken nil)
+          (ghostherd--log nil))
+      (ghostherd-tests--session :name "lead-shop" :kind 'claude :state 'working :project "/p/shop/")
+      (let ((ask (lambda (id status &optional from)
+                   (list :id id :from (or from "lead-shop") :to "qa" :status status
+                         :error (if (equal status "failed") "error: unrecognized arguments: -" "")
+                         :head "Test the login flow"))))
+        (ghostherd--herd-take-asks (list (funcall ask "old" "failed")))
+        (should-not ghostherd--herd-pushes)
+        (ghostherd--herd-take-asks (list (funcall ask "a1" "queued") (funcall ask "old" "failed")))
+        (should-not ghostherd--herd-pushes)
+        (ghostherd--herd-take-asks (list (funcall ask "a1" "failed") (funcall ask "old" "failed")))
+        (should (equal (mapcar (lambda (p) (list (plist-get p :kind) (plist-get p :session) (plist-get p :ask)
+                                                 (plist-get p :to) (plist-get p :error) (plist-get p :head)))
+                               ghostherd--herd-pushes)
+                       '(("ask-failed" "lead-shop" "a1" "qa" "error: unrecognized arguments: -" "Test the login flow"))))
+        (ghostherd--herd-take-asks (list (funcall ask "a1" "failed")))
+        (should (= (length ghostherd--herd-pushes) 1))
+        (ghostherd--herd-take-asks (list (funcall ask "a2" "failed") (funcall ask "a3" "failed" "telegram")))
+        (should (equal (mapcar (lambda (p) (plist-get p :ask)) ghostherd--herd-pushes) '("a2" "a1")))))))
+
+(ert-deftest ghostherd-test-herd-tick-carries-pushes ()
+  "Pushes go to the sidecar oldest first, in the next tick; a tick that
+fails keeps them, ahead of none queued meanwhile."
+  (ghostherd-test--pushing
+    (let (params fail)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd--herd-snapshot) (lambda () nil))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m _ok p err) (setq params p fail err))))
+        (let ((ghostherd--herd-tick-inflight nil)
+              (ghostherd--herd-replies nil)
+              (ghostherd--herd-ack-ids nil)
+              (ghostherd--herd-pushes (list '(:kind "report" :session "b") '(:kind "blocked" :session "a"))))
+          (ghostherd--herd-tick-async)
+          (should (equal (plist-get params :pushes) [(:kind "blocked" :session "a") (:kind "report" :session "b")]))
+          (should-not ghostherd--herd-pushes)
+          (push '(:kind "blocked" :session "c") ghostherd--herd-pushes)
+          (funcall fail "down")
+          (should (equal (mapcar (lambda (p) (plist-get p :session)) ghostherd--herd-pushes) '("c" "b" "a"))))))))
+
+(ert-deftest ghostherd-test-push-test ()
+  "A test push goes whether you are away or not -- not without the bot."
+  (ghostherd-test--pushing
+    (setq idle 0)
+    (let ((ghostherd-present-functions (list (lambda () t))))
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (ghostherd-push-test)))
+    (should (equal ghostherd--herd-pushes '((:kind "test" :session "ghostherd" :project "" :url ""))))
+    (let ((process-environment (cons "GHOSTHERD_TELEGRAM_TOKEN" process-environment)))
+      (should-error (ghostherd-push-test) :type 'user-error))))
+
+(ert-deftest ghostherd-test-herd-run-command-lead-say ()
+  "A reply to a push tells its project's lead -- one there is or one
+started for it -- and says whom; a project not there, or nothing to
+say, is said back instead."
+  (ghostherd-tests--with-herd ()
+    (let ((dir (file-name-as-directory (make-temp-file "gh-project" t)))
+          got)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostherd-lead-say)
+                     (lambda (project text)
+                       (setq got (list project text))
+                       (ghostherd-tests--session :name "lead-x"))))
+            (should (equal (ghostherd--herd-run-command
+                            `(:id "c1" :op "lead-say" :session ,dir :args (:project ,dir :body "  go on  ")))
+                           '(:id "c1" :text "sent to lead-x")))
+            (should (equal got (list dir "go on")))
+            (setq got nil)
+            (should (string-match-p "No project" (plist-get (ghostherd--herd-run-command
+                                                              '(:id "c2" :op "lead-say" :session "x"
+                                                                    :args (:project "/no/such/dir/" :body "hi")))
+                                                             :text)))
+            (should (equal (plist-get (ghostherd--herd-run-command
+                                       `(:id "c3" :op "lead-say" :session ,dir :args (:project ,dir :body "  ")))
+                                      :text)
+                           "Nothing to send"))
+            (should-not got))
+        (delete-directory dir t)))))
+
+(ert-deftest ghostherd-test-idle-seconds-from-ioreg ()
+  "How long this Mac has gone untouched, from ioreg's HIDIdleTime in
+nanoseconds; nil without ioreg or its answer."
+  (cl-letf (((symbol-function 'executable-find) (lambda (p) (and (equal p "ioreg") "/usr/sbin/ioreg")))
+            ((symbol-function 'call-process)
+             (lambda (&rest _)
+               (insert "+-o IOHIDSystem  <class IOHIDSystem>\n    | |   \"HIDIdleTime\" = 384807920541\n")
+               0)))
+    (should (equal (ghostherd--idle-seconds) 384.807920541)))
+  (cl-letf (((symbol-function 'executable-find) (lambda (_) nil)))
+    (should-not (ghostherd--idle-seconds)))
+  (cl-letf (((symbol-function 'executable-find) (lambda (_) "/usr/sbin/ioreg"))
+            ((symbol-function 'call-process) (lambda (&rest _) (insert "nothing") 0)))
+    (should-not (ghostherd--idle-seconds))))
+
+(ert-deftest ghostherd-test-page-holds-pushes-and-links-rooms ()
+  "The herd page in front of you holds pushes back; a push links to a
+project's room as its chat, by the page's address that has no secret --
+none when the page is this machine's alone."
+  (require 'ghostherd-memory-page)
+  (should (memq #'ghostherd-memory-page--present-p ghostherd-present-functions))
+  (should (eq ghostherd-room-url-function #'ghostherd-memory-page--room-url))
+  (cl-letf (((symbol-function 'xwapp-seen-p) (lambda (app) (eq app ghostherd-memory-page--app))))
+    (should (ghostherd-memory-page--present-p)))
+  (cl-letf (((symbol-function 'xwapp-seen-p) #'ignore))
+    (should-not (ghostherd-memory-page--present-p)))
+  (let (asked)
+    (cl-letf (((symbol-function 'xwapp-remote-open-url)
+               (lambda (app fragment) (setq asked (list app fragment)) "http://box/open/ghostherd#…")))
+      (let ((xwapp-remote-hosts nil))
+        (should-not (ghostherd-memory-page--room-url "~/w/shop/")))
+      (should-not asked)
+      (let ((xwapp-remote-hosts '("box")))
+        (should (equal (ghostherd-memory-page--room-url "~/w/shop/") "http://box/open/ghostherd#…")))
+      (should (equal asked (list ghostherd-memory-page--app "room/chat/~%2Fw%2Fshop%2F"))))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

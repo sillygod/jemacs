@@ -154,3 +154,211 @@ def test_explain_uses_snapshot(tmp_path):
     )["commands"]
     assert leftover == []
     reset_herd()
+
+
+# ---- Pushes -----------------------------------------------------------
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+from telegram import REPORT_WAIT, HELP
+
+ROOM = "http://box.tail0.ts.net/open/ghostherd#room/chat/%2Ftmp"
+
+
+class FakeTelegram:
+    """sendMessage, answered with a message id each; or failing."""
+
+    def __init__(self, fail=False):
+        self.sent = []
+        self.fail = fail
+
+    async def post(self, url, json=None):
+        self.sent.append((url, json))
+        fail = self.fail
+
+        class Resp:
+            def raise_for_status(self):
+                if fail:
+                    raise RuntimeError("telegram is down")
+
+            def json(self):
+                return {"ok": True, "result": {"message_id": 1000 + len(outer.sent)}}
+
+        outer = self
+        return Resp()
+
+
+def _push(herd, **push):
+    herd.tick(
+        sessions=[
+            {"name": "agy-commit", "kind": "agy", "state": "blocked", "reason": "proceed?", "project": "/tmp"},
+            {"name": "lead-tmp", "kind": "claude", "state": "done", "project": "/tmp", "role": "lead"},
+        ],
+        pushes=[push],
+    )
+    return herd.unsent_pushes()[-1]
+
+
+def test_tick_keeps_what_emacs_pushes(tmp_path):
+    _, herd = _bot(tmp_path)
+    herd.tick(sessions=[], pushes=[{"kind": "blocked", "session": "a"}, {"kind": "report"}, "x", {"session": "b"}])
+    got = herd.unsent_pushes()
+    assert [(p["kind"], p["session"]) for p in got] == [("blocked", "a")]
+    assert got[0]["id"] and got[0]["created_at"]
+    herd.mark_pushes_sent([got[0]["id"]])
+    assert herd.unsent_pushes() == []
+    reset_herd()
+
+
+def test_a_blocked_agent_pushed_with_its_answers_and_room(tmp_path):
+    bot, herd = _bot(tmp_path)
+    push = _push(herd, kind="blocked", session="agy-commit", project="/tmp/shop/", url=ROOM, reason="Allow npm test?")
+    text, markup = bot.prepare_push(push, 0)
+    assert text.startswith("⚠ agy-commit is blocked · shop") and "Allow npm test?" in text
+    short = herd.session("agy-commit")["short"]
+    rows = markup["inline_keyboard"]
+    assert [b["callback_data"] for b in rows[0]] == [f"n:{short}:{n}" for n in (1, 2, 3)]
+    assert rows[1] == [{"text": "screen", "callback_data": f"sc:{short}"}]
+    assert rows[2] == [{"text": "Open the room", "url": ROOM}]
+    # Answered at the desk meanwhile, or gone: not pushed.
+    herd.tick(sessions=[{"name": "agy-commit", "state": "working"}])
+    assert bot.prepare_push(push, 0) == ("", None)
+    reset_herd()
+
+
+def test_a_leads_report_carries_its_words_once_they_come(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.report(session="lead-tmp", last="Old words, from the turn before")
+    import time
+    time.sleep(0.01)
+    began = datetime.now(timezone.utc).timestamp()
+    push = _push(herd, kind="report", session="lead-tmp", project="/tmp/shop", url="", since=began)
+    # Its own words not in yet: it waits, then goes without them.
+    assert bot.prepare_push(push, began + 1) is None
+    text, markup = bot.prepare_push(push, began + REPORT_WAIT + 60)
+    assert "(its words have not come in)" in text and "Old words" not in text
+    assert markup is None
+    time.sleep(0.01)
+    herd.report(session="lead-tmp", state="done", last="Shipped X; qa passed both rounds.")
+    text, _ = bot.prepare_push(push, began + 1)
+    assert text.startswith("✓ lead-tmp · shop") and "Shipped X; qa passed both rounds." in text
+    assert "Reply to tell the lead" in text
+    reset_herd()
+
+
+def test_a_failed_ask_says_what_and_why(tmp_path):
+    bot, herd = _bot(tmp_path)
+    push = _push(herd, kind="ask-failed", session="lead-tmp", project="/tmp/shop", url=ROOM,
+                 ask="d725ee06", to="qa", error="error: unrecognized arguments: -", head="Test the login flow")
+    text, markup = bot.prepare_push(push, 0)
+    assert text.splitlines()[0] == "✖ lead-tmp's ask to qa failed · shop"
+    assert "error: unrecognized arguments: -" in text and "It asked: Test the login flow" in text
+    assert markup == {"inline_keyboard": [[{"text": "Open the room", "url": ROOM}]]}
+    assert bot.prepare_push(dict(push, kind="nonsense"), 0) == ("", None)
+    reset_herd()
+
+
+def test_pushes_go_to_every_chat_and_replies_find_their_lead(tmp_path):
+    bot, herd = _bot(tmp_path, chats=(99, 77))
+    herd.report(session="lead-tmp", state="done", last="Done.")
+    _push(herd, kind="report", session="lead-tmp", project="/tmp/shop/", url=ROOM, since=0)
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert [(u, p["chat_id"]) for u, p in tg.sent] == [("https://t/sendMessage", 77), ("https://t/sendMessage", 99)]
+    assert all(p["reply_markup"]["inline_keyboard"][0][0]["url"] == ROOM for _, p in tg.sent)
+    assert herd.unsent_pushes() == []
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert len(tg.sent) == 2
+    # A reply to it, from its chat: to the lead of its project.
+    said = bot.handle_message(99, "go on with round 3", reply_to=1002)
+    assert said["text"] == "→ the lead of shop"
+    cmds = herd.tick(sessions=[])["commands"]
+    assert [(c["op"], c["args"], c["chat_id"]) for c in cmds] == [
+        ("lead-say", {"project": "/tmp/shop/", "body": "go on with round 3"}, 99)]
+    # Another chat's message id, or a message no push sent: as before.
+    assert bot.handle_message(77, "hello", reply_to=1002)["text"] == "unknown. /herd or /help"
+    assert bot.handle_message(99, "hello", reply_to=5)["text"] == "unknown. /herd or /help"
+    assert "Reply to one to tell" in HELP
+    reset_herd()
+
+
+def test_a_push_waits_and_a_failed_send_is_tried_again(tmp_path):
+    bot, herd = _bot(tmp_path)
+    _push(herd, kind="report", session="lead-tmp", project="/tmp", url="", since=datetime.now(timezone.utc).timestamp() + 5)
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert tg.sent == [] and len(herd.unsent_pushes()) == 1
+    herd.mark_pushes_sent([herd.unsent_pushes()[0]["id"]])
+    _push(herd, kind="blocked", session="agy-commit", project="/tmp", url="", reason="?")
+    down = FakeTelegram(fail=True)
+    try:
+        asyncio.run(bot._flush_pushes(down, "https://t/{method}"))
+    except RuntimeError:
+        pass
+    assert len(herd.unsent_pushes()) == 1
+    reset_herd()
+
+
+def test_a_test_push(tmp_path):
+    bot, herd = _bot(tmp_path)
+    push = _push(herd, kind="test", session="ghostherd", project="", url="")
+    text, markup = bot.prepare_push(push, 0)
+    assert text.startswith("The herd reaches you here.") and markup is None
+    reset_herd()
+
+
+def test_the_bot_pushes_while_it_waits_for_you(tmp_path, monkeypatch):
+    "Its long poll holds for 25 seconds; pushes go out on their own meanwhile."
+    import telegram
+
+    bot, herd = _bot(tmp_path)
+    _push(herd, kind="blocked", session="agy-commit", project="/tmp", url="", reason="?")
+    posted = []
+
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            await asyncio.sleep(25)
+
+        async def post(self, url, json=None):
+            posted.append((url.rsplit("/", 1)[-1], json))
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"result": {"message_id": 1}}
+
+            return R()
+
+    monkeypatch.setattr(telegram.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(telegram, "PUSH_EVERY", 0.05)
+
+    async def go():
+        stop = asyncio.Event()
+        task = asyncio.create_task(bot.run(stop))
+        for _ in range(40):
+            if posted:
+                break
+            await asyncio.sleep(0.05)
+        stop.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(go())
+    assert [m for m, _ in posted] == ["sendMessage"] and posted[0][1]["chat_id"] == 99
+    assert herd.unsent_pushes() == []
+    reset_herd()

@@ -390,11 +390,11 @@ not deliverable; the sidecar holds the row until it is idle.  Overlay
 A skill lives in =skills/ghostherd-mail/SKILL.md=; copy or symlink it
 into the CLI's skill directory.  The herd does not install it for you.
 
-* Telegram bot (pull, no push)
+* Telegram bot
 
 The sidecar can long-poll Telegram so a phone can drive the herd
-without a public URL.  There is no push: desktop =osx-notifier= still
-fires; the bot only talks when you open it.
+without a public URL --- and tell you, while you are away, what wants
+you (below).
 
 #+begin_src bash
   export GHOSTHERD_TELEGRAM_TOKEN=123:abc
@@ -416,6 +416,31 @@ Unknown chats are dropped.  The first message from a new chat logs
 =telegram ignored chat <id>= in =*ghostherd-memory*= — that id is what
 goes in =GHOSTHERD_TELEGRAM_CHAT_IDS=.  Missing token means the bot
 task is not started; mail and memory keep working.
+
+** What it tells you while you are away
+
+The herd page shows everything, while you look at it.  The bot pushes
+what wants you while you do not (=ghostherd-push=):
+
+| =blocked=    | an agent waits on a question: what it asks, 1 / 2 / 3 and its screen |
+| =report=     | a lead is done with its turn: its own last message, whole             |
+| =ask-failed= | an agent's ask failed: whom it asked, why, what it asked              |
+
+Each carries Open the room, to the project's room as its chat on the
+herd page (=xwapp-remote-hosts=, From your phone above).  Reply to one
+and the reply goes to that project's lead, started if it has none.
+
+A push goes only while you look at neither the agent (its buffer, its
+room) nor the herd page, here or on the phone, and this Mac has gone
+untouched for =ghostherd-push-away-after= seconds (120; it asks
+=ioreg=): at the desk the desktop notification is yours.  Nil there
+pushes whenever you are not looking.  =M-x ghostherd-push-test= sends
+one now, to see that it reaches you.
+
+The room's address in a push holds no secret: Telegram's servers keep
+what passes through them.  It asks the page's =/open/ghostherd=, which
+Emacs answers only for your Tailscale login, sending the browser on to
+the page under its secret.
 
 * Handing work to another agent
 

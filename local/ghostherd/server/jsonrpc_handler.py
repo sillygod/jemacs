@@ -188,10 +188,14 @@ class JsonRpcHandler:
         replies = params.get("replies") or []
         if not isinstance(replies, list):
             raise ValueError("replies must be a list")
+        pushes = params.get("pushes") or []
+        if not isinstance(pushes, list):
+            raise ValueError("pushes must be a list")
         return get_herd().tick(
             sessions=sessions,
             ack_ids=[str(i) for i in ack_ids],
             replies=replies,
+            pushes=pushes,
         )
 
     def _herd_ask(self, params: dict) -> dict:

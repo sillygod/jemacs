@@ -148,6 +148,12 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
   there, and copies with =XW.copy= to that device's clipboard rather
   than to Emacs's.  Over plain http there is no clipboard API; a
   selected textarea and =execCommand= still copy, within the tap.
+- *An address without the secret*, for a message that passes through
+  others' hands --- a chat's server keeps what it carries:
+  =xwapp-remote-open-url= gives =/open/<pkg>#fragment=.  Asked there by
+  one of =xwapp-remote-users=, Emacs sends the browser on to the page
+  under its secret, the fragment kept by the browser.  Not from this
+  machine, where any page in the browser could ask it.
 
 A page can also give its address to the phone itself, as a QR code: an
 element with =data-xw-phone= is its button for it --- the herd page's

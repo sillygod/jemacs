@@ -434,7 +434,7 @@ a page open in a browser tab is let go: an app has one page at a time."
   "Bytes past which a request is refused.")
 
 (defconst xwapp--reasons
-  '((200 . "OK") (204 . "No Content") (400 . "Bad Request")
+  '((200 . "OK") (204 . "No Content") (302 . "Found") (400 . "Bad Request")
     (404 . "Not Found") (410 . "Gone") (413 . "Content Too Large")
     (500 . "Internal Server Error")))
 
@@ -530,23 +530,45 @@ restart still asks."
                   (t (xwapp--listen t))))))
   (process-contact xwapp--server :service))
 
+(defun xwapp--page (app)
+  "APP's page under the root it is served from: <pkg>/ui/index.html."
+  (file-relative-name (xwapp-index app) (xwapp--root app)))
+
+(defun xwapp--path (app)
+  "The path of APP's page in a URL, its secret first."
+  (format "/%s/%s" (xwapp--secret app) (xwapp--page app)))
+
 (defun xwapp-url (app)
   "The address of APP's page in the web browser.  It holds APP's secret."
-  (format "http://127.0.0.1:%d/%s/%s" (xwapp--port) (xwapp--secret app)
-          (file-relative-name (xwapp-index app) (xwapp--root app))))
+  (format "http://127.0.0.1:%d%s" (xwapp--port) (xwapp--path app)))
+
+(defun xwapp--remote-host (app host)
+  "HOST, or the first of `xwapp-remote-hosts', for APP's page from your
+other devices -- its address kept over restarts from now on."
+  (let ((host (or host (car xwapp-remote-hosts)
+                  (user-error "No `xwapp-remote-hosts': pages are served to this machine alone"))))
+    (unless (xwapp-reopen app)
+      (user-error "This page cannot open again by itself, so it cannot be reached from elsewhere"))
+    (xwapp--secret app)
+    (xwapp--port)
+    (xwapp--save)
+    host))
 
 (defun xwapp-remote-url (app &optional host)
   "The address of APP's page from your other devices, under HOST -- the
 first of `xwapp-remote-hosts' by default.  It holds APP's secret, kept
 over restarts from now on."
-  (let ((host (or host (car xwapp-remote-hosts)
-                  (user-error "No `xwapp-remote-hosts': pages are served to this machine alone"))))
-    (unless (xwapp-reopen app)
-      (user-error "This page cannot open again by itself, so it cannot be reached from elsewhere"))
-    (prog1 (format "%s://%s/%s/%s" xwapp-remote-scheme host (xwapp--secret app)
-                   (file-relative-name (xwapp-index app) (xwapp--root app)))
-      (xwapp--port)
-      (xwapp--save))))
+  (format "%s://%s%s" xwapp-remote-scheme (xwapp--remote-host app host) (xwapp--path app)))
+
+(defun xwapp-remote-open-url (app &optional fragment host)
+  "An address of APP's page from your other devices that does not hold
+its secret: for a message that passes through others' hands, a chat's
+server keeping what it carries.  Asked there by one of
+`xwapp-remote-users', it sends the browser on to the page under its
+secret, FRAGMENT kept -- the page's own place, say."
+  (format "%s://%s/open/%s%s" xwapp-remote-scheme (xwapp--remote-host app host)
+          (car (split-string (xwapp--page app) "/"))
+          (if fragment (concat "#" fragment) "")))
 
 (defun xwapp--read-app (prompt)
   "An app that can open again, read with PROMPT by its buffer name."
@@ -748,9 +770,9 @@ takes it once loaded, and this buffer is killed."
           (list method target headers (substring body 0 size)))))))
 
 (defun xwapp--from-here-p (headers)
-  "Non-nil when HEADERS name this server as the host, and as the origin
+  "`here' when HEADERS name this server as the host, and as the origin
 when there is one: a name rebound to 127.0.0.1 gets nothing, nor does
-a page of another site that has the secret.  Or one of
+a page of another site that has the secret.  `elsewhere' under one of
 `xwapp-remote-hosts', for one of `xwapp-remote-users'."
   (let* ((port (process-contact xwapp--server :service))
          (here (list (format "127.0.0.1:%d" port) (format "localhost:%d" port)))
@@ -758,12 +780,32 @@ a page of another site that has the secret.  Or one of
          (origin (cdr (assoc "origin" headers))))
     (cond
      ((member host here)
-      (or (null origin)
-          (member origin (mapcar (lambda (h) (concat "http://" h)) here))))
+      (and (or (null origin)
+               (member origin (mapcar (lambda (h) (concat "http://" h)) here)))
+           'here))
      ((member (car (split-string host ":")) (mapcar #'downcase xwapp-remote-hosts))
       (and (member (cdr (assoc "tailscale-user-login" headers)) xwapp-remote-users)
            (or (null origin)
-               (member origin (list (concat "https://" host) (concat "http://" host)))))))))
+               (member origin (list (concat "https://" host) (concat "http://" host))))
+           'elsewhere)))))
+
+(defun xwapp--open (proc parts headers)
+  "Send PROC on to the page PARTS name, (PKG), under its secret: a
+request from your other devices for `xwapp-remote-open-url'.  Not from
+this machine, where any page in the browser could ask."
+  (let ((app (and (eq (xwapp--from-here-p headers) 'elsewhere)
+                  (= (length parts) 1)
+                  (catch 'found
+                    (maphash (lambda (app _)
+                               (when (and (xwapp-reopen app)
+                                          (string-prefix-p (concat (car parts) "/") (xwapp--page app)))
+                                 (throw 'found app)))
+                             xwapp--served)
+                    nil))))
+    (if (not app)
+        (xwapp--respond proc 404)
+      (xwapp--respond proc 302 nil nil `(("Location" . ,(xwapp--path app))))
+      (xwapp--save))))
 
 (defun xwapp--answer (proc request)
   "Answer REQUEST, which came on PROC."
@@ -774,6 +816,7 @@ a page of another site that has the secret.  Or one of
                (args (url-parse-query-string (or query "")))
                (page (cadr (assoc "page" args))))
     (cond
+     ((and (equal secret "open") (equal method "GET")) (xwapp--open proc rest headers))
      ((not (and app (xwapp--from-here-p headers))) (xwapp--respond proc 404))
      ((and (equal method "POST") (equal rest '("hello")) page)
       (xwapp--hello app proc page (equal (cadr (assoc "soft" args)) "1")))
@@ -784,10 +827,10 @@ a page of another site that has the secret.  Or one of
      ((equal method "GET") (xwapp--file app proc rest))
      (t (xwapp--respond proc 404)))))
 
-(defun xwapp--respond (proc code &optional type body)
+(defun xwapp--respond (proc code &optional type body headers)
   "Answer PROC with CODE, and BODY (bytes) of TYPE, then close it.
-An error with nothing to say says its name: answered empty, a browser
-takes it for a file to download."
+HEADERS, an alist, go along.  An error with nothing to say says its
+name: answered empty, a browser takes it for a file to download."
   (when (and (>= code 400) (null type))
     (setq type "text/plain; charset=utf-8"
           body (alist-get code xwapp--reasons "")))
@@ -796,6 +839,7 @@ takes it for a file to download."
      proc
      (concat (format "HTTP/1.1 %d %s\r\n" code (alist-get code xwapp--reasons ""))
              (if type (format "Content-Type: %s\r\n" type) "")
+             (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
              (format "Content-Length: %d\r\n" (length body))
              "Cache-Control: no-store\r\n"
              "Referrer-Policy: no-referrer\r\n"

@@ -6,12 +6,19 @@ never talks to a PTY.  Unknown chats are ignored.
 Screen (and explain) read the last Emacs snapshot immediately — the
 poll already captured the pane.  Typing into a PTY still goes through
 Emacs.
+
+Pushes: Emacs decides when something wants you while you are away -- an
+agent blocked, a lead's report, an ask that failed -- and hands it over
+in herd_tick; this words it and sends it to every allowed chat.  A
+reply to a push goes to its project's lead.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -33,12 +40,21 @@ GLYPH = {
 }
 
 HELP = (
-    "ghostherd bot — pull only, no push.\n"
+    "ghostherd bot.\n"
     "/herd — list sessions\n"
     "Tap a session for screen / explain / prompt / interrupt.\n"
     "Blocked sessions also get 1 / 2 / 3 to answer a prompt.\n"
-    "/cancel — drop a pending prompt."
+    "/cancel — drop a pending prompt.\n"
+    "While you are away from the desk, the herd tells you here: an agent "
+    "blocked, a lead's report, an ask that failed.  Reply to one to tell "
+    "that project's lead."
 )
+
+# Seconds between looks for pushes to send.
+PUSH_EVERY = 2.0
+# Seconds a lead's report waits for the lead's own words: its hook may
+# bring them a moment after its state.
+REPORT_WAIT = 30.0
 
 
 def _btn(text: str, data: str) -> dict:
@@ -147,6 +163,55 @@ def _clip(text: str, n: int = 3500) -> str:
     return text
 
 
+def _leaf(project: str | None) -> str:
+    "A project's last directory: what its room is called."
+    return os.path.basename((project or "").rstrip("/")) or (project or "")
+
+
+def format_push(push: dict[str, Any], words: str = "") -> str:
+    """PUSH as a message.  WORDS, for a lead's report, are the lead's own
+    last message."""
+    kind = push.get("kind")
+    name = push.get("session") or "?"
+    where = _leaf(push.get("project"))
+    head = f" · {where}" if where else ""
+    if kind == "blocked":
+        return f"⚠ {name} is blocked{head}\n\n{push.get('reason') or ''}".rstrip()
+    if kind == "report":
+        return (f"✓ {name}{head}\n\n{words or '(its words have not come in)'}"
+                "\n\n↩ Reply to tell the lead.")
+    if kind == "test":
+        return ("The herd reaches you here.\n\nWhile you are away from the desk it "
+                "tells you here when an agent is blocked, a lead reports or an ask "
+                "fails.  Reply to one of those to tell that project's lead.")
+    if kind == "ask-failed":
+        lines = [f"✖ {name}'s ask to {push.get('to') or '?'} failed{head}"]
+        for part in (push.get("error"), push.get("head") and "It asked: " + push["head"]):
+            if part:
+                lines.append(part)
+        return "\n\n".join(lines)
+    return ""
+
+
+def push_keyboard(push: dict[str, Any], short: str = "") -> dict | None:
+    """A blocked agent's answers and screen, when it is still in the
+    herd; the room, when the push has its address."""
+    rows = []
+    if push.get("kind") == "blocked" and short:
+        rows.append([_btn(str(n), f"n:{short}:{n}") for n in (1, 2, 3)])
+        rows.append([_btn("screen", f"sc:{short}")])
+    if push.get("url"):
+        rows.append([{"text": "Open the room", "url": push["url"]}])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def _epoch(iso: str | None) -> float:
+    try:
+        return datetime.fromisoformat(iso or "").timestamp()
+    except ValueError:
+        return 0.0
+
+
 class TelegramBot:
     def __init__(
         self,
@@ -163,8 +228,11 @@ class TelegramBot:
     def allowed(self, chat_id: int | None) -> bool:
         return chat_id is not None and chat_id in self.chat_ids
 
-    def handle_message(self, chat_id: int, text: str) -> dict[str, Any] | None:
-        """Return a sendMessage payload, or None to ignore."""
+    def handle_message(
+        self, chat_id: int, text: str, reply_to: int | None = None
+    ) -> dict[str, Any] | None:
+        """Return a sendMessage payload, or None to ignore.  REPLY_TO is
+        the id of the message TEXT replies to."""
         if not self.allowed(chat_id):
             log.info("telegram ignored chat %s", chat_id)
             return None
@@ -172,6 +240,12 @@ class TelegramBot:
         if text in ("/cancel", "cancel"):
             self.pending_prompt.pop(chat_id, None)
             return {"chat_id": chat_id, "text": "cancelled"}
+        project = self.herd.pushed_project(chat_id, reply_to) if reply_to else None
+        if project and text:
+            self.herd.enqueue_command(
+                "lead-say", project, args={"project": project, "body": text}, chat_id=chat_id
+            )
+            return {"chat_id": chat_id, "text": f"→ the lead of {_leaf(project)}"}
         if chat_id in self.pending_prompt:
             session = self.pending_prompt.pop(chat_id)
             self.herd.enqueue(
@@ -326,33 +400,96 @@ class TelegramBot:
             "reply_markup": session_keyboard(session),
         }
 
+    def prepare_push(
+        self, push: dict[str, Any], now: float
+    ) -> tuple[str, dict | None] | None:
+        """PUSH as (text, keyboard); None while a lead's report waits for
+        its words.  An empty text drops it: a blocked agent answered at
+        the desk meanwhile, or a kind this does not know."""
+        kind = push.get("kind")
+        session = self.herd.session(push.get("session") or "")
+        if kind == "blocked" and not (session and session.get("state") == "blocked"):
+            return "", None
+        words = ""
+        if kind == "report":
+            link = self.herd.link(push.get("session") or "") or {}
+            fresh = link.get("last") and (link.get("last_ms") or 0) / 1000 >= float(push.get("since") or 0)
+            if fresh:
+                words = link["last"]
+            elif now - _epoch(push.get("created_at")) < REPORT_WAIT:
+                return None
+        text = format_push(push, words)
+        return text, (push_keyboard(push, session["short"] if session else "") if text else None)
+
+    async def _flush_pushes(self, client: httpx.AsyncClient, url: str, now: float | None = None) -> None:
+        now = now if now is not None else datetime.now().timestamp()
+        done = []
+        for push in self.herd.unsent_pushes():
+            ready = self.prepare_push(push, now)
+            if ready is None:
+                continue
+            text, markup = ready
+            for chat_id in sorted(self.chat_ids) if text else []:
+                payload = {"chat_id": chat_id, "text": _clip(text)}
+                if markup:
+                    payload["reply_markup"] = markup
+                resp = await client.post(url.format(method="sendMessage"), json=payload)
+                resp.raise_for_status()
+                mid = ((resp.json() or {}).get("result") or {}).get("message_id")
+                if mid and push.get("project"):
+                    self.herd.remember_pushed(chat_id, mid, push["project"])
+            done.append(push["id"])
+        self.herd.mark_pushes_sent(done)
+
+    async def _push_loop(self, client: httpx.AsyncClient, url: str, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            try:
+                await self._flush_pushes(client, url)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("telegram push")
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=PUSH_EVERY)
+            except TimeoutError:
+                pass
+
     async def run(self, stop: asyncio.Event) -> None:
         url = API.format(token=self.token, method="{method}")
         timeout = httpx.Timeout(40.0, connect=10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
-            while not stop.is_set():
+            # Pushes go out on their own: the long poll below waits up to
+            # 25 seconds for you to say something.
+            pushing = asyncio.create_task(self._push_loop(client, url, stop))
+            try:
+                await self._poll(client, url, stop)
+            finally:
+                pushing.cancel()
+
+    async def _poll(self, client: httpx.AsyncClient, url: str, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            try:
+                await self._flush_replies(client, url)
+                resp = await client.get(
+                    url.format(method="getUpdates"),
+                    params={
+                        "timeout": 25,
+                        "offset": self.offset,
+                        "allowed_updates": '["message","callback_query"]',
+                    },
+                )
+                resp.raise_for_status()
+                for upd in resp.json().get("result") or []:
+                    self.offset = int(upd["update_id"]) + 1
+                    await self._dispatch(client, url, upd)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("telegram loop")
                 try:
-                    await self._flush_replies(client, url)
-                    resp = await client.get(
-                        url.format(method="getUpdates"),
-                        params={
-                            "timeout": 25,
-                            "offset": self.offset,
-                            "allowed_updates": '["message","callback_query"]',
-                        },
-                    )
-                    resp.raise_for_status()
-                    for upd in resp.json().get("result") or []:
-                        self.offset = int(upd["update_id"]) + 1
-                        await self._dispatch(client, url, upd)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.exception("telegram loop")
-                    try:
-                        await asyncio.wait_for(stop.wait(), timeout=2)
-                    except TimeoutError:
-                        pass
+                    await asyncio.wait_for(stop.wait(), timeout=2)
+                except TimeoutError:
+                    pass
 
     async def _dispatch(self, client: httpx.AsyncClient, url: str, upd: dict) -> None:
         msg = upd.get("message") or upd.get("edited_message")
@@ -367,7 +504,10 @@ class TelegramBot:
             )
         elif msg:
             chat_id = (msg.get("chat") or {}).get("id")
-            payload = self.handle_message(chat_id, msg.get("text") or "")
+            payload = self.handle_message(
+                chat_id, msg.get("text") or "",
+                reply_to=(msg.get("reply_to_message") or {}).get("message_id"),
+            )
         if payload:
             await client.post(url.format(method="sendMessage"), json=payload)
 

@@ -904,6 +904,26 @@ look found them -- starting another when that one is old."
 
 (add-hook 'ghostherd-project-work-functions #'ghostherd-memory-page--lead-work)
 
+;; Pushes: the page in front of you holds them back, and a push links to
+;; its room -- under the address that keeps the page's secret out of the
+;; chat's server.
+
+(defun ghostherd-memory-page--present-p ()
+  "Non-nil when the herd page is in front of you, here or on a phone."
+  (xwapp-seen-p ghostherd-memory-page--app))
+
+(add-hook 'ghostherd-present-functions #'ghostherd-memory-page--present-p)
+
+(defun ghostherd-memory-page--room-url (project)
+  "The address of PROJECT's room, as its chat, from your other devices --
+without the page's secret; nil when the page is served to this machine
+alone."
+  (when xwapp-remote-hosts
+    (xwapp-remote-open-url ghostherd-memory-page--app
+                           (concat "room/chat/" (url-hexify-string project)))))
+
+(setq ghostherd-room-url-function #'ghostherd-memory-page--room-url)
+
 (defun ghostherd-memory-page--open-pr (intent)
   "Open the pull request INTENT names, of a checkout the herd is in."
   (let ((root (alist-get 'root intent))
