@@ -107,6 +107,7 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
      :transcript "~/.claude/projects/*/%s.jsonl"
+     :prompt-replaces-input t
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Do you want to make this edit"
@@ -163,6 +164,7 @@ made an unanchored `> \=' match the transcript.")
      :continue-args ("--continue")
      :resume-args ("--conversation" "%s")
      :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
+     :prompt-replaces-input t
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -209,6 +211,11 @@ Each entry is (KIND . PLIST) with keys:
 :description    human label
 :process-names  process names used for detection (future)
 :screen-rules   alist of (STATE . REGEXP-LIST) for tail matching
+:prompt-replaces-input  non-nil when a menu the CLI waits on takes its
+                input box's place: with the box at the foot, a `blocked'
+                pattern matched the conversation, not a prompt -- an
+                agent that wrote \"permission\" is not asking for it.
+                Seen of claude and agy; grok's prompts not yet.
 
 A kind's `working' rules must cover *every* indicator that CLI shows
 while busy, because its input box is on screen the whole time and the
@@ -1022,7 +1029,22 @@ pane height, and the padding would otherwise be the whole region."
          (lines (nreverse (seq-drop-while #'string-blank-p (nreverse lines)))))
     (string-join (last lines (max 1 ghostherd-status-lines)) "\n")))
 
-(defun ghostherd--match-rules (text rules)
+(defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
+  "A horizontal rule of the kind the CLIs draw around their input box.")
+
+(defun ghostherd--input-at-foot-p (text)
+  "Non-nil when TEXT's status area holds the input box: a rule, then a
+line opening with the prompt sign -- not a menu's first choice, which
+carries the sign before its number.  Only there: higher up, a rule and
+a sign are an old prompt in the conversation."
+  (let ((lines (split-string (ghostherd--status-region text) "\n")))
+    (cl-loop for (above line) on lines
+             thereis (and line
+                          (string-match-p ghostherd--input-rule-re above)
+                          (string-match-p "\\`[❯›>]\\(?:[[:blank:]]\\|\\'\\)" line)
+                          (not (string-match-p "\\`[❯›>][[:blank:]]*[1-9]\\." line))))))
+
+(defun ghostherd--match-rules (text rules &optional replaces-input)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
 RULES is an alist of (STATE . REGEXP-LIST).  Prefer blocked over
 working over idle (strict blocked detection, herdr-style).
@@ -1030,13 +1052,16 @@ working over idle (strict blocked detection, herdr-style).
 `working' is asked of the status area only; see
 `ghostherd-status-lines'.  `blocked' and `idle' still read the whole
 tail: a permission box can be tall, and `idle' is the fallback rather
-than positive evidence."
+than positive evidence.  REPLACES-INPUT, a kind's
+`:prompt-replaces-input': `blocked' only while no input box is drawn at
+the foot -- with one there, what matched is the conversation's."
   (cl-labels ((try (state haystack)
                 (when-let* ((patterns (alist-get state rules)))
                   (cl-loop for pat in patterns
                            when (ghostherd--rule-matches-p pat haystack)
                            return (cons state pat)))))
-    (or (try 'blocked text)
+    (or (and (not (and replaces-input (ghostherd--input-at-foot-p text)))
+             (try 'blocked text))
         (try 'working (ghostherd--status-region text))
         (try 'idle text))))
 
@@ -1057,14 +1082,16 @@ which is exactly when the screen rules should take back over."
         (format "osc progress %d%%" percent)
       "osc progress")))
 
-(defun ghostherd--match-all-rules (text rules)
+(defun ghostherd--match-all-rules (text rules &optional replaces-input)
   "Return every (STATE . PATTERN) in RULES matching TEXT.
 `ghostherd--match-rules' stops at the first winner, which is what the
 state machine wants but hides why a rule lost.  This reports the lot, in
 precedence order, for `ghostherd-explain' -- against the same regions
-the state machine used, or the explanation would not explain it."
-  (let ((status (ghostherd--status-region text)))
-    (cl-loop for state in '(blocked working idle)
+the state machine used, or the explanation would not explain it; and so
+no `blocked' where REPLACES-INPUT and the input box is at the foot."
+  (let ((status (ghostherd--status-region text))
+        (box (and replaces-input (ghostherd--input-at-foot-p text))))
+    (cl-loop for state in (if box '(working idle) '(blocked working idle))
              append (cl-loop for pattern in (alist-get state rules)
                              when (ghostherd--rule-matches-p
                                    pattern
@@ -1288,7 +1315,7 @@ does."
         (cons 'dead exited))
        (t
         (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
-               (hit (and tail (ghostherd--match-rules tail rules)))
+               (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input))))
                (report (ghostherd--fresh-report session)))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens))
@@ -2107,8 +2134,9 @@ otherwise prompts."
          (rules (plist-get spec :screen-rules))
          (live (ghostherd--session-live-p session))
          (tail (and live (ghostherd--host-capture session)))
-         (hits (and tail rules (ghostherd--match-all-rules tail rules)))
-         (winner (and tail rules (ghostherd--match-rules tail rules))))
+         (box (plist-get spec :prompt-replaces-input))
+         (hits (and tail rules (ghostherd--match-all-rules tail rules box)))
+         (winner (and tail rules (ghostherd--match-rules tail rules box))))
     (ghostherd--sidebar-leave-overlay)
     (with-help-window "*ghostherd explain*"
       (with-current-buffer standard-output
@@ -2166,6 +2194,10 @@ otherwise prompts."
                             pattern)))
           (insert "\nOnly the first line wins.  A rule listed under a\n")
           (insert "higher-precedence state shadows every rule below it.\n")))
+        (when (and box tail rules (ghostherd--input-at-foot-p tail)
+                   (cl-some (lambda (p) (ghostherd--rule-matches-p p tail)) (alist-get 'blocked rules)))
+          (insert "\nIts input box is at the foot, which a menu would take the place of:\n")
+          (insert "what `blocked' matched there is the conversation's, not a prompt.\n"))
 
         (when tail
           (insert (format "\nScraped tail (last %d lines):\n"
@@ -2321,9 +2353,6 @@ on a menu, ghostherd presses Return again, up to
   :type 'natnum
   :group 'ghostherd)
 
-(defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
-  "A horizontal rule of the kind the CLIs draw around their input box.")
-
 (defun ghostherd-send (session text &optional submit)
   "Send TEXT to SESSION's terminal.
 When SUBMIT is non-nil, also send RET (Enter)."
@@ -2374,10 +2403,10 @@ Not on an agent that is working or on a menu: Return there is an answer."
   (condition-case err
       (when (and (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)
                  (ghostherd--session-live-p session))
-        (let* ((rules (plist-get (ignore-errors (ghostherd--spec (ghostherd-session-kind session)))
-                                 :screen-rules))
+        (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+               (rules (plist-get spec :screen-rules))
                (screen (and rules (ghostherd--host-capture session 20)))
-               (hit (and screen (ghostherd--match-rules screen rules))))
+               (hit (and screen (ghostherd--match-rules screen rules (plist-get spec :prompt-replaces-input)))))
           (when (and screen
                      (not (memq (car-safe hit) '(working blocked)))
                      (ghostherd--unsent-p screen text))

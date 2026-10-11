@@ -5549,16 +5549,21 @@ screen, and a look once more -- one try fewer each time, then a warning."
 
 (ert-deftest ghostherd-test-return-is-not-pressed-unless-it-submits ()
   "Return on a menu is an answer and on a working agent a second prompt;
-submitted text, or an agent no longer in the herd, wants nothing."
+submitted text, or an agent no longer in the herd, wants nothing.  A
+menu takes the input box's place: words of one above a box that still
+holds the text are the conversation's, and Return goes."
   (let ((msg "please review the diff"))
     (dolist (screen (list (ghostherd-test--claude-screen "❯ please review the diff"
                                                          "  ⠋ Thinking… (esc to interrupt)\n\n")
-                          (ghostherd-test--claude-screen "❯ please review the diff"
-                                                         "  Do you want to proceed?\n")
+                          ghostherd-test--claude-permission
                           (ghostherd-test--claude-screen "❯ ")))
       (ghostherd-test--confirming screen
         (ghostherd--confirm-submit s msg 2)
         (should-not (or keys later))))
+    (ghostherd-test--confirming (ghostherd-test--claude-screen "❯ please review the diff"
+                                                               "  It asked: Do you want to proceed?\n")
+      (ghostherd--confirm-submit s msg 2)
+      (should (equal keys '(("return")))))
     (ghostherd-test--confirming (ghostherd-test--claude-screen "❯ please review the diff")
       (remhash (ghostherd-session-id s) ghostherd--sessions)
       (ghostherd--confirm-submit s msg 2)
@@ -6746,6 +6751,91 @@ sidecar as JSON, false without one."
       (should-not (ghostherd-session-prompt s))
       (should (eq (ghostherd--prompt-json nil) :json-false))
       (should (eq (plist-get (car (ghostherd--herd-snapshot)) :prompt) :json-false)))))
+
+;;; A blocked pattern above the input box is the conversation's
+
+(defconst ghostherd-test--claude-wrote-permission
+  (concat "● The parser tests use real screens: agy's prompt from this time, claude's question menu\n"
+          "  and claude's permission prompt.\n\n"
+          "✻ Bunning… (34s · ↓ 2.3k tokens)\n"
+          "                                          ✔ Update installed · Restart to update\n"
+          (make-string 82 ?─) "\n"
+          "❯ \n"
+          (make-string 82 ?─) "\n"
+          "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← for agents\n")
+  "claude at work, having written of a permission prompt: its own words
+on screen, its input box at the foot.")
+
+(defun ghostherd-test--rules-of (kind)
+  (let ((spec (ghostherd--spec kind)))
+    (list (plist-get spec :screen-rules) (plist-get spec :prompt-replaces-input))))
+
+(ert-deftest ghostherd-test-blocked-not-the-conversations-words ()
+  "For a kind whose menus take its input box's place, a `blocked'
+pattern with the box drawn at the foot is the conversation's: working
+or idle as the rest says.  The menu itself, the box gone, is blocked --
+and a kind not known to do so keeps reading blocked as before."
+  (pcase-let ((`(,claude ,replaces) (ghostherd-test--rules-of 'claude)))
+    (should replaces)
+    (should (ghostherd--input-at-foot-p ghostherd-test--claude-wrote-permission))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-wrote-permission claude t)) 'working))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-wrote-permission claude)) 'blocked))
+    (let ((idle (replace-regexp-in-string "✻ Bunning.*\n" "" (replace-regexp-in-string " · esc to interrupt" "" ghostherd-test--claude-wrote-permission))))
+      (should (eq (car (ghostherd--match-rules idle claude t)) 'idle)))
+    (should-not (ghostherd--input-at-foot-p ghostherd-test--claude-question))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-question claude t)) 'blocked))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-permission claude t)) 'blocked))
+    ;; What `ghostherd-explain' lists agrees with the state.
+    (should-not (assq 'blocked (ghostherd--match-all-rules ghostherd-test--claude-wrote-permission claude t)))
+    (should (assq 'blocked (ghostherd--match-all-rules ghostherd-test--claude-question claude t))))
+  (pcase-let ((`(,agy ,replaces) (ghostherd-test--rules-of 'agy)))
+    (should replaces)
+    ;; Its menu: a rule and "> " higher up are an old prompt, not the box.
+    (should-not (ghostherd--input-at-foot-p ghostherd-test--agy-menu))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--agy-menu agy t)) 'blocked))
+    (let ((wrote (concat "  I'd need your permission to push.\n" (make-string 82 ?─) "\n>\n" (make-string 82 ?─) "\n"
+                         "? for shortcuts                       Gemini 3.8 Flash · high\n")))
+      (should (eq (car (ghostherd--match-rules wrote agy t)) 'idle))))
+  (pcase-let ((`(,grok ,replaces) (ghostherd-test--rules-of 'grok)))
+    (should-not replaces)
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-wrote-permission grok replaces)) 'blocked))))
+
+(ert-deftest ghostherd-test-input-box-not-a-menus-first-choice ()
+  "A menu's first choice carries the prompt sign too, even under a rule:
+it is not the input box; nor is a quoted line of what it asks."
+  (should-not (ghostherd--input-at-foot-p (concat (make-string 82 ?─) "\n❯ 1. Yes\n  2. No\n")))
+  ;; Nor a line of what a menu asks that quotes with the sign: the box
+  ;; opens under a rule.
+  (should-not (ghostherd--input-at-foot-p "Allow this edit?\n> src/app.js: replace 3 lines\n  1. Yes\n  2. No\nesc to cancel\n"))
+  (should (ghostherd--input-at-foot-p (concat (make-string 82 ?─) "\n❯ fix the 1. step\n" (make-string 82 ?─) "\n"))))
+
+(ert-deftest ghostherd-test-explain-says-the-box-shadows-blocked ()
+  "Explained, a claude agent that wrote of a permission prompt: no
+`blocked' winner, and why."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "claude-x" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-live t))
+      (setq ghostherd-tests--fake-screen ghostherd-test--claude-wrote-permission)
+      (save-window-excursion (ghostherd-explain s))
+      (with-current-buffer "*ghostherd explain*"
+        (should (string-search "->  esc to interrupt" (buffer-string)))
+        (should-not (string-match-p "^  blocked" (buffer-string)))
+        (should (string-search "what `blocked' matched there is the conversation's" (buffer-string))))
+      (setq ghostherd-tests--fake-screen ghostherd-test--claude-question)
+      (save-window-excursion (ghostherd-explain s))
+      (with-current-buffer "*ghostherd explain*"
+        (should (string-match-p "^  blocked  ->" (buffer-string)))
+        (should-not (string-search "the conversation's, not a prompt" (buffer-string)))))))
+
+(ert-deftest ghostherd-test-detect-state-reads-the-box ()
+  "A claude agent that wrote of a permission prompt is working, as its
+spinner says -- not blocked on what it wrote."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "claude-x" :kind 'claude :state 'working)))
+      (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_) t))
+                ((symbol-function 'ghostherd--host-exited-p) #'ignore))
+        (should (eq (car (ghostherd--detect-state s ghostherd-test--claude-wrote-permission)) 'working))
+        (should (eq (car (ghostherd--detect-state s ghostherd-test--claude-question)) 'blocked))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here
