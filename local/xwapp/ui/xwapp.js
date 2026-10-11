@@ -13,9 +13,17 @@
  *   XW.bridge(prefix)    an emit(op, extra) that queues intents for Emacs
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
+ *   XW.kit(call)         Emacs's calls to the kit itself, in the xwidget
+ *
+ * An element with data-xw-phone is the page's button for "open it on
+ * your phone": shown once Emacs says the page can be reached there,
+ * and pressed, the page's address as a QR code.
  */
 (function () {
   "use strict";
+
+  // Where this script, and what it loads only when asked, came from.
+  const KIT = document.currentScript.src.replace(/[^/]*$/, "");
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
@@ -74,6 +82,8 @@
 
   // Served by Emacs: here, or to another device through a proxy (https).
   const BROWSER = location.protocol !== "file:";
+  // On another device already, through the proxy.
+  const ELSEWHERE = BROWSER && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
   const ROOT = "/" + location.pathname.split("/")[1] + "/";
   const SOFT = "xwapp-soft"; // sessionStorage: this load is the page coming back
 
@@ -139,6 +149,7 @@
     }
     function stop(msg) {
       over = true;
+      closeQr();
       notice(msg);
     }
     // A request failed: do what Emacs said, or ask again later.
@@ -204,6 +215,10 @@
         location.reload();
         return;
       }
+      if (call.xwapp) {
+        kit(call);
+        return;
+      }
       const ns = window[call.ns];
       if (!ns || typeof ns[call.fn] !== "function") return;
       try {
@@ -250,8 +265,148 @@
     return served;
   }
 
+  // The page's emit, for the kit's own intents.
+  let kitEmit = null;
+
   function bridge(prefix) {
-    return BROWSER ? servedBridge() : titleBridge(prefix);
+    if (BROWSER) return (kitEmit = servedBridge());
+    kitEmit = titleBridge(prefix);
+    // In a browser the hello is the request that makes the page the
+    // app's; in the xwidget it is the page's first intent.
+    kitEmit("xwapp-hello");
+    return kitEmit;
+  }
+
+  // ---- Your phone -------------------------------------------------------
+  //
+  // A page Emacs also serves to your other devices (xwapp-remote-hosts)
+  // can hand itself to your phone: its address there as a QR code, which
+  // the phone's camera opens.  The phone's page then takes the app, as
+  // any tab does, and this one lets go.  Emacs says whether the page can
+  // be reached so in answer to its hello, and gives the address only
+  // when asked: it holds the page's secret.
+
+  // Emacs's calls to the kit itself: in a browser through next, in the
+  // xwidget as XW.kit(call).
+  function kit(call) {
+    if (call.xwapp === "phone") {
+      document.documentElement.classList.toggle("xw-phone", !ELSEWHERE);
+    } else if (call.xwapp === "qr") {
+      showQr(call);
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    const button = e.target.closest && e.target.closest("[data-xw-phone]");
+    if (!button || !kitEmit) return;
+    e.preventDefault();
+    kitEmit("xwapp-qr");
+  });
+
+  // Loaded the first time it is needed: most pages never are.
+  let qrLib = null;
+  function loadQr() {
+    if (!qrLib) {
+      qrLib = new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = KIT + "vendor/qrcode.js";
+        s.addEventListener("load", () => resolve(window.qrcode));
+        s.addEventListener("error", () => {
+          qrLib = null;
+          reject(new Error("its library did not load"));
+        });
+        document.head.appendChild(s);
+      });
+    }
+    return qrLib;
+  }
+
+  // The code as one path, dark on white, in the quiet zone a scanner needs.
+  function qrSvg(lib, text) {
+    const q = lib(0, "M");
+    q.addData(text, "Byte");
+    q.make();
+    const n = q.getModuleCount();
+    const quiet = 4;
+    const size = n + 2 * quiet;
+    let d = "";
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (q.isDark(r, c)) d += "M" + (c + quiet) + " " + (r + quiet) + "h1v1h-1z";
+      }
+    }
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + size + " " + size);
+    svg.setAttribute("shape-rendering", "crispEdges");
+    svg.setAttribute("class", "xw-qr-code");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "This page's address, as a QR code");
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("width", size);
+    bg.setAttribute("height", size);
+    bg.setAttribute("fill", "#fff");
+    const fg = document.createElementNS(NS, "path");
+    fg.setAttribute("d", d);
+    fg.setAttribute("fill", "#000");
+    svg.append(bg, fg);
+    return svg;
+  }
+
+  function escQr(e) {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeQr();
+  }
+
+  function closeQr() {
+    const box = document.getElementById("xw-qr");
+    if (box) box.remove();
+    window.removeEventListener("keydown", escQr, true);
+  }
+
+  function showQr(call) {
+    closeQr();
+    const box = document.createElement("div");
+    box.id = "xw-qr";
+    box.className = "xw-qr";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.setAttribute("aria-label", "Open on your phone");
+    const card = document.createElement("div");
+    card.className = "xw-qr-card";
+    const line = (cls, text) => {
+      const p = document.createElement("p");
+      p.className = cls;
+      p.textContent = text;
+      return p;
+    };
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "xw-qr-close";
+    close.textContent = "Close";
+    close.addEventListener("click", closeQr);
+    if (!call.url) {
+      card.append(line("xw-qr-say", call.error || "Emacs gave no address."), close);
+    } else {
+      const say = line("xw-qr-say", "Scan it with your phone's camera.");
+      card.append(say, line("xw-qr-host", call.host || ""),
+        line("xw-qr-note", "Opened there, the page is your phone's, and this one lets go of it."), close);
+      loadQr().then((lib) => {
+        if (box.isConnected) card.prepend(qrSvg(lib, call.url));
+      }, (e) => {
+        say.textContent = "Cannot draw the code: " + e.message + ".";
+      });
+    }
+    box.append(card);
+    // A click beside the card closes it, as Esc does.
+    box.addEventListener("click", (e) => {
+      if (e.target === box) closeQr();
+    });
+    window.addEventListener("keydown", escQr, true);
+    document.body.appendChild(box);
+    close.focus();
   }
 
   // ---- Sanitizer -------------------------------------------------------
@@ -369,5 +524,6 @@
     bridge: bridge,
     sanitizer: sanitizer,
     browser: BROWSER,
+    kit: kit,
   });
 })();

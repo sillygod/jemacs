@@ -145,6 +145,22 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
 - A page opened from there --- a PR clicked on the herd page --- still
   opens in a browser on this machine.
 
+A page can also give its address to the phone itself, as a QR code: an
+element with =data-xw-phone= is its button for it --- the herd page's
+Phone, beside Refresh.
+
+- *Shown only where it helps.*  Hidden until Emacs answers the page's
+  hello that your other devices can reach it (=xwapp-remote-hosts=, and
+  an app that can open again), and on a page already on another device.
+- *The address only when asked*, as it holds the secret: pressed, the
+  button asks Emacs for it, and the page draws the code --- dark on
+  white, with the margin a camera needs.  Esc, Close or a click beside
+  it puts it away, and so does the phone taking the page.
+- The kit's own intents, =xwapp-hello= and =xwapp-qr=, never reach the
+  app's handler.  In a browser the hello is the request that makes the
+  page the app's; in the xwidget it is the page's first intent, and
+  Emacs answers through =XW.kit=.
+
 * Page kit (=ui/=)
 
 What the pages share on the browser side, so it is fixed once:
@@ -152,9 +168,11 @@ What the pages share on the browser side, so it is fixed once:
 | File                   | Gives                                                |
 |------------------------+------------------------------------------------------|
 | =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
-|                        | =XW.browser=                                         |
+|                        | =XW.browser=; the QR code for your phone             |
 | =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
 | =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
+| =vendor/qrcode.js=     | qrcode-generator 1.4.4 (identical to npm's), loaded |
+|                        | only when a QR code is shown                         |
 
 A page loads them as =../../xwapp/ui/…=.  That path holds both in the
 repo (=local/<pkg>/ui=) and in straight's build (=build/<pkg>/ui=),

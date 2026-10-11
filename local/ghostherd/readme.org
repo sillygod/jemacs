@@ -1065,9 +1065,10 @@ are the other tabs (below, and "What happened while you were away").
   Tailscale login alone (=xwapp-remote-hosts=, =xwapp-remote-users=,
   =tailscale serve= to =xwapp-port=; xwapp's README has it).  =M-x
   xwapp-copy-remote-url=, =*herd*=, copies the address; it holds the
-  page's secret, and is kept over restarts.  Opened there, the page is
-  the phone's: the one in Emacs lets go of it, and takes it back when
-  you open it again.
+  page's secret, and is kept over restarts.  Or press Phone, beside
+  Refresh, and scan the QR code it shows with the phone's camera.
+  Opened there, the page is the phone's: the one in Emacs lets go of
+  it, and takes it back when you open it again.
 - The chat writes to the project's /lead/ unless you pick another: an
   agent that plans the work, hands it out as asks, and reports back.
   It is an ordinary agent --- =ghostherd-lead-kind=, claude by default

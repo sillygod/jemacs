@@ -327,7 +327,7 @@ window system cannot report counts as focus."
         (setf (xwapp-last-title app) title)
         (xwidget-webkit-execute-script
          xw (format "document.title = %s;" (json-encode (xwapp-idle-title app))))
-        (funcall (xwapp-handler app) intent)))))
+        (xwapp--dispatch app intent)))))
 
 (defun xwapp-start-poll (app)
   "Start polling APP's page title for intents."
@@ -579,6 +579,38 @@ and a page open in a tab says to open it again."
   (xwapp--save)
   (message "%s has a new secret; copy its address again" (string-trim (xwapp-buffer-name app))))
 
+;; The page's own button for it: an element with data-xw-phone, shown
+;; when Emacs answers the page's hello that it can be reached so, and
+;; pressed, the address as a QR code for the phone's camera.
+
+(defun xwapp--kit (app call)
+  "Send CALL, an alist, to the page kit of APP's page."
+  (let ((json (json-encode call)))
+    (if (xwapp--get app :page)
+        (xwapp--call app json)
+      (when-let* ((xw (xwapp-session app)))
+        (xwidget-webkit-execute-script xw (format "window.XW && XW.kit(%s);" json))))))
+
+(defun xwapp--greet (app)
+  "Tell APP's page, which has just loaded, that your other devices can
+reach it -- when they can.  Its button is hidden until then."
+  (when (and xwapp-remote-hosts (xwapp-reopen app))
+    (xwapp--kit app '((xwapp . "phone")))))
+
+(defun xwapp--show-qr (app)
+  "Show APP's address from your other devices in its page, as a QR code."
+  (xwapp--kit app (condition-case err
+                      `((xwapp . "qr") (url . ,(xwapp-remote-url app))
+                        (host . ,(car xwapp-remote-hosts)))
+                    (user-error `((xwapp . "qr") (error . ,(error-message-string err)))))))
+
+(defun xwapp--dispatch (app intent)
+  "Hand INTENT, from APP's page, to the kit when it is the kit's, else to APP."
+  (pcase (alist-get 'op intent)
+    ("xwapp-hello" (xwapp--greet app))
+    ("xwapp-qr" (xwapp--show-qr app))
+    (_ (funcall (xwapp-handler app) intent))))
+
 ;; Over a restart
 
 (defun xwapp--state ()
@@ -824,6 +856,7 @@ APP is free."
       (xwapp--put app :asked nil)
       (xwapp--let-go app)
       (xwapp--put app :page page)
+      (xwapp--greet app)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
       ;; Moved, not closed: with :page set, the buffer's death runs no on-kill.
       (when-let* ((buf (xwapp-buffer app)))
@@ -889,7 +922,7 @@ APP is free."
   "Hand APP INTENT, from its page in a browser tab: a page it opens
 opens there too."
   (let ((xwapp--from-browser t))
-    (funcall (xwapp-handler app) intent)))
+    (xwapp--dispatch app intent)))
 
 (defun xwapp--sentinel (proc _event)
   "A held `next' whose tab hung up: the page may be gone."

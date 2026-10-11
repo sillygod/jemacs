@@ -25,6 +25,48 @@
 /* Elements that set display would otherwise beat [hidden]. */
 [hidden] { display: none !important; }
 
+/* A page's button for opening it on your phone, until Emacs says it can. */
+html:not(.xw-phone) [data-xw-phone] { display: none !important; }
+
+/* The page's address as a QR code, for your phone (xwapp.js). */
+.xw-qr {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.6);
+}
+.xw-qr-card {
+  width: 100%;
+  max-width: 320px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+}
+.xw-qr-code { display: block; width: 240px; height: 240px; max-width: 100%; margin: 0 auto 12px; border-radius: 4px; }
+.xw-qr-card p { margin: 6px 0; }
+.xw-qr-host { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.xw-qr-note { font-size: 12px; color: var(--muted); }
+.xw-qr-close {
+  margin-top: 10px;
+  padding: 6px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--chip);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
 /* What xwapp.js shows when a page in a web browser has lost Emacs. */
 .xw-notice {
   position: fixed;

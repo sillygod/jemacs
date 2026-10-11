@@ -754,6 +754,63 @@ its secret is renewed.  Only a page that can open again has one."
             (should (string-match-p "Copied the address of \\*xwapp-test\\*" (car said)))
             (should-not (string-match-p (xwapp--secret again) (car said)))))))))
 
+(defun xwapp-test--json (s)
+  (json-parse-string s :object-type 'alist :array-type 'list))
+
+(ert-deftest xwapp-test-phone-in-the-xwidget ()
+  "The page in Emacs says hello, and is told it can show its phone
+button only when your other devices can reach it.  Asked, it gets its
+address there to show as a QR code, or why there is none.  Neither
+intent is the app's."
+  (xwapp-test--with-browser
+    (let* ((title nil) (scripts nil)
+           (poll (lambda (intent)
+                   (setq title (concat "t:" intent) scripts nil)
+                   (xwapp--poll app)
+                   (seq-keep (lambda (s) (and (string-match "\\`window\\.XW && XW\\.kit(\\(.*\\));\\'" s)
+                                              (xwapp-test--json (match-string 1 s))))
+                             scripts))))
+      (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+                ((symbol-function 'xwidget-webkit-title) (lambda (_) title))
+                ((symbol-function 'xwidget-webkit-execute-script)
+                 (lambda (_xw s) (push s scripts))))
+        (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+        (should-not (funcall poll "{\"op\":\"xwapp-hello\",\"n\":1}"))
+        (let ((said (funcall poll "{\"op\":\"xwapp-qr\",\"n\":2}")))
+          (should (equal (mapcar #'car (car said)) '(xwapp error)))
+          (should (string-match-p "xwapp-remote-hosts.*this machine alone" (alist-get 'error (car said)))))
+        (let ((xwapp-remote-hosts (list xwapp-test--box)))
+          (should (equal (funcall poll "{\"op\":\"xwapp-hello\",\"n\":3}")
+                         '(((xwapp . "phone")))))
+          (should (equal (funcall poll "{\"op\":\"xwapp-qr\",\"n\":4}")
+                         `(((xwapp . "qr") (url . ,(xwapp-remote-url app)) (host . ,xwapp-test--box)))))
+          ;; A page that cannot open again cannot be reached from elsewhere.
+          (xwapp--put app :reopen nil)
+          (should-not (funcall poll "{\"op\":\"xwapp-hello\",\"n\":5}"))
+          (should (string-match-p "cannot be reached from elsewhere"
+                                  (alist-get 'error (car (funcall poll "{\"op\":\"xwapp-qr\",\"n\":6}"))))))
+        (should-not intents)))))
+
+(ert-deftest xwapp-test-browser-phone ()
+  "In a browser, the answer to the page's hello is the first call it
+gets; its ask for the QR code is answered with the next."
+  (xwapp-test--with-browser
+    (let ((next (lambda (page)
+                  (xwapp-test--json (cdr (xwapp-test--do "GET" (xwapp-test--at app (concat "next?page=" page))))))))
+      (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+      ;; Not reachable from elsewhere: nothing said.
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (should-not (xwapp--get app :outbox))
+      (let ((xwapp-remote-hosts (list xwapp-test--box)))
+        (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+        (should (equal (funcall next "p2") '(((xwapp . "phone")))))
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p2")
+                                            "{\"op\":\"xwapp-qr\"}"))
+                       204))
+        (should (equal (funcall next "p2")
+                       `(((xwapp . "qr") (url . ,(xwapp-remote-url app)) (host . ,xwapp-test--box)))))
+        (should-not intents)))))
+
 (ert-deftest xwapp-test-browser-resume-loads-the-apps ()
   "Once Emacs is up, each kept page's app is loaded through its reopen."
   (xwapp-test--keeping
