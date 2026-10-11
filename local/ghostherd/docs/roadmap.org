@@ -1052,15 +1052,26 @@ looking.
   choice from every start on a menu that wraps; 17 guards broken on
   purpose, each caught
 
+- [X] pr-view and clickup-view on the phone, as at the desk: no
+  Bitbucket or ClickUp login there, the tokens staying in Emacs.  A PR
+  or task chip on the herd page there opens their page there, by
+  xwapp's address without the secret (=/open/pr-view#pr=URL=,
+  =/open/clickup-view#task=ID=) --- a plain link, so iOS opens it in
+  the tap, no tab to fill once Emacs answers.  Each can open by itself
+  (=:reopen=), and its page says what it shows once loaded, keeping it
+  in its address for a reload or a restart.  What Emacs would do on the
+  desk --- open on the forge, copy --- is done on the phone
+  (=XW.open=, =XW.copy=), a task from pr-view opens in clickup-view's
+  page, Create is not offered; their own phone layout.  The herd page
+  is told which open there (=:open=), else a chip goes to the forge.
+  ERT, and WebKit end to end through a proxy doing what =tailscale
+  serve= does, against a real Emacs with the forges answered from
+  fixtures; 45 guards broken on purpose, each caught
+
 ** What is left
 
 - [ ] grok's menu prompts, when one is on screen: whether it too takes
   the input box's place (=:prompt-replaces-input=)
-- [ ] pr-view and clickup-view on the phone too, as at the desk, after
-  the page's phone layout: no Bitbucket or ClickUp login there, the
-  tokens staying in Emacs.  Each needs a :reopen that knows its PR or
-  task, a tab opened on the tap and filled once Emacs answers (iOS
-  blocks one opened later), and their own phone layout
 
 * Phase 4 — Ecosystem (only if still useful)
 
