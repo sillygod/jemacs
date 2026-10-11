@@ -77,6 +77,12 @@
     if (!kind) flashTimer = setTimeout(() => (statusEl.hidden = true), 3500);
   }
 
+  // Onto the clipboard of the device you are at: Emacs's at the desk.
+  function copy(text) {
+    if (!XW.elsewhere) return emit("copy", { text: text });
+    XW.copy(text).then((ok) => setStatus(ok ? "Copied" : "Could not copy here", ok ? "" : "error"));
+  }
+
   function shortName(name) {
     const s = String(name || "");
     return s.length > 24 ? s.slice(0, 12) + "…" + s.slice(-8) : s;
@@ -933,7 +939,10 @@
   // Its branch's pull request and the ClickUp tasks the PR cites, which
   // Emacs looks up with pr-view and clickup-view -- they hold the tokens.
   // A default branch without a PR says nothing; two tasks show, the rest
-  // behind +N.  A click opens the PR in pr-view, a task in clickup-view.
+  // behind +N.  A click opens the PR in pr-view, a task in clickup-view
+  // -- at the desk.  On another device a chip is a link to the forge's or
+  // ClickUp's own page instead, which opens there: in a tab, or in their
+  // app.
 
   const QUIET_BRANCHES = ["main", "master", "develop", "HEAD"];
 
@@ -951,20 +960,29 @@
     return pr.draft && pr.state === "OPEN" ? "Draft" : pr.state.charAt(0) + pr.state.slice(1).toLowerCase();
   }
 
+  function chip(cls, attrs, url, inner) {
+    const href = XW.elsewhere && /^https?:\/\//i.test(url || "") ? url : "";
+    return href
+      ? '<a class="' + cls + '" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + attrs + ">" + inner + "</a>"
+      : '<button type="button" class="' + cls + '"' + attrs + ">" + inner + "</button>";
+  }
+
   function prChip(root, pr, done) {
     const state = prState(pr);
     const tip = pr.error || pr.title || (state ? "" : "Being looked up");
-    return '<button type="button" class="wchip pr' + (state ? " pr-" + esc(state.toLowerCase()) : "") + (done ? " wdone" : "") +
-      '" data-act="a:work-pr" data-root="' + esc(root) + '" data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '">#' +
-      esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")) + "</button>";
+    return chip("wchip pr" + (state ? " pr-" + esc(state.toLowerCase()) : "") + (done ? " wdone" : ""),
+      ' data-act="a:work-pr" data-root="' + esc(root) + '" data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '"', pr.url,
+      "#" + esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")));
   }
 
   function taskChip(t, done) {
-    return '<button type="button" class="wchip task' + (done ? " wdone" : "") + '" data-act="a:work-task" data-id="' + esc(t.id) +
-      '" title="' + esc(t.error || [t.name, t.status].filter(Boolean).join(" · ") || t.id) + '">' +
+    return chip("wchip task" + (done ? " wdone" : ""),
+      ' data-act="a:work-task" data-id="' + esc(t.id) + '" title="' +
+      esc(t.error || [t.name, t.status].filter(Boolean).join(" · ") || t.id) + '"',
+      t.url || "https://app.clickup.com/t/" + encodeURIComponent(t.id),
       (t.status ? '<span class="tdot" style="background:' + safeColor(t.color) + '"></span>' : "") +
       '<span class="wname">' + esc(t.name || t.id) + "</span>" +
-      (t.status ? '<span class="tst">' + esc(t.status) + "</span>" : "") + "</button>";
+      (t.status ? '<span class="tst">' + esc(t.status) + "</span>" : ""));
   }
 
   function moreButton(key, open, n) {
@@ -1454,6 +1472,9 @@
     }
     if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
     if (act === "room") return openRoom(project);
+    // A chip still a button on another device has no address yet: Emacs
+    // would open it on the desk's screen.
+    if ((act === "work-pr" || act === "work-task") && XW.elsewhere) return setStatus("Its address is not known yet");
     if (act === "work-pr") return emit("open-pr", { root: el.getAttribute("data-root"), id: +el.getAttribute("data-id") });
     if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
     if (act === "work-more") {
@@ -1994,11 +2015,18 @@
   app.addEventListener("click", (ev) => {
     const t = ev.target instanceof Element ? ev.target : null;
     if (!t) return;
-    // A link would navigate the xwidget off the page and its bridge.
+    // A link would navigate the xwidget off the page and its bridge, so
+    // Emacs opens it.  On another device it opens there, in a tab of its
+    // own: the page stays.
     const a = t.closest("a[href]");
     if (a) {
-      ev.preventDefault();
       const href = a.getAttribute("href") || "";
+      if (XW.elsewhere && /^https?:/i.test(href)) {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        return;
+      }
+      ev.preventDefault();
       if (/^https?:/i.test(href)) emit("open-browser", { url: href });
       return;
     }
@@ -2029,9 +2057,9 @@
     } else if (act === "copy-msg") {
       const sec = el.closest(".msg");
       const m = src && src.messages.find((x) => String(x.first) === sec.getAttribute("data-first"));
-      if (m) emit("copy", { text: m.text });
+      if (m) copy(m.text);
     } else if (act === "copy-path") {
-      if (src) emit("copy", { text: src.path });
+      if (src) copy(src.path);
     } else if (act.startsWith("a:")) {
       onAgentAction(act.slice(2), el);
     } else if (act === "resume") {

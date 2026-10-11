@@ -142,8 +142,12 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
   =tailscale serve --http=80= and ="http"=: still encrypted between
   devices by the tailnet, but the browser does not count the page as
   secure, which some of its features need.
-- A page opened from there --- a PR clicked on the herd page --- still
-  opens in a browser on this machine.
+- *What you tap acts where you are.*  A page Emacs opens --- pr-view
+  for a PR --- opens on this machine, so a page on another device
+  (=XW.elsewhere=) links to the web's own page instead, which opens
+  there, and copies with =XW.copy= to that device's clipboard rather
+  than to Emacs's.  Over plain http there is no clipboard API; a
+  selected textarea and =execCommand= still copy, within the tap.
 
 A page can also give its address to the phone itself, as a QR code: an
 element with =data-xw-phone= is its button for it --- the herd page's
@@ -168,7 +172,8 @@ What the pages share on the browser side, so it is fixed once:
 | File                   | Gives                                                |
 |------------------------+------------------------------------------------------|
 | =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
-|                        | =XW.browser=; the QR code for your phone             |
+|                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=; the   |
+|                        | QR code for your phone                               |
 | =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
 | =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
 | =vendor/qrcode.js=     | qrcode-generator 1.4.4 (identical to npm's), loaded |

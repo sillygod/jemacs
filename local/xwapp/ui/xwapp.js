@@ -13,6 +13,8 @@
  *   XW.bridge(prefix)    an emit(op, extra) that queues intents for Emacs
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
+ *   XW.elsewhere         true on another device, through the proxy
+ *   XW.copy(text)        a promise: whether TEXT is on this device's clipboard
  *   XW.kit(call)         Emacs's calls to the kit itself, in the xwidget
  *
  * An element with data-xw-phone is the page's button for "open it on
@@ -267,6 +269,40 @@
 
   // The page's emit, for the kit's own intents.
   let kitEmit = null;
+
+  // ---- This device's clipboard ------------------------------------------
+  //
+  // On another device, Emacs's clipboard is the wrong one.  Called from a
+  // click: without a secure context -- a page over plain http on the
+  // tailnet -- there is no navigator.clipboard, but a selected textarea
+  // and execCommand still copy, as long as it is done within the click.
+
+  function copy(text) {
+    text = String(text == null ? "" : text);
+    if (window.isSecureContext && navigator.clipboard) {
+      return navigator.clipboard.writeText(text).then(() => true, () => false);
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    // Read-only, so a phone shows no keyboard; 16px, so it does not zoom.
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.opacity = "0";
+    ta.style.fontSize = "16px";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (e) {
+      ok = false;
+    }
+    ta.remove();
+    return Promise.resolve(ok);
+  }
 
   function bridge(prefix) {
     if (BROWSER) return (kitEmit = servedBridge());
@@ -524,6 +560,8 @@
     bridge: bridge,
     sanitizer: sanitizer,
     browser: BROWSER,
+    elsewhere: ELSEWHERE,
+    copy: copy,
     kit: kit,
   });
 })();

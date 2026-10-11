@@ -680,7 +680,7 @@ pre.screen {
 /* A chip is no wider than its line; a long name is cut short inside it. */
 .wchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: min(24em, 100%); overflow: hidden;
   padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font: inherit;
-  cursor: pointer; }
+  text-decoration: none; cursor: pointer; }
 .wchip:hover { border-color: var(--muted); }
 .wchip .wname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wchip .tst { flex-shrink: 0; max-width: 9em; overflow: hidden; text-overflow: ellipsis; color: var(--muted); white-space: nowrap; }
