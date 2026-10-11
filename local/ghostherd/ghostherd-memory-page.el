@@ -1265,17 +1265,34 @@ preview.  A data URL because the page loads no image from anywhere."
     (and data (string-prefix-p "\x89PNG" data)
          (concat "data:image/png;base64," (base64-encode-string data t)))))
 
+(defun ghostherd-memory-page--image-for (intent)
+  "The name of the agent INTENT attaches an image for."
+  (if (equal (alist-get 'name intent) "@lead")
+      "@lead"                           ; a lead not started yet: it will be
+    (ghostherd-session-name (ghostherd-memory-page--session intent))))
+
+(defun ghostherd-memory-page--attach (name path)
+  "Show image PATH in the page, attached to NAME's next prompt."
+  (ghostherd-memory-page--js
+   "attachImage" (list :name name :path path :thumb (ghostherd-memory-page--thumb path))))
+
 (defun ghostherd-memory-page--agent-image (intent)
   "Save the clipboard's image for the agent INTENT names, and attach it.
 The page cannot write a file, and an image is too big for the title it
 speaks through, so Emacs reads the clipboard itself; the page gets the
 file's name and a preview."
-  (let* ((name (if (equal (alist-get 'name intent) "@lead")
-                   "@lead"            ; a lead not started yet: it will be
-                 (ghostherd-session-name (ghostherd-memory-page--session intent))))
-         (path (ghostherd-save-clipboard-image name)))
-    (ghostherd-memory-page--js
-     "attachImage" (list :name name :path path :thumb (ghostherd-memory-page--thumb path)))))
+  (let ((name (ghostherd-memory-page--image-for intent)))
+    (ghostherd-memory-page--attach name (ghostherd-save-clipboard-image name))))
+
+(defun ghostherd-memory-page--agent-image-upload (intent)
+  "Save the image INTENT carries, base64, for the agent it names, and
+attach it.  It comes from the page on another device -- a phone's photo
+-- whose clipboard is not Emacs's; in a request, not a title."
+  (let* ((name (ghostherd-memory-page--image-for intent))
+         (data (alist-get 'data intent))
+         (bytes (or (and (stringp data) (ignore-errors (base64-decode-string data)))
+                    (user-error "No image came"))))
+    (ghostherd-memory-page--attach name (ghostherd-save-image bytes name))))
 
 (defun ghostherd-memory-page--lead-say (intent)
   "Say INTENT's text to its project's lead, starting the lead if need be."
@@ -1463,6 +1480,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-memory-page--send-herd))
         ("agent-new" (ghostherd-memory-page--agent-new intent))
         ("agent-image" (ghostherd-memory-page--agent-image intent))
+        ("agent-image-upload" (ghostherd-memory-page--agent-image-upload intent))
         ("lead-say" (ghostherd-memory-page--lead-say intent))
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))

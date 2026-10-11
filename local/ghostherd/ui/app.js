@@ -13,6 +13,29 @@
 
   const emit = XW.bridge(PREFIX);
 
+  // ---- A phone ---------------------------------------------------------
+  //
+  // style.css lays the page out for a narrow screen and a finger; here,
+  // what it says and starts with there.  A touch screen has no keys to
+  // hint at; a narrow one starts a room as its chat, one column at a
+  // time being the less of the two.
+
+  const TOUCH = window.matchMedia("(pointer: coarse)").matches;
+  const NARROW = window.matchMedia("(max-width: 640px)").matches;
+  const SLASH = TOUCH ? "" : "  ( / )";
+  const SENDS = TOUCH ? "" : "  (⌘↩ / C-↩ sends)";
+
+  function chatHint(to) {
+    return "Message " + (to === "@lead" ? "the lead" : to) + "  (@name for another" + (TOUCH ? ")" : " · ⌘↩ sends)");
+  }
+
+  // An agent's name opens its terminal in Emacs: at the desk.  On another
+  // device that would open on the desk's screen, so it is only its name.
+  function agentName(name) {
+    return XW.elsewhere ? '<span class="aname">' + esc(name) + "</span>"
+      : '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>";
+  }
+
   // ---- Small helpers ---------------------------------------------------
 
   const esc = XW.esc;
@@ -317,7 +340,7 @@
     app.innerHTML =
       '<div class="page">' +
       '<div class="searchbar"><input id="q" type="search" autocomplete="off" spellcheck="false" ' +
-      'placeholder="Search past sessions — 中文 or English  ( / )" value="' + esc(query) + '"></div>' +
+      'placeholder="Search past sessions — 中文 or English' + SLASH + '" value="' + esc(query) + '"></div>' +
       filtersHtml() +
       '<div id="results" class="results"></div></div>';
     renderResults();
@@ -417,7 +440,7 @@
     app.innerHTML =
       '<div class="page">' +
       '<div class="searchbar"><input id="sess-filter" type="search" autocomplete="off" spellcheck="false" ' +
-      'placeholder="Filter by project, path or session id  ( / )" value="' + esc(sessionsFilter) + '"></div>' +
+      'placeholder="Filter by project, path or session id' + SLASH + '" value="' + esc(sessionsFilter) + '"></div>' +
       filtersHtml() + '<div id="sess-list" class="results"></div></div>';
     renderSessionList();
     app.scrollTop = listScroll.sessions;
@@ -519,8 +542,9 @@
     if (!r.ok) return '<span class="noresume" title="' + esc(r.why || "") + '">⊘ ' + esc(r.why || "Not resumable") + "</span>";
     let html = "";
     if (r.running) {
-      html += '<button type="button" class="ghost small" data-act="visit-agent" title="An agent is on this conversation already">Open ' +
-        esc(r.running) + "</button>";
+      html += XW.elsewhere ? '<span class="noresume">On ' + esc(r.running) + " already</span>"
+        : '<button type="button" class="ghost small" data-act="visit-agent" title="An agent is on this conversation already">Open ' +
+          esc(r.running) + "</button>";
     } else {
       html += '<button type="button" class="primary small" data-act="resume" title="Continue this conversation in a new ' +
         esc(r.agent) + ' agent">Resume</button>';
@@ -702,13 +726,14 @@
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
-    roomView: "columns", chat: null, chatTo: {}, chatOpen: new Set(),
+    roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
   };
 
   const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
-    'title="Put the clipboard\'s image in the prompt, as a file (⌘V does too)">Image</button>';
+    (XW.elsewhere ? 'title="A photo, or one from the camera, in the prompt as a file">'
+      : 'title="Put the clipboard\'s image in the prompt, as a file (⌘V does too)">') + "Image</button>";
 
   function cssName(n) {
     return String(n).replace(/["\\]/g, "\\$&");
@@ -747,6 +772,14 @@
     return d <= 0 ? "reset due" : "resets in " + span(d);
   }
 
+  // A hook's file and line, which open in Emacs -- at the desk.
+  function hookFile(h) {
+    const where = esc(h.file + ":" + h.line + (h.scope && h.scope !== "global" ? "  (" + h.scope + ")" : ""));
+    return XW.elsewhere ? '<span class="hfile muted" title="' + where + '">' + esc(h.name + ":" + h.line) + "</span>"
+      : '<button type="button" class="linkish hfile" data-act="a:hook-open" data-i="' + h.i + '" title="' + where + '">' +
+        esc(h.name + ":" + h.line) + "</button>";
+  }
+
   // A CLI's hooks, under its usage: whether ghostherd's are in, and on
   // a click every hook it runs, each opening its file at its line.
   function hooksHtml(kind, hooks) {
@@ -769,9 +802,7 @@
       (h.matcher ? '<span class="hmatch">' + esc(h.matcher) + "</span>" : "") +
       (h.ours ? '<span class="hmine">ghostherd</span>' : "") +
       (h.enabled === false ? '<span class="hmatch">disabled</span>' : "") +
-      '<button type="button" class="linkish hfile" data-act="a:hook-open" data-i="' + h.i + '" title="' +
-      esc(h.file + ":" + h.line + (h.scope && h.scope !== "global" ? "  (" + h.scope + ")" : "")) + '">' +
-      esc(h.name + ":" + h.line) + "</button></div>" +
+      hookFile(h) + "</div>" +
       (h.error ? '<div class="hcmd herr">' + esc(h.error) + "</div>"
                : '<div class="hcmd" title="' + esc(h.command) + '">' + esc(h.command) + "</div>") +
       "</div>").join("") : '<p class="muted">No hooks.</p>') + "</div>" : "";
@@ -1065,7 +1096,7 @@
       : "";
     const compose = herdNow.composing.has(name)
       ? '<div class="agent-compose"><div class="attach">' + attachHtml(name) + '</div>' +
-        '<textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + '  (⌘↩ / C-↩ sends)">' +
+        '<textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + SENDS + '">' +
         esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
       : "";
     const notes = herdNow.notes === name
@@ -1079,8 +1110,7 @@
     return (
       '<div class="arow s-' + esc(a.state) + '" data-name="' + esc(name) + '">' +
       '<div class="amain">' + stateBadge(a.state) +
-      '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
-      agentBadge(a.kind) + leadBadge(a) +
+      agentName(name) + agentBadge(a.kind) + leadBadge(a) +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
       (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") +
@@ -1209,8 +1239,7 @@
     }
     return '<div class="amain">' + stateBadge(a.state) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
-      '<button type="button" class="aname" data-act="a:agent-visit" title="Open in Emacs">' + esc(name) + "</button>" +
-      agentBadge(a.kind) + leadBadge(a) +
+      agentName(name) + agentBadge(a.kind) + leadBadge(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
@@ -1343,7 +1372,7 @@
       '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
       '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
       chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
-      '</select><textarea class="agent-text" rows="2" placeholder="Message ' + esc(to === "@lead" ? "the lead" : to) + '  (@name for another · ⌘↩ sends)">' +
+      '</select><textarea class="agent-text" rows="2" placeholder="' + esc(chatHint(to)) + '">' +
       esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON +
       '<button type="button" class="primary small" data-act="a:send">Send</button></div></div>';
   }
@@ -1362,7 +1391,7 @@
     delete herdNow.attach[was];
     foot.setAttribute("data-name", to);
     foot.querySelector(".chat-to").value = to;
-    ta.placeholder = "Message " + (to === "@lead" ? "the lead" : to) + "  (@name for another · ⌘↩ sends)";
+    ta.placeholder = chatHint(to);
     renderAttach(to);
   }
 
@@ -1439,7 +1468,7 @@
           : '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
-              '<textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + '  (⌘↩ / C-↩ sends)">' +
+              '<textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + SENDS + '">' +
               esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>") +
         "</div>";
       room = app.querySelector(".room");
@@ -1638,8 +1667,53 @@
   // until the prompt is sent.  Every CLI can read a file, and the page
   // can neither write one nor carry an image through the title it speaks
   // to Emacs by.
+  //
+  // On another device Emacs's clipboard is not the one you have: the
+  // image is picked there -- a phone's photos, its camera, its files --
+  // and the page sends it, in a request.  Made smaller first: a photo is
+  // larger than a prompt needs, and than a request Emacs takes.
   function askImage(ta) {
-    emit("agent-image", { name: ta.closest(".arow, .rcol, .cfoot").getAttribute("data-name") });
+    const name = ta.closest(".arow, .rcol, .cfoot").getAttribute("data-name");
+    if (!XW.elsewhere) return emit("agent-image", { name: name });
+    pickFor = name;
+    picker.value = "";
+    picker.click();
+  }
+
+  const picker = $("image-pick");
+  let pickFor = null;
+  picker.addEventListener("change", () => {
+    const file = picker.files && picker.files[0];
+    const name = pickFor;
+    pickFor = null;
+    if (!file || !name) return;
+    setStatus("Sending the image…");
+    shrinkImage(file).then((data) => emit("agent-image-upload", { name: name, data: data }),
+      (e) => setStatus(e.message, "error"));
+  });
+
+  const IMAGE_MAX = 2000;
+  // FILE as a JPEG at most IMAGE_MAX pixels a side, in base64.  Read as
+  // a data: URL, the one kind of image the page's CSP loads.
+  function shrinkImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("error", () => reject(new Error("Could not read that image")));
+      reader.addEventListener("load", () => {
+        const img = new Image();
+        img.addEventListener("error", () => reject(new Error("Not an image this browser can show")));
+        img.addEventListener("load", () => {
+          const k = Math.min(1, IMAGE_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+          const c = document.createElement("canvas");
+          c.width = Math.round(img.naturalWidth * k);
+          c.height = Math.round(img.naturalHeight * k);
+          c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+          resolve(c.toDataURL("image/jpeg", 0.85).replace(/^data:image\/jpeg;base64,/, ""));
+        });
+        img.src = reader.result;
+      });
+      reader.readAsDataURL(file);
+    });
   }
 
   const THUMB = /^data:image\/png;base64,[A-Za-z0-9+/=]+$/;
@@ -1850,7 +1924,7 @@
         '" data-act="range" data-range="' + ms + '">' + label + "</button>").join("") +
       '<button type="button" class="chip' + (herd.blocked ? " on" : "") + '" data-act="blocked-only">Blocked only</button>' +
       "</div>" +
-      '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter  ( / )" value="' + esc(herd.filter) + '">' +
+      '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' + SLASH + '" value="' + esc(herd.filter) + '">' +
       '<select id="log-session" title="Agent">' + opts + "</select></div>" +
       '<div id="lanes" class="lanes"></div><div id="log-list" class="results"></div></div>';
     if (!herd.entries) {
@@ -2300,8 +2374,10 @@
       const a = roomAgents().find((x) => x.name === p.name);
       if (!a) return;
       renderRoomBody(a);
-      // Whether it has a conversation decides its Screen button.
-      roomColumn(a.name).querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
+      // Whether it has a conversation decides its Screen button -- in a
+      // column: one that comes as the room turns to its chat has none.
+      const col = roomColumn(a.name);
+      if (col) col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
     },
 
     renderLog: (p) => {

@@ -26,6 +26,9 @@ button.linkish { background: none; border: 0; padding: 0 2px; color: var(--muted
 button.linkish:hover:not(:disabled) { color: var(--accent); }
 
 .muted { color: var(--muted); }
+/* There to be clicked by the page, not seen: a file input hidden by
+   display: none does not open its picker everywhere. */
+.offscreen { position: fixed; left: -100px; top: 0; width: 1px; height: 1px; opacity: 0; }
 .pad { padding: 16px; }
 
 /* ---- Chrome ---------------------------------------------------------- */
@@ -691,3 +694,92 @@ pre.screen {
 .pr-draft { color: var(--muted); }
 .links .wbranch { font-family: inherit; }
 .wchip.wdone { opacity: 0.6; }
+
+/* ---- A phone ------------------------------------------------------------
+   A narrow screen: one thing across it at a time, the height given to
+   the conversation.  A finger: controls it can hit.  app.js starts a
+   room there as its chat, and drops the keys a phone has not. */
+
+html { -webkit-text-size-adjust: 100%; }
+
+@media (max-width: 640px) {
+  /* The bar: the tabs, swiped sideways if they must be; Back an arrow
+     before them.  Refresh lists the sessions again, as Emacs does. */
+  .top { padding: 0 8px; gap: 4px; }
+  .mark, #btn-refresh, #btn-back .lbl { display: none; }
+  .brand { flex: 1; min-width: 0; }
+  .tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .tab { flex-shrink: 0; white-space: nowrap; padding: 11px 9px; }
+  .actions { order: -1; }
+  .page { padding: 10px 12px 32px; }
+  .phead .ppath { display: none; }
+
+  /* The room's head in two lines: the project and the view; then how its
+     agents are, its branch, PR and tasks, in one row swiped sideways. */
+  .rhead { align-items: center; padding: 6px 12px; row-gap: 6px; }
+  .rhead .pname { order: 1; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rhead .ppath { display: none; }
+  .rview { order: 2; }
+  .rhead::after { content: ""; order: 3; flex-basis: 100%; }
+  .rsum { order: 4; flex-shrink: 0; }
+  .rwork { order: 5; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .rruns { order: 6; }
+  .rwork .work { margin: 0; }
+  /* So too under a project, and what a conversation names. */
+  .work { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .work > * { flex-shrink: 0; }
+  .wbranch { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wchip { max-width: 16em; }
+  .tabs::-webkit-scrollbar, .rwork::-webkit-scrollbar, .work::-webkit-scrollbar { display: none; }
+
+  /* The columns: one to the screen, the next one's edge showing. */
+  .rcols { padding: 8px 10px; gap: 8px; scroll-padding: 0 10px; }
+  .rcol { flex: 0 0 calc(100% - 18px); }
+  .cbody { padding: 8px 12px; }
+
+  /* A box to write in: the width of the screen, Send beside it; whom it
+     goes to, and Image, above. */
+  .cfoot, .rfoot, .agent-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
+  .cfoot { padding: 6px 10px 8px; }
+  .cfoot .attach, .rfoot .attach, .agent-compose .attach { grid-column: 1 / -1; }
+  .cfoot select { grid-column: 1; grid-row: 2; justify-self: start; max-width: 100%; }
+  .cfoot textarea, .rfoot textarea, .agent-compose textarea { grid-column: 1; grid-row: 3; min-width: 0; resize: none; }
+  .rfoot textarea, .agent-compose textarea { grid-row: 2 / 4; align-self: stretch; }
+  .cfoot [data-act="a:image"], .rfoot [data-act="a:image"], .agent-compose [data-act="a:image"] { grid-column: 2; grid-row: 2; }
+  .cfoot [data-act="a:send"], .rfoot [data-act="a:send"], .agent-compose [data-act="a:send"] { grid-column: 2; grid-row: 3; }
+
+  /* Usage a line a window, when it resets beside it: the herd below is
+     what the screen is for. */
+  .usage { gap: 6px; margin-bottom: 12px; }
+  .ucard { padding: 6px 10px; }
+  .uhead { margin-bottom: 2px; }
+  .uwin { grid-template-columns: 4em minmax(0, 1fr) auto auto; margin: 1px 0; }
+  .ureset { grid-column: 4; grid-row: 1; text-align: right; }
+
+  /* A session's head wraps: whose and how much, then whether it can go
+     on and Copy path, rather than past the screen's edge. */
+  .src-head .card-head { flex-wrap: wrap; row-gap: 4px; }
+  .src-head .title { flex: 1 1 8em; }
+
+  /* The log a row an entry: when and whose, then what, the width of the
+     screen. */
+  .lrow { flex-wrap: wrap; row-gap: 0; }
+  .lrow .linkish { order: 1; margin-left: auto; }
+  .lx { order: 2; flex-basis: 100%; padding-left: 4px; }
+}
+
+@media (pointer: coarse) {
+  /* Controls a finger hits; form text at 16px, below which iOS zooms
+     the page in on it. */
+  button.ghost, button.primary { min-height: 36px; }
+  button.small { padding: 4px 12px; font-size: 13px; }
+  button.linkish, .filters .chip, .wchip { min-height: 32px; }
+  button.linkish { padding: 0 6px; }
+  .wchip { padding: 0 10px; }
+  .searchbar input, #log-filter, #log-session, #project, .cfoot select, .cfoot textarea, .rfoot textarea,
+  .agent-compose textarea, .notes-edit input, .newform input, .newform select { font-size: 16px; }
+  #log-session, #project, .cfoot select { height: 36px; }
+  .phead button.pname, .ls { min-height: 32px; }
+  .lane { height: 32px; }
+  .lane-name { align-self: stretch; }
+}

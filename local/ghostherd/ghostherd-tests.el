@@ -6281,15 +6281,17 @@ nothing else: not other files, not the one just saved.  nil keeps all."
     (make-directory ghostherd-image-directory t)
     (let* ((at (lambda (f) (expand-file-name f ghostherd-image-directory)))
            (month-ago (time-subtract nil (* 31 86400))))
-      (dolist (f '("a-old.png" "a-recent.png" "notes.txt"))
+      (dolist (f '("a-old.png" "a-old.jpg" "a-recent.png" "notes.txt"))
         (write-region "x" nil (funcall at f) nil 'silent))
       (set-file-times (funcall at "a-old.png") month-ago)
+      (set-file-times (funcall at "a-old.jpg") month-ago)
       (set-file-times (funcall at "notes.txt") month-ago)
       (let ((ghostherd-image-keep-days nil))
         (ghostherd-save-clipboard-image "a")
         (should (file-exists-p (funcall at "a-old.png"))))
       (let ((new (ghostherd-save-clipboard-image "a")))
         (should-not (file-exists-p (funcall at "a-old.png")))
+        (should-not (file-exists-p (funcall at "a-old.jpg")))
         (should (file-exists-p (funcall at "a-recent.png")))
         (should (file-exists-p (funcall at "notes.txt")))
         (should (file-exists-p new)))
@@ -6318,6 +6320,49 @@ and attaches it, file and preview -- or says why not."
     (should (equal (ghostherd-test--call calls "showError") "No image on the clipboard"))
     (ghostherd-memory-page--handle '((op . "agent-image") (name . "nobody")))
     (should (string-match-p "No agent named nobody" (ghostherd-test--call calls "showError")))))
+
+(defconst ghostherd-test--jpeg "\xff\xd8\xff\xe0\0\x10JFIF\0\303\251\377 \n rest"
+  "A JPEG's signature, then bytes a text coding would change.")
+
+(ert-deftest ghostherd-test-page-uploads-an-image ()
+  "From the page on another device the image comes in the intent, base64:
+saved byte for byte as a .jpg or .png named for the agent, readable only
+by you, and attached -- or refused, saying why, nothing saved."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-clipboard "exit 1"
+      (cl-letf (((symbol-function 'ghostherd-memory-page--thumb) (lambda (f) (concat "thumb of " f))))
+        (pcase-dolist (`(,bytes . ,ext) `((,ghostherd-test--jpeg . "jpg") (,ghostherd-test--png . "png")))
+          (setq calls nil)
+          (ghostherd-memory-page--handle `((op . "agent-image-upload") (name . "claude-api")
+                                           (data . ,(base64-encode-string bytes t))))
+          (let* ((p (ghostherd-test--call calls "attachImage"))
+                 (file (plist-get p :path)))
+            (should (equal (plist-get p :name) "claude-api"))
+            (should (string-match-p (format "\\`claude-api-[0-9-]+\\.%s\\'" ext) (file-name-nondirectory file)))
+            (should (equal (file-name-directory file) (expand-file-name ghostherd-image-directory)))
+            (should (equal (with-temp-buffer
+                             (set-buffer-multibyte nil)
+                             (insert-file-contents-literally file)
+                             (buffer-string))
+                           bytes))
+            (should (= (file-modes file) #o600))
+            (should (equal (plist-get p :thumb) (concat "thumb of " file)))))
+        ;; For a lead not started yet, as the clipboard's.
+        (setq calls nil)
+        (ghostherd-memory-page--handle `((op . "agent-image-upload") (name . "@lead")
+                                         (data . ,(base64-encode-string ghostherd-test--jpeg t))))
+        (should (equal (plist-get (ghostherd-test--call calls "attachImage") :name) "@lead"))
+        (let ((saved (directory-files ghostherd-image-directory)))
+          (pcase-dolist (`(,intent . ,why)
+                         `((((name . "claude-api") (data . ,(base64-encode-string "just text" t))) . "Not a PNG or JPEG image")
+                           (((name . "claude-api")) . "No image came")
+                           (((name . "claude-api") (data . "%%% not base64")) . "No image came")
+                           (((name . "nobody") (data . ,(base64-encode-string ghostherd-test--jpeg t))) . "No agent named nobody")))
+            (setq calls nil)
+            (ghostherd-memory-page--handle (cons '(op . "agent-image-upload") intent))
+            (should-not (ghostherd-test--call calls "attachImage"))
+            (should (string-match-p why (ghostherd-test--call calls "showError"))))
+          (should (equal (directory-files ghostherd-image-directory) saved)))))))
 
 (defconst ghostherd-test--pixel
   (base64-decode-string

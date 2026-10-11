@@ -2400,37 +2400,50 @@ Older ones go when the next image is saved."
   "Remove pasted images in DIR older than `ghostherd-image-keep-days', but KEEP."
   (when ghostherd-image-keep-days
     (let ((before (- (float-time) (* ghostherd-image-keep-days 86400))))
-      (dolist (f (directory-files dir t "\\.png\\'" t))
+      (dolist (f (directory-files dir t "\\.\\(png\\|jpg\\)\\'" t))
         (unless (equal f keep)
           (when-let* ((attrs (file-attributes f)))
             (when (< (float-time (file-attribute-modification-time attrs)) before)
               (ignore-errors (delete-file f)))))))))
 
-(defun ghostherd-save-clipboard-image (&optional name)
-  "Save the clipboard's image as a PNG, and return the file's name.
+(defun ghostherd-save-image (bytes &optional name)
+  "Save BYTES, a PNG or a JPEG, as an image file, and return its name.
 NAME, an agent's, begins the file's name.  The file is readable only by
 you: a screenshot holds whatever was on the screen."
-  (let* ((cmd (or (seq-find (lambda (c) (executable-find (car c)))
-                            ghostherd-clipboard-image-commands)
-                  (user-error "Pasting an image needs %s (brew install pngpaste)"
-                              (mapconcat #'car ghostherd-clipboard-image-commands " or "))))
+  (let* ((ext (cond ((string-prefix-p "\x89PNG\r\n\x1a\n" bytes) "png")
+                    ((string-prefix-p "\xff\xd8\xff" bytes) "jpg")
+                    (t (user-error "Not a PNG or JPEG image"))))
          (dir (file-name-as-directory (expand-file-name ghostherd-image-directory)))
          (stem (replace-regexp-in-string "[^[:alnum:]._-]+" "-" (or name "")))
          (file (expand-file-name
-                (format "%s-%s.png" (if (string-empty-p stem) "image" stem)
-                        (format-time-string "%Y%m%d-%H%M%S-%3N"))
+                (format "%s-%s.%s" (if (string-empty-p stem) "image" stem)
+                        (format-time-string "%Y%m%d-%H%M%S-%3N") ext)
                 dir)))
+    (with-file-modes #o700 (make-directory dir t))
     (with-temp-buffer
       (set-buffer-multibyte nil)
-      (let ((coding-system-for-read 'binary))
-        (unless (and (eq (apply #'call-process (car cmd) nil '(t nil) nil (cdr cmd)) 0)
-                     (string-prefix-p "\x89PNG\r\n\x1a\n" (buffer-string)))
-          (user-error "No image on the clipboard")))
-      (with-file-modes #o700 (make-directory dir t))
+      (insert bytes)
       (let ((coding-system-for-write 'binary))
         (with-file-modes #o600 (write-region nil nil file nil 'silent))))
     (ghostherd--prune-images dir file)
     file))
+
+(defun ghostherd-save-clipboard-image (&optional name)
+  "Save the clipboard's image as a PNG, and return the file's name.
+NAME, an agent's, begins the file's name; see `ghostherd-save-image'."
+  (let ((cmd (or (seq-find (lambda (c) (executable-find (car c)))
+                           ghostherd-clipboard-image-commands)
+                 (user-error "Pasting an image needs %s (brew install pngpaste)"
+                             (mapconcat #'car ghostherd-clipboard-image-commands " or ")))))
+    (ghostherd-save-image
+     (with-temp-buffer
+       (set-buffer-multibyte nil)
+       (let ((coding-system-for-read 'binary))
+         (unless (and (eq (apply #'call-process (car cmd) nil '(t nil) nil (cdr cmd)) 0)
+                      (string-prefix-p "\x89PNG\r\n\x1a\n" (buffer-string)))
+           (user-error "No image on the clipboard")))
+       (buffer-string))
+     name)))
 
 (defun ghostherd-read (session &optional n-lines)
   "Return the last N-LINES of SESSION's screen."

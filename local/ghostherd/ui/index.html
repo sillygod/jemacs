@@ -25,12 +25,14 @@
     </div>
     <div class="actions">
       <button type="button" class="ghost" data-xw-phone title="Open this page on your phone: its address as a QR code">Phone</button>
-      <button type="button" id="btn-back" class="ghost" hidden title="Back (Esc)">← Back</button>
+      <button type="button" id="btn-back" class="ghost" hidden title="Back (Esc)">←<span class="lbl"> Back</span></button>
       <button type="button" id="btn-import" class="ghost" title="Import transcripts that changed since the last import">Import</button>
       <button type="button" id="btn-refresh" class="ghost" title="List the sessions again">Refresh</button>
     </div>
   </header>
   <div id="status" class="status" hidden></div>
+  <!-- On another device, Image picks from its photos, camera or files. -->
+  <input type="file" id="image-pick" class="offscreen" accept="image/*" tabindex="-1" aria-hidden="true">
   <main id="app" class="app">
     <p class="muted pad">Waiting for Emacs…</p>
   </main>

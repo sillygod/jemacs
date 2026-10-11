@@ -1071,7 +1071,11 @@ are the other tabs (below, and "What happened while you were away").
   it, and takes it back when you open it again.  What you tap there
   opens there: a PR its Bitbucket or GitHub page, a task its ClickUp
   page --- in their apps, if the phone has them --- a link in a
-  message a tab of its own; Copy copies to the phone.
+  message a tab of its own; Copy copies to the phone.  Laid out for
+  it: a room opens as its chat, its head two lines, the box the
+  screen's width; Columns one agent to the screen, swiped; Image picks
+  a photo or takes one, sent to Emacs at 2000px at most.  An agent's
+  name, a hook's file --- what opens in Emacs --- is only shown there.
 - The chat writes to the project's /lead/ unless you pick another: an
   agent that plans the work, hands it out as asks, and reports back.
   It is an ordinary agent --- =ghostherd-lead-kind=, claude by default
