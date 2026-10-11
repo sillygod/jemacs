@@ -80,8 +80,7 @@ Probed against the workspace, October 2026.
   Null clears a date.
 - Who can be given a list's tasks: =GET /list/{id}/member= (BACKLOG: 30).
   Assignees change by =PUT /task/{id}= with ={"assignees": {"add": [...],
-  "rem": [...]}}=, numeric user ids.  Dates and assignees changing has not
-  yet been exercised by a live write.
+  "rem": [...]}}=, numeric user ids.
 
 * The page
 
