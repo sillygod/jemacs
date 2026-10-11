@@ -238,6 +238,9 @@ class HerdStore:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN screen TEXT")
         if "role" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN role TEXT")
+        # A blocked agent's menu, as Emacs read it off its screen (JSON).
+        if "prompt" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN prompt TEXT")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -1090,8 +1093,8 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason, screen, role)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen, role, prompt)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -1102,6 +1105,7 @@ class HerdStore:
                         str(row.get("reason") or ""),
                         str(row.get("screen") or ""),
                         str(row.get("role") or ""),
+                        json.dumps(row["prompt"]) if isinstance(row.get("prompt"), dict) else None,
                     ),
                 )
                 self._upsert_alias(name)
@@ -1303,7 +1307,7 @@ class HerdStore:
         with self._mu:
             row = self._conn.execute(
                 """
-                SELECT name, kind, state, notes, project, reason, screen
+                SELECT name, kind, state, notes, project, reason, screen, prompt
                 FROM snapshot WHERE name = ?
                 """,
                 (name,),
@@ -1318,6 +1322,7 @@ class HerdStore:
             "project": row[4] or "",
             "reason": row[5] or "",
             "screen": row[6] or "",
+            "prompt": json.loads(row[7]) if row[7] else None,
             "short": self.short_for(row[0]),
         }
 

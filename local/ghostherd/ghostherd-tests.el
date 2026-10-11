@@ -6627,5 +6627,125 @@ none when the page is this machine's alone."
         (should (equal (ghostherd-memory-page--room-url "~/w/shop/") "http://box/open/ghostherd#…")))
       (should (equal asked (list ghostherd-memory-page--app "room/chat/~%2Fw%2Fshop%2F"))))))
 
+;;; A menu prompt, read off the screen
+
+(defconst ghostherd-test--agy-menu
+  "  Hi! How can I help you today?
+
+────────────────────────────────────────────────────────────
+> 解釋一下Respawn 的 fresh 跟 continue 差在哪裡
+
+──────────────────────────────────────────────────────────────────────────────────
+Requesting permission for:
+   grep -rn -C 3 \"respawn\" local/ghostherd/
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation for commands that start with
+'grep'
+  3. Yes, and always allow for commands that start with 'grep' (Persist to
+settings.json)
+  4. No, cancel
+  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command
+esc to cancel                         Gemini 3.8 Flash · high · AI: Out of credits
+"
+  "agy on a command it asks to run.")
+
+(defconst ghostherd-test--claude-question
+  "│ Turn it on now?
+│ I set the port, then run `tailscale serve --bg` to it.
+❯ 1. Yes, turn it on
+     I do all of the above and report what the checks show.
+  2. Not yet, and leave the code loaded but inactive until I say so
+     I stop here; the code is loaded but inactive.
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+"
+  "claude asking a question of its own, each choice described below it.")
+
+(defconst ghostherd-test--claude-permission
+  "● I'll run the tests.
+
+╭──────────────────────────────────────────────────────────────╮
+│ Bash command                                                 │
+│                                                              │
+│   npm test -- --runInBand                                    │
+│   Run the test suite                                         │
+│                                                              │
+│ Do you want to proceed?                                      │
+│ ❯ 1. Yes                                                     │
+│   2. Yes, and don't ask again for npm test commands in /x    │
+│   3. No, and tell Claude what to do differently (esc)        │
+╰──────────────────────────────────────────────────────────────╯
+"
+  "claude's permission prompt, in its box.")
+
+(ert-deftest ghostherd-test-prompt-read-off-the-screen ()
+  "A menu's question and its choices, numbered as you answer them: the
+lines above the first choice up to a rule, each choice's first line."
+  (should (equal (ghostherd--prompt ghostherd-test--agy-menu)
+                 '(:question "Requesting permission for:\ngrep -rn -C 3 \"respawn\" local/ghostherd/\nRun this command?"
+                   :options ((1 . "Yes, run command")
+                             (2 . "Yes, and always allow in this conversation for commands that start with 'grep'")
+                             (3 . "Yes, and always allow for commands that start with 'grep' (Persist to settings.json)")
+                             (4 . "No, cancel")))))
+  (should (equal (ghostherd--prompt ghostherd-test--claude-question)
+                 '(:question "Turn it on now?\nI set the port, then run `tailscale serve --bg` to it."
+                   :options ((1 . "Yes, turn it on")
+                             (2 . "Not yet, and leave the code loaded but inactive until I say so")
+                             (3 . "Type something.") (4 . "Chat about this")))))
+  (should (equal (ghostherd--prompt ghostherd-test--claude-permission)
+                 '(:question "Bash command\nnpm test -- --runInBand\nRun the test suite\nDo you want to proceed?"
+                   :options ((1 . "Yes")
+                             (2 . "Yes, and don't ask again for npm test commands in /x")
+                             (3 . "No, and tell Claude what to do differently (esc)")))))
+  ;; In a box, a choice's description is not its words wrapped, however
+  ;; wide the box's padding makes its line.
+  (should (equal (plist-get (ghostherd--prompt (concat "│ Run it?                                                         │\n"
+                                                       "│ ❯ 1. Yes                                                        │\n"
+                                                       "│ Runs it once, here                                              │\n"
+                                                       "│   2. No                                                         │\n"))
+                            :options)
+                 '((1 . "Yes") (2 . "No"))))
+  ;; A long choice, cut; six lines of question at most.  A hint under a
+  ;; short last choice is not part of it.
+  (let ((p (ghostherd--prompt (concat (mapconcat (lambda (i) (format "line %d" i)) (number-sequence 1 9) "\n")
+                                      "\n> 1. " (make-string 120 ?x) "\n  2. No\n"))))
+    (should (= (length (cdr (assq 1 (plist-get p :options)))) 100))
+    (should (equal (plist-get p :question) "line 4\nline 5\nline 6\nline 7\nline 8\nline 9"))))
+
+(ert-deftest ghostherd-test-prompt-not-the-conversations-numbers ()
+  "Numbers that are the conversation's, not a menu's: too far up, not
+from 1, one alone, or too far apart -- no menu."
+  (dolist (screen (list (concat "Plan:\n1. Read the code\n2. Write the test\n3. Ship it\n"
+                                (make-string 9 ?\n) "Allow this? [y/N]\n")
+                        "Steps so far:\n  3. Wrote the test\n  4. Ran it\n> \n"
+                        "> 1. Only one\nesc\n"
+                        (concat "> 1. Yes\n" (make-string 6 ?\n) "  2. No\n")))
+    (should-not (ghostherd--prompt screen))))
+
+(ert-deftest ghostherd-test-session-prompt-only-blocked ()
+  "Read off its last screen, while it is blocked; for the page and the
+sidecar as JSON, false without one."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "agy-c" :kind 'agy :state 'blocked)))
+      (puthash "agy-c" ghostherd-test--agy-menu ghostherd--screens)
+      (should (equal (plist-get (ghostherd-session-prompt s) :options)
+                     (plist-get (ghostherd--prompt ghostherd-test--agy-menu) :options)))
+      (let ((json (ghostherd--prompt-json (ghostherd-session-prompt s))))
+        (should (equal (aref (plist-get json :options) 3) '(:n 4 :label "No, cancel"))))
+      (should (equal (plist-get (car (ghostherd--herd-snapshot)) :prompt)
+                     (ghostherd--prompt-json (ghostherd-session-prompt s))))
+      (require 'ghostherd-memory-page)
+      (cl-letf (((symbol-function 'ghostherd-memory-page--agent-work) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--agent-links) #'ignore))
+        (should (equal (plist-get (ghostherd-memory-page--agent s) :prompt)
+                       (ghostherd--prompt-json (ghostherd-session-prompt s)))))
+      (setf (ghostherd-session-state s) 'idle)
+      (should-not (ghostherd-session-prompt s))
+      (should (eq (ghostherd--prompt-json nil) :json-false))
+      (should (eq (plist-get (car (ghostherd--herd-snapshot)) :prompt) :json-false)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

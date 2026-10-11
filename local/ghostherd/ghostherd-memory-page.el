@@ -323,6 +323,7 @@ draws lanes from fields rather than parsing prose."
           :kind (format "%s" (or (ghostherd-session-kind s) "shell"))
           :state (format "%s" (or (ghostherd-session-state s) "idle"))
           :reason (or (ghostherd-session-state-reason s) "")
+          :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
           :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
           :role (or (ghostherd-session-role s) "")
           :work (ghostherd-memory-page--agent-work s)

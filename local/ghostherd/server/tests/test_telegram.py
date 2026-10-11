@@ -362,3 +362,42 @@ def test_the_bot_pushes_while_it_waits_for_you(tmp_path, monkeypatch):
     assert [m for m, _ in posted] == ["sendMessage"] and posted[0][1]["chat_id"] == 99
     assert herd.unsent_pushes() == []
     reset_herd()
+
+
+MENU = {"question": "Requesting permission for:\ngrep -rn respawn local/\nRun this command?",
+        "options": [{"n": 1, "label": "Yes, run command"},
+                    {"n": 2, "label": "Yes, and always allow in this conversation for commands that start with"},
+                    {"n": 3, "label": "Yes, and always allow for commands that start with 'grep' (Persist to"},
+                    {"n": 4, "label": "No, cancel"}]}
+
+
+def test_a_blocked_agent_pushed_with_its_menu_in_words(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "blocked", "reason": "Command — Requesting permission for:",
+                         "project": "/tmp", "prompt": MENU}],
+              pushes=[{"kind": "blocked", "session": "agy-commit", "project": "/tmp/shop", "url": ROOM,
+                       "reason": "Command — Requesting permission for:"}])
+    push = herd.unsent_pushes()[-1]
+    text, markup = bot.prepare_push(push, 0)
+    assert text == ("⚠ agy-commit is blocked · shop\n\n" + MENU["question"] + "\n\n"
+                    "1. Yes, run command\n"
+                    "2. Yes, and always allow in this conversation for commands that start with\n"
+                    "3. Yes, and always allow for commands that start with 'grep' (Persist to\n"
+                    "4. No, cancel")
+    short = herd.session("agy-commit")["short"]
+    rows = markup["inline_keyboard"]
+    assert [r[0]["callback_data"] for r in rows[:4]] == [f"n:{short}:{n}" for n in (1, 2, 3, 4)]
+    assert rows[0][0]["text"] == "1 · Yes, run command" and rows[3][0]["text"] == "4 · No, cancel"
+    assert len(rows[1][0]["text"]) == 60 and rows[1][0]["text"].endswith("…")
+    assert rows[4] == [{"text": "screen", "callback_data": f"sc:{short}"}]
+    assert rows[5] == [{"text": "Open the room", "url": ROOM}]
+    # Its card from /herd: the same menu, and abort.
+    card = bot.handle_callback(99, f"o:{short}")
+    assert MENU["question"] in card["text"] and "4. No, cancel" in card["text"]
+    labels = [r[0]["text"] for r in card["reply_markup"]["inline_keyboard"]]
+    assert labels[2:7] == ["1 · Yes, run command", rows[1][0]["text"], rows[2][0]["text"], "4 · No, cancel", "abort"]
+    # No longer blocked: no menu, whatever the last one was.
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "working", "prompt": MENU}])
+    card = bot.handle_callback(99, f"o:{short}")
+    assert "No, cancel" not in card["text"] and "· " not in str(card["reply_markup"])
+    reset_herd()

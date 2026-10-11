@@ -407,8 +407,9 @@ Then restart the sidecar (=ghostherd-memory-stop= / enable
 =/herd= lists sessions from the last Emacs poll.  Tap a row for
 screen / explain / prompt / interrupt.  =screen= and =explain= reply
 from that snapshot immediately (the pane Emacs already captured);
-they do not wait for another tick.  A =blocked= session also gets
-=1= / =2= / =3= (=ghostherd-answer=) and abort.  Kill and respawn sit
+they do not wait for another tick.  A =blocked= session also gets a
+button per choice of its menu, in its words (=ghostherd-answer=), and
+abort.  Kill and respawn sit
 behind =more= and a confirm.  Prompt text is queued like herd mail: a
 =working= agent does not receive it until idle.
 
@@ -422,7 +423,7 @@ task is not started; mail and memory keep working.
 The herd page shows everything, while you look at it.  The bot pushes
 what wants you while you do not (=ghostherd-push=):
 
-| =blocked=    | an agent waits on a question: what it asks, 1 / 2 / 3 and its screen |
+| =blocked=    | an agent waits on a menu: what it asks, a button per choice, its screen |
 | =report=     | a lead is done with its turn: its own last message, whole             |
 | =ask-failed= | an agent's ask failed: whom it asked, why, what it asked              |
 
@@ -1132,7 +1133,9 @@ are the other tabs (below, and "What happened while you were away").
   =ghostherd-image-keep-days= (30) and then go.  ⌘V with text on the
   clipboard pastes the text, there and in any box on the page.
 - What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
-  Esc, 1 / 2 / 3 on a blocked agent, the screen; under /more/ C-c,
+  Esc, the screen; on a blocked agent, what its menu asks and a button
+  per choice in its words (1 / 2 / 3 where its menu cannot be read off
+  its screen: =ghostherd-session-prompt=); under /more/ C-c,
   notes, respawn (fresh or continuing) and kill, the last two asked
   first.  /+ New agent/ starts one in that project, kind and name
   given, without leaving the page.

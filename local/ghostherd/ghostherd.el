@@ -1183,6 +1183,88 @@ coincidence further up the scrollback."
                     text)))
     (or (ghostherd--matched-line haystack (cdr hit)) (cdr hit))))
 
+;;; A menu prompt, read off the screen
+;;
+;; A blocked agent is mostly sitting on a menu: what it asks, then its
+;; choices, numbered -- "> 1. Yes, run command", "❯ 2. Not yet".  The
+;; rule that found it quotes one line; you answer by number, so the
+;; numbers need their words.
+
+(defconst ghostherd--prompt-option-re
+  "^[[:blank:]│]*\\(?:[❯>›▶][[:blank:]]*\\)?\\([1-9]\\)\\.[[:blank:]]+\\(.*[^[:blank:]│]\\)[[:blank:]│]*$"
+  "A menu's option: its number, and its first line.")
+
+(defconst ghostherd--prompt-rule-re
+  "\\`[[:blank:]]*[─━═╭╮╰╯┌┐└┘├┤-]\\{3,\\}[[:blank:]]*\\'"
+  "A line that only draws: the edge of what a menu asks.")
+
+(defconst ghostherd--prompt-near 8
+  "Lines from the screen's foot within which a menu's last option sits.
+Further up, numbered lines are the conversation's, not a menu.")
+
+(defun ghostherd--prompt-label (lines i)
+  "Option I of LINES, joined to the lines its CLI wrapped it onto.
+A wrapped line starts left of the option's words, under a long line;
+a choice's description is indented with its words, and a hint under a
+short last choice is neither."
+  (string-match ghostherd--prompt-option-re (aref lines i))
+  (let ((label (match-string 2 (aref lines i)))
+        (column (match-beginning 2))
+        (prev (aref lines i)))
+    (cl-loop for j from (1+ i) below (length lines)
+             for line = (aref lines j)
+             while (and (> (length (string-trim-right prev "[[:blank:]│]+")) 50)
+                        (not (string-match-p ghostherd--prompt-option-re line))
+                        (not (string-match-p ghostherd--prompt-rule-re line))
+                        (string-match "\\`\\([[:blank:]]*\\)[^[:blank:]]" line)
+                        (< (length (match-string 1 line)) column))
+             do (setq label (concat label " " (string-trim line)) prev line))
+    (truncate-string-to-width label 100 nil nil "…")))
+
+(defun ghostherd--prompt (screen)
+  "The menu SCREEN ends on, as (:question TEXT :options ((N . LABEL) ...)),
+or nil.  The options are the last run numbered from 1, each a few lines
+from the next, the last near the foot; the question the lines above the
+first, up to a line that only draws, six at most."
+  (let* ((lines (vconcat (split-string (string-trim-right (or screen "")) "\n")))
+         (n (length lines))
+         (number (lambda (i) (and (string-match ghostherd--prompt-option-re (aref lines i))
+                                  (string-to-number (match-string 1 (aref lines i))))))
+         (last (cl-loop for i downfrom (1- n) to (max 0 (- n ghostherd--prompt-near))
+                        when (funcall number i) return i)))
+    (when last
+      (let ((at (list last)))
+        ;; Back up the run: each option a few lines above the next.
+        (while (and (car at) (> (funcall number (car at)) 1))
+          (let ((want (1- (funcall number (car at)))))
+            (push (cl-loop for j downfrom (1- (car at)) to (max 0 (- (car at) 5))
+                           when (eql (funcall number j) want) return j)
+                  at)))
+        ;; Ended on 1, or on nothing: a gap too wide, a number missing.
+        (when (and (car at) (cdr at))
+          (let (question)
+            (cl-loop for j downfrom (1- (car at)) to 0
+                     for line = (string-trim (replace-regexp-in-string "\\`[[:blank:]]*│\\|│[[:blank:]]*\\'" "" (aref lines j)))
+                     until (or (string-match-p ghostherd--prompt-rule-re line) (>= (length question) 6))
+                     unless (string-empty-p line) do (push line question))
+            (list :question (string-join question "\n")
+                  :options (mapcar (lambda (i) (cons (funcall number i) (ghostherd--prompt-label lines i)))
+                                   at))))))))
+
+(defun ghostherd-session-prompt (session)
+  "What blocked SESSION's menu asks and offers, read off its last screen;
+nil when it is not blocked, or sits on no menu with numbers."
+  (when (eq (ghostherd-session-state session) 'blocked)
+    (ghostherd--prompt (gethash (ghostherd-session-id session) ghostherd--screens))))
+
+(defun ghostherd--prompt-json (prompt)
+  "PROMPT for JSON: its options as (:n N :label LABEL); false for none."
+  (if prompt
+      (list :question (plist-get prompt :question)
+            :options (vconcat (mapcar (lambda (o) (list :n (car o) :label (cdr o)))
+                                      (plist-get prompt :options))))
+    :json-false))
+
 (defun ghostherd--detect-state (session &optional screen)
   "Return (STATE . REASON) for SESSION from screen rules / buffer liveness.
 
@@ -3888,6 +3970,7 @@ from sqlite instead of waiting for another Emacs round trip."
            :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
            :role (or (ghostherd-session-role s) "")
            :reason (or (ghostherd-session-state-reason s) "")
+           :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        "")))
    (hash-table-values ghostherd--sessions)))

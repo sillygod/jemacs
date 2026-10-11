@@ -348,6 +348,11 @@ mark.here { background: var(--warn); color: #0e1116; }
   overflow: hidden;
 }
 .arow.s-blocked .areason { color: var(--text); }
+/* What a blocked agent's menu asks, and its choices in their words. */
+.areason.aprompt { max-height: 9em; overflow-y: auto; }
+.choices { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 6px; }
+.choices .choice { display: flex; gap: 8px; align-items: baseline; text-align: left; }
+.choices .cn { color: var(--warn); font-weight: 700; flex-shrink: 0; }
 .aasks { margin-top: 4px; }
 .aask { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--muted); min-width: 0; }
 .aask .awhat { color: var(--accent); white-space: nowrap; flex-shrink: 0; }
@@ -747,6 +752,7 @@ html { -webkit-text-size-adjust: 100%; }
   .rfoot textarea, .agent-compose textarea { grid-row: 2 / 4; align-self: stretch; }
   .cfoot [data-act="a:image"], .rfoot [data-act="a:image"], .agent-compose [data-act="a:image"] { grid-column: 2; grid-row: 2; }
   .cfoot [data-act="a:send"], .rfoot [data-act="a:send"], .agent-compose [data-act="a:send"] { grid-column: 2; grid-row: 3; }
+  .choices { align-items: stretch; }
 
   /* Usage a line a window, when it resets beside it: the herd below is
      what the screen is for. */

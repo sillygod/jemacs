@@ -1075,14 +1075,33 @@
       (rest.length ? moreButton(key, open, rest.length) : "") + "</div>";
   }
 
-  function agentRow(a, kinds, asks) {
-    const name = a.name;
-    const blocked = a.state === "blocked";
-    const acts = [];
-    if (blocked) {
+  // A blocked agent's menu, as Emacs read it off the screen: what it
+  // asks, in place of the one line that found it, and a button for each
+  // choice with its words.  A menu Emacs could not read leaves 1 to 3,
+  // among the actions.
+  function reasonHtml(a) {
+    const p = a.state === "blocked" && a.prompt;
+    const text = p && p.question ? p.question : a.reason;
+    return text && text !== "—" ? '<div class="areason' + (p && p.question ? " aprompt" : "") + '">' + esc(text) + "</div>" : "";
+  }
+
+  function choicesHtml(a, acts) {
+    if (a.state !== "blocked") return "";
+    const options = (a.prompt && a.prompt.options) || [];
+    if (!options.length) {
       [1, 2, 3].forEach((n) => acts.push('<button type="button" class="ghost small answer" data-act="a:agent-answer" data-n="' + n +
         '" title="Answer ' + n + '">' + n + "</button>"));
+      return "";
     }
+    return '<div class="choices">' + options.map((o) =>
+      '<button type="button" class="ghost small choice" data-act="a:agent-answer" data-n="' + esc(String(o.n)) + '">' +
+      '<span class="cn">' + esc(String(o.n)) + "</span>" + esc(o.label) + "</button>").join("") + "</div>";
+  }
+
+  function agentRow(a, kinds, asks) {
+    const name = a.name;
+    const acts = [];
+    const menu = choicesHtml(a, acts);
     acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
@@ -1117,12 +1136,12 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      reasonHtml(a) +
       (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
-      (a.work ? workHtml(a.work) : "") + linksHtml(a) +
+      (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
     );
   }
@@ -1227,10 +1246,7 @@
   function roomTop(a, asks) {
     const name = a.name;
     const acts = [];
-    if (a.state === "blocked") {
-      [1, 2, 3].forEach((n) => acts.push('<button type="button" class="ghost small answer" data-act="a:agent-answer" data-n="' + n +
-        '" title="Answer ' + n + '">' + n + "</button>"));
-    }
+    const menu = choicesHtml(a, acts);
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
@@ -1243,9 +1259,9 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      (a.reason && a.reason !== "—" ? '<div class="areason">' + esc(a.reason) + "</div>" : "") +
+      reasonHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
-      (a.work ? workHtml(a.work) : "") + linksHtml(a) +
+      (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>";
   }
 

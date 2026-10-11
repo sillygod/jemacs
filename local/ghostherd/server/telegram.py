@@ -73,6 +73,40 @@ def herd_keyboard(sessions: list[dict[str, Any]]) -> dict:
     return {"inline_keyboard": rows}
 
 
+def _options(session: dict[str, Any] | None) -> list[dict[str, Any]]:
+    "A blocked SESSION's menu choices, as Emacs read them off its screen."
+    prompt = (session or {}).get("prompt") or {}
+    if (session or {}).get("state") != "blocked" or not isinstance(prompt, dict):
+        return []
+    return [o for o in prompt.get("options") or [] if isinstance(o, dict) and o.get("n")]
+
+
+def answer_rows(session: dict[str, Any]) -> list[list[dict]]:
+    """A button for each of a blocked SESSION's choices, in its words, a
+    row each; 1 / 2 / 3 when its menu could not be read."""
+    short = session["short"]
+    options = _options(session)
+    if not options:
+        return [[_btn(str(n), f"n:{short}:{n}") for n in (1, 2, 3)]]
+    return [[_btn(_cut(f"{o['n']} · {o.get('label') or ''}", 60), f"n:{short}:{o['n']}")]
+            for o in options]
+
+
+def menu_text(session: dict[str, Any] | None, reason: str = "") -> str:
+    """What a blocked SESSION's menu asks, and its choices numbered; its
+    REASON when the menu could not be read."""
+    options = _options(session)
+    question = ((session or {}).get("prompt") or {}).get("question") if options else ""
+    lines = [question or reason or ""]
+    if options:
+        lines.append("\n".join(f"{o['n']}. {o.get('label') or ''}" for o in options))
+    return "\n\n".join(line for line in lines if line)
+
+
+def _cut(text: str, n: int) -> str:
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
 def session_keyboard(session: dict[str, Any], more: bool = False) -> dict:
     short = session["short"]
     state = session.get("state") or ""
@@ -81,14 +115,8 @@ def session_keyboard(session: dict[str, Any], more: bool = False) -> dict:
         [_btn("prompt", f"p:{short}"), _btn("interrupt", f"i:{short}")],
     ]
     if state == "blocked":
-        rows.append(
-            [
-                _btn("1", f"n:{short}:1"),
-                _btn("2", f"n:{short}:2"),
-                _btn("3", f"n:{short}:3"),
-                _btn("abort", f"ab:{short}"),
-            ]
-        )
+        rows.extend(answer_rows(session))
+        rows.append([_btn("abort", f"ab:{short}")])
     if more:
         rows.append(
             [
@@ -140,8 +168,9 @@ def format_session(session: dict[str, Any]) -> str:
         lines.append(session["project"])
     if session.get("notes"):
         lines.append(session["notes"])
-    if session.get("reason"):
-        lines.append(session["reason"])
+    said = menu_text(session, session.get("reason") or "")
+    if said:
+        lines.append(said)
     return "\n".join(lines)
 
 
@@ -168,15 +197,16 @@ def _leaf(project: str | None) -> str:
     return os.path.basename((project or "").rstrip("/")) or (project or "")
 
 
-def format_push(push: dict[str, Any], words: str = "") -> str:
+def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] | None = None) -> str:
     """PUSH as a message.  WORDS, for a lead's report, are the lead's own
-    last message."""
+    last message; SESSION, for a blocked agent, is it as last seen, its
+    menu read off its screen."""
     kind = push.get("kind")
     name = push.get("session") or "?"
     where = _leaf(push.get("project"))
     head = f" · {where}" if where else ""
     if kind == "blocked":
-        return f"⚠ {name} is blocked{head}\n\n{push.get('reason') or ''}".rstrip()
+        return f"⚠ {name} is blocked{head}\n\n{menu_text(session, push.get('reason') or '')}".rstrip()
     if kind == "report":
         return (f"✓ {name}{head}\n\n{words or '(its words have not come in)'}"
                 "\n\n↩ Reply to tell the lead.")
@@ -193,13 +223,13 @@ def format_push(push: dict[str, Any], words: str = "") -> str:
     return ""
 
 
-def push_keyboard(push: dict[str, Any], short: str = "") -> dict | None:
+def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -> dict | None:
     """A blocked agent's answers and screen, when it is still in the
     herd; the room, when the push has its address."""
     rows = []
-    if push.get("kind") == "blocked" and short:
-        rows.append([_btn(str(n), f"n:{short}:{n}") for n in (1, 2, 3)])
-        rows.append([_btn("screen", f"sc:{short}")])
+    if push.get("kind") == "blocked" and session:
+        rows.extend(answer_rows(session))
+        rows.append([_btn("screen", f"sc:{session['short']}")])
     if push.get("url"):
         rows.append([{"text": "Open the room", "url": push["url"]}])
     return {"inline_keyboard": rows} if rows else None
@@ -418,8 +448,8 @@ class TelegramBot:
                 words = link["last"]
             elif now - _epoch(push.get("created_at")) < REPORT_WAIT:
                 return None
-        text = format_push(push, words)
-        return text, (push_keyboard(push, session["short"] if session else "") if text else None)
+        text = format_push(push, words, session)
+        return text, (push_keyboard(push, session) if text else None)
 
     async def _flush_pushes(self, client: httpx.AsyncClient, url: str, now: float | None = None) -> None:
         now = now if now is not None else datetime.now().timestamp()
