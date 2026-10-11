@@ -762,7 +762,9 @@ rounds, and the lead reported.  Three things went wrong on the way.
 
 - [ ] A lead on another CLI taking over from this one: a handoff
   summary from the old, the new one starting from it
-- [ ] The chat on Telegram: read it, and talk to the lead, from a phone
+- [-] The chat on Telegram: read it, and talk to the lead, from a phone
+  --- *narrowed by 3.25*: the page itself on the phone, through
+  Tailscale; Telegram for what tells you, not for the chat again
 
 * Phase 3.22 — What a project works on: its PR and its tickets  *(this tree)*
 
@@ -921,6 +923,60 @@ loops.
 - [ ] The run of an agent nobody asked ends on the tick's view of its
   state: a turn that ends and starts again within a tick is not seen
   to end, and its next asks count with the last
+
+* Phase 3.25 — The herd page from your phone  *(this tree)*
+
+Goal: the herd from a phone, as at the desk.  The browser page of 3.23
+already does everything; it needed reaching from another device, safely.
+Telegram stays for what a page cannot do: tell you when you are not
+looking.
+
+** What shipped
+
+- [X] =xwapp-remote-hosts= and =xwapp-remote-users=: under this
+  machine's name on the tailnet, a page for your Tailscale login alone
+  --- the user =tailscale serve= names in =Tailscale-User-Login=, having
+  taken off any the device sent.  Secret and origin as before.  Emacs
+  still listens on 127.0.0.1 only; =xwapp-port= fixes the port for the
+  proxy
+- [X] A remote address is kept with no tab open and over restarts, so a
+  bookmark on the phone works; =xwapp-copy-remote-url= copies it
+  without showing it, =xwapp-renew-secret= ends it
+- [X] The page knows it is served over =https:= too (it took itself
+  for the xwidget); a refusal says so in text, not as an empty body a
+  browser downloads
+- [X] 3 xwapp ERT; 10 WebKit checks of a page at =https://= with its
+  requests passed on as =tailscale serve= does, across a restart; 12
+  guards broken on purpose, each caught
+- [X] On, on this Mac: =tailscale serve --bg --http=80= to port 48123,
+  plain HTTP --- the tailnet encrypts it, and no HTTPS means the
+  machine's name stays out of the public certificate logs.  Through the
+  real proxy: the page served, the Host kept, a forged
+  =Tailscale-User-Login= replaced by the real one, another origin and a
+  path without the secret refused
+- [X] Opened on the phone, by the Mac's tailnet name --- the phone
+  resolves it; this Mac's own resolver does not, so the checks above
+  went through its tailnet IP
+
+** What is left
+
+- [ ] The page on a phone's screen (3.25 step 2): the chat first, the
+  columns one at a time, buttons a finger can press, what only a hover
+  shows, images from the camera rather than the clipboard.  What the
+  phone showed: the tabs and Back, Log and Refresh run into each other;
+  the room's head --- path, branch, pull request, tasks --- takes a
+  third of the screen before a word of the conversation; the chat's
+  picker takes its row and leaves the message box a word wide; a column
+  is wider than the screen, its conversation a few lines tall; the
+  prompts hint at keys a phone has not
+- [ ] The address as a QR code on the page at the desk: scanned, the
+  phone has the page, nothing pasted
+- [ ] A PR or task clicked on the phone opens on the Mac: there, the
+  forge's or ClickUp's own page would serve better
+- [ ] Telegram tells you what the page cannot (3.25 step 3): the lead's
+  report, an agent blocked, an ask failed --- each with a link to its
+  room, and a short answer back to the lead.  It replaces 3.21's chat
+  on Telegram
 
 * Phase 4 — Ecosystem (only if still useful)
 
