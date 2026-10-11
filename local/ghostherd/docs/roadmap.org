@@ -966,6 +966,14 @@ looking.
   by a decoder, the phone opening it and the desk letting go, the
   xwidget's side, the herd page under its own CSP; 23 guards broken
   on purpose, each caught
+- [X] What you tap on the phone acts on the phone: a PR or task chip is
+  a link to the forge's or ClickUp's own page (a task not looked up
+  yet by its id; a PR without an address says so), a link in a message
+  opens in a tab of its own, Copy copies to the phone's clipboard ---
+  over plain http too, where there is no clipboard API.  At the desk,
+  as before.  =XW.elsewhere= and =XW.copy= in xwapp's kit.  18 WebKit
+  checks of the page at a phone's size, as =tailscale serve= brings
+  it; 17 guards broken on purpose, each caught
 
 ** What is left
 
@@ -978,8 +986,14 @@ looking.
   picker takes its row and leaves the message box a word wide; a column
   is wider than the screen, its conversation a few lines tall; the
   prompts hint at keys a phone has not
-- [ ] A PR or task clicked on the phone opens on the Mac: there, the
-  forge's or ClickUp's own page would serve better
+- [ ] pr-view and clickup-view on the phone too, as at the desk, after
+  the page's phone layout: no Bitbucket or ClickUp login there, the
+  tokens staying in Emacs.  Each needs a :reopen that knows its PR or
+  task, a tab opened on the tap and filled once Emacs answers (iOS
+  blocks one opened later), and their own phone layout
+- [ ] From the phone, what only Emacs shows still happens on the Mac:
+  Visit, Resume and Fork, a hook's file.  Hidden there, or saying
+  where it went (3.25 step 2)
 - [ ] Telegram tells you what the page cannot (3.25 step 3): the lead's
   report, an agent blocked, an ask failed --- each with a link to its
   room, and a short answer back to the lead.  It replaces 3.21's chat
