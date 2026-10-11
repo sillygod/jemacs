@@ -374,7 +374,9 @@ push, without cloning the overlay.
 
 ** Deliberately not done
 
-- Push on blocked/done/dead
+- Push on blocked/done/dead --- /done in 3.25/, as what tells you while
+  you are away: once the herd page could be on the phone, Telegram's
+  part was the telling
 - spawn / memory search
 - Webhook / public URL
 
@@ -995,18 +997,61 @@ looking.
   name (Visit), a hook's file, the agent a session is on are only
   shown.  Resume and Fork stay: they start an agent, which the phone
   then talks to
+- [X] Telegram tells you what the page cannot (3.25 step 3): an agent
+  blocked --- what its menu asks, a button per choice in its words, and
+  its screen; a lead done with
+  its turn --- its own last message, from its hook, waited for up to
+  30s; an ask that failed --- whom, why, what.  Each with Open the
+  room, its chat; a reply to one goes to that project's lead
+  (=lead-say=, started if it has none).  Only while you look at
+  neither the agent nor the herd page, and this Mac has gone untouched
+  for =ghostherd-push-away-after= (=ioreg='s HIDIdleTime): at the desk
+  the desktop notification is yours.  The room's address holds no
+  secret, Telegram's servers keeping what they carry:
+  =xwapp-remote-open-url=, =/open/<pkg>=, answered for your Tailscale
+  login alone with a redirect under the secret, the fragment kept.
+  Pushes go in =herd_tick=; the bot sends them on a loop of their own,
+  its long poll holding 25s.  =M-x ghostherd-push-test=.  10 ERT, 9
+  pytest; WebKit: the address through an HTTP proxy that does what
+  =tailscale serve= does, and a room link opening its chat; 48 guards
+  broken on purpose, each caught.  It replaces 3.21's chat on Telegram
+- [X] A blocked agent's menu in words, where you answer it --- the page,
+  a push, the bot's card: 1 / 2 / 3 said nothing of what each was, and
+  agy offers four, "No, cancel" the fourth.  Emacs reads it off the
+  screen (=ghostherd-session-prompt=): the last run numbered from 1 near
+  the foot, each choice a few lines from the next; what it asks, the
+  lines above up to a rule; a choice its CLI wrapped joined again, one
+  described below it not.  No number where none can be read: one
+  picked blind could be any of its choices.  From
+  agy's and claude's own screens: ERT, pytest, WebKit on the phone and
+  at the desk; guards broken on purpose, each caught
+- [X] What an agent wrote is not a prompt it sits on.  claude stood
+  blocked, done with its turn, on its own report --- it had written
+  "permission prompt", and the rules read the whole screen.  A menu
+  takes the input box's place in claude and agy
+  (=:prompt-replaces-input=): with the box drawn at the foot, a
+  =blocked= pattern above it is the conversation's.  grok's prompts
+  not seen yet, so grok reads as before; =ghostherd-explain= says when
+  the box shadowed one.  12 guards broken on purpose, each caught
+- [X] An answer lands on the choice you tapped.  Yes on agy's menu
+  went as "No, cancel": =ghostherd-answer= went to the top with nine
+  Ups and down from there, and agy's menu wraps around --- nine Ups
+  from the first of four land on the fourth.  The moves count from the
+  choice highlighted on screen now, and Return goes only once the
+  screen shows the highlight on yours; the answer, or why it was not
+  given, in the herd log.  No number for a menu it cannot read.  Every
+  choice from every start on a menu that wraps; 17 guards broken on
+  purpose, each caught
 
 ** What is left
 
+- [ ] grok's menu prompts, when one is on screen: whether it too takes
+  the input box's place (=:prompt-replaces-input=)
 - [ ] pr-view and clickup-view on the phone too, as at the desk, after
   the page's phone layout: no Bitbucket or ClickUp login there, the
   tokens staying in Emacs.  Each needs a :reopen that knows its PR or
   task, a tab opened on the tap and filled once Emacs answers (iOS
   blocks one opened later), and their own phone layout
-- [ ] Telegram tells you what the page cannot (3.25 step 3): the lead's
-  report, an agent blocked, an ask failed --- each with a link to its
-  room, and a short answer back to the lead.  It replaces 3.21's chat
-  on Telegram
 
 * Phase 4 — Ecosystem (only if still useful)
 
