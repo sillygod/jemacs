@@ -1897,7 +1897,8 @@ session around a process that never stopped."
   "Relaunch SESSION from its recipe, replacing any existing buffer.
 
 With CONTINUE non-nil, append the CLI's `:continue-args' so it resumes
-its previous conversation rather than starting cold.  Interactively that
+its previous conversation rather than starting cold.  Without it, it
+starts cold: the recipe's flags that pick a conversation are left off.  Interactively that
 is the default when the agent kind has such a flag, since the usual
 reason to respawn is that the agent died or wedged and you want it back
 where it was.
@@ -1929,11 +1930,13 @@ one, and otherwise prompts."
          ;; with two agents of a kind in one project may be the other's.
          (exact (and continue
                      (ghostherd--resume-args kind (ghostherd-session-conversation session))))
-         (args (cond (exact (append (ghostherd--without-resume kind (plist-get recipe :args))
-                                    exact))
-                     (continue (append (plist-get recipe :args)
-                                       (plist-get spec :continue-args)))
-                     (t (plist-get recipe :args)))))
+         ;; The recipe has the flags it was last started with -- the
+         ;; `--continue' of a continuing respawn, the `-r' of a resume.
+         ;; Fresh is without them, or it goes on where it was.
+         (base (ghostherd--without-resume kind (plist-get recipe :args)))
+         (args (cond (exact (append base exact))
+                     (continue (append base (plist-get spec :continue-args)))
+                     (t base))))
     (when (and continue (not exact) (null (plist-get spec :continue-args)))
       (user-error "%s has no resume flag" kind))
     ;; The recipe holds the role as it was when the lead started; it

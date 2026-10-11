@@ -2219,6 +2219,24 @@ has to tear the old one down first or it can never succeed twice."
       (should (equal (plist-get spawned :args)
                      '("--effort" "high" "--continue"))))))
 
+(ert-deftest ghostherd-test-respawn-fresh-is-fresh ()
+  "A recipe keeps the flags it was last started with: a continuing
+respawn's `--continue', the `-r' of a resume.  Fresh leaves them off,
+or agy-emacs-commit, respawned fresh, went on with its conversation;
+continuing again does not say `--continue' twice."
+  (ghostherd-tests--with-herd ()
+    (let (spawned)
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (_kind &rest plist) (setq spawned plist) nil)))
+        (pcase-dolist (`(,kind ,args ,fresh ,continued)
+                       '((agy ("--effort" "high" "--continue") ("--effort" "high") ("--effort" "high" "--continue"))
+                         (agy ("--conversation" "2f08522d" "--effort" "high") ("--effort" "high") ("--effort" "high" "--continue"))
+                         (claude ("--model" "opus" "-r" "b25467a0") ("--model" "opus") ("--model" "opus" "--continue"))))
+          (ghostherd-respawn (ghostherd-tests--session :name "a" :kind kind :args args) nil)
+          (should (equal (plist-get spawned :args) fresh))
+          (ghostherd-respawn (ghostherd-tests--session :name "a" :kind kind :args args) t)
+          (should (equal (plist-get spawned :args) continued)))))))
+
 ;;; Switcher annotation and notes
 
 (ert-deftest ghostherd-test-candidate-is-just-the-name ()
