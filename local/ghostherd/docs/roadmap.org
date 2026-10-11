@@ -957,6 +957,15 @@ looking.
 - [X] Opened on the phone, by the Mac's tailnet name --- the phone
   resolves it; this Mac's own resolver does not, so the checks above
   went through its tailnet IP
+- [X] The address as a QR code on the page at the desk (Phone, beside
+  Refresh): scanned, the phone has the page, nothing pasted.  xwapp's,
+  for any page that puts a =data-xw-phone= button somewhere: shown only
+  when the page can be reached from elsewhere and is not there already;
+  the address given only when asked; qrcode-generator 1.4.4 vendored,
+  loaded only then.  2 ERT; 27 WebKit checks --- the code read back
+  by a decoder, the phone opening it and the desk letting go, the
+  xwidget's side, the herd page under its own CSP; 23 guards broken
+  on purpose, each caught
 
 ** What is left
 
@@ -969,8 +978,6 @@ looking.
   picker takes its row and leaves the message box a word wide; a column
   is wider than the screen, its conversation a few lines tall; the
   prompts hint at keys a phone has not
-- [ ] The address as a QR code on the page at the desk: scanned, the
-  phone has the page, nothing pasted
 - [ ] A PR or task clicked on the phone opens on the Mac: there, the
   forge's or ClickUp's own page would serve better
 - [ ] Telegram tells you what the page cannot (3.25 step 3): the lead's
