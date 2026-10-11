@@ -532,3 +532,44 @@ def test_the_room_reads_what_ghostherd_writes(tmp_path):
     mail = _mail_to(h, "claude-main")[0]
     e = conv.user_entry(message(mail["from"], "claude-main", mail["body"]), None)
     assert (e["kind"], e["failed"]) == ("answer", True) and "exited before answering" in e["text"]
+
+
+def test_what_the_herd_puts_before_your_words_to_a_lead_is_a_line_each():
+    """Before your words to a lead, ghostherd.el puts what you said to the
+    team and what the project works on: the herd's, so a line each in the
+    chat, your words as yours.  As Emacs writes them, not as copied here."""
+    import shutil
+    import subprocess
+
+    emacs = shutil.which("emacs")
+    if not emacs:
+        pytest.skip("no emacs")
+    root = GHOSTHERD_EL.parent
+    lisp = r"""
+(let* ((work (list "branch x in ~/p/" "its pull request #3, open: Fix [the] login -- https://h/3"))
+       (ghostherd-project-work-functions (list (lambda (_p) work)))
+       (lead (ghostherd-session--create :id "L" :name "lead-p" :project "~/p/")))
+  (puthash "~/p/" (list (cons "rd" "use [the] old API")) ghostherd--lead-unheard)
+  (princ (concat (ghostherd--lead-unheard-note "~/p/") (ghostherd--lead-work-note lead "~/p/") "status?"))
+  (princ "\0")
+  (setq work (list "branch y in ~/p/"))
+  (princ (concat (ghostherd--lead-work-note lead "~/p/") "[and] now?")))
+"""
+    out = subprocess.run([emacs, "-Q", "--batch", "-L", str(root), "-L", str(root.parent / "xwapp"),
+                          "-l", "ghostherd", "--eval", lisp], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-2000:]
+    first, second = out.stdout.split("\0")
+    assert first.count("\n- ") == 3
+
+    e = conv.user_entry(first, None)
+    assert (e["kind"], e["text"]) == ("prompt", "status?")
+    assert e["notes"] == ["Since you last heard from me, I wrote to the team directly",
+                          "What this project works on, as the herd sees it"]
+    # And so in the chat.
+    items = conv._chat_items("lead-p", [e], {}, set())
+    assert [(i["kind"], i["text"], i["notes"]) for i in items] == [("prompt", "status?", e["notes"])]
+    e = conv.user_entry(second, None)
+    assert (e["text"], e["notes"]) == ("[and] now?", ["What this project works on has changed since you were told"])
+    # Your own words in brackets are yours.
+    e = conv.user_entry("[What this project works on] is the question\n\nanswer it", None)
+    assert "notes" not in e and e["text"].startswith("[What this project")

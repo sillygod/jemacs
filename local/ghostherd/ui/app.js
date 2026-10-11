@@ -1260,7 +1260,7 @@
       return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color) + plainBody(e.text) + "</div>";
     }
     if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color) + plainBody(e.text) + "</div>";
-    return '<div class="ent you">' + entHead("You", "", e.ts) + plainBody(e.text) + "</div>";
+    return '<div class="ent you">' + entHead("You", "", e.ts) + herdNotes(e) + plainBody(e.text) + "</div>";
   }
 
   function roomBodyHtml(a) {
@@ -1348,6 +1348,12 @@
     renderAttach(to);
   }
 
+  // What the herd put before your words to a lead: a line each, not
+  // your words.
+  function herdNotes(e) {
+    return (e.notes || []).map((n) => '<div class="hnote">herd note: ' + esc(n) + "</div>").join("");
+  }
+
   const CHAT_LONG = 900;
   function chatItemHtml(e) {
     const you = e.who === "user";
@@ -1368,7 +1374,7 @@
       : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
     return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '"' +
       (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
-      entHead(head, you ? "" : "", e.ts, color) + body + outcome +
+      entHead(head, you ? "" : "", e.ts, color) + herdNotes(e) + body + outcome +
       (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
       "</div>";
   }

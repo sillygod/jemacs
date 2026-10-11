@@ -1031,7 +1031,8 @@ are the other tabs (below, and "What happened while you were away").
   column (=↳ named=): the pull requests of its project's repository and
   the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,
   that it ran a command on, or that it wrote of.  One that only went by
-  in a tool's output --- a search, a list --- is not counted.  Up to
+  in a tool's output --- a search, a list --- is not counted, nor what
+  the herd told a lead its project works on.  Up to
   four still open show, PRs and tasks two each; merged, declined,
   closed and the rest wait behind =+N=.  One that could not be looked
   up is not shown --- most often an id in a test or a file --- and what
@@ -1069,6 +1070,17 @@ are the other tabs (below, and "What happened while you were away").
   another agent of the project directly, it hears as a note before
   your next message to it.  It comes first in the room, marked /lead/,
   and stays one across a restart.
+- The lead knows what its project works on: what the page shows of it
+  --- the branch, its pull request and the tickets that cites, an
+  agent's own branch, the open pull requests and tickets the agents'
+  conversations name (six at most) --- opens your first message to it,
+  as a note, and your next one whenever it changed.  It reads the
+  tickets with whatever tools it has for them, and its role forbids it
+  to change one --- status, fields, comments --- or the pull request,
+  unless you ask.  In the room and the chat each note is a line,
+  /herd note: …/, above your words.  It is the page's last look, and a
+  new one starts when that is a minute old; with neither pr-view nor
+  clickup-view there is nothing to tell.
 - An image goes with a prompt as a file.  ⌘V an image into a prompt
   box, or press /Image/ beside it: Emacs saves the clipboard's image
   (=pngpaste=, or =wl-paste= / =xclip=) under

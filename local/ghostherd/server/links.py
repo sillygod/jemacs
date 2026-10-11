@@ -7,7 +7,8 @@ the tasks reach it as links you pasted.  So its transcript is read for
 them -- but only what it was given or did counts: a reference in your
 prompt, in its own command, or in what it said.  One that only went by
 in a tool's output is what it happened to see -- a search, a docs page,
-a list -- and is left out.
+a list -- and is left out; so is what the herd told a lead its project
+works on, at the head of your prompt, which is the others' named again.
 
 A transcript can run to tens of megabytes and grows a turn at a time,
 so each is read on from where it was left, its references kept.
@@ -73,25 +74,25 @@ def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
         ts = o.get("timestamp")
         content = (o.get("message") or {}).get("content")
         if isinstance(content, str):
-            return [(content, ts)] if o.get("type") == "user" else out
+            return [(conversation.without_herd_notes(content), ts)] if o.get("type") == "user" else out
         for b in content or []:
             if not isinstance(b, dict):
                 continue
             if b.get("type") == "text":
-                out.append((b.get("text") or "", ts))
+                out.append((conversation.without_herd_notes(b.get("text") or ""), ts))
             elif b.get("type") == "tool_use":
                 out.append((json.dumps(b.get("input"), ensure_ascii=False), ts))
     elif cli == "agy":
         ts = o.get("created_at")
         if o.get("type") == "USER_INPUT":
-            out.append((o.get("content") or "", ts))
+            out.append((conversation.without_herd_notes(o.get("content") or ""), ts))
         elif o.get("type") == "PLANNER_RESPONSE":
             out.append((o.get("content") or "", ts))
             for call in o.get("tool_calls") or []:
                 out.append((json.dumps(call, ensure_ascii=False), ts))
     elif cli == "grok":
         if o.get("type") == "user" and not o.get("synthetic_reason"):
-            out.append((conversation.content_to_text(o.get("content")), None))
+            out.append((conversation.without_herd_notes(conversation.content_to_text(o.get("content"))), None))
         elif o.get("type") == "assistant":
             content = o.get("content")
             out.append((content if isinstance(content, str) else conversation.content_to_text(content), None))

@@ -823,6 +823,87 @@ until they are done, the page shows the last look."
         (ghostherd-memory-page--work co)
       :json-false)))
 
+(defconst ghostherd-memory-page--lead-named 6
+  "Most pull requests and tasks a lead is told of that only its project's
+conversations name.")
+
+(defun ghostherd-memory-page--line (s)
+  "S on one line, short enough to read."
+  (truncate-string-to-width (replace-regexp-in-string "[\n\t ]+" " " (string-trim s))
+                            120 nil nil "…"))
+
+(defun ghostherd-memory-page--pr-said (pr)
+  "PR, as the page has it, as a lead is told it; nil when it is not known."
+  (when (and (consp pr) (plist-get pr :id) (not (plist-get pr :error)))
+    (concat (format "pull request #%s" (plist-get pr :id))
+            (when-let* ((state (plist-get pr :state))) (concat ", " (downcase state)))
+            (when (eq (plist-get pr :draft) t) ", draft")
+            (when-let* ((title (plist-get pr :title))) (concat ": " (ghostherd-memory-page--line title)))
+            (when-let* ((url (plist-get pr :url))) (concat " -- " url)))))
+
+(defun ghostherd-memory-page--task-said (task)
+  "TASK, as the page has it, as a lead is told it."
+  (concat (format "ClickUp task %s" (plist-get task :id))
+          (when-let* ((status (plist-get task :status))) (concat ", " status))
+          (when-let* ((name (plist-get task :name))) (concat ": " (ghostherd-memory-page--line name)))
+          (when-let* ((url (plist-get task :url))) (concat " -- " url))))
+
+(defun ghostherd-memory-page--lead-work (project)
+  "What PROJECT works on, in lines for its lead: its checkout's branch,
+pull request and the tasks that cites; an agent's, where it is on
+another; then the open pull requests and tasks its agents'
+conversations name, the most recently named first.  As the page's last
+look found them -- starting another when that one is old."
+  (when (> (- (float-time) ghostherd-memory-page--work-at) ghostherd-memory-page--work-every)
+    (ghostherd-memory-page--work-look))
+  (let* ((agents (sort (seq-filter (lambda (s) (equal (ghostherd--project-name (ghostherd-session-project s))
+                                                      project))
+                                   (ghostherd-sessions))
+                       (lambda (a b) (string< (ghostherd-session-name a) (ghostherd-session-name b)))))
+         (home (gethash project ghostherd-memory-page--checkouts))
+         (named 0)
+         seen lines)
+    (cl-labels ((new-p (key) (unless (member key seen) (push key seen)))
+                (checkout (co who)
+                  (let* ((work (ghostherd-memory-page--work co))
+                         (pr (plist-get work :pr))
+                         (whose (if who (concat who "'s") "its")))
+                    (push (format "%sbranch %s in %s" (if who (concat who " works on ") "") (cdr co) (car co))
+                          lines)
+                    (when-let* ((said (ghostherd-memory-page--pr-said pr)))
+                      (new-p (or (plist-get pr :url) (cons (car co) (plist-get pr :id))))
+                      (push (concat whose " " said) lines))
+                    (seq-doseq (task (plist-get work :tasks))
+                      (when (new-p (plist-get task :id))
+                        (push (concat "a ticket " whose " pull request names: "
+                                      (ghostherd-memory-page--task-said task))
+                              lines))))))
+      (when (consp home) (checkout home nil))
+      (dolist (s agents)
+        (let ((co (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts)))
+          (when (and (consp co) (not (equal co home)))
+            (checkout co (ghostherd-session-name s)))))
+      (dolist (s agents)
+        (let ((links (ghostherd-memory-page--agent-links s))
+              (in (format "named in %s's conversation: " (ghostherd-session-name s))))
+          (when (consp links)
+            (seq-doseq (pr (plist-get links :prs))
+              (when (and (< named ghostherd-memory-page--lead-named)
+                         (equal (plist-get pr :state) "OPEN")
+                         (new-p (or (plist-get pr :url) (cons (plist-get links :root) (plist-get pr :id)))))
+                (cl-incf named)
+                (push (concat in (ghostherd-memory-page--pr-said pr)) lines)))
+            (seq-doseq (task (plist-get links :tasks))
+              (when (and (< named ghostherd-memory-page--lead-named)
+                         (plist-get task :name)
+                         (not (eq (plist-get task :done) t))
+                         (new-p (plist-get task :id)))
+                (cl-incf named)
+                (push (concat in (ghostherd-memory-page--task-said task)) lines)))))))
+    (nreverse lines)))
+
+(add-hook 'ghostherd-project-work-functions #'ghostherd-memory-page--lead-work)
+
 (defun ghostherd-memory-page--open-pr (intent)
   "Open the pull request INTENT names, of a checkout the herd is in."
   (let ((root (alist-get 'root intent))

@@ -49,6 +49,12 @@ ANSWER = re.compile(
     r"\AAnswer to ask ([0-9A-Za-z]{4,32}) \((.*?)\)( -- no answer was sent[^:\n]*)?:\n(.*)\Z", re.S
 )
 FAILED = re.compile(r"\AAsk ([0-9A-Za-z]{4,32}) failed: (.*)\Z", re.S)
+# What opens the user's message to a lead: the herd's words, not theirs
+# (`ghostherd--lead-unheard-note', `ghostherd--lead-work-note').  After
+# the role, on a CLI that takes it with the first message; just inside
+# the tag a CLI wraps a prompt in.
+LEAD_NOTE = re.compile(r"(?:^|(?<=>))\[((?:Since you last heard from me|What this project works on)[^\n]*)\n.*?\]\n\n",
+                       re.S | re.M)
 
 # The herd client in a shell command: `"$GHOSTHERD_HERD" ask qa --wait
 # <<'HERD'', `/path/bin/herd reply 1a2b3c4d "done"'.
@@ -209,6 +215,11 @@ def herd_call(command: str) -> dict[str, Any] | None:
     return out
 
 
+def without_herd_notes(text: str) -> str:
+    """TEXT, said to a lead, less what the herd put in it."""
+    return LEAD_NOTE.sub("", text or "")
+
+
 def user_entry(text: str, ts: Any) -> dict[str, Any] | None:
     """What was said to the agent: by you, or by the herd for another agent."""
     text = PASTED.sub(lambda m: m.group(2), SYSTEM_REMINDER.sub("", text or "")).strip()
@@ -243,7 +254,13 @@ def user_entry(text: str, ts: Any) -> dict[str, Any] | None:
     elif text.startswith("[Request interrupted"):
         entry.update(kind="note", text=first_line(text.strip("[]")))
     else:
+        notes = []
+        while (n := LEAD_NOTE.match(text)):
+            notes.append(re.split(r"[.:]", n.group(1), maxsplit=1)[0])
+            text = text[n.end():]
         entry["text"] = clip(text)
+        if notes:
+            entry["notes"] = notes
     return entry
 
 
@@ -506,7 +523,8 @@ def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
         elif role == "user":
             turn()
             if kind == "prompt":
-                add(who="user", to=name, kind="prompt", text=e.get("text"), ts=e.get("ts"))
+                add(who="user", to=name, kind="prompt", text=e.get("text"), ts=e.get("ts"),
+                    notes=e.get("notes"))
             elif kind in ("ask", "message"):
                 add(who=e.get("who"), to=name, kind=kind, ask=ask, text=e.get("text"), ts=e.get("ts"))
             elif kind == "answer" and ask not in replied:

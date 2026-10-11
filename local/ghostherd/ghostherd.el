@@ -4134,6 +4134,13 @@ When an ask fails, or comes back as the herd's answer rather than the
 agent's, say what happened and decide: ask again, ask someone else, or
 ask the user.
 
+What the project works on -- its branch, its pull request, the ClickUp
+tickets they and the team's conversations name -- opens the user's
+first message to you, and their next one whenever it changes.  Read the
+tickets and the pull request for the work, with whatever tools you have
+for them; change none of them -- no ticket's status, fields or
+comments, nothing on the pull request -- unless the user asks you to.
+
 The user may also write to an agent directly.  When they have since you
 last heard from them, their next message to you starts with a note
 saying so: take it into account rather than undoing it.
@@ -4204,16 +4211,52 @@ with; or the empty string."
               "]\n\n")
     ""))
 
-(defun ghostherd-tell (session text)
+(defvar ghostherd-project-work-functions nil
+  "Functions called with a project, each saying what it works on -- its
+branch, its pull request, the tickets they name -- as lines, or nil.
+Its lead is told them.  The herd page's look at the herd's checkouts
+answers it.")
+
+(defvar ghostherd--lead-work-told (make-hash-table :test 'equal)
+  "Lead session id -> the lines it was last told its project works on.")
+
+(defun ghostherd--project-work (project)
+  "What PROJECT works on, as lines; nil when nothing says."
+  (seq-mapcat (lambda (f) (with-demoted-errors "ghostherd: %S" (funcall f project)))
+              ghostherd-project-work-functions))
+
+(defun ghostherd--lead-work-note (lead project)
+  "What LEAD has not been told its PROJECT works on, as the note its next
+message opens with; or the empty string.  Told, it is not told again
+until it changes."
+  (let ((lines (ghostherd--project-work project))
+        (had (gethash (ghostherd-session-id lead) ghostherd--lead-work-told 'none)))
+    (if (or (null lines) (equal lines had))
+        ""
+      (puthash (ghostherd-session-id lead) lines ghostherd--lead-work-told)
+      (concat (if (eq had 'none)
+                  "[What this project works on, as the herd sees it.  Read them for the work; \
+change none of them -- no ticket's status, fields or comments, nothing on the pull request -- \
+unless I ask you to:\n"
+                "[What this project works on has changed since you were told.  Now:\n")
+              (mapconcat (lambda (l) (concat "- " l)) lines "\n")
+              "]\n\n"))))
+
+(defun ghostherd-tell (session text &optional role)
   "Prompt SESSION with TEXT from the user.
 A project's lead hears first what the user said to its agents directly
-since it last heard from them; said to another agent of a project that
-has a lead, TEXT is kept for that."
+since it last heard from them, and what the project works on when that
+is news to it -- after ROLE, the role of a lead that took none as it
+started.  Said to another agent of a project that has a lead, TEXT is
+kept for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
          (lead (and project (ghostherd-project-lead project))))
     (if (eq lead session)
         (progn
-          (ghostherd-prompt session (concat (ghostherd--lead-unheard-note project) text))
+          (ghostherd-prompt session (concat role
+                                            (ghostherd--lead-unheard-note project)
+                                            (ghostherd--lead-work-note session project)
+                                            text))
           (remhash project ghostherd--lead-unheard))
       (ghostherd-prompt session text)
       (when lead
@@ -4240,10 +4283,12 @@ CLI that took none as it started.  Return the lead."
   (if-let* ((lead (ghostherd-project-lead project)))
       (progn (ghostherd-tell lead text) lead)
     (let* ((lead (ghostherd-start-lead project))
-           (role (if (ghostherd--lead-args (ghostherd-session-kind lead))
-                     ""
+           (role (unless (ghostherd--lead-args (ghostherd-session-kind lead))
                    (concat ghostherd--lead-role "\n---\n\n"))))
-      (ghostherd--when-ready lead (lambda () (ghostherd-tell lead (concat role text))))
+      ;; Asked now, so that whatever looks has looked by the time the
+      ;; lead is ready to be told.
+      (ghostherd--project-work project)
+      (ghostherd--when-ready lead (lambda () (ghostherd-tell lead text role)))
       lead)))
 
 ;;; What agents say about themselves, through their CLI's hooks

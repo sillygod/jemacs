@@ -5606,11 +5606,14 @@ the herd the agent called qa was the implementer."
 ;;; A project's lead
 
 (defmacro ghostherd-tests--with-leads (&rest body)
-  "BODY with roles and unheard notes of its own, `ghostherd-spawn' making
+  "BODY with roles, unheard notes and work told of its own, nothing to say
+what a project works on, `ghostherd-spawn' making
 a test session in state `starting', and timers asked for in `later'."
   (declare (indent 0))
   `(ghostherd-tests--with-herd ((ghostherd--roles (make-hash-table :test 'equal))
-                                (ghostherd--lead-unheard (make-hash-table :test 'equal)))
+                                (ghostherd--lead-unheard (make-hash-table :test 'equal))
+                                (ghostherd--lead-work-told (make-hash-table :test 'equal))
+                                (ghostherd-project-work-functions nil))
      (let ((spawned nil) (later nil))
        (cl-letf (((symbol-function 'ghostherd-spawn)
                   (lambda (kind &rest pl)
@@ -5754,6 +5757,145 @@ team directly meanwhile, and that only once."
           (ghostherd-tell lead "and now?")
           (should (equal (cdar said) "and now?"))
           (should (= (length spawned) 1)))))))
+
+(ert-deftest ghostherd-test-a-lead-is-told-what-its-project-works-on ()
+  "A lead's first message opens with what its project works on, and the
+rule to change none of it; the next ones only when that changed --
+after what the user said to the team, and after a role it took with
+its first message.  Its agents are not told, nor another project's lead."
+  (ghostherd-tests--with-leads
+    (let* ((work (list (list "~/p/" "branch x in ~/p/" "its pull request #3, open: Login -- https://h/3")
+                       (list "~/q/" "branch main in ~/q/")))
+           (ghostherd-project-work-functions (list (lambda (p) (cdr (assoc p work)))))
+           (said nil)
+           (lead (ghostherd-tests--session :name "lead-p" :kind 'claude :project "~/p/" :state 'idle))
+           (rd (ghostherd-tests--session :name "rd" :kind 'claude :project "~/p/" :state 'idle))
+           (other (ghostherd-tests--session :name "lead-q" :kind 'agy :project "~/q/" :state 'idle))
+           (rule "Read them for the work; change none of them -- no ticket's status, fields or comments, nothing on the pull request -- unless I ask you to:\n"))
+      (puthash "lead-p" "lead" ghostherd--roles)
+      (puthash "lead-q" "lead" ghostherd--roles)
+      (cl-letf (((symbol-function 'ghostherd-prompt)
+                 (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) said))))
+        (ghostherd-tell lead "plan it")
+        (should (equal (cdar said)
+                       (concat "[What this project works on, as the herd sees it.  " rule
+                               "- branch x in ~/p/\n- its pull request #3, open: Login -- https://h/3]\n\nplan it")))
+        (ghostherd-tell lead "status?")
+        (should (equal (cdar said) "status?"))
+        (ghostherd-tell rd "go")
+        (should (equal (car said) '("rd" . "go")))
+        (setcdr (assoc "~/p/" work) (list "branch x in ~/p/" "its pull request #3, merged: Login -- https://h/3"))
+        (ghostherd-tell lead "now?")
+        (should (equal (cdar said)
+                       (concat "[Since you last heard from me, I wrote to the team directly:\n- to rd: go]\n\n"
+                               "[What this project works on has changed since you were told.  Now:\n"
+                               "- branch x in ~/p/\n- its pull request #3, merged: Login -- https://h/3]\n\nnow?")))
+        ;; Nothing said of it: nothing told, and not taken for a change.
+        (setcdr (assoc "~/p/" work) nil)
+        (ghostherd-tell lead "and?")
+        (should (equal (cdar said) "and?"))
+        ;; A role it takes with its first message comes before it all.
+        (puthash "~/q/" (list (cons "ops" "hold the deploy")) ghostherd--lead-unheard)
+        (ghostherd-tell other "start" "ROLE\n---\n\n")
+        (should (equal (car said)
+                       (cons "lead-q" (concat "ROLE\n---\n\n"
+                                              "[Since you last heard from me, I wrote to the team directly:\n- to ops: hold the deploy]\n\n"
+                                              "[What this project works on, as the herd sees it.  "
+                                              rule "- branch main in ~/q/]\n\nstart"))))
+        ;; And the role says so as well, for every message after.
+        (should (string-match-p "change none of them -- no ticket's status, fields or\ncomments, nothing on the pull request -- unless the user asks you to"
+                                ghostherd--lead-role))))))
+
+(ert-deftest ghostherd-test-a-new-lead-looks-before-it-is-ready ()
+  "What its project works on is asked as the lead starts, so a look has
+had the time it took to come to its prompt."
+  (ghostherd-tests--with-leads
+    (let* ((asked 0)
+           (ghostherd-lead-kind 'claude)
+           (ghostherd-project-work-functions (list (lambda (_p) (cl-incf asked) (list "branch x in ~/p/"))))
+           (said nil))
+      (cl-letf (((symbol-function 'ghostherd-prompt)
+                 (lambda (_s text &rest _) (push text said))))
+        (let ((lead (ghostherd-lead-say "~/p/" "plan it")))
+          (should (= asked 1))
+          (should-not said)
+          (setf (ghostherd-session-state lead) 'idle)
+          (let ((next (pop later))) (apply (car next) (cdr next)))
+          (should (= asked 2))
+          (should (string-suffix-p "- branch x in ~/p/]\n\nplan it" (car said))))))))
+
+(ert-deftest ghostherd-test-the-page-tells-a-lead-what-its-project-works-on ()
+  "From the page's last look: the project's branch, its pull request and
+the tickets that names; an agent's checkout where it is on another; the
+open pull requests and tickets its agents' conversations name, each
+once and only so many.  Nothing of another project's."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
+                               (ghostherd-memory-page--prs (make-hash-table :test 'equal))
+                               (ghostherd-memory-page--task-briefs (make-hash-table :test 'equal))
+                               (ghostherd-memory-page--links (make-hash-table :test 'equal))
+                               (ghostherd-memory-page--pr-briefs (make-hash-table :test 'equal))
+                               (ghostherd-memory-page--remotes (make-hash-table :test 'equal)))
+    (let ((ghostherd-memory-page--work-at (float-time))
+          (now (float-time))
+          (brief (lambda (name status type)
+                   (list :at (float-time) :brief `((name . ,name) (status (name . ,status) (type . ,type))
+                                                    (url . ,(concat "https://c/t/" (downcase name))))))))
+      (ghostherd-tests--session :name "lead-p" :kind 'claude :project "~/p/")
+      (ghostherd-tests--session :name "rd" :kind 'claude :project "~/p/")
+      (ghostherd-tests--session :name "x" :kind 'claude :project "~/q/")
+      (puthash "~/p/" '("~/p/" . "feat/login") ghostherd-memory-page--checkouts)
+      (puthash '(agent . "lead-p") '("~/p/" . "feat/login") ghostherd-memory-page--checkouts)
+      (puthash '(agent . "rd") '("~/wt/fix/" . "fix/typo") ghostherd-memory-page--checkouts)
+      (puthash "~/q/" '("~/q/" . "main") ghostherd-memory-page--checkouts)
+      (puthash '(agent . "x") '("~/q/" . "main") ghostherd-memory-page--checkouts)
+      (puthash '("~/p/" . "feat/login")
+               (list :at now :pr '((id . 12) (title . "Login\n  page") (state . "OPEN") (draft . t)
+                                   (url . "https://h/12") (tasks "86a" "86b")))
+               ghostherd-memory-page--prs)
+      (puthash '("~/wt/fix/" . "fix/typo") (list :at now :pr '((error . "no pull request")))
+               ghostherd-memory-page--prs)
+      (puthash '("~/q/" . "main") (list :at now :pr '((id . 1) (title . "Q") (state . "OPEN") (url . "https://h/q1")))
+               ghostherd-memory-page--prs)
+      (puthash "86a" (funcall brief "Login" "in progress" "custom") ghostherd-memory-page--task-briefs)
+      (puthash "86c" (funcall brief "Typo" "to do" "open") ghostherd-memory-page--task-briefs)
+      (puthash "86d" (funcall brief "Old" "complete" "closed") ghostherd-memory-page--task-briefs)
+      ;; rd's conversation: the project's PR again, one open, one merged;
+      ;; a ticket the PR names, one open, one done, one not looked up.
+      (puthash "~/wt/fix/" (cons now '(:kind github :owner "O" :repo "R")) ghostherd-memory-page--remotes)
+      (dolist (pr '((12 "OPEN" "https://h/12") (20 "OPEN" "https://h/20") (21 "MERGED" "https://h/21")))
+        (puthash (cons "~/wt/fix/" (car pr))
+                 (list :at now :pr `((title . ,(format "PR %d" (car pr))) (state . ,(nth 1 pr)) (url . ,(nth 2 pr))))
+                 ghostherd-memory-page--pr-briefs))
+      (puthash "rd" (list :sig "s" :links
+                          (list :prs (mapcar (lambda (id) (list :host "github" :owner "o" :repo "r" :id id :last 1))
+                                             '(12 20 21))
+                                :tasks (mapcar (lambda (id) (list :id id :last 1)) '("86a" "86c" "86d" "86e"))))
+               ghostherd-memory-page--links)
+      (should (equal (ghostherd-memory-page--lead-work "~/p/")
+                     '("branch feat/login in ~/p/"
+                       "its pull request #12, open, draft: Login page -- https://h/12"
+                       "a ticket its pull request names: ClickUp task 86a, in progress: Login -- https://c/t/login"
+                       "a ticket its pull request names: ClickUp task 86b"
+                       "rd works on branch fix/typo in ~/wt/fix/"
+                       "named in rd's conversation: pull request #20, open: PR 20 -- https://h/20"
+                       "named in rd's conversation: ClickUp task 86c, to do: Typo -- https://c/t/typo")))
+      (let ((ghostherd-memory-page--lead-named 1))
+        (should (equal (last (ghostherd-memory-page--lead-work "~/p/"))
+                       '("named in rd's conversation: pull request #20, open: PR 20 -- https://h/20"))))
+      (let ((ghostherd-memory-page--lead-named 0))
+        (should (equal (last (ghostherd-memory-page--lead-work "~/p/"))
+                       '("rd works on branch fix/typo in ~/wt/fix/"))))
+      (should (memq #'ghostherd-memory-page--lead-work ghostherd-project-work-functions))
+      (should-not (ghostherd-memory-page--lead-work "~/r/"))
+      ;; A look a minute old: another is started, and the last one told.
+      (let ((looked 0))
+        (cl-letf (((symbol-function 'ghostherd-memory-page--work-look) (lambda () (cl-incf looked))))
+          (ghostherd-memory-page--lead-work "~/p/")
+          (should (= looked 0))
+          (let ((ghostherd-memory-page--work-at (- (float-time) 61)))
+            (should (equal (car (ghostherd-memory-page--lead-work "~/p/")) "branch feat/login in ~/p/"))
+            (should (= looked 1))))))))
 
 (ert-deftest ghostherd-test-waiting-for-a-prompt-gives-up ()
   "A session that never comes to its prompt is logged, its message not

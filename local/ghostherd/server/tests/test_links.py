@@ -140,11 +140,34 @@ def test_a_rewritten_transcript_is_read_again(home):
     assert tasks(links.scan(str(path))) == ["86new333"]
 
 
+NOTE = ("[What this project works on, as the herd sees it.  Read them for the work; change none of them:\n"
+        "- its pull request #378, merged: x -- https://bitbucket.org/team/deploy-platform/pull-requests/378\n"
+        "- named in rd's conversation: ClickUp task 86note01, open: y -- https://app.clickup.com/t/86note01]\n\n")
+UNHEARD = "[Since you last heard from me, I wrote to the team directly:\n- to rd: see CU-86told01]\n\n"
+
+
+def test_what_the_herd_told_a_lead_is_not_named_by_it(home):
+    """The herd's notes at the head of a prompt name the others' tickets
+    again: the lead was told them, not given them.  Wrapped as a paste,
+    after a role, or in a block; what it says of them itself counts."""
+    path = _claude(home, [
+        u('\n\n<pasted_content id="882f">\n' + UNHEARD + NOTE + "status of CU-86mine01?\n</pasted_content id=\"882f\">\n"),
+        u([text("ROLE\n---\n\n" + NOTE + "and CU-86mine02")]),
+        a(text("Read https://app.clickup.com/t/86said01.")),
+    ])
+    r = links.scan(str(path))
+    assert tasks(r) == ["86said01", "86mine02", "86mine01"] and prs(r) == []
+    # Words of yours that only look like it are yours.
+    path.write_text(_line(u("[What this project works on] is CU-86mine03\n\nthat")))
+    links._state.clear()
+    assert tasks(links.scan(str(path))) == ["86mine03"]
+
+
 def test_agy(home):
     path = home / ".gemini" / "antigravity-cli" / "brain" / "c1" / ".system_generated" / "logs" / "transcript.jsonl"
     path.parent.mkdir(parents=True)
     path.write_text("".join(map(_line, [
-        {"type": "USER_INPUT", "created_at": "t0", "content": "<USER_REQUEST>fix CU-86agy001</USER_REQUEST>"},
+        {"type": "USER_INPUT", "created_at": "t0", "content": "<USER_REQUEST>ROLE\n---\n\n" + NOTE + "fix CU-86agy001</USER_REQUEST>"},
         {"type": "PLANNER_RESPONSE", "created_at": "t1",
          "tool_calls": [{"name": "run_command", "args": {"CommandLine": "gh pr view https://github.com/me/x/pull/4"}}]},
         {"type": "GENERIC", "created_at": "t2", "content": "https://github.com/me/x/pull/99 CU-86out999"},
@@ -159,7 +182,7 @@ def test_grok(home):
     path = home / ".grok" / "sessions" / "%2Fx%2Fproj" / "s1" / "chat_history.jsonl"
     path.parent.mkdir(parents=True)
     path.write_text("".join(map(_line, [
-        {"type": "user", "content": [{"type": "text", "text": "<user_query>CU-86grok01</user_query>"}]},
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>" + NOTE + "CU-86grok01</user_query>"}]},
         {"type": "user", "content": [{"type": "text", "text": "CU-86summ01"}], "synthetic_reason": "compaction_meta"},
         {"type": "assistant", "content": "On it.", "tool_calls": [
             {"id": "c1", "name": "run_terminal_command",
