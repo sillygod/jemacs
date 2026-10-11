@@ -991,11 +991,22 @@
     return pr.draft && pr.state === "OPEN" ? "Draft" : pr.state.charAt(0) + pr.state.slice(1).toLowerCase();
   }
 
-  function chip(cls, attrs, url, inner) {
-    const href = XW.elsewhere && /^https?:\/\//i.test(url || "") ? url : "";
+  // On a phone, a chip is a link.  A pull request or task opens in
+  // pr-view's or clickup-view's page there, when Emacs says it can
+  // (herd.open): through Emacs's address for it that holds no secret,
+  // its tokens staying in Emacs, in one tab per app used again.  Else on
+  // the forge or ClickUp, which want their own login on the phone.
+  function chip(cls, attrs, url, inner, app) {
+    const href = !XW.elsewhere ? "" : app ? app.href : /^https?:\/\//i.test(url || "") ? url : "";
+    const target = app ? app.tab : "_blank";
     return href
-      ? '<a class="' + cls + '" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + attrs + ">" + inner + "</a>"
+      ? '<a class="' + cls + '" href="' + esc(href) + '" target="' + target + '"' + (app ? "" : ' rel="noopener noreferrer"') + attrs + ">" + inner + "</a>"
       : '<button type="button" class="' + cls + '"' + attrs + ">" + inner + "</button>";
+  }
+
+  function opens(what) {
+    const o = herdNow.data && herdNow.data.open;
+    return !!(o && o[what] === true);
   }
 
   function prChip(root, pr, done) {
@@ -1003,7 +1014,9 @@
     const tip = pr.error || pr.title || (state ? "" : "Being looked up");
     return chip("wchip pr" + (state ? " pr-" + esc(state.toLowerCase()) : "") + (done ? " wdone" : ""),
       ' data-act="a:work-pr" data-root="' + esc(root) + '" data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '"', pr.url,
-      "#" + esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")));
+      "#" + esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")),
+      opens("pr") && /^https:\/\/(github\.com|bitbucket\.org)\//.test(pr.url || "")
+        ? { href: "/open/pr-view#pr=" + encodeURIComponent(pr.url), tab: "pr-view" } : null);
   }
 
   function taskChip(t, done) {
@@ -1013,7 +1026,8 @@
       t.url || "https://app.clickup.com/t/" + encodeURIComponent(t.id),
       (t.status ? '<span class="tdot" style="background:' + safeColor(t.color) + '"></span>' : "") +
       '<span class="wname">' + esc(t.name || t.id) + "</span>" +
-      (t.status ? '<span class="tst">' + esc(t.status) + "</span>" : ""));
+      (t.status ? '<span class="tst">' + esc(t.status) + "</span>" : ""),
+      opens("task") ? { href: "/open/clickup-view#task=" + encodeURIComponent(t.id), tab: "clickup-view" } : null);
   }
 
   function moreButton(key, open, n) {
@@ -2112,6 +2126,8 @@
         a.rel = "noopener noreferrer";
         return;
       }
+      // Emacs's page for a pull request or task, in that app's tab.
+      if (XW.elsewhere && /^\/open\//.test(href)) return;
       ev.preventDefault();
       if (/^https?:/i.test(href)) emit("open-browser", { url: href });
       return;

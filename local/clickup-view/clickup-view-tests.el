@@ -492,6 +492,35 @@ list's hidden folder is none."
       (should (clickup-view-test--call (calls) "renderTask"))
       (should-not clickup-view--pending))))
 
+(ert-deftest clickup-view-test-a-tab-says-which-task ()
+  "A page in a tab says which task it showed -- opened on the phone, or
+back after a restart: an id, a CU-id or a task link.  It shows that
+one, over one left pending; what is no task shows home."
+  (clickup-view-test--with-api
+      `(("GET" "/task/abc123\\?" 200 ,clickup-view-test--task-json)
+        ("GET" "/list/L1\\'" 200 ,clickup-view-test--list-json)
+        ("GET" "/task/abc123/comment" 200 "{\"comments\":[]}"))
+    (dolist (asked '("abc123" "https://app.clickup.com/t/abc123"))
+      (let ((clickup-view--pending "zzz999"))
+        (setq requests nil)
+        (clickup-view--handle-intent `((op . "ready") (task . ,asked)))
+        (should (string-match-p "/task/abc123\\?" (nth 1 (car (last requests)))))
+        (should-not clickup-view--pending))))
+  (clickup-view-test--with-api nil
+    (dolist (asked '("" "no task here" :false))
+      (let ((clickup-view--pending nil))
+        (clickup-view--handle-intent `((op . "ready") (task . ,asked)))
+        (should (assoc "showHome" (calls)))
+        (should-not requests)))))
+
+(ert-deftest clickup-view-test-opens-again-by-itself ()
+  "The page can open by itself, for a tab on your phone or one back after
+a restart; the task it shows is the tab's to say, not one left pending."
+  (should (eq (xwapp-reopen clickup-view--app) #'clickup-view-reopen))
+  (let ((clickup-view--pending "abc123"))
+    (clickup-view-reopen)
+    (should-not clickup-view--pending)))
+
 (ert-deftest clickup-view-test-ready-without-task-shows-home ()
   (clickup-view-test--with-api nil
     (let ((clickup-view--pending nil))

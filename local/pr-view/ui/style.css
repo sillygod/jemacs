@@ -639,10 +639,14 @@ button.linkish:hover { color: var(--accent); }
 
 @media (max-width: 720px) {
   .list-head { display: none; }
+  /* The title and branches across; when, comments and reviewers one
+     line under them, from where the title starts. */
   .pr-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    gap: 6px 14px;
   }
+  .pr-row .summary { grid-column: 1 / -1; }
+  .pr-row > .col:not(.activity) { padding-left: 42px; }
   .form-row { grid-template-columns: 1fr; }
 }
 
@@ -825,3 +829,24 @@ button.linkish:hover { color: var(--accent); }
   padding: 2px 4px;
 }
 .task-more:hover { text-decoration: underline; }
+
+/* On a phone: the bar one line, its buttons their first word. */
+@media (max-width: 640px) {
+  .top { padding: 8px 12px; gap: 8px; }
+  .top .lbl { display: none; }
+  .actions button { white-space: nowrap; }
+}
+
+@media (pointer: coarse) {
+  /* Controls a finger hits, 32 points and more; form text at 16px,
+     below which iOS zooms the page in on it. */
+  button.ghost, button.primary, button.success, button.warn { min-height: 36px; }
+  select, textarea, input:not([type="checkbox"]):not([type="radio"]),
+  .detail-actions select, #add-reviewer, .comment-form textarea, .form input, .form textarea, .form select { font-size: 16px; }
+  input:not([type="checkbox"]):not([type="radio"]), #add-reviewer { min-height: 36px; }
+  /* A select keeps its own height in WebKit whatever its min-height. */
+  select, .detail-actions select { height: 36px; }
+  .filter, .row-copy, .task-chip, .tree-file, button.linkish, .commits .linkish { min-height: 32px; }
+  .row-copy { padding: 0 12px; }
+  .rev-x { min-width: 32px; min-height: 32px; }
+}

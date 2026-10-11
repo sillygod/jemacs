@@ -165,6 +165,26 @@ no inline script or handler, no fetch, images https or data: --- so an
 avatar that fails to load is dropped by a listener, not an =onerror=
 attribute.
 
+* On your phone
+
+From the herd page on your phone, a PR chip opens pr-view's page there
+--- through xwapp's address without the secret,
+=/open/pr-view#pr=<the PR's address>=, the Bitbucket or GitHub token
+staying in Emacs.  The page says which pull request it is for once it
+loads (=ready= with =pr=); a repository's list keeps its place the
+same way (=repo=, =KIND/OWNER/REPO=).  Only github.com and
+bitbucket.org pull requests, owner and repository in the forges' own
+characters.  The address follows the page as it moves, so a reload,
+or Emacs restarted (=pr-view-reopen=), comes back to the same place.
+
+There, Open and a commit open on the forge in a tab of the phone, Copy
+copies to its clipboard, and a ClickUp task opens in clickup-view's
+page there; Create, which takes a branch of a checkout on the Mac, is
+not offered.  Under 640 points the bar is one line, its buttons their
+first word, and a list row's when, comments and reviewers one line
+under its title; to a finger, controls 32 points and more, form text
+16px.
+
 * For other packages
 
 ghostherd's herd page shows the PR an agent's branch is on.  Two

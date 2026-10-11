@@ -262,6 +262,7 @@
       trail.push(view);
     }
     view = spec;
+    here(spec.kind === "task" ? spec.id : "");
     nav = null;
     progress(false);
   }
@@ -1009,7 +1010,7 @@
         }
         break;
       case "open-url":
-        emit("open-browser", { url: el.getAttribute("data-url") || "" });
+        openUrl(el.getAttribute("data-url") || "");
         break;
       case "status-menu":
         openMenu(!menuOpen);
@@ -1034,7 +1035,30 @@
     const href = a.getAttribute("href") || "";
     const id = a.getAttribute("data-task") || taskIdFromUrl(href);
     if (id) go({ kind: "task", id: id });
-    else if (/^(https?:|mailto:)/i.test(href)) emit("open-browser", { url: href });
+    else if (/^(https?:|mailto:)/i.test(href)) openUrl(href);
+  }
+
+  // On another device, what Emacs would open in its browser or copy to
+  // its clipboard is done on this one -- in the tap, for iOS.
+  function openUrl(url) {
+    if (!url) return;
+    if (XW.elsewhere) XW.open(url);
+    else emit("open-browser", { url: url });
+  }
+
+  function copyUrl(url) {
+    if (!url) return;
+    if (!XW.elsewhere) return emit("copy-url", { url: url });
+    XW.copy(url).then((ok) => (ok ? setStatus("Copied link") : setStatus("Could not copy " + url, "error")));
+  }
+
+  // In a tab, the task on screen is kept in its address: for a reload,
+  // or Emacs restarted, to come back to, and for the herd page or
+  // pr-view on a phone to open it at.
+  function here(id) {
+    if (!XW.browser) return;
+    const hash = id ? "#task=" + encodeURIComponent(id) : "";
+    if (location.hash !== hash) history.replaceState(null, "", hash || location.pathname + location.search);
   }
 
   // Every link is handled here: left alone, one would navigate the
@@ -1053,7 +1077,7 @@
       }
       const img = t.closest(".md img");
       if (img) {
-        emit("open-browser", { url: img.getAttribute("src") || "" });
+        openUrl(img.getAttribute("src") || "");
         return;
       }
       const btn = t.closest("[data-act]");
@@ -1097,8 +1121,8 @@
 
   btnBack.addEventListener("click", back);
   btnRefresh.addEventListener("click", refresh);
-  btnCopy.addEventListener("click", () => viewUrl() && emit("copy-url", { url: viewUrl() }));
-  btnBrowser.addEventListener("click", () => viewUrl() && emit("open-browser", { url: viewUrl() }));
+  btnCopy.addEventListener("click", () => copyUrl(viewUrl()));
+  btnBrowser.addEventListener("click", () => openUrl(viewUrl()));
 
   // Rows and status groups, in screen order, for the arrow keys.
   function stops() {
@@ -1366,5 +1390,5 @@
     },
   };
 
-  emit("ready");
+  emit("ready", { task: new URLSearchParams(location.hash.slice(1)).get("task") || "" });
 })();

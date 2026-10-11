@@ -106,7 +106,8 @@ rebuild the reviewer chips without asking for the PR again.")
                 :namespace "BB"
                 :idle-title "PR View"
                 :handler #'pr-view--handle-intent
-                :on-kill #'pr-view--on-kill)
+                :on-kill #'pr-view--on-kill
+                :reopen #'pr-view-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
 
@@ -158,6 +159,26 @@ KIND is `github' or `bitbucket'."
       (list :kind 'bitbucket
             :owner (match-string 1 url)
             :repo (match-string 2 url))))))
+
+(defun pr-view--pr-of-url (url)
+  "The pull request URL is, as (HOST . ID), HOST as `pr-view--parse-remote'
+gives one; or nil when URL is not a GitHub or Bitbucket pull request."
+  (when (and (stringp url)
+             (string-match "\\`https://\\(github\\.com\\|bitbucket\\.org\\)/\\([[:alnum:]_][[:alnum:]_.-]*\\)/\\([[:alnum:]_][[:alnum:]_.-]*\\)/\\(?:pull\\|pull-requests\\)/\\([0-9]+\\)\\(?:[/?#].*\\)?\\'"
+                           url))
+    (let ((kind (if (equal (match-string 1 url) "github.com") 'github 'bitbucket))
+          (path (if (string-search "/pull-requests/" url) "pull-requests" "pull")))
+      ;; Each forge's own word for it: a github.com/x/y/pull-requests/1 is no PR.
+      (when (equal path (if (eq kind 'github) "pull" "pull-requests"))
+        (cons (list :kind kind :owner (match-string 2 url) :repo (match-string 3 url))
+              (string-to-number (match-string 4 url)))))))
+
+(defun pr-view--repo-of (spec)
+  "The repository SPEC, \"KIND/OWNER/REPO\", names, as a host; or nil."
+  (when (and (stringp spec)
+             (string-match "\\`\\(github\\|bitbucket\\)/\\([[:alnum:]_][[:alnum:]_.-]*\\)/\\([[:alnum:]_][[:alnum:]_.-]*\\)\\'" spec))
+    (list :kind (intern (match-string 1 spec))
+          :owner (match-string 2 spec) :repo (match-string 3 spec))))
 
 (defun pr-view--resolve-host (&optional kind)
   "Return host plist, preferring explicit custom vars then git remote."
@@ -542,10 +563,18 @@ people who already answered have to be added back from REVIEWS."
     (pcase op
       ("ready"
        (setq pr-view--list-states '("OPEN" "MERGED"))
-       (if-let* ((id pr-view--pending-pr))
-           (progn (setq pr-view--pending-pr nil)
-                  (pr-view--fetch-detail id))
-         (pr-view--fetch-list)))
+       ;; A page in a tab says what it showed: one opened on the phone,
+       ;; or one coming back after a restart, which Emacs knows nothing of.
+       (let ((pr (pr-view--pr-of-url (alist-get 'pr intent)))
+             (repo (pr-view--repo-of (alist-get 'repo intent))))
+         (when (or pr repo)
+           (setq pr-view--host (or (car pr) repo)
+                 pr-view--list-cache nil
+                 pr-view--pending-pr (cdr pr)))
+         (if-let* ((id pr-view--pending-pr))
+             (progn (setq pr-view--pending-pr nil)
+                    (pr-view--fetch-detail id))
+           (pr-view--fetch-list))))
       ("refresh-list"
        (setq pr-view--list-states
              (pr-view--normalize-states (alist-get 'states intent)))
@@ -1716,6 +1745,17 @@ Nothing goes to pr-view's page."
 
 (defun pr-view--on-kill ()
   (setq pr-view--inflight nil))
+
+;;;###autoload
+(defun pr-view-reopen ()
+  "Make pr-view ready for a browser tab that comes to it by itself: one
+on your phone, opened from the herd page, or one coming back after a
+restart.  The tab says which pull request or repository it shows.
+xwapp calls this; autoloaded, so that once Emacs is up xwapp can load
+the package through it, for that tab to find."
+  (setq pr-view--list-cache nil
+        pr-view--inflight nil
+        pr-view--pending-pr nil))
 
 ;;;###autoload
 (defun pr-view (&optional kind)

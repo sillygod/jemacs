@@ -508,7 +508,8 @@
     page = kind;
     btnBack.hidden = kind === "list";
     btnRefresh.hidden = kind !== "list";
-    btnCreate.hidden = kind !== "list";
+    // A pull request is made from a branch of a checkout on the Mac.
+    btnCreate.hidden = kind !== "list" || XW.elsewhere;
     btnBrowser.hidden = kind !== "detail";
     btnCopy.hidden = kind !== "detail";
   }
@@ -535,6 +536,7 @@
     const forge = payload.forge || "";
     const owner = payload.owner || "";
     const repo = payload.repo || "";
+    if (forge && owner && repo) here("repo", forge + "/" + owner + "/" + repo);
     contextEl.textContent = (forge ? forge + " · " : "") + owner + "/" + repo;
     if (payload.states && payload.states.length) {
       selectedStates = payload.states.map((s) => String(s).toUpperCase());
@@ -647,7 +649,7 @@
     app.querySelectorAll(".row-copy").forEach((btn) => {
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        emit("copy-url", { url: btn.getAttribute("data-url") || "" });
+        copyUrl(btn.getAttribute("data-url") || "");
       });
     });
     app.querySelectorAll(".pr-row").forEach((row) => {
@@ -987,6 +989,7 @@
     setChrome("detail");
     btnBrowser.hidden = !pr.url;
     btnCopy.hidden = !pr.url;
+    if (pr.url) here("pr", pr.url);
     contextEl.textContent = "#" + (pr.id || "") + " · " + (pr.state || "");
     const open = String(pr.state || "").toUpperCase() === "OPEN" && !isDraft(pr);
     const strategies = mergeOptions(forge)
@@ -1129,7 +1132,7 @@
       commitPanel.addEventListener("click", (ev) => {
         const btn = ev.target.closest(".linkish");
         if (!btn) return;
-        emit("open-browser", { url: btn.getAttribute("data-url") || "" });
+        openUrl(btn.getAttribute("data-url") || "");
       });
     }
     app.querySelectorAll(".tab").forEach((btn) => {
@@ -1419,7 +1422,7 @@
     if (!t) return;
     const chip = t.closest(".task-chip");
     if (chip) {
-      emit("open-task", { ref: chip.getAttribute("data-task") || "" });
+      openTask(chip.getAttribute("data-task") || "");
       return;
     }
     if (t.closest(".task-more")) {
@@ -1430,9 +1433,43 @@
     const a = t.closest("a[href]");
     if (a && CLICKUP_TASK_LINK.test(a.getAttribute("href") || "")) {
       ev.preventDefault();
-      emit("open-task", { ref: a.getAttribute("href") });
+      openTask(a.getAttribute("href"));
     }
   });
+
+  // On another device, what Emacs would open in its browser or copy to
+  // its clipboard is done on this one -- in the tap, for iOS -- and a
+  // task opens in clickup-view's page there, through Emacs's address
+  // for it (xwapp-remote-open-url): the ClickUp token stays in Emacs.
+  function openUrl(url) {
+    if (!XW.elsewhere) emit("open-browser", { url: url || "" });
+    else if (url) XW.open(url);
+  }
+
+  function copyUrl(url) {
+    if (!XW.elsewhere) return emit("copy-url", { url: url || "" });
+    if (!url) return setStatus("No PR URL yet.", "error");
+    XW.copy(url).then((ok) => (ok ? setStatus("Copied PR link") : setStatus("Could not copy " + url, "error")));
+  }
+
+  function openTask(ref) {
+    if (!XW.elsewhere) emit("open-task", { ref: ref });
+    else if (ref) XW.open("/open/clickup-view#task=" + encodeURIComponent(ref), "clickup-view");
+  }
+
+  // In a tab, where the page is -- a pull request, or a repository's
+  // list -- is kept in its address: for a reload, or Emacs restarted,
+  // to come back to, and for the herd page on a phone to open it at.
+  function here(key, value) {
+    if (!XW.browser) return;
+    const hash = "#" + key + "=" + encodeURIComponent(value);
+    if (location.hash !== hash) history.replaceState(null, "", hash);
+  }
+
+  function asked() {
+    const p = new URLSearchParams(location.hash.slice(1));
+    return { pr: p.get("pr") || "", repo: p.get("repo") || "" };
+  }
 
   // An avatar that fails to load leaves its initials showing.  Not an
   // inline onerror: the page's CSP refuses inline handlers.  Capture,
@@ -1450,14 +1487,8 @@
     setStatus("Loading branches…");
     emit("create-form");
   });
-  btnBrowser.addEventListener("click", () => {
-    const url = lastDetail && lastDetail.pr && lastDetail.pr.url;
-    emit("open-browser", { url: url || "" });
-  });
-  btnCopy.addEventListener("click", () => {
-    const url = lastDetail && lastDetail.pr && lastDetail.pr.url;
-    emit("copy-url", { url: url || "" });
-  });
+  btnBrowser.addEventListener("click", () => openUrl(lastDetail && lastDetail.pr && lastDetail.pr.url));
+  btnCopy.addEventListener("click", () => copyUrl(lastDetail && lastDetail.pr && lastDetail.pr.url));
 
   document.addEventListener("keydown", (ev) => {
     if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) return;
@@ -1467,5 +1498,5 @@
     }
   });
 
-  emit("ready");
+  emit("ready", asked());
 })();

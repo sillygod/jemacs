@@ -835,5 +835,56 @@ the list; the next time it is ready, the list again."
         (pr-view--handle-intent '((op . "ready")))
         (should (equal (reverse fetched) '((detail 87) list)))))))
 
+(ert-deftest pr-view-test-a-pull-request-by-its-address ()
+  "A GitHub or Bitbucket pull request's address, each in its own word for
+it, gives its repository and number; nothing else does -- not another
+site, not plain http, not a name that leaves the repository's path."
+  (should (equal (pr-view--pr-of-url "https://bitbucket.org/unno/shop/pull-requests/42")
+                 '((:kind bitbucket :owner "unno" :repo "shop") . 42)))
+  (should (equal (pr-view--pr-of-url "https://github.com/me/my.app/pull/7/files")
+                 '((:kind github :owner "me" :repo "my.app") . 7)))
+  (dolist (url '("https://github.com/me/x/pull-requests/4" "https://bitbucket.org/ws/r/pull/5"
+                 "http://github.com/me/x/pull/4" "https://evil.example/github.com/a/b/pull/1"
+                 "https://bitbucket.org/../r/pull-requests/1" "https://github.com/a/b%2F../pull/1"
+                 "https://github.com/me/x/pull/" "" nil :false))
+    (should-not (pr-view--pr-of-url url)))
+  (should (equal (pr-view--repo-of "bitbucket/unno/shop") '(:kind bitbucket :owner "unno" :repo "shop")))
+  (should (equal (pr-view--repo-of "github/me/my.app") '(:kind github :owner "me" :repo "my.app")))
+  (dolist (spec '("gitlab/a/b" "github/../x" "github/a" "github/a/b/c" "" nil))
+    (should-not (pr-view--repo-of spec))))
+
+(ert-deftest pr-view-test-a-tab-says-what-it-shows ()
+  "A page in a tab says what it showed -- opened on the phone at a pull
+request, or back after a restart, which Emacs knows nothing of: that
+pull request, or that repository's list.  Without, as before."
+  (let (fetched)
+    (cl-letf (((symbol-function 'pr-view--fetch-detail)
+               (lambda (id) (push (list 'detail id pr-view--host) fetched)))
+              ((symbol-function 'pr-view--fetch-list)
+               (lambda () (push (list 'list pr-view--host) fetched))))
+      (let ((pr-view--host '(:kind github :owner "me" :repo "x"))
+            (pr-view--pending-pr 87)
+            (pr-view--list-cache '(stale)))
+        (pr-view--handle-intent '((op . "ready") (pr . "https://bitbucket.org/unno/shop/pull-requests/42") (repo . "")))
+        (should (equal (car fetched) '(detail 42 (:kind bitbucket :owner "unno" :repo "shop"))))
+        (should-not pr-view--list-cache)
+        (should-not pr-view--pending-pr)
+        (pr-view--handle-intent '((op . "ready") (pr . "") (repo . "github/me/y")))
+        (should (equal (car fetched) '(list (:kind github :owner "me" :repo "y"))))
+        ;; What it says that is no pull request or repository: as before.
+        (setq pr-view--pending-pr 5)
+        (pr-view--handle-intent '((op . "ready") (pr . "https://example.com/x") (repo . "gitlab/a/b")))
+        (should (equal (car fetched) '(detail 5 (:kind github :owner "me" :repo "y"))))
+        (pr-view--handle-intent '((op . "ready")))
+        (should (equal (car fetched) '(list (:kind github :owner "me" :repo "y"))))))))
+
+(ert-deftest pr-view-test-opens-again-by-itself ()
+  "The page can open by itself, for a tab on your phone or one back after
+a restart; what it opens with is the tab's to say, not what was left."
+  (should (eq (xwapp-reopen pr-view--app) #'pr-view-reopen))
+  (let ((pr-view--list-cache '(stale)) (pr-view--inflight t) (pr-view--pending-pr 3))
+    (pr-view-reopen)
+    (should-not (or pr-view--list-cache pr-view--inflight pr-view--pending-pr))))
+
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

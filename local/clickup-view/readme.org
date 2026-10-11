@@ -114,6 +114,20 @@ up from any of them; a folder crumb opens its space at that folder.
 - A Content-Security-Policy behind the sanitizer: no inline script or
   handler, no =javascript:= link, no fetch; images https or data:.
 
+* On your phone
+
+From the herd page on your phone, or from pr-view there, a task opens
+in clickup-view's page there --- through xwapp's address without the
+secret, =/open/clickup-view#task=<id>=, the ClickUp token staying in
+Emacs.  The page says which task once it loads (=ready= with =task=: an
+id, a CU-id or a task link), and keeps the task on screen in its
+address, so a reload, or Emacs restarted (=clickup-view-reopen=),
+comes back to it.  Open and the links in a task open in a tab of the
+phone, Copy copies to its clipboard.  Under 640 points the bar is one
+line, its buttons their first word, with where you are --- space and
+list --- on a line under it; to a finger, controls 32 points and more,
+form text 16px.
+
 * Page contract
 
 Intents, page → Emacs, as =document.title = "clickup:" + JSON=.  The
@@ -125,7 +139,7 @@ dropped, and a reloaded page's first intent mistaken for the old one's.
 
 | op               | fields                           |
 |------------------+----------------------------------|
-| =ready=          |                                  |
+| =ready=          | task (from the page's address)   |
 | =refresh-spaces= |                                  |
 | =open-space=     | id, force                        |
 | =open-list=      | id, page, closed, mine           |

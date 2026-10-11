@@ -568,3 +568,25 @@ li.done > .box { background: var(--plus); border-color: var(--plus); color: #0e1
 .thread .composer { margin: 6px 0 0; }
 
 .more { margin: 12px 0 0; width: 100%; }
+
+/* On a phone: the bar one line, its buttons their first word; where
+   you are, space and list, on a line of its own under it. */
+@media (max-width: 640px) {
+  .top { flex-wrap: wrap; row-gap: 4px; padding-left: 12px; padding-right: 12px; }
+  .brand { display: contents; }
+  .actions { margin-left: auto; }
+  .actions button { white-space: nowrap; }
+  .top .lbl { display: none; }
+  .crumbs { order: 3; flex-basis: 100%; }
+}
+
+@media (pointer: coarse) {
+  /* Controls a finger hits, 32 points and more; form text at 16px,
+     below which iOS zooms the page in on it. */
+  button.ghost, button.primary { min-height: 36px; }
+  .mark { min-width: 32px; min-height: 32px; }
+  .crumb, .status-btn, button.linkish { min-height: 32px; }
+  .row { min-height: 36px; }
+  .open-row input, #list-filter, .composer textarea { font-size: 16px; }
+}
+

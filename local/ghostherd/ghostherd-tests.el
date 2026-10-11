@@ -4944,6 +4944,32 @@ there, and it is a conversation; otherwise the page is told why."
                 ghostherd--sessions)
        ,@body)))
 
+(defvar ghostherd-test--prs-app)
+(defvar ghostherd-test--closed-app)
+
+(ert-deftest ghostherd-test-herd-says-what-opens-on-the-phone ()
+  "The page is told which of pr-view and clickup-view your other devices
+can open, by Emacs's address for them that holds no secret: loaded,
+able to open by themselves, with somewhere to be reached from.  Not
+so, a chip there goes to the forge or ClickUp."
+  (ghostherd-test--with-herd
+    (let ((ghostherd-test--prs-app (xwapp-create :buffer-name " *t-prs*" :index "/x/prs/ui/index.html"
+                                                 :reopen #'ignore))
+          (ghostherd-test--closed-app (xwapp-create :buffer-name " *t-closed*" :index "/x/c/ui/index.html"))
+          (xwapp-remote-hosts '("box.tail0.ts.net")))
+      (should (eq (ghostherd-memory-page--opens-elsewhere 'ghostherd-test--prs-app) t))
+      (should (eq (ghostherd-memory-page--opens-elsewhere 'ghostherd-test--closed-app) :json-false))
+      (should (eq (ghostherd-memory-page--opens-elsewhere 'ghostherd-test--never-loaded) :json-false))
+      (let ((xwapp-remote-hosts nil))
+        (should (eq (ghostherd-memory-page--opens-elsewhere 'ghostherd-test--prs-app) :json-false)))
+      (cl-letf (((symbol-function 'ghostherd-memory-page--opens-elsewhere)
+                 (lambda (var) (if (eq var 'pr-view--app) t :json-false))))
+        (ghostherd-memory-page--send-herd)
+        (should (equal (plist-get (ghostherd-test--call calls "renderHerd") :open)
+                       '(:pr t :task :json-false))))
+      (remhash ghostherd-test--prs-app xwapp--served)
+      (remhash ghostherd-test--closed-app xwapp--served))))
+
 (ert-deftest ghostherd-test-herd-page-snapshot ()
   (ghostherd-test--with-herd
     (ghostherd-memory-page--send-herd)

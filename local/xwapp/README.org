@@ -142,12 +142,15 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
   =tailscale serve --http=80= and ="http"=: still encrypted between
   devices by the tailnet, but the browser does not count the page as
   secure, which some of its features need.
-- *What you tap acts where you are.*  A page Emacs opens --- pr-view
-  for a PR --- opens on this machine, so a page on another device
-  (=XW.elsewhere=) links to the web's own page instead, which opens
-  there, and copies with =XW.copy= to that device's clipboard rather
-  than to Emacs's.  Over plain http there is no clipboard API; a
-  selected textarea and =execCommand= still copy, within the tap.
+- *What you tap acts where you are.*  On another device
+  (=XW.elsewhere=) a link Emacs would open in its browser opens there
+  instead, =XW.open= in the tap itself (iOS opens no tab a script asks
+  for later), and a copy goes with =XW.copy= to that device's clipboard
+  rather than to Emacs's.  Over plain http there is no clipboard API; a
+  selected textarea and =execCommand= still copy, within the tap.  A
+  page of another app opens there through its address without the
+  secret, below --- the herd page's PR and task chips open pr-view and
+  clickup-view so, in one tab each, used again.
 - *An address without the secret*, for a message that passes through
   others' hands --- a chat's server keeps what it carries:
   =xwapp-remote-open-url= gives =/open/<pkg>#fragment=.  Asked there by
@@ -178,8 +181,8 @@ What the pages share on the browser side, so it is fixed once:
 | File                   | Gives                                                |
 |------------------------+------------------------------------------------------|
 | =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
-|                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=; the   |
-|                        | QR code for your phone                               |
+|                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=,       |
+|                        | =XW.open(url, name)=; the QR code for your phone     |
 | =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
 | =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
 | =vendor/qrcode.js=     | qrcode-generator 1.4.4 (identical to npm's), loaded |

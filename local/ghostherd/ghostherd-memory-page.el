@@ -947,6 +947,15 @@ alone."
       (browse-url (concat "https://app.clickup.com/t/" id)))))
 
 
+(defun ghostherd-memory-page--opens-elsewhere (var)
+  "Whether the app in VAR opens on your other devices by its address
+that holds no secret (`xwapp-remote-open-url'): loaded, and able to open
+by itself.  Not loaded, a pull request or task chip there goes to the
+forge or ClickUp instead, which want their own login."
+  (if (and xwapp-remote-hosts (boundp var) (xwapp-reopen (symbol-value var)))
+      t
+    :json-false))
+
 (defun ghostherd-memory-page--send-herd ()
   "Send the herd, its asks and the usage to the page."
   (ghostherd-memory-page--js
@@ -958,6 +967,8 @@ alone."
          :hooks (ghostherd-memory-page--hooks-payload)
          :work (ghostherd-memory-page--projects-work)
          :usage (ghostherd-memory-page--usage)
+         :open (list :pr (ghostherd-memory-page--opens-elsewhere 'pr-view--app)
+                     :task (ghostherd-memory-page--opens-elsewhere 'clickup-view--app))
          :kinds (ghostherd-memory-page--vec
                  (mapcar #'symbol-name
                          (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))

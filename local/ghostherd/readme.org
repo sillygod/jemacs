@@ -1101,9 +1101,12 @@ are the other tabs (below, and "What happened while you were away").
   Refresh, and scan the QR code it shows with the phone's camera.
   Opened there, the page is the phone's: the one in Emacs lets go of
   it, and takes it back when you open it again.  What you tap there
-  opens there: a PR its Bitbucket or GitHub page, a task its ClickUp
-  page --- in their apps, if the phone has them --- a link in a
-  message a tab of its own; Copy copies to the phone.  Laid out for
+  opens there: a PR in pr-view's page, a task in clickup-view's, each
+  in a tab of its own used again --- through Emacs's address for them
+  without the secret, the forges' tokens staying in Emacs; their
+  Bitbucket, GitHub or ClickUp pages when pr-view or clickup-view is
+  not loaded.  A link in a message opens a tab of its own; Copy copies
+  to the phone.  Laid out for
   it: a room opens as its chat, its head two lines, the box the
   screen's width; Columns one agent to the screen, swiped; Image picks
   a photo or takes one, sent to Emacs at 2000px at most.  An agent's

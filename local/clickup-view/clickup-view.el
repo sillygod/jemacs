@@ -87,7 +87,8 @@
                 :namespace "CU"
                 :idle-title "ClickUp"
                 :handler #'clickup-view--handle-intent
-                :on-kill #'clickup-view--on-kill)
+                :on-kill #'clickup-view--on-kill
+                :reopen #'clickup-view-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
 
@@ -850,7 +851,12 @@ on its own (divider, table)."
                       (team . ,clickup-view--team)
                       (spaces . ,(vconcat clickup-view--spaces)))))
 
-(defun clickup-view--on-ready ()
+(defun clickup-view--on-ready (&optional asked)
+  "Send the page what it needs on loading, then a task or the spaces.
+ASKED is the task a page in a tab says it showed: one opened on the
+phone, or one coming back after a restart, which Emacs knows nothing of."
+  (when-let* ((id (clickup-view--normalize-id asked)))
+    (setq clickup-view--pending id))
   (clickup-view--with-context
    (lambda ()
      (clickup-view--send-context)
@@ -1024,7 +1030,7 @@ shows its own progress."
   "Dispatch INTENT from the page.  Errors are shown there, not lost."
   (condition-case e
       (pcase (alist-get 'op intent)
-        ("ready" (clickup-view--on-ready))
+        ("ready" (clickup-view--on-ready (alist-get 'task intent)))
         ("refresh-spaces" (clickup-view--load-spaces))
         ("open-space" (clickup-view--load-space (alist-get 'id intent)
                                                 (clickup-view--truthy (alist-get 'force intent))))
@@ -1058,6 +1064,15 @@ shows its own progress."
 ;;; Commands
 
 (defun clickup-view--on-kill ()
+  (setq clickup-view--pending nil))
+
+;;;###autoload
+(defun clickup-view-reopen ()
+  "Make clickup-view ready for a browser tab that comes to it by itself:
+one on your phone, opened from the herd page or from pr-view there, or
+one coming back after a restart.  The tab says which task it shows.
+xwapp calls this; autoloaded, so that once Emacs is up xwapp can load
+the package through it, for that tab to find."
   (setq clickup-view--pending nil))
 
 (defun clickup-view--open (id)

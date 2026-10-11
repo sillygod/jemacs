@@ -15,6 +15,7 @@
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
  *   XW.copy(text)        a promise: whether TEXT is on this device's clipboard
+ *   XW.open(url, name)   URL in a tab of this device's browser, from a tap
  *   XW.kit(call)         Emacs's calls to the kit itself, in the xwidget
  *
  * An element with data-xw-phone is the page's button for "open it on
@@ -304,6 +305,20 @@
     return Promise.resolve(ok);
   }
 
+  // ---- This device's browser --------------------------------------------
+  //
+  // On another device, a link Emacs would open in its browser opens here
+  // instead, in a tab of its own -- from the tap itself, for iOS opens
+  // none a script asks for later.  NAME, for a page of Emacs's own, is
+  // the tab to use again: the one it is in already, say.
+
+  function open(url, name) {
+    url = String(url == null ? "" : url);
+    if (!/^(https?:|mailto:|\/[^/])/i.test(url)) return false;
+    window.open(url, name || "_blank", name ? "" : "noopener");
+    return true;
+  }
+
   function bridge(prefix) {
     if (BROWSER) return (kitEmit = servedBridge());
     kitEmit = titleBridge(prefix);
@@ -562,6 +577,7 @@
     browser: BROWSER,
     elsewhere: ELSEWHERE,
     copy: copy,
+    open: open,
     kit: kit,
   });
 })();
