@@ -83,13 +83,11 @@ def _options(session: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 def answer_rows(session: dict[str, Any]) -> list[list[dict]]:
     """A button for each of a blocked SESSION's choices, in its words, a
-    row each; 1 / 2 / 3 when its menu could not be read."""
+    row each; none when its menu could not be read, for a number picked
+    blind could be any of them."""
     short = session["short"]
-    options = _options(session)
-    if not options:
-        return [[_btn(str(n), f"n:{short}:{n}") for n in (1, 2, 3)]]
     return [[_btn(_cut(f"{o['n']} · {o.get('label') or ''}", 60), f"n:{short}:{o['n']}")]
-            for o in options]
+            for o in _options(session)]
 
 
 def menu_text(session: dict[str, Any] | None, reason: str = "") -> str:

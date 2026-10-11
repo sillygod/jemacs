@@ -78,15 +78,16 @@ def test_prompt_next_message(tmp_path):
 
 
 def test_blocked_card_has_answer_keys(tmp_path):
+    """A key per choice of a menu Emacs read; none for one it could not,
+    for a number picked blind could be any of its choices -- abort stays."""
     bot, herd = _bot(tmp_path)
+    data = lambda s: [btn["callback_data"] for row in session_keyboard(s)["inline_keyboard"] for btn in row]
     agy = herd.session("agy-commit")
-    kb = session_keyboard(agy)
-    data = [
-        btn["callback_data"]
-        for row in kb["inline_keyboard"]
-        for btn in row
-    ]
-    assert f"n:{agy['short']}:1" in data
+    assert not any(d.startswith("n:") for d in data(agy)) and f"ab:{agy['short']}" in data(agy)
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "blocked", "prompt": MENU},
+                        {"name": "grok-dev", "kind": "grok", "state": "working"}])
+    agy = herd.session("agy-commit")
+    assert [d for d in data(agy) if d.startswith("n:")] == [f"n:{agy['short']}:{n}" for n in (1, 2, 3, 4)]
     grok = herd.session("grok-dev")
     grok_data = [
         btn["callback_data"]
@@ -211,16 +212,16 @@ def test_tick_keeps_what_emacs_pushes(tmp_path):
     reset_herd()
 
 
-def test_a_blocked_agent_pushed_with_its_answers_and_room(tmp_path):
+def test_a_blocked_agent_pushed_with_its_screen_and_room(tmp_path):
     bot, herd = _bot(tmp_path)
     push = _push(herd, kind="blocked", session="agy-commit", project="/tmp/shop/", url=ROOM, reason="Allow npm test?")
     text, markup = bot.prepare_push(push, 0)
     assert text.startswith("⚠ agy-commit is blocked · shop") and "Allow npm test?" in text
     short = herd.session("agy-commit")["short"]
     rows = markup["inline_keyboard"]
-    assert [b["callback_data"] for b in rows[0]] == [f"n:{short}:{n}" for n in (1, 2, 3)]
-    assert rows[1] == [{"text": "screen", "callback_data": f"sc:{short}"}]
-    assert rows[2] == [{"text": "Open the room", "url": ROOM}]
+    # Its menu not read: no number to pick blind.
+    assert rows[0] == [{"text": "screen", "callback_data": f"sc:{short}"}]
+    assert rows[1] == [{"text": "Open the room", "url": ROOM}]
     # Answered at the desk meanwhile, or gone: not pushed.
     herd.tick(sessions=[{"name": "agy-commit", "state": "working"}])
     assert bot.prepare_push(push, 0) == ("", None)

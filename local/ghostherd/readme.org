@@ -333,7 +333,12 @@ Three things worth knowing:
   usual reason to send a key is to make the agent *stop*. The next poll
   reports what actually happened.
 - =ghostherd-answer= is 1-based and drives the menu with arrows, not
-  digits, so it works on CLIs that ignore the number.
+  digits, so it works on CLIs that ignore the number.  It counts the
+  moves from the choice highlighted on screen --- agy's menu wraps
+  around, so Ups "to the top" are not --- and presses Return only once
+  the screen shows the highlight on yours; the answer, or why it was
+  not given, goes to the herd log.  A menu it cannot read off the
+  screen, numbers and highlight, it does not answer.
 - Friendly names (=esc=, =C-c=, =down=) are mapped in
   =ghostherd-key-aliases=; each backend translates them into its own
   vocabulary, and anything unlisted is passed through unchanged, so the
@@ -409,7 +414,8 @@ screen / explain / prompt / interrupt.  =screen= and =explain= reply
 from that snapshot immediately (the pane Emacs already captured);
 they do not wait for another tick.  A =blocked= session also gets a
 button per choice of its menu, in its words (=ghostherd-answer=), and
-abort.  Kill and respawn sit
+abort; no number where its menu could not be read, for one picked
+blind could be any of its choices.  Kill and respawn sit
 behind =more= and a confirm.  Prompt text is queued like herd mail: a
 =working= agent does not receive it until idle.
 
@@ -1134,8 +1140,8 @@ are the other tabs (below, and "What happened while you were away").
   clipboard pastes the text, there and in any box on the page.
 - What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
   Esc, the screen; on a blocked agent, what its menu asks and a button
-  per choice in its words (1 / 2 / 3 where its menu cannot be read off
-  its screen: =ghostherd-session-prompt=); under /more/ C-c,
+  per choice in its words (none where its menu cannot be read off its
+  screen: =ghostherd-session-prompt=); under /more/ C-c,
   notes, respawn (fresh or continuing) and kill, the last two asked
   first.  /+ New agent/ starts one in that project, kind and name
   given, without leaving the page.

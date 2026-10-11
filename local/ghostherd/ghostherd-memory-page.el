@@ -1240,7 +1240,7 @@ again only changes which those are."
              (let ((n (alist-get 'n intent)))
                (unless (and (integerp n) (<= 1 n 9)) (user-error "Choice is 1 to 9"))
                (ghostherd-answer s n)
-               (format "Answered %d to %s" n name)))
+               (format "Answering %s with %d" name n)))
             ("agent-respawn"
              (ghostherd-respawn s (ghostherd-memory-page--truthy (alist-get 'continue intent)))
              (format "Respawned %s" name))

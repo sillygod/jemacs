@@ -2395,25 +2395,6 @@ what `ghostherd-send' does -- would be exactly backwards."
       (should (equal (ghostherd-tests--recording-keys (ghostherd-abort s))
                      '(("c" . "ctrl")))))))
 
-(ert-deftest ghostherd-test-answer-homes-before-descending ()
-  "The highlighted option is not necessarily the first, so counting down
-from wherever the cursor happens to be would pick the wrong answer."
-  (ghostherd-tests--with-herd ()
-    (let* ((s (ghostherd-tests--session :name "a"))
-           (sent (ghostherd-tests--recording-keys (ghostherd-answer s 3)))
-           (names (mapcar #'car sent)))
-      (should (equal (last names) '("return")))
-      (should (= (cl-count "down" names :test #'equal) 2))
-      (should (> (cl-count "up" names :test #'equal) 1))
-      ;; every `up' precedes every `down'
-      (should (< (cl-position "up" names :test #'equal :from-end t)
-                 (cl-position "down" names :test #'equal))))))
-
-(ert-deftest ghostherd-test-answer-rejects-zero ()
-  (ghostherd-tests--with-herd ()
-    (let ((s (ghostherd-tests--session :name "a")))
-      (should-error (ghostherd-answer s 0) :type 'user-error))))
-
 (ert-deftest ghostherd-test-send-keys-requires-live-buffer ()
   (ghostherd-tests--with-herd ()
     (let ((s (ghostherd-tests--session :name "a")))
@@ -6694,17 +6675,25 @@ lines above the first choice up to a rule, each choice's first line."
                    :options ((1 . "Yes, run command")
                              (2 . "Yes, and always allow in this conversation for commands that start with 'grep'")
                              (3 . "Yes, and always allow for commands that start with 'grep' (Persist to settings.json)")
-                             (4 . "No, cancel")))))
+                             (4 . "No, cancel"))
+                   :on 1)))
   (should (equal (ghostherd--prompt ghostherd-test--claude-question)
                  '(:question "Turn it on now?\nI set the port, then run `tailscale serve --bg` to it."
                    :options ((1 . "Yes, turn it on")
                              (2 . "Not yet, and leave the code loaded but inactive until I say so")
-                             (3 . "Type something.") (4 . "Chat about this")))))
+                             (3 . "Type something.") (4 . "Chat about this"))
+                   :on 1)))
   (should (equal (ghostherd--prompt ghostherd-test--claude-permission)
                  '(:question "Bash command\nnpm test -- --runInBand\nRun the test suite\nDo you want to proceed?"
                    :options ((1 . "Yes")
                              (2 . "Yes, and don't ask again for npm test commands in /x")
-                             (3 . "No, and tell Claude what to do differently (esc)")))))
+                             (3 . "No, and tell Claude what to do differently (esc)"))
+                   :on 1)))
+  ;; On: the choice its mark is on, wherever; none marked, none.
+  (should (eql (plist-get (ghostherd--prompt (ghostherd-test--agy-menu-on 3)) :on) 3))
+  (should (equal (plist-get (ghostherd--prompt (ghostherd-test--agy-menu-on nil)) :options)
+                 (plist-get (ghostherd--prompt ghostherd-test--agy-menu) :options)))
+  (should-not (plist-get (ghostherd--prompt (ghostherd-test--agy-menu-on nil)) :on))
   ;; In a box, a choice's description is not its words wrapped, however
   ;; wide the box's padding makes its line.
   (should (equal (plist-get (ghostherd--prompt (concat "│ Run it?                                                         │\n"
@@ -6719,6 +6708,118 @@ lines above the first choice up to a rule, each choice's first line."
                                       "\n> 1. " (make-string 120 ?x) "\n  2. No\n"))))
     (should (= (length (cdr (assq 1 (plist-get p :options)))) 100))
     (should (equal (plist-get p :question) "line 4\nline 5\nline 6\nline 7\nline 8\nline 9"))))
+
+;;; Answering a menu
+
+(defun ghostherd-test--agy-menu-on (on)
+  "agy's menu with its highlight on choice ON, or on none."
+  (replace-regexp-in-string
+   "^[> ] \\([1-4]\\)\\. "
+   (lambda (m) (format "%s %s. " (if (eql (string-to-number (match-string 1 m)) on) ">" " ")
+                       (match-string 1 m)))
+   ghostherd-test--agy-menu t t))
+
+(defun ghostherd-test--answer (choice &rest how)
+  "Answer CHOICE on a model of agy's menu, which wraps around at either end.
+HOW: :on where its highlight starts, :lag looks that still see it there
+once moved, :stuck when arrows do nothing, :went when the menu goes once
+a key is sent, :gone when the agent leaves the herd.  Returns (:keys the
+keys sent :pressed the choice Return went on :entry the log's last :looks)."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((ghostherd-tests--fake-live t)
+             (s (ghostherd-tests--session :name "agy-c" :kind 'agy :backend 'fake))
+             (on (or (plist-get how :on) 1))
+             (shown on)
+             (lag (or (plist-get how :lag) 0))
+             (looks 0) keys pressed later)
+        (cl-letf (((symbol-function 'ghostherd--host-capture)
+                   (lambda (_s &optional _n)
+                     (cl-incf looks)
+                     (if (and keys (> lag 0)) (cl-decf lag) (setq shown on))
+                     (if (and keys (plist-get how :went)) "> \n" (ghostherd-test--agy-menu-on shown))))
+                  ((symbol-function 'ghostherd--host-send-keys)
+                   (lambda (_s ks)
+                     (dolist (k ks)
+                       (push k keys)
+                       (unless (plist-get how :stuck)
+                         (pcase k
+                           ("up" (setq on (1+ (mod (- on 2) 4))))
+                           ("down" (setq on (1+ (mod on 4))))))
+                       (when (equal k "return") (setq pressed on)))))
+                  ((symbol-function 'run-at-time)
+                   (lambda (_t _r f &rest args) (setq later (append later (list (cons f args)))))))
+          (ghostherd-answer s choice)
+          (when (plist-get how :gone)
+            (remhash (ghostherd-session-id s) ghostherd--sessions))
+          (cl-loop repeat 50 while later
+                   do (let ((next (pop later))) (apply (car next) (cdr next))))
+          (should-not later)
+          (list :keys (reverse keys) :pressed pressed :entry (car ghostherd--log) :looks looks))))))
+
+(ert-deftest ghostherd-test-answer-moves-from-the-highlight ()
+  "Every choice of a menu that wraps around, from wherever its highlight
+starts: the moves count from there, and Return goes on that choice.
+Ups enough to reach the top, then Downs, took agy's Yes round to its
+last choice, \"No, cancel\"."
+  (dolist (from '(1 2 3 4))
+    (dolist (to '(1 2 3 4))
+      (let ((got (ghostherd-test--answer to :on from)))
+        (should (eql (plist-get got :pressed) to))
+        (should (equal (plist-get got :keys)
+                       (append (make-list (abs (- to from)) (if (> to from) "down" "up"))
+                               '("return"))))))))
+
+(ert-deftest ghostherd-test-answer-returns-on-the-screens-word ()
+  "Return waits for the screen to show the highlight on the choice; the
+answer is logged in its words.  Arrows that went nowhere, or a menu
+gone, leave it unanswered after a few looks, logged with the screen; an
+agent gone from the herd is let be."
+  (let ((got (ghostherd-test--answer 3 :lag 2)))
+    (should (eql (plist-get got :pressed) 3))
+    (should (equal (plist-get got :keys) '("down" "down" "return")))
+    (should (equal (ghostherd-log-entry-text (plist-get got :entry))
+                   "← 3. Yes, and always allow for commands that start with 'grep' (Persist to settings.json)")))
+  (let ((got (ghostherd-test--answer 2 :stuck t)))
+    (should-not (plist-get got :pressed))
+    (should (equal (plist-get got :keys) '("down")))
+    (should (= (plist-get got :looks) (+ 2 ghostherd--answer-looks)))
+    (should (equal (ghostherd-log-entry-text (plist-get got :entry))
+                   "2 not answered: the highlight stayed on 1"))
+    (should (string-match-p "> 1\\. Yes" (ghostherd-log-entry-screen (plist-get got :entry)))))
+  (let ((got (ghostherd-test--answer 2 :went t)))
+    (should-not (plist-get got :pressed))
+    (should (equal (ghostherd-log-entry-text (plist-get got :entry)) "2 not answered: the menu went")))
+  (let ((got (ghostherd-test--answer 2 :gone t)))
+    (should (equal (plist-get got :keys) '("down")))
+    (should-not (plist-get got :entry))))
+
+(ert-deftest ghostherd-test-answer-only-a-menu-it-can-read ()
+  "No menu with numbers, no such choice, no highlight to count from, or
+no host: refused, and no key sent."
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd-tests--fake-live t)
+           (s (ghostherd-tests--session :name "agy-c" :kind 'agy :backend 'fake))
+           (did nil))
+      (cl-letf (((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k did)))
+                ((symbol-function 'run-at-time) (lambda (&rest a) (push a did))))
+        (pcase-dolist (`(,screen . ,choice)
+                       (list (cons (ghostherd-test--claude-screen "❯ ") 1)
+                             (cons ghostherd-test--agy-menu 0)
+                             (cons ghostherd-test--agy-menu 5)
+                             (cons (ghostherd-test--agy-menu-on nil) 1)))
+          (let ((ghostherd-tests--fake-screen screen))
+            (should-error (ghostherd-answer s choice) :type 'user-error)))
+        (let ((ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ ")))
+          (should (equal (cadr (should-error (ghostherd-answer s 1) :type 'user-error))
+                         "agy-c is on no menu with numbers")))
+        (let ((ghostherd-tests--fake-live nil)
+              (ghostherd-tests--fake-screen ghostherd-test--agy-menu))
+          (should-error (ghostherd-answer s 1) :type 'user-error))
+        (should-not did)
+        (let ((ghostherd-tests--fake-screen ghostherd-test--agy-menu))
+          (ghostherd-answer s 1)
+          (should did))))))
 
 (ert-deftest ghostherd-test-prompt-not-the-conversations-numbers ()
   "Numbers that are the conversation's, not a menu's: too far up, not

@@ -1218,8 +1218,8 @@ coincidence further up the scrollback."
 ;; numbers need their words.
 
 (defconst ghostherd--prompt-option-re
-  "^[[:blank:]│]*\\(?:[❯>›▶][[:blank:]]*\\)?\\([1-9]\\)\\.[[:blank:]]+\\(.*[^[:blank:]│]\\)[[:blank:]│]*$"
-  "A menu's option: its number, and its first line.")
+  "^[[:blank:]│]*\\(?:\\(?3:[❯>›▶]\\)[[:blank:]]*\\)?\\(?1:[1-9]\\)\\.[[:blank:]]+\\(?2:.*[^[:blank:]│]\\)[[:blank:]│]*$"
+  "A menu's option: its number, its first line, the highlight's mark.")
 
 (defconst ghostherd--prompt-rule-re
   "\\`[[:blank:]]*[─━═╭╮╰╯┌┐└┘├┤-]\\{3,\\}[[:blank:]]*\\'"
@@ -1249,10 +1249,11 @@ short last choice is neither."
     (truncate-string-to-width label 100 nil nil "…")))
 
 (defun ghostherd--prompt (screen)
-  "The menu SCREEN ends on, as (:question TEXT :options ((N . LABEL) ...)),
-or nil.  The options are the last run numbered from 1, each a few lines
-from the next, the last near the foot; the question the lines above the
-first, up to a line that only draws, six at most."
+  "The menu SCREEN ends on, as (:question TEXT :options ((N . LABEL) ...)
+:on N), or nil.  The options are the last run numbered from 1, each a
+few lines from the next, the last near the foot; the question the lines
+above the first, up to a line that only draws, six at most; on, the
+option marked highlighted, nil when none is."
   (let* ((lines (vconcat (split-string (string-trim-right (or screen "")) "\n")))
          (n (length lines))
          (number (lambda (i) (and (string-match ghostherd--prompt-option-re (aref lines i))
@@ -1276,7 +1277,11 @@ first, up to a line that only draws, six at most."
                      unless (string-empty-p line) do (push line question))
             (list :question (string-join question "\n")
                   :options (mapcar (lambda (i) (cons (funcall number i) (ghostherd--prompt-label lines i)))
-                                   at))))))))
+                                   at)
+                  :on (cl-loop for i in at
+                               when (and (string-match ghostherd--prompt-option-re (aref lines i))
+                                         (match-beginning 3))
+                               return (funcall number i)))))))))
 
 (defun ghostherd-session-prompt (session)
   "What blocked SESSION's menu asks and offers, read off its last screen;
@@ -2458,23 +2463,67 @@ happened."
   (interactive (list (ghostherd--read-session "Abort agent: ")))
   (ghostherd-send-keys session "C-c"))
 
+(defvar ghostherd--answer-look-every 0.2
+  "Seconds between looks for an answer's highlight on its choice.")
+
+(defvar ghostherd--answer-looks 5
+  "Looks more for an answer's highlight before it is given up.")
+
 ;;;###autoload
 (defun ghostherd-answer (session choice)
-  "Answer SESSION's menu prompt by moving to CHOICE and pressing Return.
+  "Answer SESSION's menu with CHOICE, 1-based: move there, then press
+Return once the screen shows the highlight on it.
 
-CHOICE is 1-based.  Some agent CLIs accept the digit as text; others
-only respond to the arrow keys, and there is no way to tell from the
-outside which you are looking at.  Arrows work for both."
+The moves count from the choice highlighted now, read off the screen.
+Counting from the top, after enough Ups to get there, picks wrong on a
+menu that wraps around -- agy's does: nine Ups from its first of four
+choices land on its last, and Yes became \"No, cancel\".  Arrows rather
+than the digit, which not every CLI takes; and Return only on the
+screen's word, so moves that went astray leave the menu unanswered
+rather than answered wrong.  Both outcomes are logged."
   (interactive
    (list (ghostherd--read-session "Answer agent: ")
          (read-number "Choice (1-based): " 1)))
-  (when (< choice 1)
-    (user-error "Choice is 1-based"))
-  ;; Home first: the highlighted option is not necessarily the first.
-  (apply #'ghostherd-send-keys session
-         (append (make-list 9 "up")
-                 (make-list (1- choice) "down")
-                 (list "return"))))
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session host is not live"))
+  (let* ((name (ghostherd-session-name session))
+         (menu (ghostherd--prompt (ghostherd--host-capture session)))
+         (on (plist-get menu :on)))
+    (cond ((not menu) (user-error "%s is on no menu with numbers" name))
+          ((not (assq choice (plist-get menu :options)))
+           (user-error "%s's menu has no choice %s" name choice))
+          ((not on) (user-error "Which of %s's choices is highlighted does not show" name)))
+    (when (/= choice on)
+      (ghostherd--host-send-keys session (make-list (abs (- choice on)) (if (> choice on) "down" "up"))))
+    (run-at-time ghostherd--answer-look-every nil #'ghostherd--confirm-answer
+                 session choice ghostherd--answer-looks)
+    choice))
+
+(defun ghostherd--confirm-answer (session choice looks)
+  "Press Return on SESSION's menu once its highlight is on CHOICE,
+looking LOOKS more times while it is not."
+  (condition-case err
+      (when (and (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)
+                 (ghostherd--session-live-p session))
+        (let* ((screen (ghostherd--host-capture session))
+               (menu (ghostherd--prompt screen))
+               (on (plist-get menu :on)))
+          (cond ((eql on choice)
+                 (ghostherd--host-send-keys session '("return"))
+                 (ghostherd--log-add session 'input
+                                     (format "← %d. %s" choice
+                                             (alist-get choice (plist-get menu :options)))))
+                ((> looks 0)
+                 (run-at-time ghostherd--answer-look-every nil #'ghostherd--confirm-answer
+                              session choice (1- looks)))
+                (t
+                 (ghostherd--log-add session 'input
+                                     (if on
+                                         (format "%d not answered: the highlight stayed on %d" choice on)
+                                       (format "%d not answered: the menu went" choice))
+                                     screen)))))
+    (error (message "ghostherd: answering: %s" (error-message-string err)))))
 
 (defun ghostherd-prompt (session prompt &optional wait timeout)
   "Submit PROMPT to SESSION (text + Enter).
@@ -4554,7 +4603,7 @@ on, would contradict it."
           ("answer"
            (let ((n (plist-get args :n)))
              (ghostherd-answer name (truncate (or n 1))))
-           (setq text "answered"))
+           (setq text "answering"))
           ("interrupt"
            (ghostherd-interrupt name)
            (setq text "interrupted"))

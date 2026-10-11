@@ -365,7 +365,6 @@ mark.here { background: var(--warn); color: #0e1116; }
 .aask.said .awhat { color: var(--muted); }
 .aacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
 .aacts.more { margin-top: 4px; }
-.answer { min-width: 2.2em; font-weight: 600; }
 button.danger { color: var(--minus); border-color: rgba(248, 81, 73, 0.5); }
 button.primary.danger { background: #da3633; border-color: #f85149; color: #fff; }
 .agent-compose, .notes-edit, .newform { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; flex-wrap: wrap; }

@@ -1077,22 +1077,18 @@
 
   // A blocked agent's menu, as Emacs read it off the screen: what it
   // asks, in place of the one line that found it, and a button for each
-  // choice with its words.  A menu Emacs could not read leaves 1 to 3,
-  // among the actions.
+  // choice with its words.  A menu Emacs could not read has none: a
+  // number picked blind could be any of its choices.
   function reasonHtml(a) {
     const p = a.state === "blocked" && a.prompt;
     const text = p && p.question ? p.question : a.reason;
     return text && text !== "—" ? '<div class="areason' + (p && p.question ? " aprompt" : "") + '">' + esc(text) + "</div>" : "";
   }
 
-  function choicesHtml(a, acts) {
+  function choicesHtml(a) {
     if (a.state !== "blocked") return "";
     const options = (a.prompt && a.prompt.options) || [];
-    if (!options.length) {
-      [1, 2, 3].forEach((n) => acts.push('<button type="button" class="ghost small answer" data-act="a:agent-answer" data-n="' + n +
-        '" title="Answer ' + n + '">' + n + "</button>"));
-      return "";
-    }
+    if (!options.length) return "";
     return '<div class="choices">' + options.map((o) =>
       '<button type="button" class="ghost small choice" data-act="a:agent-answer" data-n="' + esc(String(o.n)) + '">' +
       '<span class="cn">' + esc(String(o.n)) + "</span>" + esc(o.label) + "</button>").join("") + "</div>";
@@ -1101,7 +1097,7 @@
   function agentRow(a, kinds, asks) {
     const name = a.name;
     const acts = [];
-    const menu = choicesHtml(a, acts);
+    const menu = choicesHtml(a);
     acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
@@ -1246,7 +1242,7 @@
   function roomTop(a, asks) {
     const name = a.name;
     const acts = [];
-    const menu = choicesHtml(a, acts);
+    const menu = choicesHtml(a);
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
