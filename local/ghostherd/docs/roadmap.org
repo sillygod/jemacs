@@ -184,8 +184,9 @@ How to use it is in [[file:../readme.org][readme.org]] under "Agents that report
   =working=-vetoes-=blocked= rule are both judgement calls that want log
   evidence, and =ghostherd-explain= now prints exactly what is needed to
   argue about them
-- [ ] grok and agy: find out whether they have a hook mechanism at all.
-  The readme documents claude's because it is the one that does
+- [X] grok and agy: find out whether they have a hook mechanism at all
+  --- they do, and Phase 3.17 wires both: =herd hook= takes claude's,
+  grok's and agy's payloads
 
 ** Deliberately not done
 
@@ -401,7 +402,9 @@ there: "Why the sidecar wants a token" in [[file:design.org][design.org]].
 ** What is left
 
 - [ ] Agents spawned before this hold a bare =GHOSTHERD_RPC= until
-  respawned; they recover through =rpc.url= if they follow the skill
+  respawned; they recover through =rpc.url= if they follow the skill.
+  Still four on 2026-10-11 --- tmux keeps an agent's environment from
+  its spawn through every Emacs restart --- all grok and agy
 
 * Phase 3.12 — The memory page  *(done)*
 
@@ -788,10 +791,32 @@ project's agents are on, and open them from there.
 - [X] 4 ERT, 5 pr-view ERT and 11 pytest; WebKit checks of the chips;
   each guard mutation-tested
 
+- [X] The lead told what its project works on: the page's look ---
+  the branch, its PR and the tickets that cites, an agent's own branch,
+  the open PRs and tickets the conversations name, six at most --- as a
+  note opening the user's first message to it, and their next one when
+  it changed.  Asked as the lead starts, so a look has run by the time
+  it is ready.  Its role: read them, change none --- no ticket's status,
+  fields or comments, nothing on the PR --- unless the user asks.  In
+  the room and the chat the herd's notes are a line each, not the
+  user's words (=ghostherd-project-work-functions=,
+  =ghostherd--lead-work-note=, =LEAD_NOTE=)
+- [X] What the herd told a lead is not what its conversation names:
+  the note named every ticket again, so the lead's column grew chips of
+  tickets it had only been told of, and they would have come back to
+  it as its own.  =herd_links= reads a prompt less the herd's notes ---
+  at its head, after a role, just inside a CLI's tag
+- [X] Tried on a real project: told nine lines, once; it read two
+  tickets through its own ClickUp tools, changed nothing, and said it
+  would leave a ticket's status to the user
+- [X] For that: 3 ERT, 2 pytest and 2 extended (one on the notes as
+  Emacs writes them), 5 WebKit checks; 32 guards broken on purpose,
+  each caught
+
 ** What is left
 
-- [ ] The lead told its project's PR and tickets when it starts; never
-  changing a ticket on its own
+- [ ] A lead told of a ticket reads it through its own tools (a ClickUp
+  MCP, say); the herd hands it no more than the name, status and link
 
 * Phase 3.23 — The herd page in a web browser  *(this tree)*
 
