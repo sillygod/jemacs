@@ -104,6 +104,47 @@ once the app is free --- it was left on purpose.  An app without
 =:reopen= keeps no address: after a restart its tab says to open it
 again from Emacs.
 
+** From your other devices
+
+The pages can reach a phone or another computer through a proxy on
+this machine that knows who is asking: =tailscale serve=.  Emacs still
+listens on 127.0.0.1 alone; the proxy takes the request on your
+tailnet, passes it on, and names the user of the device it came from.
+
+#+begin_src emacs-lisp
+(setq xwapp-port 48123                      ; fixed, for the proxy
+      xwapp-remote-hosts '("box.tail1234.ts.net")
+      xwapp-remote-users '("you@example.com"))
+#+end_src
+
+#+begin_src sh
+tailscale serve --bg --https=443 http://127.0.0.1:48123
+#+end_src
+
+Then =M-x xwapp-copy-remote-url= copies a page's address there, which
+holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
+
+- *Under one of =xwapp-remote-hosts=, for one of =xwapp-remote-users=
+  only.*  =tailscale serve= puts the device's user in
+  =Tailscale-User-Login=, having taken off any such header the device
+  sent; a request with none --- a tagged device, anything not through
+  the proxy --- or another user's gets 404.  The secret is still
+  needed, the origin still checked: =https://= or =http://= the name.
+- *The address is kept,* with no tab open and over restarts: an
+  address saved on a phone keeps working.  At startup =xwapp-resume=
+  loads the apps and Emacs listens on =xwapp-port=.  =M-x
+  xwapp-renew-secret= ends an address given out.
+- *Opened there, the page is that device's*, as for any tab: the one
+  in Emacs, or in a tab here, lets go of it.
+- =xwapp-remote-scheme= is ="https"= by default.  The proxy needs a
+  certificate for it --- HTTPS turned on for the tailnet, which puts
+  the machine's name in the public certificate logs.  Without one,
+  =tailscale serve --http=80= and ="http"=: still encrypted between
+  devices by the tailnet, but the browser does not count the page as
+  secure, which some of its features need.
+- A page opened from there --- a PR clicked on the herd page --- still
+  opens in a browser on this machine.
+
 * Page kit (=ui/=)
 
 What the pages share on the browser side, so it is fixed once:
@@ -180,4 +221,10 @@ in one tick arriving in order, a call that throws not stopping the
 next, and the three real pages loading under their CSP with no error;
 a tab coming back to a second Emacs started after the first was
 killed, and to the same Emacs after its requests were held past the
-gone (headless Chrome will not freeze a page).
+gone (headless Chrome will not freeze a page).  From another device:
+the server's names, users, origins and fixed port, and an address kept
+over a restart and renewed, in batch; then in WebKit, a page at
+=https://= under the box's name, its requests passed on as =tailscale
+serve= does --- served, its calls and intents through, another user and
+no user refused, and after a restart the open page back and a saved
+address working.

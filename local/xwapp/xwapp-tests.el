@@ -634,6 +634,126 @@ port another Emacs has is not taken at all."
               (should (file-exists-p xwapp-state-file)))
           (delete-process theirs))))))
 
+(defconst xwapp-test--box "box.tail0.ts.net")
+
+(defun xwapp-test--from-box (&optional login origin host)
+  "Headers of a request through `tailscale serve' on the box, from a
+device of LOGIN (none when nil), its page at ORIGIN when given."
+  (append (list (cons "Host" (or host xwapp-test--box)))
+          (when login (list (cons "Tailscale-User-Login" login)))
+          (when origin (list (cons "Origin" origin)))))
+
+(ert-deftest xwapp-test-browser-remote-hosts-for-their-users-only ()
+  "Under a name of `xwapp-remote-hosts', a page is served to one of
+`xwapp-remote-users' alone: not without the login the proxy puts in,
+not for another's, not to another site's page, not under another name.
+With no users, or no names, to none."
+  (xwapp-test--with-browser
+    (let ((xwapp-remote-hosts (list "Box.Tail0.ts.net"))
+          (xwapp-remote-users (list "me@example.com"))
+          (index (xwapp-test--at app "app/ui/index.html"))
+          (https (concat "https://" xwapp-test--box)))
+      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))
+                     '(200 . "<app/ui/index.html>")))
+      (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com" nil
+                                                                               "box.tail0.ts.net:8443")))
+                     200))
+      (dolist (h (list (xwapp-test--from-box nil)
+                       (xwapp-test--from-box "someone@else.com")
+                       (xwapp-test--from-box "me@example.com" nil "other.tail0.ts.net")
+                       (xwapp-test--from-box "me@example.com" "https://evil.example")
+                       (xwapp-test--from-box "me@example.com" "http://127.0.0.1:1")))
+        (should (equal (car (xwapp-test--do "GET" index nil h)) 404)))
+      ;; The page there, its own origin: hello, intents and calls.
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}"
+                                          (xwapp-test--from-box "me@example.com" https)))
+                     204))
+      (should (xwapp-live-p app))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"go\"}"
+                                          (xwapp-test--from-box "me@example.com" https)))
+                     204))
+      (xwapp-test--turn)
+      (should (equal intents '(((op . "go")))))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"no\"}"
+                                          (xwapp-test--from-box "me@example.com" "https://evil.example")))
+                     404))
+      ;; Refused in words: an empty answer, a browser would download.
+      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box nil)) '(404 . "Not Found")))
+      (let ((xwapp-remote-users nil))
+        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404)))
+      (let ((xwapp-remote-hosts nil))
+        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404)))
+      ;; This machine as before.
+      (should (equal (car (xwapp-test--do "GET" index)) 200)))))
+
+(ert-deftest xwapp-test-browser-a-fixed-port ()
+  "`xwapp-port' is where pages are served, or it says why it cannot be."
+  (xwapp-test--with-browser
+    (let ((port (xwapp-test--free-port)))
+      (delete-process xwapp--server)
+      (let ((xwapp-port port))
+        (should (string-prefix-p (format "http://127.0.0.1:%d/" port) (xwapp-url app)))
+        (delete-process xwapp--server)
+        (let ((theirs (xwapp--listen port)))
+          (unwind-protect
+              (should (string-match-p (format "cannot listen on port %d" port)
+                                      (cadr (should-error (xwapp--port) :type 'user-error))))
+            (delete-process theirs)))))))
+
+(ert-deftest xwapp-test-browser-a-remote-address-outlives-emacs ()
+  "Given out for another device, an address is kept with no tab open,
+and over a restart for good -- not only until a tab comes back -- until
+its secret is renewed.  Only a page that can open again has one."
+  (xwapp-test--keeping
+    (let* ((xwapp-remote-hosts (list xwapp-test--box))
+           (xwapp-remote-users (list "me@example.com"))
+           (port (xwapp-test--free-port))
+           (xwapp-port port)
+           (made (lambda ()
+                   (xwapp-create :buffer-name " *xwapp-test*"
+                                 :index (expand-file-name "app/ui/index.html" root)
+                                 :prefixes '("t:") :namespace "T" :handler #'ignore
+                                 :reopen #'xwapp-test--keep-reopen))))
+      (should-error (xwapp-remote-url app) :type 'user-error)
+      (delete-process xwapp--server)
+      (clrhash xwapp--served)
+      (let* ((app (funcall made))
+             (url (xwapp-remote-url app))
+             (secret (xwapp--secret app)))
+        (should (equal url (format "https://%s/%s/app/ui/index.html" xwapp-test--box secret)))
+        (let ((xwapp-remote-scheme "http"))
+          (should (string-prefix-p "http://box" (xwapp-remote-url app))))
+        (should (equal (plist-get (xwapp--state) :pages)
+                       (list (list " *xwapp-test*" secret 'xwapp-test--keep-reopen))))
+        ;; Restarted, the page nowhere: the same address, kept on.
+        (delete-process xwapp--server)
+        (clrhash xwapp--served)
+        (setq xwapp--state-ours nil)
+        (let* ((xwapp--come-back-within 0.1)
+               (again (funcall made)))
+          (should (equal (xwapp--secret again) secret))
+          (xwapp-test--turn 0.3)
+          (should (equal (cadar (plist-get (xwapp--state) :pages)) secret))
+          (should (equal (car (xwapp-test--do "GET" (concat "/" secret "/app/ui/index.html") nil
+                                              (xwapp-test--from-box "me@example.com")))
+                         200))
+          ;; Renewed: the old address is no one's.
+          (cl-letf (((symbol-function 'message) #'ignore))
+            (xwapp-renew-secret again))
+          (should-not (equal (xwapp--secret again) secret))
+          (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret again)))
+          (should (equal (car (xwapp-test--do "GET" (concat "/" secret "/app/ui/index.html") nil
+                                              (xwapp-test--from-box "me@example.com")))
+                         404))
+          ;; Copied, not shown.
+          (let (copied said)
+            (cl-letf (((symbol-function 'xwapp-copy) (lambda (s) (setq copied s)))
+                      ((symbol-function 'message) (lambda (f &rest args) (push (apply #'format f args) said))))
+              (xwapp-copy-remote-url again))
+            (should (equal copied (xwapp-remote-url again)))
+            (should (string-match-p "Copied the address of \\*xwapp-test\\*" (car said)))
+            (should-not (string-match-p (xwapp--secret again) (car said)))))))))
+
 (ert-deftest xwapp-test-browser-resume-loads-the-apps ()
   "Once Emacs is up, each kept page's app is loaded through its reopen."
   (xwapp-test--keeping

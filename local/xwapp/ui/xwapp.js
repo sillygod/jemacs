@@ -72,7 +72,8 @@
   // When Emacs does not answer at all -- restarting -- the page asks
   // again, less often each time, until it does.
 
-  const BROWSER = location.protocol === "http:";
+  // Served by Emacs: here, or to another device through a proxy (https).
+  const BROWSER = location.protocol !== "file:";
   const ROOT = "/" + location.pathname.split("/")[1] + "/";
   const SOFT = "xwapp-soft"; // sessionStorage: this load is the page coming back
 

@@ -1060,6 +1060,14 @@ are the other tabs (below, and "What happened while you were away").
   the one named by =@name= at its start, images and ⌘V as in any box.
   The sidecar builds the timeline from the agents' transcripts, so it
   starts with everything they already said.
+- From your phone, through Tailscale: the same page, served by Emacs
+  to your other devices under this Mac's name on your tailnet, for your
+  Tailscale login alone (=xwapp-remote-hosts=, =xwapp-remote-users=,
+  =tailscale serve= to =xwapp-port=; xwapp's README has it).  =M-x
+  xwapp-copy-remote-url=, =*herd*=, copies the address; it holds the
+  page's secret, and is kept over restarts.  Opened there, the page is
+  the phone's: the one in Emacs lets go of it, and takes it back when
+  you open it again.
 - The chat writes to the project's /lead/ unless you pick another: an
   agent that plans the work, hands it out as asks, and reports back.
   It is an ordinary agent --- =ghostherd-lead-kind=, claude by default
