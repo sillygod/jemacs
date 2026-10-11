@@ -132,9 +132,13 @@ mode-line would eat it)."
 ;;; Parsers (no I/O)
 
 (defun ghostherd-usage--parse-grok-config (cfg)
-  "Parse grok billing `config' object.  creditUsagePercent is *used*."
-  (let* ((used (ghostherd-usage--alist cfg 'creditUsagePercent))
-         (period (ghostherd-usage--alist cfg 'currentPeriod))
+  "Parse grok billing `config' object.  creditUsagePercent is *used*.
+The billing API leaves out a field that is zero, as protobuf's JSON
+does: a period with no creditUsagePercent is one nothing is used of
+yet, as every new week starts."
+  (let* ((period (ghostherd-usage--alist cfg 'currentPeriod))
+         (used (or (ghostherd-usage--alist cfg 'creditUsagePercent)
+                   (and period 0)))
          (type (format "%s" (or (ghostherd-usage--alist period 'type) "")))
          (label (if (string-match-p "WEEKLY" type) "wk" "mo"))
          (end (ghostherd-usage--parse-time
@@ -219,11 +223,12 @@ cannot be told apart."
                  labels
                  vals))))
 
-(defun ghostherd-usage--put (kind windows &optional err)
+(defun ghostherd-usage--put (kind windows &optional err fetched)
+  "Record KIND's WINDOWS, ERR, and FETCHED, when they were read (now)."
   (setq ghostherd-usage--cache
         (cons (cons kind
                     (list :windows windows
-                          :fetched (float-time)
+                          :fetched (or fetched (float-time))
                           :error err))
               (assq-delete-all kind ghostherd-usage--cache))))
 
@@ -500,7 +505,10 @@ after `ghostherd-usage-timeout' if none arrives."
         (buffer-string)))))
 
 (defun ghostherd-usage--grok-from-log ()
-  "Fill grok cache from the last billing line in unified.jsonl."
+  "Fill grok cache from the last billing line in unified.jsonl.
+As of when grok wrote it, and only when that is newer than what the
+cache has: a line an hour old is an hour old, and must not stand
+over what the billing API said a minute ago."
   (let* ((file (expand-file-name "logs/unified.jsonl"
                                  (expand-file-name ".grok" "~")))
          (tail (ghostherd-usage--file-tail file (* 256 1024)))
@@ -511,8 +519,11 @@ after `ghostherd-usage-timeout' if none arrives."
           (setq hit (ignore-errors (ghostherd-usage--json line))))))
     (when-let* ((cfg (ghostherd-usage--alist
                       (ghostherd-usage--alist hit 'ctx) 'config))
-                (wins (ghostherd-usage--parse-grok-config cfg)))
-      (ghostherd-usage--put 'grok wins)
+                (wins (ghostherd-usage--parse-grok-config cfg))
+                (at (or (ghostherd-usage--parse-time (ghostherd-usage--alist hit 'ts))
+                        (float-time))))
+      (when (> at (or (plist-get (alist-get 'grok ghostherd-usage--cache) :fetched) 0))
+        (ghostherd-usage--put 'grok wins nil at))
       t)))
 
 (defun ghostherd-usage--done ()
@@ -579,10 +590,14 @@ after `ghostherd-usage-timeout' if none arrives."
          `(("Authorization" . ,(concat "Bearer " tok))
            ("X-XAI-Token-Auth" . "xai-grok-cli")
            ("x-userid" . ,uid))
-         (lambda (raw &optional _code)
+         (lambda (raw &optional code)
+           ;; One that fails says why, the numbers kept: a card left
+           ;; as it was reads as current.
            (let* ((cfg (or (ghostherd-usage--alist raw 'config) raw))
                   (wins (and cfg (ghostherd-usage--parse-grok-config cfg))))
-             (when wins (ghostherd-usage--put 'grok wins))
+             (cond (wins (ghostherd-usage--put 'grok wins))
+                   (raw (ghostherd-usage--put-error 'grok "billing unreadable"))
+                   (t (ghostherd-usage--put-error 'grok (format "http %s" (or code "?")))))
              (ghostherd-usage--done))))))))
 
 (defun ghostherd-usage--agy-from-screens ()

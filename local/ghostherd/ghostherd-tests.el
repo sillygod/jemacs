@@ -4284,6 +4284,72 @@ and only after the call returns, as from any answer."
     (should (equal (plist-get (car wins) :label) "wk"))
     (should (= (plist-get (car wins) :remaining) 11.0))))
 
+(ert-deftest ghostherd-test-usage-grok-new-week-is-nothing-used ()
+  "Billing leaves a zero out, as protobuf's JSON does: a week just begun
+has no creditUsagePercent, and is nothing used, not no numbers."
+  (let* ((raw (json-parse-string
+               "{\"currentPeriod\":{\"type\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"start\":\"2026-10-11T14:57:40.825457+00:00\",\"end\":\"2026-10-18T14:57:40.825457+00:00\"},\"onDemandCap\":{\"val\":0},\"isUnifiedBillingUser\":true}"
+               :object-type 'alist :null-object nil))
+         (wins (ghostherd-usage--parse-grok-config raw)))
+    (should (equal (plist-get (car wins) :label) "wk"))
+    (should (= (plist-get (car wins) :remaining) 100.0))
+    (should (= (plist-get (car wins) :resets-at)
+               (float-time (encode-time (iso8601-parse "2026-10-18T14:57:40.825457+00:00")))))
+    ;; Nor a period: nothing to read, not a guess.
+    (should-not (ghostherd-usage--parse-grok-config '((isUnifiedBillingUser . t))))))
+
+(ert-deftest ghostherd-test-usage-grok-log-as-of-when-written ()
+  "A billing line in grok's log counts from when grok wrote it, and only
+over numbers older than it."
+  (let* ((line (lambda (ts used)
+                 (format "{\"ts\":\"%s\",\"msg\":\"billing: fetched credits config\",\"ctx\":{\"config\":{\"creditUsagePercent\":%s,\"currentPeriod\":{\"type\":\"USAGE_PERIOD_TYPE_WEEKLY\",\"end\":\"2026-10-18T14:57:40Z\"}}}}"
+                         ts used)))
+         (tail (concat (funcall line "2026-10-11T15:18:44.171Z" 12)
+                       "\n{\"ts\":\"2026-10-11T15:19:00Z\",\"msg\":\"other\"}\n"))
+         (ghostherd-usage--cache nil))
+    (cl-letf (((symbol-function 'ghostherd-usage--file-tail) (lambda (&rest _) tail)))
+      (should (ghostherd-usage--grok-from-log))
+      (let ((pl (alist-get 'grok ghostherd-usage--cache)))
+        (should (= (plist-get pl :fetched)
+                   (float-time (encode-time (iso8601-parse "2026-10-11T15:18:44.171Z")))))
+        (should (= (plist-get (car (plist-get pl :windows)) :remaining) 88.0)))
+      ;; The API has said something since: the older line stands down.
+      (ghostherd-usage--put 'grok (list (ghostherd-usage--window "wk" 70.0)))
+      (ghostherd-usage--grok-from-log)
+      (should (= (plist-get (car (plist-get (alist-get 'grok ghostherd-usage--cache) :windows))
+                            :remaining)
+                 70.0)))))
+
+(ert-deftest ghostherd-test-usage-grok-fetch-says-why-it-failed ()
+  "A fetch that fails keeps the numbers and says why: a card left as it
+was reads as current."
+  (let ((ghostherd-usage--cache
+         (list (cons 'grok (list :windows (list (ghostherd-usage--window "wk" 7.0))
+                                 :fetched 100.0 :error nil))))
+        (reply nil))
+    (cl-letf (((symbol-function 'ghostherd-usage--grok-auth-entry)
+               (lambda () `((key . "k") (user_id . "u")
+                            (expires_at . ,(format-time-string "%FT%T%z" (+ (float-time) 3600))))))
+              ((symbol-function 'ghostherd-usage--http-json)
+               (lambda (_url _headers ok-fn &rest _) (apply ok-fn reply)))
+              ((symbol-function 'ghostherd-usage--done) #'ignore))
+      (setq reply '(nil 503))
+      (ghostherd-usage--fetch-grok)
+      (let ((pl (alist-get 'grok ghostherd-usage--cache)))
+        (should (equal (plist-get pl :error) "http 503"))
+        (should (= (plist-get pl :fetched) 100.0))
+        (should (= (plist-get (car (plist-get pl :windows)) :remaining) 7.0)))
+      (setq reply '(((config (onDemandCap (val . 0))))))
+      (ghostherd-usage--fetch-grok)
+      (should (equal (plist-get (alist-get 'grok ghostherd-usage--cache) :error) "billing unreadable"))
+      ;; The new week, as the API sends it: nothing used, the error gone.
+      (setq reply '(((config (currentPeriod (type . "USAGE_PERIOD_TYPE_WEEKLY")
+                                            (end . "2026-10-18T14:57:40Z"))))))
+      (ghostherd-usage--fetch-grok)
+      (let ((pl (alist-get 'grok ghostherd-usage--cache)))
+        (should-not (plist-get pl :error))
+        (should (= (plist-get (car (plist-get pl :windows)) :remaining) 100.0))))))
+
 (ert-deftest ghostherd-test-usage-parse-claude ()
   (let* ((raw (json-parse-string
                "{\"five_hour\":{\"utilization\":38.0,\"resets_at\":\"2026-09-18T12:00:00Z\"},\"seven_day\":{\"utilization\":12.0}}"
