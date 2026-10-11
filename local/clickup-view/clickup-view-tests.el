@@ -40,7 +40,8 @@ holds (FN . OBJ) page calls, oldest first."
          (clickup-view--team "900") (clickup-view--me '((id . 7) (name . "me")))
          (clickup-view--spaces '(((id . "s1") (name . "Back-End"))))
          (clickup-view--list-cache (make-hash-table :test #'equal))
-         (clickup-view--space-cache (make-hash-table :test #'equal)))
+         (clickup-view--space-cache (make-hash-table :test #'equal))
+         (clickup-view--member-cache (make-hash-table :test #'equal)))
      (cl-letf (((symbol-function 'clickup-view--token) (lambda () "pk_test"))
                ((symbol-function 'clickup-view--http)
                 (lambda (url _headers cb &optional method body)
@@ -406,6 +407,109 @@ list's hidden folder is none."
     (let ((ch (clickup-view-test--call (calls) "statusChanged")))
       (should (equal (alist-get 'task_id ch) "abc123"))
       (should (equal (alist-get 'name (alist-get 'status ch)) "in progress")))))
+
+;;; Dates and assignees
+
+(ert-deftest clickup-view-test-a-date-says-if-its-time-counts ()
+  (let ((task (clickup-view--task
+               (clickup-view-test--json
+                (replace-regexp-in-string "\"start_date\":null"
+                                          "\"start_date\":\"5\",\"start_date_time\":true"
+                                          clickup-view-test--task-json)))))
+    (should (equal (alist-get 'start task) "5"))
+    (should (eq (alist-get 'start_time task) t))
+    (should (string-match-p "\"due_time\":false" (json-encode task)))))
+
+(ert-deftest clickup-view-test-set-due-date ()
+  "A date goes as ms, with whether its time counts; the page hears back."
+  (clickup-view-test--with-api
+      `(("PUT" "/task/abc123\\'" 200 ,clickup-view-test--task-json))
+    (clickup-view--handle-intent '((op . "set-date") (task_id . "abc123") (field . "due")
+                                   (at . 1791748800000) (time . :false)))
+    (should (equal (json-encode (nth 2 (car requests)))
+                   "{\"due_date\":1791748800000,\"due_date_time\":false}"))
+    (let ((ch (clickup-view-test--call (calls) "taskChanged")))
+      (should (equal (alist-get 'task_id ch) "abc123"))
+      (should (equal (alist-get 'field ch) "due"))
+      (should (equal (alist-get 'due ch) "1791338403957"))
+      (should (equal (alist-get 'name (aref (alist-get 'assignees ch) 0)) "Ada")))
+    (should (equal (clickup-view-test--call (calls) "flash") "Due date set"))))
+
+(ert-deftest clickup-view-test-a-date-with-its-time ()
+  (clickup-view-test--with-api
+      `(("PUT" "/task/abc123\\'" 200 ,clickup-view-test--task-json))
+    (clickup-view--handle-intent '((op . "set-date") (task_id . "abc123") (field . "start")
+                                   (at . 1791770400000) (time . t)))
+    (should (equal (json-encode (nth 2 (car requests)))
+                   "{\"start_date\":1791770400000,\"start_date_time\":true}"))))
+
+(ert-deftest clickup-view-test-clear-a-date ()
+  (clickup-view-test--with-api
+      `(("PUT" "/task/abc123\\'" 200 ,clickup-view-test--task-json))
+    (clickup-view--handle-intent '((op . "set-date") (task_id . "abc123") (field . "start")
+                                   (at . :null) (time . t)))
+    ;; Null, not left out: null is what clears a date in ClickUp.
+    (should (equal (json-encode (nth 2 (car requests)))
+                   "{\"start_date\":null,\"start_date_time\":false}"))
+    (should (equal (clickup-view-test--call (calls) "flash") "Start date cleared"))))
+
+(ert-deftest clickup-view-test-dates-only-what-they-can-be ()
+  "No request for a field, a time or a task that is not one; each said so."
+  (clickup-view-test--with-api nil
+    (dolist (bad '(((field . "date_created") (at . 1))
+                   ((field . "due") (at . "tomorrow"))
+                   ((field . "due") (at . -5))
+                   ((field . "due") (at . 1.5))
+                   ((task_id . "../team") (field . "due") (at . 1))))
+      (clickup-view--handle-intent `((op . "set-date") ,@bad (task_id . "abc123"))))
+    (should-not requests)
+    (should (= (length (seq-filter (lambda (c) (equal (car c) "showError")) (calls))) 5))))
+
+(ert-deftest clickup-view-test-assign ()
+  (clickup-view-test--with-api
+      `(("PUT" "/task/abc123\\'" 200 ,clickup-view-test--task-json))
+    (clickup-view--handle-intent '((op . "set-assignees") (task_id . "abc123") (add 8) (rem)))
+    (should (equal (json-encode (nth 2 (car requests)))
+                   "{\"assignees\":{\"add\":[8],\"rem\":[]}}"))
+    (let ((ch (clickup-view-test--call (calls) "taskChanged")))
+      (should (equal (alist-get 'users ch) [8]))
+      (should (equal (alist-get 'name (aref (alist-get 'assignees ch) 0)) "Ada")))
+    (should (equal (clickup-view-test--call (calls) "flash") "Assigned to Ada"))))
+
+(ert-deftest clickup-view-test-unassign ()
+  (clickup-view-test--with-api
+      `(("PUT" "/task/abc123\\'" 200
+         ,(replace-regexp-in-string "\"assignees\":\\[{[^]]*\\]" "\"assignees\":[]"
+                                    clickup-view-test--task-json)))
+    (clickup-view--handle-intent '((op . "set-assignees") (task_id . "abc123") (rem 7)))
+    (should (equal (json-encode (nth 2 (car requests)))
+                   "{\"assignees\":{\"add\":[],\"rem\":[7]}}"))
+    (should (equal (alist-get 'assignees (clickup-view-test--call (calls) "taskChanged")) []))
+    (should (equal (clickup-view-test--call (calls) "flash") "Unassigned"))))
+
+(ert-deftest clickup-view-test-assignees-only-people ()
+  (clickup-view-test--with-api nil
+    (dolist (bad '(((add "7")) ((add -1)) ((rem 7.5)) ((add) (rem)) ((add . :null))))
+      (clickup-view--handle-intent `((op . "set-assignees") (task_id . "abc123") ,@bad)))
+    (should-not requests)
+    (should (= (length (seq-filter (lambda (c) (equal (car c) "showError")) (calls))) 5))))
+
+(ert-deftest clickup-view-test-members-once-a-session ()
+  "Who can be given a list's tasks, asked of ClickUp once per list."
+  (clickup-view-test--with-api
+      '(("GET" "/list/L1/member\\'" 200
+         "{\"members\":[{\"id\":7,\"username\":\"Ada\",\"initials\":\"A\",\"email\":\"a@x\"},{\"id\":8,\"username\":\"Bob\"}]}"))
+    (clickup-view--handle-intent '((op . "members") (list_id . "L1")))
+    (clickup-view--handle-intent '((op . "members") (list_id . "L1")))
+    (clickup-view--handle-intent '((op . "members") (list_id . "../team/900")))
+    (should (= (length requests) 1))
+    (let ((sent (seq-filter (lambda (c) (equal (car c) "setMembers")) (calls))))
+      (should (= (length sent) 2))
+      (dolist (c sent)
+        (should (equal (alist-get 'list_id (cdr c)) "L1"))
+        (should (equal (mapcar (lambda (p) (alist-get 'name p)) (alist-get 'members (cdr c)))
+                       '("Ada" "Bob")))))
+    (should (clickup-view-test--call (calls) "showError"))))
 
 (ert-deftest clickup-view-test-post-comment-sends-delta ()
   (clickup-view-test--with-api

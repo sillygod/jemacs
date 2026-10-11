@@ -369,6 +369,55 @@ button.crumb:hover { color: var(--accent); }
 .menu-item .mi-name { flex: 1; }
 .menu-item .check { color: var(--accent); }
 .menu-note { margin: 6px 8px; }
+.menu { max-width: calc(100vw - 16px); }
+.menu-item:disabled { opacity: 0.6; cursor: default; }
+
+/* ---- Assignees and dates ---------------------------------------------- */
+
+.pop-ctl { position: relative; }
+/* Inline, not a wrapping flex box: WebKit sizes one of those as if
+   each of its items were on a line of its own. */
+.edit-btn {
+  display: inline-block;
+  max-width: 100%;
+  background: none;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 2px 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/* Its words where the other values' start; on the button, not the
+   box around it, the margin would come off its width. */
+.props .v > .pop-ctl:first-child { margin-left: -7px; }
+.edit-btn:hover:not(:disabled), .edit-btn[aria-expanded="true"] { border-color: var(--line); background: var(--row-hover); }
+.edit-btn .person { margin-right: 10px; vertical-align: middle; }
+.edit-btn .chev { color: var(--muted); vertical-align: middle; }
+.edit-btn.late { color: var(--minus); }
+.people-menu {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: 18em;
+}
+.people-menu .menu-list { overflow: auto; min-height: 0; }
+.menu-filter, .date-menu input {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+  color-scheme: dark;
+}
+.menu-filter { margin: 2px 2px 6px; flex-shrink: 0; }
+.menu-item.person-item { text-transform: none; letter-spacing: 0; font-size: 13px; font-weight: 400; }
+.date-menu { display: grid; gap: 8px; padding: 10px; width: 20em; }
+.date-picks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.date-picks button { padding-left: 4px; padding-right: 4px; white-space: nowrap; }
+.date-actions { display: flex; justify-content: flex-end; gap: 6px; }
 
 /* ---- Sections --------------------------------------------------------- */
 
@@ -586,7 +635,10 @@ li.done > .box { background: var(--plus); border-color: var(--plus); color: #0e1
   button.ghost, button.primary { min-height: 36px; }
   .mark { min-width: 32px; min-height: 32px; }
   .crumb, .status-btn, button.linkish { min-height: 32px; }
-  .row { min-height: 36px; }
-  .open-row input, #list-filter, .composer textarea { font-size: 16px; }
+  .row, .menu-item { min-height: 36px; }
+  .open-row input, #list-filter, .composer textarea, .menu-filter, .date-menu input { font-size: 16px; }
+  .menu-filter, .date-menu input { min-height: 36px; }
+  /* No hover to show it: what can be changed has its edge. */
+  .edit-btn { min-height: 32px; border-color: var(--line); }
 }
 

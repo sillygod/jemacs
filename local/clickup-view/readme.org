@@ -1,8 +1,8 @@
 #+TITLE: clickup-view
 
 ClickUp inside Emacs: read a task (description, checklists, subtasks,
-attachments, comments and their threads), change its status, comment and
-reply, and browse Space ▸ Folder ▸ List.  Built on =xwapp=: Elisp owns
+attachments, comments and their threads), change its status, dates and
+assignees, comment and reply, and browse Space ▸ Folder ▸ List.  Built on =xwapp=: Elisp owns
 HTTP and the token, =ui/= only renders.
 
 * Status
@@ -12,7 +12,7 @@ HTTP and the token, =ui/= only renders.
 | Package | =local/clickup-view/= |
 | Entry   | =SPC g c= / =M-x clickup-view= · =clickup-view-task= · =clickup-set-status= |
 | Needs   | =CLICKUP_API_TOKEN=; GUI Emacs with xwidgets for the page |
-| State   | Task page, Space ▸ Folder ▸ List browser, and the tasks a PR cites in pr-view: done |
+| State   | Task page (status, dates, assignees), Space ▸ Folder ▸ List browser, and the tasks a PR cites in pr-view: done |
 
 * Auth
 
@@ -74,6 +74,14 @@ Probed against the workspace, October 2026.
 - Status types: =open=, =custom=, =done=, =closed=.  =done= is not
   closed: BACKLOG's "wait for testing" is one.  =include_closed= adds only
   =closed=.
+- A date is ms; =due_date_time= / =start_date_time= say whether its
+  time of day counts.  A day with no time is kept at 4 in the morning,
+  local: a due date set in ClickUp to Oct 12 is =2026-10-12 04:00 CST=.
+  Null clears a date.
+- Who can be given a list's tasks: =GET /list/{id}/member= (BACKLOG: 30).
+  Assignees change by =PUT /task/{id}= with ={"assignees": {"add": [...],
+  "rem": [...]}}=, numeric user ids.  Dates and assignees changing has not
+  yet been exercised by a live write.
 
 * The page
 
@@ -96,10 +104,18 @@ up from any of them; a folder crumb opens its space at that folder.
   counts and the filter see the whole list; past that, Load more.
 - Going forward always loads fresh.  Back shows a space or list as it
   was left, at the same scroll, with the row of the task just left
-  focused; a task loads again.  A status changed here updates the lists
-  the page keeps.
+  focused; a task loads again.  A status, due date or assignee changed
+  here updates the lists the page keeps.
+- Assignees and the start and due dates open an editor under them, as
+  the status does.  Assignees: who has the task, you, then the list's
+  people by name, a box to find one when there are more than 8; a tap
+  gives or takes the task, the menu staying open.  A date: a day, Today,
+  Tomorrow, In a week, Clear.  A day picked keeps the time of day the
+  date had; a date that had none gets 4 in the morning where you are,
+  as ClickUp does.
 - Only closed tasks are muted.
-- Keys: =s= status menu (arrows, Enter, Esc), =r= refresh, =Esc= back,
+- Keys: =s= status menu (arrows, Enter, Esc), =a= assignees (type to
+  find, Enter gives the first), =d= due date, =r= refresh, =Esc= back,
   =/= filter, =↑= / =↓= between rows, =→= / =←= subtasks, =⌘↩= / =C-↩=
   sends the comment or reply being typed.
 - Comments are newest first with the composer on top; a thread reads
@@ -126,7 +142,8 @@ comes back to it.  Open and the links in a task open in a tab of the
 phone, Copy copies to its clipboard.  Under 640 points the bar is one
 line, its buttons their first word, with where you are --- space and
 list --- on a line under it; to a finger, controls 32 points and more,
-form text 16px.
+form text 16px.  The editors' menus move left rather than run past the
+edge, and the people box does not pull up the keyboard by itself.
 
 * Page contract
 
@@ -147,6 +164,10 @@ dropped, and a reloaded page's first intent mistaken for the old one's.
 | =more-comments=  | task_id, start, start_id         |
 | =load-replies=   | comment_id                       |
 | =set-status=     | task_id, status                  |
+| =members=        | list_id                          |
+| =set-date=       | task_id, field (due / start),    |
+|                  | at (ms, null clears), time       |
+| =set-assignees=  | task_id, add, rem (user ids)     |
 | =post-comment=   | task_id, text (markdown)         |
 | =post-reply=     | task_id, comment_id, text        |
 | =open-browser=   | url (http(s) / mailto only)      |
@@ -168,6 +189,9 @@ Calls, Emacs → page, as =CU.fn(payload)=:
 | =setComments=   | task_id, items (newest first, with html), has_more, append    |
 | =setReplies=    | comment_id, items                                             |
 | =statusChanged= | task_id, status                                               |
+| =setMembers=    | list_id, members                                              |
+| =taskChanged=   | task_id, assignees, due, due_time, start, start_time; field   |
+|                 | (the date changed) or users (who was given or taken it)       |
 | =posted=        | task_id, comment_id (null for a comment): clear that box      |
 
 Every payload names its space, list, task or comment.  The page drops

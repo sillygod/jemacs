@@ -179,7 +179,7 @@
   let space = null; // the space on screen, as renderSpace sent it
   let list = null; // the list on screen; see newList
   let listOpts = { closed: false, mine: false }; // carried from list to list
-  const cache = { space: {}, list: {} }; // what each was when last shown, for Back
+  const cache = { space: {}, list: {}, members: {} }; // what each was when last shown, for Back; list id → its people
   // Pages of a list fetched without asking (ClickUp sends 100 tasks a
   // page, subtasks included), so status counts and the filter see all.
   const AUTO_PAGES = 5;
@@ -191,6 +191,9 @@
   let posting = {}; // draft key → true while its post is out
   let settingStatus = null; // the status name on its way
   let menuOpen = false;
+  let pop = null; // the editor open under its control: "assignees" | "start" | "due"
+  let changing = {}; // "start" / "due" / "a:<user id>" → true while that change is out
+  let memberFilter = "";
   let infoTimer = null;
 
   // ---- Status bar ------------------------------------------------------
@@ -639,6 +642,7 @@
   function renderStatusSlot() {
     const slot = $("status-slot");
     if (slot) slot.innerHTML = statusControl();
+    fitMenus();
     if (menuOpen) {
       const first = app.querySelector(".menu-item.on") || app.querySelector(".menu-item");
       if (first) first.focus();
@@ -681,19 +685,6 @@
       '<span class="prio" style="--c:' + hex(p.color) + '"><i class="flag">⚑</i>' +
       esc(p.name.charAt(0).toUpperCase() + p.name.slice(1)) + "</span>"
     );
-  }
-
-  function datesHtml(t) {
-    const parts = [];
-    if (stamp(t.start)) parts.push('<span title="' + esc(fullTime(t.start)) + '">Start ' + esc(day(t.start)) + "</span>");
-    if (stamp(t.due)) {
-      const late = stamp(t.due) < Date.now() && !isDone(t.status);
-      parts.push(
-        '<span class="' + (late ? "late" : "") + '" title="' + esc(fullTime(t.due)) + '">Due ' +
-        esc(day(t.due)) + (late ? " · overdue" : "") + "</span>"
-      );
-    }
-    return parts.length ? parts.join('<span class="sep">→</span>') : '<span class="muted">—</span>';
   }
 
   // ClickUp often sends a tag's fg equal to its bg; tint from bg alone.
@@ -826,9 +817,9 @@
       "<h1>" + esc(t.name) + "</h1>" +
       '<div class="props">' +
       '<div class="k">Status</div><div class="v" id="status-slot">' + statusControl() + "</div>" +
-      prop("Assignees", people(t.assignees)) +
+      '<div class="k">Assignees</div><div class="v" id="assignee-slot">' + assigneeControl() + "</div>" +
       prop("Priority", priorityHtml(t.priority)) +
-      prop("Dates", datesHtml(t)) +
+      '<div class="k">Dates</div><div class="v" id="date-slot">' + dateControl() + "</div>" +
       (tags ? prop("Tags", tags) : "") +
       prop("Created", created) +
       prop("Updated", '<span title="' + esc(fullTime(t.updated)) + '">' + esc(relTime(t.updated)) + "</span>") +
@@ -844,6 +835,202 @@
       '<div id="comments"></div>' +
       "</aside></div>";
     renderComments();
+  }
+
+  // ---- Assignees and dates ---------------------------------------------
+  //
+  // Each opens an editor under it, as the status does; one at a time.
+
+  const coarse = () => !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+
+  function assigneeControl() {
+    const t = task;
+    const open = pop === "assignees";
+    const who = t.assignees && t.assignees.length ? people(t.assignees) : '<span class="muted">Unassigned</span>';
+    return (
+      '<div class="pop-ctl">' +
+      '<button type="button" class="edit-btn" data-act="pop" data-pop="assignees" aria-expanded="' + open +
+      '" title="Assign (a)">' + who + '<i class="chev down"></i></button>' +
+      (open ? '<div class="menu people-menu">' + peopleMenu() + "</div>" : "") +
+      "</div>"
+    );
+  }
+
+  function peopleMenu() {
+    const known = cache.members[String(task.list && task.list.id)];
+    if (!known) return '<p class="muted menu-note">Loading people…</p>';
+    const filter = known.length > 8
+      ? '<input type="search" id="member-filter" class="menu-filter" placeholder="Find someone" autocomplete="off" value="' +
+        esc(memberFilter) + '">'
+      : "";
+    return filter + '<div class="menu-list">' + peopleItems() + "</div>";
+  }
+
+  // Who has the task on top, whether or not the list still has them;
+  // then you; then everyone else by name.
+  function peopleItems() {
+    const known = cache.members[String(task.list && task.list.id)] || [];
+    const on = new Set((task.assignees || []).map((p) => String(p.id)));
+    const me = ctx.me ? String(ctx.me.id) : "";
+    const q = memberFilter.trim().toLowerCase();
+    const rank = (p) => (on.has(String(p.id)) ? 0 : String(p.id) === me ? 1 : 2);
+    const items = (task.assignees || [])
+      .concat(known.filter((p) => !on.has(String(p.id))))
+      .filter((p) => !q || String(p.name || "").toLowerCase().indexOf(q) !== -1)
+      .sort((a, b) => rank(a) - rank(b) || String(a.name || "").localeCompare(String(b.name || "")))
+      .map((p) => {
+        const id = String(p.id);
+        const busy = changing["a:" + id];
+        return (
+          '<button type="button" class="menu-item person-item' + (on.has(id) ? " on" : "") +
+          '" data-act="assign" data-uid="' + esc(id) + '"' + (busy ? " disabled" : "") + ">" +
+          avatar(p, "sm") + '<span class="mi-name">' + esc(p.name) +
+          (id === me ? ' <span class="muted">· me</span>' : "") + "</span>" +
+          (busy ? '<span class="muted">…</span>' : on.has(id) ? '<span class="check">✓</span>' : "") +
+          "</button>"
+        );
+      })
+      .join("");
+    return items || '<p class="muted menu-note">No one by that name.</p>';
+  }
+
+  function toggleAssignee(uid) {
+    if (!task || !/^\d+$/.test(uid || "") || changing["a:" + uid]) return;
+    const on = (task.assignees || []).some((p) => String(p.id) === uid);
+    changing["a:" + uid] = true;
+    renderEditors();
+    emit("set-assignees", { task_id: task.id, add: on ? [] : [Number(uid)], rem: on ? [Number(uid)] : [] });
+  }
+
+  function ymd(ms) {
+    const d = new Date(ms);
+    const two = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
+  }
+
+  function dateText(key) {
+    const v = stamp(task[key]);
+    if (!v) return "";
+    const time = task[key + "_time"]
+      ? " " + new Date(v).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+      : "";
+    return day(v) + time;
+  }
+
+  function dateControl() {
+    const one = (key, label) => {
+      const v = stamp(task[key]);
+      const late = key === "due" && v && v < Date.now() && !isDone(task.status);
+      const open = pop === key;
+      const shown = changing[key]
+        ? "…"
+        : v
+        ? esc(dateText(key)) + (late ? " · overdue" : "")
+        : '<span class="muted">—</span>';
+      return (
+        '<div class="pop-ctl">' +
+        '<button type="button" class="edit-btn' + (late ? " late" : "") + '" data-act="pop" data-pop="' + key +
+        '" aria-expanded="' + open + '"' + (changing[key] ? " disabled" : "") +
+        ' title="' + esc(v ? fullTime(v) : "Set the " + label.toLowerCase() + " date") +
+        (key === "due" ? " (d)" : "") + '">' + label + " " + shown + "</button>" +
+        (open ? dateMenu(v) : "") +
+        "</div>"
+      );
+    };
+    return one("start", "Start") + '<span class="sep">→</span>' + one("due", "Due");
+  }
+
+  function dateMenu(v) {
+    const now = new Date();
+    const plus = (n) => ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() + n).getTime());
+    const pick = (n, label) =>
+      '<button type="button" class="ghost" data-act="pick-date" data-day="' + plus(n) + '">' + label + "</button>";
+    return (
+      '<div class="menu date-menu">' +
+      '<input type="date" id="date-input" value="' + (v ? ymd(v) : "") + '">' +
+      '<div class="date-picks">' + pick(0, "Today") + pick(1, "Tomorrow") + pick(7, "In a week") + "</div>" +
+      '<div class="date-actions">' +
+      (v ? '<button type="button" class="ghost" data-act="clear-date">Clear</button>' : "") +
+      '<button type="button" class="primary" data-act="save-date">Save</button>' +
+      "</div></div>"
+    );
+  }
+
+  // DAY is "YYYY-MM-DD", or null to clear.  The date keeps the time of
+  // day it had; one that had none gets 4 in the morning, where you are,
+  // which is where ClickUp keeps a day with no time.
+  function setDate(key, dayStr) {
+    if (!task || (key !== "start" && key !== "due")) return;
+    const old = stamp(task[key]);
+    const m = dayStr ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayStr) : null;
+    if (dayStr && !m) return;
+    pop = null;
+    if (m ? old && ymd(old) === dayStr : !old) {
+      renderEditors();
+      return;
+    }
+    const was = old ? new Date(old) : null;
+    const at = m
+      ? new Date(+m[1], +m[2] - 1, +m[3], was ? was.getHours() : 4, was ? was.getMinutes() : 0).getTime()
+      : null;
+    changing[key] = true;
+    renderEditors();
+    emit("set-date", { task_id: task.id, field: key, at: at, time: !!(m && old && task[key + "_time"]) });
+  }
+
+  function setPop(key, refocus) {
+    if (!task || pop === key) return;
+    const was = pop;
+    pop = key;
+    if (key === "assignees") {
+      memberFilter = "";
+      const id = task.list && task.list.id;
+      if (id && !cache.members[String(id)]) emit("members", { list_id: String(id) });
+    }
+    if (key && menuOpen) openMenu(false);
+    renderEditors();
+    if (key && !coarse()) {
+      const first = $(key === "assignees" ? "member-filter" : "date-input") ||
+        app.querySelector(".people-menu .menu-item");
+      if (first) first.focus();
+    } else if (!key && refocus && was) {
+      const btn = app.querySelector('.edit-btn[data-pop="' + was + '"]');
+      if (btn) btn.focus();
+    }
+  }
+
+  // Again from what the page has, keeping where you were in the menu.
+  function renderEditors() {
+    const a = $("assignee-slot");
+    const d = $("date-slot");
+    if (!a || !d || !task) return;
+    const focused = document.activeElement;
+    const typing = focused && focused.id === "member-filter" ? focused.selectionStart : null;
+    const uid = focused && focused.getAttribute ? focused.getAttribute("data-uid") : null;
+    const listEl = app.querySelector(".people-menu .menu-list");
+    const scrolled = listEl ? listEl.scrollTop : 0;
+    a.innerHTML = assigneeControl();
+    d.innerHTML = dateControl();
+    const list2 = app.querySelector(".people-menu .menu-list");
+    if (list2) list2.scrollTop = scrolled;
+    if (typing !== null && $("member-filter")) {
+      $("member-filter").focus();
+      $("member-filter").setSelectionRange(typing, typing);
+    } else if (uid) {
+      const again = app.querySelector('.person-item[data-uid="' + CSS.escape(uid) + '"]');
+      if (again) again.focus({ preventScroll: true });
+    }
+    fitMenus();
+  }
+
+  // A menu that would run past the window's right edge moves left.
+  function fitMenus() {
+    app.querySelectorAll(".menu").forEach((m) => {
+      m.style.left = "";
+      const r = m.getBoundingClientRect();
+      const room = document.documentElement.clientWidth - 8;
+      if (r.right > room) m.style.left = -Math.max(0, Math.min(r.right - room, r.left - 8)) + "px";
+    });
   }
 
   function composer(key, act, label, placeholder, rows, extra) {
@@ -1018,6 +1205,23 @@
       case "set-status":
         setStatusTo(el.getAttribute("data-status"));
         break;
+      case "pop": {
+        const key = el.getAttribute("data-pop");
+        setPop(pop === key ? null : key);
+        break;
+      }
+      case "assign":
+        toggleAssignee(el.getAttribute("data-uid"));
+        break;
+      case "pick-date":
+        setDate(pop, el.getAttribute("data-day"));
+        break;
+      case "save-date":
+        setDate(pop, ($("date-input") && $("date-input").value) || null);
+        break;
+      case "clear-date":
+        setDate(pop, null);
+        break;
       case "thread":
         toggleThread(id);
         break;
@@ -1069,6 +1273,7 @@
       const t = ev.target;
       if (!(t instanceof Element)) return;
       if (menuOpen && !t.closest(".status-ctl")) openMenu(false);
+      if (pop && !t.closest(".pop-ctl")) setPop(null);
       const a = t.closest("a");
       if (a) {
         ev.preventDefault();
@@ -1109,7 +1314,11 @@
     const t = ev.target;
     const key = t.getAttribute && t.getAttribute("data-draft");
     if (key) drafts[key] = t.value;
-    else if (t.id === "list-filter" && list) {
+    else if (t.id === "member-filter") {
+      memberFilter = t.value;
+      const l = app.querySelector(".people-menu .menu-list");
+      if (l) l.innerHTML = peopleItems();
+    } else if (t.id === "list-filter" && list) {
       list.filter = t.value;
       renderListBody();
     }
@@ -1139,6 +1348,22 @@
       } else if (ev.key === "Enter" && t.id === "open-id") {
         ev.preventDefault();
         openTyped();
+      } else if (ev.key === "Enter" && t.id === "date-input") {
+        ev.preventDefault();
+        setDate(pop, t.value || null);
+      } else if (ev.key === "Enter" && t.id === "member-filter") {
+        ev.preventDefault();
+        const first = app.querySelector(".people-menu .menu-item");
+        if (first) toggleAssignee(first.getAttribute("data-uid"));
+      } else if (ev.key === "ArrowDown" && t.id === "member-filter") {
+        const first = app.querySelector(".people-menu .menu-item");
+        if (first) {
+          ev.preventDefault();
+          first.focus();
+        }
+      } else if (ev.key === "Escape" && pop && t.closest(".pop-ctl")) {
+        ev.preventDefault();
+        setPop(null, true);
       } else if (ev.key === "ArrowDown" && (t.id === "open-id" || t.id === "list-filter")) {
         const first = stops()[0];
         if (first) {
@@ -1152,6 +1377,19 @@
         } else {
           t.blur();
         }
+      }
+      return;
+    }
+    if (pop) {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        setPop(null, true);
+      } else if (pop === "assignees" && (ev.key === "ArrowDown" || ev.key === "ArrowUp")) {
+        ev.preventDefault();
+        const items = Array.from(app.querySelectorAll(".people-menu .menu-item"));
+        const i = items.indexOf(document.activeElement) + (ev.key === "ArrowDown" ? 1 : -1);
+        if (i >= 0 && i < items.length) items[i].focus();
+        else if (i < 0 && $("member-filter")) $("member-filter").focus();
       }
       return;
     }
@@ -1193,6 +1431,9 @@
     } else if (ev.key === "s" && view.kind === "task" && task) {
       ev.preventDefault();
       openMenu(true);
+    } else if ((ev.key === "a" || ev.key === "d") && view.kind === "task" && task) {
+      ev.preventDefault();
+      setPop(ev.key === "a" ? "assignees" : "due");
     } else if (ev.key === "/" && $("list-filter")) {
       ev.preventDefault();
       $("list-filter").focus();
@@ -1230,6 +1471,7 @@
       progress(false);
       posting = {};
       settingStatus = null;
+      changing = {};
       // A page that failed can be asked for again: Load more.
       if (list && list.loading != null) {
         list.loading = null;
@@ -1241,6 +1483,7 @@
       } else {
         syncPosting();
         renderStatusSlot();
+        renderEditors();
         if (comments.more) {
           comments.more = false;
           renderComments();
@@ -1319,6 +1562,9 @@
       statuses = p.statuses || (same ? statuses : null);
       settingStatus = null;
       menuOpen = false;
+      pop = null;
+      changing = {};
+      memberFilter = "";
       comments = { items: [], hasMore: false, loading: true, more: false };
       threads = {};
       clearInfo();
@@ -1345,6 +1591,41 @@
       task.status = p.status;
       settingStatus = null;
       renderStatusSlot();
+    },
+
+    setMembers: (p) => {
+      if (!p) return;
+      const id = String(p.list_id);
+      cache.members[id] = p.members || [];
+      if (pop !== "assignees" || !task || String(task.list && task.list.id) !== id) return;
+      renderEditors();
+      const f = $("member-filter") || app.querySelector(".people-menu .menu-item");
+      if (f && !coarse() && !app.querySelector(".people-menu").contains(document.activeElement)) f.focus();
+    },
+
+    // A date or the assignees changed: FIELD is the date, USERS who was
+    // given or taken the task.  Lists the page keeps show it too, for Back.
+    taskChanged: (p) => {
+      if (!p) return;
+      const same = (t) => String(t.id) === String(p.task_id);
+      Object.keys(cache.list).forEach((k) =>
+        cache.list[k].tasks.forEach((t) => {
+          if (!same(t)) return;
+          t.assignees = p.assignees || [];
+          t.due = p.due;
+          t.due_time = !!p.due_time;
+        })
+      );
+      if (view.kind === "list") renderListBody();
+      if (!onTask(p.task_id)) return;
+      task.assignees = p.assignees || [];
+      task.due = p.due;
+      task.due_time = !!p.due_time;
+      task.start = p.start;
+      task.start_time = !!p.start_time;
+      if (p.field) delete changing[p.field];
+      (p.users || []).forEach((u) => delete changing["a:" + u]);
+      renderEditors();
     },
 
     setComments: (p) => {

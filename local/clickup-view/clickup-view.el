@@ -8,9 +8,9 @@
 
 ;;; Commentary:
 ;;
-;; Read a ClickUp task, change its status, comment and reply, and browse
-;; Space ▸ Folder ▸ List, without leaving Emacs.  Built on xwapp: Elisp
-;; owns HTTP and the token, ui/ only renders.
+;; Read a ClickUp task, change its status, dates and assignees, comment
+;; and reply, and browse Space ▸ Folder ▸ List, without leaving Emacs.
+;; Built on xwapp: Elisp owns HTTP and the token, ui/ only renders.
 ;;
 ;;   M-x clickup-view        the task this branch's commits reference,
 ;;                           or the browser when there is none (C-u: browse)
@@ -77,6 +77,8 @@
   "Space id → its folders and folderless lists.")
 (defvar clickup-view--list-cache (make-hash-table :test #'equal)
   "List id → name and statuses.  Statuses belong to a list, not a space.")
+(defvar clickup-view--member-cache (make-hash-table :test #'equal)
+  "List id → the people who can be given its tasks, normalized.")
 (defvar clickup-view--pending nil
   "Task id to show once the page reports ready; nil shows the browser.")
 
@@ -355,6 +357,7 @@ Signals a `user-error' on failure."
     (priority . ,(clickup-view--priority (alist-get 'priority raw)))
     (assignees . ,(clickup-view--vec #'clickup-view--person (alist-get 'assignees raw)))
     (due . ,(or (alist-get 'due_date raw) ""))
+    (due_time . ,(clickup-view--bool (alist-get 'due_date_time raw)))
     (parent . ,(alist-get 'parent raw))
     (updated . ,(or (alist-get 'date_updated raw) ""))
     (url . ,(or (alist-get 'url raw) ""))))
@@ -424,6 +427,7 @@ That one is not a folder to the reader: no breadcrumb for it."
        (creator . ,(clickup-view--person (alist-get 'creator raw)))
        (tags . ,(clickup-view--vec #'clickup-view--tag (alist-get 'tags raw)))
        (start . ,(or (alist-get 'start_date raw) ""))
+       (start_time . ,(clickup-view--bool (alist-get 'start_date_time raw)))
        (created . ,(or (alist-get 'date_created raw) ""))
        (list . ((id . ,(alist-get 'id (alist-get 'list raw)))
                 (name . ,(or (alist-get 'name (alist-get 'list raw)) ""))))
@@ -960,6 +964,21 @@ shows its own progress."
    '((include_markdown_description . t)
      (include_subtasks . t))))
 
+(defun clickup-view--load-members (list-id)
+  "Send the people LIST-ID's tasks can be given to, fetched once a session."
+  (unless (and (stringp list-id) (string-match-p "\\`[0-9A-Za-z]+\\'" list-id))
+    (user-error "Not a list id: %S" list-id))
+  (let ((send (lambda (people)
+                (clickup-view--js "setMembers" `((list_id . ,list-id) (members . ,people))))))
+    (if-let* ((cached (gethash list-id clickup-view--member-cache)))
+        (funcall send cached)
+      (clickup-view--request
+       "GET" (format "/list/%s/member" list-id)
+       (lambda (raw)
+         (funcall send (puthash list-id
+                                (clickup-view--vec #'clickup-view--person (alist-get 'members raw))
+                                clickup-view--member-cache)))))))
+
 (defun clickup-view--load-comments (task-id &optional start start-id)
   "Send TASK-ID's newest comments, or those older than START / START-ID."
   (clickup-view--request
@@ -998,6 +1017,65 @@ shows its own progress."
        (clickup-view--js "statusChanged" `((task_id . ,task-id) (status . ,st)))
        (clickup-view--flash (format "Status → %s" (alist-get 'name st)))))
    nil `((status . ,status))))
+
+(defun clickup-view--changed (task-id raw)
+  "TASK-ID's assignees and dates, from the task RAW a change returned."
+  `((task_id . ,task-id)
+    (assignees . ,(clickup-view--vec #'clickup-view--person (alist-get 'assignees raw)))
+    (due . ,(or (alist-get 'due_date raw) ""))
+    (due_time . ,(clickup-view--bool (alist-get 'due_date_time raw)))
+    (start . ,(or (alist-get 'start_date raw) ""))
+    (start_time . ,(clickup-view--bool (alist-get 'start_date_time raw)))))
+
+(defun clickup-view--task-id (v)
+  "V, from the page, as a native task id; a `user-error' when it is none."
+  (or (and (stringp v) (clickup-view--normalize-id v))
+      (user-error "Not a ClickUp task id: %S" v)))
+
+(defun clickup-view--set-date (task-id field at time)
+  "Set TASK-ID's FIELD, \"due\" or \"start\", to AT, in ms; nil AT clears it.
+TIME non-nil means AT's time of day counts, not only its day.  The page
+works AT out: the day picked, at the time the date had, or at 4 in the
+morning where it is, which is where ClickUp keeps a day with no time."
+  (let* ((key (pcase field
+                ("due" 'due_date)
+                ("start" 'start_date)
+                (_ (user-error "No such date: %S" field))))
+         (at (cond ((memq at '(nil :null)) nil)
+                   ((natnump at) at)
+                   (t (user-error "Not a time: %S" at))))
+         (id (clickup-view--task-id task-id)))
+    (clickup-view--request
+     "PUT" (format "/task/%s" id)
+     (lambda (raw)
+       (clickup-view--js "taskChanged" `(,@(clickup-view--changed id raw) (field . ,field)))
+       (clickup-view--flash (format "%s date %s" (capitalize field) (if at "set" "cleared"))))
+     nil `((,key . ,at)
+           (,(intern (format "%s_time" key))
+            . ,(if (and at (clickup-view--truthy time)) t :json-false))))))
+
+(defun clickup-view--set-assignees (task-id add rem)
+  "Give TASK-ID to the people ADD and take it from REM, lists of user ids."
+  (let* ((ids (lambda (xs)
+                (vconcat (mapcar (lambda (x)
+                                   (if (natnump x) x (user-error "Not a user id: %S" x)))
+                                 (and (listp xs) xs)))))
+         (add (funcall ids add))
+         (rem (funcall ids rem))
+         (id (clickup-view--task-id task-id)))
+    (if (and (seq-empty-p add) (seq-empty-p rem))
+        (user-error "No one to assign or unassign")
+      (clickup-view--request
+       "PUT" (format "/task/%s" id)
+       (lambda (raw)
+         (let ((names (mapcar (lambda (p) (or (alist-get 'username p) (alist-get 'email p) "?"))
+                              (alist-get 'assignees raw))))
+           (clickup-view--js "taskChanged" `(,@(clickup-view--changed id raw)
+                                             (users . ,(vconcat add rem))))
+           (clickup-view--flash (if names
+                                    (concat "Assigned to " (string-join names ", "))
+                                  "Unassigned"))))
+       nil `((assignees . ((add . ,add) (rem . ,rem))))))))
 
 (defun clickup-view--post-comment (task-id text)
   (if (string-empty-p (string-trim (or text "")))
@@ -1045,6 +1123,14 @@ shows its own progress."
         ("load-replies" (clickup-view--load-replies (alist-get 'comment_id intent)))
         ("set-status" (clickup-view--change-status (alist-get 'task_id intent)
                                                    (alist-get 'status intent)))
+        ("members" (clickup-view--load-members (alist-get 'list_id intent)))
+        ("set-date" (clickup-view--set-date (alist-get 'task_id intent)
+                                            (alist-get 'field intent)
+                                            (alist-get 'at intent)
+                                            (alist-get 'time intent)))
+        ("set-assignees" (clickup-view--set-assignees (alist-get 'task_id intent)
+                                                      (alist-get 'add intent)
+                                                      (alist-get 'rem intent)))
         ("post-comment" (clickup-view--post-comment (alist-get 'task_id intent)
                                                     (alist-get 'text intent)))
         ("post-reply" (clickup-view--post-reply (alist-get 'task_id intent)
