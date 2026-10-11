@@ -311,6 +311,15 @@ inside Emacs.
   before restart, search / import / status
 - [X] =bin/ghostherd memory search|import= so an agent can ask
 - [X] pytest (fake embed, no model download) + ERT for the Elisp seam
+- [X] An import costs what is new.  An agy conversation was embedded
+  whole each time it moved --- 1,577 chunks, some eight minutes of CPU
+  on ten threads, every five minutes: each step carries the
+  conversation's time, and the import compared whole payloads.  New
+  words only are embedded now; a chunk that only says something new of
+  itself is written again without its vectors.  Four threads at most,
+  on the CPU unless CoreML is asked for (=GHOSTHERD_MEMORY_THREADS=,
+  =GHOSTHERD_MEMORY_ONNX=): ten threads and CoreML were slower and
+  dearer, 200 chunks 10.7 s and 61 s of CPU against 9.0 s and 34 s
 
 ** What is left
 

@@ -237,14 +237,25 @@ class MemoryEngine:
         # few turns between imports, and its chunk ids are fixed by
         # (path, index): re-embedding all of it every five minutes would
         # cost tens of seconds of CPU per active session, every time.
+        # The vectors are of the words alone: a chunk that only says
+        # something new of itself -- agy gives every step the
+        # conversation's time, which moves with each step -- is written
+        # again without them.
         if force:
             self.store.delete_source(meta.path)
             stored = {}
         else:
             stored = self.store.payloads_of(meta.path)
-        fresh = [c for c in chunks if stored.get(c.chunk_index) != payload_for(c)]
+        fresh, restated = [], []
+        for c in chunks:
+            have = stored.get(c.chunk_index)
+            if have is None or have.get("text") != c.text:
+                fresh.append(c)
+            elif have != payload_for(c):
+                restated.append(c)
         gone = [i for i in stored if i >= len(chunks)]
         self.store.delete_chunks(meta.path, gone)
+        self.store.restate(restated)
         if fresh:
             texts = [c.text for c in fresh]
             self.store.upsert(fresh, self.embedder.dense(texts), self.embedder.sparse(texts))

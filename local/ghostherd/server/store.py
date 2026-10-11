@@ -13,8 +13,10 @@ from qdrant_client.models import (
     Filter,
     FilterSelector,
     MatchValue,
+    OverwritePayloadOperation,
     PointIdsList,
     PointStruct,
+    SetPayload,
     SparseVector,
     SparseVectorParams,
     VectorParams,
@@ -192,6 +194,25 @@ class Store:
             )
         self.client.upsert(collection_name=COLLECTION, points=points)
         return len(points)
+
+    def restate(self, turns: list[Turn]) -> int:
+        """What TURNS say of themselves -- a time, a title -- written over
+        their stored chunks', whose words and so vectors are the same."""
+        if not turns:
+            return 0
+        self.client.batch_update_points(
+            collection_name=COLLECTION,
+            update_operations=[
+                OverwritePayloadOperation(
+                    overwrite_payload=SetPayload(
+                        payload=payload_for(turn),
+                        points=[point_id(turn.source_path, turn.chunk_index)],
+                    )
+                )
+                for turn in turns
+            ],
+        )
+        return len(turns)
 
     def search(
         self,

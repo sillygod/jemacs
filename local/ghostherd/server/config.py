@@ -37,8 +37,9 @@ class Config:
     # json.loads of a 1MB tool-result line is CPU with nothing to search.
     max_line_bytes: int = 262144
     embed_batch: int = 256
-    embed_threads: int = 0  # 0 = cpu_count - 1
-    # auto: CoreML on macOS if the session accepts it, else CPU.
+    embed_threads: int = 0  # 0 = four at most, one core left
+    # auto: CPU.  coreml: CoreML on macOS where the session accepts it --
+    # it takes 6 of bge-small-zh's 40 nodes, and is the slower for it.
     onnx_provider: str = "auto"
     # tool dumps are rarely what you search for and dominate grok volume.
     index_tools: bool = False

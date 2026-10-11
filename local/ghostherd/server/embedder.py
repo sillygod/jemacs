@@ -92,17 +92,20 @@ class Embedder:
 
 
 def _thread_count(configured: int) -> int:
+    """Four at most, unless configured.  Past four, bge-small-zh is no
+    faster on an M-series Mac, only dearer: 200 chunks took 9.0 s and
+    34 s of CPU on four threads, 10.7 s and 61 s on ten -- the whole
+    machine, every import, for nothing."""
     if configured and configured > 0:
         return configured
     n = os.cpu_count() or 4
-    return max(1, n - 1)
+    return max(1, min(4, n - 1))
 
 
 def _onnx_providers(choice: str) -> list[str] | None:
+    "CPU unless CoreML is asked for: it took 11 s where the CPU took 9."
     choice = (choice or "auto").lower()
-    if choice in ("cpu", "none", ""):
-        return None
-    if choice == "coreml" or (choice == "auto" and sys.platform == "darwin"):
+    if choice == "coreml" and sys.platform == "darwin":
         return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
     return None
 

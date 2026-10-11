@@ -245,6 +245,91 @@ def test_reimport_embeds_only_what_changed(tmp_path, monkeypatch):
         reset_engine()
 
 
+def test_reimport_embeds_only_new_words(tmp_path, monkeypatch):
+    """agy gives every step of a conversation the conversation's time,
+    which moves with each new step: a chunk whose words are as stored
+    keeps its vectors, and only what it says of itself -- a time, a
+    title -- is written again.  Its 1,577 chunks were embedded whole
+    every five minutes, ten threads at once."""
+    import json
+    import sqlite3
+
+    from config import Config
+    from engine import MemoryEngine, reset_engine
+
+    agy = tmp_path / "agy"
+    (agy / "conversations").mkdir(parents=True)
+    db = agy / "conversations" / "conv-1.db"
+    summaries = agy / "conversation_summaries.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE steps (idx INTEGER, step_payload BLOB)")
+    conn.commit()
+    conn.close()
+    conn = sqlite3.connect(summaries)
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT, preview TEXT,"
+                 " workspace_uris TEXT, last_modified_time TEXT)")
+    conn.execute("INSERT INTO conversation_summaries VALUES (?,?,?,?,?)",
+                 ("conv-1", "commit code", "commit it once the tests of the shop pass", json.dumps(["file:///tmp/shop"]), "2026-10-11T10:00"))
+    conn.commit()
+    conn.close()
+
+    def step(n, at, title="commit code"):
+        with sqlite3.connect(db) as c:
+            c.executemany("INSERT INTO steps VALUES (?, ?)",
+                          [(i, f"step {i}: ran the tests of the shop and read what failed".encode()) for i in n])
+        with sqlite3.connect(summaries) as c:
+            c.execute("UPDATE conversation_summaries SET last_modified_time = ?, title = ?", (at, title))
+        os_mtime_bump(db)
+        os_mtime_bump(summaries)
+
+    reset_engine()
+    cfg = Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "c",
+                 grok_root=tmp_path / "g", agy_root=agy)
+    eng = MemoryEngine(cfg)
+    embedded = []
+    for name in ("dense", "sparse"):
+        real = getattr(eng.embedder, name)
+        monkeypatch.setattr(eng.embedder, name, lambda texts, real=real, name=name:
+                            embedded.append((name, len(list(texts)))) or real(texts))
+    try:
+        step(range(10), "2026-10-11T10:05")
+        assert eng.import_transcripts(agents=["agy"])["imported"] == 11  # ten steps, and the summary
+        embedded.clear()
+        step([10], "2026-10-11T10:10")
+        assert eng.import_transcripts(agents=["agy"])["imported"] == 1
+        assert embedded == [("dense", 1), ("sparse", 1)]
+        stored = eng.store.payloads_of(str(db))
+        assert len(stored) == 11 and {p["ts"] for p in stored.values()} == {"2026-10-11T10:10"}
+        assert eng.store.payloads_of(str(summaries))[0]["ts"] == "2026-10-11T10:10"
+        # Renamed: the summary's words change; the steps only say it.
+        embedded.clear()
+        step([], "2026-10-11T10:15", title="commit the shop")
+        assert eng.import_transcripts(agents=["agy"])["imported"] == 1
+        assert embedded == [("dense", 1), ("sparse", 1)]
+        assert {p["title"] for p in eng.store.payloads_of(str(db)).values()} == {"commit the shop"}
+        hits = eng.search("ran the tests of the shop", limit=3)["hits"]
+        assert hits and all(h.get("ts") == "2026-10-11T10:15" for h in hits)
+    finally:
+        eng.close()
+        reset_engine()
+
+
+def test_embedding_takes_a_few_cores(monkeypatch):
+    """Four threads at most unless configured, on the CPU unless CoreML
+    is asked for: ten threads and CoreML were slower and dearer."""
+    import os
+
+    from embedder import _onnx_providers, _thread_count
+
+    for cores, want in ((11, 4), (4, 3), (1, 1)):
+        monkeypatch.setattr(os, "cpu_count", lambda cores=cores: cores)
+        assert _thread_count(0) == want
+    assert _thread_count(8) == 8
+    assert _onnx_providers("auto") is None and _onnx_providers("cpu") is None
+    assert _onnx_providers("coreml") == (["CoreMLExecutionProvider", "CPUExecutionProvider"]
+                                         if __import__("sys").platform == "darwin" else None)
+
+
 def os_mtime_bump(path):
     """Give PATH a new mtime even within the same clock tick."""
     import os
