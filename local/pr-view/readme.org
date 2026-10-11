@@ -185,6 +185,12 @@ first word, and a list row's when, comments and reviewers one line
 under its title; to a finger, controls 32 points and more, form text
 16px.
 
+In any narrow window --- the phone, or Emacs split side by side ---
+nothing scrolls sideways but a block of code or a wide table, each by
+itself: a long link, path or branch breaks rather than widen the page.
+Under 720 points a commit is a card, who, which and when on a line and
+its message under them.
+
 * For other packages
 
 ghostherd's herd page shows the PR an agent's branch is on.  Two

@@ -127,7 +127,7 @@
     let start = 1;
     if (rows[1] && /^\s*\|?[\s:\-|]+$/.test(rows[1])) start = 2;
     let html =
-      "<table><thead><tr>" +
+      '<div class="md-table"><table><thead><tr>' +
       head.map((c) => "<th>" + inlineMd(c) + "</th>").join("") +
       "</tr></thead><tbody>";
     for (let r = start; r < rows.length; r++) {
@@ -136,7 +136,7 @@
         cells(rows[r]).map((c) => "<td>" + inlineMd(c) + "</td>").join("") +
         "</tr>";
     }
-    return html + "</tbody></table>";
+    return html + "</tbody></table></div>";
   }
 
   function renderMarkdown(src) {
@@ -707,7 +707,7 @@
       escapeHtml(relTime(c.created_on)) +
       "</span></div>" +
       path +
-      '<div class="comment-md">' +
+      '<div class="comment-md md">' +
       renderMarkdown(c.content || "") +
       "</div>" +
       '<div class="comment-actions">' +
@@ -816,11 +816,11 @@
           const hash = c.short || "";
           return (
             "<tr>" +
-            '<td class="c-author">' +
+            '<td class="c-author"><span class="c-who">' +
             avatarHtml(name, c.avatar) +
             "<span>" +
             escapeHtml(name) +
-            "</span></td>" +
+            "</span></span></td>" +
             '<td class="c-hash">' +
             (c.url
               ? '<button type="button" class="linkish" data-url="' +
@@ -1071,7 +1071,7 @@
       '<div id="panel-overview" class="panel-overview"' +
       (selectedTab === "overview" ? "" : " hidden") +
       ">" +
-      '<section class="description">' +
+      '<section class="description md">' +
       renderMarkdown(pr.description || "") +
       "</section>" +
       '<section class="comments-wrap">' +

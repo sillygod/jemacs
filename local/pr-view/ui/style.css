@@ -276,6 +276,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; align-items: center; }
 .chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--muted);
   border: 1px solid var(--line);
@@ -334,6 +336,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   color: var(--accent);
   margin: 4px 0;
 }
+.comment-body { min-width: 0; overflow-wrap: anywhere; }
 .comment-md { margin-top: 6px; }
 .comment-md p { margin: 0.35em 0; }
 .comment-form { margin-top: 14px; display: grid; gap: 8px; max-width: 52em; }
@@ -444,48 +447,52 @@ button.linkish:hover { color: var(--accent); }
   overflow-wrap: anywhere;
   flex-shrink: 0;
 }
-.description h1, .description h2, .description h3 { margin: 0.7em 0 0.35em; line-height: 1.25; }
-.description h1 { font-size: 1.35em; }
-.description h2 { font-size: 1.18em; }
-.description h3 { font-size: 1.05em; }
-.description p { margin: 0.45em 0; }
-.description ul, .description ol { margin: 0.4em 0 0.4em 1.3em; padding: 0; }
-.description li { margin: 0.2em 0; }
-.description li.task { list-style: none; margin-left: -1.1em; }
-.description blockquote {
+.md h1, .md h2, .md h3 { margin: 0.7em 0 0.35em; line-height: 1.25; }
+.md h1 { font-size: 1.35em; }
+.md h2 { font-size: 1.18em; }
+.md h3 { font-size: 1.05em; }
+.md p { margin: 0.45em 0; }
+.md ul, .md ol { margin: 0.4em 0 0.4em 1.3em; padding: 0; }
+.md li { margin: 0.2em 0; }
+.md li.task { list-style: none; margin-left: -1.1em; }
+.md blockquote {
   margin: 0.5em 0;
   padding: 0.2em 0.8em;
   border-left: 3px solid var(--line);
   color: var(--muted);
 }
-.description hr { border: 0; border-top: 1px solid var(--line); margin: 0.8em 0; }
-.description table {
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 0.8em 0; }
+/* A table wider than the page scrolls by itself, not the page. */
+.md-table { overflow-x: auto; margin: 0.6em 0; }
+.md table {
   border-collapse: collapse;
   width: 100%;
-  margin: 0.6em 0;
   font-size: 12px;
 }
-.description th, .description td {
+.md th, .md td {
   border: 1px solid var(--line);
   padding: 4px 8px;
   text-align: left;
+  overflow-wrap: normal;
 }
-.description th { background: #12171e; }
-.description code {
+.md th { background: #12171e; }
+.md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   background: #0b0e12;
   padding: 1px 4px;
   border-radius: 3px;
 }
-.description pre {
+.md a { color: var(--accent); }
+.md img { max-width: 100%; }
+.md pre {
   background: #0b0e12;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 10px 12px;
   overflow: auto;
 }
-.description pre code { background: none; padding: 0; }
+.md pre code { background: none; padding: 0; overflow-wrap: normal; }
 
 .diff-split {
   flex: 1;
@@ -668,16 +675,16 @@ button.linkish:hover { color: var(--accent); }
   padding: 8px 10px;
   vertical-align: top;
 }
-.commits tr:hover td { background: var(--row-hover); }
-.commits .c-author {
+.commits tr:hover, .commits tr:hover td { background: var(--row-hover); }
+.commits .c-who {
   display: flex;
   align-items: center;
   gap: 6px;
   white-space: nowrap;
 }
-.commits .c-author .avatar { width: 20px; height: 20px; font-size: 9px; }
+.commits .c-who .avatar { width: 20px; height: 20px; font-size: 9px; }
 .commits .c-hash { white-space: nowrap; }
-.commits .c-msg { width: 100%; }
+.commits .c-msg { width: 100%; overflow-wrap: anywhere; }
 .commits .c-msg pre {
   margin: 6px 0 0;
   white-space: pre-wrap;
@@ -697,6 +704,25 @@ button.linkish:hover { color: var(--accent); }
 }
 .linkish:hover { text-decoration: underline; }
 .empty { color: var(--muted); padding: 12px 10px; }
+
+/* Narrow: a commit a card -- who, which and when on a line, what under them. */
+@media (max-width: 720px) {
+  .commits thead { display: none; }
+  .commits, .commits tbody { display: block; }
+  .commits tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px 12px;
+    align-items: baseline;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .commits td { border: 0; padding: 0; }
+  .commits .c-who span { overflow: hidden; text-overflow: ellipsis; }
+  .commits .c-who { align-self: center; }
+  .commits .c-date { grid-area: 1 / 3; }
+  .commits .c-msg { grid-area: 2 / 1 / 3 / -1; width: auto; }
+}
 
 /* Conflicts */
 .chip.conflict {
@@ -847,6 +873,7 @@ button.linkish:hover { color: var(--accent); }
   /* A select keeps its own height in WebKit whatever its min-height. */
   select, .detail-actions select { height: 36px; }
   .filter, .row-copy, .task-chip, .tree-file, button.linkish, .commits .linkish { min-height: 32px; }
+  .commits .c-msg summary { line-height: 32px; }
   .row-copy { padding: 0 12px; }
   .rev-x { min-width: 32px; min-height: 32px; }
 }
