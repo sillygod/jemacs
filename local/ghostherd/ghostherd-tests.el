@@ -7133,6 +7133,8 @@ answering is its own, not failed with rd; rd's link is forgotten."
         (should (equal (list (plist-get ask :from) (plist-get ask :to)) '("claude" "grok")))
         (should (equal (plist-get ask :generation) 2))
         (should (equal (plist-get ask :reason) "it wedged"))
+        ;; Idle, its usage left: its turn had ended, and the heir waits.
+        (should (eq (plist-get ask :cut) :json-false))
         (should (equal (plist-get ask :notes) "implementer"))
         (should (equal (plist-get ask :project) "/p/shop/"))
         (should (equal (plist-get ask :client) "/p/bin/herd")))
@@ -7301,8 +7303,22 @@ on the same CLI, its own flags kept, less what picked its conversation."
                               (ghostherd-usage-used-up-text 'claude)))
       (should-not (ghostherd-usage-used-up-text 'grok))
       (ghostherd-relay rd 'grok)
-      (should (string-match-p "\\`its claude usage (5h) is used up"
-                              (plist-get (cadr (assoc "herd_relay_brief" requests)) :reason))))))
+      (let ((ask (cadr (assoc "herd_relay_brief" requests))))
+        (should (string-match-p "\\`its claude usage (5h) is used up" (plist-get ask :reason)))
+        ;; Its usage ran out: its turn was cut short, and the heir goes on.
+        (should (eq (plist-get ask :cut) t))))))
+
+(ert-deftest ghostherd-test-relay-of-one-at-work-goes-on ()
+  "An agent relayed while it works, or blocked on a question, was cut
+short: the heir goes on with its work.  Idle, it had finished its turn."
+  (ghostherd-tests--relaying
+    (dolist (case '((working . t) (blocked . t) (idle . :json-false) (done . :json-false)))
+      (setq requests nil)
+      (clrhash ghostherd--relaying)
+      (let ((s (ghostherd-tests--session :name (format "rd-%s" (car case)) :kind 'claude
+                                         :state (car case) :backend 'fake)))
+        (ghostherd-relay s 'grok)
+        (should (eq (plist-get (cadr (assoc "herd_relay_brief" requests)) :cut) (cdr case)))))))
 
 (ert-deftest ghostherd-test-relay-offered-when-usage-runs-out ()
   "An agent that stops working with its CLI used up is offered its relay,

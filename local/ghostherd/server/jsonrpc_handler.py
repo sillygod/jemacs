@@ -319,8 +319,9 @@ class JsonRpcHandler:
         """What agent NAME hands its heir, as the heir's first message: its
         work from its transcript PATH, its asks, the checkout at PROJECT.
         FROM and TO are the old and new CLIs, GENERATION the heir's place
-        in the line, REASON why the old one stopped, NOTES its notes,
-        CLIENT the herd client an ask is answered with."""
+        in the line, REASON why the old one stopped, CUT true when it
+        stopped mid-turn, NOTES its notes, CLIENT the herd client an ask is
+        answered with."""
         name = str(params.get("name") or "")
         if not relay.NAME.match(name):
             raise ValueError("name is an agent's name")
@@ -349,6 +350,7 @@ class JsonRpcHandler:
             notes=str(params.get("notes") or "")[:500],
             asks=get_herd().relay_asks(name),
             client=str(params.get("client") or "herd")[:1000],
+            cut=params.get("cut") is True,
         )
 
 

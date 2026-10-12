@@ -4769,8 +4769,12 @@ asks SESSION was answering are the heir's to answer.  SESSION is
 killed; its conversation stays where its CLI keeps it.
 
 REASON says why SESSION stops; by default its CLI's usage used up,
-when the usage says so.  Interactively, acts on the sidebar row at
-point when there is one, and offers `ghostherd-relay-default-kind'.
+when the usage says so.  The heir goes on with the work when SESSION
+was cut short -- working or blocked, or its CLI's usage used up -- and
+otherwise says where the work stands and waits to be told.
+
+Interactively, acts on the sidebar row at point when there is one, and
+offers `ghostherd-relay-default-kind'.
 Returns at once: the heir starts when the sidecar has the brief."
   (interactive
    (let* ((s (or (and (derived-mode-p 'ghostherd-sidebar-mode)
@@ -4809,6 +4813,9 @@ Returns at once: the heir starts when the sidecar has the brief."
            :to (symbol-name kind)
            :generation (1+ (ghostherd-session-generation session))
            :reason (or reason "")
+           :cut (if (or (memq (ghostherd-session-state session) '(working blocked))
+                        (ghostherd-usage-used-up old))
+                    t :json-false)
            :notes (or (ghostherd-session-notes session) "")
            :client (or (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client)) "herd"))
      (lambda (err)

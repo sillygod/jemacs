@@ -23,7 +23,8 @@ import conversation
 
 BRIEF_MAX = 16000
 WORK_MAX = 1500  # one thing it was asked
-LAST_MAX = 3000  # its last answer
+LAST_MAX = 8000  # its last answer, when the brief has the room
+LAST_MIN = 2000  # and when it has not
 STEP_MAX = 400  # any other step
 WORK_LATER = 5  # instructions after the first
 STEPS = 14
@@ -34,6 +35,15 @@ GIT_TIMEOUT = 5
 # An agent's name, and a CLI's, as a relay takes them from outside.
 NAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 KIND = re.compile(r"\A[a-z][a-z0-9-]{0,31}\Z")
+
+# How a brief ends: the heir goes on with work cut short, and does
+# nothing yet with work that had come to a stop of its own.
+GO_ON = ("Its turn was cut short.  Go on from where it stopped: first say in two lines what the "
+         "work is and what you will do next, then do it.  Do not redo what is done; if its last "
+         "answer above shows the work finished after all, say so and wait to be told what is next.")
+WAIT = ("Its turn had ended: it was waiting to be told what is next.  So do nothing yet: say in "
+        "two lines what the work is and where it stands, then wait to be told.")
+CUT = "\n[… the rest is left out: the brief is too long.]\n\n"
 
 # A brief, as the heir was given it: its own heir carries the work on.
 RELAY = re.compile(r"\A\[Relay: ")
@@ -102,9 +112,20 @@ def _work(head: list[dict[str, Any]], tail: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
-def _step(e: dict[str, Any], limit: int = STEP_MAX) -> str | None:
+def _said(text: str, limit: int) -> str:
+    """TEXT, its last answer, whole -- or cut at LIMIT, saying it is the
+    brief that cut it: a bare … reads as an answer it never finished."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    kept = text[:limit].rstrip()
+    return (f"{kept}\n[… {len(text) - len(kept)} more characters of this answer are left out "
+            "of the brief: it goes on in its conversation.]")
+
+
+def _step(e: dict[str, Any]) -> str | None:
     role, kind = e.get("role"), e.get("kind")
-    clip = lambda t: _indent(conversation.clip(t or "", limit))  # noqa: E731
+    clip = lambda t: _indent(conversation.clip(t or "", STEP_MAX))  # noqa: E731
     if role == "assistant":
         return f"- It said: {clip(e.get('text'))}"
     if role == "tools":
@@ -131,13 +152,13 @@ def _step(e: dict[str, Any], limit: int = STEP_MAX) -> str | None:
     return None
 
 
-def _steps(tail: list[dict[str, Any]], count: int = STEPS) -> str:
-    "Its last steps, latest last; its last answer as it said it."
+def _steps(tail: list[dict[str, Any]], count: int = STEPS, limit: int = LAST_MAX) -> str:
+    "Its last steps, latest last; its last answer as it said it, up to LIMIT."
     steps = [e for e in tail if not (e.get("role") == "user" and RELAY.match(e.get("text") or ""))]
     last = next((i for i in range(len(steps) - 1, -1, -1) if steps[i].get("role") == "assistant"), None)
     lines = []
     for i, e in enumerate(steps[-count:], start=max(0, len(steps) - count)):
-        s = _step(e, LAST_MAX if i == last else STEP_MAX)
+        s = f"- It said: {_indent(_said(e.get('text') or '', limit))}" if i == last else _step(e)
         if s:
             lines.append(s)
     if len(steps) > count:
@@ -205,11 +226,13 @@ def _asks(asks: dict[str, list[dict[str, Any]]], client: str) -> str:
 def brief(name: str, path: str | None, project: str | None, old: str, new: str,
           generation: int, reason: str = "", notes: str = "",
           asks: dict[str, list[dict[str, Any]]] | None = None,
-          client: str = "herd") -> dict[str, Any]:
+          client: str = "herd", cut: bool = False) -> dict[str, Any]:
     """NAME's work as its heir is told it: NAME an OLD agent until now, a
     NEW one from now, the GENERATION-th of the name; REASON why the old
-    one stopped.  PATH is its transcript, PROJECT its checkout, CLIENT
-    the herd client an ask is answered with."""
+    one stopped, CUT whether it stopped mid-turn.  PATH is its
+    transcript, PROJECT its checkout, CLIENT the herd client an ask is
+    answered with.  The heir goes on with the work when it was cut
+    short or it owes an answer to an ask; otherwise it waits."""
     asks = asks or {}
     real = None
     why = ""
@@ -244,12 +267,11 @@ def brief(name: str, path: str | None, project: str | None, old: str, new: str,
     sections = [top, "## The work\n" + work]
     asks_text = _asks(asks, client)
     git = checkout(project)
-    end = ("Go on from where it stopped.  First say in two lines what the work is and what you "
-           "will do next; then do it.  Do not redo what is done.")
+    end = GO_ON if cut or asks.get("taking") else WAIT
 
-    def assemble(count: int) -> str:
+    def assemble(count: int, limit: int) -> str:
         parts = list(sections)
-        steps = _steps(tail, count) if real else ""
+        steps = _steps(tail, count, limit) if real else ""
         if steps:
             parts.append("## Where it got to\n" + steps)
         if asks_text:
@@ -259,13 +281,19 @@ def brief(name: str, path: str | None, project: str | None, old: str, new: str,
         parts.append(end)
         return "\n\n".join(parts)
 
-    count = STEPS
-    text = assemble(count)
+    # Too long: its older steps go first, then its last answer is cut,
+    # then whatever is left over.
+    said = next((e.get("text") or "" for e in reversed(tail) if e.get("role") == "assistant"), "")
+    count, limit = STEPS, min(LAST_MAX, len(said.strip()))
+    text = assemble(count, limit)
     while len(text) > BRIEF_MAX and count > 2:
         count -= 2
-        text = assemble(count)
+        text = assemble(count, limit)
+    if len(text) > BRIEF_MAX and limit > LAST_MIN:
+        limit = max(LAST_MIN, limit - (len(text) - BRIEF_MAX) - 120)
+        text = assemble(count, limit)
     if len(text) > BRIEF_MAX:
-        text = text[: BRIEF_MAX - len(end) - 4].rstrip() + "\n…\n\n" + end
+        text = text[: BRIEF_MAX - len(end) - len(CUT)].rstrip() + CUT + end
     return {
         "text": text,
         "transcript": str(real) if real else None,

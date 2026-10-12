@@ -3,6 +3,7 @@ herd's asks and the checkout."""
 
 import asyncio
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def result(i, content):
 def section(t, name):
     "Section NAME of brief T, without its heading."
     body = t.split(f"## {name}\n", 1)[1]
-    return body.split("\n## ", 1)[0].split("\n\nGo on from where", 1)[0]
+    return body.split("\n## ", 1)[0].split("\n\nIts turn ", 1)[0]
 
 
 ASK = (
@@ -87,7 +88,7 @@ def _work_of(home):
 
 def test_a_brief_says_what_it_was_asked_and_where_it_got_to(home):
     path = _work_of(home)
-    b = relay.brief("rd", path, None, "claude", "grok", 2, reason="claude's usage is used up")
+    b = relay.brief("rd", path, None, "claude", "grok", 2, reason="claude's usage is used up", cut=True)
     t = b["text"]
     assert t.startswith("[Relay: you take over from rd, a claude agent that stopped -- claude's usage is used up.")
     assert "You are rd now, the second of the name" in t
@@ -99,17 +100,31 @@ def test_a_brief_says_what_it_was_asked_and_where_it_got_to(home):
     steps = section(t, "Where it got to")
     assert "It ran: Read /x/auth.py" in steps and "It ran: Bash Run the auth tests" in steps
     assert steps.rstrip().endswith("Next: keep it apart.")
-    assert t.rstrip().endswith("Do not redo what is done.")
+    assert t.endswith("\n\n" + relay.GO_ON)
     assert b["transcript"].endswith("abc.jsonl") and b["taking"] == [] and b["waiting"] == []
 
 
 def test_its_last_answer_is_kept_whole_its_other_steps_short(home):
     long = "word " * 500
-    path = _claude(home, [u("Do it.", 0), a("m1", text("early " + long), minute=1), a("m2", text("last " + long), minute=2)])
+    path = _claude(home, [u("Do it.", 0), a("m1", text("early " + long), minute=1),
+                          a("m2", text("last " + long * 3 + "THE END."), minute=2)])
     steps = section(relay.brief("rd", path, None, "claude", "agy", 2)["text"], "Where it got to")
     early, last = steps.split("- It said: ")[1:3]
     assert len(early) < relay.STEP_MAX + 20
-    assert len(last) > 2000
+    # A long answer, whole: cut, the heir took it for one it never finished.
+    assert last.rstrip().endswith("THE END.") and "…" not in last
+
+
+def test_the_heir_goes_on_only_with_work_cut_short(home):
+    path = _work_of(home)
+    # Its turn had ended: the heir says where the work stands, and waits.
+    t = relay.brief("rd", path, None, "agy", "grok", 2)["text"]
+    assert t.endswith("\n\n" + relay.WAIT) and relay.GO_ON not in t
+    # Cut short -- mid-turn, or its usage ran out -- it goes on.
+    assert relay.brief("rd", path, None, "agy", "grok", 2, cut=True)["text"].endswith("\n\n" + relay.GO_ON)
+    # An ask it owes an answer is work not done.
+    asks = {"taking": [{"id": "a1b2c3d4", "from": "lead", "body": "Test it."}]}
+    assert relay.brief("rd", path, None, "agy", "grok", 2, asks=asks)["text"].endswith("\n\n" + relay.GO_ON)
 
 
 def test_an_ask_it_was_given_is_part_of_the_work(home):
@@ -211,7 +226,7 @@ def test_a_long_conversation_fits(home):
         records.append(a(f"m{i}", text(f"step {i} " + "x" * 3000), minute=1))
     t = relay.brief("rd", _claude(home, records), None, "claude", "grok", 2)["text"]
     assert len(t) <= relay.BRIEF_MAX
-    assert t.rstrip().endswith("Do not redo what is done.") and "Start." in t
+    assert t.endswith("\n\n" + relay.WAIT) and "Start." in t
 
 
 def test_a_brief_too_long_drops_its_oldest_steps_first(home):
@@ -225,17 +240,37 @@ def test_a_brief_too_long_drops_its_oldest_steps_first(home):
     steps = section(t, "Where it got to")
     assert "earlier steps" in steps.splitlines()[0] and "THE LAST ANSWER" in steps
     # Steps dropped, not the brief cut off: its last answer whole.
-    assert "w" * 2900 in steps and "\n…\n\nGo on" not in t
-    assert t.rstrip().endswith("Do not redo what is done.")
+    assert "w" * 2900 in steps and relay.CUT not in t and "left out" not in steps
+    assert t.endswith("\n\n" + relay.WAIT)
+
+
+def test_a_last_answer_too_long_for_the_brief_says_it_is_the_brief_that_cut_it(home):
+    records = []
+    for i in range(7):
+        records.append(u(f"instruction {i} " + "y" * 2000, i))
+        records.append(a(f"m{i}", text(f"answer {i} " + "z" * 2000), minute=i))
+    records.append(a("last", text("THE LAST ANSWER " + "w" * 7000), minute=30))
+    t = relay.brief("rd", _claude(home, records), None, "claude", "grok", 2, cut=True)["text"]
+    assert len(t) <= relay.BRIEF_MAX
+    steps = section(t, "Where it got to")
+    last = steps.split("- It said: ")[-1]
+    assert last.startswith("THE LAST ANSWER") and len(last) > relay.LAST_MIN
+    assert re.search(r"w\n  \[… \d+ more characters of this answer are left out of the brief: "
+                     r"it goes on in its conversation\.\]$", last.rstrip())
+    assert relay.CUT not in t and t.endswith("\n\n" + relay.GO_ON)
 
 
 def test_a_brief_too_long_however_few_steps_is_cut(home, tmp_path):
     reset_herd()
     h = HerdStore(tmp_path / "herd.sqlite")
     asks = {"taking": [{"id": f"a{i:07d}", "from": "lead", "body": f"part {i} " + "q" * 3000} for i in range(12)]}
-    t = relay.brief("rd", None, None, "claude", "grok", 2, asks=asks)["text"]
+    path = _claude(home, [u("Do it.", 0), a("m1", text("THE LAST ANSWER " + "w" * 5000), minute=1)])
+    t = relay.brief("rd", path, None, "claude", "grok", 2, asks=asks)["text"]
     assert len(t) <= relay.BRIEF_MAX
-    assert t.rstrip().endswith("Do not redo what is done.") and "\n…\n" in t
+    # Its last answer cut no shorter than LAST_MIN, the rest after it.
+    last = section(t, "Where it got to").split("- It said: ")[-1]
+    assert "w" * (relay.LAST_MIN - 20) in last and "left out of the brief" in last
+    assert t.endswith(relay.CUT + relay.GO_ON)
     h.close()
 
 
@@ -274,8 +309,11 @@ def test_rpc(home, tmp_path, monkeypatch):
         return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_relay_brief", params=params)))
 
     r = call(name="rd", path=path, project=str(tmp_path), **{"from": "claude", "to": "grok"}, generation=2,
-             reason="used up")
+             reason="used up", cut=True)
     assert r.error is None and "You are rd now, the second of the name" in r.result["text"]
+    assert r.result["text"].endswith(relay.GO_ON)
+    for cut in (False, "yes", None):
+        assert call(name="rd", path=path, **{"from": "claude", "to": "grok"}, cut=cut).result["text"].endswith(relay.WAIT)
     assert call(name="-rf", **{"from": "claude", "to": "grok"}).error.message == "name is an agent's name"
     assert call(name="rd", **{"from": "Claude Code", "to": "grok"}).error.message == "from is a CLI's name"
     assert call(name="rd", **{"from": "claude", "to": "grok"}, generation=1).error.message == "generation is 2 to 999"

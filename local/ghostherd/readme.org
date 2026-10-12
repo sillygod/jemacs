@@ -566,8 +566,16 @@ anything:
 - *The checkout* --- the branch, what is not committed, the diff's
   stat, the latest commits.
 
-Sixteen thousand characters at most, its oldest steps dropped first;
-the transcript's path is in it, for an heir that wants more.
+Then what to do with it.  An agent cut short --- working or blocked
+when relayed, or its CLI's usage used up --- or owing an ask has work
+left: the heir goes on from where it stopped.  One whose turn had
+ended was waiting for you: the heir says in two lines where the work
+stands, and waits too.
+
+Sixteen thousand characters at most: its oldest steps dropped first,
+then its last answer cut --- saying it is the brief that cut it, or an
+heir takes it for an answer never finished.  The transcript's path is
+in it, for an heir that wants more.
 
 The name is what the rest of the herd knows an agent by, so nothing
 else has to change: the lead's asks of rd reach rd's heir, answers to
