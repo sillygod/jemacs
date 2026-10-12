@@ -123,6 +123,17 @@
 (e2e-write "icon.ico" (unibyte-string 0 0 1 0 2 0))
 (defvar e2e-checkout-root (pr-view--local-root e2e-checkout))
 (add-hook 'pr-view-local-allowed-functions (lambda (root) (equal root e2e-checkout-root)))
+;; Who a review of it may go to: what each is sent is noted; qa is gone
+;; by the time it is sent anything.
+(add-hook 'pr-view-local-recipients-functions
+          (lambda (root)
+            (when (equal root e2e-checkout-root)
+              (list (list :id "lead-shop" :label "lead-shop · claude"
+                          :send (lambda (text) (e2e-note (list :review "lead-shop" :text text)) "Sent to lead-shop"))
+                    (list :id "rd" :label "rd · grok"
+                          :send (lambda (text) (e2e-note (list :review "rd" :text text)) nil))
+                    (list :id "qa" :label "qa · agy"
+                          :send (lambda (_text) (user-error "qa is not in the herd any more")))))))
 
 (write-region (json-encode (list (cons "pr" (xwapp-url pr-view--app))
                                  (cons "task" (xwapp-url clickup-view--app))

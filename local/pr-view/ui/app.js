@@ -12,6 +12,13 @@
   let lastList = null;
   let lastDetail = null;
   let lastLocal = null;
+  // Who a review of the checkout shown may go to, as Emacs says, and the
+  // review: comments on its lines, kept per checkout in this browser
+  // until they are sent, together.  OPEN is the comment being written:
+  // a new one (index -1) or one changed.
+  let recipients = [];
+  const rv = { root: null, comments: [], note: "", to: "", open: null, list: false, sending: false };
+  const RV_KEY = "pr-view-review:";
   let selectedStates = ["OPEN", "MERGED"];
   let searchQ = "";
   let page = "list";
@@ -376,6 +383,7 @@
         if (!match(ent.file.path)) return;
         const sel = ent.file.path === selectedDiffPath ? " selected" : "";
         const bad = isConflicted(ent.file.path);
+        const said = page === "local" ? rv.comments.filter((c) => c.path === ent.file.path).length : 0;
         html +=
           '<button type="button" class="tree-file' +
           sel +
@@ -390,12 +398,17 @@
           (bad
             ? '<span class="file-conflict" title="Conflicted">Conflicted</span>'
             : "") +
+          (said
+            ? '<span class="tree-rv" title="' + said + (said === 1 ? " comment" : " comments") + '">' + said + "</span>"
+            : "") +
           "</button>";
       });
     return html;
   }
 
-  function renderFileLines(file) {
+  // A file's lines; with NOTES -- a checkout's, which takes comments --
+  // each line says where it is, and what is said of it follows it.
+  function renderFileLines(file, notes) {
     const rows = [];
     (file.hunks || []).forEach((h) => {
       rows.push(
@@ -405,10 +418,15 @@
       );
       h.lines.forEach((ln) => {
         const sign = ln.type === "add" ? "+" : ln.type === "del" ? "−" : "";
+        const side = ln.type === "del" ? "old" : "new";
+        const at = side === "old" ? ln.old : ln.neu;
         rows.push(
           '<div class="diff-row ' +
             ln.type +
-            '"><span class="ln">' +
+            (notes && notes.here(side, at, ln.text) ? " rv-at" : "") +
+            '"' +
+            (notes && notes.on ? ' data-side="' + side + '" data-line="' + at + '"' : "") +
+            '><span class="ln">' +
             (ln.old != null ? ln.old : "") +
             '</span><span class="ln">' +
             (ln.neu != null ? ln.neu : "") +
@@ -418,6 +436,7 @@
             escapeHtml(ln.text) +
             "</span></div>"
         );
+        if (notes) rows.push(notes.after(side, at, ln.text));
       });
     });
     return rows.join("");
@@ -432,7 +451,7 @@
     return file.status === "added" ? "An empty file." : "No lines changed.";
   }
 
-  function renderFileDiff(payload) {
+  function renderFileDiff(payload, notesFor) {
     if (payload.diff_loading) {
       return '<div class="diff-split"><div class="file-pane"><p class="muted pane-msg">Loading diff…</p></div></div>';
     }
@@ -460,6 +479,8 @@
       (current.added ? '<span class="stat-add">+' + current.added + "</span>" : "") +
       (current.deleted ? '<span class="stat-del">−' + current.deleted + "</span>" : "");
     const viewed = !!viewedFiles[current.path];
+    const notes = notesFor ? notesFor(current) : null;
+    const lines = renderFileLines(current, notes);
     return (
       '<div class="diff-split">' +
       '<aside class="file-tree">' +
@@ -479,8 +500,9 @@
       (viewed ? " checked" : "") +
       "> Viewed</label>" +
       "</header>" +
-      '<div class="file-diff">' +
-      (renderFileLines(current) || '<p class="muted pane-msg">' + escapeHtml(notShown(payload, current)) + "</p>") +
+      '<div class="file-diff' + (notes && notes.on ? " rv-on" : "") + '">' +
+      (notes ? notes.lost() : "") +
+      (lines || '<p class="muted pane-msg">' + escapeHtml(notShown(payload, current)) + "</p>") +
       "</div></section></div>"
     );
   }
@@ -1034,9 +1056,18 @@
 
   // What a checkout has not committed, which Emacs reads with git: in a
   // pull request's file view, without its tabs.  Back is to its
-  // repository's pull requests, when it is on a forge.
+  // repository's pull requests, when it is on a forge.  Read again --
+  // Refresh -- the comment being written goes in as it is.
   function renderLocal(payload) {
     lastLocal = payload || {};
+    recipients = Array.isArray(lastLocal.recipients) ? lastLocal.recipients : [];
+    if ((lastLocal.root || "") !== rv.root) rvLoad(lastLocal.root || "");
+    else rvSettle();
+    drawLocal();
+    setStatus("");
+  }
+
+  function drawLocal() {
     const root = lastLocal.root || "";
     const branch = lastLocal.branch || "";
     setChrome("local");
@@ -1061,14 +1092,350 @@
       '<p class="muted local-root">' + escapeHtml(root) + "</p>" +
       (more ? '<p class="muted local-more">' + more + (more === 1 ? " more file is" : " more files are") +
         " not shown: too many to read here.</p>" : "") +
+      (files.length && recipients.length && !rv.comments.length
+        ? '<p class="muted rv-hint">Pick a line to comment on it. The comments go together, to an agent working here.</p>'
+        : "") +
       "</section>" +
       '<div id="panel-files" class="panel-files">' +
       (files.length || lastLocal.diff_error
-        ? renderFileDiff(lastLocal)
+        ? renderFileDiff(lastLocal, rvNotes)
         : '<div class="diff-split"><div class="file-pane"><p class="muted pane-msg">Nothing uncommitted.</p></div></div>') +
-      "</div></div>";
-    bindFiles(() => renderLocal(lastLocal));
-    setStatus("");
+      "</div>" +
+      rvBarHtml() +
+      "</div>";
+    bindFiles(() => {
+      rvSettle();
+      drawLocal();
+    });
+    bindReview();
+  }
+
+  // ---- A review of the checkout's changes --------------------------------
+
+  function rvSound(c) {
+    return !!c && typeof c.path === "string" && c.path && (c.side === "new" || c.side === "old") &&
+      Number.isInteger(c.line) && c.line > 0 && typeof c.code === "string" && typeof c.text === "string" && c.text.trim();
+  }
+
+  // What this browser kept of ROOT's review.  Storage may be refused --
+  // a private window -- and then the review lasts as long as the page.
+  function rvLoad(root) {
+    let kept = null;
+    try {
+      kept = JSON.parse(localStorage.getItem(RV_KEY + root) || "null");
+    } catch (e) {
+      kept = null;
+    }
+    rv.root = root;
+    rv.comments = kept && Array.isArray(kept.comments) ? kept.comments.filter(rvSound) : [];
+    rv.note = kept && typeof kept.note === "string" ? kept.note : "";
+    rv.to = kept && typeof kept.to === "string" ? kept.to : "";
+    rv.open = null;
+    rv.list = false;
+    rv.sending = false;
+  }
+
+  function rvSave() {
+    try {
+      localStorage.setItem(RV_KEY + rv.root, JSON.stringify({ comments: rv.comments, note: rv.note, to: rv.to }));
+    } catch (e) {
+      // Not kept: it lasts as long as the page.
+    }
+  }
+
+  // The comment being written goes in as it is -- left for another line,
+  // another file, Refresh or Send, it is not lost -- and one with nothing
+  // in it goes away.
+  function rvSettle() {
+    const o = rv.open;
+    rv.open = null;
+    const text = o ? (o.text || "").trim() : "";
+    if (!text) return;
+    if (o.index < 0) rv.comments.push({ path: o.path, side: o.side, line: o.line, code: o.code, text: text });
+    else if (rv.comments[o.index]) rv.comments[o.index].text = text;
+    rvSave();
+  }
+
+  function rvWhere(c) {
+    return c.side === "old" ? "Line " + c.line + " before, taken out" : "Line " + c.line;
+  }
+
+  // The file's comments, each after its line -- the same number on the
+  // same side, and the same text -- and those whose line is not there
+  // any more at the file's head.  The comment being written, in place.
+  function rvNotes(file) {
+    const mine = [];
+    rv.comments.forEach((c, i) => {
+      if (c.path === file.path) mine.push(i);
+    });
+    const placed = {};
+    const o = rv.open && rv.open.path === file.path ? rv.open : null;
+    let opened = false;
+    const at = (c, side, line, code) => c.side === side && c.line === line && c.code === code;
+    return {
+      on: recipients.length > 0,
+      here: (side, line, code) => !!o && at(o, side, line, code),
+      after: (side, line, code) => {
+        let html = "";
+        mine.forEach((i) => {
+          if (placed[i] || !at(rv.comments[i], side, line, code)) return;
+          placed[i] = true;
+          if (o && o.index === i) {
+            opened = true;
+            html += rvBox();
+          } else html += rvCard(i, false);
+        });
+        if (o && o.index < 0 && !opened && at(o, side, line, code)) {
+          opened = true;
+          html += rvBox();
+        }
+        return html;
+      },
+      lost: () => {
+        const lost = mine.filter((i) => !placed[i]);
+        const box = o && !opened && o.index < 0;
+        if (!lost.length && !box) return "";
+        return (
+          '<div class="rv-lost"><p class="rv-lost-why">Not at their lines any more: the file changed since.</p>' +
+          lost.map((i) => (o && o.index === i ? rvBox() : rvCard(i, true))).join("") +
+          (box ? rvBox() : "") +
+          "</div>"
+        );
+      },
+    };
+  }
+
+  function rvCard(i, lost) {
+    const c = rv.comments[i];
+    return (
+      '<div class="rv-card" data-rv="' + i + '">' +
+      (lost
+        ? '<div class="rv-where">' + escapeHtml(rvWhere(c)) + '</div><div class="rv-code">' + escapeHtml(c.code) + "</div>"
+        : "") +
+      '<div class="rv-text">' + escapeHtml(c.text) + "</div>" +
+      '<div class="rv-acts"><button type="button" class="linkish" data-rv-act="edit">Edit</button>' +
+      '<button type="button" class="linkish" data-rv-act="remove">Remove</button></div></div>'
+    );
+  }
+
+  function rvBox() {
+    const o = rv.open;
+    return (
+      '<div class="rv-box"><div class="rv-where">' + escapeHtml(rvWhere(o)) + "</div>" +
+      '<textarea class="rv-input" rows="3" placeholder="Your comment on this line"></textarea>' +
+      '<div class="rv-acts"><button type="button" class="ghost" data-rv-act="cancel">Cancel</button>' +
+      '<button type="button" class="primary" data-rv-act="save">' + (o.index < 0 ? "Add" : "Save") + "</button></div></div>"
+    );
+  }
+
+  // In the order of the diff: by file, then by line.
+  function rvSorted() {
+    const order = {};
+    (lastLocal && lastLocal.diff ? parseUnifiedDiff(lastLocal.diff) : []).forEach((f, i) => {
+      order[f.path] = i;
+    });
+    const rank = (c) => (Object.prototype.hasOwnProperty.call(order, c.path) ? order[c.path] : Infinity);
+    return rv.comments.slice().sort((a, b) =>
+      rank(a) - rank(b) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) || a.line - b.line ||
+      (a.side === b.side ? 0 : a.side === "old" ? -1 : 1));
+  }
+
+  function rvTo() {
+    if (recipients.some((r) => r.id === rv.to)) return rv.to;
+    return recipients.length ? recipients[0].id : "";
+  }
+
+  // How many, whom they go to, Send; opened, each comment -- to go to it
+  // -- and a note to send with them.
+  function rvBarHtml() {
+    const n = rv.comments.length;
+    if (!n) return "";
+    const to = rvTo();
+    const list = rv.list
+      ? '<div class="rv-list">' +
+        rvSorted().map((c) => {
+          const i = rv.comments.indexOf(c);
+          return (
+            '<div class="rv-item"><button type="button" class="rv-go" data-rv-go="' + i + '">' +
+            '<span class="rv-item-at">' + escapeHtml(c.path + ":" + c.line + (c.side === "old" ? " before" : "")) + "</span>" +
+            '<span class="rv-item-text">' + escapeHtml(c.text) + "</span></button>" +
+            '<span data-rv="' + i + '"><button type="button" class="linkish" data-rv-act="remove">Remove</button></span></div>'
+          );
+        }).join("") +
+        '<textarea class="rv-note" rows="2" placeholder="Anything to say with them (optional)"></textarea></div>'
+      : "";
+    return (
+      '<div class="rv-bar" id="rv-bar">' + list + '<div class="rv-row">' +
+      '<button type="button" class="ghost rv-toggle" data-rv-act="list" aria-expanded="' + rv.list + '">' +
+      n + (n === 1 ? " comment" : " comments") + (rv.note.trim() ? " + note" : "") + (rv.list ? " ▾" : " ▴") +
+      "</button>" +
+      (recipients.length
+        ? '<label class="rv-to-wrap"><span>To</span><select class="rv-to" id="rv-to">' +
+          recipients.map((r) => '<option value="' + escapeHtml(r.id) + '"' + (r.id === to ? " selected" : "") + ">" +
+            escapeHtml(r.label) + "</option>").join("") +
+          "</select></label>" +
+          '<button type="button" class="primary rv-send" data-rv-act="send"' + (rv.sending ? " disabled" : "") + ">" +
+          (rv.sending ? "Sending…" : "Send") + "</button>"
+        : '<span class="muted rv-none">Nobody works in this checkout now to send them to.</span>') +
+      "</div></div>"
+    );
+  }
+
+  // Drawn again where it was: the diff, the tree and the page keep their
+  // scroll.  FOCUS, the box of the comment being written.
+  function rvPaint(focus) {
+    const fd = app.querySelector(".file-diff");
+    const tb = app.querySelector(".tree-body");
+    const was = { app: app.scrollTop, top: fd ? fd.scrollTop : 0, left: fd ? fd.scrollLeft : 0, tree: tb ? tb.scrollTop : 0 };
+    drawLocal();
+    app.scrollTop = was.app;
+    const nfd = app.querySelector(".file-diff");
+    if (nfd) {
+      nfd.scrollTop = was.top;
+      nfd.scrollLeft = was.left;
+    }
+    const ntb = app.querySelector(".tree-body");
+    if (ntb) ntb.scrollTop = was.tree;
+    const box = focus && app.querySelector(".rv-box");
+    if (box) {
+      const input = box.querySelector(".rv-input");
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+      box.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function rvOpenAt(row) {
+    const side = row.getAttribute("data-side");
+    const line = Number(row.getAttribute("data-line"));
+    const code = row.querySelector(".code").textContent;
+    const o = rv.open;
+    // The same line again: a box with nothing in it is put away.
+    if (o && o.index < 0 && o.path === selectedDiffPath && o.side === side && o.line === line && !o.text.trim()) {
+      rv.open = null;
+      return rvPaint();
+    }
+    rvSettle();
+    rv.open = { path: selectedDiffPath, side: side, line: line, code: code, text: "", was: "", index: -1 };
+    rvPaint(true);
+  }
+
+  function rvGo(i) {
+    rvSettle();
+    const c = rv.comments[i];
+    if (!c) return;
+    rv.list = false;
+    const files = lastLocal && lastLocal.diff ? parseUnifiedDiff(lastLocal.diff) : [];
+    if (!files.some((f) => f.path === c.path)) {
+      rvPaint();
+      return setStatus(c.path + " has nothing uncommitted now; its comment goes with the rest");
+    }
+    selectedDiffPath = c.path;
+    drawLocal();
+    const card = app.querySelector('.rv-card[data-rv="' + i + '"]');
+    if (card) card.scrollIntoView({ block: "center" });
+  }
+
+  function rvSend() {
+    if (rv.sending) return;
+    rvSettle();
+    const to = rvTo();
+    if (!rv.comments.length || !to) return rvPaint();
+    rv.to = to;
+    rv.sending = true;
+    rvSave();
+    rvPaint();
+    const n = rv.comments.length;
+    setStatus("Sending " + n + (n === 1 ? " comment…" : " comments…"));
+    emit("local-review", {
+      root: rv.root,
+      to: to,
+      note: rv.note,
+      comments: rvSorted().map((c) => ({ path: c.path, side: c.side, line: c.line, code: c.code, text: c.text })),
+    });
+  }
+
+  function rvAct(act, i) {
+    const o = rv.open;
+    if (act === "save") {
+      if (o && !o.text.trim()) return rvPaint(true);
+      rvSettle();
+      return rvPaint();
+    }
+    if (act === "cancel") {
+      rv.open = null;
+      return rvPaint();
+    }
+    if (act === "edit") {
+      rvSettle();
+      const c = rv.comments[i];
+      if (!c) return rvPaint();
+      rv.open = { path: c.path, side: c.side, line: c.line, code: c.code, text: c.text, was: c.text, index: i };
+      return rvPaint(true);
+    }
+    if (act === "remove") {
+      if (!rv.comments[i]) return;
+      rv.comments.splice(i, 1);
+      if (o && o.index === i) rv.open = null;
+      else if (o && o.index > i) o.index--;
+      rvSave();
+      return rvPaint();
+    }
+    if (act === "list") {
+      rv.list = !rv.list;
+      return rvPaint();
+    }
+    if (act === "send") return rvSend();
+  }
+
+  function rvClick(ev) {
+    const t = ev.target instanceof Element ? ev.target : null;
+    if (!t) return;
+    const act = t.closest("[data-rv-act]");
+    if (act) {
+      const of = act.closest("[data-rv]");
+      return rvAct(act.getAttribute("data-rv-act"), of ? Number(of.getAttribute("data-rv")) : -1);
+    }
+    const go = t.closest("[data-rv-go]");
+    if (go) return rvGo(Number(go.getAttribute("data-rv-go")));
+    const row = t.closest(".diff-row[data-line]");
+    if (!row || !recipients.length) return;
+    // Text being selected, not a line picked.
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    rvOpenAt(row);
+  }
+
+  function bindReview() {
+    const wrap = app.querySelector(".detail-wrap.local");
+    if (!wrap) return;
+    const input = wrap.querySelector(".rv-input");
+    if (input && rv.open) input.value = rv.open.text;
+    const note = wrap.querySelector(".rv-note");
+    if (note) note.value = rv.note;
+    wrap.addEventListener("click", rvClick);
+    wrap.addEventListener("input", (ev) => {
+      if (ev.target.classList.contains("rv-input") && rv.open) rv.open.text = ev.target.value;
+      else if (ev.target.classList.contains("rv-note")) {
+        rv.note = ev.target.value;
+        rvSave();
+      }
+    });
+    wrap.addEventListener("change", (ev) => {
+      if (ev.target.id !== "rv-to") return;
+      rv.to = ev.target.value;
+      rvSave();
+    });
+    wrap.addEventListener("keydown", (ev) => {
+      if (!ev.target.classList.contains("rv-input") || !rv.open) return;
+      if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+        ev.preventDefault();
+        rvAct("save");
+      } else if (ev.key === "Escape" && rv.open.text === rv.open.was) {
+        ev.preventDefault();
+        rvAct("cancel");
+      }
+    });
   }
 
   function renderDetail(payload) {
@@ -1401,6 +1768,27 @@
     renderPrList: renderList,
     renderPrDetail: renderDetail,
     renderLocal: renderLocal,
+    // The review went: what Emacs did with it, and who may get the next.
+    reviewSent: (p) => {
+      if (!p || p.root !== rv.root) return;
+      rv.comments = [];
+      rv.note = "";
+      rv.open = null;
+      rv.list = false;
+      rv.sending = false;
+      if (Array.isArray(p.recipients)) recipients = p.recipients;
+      rvSave();
+      if (page === "local") rvPaint();
+      setStatus(p.said || "Sent", "ok");
+    },
+    // It did not: the comments stay, to send again.
+    reviewFailed: (p) => {
+      if (!p || (p.root && p.root !== rv.root)) return;
+      rv.sending = false;
+      if (Array.isArray(p.recipients)) recipients = p.recipients;
+      if (page === "local") rvPaint();
+      setStatus(p.error || "Not sent", "error");
+    },
     renderCreateForm: renderCreateForm,
     setComments: (payload) => {
       const items = (payload && payload.items) || [];

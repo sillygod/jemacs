@@ -1086,6 +1086,139 @@ ready, and that checkout the page may show again; not a checkout, said."
           (should-not (pr-view-local-stat plain))
           (delete-directory plain t))))))
 
+(defconst pr-view-tests--comment
+  '((path . "a.txt") (side . "new") (line . 1) (code . "x") (text . "Why?"))
+  "A comment on a line, as the page sends one.")
+
+(ert-deftest pr-view-test-local-review-text ()
+  "A review is one text: the checkout and its branch, then each comment
+numbered, at its file and line -- a line taken out said so -- with the
+line as it was shown, then the note.  Too long, a part is cut, and says
+so; not a comment, or none, or too many, it is refused."
+  (pr-view-tests--repo root
+    (pr-view-tests--write root "a.txt" "x\n")
+    (pr-view-tests--git root "add" ".")
+    (pr-view-tests--git root "commit" "-q" "-m" "x")
+    (pr-view-tests--git root "checkout" "-q" "-b" "fix/retry")
+    (should (equal (pr-view--local-review-text
+                    root
+                    '(((path . "src/pay.py") (side . "new") (line . 2) (code . "    total = order.total")
+                       (text . "Name it amount.\n\nAnd round it."))
+                      ((path . "src/pay.py") (side . "old") (line . 1) (code . "def pay(order):")
+                       (text . "  Keep this name.  "))
+                      ((path . "README.md") (side . "new") (line . 3) (code . " ") (text . "No blank line.")))
+                    " Run the tests after. ")
+                   (concat "Comments on what is not committed in " root
+                           " (branch fix/retry), each on a line of its diff against HEAD:\n"
+                           "\n1. src/pay.py:2\n   >     total = order.total\n   Name it amount.\n\n   And round it.\n"
+                           "\n2. src/pay.py, line 1 before, taken out:\n   > def pay(order):\n   Keep this name.\n"
+                           "\n3. README.md:3\n   (an empty line)\n   No blank line.\n"
+                           "\nRun the tests after.\n")))
+    ;; Not on a branch: none named.  No note: nothing after.
+    (pr-view-tests--git root "checkout" "-q" "--detach")
+    (should (string-match-p (concat "\\`Comments on what is not committed in " (regexp-quote root)
+                                    ", each on a line .*\n\n1\\. a\\.txt:1\n   > x\n   Why\\?\n\\'")
+                            (pr-view--local-review-text root (list pr-view-tests--comment) "  ")))
+    (let ((pr-view--review-text-max 5) (pr-view--review-code-max 3))
+      (should (string-match-p "\n   > a b…\n   12345…\n\nabcde…\n\\'"
+                              (pr-view--local-review-text
+                               root '(((path . "a") (side . "new") (line . 1) (code . "a\nbcdef") (text . "1234567")))
+                               "abcdefgh"))))
+    (dolist (bad `(nil
+                   "a string"
+                   (((path . "") (side . "new") (line . 1) (text . "x")))
+                   (((path . "a\nb") (side . "new") (line . 1) (text . "x")))
+                   (((path . "a") (side . "mid") (line . 1) (text . "x")))
+                   (((path . "a") (side . "new") (line . 0) (text . "x")))
+                   (((path . "a") (side . "new") (line . 1.5) (text . "x")))
+                   (((path . "a") (side . "new") (line . 1) (text . " \n ")))
+                   (((path . "a") (side . "new") (line . 1) (code . 7) (text . "x")))
+                   (,pr-view-tests--comment 7)))
+      (should-error (pr-view--local-review-text root bad nil) :type 'user-error))
+    (let ((pr-view--review-max 2))
+      (should (pr-view--local-review-text root (make-list 2 pr-view-tests--comment) nil))
+      (should-error (pr-view--local-review-text root (make-list 3 pr-view-tests--comment) nil)
+                    :type 'user-error))))
+
+(ert-deftest pr-view-test-local-review-goes-to-whom-it-names ()
+  "From the page, a review goes to the one it names, of those another
+package says may get one for that checkout -- and the page is told so,
+with who may get the next.  Not for a checkout the page may not show,
+nor to one not offered, nor when it is no review: then the page is told
+why, and nothing is sent."
+  (pr-view-tests--repo root
+    (let* (sent js asked
+           (pr-view--local-opened nil)
+           (pr-view-local-allowed-functions (list (lambda (r) (equal r root))))
+           (pr-view-local-recipients-functions
+            (list (lambda (r)
+                    (push r asked)
+                    (and (equal r root)
+                         (list (list :id "lead" :label "lead · claude"
+                                     :send (lambda (text) (push (list "lead" text) sent) "Sent to the lead"))
+                               (list :id "rd" :label "rd · grok"
+                                     :send (lambda (text) (push (list "rd" text) sent) nil))
+                               '(:id "" :label "nobody" :send ignore)
+                               '(:id "mute" :label "mute"))))
+                  (lambda (_r) (error "A broken one"))))
+           (said (lambda () (cdr (car js)))))
+      (cl-letf (((symbol-function 'pr-view--js) (lambda (fn arg) (push (cons fn arg) js))))
+        (should (equal (pr-view--local-recipients-json root)
+                       [((id . "lead") (label . "lead · claude")) ((id . "rd") (label . "rd · grok"))]))
+        (should (equal (pr-view--local-recipients-json "/etc/") []))
+        (pr-view--handle-intent `((op . "local-review") (root . ,root) (to . "rd")
+                                  (comments . (,pr-view-tests--comment)) (note . "Then commit.")))
+        (should (equal (mapcar #'car sent) '("rd")))
+        (should (string-match-p "\\`Comments on what is not committed in .*\n\n1\\. a\\.txt:1\n   > x\n   Why\\?\n\nThen commit\\.\n\\'"
+                                (cadr (car sent))))
+        (should (equal (caar js) "reviewSent"))
+        (should (equal (alist-get 'root (funcall said)) root))
+        ;; One that says nothing of what it did: sent to it, by its label.
+        (should (equal (alist-get 'said (funcall said)) "Sent to rd · grok"))
+        (should (equal (alist-get 'recipients (funcall said)) (pr-view--local-recipients-json root)))
+        (pr-view--handle-intent `((op . "local-review") (root . ,root) (to . "lead")
+                                  (comments . (,pr-view-tests--comment))))
+        (should (equal (mapcar #'car sent) '("lead" "rd")))
+        (should (equal (alist-get 'said (funcall said)) "Sent to the lead"))
+        ;; Refused, each: nothing sent, the page told why.
+        (setq sent nil js nil asked nil)
+        (dolist (intent `(((op . "local-review") (root . "/etc/") (to . "rd") (comments . (,pr-view-tests--comment)))
+                          ((op . "local-review") (root . 7) (to . "rd") (comments . (,pr-view-tests--comment)))
+                          ((op . "local-review") (root . ,root) (to . "mute") (comments . (,pr-view-tests--comment)))
+                          ((op . "local-review") (root . ,root) (to . "") (comments . (,pr-view-tests--comment)))
+                          ((op . "local-review") (root . ,root) (to . "rd"))
+                          ((op . "local-review") (root . ,root) (to . "rd")
+                           (comments . (((path . "a.txt") (side . "new") (line . -1) (text . "x")))))))
+          (pr-view--handle-intent intent))
+        (should-not sent)
+        (should (equal (mapcar #'car js) (make-list 6 "reviewFailed")))
+        (let ((failed (mapcar #'cdr (reverse js))))
+          (should (equal (mapcar (lambda (f) (alist-get 'root f)) failed) (list "/etc/" nil root root root root)))
+          (should (equal (mapcar (lambda (f) (car (split-string (alist-get 'error f) ":"))) failed)
+                         '("Not a checkout this page may show" "Not a checkout this page may show"
+                           "mute cannot be sent it now" " cannot be sent it now"
+                           "No comments to send" "Not a comment on a line")))
+          ;; Told who may get it, for a checkout it may show only: nobody
+          ;; is asked about another.
+          (should (equal (mapcar (lambda (f) (length (alist-get 'recipients f))) failed) '(0 0 2 2 2 2)))
+          (should (equal (delete-dups asked) (list root))))))))
+
+(ert-deftest pr-view-test-local-changes-say-who-may-get-a-review ()
+  "A checkout's changes come to the page with who may be sent a review of
+them, and with none when nobody may."
+  (pr-view-tests--repo root
+    (let ((pr-view--local root) js
+          (pr-view-local-recipients-functions
+           (list (lambda (r) (and (equal r root) (list (list :id "rd" :label "rd · claude" :send #'ignore)))))))
+      (cl-letf (((symbol-function 'pr-view--js) (lambda (fn arg) (push (cons fn arg) js)))
+                ((symbol-function 'pr-view--local-read) (lambda (r cb) (funcall cb `((root . ,r) (diff . ""))))))
+        (pr-view--local-read-for root)
+        (should (equal (alist-get 'recipients (cdr (assoc "renderLocal" js)))
+                       [((id . "rd") (label . "rd · claude"))]))
+        (setq pr-view-local-recipients-functions nil js nil)
+        (pr-view--local-read-for root)
+        (should (equal (alist-get 'recipients (cdr (assoc "renderLocal" js))) []))))))
+
 (ert-deftest pr-view-test-ui-shows-local-changes ()
   "The page has a view for a checkout's changes, asks for one by its
 address, and says why a file is not shown."

@@ -1165,9 +1165,26 @@ and all.
 
 ** What is left
 
-- [ ] A line of the diff, commented on, goes to the agent --- the
+- [X] A line of the diff, commented on, goes to the agent --- the
   lead, or the one you pick --- as a prompt with its file and line:
-  review on the phone, and have it fixed, in one place
+  review on the phone, and have it fixed, in one place.  A line picked
+  in pr-view's view of the checkout takes a comment under it; they are
+  kept in that browser, per checkout, until they go together from the
+  bar at the foot --- to the project's lead, an agent working in the
+  checkout, or a lead started for it, only when picked; never a
+  shell, which would run them.  Emacs writes them as one prompt, each
+  numbered at its file and line with the line quoted, for the agent to
+  find it once it has moved; a note after them.  A comment whose line
+  has moved waits at its file's head; one being written is not lost to
+  another line, another file, Refresh or Send; a send that fails keeps
+  them.  pr-view knows nothing of the herd:
+  =pr-view-local-recipients-functions= says who may get a review, and
+  is asked only of a checkout the page may show.  5 ERT, 39 WebKit
+  checks (=pr-review=, a phone and the desk); 32 guards broken on
+  purpose, each caught
+- [ ] Comments on a pull request's diff, to the agent on its branch:
+  pr-view's pull request view takes none
+- [ ] A comment on a run of lines, not only one
 - [ ] Which agent changed which file, from the Edit and Write in their
   conversations, on the file tree
 - [ ] Syntax in pr-view's diffs, a pull request's and a checkout's

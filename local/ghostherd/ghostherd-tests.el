@@ -6541,6 +6541,85 @@ pr-view's page may show it; another directory is neither."
         (should (ghostherd-memory-page--herd-checkout-p "~/q/"))
         (should-not (ghostherd-memory-page--herd-checkout-p "~/r/"))))))
 
+(ert-deftest ghostherd-test-a-review-goes-to-an-agent-of-its-checkout ()
+  "A review of what a checkout has not committed may go to its project's
+lead first, then each agent working in it -- not one in another
+worktree, nor a shell, nor a dead agent -- and to a lead started for it
+when the project has none, last.  Sent, it is said to the one picked.
+A checkout the herd is not in has nobody."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let* ((root (abbreviate-file-name repo))
+             (tree (abbreviate-file-name wt))
+             (ghostherd--roles (make-hash-table :test 'equal))
+             (dirs `(("rd" . ,repo) ("qa" . ,wt) ("sh" . ,repo) ("old" . ,repo) ("lead-repo" . ,repo)))
+             (to (lambda (dir) (mapcar (lambda (r) (list (plist-get r :id) (plist-get r :label)))
+                                       (ghostherd-memory-page--review-recipients dir))))
+             (send (lambda (dir id text)
+                     (funcall (plist-get (seq-find (lambda (r) (equal (plist-get r :id) id))
+                                                   (ghostherd-memory-page--review-recipients dir))
+                                         :send)
+                              text)))
+             told started)
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'working)
+        (ghostherd-tests--session :name "qa" :kind 'grok :project repo :state 'idle)
+        (ghostherd-tests--session :name "sh" :kind 'shell :project repo :state 'idle)
+        (ghostherd-tests--session :name "old" :kind 'agy :project repo :state 'dead)
+        (cl-letf (((symbol-function 'ghostherd-session-directory)
+                   (lambda (s) (cdr (assoc (ghostherd-session-name s) dirs))))
+                  ((symbol-function 'ghostherd-tell)
+                   (lambda (s text &rest _) (push (list (ghostherd-session-name s) text) told)))
+                  ((symbol-function 'ghostherd-lead-say)
+                   (lambda (project text)
+                     (push (list project text) started)
+                     (let ((lead (ghostherd-tests--session :name "lead-repo" :kind 'claude :project repo
+                                                           :state 'idle)))
+                       (puthash "lead-repo" "lead" ghostherd--roles)
+                       lead))))
+          (should (memq #'ghostherd-memory-page--review-recipients pr-view-local-recipients-functions))
+          ;; No lead yet: whoever works there, then a lead to be started.
+          (should (equal (funcall to root) `(("rd" "rd · claude") (,(concat "@lead " root) "new lead · claude"))))
+          (should (equal (funcall to tree) `(("qa" "qa · grok") (,(concat "@lead " root) "new lead · claude"))))
+          (should (equal (funcall send root "rd" "Comments…") "Sent to rd"))
+          (should (equal told '(("rd" "Comments…"))))
+          (should (equal (funcall send tree (concat "@lead " root) "More…")
+                         "Started lead-repo; it gets the comments once it is ready"))
+          (should (equal started `((,root "More…"))))
+          ;; With a lead: the lead first, in its worktrees too.
+          (should (equal (funcall to root) '(("lead-repo" "lead-repo · claude") ("rd" "rd · claude"))))
+          (should (equal (funcall to tree) '(("lead-repo" "lead-repo · claude") ("qa" "qa · grok"))))
+          (funcall send tree "lead-repo" "Again…")
+          (should (equal (car told) '("lead-repo" "Again…")))
+          ;; Nobody for a checkout the herd is not in.
+          (should-not (ghostherd-memory-page--review-recipients "/etc/"))
+          (should-not (ghostherd-memory-page--review-recipients (abbreviate-file-name base))))))))
+
+(ert-deftest ghostherd-test-a-review-from-pr-views-page-reaches-the-agent ()
+  "Comments written on a herd checkout's diff in pr-view's page reach the
+agent picked as one prompt, each at its file and line."
+  (skip-unless (require 'pr-view nil t))
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let ((root (abbreviate-file-name repo)) told js)
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'idle)
+        (cl-letf (((symbol-function 'ghostherd-session-directory) (lambda (_s) repo))
+                  ((symbol-function 'ghostherd-tell)
+                   (lambda (s text &rest _) (push (list (ghostherd-session-name s) text) told)))
+                  ((symbol-function 'pr-view--js) (lambda (fn arg) (push (cons fn arg) js))))
+          (pr-view--handle-intent
+           `((op . "local-review") (root . ,root) (to . "rd")
+             (comments . (((path . "src/pay.py") (side . "new") (line . 3) (code . "return charge(total)")
+                           (text . "Retry it."))))))
+          (should (equal (caar js) "reviewSent"))
+          (should (equal (alist-get 'said (cdar js)) "Sent to rd"))
+          (should (equal (mapcar #'car told) '("rd")))
+          (should (equal (cadr (car told))
+                         (concat "Comments on what is not committed in " root " (branch feat/x), "
+                                 "each on a line of its diff against HEAD:\n"
+                                 "\n1. src/pay.py:3\n   > return charge(total)\n   Retry it.\n"))))))))
+
 (ert-deftest ghostherd-test-sidebar-shows-a-checkouts-changes ()
   "d on a row: the status of the checkout its agent works in -- a
 worktree, say -- in magit, or vc-dir without it."

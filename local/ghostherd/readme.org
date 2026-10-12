@@ -1124,7 +1124,12 @@ are the other tabs (below, and "What happened while you were away").
   shows, and a default branch with no PR shows nothing either.  And
   what the checkout has not committed, =3 uncommitted +12 −4= --- on a
   default branch too --- which opens pr-view's diff view of it, on the
-  phone as well; counted again when an agent there ends a turn.  =d= in
+  phone as well; counted again when an agent there ends a turn.  There
+  a line picked takes a comment, and the comments go together, as one
+  prompt with each at its file and line, to the agent you pick: the
+  project's lead first, then the agents working in that checkout, then
+  a lead started for it, only when picked --- never a shell, which
+  would run them.  =d= in
   the sidebar shows an agent's checkout in magit.  Looked
   at once a minute while the tab is watched, an answer kept five.
   Each git call and each request is done when you stop typing, a few

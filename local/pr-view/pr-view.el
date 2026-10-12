@@ -598,6 +598,7 @@ people who already answered have to be added back from REVIEWS."
          (if (equal root pr-view--local)
              (pr-view--local-show root)
            (pr-view--local-asked root))))
+      ("local-review" (pr-view--local-review intent))
       ("refresh-list"
        (setq pr-view--list-states
              (pr-view--normalize-states (alist-get 'states intent)))
@@ -1676,6 +1677,15 @@ files left out are counted.")
 with a final slash: non-nil when a page may show what it has not
 committed.  One opened here with `pr-view-changes' is shown anyway.")
 
+(defvar pr-view-local-recipients-functions nil
+  "Functions of a checkout's root, as for `pr-view-local-allowed-functions',
+saying who may be sent a review of what it has not committed: each
+returns a list of plists (:id ID :label LABEL :send FN) -- ID a string
+the page names it by, LABEL how the page shows it, FN called with the
+review's text and returning a sentence saying what it did.  The first
+is offered first.  With nobody to send it to, the page takes no
+comments.")
+
 (defvar pr-view--local-opened nil
   "Checkout roots opened here with `pr-view-changes'.")
 (defun pr-view--local-git (root &rest args)
@@ -1868,7 +1878,9 @@ not kept."
   (pr-view--local-read
    root (lambda (payload)
           (when (equal pr-view--local root)
-            (pr-view--js "renderLocal" payload)))))
+            (pr-view--js "renderLocal"
+                         (append payload
+                                 `((recipients . ,(pr-view--local-recipients-json root)))))))))
 
 (defun pr-view--local-asked (root)
   "The page asks for checkout ROOT's changes: show them, if it may."
@@ -1916,6 +1928,125 @@ DIR defaults to the current directory."
     (setf (xwapp-poll-interval pr-view--app) pr-view-poll-interval)
     (xwapp-open pr-view--app)
     (pr-view--js "setStatus" "Loading…")))
+
+;;; A review of local changes
+;;
+;; Comments on lines of a checkout's diff, written in the page and sent
+;; together, as one text, to one of those another package says may get
+;; it -- ghostherd's agents working there.  The page keeps them until
+;; they are sent.  Emacs writes the text: each comment at its file and
+;; line, with the line as the page showed it, for the agent to find it
+;; by once the line has moved.
+
+(defconst pr-view--review-max 50
+  "Most comments in one review.")
+(defconst pr-view--review-text-max 4000
+  "Most characters of a comment, or of the note after them.")
+(defconst pr-view--review-code-max 300
+  "Most characters of the line a comment quotes.")
+
+(defun pr-view--local-recipients (root)
+  "Who a review of checkout ROOT's changes may be sent to, as
+`pr-view-local-recipients-functions' say, the well-formed only."
+  (let (out)
+    (run-hook-wrapped 'pr-view-local-recipients-functions
+                      (lambda (f)
+                        (setq out (append out (with-demoted-errors "pr-view: %S" (funcall f root))))
+                        nil))
+    (seq-filter (lambda (r)
+                  (and (stringp (plist-get r :id)) (not (string-empty-p (plist-get r :id)))
+                       (stringp (plist-get r :label))
+                       (functionp (plist-get r :send))))
+                out)))
+
+(defun pr-view--local-recipients-json (root)
+  "Who a review of checkout ROOT's changes may be sent to, as the page
+shows them."
+  (vconcat (mapcar (lambda (r) `((id . ,(plist-get r :id)) (label . ,(plist-get r :label))))
+                   (pr-view--local-recipients root))))
+
+(defun pr-view--review-cut (s max)
+  "S cut to MAX characters, the cut said."
+  (if (> (length s) max) (concat (substring s 0 max) "…") s))
+
+(defun pr-view--review-comment (c)
+  "Comment C as the page sent it, checked: (PATH SIDE LINE CODE TEXT)."
+  (let* ((c (and (consp c) c))
+         (path (alist-get 'path c))
+         (side (alist-get 'side c))
+         (line (alist-get 'line c))
+         (code (alist-get 'code c))
+         (text (alist-get 'text c)))
+    (unless (and (stringp path) (not (string-empty-p path)) (not (string-match-p "[\n\r]" path))
+                 (member side '("new" "old"))
+                 (natnump line) (> line 0)
+                 (or (null code) (stringp code))
+                 (stringp text) (not (string-empty-p (string-trim text))))
+      (user-error "Not a comment on a line: %S" c))
+    (list path side line
+          (pr-view--review-cut (replace-regexp-in-string "[\n\r]" " " (or code "")) pr-view--review-code-max)
+          (pr-view--review-cut (string-trim text) pr-view--review-text-max))))
+
+(defun pr-view--local-review-text (root comments note)
+  "What is sent for COMMENTS on checkout ROOT's changes, NOTE after them.
+COMMENTS as the page sends them: each an alist of `path', `side' --
+\"new\" for a line the changes have, \"old\" for one they took out --
+`line', its number on that side, `code', the line as the page showed
+it, and `text'."
+  (let* ((comments (mapcar #'pr-view--review-comment comments))
+         (branch (string-trim (or (pr-view--local-git root "rev-parse" "--abbrev-ref" "HEAD") "")))
+         (note (if (stringp note) (string-trim note) ""))
+         (n 0))
+    (unless comments (user-error "No comments to send"))
+    (when (> (length comments) pr-view--review-max)
+      (user-error "At most %d comments go in one review" pr-view--review-max))
+    (concat
+     (format "Comments on what is not committed in %s%s, each on a line of its diff against HEAD:\n"
+             root (if (member branch '("" "HEAD")) "" (format " (branch %s)" branch)))
+     (mapconcat
+      (pcase-lambda (`(,path ,side ,line ,code ,text))
+        (concat "\n" (format "%d. " (cl-incf n))
+                (if (equal side "new")
+                    (format "%s:%d" path line)
+                  (format "%s, line %d before, taken out:" path line))
+                "\n   "
+                (if (string-blank-p code) "(an empty line)" (concat "> " code))
+                "\n"
+                (mapconcat (lambda (l) (if (string-empty-p l) "" (concat "   " l)))
+                           (split-string text "\n") "\n")
+                "\n"))
+      comments "")
+     (if (string-empty-p note)
+         ""
+       (concat "\n" (pr-view--review-cut note pr-view--review-text-max) "\n")))))
+
+(defun pr-view--local-review (intent)
+  "Send the review INTENT carries, of a checkout's changes, to the one it
+names; the page is told it went, or why not, and who may get the next."
+  (let* ((root (alist-get 'root intent))
+         (root (and (stringp root) root)))
+    (condition-case e
+        (progn
+          (unless (pr-view--local-allowed-p root)
+            (user-error "Not a checkout this page may show: %s" root))
+          (let* ((to (alist-get 'to intent))
+                 (who (or (seq-find (lambda (r) (equal (plist-get r :id) to))
+                                    (pr-view--local-recipients root))
+                          (user-error "%s cannot be sent it now" to)))
+                 (text (pr-view--local-review-text root (alist-get 'comments intent)
+                                                   (alist-get 'note intent)))
+                 (said (funcall (plist-get who :send) text)))
+            (pr-view--js "reviewSent"
+                         `((root . ,root)
+                           (said . ,(if (stringp said) said (format "Sent to %s" (plist-get who :label))))
+                           (recipients . ,(pr-view--local-recipients-json root))))))
+      (error
+       (pr-view--js "reviewFailed"
+                    `((root . ,root)
+                      (error . ,(xwapp-scrub-error (error-message-string e)))
+                      (recipients . ,(if (pr-view--local-allowed-p root)
+                                         (pr-view--local-recipients-json root)
+                                       []))))))))
 
 
 ;;; For other packages

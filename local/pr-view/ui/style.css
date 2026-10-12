@@ -622,6 +622,114 @@ button.linkish:hover { color: var(--accent); }
 .diff-row.hunk .code { color: var(--meta); }
 .pane-msg { padding: 24px 16px; }
 
+/* A checkout's review: a line picked takes a comment, kept under it
+   until the comments go, together, from the bar at the foot.  A box
+   or a comment stays in view while a long line is scrolled sideways. */
+.file-diff.rv-on .diff-row[data-line] { cursor: pointer; }
+.file-diff.rv-on .diff-row[data-line]:hover .ln { color: var(--accent); }
+.diff-row.rv-at > :first-child { box-shadow: inset 3px 0 var(--accent); }
+.rv-box, .rv-card, .rv-lost-why {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  width: 100%;
+  font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.rv-box, .rv-card {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+}
+.rv-where { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.rv-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+}
+.rv-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-box textarea, .rv-note {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.rv-acts { display: flex; gap: 12px; justify-content: flex-end; align-items: center; margin-top: 6px; }
+.rv-lost { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.rv-lost-why { margin: 0; padding: 8px 12px 4px; color: var(--warn); font-size: 12px; }
+.tree-rv {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.rv-hint { margin: 4px 0 0; }
+.rv-bar {
+  flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  padding: 8px 12px;
+}
+.rv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rv-to-wrap { display: flex; align-items: center; gap: 6px; flex: 1 1 12em; min-width: 0; color: var(--muted); }
+.rv-to {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font: inherit;
+}
+.rv-none { font-size: 12px; }
+.rv-list { display: grid; gap: 2px; max-height: 40vh; overflow: auto; margin-bottom: 8px; }
+.rv-item { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rv-go {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rv-go:hover .rv-item-text { color: var(--accent); }
+.rv-item-at {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent);
+}
+.rv-item-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-note { margin-top: 6px; }
+
 @media (max-width: 720px) {
   .diff-split { flex-direction: column; }
   .file-tree { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -902,4 +1010,8 @@ button.linkish:hover { color: var(--accent); }
   .commits .c-msg summary { line-height: 32px; }
   .row-copy { padding: 0 12px; }
   .rev-x { min-width: 32px; min-height: 32px; }
+  /* A line taken by a finger: taller, so the one meant is the one hit. */
+  .file-diff.rv-on .diff-row { line-height: 1.9; }
+  .rv-box textarea, .rv-note, .rv-to { font-size: 16px; }
+  .rv-go { min-height: 32px; }
 }

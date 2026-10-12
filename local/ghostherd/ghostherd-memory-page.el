@@ -834,6 +834,61 @@ last look found, or one an agent's directory or project is in now."
 
 (add-hook 'pr-view-local-allowed-functions #'ghostherd-memory-page--herd-checkout-p)
 
+;; A review of what a checkout has not committed -- comments on lines of
+;; its diff, written in pr-view's page -- goes to one agent: its
+;; project's lead first, when it has one, then each agent working in the
+;; checkout, then a lead started for it, only when picked.  Not a shell:
+;; what a shell is sent, it runs.
+
+(defun ghostherd-memory-page--review-to (s)
+  "Agent S as one a review may be sent to."
+  (let ((name (ghostherd-session-name s)))
+    (list :id name
+          :label (format "%s · %s" name (ghostherd-session-kind s))
+          :send (lambda (text)
+                  (ghostherd-tell s text)
+                  (format "Sent to %s" name)))))
+
+(defun ghostherd-memory-page--review-recipients (root)
+  "Who a review of what checkout ROOT has not committed may go to, as
+`pr-view-local-recipients-functions' wants them; none for a checkout
+the herd is not in."
+  (let* ((roots (make-hash-table :test 'equal))
+         (root-of (lambda (dir)
+                    (with-memoization (gethash dir roots)
+                      (car-safe (ghostherd-memory-page--checkout dir)))))
+         (agents (seq-filter (lambda (s)
+                               (and (not (eq (ghostherd-session-state s) 'dead))
+                                    (plist-get (ghostherd--spec (ghostherd-session-kind s)) :command)))
+                             (ghostherd-sessions)))
+         (here (seq-filter (lambda (s) (equal (funcall root-of (ghostherd-session-directory s)) root))
+                           agents))
+         ;; The projects of those here, and those whose own checkout it is.
+         (projects (delete-dups
+                    (delq nil (mapcar (lambda (s)
+                                        (let ((p (ghostherd--project-name (ghostherd-session-project s))))
+                                          (and p (or (memq s here) (equal (funcall root-of p) root)) p)))
+                                      (ghostherd-sessions)))))
+         (leads (seq-filter (lambda (s) (memq s agents))
+                            (delq nil (mapcar #'ghostherd-project-lead projects))))
+         (leaderless (seq-remove #'ghostherd-project-lead projects)))
+    (append
+     (mapcar #'ghostherd-memory-page--review-to leads)
+     (mapcar #'ghostherd-memory-page--review-to (seq-remove (lambda (s) (memq s leads)) here))
+     (mapcar (lambda (p)
+               (list :id (concat "@lead " p)
+                     :label (format "new lead%s · %s"
+                                    (if (cdr leaderless)
+                                        (concat " for " (file-name-nondirectory (directory-file-name p)))
+                                      "")
+                                    ghostherd-lead-kind)
+                     :send (lambda (text)
+                             (format "Started %s; it gets the comments once it is ready"
+                                     (ghostherd-session-name (ghostherd-lead-say p text))))))
+             leaderless))))
+
+(add-hook 'pr-view-local-recipients-functions #'ghostherd-memory-page--review-recipients)
+
 (defun ghostherd-memory-page--open-changes (intent)
   "Open in pr-view what the checkout INTENT names has not committed."
   (let ((root (alist-get 'root intent)))

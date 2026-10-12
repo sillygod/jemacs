@@ -219,6 +219,28 @@ directory, so the page shows only a checkout opened here with
 checkouts the herd is in --- and refuses the rest, running no git
 there.
 
+** A review of them
+
+When a function on =pr-view-local-recipients-functions= says someone
+may be sent a review of the checkout --- ghostherd: the agents working
+in it --- a line picked takes a comment, in a box under it: Add, or
+=⌘↩=; Escape puts away one with nothing new in it.  A comment left for
+another line, another file, Refresh or Send goes in as written.  Each
+stays under its line, its file counting them in the tree; one whose
+line has moved since --- the same number on the same side, with the
+same text, is no longer there --- waits at the head of its file, with
+the line it was on.  Text selected in a line is not a line picked.
+
+They go together, from the bar at the foot: how many (opened, each one,
+to go to it or remove it, and a note to send with them), whom to (the
+first offered, or the one picked last), Send.  Emacs writes them as one
+text --- the checkout and its branch, then each comment numbered at its
+file and line (or the line taken out, by its number before), with that
+line quoted, then the note --- and hands it to the one picked; the page
+says what was done, or why not, and keeps them to send again.  Until
+sent they are kept in that browser, per checkout, over a reload; a
+private window keeps them as long as the page.
+
 * For other packages
 
 ghostherd's herd page shows the PR an agent's branch is on.  Two
@@ -242,6 +264,13 @@ functions serve it, and anything else that wants the same:
   committed, as the page counts it: =(:root :files :added :deleted)=,
   or =nil= outside a checkout.  Run as asked, not apart.
 - =pr-view-changes= =DIR=: open that checkout's changes here.
+- =pr-view-local-allowed-functions=: functions of a checkout's root,
+  non-nil when the page may show its changes.
+- =pr-view-local-recipients-functions=: functions of a checkout's
+  root, each a list of who may be sent a review of its changes, as
+  =(:id ID :label LABEL :send FN)= --- =FN= called with the review's
+  text, returning a sentence saying what it did.  Asked only of a
+  checkout the page may show; the first offered first.
 
 * Tests
 
@@ -257,4 +286,5 @@ Without clickup-view on the load path the ClickUp task tests skip.
 
 The page on a phone and in a narrow window is in xwapp's browser
 suites, on fixtures and without a token (=../xwapp/e2e/=: =apps-phone=,
-=narrow=); a checkout's changes, on a real one, in =pr-local=.
+=narrow=); a checkout's changes, on a real one, in =pr-local=, and a
+review of them in =pr-review=.

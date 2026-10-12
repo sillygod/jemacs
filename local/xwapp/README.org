@@ -299,6 +299,11 @@ so a page opens as it would on the phone.
 | =pr-local=     | pr-view at a real checkout's uncommitted changes, on the        |
 |                | phone: each file, a new one whole, why one is not shown,        |
 |                | Refresh, a reload, Back; one not vouched for refused            |
+| =pr-review=    | a review of those changes: a line picked takes a comment, kept  |
+|                | over another line, file, reload; sent together, the text Emacs  |
+|                | is given; a failed send keeps them; a moved line's comment at   |
+|                | the head; a long line's box in view; fitting the phone; the     |
+|                | desk's keys, text selected is no line picked                    |
 | =narrow=       | 320 to 760 points: nothing scrolls sideways but code and wide   |
 |                | tables, a commit row's cells meet                               |
 | =cu-edit=      | clickup-view's assignees and dates, on a phone and at the       |
