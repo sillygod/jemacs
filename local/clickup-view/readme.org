@@ -230,3 +230,7 @@ and comment, a 760px window.  Browser: home, space, a list's two pages,
 status groups, subtasks, filter, Mine / Closed and quick toggles, Back
 from the page's copy, breadcrumbs, stale replies dropped.  Not part of
 the suite: it needs a browser and the token.
+
+Assignees and dates, the page on a phone and in a narrow window are in
+xwapp's browser suites, on fixtures and without the token
+(=../xwapp/e2e/=: =cu-edit=, =apps-phone=, =narrow=).

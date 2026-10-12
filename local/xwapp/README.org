@@ -260,3 +260,36 @@ over a restart and renewed, in batch; then in WebKit, a page at
 serve= does --- served, its calls and intents through, another user and
 no user refused, and after a restart the open page back and a saved
 address working.
+
+** In a browser (=e2e/=)
+
+The pages themselves, in WebKit through Playwright.  The suites that
+need Emacs start one in batch (=e2e/apps.el=, =emacs -Q=) serving
+pr-view and clickup-view with Bitbucket and ClickUp answered from
+=e2e/fixtures/=: nothing reaches the network, no token is read, and a
+ClickUp write changes only the fixture's copy of the task.  The browser
+reaches that Emacs through a proxy doing what =tailscale serve= does,
+so a page opens as it would on the phone.
+
+#+begin_src sh
+  cd ~/.emacs.d/local/xwapp/e2e
+  npm ci && npx playwright install webkit   # once
+  npm test                                  # or: node run.js narrow cu-edit
+#+end_src
+
+| Suite        | Checks                                                        |
+|--------------+---------------------------------------------------------------|
+| =kit=        | the sanitizer, the bridge's queue, =XW.open=                  |
+| =herd-chips= | the herd page's PR and task chips: pr-view's and              |
+|              | clickup-view's pages on the phone, one tab per app, else the  |
+|              | forge's                                                       |
+| =apps-phone= | pr-view and clickup-view opened from the phone: what the      |
+|              | address names, Open and Copy there, a reload, fitting it; at  |
+|              | the desk, Open and Copy still Emacs's                         |
+| =narrow=     | 320 to 760 points: nothing scrolls sideways but code and wide |
+|              | tables, a commit row's cells meet                             |
+| =cu-edit=    | clickup-view's assignees and dates, on a phone and at the     |
+|              | desk: what goes to ClickUp, the keys, the menus fitting       |
+
+Screenshots land in =e2e/shots/=.  =EMACS= picks an Emacs other than
+the one on =PATH=; =KEEP=1= keeps a run's state, log and addresses.

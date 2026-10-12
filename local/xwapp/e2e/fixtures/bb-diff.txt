@@ -1,0 +1,19 @@
+diff --git a/shop/payments/webhook.py b/shop/payments/webhook.py
+--- a/shop/payments/webhook.py
++++ b/shop/payments/webhook.py
+@@ -10,7 +10,19 @@ class PaymentWebhookHandler:
+     def handle(self, event):
+-        return self.gateway.confirm(event.order_id, timeout=10)
++        for attempt, wait in enumerate(settings.PAYMENT_RETRY_BACKOFF, start=1):
++            try:
++                return self.gateway.confirm(event.order_id, timeout=10)
++            except GatewayTimeout:
++                log.warning("payment webhook timed out, retrying", extra={"order_id": event.order_id, "attempt": attempt, "wait": wait})
++                time.sleep(wait)
++        alert("payment webhook failed after retries", order_id=event.order_id)
+diff --git a/shop/settings.py b/shop/settings.py
+--- a/shop/settings.py
++++ b/shop/settings.py
+@@ -40,3 +40,4 @@ PAYMENT_GATEWAY = env("PAYMENT_GATEWAY")
+ PAYMENT_TIMEOUT = 10
++PAYMENT_RETRY_BACKOFF = [int(s) for s in env("PAYMENT_RETRY_BACKOFF", "1,4,16").split(",")]

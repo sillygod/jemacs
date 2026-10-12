@@ -1,0 +1,11 @@
+{
+  "name": "xwapp-e2e",
+  "private": true,
+  "description": "xwapp's pages in WebKit: pr-view, clickup-view and the herd page, on a phone and at the desk",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

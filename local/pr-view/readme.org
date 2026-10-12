@@ -222,3 +222,7 @@ functions serve it, and anything else that wants the same:
 #+end_src
 
 Without clickup-view on the load path the ClickUp task tests skip.
+
+The page on a phone and in a narrow window is in xwapp's browser
+suites, on fixtures and without a token (=../xwapp/e2e/=: =apps-phone=,
+=narrow=).
