@@ -75,6 +75,18 @@
 
   #+end_src
 
+* the server, for emacsclient
+
+  ghostherd's agents and its =bin/= scripts reach this Emacs through
+  =emacsclient=; so does =$EDITOR=.  Not when another Emacs already
+  serves under the same name, nor in batch.
+
+  #+begin_src emacs-lisp
+    (require 'server)
+    (unless (or noninteractive (server-running-p))
+      (server-start))
+  #+end_src
+
 * after init
 
   #+begin_src emacs-lisp

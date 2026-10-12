@@ -33,4 +33,18 @@
 ;; Run this config out of a different directory.
 ;; (setq user-emacs-directory "~/.mynewcraft.d")
 
+;; The xwapp pages -- the herd page, pr-view, clickup-view -- on your
+;; phone, through `tailscale serve' on this machine.  Here rather than
+;; in personal_lp.org because it names this machine: its tailnet name,
+;; and the port the serve passes on to, kept fixed for it.  Plain http
+;; for a serve without a certificate (`--http=80'), else "https".
+;; See "From your other devices" in local/xwapp/README.org.
+;;
+;;   tailscale serve --bg --http=80 http://127.0.0.1:48123
+;;
+;; (setq xwapp-port 48123
+;;       xwapp-remote-hosts '("my-mac.tail1234.ts.net" "my-mac")
+;;       xwapp-remote-users '("you@example.com")   ; your Tailscale login
+;;       xwapp-remote-scheme "http")
+
 ;;; example-config.el ends here
