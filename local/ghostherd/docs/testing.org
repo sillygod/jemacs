@@ -420,18 +420,18 @@ Anything else worth recording:
 
 * Remaining test gaps
 
-| Suite              | Scope                                    | Notes                     |
-|--------------------+------------------------------------------+---------------------------|
-| ERT unit           | *done* --- see =ghostherd-tests.el=      | No PTY needed             |
-| ERT, fake backend  | *done* --- detection/read through the slot | No tmux, no PTY         |
-| ERT, stubbed tmux  | *done* --- the command lines themselves  | Stubs =--call=            |
-| ERT, real tmux     | *done* --- spawn/capture/send/restore/kill | Skipped without tmux    |
-| Attach (=ghostel-exec=) | *gap* --- needs the compiled module  | Manual: T10–T12           |
-| Agent-driven reports | *gap* --- needs a real CLI's hooks      | Manual: T13               |
-| Batched fetch        | *done* --- real tmux, two panes, one call | Wedged host: manual T14 |
-| Log persistence      | *done* --- format, caps, truncated tail  | A real crash: manual T15 |
-| Herd page in WebKit  | *in part* --- the PR, task and changes chips, the forms, the relay | =../../xwapp/e2e=, =herd-chips=, =herd-changes=, =herd-forms=, =herd-relay=, =pr-local= |
-| Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
+| Suite                   | Scope                                                                                         | Notes                                                                                                |
+|-------------------------+-----------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------|
+| ERT unit                | *done* --- see =ghostherd-tests.el=                                                           | No PTY needed                                                                                        |
+| ERT, fake backend       | *done* --- detection/read through the slot                                                    | No tmux, no PTY                                                                                      |
+| ERT, stubbed tmux       | *done* --- the command lines themselves                                                       | Stubs =--call=                                                                                       |
+| ERT, real tmux          | *done* --- spawn/capture/send/restore/kill                                                    | Skipped without tmux                                                                                 |
+| Attach (=ghostel-exec=) | *gap* --- needs the compiled module                                                           | Manual: T10–T12                                                                                      |
+| Agent-driven reports    | *gap* --- needs a real CLI's hooks                                                            | Manual: T13                                                                                          |
+| Batched fetch           | *done* --- real tmux, two panes, one call                                                     | Wedged host: manual T14                                                                              |
+| Log persistence         | *done* --- format, caps, truncated tail                                                       | A real crash: manual T15                                                                             |
+| Herd page in WebKit     | *in part* --- the PR, task and changes chips, the forms, the relay, what claude's screen says | =../../xwapp/e2e=, =herd-chips=, =herd-changes=, =herd-foot=, =herd-forms=, =herd-relay=, =pr-local= |
+| Interactive script      | =emacsclient= spawn/kill smoke                                                                | Optional CI later                                                                                    |
 
 Do *not* block UX work on full TUI integration tests of claude/grok
 themselves. That is still the Phase 1 gap, and Phase 3 did not close it.

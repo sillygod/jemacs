@@ -1070,6 +1070,14 @@ looking.
   ERT, and WebKit end to end through a proxy doing what =tailscale
   serve= does, against a real Emacs with the forges answered from
   fixtures; 45 guards broken on purpose, each caught
+- [X] What claude shows only on its screen, on the page too: work in
+  the background (=1 shell running=, read off its footer), and the
+  prompt it suggests you send next --- the box's placeholder, put in
+  by Use or, at the desk, Tab.  A suggestion is told from what you typed
+  in the CLI by its faintness, which the poll's capture does not keep:
+  tmux is asked for the styled screen once a new text is in the box.
+  3 ERT, 27 WebKit checks (=herd-foot=); 16 guards broken on purpose,
+  each caught
 
 ** What is left
 

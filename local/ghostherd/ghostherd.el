@@ -1078,6 +1078,122 @@ a sign are an old prompt in the conversation."
                           (string-match-p "\\`[❯›>]\\(?:[[:blank:]]\\|\\'\\)" line)
                           (not (string-match-p "\\`[❯›>][[:blank:]]*[1-9]\\." line))))))
 
+;;; What a screen says besides the state
+;;
+;; Two things claude shows only on its screen: work it has running in
+;; the background -- "1 shell" in its footer, there from the turn's end
+;; on -- and the prompt it suggests you send next, drawn faint in its
+;; empty input box.  The poll reads them from the screen it has.  A
+;; suggestion is told from text you typed into the box by that
+;; faintness, which the poll's capture does not keep: the host is asked
+;; once for the screen with its styles, when new text is in the box.
+
+(defcustom ghostherd-foot-kinds '(claude)
+  "Kinds whose screen's foot is read for the work they have running in
+the background and the prompt they suggest you send next."
+  :type '(repeat symbol)
+  :group 'ghostherd)
+
+(defconst ghostherd--background-re
+  "\\`[0-9]+ \\(?:shell\\|agent\\|monitor\\|task\\|workflow\\)s?\\'"
+  "A count of work running in the background, as a footer says it.")
+
+(defconst ghostherd--sgr-re "\e\\[[0-9;:]*m"
+  "A style escape, as a styled capture holds them.")
+
+(defconst ghostherd--faint-input-re
+  (concat "\\`[^❯›>]*[❯›>]\\(?:" ghostherd--sgr-re "\\|[[:blank:]]\\)*"
+          "\e\\[\\(?:[0-9;:]*;\\)?2\\(?:;[0-9;:]*\\)?m")
+  "An input box's first line whose text starts faint.")
+
+(defvar ghostherd--feet (make-hash-table :test 'equal)
+  "Session id -> what its screen's foot says besides its state:
+\(:background WORDS :input TEXT :suggestion TEXT).")
+
+(defun ghostherd--foot-at (lines)
+  "Where LINES, a screen's, draw an input box at their foot: (TOP . BOTTOM),
+TOP the box's first line -- the prompt sign's -- and BOTTOM its lower
+rule, a footer of a line or three under it.  Nil when there is none."
+  (let* ((lines (vconcat lines))
+         (n (length lines))
+         (end (1- n)))
+    (while (and (>= end 0) (string-blank-p (aref lines end)))
+      (setq end (1- end)))
+    (cl-loop for bottom from (1- end) downto (max 0 (- end 3))
+             when (string-match-p ghostherd--input-rule-re (aref lines bottom))
+             return (cl-loop for top from (1- bottom) downto (max 1 (- bottom 8))
+                             when (string-match-p ghostherd--input-rule-re (aref lines (1- top)))
+                             return (and (string-match-p "\\`[❯›>]\\(?:[[:blank:]]\\|\\'\\)" (aref lines top))
+                                         (not (string-match-p "\\`[❯›>][[:blank:]]*[1-9]\\." (aref lines top)))
+                                         (cons top bottom))))))
+
+(defun ghostherd--join-wrapped (a b)
+  "A then B, a line wrapped between them: a space between words, none
+between ideographs."
+  (if (or (string-empty-p a) (string-empty-p b)
+          (>= (aref a (1- (length a))) #x2e80) (>= (aref b 0) #x2e80))
+      (concat a b)
+    (concat a " " b)))
+
+(defun ghostherd--foot (text)
+  "What TEXT's foot says besides the state: (:input TEXT :background
+WORDS) -- what its input box holds, nil when empty; the background work
+its footer counts, as (\"1 shell\").  Nil when no input box is drawn there."
+  (let* ((lines (vconcat (split-string (or text "") "\n")))
+         (at (ghostherd--foot-at lines)))
+    (when at
+      (let* ((box (mapcar #'string-trim
+                          (cons (replace-regexp-in-string "\\`[❯›>][[:blank:]]*" "" (aref lines (car at)))
+                                (append (seq-subseq lines (1+ (car at)) (cdr at)) nil))))
+             (input (string-trim (seq-reduce #'ghostherd--join-wrapped (cdr box) (car box))))
+             (footer (append (seq-subseq lines (1+ (cdr at))) nil)))
+        (list :input (and (not (string-empty-p input)) input)
+              :background (seq-filter (lambda (part) (string-match-p ghostherd--background-re part))
+                                      (mapcan (lambda (line) (mapcar #'string-trim (split-string line "·")))
+                                              footer)))))))
+
+(defun ghostherd--faint-input-p (styled)
+  "Non-nil when STYLED, a screen with its styles as escapes, starts the
+text of the input box at its foot faint: a suggestion, not typed."
+  (let* ((lines (split-string (or styled "") "\n"))
+         (at (ghostherd--foot-at
+              (mapcar (lambda (l) (replace-regexp-in-string ghostherd--sgr-re "" l)) lines))))
+    (and at (string-match-p ghostherd--faint-input-re (nth (car at) lines)) t)))
+
+(defun ghostherd--read-foot (session text)
+  "Keep what SESSION's screen TEXT says at its foot besides the state.
+New text in its input box: the host is asked whether it is faint."
+  (let ((id (ghostherd-session-id session)))
+    (if (not (memq (ghostherd-session-kind session) ghostherd-foot-kinds))
+        (remhash id ghostherd--feet)
+      (let* ((foot (ghostherd--foot text))
+             (input (plist-get foot :input))
+             (had (gethash id ghostherd--feet)))
+        (puthash id (list :background (plist-get foot :background)
+                          :input input
+                          :suggestion (and input (equal input (plist-get had :input))
+                                           (plist-get had :suggestion)))
+                 ghostherd--feet)
+        (when (and input (not (equal input (plist-get had :input))))
+          (ignore-errors
+            (ghostherd-backend-styled-screen
+             (ghostherd--backend-of session) session
+             (lambda (styled)
+               (let ((now (gethash id ghostherd--feet)))
+                 (when (and now (equal (plist-get now :input) input)
+                            (ghostherd--faint-input-p styled))
+                   (puthash id (plist-put (copy-sequence now) :suggestion input)
+                            ghostherd--feet)))))))))))
+
+(defun ghostherd-session-background (session)
+  "The work SESSION has running in the background, as its screen counts
+it: (\"1 shell\"), or nil."
+  (plist-get (gethash (ghostherd-session-id session) ghostherd--feet) :background))
+
+(defun ghostherd-session-suggestion (session)
+  "The prompt SESSION suggests you send next, or nil."
+  (plist-get (gethash (ghostherd-session-id session) ghostherd--feet) :suggestion))
+
 (defun ghostherd--match-rules (text rules &optional replaces-input)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
 RULES is an alist of (STATE . REGEXP-LIST).  Prefer blocked over
@@ -1357,7 +1473,8 @@ does."
                (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input))))
                (report (ghostherd--fresh-report session)))
           (when tail
-            (puthash (ghostherd-session-id session) tail ghostherd--screens))
+            (puthash (ghostherd-session-id session) tail ghostherd--screens)
+            (ghostherd--read-foot session tail))
           (cond
            ;; Screen rules keep priority for `blocked': a stale progress
            ;; report must never mask an agent sitting on a prompt, and
@@ -2299,6 +2416,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--idle-since)
     (remhash id ghostherd--reports)
     (remhash id ghostherd--screens)
+    (remhash id ghostherd--feet)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)

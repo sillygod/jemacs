@@ -728,6 +728,31 @@ must not touch `state' -- the agent is still running."
    "capture-pane" "-p" "-S" (format "-%d" lines) "-t"
    (ghostherd-tmux--target (ghostherd-session-host-id session))))
 
+(cl-defmethod ghostherd-backend-styled-screen
+  ((_backend (eql tmux)) session callback)
+  ;; -e, the styles: all this is asked for.  Apart from Emacs, as the
+  ;; poll's fetch is -- one pane, when new text is in its input box.
+  (let ((buffer (generate-new-buffer " *ghostherd-tmux-styled*")))
+    (make-process
+     :name "ghostherd-tmux-styled"
+     :buffer buffer
+     :noquery t
+     :connection-type 'pipe
+     :coding 'utf-8
+     :stderr (get-buffer-create " *ghostherd-tmux-styled-stderr*")
+     :command (append (list ghostherd-tmux-executable)
+                      (ghostherd-tmux--socket-args)
+                      (list "capture-pane" "-p" "-e" "-t"
+                            (ghostherd-tmux--target (ghostherd-session-host-id session))))
+     :sentinel
+     (lambda (proc _event)
+       (unless (process-live-p proc)
+         (let ((out (and (eq (process-exit-status proc) 0)
+                         (buffer-live-p buffer)
+                         (with-current-buffer buffer (buffer-string)))))
+           (when (buffer-live-p buffer) (kill-buffer buffer))
+           (funcall callback out)))))))
+
 (cl-defmethod ghostherd-backend-scroll ((_backend (eql tmux)) session lines)
   ;; tmux copy mode is the only thing that can move a pane's view, but it
   ;; is driven here by command rather than by a prefix key, so it never

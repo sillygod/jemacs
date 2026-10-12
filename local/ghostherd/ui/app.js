@@ -26,7 +26,57 @@
   const SENDS = TOUCH ? "" : "  (⌘↩ / C-↩ sends)";
 
   function chatHint(to) {
+    const a = agentByName(to);
+    if (a && a.suggestion) return suggestionHint(a);
     return "Message " + (to === "@lead" ? "the lead" : to) + "  (@name for another" + (TOUCH ? ")" : " · ⌘↩ sends)");
+  }
+
+  // What claude shows only on its screen, as Emacs read it there: work it
+  // has running in the background, and the prompt it suggests you send
+  // next, faint in its input box.  Here that is the box's placeholder,
+  // and Use -- or Tab in an empty box, as in the CLI -- puts it in.
+  function agentByName(name) {
+    return ((herdNow.data && herdNow.data.agents) || []).find((a) => a.name === name) || null;
+  }
+
+  function suggestionHint(a) {
+    return "↳ " + a.suggestion + (TOUCH ? "" : "  (Tab takes it)");
+  }
+
+  function promptHint(name) {
+    const a = agentByName(name);
+    return a && a.suggestion ? suggestionHint(a) : "Prompt for " + name + SENDS;
+  }
+
+  function useButton(name) {
+    const a = agentByName(name);
+    return '<button type="button" class="ghost small use" data-act="a:use-suggestion"' + (a && a.suggestion ? "" : " hidden") +
+      ' title="Put what it suggests in the box">Use</button>';
+  }
+
+  // A box drawn once, kept as you type: its placeholder and Use follow
+  // what the agent suggests now.
+  function suggestIn(box, name, hint) {
+    const ta = box.querySelector("textarea.agent-text");
+    const use = box.querySelector(".use");
+    const a = agentByName(name);
+    if (ta && ta.placeholder !== hint) ta.placeholder = hint;
+    if (use) use.hidden = !(a && a.suggestion);
+  }
+
+  function useSuggestion(name, ta) {
+    const a = agentByName(name);
+    if (!a || !a.suggestion || !ta) return false;
+    ta.value = a.suggestion;
+    herdNow.compose[name] = ta.value;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    return true;
+  }
+
+  function backgroundHtml(a) {
+    const bg = a.background || [];
+    return bg.length ? '<span class="det bgw" title="Running in the background, as its screen says">' + esc(bg.join(" · ")) + " running</span>" : "";
   }
 
   // An agent's name opens its terminal in Emacs: at the desk.  On another
@@ -1153,8 +1203,9 @@
       : "";
     const compose = herdNow.composing.has(name)
       ? '<div class="agent-compose"><div class="attach">' + attachHtml(name) + '</div>' +
-        '<textarea class="agent-text" rows="3" placeholder="Prompt for ' + esc(name) + SENDS + '">' +
-        esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
+        '<textarea class="agent-text" rows="3" placeholder="' + esc(promptHint(name)) + '">' +
+        esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + useButton(name) +
+        '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
       : "";
     const notes = herdNow.notes === name
       ? '<div class="notes-edit"><input class="notes-text" value="' + esc(herdNow.notesText) + '" placeholder="Role / notes">' +
@@ -1170,7 +1221,7 @@
       agentName(name) + genBadge(a) + agentBadge(a.kind) + leadBadge(a) +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
-      (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") +
+      (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") + backgroundHtml(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
@@ -1325,7 +1376,7 @@
     }
     return '<div class="amain">' + stateBadge(a.state) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
-      agentName(name) + agentBadge(a.kind) + leadBadge(a) +
+      agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
@@ -1459,7 +1510,7 @@
       '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
       chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
       '</select><textarea class="agent-text" rows="2" placeholder="' + esc(chatHint(to)) + '">' +
-      esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON +
+      esc(herdNow.compose[to] || "") + "</textarea>" + IMAGE_BUTTON + useButton(to) +
       '<button type="button" class="primary small" data-act="a:send">Send</button></div></div>';
   }
 
@@ -1477,7 +1528,7 @@
     delete herdNow.attach[was];
     foot.setAttribute("data-name", to);
     foot.querySelector(".chat-to").value = to;
-    ta.placeholder = chatHint(to);
+    suggestIn(foot, to, chatHint(to));
     renderAttach(to);
   }
 
@@ -1554,8 +1605,9 @@
           : '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
-              '<textarea class="agent-text" rows="2" placeholder="Prompt for ' + esc(a.name) + SENDS + '">' +
-              esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>") +
+              '<textarea class="agent-text" rows="2" placeholder="' + esc(promptHint(a.name)) + '">' +
+              esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + useButton(a.name) +
+              '<button type="button" class="primary small" data-act="a:send">Send</button></div></section>').join("") + "</div>") +
         "</div>";
       room = app.querySelector(".room");
       room.setAttribute("data-key", key);
@@ -1566,11 +1618,16 @@
     const rwork = room.querySelector(".rwork");
     if (rwork) rwork.innerHTML = workHtml(workFor(project));
     room.querySelector(".rruns").innerHTML = runsHtml(agents, asks);
-    if (chat) return;
+    if (chat) {
+      const foot = room.querySelector(".chat .cfoot");
+      if (foot) suggestIn(foot, foot.getAttribute("data-name"), chatHint(foot.getAttribute("data-name")));
+      return;
+    }
     agents.forEach((a) => {
       const col = roomColumn(a.name);
       col.className = "rcol s-" + a.state;
       col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
+      suggestIn(col, a.name, promptHint(a.name));
     });
   }
 
@@ -1593,6 +1650,7 @@
     if (act === "work-pr") return emit("open-pr", { root: el.getAttribute("data-root"), id: +el.getAttribute("data-id") });
     if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
     if (act === "work-changes") return emit("open-changes", { root: el.getAttribute("data-root") });
+    if (act === "use-suggestion") return useSuggestion(name, row && row.querySelector("textarea.agent-text"));
     if (act === "work-more") {
       const key = el.getAttribute("data-key");
       if (herdNow.workOpen.has(key)) herdNow.workOpen.delete(key);
@@ -1866,7 +1924,10 @@
   app.addEventListener("keydown", (ev) => {
     const t = ev.target;
     if (!t.classList) return;
-    if (t.classList.contains("agent-text") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+    if (t.classList.contains("agent-text") && ev.key === "Tab" && !ev.shiftKey && !t.value) {
+      const box = t.closest(".arow, .rcol, .cfoot");
+      if (box && useSuggestion(box.getAttribute("data-name"), t)) ev.preventDefault();
+    } else if (t.classList.contains("agent-text") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
       ev.preventDefault();
       sendPrompt(t.closest(".arow, .rcol, .cfoot").getAttribute("data-name"));
     } else if (t.classList.contains("notes-text") && ev.key === "Enter") {

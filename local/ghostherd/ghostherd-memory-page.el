@@ -338,6 +338,10 @@ draws lanes from fields rather than parsing prose."
                                (ghostherd-session-started-at s))))
                    (and t0 (* 1000 (float-time t0))))
           :progress (ghostherd-session-progress-percent s)
+          ;; What its screen says besides: work in the background, and
+          ;; the prompt it suggests you send next.
+          :background (ghostherd-memory-page--vec (ghostherd-session-background s))
+          :suggestion (or (ghostherd-session-suggestion s) "")
           :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
           :saidAt (plist-get (ghostherd--link s) :last_ms)
           :conversation (ghostherd-session-conversation s)

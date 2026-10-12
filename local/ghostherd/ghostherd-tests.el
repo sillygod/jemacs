@@ -862,6 +862,132 @@ no working rule knew grok's footer hint."
                           ghostherd-tests--grok-idle rules)
                          :key #'car))))
 
+;;; What a screen says besides the state
+
+(defconst ghostherd-tests--rule (make-string 60 ?─))
+
+(defun ghostherd-tests--claude-screen (box &optional footer above)
+  "A claude screen: ABOVE, then its input box holding BOX's lines, then
+FOOTER under it -- padded to the pane's height, as a capture is."
+  (string-join
+   (append (or above '("⏺ Done: the tests pass." ""
+                       "✻ Sautéed for 1m 25s · done 5:28 PM"))
+           (list ghostherd-tests--rule)
+           box
+           (list ghostherd-tests--rule
+                 (or footer "  ⏵⏵ auto mode on (shift+tab to cycle)")
+                 "" ""))
+   "\n"))
+
+(ert-deftest ghostherd-test-a-screens-foot ()
+  "What claude's foot says: its input box's text -- a wrapped one joined,
+with a space between words and none between ideographs -- and the
+background work its footer counts.  An empty box, a menu, an old prompt
+up in the conversation say nothing."
+  (let ((nbsp " "))
+    (should (equal (ghostherd--foot (ghostherd-tests--claude-screen
+                                     (list (concat "❯" nbsp "好，等你看完再說"))
+                                     "  ⏵⏵ auto mode on · 1 shell · ← for agents · ↓ to manage"))
+                   '(:input "好，等你看完再說" :background ("1 shell"))))
+    (should (equal (ghostherd--foot (ghostherd-tests--claude-screen
+                                     '("❯ Add a test for the" "  retry path")
+                                     "  2 shells · 1 agent · 3 monitors · ↓ to manage"))
+                   '(:input "Add a test for the retry path" :background ("2 shells" "1 agent" "3 monitors"))))
+    (should (equal (plist-get (ghostherd--foot (ghostherd-tests--claude-screen '("❯ 做 v2 的 diff 行評論" "  送給 agent"))) :input)
+                   "做 v2 的 diff 行評論送給 agent"))
+    (should (equal (ghostherd--foot (ghostherd-tests--claude-screen (list (concat "❯" nbsp))))
+                   '(:input nil :background nil)))
+    ;; Not a box: a menu's first choice; an old prompt above the foot.
+    (should-not (ghostherd--foot (ghostherd-tests--claude-screen '("❯ 1. Yes"))))
+    (should-not (ghostherd--foot (string-join (list ghostherd-tests--rule "❯ an old prompt" ghostherd-tests--rule
+                                                     "⏺ and much said since" "" "it goes on" "and on")
+                                               "\n")))
+    (should-not (ghostherd--foot ""))
+    (should-not (ghostherd--foot nil))))
+
+(ert-deftest ghostherd-test-a-suggestion-is-faint ()
+  "A suggestion is drawn faint in the box; what you typed there is not."
+  (let ((faint (ghostherd-tests--claude-screen
+                (list "\e[39m❯ \e[2m好，等你看完再說\e[0m")
+                "\e[39m  \e[38;5;220m⏵⏵ auto mode on\e[38;5;246m · \e[38;5;44m1 shell\e[39m"
+                '("\e[38;5;246m✻\e[39m done" "")))
+        (typed (ghostherd-tests--claude-screen (list "\e[39m❯ hello\e[0m"))))
+    (should (ghostherd--faint-input-p faint))
+    (should-not (ghostherd--faint-input-p typed))
+    (should (ghostherd--faint-input-p (ghostherd-tests--claude-screen (list "❯ \e[1;2mfaint and bold\e[0m"))))
+    ;; Faint words higher up, in the conversation, are not the box's.
+    (should-not (ghostherd--faint-input-p
+                 (ghostherd-tests--claude-screen (list "❯ typed")
+                                                 nil '("\e[2m❯ an old faint line\e[0m" ""))))
+    (should-not (ghostherd--faint-input-p nil))))
+
+(ert-deftest ghostherd-test-the-poll-reads-a-screens-foot ()
+  "Each poll keeps what a claude's foot says.  New text in its box: the
+host is asked, once, for the screen with its styles -- faint, it is a
+suggestion, kept while the box holds it.  Typed, it is none.  Not
+claude: nothing is read."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd--feet (make-hash-table :test 'equal))
+                               (ghostherd--screens (make-hash-table :test 'equal)))
+    (let* ((s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'fake))
+           (g (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+           (asked 0)
+           (styled nil)
+           (screen (lambda (box &optional footer) (ghostherd-tests--claude-screen (list box) footer))))
+      (cl-letf (((symbol-function 'ghostherd-backend-styled-screen)
+                 (lambda (_backend _session cb) (cl-incf asked) (funcall cb styled))))
+        (setq styled (funcall screen "❯ \e[2mRun the tests\e[0m"))
+        (ghostherd--read-foot s (funcall screen "❯ Run the tests" "  1 shell · ↓ to manage"))
+        (should (equal (ghostherd-session-suggestion s) "Run the tests"))
+        (should (equal (ghostherd-session-background s) '("1 shell")))
+        (should (= asked 1))
+        ;; The same text: kept, not asked again.
+        (ghostherd--read-foot s (funcall screen "❯ Run the tests"))
+        (should (equal (ghostherd-session-suggestion s) "Run the tests"))
+        (should-not (ghostherd-session-background s))
+        (should (= asked 1))
+        ;; Taken, and typed on: the suggestion is gone at once, not when
+        ;; the host has answered.
+        (let (later)
+          (cl-letf (((symbol-function 'ghostherd-backend-styled-screen)
+                     (lambda (_b _s cb) (setq later cb))))
+            (ghostherd--read-foot s (funcall screen "❯ Run the tests now"))
+            (should-not (ghostherd-session-suggestion s))
+            (funcall later (funcall screen "❯ Run the tests now"))
+            (should-not (ghostherd-session-suggestion s))))
+        ;; Sent: the box is empty, and so is the suggestion.
+        (ghostherd--read-foot s (funcall screen "❯ "))
+        (should-not (ghostherd-session-suggestion s))
+        ;; Typed at the desk: asked, and not faint.
+        (setq styled (funcall screen "❯ my own words"))
+        (ghostherd--read-foot s (funcall screen "❯ my own words"))
+        (should (= asked 2))
+        (should-not (ghostherd-session-suggestion s))
+        ;; A styled screen that comes too late, the box moved on: not taken.
+        (let (later)
+          (cl-letf (((symbol-function 'ghostherd-backend-styled-screen)
+                     (lambda (_b _s cb) (setq later cb))))
+            (ghostherd--read-foot s (funcall screen "❯ Ship it"))
+            (ghostherd--read-foot s (funcall screen "❯ "))
+            (funcall later (funcall screen "❯ \e[2mShip it\e[0m"))
+            (should-not (ghostherd-session-suggestion s))))
+        ;; Another kind's foot is not read.
+        (ghostherd--read-foot g (funcall screen "❯ Run the tests" "  1 shell"))
+        (should-not (gethash (ghostherd-session-id g) ghostherd--feet))
+        ;; Through the poll, from the screen it has; to the page.
+        (setq styled (funcall screen "❯ \e[2mCommit it\e[0m"))
+        (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                  ((symbol-function 'ghostherd--host-exited-p) (lambda (_s) nil)))
+          (ghostherd--detect-state s (funcall screen "❯ Commit it" "  2 shells · ↓ to manage")))
+        (should (equal (ghostherd-session-suggestion s) "Commit it"))
+        (let ((page (ghostherd-memory-page--agent s)))
+          (should (equal (plist-get page :suggestion) "Commit it"))
+          (should (equal (plist-get page :background) ["2 shells"])))
+        ;; Killed: forgotten.
+        (cl-letf (((symbol-function 'ghostherd--host-kill) #'ignore))
+          (ghostherd-kill s))
+        (should-not (gethash (ghostherd-session-id s) ghostherd--feet))))))
+
 (ert-deftest ghostherd-test-status-region-is-the-bottom ()
   "The region is the live status area, not the scrollback above it."
   (let ((ghostherd-status-lines 3))

@@ -1130,6 +1130,13 @@ are the other tabs (below, and "What happened while you were away").
   Each git call and each request is done when you stop typing, a few
   at a time, so the looking never holds a keystroke; meanwhile the
   page shows the last look.
+- What claude shows only on its screen: work it has running in the
+  background, =1 shell running= on its row and its column, read off its
+  footer; and the prompt it suggests you send next, faint in its input
+  box --- the placeholder of its box here, put in by Use, or by Tab in
+  an empty box at the desk.  Faint is how it is told from what you
+  typed in the CLI: when new text is in the box, tmux is asked once for
+  the screen with its styles (=ghostherd-foot-kinds=).
 - What each agent's conversation names, on its row and its room
   column (=↳ named=): the pull requests of its project's repository and
   the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,

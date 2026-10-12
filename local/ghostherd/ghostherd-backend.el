@@ -351,6 +351,13 @@ would be matching something that is no longer true.  Reading it on
 purpose is a different act from detecting on it."
   nil)
 
+(cl-defgeneric ghostherd-backend-styled-screen (_backend _session callback)
+  "Call CALLBACK with SESSION's visible screen, its styles kept as escape
+sequences -- what tells faint text from plain -- or with nil where the
+host keeps none.  Asked apart from the poll, and seldom: the poll
+matches text, not styles."
+  (funcall callback nil))
+
 (cl-defgeneric ghostherd-backend-send-text (backend session text submit)
   "Type TEXT into SESSION, pressing Return when SUBMIT is non-nil.")
 
