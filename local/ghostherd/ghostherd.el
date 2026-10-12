@@ -521,6 +521,27 @@ restart.")
   "SESSION's role in the herd, or nil."
   (gethash (ghostherd-session-id session) ghostherd--roles))
 
+(defvar ghostherd--lineage (make-hash-table :test 'equal)
+  "Session id -> the agents that held its name before it, oldest first.
+Each an alist of `kind', `conversation', `ended' and `reason', all
+strings: see `ghostherd-relay'.  Written onto the host with the recipe,
+as the role is.")
+
+(defun ghostherd-session-lineage (session)
+  "The agents that held SESSION's name before it, oldest first."
+  (gethash (ghostherd-session-id session) ghostherd--lineage))
+
+(defun ghostherd-session-generation (session)
+  "SESSION's place in the line of its name: 1 for the first to hold it."
+  (1+ (length (ghostherd-session-lineage session))))
+
+(defun ghostherd--roman (n)
+  "N in Roman numerals, for the line of a name; past 39, the number."
+  (if (and (integerp n) (< 0 n 40))
+      (concat (make-string (/ n 10) ?X)
+              (aref ["" "I" "II" "III" "IV" "V" "VI" "VII" "VIII" "IX"] (% n 10)))
+    (format "%s" n)))
+
 (defun ghostherd--session-title (session)
   "Return SESSION's terminal title, or nil when it says nothing new.
 Which OSC 2 stream that comes from is the backend's business: a ghostel
@@ -1717,6 +1738,7 @@ PLIST keys:
   :args      override argument list
   :notes     free-form note / role description
   :role      its role in the herd: \"lead\" for a project's lead
+  :lineage   the agents that held its name before it (`ghostherd-relay')
   :directory working directory (defaults to project or `default-directory')
   :backend   host to start it on (defaults to `ghostherd-backend')
   :display   when non-nil (default t), pop to the buffer"
@@ -1738,6 +1760,7 @@ PLIST keys:
                  (plist-get spec :args)))
          (notes (plist-get plist :notes))
          (role (plist-get plist :role))
+         (lineage (plist-get plist :lineage))
          (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
@@ -1746,7 +1769,7 @@ PLIST keys:
                    backend
                    (list :name name :kind kind :command command :args args
                          :directory directory :project project :notes notes
-                         :role role)))
+                         :role role :lineage lineage)))
          session)
     (setq session
           (ghostherd-session--create
@@ -1767,6 +1790,9 @@ PLIST keys:
     (if role
         (puthash name role ghostherd--roles)
       (remhash name ghostherd--roles))
+    (if lineage
+        (puthash name lineage ghostherd--lineage)
+      (remhash name ghostherd--lineage))
     (ghostherd--log-add session 'life
                         (format "spawned %s on %s" kind backend))
     (ghostherd--ensure-poll-timer)
@@ -1864,6 +1890,9 @@ running, and a session keeps the backend it was born with anyway."
           (if-let* ((role (plist-get recipe :role)))
               (puthash name role ghostherd--roles)
             (remhash name ghostherd--roles))
+          (if-let* ((lineage (plist-get recipe :lineage)))
+              (puthash name lineage ghostherd--lineage)
+            (remhash name ghostherd--lineage))
           (ghostherd--log-add name 'life
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
@@ -1890,7 +1919,8 @@ session around a process that never stopped."
         :command (ghostherd-session-command session)
         :args (ghostherd-session-args session)
         :notes (ghostherd-session-notes session)
-        :role (ghostherd-session-role session)))
+        :role (ghostherd-session-role session)
+        :lineage (ghostherd-session-lineage session)))
 
 ;;;###autoload
 (defun ghostherd-respawn (session &optional continue)
@@ -3367,6 +3397,7 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-kill                  . "Kill session")
     (ghostherd-sidebar-rename                . "Rename session")
     (ghostherd-respawn                       . "Respawn from recipe")
+    (ghostherd-relay                         . "Relay: an heir on another CLI")
     (ghostherd-sidebar-notes                 . "Edit note / role")
     (ghostherd-sidebar-interrupt             . "Interrupt (Escape)")
     (ghostherd-sidebar-abort                 . "Abort (C-c)")
@@ -3465,6 +3496,7 @@ window, which had nowhere to go except by killing the child frame."
   "?" #'ghostherd-sidebar-help
   "e" #'ghostherd-explain
   "R" #'ghostherd-respawn
+  "T" #'ghostherd-relay
   "c" #'ghostherd-sidebar-notes
   "z" #'ghostherd-sidebar-interrupt
   "Z" #'ghostherd-sidebar-abort
@@ -4103,6 +4135,11 @@ from sqlite instead of waiting for another Emacs round trip."
 (defvar ghostherd--asks-settled (make-hash-table :test 'equal)
   "Ask ids this Emacs has closed, so a stale tick does not reopen them.")
 
+(defvar ghostherd--relay-held (make-hash-table :test 'equal)
+  "Ask id -> the name whose heir answers it, until the heir is told:
+see `ghostherd-relay'.  Not open meanwhile: an heir sitting at its first
+prompt has not stopped answering it.")
+
 (defvar ghostherd--herd-asks nil
   "Open and recent asks from the last `herd_tick', newest first.")
 
@@ -4263,6 +4300,9 @@ from here on, and closed now if the taker is already sitting idle."
         (when-let* (((equal status "delivered"))
                     ((not (gethash id ghostherd--asks-open)))
                     ((not (gethash id ghostherd--asks-settled)))
+                    ;; Its taker's heir is not told it yet: at its first
+                    ;; prompt, it has not stopped answering it.
+                    ((not (gethash id ghostherd--relay-held)))
                     (session (ghostherd-get (plist-get a :to))))
           (puthash id (ghostherd-session-id session) ghostherd--asks-open)
           (when (memq (ghostherd-session-state session) '(idle done dead))
@@ -4453,18 +4493,21 @@ kept for that."
         (push (cons (ghostherd-session-name session) text)
               (gethash project ghostherd--lead-unheard))))))
 
-(defun ghostherd--when-ready (session fn &optional tries)
+(defun ghostherd--when-ready (session fn &optional tries fail)
   "Call FN once SESSION is at its prompt, looking every second.
 Two minutes at most, TRIES counting down; a session that never gets
-there is logged, and one gone is let be."
+there is logged, and one gone is let be.  Either way FAIL, when given,
+is called instead."
   (let ((tries (or tries 120)))
     (cond
-     ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)))
+     ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session))
+      (when fail (funcall fail)))
      ((memq (ghostherd-session-state session) '(idle done))
       (funcall fn))
      ((<= tries 0)
-      (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent"))
-     (t (run-at-time 1 nil #'ghostherd--when-ready session fn (1- tries))))))
+      (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent")
+      (when fail (funcall fail)))
+     (t (run-at-time 1 nil #'ghostherd--when-ready session fn (1- tries) fail)))))
 
 (defun ghostherd-lead-say (project text)
   "Say TEXT to PROJECT's lead, starting one when it has none.
@@ -4514,9 +4557,15 @@ agent's environment carries.")
     (setq ghostherd--herd-links table)))
 
 (defun ghostherd--link (session)
-  "What SESSION's hooks last said, or nil."
-  (when-let* ((s (ghostherd-get session)))
-    (gethash (ghostherd-session-name s) ghostherd--herd-links)))
+  "What SESSION's hooks last said, or nil.
+Not what another CLI's said under its name: the agent it took over
+from (`ghostherd-relay'), whose conversation is not its own."
+  (when-let* ((s (ghostherd-get session))
+              (link (gethash (ghostherd-session-name s) ghostherd--herd-links)))
+    (let ((cli (plist-get link :cli)))
+      (and (or (not (stringp cli)) (string-empty-p cli)
+               (equal cli (symbol-name (or (ghostherd-session-kind s) 'shell))))
+           link))))
 
 (defun ghostherd-session-conversation (session)
   "The conversation SESSION is on, as its own hooks named it, or nil."
@@ -4619,6 +4668,12 @@ on, would contradict it."
           ("respawn"
            (ghostherd-respawn name)
            (setq text "respawned"))
+          ("relay"
+           (let ((kind (plist-get args :kind)))
+             (unless (and (stringp kind) (memq (intern kind) (ghostherd--relay-kinds)))
+               (error "Relay to what: %s" kind))
+             (ghostherd-relay name (intern kind))
+             (setq text (format "relaying %s to %s" name kind))))
           ("screen"
            (setq text (or (ghostherd-read name 40) "(empty)"))
            (when (> (length text) 3500)
@@ -4642,6 +4697,217 @@ on, would contradict it."
   (dolist (cmd (plist-get result :commands))
     (push (ghostherd--herd-run-command cmd) ghostherd--herd-replies)))
 
+;;; Relay: an heir takes an agent's name and its work
+;;
+;; An agent stops -- its CLI's usage used up, wedged, or you would
+;; rather another CLI went on -- and a new agent takes its name, its
+;; role, its notes and its project: the second of the name, the third.
+;; Its first message is where the work stood, which the sidecar reads
+;; from the old one's transcript, the herd's asks and the checkout
+;; (server/relay.py): the old one may not be able to say anything any
+;; more.  The name is what the rest of the herd knows it by, so asks of
+;; it, the asks it waits on and mail for it go on as they were; the
+;; asks it was answering are its heir's to answer, not failed with it.
+
+(defcustom ghostherd-relay-kinds '(claude grok agy)
+  "CLIs an agent's work is relayed to, the herd's first choice first.
+`ghostherd-relay' offers the first that is not the agent's own and has
+usage left; any other kind with a command can still be picked."
+  :type '(repeat symbol)
+  :group 'ghostherd)
+
+(defvar ghostherd--relaying (make-hash-table :test 'equal)
+  "Session id -> t while its relay waits for the sidecar's brief.")
+
+(defvar ghostherd--relay-offered (make-hash-table :test 'equal)
+  "Session id -> the used-up window it was last offered a relay for.")
+
+(defun ghostherd--relay-kinds ()
+  "The kinds an agent's work can go to: `ghostherd-relay-kinds' first,
+then any other that runs a command."
+  (seq-filter (lambda (k) (plist-get (alist-get k ghostherd-agent-specs) :command))
+              (seq-uniq (append ghostherd-relay-kinds (ghostherd--agent-kinds)))))
+
+(defun ghostherd-relay-default-kind (session)
+  "The CLI SESSION's work goes to unless said otherwise: the first of
+`ghostherd-relay-kinds' other than its own with usage left, its own
+when none has."
+  (let ((own (ghostherd-session-kind session)))
+    (or (seq-find (lambda (k) (not (or (eq k own) (ghostherd-usage-used-up k))))
+                  (ghostherd--relay-kinds))
+        own)))
+
+(defun ghostherd--relay-args (kind recipe lead)
+  "Arguments for an heir on KIND to the agent of RECIPE, its :kind
+added; LEAD when it leads its project.  On the same CLI, the old one's
+own, less what picked its conversation; on another, what the project
+or KIND gives an agent, since one CLI's flags mean nothing to another."
+  (let* ((dir (or (plist-get recipe :directory) (plist-get recipe :project) default-directory))
+         (defaults (ghostherd-project-defaults dir))
+         (args (if (eq kind (plist-get recipe :kind))
+                   (ghostherd--without-resume kind (plist-get recipe :args))
+                 (if (eq (car defaults) kind)
+                     (cdr defaults)
+                   (plist-get (ghostherd--spec kind) :args)))))
+    (if lead (ghostherd--with-lead-role kind args) args)))
+
+(defun ghostherd--relay-ancestor (session reason)
+  "SESSION as the line of its name remembers it, gone for REASON."
+  `((kind . ,(symbol-name (ghostherd-session-kind session)))
+    (conversation . ,(or (ghostherd-session-conversation session) ""))
+    (ended . ,(format-time-string "%FT%T%z"))
+    (reason . ,(or reason ""))))
+
+;;;###autoload
+(defun ghostherd-relay (session kind &optional reason)
+  "Hand SESSION's work to a new agent on KIND, which takes its name.
+The heir has SESSION's role, notes and project, and is the next of the
+name; its first message is where SESSION's work stood -- what it was
+asked, its last steps and answer, the asks it owes and waits on, the
+checkout -- which the sidecar reads from SESSION's transcript.  The
+asks SESSION was answering are the heir's to answer.  SESSION is
+killed; its conversation stays where its CLI keeps it.
+
+REASON says why SESSION stops; by default its CLI's usage used up,
+when the usage says so.  Interactively, acts on the sidebar row at
+point when there is one, and offers `ghostherd-relay-default-kind'.
+Returns at once: the heir starts when the sidecar has the brief."
+  (interactive
+   (let* ((s (or (and (derived-mode-p 'ghostherd-sidebar-mode)
+                      (ghostherd--sidebar-session-at-point))
+                 (ghostherd--read-session "Relay agent: ")))
+          (default (ghostherd-relay-default-kind s)))
+     (list s (intern (completing-read
+                      (format "Relay %s (%s) to: " (ghostherd-session-name s)
+                              (ghostherd-session-kind s))
+                      (mapcar #'symbol-name (ghostherd--relay-kinds))
+                      nil t nil nil (symbol-name default))))))
+  (setq session (or (ghostherd-get session) (user-error "No such session")))
+  (let* ((id (ghostherd-session-id session))
+         (name (ghostherd-session-name session))
+         (old (ghostherd-session-kind session))
+         (reason (or reason (ghostherd-usage-used-up-text old))))
+    (unless (plist-get (alist-get kind ghostherd-agent-specs) :command)
+      (user-error "%s runs no agent" kind))
+    (unless (plist-get (alist-get old ghostherd-agent-specs) :command)
+      (user-error "%s is a shell, not an agent" name))
+    (unless (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url))
+      (user-error "A relay needs the herd's sidecar, to read %s's conversation" name))
+    (when (gethash id ghostherd--relaying)
+      (user-error "%s is already being relayed" name))
+    (puthash id t ghostherd--relaying)
+    (ghostherd--log-add session 'life (format "relaying to %s: reading where its work stands" kind))
+    (ghostherd-memory-request-async
+     "herd_relay_brief"
+     (lambda (brief)
+       (remhash id ghostherd--relaying)
+       (ghostherd--relay-hand session kind (plist-get brief :text) reason))
+     (list :name name
+           :path (or (ghostherd-session-transcript session) "")
+           :project (or (ghostherd-session-project session) "")
+           :from (symbol-name old)
+           :to (symbol-name kind)
+           :generation (1+ (ghostherd-session-generation session))
+           :reason (or reason "")
+           :notes (or (ghostherd-session-notes session) "")
+           :client (or (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client)) "herd"))
+     (lambda (err)
+       (remhash id ghostherd--relaying)
+       (ghostherd--log-add session 'life (format "relay to %s failed: %s" kind err))
+       (message "ghostherd: relaying %s: %s" name err)))
+    nil))
+
+(defun ghostherd--relay-hand (session kind text reason)
+  "Kill SESSION and start its heir on KIND, told TEXT once it is ready.
+REASON is why SESSION stopped.  The asks SESSION was answering are held
+for the heir meanwhile.  Return the heir, or nil when SESSION left the
+herd while the brief was written."
+  (let ((id (ghostherd-session-id session))
+        (name (ghostherd-session-name session)))
+    (if (not (eq (gethash id ghostherd--sessions) session))
+        (progn (message "ghostherd: %s left the herd before its heir could take over" name)
+               nil)
+      (let* ((old (ghostherd-session-kind session))
+             (recipe (plist-put (ghostherd-session-recipe session) :kind old))
+             (lead (equal (plist-get recipe :role) "lead"))
+             (held (ghostherd--asks-of session))
+             (lineage (append (ghostherd-session-lineage session)
+                              (list (ghostherd--relay-ancestor session reason))))
+             (buffer (ghostherd-session-buffer session))
+             (shown (and (buffer-live-p buffer) (get-buffer-window buffer t) t))
+             (args (ghostherd--relay-args kind recipe lead))
+             heir)
+        ;; Its asks are its heir's, not failed with it.
+        (dolist (ask held)
+          (remhash ask ghostherd--asks-open)
+          (puthash ask name ghostherd--relay-held))
+        (ghostherd--handoff-cancel id)
+        ;; What its hooks said, and what its lead was told, were its own.
+        (remhash name ghostherd--herd-links)
+        (remhash id ghostherd--lead-work-told)
+        (ghostherd-memory-request-async "herd_unlink" #'ignore (list :session name) #'ignore)
+        (ghostherd-kill session t)
+        (setq heir (ghostherd-spawn kind
+                                    :name name
+                                    :project (plist-get recipe :project)
+                                    :directory (or (plist-get recipe :directory)
+                                                   (plist-get recipe :project))
+                                    :backend (plist-get recipe :backend)
+                                    :args args
+                                    :notes (plist-get recipe :notes)
+                                    :role (plist-get recipe :role)
+                                    :lineage lineage
+                                    :display shown))
+        (ghostherd--log-add heir 'life
+                            (format "%s %s, on %s: took over from %s%s"
+                                    name (ghostherd--roman (ghostherd-session-generation heir))
+                                    kind old (if reason (concat " -- " reason) "")))
+        (ghostherd--when-ready heir
+                               (lambda () (ghostherd--relay-tell heir text held lead))
+                               nil
+                               (lambda () (ghostherd--relay-release heir held)))
+        heir))))
+
+(defun ghostherd--relay-tell (heir text held lead)
+  "Tell HEIR its work, TEXT; then the asks HELD for it are its to answer.
+LEAD when it leads its project: it hears what a lead hears first."
+  (if lead
+      (ghostherd-tell heir text (unless (ghostherd--lead-args (ghostherd-session-kind heir))
+                                  (concat ghostherd--lead-role "\n---\n\n")))
+    (ghostherd-prompt heir text))
+  (dolist (ask held)
+    (remhash ask ghostherd--relay-held)
+    (puthash ask (ghostherd-session-id heir) ghostherd--asks-open))
+  (ghostherd--log-add heir 'life "told where the work stood"))
+
+(defun ghostherd--relay-release (heir held)
+  "The asks HELD for HEIR fail: it never came to be told them."
+  (dolist (ask held)
+    (remhash ask ghostherd--relay-held)
+    (ghostherd--ask-settle ask heir nil
+                           (format "%s's heir never came to its prompt" (ghostherd-session-name heir)))))
+
+(defun ghostherd--relay-offer (session old new)
+  "SESSION stopped working, from OLD to NEW, with its CLI's usage used
+up: say so, and that a relay would carry its work on -- once for each
+time its usage runs out."
+  (when-let* (((eq old 'working))
+              ((memq new '(idle blocked done)))
+              (kind (ghostherd-session-kind session))
+              (window (ghostherd-usage-used-up kind))
+              (to (ghostherd-relay-default-kind session))
+              ((not (eq to kind)))
+              (key (list kind (plist-get window :label) (plist-get window :resets-at)))
+              ((not (equal (gethash (ghostherd-session-id session) ghostherd--relay-offered) key))))
+    (puthash (ghostherd-session-id session) key ghostherd--relay-offered)
+    (let ((why (ghostherd-usage-used-up-text kind)))
+      (ghostherd--log-add session 'life (format "stopped: %s.  A relay hands its work to %s" why to))
+      (message "ghostherd: %s stopped: %s -- M-x ghostherd-relay hands its work to %s"
+               (ghostherd-session-name session) why to)
+      (ghostherd--push 'used-up session :from (symbol-name kind) :to (symbol-name to) :reason why))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--relay-offer)
+
 ;;; Pushes to your phone
 ;;
 ;; The herd page shows everything -- while you look at it.  Telegram is
@@ -4651,12 +4917,14 @@ on, would contradict it."
 ;; agent nor the herd page, and have left this machine -- and the bot
 ;; words it: it has the lead's last message, and the buttons to answer.
 
-(defcustom ghostherd-push '(blocked report ask-failed)
+(defcustom ghostherd-push '(blocked report ask-failed used-up)
   "What the herd pushes to Telegram while you are away: an agent
-`blocked', a lead's `report' at the end of its turn, an `ask-failed'.
-Nil pushes nothing.  The sidecar's bot sends them to the chats of
-GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one goes to that project's lead."
-  :type '(set (const blocked) (const report) (const ask-failed))
+`blocked', a lead's `report' at the end of its turn, an `ask-failed',
+an agent stopped with its CLI's usage `used-up' -- with a button that
+relays it.  Nil pushes nothing.  The sidecar's bot sends them to the
+chats of GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one goes to that
+project's lead."
+  :type '(set (const blocked) (const report) (const ask-failed) (const used-up))
   :group 'ghostherd)
 
 (defcustom ghostherd-push-away-after 120

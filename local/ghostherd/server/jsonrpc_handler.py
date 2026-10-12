@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import conversation
 import links
+import relay
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
 
@@ -69,6 +70,8 @@ class JsonRpcHandler:
             "herd_conversation": self._herd_conversation,
             "herd_chat": self._herd_chat,
             "herd_links": self._herd_links,
+            "herd_relay_brief": self._herd_relay_brief,
+            "herd_unlink": self._herd_unlink,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -308,6 +311,45 @@ class JsonRpcHandler:
         """The pull requests and ClickUp tasks a transcript names, as given
         to its agent or by it; most recent first."""
         return links.scan(str(params.get("path") or ""))
+
+    def _herd_unlink(self, params: dict) -> dict:
+        return get_herd().unlink(str(params.get("session") or ""))
+
+    def _herd_relay_brief(self, params: dict) -> dict:
+        """What agent NAME hands its heir, as the heir's first message: its
+        work from its transcript PATH, its asks, the checkout at PROJECT.
+        FROM and TO are the old and new CLIs, GENERATION the heir's place
+        in the line, REASON why the old one stopped, NOTES its notes,
+        CLIENT the herd client an ask is answered with."""
+        name = str(params.get("name") or "")
+        if not relay.NAME.match(name):
+            raise ValueError("name is an agent's name")
+        kinds = []
+        for key in ("from", "to"):
+            kind = str(params.get(key) or "")
+            if not relay.KIND.match(kind):
+                raise ValueError(f"{key} is a CLI's name")
+            kinds.append(kind)
+        try:
+            generation = int(params.get("generation") or 2)
+        except (TypeError, ValueError):
+            raise ValueError("generation must be a number") from None
+        if not 2 <= generation <= 999:
+            raise ValueError("generation is 2 to 999")
+        path = params.get("path")
+        project = params.get("project")
+        return relay.brief(
+            name,
+            str(path) if path else None,
+            str(project) if project else None,
+            kinds[0],
+            kinds[1],
+            generation,
+            reason=str(params.get("reason") or "")[:300],
+            notes=str(params.get("notes") or "")[:500],
+            asks=get_herd().relay_asks(name),
+            client=str(params.get("client") or "herd")[:1000],
+        )
 
 
 handler = JsonRpcHandler()

@@ -338,7 +338,14 @@ draws lanes from fields rather than parsing prose."
           :progress (ghostherd-session-progress-percent s)
           :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
           :saidAt (plist-get (ghostherd--link s) :last_ms)
-          :conversation (ghostherd-session-conversation s))))
+          :conversation (ghostherd-session-conversation s)
+          ;; Its place in the line of its name, and the CLIs before it.
+          :generation (ghostherd-session-generation s)
+          :line (ghostherd-memory-page--vec
+                 (mapcar (lambda (a) (or (alist-get 'kind a) "?"))
+                         (ghostherd-session-lineage s)))
+          :relayTo (format "%s" (ghostherd-relay-default-kind s))
+          :usedUp (or (ghostherd-usage-used-up-text (ghostherd-session-kind s)) ""))))
 
 (defun ghostherd-memory-page--usage ()
   "The usage cache, one entry per CLI, windows as used percent."
@@ -972,7 +979,14 @@ forge or ClickUp instead, which want their own login."
          :kinds (ghostherd-memory-page--vec
                  (mapcar #'symbol-name
                          (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
-                                     (ghostherd--agent-kinds)))))))
+                                     (ghostherd--agent-kinds))))
+         ;; Where an agent's work can be relayed, the herd's choice first,
+         ;; and which of them have no usage left.
+         :relayKinds (ghostherd-memory-page--vec
+                      (mapcar (lambda (k)
+                                (list :kind (symbol-name k)
+                                      :usedUp (or (ghostherd-usage-used-up-text k) "")))
+                              (ghostherd--relay-kinds))))))
 
 (defun ghostherd-memory-page--herd-tick ()
   "One snapshot; usage too when it is due and the page can be seen."
@@ -1255,6 +1269,12 @@ again only changes which those are."
             ("agent-respawn"
              (ghostherd-respawn s (ghostherd-memory-page--truthy (alist-get 'continue intent)))
              (format "Respawned %s" name))
+            ("agent-relay"
+             (let ((kind (alist-get 'kind intent)))
+               (unless (and (stringp kind) (memq (intern kind) (ghostherd--relay-kinds)))
+                 (user-error "No CLI %s to relay to" kind))
+               (ghostherd-relay s (intern kind))
+               (format "Relaying %s to %s: its heir starts once its work is read" name kind)))
             ("agent-kill" (ghostherd-kill s t) (format "Killed %s" name))
             ("agent-notes"
              (ghostherd-set-notes s (or (alist-get 'text intent) ""))

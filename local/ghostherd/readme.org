@@ -126,6 +126,7 @@ report. Notes do, because they were written onto the host.
 | =M-x ghostherd-report=              | Record what an agent says about itself |
 | =M-x ghostherd-explain=             | Why a session is in the state it is  |
 | =M-x ghostherd-respawn=             | Relaunch from recipe (± =--continue=) |
+| =M-x ghostherd-relay=               | An heir on another CLI takes an agent's name and work |
 | =ghostherd-resume=                  | Agent on a past conversation by id (the page's Resume) |
 | =M-x ghostherd-set-notes=           | Set an agent's role / note           |
 | =M-x ghostherd-interrupt=           | Send Escape ("esc to interrupt")     |
@@ -165,7 +166,7 @@ report. Notes do, because they were written onto the host.
 ** Sidebar keys
 
 =?= key legend (in the overlay) · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
-=r= rename · =R= respawn · =c= note · =z= interrupt · =Z= abort ·
+=r= rename · =R= respawn · =T= relay · =c= note · =z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= filter by project · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
@@ -432,6 +433,7 @@ what wants you while you do not (=ghostherd-push=):
 | =blocked=    | an agent waits on a menu: what it asks, a button per choice, its screen |
 | =report=     | a lead is done with its turn: its own last message, whole             |
 | =ask-failed= | an agent's ask failed: whom it asked, why, what it asked              |
+| =used-up=    | an agent stopped with its CLI's usage used up: a button relays it     |
 
 Each carries Open the room, to the project's room as its chat on the
 herd page (=xwapp-remote-hosts=, From your phone above).  Reply to one
@@ -539,6 +541,58 @@ data: a fetched page can carry instructions, and the answer is not one.
 The taker works under its own approvals; an ask grants nothing.  It can
 route /around/ one, though --- an agent kept from pushing can ask one
 allowed to --- so the approvals on each agent are the real boundary.
+
+* Relay: an heir takes an agent's name and its work
+
+An agent stops --- its CLI's usage used up, wedged, or you would
+rather another CLI went on.  =M-x ghostherd-relay= (=T= in the sidebar,
+Relay on the herd page, the button of a =used-up= push) starts a new
+agent on the CLI you pick, which takes the old one's name, role, notes
+and project: rd the first was claude, rd the second is grok.  The old
+one is killed; its conversation stays where its CLI keeps it, its id in
+the heir's line.
+
+The heir's first message is where the work stood.  The sidecar writes
+it (=server/relay.py=), because the old one may be past saying
+anything:
+
+- *The work* --- the first thing it was asked, then the latest five:
+  your prompts, the asks of other agents.  An heir of an heir carries
+  the first one's work on, not the brief it was given.
+- *Where it got to* --- its last fourteen steps, what it said and ran
+  and was answered, its last answer whole.
+- *Asks* --- the ones it owed, each with the command that answers it,
+  and the ones it waits on.
+- *The checkout* --- the branch, what is not committed, the diff's
+  stat, the latest commits.
+
+Sixteen thousand characters at most, its oldest steps dropped first;
+the transcript's path is in it, for an heir that wants more.
+
+The name is what the rest of the herd knows an agent by, so nothing
+else has to change: the lead's asks of rd reach rd's heir, answers to
+the asks rd made come to it, and the asks rd was answering are the
+heir's to answer --- not failed when rd was killed, nor closed while the
+heir sits at its first prompt.  An heir that never comes to its prompt
+fails them, saying so.  A lead's heir leads: its role in its flags
+where its CLI takes one (claude, grok), in its first message where not
+(agy), and it is told again what its project works on.
+
+What the CLI is given: on the same CLI, the old one's own flags (=claude
+again= is a fresh conversation, the brief in place of a long or
+compacted one); on another, what the project or the CLI's spec gives a
+new agent --- one CLI's flags mean nothing to another.
+
+Which CLI: the first of =ghostherd-relay-kinds= (=claude grok agy=)
+that is not the agent's own and has usage left, by the usage the herd
+reads (=ghostherd-usage-used-up=: under 1% left in a window not yet
+reset, read in the last two hours).  When an agent stops working with
+its CLI used up, the herd says so once for that window --- in the log,
+the echo area, a =used-up= push --- and the herd page puts =Relay to
+grok= first on its row.
+
+The line of a name is kept with the recipe, so it outlives Emacs on
+tmux: the page shows the heir's =II= and, over it, the CLIs before it.
 
 * From a shell (=bin/ghostherd=)
 

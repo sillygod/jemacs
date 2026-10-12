@@ -7048,5 +7048,406 @@ spinner says -- not blocked on what it wrote."
         (should (eq (car (ghostherd--detect-state s ghostherd-test--claude-wrote-permission)) 'working))
         (should (eq (car (ghostherd--detect-state s ghostherd-test--claude-question)) 'blocked))))))
 
+;;; Relay: an heir takes an agent's name and its work
+
+(defmacro ghostherd-tests--relaying (&rest body)
+  "BODY in a clean herd that can relay.  Sidecar requests land in
+`requests' as (METHOD PARAMS); the brief is \"BRIEF\".  `spawned' holds
+the heir's (KIND . PLIST); the heir is registered idle on the fake
+backend.  `told' holds (FN SESSION TEXT ROLE) for what it was told.
+`ready' is the heir's wait for its prompt, (FN FAIL), when `hold' is
+set; otherwise it is told at once."
+  (declare (indent 0))
+  `(ghostherd-tests--with-herd
+       ((ghostherd--asks-open (make-hash-table :test 'equal))
+        (ghostherd--asks-settled (make-hash-table :test 'equal))
+        (ghostherd--relay-held (make-hash-table :test 'equal))
+        (ghostherd--relaying (make-hash-table :test 'equal))
+        (ghostherd--relay-offered (make-hash-table :test 'equal))
+        (ghostherd--lineage (make-hash-table :test 'equal))
+        (ghostherd--roles (make-hash-table :test 'equal))
+        (ghostherd--herd-links (make-hash-table :test 'equal))
+        (ghostherd--lead-work-told (make-hash-table :test 'equal))
+        (ghostherd--lead-unheard (make-hash-table :test 'equal))
+        (ghostherd--herd-asks nil)
+        (ghostherd--herd-pushes nil)
+        (ghostherd-usage--cache nil)
+        (ghostherd-relay-kinds '(claude grok agy))
+        (ghostherd--log nil)
+        (requests nil) (spawned nil) (told nil) (ready nil) (hold nil) (brief-error nil))
+     (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+               ((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://127.0.0.1:1/jsonrpc"))
+               ((symbol-function 'ghostherd-memory-request-async)
+                (lambda (method cb &optional params err)
+                  (setq requests (append requests (list (list method params))))
+                  (when (equal method "herd_relay_brief")
+                    (if brief-error (funcall err brief-error) (funcall cb '(:text "BRIEF"))))))
+               ((symbol-function 'ghostherd--host-kill) #'ignore)
+               ((symbol-function 'ghostherd-project-defaults) (lambda (&optional _d) (cons nil nil)))
+               ((symbol-function 'ghostherd-spawn)
+                (lambda (kind &rest plist)
+                  (setq spawned (cons kind plist))
+                  (let ((heir (ghostherd-tests--session :name (plist-get plist :name) :kind kind
+                                                        :state 'idle :backend 'fake
+                                                        :project (plist-get plist :project)
+                                                        :notes (plist-get plist :notes)
+                                                        :args (plist-get plist :args))))
+                    (if (plist-get plist :role)
+                        (puthash (plist-get plist :name) (plist-get plist :role) ghostherd--roles)
+                      (remhash (plist-get plist :name) ghostherd--roles))
+                    (if (plist-get plist :lineage)
+                        (puthash (plist-get plist :name) (plist-get plist :lineage) ghostherd--lineage)
+                      (remhash (plist-get plist :name) ghostherd--lineage))
+                    heir)))
+               ((symbol-function 'ghostherd--when-ready)
+                (lambda (_s fn &optional _tries fail)
+                  (if hold (setq ready (list fn fail)) (funcall fn))))
+               ((symbol-function 'ghostherd-prompt)
+                (lambda (s text &rest _) (push (list 'prompt s text nil) told)))
+               ((symbol-function 'ghostherd-tell)
+                (lambda (s text &optional role) (push (list 'tell s text role) told))))
+       ,@body)))
+
+(defun ghostherd-tests--used-up (kind &optional resets fetched label)
+  "Put KIND's usage in the cache as used up, until RESETS (seconds from
+now, an hour by default), read FETCHED seconds ago."
+  (setf (alist-get kind ghostherd-usage--cache)
+        (list :windows (list (list :label (or label "5h") :remaining 0
+                                   :resets-at (+ (float-time) (or resets 3600))))
+              :fetched (- (float-time) (or fetched 0)))))
+
+(ert-deftest ghostherd-test-relay-hands-the-name-and-the-work ()
+  "rd on claude, relayed to grok: grok takes the name, the notes and the
+project, the second of the name; it is told the brief; the ask rd was
+answering is its own, not failed with rd; rd's link is forgotten."
+  (ghostherd-tests--relaying
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake
+                                        :project "/p/shop/" :notes "implementer"
+                                        :args '("--model" "opus"))))
+      (puthash "a1" "rd" ghostherd--asks-open)
+      (ghostherd--herd-take-links '((:session "rd" :cli "claude" :conversation "c1")))
+      (should (equal (ghostherd-session-conversation rd) "c1"))
+      (should-not (ghostherd-relay "rd" 'grok "it wedged"))
+      (let ((ask (cadr (assoc "herd_relay_brief" requests))))
+        (should (equal (plist-get ask :name) "rd"))
+        (should (equal (list (plist-get ask :from) (plist-get ask :to)) '("claude" "grok")))
+        (should (equal (plist-get ask :generation) 2))
+        (should (equal (plist-get ask :reason) "it wedged"))
+        (should (equal (plist-get ask :notes) "implementer"))
+        (should (equal (plist-get ask :project) "/p/shop/"))
+        (should (equal (plist-get ask :client) "/p/bin/herd")))
+      (should (equal (cadr (assoc "herd_unlink" requests)) '(:session "rd")))
+      ;; Not failed: no settle for a1 when rd was killed.
+      (should-not (assoc "herd_settle" requests))
+      (should (eq (car spawned) 'grok))
+      (let ((plist (cdr spawned)))
+        (should (equal (plist-get plist :name) "rd"))
+        (should (equal (plist-get plist :notes) "implementer"))
+        (should (equal (plist-get plist :project) "/p/shop/"))
+        ;; Claude's flags are nothing to grok.
+        (should (equal (plist-get plist :args) nil))
+        (let ((line (plist-get plist :lineage)))
+          (should (= (length line) 1))
+          (should (equal (alist-get 'kind (car line)) "claude"))
+          (should (equal (alist-get 'conversation (car line)) "c1"))
+          (should (equal (alist-get 'reason (car line)) "it wedged"))))
+      (let ((heir (ghostherd-get "rd")))
+        (should-not (eq heir rd))
+        (should (eq (ghostherd-session-kind heir) 'grok))
+        (should (= (ghostherd-session-generation heir) 2))
+        (should (equal told (list (list 'prompt heir "BRIEF" nil))))
+        (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
+        (should (zerop (hash-table-count ghostherd--relay-held)))
+        ;; Its predecessor's link is gone: not its conversation.
+        (should-not (ghostherd-session-conversation heir))
+        (should-not (gethash "rd" ghostherd--relaying))
+        (should (seq-find (lambda (e) (string-match-p "rd II, on grok: took over from claude -- it wedged"
+                                                      (ghostherd-log-entry-text e)))
+                          ghostherd--log))))))
+
+(ert-deftest ghostherd-test-relay-holds-the-asks-until-the-heir-is-told ()
+  "Between the old one's going and the heir's being told, the ask is
+neither failed, nor taken by a tick as an ask nobody watched, nor
+closed by the heir going idle at its first prompt."
+  (ghostherd-tests--relaying
+    (setq hold t)
+    (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake)
+    (puthash "a1" "rd" ghostherd--asks-open)
+    (ghostherd-relay "rd" 'agy)
+    (let ((heir (ghostherd-get "rd")))
+      (should (equal (gethash "a1" ghostherd--relay-held) "rd"))
+      (should-not (gethash "a1" ghostherd--asks-open))
+      (ghostherd--herd-take-asks '((:id "a1" :from "lead" :to "rd" :status "delivered")))
+      (setf (ghostherd-session-state heir) 'starting)
+      (ghostherd--set-state heir 'idle)
+      (should-not (assoc "herd_settle" requests))
+      (should-not (gethash "a1" ghostherd--asks-open))
+      (funcall (car ready))
+      (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
+      (should-not (gethash "a1" ghostherd--relay-held))
+      ;; Its turn done, the ask closes with its answer, as any taker's.
+      (ghostherd--set-state heir 'working)
+      (ghostherd--set-state heir 'idle)
+      (should (equal (car (assoc "herd_settle" requests)) "herd_settle")))))
+
+(ert-deftest ghostherd-test-relay-an-heir-that-never-comes-fails-its-asks ()
+  (ghostherd-tests--relaying
+    (setq hold t)
+    (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)
+    (puthash "a1" "rd" ghostherd--asks-open)
+    (ghostherd-relay "rd" 'grok)
+    (funcall (cadr ready))
+    (should (equal (cadr (assoc "herd_settle" requests))
+                   '(:id "a1" :screen "" :dead :json-false :error "rd's heir never came to its prompt")))
+    (should-not (gethash "a1" ghostherd--relay-held))))
+
+(ert-deftest ghostherd-test-relay-of-a-lead ()
+  "A lead's heir leads: its role in its flags where its CLI takes one,
+in its first message where not; told what the project works on again;
+on the same CLI, its own flags kept, less what picked its conversation."
+  (ghostherd-tests--relaying
+    (pcase-dolist (`(,to ,args ,role)
+                   `((agy nil t)
+                     (grok ("--rules" ,ghostherd--lead-role) nil)
+                     (claude ("--model" "opus" "--append-system-prompt" ,ghostherd--lead-role) nil)))
+      (setq told nil)
+      (remhash "lead-shop" ghostherd--sessions)
+      (let ((lead (ghostherd-tests--session :name "lead-shop" :kind 'claude :state 'idle :backend 'fake
+                                            :project "/p/shop/"
+                                            :args '("--model" "opus" "-r" "c0"
+                                                    "--append-system-prompt" "an old role"))))
+        (puthash "lead-shop" "lead" ghostherd--roles)
+        (ghostherd--herd-take-links '((:session "lead-shop" :cli "claude" :conversation "c0")))
+        (puthash "lead-shop" '("what it was told") ghostherd--lead-work-told)
+        (ghostherd-relay lead to)
+        (should (equal (plist-get (cdr spawned) :role) "lead"))
+        (should (equal (plist-get (cdr spawned) :args) args))
+        (should-not (gethash "lead-shop" ghostherd--lead-work-told))
+        ;; Even on the same CLI, the old conversation is not the heir's.
+        (should-not (ghostherd-session-conversation (ghostherd-get "lead-shop")))
+        (pcase-let ((`(,fn ,_s ,text ,given) (car told)))
+          (should (eq fn 'tell))
+          (should (equal text "BRIEF"))
+          (if role
+              (should (string-prefix-p ghostherd--lead-role given))
+            (should-not given)))))))
+
+(ert-deftest ghostherd-test-relay-the-third-of-the-name ()
+  "Each relay adds one to the line; the brief is asked for the next."
+  (ghostherd-tests--relaying
+    (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)
+    (ghostherd-relay "rd" 'grok)
+    (ghostherd-relay "rd" 'agy)
+    (let ((heir (ghostherd-get "rd")))
+      (should (= (ghostherd-session-generation heir) 3))
+      (should (equal (mapcar (lambda (a) (alist-get 'kind a)) (ghostherd-session-lineage heir))
+                     '("claude" "grok")))
+      (should (equal (mapcar (lambda (r) (plist-get (cadr r) :generation))
+                             (seq-filter (lambda (r) (equal (car r) "herd_relay_brief")) requests))
+                     '(2 3))))
+    (should (equal (mapcar #'ghostherd--roman '(1 2 3 4 9 14 39 40)) '("I" "II" "III" "IV" "IX" "XIV" "XXXIX" "40")))))
+
+(ert-deftest ghostherd-test-relay-refuses ()
+  (ghostherd-tests--relaying
+    (ghostherd-tests--session :name "sh" :kind 'shell :state 'idle)
+    (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)
+    (should (string-match-p "a shell, not an agent" (cadr (should-error (ghostherd-relay "sh" 'grok) :type 'user-error))))
+    (should (string-match-p "shell runs no agent" (cadr (should-error (ghostherd-relay "rd" 'shell) :type 'user-error))))
+    (puthash "rd" t ghostherd--relaying)
+    (should (string-match-p "already being relayed" (cadr (should-error (ghostherd-relay "rd" 'grok) :type 'user-error))))
+    (remhash "rd" ghostherd--relaying)
+    (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) #'ignore))
+      (should (string-match-p "needs the herd.s sidecar" (cadr (should-error (ghostherd-relay "rd" 'grok) :type 'user-error)))))
+    (should-not spawned)
+    ;; The sidecar fails: rd stays, and can be relayed again.
+    (setq brief-error "no such transcript")
+    (ghostherd-relay "rd" 'grok)
+    (should-not spawned)
+    (should (eq (ghostherd-session-kind (ghostherd-get "rd")) 'claude))
+    (should-not (gethash "rd" ghostherd--relaying))
+    (should (string-match-p "relay to grok failed: no such transcript" (ghostherd-log-entry-text (car ghostherd--log))))))
+
+(ert-deftest ghostherd-test-relay-of-one-that-left-meanwhile ()
+  (ghostherd-tests--relaying
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)))
+      (remhash "rd" ghostherd--sessions)
+      (should-not (ghostherd--relay-hand rd 'grok "BRIEF" nil))
+      (should-not spawned))))
+
+(ert-deftest ghostherd-test-relay-goes-where-usage-is-left ()
+  (ghostherd-tests--relaying
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)))
+      (should (eq (ghostherd-relay-default-kind rd) 'grok))
+      (ghostherd-tests--used-up 'grok)
+      (should (eq (ghostherd-relay-default-kind rd) 'agy))
+      (ghostherd-tests--used-up 'agy)
+      (should (eq (ghostherd-relay-default-kind rd) 'claude))
+      ;; A reading three hours old, or a window that has reset since: not used up.
+      (ghostherd-tests--used-up 'grok 3600 (* 3 3600))
+      (should (eq (ghostherd-relay-default-kind rd) 'grok))
+      (ghostherd-tests--used-up 'grok -60)
+      (should (eq (ghostherd-relay-default-kind rd) 'grok))
+      ;; Under 1% left is used up; 5% is not.
+      (setf (alist-get 'grok ghostherd-usage--cache)
+            (list :windows (list (list :label "day" :remaining 5 :resets-at (+ (float-time) 600)))
+                  :fetched (float-time)))
+      (should-not (ghostherd-usage-used-up 'grok))
+      (setf (plist-get (car (plist-get (alist-get 'grok ghostherd-usage--cache) :windows)) :remaining) 0.5)
+      (should (ghostherd-usage-used-up 'grok))
+      (setf (alist-get 'grok ghostherd-usage--cache) nil)
+      ;; Used up, it says so, and is the reason by default.
+      (ghostherd-tests--used-up 'claude 600 0 "5h")
+      (should (string-match-p "\\`its claude usage (5h) is used up, until [0-9][0-9]:[0-9][0-9]\\'"
+                              (ghostherd-usage-used-up-text 'claude)))
+      (should-not (ghostherd-usage-used-up-text 'grok))
+      (ghostherd-relay rd 'grok)
+      (should (string-match-p "\\`its claude usage (5h) is used up"
+                              (plist-get (cadr (assoc "herd_relay_brief" requests)) :reason))))))
+
+(ert-deftest ghostherd-test-relay-offered-when-usage-runs-out ()
+  "An agent that stops working with its CLI used up is offered its relay,
+once for that window: in the log, the echo area and a push."
+  (ghostherd-tests--relaying
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake))
+          pushed)
+      (cl-letf (((symbol-function 'ghostherd--push)
+                 (lambda (kind s &rest fields)
+                   (when (eq kind 'used-up)
+                     (push (list kind (ghostherd-session-name s) fields) pushed))))
+                ((symbol-function 'ghostherd--maybe-notify-state) #'ignore))
+        (ghostherd--set-state rd 'idle)
+        (should-not pushed)
+        (ghostherd-tests--used-up 'claude)
+        (ghostherd--set-state rd 'working)
+        (ghostherd--set-state rd 'idle)
+        (should (= (length pushed) 1))
+        (pcase-let ((`(,kind ,name ,fields) (car pushed)))
+          (should (eq kind 'used-up))
+          (should (equal name "rd"))
+          (should (equal (plist-get fields :from) "claude"))
+          (should (equal (plist-get fields :to) "grok"))
+          (should (string-match-p "its claude usage (5h) is used up" (plist-get fields :reason))))
+        (should (string-match-p "A relay hands its work to grok" (ghostherd-log-entry-text (car ghostherd--log))))
+        (ghostherd--set-state rd 'working)
+        (ghostherd--set-state rd 'blocked)
+        (should (= (length pushed) 1))
+        ;; One that was not working -- just started -- has stopped nothing.
+        (ghostherd-tests--session :name "new" :kind 'claude :state 'starting :backend 'fake)
+        (ghostherd--set-state (ghostherd-get "new") 'idle)
+        (should (= (length pushed) 1))
+        ;; Nowhere else to go: nothing offered.
+        (ghostherd-tests--session :name "qa" :kind 'claude :state 'working :backend 'fake)
+        (ghostherd-tests--used-up 'grok)
+        (ghostherd-tests--used-up 'agy)
+        (ghostherd--set-state (ghostherd-get "qa") 'idle)
+        (should (= (length pushed) 1))))))
+
+(ert-deftest ghostherd-test-relay-a-link-another-cli-left-is-not-the-heirs ()
+  "A hook of the killed claude reporting late under rd's name: the grok
+heir does not take its conversation for its own."
+  (ghostherd-tests--with-herd ((ghostherd--herd-links (make-hash-table :test 'equal)))
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'grok)))
+      (ghostherd--herd-take-links '((:session "rd" :cli "claude" :conversation "c1")))
+      (should-not (ghostherd-session-conversation rd))
+      (setf (ghostherd-session-kind rd) 'claude)
+      (should (equal (ghostherd-session-conversation rd) "c1"))
+      (ghostherd--herd-take-links '((:session "rd" :conversation "c2")))
+      (setf (ghostherd-session-kind rd) 'grok)
+      (should (equal (ghostherd-session-conversation rd) "c2")))))
+
+(ert-deftest ghostherd-test-relay-the-line-outlives-emacs ()
+  "Written onto tmux with the recipe, and read back by restore."
+  (let ((line '(((kind . "claude") (conversation . "c1") (ended . "2026-10-12T15:00:00+0800")
+                 (reason . "its claude usage (5h) is used up")))))
+    (should (equal (ghostherd-tmux--decode :lineage (ghostherd-tmux--encode :lineage line)) line))
+    (should (equal (ghostherd-tmux--encode :lineage nil) ""))
+    (should-not (ghostherd-tmux--decode :lineage ""))
+    (should-not (ghostherd-tmux--decode :lineage "not json"))
+    (should (assq :lineage ghostherd-tmux--recipe-options))
+    (ghostherd-tests--with-herd ((ghostherd--lineage (make-hash-table :test 'equal))
+                                 (ghostherd--roles (make-hash-table :test 'equal))
+                                 (ghostherd-known-backends '(fake))
+                                 (ghostherd-tests--fake-recipes
+                                  `((:name "rd" :kind grok :host-id "gh-rd" :lineage ,line))))
+      (cl-letf (((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+        (ghostherd-restore))
+      (let ((rd (ghostherd-get "rd")))
+        (should (= (ghostherd-session-generation rd) 2))
+        (should (equal (plist-get (ghostherd-session-recipe rd) :lineage) line))))))
+
+(defvar ghostherd-tests--fake-spawned nil
+  "The plist the `fake' backend was last asked to spawn.")
+
+(cl-defmethod ghostherd-backend-spawn ((_backend (eql fake)) plist)
+  (setq ghostherd-tests--fake-spawned plist)
+  (list :host-id (concat "gh-" (plist-get plist :name)) :buffer nil :started t))
+
+(ert-deftest ghostherd-test-relay-spawn-keeps-the-line ()
+  "An heir's line goes to the host with its recipe, and comes back in it;
+an agent spawned without one is the first of its name."
+  (ghostherd-tests--with-herd ((ghostherd--lineage (make-hash-table :test 'equal))
+                               (ghostherd--roles (make-hash-table :test 'equal))
+                               (ghostherd-tests--fake-spawned nil))
+    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+              ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+              ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+      (let* ((line '(((kind . "claude") (conversation . "c1") (ended . "x") (reason . ""))))
+             (rd (ghostherd-spawn 'grok :name "rd" :project "/p/" :backend 'fake :lineage line :display nil)))
+        (should (equal (plist-get ghostherd-tests--fake-spawned :lineage) line))
+        (should (= (ghostherd-session-generation rd) 2))
+        (should (equal (plist-get (ghostherd-session-recipe rd) :lineage) line))
+        (ghostherd-kill rd)
+        (should (= (ghostherd-session-generation
+                    (ghostherd-spawn 'grok :name "rd" :project "/p/" :backend 'fake :display nil))
+                   1))))))
+
+(ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))
+          said)
+      (ghostherd--when-ready s (lambda () (push 'told said)) 0 (lambda () (push 'never said)))
+      (should (equal said '(never)))
+      (remhash "rd" ghostherd--sessions)
+      (ghostherd--when-ready s (lambda () (push 'told said)) 5 (lambda () (push 'gone said)))
+      (should (equal said '(gone never)))
+      (puthash "rd" s ghostherd--sessions)
+      (setf (ghostherd-session-state s) 'idle)
+      (ghostherd--when-ready s (lambda () (push 'told said)) 5 (lambda () (push 'never said)))
+      (should (equal said '(told gone never))))))
+
+(ert-deftest ghostherd-test-relay-from-telegram ()
+  (ghostherd-tests--relaying
+    (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)
+    (should (equal (ghostherd--herd-run-command '(:id "c1" :op "relay" :session "rd" :args (:kind "grok")))
+                   '(:id "c1" :text "relaying rd to grok")))
+    (should (eq (ghostherd-session-kind (ghostherd-get "rd")) 'grok))
+    (should (equal (plist-get (ghostherd--herd-run-command '(:id "c2" :op "relay" :session "rd" :args (:kind "rm -rf")))
+                              :text)
+                   "Relay to what: rm -rf"))))
+
+(ert-deftest ghostherd-test-relay-on-the-page ()
+  "The page shows an heir's place in its line and where its work would
+go; its Relay names the CLI, which must be one an agent runs on."
+  (ghostherd-tests--relaying
+    (skip-unless (require 'ghostherd-memory-page nil t))
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle :backend 'fake))
+          relayed)
+      (puthash "rd" '(((kind . "claude") (conversation . "") (ended . "x") (reason . ""))) ghostherd--lineage)
+      (ghostherd-tests--used-up 'grok)
+      (let ((a (ghostherd-memory-page--agent rd)))
+        (should (equal (plist-get a :generation) 2))
+        (should (equal (plist-get a :line) ["claude"]))
+        (should (equal (plist-get a :relayTo) "claude"))
+        (should (string-match-p "its grok usage" (plist-get a :usedUp))))
+      (cl-letf (((symbol-function 'ghostherd-relay) (lambda (s kind &rest _) (setq relayed (list s kind))))
+                ((symbol-function 'ghostherd-memory-page--js) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore))
+        (ghostherd-memory-page--agent-act "agent-relay" '((name . "rd") (kind . "agy")))
+        (should (equal relayed (list rd 'agy)))
+        (should-error (ghostherd-memory-page--agent-act "agent-relay" '((name . "rd") (kind . "shell")))
+                      :type 'user-error)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

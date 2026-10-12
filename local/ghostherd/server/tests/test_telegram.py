@@ -248,6 +248,34 @@ def test_a_leads_report_carries_its_words_once_they_come(tmp_path):
     reset_herd()
 
 
+def test_a_used_up_agent_is_offered_its_relay(tmp_path):
+    bot, herd = _bot(tmp_path)
+    push = _push(herd, kind="used-up", session="lead-tmp", project="/tmp/shop/", url=ROOM,
+                 to="grok", reason="its claude usage (5h) is used up, until 15:00", **{"from": "claude"})
+    text, markup = bot.prepare_push(push, 0)
+    assert text.splitlines()[0] == "⌛ lead-tmp stopped · shop"
+    assert "Its claude usage (5h) is used up, until 15:00." in text
+    assert "Relay it to grok: a grok agent takes its name and its work." in text
+    short = herd.session("lead-tmp")["short"]
+    rows = markup["inline_keyboard"]
+    assert rows[0] == [{"text": "Relay to grok", "callback_data": f"rl:{short}:grok"},
+                       {"text": "screen", "callback_data": f"sc:{short}"}]
+    assert rows[1] == [{"text": "Open the room", "url": ROOM}]
+    # The tap: Emacs relays it.
+    assert bot.handle_callback(99, f"rl:{short}:grok")["text"] == "relay → lead-tmp"
+    snap = [{"name": "lead-tmp", "kind": "claude", "state": "idle", "project": "/tmp"}]
+    cmd = herd.tick(sessions=snap)["commands"][-1]
+    assert (cmd["op"], cmd["session"], cmd["args"]) == ("relay", "lead-tmp", {"kind": "grok"})
+    assert bot.handle_callback(99, f"rl:{short}:Grok Build")["text"] == "bad relay"
+    assert bot.handle_callback(99, "rl:zz:grok")["text"] == "unknown session"
+    # Relayed meanwhile -- its name on grok now -- or gone: not pushed.
+    herd.tick(sessions=[dict(snap[0], kind="grok", state="working")])
+    assert bot.prepare_push(push, 0) == ("", None)
+    herd.tick(sessions=[])
+    assert bot.prepare_push(push, 0) == ("", None)
+    reset_herd()
+
+
 def test_a_failed_ask_says_what_and_why(tmp_path):
     bot, herd = _bot(tmp_path)
     push = _push(herd, kind="ask-failed", session="lead-tmp", project="/tmp/shop", url=ROOM,

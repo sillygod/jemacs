@@ -341,7 +341,8 @@ the name we are about to take."
     (:command . "@ghostherd-command")
     (:args    . "@ghostherd-args")
     (:notes   . "@ghostherd-notes")
-    (:role    . "@ghostherd-role"))
+    (:role    . "@ghostherd-role")
+    (:lineage . "@ghostherd-lineage"))
   "Recipe fields and the tmux user options that hold them.
 
 On the session itself rather than in a sidecar file: a file can be
@@ -355,6 +356,8 @@ session name is not big enough to carry a note.")
     ;; A list cannot be one option value, and the arguments are free text
     ;; that can contain spaces and quotes.  JSON is already a dependency.
     (:args (json-serialize (vconcat (or value []))))
+    ;; The agents that held the name before: alists of strings.
+    (:lineage (if value (json-serialize (vconcat value)) ""))
     (_ (or value ""))))
 
 (defun ghostherd-tmux--decode (field value)
@@ -364,6 +367,11 @@ session name is not big enough to carry a note.")
     (:args (and value (not (string-empty-p value))
                 (ignore-errors
                   (append (json-parse-string value :array-type 'list) nil))))
+    (:lineage (and value (not (string-empty-p value))
+                   (ignore-errors
+                     (seq-filter #'consp
+                                 (json-parse-string value :array-type 'list
+                                                    :object-type 'alist)))))
     (_ (and value (not (string-empty-p value)) value))))
 
 (defun ghostherd-tmux--write-recipe (id plist)

@@ -285,6 +285,8 @@ so a page opens as it would on the phone.
 |              | forge's                                                       |
 | =herd-forms= | the herd page's new agent and notes forms keep what was       |
 |              | picked and typed when the page is drawn again                 |
+| =herd-relay= | the herd page's relay: an heir's place in its line, the CLI   |
+|              | asked for, a used-up agent's relay first                      |
 | =apps-phone= | pr-view and clickup-view opened from the phone: what the      |
 |              | address names, Open and Copy there, a reload, fitting it, a   |
 |              | pull request scrolling as one page, upright and on its side;  |

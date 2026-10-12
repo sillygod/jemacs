@@ -25,6 +25,7 @@ import httpx
 
 from config import Config, get_config
 from herd import HerdStore, get_herd
+from relay import KIND as RELAY_KIND
 
 log = logging.getLogger("ghostherd.telegram")
 
@@ -212,6 +213,10 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
         return ("The herd reaches you here.\n\nWhile you are away from the desk it "
                 "tells you here when an agent is blocked, a lead reports or an ask "
                 "fails.  Reply to one of those to tell that project's lead.")
+    if kind == "used-up":
+        to = push.get("to") or "another CLI"
+        return (f"⌛ {name} stopped{head}\n\n{_sentence(push.get('reason') or 'Its usage is used up')}"
+                f"\n\nRelay it to {to}: a {to} agent takes its name and its work.")
     if kind == "ask-failed":
         lines = [f"✖ {name}'s ask to {push.get('to') or '?'} failed{head}"]
         for part in (push.get("error"), push.get("head") and "It asked: " + push["head"]):
@@ -221,13 +226,21 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
     return ""
 
 
+def _sentence(text: str) -> str:
+    text = text.strip()
+    return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!", "?")) else ".")
+
+
 def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -> dict | None:
     """A blocked agent's answers and screen, when it is still in the
-    herd; the room, when the push has its address."""
+    herd; a used-up one's relay; the room, when the push has its address."""
     rows = []
     if push.get("kind") == "blocked" and session:
         rows.extend(answer_rows(session))
         rows.append([_btn("screen", f"sc:{session['short']}")])
+    if push.get("kind") == "used-up" and session and RELAY_KIND.match(push.get("to") or ""):
+        rows.append([_btn(f"Relay to {push['to']}", f"rl:{session['short']}:{push['to']}"),
+                     _btn("screen", f"sc:{session['short']}")])
     if push.get("url"):
         rows.append([{"text": "Open the room", "url": push["url"]}])
     return {"inline_keyboard": rows} if rows else None
@@ -342,6 +355,11 @@ class TelegramBot:
             return self._enqueue(chat_id, "kill", data[3:])
         if data.startswith("rs2:"):
             return self._enqueue(chat_id, "respawn", data[4:])
+        if data.startswith("rl:"):
+            short, _, kind = data[3:].rpartition(":")
+            if not RELAY_KIND.match(kind):
+                return {"chat_id": chat_id, "text": "bad relay"}
+            return self._enqueue(chat_id, "relay", short, {"kind": kind})
         if data.startswith("k:"):
             short = data[2:]
             name = self.herd.name_for(short) or short
@@ -437,6 +455,9 @@ class TelegramBot:
         kind = push.get("kind")
         session = self.herd.session(push.get("session") or "")
         if kind == "blocked" and not (session and session.get("state") == "blocked"):
+            return "", None
+        # Relayed meanwhile, or gone: nothing to offer.
+        if kind == "used-up" and not (session and session.get("kind") == push.get("from")):
             return "", None
         words = ""
         if kind == "report":

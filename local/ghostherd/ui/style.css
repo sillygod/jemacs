@@ -668,6 +668,8 @@ pre.screen {
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
 .cmore { margin-top: 2px; font-size: 12px; }
 .leadb { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid #a371f7; color: #d2a8ff; }
+/* The second of a name, the third: it took over another's work. */
+.genb { font-size: 11px; font-weight: 650; letter-spacing: 0.04em; color: var(--muted); font-family: ui-serif, Georgia, serif; }
 
 /* What a project works on: its branch, PR and tasks. */
 .work { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 6px; font-size: 12px; }

@@ -294,6 +294,41 @@ The number is the used percent, like the provider panels print."
 (defun ghostherd-usage--tightest (wins)
   (car (seq-sort-by (lambda (w) (plist-get w :remaining)) #'< wins)))
 
+(defconst ghostherd-usage-trusted-for 7200
+  "Seconds a reading of usage is believed when it says some is used up.")
+
+(defun ghostherd-usage-used-up (kind)
+  "The window of KIND's usage that is used up, or nil.
+A window as the cache keeps it: :label, :remaining, :resets-at.  Less
+than 1% left counts.  Not one that has reset since it was read, nor
+any from a reading older than `ghostherd-usage-trusted-for'."
+  (let* ((pl (alist-get kind ghostherd-usage--cache))
+         (fetched (plist-get pl :fetched))
+         (now (float-time)))
+    (when (and (numberp fetched) (< (- now fetched) ghostherd-usage-trusted-for))
+      (car (seq-sort-by
+            (lambda (w) (or (plist-get w :resets-at) most-positive-fixnum))
+            #'>
+            (seq-filter (lambda (w)
+                          (let ((left (plist-get w :remaining))
+                                (resets (plist-get w :resets-at)))
+                            (and (numberp left) (< left 1)
+                                 (not (and (numberp resets) (<= resets now))))))
+                        (plist-get pl :windows)))))))
+
+(defun ghostherd-usage-used-up-text (kind)
+  "KIND's usage used up, in words -- \"its claude usage (5h) is used up,
+until 15:00\" -- or nil when it is not."
+  (when-let* ((w (ghostherd-usage-used-up kind)))
+    (let ((label (plist-get w :label))
+          (resets (plist-get w :resets-at)))
+      (format "its %s usage%s is used up%s" kind
+              (if (and (stringp label) (not (string-empty-p label))) (format " (%s)" label) "")
+              (cond ((not (numberp resets)) "")
+                    ((< (- resets (float-time)) (* 20 3600))
+                     (format-time-string ", until %H:%M" resets))
+                    (t (format-time-string ", until %a %H:%M" resets)))))))
+
 (defun ghostherd-usage--entry-string (kind compact)
   (let* ((pl (alist-get kind ghostherd-usage--cache))
          (name (symbol-name kind))

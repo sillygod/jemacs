@@ -640,6 +640,33 @@ class HerdStore:
             "mailed": not row["wait"] and bool(row["collected"]),
         }
 
+    def relay_asks(self, name: str) -> dict[str, list[dict[str, Any]]]:
+        """What NAME's heir takes on: the asks NAME was handed and has not
+        answered, and those it made that its heir will hear back on --
+        open, or answered and on their way to it.  Asks are NAME's, not
+        its CLI's: the heir has its name, and they go on as they were."""
+        with self._mu:
+            taking = self._conn.execute(
+                """
+                SELECT id, from_name, body FROM asks
+                WHERE to_name = ? AND status = 'delivered' ORDER BY created_at
+                """,
+                (name,),
+            ).fetchall()
+            waiting = self._conn.execute(
+                f"""
+                SELECT id, to_name, body, status FROM asks
+                WHERE from_name = ? AND (status IN {ASK_OPEN}
+                  OR (status IN ('answered', 'failed') AND collected = 0))
+                ORDER BY created_at
+                """,
+                (name,),
+            ).fetchall()
+        return {
+            "taking": [{"id": r[0], "from": r[1], "body": r[2] or ""} for r in taking],
+            "waiting": [{"id": r[0], "to": r[1], "body": r[2] or "", "status": r[3]} for r in waiting],
+        }
+
     def reply(
         self, ask_id: str, body: str, from_name: str | None = None
     ) -> dict[str, Any]:
@@ -976,6 +1003,18 @@ class HerdStore:
                     closed = open_ask[0]
             self._conn.commit()
         return {"session": session, "closed_ask": closed}
+
+    def unlink(self, session: str) -> dict[str, Any]:
+        """Forget what SESSION's hooks said: a new agent has its name now,
+        on a conversation of its own -- one its hooks will name.  Until
+        they do, the last answer of the one before is not its."""
+        session = (session or "").strip()
+        if not session:
+            raise ValueError("session is required")
+        with self._mu:
+            n = self._conn.execute("DELETE FROM links WHERE session = ?", (session,)).rowcount
+            self._conn.commit()
+        return {"session": session, "forgot": bool(n)}
 
     def _last_since(self, session: str, since: str | None) -> str | None:
         "SESSION's last answer if it came after SINCE.  Caller holds `_mu`."

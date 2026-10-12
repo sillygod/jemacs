@@ -771,8 +771,10 @@ rounds, and the lead reported.  Three things went wrong on the way.
 
 ** What is left
 
-- [ ] A lead on another CLI taking over from this one: a handoff
-  summary from the old, the new one starting from it
+- [X] A lead on another CLI taking over from this one: a handoff
+  summary from the old, the new one starting from it --- /done in
+  3.26/, for any agent, the summary read from the old one's transcript
+  rather than asked of it
 - [-] The chat on Telegram: read it, and talk to the lead, from a phone
   --- *narrowed by 3.25*: the page itself on the phone, through
   Tailscale; Telegram for what tells you, not for the chat again
@@ -1073,6 +1075,51 @@ looking.
 
 - [ ] grok's menu prompts, when one is on screen: whether it too takes
   the input box's place (=:prompt-replaces-input=)
+
+* Phase 3.26 — Relay: an heir takes an agent's name and its work  *(this tree)*
+
+Goal: an agent whose CLI is used up, wedged or simply the wrong one
+for the work hands it to another CLI without losing it --- the heir
+taking its name, so the herd around it goes on as it was.  3.21's
+lead handoff, for every agent.
+
+** What shipped
+
+- [X] =ghostherd-relay= (=T= in the sidebar, Relay on the herd page):
+  the old agent killed, a new one on the CLI picked with its name,
+  role, notes and project, the next of the name; its line kept with
+  the recipe, so it outlives Emacs on tmux
+- [X] The brief, written by the sidecar from the old one's transcript
+  --- which needs nothing of the old one, used up as it may be: the
+  first thing it was asked and the latest, its last steps and answer,
+  the asks it owes (with the command that answers each) and waits on,
+  the checkout.  16k at most; an heir of an heir carries the first
+  one's work on
+- [X] Asks go on: those it was answering are its heir's, not failed
+  with it nor closed by the heir's first prompt; failed when the heir
+  never comes to one.  Its hooks' link forgotten, and one another CLI
+  left under the name not taken for the heir's
+- [X] A lead's heir leads: its role by flag or first message, the
+  project's work told again.  On the same CLI the old flags, less the
+  conversation; on another, the project's or the spec's
+- [X] Which CLI: the first of =ghostherd-relay-kinds= with usage left.
+  An agent that stops with its CLI used up is offered its relay once
+  per window: the log, the echo area, a =used-up= push whose button
+  relays it from Telegram, =Relay to grok= first on its row
+- [X] 15 pytest (three CLIs' transcripts, the heir of an heir, asks,
+  the checkout, the size, what is not a transcript, the link, the
+  push and its tap), 15 ERT, 11 WebKit checks of the page's relay;
+  59 guards broken on purpose, each caught
+
+** What is left
+
+- [ ] Relay a real agent at a real limit: what claude's screen says when
+  its usage runs out, so the state can say it too, and whether a brief
+  from a long day's transcript is the right sixteen thousand characters
+- [ ] An agent relaying another --- a lead whose rd is used up --- through
+  =herd relay=
+- [ ] The sidebar's name column says nothing of the line; the page and
+  the log do
 
 * Phase 4 — Ecosystem (only if still useful)
 

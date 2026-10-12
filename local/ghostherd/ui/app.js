@@ -1117,6 +1117,10 @@
     const name = a.name;
     const acts = [];
     const menu = choicesHtml(a);
+    // Its CLI's usage used up: its relay first.
+    if (a.usedUp && a.relayTo && a.relayTo !== a.kind) {
+      acts.push('<button type="button" class="primary small" data-act="a:relay" title="' + esc(a.usedUp) + '">Relay to ' + esc(a.relayTo) + "</button>");
+    }
     acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
@@ -1126,6 +1130,7 @@
         '<button type="button" class="ghost small" data-act="a:agent-abort" title="Send C-c">C-c</button>' +
         '<button type="button" class="ghost small" data-act="a:notes">Notes</button>' +
         '<button type="button" class="ghost small" data-act="a:respawn">Respawn</button>' +
+        '<button type="button" class="ghost small" data-act="a:relay" title="Hand its work to a new agent on another CLI">Relay</button>' +
         '<button type="button" class="ghost small danger" data-act="a:kill">Kill</button></div>'
       : "";
     const compose = herdNow.composing.has(name)
@@ -1144,7 +1149,7 @@
     return (
       '<div class="arow s-' + esc(a.state) + '" data-name="' + esc(name) + '">' +
       '<div class="amain">' + stateBadge(a.state) +
-      agentName(name) + agentBadge(a.kind) + leadBadge(a) +
+      agentName(name) + genBadge(a) + agentBadge(a.kind) + leadBadge(a) +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
       (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") +
@@ -1257,6 +1262,37 @@
 
   function leadBadge(a) {
     return a.role === "lead" ? '<span class="leadb" title="Plans the work and hands it out">lead</span>' : "";
+  }
+
+  // The second of a name, the third: an agent that took over another's
+  // name and work (M-x ghostherd-relay).
+  function roman(n) {
+    if (!(n > 0 && n < 40)) return String(n);
+    return "X".repeat(Math.floor(n / 10)) + ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"][n % 10];
+  }
+
+  function genBadge(a) {
+    if (!(a.generation > 1)) return "";
+    const line = (a.line || []).concat([a.kind]).join(" → ");
+    return '<span class="genb" title="' + esc(a.name + " " + roman(a.generation) + ", the CLIs of its name: " + line) + '">' +
+      esc(roman(a.generation)) + "</span>";
+  }
+
+  // Relay NAME's work to an heir on another CLI, the herd's choice last
+  // so that it has the keys.
+  function askRelay(a) {
+    const kinds = (herdNow.data && herdNow.data.relayKinds) || [];
+    const choices = [["Cancel", "ghost", null]];
+    const order = kinds.filter((k) => k.kind !== a.relayTo).concat(kinds.filter((k) => k.kind === a.relayTo));
+    order.forEach((k) => choices.push([
+      k.kind + (k.kind === a.kind ? " again" : "") + (k.usedUp ? " · used up" : ""),
+      k.kind === a.relayTo ? "primary" : "ghost",
+      () => emit("agent-relay", { name: a.name, kind: k.kind })]));
+    ask("Relay " + a.name + " to…",
+      (a.usedUp ? a.usedUp.charAt(0).toUpperCase() + a.usedUp.slice(1) + ". " : "") +
+        "A new agent takes its name, its role and its work: its first message is where the work stands, " +
+        "read from " + a.name + "'s conversation, its asks and the checkout. " + a.name + " stops; its conversation stays.",
+      choices);
   }
 
   function roomTop(a, asks) {
@@ -1637,6 +1673,10 @@
       return ask("Respawn " + name + "?", "It is relaunched from its recipe. Continue picks the conversation up again; Fresh starts it cold.",
         [["Cancel", "ghost", null], ["Fresh", "ghost", () => emit("agent-respawn", { name, continue: false })],
          ["Continue", "primary", () => emit("agent-respawn", { name, continue: true })]]);
+    }
+    if (act === "relay") {
+      const a = ((herdNow.data && herdNow.data.agents) || []).find((x) => x.name === name);
+      return a ? askRelay(a) : undefined;
     }
     if (act === "kill") {
       return ask("Kill " + name + "?", "The agent stops and leaves the herd. Its transcript stays.",
