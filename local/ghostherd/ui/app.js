@@ -1091,15 +1091,31 @@
   }
 
   // What the checkout has not committed, which Emacs counts with pr-view:
-  // a chip that opens pr-view's view of it.  None when it is clean.
+  // a chip that opens pr-view's view of it.  None when it is clean.  Its
+  // tracked files changed, and apart from them those git does not track
+  // yet -- often a tool's own, never meant to be committed: counted as
+  // uncommitted, everything looked committed and was not.
   function changesChip(w) {
     const c = w.changes;
     if (!c || !c.files) return "";
-    const lines = (c.added ? '<span class="cadd">+' + c.added + "</span>" : "") +
-      (c.deleted ? '<span class="cdel">−' + c.deleted + "</span>" : "");
-    return chip("wchip chg", ' data-act="a:work-changes" data-root="' + esc(w.root) + '" title="' +
-      esc(c.files + (c.files === 1 ? " file" : " files") + " not committed, +" + c.added + " −" + c.deleted) + '"', "",
-      "<span>" + c.files + " uncommitted</span>" + lines,
+    const fresh = c.untracked || 0;
+    const changed = c.files - fresh;
+    const added = c.added - (c.untrackedAdded || 0);
+    const files = (n) => n + (n === 1 ? " file" : " files");
+    const parts = [];
+    const said = [];
+    if (changed) {
+      parts.push("<span>" + changed + " uncommitted</span>" +
+        (added ? '<span class="cadd">+' + added + "</span>" : "") +
+        (c.deleted ? '<span class="cdel">−' + c.deleted + "</span>" : ""));
+      said.push(files(changed) + " changed, not committed, +" + added + " −" + c.deleted);
+    }
+    if (fresh) {
+      parts.push("<span>" + fresh + " untracked</span>");
+      said.push(files(fresh) + " git does not track yet, +" + (c.untrackedAdded || 0));
+    }
+    return chip("wchip chg", ' data-act="a:work-changes" data-root="' + esc(w.root) + '" title="' + esc(said.join("; ")) + '"', "",
+      parts.join('<span class="csep">·</span>'),
       opens("pr") ? { href: "/open/pr-view#local=" + encodeURIComponent(w.root), tab: "pr-view" } : null);
   }
 

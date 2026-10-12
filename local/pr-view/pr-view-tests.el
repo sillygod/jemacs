@@ -972,7 +972,7 @@ which is not followed -- and an ignored one not at all."
               (should-not (string-match-p "debug.log" diff))
               ;; As many as pr-view-local-stat counts, by construction.
               (should (equal (pr-view-local-stat (concat root "new dir/"))
-                             (list :root root :files 6 :added 3 :deleted 1)))
+                             (list :root root :files 6 :added 3 :deleted 1 :untracked 4 :untracked-added 1)))
               (should (equal (pr-view-tests--counted diff) '(3 1)))
               (should (= (pr-view--local-files diff) 6))))
         (delete-file outside)))))
@@ -986,7 +986,7 @@ which is not followed -- and an ignored one not at all."
     (let ((diff (alist-get 'diff (pr-view-tests--local root))))
       (should (string-match-p "^\\+s$" diff))
       (should (string-match-p "^\\+l$" diff)))
-    (should (equal (pr-view-local-stat root) (list :root root :files 2 :added 2 :deleted 0)))))
+    (should (equal (pr-view-local-stat root) (list :root root :files 2 :added 2 :deleted 0 :untracked 1 :untracked-added 1)))))
 
 (ert-deftest pr-view-test-local-changes-run-none-of-the-checkouts-commands ()
   "A checkout's textconv filter or external diff could be any command:
@@ -1029,7 +1029,8 @@ a byte that is no UTF-8 does not stop the page's JSON."
            (p (pr-view-tests--local root)))
       (should (= (pr-view--local-files (alist-get 'diff p)) 2))
       (should (= (alist-get 'more p) 4))
-      (should (= (plist-get (pr-view-local-stat root) :files) 6)))))
+      (should (= (plist-get (pr-view-local-stat root) :files) 6))
+      (should (= (plist-get (pr-view-local-stat root) :untracked) 6)))))
 
 (ert-deftest pr-view-test-local-changes-only-of-a-checkout-it-may-show ()
   "A page names a checkout in its address: shown when it was opened here

@@ -41,7 +41,7 @@ const line = (page, project) => page.$eval('.pgroup[data-project="' + project + 
     let dp = await line(page, DP);
     const chg = dp && dp.chips.find((c) => /chg/.test(c.cls));
     check("the default branch says what it has not committed", chg && chg.text === "3 uncommitted+12−4" &&
-      chg.title === "3 files not committed, +12 −4", dp);
+      chg.title === "3 files changed, not committed, +12 −4", dp);
     check("and nothing of a pull request", dp && !dp.notes.length && dp.chips.length === 1, dp);
     check("a link to pr-view's view of it, in pr-view's tab", chg && chg.tag === "a" && chg.href === LOCAL && chg.target === "pr-view", chg);
     const jn = await line(page, JN);
@@ -64,6 +64,17 @@ const line = (page, project) => page.$eval('.pgroup[data-project="' + project + 
     check("in its room, the same", room === LOCAL, room);
     await page.evaluate(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
     await sleep(100);
+
+    // Files git does not track yet, apart: all the rest committed, none
+    // "uncommitted".
+    await show(herd((h) => { h.work[0].changes = { files: 67, added: 6213, deleted: 0, untracked: 67, untrackedAdded: 6213 }; }));
+    let only = (await line(page, DP)).chips[0];
+    check("all committed, files git does not track: untracked, not uncommitted",
+      only.text === "67 untracked" && only.title === "67 files git does not track yet, +6213", only);
+    await show(herd((h) => { h.work[0].changes = { files: 5, added: 20, deleted: 4, untracked: 2, untrackedAdded: 8 }; }));
+    only = (await line(page, DP)).chips[0];
+    check("both: each said apart", only.text === "3 uncommitted+12−4·2 untracked" &&
+      only.title === "3 files changed, not committed, +12 −4; 2 files git does not track yet, +8", only);
 
     // Clean: the default branch says nothing at all.
     await show(herd((h) => { h.work[0].changes = false; }));

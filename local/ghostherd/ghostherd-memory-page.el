@@ -869,7 +869,10 @@ last look found, or one an agent's directory or project is in now."
                      (if (and stat (> (plist-get stat :files) 0))
                          (list :files (plist-get stat :files)
                                :added (plist-get stat :added)
-                               :deleted (plist-get stat :deleted))
+                               :deleted (plist-get stat :deleted)
+                               ;; Of them, files git does not track yet.
+                               :untracked (or (plist-get stat :untracked) 0)
+                               :untrackedAdded (or (plist-get stat :untracked-added) 0))
                        :json-false))
           :pending (if (and (plist-get entry :pending) (null pr)) t :json-false)
           :error (ghostherd-memory-page--str err)

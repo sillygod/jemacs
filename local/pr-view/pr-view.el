@@ -1878,15 +1878,17 @@ not kept."
 
 (defun pr-view-local-stat (dir)
   "What the checkout DIR is in has not committed, in numbers, for another
-package: (:root ROOT :files N :added A :deleted D) as the page counts
-them -- a file git does not track yet is one, its lines added -- or nil
-when DIR is in no checkout.  Run as it is asked, not apart."
+package: (:root ROOT :files N :added A :deleted D :untracked U
+:untracked-added UA) as the page counts them -- a file git does not
+track yet is one, its lines added; U of the N are those, UA of the A
+their lines -- or nil when DIR is in no checkout.  Run as it is asked,
+not apart."
   (when-let* ((root (pr-view--local-root dir))
               ;; git runs no textconv for a count; told not to all the same.
            (stat (pr-view--local-git root "-c" "core.quotePath=false" "diff" "--numstat"
                                         "--no-ext-diff" "--no-textconv" "-M"
                                         (pr-view--local-base root) "--")))
-    (let ((files 0) (added 0) (deleted 0)
+    (let ((files 0) (added 0) (deleted 0) (new-lines 0)
           (untracked (pr-view--local-untracked root)))
       (dolist (line (split-string stat "\n" t))
         (when (string-match "\\`\\([0-9]+\\|-\\)\t\\([0-9]+\\|-\\)\t" line)
@@ -1894,10 +1896,11 @@ when DIR is in no checkout.  Run as it is asked, not apart."
                 added (+ added (string-to-number (match-string 1 line)))
                 deleted (+ deleted (string-to-number (match-string 2 line))))))
       (dolist (f (car untracked))
-        (setq files (1+ files))
         (when (eq (cadr f) 'text)
-          (setq added (+ added (length (pr-view--local-lines (cddr f)))))))
-      (list :root root :files (+ files (cdr untracked)) :added added :deleted deleted))))
+          (setq new-lines (+ new-lines (length (pr-view--local-lines (cddr f)))))))
+      (let ((new (+ (length (car untracked)) (cdr untracked))))
+        (list :root root :files (+ files new) :added (+ added new-lines) :deleted deleted
+              :untracked new :untracked-added new-lines)))))
 
 ;;;###autoload
 (defun pr-view-changes (&optional dir)
