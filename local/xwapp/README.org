@@ -284,8 +284,9 @@ so a page opens as it would on the phone.
 |              | clickup-view's pages on the phone, one tab per app, else the  |
 |              | forge's                                                       |
 | =apps-phone= | pr-view and clickup-view opened from the phone: what the      |
-|              | address names, Open and Copy there, a reload, fitting it; at  |
-|              | the desk, Open and Copy still Emacs's                         |
+|              | address names, Open and Copy there, a reload, fitting it, a   |
+|              | pull request scrolling as one page, upright and on its side;  |
+|              | at the desk, Open and Copy still Emacs's, the head still      |
 | =narrow=     | 320 to 760 points: nothing scrolls sideways but code and wide |
 |              | tables, a commit row's cells meet                             |
 | =cu-edit=    | clickup-view's assignees and dates, on a phone and at the     |

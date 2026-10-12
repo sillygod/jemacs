@@ -15,6 +15,15 @@ const text = (page, sel) => page.textContent(sel).catch(() => "");
 // A tab opened without an opener starts blank, then goes.
 const landed = async (page) => { await until(() => page.url() && page.url() !== "about:blank", 5000); return page.url(); };
 const hidden = (page, sel) => page.$eval(sel, (e) => e.hidden || getComputedStyle(e).display === "none").catch(() => true);
+// Where a pull request's tabs are in the window, and how much of it is
+// left to read under them.
+const held = (page) => page.evaluate(() => {
+  const app = document.getElementById("app"), a = app.getBoundingClientRect();
+  const nav = document.querySelector(".tabs").getBoundingClientRect();
+  const on = document.querySelector('[id^="panel-"]:not([hidden])').getBoundingClientRect();
+  return { tabs: Math.round(nav.top - a.top), under: Math.round(on.top - nav.bottom), read: Math.round(a.bottom - nav.bottom), of: app.clientHeight };
+});
+const scrollApp = (page, y) => page.evaluate((y) => { document.getElementById("app").scrollTop = y; }, y);
 
 (async () => {
   const s = await start();
@@ -48,6 +57,19 @@ const hidden = (page, sel) => page.$eval(sel, (e) => e.hidden || getComputedStyl
       m = await measure(tab);
       check("its " + t + " fit too", fits(m, 56), m);
     }
+    // Its head scrolls away: the pull request one page, its tabs held at
+    // the top.  Held still, the head left a quarter of the screen.
+    await tab.tap('.tab[data-tab="overview"]');
+    await sleep(200);
+    await scrollApp(tab, 1e6);
+    await sleep(100);
+    let h = await held(tab);
+    check("the pull request scrolls as one page, its tabs held at the top", Math.abs(h.tabs) <= 1 && h.read >= 0.9 * h.of, h);
+    await tab.tap('.tab[data-tab="commits"]');
+    await sleep(300);
+    h = await held(tab);
+    check("another tab picked down there opens at its start, under them", Math.abs(h.tabs) <= 1 && Math.abs(h.under) <= 1, h);
+    await scrollApp(tab, 0);
 
     // What Emacs would do on the desk, done here.
     const open1 = ctx.waitForEvent("page");
@@ -132,6 +154,24 @@ const hidden = (page, sel) => page.$eval(sel, (e) => e.hidden || getComputedStyl
     check("no page errors on the phone", errors.length === 0, errors);
     await ctx.close();
 
+    // ---- the phone on its side ----
+    const side = await s.browser.newContext(Object.assign({}, PHONE, { viewport: { width: 844, height: 390 } }));
+    await side.route(/^https:\/\//, (r) => r.fulfill({ status: 200, contentType: "text/plain", body: "away" }));
+    const st = await side.newPage();
+    await st.goto(BOX + "/open/pr-view#pr=" + encodeURIComponent(PR));
+    await until(async () => /Retry the payment webhook/.test(await text(st, "#app")), 10000);
+    await sleep(300);
+    for (const t of ["overview", "files"]) {
+      await st.tap('.tab[data-tab="' + t + '"]');
+      await sleep(300);
+      await scrollApp(st, 1e6);
+      await sleep(100);
+      h = await held(st);
+      check("on its side, " + t + " too: the head scrolls away", Math.abs(h.tabs) <= 1 && h.read >= 0.85 * h.of, h);
+      await scrollApp(st, 0);
+    }
+    await side.close();
+
     // ---- at the desk, as before ----
     const desk = await webkit.launch();
     try {
@@ -143,6 +183,10 @@ const hidden = (page, sel) => page.$eval(sel, (e) => e.hidden || getComputedStyl
       check("at the desk: Create, and the bar's words", !(await hidden(dpage, "#btn-create")) && /List/.test(await dpage.textContent("#btn-back")));
       await dpage.click('.pr-row[data-id="42"]');
       await until(async () => !!(await dpage.$('.tab[data-tab="overview"]')));
+      check("at the desk the head stays, the overview scrolls under it", await dpage.evaluate(() => {
+        const app = document.getElementById("app"), ov = document.getElementById("panel-overview");
+        return app.scrollHeight <= app.clientHeight + 1 && getComputedStyle(ov).overflowY === "auto" && ov.scrollHeight > ov.clientHeight;
+      }));
       await dpage.click("#btn-browser");
       await dpage.click("#btn-copy");
       check("Open and Copy are Emacs's there", await until(() => did("browse").length === 1 && did("copy").length === 1),

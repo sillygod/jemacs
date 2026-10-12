@@ -268,7 +268,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   flex-direction: column;
   min-height: 0;
 }
-.detail-head { padding: 12px 14px 0; flex-shrink: 0; }
+.detail-head { padding: 12px 14px 8px; flex-shrink: 0; }
 .detail-head h1 {
   font-size: 18px;
   font-weight: 650;
@@ -287,7 +287,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .tabs {
   display: flex;
   gap: 2px;
-  margin-top: 8px;
+  padding: 0 14px;
+  flex-shrink: 0;
 }
 .tab {
   background: none;
@@ -622,6 +623,29 @@ button.linkish:hover { color: var(--accent); }
 @media (max-width: 720px) {
   .diff-split { flex-direction: column; }
   .file-tree { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* Narrow or short -- a phone, Emacs split: the pull request scrolls as
+   one page, its tabs held at the top.  Held still, its head left a
+   phone a quarter of the screen to read in, and a phone on its side a
+   line. */
+@media (max-width: 720px), (max-height: 560px) {
+  .detail-wrap { display: block; height: auto; }
+  .tabs {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg);
+    box-shadow: 0 1px 0 var(--line);
+  }
+  .panel-overview, .panel-commits { overflow: visible; }
+  .file-diff { overflow-y: hidden; }
+  /* A tab at least fills the window under the tabs, so they stay put
+     when another is picked: 84px, the bar and the tabs at their least. */
+  .panel-overview, .panel-files, .panel-commits {
+    min-height: calc(100vh - 84px);
+    min-height: calc(100dvh - 84px);
+  }
 }
 
 .form {

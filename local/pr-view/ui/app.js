@@ -1053,6 +1053,7 @@
       conflictBanner(pr) +
       tasksHtml() +
       reviewersHtml(pr) +
+      "</section>" +
       '<nav class="tabs">' +
       '<button type="button" class="tab' +
       ovOn +
@@ -1067,7 +1068,7 @@
       coOn +
       '" data-tab="commits">Commits' +
       (commitsN ? " " + commitsN : "") +
-      "</button></nav></section>" +
+      "</button></nav>" +
       '<div id="panel-overview" class="panel-overview"' +
       (selectedTab === "overview" ? "" : " hidden") +
       ">" +
@@ -1138,7 +1139,13 @@
     app.querySelectorAll(".tab").forEach((btn) => {
       btn.addEventListener("click", () => {
         selectedTab = btn.getAttribute("data-tab") || "overview";
+        // Narrow, the pull request scrolls as one page and its tabs stay
+        // at the top: scrolled past the head, a tab opens at its start.
+        const head = app.querySelector(".detail-head");
+        const past = head && app.scrollTop >= head.offsetHeight;
         renderDetail(lastDetail);
+        const now = app.querySelector(".detail-head");
+        if (past && now) app.scrollTop = now.offsetHeight;
       });
     });
     const postBtn = document.getElementById("comment-post");

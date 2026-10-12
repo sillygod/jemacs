@@ -191,6 +191,13 @@ itself: a long link, path or branch breaks rather than widen the page.
 Under 720 points a commit is a card, who, which and when on a line and
 its message under them.
 
+Narrow or short --- under 720 points across or 560 down, a phone on
+its side included --- a pull request scrolls as one page, its tabs held
+at the top: held still, its head left a phone a quarter of the screen
+to read in.  A tab picked once its head has scrolled away opens at its
+start, under the tabs.  At the desk the head stays and the tab scrolls
+under it, as before.
+
 * For other packages
 
 ghostherd's herd page shows the PR an agent's branch is on.  Two
