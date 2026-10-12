@@ -730,7 +730,10 @@ What each event means:
   for claude and agy it is read from the end of the transcript, and
   only when it is past the prompt, so an earlier turn's answer is never
   taken for this one's.  grok's =StopCancelled= withdraws the report
-- every event names the conversation, kept by the sidecar
+- every event names the conversation, kept by the sidecar, and its
+  transcript.  grok's name =updates.jsonl=, its screen's stream of
+  updates; the herd reads =chat_history.jsonl= beside it, the
+  conversation itself
 
 What the herd does with them:
 

@@ -280,6 +280,25 @@ def test_grok(home):
     assert e[3]["answer"] == "Looks good." and e[4]["tools"] == [{"name": "read_file", "hint": "/x/a.py"}]
 
 
+def test_grok_updates_are_read_as_its_conversation(home):
+    """grok's hooks name updates.jsonl, a stream of its screen's updates:
+    a link that has it reads chat_history.jsonl beside it."""
+    d = home / ".grok" / "sessions" / "%2Fx" / "s1"
+    history = _write(d / "chat_history.jsonl", [
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>run the tests</user_query>"}]},
+        {"type": "assistant", "content": "All green."}])
+    updates = _write(d / "updates.jsonl", [{"timestamp": 1, "method": "session/update", "params": {"sessionId": "s1"}}])
+    r = conv.read(updates)
+    assert r["path"] == str(Path(history).resolve()) and r["cli"] == "grok"
+    assert [e.get("text") for e in r["entries"]] == ["run the tests", "All green."]
+    # Without one beside it, the file named; and only grok's are taken.
+    lone = _write(home / ".grok" / "sessions" / "%2Fx" / "s2" / "updates.jsonl", [{"method": "x"}])
+    assert conv.locate(lone)[0].name == "updates.jsonl"
+    other = _write(home / ".claude" / "projects" / "-x" / "updates.jsonl", [{"type": "user"}])
+    _write(home / ".claude" / "projects" / "-x" / "chat_history.jsonl", [{"type": "user"}])
+    assert conv.locate(other)[0].name == "updates.jsonl"
+
+
 def test_claude_what_it_wrote_as_you_is_not_you(home):
     """A tool's output, a skill's text (isMeta) and a compaction's summary
     come as user turns; only the summary shows, as what happened."""

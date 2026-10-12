@@ -104,6 +104,13 @@ def locate(path: str) -> tuple[Path, str]:
         home = Path(os.path.expanduser("~")).resolve()
         for root, cli in ROOTS:
             if real.is_relative_to(home / root):
+                # grok's hooks name updates.jsonl, its screen's stream of
+                # updates; the conversation is beside it.
+                history = real.with_name("chat_history.jsonl")
+                if cli == "grok" and real.name != history.name and history.is_file():
+                    history = history.resolve()
+                    if history.is_relative_to(home / root):
+                        real = history
                 return real, cli
     raise ValueError("not a transcript")
 

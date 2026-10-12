@@ -116,6 +116,19 @@ def test_claude_stop_takes_the_payloads_answer_first():
 GROK = {"sessionId": "g-123", "cwd": "/src/a", "workspaceRoot": "/src/a"}
 
 
+def test_grok_names_its_conversation_not_its_updates(tmp_path):
+    """grok's hooks name updates.jsonl; the conversation the herd reads is
+    chat_history.jsonl beside it."""
+    updates = tmp_path / "updates.jsonl"
+    updates.write_text("{}\n")
+    p = dict(GROK, hook_event_name="UserPromptSubmit", transcriptPath=str(updates))
+    assert _news(p)["transcript"] == str(updates)  # nothing beside it: as named
+    (tmp_path / "chat_history.jsonl").write_text("{}\n")
+    assert _news(p)["transcript"] == str(tmp_path / "chat_history.jsonl")
+    # Another CLI's file is its own.
+    assert _news(dict(CLAUDE, hook_event_name="UserPromptSubmit", transcript_path=str(updates)))["transcript"] == str(updates)
+
+
 def test_grok_events():
     assert _news(dict(GROK, hook_event_name="UserPromptSubmit", hookEventName="user_prompt_submit")) == {
         "cli": "grok", "conversation": "g-123", "state": "working"}

@@ -395,6 +395,16 @@ def agy_last(path):
     return None
 
 
+def grok_history(path):
+    """The conversation grok keeps beside PATH, or PATH: its hooks name
+    updates.jsonl, its screen's stream of updates, not the conversation."""
+    if path and os.path.basename(path) != "chat_history.jsonl":
+        history = os.path.join(os.path.dirname(path), "chat_history.jsonl")
+        if os.path.isfile(history):
+            return history
+    return path
+
+
 def hook_report(p, event=None):
     """What hook payload P says about the agent.
 
@@ -404,6 +414,8 @@ def hook_report(p, event=None):
     cli = _cli(p)
     event = p.get("hook_event_name") or event or ""
     transcript = p.get("transcript_path") or p.get("transcriptPath") or ""
+    if cli == "grok":
+        transcript = grok_history(transcript)
     out = {
         "cli": cli,
         "conversation": p.get("session_id") or p.get("sessionId") or p.get("conversationId") or "",
