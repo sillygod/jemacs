@@ -871,9 +871,10 @@ of Emacs.  How it is built is under "In a web browser" in
 - [ ] A PR or task clicked in a tab opens a new tab each time: Emacs
   cannot bring a tab it opened to the front, and the one before only
   says it was taken
-- [ ] pr-view's and clickup-view's tabs do not come back after a
+- [X] pr-view's and clickup-view's tabs do not come back after a
   restart: neither has a =:reopen= --- pr-view would need the
-  repository it was opened on
+  repository it was opened on --- /done in 3.25/: both have one, and
+  the page's address keeps what it shows (=#pr=, =#repo=, =#task=)
 
 * Phase 3.24 — Rounds the herd holds  *(this tree)*
 
