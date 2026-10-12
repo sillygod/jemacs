@@ -548,9 +548,10 @@ An agent stops --- its CLI's usage used up, wedged, or you would
 rather another CLI went on.  =M-x ghostherd-relay= (=T= in the sidebar,
 Relay on the herd page, the button of a =used-up= push) starts a new
 agent on the CLI you pick, which takes the old one's name, role, notes
-and project: rd the first was claude, rd the second is grok.  The old
-one is killed; its conversation stays where its CLI keeps it, its id in
-the heir's line.
+and project: rd the first was claude, rd the second is grok --- =rd II=
+in the sidebar and on the herd page, the CLIs of its name on hover.
+The old one is killed; its conversation stays where its CLI keeps it,
+its id in the heir's line.
 
 The heir's first message is where the work stood.  The sidecar writes
 it (=server/relay.py=), because the old one may be past saying

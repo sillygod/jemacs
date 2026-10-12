@@ -1100,6 +1100,9 @@ lead handoff, for every agent.
   and a cut said to be the brief's --- the first real relay, of an
   idle agy, clipped its long answer with a bare =…= and told grok to go
   on, and grok set about finishing what agy had finished
+- [X] The line shown: =rd II= on its row in the sidebar and on the
+  herd page, the CLIs of its name on hover; the log says who took
+  over from whom
 - [X] Asks go on: those it was answering are its heir's, not failed
   with it nor closed by the heir's first prompt; failed when the heir
   never comes to one.  Its hooks' link forgotten, and one another CLI
@@ -1113,8 +1116,8 @@ lead handoff, for every agent.
   relays it from Telegram, =Relay to grok= first on its row
 - [X] 17 pytest (three CLIs' transcripts, the heir of an heir, asks,
   the checkout, the size, go on or wait, what is not a transcript, the
-  link, the push and its tap), 16 ERT, 11 WebKit checks of the page's
-  relay; 69 guards broken on purpose, each caught
+  link, the push and its tap), 17 ERT, 11 WebKit checks of the page's
+  relay; 74 guards broken on purpose, each caught
 
 ** What is left
 
@@ -1123,8 +1126,6 @@ lead handoff, for every agent.
   from a long day's transcript is the right sixteen thousand characters
 - [ ] An agent relaying another --- a lead whose rd is used up --- through
   =herd relay=
-- [ ] The sidebar's name column says nothing of the line; the page and
-  the log do
 
 * Phase 4 — Ecosystem (only if still useful)
 

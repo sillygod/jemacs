@@ -542,6 +542,18 @@ as the role is.")
               (aref ["" "I" "II" "III" "IV" "V" "VI" "VII" "VIII" "IX"] (% n 10)))
     (format "%s" n)))
 
+(defun ghostherd--line-text (session)
+  "SESSION as the line of its name says it, the CLIs that held the
+name, oldest first: \"rd II, the CLIs of its name: claude → grok\"."
+  (format "%s %s, the CLIs of its name: %s"
+          (ghostherd-session-name session)
+          (ghostherd--roman (ghostherd-session-generation session))
+          (mapconcat #'identity
+                     (append (mapcar (lambda (a) (or (alist-get 'kind a) "?"))
+                                     (ghostherd-session-lineage session))
+                             (list (symbol-name (ghostherd-session-kind session))))
+                     " → ")))
+
 (defun ghostherd--session-title (session)
   "Return SESSION's terminal title, or nil when it says nothing new.
 Which OSC 2 stream that comes from is the backend's business: a ghostel
@@ -3690,7 +3702,15 @@ columns back rather than needing the buffer recreated."
                ;; watching.
                (unless (buffer-live-p (ghostherd-session-buffer session))
                  (propertize ghostherd-detached-glyph 'face face))))
-    ('name    (propertize (ghostherd-session-name session) 'face face))
+    ('name    (let ((name (propertize (ghostherd-session-name session) 'face face))
+                    (generation (ghostherd-session-generation session)))
+                ;; An heir's place in the line of its name, as the herd
+                ;; page shows it: rd II took rd's name and work.
+                (if (< generation 2)
+                    name
+                  (propertize (concat name (propertize (concat " " (ghostherd--roman generation))
+                                                       'face (list 'bold face)))
+                              'help-echo (ghostherd--line-text session)))))
     ('kind    (symbol-name (ghostherd-session-kind session)))
     ('state   (propertize (symbol-name state) 'face face))
     ('project (ghostherd--abbreviate (ghostherd-session-project session)))

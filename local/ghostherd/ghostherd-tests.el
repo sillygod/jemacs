@@ -1578,6 +1578,35 @@ fitted away exactly where it is needed."
         (should (<= (string-width detached)
                     (nth 2 (assq 'glyph ghostherd--sidebar-column-specs))))))))
 
+(ert-deftest ghostherd-test-sidebar-names-an-heir-by-its-place-in-the-line ()
+  "An heir is rd II in the sidebar, as on the herd page, the CLIs of its
+name on hover; the first of a name is its name alone."
+  (ghostherd-tests--with-herd ((ghostherd--lineage (make-hash-table :test 'equal)))
+    (let* ((rd (ghostherd-tests--session :name "rd" :kind 'grok :backend 'fake))
+           (first (ghostherd--sidebar-cell rd 'name 'idle 'default)))
+      (should (equal first "rd"))
+      (should-not (get-text-property 0 'help-echo first))
+      (puthash (ghostherd-session-id rd) '(((kind . "claude")) ((kind . "agy"))) ghostherd--lineage)
+      (let ((cell (ghostherd--sidebar-cell rd 'name 'idle 'default)))
+        (should (equal cell "rd III"))
+        (should (equal (get-text-property 0 'help-echo cell)
+                       "rd III, the CLIs of its name: claude → agy → grok"))
+        (should (equal (get-text-property 5 'help-echo cell) (get-text-property 0 'help-echo cell)))
+        ;; The name in its state's face, the numeral bold in it too.
+        (should (eq (get-text-property 0 'face cell) 'default))
+        (should (equal (get-text-property 4 'face cell) '(bold default))))
+      ;; The row drawn has it in its name column.
+      (let ((ghostherd-sidebar-width 60)
+            (ghostherd--sidebar-filter-project nil)
+            (ghostherd--sidebar-query nil))
+        (with-temp-buffer
+          (ghostherd-sidebar-mode)
+          (cl-letf (((symbol-function 'ghostherd--sidebar-available-width) (lambda () 60)))
+            (ghostherd--sidebar-build-entries)
+            (let* ((names (mapcar #'car (ghostherd--sidebar-visible-columns)))
+                   (row (cadr (assoc (ghostherd-session-id rd) tabulated-list-entries))))
+              (should (equal (aref row (seq-position names 'name)) "rd III")))))))))
+
 (ert-deftest ghostherd-test-sidebar-mark-is-silent-on-ghostel ()
   "On the ghostel backend a registered session always has its buffer, so
 the mark must never appear there -- the concept does not exist."
