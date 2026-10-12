@@ -283,6 +283,8 @@ so a page opens as it would on the phone.
 | =herd-chips= | the herd page's PR and task chips: pr-view's and              |
 |              | clickup-view's pages on the phone, one tab per app, else the  |
 |              | forge's                                                       |
+| =herd-forms= | the herd page's new agent and notes forms keep what was       |
+|              | picked and typed when the page is drawn again                 |
 | =apps-phone= | pr-view and clickup-view opened from the phone: what the      |
 |              | address names, Open and Copy there, a reload, fitting it, a   |
 |              | pull request scrolling as one page, upright and on its side;  |

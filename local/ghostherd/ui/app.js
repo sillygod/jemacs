@@ -719,6 +719,11 @@
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
+    // What the open forms say, kept here as the prompts are: the page is
+    // drawn again every 5s and on news, and a form drawn from nothing
+    // would come back empty, its first CLI picked.  Set afresh as each
+    // form opens.
+    notesText: "", newKind: "", newName: "",
     // Images attached to each agent's next prompt: [{path, thumb}].
     attach: {},
     // The room: its project, each agent's conversation, the agents shown
@@ -1129,7 +1134,7 @@
         esc(herdNow.compose[name] || "") + '</textarea>' + IMAGE_BUTTON + '<button type="button" class="primary small" data-act="a:send">Send</button></div>'
       : "";
     const notes = herdNow.notes === name
-      ? '<div class="notes-edit"><input class="notes-text" value="' + esc(a.notes) + '" placeholder="Role / notes">' +
+      ? '<div class="notes-edit"><input class="notes-text" value="' + esc(herdNow.notesText) + '" placeholder="Role / notes">' +
         '<button type="button" class="primary small" data-act="a:notes-save">Save</button>' +
         '<button type="button" class="ghost small" data-act="a:notes-cancel">Cancel</button></div>'
       : "";
@@ -1189,8 +1194,9 @@
           const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
             .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
           const form = herdNow.newFor === g.project
-            ? '<div class="newform"><select class="new-kind">' + kinds.map((k) => '<option value="' + esc(k) + '">' + esc(k) + "</option>").join("") +
-              '</select><input class="new-name" placeholder="name (default: kind-' + esc(leaf(g.project)) + ')">' +
+            ? '<div class="newform"><select class="new-kind">' + kinds.map((k) => '<option value="' + esc(k) + '"' +
+              (k === herdNow.newKind ? " selected" : "") + ">" + esc(k) + "</option>").join("") +
+              '</select><input class="new-name" value="' + esc(herdNow.newName) + '" placeholder="name (default: kind-' + esc(leaf(g.project)) + ')">' +
               '<button type="button" class="primary small" data-act="a:new-go">Start</button>' +
               '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button></div>'
             : "";
@@ -1609,7 +1615,9 @@
       return renderAttach(name);
     }
     if (act === "notes") {
+      const a = ((herdNow.data && herdNow.data.agents) || []).find((x) => x.name === name);
       herdNow.notes = name;
+      herdNow.notesText = (a && a.notes) || "";
       renderAgents();
       const inp = app.querySelector(".notes-text");
       if (inp) inp.focus();
@@ -1618,7 +1626,7 @@
     if (act === "notes-save") {
       const inp = row.querySelector(".notes-text");
       herdNow.notes = null;
-      emit("agent-notes", { name, text: inp ? inp.value : "" });
+      emit("agent-notes", { name, text: inp ? inp.value : herdNow.notesText });
       return renderAgents();
     }
     if (act === "notes-cancel") {
@@ -1636,6 +1644,7 @@
     }
     if (act === "new-agent") {
       herdNow.newFor = project;
+      herdNow.newKind = herdNow.newName = "";
       renderAgents();
       const sel = app.querySelector(".newform select");
       if (sel) sel.focus();
@@ -1780,12 +1789,19 @@
 
   app.addEventListener("change", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
+    if (ev.target.classList && ev.target.classList.contains("new-kind")) herdNow.newKind = ev.target.value;
   });
 
   app.addEventListener("input", (ev) => {
-    if (ev.target.classList && ev.target.classList.contains("agent-text")) {
+    const c = ev.target.classList;
+    if (!c) return;
+    if (c.contains("agent-text")) {
       const row = ev.target.closest(".arow, .rcol, .cfoot");
       if (row) herdNow.compose[row.getAttribute("data-name")] = ev.target.value;
+    } else if (c.contains("new-name")) {
+      herdNow.newName = ev.target.value;
+    } else if (c.contains("notes-text")) {
+      herdNow.notesText = ev.target.value;
     }
   });
   app.addEventListener("keydown", (ev) => {
