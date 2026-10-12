@@ -53,7 +53,12 @@ async function start() {
     req.pipe(up);
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
-  const browser = await webkit.launch({ proxy: { server: "http://127.0.0.1:" + proxy.address().port } });
+  // No browser -- not installed, say -- and nothing is left running.
+  const browser = await webkit.launch({ proxy: { server: "http://127.0.0.1:" + proxy.address().port } }).catch((e) => {
+    proxy.close();
+    emacs.kill();
+    throw e;
+  });
   const stop = async () => {
     await browser.close().catch(() => {});
     proxy.close();
