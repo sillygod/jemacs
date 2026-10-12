@@ -43,6 +43,7 @@
 (require 'ghostherd-memory)
 (require 'ghostherd-usage)
 
+(declare-function magit-status-setup-buffer "magit-status" (&optional directory))
 (declare-function alert "alert" (message &rest kwargs))
 (declare-function posframe-workable-p "posframe")
 (declare-function posframe-show "posframe")
@@ -3410,6 +3411,7 @@ stretch the frame, truncating Project one step behind.")
     (ghostherd-sidebar-rename                . "Rename session")
     (ghostherd-respawn                       . "Respawn from recipe")
     (ghostherd-relay                         . "Relay: an heir on another CLI")
+    (ghostherd-sidebar-changes               . "What its checkout has not committed")
     (ghostherd-sidebar-notes                 . "Edit note / role")
     (ghostherd-sidebar-interrupt             . "Interrupt (Escape)")
     (ghostherd-sidebar-abort                 . "Abort (C-c)")
@@ -3509,6 +3511,7 @@ window, which had nowhere to go except by killing the child frame."
   "e" #'ghostherd-explain
   "R" #'ghostherd-respawn
   "T" #'ghostherd-relay
+  "d" #'ghostherd-sidebar-changes
   "c" #'ghostherd-sidebar-notes
   "z" #'ghostherd-sidebar-interrupt
   "Z" #'ghostherd-sidebar-abort
@@ -5089,6 +5092,20 @@ reaches you there."
   (interactive)
   (when-let* ((s (ghostherd--sidebar-session-at-point)))
     (ghostherd-visit s)))
+
+(defun ghostherd-sidebar-changes ()
+  "Show what the checkout of the session at point has not committed: its
+status in magit, or `vc-dir' without magit."
+  (interactive)
+  (when-let* ((s (ghostherd--sidebar-session-at-point)))
+    (let ((dir (ghostherd-session-directory s)))
+      (unless (and dir (file-directory-p (expand-file-name dir)))
+        (user-error "%s has no directory here" (ghostherd-session-name s)))
+      ;; The overlay's window is dedicated: magit has nowhere to go from it.
+      (ghostherd--sidebar-leave-overlay)
+      (if (require 'magit nil t)
+          (magit-status-setup-buffer (expand-file-name dir))
+        (vc-dir (expand-file-name dir))))))
 
 (defun ghostherd-sidebar-kill ()
   "Kill the session at point."

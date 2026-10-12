@@ -277,24 +277,30 @@ so a page opens as it would on the phone.
   npm test                                  # or: node run.js narrow cu-edit
 #+end_src
 
-| Suite        | Checks                                                        |
-|--------------+---------------------------------------------------------------|
-| =kit=        | the sanitizer, the bridge's queue, =XW.open=                  |
-| =herd-chips= | the herd page's PR and task chips: pr-view's and              |
-|              | clickup-view's pages on the phone, one tab per app, else the  |
-|              | forge's                                                       |
-| =herd-forms= | the herd page's new agent and notes forms keep what was       |
-|              | picked and typed when the page is drawn again                 |
-| =herd-relay= | the herd page's relay: an heir's place in its line, the CLI   |
-|              | asked for, a used-up agent's relay first                      |
-| =apps-phone= | pr-view and clickup-view opened from the phone: what the      |
-|              | address names, Open and Copy there, a reload, fitting it, a   |
-|              | pull request scrolling as one page, upright and on its side;  |
-|              | at the desk, Open and Copy still Emacs's, the head still      |
-| =narrow=     | 320 to 760 points: nothing scrolls sideways but code and wide |
-|              | tables, a commit row's cells meet                             |
-| =cu-edit=    | clickup-view's assignees and dates, on a phone and at the     |
-|              | desk: what goes to ClickUp, the keys, the menus fitting       |
+| Suite          | Checks                                                          |
+|----------------+-----------------------------------------------------------------|
+| =kit=          | the sanitizer, the bridge's queue, =XW.open=                    |
+| =herd-chips=   | the herd page's PR and task chips: pr-view's and                |
+|                | clickup-view's pages on the phone, one tab per app, else the    |
+|                | forge's                                                         |
+| =herd-forms=   | the herd page's new agent and notes forms keep what was         |
+|                | picked and typed when the page is drawn again                   |
+| =herd-relay=   | the herd page's relay: an heir's place in its line, the CLI     |
+|                | asked for, a used-up agent's relay first                        |
+| =herd-changes= | the herd page's uncommitted-changes chip: on a default          |
+|                | branch too, none when clean; pr-view's view on the phone, Emacs |
+|                | asked at the desk                                               |
+| =apps-phone=   | pr-view and clickup-view opened from the phone: what the        |
+|                | address names, Open and Copy there, a reload, fitting it, a     |
+|                | pull request scrolling as one page, upright and on its side;    |
+|                | at the desk, Open and Copy still Emacs's, the head still        |
+| =pr-local=     | pr-view at a real checkout's uncommitted changes, on the        |
+|                | phone: each file, a new one whole, why one is not shown,        |
+|                | Refresh, a reload, Back; one not vouched for refused            |
+| =narrow=       | 320 to 760 points: nothing scrolls sideways but code and wide   |
+|                | tables, a commit row's cells meet                               |
+| =cu-edit=      | clickup-view's assignees and dates, on a phone and at the       |
+|                | desk: what goes to ClickUp, the keys, the menus fitting         |
 
 Screenshots land in =e2e/shots/=.  =EMACS= picks an Emacs other than
 the one on =PATH=; =KEEP=1= keeps a run's state, log and addresses.

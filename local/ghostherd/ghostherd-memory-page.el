@@ -37,6 +37,8 @@
 (declare-function pr-view-branch-pr "pr-view" (dir callback))
 (declare-function pr-view-open-pr "pr-view" (dir id))
 (declare-function pr-view-pr-brief "pr-view" (dir id callback))
+(declare-function pr-view-local-stat "pr-view" (dir))
+(declare-function pr-view-changes "pr-view" (&optional dir))
 (declare-function pr-view-remote "pr-view" (dir))
 (declare-function clickup-view-task-brief "clickup-view" (id callback))
 (declare-function clickup-view-task "clickup-view" (id))
@@ -768,7 +770,8 @@ until they are done, the page shows the last look."
                (car look)))))
 
 (defun ghostherd-memory-page--look-done ()
-  "The look's checkouts are the herd's now; ask after their pull requests."
+  "The look's checkouts are the herd's now; ask after their pull requests,
+and count what they have not committed."
   (when-let* ((look ghostherd-memory-page--look))
     (setq ghostherd-memory-page--checkouts (car look)
           ghostherd-memory-page--look nil)
@@ -776,9 +779,65 @@ until they are done, the page shows the last look."
       (maphash (lambda (_k co)
                  (when (and (consp co) (not (member co seen)))
                    (push co seen)
-                   (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-ask co)))
+                   (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-ask co)
+                   (ghostherd-memory-page--chore #'ghostherd-memory-page--changes-count (car co))))
                ghostherd-memory-page--checkouts))
     (ghostherd-memory-page--work-changed)))
+
+;; What a checkout has not committed, in numbers: a chip on its work line
+;; that opens pr-view's diff view of it.  pr-view counts it with git, as
+;; a chore: at each look at the checkouts, and when an agent in one ends
+;; a turn -- when what it has not committed most likely changed.  The
+;; checkouts the herd is in are the ones pr-view's page may show.
+
+(defvar ghostherd-memory-page--changes (make-hash-table :test 'equal)
+  "Checkout root -> what it has not committed, as `pr-view-local-stat'
+counted it.")
+
+(defun ghostherd-memory-page--changes-count (root)
+  "Count what checkout ROOT has not committed; the page is told when that
+changed."
+  (when (ghostherd-memory-page--have 'pr-view-local-stat 'pr-view)
+    (let ((stat (ignore-errors (pr-view-local-stat root))))
+      (unless (equal stat (gethash root ghostherd-memory-page--changes))
+        (puthash root stat ghostherd-memory-page--changes)
+        (ghostherd-memory-page--work-changed)))))
+
+(defun ghostherd-memory-page--changes-on-state (session old new)
+  "SESSION ended a turn, from OLD to NEW: count its checkouts again, while
+the page is open."
+  (when (and (eq old 'working) (memq new '(idle blocked done))
+             (xwapp-live-p ghostherd-memory-page--app))
+    (dolist (key (list (cons 'agent (ghostherd-session-name session))
+                       (ghostherd--project-name (ghostherd-session-project session))))
+      (let ((co (gethash key ghostherd-memory-page--checkouts)))
+        (when (consp co)
+          (ghostherd-memory-page--chore #'ghostherd-memory-page--changes-count (car co)))))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd-memory-page--changes-on-state)
+
+(defun ghostherd-memory-page--herd-checkout-p (root)
+  "Non-nil when ROOT is the root of a checkout the herd is in: one the
+last look found, or one an agent's directory or project is in now."
+  (and (stringp root)
+       (or (seq-some (lambda (co) (and (consp co) (equal (car co) root)))
+                     (hash-table-values ghostherd-memory-page--checkouts))
+           (seq-some (lambda (s)
+                       (seq-some (lambda (dir) (equal (car-safe (ghostherd-memory-page--checkout dir)) root))
+                                 (list (ghostherd-session-directory s) (ghostherd-session-project s))))
+                     (ghostherd-sessions)))
+       t))
+
+(add-hook 'pr-view-local-allowed-functions #'ghostherd-memory-page--herd-checkout-p)
+
+(defun ghostherd-memory-page--open-changes (intent)
+  "Open in pr-view what the checkout INTENT names has not committed."
+  (let ((root (alist-get 'root intent)))
+    (unless (ghostherd-memory-page--herd-checkout-p root)
+      (user-error "No such checkout here"))
+    (unless (ghostherd-memory-page--have 'pr-view-changes 'pr-view)
+      (user-error "pr-view shows a checkout's changes; it is not here"))
+    (pr-view-changes root)))
 
 (defun ghostherd-memory-page--task (id)
   "Task ID as the page shows it."
@@ -802,6 +861,12 @@ until they are done, the page shows the last look."
          (tasks (and (not err) (alist-get 'tasks pr))))
     (list :root (car co)
           :branch (cdr co)
+          :changes (let ((stat (gethash (car co) ghostherd-memory-page--changes)))
+                     (if (and stat (> (plist-get stat :files) 0))
+                         (list :files (plist-get stat :files)
+                               :added (plist-get stat :added)
+                               :deleted (plist-get stat :deleted))
+                       :json-false))
           :pending (if (and (plist-get entry :pending) (null pr)) t :json-false)
           :error (ghostherd-memory-page--str err)
           :pr (if (and pr (not err))
@@ -1536,6 +1601,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("lead-say" (ghostherd-memory-page--lead-say intent))
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))
+        ("open-changes" (ghostherd-memory-page--open-changes intent))
         ("paste" (ghostherd-memory-page-paste))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))

@@ -1040,18 +1040,36 @@
       (open ? "less" : "+" + n) + "</button>";
   }
 
+  // What the checkout has not committed, which Emacs counts with pr-view:
+  // a chip that opens pr-view's view of it.  None when it is clean.
+  function changesChip(w) {
+    const c = w.changes;
+    if (!c || !c.files) return "";
+    const lines = (c.added ? '<span class="cadd">+' + c.added + "</span>" : "") +
+      (c.deleted ? '<span class="cdel">−' + c.deleted + "</span>" : "");
+    return chip("wchip chg", ' data-act="a:work-changes" data-root="' + esc(w.root) + '" title="' +
+      esc(c.files + (c.files === 1 ? " file" : " files") + " not committed, +" + c.added + " −" + c.deleted) + '"', "",
+      "<span>" + c.files + " uncommitted</span>" + lines,
+      opens("pr") ? { href: "/open/pr-view#local=" + encodeURIComponent(w.root), tab: "pr-view" } : null);
+  }
+
   function workHtml(w) {
     if (!w || !w.branch) return "";
     const pr = w.pr || null;
     const tasks = w.tasks || [];
-    if (!pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch)) return "";
+    const changes = changesChip(w);
+    // The default branch without a PR says nothing of one -- but what it
+    // has not committed, it says.
+    const quiet = !pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch);
+    if (quiet && !changes) return "";
     const key = w.root + "|" + w.branch;
     const open = herdNow.workOpen.has(key);
-    const prPart = pr ? prChip(w.root, pr)
+    const prPart = quiet ? ""
+      : pr ? prChip(w.root, pr)
       : w.error ? '<span class="wnote" title="' + esc(w.error) + '">PR not looked up</span>'
       : w.pending ? '<span class="wnote">PR…</span>'
       : '<span class="wnote">no PR</span>';
-    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart +
+    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes +
       (open ? tasks : tasks.slice(0, 2)).map((t) => taskChip(t)).join("") +
       (tasks.length > 2 ? moreButton(key, open, tasks.length - 2) : "") + "</div>";
   }
@@ -1571,9 +1589,10 @@
     if (act === "room") return openRoom(project);
     // A chip still a button on another device has no address yet: Emacs
     // would open it on the desk's screen.
-    if ((act === "work-pr" || act === "work-task") && XW.elsewhere) return setStatus("Its address is not known yet");
+    if ((act === "work-pr" || act === "work-task" || act === "work-changes") && XW.elsewhere) return setStatus("Its address is not known yet");
     if (act === "work-pr") return emit("open-pr", { root: el.getAttribute("data-root"), id: +el.getAttribute("data-id") });
     if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
+    if (act === "work-changes") return emit("open-changes", { root: el.getAttribute("data-root") });
     if (act === "work-more") {
       const key = el.getAttribute("data-key");
       if (herdNow.workOpen.has(key)) herdNow.workOpen.delete(key);

@@ -1,6 +1,7 @@
 ;; -*- lexical-binding: t -*-
 ;; One Emacs serving pr-view and clickup-view to "your phone", with
-;; Bitbucket and ClickUp answered from ./fixtures.  Started by
+;; Bitbucket and ClickUp answered from ./fixtures, and a checkout with
+;; work not committed.  Started by
 ;; appslib.js: E2E_DIR is where a run writes the state file, the log and
 ;; the addresses; E2E_PORT is `xwapp-port'; E2E_LOCAL the directory
 ;; with xwapp, pr-view and clickup-view, this checkout's by default.
@@ -93,7 +94,38 @@
 (advice-add 'browse-url :override (lambda (url &rest _) (e2e-note (list :browse url))))
 (advice-add 'xwapp-copy :override (lambda (text) (e2e-note (list :copy text))))
 
+;; A checkout with work not committed, for pr-view's view of it: three
+;; files changed -- one binary -- and two new, one binary; on Bitbucket's unno/shop, whose
+;; pull requests the fixtures answer.  pr-view may show it, and no other.
+;; git without your config: no signing, no hooks of yours.
+(setenv "GIT_CONFIG_GLOBAL" "/dev/null")
+(setenv "GIT_CONFIG_NOSYSTEM" "1")
+(defvar e2e-checkout (file-name-as-directory (file-truename (expand-file-name "checkout" e2e-dir))))
+(defun e2e-git (&rest args)
+  (let ((default-directory e2e-checkout))
+    (apply #'call-process "git" nil nil nil "-c" "user.name=e2e" "-c" "user.email=e2e@example.com" args)))
+(defun e2e-write (file text)
+  (let ((path (expand-file-name file e2e-checkout))
+        (coding-system-for-write 'no-conversion))
+    (make-directory (file-name-directory path) t)
+    (write-region text nil path nil 'silent)))
+(e2e-write "src/pay.py" "def pay(order):\n    total = order.total\n    return charge(total)\n")
+(e2e-write "README.md" "# Shop\n")
+(e2e-write "icon.ico" (unibyte-string 0 0 1 0 1 0))
+(e2e-git "init" "-q" "-b" "fix/payment-retry")
+(e2e-git "remote" "add" "origin" "git@bitbucket.org:unno/shop.git")
+(e2e-git "add" ".")
+(e2e-git "commit" "-q" "-m" "Pay an order")
+(e2e-write "src/pay.py" "def pay(order, retries=3):\n    total = order.total\n    return charge(total, retries=retries)\n")
+(e2e-write "README.md" "# Shop\n\nA failed charge is tried again.\n")
+(e2e-write "notes/retry.md" "Retry a failed charge three times.\n")
+(e2e-write "logo.png" (unibyte-string #x89 ?P ?N ?G 0 1 2 0))
+(e2e-write "icon.ico" (unibyte-string 0 0 1 0 2 0))
+(defvar e2e-checkout-root (pr-view--local-root e2e-checkout))
+(add-hook 'pr-view-local-allowed-functions (lambda (root) (equal root e2e-checkout-root)))
+
 (write-region (json-encode (list (cons "pr" (xwapp-url pr-view--app))
-                                 (cons "task" (xwapp-url clickup-view--app))))
+                                 (cons "task" (xwapp-url clickup-view--app))
+                                 (cons "local" e2e-checkout-root)))
               nil (expand-file-name "urls.json" e2e-dir) nil 'silent)
 (while t (accept-process-output nil 1))

@@ -6078,7 +6078,8 @@ for it.  The page knows the lead by its role."
 it on feat/y; the work caches its own, and `asked' recording what
 pr-view, clickup-view and the sidecar are asked, which answer as `prs',
 `briefs', `by-id', `remote' and `said' say.  An agent's transcript is
-as `transcripts' says."
+as `transcripts' says.  `counted' holds the checkouts whose changes
+pr-view counted, as `stats' says them."
   (declare (indent 0))
   `(let* ((_ (skip-unless (require 'ghostherd-memory-page nil t)))
           ;; Its true name: git answers with it, and /var is /private/var.
@@ -6096,6 +6097,9 @@ as `transcripts' says."
           (remote nil)
           (said nil)
           (transcripts nil)
+          (counted nil)
+          (stats nil)
+          (ghostherd-memory-page--changes (make-hash-table :test 'equal))
           (ghostherd-memory-page--work-at 0)
           (ghostherd-memory-page--look nil)
           (ghostherd-memory-page--chores nil)
@@ -6119,6 +6123,8 @@ as `transcripts' says."
                     (lambda (id cb) (push (list 'task id) asked)
                       (funcall cb (or (cdr (assoc id briefs)) `((id . ,id) (error . "no such task"))))))
                    ((symbol-function 'pr-view-remote) (lambda (_dir) remote))
+                   ((symbol-function 'pr-view-local-stat)
+                    (lambda (dir) (push dir counted) (cdr (assoc dir stats))))
                    ((symbol-function 'pr-view-pr-brief)
                     (lambda (dir id cb) (push (list 'brief dir id) asked)
                       (funcall cb (or (cdr (assoc id by-id)) '((error . "no such pull request"))))))
@@ -6332,6 +6338,106 @@ looked up again when stale -- a merged one much later."
               (clrhash ghostherd-memory-page--prs)
               (ghostherd-memory-page--handle `((op . "open-pr") (root . ,root) (id . 360)))
               (should (equal opened `((,root 360)))))))))))
+
+(ert-deftest ghostherd-test-the-page-counts-what-a-checkout-has-not-committed ()
+  "Each checkout the herd is in is counted once a look, an agent's
+worktree too; the work line says it -- nothing when it is clean -- and
+the page is told only when it changed.  An agent that ends a turn has
+its checkouts counted again, while the page is open."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let ((root (abbreviate-file-name repo))
+            (tree (abbreviate-file-name wt)))
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'working)
+        (ghostherd-tests--session :name "qa" :kind 'claude :project repo :state 'idle)
+        (setq stats `((,root :root ,root :files 3 :added 12 :deleted 4)
+                      (,tree :root ,tree :files 0 :added 0 :deleted 0)))
+        (cl-letf (((symbol-function 'ghostherd-session-directory)
+                   (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
+                  ((symbol-function 'ghostherd--project-name)
+                   (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
+          (ghostherd-test--look)
+          (should (equal (sort (copy-sequence counted) #'string<) (sort (list root tree) #'string<)))
+          (ghostherd-memory-page--send-herd)
+          (let* ((herd (ghostherd-test--call calls "renderHerd"))
+                 (work (seq-find (lambda (w) (equal (plist-get w :project) root))
+                                 (append (plist-get herd :work) nil)))
+                 (qa (seq-find (lambda (a) (equal (plist-get a :name) "qa"))
+                               (append (plist-get herd :agents) nil))))
+            (should (equal (plist-get work :changes) '(:files 3 :added 12 :deleted 4)))
+            ;; Clean: nothing to say.
+            (should (equal (plist-get (plist-get qa :work) :root) tree))
+            (should (eq (plist-get (plist-get qa :work) :changes) :json-false)))
+          ;; Counted the same: the page is not told again; changed, it is.
+          (let ((told 0))
+            (cl-letf (((symbol-function 'ghostherd-memory-page--work-changed) (lambda () (cl-incf told))))
+              (ghostherd-memory-page--changes-count root)
+              (should (= told 0))
+              (setf (alist-get root stats nil nil #'equal) (list :root root :files 4 :added 13 :deleted 4))
+              (ghostherd-memory-page--changes-count root)
+              (should (= told 1))))
+          ;; rd ends a turn: its checkout is counted again -- with the page open.
+          (setq counted nil ghostherd-memory-page--chores nil)
+          (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_app) nil)))
+            (ghostherd--set-state (ghostherd-get "rd") 'idle))
+          (should-not ghostherd-memory-page--chores)
+          (setf (ghostherd-session-state (ghostherd-get "rd")) 'working)
+          (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_app) t)))
+            (ghostherd--set-state (ghostherd-get "rd") 'idle)
+            (ghostherd--set-state (ghostherd-get "qa") 'done))
+          (while ghostherd-memory-page--chores (ghostherd-memory-page--chore-next))
+          (should (equal counted (list root))))))))
+
+(ert-deftest ghostherd-test-the-page-opens-a-checkouts-changes ()
+  "What a checkout the herd is in has not committed opens in pr-view, and
+pr-view's page may show it; another directory is neither."
+  (ghostherd-test--with-herd
+    (let ((ghostherd-memory-page--checkouts (make-hash-table :test 'equal)) opened)
+      (puthash "~/p/" '("~/p/" . "feat/x") ghostherd-memory-page--checkouts)
+      (cl-letf (((symbol-function 'pr-view-changes) (lambda (dir) (push dir opened)))
+                ((symbol-function 'ghostherd-memory-page--checkout) (lambda (_dir) nil)))
+        (ghostherd-memory-page--handle '((op . "open-changes") (root . "~/p/")))
+        (should (equal opened '("~/p/")))
+        (should (memq #'ghostherd-memory-page--herd-checkout-p pr-view-local-allowed-functions))
+        (should (ghostherd-memory-page--herd-checkout-p "~/p/"))
+        (setq calls nil)
+        (dolist (bad '("/etc/" "~/p" 7 nil))
+          (should-not (ghostherd-memory-page--herd-checkout-p bad))
+          (ghostherd-memory-page--handle `((op . "open-changes") (root . ,bad))))
+        (should (equal opened '("~/p/")))
+        (should (= (length (seq-filter (lambda (c) (equal (car c) "showError")) calls)) 4)))
+      ;; Before a look -- Emacs just restarted -- an agent's own checkout.
+      (clrhash ghostherd-memory-page--checkouts)
+      (cl-letf (((symbol-function 'ghostherd-memory-page--checkout)
+                 (lambda (dir) (and (equal dir "/p/") '("~/q/" . "main")))))
+        (should (ghostherd-memory-page--herd-checkout-p "~/q/"))
+        (should-not (ghostherd-memory-page--herd-checkout-p "~/r/"))))))
+
+(ert-deftest ghostherd-test-sidebar-shows-a-checkouts-changes ()
+  "d on a row: the status of the checkout its agent works in -- a
+worktree, say -- in magit, or vc-dir without it."
+  (ghostherd-tests--with-herd ()
+    (let* ((dir (file-name-as-directory (make-temp-file "gh-changes" t)))
+           (wt (concat dir "wt/"))
+           (s (ghostherd-tests--session :name "rd" :kind 'claude :project dir))
+           shown)
+      (make-directory wt)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostherd--sidebar-session-at-point) (lambda () s))
+                    ((symbol-function 'ghostherd--sidebar-leave-overlay) #'ignore)
+                    ((symbol-function 'ghostherd-session-directory) (lambda (_s) wt))
+                    ((symbol-function 'magit-status-setup-buffer) (lambda (d) (push (list 'magit d) shown)))
+                    ((symbol-function 'vc-dir) (lambda (d) (push (list 'vc d) shown))))
+            (should (eq (keymap-lookup ghostherd-sidebar-mode-map "d") #'ghostherd-sidebar-changes))
+            (cl-letf (((symbol-function 'require) (lambda (f &rest _) (eq f 'magit))))
+              (ghostherd-sidebar-changes))
+            (cl-letf (((symbol-function 'require) (lambda (&rest _) nil)))
+              (ghostherd-sidebar-changes))
+            (should (equal (reverse shown) `((magit ,wt) (vc ,wt))))
+            (delete-directory wt)
+            (should-error (ghostherd-sidebar-changes) :type 'user-error))
+        (delete-directory dir t)))))
 
 (ert-deftest ghostherd-test-the-page-opens-a-pr-or-a-task ()
   "A PR of a checkout the herd is in opens in pr-view, a task in

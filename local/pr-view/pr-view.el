@@ -93,6 +93,11 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
 (defvar pr-view--pending-pr nil
   "A PR for the page to open once it is ready, in place of the list.
 `pr-view-open-pr' sets it, for another package.")
+(defvar pr-view--pending-local nil
+  "A checkout root whose changes the page is to show once it is ready.
+`pr-view-changes' sets it.")
+(defvar pr-view--local nil
+  "The checkout root whose changes the page shows, or nil.")
 (defvar pr-view--last-comments nil)
 (defvar pr-view--last-members nil)
 (defvar pr-view--last-detail-raw nil
@@ -566,21 +571,40 @@ people who already answered have to be added back from REVIEWS."
        ;; A page in a tab says what it showed: one opened on the phone,
        ;; or one coming back after a restart, which Emacs knows nothing of.
        (let ((pr (pr-view--pr-of-url (alist-get 'pr intent)))
-             (repo (pr-view--repo-of (alist-get 'repo intent))))
+             (repo (pr-view--repo-of (alist-get 'repo intent)))
+             (local (let ((l (alist-get 'local intent)))
+                      (and (stringp l) (not (string-empty-p l)) l))))
+         (setq pr-view--local nil)
          (when (or pr repo)
            (setq pr-view--host (or (car pr) repo)
                  pr-view--list-cache nil
-                 pr-view--pending-pr (cdr pr)))
-         (if-let* ((id pr-view--pending-pr))
-             (progn (setq pr-view--pending-pr nil)
-                    (pr-view--fetch-detail id))
-           (pr-view--fetch-list))))
+                 pr-view--pending-pr (cdr pr)
+                 pr-view--pending-local nil))
+         (cond
+          (local
+           (setq pr-view--pending-pr nil pr-view--pending-local nil)
+           (pr-view--local-asked local))
+          (pr-view--pending-local
+           (let ((root pr-view--pending-local))
+             (setq pr-view--pending-local nil)
+             (pr-view--local-show root)))
+          (pr-view--pending-pr
+           (let ((id pr-view--pending-pr))
+             (setq pr-view--pending-pr nil)
+             (pr-view--fetch-detail id)))
+          (t (pr-view--fetch-list)))))
+      ("local"
+       (let ((root (alist-get 'root intent)))
+         (if (equal root pr-view--local)
+             (pr-view--local-show root)
+           (pr-view--local-asked root))))
       ("refresh-list"
        (setq pr-view--list-states
              (pr-view--normalize-states (alist-get 'states intent)))
        (pr-view--fetch-list))
       ("open-pr" (pr-view--fetch-detail (alist-get 'id intent)))
       ("back-list"
+       (setq pr-view--local nil)
        (if pr-view--list-cache
            (pr-view--js "renderPrList" pr-view--list-cache)
          (pr-view--fetch-list)))
@@ -1625,6 +1649,272 @@ no xwidgets, or a custom id it does not read."
         (browse-url url)))))
 
 
+;;; Local changes
+;;
+;; What a checkout has not committed -- an agent's work before it is a
+;; commit, let alone a pull request -- read from git here and shown in a
+;; pull request's diff view.  The page names the checkout by its root
+;; (#local=ROOT), and is shown one opened here with `pr-view-changes', or
+;; one another package vouches for -- the herd's checkouts -- and no
+;; other: the page's address must not read whatever directory it names.
+;; Against HEAD, staged or not; files git does not track yet as new ones,
+;; but not those it ignores, nor what is not a plain file.  git's diff
+;; drivers and textconv filters are not run.
+
+(defconst pr-view--local-max (* 2 1024 1024)
+  "Most characters of a checkout's diff sent to the page; past it, the
+files left out are counted.")
+(defconst pr-view--local-untracked-max 50
+  "Most files git does not track yet that are shown.")
+(defconst pr-view--local-file-max (* 128 1024)
+  "Bytes of the largest new file shown: a larger one is named, not shown.")
+(defconst pr-view--local-timeout 20
+  "Seconds git has to say what a checkout changed.")
+
+(defvar pr-view-local-allowed-functions nil
+  "Functions of a checkout's root, as `abbreviate-file-name' writes it
+with a final slash: non-nil when a page may show what it has not
+committed.  One opened here with `pr-view-changes' is shown anyway.")
+
+(defvar pr-view--local-opened nil
+  "Checkout roots opened here with `pr-view-changes'.")
+(defun pr-view--local-git (root &rest args)
+  "Run git ARGS at checkout ROOT: its output, or nil when it failed."
+  (let ((default-directory (file-name-as-directory (expand-file-name root))))
+    (with-temp-buffer
+      (when (eq 0 (ignore-errors (apply #'call-process "git" nil '(t nil) nil args)))
+        (buffer-string)))))
+
+(defun pr-view--local-root (dir)
+  "The root of the checkout DIR is in, abbreviated with a final slash;
+nil when DIR is in none."
+  (when (and (stringp dir) (not (string-empty-p dir))
+             (file-directory-p (expand-file-name dir)))
+    (when-let* ((top (pr-view--local-git dir "rev-parse" "--show-toplevel")))
+      (abbreviate-file-name (file-name-as-directory (string-trim top))))))
+
+(defun pr-view--local-allowed-p (root)
+  "Non-nil when the page may show checkout ROOT's changes."
+  (and (stringp root)
+       (or (member root pr-view--local-opened)
+           (run-hook-with-args-until-success 'pr-view-local-allowed-functions root))
+       t))
+
+(defun pr-view--local-base (root)
+  "What ROOT's changes are against: HEAD, or before its first commit the
+empty tree."
+  (if (pr-view--local-git root "rev-parse" "--verify" "-q" "HEAD")
+      "HEAD"
+    (string-trim (or (pr-view--local-git root "hash-object" "-t" "tree" "/dev/null")
+                     "4b825dc642cb6eb9a060e54bf8d69288fbee4904"))))
+
+(defun pr-view--local-clean (s)
+  "S with a byte that is no UTF-8 as U+FFFD, for JSON."
+  (replace-regexp-in-string (rx (any (#x3fff80 . #x3fffff))) "\uFFFD" s t t))
+
+(defun pr-view--local-text (file)
+  "FILE's text when it can be shown, else why not: (text . TEXT) or
+(why . WHY).  Not a plain file -- a link may point out of the checkout
+-- binary, or larger than `pr-view--local-file-max'."
+  (let ((size (file-attribute-size (file-attributes file))))
+    (cond
+     ((or (file-symlink-p file) (not (file-regular-p file)))
+      '(why . "not a plain file"))
+     ((> (or size 0) pr-view--local-file-max)
+      (cons 'why (format "too large to show: %s" (file-size-human-readable size))))
+     (t
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally file)
+        (if (search-forward "\0" nil t)
+            '(why . "binary")
+          (cons 'text (pr-view--local-clean
+                       (decode-coding-string (buffer-string) 'utf-8)))))))))
+
+(defun pr-view--local-untracked (root)
+  "The files at ROOT git does not track yet and does not ignore, as
+\(FILES . LEFT-OUT): FILES the first `pr-view--local-untracked-max',
+each (PATH . TEXT-OR-WHY) as `pr-view--local-text' gives it."
+  (let* ((out (pr-view--local-git root "-c" "core.quotePath=false"
+                                  "ls-files" "--others" "--exclude-standard" "-z"))
+         (paths (split-string (or out "") "\0" t)))
+    (cons (mapcar (lambda (path)
+                    (cons path (pr-view--local-text
+                                (expand-file-name path (expand-file-name root)))))
+                  (seq-take paths pr-view--local-untracked-max))
+          (max 0 (- (length paths) pr-view--local-untracked-max)))))
+
+(defun pr-view--local-lines (text)
+  "TEXT's lines, without the empty one after a final newline."
+  (let ((lines (split-string text "\n")))
+    (if (string-suffix-p "\n" text) (butlast lines) lines)))
+
+(defun pr-view--local-new-file (path text)
+  "A diff that adds PATH with TEXT; nil TEXT, a file not shown."
+  (let ((head (format "diff --git a/%s b/%s\nnew file mode 100644\n" path path)))
+    (if (or (null text) (string-empty-p text))
+        head
+      (let ((lines (pr-view--local-lines text)))
+        (concat head "--- /dev/null\n+++ b/" path "\n"
+                (format "@@ -0,0 +1,%d @@\n" (length lines))
+                (mapconcat (lambda (l) (concat "+" l "\n")) lines "")
+                (unless (string-suffix-p "\n" text) "\\ No newline at end of file\n"))))))
+
+(defun pr-view--local-files (diff)
+  "How many files DIFF changes."
+  (let ((n 0) (i 0))
+    (while (string-match "^diff --git " diff i)
+      (setq n (1+ n) i (match-end 0)))
+    n))
+
+(defun pr-view--local-cap (diff)
+  "DIFF cut at a file's start to `pr-view--local-max', as (DIFF . LEFT-OUT),
+LEFT-OUT the files cut."
+  (if (<= (length diff) pr-view--local-max)
+      (cons diff 0)
+    (let ((i 0) at)
+      (while (and (setq i (string-search "\ndiff --git " diff i))
+                  (< i pr-view--local-max))
+        (setq at i i (1+ i)))
+      (let ((kept (if at (substring diff 0 (1+ at)) "")))
+        (cons kept (pr-view--local-files (substring diff (length kept))))))))
+
+(defun pr-view--local-diff-args (base &rest more)
+  "git's arguments for checkout's diff against BASE, then MORE."
+  (append (list "-c" "core.quotePath=false" "diff" "--no-color" "--no-ext-diff" "--no-textconv" "-M")
+          more (list base "--")))
+
+(defun pr-view--local-payload (root diff err)
+  "The page's payload for ROOT: its tracked changes DIFF, as git said them
+-- or ERR why not -- and its untracked files."
+  (let* ((untracked (pr-view--local-untracked root))
+         (notes nil)
+         (whole (concat (pr-view--local-clean (or diff ""))
+                        (mapconcat (lambda (f)
+                                     (when (eq (cadr f) 'why)
+                                       (push (cons (car f) (cddr f)) notes))
+                                     (pr-view--local-new-file
+                                      (car f) (and (eq (cadr f) 'text) (cddr f))))
+                                   (car untracked) "")))
+         (cap (pr-view--local-cap whole))
+         (branch (string-trim (or (pr-view--local-git root "rev-parse" "--abbrev-ref" "HEAD") "")))
+         (head (string-trim (or (pr-view--local-git root "log" "-1" "--format=%h %s") "")))
+         (host (let ((default-directory (file-name-as-directory (expand-file-name root))))
+                 (pr-view--parse-remote (pr-view--git-remote-url)))))
+    `((root . ,root)
+      (branch . ,branch)
+      (head . ,head)
+      (forge . ,(if host (symbol-name (plist-get host :kind)) ""))
+      (diff . ,(car cap))
+      (more . ,(+ (cdr cap) (cdr untracked)))
+      (notes . ,(or (nreverse notes) :json-false))
+      (diff_error . ,(or err "")))))
+
+(defun pr-view--local-read (root callback)
+  "Read what checkout ROOT has not committed, then call CALLBACK with the
+page's payload.  git runs apart from Emacs, for as long as
+`pr-view--local-timeout'; its output past twice `pr-view--local-max' is
+not kept."
+  (let* ((default-directory (file-name-as-directory (expand-file-name root)))
+         (out (generate-new-buffer " *pr-view-local*"))
+         (errs (generate-new-buffer " *pr-view-local-err*"))
+         (over nil)
+         (timer nil)
+         (finish
+          (lambda (proc)
+            (when (buffer-live-p out)
+              (when (timerp timer) (cancel-timer timer))
+              (let ((diff (with-current-buffer out (buffer-string)))
+                    (why (cond (over nil)
+                               ((eq (process-exit-status proc) 0) nil)
+                               ((not (eq (process-status proc) 'exit)) "git took too long")
+                               (t (or (car (split-string (with-current-buffer errs (buffer-string)) "\n" t))
+                                      "git could not say")))))
+                (kill-buffer out)
+                (when (buffer-live-p errs) (kill-buffer errs))
+                (funcall callback (pr-view--local-payload root (and (not why) diff) why))))))
+         (proc (make-process
+                :name "pr-view-local" :buffer out :stderr errs :noquery t
+                :connection-type 'pipe :coding 'utf-8
+                :command (cons "git" (pr-view--local-diff-args (pr-view--local-base root)))
+                :filter (lambda (p s)
+                          (when (buffer-live-p out)
+                            (with-current-buffer out
+                              (goto-char (point-max))
+                              (insert s)
+                              (when (> (buffer-size) (* 2 pr-view--local-max))
+                                (setq over t)
+                                (delete-process p)))))
+                :sentinel (lambda (p _event)
+                            (unless (process-live-p p) (funcall finish p))))))
+    (setq timer (run-at-time pr-view--local-timeout nil
+                             (lambda () (when (process-live-p proc) (delete-process proc)))))
+    proc))
+
+(defun pr-view--local-show (root)
+  "Show checkout ROOT's changes on the page, once git has said them."
+  (setq pr-view--local root
+        pr-view--inflight nil)
+  (if (not (file-directory-p (expand-file-name root)))
+      (pr-view--js "showError" (format "No checkout at %s any more" root))
+    (pr-view--local-read-for root)))
+
+(defun pr-view--local-read-for (root)
+  "Read checkout ROOT's changes for the page."
+  (let ((host (let ((default-directory (file-name-as-directory (expand-file-name root))))
+                (pr-view--parse-remote (pr-view--git-remote-url)))))
+    (when host (setq pr-view--host host pr-view--list-cache nil)))
+  (pr-view--js "setStatus" "Reading the changes…")
+  (pr-view--local-read
+   root (lambda (payload)
+          (when (equal pr-view--local root)
+            (pr-view--js "renderLocal" payload)))))
+
+(defun pr-view--local-asked (root)
+  "The page asks for checkout ROOT's changes: show them, if it may."
+  (if (pr-view--local-allowed-p root)
+      (pr-view--local-show root)
+    (pr-view--js "showError" (format "Not a checkout this page may show: %s" root))))
+
+(defun pr-view-local-stat (dir)
+  "What the checkout DIR is in has not committed, in numbers, for another
+package: (:root ROOT :files N :added A :deleted D) as the page counts
+them -- a file git does not track yet is one, its lines added -- or nil
+when DIR is in no checkout.  Run as it is asked, not apart."
+  (when-let* ((root (pr-view--local-root dir))
+              ;; git runs no textconv for a count; told not to all the same.
+           (stat (pr-view--local-git root "-c" "core.quotePath=false" "diff" "--numstat"
+                                        "--no-ext-diff" "--no-textconv" "-M"
+                                        (pr-view--local-base root) "--")))
+    (let ((files 0) (added 0) (deleted 0)
+          (untracked (pr-view--local-untracked root)))
+      (dolist (line (split-string stat "\n" t))
+        (when (string-match "\\`\\([0-9]+\\|-\\)\t\\([0-9]+\\|-\\)\t" line)
+          (setq files (1+ files)
+                added (+ added (string-to-number (match-string 1 line)))
+                deleted (+ deleted (string-to-number (match-string 2 line))))))
+      (dolist (f (car untracked))
+        (setq files (1+ files))
+        (when (eq (cadr f) 'text)
+          (setq added (+ added (length (pr-view--local-lines (cddr f)))))))
+      (list :root root :files (+ files (cdr untracked)) :added added :deleted deleted))))
+
+;;;###autoload
+(defun pr-view-changes (&optional dir)
+  "Show what the checkout DIR is in has not committed, in pr-view's diff
+view: against HEAD, staged or not, files git does not track yet as new.
+DIR defaults to the current directory."
+  (interactive)
+  (let ((root (or (pr-view--local-root (or dir default-directory))
+                  (user-error "Not in a git checkout: %s" (or dir default-directory)))))
+    (cl-pushnew root pr-view--local-opened :test #'equal)
+    (setq pr-view--pending-local root
+          pr-view--pending-pr nil)
+    (setf (xwapp-poll-interval pr-view--app) pr-view-poll-interval)
+    (xwapp-open pr-view--app)
+    (pr-view--js "setStatus" "Loading…")))
+
+
 ;;; For other packages
 ;;
 ;; Another package -- ghostherd's herd page -- shows the PR an agent's
@@ -1737,7 +2027,8 @@ Nothing goes to pr-view's page."
 (defun pr-view-open-pr (dir id)
   "Open pull request ID of the repository at DIR in pr-view."
   (let ((default-directory (file-name-as-directory (expand-file-name dir))))
-    (setq pr-view--pending-pr id)
+    (setq pr-view--pending-pr id
+          pr-view--pending-local nil)
     (pr-view)))
 
 
@@ -1755,7 +2046,9 @@ xwapp calls this; autoloaded, so that once Emacs is up xwapp can load
 the package through it, for that tab to find."
   (setq pr-view--list-cache nil
         pr-view--inflight nil
-        pr-view--pending-pr nil))
+        pr-view--pending-pr nil
+        pr-view--pending-local nil
+        pr-view--local nil))
 
 ;;;###autoload
 (defun pr-view (&optional kind)

@@ -166,7 +166,8 @@ report. Notes do, because they were written onto the host.
 ** Sidebar keys
 
 =?= key legend (in the overlay) · =RET= visit · =e= explain · =N= new · =P= pair · =k= kill ·
-=r= rename · =R= respawn · =T= relay · =c= note · =z= interrupt · =Z= abort ·
+=r= rename · =R= respawn · =T= relay · =d= its uncommitted changes · =c= note ·
+=z= interrupt · =Z= abort ·
 =L= herd log · =H= scrollback ·
 =a= answer prompt · =m= message · =i= prompt ·
 =s= filter by project · =/= live-narrow · =v= preview · =g= refresh · =U= usage · =.= next blocked ·
@@ -1120,7 +1121,11 @@ are the other tabs (below, and "What happened while you were away").
   rest behind =+N=; a click opens one in clickup-view).  An agent in
   another of the project's worktrees shows its own.  pr-view and
   clickup-view hold the tokens and do the asking; without them nothing
-  shows, and a default branch with no PR shows nothing either.  Looked
+  shows, and a default branch with no PR shows nothing either.  And
+  what the checkout has not committed, =3 uncommitted +12 −4= --- on a
+  default branch too --- which opens pr-view's diff view of it, on the
+  phone as well; counted again when an agent there ends a turn.  =d= in
+  the sidebar shows an agent's checkout in magit.  Looked
   at once a minute while the tab is watched, an answer kept five.
   Each git call and each request is done when you stop typing, a few
   at a time, so the looking never holds a keystroke; meanwhile the

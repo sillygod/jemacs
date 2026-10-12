@@ -11,6 +11,7 @@
 
   let lastList = null;
   let lastDetail = null;
+  let lastLocal = null;
   let selectedStates = ["OPEN", "MERGED"];
   let searchQ = "";
   let page = "list";
@@ -286,6 +287,10 @@
         cur.status = "renamed";
         continue;
       }
+      if (line.startsWith("Binary files ")) {
+        cur.binary = true;
+        continue;
+      }
       if (line.startsWith("--- ")) {
         const p = line.slice(4).replace(/^[ab]\//, "");
         if (p === "/dev/null") cur.status = "added";
@@ -418,6 +423,15 @@
     return rows.join("");
   }
 
+  // A file without lines: why, as Emacs said it of a file it did not
+  // read, or as the diff says it.
+  function notShown(payload, file) {
+    const why = payload.notes && payload.notes[file.path];
+    if (why) return "Not shown: " + why + ".";
+    if (file.binary) return "Not shown: binary.";
+    return file.status === "added" ? "An empty file." : "No lines changed.";
+  }
+
   function renderFileDiff(payload) {
     if (payload.diff_loading) {
       return '<div class="diff-split"><div class="file-pane"><p class="muted pane-msg">Loading diff…</p></div></div>';
@@ -466,7 +480,7 @@
       "> Viewed</label>" +
       "</header>" +
       '<div class="file-diff">' +
-      renderFileLines(current) +
+      (renderFileLines(current) || '<p class="muted pane-msg">' + escapeHtml(notShown(payload, current)) + "</p>") +
       "</div></section></div>"
     );
   }
@@ -507,7 +521,7 @@
   function setChrome(kind) {
     page = kind;
     btnBack.hidden = kind === "list";
-    btnRefresh.hidden = kind !== "list";
+    btnRefresh.hidden = kind !== "list" && kind !== "local";
     // A pull request is made from a branch of a checkout on the Mac.
     btnCreate.hidden = kind !== "list" || XW.elsewhere;
     btnBrowser.hidden = kind !== "detail";
@@ -982,6 +996,81 @@
     ];
   }
 
+  // The file tree and the file shown, as a pull request's and a
+  // checkout's changes have them: a file picked is drawn by RERENDER.
+  function bindFiles(rerender) {
+    const treeBody = document.getElementById("tree-body");
+    const treeSearch = document.getElementById("tree-search");
+    const viewedEl = document.getElementById("file-viewed");
+    if (treeBody) {
+      treeBody.querySelectorAll(".tree-file").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedDiffPath = btn.getAttribute("data-path");
+          rerender();
+        });
+      });
+    }
+    if (treeSearch && treeBody) {
+      treeSearch.addEventListener("input", () => {
+        const q = treeSearch.value.trim().toLowerCase();
+        treeBody.querySelectorAll(".tree-file").forEach((btn) => {
+          const path = (btn.getAttribute("data-path") || "").toLowerCase();
+          btn.hidden = q && path.indexOf(q) === -1;
+        });
+        treeBody.querySelectorAll(".tree-dir").forEach((dir) => {
+          const vis = dir.querySelectorAll(".tree-file:not([hidden])").length;
+          dir.hidden = q && vis === 0;
+        });
+      });
+    }
+    if (viewedEl) {
+      viewedEl.addEventListener("change", () => {
+        if (!selectedDiffPath) return;
+        if (viewedEl.checked) viewedFiles[selectedDiffPath] = true;
+        else delete viewedFiles[selectedDiffPath];
+      });
+    }
+  }
+
+  // What a checkout has not committed, which Emacs reads with git: in a
+  // pull request's file view, without its tabs.  Back is to its
+  // repository's pull requests, when it is on a forge.
+  function renderLocal(payload) {
+    lastLocal = payload || {};
+    const root = lastLocal.root || "";
+    const branch = lastLocal.branch || "";
+    setChrome("local");
+    btnBack.hidden = !lastLocal.forge;
+    if (root) here("local", root);
+    contextEl.textContent = root.replace(/\/$/, "").split("/").pop() + (branch ? " · " + branch : "");
+    const files = lastLocal.diff ? parseUnifiedDiff(lastLocal.diff) : [];
+    const added = files.reduce((n, f) => n + f.added, 0);
+    const deleted = files.reduce((n, f) => n + f.deleted, 0);
+    const more = lastLocal.more || 0;
+    app.innerHTML =
+      '<div class="detail-wrap local"><section class="detail-head">' +
+      "<h1>Uncommitted changes</h1>" +
+      '<div class="chips">' +
+      (branch ? '<span class="chip">⎇ ' + escapeHtml(branch) + "</span>" : "") +
+      (files.length
+        ? '<span class="chip local-stat">' + files.length + (files.length === 1 ? " file " : " files ") +
+          '<span class="stat-add">+' + added + '</span> <span class="stat-del">−' + deleted + "</span></span>"
+        : "") +
+      (lastLocal.head ? '<span class="chip" title="The last commit">' + escapeHtml(lastLocal.head) + "</span>" : "") +
+      "</div>" +
+      '<p class="muted local-root">' + escapeHtml(root) + "</p>" +
+      (more ? '<p class="muted local-more">' + more + (more === 1 ? " more file is" : " more files are") +
+        " not shown: too many to read here.</p>" : "") +
+      "</section>" +
+      '<div id="panel-files" class="panel-files">' +
+      (files.length || lastLocal.diff_error
+        ? renderFileDiff(lastLocal)
+        : '<div class="diff-split"><div class="file-pane"><p class="muted pane-msg">Nothing uncommitted.</p></div></div>') +
+      "</div></div>";
+    bindFiles(() => renderLocal(lastLocal));
+    setStatus("");
+  }
+
   function renderDetail(payload) {
     lastDetail = payload;
     const pr = (payload && payload.pr) || {};
@@ -1097,37 +1186,7 @@
       "</div>";
     const ap = document.getElementById("act-approve");
     const mg = document.getElementById("act-merge");
-    const treeBody = document.getElementById("tree-body");
-    const treeSearch = document.getElementById("tree-search");
-    const viewedEl = document.getElementById("file-viewed");
-    if (treeBody) {
-      treeBody.querySelectorAll(".tree-file").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          selectedDiffPath = btn.getAttribute("data-path");
-          renderDetail(lastDetail);
-        });
-      });
-    }
-    if (treeSearch && treeBody) {
-      treeSearch.addEventListener("input", () => {
-        const q = treeSearch.value.trim().toLowerCase();
-        treeBody.querySelectorAll(".tree-file").forEach((btn) => {
-          const path = (btn.getAttribute("data-path") || "").toLowerCase();
-          btn.hidden = q && path.indexOf(q) === -1;
-        });
-        treeBody.querySelectorAll(".tree-dir").forEach((dir) => {
-          const vis = dir.querySelectorAll(".tree-file:not([hidden])").length;
-          dir.hidden = q && vis === 0;
-        });
-      });
-    }
-    if (viewedEl) {
-      viewedEl.addEventListener("change", () => {
-        if (!selectedDiffPath) return;
-        if (viewedEl.checked) viewedFiles[selectedDiffPath] = true;
-        else delete viewedFiles[selectedDiffPath];
-      });
-    }
+    bindFiles(() => renderDetail(lastDetail));
     const commitPanel = document.getElementById("panel-commits");
     if (commitPanel) {
       commitPanel.addEventListener("click", (ev) => {
@@ -1341,6 +1400,7 @@
     showError: (msg) => setStatus(msg, "error"),
     renderPrList: renderList,
     renderPrDetail: renderDetail,
+    renderLocal: renderLocal,
     renderCreateForm: renderCreateForm,
     setComments: (payload) => {
       const items = (payload && payload.items) || [];
@@ -1475,7 +1535,12 @@
 
   function asked() {
     const p = new URLSearchParams(location.hash.slice(1));
-    return { pr: p.get("pr") || "", repo: p.get("repo") || "" };
+    return { pr: p.get("pr") || "", repo: p.get("repo") || "", local: p.get("local") || "" };
+  }
+
+  function refresh() {
+    if (page === "local") emit("local", { root: (lastLocal && lastLocal.root) || "" });
+    else emit("refresh-list", { states: selectedStates });
   }
 
   // An avatar that fails to load leaves its initials showing.  Not an
@@ -1487,9 +1552,7 @@
   }, true);
 
   btnBack.addEventListener("click", () => emit("back-list"));
-  btnRefresh.addEventListener("click", () =>
-    emit("refresh-list", { states: selectedStates })
-  );
+  btnRefresh.addEventListener("click", refresh);
   btnCreate.addEventListener("click", () => {
     setStatus("Loading branches…");
     emit("create-form");
@@ -1499,10 +1562,8 @@
 
   document.addEventListener("keydown", (ev) => {
     if (ev.target && /INPUT|TEXTAREA|SELECT/.test(ev.target.tagName)) return;
-    if (ev.key === "Escape" && page !== "list") emit("back-list");
-    if (ev.key === "r" && !ev.metaKey && !ev.ctrlKey && page === "list") {
-      emit("refresh-list", { states: selectedStates });
-    }
+    if (ev.key === "Escape" && page !== "list" && !btnBack.hidden) emit("back-list");
+    if (ev.key === "r" && !ev.metaKey && !ev.ctrlKey && (page === "list" || page === "local")) refresh();
   });
 
   emit("ready", asked());

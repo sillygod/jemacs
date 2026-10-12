@@ -1127,6 +1127,43 @@ lead handoff, for every agent.
 - [ ] An agent relaying another --- a lead whose rd is used up --- through
   =herd relay=
 
+* Phase 3.27 — What a checkout has not committed  *(this tree)*
+
+Goal: an agent says it is done; on the phone, see what it changed
+before telling it to commit --- without the Screen, and without a
+second diff view to keep: a checkout's uncommitted changes are a pull
+request not yet opened, and pr-view already shows one, narrow screens
+and all.
+
+** What shipped
+
+- [X] =pr-view-changes=: a checkout's changes in pr-view's file view
+  --- against =HEAD=, staged or not; new files whole, or named with
+  why not (binary, too large, not a plain file); ignored ones left
+  out; capped, and what is left out counted.  git apart from Emacs,
+  its diff drivers and textconv filters not run.  Refresh, a reload
+  and Back to the repository's pull requests
+- [X] On the phone at =/open/pr-view#local=<root>=, for a checkout
+  opened here or vouched for by =pr-view-local-allowed-functions= ---
+  the herd's checkouts --- and no other
+- [X] The herd page's work line: =N uncommitted +A −D=, on a default
+  branch too, opening it; counted at each look and when an agent there
+  ends a turn.  =d= in the sidebar: the agent's checkout in magit
+- [X] 7 ERT in pr-view (real checkouts: staged and not, before the
+  first commit, a link not followed, the checkout's own commands not
+  run, the caps), 3 in ghostherd; 14 + 17 WebKit checks
+  (=herd-changes=, =pr-local=); 30 guards broken on purpose, each
+  caught
+
+** What is left
+
+- [ ] A line of the diff, commented on, goes to the agent --- the
+  lead, or the one you pick --- as a prompt with its file and line:
+  review on the phone, and have it fixed, in one place
+- [ ] Which agent changed which file, from the Edit and Write in their
+  conversations, on the file tree
+- [ ] Syntax in pr-view's diffs, a pull request's and a checkout's
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

@@ -700,6 +700,10 @@ pre.screen {
 .pr-draft { color: var(--muted); }
 .links .wbranch { font-family: inherit; }
 .wchip.wdone { opacity: 0.6; }
+.wchip.chg { color: var(--muted); }
+.wchip.chg span { white-space: nowrap; }
+.cadd { color: #3fb950; }
+.cdel { color: #f85149; }
 
 /* ---- A phone ------------------------------------------------------------
    A narrow screen: one thing across it at a time, the height given to

@@ -430,7 +430,7 @@ Anything else worth recording:
 | Agent-driven reports | *gap* --- needs a real CLI's hooks      | Manual: T13               |
 | Batched fetch        | *done* --- real tmux, two panes, one call | Wedged host: manual T14 |
 | Log persistence      | *done* --- format, caps, truncated tail  | A real crash: manual T15 |
-| Herd page in WebKit  | *in part* --- the PR and task chips, the forms, the relay | =../../xwapp/e2e=, =herd-chips=, =herd-forms=, =herd-relay= |
+| Herd page in WebKit  | *in part* --- the PR, task and changes chips, the forms, the relay | =../../xwapp/e2e=, =herd-chips=, =herd-changes=, =herd-forms=, =herd-relay=, =pr-local= |
 | Interactive script | =emacsclient= spawn/kill smoke           | Optional CI later         |
 
 Do *not* block UX work on full TUI integration tests of claude/grok

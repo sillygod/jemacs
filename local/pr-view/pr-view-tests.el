@@ -886,5 +886,214 @@ a restart; what it opens with is the tab's to say, not what was left."
     (pr-view-reopen)
     (should-not (or pr-view--list-cache pr-view--inflight pr-view--pending-pr))))
 
+;;; Local changes
+
+(defmacro pr-view-tests--repo (var &rest body)
+  "BODY with VAR a new git checkout, git's own and the user's config
+left out."
+  (declare (indent 1))
+  `(let* ((,var (file-name-as-directory (file-truename (make-temp-file "pr-view-local-" t))))
+          (process-environment
+           (append (list "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_NOSYSTEM=1"
+                         "GIT_AUTHOR_NAME=t" "GIT_AUTHOR_EMAIL=t@example.com"
+                         "GIT_COMMITTER_NAME=t" "GIT_COMMITTER_EMAIL=t@example.com")
+                   process-environment)))
+     (unwind-protect
+         (progn (pr-view-tests--git ,var "init" "-q" "-b" "main") ,@body)
+       (delete-directory ,var t))))
+
+(defun pr-view-tests--git (root &rest args)
+  (let ((default-directory root))
+    (should (eq 0 (apply #'call-process "git" nil nil nil args)))))
+
+(defun pr-view-tests--write (root path text)
+  (let ((file (expand-file-name path root)))
+    (make-directory (file-name-directory file) t)
+    (let ((coding-system-for-write 'no-conversion))
+      (write-region text nil file nil 'silent))))
+
+(defun pr-view-tests--local (root)
+  "ROOT's changes as the page is sent them."
+  (let (got)
+    (pr-view--local-read root (lambda (payload) (setq got payload)))
+    (with-timeout (10 (error "git did not finish"))
+      (while (not got) (accept-process-output nil 0.05)))
+    got))
+
+(defun pr-view-tests--counted (diff)
+  "The lines DIFF adds and deletes, as the page counts them."
+  (let ((added 0) (deleted 0) (in nil))
+    (dolist (line (split-string diff "\n"))
+      (cond ((string-prefix-p "diff --git " line) (setq in nil))
+            ((string-prefix-p "@@ " line) (setq in t))
+            ((and in (string-prefix-p "+" line)) (cl-incf added))
+            ((and in (string-prefix-p "-" line)) (cl-incf deleted))))
+    (list added deleted)))
+
+(ert-deftest pr-view-test-local-changes-of-a-checkout ()
+  "What a checkout has not committed: staged or not, against HEAD; a new
+file whole; one not shown named with why -- binary, too large, a link,
+which is not followed -- and an ignored one not at all."
+  (pr-view-tests--repo root
+    (let ((outside (make-temp-file "pr-view-secret-")))
+      (unwind-protect
+          (let ((pr-view--local-file-max 64))
+            (pr-view-tests--write outside "" "the secret\n")
+            (pr-view-tests--write root "a.txt" "one\ntwo\n")
+            (pr-view-tests--write root "b.txt" "keep\n")
+            (pr-view-tests--write root ".gitignore" "*.log\n")
+            (pr-view-tests--git root "add" ".")
+            (pr-view-tests--git root "commit" "-q" "-m" "First things")
+            (pr-view-tests--write root "a.txt" "one\nTWO\n")
+            (pr-view-tests--git root "add" "a.txt")
+            (pr-view-tests--write root "b.txt" "keep\nmore\n")
+            (pr-view-tests--write root "new dir/new.txt" "hello")
+            (pr-view-tests--write root "bin.dat" "a\0b")
+            (pr-view-tests--write root "big.txt" (make-string 100 ?x))
+            (pr-view-tests--write root "debug.log" "ignored\n")
+            (make-symbolic-link outside (expand-file-name "link" root))
+            (let* ((p (pr-view-tests--local root))
+                   (diff (alist-get 'diff p)))
+              (should (equal (alist-get 'root p) root))
+              (should (equal (alist-get 'branch p) "main"))
+              (should (string-match-p "\\`[0-9a-f]+ First things\\'" (alist-get 'head p)))
+              (should (equal (alist-get 'diff_error p) ""))
+              (should (= (alist-get 'more p) 0))
+              ;; Staged and not, both.
+              (should (string-match-p "^-two$" diff))
+              (should (string-match-p "^\\+TWO$" diff))
+              (should (string-match-p "^\\+more$" diff))
+              ;; New, whole, with a space in its path.
+              (should (string-match-p "^diff --git a/new dir/new.txt b/new dir/new.txt\nnew file mode 100644\n--- /dev/null\n\\+\\+\\+ b/new dir/new.txt\n@@ -0,0 \\+1,1 @@\n\\+hello\n\\\\ No newline at end of file$" diff))
+              (should (equal (alist-get 'notes p)
+                             '(("big.txt" . "too large to show: 100") ("bin.dat" . "binary") ("link" . "not a plain file"))))
+              (should (string-match-p "^diff --git a/link b/link\nnew file mode" diff))
+              (should-not (string-match-p "secret" diff))
+              (should-not (string-match-p "debug.log" diff))
+              ;; As many as pr-view-local-stat counts, by construction.
+              (should (equal (pr-view-local-stat (concat root "new dir/"))
+                             (list :root root :files 6 :added 3 :deleted 1)))
+              (should (equal (pr-view-tests--counted diff) '(3 1)))
+              (should (= (pr-view--local-files diff) 6))))
+        (delete-file outside)))))
+
+(ert-deftest pr-view-test-local-changes-before-the-first-commit ()
+  "Before its first commit a checkout's changes are against nothing."
+  (pr-view-tests--repo root
+    (pr-view-tests--write root "staged.txt" "s\n")
+    (pr-view-tests--git root "add" "staged.txt")
+    (pr-view-tests--write root "loose.txt" "l\n")
+    (let ((diff (alist-get 'diff (pr-view-tests--local root))))
+      (should (string-match-p "^\\+s$" diff))
+      (should (string-match-p "^\\+l$" diff)))
+    (should (equal (pr-view-local-stat root) (list :root root :files 2 :added 2 :deleted 0)))))
+
+(ert-deftest pr-view-test-local-changes-run-none-of-the-checkouts-commands ()
+  "A checkout's textconv filter or external diff could be any command:
+git is told to run neither."
+  (pr-view-tests--repo root
+    (let ((ran (expand-file-name "ran" (make-temp-file "pr-view-ran-" t))))
+      (pr-view-tests--write root "a.txt" "one\n")
+      (pr-view-tests--write root ".gitattributes" "*.txt diff=evil\n")
+      (pr-view-tests--git root "add" ".")
+      (pr-view-tests--git root "commit" "-q" "-m" "x")
+      (pr-view-tests--git root "config" "diff.evil.textconv" (format "touch %s; cat" ran))
+      (pr-view-tests--git root "config" "diff.external" (format "touch %s; true" ran))
+      (pr-view-tests--write root "a.txt" "two\n")
+      (should (string-match-p "^\\+two$" (alist-get 'diff (pr-view-tests--local root))))
+      (should (plist-get (pr-view-local-stat root) :files))
+      (should-not (file-exists-p ran))
+      (delete-directory (file-name-directory ran) t))))
+
+(ert-deftest pr-view-test-local-changes-too-long-are-cut-between-files ()
+  "Past the most the page is sent, whole files are left out, and counted;
+a byte that is no UTF-8 does not stop the page's JSON."
+  (pr-view-tests--repo root
+    (pr-view-tests--write root "seed" "x\n")
+    (pr-view-tests--git root "add" ".")
+    (pr-view-tests--git root "commit" "-q" "-m" "x")
+    (dotimes (i 5)
+      (pr-view-tests--write root (format "f%d.txt" i) (concat (make-string 300 ?y) "\n")))
+    (pr-view-tests--write root "latin.txt" "caf\351\n")
+    (let ((pr-view--local-max 1000))
+      (let* ((p (pr-view-tests--local root))
+             (diff (alist-get 'diff p)))
+        (should (<= (length diff) 1000))
+        (should (= (+ (pr-view--local-files diff) (alist-get 'more p)) 6))
+        (should (> (alist-get 'more p) 0))
+        (should (string-suffix-p "\n" diff))
+        (should (json-encode p))))
+    (should (string-match-p "caf\uFFFD" (alist-get 'diff (pr-view-tests--local root))))
+    ;; So many new files: the first so many, the rest counted.
+    (let* ((pr-view--local-untracked-max 2)
+           (p (pr-view-tests--local root)))
+      (should (= (pr-view--local-files (alist-get 'diff p)) 2))
+      (should (= (alist-get 'more p) 4))
+      (should (= (plist-get (pr-view-local-stat root) :files) 6)))))
+
+(ert-deftest pr-view-test-local-changes-only-of-a-checkout-it-may-show ()
+  "A page names a checkout in its address: shown when it was opened here
+or another package vouches for it, else refused -- and git is not run
+there."
+  (pr-view-tests--repo herd
+    (pr-view-tests--repo elsewhere
+      (let (read errors pr-view--local-opened pr-view-local-allowed-functions)
+        (cl-letf (((symbol-function 'pr-view--local-read) (lambda (root _cb) (push root read)))
+                  ((symbol-function 'pr-view--js)
+                   (lambda (fn arg) (when (equal fn "showError") (push arg errors))))
+                  ((symbol-function 'pr-view--fetch-list) #'ignore))
+          (pr-view--handle-intent `((op . "ready") (local . ,elsewhere)))
+          (should-not read)
+          (should (string-match-p "Not a checkout this page may show" (car errors)))
+          (add-hook 'pr-view-local-allowed-functions (lambda (root) (equal root herd)))
+          (pr-view--handle-intent `((op . "ready") (local . ,herd)))
+          (should (equal read (list herd)))
+          (should (equal pr-view--local herd))
+          ;; Its refresh, and one for another checkout.
+          (pr-view--handle-intent `((op . "local") (root . ,herd)))
+          (pr-view--handle-intent `((op . "local") (root . ,elsewhere)))
+          (should (equal read (list herd herd)))
+          ;; One gone since, said so.
+          (setq errors nil)
+          (let ((gone (concat herd "gone/")))
+            (add-hook 'pr-view-local-allowed-functions (lambda (root) (equal root gone)))
+            (pr-view--handle-intent `((op . "local") (root . ,gone)))
+            (should (equal read (list herd herd)))
+            (should (string-match-p "No checkout at .*gone/ any more" (car errors))))
+          ;; Back to the list leaves it.
+          (pr-view--handle-intent '((op . "back-list")))
+          (should-not pr-view--local))))))
+
+(ert-deftest pr-view-test-changes-opens-a-checkout-here ()
+  "Opened in Emacs, a checkout's changes are shown once the page is
+ready, and that checkout the page may show again; not a checkout, said."
+  (pr-view-tests--repo root
+    (let (opened read pr-view--local-opened pr-view--pending-local)
+      (cl-letf (((symbol-function 'xwapp-open) (lambda (_app) (setq opened t)))
+                ((symbol-function 'pr-view--js) #'ignore)
+                ((symbol-function 'pr-view--local-read) (lambda (r _cb) (push r read))))
+        (pr-view-changes root)
+        (should opened)
+        (should (equal pr-view--local-opened (list (pr-view--local-root root))))
+        (pr-view--handle-intent '((op . "ready")))
+        (should (equal read (list (pr-view--local-root root))))
+        ;; Once: the next time it is ready, the list.
+        (should-not pr-view--pending-local)
+        (should (pr-view--local-allowed-p (pr-view--local-root root)))
+        (let ((plain (make-temp-file "pr-view-plain-" t)))
+          (should-error (pr-view-changes plain) :type 'user-error)
+          (should-not (pr-view-local-stat plain))
+          (delete-directory plain t))))))
+
+(ert-deftest pr-view-test-ui-shows-local-changes ()
+  "The page has a view for a checkout's changes, asks for one by its
+address, and says why a file is not shown."
+  (let ((js (with-temp-buffer
+              (insert-file-contents (expand-file-name "ui/app.js" pr-view--dir))
+              (buffer-string))))
+    (should (string-match-p "renderLocal: renderLocal" js))
+    (should (string-match-p "local: p.get(\"local\")" js))
+    (should (string-match-p "\"Not shown: \" \\+ why" js))))
+
 (provide 'pr-view-tests)
 ;;; pr-view-tests.el ends here

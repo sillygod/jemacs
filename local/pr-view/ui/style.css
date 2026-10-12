@@ -95,6 +95,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 }
 
 .muted { color: var(--muted); }
+/* A checkout's path: long, and no spaces to wrap at. */
+.local-root { overflow-wrap: anywhere; }
 
 .empty {
   margin: 48px auto;

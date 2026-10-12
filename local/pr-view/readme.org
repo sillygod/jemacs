@@ -198,6 +198,27 @@ to read in.  A tab picked once its head has scrolled away opens at its
 start, under the tabs.  At the desk the head stays and the tab scrolls
 under it, as before.
 
+* A checkout's uncommitted changes
+
+=M-x pr-view-changes= shows what the checkout at hand has not
+committed in a pull request's file view: against =HEAD=, staged or
+not, a file git does not track yet as a new one --- whole, or named
+with why it is not shown: binary, larger than 128k, not a plain file
+(a link is not followed out of the checkout).  Files git ignores are
+left out.  Up to fifty new files and two megabytes of diff; past them
+the files left out are counted.  git runs apart from Emacs, for twenty
+seconds at most, its diff drivers and textconv filters not run.
+Refresh reads it again; Back is to the repository's pull requests,
+when it is on a forge.
+
+From the herd page --- a checkout's =N uncommitted= chip --- it opens
+on the phone at =/open/pr-view#local=<root>=.  An address names any
+directory, so the page shows only a checkout opened here with
+=pr-view-changes=, or one a function on
+=pr-view-local-allowed-functions= vouches for --- ghostherd's: the
+checkouts the herd is in --- and refuses the rest, running no git
+there.
+
 * For other packages
 
 ghostherd's herd page shows the PR an agent's branch is on.  Two
@@ -217,6 +238,10 @@ functions serve it, and anything else that wants the same:
   =(:kind :owner :repo)=.
 - =pr-view-open-pr= =DIR ID=: open PR =ID= of =DIR='s repository here,
   its detail rather than the list.
+- =pr-view-local-stat= =DIR=: what the checkout =DIR= is in has not
+  committed, as the page counts it: =(:root :files :added :deleted)=,
+  or =nil= outside a checkout.  Run as asked, not apart.
+- =pr-view-changes= =DIR=: open that checkout's changes here.
 
 * Tests
 
@@ -232,4 +257,4 @@ Without clickup-view on the load path the ClickUp task tests skip.
 
 The page on a phone and in a narrow window is in xwapp's browser
 suites, on fixtures and without a token (=../xwapp/e2e/=: =apps-phone=,
-=narrow=).
+=narrow=); a checkout's changes, on a real one, in =pr-local=.
