@@ -241,6 +241,10 @@ class HerdStore:
         # A blocked agent's menu, as Emacs read it off its screen (JSON).
         if "prompt" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN prompt TEXT")
+        # The address of its project's room from your phone, without the
+        # page's secret: for the bot to link to.
+        if "room" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN room TEXT")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -1060,7 +1064,10 @@ class HerdStore:
         replies: list[dict[str, Any]] | None = None,
         ack_cmd_ids: list[str] | None = None,
         pushes: list[dict[str, Any]] | None = None,
+        page_url: str | None = None,
     ) -> dict[str, Any]:
+        """PAGE_URL is the herd page's address from your phone, without its
+        secret, as Emacs says it each tick; none, it is not linked."""
         sessions = sessions or []
         pushes = [p for p in (pushes or []) if isinstance(p, dict) and p.get("kind") and p.get("session")]
         ack_ids = [i for i in (ack_ids or []) if i]
@@ -1132,8 +1139,8 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason, screen, role, prompt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen, role, prompt, room)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -1145,11 +1152,16 @@ class HerdStore:
                         str(row.get("screen") or ""),
                         str(row.get("role") or ""),
                         json.dumps(row["prompt"]) if isinstance(row.get("prompt"), dict) else None,
+                        str(row.get("room") or ""),
                     ),
                 )
                 self._upsert_alias(name)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (k, v) VALUES ('synced', '1')"
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (k, v) VALUES ('page_url', ?)",
+                (page_url if isinstance(page_url, str) else "",),
             )
             names = {
                 str(row.get("name") or "").strip()
@@ -1346,7 +1358,7 @@ class HerdStore:
         with self._mu:
             row = self._conn.execute(
                 """
-                SELECT name, kind, state, notes, project, reason, screen, prompt
+                SELECT name, kind, state, notes, project, reason, screen, prompt, room
                 FROM snapshot WHERE name = ?
                 """,
                 (name,),
@@ -1362,8 +1374,17 @@ class HerdStore:
             "reason": row[5] or "",
             "screen": row[6] or "",
             "prompt": json.loads(row[7]) if row[7] else None,
+            "room": row[8] or "",
             "short": self.short_for(row[0]),
         }
+
+    def page_url(self) -> str:
+        "The herd page's address from your phone, as Emacs last said it; or ''."
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT v FROM meta WHERE k = 'page_url'"
+            ).fetchone()
+        return (row[0] if row else "") or ""
 
     def enqueue_command(
         self,

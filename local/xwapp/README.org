@@ -132,8 +132,14 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
   needed, the origin still checked: =https://= or =http://= the name.
 - *The address is kept,* with no tab open and over restarts: an
   address saved on a phone keeps working.  At startup =xwapp-resume=
-  loads the apps and Emacs listens on =xwapp-port=.  =M-x
-  xwapp-renew-secret= ends an address given out.
+  loads the apps and Emacs listens on =xwapp-port= --- with remote
+  hosts it listens whether or not a page was kept, for the proxy
+  cannot ask it to begin.  =M-x xwapp-renew-secret= ends an address
+  given out.
+- *An address without the secret,* =/open/<pkg>=, sends a browser on
+  to that app's page under its secret, for one of
+  =xwapp-remote-users= only: one to bookmark, or to pass through a
+  chat's servers (=xwapp-remote-open-url=).  The app must be loaded.
 - *Opened there, the page is that device's*, as for any tab: the one
   in Emacs, or in a tab here, lets go of it.
 - =xwapp-remote-scheme= is ="https"= by default.  The proxy needs a

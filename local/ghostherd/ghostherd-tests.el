@@ -7061,8 +7061,75 @@ none when the page is this machine's alone."
         (should-not (ghostherd-memory-page--room-url "~/w/shop/")))
       (should-not asked)
       (let ((xwapp-remote-hosts '("box")))
-        (should (equal (ghostherd-memory-page--room-url "~/w/shop/") "http://box/open/ghostherd#…")))
-      (should (equal asked (list ghostherd-memory-page--app "room/chat/~%2Fw%2Fshop%2F"))))))
+        (should (equal (ghostherd-memory-page--room-url "~/w/shop/") "http://box/open/ghostherd#…"))
+        (should (equal asked (list ghostherd-memory-page--app "room/chat/~%2Fw%2Fshop%2F")))
+        ;; No project: the page itself, on its Agents tab.
+        (ghostherd-memory-page--room-url nil)
+        (should (equal asked (list ghostherd-memory-page--app "agents")))))))
+
+(ert-deftest ghostherd-test-the-bot-is-told-the-pages-addresses ()
+  "Each tick tells the sidecar the herd page's address from your phone,
+and each agent's room's, for the bot to link to.  Each is asked of the
+page once -- asking keeps xwapp's address, which writes a file, and the
+tick runs every second -- and again only when the hosts change."
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd--room-urls (make-hash-table :test 'equal))
+           (asked nil)
+           (ghostherd-room-url-function
+            (lambda (p) (push p asked) (if p (concat "room:" p) "page")))
+           params
+           (tick (lambda ()
+                   (let ((ghostherd--herd-tick-inflight nil) (ghostherd--herd-replies nil)
+                         (ghostherd--herd-ack-ids nil) (ghostherd--herd-pushes nil))
+                     (ghostherd--herd-tick-async))
+                   (list (plist-get params :page_url)
+                         (sort (mapcar (lambda (r) (list (plist-get r :name) (plist-get r :room)))
+                                       (append (plist-get params :sessions) nil))
+                               (lambda (a b) (string< (car a) (car b))))))))
+      (ghostherd-tests--session :name "rd" :kind 'claude :project "/w/shop/")
+      (ghostherd-tests--session :name "qa" :kind 'grok :project "/w/shop/")
+      (ghostherd-tests--session :name "sh" :kind 'shell)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd-memory-request-async) (lambda (_m _ok p _err) (setq params p))))
+        (dotimes (_ 3)
+          (should (equal (funcall tick)
+                         '("page" (("qa" "room:/w/shop/") ("rd" "room:/w/shop/") ("sh" ""))))))
+        (should (equal (sort (copy-sequence asked) (lambda (a b) (string< (or a "") (or b ""))))
+                       '(nil "/w/shop/")))
+        ;; Another host: asked again.
+        (let ((xwapp-remote-hosts '("elsewhere")))
+          (funcall tick))
+        (should (= (length asked) 4))
+        ;; A push's room is the same address, not asked again.
+        (should (equal (ghostherd--room-url "/w/shop/") "room:/w/shop/"))
+        (should (= (length asked) 4))
+        ;; Nothing to link to: empty, on the page and each room.
+        (let ((ghostherd-room-url-function nil))
+          (should (equal (funcall tick) '("" (("qa" "") ("rd" "") ("sh" ""))))))
+        (let ((ghostherd-room-url-function (lambda (_) (error "No address"))))
+          (should (equal (car (funcall tick)) "")))))))
+
+(ert-deftest ghostherd-test-the-herd-page-is-there-for-your-phone ()
+  "With remote hosts, the herd page loads with the mode -- its address
+without the secret wants it there -- and not otherwise; failing to load
+does not stop the mode."
+  (let (required)
+    (cl-letf (((symbol-function 'require) (lambda (f &rest _) (push f required) t)))
+      (let ((xwapp-remote-hosts nil))
+        (ghostherd--herd-page-for-phone))
+      (should-not required)
+      (let ((xwapp-remote-hosts '("box")))
+        (ghostherd--herd-page-for-phone))
+      (should (equal required '(ghostherd-memory-page))))
+    (cl-letf (((symbol-function 'require) (lambda (&rest _) (error "Broken")))
+              ((symbol-function 'message) #'ignore))
+      (let ((xwapp-remote-hosts '("box")))
+        (should-not (ghostherd--herd-page-for-phone))))
+    (should (string-match-p "(ghostherd--herd-page-for-phone)"
+                            (with-temp-buffer
+                              (insert-file-contents (locate-library "ghostherd.el" t))
+                              (buffer-substring (search-forward "(define-minor-mode ghostherd-mode")
+                                                (search-forward "(ghostherd-memory-auto-import-start)")))))))
 
 ;;; A menu prompt, read off the screen
 

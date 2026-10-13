@@ -877,5 +877,23 @@ gets; its ask for the QR code is answered with the next."
         (makunbound 'xwapp-test--resumed-here)
         (fmakunbound 'xwapp-test--resumed-reopen)))))
 
+(ert-deftest xwapp-test-listens-from-the-start-for-other-devices ()
+  "With remote hosts, Emacs listens once it is up -- a proxy cannot ask it
+to begin -- though no page was kept and none is opened here; without
+them it waits to be asked."
+  (xwapp-test--with-browser
+    (delete-process xwapp--server)
+    (setq xwapp--server nil)
+    (let ((startup (seq-filter (lambda (f) (string-match-p "xwapp-resume" (format "%S" f)))
+                               emacs-startup-hook)))
+      (should (= (length startup) 1))
+      (should-not (file-exists-p xwapp-state-file))
+      (let ((xwapp-remote-hosts nil))
+        (funcall (car startup))
+        (should-not (process-live-p xwapp--server)))
+      (let ((xwapp-remote-hosts (list xwapp-test--box)))
+        (funcall (car startup))
+        (should (process-live-p xwapp--server))))))
+
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

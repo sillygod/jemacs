@@ -1051,11 +1051,13 @@ look found them -- starting another when that one is old."
 
 (defun ghostherd-memory-page--room-url (project)
   "The address of PROJECT's room, as its chat, from your other devices --
-without the page's secret; nil when the page is served to this machine
-alone."
+without the page's secret -- or of the page's Agents tab, for nil; nil
+when the page is served to this machine alone."
   (when xwapp-remote-hosts
     (xwapp-remote-open-url ghostherd-memory-page--app
-                           (concat "room/chat/" (url-hexify-string project)))))
+                           (if project
+                               (concat "room/chat/" (url-hexify-string project))
+                             "agents"))))
 
 (setq ghostherd-room-url-function #'ghostherd-memory-page--room-url)
 

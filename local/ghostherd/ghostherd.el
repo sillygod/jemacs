@@ -4214,7 +4214,8 @@ With prefix UNINSTALL, take them out again."
 (defun ghostherd--herd-snapshot ()
   "Session list pushed to the sidecar each poll.
 Includes the last captured pane so Telegram `screen' can reply
-from sqlite instead of waiting for another Emacs round trip."
+from sqlite instead of waiting for another Emacs round trip, and the
+address of each one's room from your phone, for the bot to link to."
   (mapcar
    (lambda (s)
      (list :name (ghostherd-session-name s)
@@ -4222,6 +4223,9 @@ from sqlite instead of waiting for another Emacs round trip."
            :state (symbol-name (or (ghostherd-session-state s) 'idle))
            :notes (or (ghostherd-session-notes s) "")
            :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
+           :room (or (when-let* ((p (ghostherd--project-name (ghostherd-session-project s))))
+                       (ghostherd--room-url p))
+                     "")
            :role (or (ghostherd-session-role s) "")
            :reason (or (ghostherd-session-state-reason s) "")
            :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
@@ -5088,8 +5092,26 @@ time cannot be read (no ioreg), you count as away."
 you now.  The first non-nil answer holds pushes back.")
 
 (defvar ghostherd-room-url-function nil
-  "Function of a project giving the address of its room from your phone,
-for a push to link to; nil, or a function giving nil, links none.")
+  "Function of a project giving the address of its room from your phone
+-- of the herd page itself, for nil -- for a push or the bot to link
+to; nil, or a function giving nil, links none.")
+
+(defvar ghostherd--room-urls (make-hash-table :test 'equal)
+  "(FUNCTION PROJECT HOSTS SCHEME) -> what FUNCTION said is PROJECT's
+address from your phone.  Asked once: asking keeps xwapp's address
+over restarts, which writes a file, and the herd's tick asks every
+second.")
+
+(defun ghostherd--room-url (&optional project)
+  "The address of PROJECT's room from your phone -- of the herd page, for
+nil -- as `ghostherd-room-url-function' gives it; nil when it gives none."
+  (when ghostherd-room-url-function
+    (let ((key (list ghostherd-room-url-function project
+                     (bound-and-true-p xwapp-remote-hosts)
+                     (bound-and-true-p xwapp-remote-scheme))))
+      (or (gethash key ghostherd--room-urls)
+          (puthash key (ignore-errors (funcall ghostherd-room-url-function project))
+                   ghostherd--room-urls)))))
 
 (defvar ghostherd--herd-pushes nil
   "Pushes not yet handed to the sidecar, newest first.")
@@ -5127,9 +5149,7 @@ when it is worth one: see `ghostherd-push'."
       (push (append (list :kind (symbol-name kind)
                           :session (ghostherd-session-name session)
                           :project (or project "")
-                          :url (or (and project ghostherd-room-url-function
-                                        (ignore-errors (funcall ghostherd-room-url-function project)))
-                                   ""))
+                          :url (or (and project (ghostherd--room-url project)) ""))
                     fields)
             ghostherd--herd-pushes))))
 
@@ -5179,6 +5199,7 @@ reaches you there."
          (ghostherd--herd-take-reports (plist-get result :reports))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
+             :page_url (or (ghostherd--room-url) "")
              :ack_ids (vconcat (append acks nil))
              :replies (vconcat (or replies []))
              :pushes (vconcat (reverse pushes)))
@@ -5963,6 +5984,14 @@ sweeps every `ghostherd-poll-interval'."
                     "<mode-line> <mouse-1>" #'ghostherd-sidebar)))))
 
 ;;;###autoload
+(defun ghostherd--herd-page-for-phone ()
+  "Load the herd page now, when your phone reaches it (`xwapp-remote-hosts'):
+its address without the secret, a push's room and the bot's links all
+want it loaded, and after a restart nothing here has opened it yet."
+  (when (bound-and-true-p xwapp-remote-hosts)
+    (with-demoted-errors "ghostherd: herd page: %S"
+      (require 'ghostherd-memory-page))))
+
 (define-minor-mode ghostherd-mode
   "Global minor mode for ghostherd modeline indicator and hooks."
   :global t
@@ -5984,6 +6013,7 @@ sweeps every `ghostherd-poll-interval'."
         ;; GHOSTHERD_RPC.
         (with-demoted-errors "ghostherd: memory sidecar: %S"
           (ghostherd-memory-start))
+        (ghostherd--herd-page-for-phone)
         (ghostherd-memory-auto-import-start)
         (ignore-errors (ghostherd--herd-write-protocol))
         (ghostherd--ensure-poll-timer)

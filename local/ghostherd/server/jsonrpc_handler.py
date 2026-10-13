@@ -199,6 +199,7 @@ class JsonRpcHandler:
             ack_ids=[str(i) for i in ack_ids],
             replies=replies,
             pushes=pushes,
+            page_url=params.get("page_url"),
         )
 
     def _herd_ask(self, params: dict) -> dict:

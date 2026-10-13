@@ -421,6 +421,14 @@ blind could be any of its choices.  Kill and respawn sit
 behind =more= and a confirm.  Prompt text is queued like herd mail: a
 =working= agent does not receive it until idle.
 
+With the herd page on your phone (=xwapp-remote-hosts=), =/herd= also
+has /Open the herd page/, and a session's card /Open the room/ ---
+its project's room, as its chat --- to open in the phone's browser,
+nothing bookmarked: out without the page, ask the bot.  The
+addresses hold no secret (below), and Emacs gives them with each
+tick; one Telegram would refuse --- not http(s) under a full name ---
+is left out, for a button it refuses takes the whole message with it.
+
 Unknown chats are dropped.  The first message from a new chat logs
 =telegram ignored chat <id>= in =*ghostherd-memory*= — that id is what
 goes in =GHOSTHERD_TELEGRAM_CHAT_IDS=.  Missing token means the bot
@@ -1181,7 +1189,14 @@ are the other tabs (below, and "What happened while you were away").
   =tailscale serve= to =xwapp-port=; xwapp's README has it).  =M-x
   xwapp-copy-remote-url=, =*herd*=, copies the address; it holds the
   page's secret, and is kept over restarts.  Or press Phone, beside
-  Refresh, and scan the QR code it shows with the phone's camera.
+  Refresh, and scan the QR code it shows with the phone's camera.  Or
+  nothing at the desk at all: =http://<tailnet name>/open/ghostherd=
+  holds no secret --- Emacs answers it for your Tailscale login alone,
+  sending the browser on to the page under its secret --- so it can be
+  bookmarked once, and the bot's =/herd= links to it (Telegram bot,
+  above).  With =xwapp-remote-hosts=, Emacs listens and loads the page
+  as it starts, so after a restart that address answers before anything
+  here has opened the page.
   Opened there, the page is the phone's: the one in Emacs lets go of
   it, and takes it back when you open it again.  What you tap there
   opens there: a PR in pr-view's page, a task in clickup-view's, each

@@ -1,5 +1,5 @@
 from herd import HerdStore, reset_herd
-from telegram import TelegramBot, format_herd, session_keyboard
+from telegram import TelegramBot, format_herd, push_keyboard, session_keyboard
 
 
 def _bot(tmp_path, chats=(99,)):
@@ -429,4 +429,38 @@ def test_a_blocked_agent_pushed_with_its_menu_in_words(tmp_path):
     herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "working", "prompt": MENU}])
     card = bot.handle_callback(99, f"o:{short}")
     assert "No, cancel" not in card["text"] and "· " not in str(card["reply_markup"])
+    reset_herd()
+
+
+PAGE = "http://box.tail0.ts.net/open/ghostherd#agents"
+
+
+def _urls(msg):
+    return [b for row in msg["reply_markup"]["inline_keyboard"] for b in row if "url" in b]
+
+
+def test_herd_links_the_page_and_a_card_its_room(tmp_path):
+    """/herd opens the herd page on the phone, and a session's card its
+    room, under the addresses Emacs gave on its last tick; given none,
+    or one Telegram would refuse with the whole message, no button."""
+    bot, herd = _bot(tmp_path)
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "idle", "project": "/tmp/", "room": ROOM},
+                        {"name": "grok-dev", "kind": "grok", "state": "working"}],
+              page_url=PAGE)
+    rows = bot.handle_message(99, "/herd")["reply_markup"]["inline_keyboard"]
+    assert rows[0] == [{"text": "Open the herd page", "url": PAGE}]
+    assert len(_urls(bot.handle_message(99, "/herd"))) == 1
+    assert _urls(bot.handle_callback(99, "h")) == [{"text": "Open the herd page", "url": PAGE}]
+    short = herd.session("agy-commit")["short"]
+    assert herd.session("agy-commit")["room"] == ROOM
+    for tap in (f"o:{short}", f"m:{short}"):
+        assert _urls(bot.handle_callback(99, tap)) == [{"text": "Open the room", "url": ROOM}]
+    assert _urls(bot.handle_callback(99, "o:" + herd.session("grok-dev")["short"])) == []
+    for url in ("", None, "http://box/open/ghostherd", "javascript:alert(1)", "file:///etc/passwd", "http://[::1/x",
+                "javascript://box.tail0.ts.net/%0Aalert(1)", "ftp://box.tail0.ts.net/open/ghostherd"):
+        herd.tick(sessions=[{"name": "agy-commit", "state": "idle", "room": url}], page_url=url)
+        assert herd.page_url() == (url or "")
+        assert _urls(bot.handle_message(99, "/herd")) == []
+        assert _urls(bot.handle_callback(99, f"o:{short}")) == []
+        assert push_keyboard({"kind": "report", "session": "agy-commit", "url": url}) is None
     reset_herd()

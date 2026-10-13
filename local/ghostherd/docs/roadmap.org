@@ -1078,6 +1078,17 @@ looking.
   tmux is asked for the styled screen once a new text is in the box.
   3 ERT, 27 WebKit checks (=herd-foot=); 16 guards broken on purpose,
   each caught
+- [X] Out without the page on the phone: ask the bot.  =/herd= has
+  Open the herd page, a session's card Open the room --- addresses
+  without the secret, given by Emacs each tick and asked of the page
+  once, for asking writes xwapp's state; a push's room is the same.
+  One Telegram would refuse is left out, a refused button taking its
+  message with it.  And reachable from the start: with remote hosts,
+  xwapp listens at startup though no page was kept, and =ghostherd-mode=
+  loads the herd page --- after a restart =/open/ghostherd= answered
+  nothing until a page was opened at the desk.  2 ERT (and 1
+  extended), 1 in xwapp, 2 pytest; 17 guards broken on purpose, each
+  caught
 
 ** What is left
 

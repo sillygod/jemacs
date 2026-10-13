@@ -11,6 +11,11 @@ Pushes: Emacs decides when something wants you while you are away -- an
 agent blocked, a lead's report, an ask that failed -- and hands it over
 in herd_tick; this words it and sends it to every allowed chat.  A
 reply to a push goes to its project's lead.
+
+Links: the herd page, and each project's room, under the address Emacs
+gives in herd_tick -- without the page's secret, so Telegram keeping it
+gives nothing away -- for /herd and a session's card to open on the
+phone, nothing bookmarked.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -46,6 +52,8 @@ HELP = (
     "Tap a session for screen / explain / prompt / interrupt.\n"
     "Blocked sessions also get 1 / 2 / 3 to answer a prompt.\n"
     "/cancel — drop a pending prompt.\n"
+    "/herd also opens the herd page, and a session its room, in this "
+    "phone's browser: over your tailnet, nothing to bookmark.\n"
     "While you are away from the desk, the herd tells you here: an agent "
     "blocked, a lead's report, an ask that failed.  Reply to one to tell "
     "that project's lead."
@@ -62,8 +70,22 @@ def _btn(text: str, data: str) -> dict:
     return {"text": text, "callback_data": data}
 
 
-def herd_keyboard(sessions: list[dict[str, Any]]) -> dict:
-    rows = []
+def _link(text: str, url: str | None) -> list[dict] | None:
+    """A row with a button that opens URL, or None: not http(s) under a
+    full name.  Telegram refuses a message whose button it will not
+    take, and the whole message goes."""
+    try:
+        parts = urlparse(url or "")
+    except ValueError:
+        return None
+    if parts.scheme in ("http", "https") and "." in (parts.hostname or ""):
+        return [{"text": text, "url": url}]
+    return None
+
+
+def herd_keyboard(sessions: list[dict[str, Any]], page: str = "") -> dict:
+    "The herd: the page first, when it has an address; a button a session."
+    rows = [row for row in [_link("Open the herd page", page)] if row]
     for s in sessions:
         glyph = GLYPH.get(s.get("state") or "", "?")
         label = f"{glyph} {s['name']}"
@@ -116,6 +138,9 @@ def session_keyboard(session: dict[str, Any], more: bool = False) -> dict:
     if state == "blocked":
         rows.extend(answer_rows(session))
         rows.append([_btn("abort", f"ab:{short}")])
+    room = _link("Open the room", session.get("room"))
+    if room:
+        rows.append(room)
     if more:
         rows.append(
             [
@@ -241,8 +266,9 @@ def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -
     if push.get("kind") == "used-up" and session and RELAY_KIND.match(push.get("to") or ""):
         rows.append([_btn(f"Relay to {push['to']}", f"rl:{session['short']}:{push['to']}"),
                      _btn("screen", f"sc:{session['short']}")])
-    if push.get("url"):
-        rows.append([{"text": "Open the room", "url": push["url"]}])
+    room = _link("Open the room", push.get("url"))
+    if room:
+        rows.append(room)
     return {"inline_keyboard": rows} if rows else None
 
 
@@ -383,7 +409,7 @@ class TelegramBot:
         return {
             "chat_id": chat_id,
             "text": format_herd(sessions),
-            "reply_markup": herd_keyboard(sessions),
+            "reply_markup": herd_keyboard(sessions, self.herd.page_url()),
         }
 
     def _session_message(

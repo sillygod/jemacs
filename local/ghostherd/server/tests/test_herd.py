@@ -215,6 +215,30 @@ def test_alias_is_stable(tmp_path: Path):
     reset_herd()
 
 
+def test_herd_tick_takes_the_page_address_over_rpc(tmp_path: Path, monkeypatch):
+    "The herd page's address, and each room's, come in Emacs's herd_tick; not a string, none."
+    reset_engine()
+    reset_herd()
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_CHAT_IDS", raising=False)
+    page = "http://box.tail0.ts.net/open/ghostherd#agents"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        from herd import get_herd
+        _rpc(client, "herd_tick", {"sessions": [{"name": "rd", "state": "idle", "room": page + "x"}],
+                                   "page_url": page})
+        assert get_herd().page_url() == page
+        assert get_herd().session("rd")["room"] == page + "x"
+        _rpc(client, "herd_tick", {"sessions": [], "page_url": ["x"]})
+        assert get_herd().page_url() == ""
+        _rpc(client, "herd_tick", {"sessions": [], "page_url": page})
+        _rpc(client, "herd_tick", {"sessions": []})
+        assert get_herd().page_url() == ""
+    reset_engine()
+    reset_herd()
+
+
 def test_herd_tick_takes_pushes_over_rpc(tmp_path: Path, monkeypatch):
     "What Emacs pushes comes in its herd_tick, a list or refused."
     reset_engine()

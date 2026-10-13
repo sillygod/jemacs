@@ -709,18 +709,23 @@ Emacs has the port: the tab is that one's."
 ;;;###autoload
 (defun xwapp-resume ()
   "Load the apps whose pages were in browser tabs as Emacs last exited.
-Each listens again where its tab asks, and the tab comes back.  Run once
-Emacs is up, when there is a `xwapp-state-file'."
+Each listens again where its tab asks, and the tab comes back.  With
+`xwapp-remote-hosts', listen in any case: your other devices come
+through a proxy, which cannot ask Emacs to begin.  Run once Emacs is
+up, when there is a `xwapp-state-file' or remote hosts."
   (interactive)
   (dolist (page (plist-get (xwapp--state) :pages))
     (let ((reopen (nth 2 page)))
       (when (and reopen (autoloadp (symbol-function reopen)))
         (with-demoted-errors "xwapp: %S"
-          (autoload-do-load (symbol-function reopen) reopen))))))
+          (autoload-do-load (symbol-function reopen) reopen)))))
+  (when xwapp-remote-hosts
+    (with-demoted-errors "xwapp: %S" (xwapp--port))))
 
 ;;;###autoload
 (add-hook 'emacs-startup-hook
-          (lambda () (when (file-exists-p xwapp-state-file) (xwapp-resume))))
+          (lambda () (when (or (file-exists-p xwapp-state-file) (bound-and-true-p xwapp-remote-hosts))
+                       (xwapp-resume))))
 
 (defun xwapp-browse (app)
   "Show APP's page in the web browser, on a fresh load.
