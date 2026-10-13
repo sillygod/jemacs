@@ -614,6 +614,9 @@ host no longer exists to ask."
        (setf (ghostherd-session-state session) 'dead
              (ghostherd-session-state-reason session) "host gone")
        (remhash id ghostherd--sessions)
+       ;; Said: a herd that empties itself without a line leaves nothing
+       ;; to go on.
+       (ghostherd--log-add session 'life "dropped from the herd: its host is gone")
        (run-hook-with-args 'ghostherd-session-removed-hook session)))
    ghostherd--sessions))
 
@@ -1697,6 +1700,13 @@ SCREEN is SESSION's screen if the caller already fetched it; see
           (setq reason "seen"))
         (ghostherd--set-state session state reason)))))
 
+(defvar ghostherd-restore-every 30
+  "Seconds between the poll's looks for agents to re-adopt, while the
+herd is empty.")
+
+(defvar ghostherd--restore-tried-at 0
+  "When the poll last looked for agents to re-adopt.")
+
 (defun ghostherd-poll-all ()
   "Poll every registered session, one round trip per host where possible.
 
@@ -1711,7 +1721,15 @@ straddle two."
   (let ((groups (seq-group-by #'ghostherd-session-backend
                               (hash-table-values ghostherd--sessions))))
     (if (null groups)
-        (ghostherd--ensure-sessions)
+        (progn
+          (ghostherd--ensure-sessions)
+          ;; An empty herd is looked for again now and then: one emptied
+          ;; by a moment its host could not be reached came back only
+          ;; when a session was picked or the sidebar opened, and the
+          ;; herd page did neither.
+          (when (> (- (float-time) ghostherd--restore-tried-at) ghostherd-restore-every)
+            (setq ghostherd--restore-tried-at (float-time))
+            (ghostherd--maybe-restore)))
       (pcase-dolist (`(,backend . ,members) groups)
         ;; The callback closes over MEMBERS and may arrive long after this
         ;; loop has moved on -- safe, because `dolist' binds afresh per
@@ -2005,7 +2023,9 @@ running, and a session keeps the backend it was born with anyway."
                     :kind (or (plist-get recipe :kind) 'shell)
                     :backend backend
                     :host-id (plist-get recipe :host-id)
-                    :buffer nil
+                    ;; None after a restart; one still showing it when
+                    ;; this Emacs dropped it and takes it back.
+                    :buffer (ghostherd--orphan-view name)
                     :project (plist-get recipe :project)
                     :command (plist-get recipe :command)
                     :args (plist-get recipe :args)

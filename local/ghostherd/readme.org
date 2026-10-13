@@ -1517,6 +1517,18 @@ Being told is the whole point. This used to be a synchronous
 herd, and looked like Emacs hanging for no reason. What to do about it is
 the section above.
 
+** The herd went empty, the agents still running
+
+=tmux -L ghostherd ls= lists them; the sidebar and the herd page do not.
+An agent is dropped from the herd only when tmux says its pane is gone
+--- no server, or no such session --- and the herd log says so
+(=dropped from the herd=).  tmux asked and not answering, a server too
+busy to take the connection, is not that: the agents are kept, their
+states stale until it answers.  An empty herd is looked for again every
+=ghostherd-restore-every= seconds (30), so one emptied all the same
+comes back by itself; =M-x ghostherd-restore= brings it back now.  An
+agent you were looking at comes back to the buffer still showing it.
+
 ** The agent is drawing into a fraction of the window
 
 Ask the host what size it thinks it is, rather than guessing from what

@@ -452,15 +452,32 @@ screen in the same round trip.")
 
 One call for the whole herd.  On the poll path this is not called at all:
 the batched fetch stamps the same cache from the same fields, so asking
-again would be a second subprocess for an answer already in hand."
-  (when-let* ((out (ghostherd-tmux--try
-                    "list-panes" "-a" "-F" ghostherd-tmux--status-format)))
-    (ghostherd-tmux--parse-snapshot out)))
+again would be a second subprocess for an answer already in hand.
+
+Nil when there is nothing to ask: no server running -- a socket left
+behind (\"no server running on\"), or none at all (\"No such file or
+directory\") -- or no tmux.  `unknown' when tmux could not be asked for
+any other reason, a server too busy to take the connection, say.  That
+is not an empty herd: read as one, every pane was gone, and
+`ghostherd--ensure-sessions' dropped the whole herd, its agents still
+running."
+  (pcase-let ((`(,status . ,output)
+               (ghostherd-tmux--call
+                (list "list-panes" "-a" "-F" ghostherd-tmux--status-format))))
+    (cond
+     ((eq status 0) (ghostherd-tmux--parse-snapshot output))
+     ((or (eq status 127)
+          (string-match-p "\\`no server running on \\|\\`error connecting to .*(No such file or directory)"
+                          (or output "")))
+      nil)
+     (t 'unknown))))
 
 (defun ghostherd-tmux--status (session)
-  "Return (DEAD-P . TITLE) for SESSION, or nil when its host is gone."
-  (when-let* ((id (ghostherd-session-host-id session)))
-    (cdr (assoc id (ghostherd-tmux--snapshot)))))
+  "Return (DEAD-P . TITLE) for SESSION, or nil when its host is gone --
+or when tmux could not be asked."
+  (when-let* ((id (ghostherd-session-host-id session))
+              (snapshot (ghostherd-tmux--snapshot)))
+    (and (listp snapshot) (cdr (assoc id snapshot)))))
 
 
 ;;; One round trip for the whole herd
@@ -795,10 +812,13 @@ must not touch `state' -- the agent is still running."
                    keys))))
 
 (cl-defmethod ghostherd-backend-live-p ((_backend (eql tmux)) session)
-  (and (ghostherd-session-host-id session)
-       (assoc (ghostherd-session-host-id session)
-              (ghostherd-tmux--snapshot))
-       t))
+  (let ((snapshot (ghostherd-tmux--snapshot)))
+    (and (ghostherd-session-host-id session)
+         ;; tmux could not be asked: there as far as anyone knows, rather
+         ;; than gone -- gone, the sweep drops it while it runs on.
+         (or (eq snapshot 'unknown)
+             (assoc (ghostherd-session-host-id session) snapshot))
+         t)))
 
 (cl-defmethod ghostherd-backend-exited-p ((_backend (eql tmux)) session)
   ;; `remain-on-exit on' keeps the pane after the agent exits, so a dead
@@ -837,10 +857,11 @@ buffer name back."
       (and (not (string-empty-p dir)) (file-name-as-directory dir)))))
 
 (cl-defmethod ghostherd-backend-view ((_backend (eql tmux)) session)
-  (let ((buffer (ghostherd-session-buffer session)))
+  (let ((buffer (or (ghostherd-session-buffer session)
+                    (ghostherd--orphan-view (ghostherd-session-name session)))))
     (if (and (buffer-live-p buffer)
              (process-live-p (buffer-local-value 'ghostel--process buffer)))
-        buffer
+        (setf (ghostherd-session-buffer session) buffer)
       (ghostherd-tmux--attach session))))
 
 (cl-defmethod ghostherd-backend-kill ((_backend (eql tmux)) session)

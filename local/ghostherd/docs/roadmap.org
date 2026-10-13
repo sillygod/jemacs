@@ -230,6 +230,19 @@ The numbers and the three tmux behaviours this rests on are in
 - [X] 10 new ERT tests including a real-tmux batch round trip, plus pure
   seams for the argument list and the parse
 
+- [X] A tmux that could not be asked is not an empty herd.  The
+  liveness read took any failed =list-panes= for "no panes", and the
+  sweep dropped all fourteen agents at once, without a line, while they
+  ran on (2026-10-13); the herd page stayed empty, for only picking a
+  session or opening the sidebar looked again.  Now only "no server
+  running" or no socket at all means none; anything else is unknown,
+  and the agents stay.  A drop is logged, and the poll looks for an
+  empty herd's agents every =ghostherd-restore-every= seconds.  And an
+  agent re-adopted in the Emacs that dropped it takes back the buffer
+  still showing it: opening it attached again, in that same buffer, and
+  ghostel refused ("already has a running ghostel process").  3 ERT;
+  11 guards broken on purpose, each caught
+
 ** What is left
 
 - [ ] Watch for a partial-batch pattern in daily use. A pane killed from

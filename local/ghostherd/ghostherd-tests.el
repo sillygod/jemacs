@@ -3438,6 +3438,97 @@ than actually gone."
         (ghostherd--ensure-sessions))
       (should (eq (ghostherd-get "a") s)))))
 
+(ert-deftest ghostherd-test-tmux-not-asked-is-not-gone ()
+  "tmux says nothing runs only when there is no server -- a socket left
+behind, or none -- or no tmux.  Asked and not answering, it is unknown:
+read as an empty herd, every session was gone, and the sweep dropped
+the whole herd, its panes still running, without a word."
+  (dolist (case '(((0 . "gh-abc-rev\t0\tclaude\n") (("gh-abc-rev" nil . "claude")))
+                  ((1 . "no server running on /private/tmp/tmux-501/ghostherd\n") nil)
+                  ((1 . "error connecting to /private/tmp/tmux-501/ghostherd (No such file or directory)\n") nil)
+                  ((127 . "Searching for program: No such file or directory, tmux") nil)
+                  ((1 . "error connecting to /private/tmp/tmux-501/ghostherd (Resource temporarily unavailable)\n") unknown)
+                  ((1 . "lost server\n") unknown)
+                  ((1 . "") unknown)))
+    (cl-letf (((symbol-function 'ghostherd-tmux--call) (lambda (_args) (car case))))
+      (should (equal (ghostherd-tmux--read-snapshot) (cadr case)))))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--tmux-session :name "rev" :kind 'claude)))
+        ;; Not answering: there, as far as anyone knows -- and not dead.
+        (ghostherd-tests--with-tmux
+            '(("list-panes" . (1 . "error connecting to /x (Resource temporarily unavailable)")))
+          (should (ghostherd--session-live-p s))
+          (should-not (ghostherd--host-exited-p s))
+          (ghostherd--ensure-sessions))
+        (should (eq (ghostherd-get "rev") s))
+        (should-not ghostherd--log)
+        ;; No server: gone, and the log says so.
+        (ghostherd-tests--with-tmux '(("list-panes" . (1 . "no server running on /x")))
+          (ghostherd--ensure-sessions))
+        (should-not (ghostherd-get "rev"))
+        (should (equal (mapcar #'ghostherd-log-entry-text ghostherd--log)
+                       '("dropped from the herd: its host is gone")))))))
+
+(ert-deftest ghostherd-test-a-readopted-agent-takes-back-its-view ()
+  "An agent dropped and re-adopted in the same Emacs is still shown in
+its buffer, attached: it takes that buffer back -- on restore, and on
+being opened -- rather than attaching again in it, which ghostel
+refuses.  A buffer only named for it, or one whose process is gone, is
+not taken."
+  (ghostherd-tests--with-herd ()
+    (let* ((proc (make-process :name "gh-view" :command '("sleep" "30") :noquery t))
+           (view (get-buffer-create "*ghostherd:rev*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer view
+              (setq-local ghostherd-session-id "rev")
+              (setq-local ghostel--process proc))
+            ;; Restored: its buffer is the one still showing it.
+            (let ((ghostherd-known-backends '(fake))
+                  (ghostherd-tests--fake-recipes '((:host-id "gh-abc-rev" :name "rev" :kind claude))))
+              (cl-letf (((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
+                        ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore))
+                (ghostherd-restore)))
+            (should (eq (ghostherd-session-buffer (ghostherd-get "rev")) view))
+            ;; Opened with no buffer of its own: that one, not a second attach.
+            (let ((s (ghostherd-get "rev")))
+              (setf (ghostherd-session-backend s) 'tmux
+                    (ghostherd-session-buffer s) nil)
+              (cl-letf (((symbol-function 'ghostherd-tmux--attach) (lambda (_) (error "Attached again"))))
+                (should (eq (ghostherd-backend-view 'tmux s) view)))
+              (should (eq (ghostherd-session-buffer s) view)))
+            ;; Not its own, or not running: not taken.
+            (with-current-buffer view (setq-local ghostherd-session-id "other"))
+            (should-not (ghostherd--orphan-view "rev"))
+            (with-current-buffer view (setq-local ghostherd-session-id "rev"))
+            (delete-process proc)
+            (should-not (ghostherd--orphan-view "rev"))
+            (should-not (ghostherd--orphan-view "nobody")))
+        (when (process-live-p proc) (delete-process proc))
+        (kill-buffer view)))))
+
+(ert-deftest ghostherd-test-an-empty-herd-is-looked-for-again ()
+  "The poll looks for agents to re-adopt while the herd is empty -- not on
+every tick -- so a herd emptied by a moment its host could not be
+reached comes back by itself, to the herd page too."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd--restore-tried-at 0) (restored 0))
+      (cl-letf (((symbol-function 'ghostherd-restore) (lambda (&rest _) (cl-incf restored))))
+        (ghostherd-poll-all)
+        (ghostherd-poll-all)
+        (should (= restored 1))
+        (setq ghostherd--restore-tried-at (- (float-time) ghostherd-restore-every 1))
+        (ghostherd-poll-all)
+        (should (= restored 2))
+        ;; A herd with someone in it is not looked for.
+        (ghostherd-tests--session :name "a" :backend 'fake)
+        (setq ghostherd--restore-tried-at 0)
+        (let ((ghostherd-tests--fake-live t))
+          (cl-letf (((symbol-function 'ghostherd-poll-session) #'ignore))
+            (ghostherd-poll-all)))
+        (should (= restored 2))))))
+
 ;;; Detach is not death
 
 (ert-deftest ghostherd-test-view-exit-kills-only-on-ghostel ()

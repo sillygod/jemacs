@@ -187,6 +187,19 @@ Accepts session id, name, or a live buffer that views a session."
   "Return buffer name for session NAME."
   (format ghostherd-buffer-name-format name))
 
+(defun ghostherd--orphan-view (name)
+  "The buffer still showing agent NAME from before it left the herd, or
+nil: named for it, its own, its process running.  An agent re-adopted
+in the Emacs that dropped it is still being shown there -- attached to
+its tmux session -- and attaching again would start a second process in
+that buffer, which ghostel refuses."
+  (let ((buffer (get-buffer (ghostherd--buffer-name name))))
+    (and (buffer-live-p buffer)
+         (equal (buffer-local-value 'ghostherd-session-id buffer) name)
+         (buffer-local-boundp 'ghostel--process buffer)
+         (process-live-p (buffer-local-value 'ghostel--process buffer))
+         buffer)))
+
 (defun ghostherd--buffer-tail (buffer &optional n)
   "Return the last N lines of BUFFER as a single string."
   (with-current-buffer buffer
