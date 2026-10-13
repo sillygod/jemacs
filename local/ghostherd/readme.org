@@ -1183,6 +1183,15 @@ are the other tabs (below, and "What happened while you were away").
   the one named by =@name= at its start, images and ⌘V as in any box.
   The sidecar builds the timeline from the agents' transcripts, so it
   starts with everything they already said.
+- Copy, on each turn in the columns and the chat --- yours, an
+  agent's, an ask and its answer each --- copies what was said as it
+  was written: an agent's markdown rather than the page's drawing of
+  it, your words without the herd's notes before them, a folded
+  message whole.  A turn's head --- whose it is, and its Copy --- stays
+  at the top while you read the turn, so a long reply's is there at its
+  end.  At the desk onto Emacs's kill ring, on the phone onto the
+  phone's clipboard.  A turn past 12,000 characters reaches the
+  page cut short, and copies so; the transcript has it whole.
 - From your phone, through Tailscale: the same page, served by Emacs
   to your other devices under this Mac's name on your tailnet, for your
   Tailscale login alone (=xwapp-remote-hosts=, =xwapp-remote-users=,

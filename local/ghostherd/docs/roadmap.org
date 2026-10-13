@@ -686,6 +686,17 @@ builds, one tests, back and forth --- as one conversation, on the page.
   not built
 - [ ] Earlier turns: the room shows the tail; the whole conversation is
   on the Sessions tab once imported
+- [X] Copy on each turn, in the columns and the chat: what was said as
+  it was written --- an agent's markdown, your words without the herd's
+  notes, an ask and its answer each, a folded message whole --- onto
+  the clipboard of the device you are at.  In the turn's head, which
+  stays at the top while the turn is read: first put where a head
+  always was, it was scrolled away by the end of a long reply, the
+  place you would copy it from.  Found at the click in the
+  list its body was drawn from, so a conversation that moved on without
+  a redraw cannot hand over a neighbour's turn.  A turn the sidecar cut
+  at =TEXT_MAX= (12,000 characters) copies cut.  33 WebKit checks
+  (=herd-copy=); 12 guards broken on purpose, each caught
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

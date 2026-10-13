@@ -1408,11 +1408,27 @@
     return [...counts.entries()].map(([n, k]) => (k > 1 ? n + " ×" + k : n)).join(" · ");
   }
 
-  function entHead(who, cls, ts, color) {
+  function entHead(who, cls, ts, color, copyHtml) {
     return '<div class="ehead"><span class="who' + (cls ? " " + cls : "") + '"' +
       (color ? ' style="color:' + color + '"' : "") + ">" + esc(who) + "</span>" +
-      (ts ? '<span class="when" title="' + esc(fullTime(ts)) + '">' + esc(when(ts)) + "</span>" : "") + "</div>";
+      (ts ? '<span class="when" title="' + esc(fullTime(ts)) + '">' + esc(when(ts)) + "</span>" : "") + (copyHtml || "") + "</div>";
   }
+
+  // A head's Copy: what it heads, as it was written -- an agent's
+  // markdown rather than the page's drawing of it, your words without the
+  // herd's notes before them.  Found at the click by place, in the list
+  // its body was drawn from; PART names which of the entry's texts.
+  function copyButton(i, text, part) {
+    if (!text || !String(text).trim()) return "";
+    return '<button type="button" class="linkish ecopy" data-act="a:copy-entry" data-i="' + i + '"' +
+      (part ? ' data-part="' + part + '"' : "") + ' title="Copy it, as written">Copy</button>';
+  }
+
+  // What each conversation body was last drawn from.  The data moves on
+  // without a redraw now and then -- a conversation that arrives while
+  // the page shows something else -- and a Copy must copy the turn it is
+  // on, not the one now at its place.
+  const drawn = new WeakMap();
 
   function plainBody(text) {
     return '<div class="ebody plain">' + esc(text || "") + "</div>";
@@ -1426,7 +1442,7 @@
     const bar = color ? ' style="border-left-color:' + color + '"' : "";
     const own = sessionColor(name);
     if (e.role === "assistant") {
-      return '<div class="ent me" style="border-left-color:' + own + '">' + entHead(name, "", e.ts, own) +
+      return '<div class="ent me" style="border-left-color:' + own + '">' + entHead(name, "", e.ts, own, copyButton(i, e.text)) +
         '<div class="ebody msg-body">' + markdown(e.text) + "</div></div>";
     }
     if (e.role === "tools") {
@@ -1443,24 +1459,24 @@
       const tcolor = e.to ? sessionColor(e.to) : "";
       // What came of an ask: its answer, the client's error, or nothing yet.
       const outcome = e.kind !== "ask" ? ""
-        : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null) + plainBody(e.answer) + "</div>"
-        : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered" + (e.auto ? " — stopped without answering" : ""), "", null, tcolor) +
-          plainBody(e.answer) + "</div>"
+        : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
+        : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered" + (e.auto ? " — stopped without answering" : ""), "", null, tcolor,
+          copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
         : e.waiting ? '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>"
         : "";
       return '<div class="ent herd" style="border-left-color:' + own + '">' +
-        entHead(name + " " + what, "", e.ts, own) + plainBody(e.text) + outcome + "</div>";
+        entHead(name + " " + what, "", e.ts, own, copyButton(i, e.text)) + plainBody(e.text) + outcome + "</div>";
     }
     // Said to it: by you, or through the herd.
     if (e.kind === "command") return '<div class="ent small">› ' + esc(e.text) + "</div>";
     if (e.kind === "note") return '<div class="ent small">' + esc(e.text) + "</div>";
-    if (e.kind === "ask") return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " asks", "", e.ts, color) + plainBody(e.text) + "</div>";
+    if (e.kind === "ask") return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " asks", "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     if (e.kind === "answer") {
       const how = e.failed ? " — ask failed" : e.auto ? " — stopped without answering" : "";
-      return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color) + plainBody(e.text) + "</div>";
+      return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     }
-    if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color) + plainBody(e.text) + "</div>";
-    return '<div class="ent you">' + entHead("You", "", e.ts) + herdNotes(e) + plainBody(e.text) + "</div>";
+    if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
+    return '<div class="ent you">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
   }
 
   function roomBodyHtml(a) {
@@ -1493,6 +1509,7 @@
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
     const keep = body.scrollTop;
     body.innerHTML = roomBodyHtml(a);
+    drawn.set(body, (herdNow.convs[a.name] && herdNow.convs[a.name].entries) || []);
     body.setAttribute("data-drawn", "1");
     body.scrollTop = first || atBottom ? body.scrollHeight : keep;
   }
@@ -1555,7 +1572,7 @@
   }
 
   const CHAT_LONG = 900;
-  function chatItemHtml(e) {
+  function chatItemHtml(e, i) {
     const you = e.who === "user";
     const color = you ? "" : sessionColor(e.who || "");
     const tag = e.kind === "ask" ? " · ask" + (e.ask ? " " + e.ask : "")
@@ -1569,12 +1586,13 @@
     const body = e.kind === "turn" ? '<div class="ebody msg-body">' + markdown(e.text) + "</div>" : plainBody(e.text);
     // An ask its taker never saw carries what came of it.
     const outcome = e.kind !== "ask" || !(e.failed || e.answer || e.waiting) ? ""
-      : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null) + plainBody(e.answer) + "</div>"
-      : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || "")) + plainBody(e.answer) + "</div>"
+      : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
+      : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || ""), copyButton(i, e.answer, "answer")) +
+        plainBody(e.answer) + "</div>"
       : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
     return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '"' +
       (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
-      entHead(head, you ? "" : "", e.ts, color) + herdNotes(e) + body + outcome +
+      entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + outcome +
       (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
       "</div>";
   }
@@ -1593,6 +1611,7 @@
       : (c.earlier ? '<p class="rnote">Earlier messages are in each agent\'s column, not shown here.</p>' : "") +
         ((c.entries || []).length ? c.entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
         (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
+    drawn.set(body, (c && c.entries) || []);
     body.setAttribute("data-drawn", "1");
     body.scrollTop = first || atBottom ? body.scrollHeight : keep;
   }
@@ -1680,6 +1699,12 @@
       remember();
       watchRoom();
       return renderRoom();
+    }
+    if (act === "copy-entry") {
+      const list = drawn.get(el.closest(".rbody, .cbody"));
+      const e = list && list[+el.getAttribute("data-i")];
+      const text = e && e[el.getAttribute("data-part") || "text"];
+      return text ? copy(text) : setStatus("Nothing to copy", "error");
     }
     if (act === "chat-more") {
       const key = el.getAttribute("data-key");
