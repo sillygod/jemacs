@@ -140,6 +140,10 @@ holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
   to that app's page under its secret, for one of
   =xwapp-remote-users= only: one to bookmark, or to pass through a
   chat's servers (=xwapp-remote-open-url=).  The app must be loaded.
+- *What this keeps out, and what it does not:* the request's path,
+  the two checks, and who gets past them --- anyone signed in to
+  Tailscale as you does --- in
+  [[file:../ghostherd/docs/phone-access.html][ghostherd/docs/phone-access.html]].
 - *Opened there, the page is that device's*, as for any tab: the one
   in Emacs, or in a tab here, lets go of it.
 - =xwapp-remote-scheme= is ="https"= by default.  The proxy needs a

@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herd 頁面門禁</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  /* Layout: one reading column; a request's path drawn as a lane of stations
+     with its two checkpoints marked, then who gets through, then what to do. */
+  :root {
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --fg: #18212c;
+    --muted: #5a6573;
+    --line: #d8dee7;
+    --accent: #2f58cd;
+    --accent-soft: #e6ecfb;
+    --pass: #1d7547;
+    --pass-soft: #e2f3ea;
+    --block: #b3362c;
+    --block-soft: #f9e4e1;
+    --warn: #96600a;
+    --warn-soft: #fbefd9;
+    --code-bg: #eef1f5;
+    --sans: "IBM Plex Sans", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141b; --panel: #161d26; --fg: #e2e8f0; --muted: #97a3b4; --line: #2a3442;
+      --accent: #86a6ff; --accent-soft: #1d2a4a; --pass: #63c690; --pass-soft: #14301f;
+      --block: #f08177; --block-soft: #3a1a17; --warn: #e3ac55; --warn-soft: #382a12;
+      --code-bg: #1d2530; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141b; --panel: #161d26; --fg: #e2e8f0; --muted: #97a3b4; --line: #2a3442;
+    --accent: #86a6ff; --accent-soft: #1d2a4a; --pass: #63c690; --pass-soft: #14301f;
+    --block: #f08177; --block-soft: #3a1a17; --warn: #e3ac55; --warn-soft: #382a12;
+    --code-bg: #1d2530; color-scheme: dark;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { color-scheme: light; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.7 var(--sans); }
+  .page { max-width: 46rem; margin: 0 auto; padding-inline: 18px; padding-block: 36px 64px; display: grid; gap: 40px; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+  h1 { font-size: 1.75rem; font-weight: 700; }
+  h2 { font-size: 1.2rem; font-weight: 650; }
+  h3 { font-size: 1rem; font-weight: 600; }
+  p { margin: 0; }
+  section { display: grid; gap: 14px; min-width: 0; }
+  .eyebrow { font: 500 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  .lede { color: var(--muted); max-width: 40rem; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+
+  /* The answer, first */
+  .answer { display: grid; gap: 10px; }
+  .verdict { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; padding: 14px 16px; border-radius: 8px; }
+  .verdict.ok { background: var(--pass-soft); }
+  .verdict.no { background: var(--block-soft); }
+  .verdict b { font-weight: 650; }
+  .tag { font: 600 0.72rem/1.6 var(--mono); letter-spacing: 0.04em; padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+  .tag.ok { color: var(--pass); border: 1px solid var(--pass); }
+  .tag.no { color: var(--block); border: 1px solid var(--block); }
+  .tag.warn { color: var(--warn); border: 1px solid var(--warn); }
+
+  /* The path a request takes */
+  .lane { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; }
+  .station { flex: 1 1 8.5rem; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; align-content: start; }
+  .station .where { font: 500 0.7rem/1.3 var(--mono); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .station .what { font-weight: 600; line-height: 1.35; }
+  .station .note { font-size: 0.82rem; color: var(--muted); line-height: 1.45; }
+  .hop { flex: 0 0 auto; display: grid; place-items: center; padding: 0 6px; color: var(--muted); font-family: var(--mono); }
+  .hop .gate { display: grid; justify-items: center; gap: 2px; }
+  .hop .gate span { font: 600 0.66rem/1 var(--mono); color: var(--accent); background: var(--accent-soft); padding: 3px 5px; border-radius: 4px; white-space: nowrap; }
+  .station.danger { border-color: var(--block); }
+  @media (max-width: 640px) {
+    .lane { flex-direction: column; }
+    .hop { padding: 4px 0; }
+    .hop .arrow { transform: rotate(90deg); }
+    .hop .gate { grid-auto-flow: column; align-items: center; gap: 8px; }
+  }
+
+  /* The two checks */
+  .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 12px; }
+  .check { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .check .num { font: 600 0.75rem/1 var(--mono); color: var(--accent); }
+  .check ul { margin: 0; padding-left: 1.1em; display: grid; gap: 4px; }
+  .url { font-family: var(--mono); font-size: 0.82rem; background: var(--code-bg); border-radius: 6px; padding: 8px 10px; overflow-x: auto; white-space: nowrap; }
+  .url .s { color: var(--accent); font-weight: 600; }
+  .exception { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 12px 14px; border-radius: 0 8px 8px 0; display: grid; gap: 6px; }
+
+  /* Flows */
+  .flows { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 12px; }
+  .flow { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .flow ol { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; }
+  .flow li::marker { font-family: var(--mono); color: var(--muted); }
+  .flow .gatehit { font: 600 0.7rem/1 var(--mono); color: var(--accent); background: var(--accent-soft); padding: 2px 5px; border-radius: 4px; margin-left: 4px; white-space: nowrap; }
+
+  /* Who gets through */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 40rem; font-size: 0.88rem; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { font: 600 0.72rem/1.3 var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; width: 22%; }
+  tr.hole td:first-child { box-shadow: inset 3px 0 var(--block); }
+
+  /* Findings and actions */
+  .finding { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 8px; }
+  .finding.red { border-color: var(--block); }
+  .checklist { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+  .todo { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .todo li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+  .todo .pri { font: 600 0.72rem/1.6 var(--mono); color: var(--accent); white-space: nowrap; }
+  .todo .body { display: grid; gap: 4px; min-width: 0; }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<main class="page">
+  <header style="display:grid; gap:10px">
+    <div class="eyebrow">ghostherd · xwapp · tailscale serve</div>
+    <h1>手機打開 herd page 時，誰擋誰</h1>
+    <p class="lede">從手機到 Emacs，一個請求要過兩道檢查：網址裡的密鑰，以及「是誰在問」。這頁走一遍整條路，再逐一看各種闖入者走到哪裡被擋，或擋不住。</p>
+  </header>
+
+  <section class="answer" aria-labelledby="ans">
+    <h2 id="ans">先說結論</h2>
+    <div class="verdict ok">
+      <span class="tag ok">擋得住</span>
+      <p>有人進了你的 tailnet，但用的是<b>別人的身分</b>（他自己的帳號、分享進來的裝置、tag 裝置）：就算他知道 host 和密鑰，Emacs 也回 404。擋下他的是「誰在問」那道，不是密鑰。</p>
+    </div>
+    <div class="verdict no">
+      <span class="tag no">擋不住</span>
+      <p>有人用<b>你的身分</b>進來（偷了你登入 Tailscale 的帳號再加一台新裝置，或拿到你的手機）：xwapp 認不出他不是你。他甚至不需要知道密鑰，<code>/open/ghostherd</code> 會直接給他。這一層只能在 Tailscale 那邊補，見最後一節。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="path">
+    <div class="eyebrow">整條路</div>
+    <h2 id="path">一個請求從手機到 agent</h2>
+    <div class="lane" role="list">
+      <div class="station" role="listitem">
+        <div class="where">你的手機</div>
+        <div class="what">瀏覽器</div>
+        <div class="note">Tailscale app 連著你的 tailnet</div>
+      </div>
+      <div class="hop" aria-hidden="true"><span class="arrow">→</span></div>
+      <div class="station" role="listitem">
+        <div class="where">WireGuard 隧道</div>
+        <div class="what">加密，只在 tailnet 內</div>
+        <div class="note">網際網路上的人到不了這台 Mac 的 80 port</div>
+      </div>
+      <div class="hop" aria-hidden="true"><span class="arrow">→</span></div>
+      <div class="station" role="listitem">
+        <div class="where">Mac · tailscale serve :80</div>
+        <div class="what">代理，加上身分</div>
+        <div class="note">刪掉手機送來的 <code>Tailscale-User-Login</code>，換成 Tailscale 認證過的登入</div>
+      </div>
+      <div class="hop" aria-hidden="true"><div class="gate"><span class="arrow">→</span><span>檢查 1·2</span></div></div>
+      <div class="station" role="listitem">
+        <div class="where">Mac · 127.0.0.1:48123</div>
+        <div class="what">Emacs（xwapp）</div>
+        <div class="note">只聽本機；每個請求都在這裡過兩道檢查</div>
+      </div>
+      <div class="hop" aria-hidden="true"><span class="arrow">→</span></div>
+      <div class="station danger" role="listitem">
+        <div class="where">herd page → agents</div>
+        <div class="what">能下指令</div>
+        <div class="note">送 prompt、Esc、kill、relay；agent 會在 Mac 上跑指令</div>
+      </div>
+    </div>
+    <p class="muted">最後一格是要保護的東西：能操作 herd page，就等於能讓 agent 在你的 Mac 上執行指令。</p>
+  </section>
+
+  <section aria-labelledby="checks">
+    <div class="eyebrow">兩道檢查</div>
+    <h2 id="checks">Emacs 收到請求時看什麼</h2>
+    <div class="checks">
+      <div class="check">
+        <div class="num">檢查 1 · 密鑰</div>
+        <h3>網址裡有沒有對的密鑰</h3>
+        <div class="url">http://&lt;tailnet 名稱&gt;/<span class="s">3f9a…c41e</span>/ghostherd/ui/index.html</div>
+        <ul>
+          <li>每個 app 一把：herd page、pr-view、clickup-view 各自不同</li>
+          <li>16 個隨機位元組，寫成 32 個十六進位字元</li>
+          <li>錯的或沒有 → 404</li>
+          <li>存在 <code>emacs-home/xwapp-browser.eld</code>，只有你讀得到；有設手機 hosts 時重開也保留</li>
+        </ul>
+      </div>
+      <div class="check">
+        <div class="num">檢查 2 · 誰在問</div>
+        <h3>看 Host 和身分標頭</h3>
+        <ul>
+          <li><b>本機來的：</b>Host 必須是 <code>127.0.0.1:48123</code> 或 <code>localhost:48123</code>，Origin 要嘛沒有、要嘛就是它自己。別的網站的網頁改不了 Host，也假造不了 Origin</li>
+          <li><b>手機來的：</b>Host 必須是 <code>xwapp-remote-hosts</code> 之一，而且 <code>Tailscale-User-Login</code> 必須是你的登入</li>
+          <li>兩種都不是 → 404</li>
+        </ul>
+      </div>
+    </div>
+    <div class="exception">
+      <h3>唯一的例外：<code>/open/&lt;app&gt;</code></h3>
+      <p>這個位址不需要檢查 1，只看檢查 2，而且只接受「手機來的」那種。通過了，Emacs 回一個轉址，帶你到含密鑰的完整位址。換句話說，<b>密鑰只交給已經證明是你、從 tailnet 進來的瀏覽器</b>。所以這個位址可以放進書籤，也可以放進 Telegram：Telegram 的伺服器會保存訊息，但看到這個連結的人不在你的 tailnet、不是你，就拿不到任何東西。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="flows">
+    <div class="eyebrow">兩種打開方式</div>
+    <h2 id="flows">實際走一遍</h2>
+    <div class="flows">
+      <div class="flow">
+        <h3>點 Telegram 的按鈕，或書籤</h3>
+        <ol>
+          <li>手機打開 <code>http://&lt;tailnet 名稱&gt;/open/ghostherd#agents</code></li>
+          <li>經隧道到 Mac 的 tailscale serve，它填上你的登入</li>
+          <li>Emacs 看 Host 和登入<span class="gatehit">檢查 2</span></li>
+          <li>通過 → 回 302，轉到 <code>/&lt;密鑰&gt;/ghostherd/…#agents</code></li>
+          <li>瀏覽器照轉址再要一次，這次兩道都看<span class="gatehit">檢查 1·2</span></li>
+          <li>頁面打開，之後每個請求都帶著密鑰</li>
+        </ol>
+      </div>
+      <div class="flow">
+        <h3>掃 Phone 按鈕的 QR code</h3>
+        <ol>
+          <li>QR code 裡就是含密鑰的完整位址（所以只在你按了才顯示）</li>
+          <li>手機打開它，經隧道到 tailscale serve，填上你的登入</li>
+          <li>Emacs 兩道都看<span class="gatehit">檢查 1·2</span></li>
+          <li>頁面打開</li>
+        </ol>
+        <p class="muted">密鑰換掉（<code>M-x xwapp-renew-secret</code>）後，這種含密鑰的書籤會失效；<code>/open/</code> 的不會。</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="who">
+    <div class="eyebrow">誰過得去</div>
+    <h2 id="who">每種闖入者走到哪裡</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>誰</th><th>到得了 Emacs 嗎</th><th>檢查 2（誰在問）</th><th>拿得到密鑰嗎</th><th>結果</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>你 Mac 瀏覽器裡的其他網站</td>
+            <td>能送到 127.0.0.1</td>
+            <td>不過：改不了 Host，Origin 不對</td>
+            <td>不知道，也讀不到</td>
+            <td><span class="tag ok">擋下</span></td>
+          </tr>
+          <tr>
+            <td>網際網路上的人</td>
+            <td>到不了：serve 只開給 tailnet，Emacs 只聽本機</td>
+            <td>—</td>
+            <td>—</td>
+            <td><span class="tag ok">擋下</span></td>
+          </tr>
+          <tr>
+            <td>拿到含密鑰網址、但不在 tailnet 的人</td>
+            <td>到不了</td>
+            <td>—</td>
+            <td>有，但用不上</td>
+            <td><span class="tag ok">擋下</span></td>
+          </tr>
+          <tr>
+            <td>tailnet 上別人的裝置（另一個帳號、分享進來、tag 裝置）</td>
+            <td>到得了 Mac 的 80 port</td>
+            <td>不過：Tailscale 填的是他的登入，tag 裝置則不填</td>
+            <td>就算知道也沒用</td>
+            <td><span class="tag ok">擋下（404）</span></td>
+          </tr>
+          <tr class="hole">
+            <td>用你的身分加進來的新裝置（偷了你登入 Tailscale 的帳號）</td>
+            <td>到得了</td>
+            <td>通過：Tailscale 認證的就是你</td>
+            <td>有：<code>/open/</code> 直接給</td>
+            <td><span class="tag no">完全控制</span></td>
+          </tr>
+          <tr class="hole">
+            <td>你被偷走、未上鎖的手機</td>
+            <td>到得了</td>
+            <td>通過</td>
+            <td>有：書籤、瀏覽紀錄、<code>/open/</code></td>
+            <td><span class="tag no">完全控制</span></td>
+          </tr>
+          <tr class="hole">
+            <td>這台 Mac 上的程式，直接連 127.0.0.1:48123</td>
+            <td>到得了</td>
+            <td>能假造：自己填 Host 和你的登入（實測：回 302 給出密鑰）</td>
+            <td>有</td>
+            <td><span class="tag warn">見下方</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="secret">
+    <div class="eyebrow">所以密鑰到底在擋什麼</div>
+    <h2 id="secret">密鑰實際擋的是什麼</h2>
+    <p>密鑰主要擋的是<b>你 Mac 瀏覽器裡的網頁</b>：它們送得到 127.0.0.1，但不知道密鑰，也假造不了身分。對從 tailnet 進來的人，真正把關的是檢查 2，而檢查 2 只分得出「是不是你這個帳號」，分不出「是不是你的哪台裝置」。</p>
+    <p>對用你身分進來的人，密鑰不算數，因為 <code>/open/</code> 會把它交出去。這是一個取捨：換來的是可以放書籤、可以放 Telegram 的位址。常有的誤解是「在 tailnet 上的人沒有密鑰就用不了頁面」：對用你身分的人並不成立。</p>
+    <div class="finding red">
+      <h3>查到的一個缺口：本機程式能假造身分</h3>
+      <p>tailscale serve 也是從 127.0.0.1 連到 Emacs，所以 Emacs 分不出一個連線是 tailscale serve 轉來的，還是這台 Mac 上任何程式自己連的。實測過（2026-10-13）：直接連 <code>127.0.0.1:48123</code>，自己填上 tailnet 的 Host 和你的登入，<code>/open/ghostherd</code> 就回 302 並給出密鑰。</p>
+      <p class="muted">實際影響有限：以你的使用者身分跑的程式，本來就能用 <code>emacsclient</code> 讓 Emacs 執行任何程式碼，不需要這條路。它只對「連得到本機網路、但碰不到你帳號」的東西才算新的入口，例如這台 Mac 的其他使用者帳號，或被限制在沙盒裡的程式。在只有你一個人用的 Mac 上，風險低。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="now">
+    <div class="eyebrow">你的設定</div>
+    <h2 id="now">看自己的 tailnet 現在是什麼狀態</h2>
+    <ul class="checklist">
+      <li><code>tailscale status</code>：tailnet 上有哪些裝置、各是誰的。只有你自己的裝置時，表格裡「別人的裝置」那列不會發生</li>
+      <li><code>tailscale lock status</code>：Tailnet Lock 有沒有開</li>
+      <li><code>tailscale serve status</code>：herd page 是不是只開給 tailnet（<code>tailnet only</code>），轉到哪個 port</li>
+      <li>Tailscale 管理頁：裝置金鑰會不會到期、新裝置要不要核准</li>
+    </ul>
+    <p class="muted">只有你自己的裝置時，最實際的威脅是表格裡紅色那兩列：有人拿到你登入 Tailscale 的帳號、自己加一台裝置進來，或拿到你的手機。</p>
+  </section>
+
+  <section aria-labelledby="todo">
+    <div class="eyebrow">怎麼補</div>
+    <h2 id="todo">依效果排序</h2>
+    <ol class="todo">
+      <li>
+        <span class="pri">最重要</span>
+        <div class="body">
+          <h3>開 Tailnet Lock</h3>
+          <p>開了以後，新裝置就算登入的是你的帳號，也要由你現有的裝置（這台 Mac、你的手機）簽過才能加入 tailnet。這直接堵住「偷了帳號、加一台新裝置」那條路，也就是 xwapp 本身擋不住的那一列。</p>
+          <p class="muted">用 <code>tailscale lock status</code> 看兩台裝置的金鑰，再照 Tailscale 文件用 <code>tailscale lock init</code> 把它們設為信任的簽署者。設定時會產生一組解除用的 disablement secret，要另外妥善保存。</p>
+        </div>
+      </li>
+      <li>
+        <span class="pri">接著</span>
+        <div class="body">
+          <h3>你登入 Tailscale 用的帳號開兩步驗證</h3>
+          <p>Tailscale 的身分來自那個帳號（例如 Google）。帳號被盜，就是表格裡「用你的身分加進來」那一列的起點。</p>
+        </div>
+      </li>
+      <li>
+        <span class="pri">手機遺失時</span>
+        <div class="body">
+          <h3>先在 Tailscale 管理頁移除那台裝置，再換密鑰</h3>
+          <p>移除後它就進不了 tailnet。再跑 <code>M-x xwapp-renew-secret</code>，讓書籤和紀錄裡的含密鑰位址失效。</p>
+        </div>
+      </li>
+      <li>
+        <span class="pri">選擇性</span>
+        <div class="body">
+          <h3>用 ACL 限定只有你的手機能連 Mac 的 80 port</h3>
+          <p>將來 tailnet 上多了別的裝置，它們連 herd page 的門口都碰不到。</p>
+        </div>
+      </li>
+      <li>
+        <span class="pri">程式這邊</span>
+        <div class="body">
+          <h3>本機假造身分的缺口可以補</h3>
+          <p>做法是讓 Emacs 只相信真的從 tailscale serve 轉來的身分，例如請 tailscale serve 在轉發時帶一個只有它和 Emacs 知道的值。需要先確認 tailscale serve 支援哪種方式，風險低，不急。</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

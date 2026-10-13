@@ -1196,7 +1196,9 @@ are the other tabs (below, and "What happened while you were away").
   bookmarked once, and the bot's =/herd= links to it (Telegram bot,
   above).  With =xwapp-remote-hosts=, Emacs listens and loads the page
   as it starts, so after a restart that address answers before anything
-  here has opened the page.
+  here has opened the page.  Who these checks keep out, and who they
+  do not --- anyone signed in as you --- is drawn in
+  [[file:docs/phone-access.html][docs/phone-access.html]].
   Opened there, the page is the phone's: the one in Emacs lets go of
   it, and takes it back when you open it again.  What you tap there
   opens there: a PR in pr-view's page, a task in clickup-view's, each

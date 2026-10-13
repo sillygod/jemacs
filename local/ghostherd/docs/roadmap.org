@@ -1092,6 +1092,14 @@ looking.
 
 ** What is left
 
+- [ ] A program on this Mac can pass for your phone: =tailscale serve=
+  reaches xwapp from 127.0.0.1 like anything else here, so a direct
+  connection with the tailnet's Host and your =Tailscale-User-Login=
+  is answered as one from the phone, and =/open/= hands it the secret
+  (tried on 2026-10-13).  Code running as you has =emacsclient= anyway;
+  another account on the Mac, or a sandboxed program that reaches its
+  localhost, does not.  Wants a way for xwapp to know a request came
+  through the serve.  Who gets past what: [[file:phone-access.html][phone-access.html]]
 - [ ] grok's menu prompts, when one is on screen: whether it too takes
   the input box's place (=:prompt-replaces-input=)
 
