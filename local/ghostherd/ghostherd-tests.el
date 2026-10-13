@@ -3894,6 +3894,32 @@ whole herd rather than costing a subprocess per session."
         (should-not (ghostherd--host-live-p s))
         (should (equal (car (ghostherd--detect-state s)) 'dead))))))
 
+(ert-deftest ghostherd-test-tmux-starts-from-a-directory-that-is-there ()
+  "A timer runs in whatever buffer is current.  One whose directory was
+deleted -- a dired buffer on an unpacked tarball, the folder then
+removed -- made `call-process' refuse to start tmux, that read as no
+tmux, and the whole herd was dropped, every agent still running."
+  (let ((gone (file-name-as-directory (make-temp-file "ghostherd-gone" t)))
+        (ghostherd-tmux-executable "true")
+        (ghostherd-tmux-config "/dev/null")
+        (ghostherd-tmux--fetch nil)
+        (ghostherd-tmux--status-cache nil)
+        fetched styled)
+    (delete-directory gone)
+    (ghostherd-tests--with-herd ()
+      (let ((s (ghostherd-tests--session :name "a" :backend 'tmux
+                                         :host-id "gh-abc-a"))
+            (default-directory gone))
+        (should (equal (ghostherd-tmux--call '("list-panes")) '(0 . "")))
+        ;; The poll's fetch and a styled capture start tmux too.
+        (should (ghostherd-backend-screens 'tmux (list s) 10
+                                           (lambda (_) (setq fetched t))))
+        (ghostherd-backend-styled-screen 'tmux s (lambda (out) (setq styled out)))
+        (with-timeout (5 (ert-fail "tmux never answered"))
+          (while (not (and fetched styled))
+            (accept-process-output nil 0.05)))
+        (should (equal styled ""))))))
+
 (ert-deftest ghostherd-test-tmux-missing-binary-is-a-dead-host ()
   "A machine without tmux must not break the ghostel backend, so a
 missing binary reports a gone host rather than signalling."

@@ -242,6 +242,13 @@ The numbers and the three tmux behaviours this rests on are in
   still showing it: opening it attached again, in that same buffer, and
   ghostel refused ("already has a running ghostel process").  3 ERT;
   11 guards broken on purpose, each caught
+- [X] ...and what it was that day was not tmux.  A dired buffer on an
+  unpacked tarball, the folder then deleted: a timer runs in whatever
+  buffer is current, =call-process= will not start in a directory that
+  is gone, and its =file-missing= is the signal for no tmux at all --
+  which still means none.  Every tmux client (the sync call, the poll's
+  fetch, the styled capture) now starts from home.  Reproduced against
+  a throwaway server, gone after.  1 ERT; 3 guards broken, each caught
 
 ** What is left
 

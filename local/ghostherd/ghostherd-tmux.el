@@ -213,6 +213,18 @@ on a one-off `start-server'."
           (when-let* ((config (ghostherd-tmux--config-file)))
             (list "-f" config))))
 
+(defun ghostherd-tmux--directory ()
+  "Return the directory a tmux client is started from: home, always there.
+
+Not the current buffer's.  A timer runs in whatever buffer is current,
+and one whose directory was deleted out from under it -- a dired buffer
+on an unpacked tarball, the folder then removed -- makes `call-process'
+refuse to start anything.  That refusal is `file-missing', the signal
+for no tmux at all, so the herd was read as empty and dropped whole, its
+agents still running (2026-10-13).  tmux needs no directory of ours:
+`new-session' is told its own with -c."
+  (expand-file-name "~/"))
+
 (defun ghostherd-tmux--call (args)
   "Run tmux with ARGS on ghostherd's socket.  Return (STATUS . OUTPUT).
 
@@ -225,7 +237,8 @@ can be a prompt in any language on its way to `set-buffer'.  A guessed
 coding system either mangles those or stops to ask."
   (condition-case error
       (with-temp-buffer
-        (let* ((coding-system-for-read 'utf-8)
+        (let* ((default-directory (ghostherd-tmux--directory))
+               (coding-system-for-read 'utf-8)
                (coding-system-for-write 'utf-8)
                (status (apply #'call-process ghostherd-tmux-executable nil t nil
                               (append (ghostherd-tmux--socket-args) args))))
@@ -632,7 +645,8 @@ screen is trimmed to N lines so it matches what `capture' would return."
         ;; starting a second one against a slow server is how a pile-up
         ;; begins.
         (progn (ghostherd-tmux--fetch-overdue-p) t)
-      (let* ((live (seq-filter #'ghostherd-session-host-id sessions))
+      (let* ((default-directory (ghostherd-tmux--directory))
+             (live (seq-filter #'ghostherd-session-host-id sessions))
              (marker (ghostherd-tmux--marker))
              (by-host (mapcar (lambda (s)
                                 (cons (ghostherd-session-host-id s)
@@ -749,7 +763,8 @@ must not touch `state' -- the agent is still running."
   ((_backend (eql tmux)) session callback)
   ;; -e, the styles: all this is asked for.  Apart from Emacs, as the
   ;; poll's fetch is -- one pane, when new text is in its input box.
-  (let ((buffer (generate-new-buffer " *ghostherd-tmux-styled*")))
+  (let* ((default-directory (ghostherd-tmux--directory))
+         (buffer (generate-new-buffer " *ghostherd-tmux-styled*")))
     (make-process
      :name "ghostherd-tmux-styled"
      :buffer buffer

@@ -1529,6 +1529,11 @@ states stale until it answers.  An empty herd is looked for again every
 comes back by itself; =M-x ghostherd-restore= brings it back now.  An
 agent you were looking at comes back to the buffer still showing it.
 
+The one time this happened for real, tmux was fine: the herd was asked
+from a dired buffer whose folder had just been deleted, and Emacs will
+not start a process in a directory that is not there.  tmux is started
+from your home directory now, whichever buffer is current.
+
 ** The agent is drawing into a fraction of the window
 
 Ask the host what size it thinks it is, rather than guessing from what
