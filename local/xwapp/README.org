@@ -310,6 +310,9 @@ so a page opens as it would on the phone.
 | =herd-meter=   | each agent's model, effort and context bar, on its row, its     |
 |                | column and above the chat's box; the form that switches it for  |
 |                | its session: what it sends, held while the agent works          |
+| =herd-subs=    | an agent's sub-agents running, under its column and above the   |
+|                | chat's box, their time running on; the lines that started them  |
+|                | marked; each report where it came back, folded, opened, copied  |
 | =apps-phone=   | pr-view and clickup-view opened from the phone: what the        |
 |                | address names, Open and Copy there, a reload, fitting it, a     |
 |                | pull request scrolling as one page, upright and on its side;    |

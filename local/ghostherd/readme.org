@@ -1181,6 +1181,28 @@ are the other tabs (below, and "What happened while you were away").
   that is the CLI's own.  =M-x ghostherd-switch-model= does the same
   from Emacs; =:model-picker= in =ghostherd-agent-specs= is what makes
   a kind switchable, claude so far.
+- What a claude agent's sub-agents are doing --- the ones its Agent
+  tool runs, each in a conversation of its own --- as its screen lists
+  them at its foot: a line each under its room column, and above the
+  chat's box for the agent it writes to, with what it is, how long it
+  has run, its tool calls and context so far, and its latest step
+  under it; counted on its row (=2 sub-agents running=).  The sidecar
+  reads them off their own transcripts, beside the agent's
+  (=<transcript>/subagents/agent-<id>.jsonl=, what each was started as
+  in its =.meta.json=), from where it last read each; Emacs asks again
+  when the agent's transcript changed or a file the last answer named.
+  One has stopped when it handed its report back, or its agent was told
+  it stopped (failed, killed) --- not stopped with work of its own still
+  in the background, which it goes on from; one sent another message
+  runs again; one silent for an hour, or an agent dead, has none
+  running.
+- What a sub-agent sent back, in its agent's column where it came back:
+  whose it is and what it was asked, how it ended and what it took
+  (=finished · 15m 31s · 61 tools · 196k tokens=), and its report, the
+  start in sight and the rest a press on =more= away; Copy copies it as
+  written.  The line of the call that started it says how it is doing
+  --- running, ✓, how it ended.  The chat leaves them to the columns:
+  what the agent made of a report is its next turn.
 - What each agent's conversation names, on its row and its room
   column (=↳ named=): the pull requests of its project's repository and
   the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,

@@ -2,7 +2,8 @@
 
 The herd page's room shows a project's agents side by side: what was
 said to each -- by you, or by another agent through the herd -- and
-what it answered, its tool calls folded to a line.  Emacs names the
+what it answered, its tool calls folded to a line, and what came back
+from the sub-agents it ran.  Emacs names the
 transcript (its hooks did, or the conversation it was started on) and
 asks again only when the file has changed; this reads the last part of
 it, so a long conversation costs what a short one does.
@@ -74,6 +75,25 @@ BACKGROUND = re.compile(
 # Ends the output file -- though the reading command may print on after it.
 EXITED = re.compile(r"\n*^\[exited with code (\d+)\]$", re.M)
 LINE_NO = re.compile(r"^ *\d+(?:→|\t)", re.M)  # the Read tool's
+
+# Claude Code's sub-agents: its Agent tool (Task before it).  One run in
+# the background answers its call at once, with its id; what it found
+# comes back later as a message from it, then a notice that it stopped --
+# queued for the agent as they arrive, read by it when it can.  Each has
+# a conversation of its own beside its parent's (subagents.py).
+SUB_TOOLS = {"Agent", "Task"}
+SUB_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+LAUNCHED = re.compile(r"\AAsync agent launched\b.*?\bagentId: ([A-Za-z0-9_-]{1,64})", re.S)
+AGENT_MESSAGE = re.compile(r'<agent-message from="([A-Za-z0-9_-]{1,64})">\n?(.*?)(?:</agent-message>|\Z)', re.S)
+# The harness's line over a report, whose every line it indents.
+HANDBACK = re.compile(r"\A\[Subagent hand-back\][^\n]*\n")
+NOTICE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+# A notice whose report came as the message before it.
+DELIVERED = re.compile(r"\AThis agent's report was delivered to you as a message\b")
+# A notice that it stopped with background work of its own still
+# running: it goes on when that ends, and no report has come.
+INTERIM = re.compile(r"\bthe result below may be interim\b|\AThis agent has not reported yet\b")
+STOPPED = re.compile(r'\AAgent "(.*)" \w+\Z', re.S)
 
 SYSTEM_REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 # Claude Code keeps a paste in its transcript wrapped, the herd's too.
@@ -222,6 +242,44 @@ def herd_call(command: str) -> dict[str, Any] | None:
     return out
 
 
+def notice(text: str) -> dict[str, Any] | None:
+    """A task notification in TEXT: which task, how it ended, and for a
+    sub-agent what it cost.  None when there is none."""
+    m = NOTICE.search(text or "")
+    if not m:
+        return None
+    body = m.group(1)
+
+    def tag(*names: str) -> str:
+        for name in names:
+            t = re.search(r"<%s>(.*?)</%s>" % (name, name), body, re.S)
+            if t:
+                return t.group(1).strip()
+        return ""
+
+    def num(*names: str) -> int | None:
+        v = tag(*names)
+        return int(v) if v.isdigit() else None
+
+    return {"id": tag("task-id"), "call": tag("tool-use-id"), "status": tag("status"),
+            "summary": tag("summary"), "result": tag("result"),
+            "interim": bool(INTERIM.search(tag("note")) or INTERIM.search(tag("result"))),
+            "tokens": num("subagent_tokens", "total_tokens"), "uses": num("tool_uses"),
+            "ms": num("duration_ms")}
+
+
+def sub_meta(transcript: Path, sid: str) -> dict[str, Any]:
+    """What sub-agent SID of TRANSCRIPT was started as -- its type, its
+    description, a name it was given -- from beside its conversation."""
+    if not SUB_ID.match(sid or ""):
+        return {}
+    try:
+        m = json.loads((transcript.with_suffix("") / "subagents" / f"agent-{sid}.meta.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return m if isinstance(m, dict) else {}
+
+
 def without_herd_notes(text: str) -> str:
     """TEXT, said to a lead, less what the herd put in it."""
     return LEAD_NOTE.sub("", text or "")
@@ -303,10 +361,19 @@ def ask_outcome(text: str, error: bool = False, final: bool = True) -> dict[str,
 class Thread:
     "Entries in the order they happened, tool calls folded together."
 
-    def __init__(self) -> None:
+    def __init__(self, transcript: Path | None = None) -> None:
         self.entries: list[dict[str, Any]] = []
         self._calls: dict[str, dict[str, Any]] = {}
         self._outputs: dict[str, dict[str, Any]] = {}  # background ask's output file
+        # Sub-agents: each call's line among the tools, by call and then by
+        # the id it was started with; a report waiting for its notice; the
+        # notices read off the queue, not to be read again when delivered.
+        self.transcript = transcript
+        self._subcalls: dict[str, dict[str, Any]] = {}
+        self._subs: dict[str, dict[str, Any]] = {}
+        self._reports: dict[str, dict[str, Any]] = {}
+        self._queued: set[str] = set()
+        self._metas: dict[str, dict[str, Any]] = {}
 
     def user(self, text: str, ts: Any = None) -> None:
         e = user_entry(text, ts)
@@ -345,9 +412,27 @@ class Thread:
         if not (last and last["role"] == "tools"):
             last = {"role": "tools", "tools": [], "ts": ts}
             self.entries.append(last)
-        last["tools"].append({"name": str(name or "tool"), "hint": hint(args)})
+        line = {"name": str(name or "tool"), "hint": hint(args)}
+        last["tools"].append(line)
+        if name in SUB_TOOLS and call_id:
+            self._subcalls[str(call_id)] = line
 
     def result(self, call_id: Any, content: Any, error: bool = False, ts: Any = None) -> None:
+        line = self._subcalls.pop(str(call_id), None) if call_id else None
+        if line is not None:
+            text = content_to_text(content, TEXT_MAX) or ""
+            m = LAUNCHED.match(text)
+            if m:
+                # In the background: the rest comes later, by this id.
+                line["sub"] = m.group(1)
+                self._subs[m.group(1)] = line
+            else:
+                # Run while the agent waited: what it answered is its report.
+                line["state"] = "failed" if error else "completed"
+                self.entries.append({"role": "sub", "kind": "report", "sub": "", "who": "",
+                                     "title": line["hint"], "text": clip(text),
+                                     "status": line["state"], "ts": ts})
+            return
         herd = self._calls.pop(str(call_id), None) if call_id else None
         if not (herd and herd["kind"] == "ask"):
             return
@@ -368,6 +453,63 @@ class Thread:
             for f in [f for f, a in self._outputs.items() if a is herd]:
                 del self._outputs[f]
 
+    def _meta(self, sid: str) -> dict[str, Any]:
+        if sid not in self._metas:
+            self._metas[sid] = sub_meta(self.transcript, sid) if self.transcript else {}
+        return self._metas[sid]
+
+    def _sub_entry(self, sid: str, ts: Any, text: str = "") -> dict[str, Any]:
+        "Sub-agent SID's report, said where it came back."
+        meta = self._meta(sid)
+        line = self._subs.get(sid) or {}
+        e = {"role": "sub", "kind": "report", "sub": sid,
+             "who": str(meta.get("name") or meta.get("agentType") or ""),
+             "title": str(meta.get("description") or line.get("hint") or ""),
+             "text": clip(text), "ts": ts}
+        self.entries.append(e)
+        return e
+
+    def queued(self, text: str, ts: Any = None) -> None:
+        """What was queued for the agent as it arrived: a sub-agent's report,
+        its notice that it stopped.  Anything else is read when delivered."""
+        m = AGENT_MESSAGE.search(text)
+        if m:
+            report = re.sub(r"^  ", "", HANDBACK.sub("", m.group(2).strip("\n"), count=1), flags=re.M)
+            self._reports[m.group(1)] = self._sub_entry(m.group(1), ts, report)
+            return
+        n = notice(text)
+        if n and self._sub(n):
+            self._queued.add(text.strip())
+            self._stopped(n, ts)
+
+    def delivered(self, text: str, ts: Any = None) -> bool:
+        """True when TEXT, said to the agent, was a sub-agent's notice: read
+        off the queue already, or now.  Any other is said as it is."""
+        n = notice(text) if "<task-notification>" in text else None
+        if not (n and self._sub(n)):
+            return False
+        if text.strip() not in self._queued:
+            self._stopped(n, ts)
+        return True
+
+    def _sub(self, n: dict[str, Any]) -> bool:
+        sid = n["id"]
+        return bool(sid) and (sid in self._subs or sid in self._reports or bool(self._meta(sid)))
+
+    def _stopped(self, n: dict[str, Any], ts: Any) -> None:
+        sid = n["id"]
+        if n["interim"]:
+            return  # still at work, in the background: no report yet
+        if sid in self._subs:
+            self._subs[sid]["state"] = n["status"] or "completed"
+        e = self._reports.pop(sid, None)
+        if e is None:
+            result = "" if DELIVERED.match(n["result"]) else n["result"]
+            e = self._sub_entry(sid, ts, result)
+            if not e["title"] and (m := STOPPED.match(n["summary"])):
+                e["title"] = m.group(1)
+        e.update(status=n["status"] or "completed", tokens=n["tokens"], uses=n["uses"], ms=n["ms"])
+
     def done(self, limit: int) -> tuple[list[dict[str, Any]], bool]:
         for e in self.entries:
             e.pop("key", None)
@@ -381,19 +523,25 @@ def _claude(records, thread: Thread) -> None:
         msg = o.get("message") if isinstance(o.get("message"), dict) else {}
         content = msg.get("content")
         ts = o.get("timestamp")
-        if o.get("type") == "user":
+        if o.get("type") == "queue-operation":
+            if o.get("operation") == "enqueue" and isinstance(o.get("content"), str):
+                thread.queued(o["content"], ts)
+        elif o.get("type") == "user":
             if o.get("isCompactSummary"):
                 thread.note("the conversation was compacted", ts)
                 continue
             if isinstance(content, str):
-                thread.user(content, ts)
+                if not thread.delivered(content, ts):
+                    thread.user(content, ts)
                 continue
             blocks = [b for b in content or [] if isinstance(b, dict)]
             results = [b for b in blocks if b.get("type") == "tool_result"]
             for b in results:
                 thread.result(b.get("tool_use_id"), b.get("content"), bool(b.get("is_error")), ts)
             if not results:
-                thread.user("\n".join(b.get("text", "") for b in blocks if b.get("type") == "text"), ts)
+                said = "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+                if not thread.delivered(said, ts):
+                    thread.user(said, ts)
         elif o.get("type") == "assistant":
             for b in content if isinstance(content, list) else []:
                 if not isinstance(b, dict):
@@ -464,7 +612,7 @@ def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
     window = TAIL_BYTES
     while True:
         lines, cut = _tail(real, window)
-        thread = Thread()
+        thread = Thread(real)
         READERS[cli](_records(lines), thread)
         if not cut or len(thread.entries) >= limit or window >= TAIL_MAX:
             break

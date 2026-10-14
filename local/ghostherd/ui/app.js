@@ -74,9 +74,15 @@
     return true;
   }
 
+  // Its sub-agents as their transcripts have them, rather than as its
+  // footer counts them.
   function backgroundHtml(a) {
-    const bg = a.background || [];
-    return bg.length ? '<span class="det bgw" title="Running in the background, as its screen says">' + esc(bg.join(" · ")) + " running</span>" : "";
+    const subs = a.subs || [];
+    const bg = (a.background || []).filter((w) => !(subs.length && /^\d+ agents?$/.test(w)));
+    if (subs.length) bg.push(subs.length + (subs.length === 1 ? " sub-agent" : " sub-agents"));
+    const title = "Running in the background, as its screen says" +
+      (subs.length ? "; its sub-agents: " + subs.map((u) => u.title || u.who || "?").join(", ") : "");
+    return bg.length ? '<span class="det bgw" title="' + esc(title) + '">' + esc(bg.join(" · ")) + " running</span>" : "";
   }
 
   // An agent's name opens its terminal in Emacs: at the desk.  On another
@@ -781,6 +787,8 @@
     // The room: its project, each agent's conversation, the agents shown
     // by their screen instead, and the tool lines opened.
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
+    // The sub-agents' reports opened whole.
+    subOpen: new Set(),
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
@@ -1276,6 +1284,59 @@
     };
   }
 
+  // ---- Sub-agents ------------------------------------------------------
+  //
+  // The sub-agents an agent has running, under it as its screen shows
+  // them: what each is, how long it has run, its tool calls and context
+  // so far, and its latest step.  Their time runs on here between looks.
+
+  function elapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    return m < 60 ? m + "m " + (s % 60) + "s" : Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
+
+  function runFor(started) {
+    const t = stamp(started);
+    return t ? '<span class="since" data-since="' + t + '">' + esc(elapsed(Date.now() - t)) + "</span>" : "";
+  }
+
+  setInterval(() => {
+    app.querySelectorAll("[data-since]").forEach((el) => {
+      el.textContent = elapsed(Date.now() - +el.getAttribute("data-since"));
+    });
+  }, 1000);
+
+  function subsHtml(a) {
+    const subs = (a && a.subs) || [];
+    if (!subs.length) return "";
+    return '<div class="subs">' + subs.map((u) => {
+      const stats = [runFor(u.started), esc(u.tools + (u.tools === 1 ? " tool" : " tools")),
+        u.tokens != null ? esc(tokens(u.tokens)) : ""].filter(Boolean).join(" · ");
+      return '<div class="sub" data-sub="' + esc(u.id) + '"><div class="sline"><span class="sdot" aria-hidden="true"></span>' +
+        '<span class="swho">' + esc(u.who || "sub-agent") + "</span>" +
+        '<span class="stitle" title="' + esc(u.title || "") + '">' + esc(u.title || "") + "</span>" +
+        '<span class="sstat">' + stats + "</span></div>" +
+        (u.doing ? '<div class="sdoing" title="' + esc(u.doing) + '">' + esc(u.doing) + "</div>" : "") + "</div>";
+    }).join("") + "</div>";
+  }
+
+  // Which of its sub-agents are running, as a key: a column redraws its
+  // body when that changes, for the marks on the lines that started them.
+  function subsKey(a) {
+    return ((a && a.subs) || []).map((u) => u.id).join(" ");
+  }
+
+  // Put HTML in BOX, a strip below BODY: BODY stays at its bottom if it
+  // was there when the strip grows or shrinks.
+  function stripUnder(body, box, html) {
+    if (!box || box.innerHTML === html) return;
+    const atBottom = body && body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    box.innerHTML = html;
+    if (atBottom) body.scrollTop = body.scrollHeight;
+  }
+
   function agentRow(a, kinds, asks) {
     const name = a.name;
     const acts = [];
@@ -1513,6 +1574,8 @@
     return '<div class="ebody plain">' + esc(text || "") + "</div>";
   }
 
+  const SUB_LONG = 600;
+
   // Each agent has one colour wherever it speaks, the Log's lane colour:
   // an entry's bar is whoever said it.  You are the blue.
   function entryHtml(e, i, name, kind) {
@@ -1528,10 +1591,36 @@
       const tools = e.tools || [];
       const key = name + ":" + i;
       const open = herdNow.toolsOpen.has(key);
+      // A sub-agent it started: running while its agent says so, else
+      // how it ended -- nothing when that is not known.
+      const live = new Set(((agentByName(name) || {}).subs || []).map((u) => u.id));
+      const mark = (t) => !t.sub && !t.state ? ""
+        : !t.state ? (live.has(t.sub) ? '<span class="tstate run" title="Running">●</span>' : "")
+        : t.state === "completed" ? '<span class="tstate" title="Finished">✓</span>'
+        : '<span class="tstate bad">' + esc(t.state) + "</span>";
+      const running = tools.filter((t) => t.sub && !t.state && live.has(t.sub)).length;
       return '<div class="ent tools"><button type="button" class="linkish" data-act="a:room-tools" data-key="' + esc(key) + '">' +
-        (open ? "▾ " : "▸ ") + esc(toolsSummary(tools)) + "</button>" +
-        (open ? '<div class="tlist">' + tools.map((t) => '<div class="trow"><span class="tname">' + esc(t.name) + "</span>" +
+        (open ? "▾ " : "▸ ") + esc(toolsSummary(tools) + (running ? " · " + running + " running" : "")) + "</button>" +
+        (open ? '<div class="tlist">' + tools.map((t) => '<div class="trow"><span class="tname">' + esc(t.name) + "</span>" + mark(t) +
           '<span class="thint">' + esc(t.hint || "") + "</span></div>").join("") + "</div>" : "") + "</div>";
+    }
+    if (e.role === "sub") {
+      // A sub-agent's report, where it came back: its start in sight,
+      // the rest a press away.
+      const key = name + "|" + (e.sub || "") + "|" + (e.ts || i);
+      const open = herdNow.subOpen.has(key);
+      const text = e.text || "";
+      const long = text.length > SUB_LONG || text.split("\n").length > 8;
+      const ended = !e.status ? "sent a message" : e.status === "completed" ? "finished" : e.status;
+      const stats = [ended, e.ms != null ? elapsed(e.ms) : "", e.uses != null ? e.uses + (e.uses === 1 ? " tool" : " tools") : "",
+        e.tokens != null ? tokens(e.tokens) + " tokens" : ""].filter(Boolean).join(" · ");
+      return '<div class="ent sub' + (long && !open ? " folded" : "") + (e.status && e.status !== "completed" ? " bad" : "") +
+        '" style="border-left-color:' + own + '">' +
+        entHead("↩ " + (e.who || "sub-agent") + (e.title ? " · " + e.title : ""), "", e.ts, own, copyButton(i, text)) +
+        '<div class="smeta">' + esc(stats) + "</div>" +
+        (text ? '<div class="ebody msg-body">' + markdown(text) + "</div>" : "") +
+        (long ? '<button type="button" class="linkish cmore" data-act="a:sub-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
+        "</div>";
     }
     if (e.role === "herd") {
       const what = e.kind === "ask" ? "⇢ asks " + (e.to || "?") + (e.ask ? " · ask " + e.ask : "") : "⇢ answers ask " + (e.ask || "");
@@ -1652,7 +1741,7 @@
     if (!foot || !box) return;
     const a = roomAgents().find((x) => x.name === foot.getAttribute("data-name"));
     box.setAttribute("data-name", a ? a.name : "");
-    box.innerHTML = a ? meterHtml(a) + modelFormHtml(a) : "";
+    stripUnder(app.querySelector(".chat .cbody"), box, a ? meterHtml(a) + modelFormHtml(a) + subsHtml(a) : "");
   }
 
   // What the herd put before your words to a lead: a line each, not
@@ -1728,7 +1817,7 @@
         (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
-              '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div>' +
+              '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div><div class="rsubs"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
               '<textarea class="agent-text" rows="2" placeholder="' + esc(promptHint(a.name)) + '">' +
               esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + useButton(a.name) +
@@ -1753,6 +1842,12 @@
       const col = roomColumn(a.name);
       col.className = "rcol s-" + a.state;
       col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
+      const body = col.querySelector(".rbody");
+      if ((body.getAttribute("data-subs") || "") !== subsKey(a)) {
+        body.setAttribute("data-subs", subsKey(a));
+        if (body.hasAttribute("data-drawn")) renderRoomBody(a);
+      }
+      stripUnder(body, col.querySelector(".rsubs"), subsHtml(a));
       suggestIn(col, a.name, promptHint(a.name));
     });
   }
@@ -1814,6 +1909,17 @@
       const a = roomAgents().find((x) => x.name === name);
       if (a) renderRoomBody(a);
       return renderRoom();
+    }
+    if (act === "sub-more") {
+      const key = el.getAttribute("data-key");
+      if (herdNow.subOpen.has(key)) herdNow.subOpen.delete(key);
+      else herdNow.subOpen.add(key);
+      const a = roomAgents().find((x) => x.name === name);
+      const body = row && row.querySelector(".rbody");
+      const keep = body ? body.scrollTop : 0;
+      if (a) renderRoomBody(a);
+      if (body) body.scrollTop = keep;
+      return;
     }
     if (act === "room-tools") {
       const key = el.getAttribute("data-key");

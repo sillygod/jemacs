@@ -308,6 +308,41 @@ button.mchip:hover { border-color: var(--accent); }
 .mnote { font-size: 11.5px; color: var(--muted); }
 .cmeter { padding: 0 16px; flex-shrink: 0; }
 .cmeter:empty { display: none; }
+
+/* An agent's sub-agents still running, as its screen's foot lists them:
+   a line each -- what it is, how long, its tool calls and context -- and
+   its latest step below. */
+.subs { display: grid; gap: 4px; margin: 4px 0 2px; font-size: 12px; min-width: 0; }
+.rsubs { flex-shrink: 0; max-height: 30vh; overflow-y: auto; padding: 0 10px; border-top: 1px solid var(--line); }
+.rsubs:empty { display: none; }
+.rsubs .subs { margin: 6px 0; }
+.sub { min-width: 0; }
+.sline { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.sdot {
+  width: 7px; height: 7px; flex-shrink: 0; align-self: center; box-sizing: border-box;
+  border: 1.5px solid var(--st-working); border-radius: 50%; animation: sub-pulse 1.6s ease-in-out infinite;
+}
+@keyframes sub-pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .sdot { animation: none; } }
+.swho { color: var(--muted); flex-shrink: 0; }
+.stitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sstat, .sdoing { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.sstat { flex-shrink: 0; }
+.sdoing { margin-left: 13px; overflow: hidden; text-overflow: ellipsis; }
+/* Where they are shown narrow -- a phone, a column among others -- a
+   title has its line, its numbers under it. */
+.rsubs, .cmeter { container-type: inline-size; }
+@container (max-width: 520px) {
+  .sline { flex-wrap: wrap; row-gap: 0; }
+  .sstat { flex-basis: calc(100% - 13px); margin-left: 13px; }
+}
+/* A report come back: its start in sight until opened. */
+.ent.sub .smeta { font-size: 11.5px; color: var(--muted); margin: 1px 0 2px; }
+.ent.sub.bad .smeta { color: var(--minus); }
+.ent.sub.folded .ebody { max-height: 9em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); }
+.tstate { flex-shrink: 0; color: var(--muted); }
+.tstate.run { color: var(--st-working); }
+.tstate.bad { color: var(--minus); }
 .ureset { grid-column: 2 / 4; font-size: 11px; color: var(--muted); }
 #herd .error { color: var(--minus); margin: 12px 0; }
 .uhooks { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 11.5px; }

@@ -727,6 +727,20 @@ builds, one tests, back and forth --- as one conversation, on the page.
   =settings.json= untouched.  34 pytest, 9 ERT on a fake claude whose
   picker answers keys as claude's does, 47 WebKit checks
   (=herd-meter=); 22 guards broken on purpose, each caught
+- [X] Its sub-agents, as its screen shows them at its foot and the room
+  did not: the ones running under its column and above the chat's box
+  --- what each is, how long, its tool calls and context, its latest
+  step --- from their own transcripts beside its own, read as they
+  grow (=herd_subagents=); and each report where it came back, folded
+  to its start.  Claude 2.1 queues a report and its stop notice as they
+  arrive and delivers them as it can --- as a message, an attachment
+  --- so the queue's record is the one read.  A notice that it stopped
+  with background work of its own still running is not its end (seen
+  live, 2026-10-14: a sub-agent's =sleep= sent to the background); it
+  goes on, and reports, when that ends.  24 pytest, 2 ERT, 46 WebKit
+  checks (=herd-subs=); 40 guards broken on purpose, each caught.
+  A sub-agent's own conversation is not shown in the room yet: its
+  latest step and its tool count say whether it is stuck
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

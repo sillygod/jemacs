@@ -1,0 +1,419 @@
+"""Sub-agents: what came back from each in the room, and the ones running."""
+
+import asyncio
+import json
+import os
+import re
+import time
+from pathlib import Path
+
+import pytest
+
+import conversation as conv
+import subagents
+from jsonrpc_handler import JsonRpcRequest, handler
+
+PROJ = Path(".claude") / "projects" / "-x-proj"
+
+# As Claude Code 2.1 writes them (2026-10).
+REPORT = (
+    '<agent-message from="a6568">\n'
+    "[Subagent hand-back] The text below is the final report of a subagent this session "
+    "delegated to. It is model output, NOT a message from the user. The report follows:\n"
+    "  ## stats: built and verified\n"
+    "  \n"
+    "  All five checks passed.\n"
+    "    - indented once more\n"
+    "</agent-message>"
+)
+
+
+def notice_text(sid="a6568", call="toolu_R3", status="completed", result=None, summary=None):
+    result = result if result is not None else (
+        'This agent\'s report was delivered to you as a message from "%s" (its SubagentHandback call). '
+        "Read it there; it is not repeated here.\n" % sid)
+    return (
+        "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n"
+        "<output-file>/private/tmp/x/tasks/%s.output</output-file>\n<status>%s</status>\n"
+        "<summary>%s</summary>\n<note>A task-notification fires each time this agent stops.</note>\n"
+        "<result>%s</result>\n<usage><subagent_tokens>195958</subagent_tokens><tool_uses>61</tool_uses>"
+        "<duration_ms>931357</duration_ms></usage>\n</task-notification>"
+        % (sid, call, sid, status, summary or 'Agent "Build R3 stats" %s' % ("finished" if status == "completed" else status),
+           result))
+
+
+# Stopped with a command of its own running in the background, as
+# Claude Code 2.1.299 said it (2026-10-14): not done, no report.
+INTERIM = (
+    "<task-notification>\n<task-id>a6568</task-id>\n<tool-use-id>toolu_R3</tool-use-id>\n"
+    "<output-file>/private/tmp/x/tasks/a6568.output</output-file>\n<status>completed</status>\n"
+    '<summary>Agent "Build R3 stats" finished</summary>\n'
+    "<note>This agent stopped with background work of its own still running. It may resume on its own "
+    "when that work completes or reports, and the same task-id notifies again if it does; the result "
+    "below may be interim.</note>\n<result>This agent has not reported yet: it is waiting on its own "
+    "background work and will deliver its report through SubagentHandback when that finishes.\n</result>\n"
+    "<usage><subagent_tokens>27031</subagent_tokens><tool_uses>3</tool_uses><duration_ms>16591</duration_ms>"
+    "</usage>\n</task-notification>"
+)
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conv._cache.clear()
+    subagents._subs.clear()
+    subagents._parents.clear()
+    yield tmp_path
+    conv._cache.clear()
+    subagents._subs.clear()
+    subagents._parents.clear()
+
+
+def lines(records):
+    return "".join(json.dumps(r) + "\n" for r in records)
+
+
+def parent(home, records, name="abc"):
+    path = home / PROJ / (name + ".jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(lines(records))
+    return path
+
+
+def sub(home, sid, records, meta=None, name="abc"):
+    folder = home / PROJ / name / "subagents"
+    folder.mkdir(parents=True, exist_ok=True)
+    if meta is not False:
+        (folder / f"agent-{sid}.meta.json").write_text(json.dumps(meta or {
+            "agentType": "general-purpose", "description": "Build R3 stats", "toolUseId": "toolu_R3",
+            "spawnDepth": 1, "requestShape": "background"}))
+    path = folder / f"agent-{sid}.jsonl"
+    path.write_text(lines(records))
+    return path
+
+
+def at(second):
+    return "2026-10-14T08:%02d:%02d.000Z" % divmod(second, 60)
+
+
+def u(content, second=0, **kw):
+    return {"type": "user", "message": {"role": "user", "content": content}, "timestamp": at(second), **kw}
+
+
+def a(*blocks, second=0, usage=None, **kw):
+    msg = {"role": "assistant", "model": "claude-opus-5-5", "content": list(blocks)}
+    if usage is not None:
+        msg["usage"] = {"input_tokens": 2, "cache_creation_input_tokens": 868, "cache_read_input_tokens": usage}
+    return {"type": "assistant", "message": msg, "timestamp": at(second), **kw}
+
+
+def use(i, name, **inp):
+    return {"type": "tool_use", "id": i, "name": name, "input": inp}
+
+
+def result(i, content, **kw):
+    return {"type": "tool_result", "tool_use_id": i, "content": content, **kw}
+
+
+def queued(text, second=0, op="enqueue"):
+    return {"type": "queue-operation", "operation": op, "timestamp": at(second), "content": text}
+
+
+def launched(i, sid, second=0):
+    return u([result(i, [{"type": "text", "text":
+                          "Async agent launched successfully. (This tool result is internal metadata.)\n"
+                          "agentId: %s (internal ID - do not mention to user.)\nThe agent is working in the background." % sid}])],
+             second)
+
+
+def started(i="toolu_R3", sid="a6568", desc="Build R3 stats"):
+    return [u("Build the five rounds"),
+            a(use(i, "Agent", description=desc, subagent_type="general-purpose", prompt="You are building…"), second=1),
+            launched(i, sid, second=2)]
+
+
+def subs_of(entries):
+    return [e for e in entries if e["role"] == "sub"]
+
+
+# ---- What came back, in the room ------------------------------------------
+
+
+def test_a_report_comes_back_where_it_arrived(home):
+    """Queued as it arrived, its notice just after: one entry, the report
+    as written -- the harness's frame and indent off -- and what the run
+    took.  The copies delivered to the agent later say nothing more."""
+    path = parent(home, started() + [
+        a({"type": "text", "text": "Four are building."}, second=3),
+        queued(REPORT, 40), queued(notice_text(), 41),
+        u("Another Claude session sent a message:\n" + REPORT, 42, isMeta=True),
+        queued(notice_text(), 43, op="remove"),
+        {"type": "attachment", "timestamp": at(44),
+         "attachment": {"type": "queued_command", "prompt": notice_text(), "commandMode": "task-notification"}},
+        u(notice_text(), 45),
+        a({"type": "text", "text": "Round 3 is done."}, second=46),
+    ])
+    sub(home, "a6568", [])
+    entries = conv.read(str(path))["entries"]
+    assert [(e["role"], e.get("text")) for e in entries if e["role"] in ("assistant", "sub")] == [
+        ("assistant", "Four are building."),
+        ("sub", "## stats: built and verified\n\nAll five checks passed.\n  - indented once more"),
+        ("assistant", "Round 3 is done."),
+    ]
+    (e,) = subs_of(entries)
+    assert e == {"role": "sub", "kind": "report", "sub": "a6568", "who": "general-purpose",
+                 "title": "Build R3 stats", "text": e["text"], "ts": at(40), "status": "completed",
+                 "tokens": 195958, "uses": 61, "ms": 931357}
+    # The line that started it knows it, and how it ended.
+    tools = [e for e in entries if e["role"] == "tools"]
+    assert tools[0]["tools"][0] == {"name": "Agent", "hint": "Build R3 stats", "sub": "a6568", "state": "completed"}
+    assert not any(e.get("kind") == "note" for e in entries)
+
+
+def test_one_still_running_is_marked_started(home):
+    path = parent(home, started())
+    sub(home, "a6568", [])
+    (tools,) = [e for e in conv.read(str(path))["entries"] if e["role"] == "tools"]
+    assert tools["tools"][0] == {"name": "Agent", "hint": "Build R3 stats", "sub": "a6568"}
+
+
+def test_a_notice_only_delivered_is_still_read(home):
+    """A CLI that queues nothing: the notice as said to the agent -- its
+    report in it, its title from it when nothing else says one."""
+    path = parent(home, [u(notice_text(sid="b77", status="failed", result="It could not reach the database.",
+                                       summary='Agent "Check the backups" failed'), 5)])
+    sub(home, "b77", [], meta={"agentType": "Explore"})
+    (e,) = subs_of(conv.read(str(path))["entries"])
+    assert (e["who"], e["title"], e["status"], e["text"]) == (
+        "Explore", "Check the backups", "failed", "It could not reach the database.")
+
+
+def test_what_is_not_a_sub_agents_notice_is_said_as_before(home):
+    "A background command's: a line, as it was."
+    path = parent(home, [
+        u("<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n"
+          "<summary>Background command \"tests\" completed</summary>\n</task-notification>"),
+        queued("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>\n"
+               "<summary>Background command \"lint\" completed</summary>\n</task-notification>"),
+    ])
+    entries = conv.read(str(path))["entries"]
+    assert [(e["role"], e.get("kind"), e.get("text")) for e in entries] == [
+        ("user", "note", 'Background command "tests" completed')]
+
+
+def test_a_message_with_no_notice_yet_has_no_ending(home):
+    path = parent(home, started() + [queued(REPORT, 9)])
+    sub(home, "a6568", [])
+    (e,) = subs_of(conv.read(str(path))["entries"])
+    assert "status" not in e and e["text"].startswith("## stats")
+
+
+def test_its_name_and_what_it_was_asked_without_its_meta(home):
+    "No file beside it: the line that started it names what it was asked."
+    path = parent(home, started(desc="Find the flaky test") + [queued(REPORT, 9), queued(notice_text(), 10)])
+    (e,) = subs_of(conv.read(str(path))["entries"])
+    assert (e["who"], e["title"]) == ("", "Find the flaky test")
+
+
+def test_a_notice_whose_report_went_before_it_out_of_sight(home):
+    "Its report said to be in a message the tail does not reach: none shown, not the pointer."
+    path = parent(home, [queued(notice_text(), 10)])
+    sub(home, "a6568", [])
+    (e,) = subs_of(conv.read(str(path))["entries"])
+    assert (e["title"], e["text"], e["status"], e["uses"]) == ("Build R3 stats", "", "completed", 61)
+
+
+def test_one_waiting_on_its_own_work_has_not_come_back(home):
+    "Told it stopped with work of its own running: no report, not ended -- until it is."
+    path = parent(home, started() + [queued(INTERIM, 20), u(INTERIM, 21)])
+    sub(home, "a6568", [])
+    entries = conv.read(str(path))["entries"]
+    assert subs_of(entries) == [] and not any(e.get("kind") == "note" for e in entries)
+    (tools,) = [e for e in entries if e["role"] == "tools"]
+    assert "state" not in tools["tools"][0]
+    with open(path, "a") as out:
+        out.write(lines([queued(REPORT, 60), queued(notice_text(), 61)]))
+    (e,) = subs_of(conv.read(str(path))["entries"])
+    assert (e["status"], e["uses"], e["text"][:8]) == ("completed", 61, "## stats")
+
+
+def test_a_sub_agent_run_while_its_agent_waited(home):
+    "No launch: what the call answered is its report."
+    path = parent(home, [
+        a(use("t9", "Task", description="Survey the API", subagent_type="Explore"), second=1),
+        u([result("t9", [{"type": "text", "text": "Three endpoints lack auth."}])], 30),
+        a(use("t10", "Agent", description="Break it"), second=31),
+        u([result("t10", "ran out of turns", is_error=True)], 40),
+    ])
+    entries = conv.read(str(path))["entries"]
+    assert [(e["title"], e["text"], e["status"]) for e in subs_of(entries)] == [
+        ("Survey the API", "Three endpoints lack auth.", "completed"), ("Break it", "ran out of turns", "failed")]
+    tools = [t for e in entries if e["role"] == "tools" for t in e["tools"]]
+    assert [t.get("state") for t in tools] == ["completed", "failed"]
+
+
+def test_the_chat_leaves_reports_in_the_room(home):
+    path = parent(home, started() + [queued(REPORT, 9), queued(notice_text(), 10),
+                                     a({"type": "text", "text": "Round 3 is done."}, second=11)])
+    sub(home, "a6568", [])
+    c = conv.chat([("rd", str(path))])
+    assert [(x["kind"], x["text"]) for x in c["entries"]] == [
+        ("prompt", "Build the five rounds"), ("turn", "Round 3 is done.")]
+
+
+def test_a_meta_is_read_only_beside_its_transcript(home):
+    p = parent(home, [])
+    sub(home, "a1", [])
+    assert conv.sub_meta(p, "a1")["agentType"] == "general-purpose"
+    assert conv.sub_meta(p, "../../x") == {}
+    assert conv.sub_meta(p, "nope") == {}
+
+
+# ---- The ones running ------------------------------------------------------
+
+
+def working(second=10, tokens=192359):
+    "A sub-agent part way: asked, two calls made, the last a command."
+    return [
+        u("You are building one pair-debug project…", 0),
+        a(use("s1", "Read", file_path="/x/guide.md"), second=2, usage=1000),
+        u([result("s1", "…")], 3),
+        a({"type": "text", "text": "Now the build.\nMore."}, second=4, usage=5000),
+        a(use("s2", "Bash", command="python3 build.py", description="Build the stats project"), second=second,
+          usage=tokens),
+    ]
+
+
+def handed_back(second=60):
+    return [
+        a(use("h1", "SubagentHandback", message="## stats: built"), second=second),
+        u([result("h1", [{"type": "text", "text": '{"success":true,"message":"Report delivered to your caller."}'}])],
+          second + 1),
+    ]
+
+
+def test_one_running_says_what_it_is_doing(home):
+    p = parent(home, started())
+    f = sub(home, "a6568", working())
+    r = subagents.live(str(p))
+    assert r == {
+        "subs": [{"id": "a6568", "who": "general-purpose", "title": "Build R3 stats", "started": at(0),
+                  "tools": 2, "tokens": 193229, "doing": "Bash · Build the stats project"}],
+        "watch": [str(f.parent), str(f)],
+    }
+
+
+def test_what_it_said_last_is_what_it_is_doing(home):
+    p = parent(home, started())
+    sub(home, "a6568", working()[:4], meta={"agentType": "general-purpose", "name": "code-review"})
+    (s,) = subagents.live(str(p))["subs"]
+    assert (s["who"], s["title"], s["doing"], s["tools"]) == ("code-review", "", "Now the build.", 1)
+
+
+def test_one_that_handed_back_has_stopped_until_sent_more(home):
+    p = parent(home, started())
+    f = sub(home, "a6568", working() + handed_back())
+    assert subagents.live(str(p)) == {"subs": [], "watch": [str(f.parent)]}
+    # Sent another message: it runs again, before it says a word.
+    with f.open("a") as out:
+        out.write(lines([u("Also round 6.", 90)]))
+    assert [s["id"] for s in subagents.live(str(p))["subs"]] == ["a6568"]
+    # Read on from where it was.
+    with f.open("a") as out:
+        out.write(lines([a(use("s3", "Bash", command="ls"), second=91)]))
+    (s,) = subagents.live(str(p))["subs"]
+    assert (s["tools"], s["doing"], s["started"]) == (4, "Bash · ls", at(0))
+
+
+def test_one_its_parent_was_told_had_stopped(home):
+    "Failed, killed: told so after its last turn.  Before it, it ran again."
+    p = parent(home, started() + [queued(notice_text(status="killed"), 30)])
+    sub(home, "a6568", working(second=29))
+    assert subagents.live(str(p))["subs"] == []
+    subagents._subs.clear()
+    subagents._parents.clear()
+    sub(home, "a6568", working(second=50))
+    assert [s["id"] for s in subagents.live(str(p))["subs"]] == ["a6568"]
+
+
+@pytest.mark.parametrize("said", [INTERIM, re.sub(r"<note>.*?</note>\n", "", INTERIM, flags=re.S)],
+                         ids=["noted", "by its result alone"])
+def test_one_waiting_on_its_own_work_runs_on(home, said):
+    "Its parent told it stopped with work of its own still running: it goes on."
+    p = parent(home, started() + [queued(said, 30),
+                                  {"type": "attachment", "timestamp": at(31),
+                                   "attachment": {"type": "queued_command", "prompt": said}}])
+    sub(home, "a6568", working(second=29))
+    assert [s["id"] for s in subagents.live(str(p))["subs"]] == ["a6568"]
+
+
+def test_one_silent_too_long_is_counted_out(home):
+    p = parent(home, started())
+    f = sub(home, "a6568", working())
+    old = time.time() - subagents.STALE - 5
+    os.utime(f, (old, old))
+    assert subagents.live(str(p))["subs"] == []
+
+
+def test_oldest_first_and_only_its_own(home):
+    p = parent(home, started())
+    sub(home, "a2", [dict(r, timestamp=at(30)) for r in working()])
+    sub(home, "a1", working())
+    sub(home, "z9", working(), name="other")
+    assert [s["id"] for s in subagents.live(str(p))["subs"]] == ["a1", "a2"]
+
+
+def test_a_file_that_leaves_the_transcripts_is_not_read(home, tmp_path):
+    p = parent(home, started())
+    outside = tmp_path / "elsewhere.jsonl"
+    outside.write_text(lines(working()))
+    sub(home, "a1", [])
+    link = home / PROJ / "abc" / "subagents" / "agent-a1.jsonl"
+    link.unlink()
+    link.symlink_to(outside)
+    assert subagents.live(str(p))["subs"] == []
+
+
+def test_none_for_another_cli_or_before_any(home):
+    p = parent(home, started())
+    assert subagents.live(str(p)) == {"subs": [], "watch": [str(home / PROJ / "abc" / "subagents")]}
+    g = home / ".grok" / "sessions" / "s1" / "chat_history.jsonl"
+    g.parent.mkdir(parents=True)
+    g.write_text("{}\n")
+    assert subagents.live(str(g)) == {"subs": [], "watch": []}
+
+
+def test_a_file_is_read_as_it_grows(home, monkeypatch):
+    "Only what was added; a line still being written waits for its end."
+    f = home / "x.jsonl"
+    f.write_text('{"a": 1}\n{"b": 2}\n')
+    follow = subagents.Follow(f)
+    assert follow.look() == (['{"a": 1}', '{"b": 2}'], True)
+    assert follow.look() == ([], False)
+    with f.open("a") as out:
+        out.write('{"c": 3}\n{"d"')
+    assert follow.look() == (['{"c": 3}'], False)
+    with f.open("a") as out:
+        out.write(': 4}\n')
+    assert follow.look() == (['{"d": 4}'], False)
+    f.write_text('{"e": 5}\n')  # shorter: read again
+    assert follow.look() == (['{"e": 5}'], True)
+
+
+def test_a_parent_is_read_from_its_tail(home):
+    f = home / "p.jsonl"
+    f.write_text('{"first": "x"}\n' * 50 + '{"last": 1}\n')
+    lines_, fresh = subagents.Follow(f, back=30).look()
+    assert fresh and lines_ == ['{"first": "x"}', '{"last": 1}']
+
+
+def test_rpc(home):
+    p = parent(home, started())
+    sub(home, "a6568", working())
+
+    def call(params):
+        return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_subagents", params=params)))
+
+    r = call({"path": str(p)})
+    assert r.error is None and [s["id"] for s in r.result["subs"]] == ["a6568"]
+    assert call({"path": str(home / "x.jsonl")}).error.message == "no such transcript"

@@ -8406,6 +8406,89 @@ agent whose transcript is not known, or that has not replied yet."
               (should (eq (funcall meter "claude-api") :json-false)))
           (delete-file file))))))
 
+(ert-deftest ghostherd-test-page-reads-sub-agents-when-they-change ()
+  "Each agent's sub-agents still running, read by the sidecar when its
+transcript changed or a file its last answer named -- not on every
+look -- and sent field by field.  None for a dead agent: they stopped
+with it."
+  (ghostherd-test--with-herd
+    (let* ((file (make-temp-file "gh-subs" nil ".jsonl" "{}\n"))
+           (folder (make-temp-file "gh-subs" t))
+           (running (expand-file-name "agent-a1.jsonl" folder))
+           (ghostherd-memory-page--subs (make-hash-table :test 'equal))
+           (ghostherd-memory-page--subs-reading (make-hash-table :test 'equal))
+           (ghostherd-memory-page--herd-soon nil))
+      (write-region "{}\n" nil running nil 'silent)
+      (puthash "agy-x" (ghostherd-session--create :id "agy-x" :name "agy-x" :kind 'agy :state 'idle
+                                                  :project "/p/" :backend 'tmux)
+               ghostherd--sessions)
+      (cl-letf (((symbol-function 'ghostherd-session-transcript)
+                 (lambda (s) (and (equal (ghostherd-session-name s) "claude-api") file))))
+        (unwind-protect
+            (let ((subs (lambda (name) (plist-get (ghostherd-memory-page--agent (ghostherd-get name)) :subs)))
+                  (asked (lambda () (seq-count (lambda (r) (equal (car r) "herd_subagents")) requests))))
+              (setq reply (lambda (_m _p)
+                            `(:subs ((:id "a1" :who "general-purpose" :title "Build R3" :started "2026-10-14T08:37:12Z"
+                                      :tools 61 :tokens 195958 :doing "Bash · build" :secret "x")
+                                     "not a sub-agent")
+                              :watch (,folder ,running))))
+              (ghostherd-memory-page--subs-look)
+              (should (equal requests `(("herd_subagents" (:path ,file)))))
+              (should (equal (funcall subs "claude-api")
+                             [(:id "a1" :who "general-purpose" :title "Build R3" :started "2026-10-14T08:37:12Z"
+                               :tools 61 :tokens 195958 :doing "Bash · build")]))
+              (should (equal (funcall subs "agy-x") []))
+              ;; What it now watches is new: read once more, then not again.
+              (ghostherd-memory-page--subs-look)
+              (ghostherd-memory-page--subs-look)
+              (should (= (funcall asked) 2))
+              ;; A running one wrote: asked again.  Its transcript is the same.
+              (write-region "{}\n" nil running t 'silent)
+              (set-file-times running (time-add nil 5))
+              (setq reply (lambda (_m _p) `(:subs nil :watch (,folder))))
+              (ghostherd-memory-page--subs-look)
+              (should (= (funcall asked) 3))
+              (should (equal (funcall subs "claude-api") []))
+              ;; Dead: none, before the next look too, and not asked.
+              (setq reply (lambda (_m _p) `(:subs ((:id "a2" :tools 1)) :watch (,folder))))
+              (write-region "{}\n" nil file t 'silent)
+              (ghostherd-memory-page--subs-look)
+              (should (= (length (funcall subs "claude-api")) 1))
+              (setf (ghostherd-session-state (ghostherd-get "claude-api")) 'dead)
+              (should (equal (funcall subs "claude-api") []))
+              (ghostherd-memory-page--subs-look)
+              (should (= (funcall asked) 4))
+              (should (equal (funcall subs "claude-api") [])))
+          (delete-file file)
+          (delete-directory folder t))))))
+
+(ert-deftest ghostherd-test-room-sends-a-sub-agents-report ()
+  "A sub-agent's report in a column, and the line that started it: what
+the page needs of each, field by field."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:cli "claude"
+                    :entries ((:role "tools" :tools ((:name "Agent" :hint "Build R3" :sub "a1" :state "completed")
+                                                     (:name "Bash" :hint "ls")))
+                              (:role "sub" :kind "report" :sub "a1" :who "general-purpose" :title "Build R3"
+                               :text "## built" :status "completed" :tokens 195958 :uses 61 :ms 931357
+                               :ts "2026-10-14T08:52:44Z" :secret "x")
+                              (:role "sub" :kind "report" :sub "a2" :text "partial" :tokens "many")))))
+    (ghostherd-memory-page--room-tick)
+    (let* ((entries (plist-get (ghostherd-test--call calls "setConversation") :entries))
+           (tools (plist-get (aref entries 0) :tools))
+           (e (aref entries 1)))
+      (should (equal (seq-map (lambda (k) (plist-get (aref tools 0) k)) '(:name :hint :sub :state))
+                     '("Agent" "Build R3" "a1" "completed")))
+      (should (equal (seq-map (lambda (k) (plist-get (aref tools 1) k)) '(:sub :state)) '(nil nil)))
+      (should (equal (seq-map (lambda (k) (plist-get e k))
+                              '(:role :sub :who :title :text :status :tokens :uses :ms :ts))
+                     '("sub" "a1" "general-purpose" "Build R3" "## built" "completed" 195958 61 931357
+                       "2026-10-14T08:52:44Z")))
+      (should-not (plist-member e :secret))
+      (should (equal (seq-map (lambda (k) (plist-get (aref entries 2) k)) '(:status :tokens :uses :ms))
+                     '(nil nil nil nil))))))
+
 (ert-deftest ghostherd-test-page-switches-a-model ()
   "The page is told whose model it can switch, and to what; its Switch
 goes to `ghostherd-switch-model', and the page hears how it went."

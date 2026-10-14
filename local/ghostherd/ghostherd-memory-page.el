@@ -353,6 +353,7 @@ draws lanes from fields rather than parsing prose."
           :relayTo (format "%s" (ghostherd-relay-default-kind s))
           :usedUp (or (ghostherd-usage-used-up-text (ghostherd-session-kind s)) "")
           :meter (ghostherd-memory-page--meter s)
+          :subs (ghostherd-memory-page--subs-of s)
           :switching (if (gethash (ghostherd-session-id s) ghostherd--switching) t :json-false))))
 
 ;; Each agent's meter: what it runs on and how full its context is, read
@@ -378,6 +379,27 @@ what the sidecar made of it, a plist or nil.")
             :pending (if (eq (plist-get m :pending) t) t :json-false)
             :compacted (if (eq (plist-get m :compacted) t) t :json-false)))))
 
+(defun ghostherd-memory-page--ask-on-change (table busy name sig method path)
+  "Ask the sidecar METHOD about agent NAME's transcript PATH, unless SIG
+is what TABLE holds from the last answer, or an answer is on its way
+\(BUSY).  TABLE then holds (SIG . ANSWER); the page hears of a new one
+on the next look."
+  (unless (or (equal sig (car (gethash name table))) (gethash name busy))
+    (puthash name t busy)
+    (let ((done (lambda (answer)
+                  (remhash name busy)
+                  (let ((had (cdr (gethash name table))))
+                    (puthash name (cons sig answer) table)
+                    (unless (equal had answer)
+                      (ghostherd-memory-page--send-herd-soon))))))
+      (condition-case nil
+          (ghostherd-memory-request-async
+           method done (list :path path)
+           ;; A sidecar older than the question, or a file gone: none,
+           ;; and not asked again until the file changes.
+           (lambda (_e) (funcall done nil)))
+        (error (remhash name busy))))))
+
 (defun ghostherd-memory-page--meter-look ()
   "Ask the sidecar again for the meter of each agent whose transcript
 changed; the page hears of it on the next look."
@@ -385,25 +407,58 @@ changed; the page hears of it on the next look."
     (let* ((name (ghostherd-session-name s))
            (path (ghostherd-session-transcript s))
            (sig (ghostherd-memory-page--room-signature path)))
-      (cond
-       ((null sig) (remhash name ghostherd-memory-page--meters))
-       ((or (equal sig (car (gethash name ghostherd-memory-page--meters)))
-            (gethash name ghostherd-memory-page--metering)))
-       (t
-        (puthash name t ghostherd-memory-page--metering)
-        (let ((done (lambda (meter)
-                      (remhash name ghostherd-memory-page--metering)
-                      (let ((had (cdr (gethash name ghostherd-memory-page--meters))))
-                        (puthash name (cons sig meter) ghostherd-memory-page--meters)
-                        (unless (equal had meter)
-                          (ghostherd-memory-page--send-herd-soon))))))
-          (condition-case nil
-              (ghostherd-memory-request-async
-               "herd_meter" done (list :path path)
-               ;; A sidecar older than the meter, or a file gone: none, and
-               ;; not asked again until the file changes.
-               (lambda (_e) (funcall done nil)))
-            (error (remhash name ghostherd-memory-page--metering)))))))))
+      (if (null sig)
+          (remhash name ghostherd-memory-page--meters)
+        (ghostherd-memory-page--ask-on-change
+         ghostherd-memory-page--meters ghostherd-memory-page--metering
+         name sig "herd_meter" path)))))
+
+;; Each agent's sub-agents still running -- what each is and is doing --
+;; read by the sidecar from their own transcripts, beside its own.
+;; Asked again when its transcript changed, or one of the files the last
+;; answer named: the folder a new one appears in, each running one's.
+
+(defvar ghostherd-memory-page--subs (make-hash-table :test 'equal)
+  "Agent name -> (SIGNATURE . ANSWER): what was watched when last asked,
+and the sidecar's answer, a plist of :subs and :watch.")
+
+(defvar ghostherd-memory-page--subs-reading (make-hash-table :test 'equal)
+  "Agent name -> t while the sidecar reads its sub-agents.")
+
+(defun ghostherd-memory-page--subs-of (s)
+  "S's sub-agents still running, as the page takes them: field by field,
+none once S is dead -- they stopped with it."
+  (let ((str #'ghostherd-memory-page--str))
+    (ghostherd-memory-page--vec
+     (unless (eq (ghostherd-session-state s) 'dead)
+       (mapcar (lambda (u)
+                 (list :id (funcall str (plist-get u :id))
+                       :who (funcall str (plist-get u :who))
+                       :title (funcall str (plist-get u :title))
+                       :started (funcall str (plist-get u :started))
+                       :tools (if (natnump (plist-get u :tools)) (plist-get u :tools) 0)
+                       :tokens (and (natnump (plist-get u :tokens)) (plist-get u :tokens))
+                       :doing (funcall str (plist-get u :doing))))
+               (seq-filter #'consp (plist-get (cdr (gethash (ghostherd-session-name s)
+                                                             ghostherd-memory-page--subs))
+                                               :subs)))))))
+
+(defun ghostherd-memory-page--subs-look ()
+  "Ask the sidecar again for the sub-agents of each live agent whose
+transcript, or whose sub-agents' files, changed."
+  (dolist (s (ghostherd-sessions))
+    (let* ((name (ghostherd-session-name s))
+           (path (ghostherd-session-transcript s))
+           (watch (seq-filter #'stringp (plist-get (cdr (gethash name ghostherd-memory-page--subs))
+                                                   :watch)))
+           (sig (and (not (eq (ghostherd-session-state s) 'dead))
+                     (ghostherd-memory-page--room-signature path))))
+      (if (null sig)
+          (remhash name ghostherd-memory-page--subs)
+        (ghostherd-memory-page--ask-on-change
+         ghostherd-memory-page--subs ghostherd-memory-page--subs-reading
+         name (cons sig (mapcar #'ghostherd-memory-page--room-signature watch))
+         "herd_subagents" path)))))
 
 (defvar ghostherd-memory-page--herd-soon nil
   "The timer of a herd about to be sent, or nil.")
@@ -1206,6 +1261,7 @@ forge or ClickUp instead, which want their own login."
     (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
       (ghostherd-memory-page--hooks-refresh))
     (ghostherd-memory-page--meter-look)
+    (ghostherd-memory-page--subs-look)
     (ghostherd-memory-page--send-herd)))
 
 (defun ghostherd-memory-page--herd-watch ()
@@ -1295,9 +1351,19 @@ Field by field: what reaches the page is what is named here."
           :auto (if (plist-get e :auto) t :json-false)
           :failed (if (plist-get e :failed) t :json-false)
           :waiting (if (plist-get e :waiting) t :json-false)
+          ;; A sub-agent's report: which, what it was asked, how it ended
+          ;; and what it took.
+          :sub (funcall str (plist-get e :sub))
+          :title (funcall str (plist-get e :title))
+          :status (funcall str (plist-get e :status))
+          :tokens (and (natnump (plist-get e :tokens)) (plist-get e :tokens))
+          :uses (and (natnump (plist-get e :uses)) (plist-get e :uses))
+          :ms (and (natnump (plist-get e :ms)) (plist-get e :ms))
           :tools (ghostherd-memory-page--vec
                   (mapcar (lambda (tl) (list :name (funcall str (plist-get tl :name))
-                                             :hint (funcall str (plist-get tl :hint))))
+                                             :hint (funcall str (plist-get tl :hint))
+                                             :sub (funcall str (plist-get tl :sub))
+                                             :state (funcall str (plist-get tl :state))))
                           (plist-get e :tools))))))
 
 (defun ghostherd-memory-page--sidecar-error (e)
