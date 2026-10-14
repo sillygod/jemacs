@@ -249,13 +249,28 @@ The numbers and the three tmux behaviours this rests on are in
   which still means none.  Every tmux client (the sync call, the poll's
   fetch, the styled capture) now starts from home.  Reproduced against
   a throwaway server, gone after.  1 ERT; 3 guards broken, each caught
+- [X] A dead agent says why.  =claude --continue= in a folder claude had
+  never worked in said "No conversation found to continue" and exited 1,
+  the line one above the top of its screen; the herd said "process
+  exited" over a blank screen (2026-10-14).  The fetch reads
+  =#{pane_dead_status}= with the rest, and a dead pane's capture reaches
+  50 lines into its history --- tmux decides which, pane by pane, with
+  =if-shell -F= in the same round trip.  The reason is now =exited 1: No
+  conversation found to continue=, in the log, the page and the
+  notification.  ghostel says the same from its buffer, its status only
+  for a child of Emacs's own: the native PTY keeps the child's to
+  itself.  6 ERT, one against real panes; 11 guards broken on purpose,
+  each caught
 
 ** What is left
 
-- [ ] Watch for a partial-batch pattern in daily use. A pane killed from
-  outside is meant to cost one tick of individual reads; if that turns
-  out to be common rather than rare, the fetch should ask =list-panes=
-  first and capture only what it reported
+- [X] Watch for a partial-batch pattern in daily use. A pane killed from
+  outside was meant to cost one tick of individual reads; if that turned
+  out to be common rather than rare, the fetch would ask =list-panes=
+  first and capture only what it reported.  Moot since the captures go
+  through =if-shell= (2026-10-14): a pane that is gone no longer stops
+  the panes after it, against tmux 3.5a, and the real-tmux ERT puts one
+  first to keep it so
 
 ** Deliberately not done
 

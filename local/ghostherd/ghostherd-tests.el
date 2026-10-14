@@ -110,7 +110,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
 (defun ghostherd-tests--tmux-panes ()
   "Fake `list-panes' output showing every registered tmux session alive."
   (mapconcat (lambda (s)
-               (format "%s\t0\t\n" (ghostherd-session-host-id s)))
+               (format "%s\t0\t\t\n" (ghostherd-session-host-id s)))
              (cl-remove-if-not
               (lambda (s) (eq (ghostherd-session-backend s) 'tmux))
               (hash-table-values ghostherd--sessions))
@@ -3443,7 +3443,7 @@ than actually gone."
 behind, or none -- or no tmux.  Asked and not answering, it is unknown:
 read as an empty herd, every session was gone, and the sweep dropped
 the whole herd, its panes still running, without a word."
-  (dolist (case '(((0 . "gh-abc-rev\t0\tclaude\n") (("gh-abc-rev" nil . "claude")))
+  (dolist (case '(((0 . "gh-abc-rev\t0\t\tclaude\n") (("gh-abc-rev" nil . "claude")))
                   ((1 . "no server running on /private/tmp/tmux-501/ghostherd\n") nil)
                   ((1 . "error connecting to /private/tmp/tmux-501/ghostherd (No such file or directory)\n") nil)
                   ((127 . "Searching for program: No such file or directory, tmux") nil)
@@ -3872,15 +3872,20 @@ whole herd rather than costing a subprocess per session."
     (let ((a (ghostherd-tests--session :name "a" :backend 'tmux
                                        :host-id "gh-abc-a"))
           (b (ghostherd-tests--session :name "b" :backend 'tmux
-                                       :host-id "gh-abc-b")))
+                                       :host-id "gh-abc-b"))
+          (c (ghostherd-tests--session :name "c" :backend 'tmux
+                                       :host-id "gh-abc-c"))
+          (ghostherd-tmux--last-words nil))
       (ghostherd-tests--with-tmux
-          '(("list-panes" . (0 . "gh-abc-a\t0\tclaude\ngh-abc-b\t1\t\n")))
+          '(("list-panes" . (0 . "gh-abc-a\t0\t\tclaude\ngh-abc-b\t1\t1\t\ngh-abc-c\t1\t\t\n")))
         (should (ghostherd--host-live-p a))
         (should (ghostherd--host-live-p b))
         (should-not (ghostherd--host-exited-p a))
         ;; `remain-on-exit' keeps a dead pane capturable: still live, but
-        ;; the agent behind it is gone.
-        (should (equal (ghostherd--host-exited-p b) "process exited"))
+        ;; the agent behind it is gone -- with its status, when tmux has
+        ;; one; killed by a signal, it has none.
+        (should (equal (ghostherd--host-exited-p b) "exited 1"))
+        (should (equal (ghostherd--host-exited-p c) "process exited"))
         (should (equal (ghostherd--host-title a) "claude")))
       (should (= (cl-count "list-panes" ghostherd-tests--tmux-calls
                            :key #'car :test #'equal)
@@ -3890,7 +3895,7 @@ whole herd rather than costing a subprocess per session."
   (ghostherd-tests--with-herd ()
     (let ((s (ghostherd-tests--session :name "a" :backend 'tmux
                                        :host-id "gh-abc-gone")))
-      (ghostherd-tests--with-tmux '(("list-panes" . (0 . "gh-abc-other\t0\t\n")))
+      (ghostherd-tests--with-tmux '(("list-panes" . (0 . "gh-abc-other\t0\t\t\n")))
         (should-not (ghostherd--host-live-p s))
         (should (equal (car (ghostherd--detect-state s)) 'dead))))))
 
@@ -3943,9 +3948,11 @@ so a single invocation answers liveness, titles and every screen."
                          ghostherd-tmux--status-format)))
     (should (equal (nthcdr 4 args)
                    (list ";" "display-message" "-p" "@@m@@ gh-a"
-                         ";" "capture-pane" "-p" "-t" "=gh-a:"
+                         ";" "if-shell" "-F" "-t" "=gh-a:" "#{pane_dead}"
+                         "capture-pane -p -J -S -50 -t =gh-a:" "capture-pane -p -t =gh-a:"
                          ";" "display-message" "-p" "@@m@@ gh-b"
-                         ";" "capture-pane" "-p" "-t" "=gh-b:")))))
+                         ";" "if-shell" "-F" "-t" "=gh-b:" "#{pane_dead}"
+                         "capture-pane -p -J -S -50 -t =gh-b:" "capture-pane -p -t =gh-b:")))))
 
 (ert-deftest ghostherd-test-screens-marker-is-not-guessable ()
   "The text being delimited is whatever an agent chose to print, and an
@@ -3955,11 +3962,11 @@ agent can print anything -- including a fixed \"unlikely\" delimiter."
 (ert-deftest ghostherd-test-parse-screens-splits-status-from-panes ()
   (pcase-let ((`(,status . ,screens)
                (ghostherd-tmux--parse-screens
-                (concat "gh-a\t0\ttitle a\ngh-b\t0\ttitle b\n"
+                (concat "gh-a\t0\t\ttitle a\ngh-b\t0\t\ttitle b\n"
                         "@@m@@ gh-a\nAAA\nAAA2\n"
                         "@@m@@ gh-b\nBBB\n")
                 "@@m@@")))
-    (should (equal status "gh-a\t0\ttitle a\ngh-b\t0\ttitle b"))
+    (should (equal status "gh-a\t0\t\ttitle a\ngh-b\t0\t\ttitle b"))
     (should (equal (alist-get "gh-a" screens nil nil #'equal) "AAA\nAAA2"))
     (should (equal (alist-get "gh-b" screens nil nil #'equal) "BBB"))))
 
@@ -3970,7 +3977,7 @@ pane whose marker printed with nothing after it is *not* reported as an
 empty screen, because an empty screen would read as `idle'."
   (pcase-let ((`(,_status . ,screens)
                (ghostherd-tmux--parse-screens
-                (concat "gh-a\t0\tt\n"
+                (concat "gh-a\t0\t\tt\n"
                         "@@m@@ gh-a\nAAA\n"
                         "@@m@@ gh-gone\n")
                 "@@m@@")))
@@ -3985,15 +3992,104 @@ synchronously, on the timer -- is the call this whole path removes."
           (got 'unset)
           (buffer (generate-new-buffer " *fetch-test*")))
       (with-current-buffer buffer
-        (insert "gh-abc-rev\t0\tagy\n@@m@@ gh-abc-rev\nThinking…\n"))
+        (insert "gh-abc-rev\t0\t\tagy\n@@m@@ gh-abc-rev\nThinking…\n"))
       (ghostherd-tmux--fetch-done buffer "@@m@@" '(("gh-abc-rev" . "rev")) 40
                                   (lambda (screens) (setq got screens)))
       (should (equal got '(("rev" . "Thinking…"))))
-      (should (equal (ghostherd-tmux--parse-snapshot "gh-abc-rev\t0\tagy")
+      (should (equal (ghostherd-tmux--parse-snapshot "gh-abc-rev\t0\t\tagy")
                      (cdr ghostherd-tmux--status-cache)))
       ;; Fresh by definition: it was stamped just now, so no reader on this
       ;; tick pays for a second list-panes.
       (should (assoc "gh-abc-rev" (ghostherd-tmux--snapshot))))))
+
+(ert-deftest ghostherd-test-status-says-how-a-pane-ended ()
+  "Running, nil; exited, its status; killed by a signal, t -- tmux has no
+status to give.  The title, last, may hold the separator."
+  (should (equal (ghostherd-tmux--parse-snapshot
+                  "gh-a\t0\t\tclaude\ngh-b\t1\t1\ta\ttitle\ngh-c\t1\t\t\n")
+                 '(("gh-a" nil . "claude") ("gh-b" 1 . "a\ttitle") ("gh-c" t . "")))))
+
+(ert-deftest ghostherd-test-last-words-are-the-last-line-that-says-something ()
+  "What a CLI said on its way out: blank lines, a box's edges and the
+host's own line about the exit say nothing."
+  (should (equal (ghostherd--last-words
+                  (concat "first\nNo conversation found to continue\n\n  ╰────╯  \n\n"
+                          "Pane is dead (status 1, Wed Oct 14 13:10:32 2026)\n")
+                  ghostherd-tmux--dead-line)
+                 "No conversation found to continue"))
+  (should (equal (ghostherd--last-words "bye\n\n[Process exited]\n"
+                                        ghostherd--ghostel-exit-line)
+                 "bye"))
+  (should-not (ghostherd--last-words "\n  \n─────\n"))
+  (should-not (ghostherd--last-words nil))
+  (let ((long (ghostherd--last-words (make-string 400 ?x))))
+    (should (= (string-width long) ghostherd--last-words-width))
+    (should (string-suffix-p "…" long))))
+
+(ert-deftest ghostherd-test-exit-reason-says-status-and-words ()
+  (should (equal (ghostherd--exit-reason 1 "No conversation found to continue")
+                 "exited 1: No conversation found to continue"))
+  (should (equal (ghostherd--exit-reason 0 nil) "exited 0"))
+  (should (equal (ghostherd--exit-reason t "Killed") "process exited: Killed"))
+  (should (equal (ghostherd--exit-reason nil nil) "process exited")))
+
+(ert-deftest ghostherd-test-a-dead-pane-says-why ()
+  "`claude --continue' in a folder with no conversation said so and
+exited 1, the line one above the top of its screen; the herd said only
+\"process exited\" (2026-10-14).  The tick that finds a pane dead reads
+what its CLI said last -- past the screen the rules are given -- and
+the reason and the log carry it."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((dead (ghostherd-tests--session :name "be" :kind 'claude :state 'starting
+                                            :backend 'tmux :host-id "gh-abc-be"))
+            (live (ghostherd-tests--session :name "ops" :kind 'claude :state 'idle
+                                            :backend 'tmux :host-id "gh-abc-ops"))
+            (ghostherd-tmux--last-words '(("gh-abc-gone" . "from a pane since killed")))
+            (buffer (generate-new-buffer " *fetch-test*"))
+            got)
+        (with-current-buffer buffer
+          (insert "gh-abc-be\t1\t1\t\ngh-abc-ops\t0\t\tclaude\n"
+                  "@@m@@ gh-abc-be\nNo conversation found to continue\n"
+                  (make-string 50 ?\n)
+                  "Pane is dead (status 1, Wed Oct 14 13:10:32 2026)\n"
+                  "@@m@@ gh-abc-ops\nthe agent at work\n> \n"))
+        (ghostherd-tests--with-tmux nil
+          (ghostherd-tmux--fetch-done buffer "@@m@@"
+                                      '(("gh-abc-be" . "be") ("gh-abc-ops" . "ops")) 40
+                                      (lambda (screens) (setq got screens)))
+          (should-not (string-match-p "No conversation" (alist-get "be" got nil nil #'equal)))
+          (should (equal ghostherd-tmux--last-words
+                         '(("gh-abc-be" . "No conversation found to continue"))))
+          (should (eq (ghostherd-poll-session dead (alist-get "be" got nil nil #'equal)) 'dead))
+          (should (equal (ghostherd-session-state-reason dead)
+                         "exited 1: No conversation found to continue"))
+          (should (string-match-p "No conversation found to continue"
+                                  (ghostherd-log-entry-text (car ghostherd--log))))
+          ;; A live pane's last line is not taken for last words.
+          (should-not (ghostherd--host-exited-p live)))))))
+
+(ert-deftest ghostherd-test-ghostel-dead-agent-says-why ()
+  "The same on ghostel: the buffer's last words, under its own line about
+the exit.  Its status only from a process of its own: the native PTY's
+handle is a pipe, whose status says nothing about the child."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "g" :kind 'claude :backend 'ghostel))
+           (buffer (ghostherd-session-buffer s))
+           (real (make-process :name "ghostherd-exit-test" :noquery t
+                               :command '("sh" "-c" "exit 2")))
+           (pipe (make-pipe-process :name "ghostherd-exit-pipe" :noquery t)))
+      (with-timeout (5 (ert-fail "the process never exited"))
+        (while (process-live-p real) (accept-process-output nil 0.05)))
+      (delete-process pipe)
+      (with-current-buffer buffer
+        (insert "No conversation found to continue\n\n[Process exited]\n")
+        (setq-local ghostel--process real))
+      (should (equal (ghostherd--host-exited-p s)
+                     "exited 2: No conversation found to continue"))
+      (with-current-buffer buffer (setq-local ghostel--process pipe))
+      (should (equal (ghostherd--host-exited-p s)
+                     "process exited: No conversation found to continue")))))
 
 (ert-deftest ghostherd-test-fetch-does-not-stack ()
   "A second fetch against a slow server is how a pile-up starts."
@@ -4125,6 +4221,65 @@ pane that is not there kept out of them."
           (cancel-timer ghostherd--poll-timer)
           (setq ghostherd--poll-timer nil))
         (call-process "tmux" nil nil nil "-L" "ghostherd-ert-batch"
+                      "kill-server")))))
+
+(ert-deftest ghostherd-test-tmux-dead-pane-round-trip ()
+  "A real pane that says something, scrolls it off its screen and exits
+3: the fetch reaches back for it, beside a pane still running -- and
+after one killed from outside, which no longer costs the panes after it
+their answer."
+  (skip-unless (executable-find "tmux"))
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd-tmux-socket "ghostherd-ert-exit")
+           (ghostherd-tmux--status-cache nil)
+           (ghostherd-tmux--last-words nil)
+           (ghostherd-tmux--fetch nil)
+           (sessions nil)
+           (screens 'unset))
+      (unwind-protect
+          (progn
+            (push (ghostherd-spawn
+                   'shell :name "exits" :backend 'tmux
+                   :project temporary-file-directory
+                   :directory temporary-file-directory
+                   :command "sh"
+                   :args (list "-c" "echo No conversation found to continue; i=0; \
+while [ $i -lt 80 ]; do echo; i=$((i+1)); done; exit 3")
+                   :display nil)
+                  sessions)
+            (push (ghostherd-spawn
+                   'shell :name "runs" :backend 'tmux
+                   :project temporary-file-directory
+                   :directory temporary-file-directory
+                   :command "sh" :args (list "-c" "echo still here; cat")
+                   :display nil)
+                  sessions)
+            ;; First in the list, and gone by the time it is asked about.
+            (push (ghostherd-spawn
+                   'shell :name "killed" :backend 'tmux
+                   :project temporary-file-directory
+                   :directory temporary-file-directory
+                   :command "cat" :args nil :display nil)
+                  sessions)
+            (sleep-for 0.5)
+            (call-process "tmux" nil nil nil "-L" "ghostherd-ert-exit" "kill-session" "-t"
+                          (ghostherd-tmux--target (ghostherd-session-host-id (car sessions))))
+            (should (ghostherd-backend-screens
+                     'tmux sessions 40 (lambda (s) (setq screens s))))
+            (with-timeout (10 (error "batched fetch never came back"))
+              (while (eq screens 'unset)
+                (accept-process-output nil 0.05)))
+            (should (equal (sort (mapcar #'car screens) #'string<) '("exits" "runs")))
+            (should (string-match-p "still here" (alist-get "runs" screens nil nil #'equal)))
+            (should (equal (ghostherd--host-exited-p (ghostherd-get "exits"))
+                           "exited 3: No conversation found to continue"))
+            (should-not (ghostherd--host-exited-p (ghostherd-get "runs"))))
+        (dolist (session sessions)
+          (ignore-errors (ghostherd--host-kill session)))
+        (when (timerp ghostherd--poll-timer)
+          (cancel-timer ghostherd--poll-timer)
+          (setq ghostherd--poll-timer nil))
+        (call-process "tmux" nil nil nil "-L" "ghostherd-ert-exit"
                       "kill-server")))))
 
 ;;; Optional: a real tmux round trip

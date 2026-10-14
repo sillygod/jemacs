@@ -29,6 +29,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 
 (declare-function ghostel "ghostel" (&optional arg))
@@ -227,6 +228,35 @@ backends feeding the rules the same amount of screen."
          (lines (split-string string "\n"))
          (n (or n ghostherd-screen-tail-lines)))
     (string-join (last lines n) "\n")))
+
+(defconst ghostherd--last-words-lines 50
+  "How far back from a dead agent's screen to look for its last words.
+Past its top: a CLI can clear the screen on its way out, or end on
+blank lines, and what it said is then above the top.")
+
+(defconst ghostherd--last-words-width 160
+  "The longest last words a dead agent's reason keeps, in columns.")
+
+(defun ghostherd--last-words (text &optional host-line)
+  "The last line of TEXT with a word in it, or nil: what a CLI said as it
+exited.  Blank lines and a box's edges say nothing; a line HOST-LINE
+matches is the host's own note about the exit, not the agent's."
+  (seq-some (lambda (line)
+              (let ((line (string-trim line)))
+                (and (string-match-p "[[:alnum:]]" line)
+                     (not (and host-line (string-match-p host-line line)))
+                     (truncate-string-to-width line ghostherd--last-words-width
+                                               nil nil "…"))))
+            (reverse (split-string (or text "") "\n"))))
+
+(defun ghostherd--exit-reason (status words)
+  "Why an agent is dead: its exit STATUS and its last WORDS.
+STATUS is nil, or not a number, when its host cannot say; WORDS nil
+when it said nothing.  \"exited 1: No conversation found to continue\"
+-- a bare \"process exited\" left the CLI's own explanation on a screen
+nobody was shown (2026-10-14)."
+  (concat (if (integerp status) (format "exited %d" status) "process exited")
+          (and words (concat ": " words))))
 
 (defun ghostherd--buffer-title (buffer)
   "Return BUFFER's OSC 2 terminal title, or nil when it says nothing new.
@@ -597,11 +627,21 @@ _KIND is reserved for kind-specific quoting later."
 (cl-defmethod ghostherd-backend-live-p ((_backend (eql ghostel)) session)
   (buffer-live-p (ghostherd-session-buffer session)))
 
+(defconst ghostherd--ghostel-exit-line "\\`\\[Process exited\\]\\'"
+  "The line ghostel writes under a terminal whose process has exited.")
+
 (cl-defmethod ghostherd-backend-exited-p ((_backend (eql ghostel)) session)
   (let* ((buffer (ghostherd-session-buffer session))
          (proc (and (buffer-live-p buffer)
                     (buffer-local-value 'ghostel--process buffer))))
-    (and proc (not (process-live-p proc)) "process exited")))
+    (and proc (not (process-live-p proc))
+         (ghostherd--exit-reason
+          ;; ghostel's native PTY hands Emacs a pipe for the child, and a
+          ;; pipe's status is its own: the child's goes unsaid.
+          (and (eq (process-type proc) 'real) (process-exit-status proc))
+          (ghostherd--last-words
+           (ghostherd--buffer-tail buffer ghostherd--last-words-lines)
+           ghostherd--ghostel-exit-line)))))
 
 (cl-defmethod ghostherd-backend-scrollback
   ((_backend (eql ghostel)) session lines)

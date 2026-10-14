@@ -674,7 +674,7 @@ parallel notifier:
 | Signal                       | Source                        | Herd action            |
 |------------------------------+-------------------------------+------------------------|
 | View process exit            | =ghostel-exit-functions=      | =dead= *only* if the view is the host |
-| Agent exit, tmux backend     | =#{pane_dead}= at poll        | state → =dead=, notify |
+| Agent exit, tmux backend     | =#{pane_dead}= at poll        | state → =dead= with its status and last words, notify |
 | OSC 133 command start/finish | =ghostel-command-*-functions= | shell kind state hints |
 | OSC 9;4 progress             | =ghostel-progress-function=   | → =working= (+ %)      |
 | OSC 2 title                  | =ghostel--title=              | sidebar Title column   |
@@ -827,6 +827,12 @@ merely printed the words rather than stopped on a prompt.
 An exited agent stays visible as =dead= with its last screen until you
 kill it from the herd, on either backend --- that is what
 =ghostel-kill-buffer-on-exit= nil and tmux's =remain-on-exit on= are for.
+Its reason says how it ended and what it said last, =exited 1: No
+conversation found to continue= rather than a bare =process exited=: the
+last line with a word in it, looked for above the top of the screen too,
+where a CLI that clears it on its way out leaves it.  On ghostel's native
+PTY the exit status is not passed on, so the reason there is =process
+exited: …=.
 
 Screen rules are heuristics against a UI that changes between releases,
 so what has been observed against which version is recorded in the

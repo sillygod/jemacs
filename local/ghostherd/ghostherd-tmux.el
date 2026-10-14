@@ -424,14 +424,25 @@ sessions."
 
 (defvar ghostherd-tmux--status-cache nil
   "Cons of (TIMESTAMP . ALIST), the last `list-panes' snapshot.
-ALIST maps a tmux session name to (DEAD-P . TITLE).")
+ALIST maps a tmux session name to (DEAD . TITLE).  DEAD is nil while the
+pane's process runs, then its exit status -- t when tmux has none to
+give, a process killed by a signal.")
+
+(defvar ghostherd-tmux--last-words nil
+  "Alist of tmux session name → what its dead pane's CLI said last.
+Replaced whole by each batched fetch, so a pane killed since leaves
+nothing behind.")
+
+(defconst ghostherd-tmux--dead-line "\\`Pane is dead\\b"
+  "The line `remain-on-exit' writes under a pane whose process exited.
+tmux's word about the exit, not the agent's.")
 
 (defun ghostherd-tmux--forget ()
   "Drop the cached host snapshot, after something changed it."
   (setq ghostherd-tmux--status-cache nil))
 
 (defun ghostherd-tmux--snapshot ()
-  "Return the alist of tmux session name → (DEAD-P . TITLE), cached."
+  "Return the alist of tmux session name → (DEAD . TITLE), cached."
   (let ((now (float-time)))
     (when (or (null ghostherd-tmux--status-cache)
               (> (- now (car ghostherd-tmux--status-cache))
@@ -441,8 +452,9 @@ ALIST maps a tmux session name to (DEAD-P . TITLE).")
     (cdr ghostherd-tmux--status-cache)))
 
 (defconst ghostherd-tmux--status-format
-  "#{session_name}\t#{pane_dead}\t#{pane_title}"
-  "Fields the herd needs about every pane, in one line each.
+  "#{session_name}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_title}"
+  "Fields the herd needs about every pane, in one line each: its name,
+whether its process exited and with what status, and its title.
 
 The title is last because it is the only one that can contain the
 separator.  A constant because two callers ask for it now: the standalone
@@ -453,11 +465,15 @@ screen in the same round trip.")
   "Parse TEXT, `ghostherd-tmux--status-format' per line, into the status alist."
   (delq nil
         (mapcar (lambda (line)
-                  (when (string-match "\\`\\([^\t]*\\)\t\\([^\t]*\\)\t?\\(.*\\)\\'"
+                  (when (string-match "\\`\\([^\t]*\\)\t\\([^\t]*\\)\t\\([^\t]*\\)\t\\(.*\\)\\'"
                                       line)
-                    (cons (match-string 1 line)
-                          (cons (equal (match-string 2 line) "1")
-                                (match-string 3 line)))))
+                    (let ((status (match-string 3 line)))
+                      (cons (match-string 1 line)
+                            (cons (and (equal (match-string 2 line) "1")
+                                       (if (string-match-p "\\`[0-9]+\\'" status)
+                                           (string-to-number status)
+                                         t))
+                                  (match-string 4 line))))))
                 (split-string text "\n" t))))
 
 (defun ghostherd-tmux--read-snapshot ()
@@ -486,7 +502,7 @@ running."
      (t 'unknown))))
 
 (defun ghostherd-tmux--status (session)
-  "Return (DEAD-P . TITLE) for SESSION, or nil when its host is gone --
+  "Return (DEAD . TITLE) for SESSION, or nil when its host is gone --
 or when tmux could not be asked."
   (when-let* ((id (ghostherd-session-host-id session))
               (snapshot (ghostherd-tmux--snapshot)))
@@ -513,6 +529,8 @@ or when tmux could not be asked."
 ;;   outside makes its capture fail, and every command after it never
 ;;   runs.  So a partial answer is normal and the parse is tolerant: what
 ;;   came back is used, what did not is read individually by the caller.
+;;   A capture inside `if-shell' (2026-10-14) does not stop the list: the
+;;   panes after a gone one are answered all the same.
 ;; - *stderr must be kept out of the screens.*  That abandoned list
 ;;   explains itself on stderr ("can't find session: x"), and a sentence
 ;;   like that landing in a captured screen is text the rules would
@@ -548,12 +566,20 @@ later."
 
 (defun ghostherd-tmux--screens-args (ids marker)
   "Return the tmux arguments dumping the status fields and every pane in IDS.
-Each pane's screen is preceded by MARKER and its id on a line of its own."
+Each pane's screen is preceded by MARKER and its id on a line of its own.
+
+A dead pane's reaches back into its history, its wrapped lines joined:
+what its CLI said on the way out may be above the top -- one line above,
+for a claude that found no conversation to continue (2026-10-14).  tmux
+decides which, pane by pane, in the same round trip."
   (append (list "list-panes" "-a" "-F" ghostherd-tmux--status-format)
           (mapcan (lambda (id)
-                    (list ";" "display-message" "-p" (concat marker " " id)
-                          ";" "capture-pane" "-p" "-t"
-                          (ghostherd-tmux--target id)))
+                    (let ((target (ghostherd-tmux--target id)))
+                      (list ";" "display-message" "-p" (concat marker " " id)
+                            ";" "if-shell" "-F" "-t" target "#{pane_dead}"
+                            (format "capture-pane -p -J -S -%d -t %s"
+                                    ghostherd--last-words-lines target)
+                            (concat "capture-pane -p -t " target))))
                   (copy-sequence ids))))
 
 (defun ghostherd-tmux--parse-screens (output marker)
@@ -626,9 +652,20 @@ screen is trimmed to N lines so it matches what `capture' would return."
       ;; the cache here is what keeps the poll path from asking a second
       ;; time -- synchronously -- for an answer already in hand.
       (when (and status (string-match-p "\t" status))
-        (setq ghostherd-tmux--fetch-warned nil
-              ghostherd-tmux--status-cache
-              (cons (float-time) (ghostherd-tmux--parse-snapshot status))))
+        (let ((snapshot (ghostherd-tmux--parse-snapshot status)))
+          (setq ghostherd-tmux--fetch-warned nil
+                ghostherd-tmux--status-cache (cons (float-time) snapshot)
+                ;; Before the screens are trimmed: a dead pane's last words
+                ;; can be above them.  Before the callback too, so the tick
+                ;; that finds a pane dead says why.
+                ghostherd-tmux--last-words
+                (delq nil
+                      (mapcar (lambda (cell)
+                                (when-let* (((cadr (assoc (car cell) snapshot)))
+                                            (words (ghostherd--last-words
+                                                    (cdr cell) ghostherd-tmux--dead-line)))
+                                  (cons (car cell) words)))
+                              screens)))))
       (funcall callback
                (delq nil
                      (mapcar (lambda (cell)
@@ -837,8 +874,12 @@ must not touch `state' -- the agent is still running."
 
 (cl-defmethod ghostherd-backend-exited-p ((_backend (eql tmux)) session)
   ;; `remain-on-exit on' keeps the pane after the agent exits, so a dead
-  ;; pane is a session we can still read but no longer talk to.
-  (and (car (ghostherd-tmux--status session)) "process exited"))
+  ;; pane is a session we can still read but no longer talk to -- read
+  ;; by the fetch for what the agent said on its way out.
+  (when-let* ((dead (car (ghostherd-tmux--status session))))
+    (ghostherd--exit-reason
+     dead
+     (cdr (assoc (ghostherd-session-host-id session) ghostherd-tmux--last-words)))))
 
 (defun ghostherd-tmux--meaningful-title (title)
   "Return TITLE unless it is tmux's default, which says nothing.

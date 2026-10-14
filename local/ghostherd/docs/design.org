@@ -686,7 +686,10 @@ watching an agent was paid again for every other agent in the herd. tmux
 takes a list of commands in one invocation --- which
 =ghostherd-backend-scroll= already relied on for the wheel --- so the
 whole tick is one call: the =list-panes= fields, then a delimiter and a
-=capture-pane= per session.
+=capture-pane= per session. A dead pane's capture reaches into its
+history for what the agent said on its way out --- tmux picks which, pane
+by pane, with =if-shell -F '#{pane_dead}'= --- so the tick that finds a
+pane dead can say why (2026-10-14).
 
 Asynchronous for a different reason than speed. =call-process= does not
 come back and cannot be interrupted, so a wedged tmux server did not
@@ -704,6 +707,9 @@ rather than assumed:
   session the batch did not answer for is read individually by the
   caller. A marker with nothing after it is reported as *missing* rather
   than as an empty screen, because an empty screen reads as =idle=.
+  Since the captures went through =if-shell= (2026-10-14) a pane that is
+  gone no longer stops the list: its =if-shell= fails, and the panes
+  after it are answered all the same. The parse stays tolerant anyway.
 - *stderr must be kept out of the screens.* That abandoned list explains
   itself on stderr (="can't find session: x"=), and a sentence like that
   landing in a captured screen is text the rules would happily match.
