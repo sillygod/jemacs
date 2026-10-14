@@ -1,6 +1,7 @@
 // Copy on each turn of a room, yours and the agents': what the turn
 // says as it was written -- the markdown, not the page's drawing of it
-// -- in the columns and in the chat, on a phone and at a desk.
+// -- in the columns and in the chat, on a phone and at a desk.  And the
+// turns themselves read a size up from the page.
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep } = require("./herdlib");
 const results = [];
@@ -84,6 +85,18 @@ const CHAT = {
       check(W("its ask, and the answer to it, each on its own"), got[2] === ASK && got[3] === ANSWER, got.slice(2));
       const flash = await page.$eval("#status", (s) => (s.hidden ? "" : s.textContent));
       check(W("and says so"), flash === "Copied", flash);
+
+      // The turns read a size up from the page; their code and headings
+      // with them.
+      const size = await page.evaluate((ents) => {
+        const px = (el) => el && parseFloat(getComputedStyle(el).fontSize);
+        const reply = document.querySelector(ents + ":nth-child(3) .ebody");
+        return { page: px(document.body), you: px(document.querySelector(ents + ":nth-child(1) .ebody")), text: px(reply),
+                 code: px(reply.querySelector("pre")), inline: px(reply.querySelector(":not(pre) > code")), head: px(reply.querySelector("h2")) };
+      }, ents);
+      check(W("a turn read a size up from the page, its code and headings with it"),
+        size.text > size.page && size.you === size.text && size.code > 12 && size.code < size.text &&
+        size.inline === size.code && size.head > size.text, size);
 
       // Where the button sits: after the time, in the head, inside the column.
       const box = await page.$eval(ents + ":nth-child(3) > .ehead", (h) => {

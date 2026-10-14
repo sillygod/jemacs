@@ -305,7 +305,8 @@ so a page opens as it would on the phone.
 | =herd-copy=    | Copy on each turn of a room, in its columns and its chat: the   |
 |                | markdown as written, your words without the herd's notes, an    |
 |                | answer apart from its ask, a folded turn whole; the head in     |
-|                | sight, solid, while a long turn is read to its end              |
+|                | sight, solid, while a long turn is read to its end; the turns   |
+|                | themselves a size up from the page, code and headings with them |
 | =apps-phone=   | pr-view and clickup-view opened from the phone: what the        |
 |                | address names, Open and Copy there, a reload, fitting it, a     |
 |                | pull request scrolling as one page, upright and on its side;    |

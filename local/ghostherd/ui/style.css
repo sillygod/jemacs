@@ -446,8 +446,12 @@ button.pname:hover { color: var(--accent); text-decoration: underline; }
    time you reach its end. */
 .ent > .ehead { position: sticky; top: 0; z-index: 1; background: var(--panel); padding: 2px 0; }
 .cbody .ent > .ehead { background: var(--bg); }
-.ebody { font-size: 12.5px; }
-.ebody.plain { font-family: inherit; font-size: 12.5px; margin: 2px 0 0; max-height: 24em; overflow-y: auto; }
+/* What a turn says, a size up from the page's: it is what a room is read
+   for.  Its code and headings a size up with it. */
+.ebody { font-size: 14px; }
+.ebody.plain { font-family: inherit; font-size: 14px; margin: 2px 0 0; max-height: 24em; overflow-y: auto; }
+.ebody.msg-body pre, .ebody.msg-body code { font-size: 13px; }
+.ebody.msg-body h1, .ebody.msg-body h2, .ebody.msg-body h3 { font-size: 15.5px; }
 .ebody.msg-body > :first-child { margin-top: 2px; }
 .ebody.msg-body > :last-child { margin-bottom: 0; }
 .eanswer { margin-top: 6px; padding-left: 8px; border-left: 2px dashed var(--line); }
