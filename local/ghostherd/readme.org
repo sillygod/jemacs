@@ -1156,6 +1156,31 @@ are the other tabs (below, and "What happened while you were away").
   an empty box at the desk.  Faint is how it is told from what you
   typed in the CLI: when new text is in the box, tmux is asked once for
   the screen with its styles (=ghostherd-foot-kinds=).
+- What each claude agent runs on, on its row, its column's head and ---
+  in the chat --- above the box, for the agent it writes to: its model
+  and effort, and its context as a bar of its model's window, =38% ·
+  381k / 1M=, coloured as the usage bars are.  The sidecar reads it off
+  the tail of the transcript, when that has changed: the last reply's
+  own record of its model, the tokens it was given and its effort.  A
+  model switched since is the one its next reply will be on, its chip
+  dashed; a context compacted since says so until then.  The window is
+  as Claude Code documents it: 1M for =[1m]= and for the models that
+  have it natively (Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5,
+  Fable), 200K for the rest.  Not claude's status line: turning that on
+  takes =esc to interrupt= off the screen, which is how the herd knows
+  an agent is working.
+- The model chip switches the model for that session alone: a model
+  and, if you like, an effort, then Switch.  Emacs drives claude's
+  =/model= picker as you would --- down to the row, ←/→ to the effort,
+  =s= for this session only --- each step waiting for the screen to
+  show it, and Escapes out with the reason when it does not; the
+  picker's own line (=Set model to Sonnet 5.5 for this session only
+  with high effort=) goes to the page and the log.  An idle or done
+  agent only, with nothing of yours in its input box.  Typed in a box,
+  =/model sonnet= also makes Sonnet the default of every new session:
+  that is the CLI's own.  =M-x ghostherd-switch-model= does the same
+  from Emacs; =:model-picker= in =ghostherd-agent-specs= is what makes
+  a kind switchable, claude so far.
 - What each agent's conversation names, on its row and its room
   column (=↳ named=): the pull requests of its project's repository and
   the ClickUp tasks (=app.clickup.com/t/…= or =CU-…=) that you gave it,

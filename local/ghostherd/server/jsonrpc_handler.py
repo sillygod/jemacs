@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import conversation
 import links
+import meter
 import relay
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
@@ -69,6 +70,7 @@ class JsonRpcHandler:
             "herd_link": self._herd_link,
             "herd_conversation": self._herd_conversation,
             "herd_chat": self._herd_chat,
+            "herd_meter": self._herd_meter,
             "herd_links": self._herd_links,
             "herd_relay_brief": self._herd_relay_brief,
             "herd_unlink": self._herd_unlink,
@@ -288,6 +290,11 @@ class JsonRpcHandler:
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
         return conversation.read(str(params.get("path") or ""), limit)
+
+    def _herd_meter(self, params: dict) -> dict:
+        """What a claude agent runs on and how full its context is, from
+        the transcript at PATH: empty for another CLI's, or before a reply."""
+        return meter.read(str(params.get("path") or ""))
 
     def _herd_chat(self, params: dict) -> dict:
         """A project's agents' conversations as one timeline.  AGENTS is a

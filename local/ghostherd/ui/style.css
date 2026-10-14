@@ -283,6 +283,31 @@ mark.here { background: var(--warn); color: #0e1116; }
 .lvl-warm { background: var(--st-blocked); }
 .lvl-hot { background: var(--st-dead); }
 .upct { text-align: right; font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+/* An agent's model and its context: a chip that switches it, where Emacs
+   can, and a bar of its window. */
+.meter { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 4px 0 2px; font-size: 12px; }
+.mchip {
+  display: inline-flex; align-items: baseline; gap: 6px; flex-shrink: 0;
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px;
+  background: none; color: var(--text); font: inherit; white-space: nowrap;
+}
+button.mchip:hover { border-color: var(--accent); }
+.mchip.pending { border-style: dashed; }
+.meff { color: var(--muted); }
+.mctx { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.mbar { flex: 1 1 60px; min-width: 40px; max-width: 220px; height: 6px; }
+.mwords { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.modelform { margin: 4px 0 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 6px; }
+.mrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mlab { width: 3.6em; flex-shrink: 0; font-size: 11.5px; color: var(--muted); }
+.mopts { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.mopt { padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--text); font-size: 12px; }
+.mopt.on { border-color: var(--accent); color: var(--accent); }
+.mgo { flex-wrap: wrap; }
+.mnote { font-size: 11.5px; color: var(--muted); }
+.cmeter { padding: 0 16px; flex-shrink: 0; }
+.cmeter:empty { display: none; }
 .ureset { grid-column: 2 / 4; font-size: 11px; color: var(--muted); }
 #herd .error { color: var(--minus); margin: 12px 0; }
 .uhooks { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 11.5px; }
@@ -760,6 +785,7 @@ html { -webkit-text-size-adjust: 100%; }
   .rcols { padding: 8px 10px; gap: 8px; scroll-padding: 0 10px; }
   .rcol { flex: 0 0 calc(100% - 18px); }
   .cbody { padding: 8px 12px; }
+  .cmeter { padding: 0 12px; }
 
   /* A box to write in: the width of the screen, Send beside it; whom it
      goes to, and Image, above. */
@@ -800,7 +826,8 @@ html { -webkit-text-size-adjust: 100%; }
      the page in on it. */
   button.ghost, button.primary { min-height: 36px; }
   button.small { padding: 4px 12px; font-size: 13px; }
-  button.linkish, .filters .chip, .wchip { min-height: 32px; }
+  button.linkish, .filters .chip, .wchip, .mchip, .mopt { min-height: 32px; }
+  .mopt { padding: 0 12px; }
   button.linkish { padding: 0 6px; }
   .wchip { padding: 0 10px; }
   .searchbar input, #log-filter, #log-session, #project, .cfoot select, .cfoot textarea, .rfoot textarea,

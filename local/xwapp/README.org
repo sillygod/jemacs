@@ -307,6 +307,9 @@ so a page opens as it would on the phone.
 |                | answer apart from its ask, a folded turn whole; the head in     |
 |                | sight, solid, while a long turn is read to its end; the turns   |
 |                | themselves a size up from the page, code and headings with them |
+| =herd-meter=   | each agent's model, effort and context bar, on its row, its     |
+|                | column and above the chat's box; the form that switches it for  |
+|                | its session: what it sends, held while the agent works          |
 | =apps-phone=   | pr-view and clickup-view opened from the phone: what the        |
 |                | address names, Open and Copy there, a reload, fitting it, a     |
 |                | pull request scrolling as one page, upright and on its side;    |

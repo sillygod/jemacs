@@ -2392,6 +2392,226 @@ continuing again does not say `--continue' twice."
           (ghostherd-respawn (ghostherd-tests--session :name "a" :kind kind :args args) t)
           (should (equal (plist-get spawned :args) continued)))))))
 
+;;; Its model, switched for this session only
+
+(defconst ghostherd-tests--picker-models
+  '(("Default (recommended)" "low" "medium" "high" "xhigh" "max")
+    ("Opus 5.5" "low" "medium" "high" "xhigh" "max")
+    ("Sonnet 5.5" "low" "medium" "high" "xhigh" "max")
+    ("Haiku 5.5" "low" "medium" "high")
+    ("Haiku 4.5"))
+  "The fake claude's models, newest of a family first, and the efforts
+each takes -- none for one without.")
+
+(defvar ghostherd-tests--picker nil
+  "The fake claude: (:model NAME :effort LEVEL :open BOOL :cursor N :at
+\(ROW . LEVEL)... :said TEXT :sent KEYS :deaf BOOL).")
+
+(defun ghostherd-tests--picker-get (key) (plist-get ghostherd-tests--picker key))
+(defun ghostherd-tests--picker-set (key value)
+  (setq ghostherd-tests--picker (plist-put ghostherd-tests--picker key value)))
+
+(defun ghostherd-tests--picker-screen ()
+  "The fake claude's screen: a conversation with a numbered list of its
+own, and the picker under it while it is open."
+  (let ((head "⏺ Done:\n1. Fixed the retry\n2. Added a test\n"))
+    (if (not (ghostherd-tests--picker-get :open))
+        (concat head (if (ghostherd-tests--picker-get :said)
+                         (concat "❯ /model\n  ⎿  " (ghostherd-tests--picker-get :said) "\n")
+                       "")
+                "────\n❯ \n────\n")
+      (let* ((cursor (ghostherd-tests--picker-get :cursor))
+             (effort (cdr (assoc cursor (ghostherd-tests--picker-get :at)))))
+        (concat head
+                "   Select model\n   Switch between Claude models.  Your pick becomes the default.\n\n"
+                (mapconcat (lambda (i)
+                             (let ((label (car (nth (1- i) ghostherd-tests--picker-models))))
+                               (format "   %s %d.  %-22s Best for something\n"
+                                       (if (= i cursor) "❯" " ") i
+                                       (if (equal label (ghostherd-tests--picker-get :model))
+                                           (concat label " ✔")
+                                         label))))
+                           (number-sequence 1 (length ghostherd-tests--picker-models)) "")
+                (if effort
+                    (format "\n   ◉ %s effort ←/→ to adjust\n"
+                            (if (equal effort "xhigh") "xHigh" (capitalize effort)))
+                  "\n")
+                "\n   Enter to set as default · s to use this session only · Esc to cancel\n")))))
+
+(cl-defmethod ghostherd-backend-capture ((_backend (eql picker)) _session &optional _n)
+  (ghostherd-tests--picker-screen))
+
+(cl-defmethod ghostherd-backend-live-p ((_backend (eql picker)) _session) t)
+
+(cl-defmethod ghostherd-backend-send-text ((_backend (eql picker)) _session text submit)
+  (ghostherd-tests--picker-set :sent (append (ghostherd-tests--picker-get :sent)
+                                             (list (if submit (list :submit text) text))))
+  (when (and submit (equal text "/model") (not (ghostherd-tests--picker-get :deaf)))
+    (let ((now (1+ (cl-position (ghostherd-tests--picker-get :model) ghostherd-tests--picker-models
+                                :key #'car :test #'equal))))
+      (ghostherd-tests--picker-set :open t)
+      (ghostherd-tests--picker-set :cursor now)
+      ;; The session's effort on its own model; another's default.
+      (ghostherd-tests--picker-set
+       :at (cl-loop for (_ . levels) in ghostherd-tests--picker-models
+                    for i from 1
+                    collect (cons i (cond ((null levels) nil)
+                                          ((= i now) (ghostherd-tests--picker-get :effort))
+                                          (t "medium"))))))))
+
+(cl-defmethod ghostherd-backend-send-keys ((_backend (eql picker)) _session keys)
+  (ghostherd-tests--picker-set :sent (append (ghostherd-tests--picker-get :sent) keys))
+  (dolist (key keys)
+    (when (ghostherd-tests--picker-get :open)
+      (let* ((cursor (ghostherd-tests--picker-get :cursor))
+             (levels (cdr (nth (1- cursor) ghostherd-tests--picker-models)))
+             (at (assoc cursor (ghostherd-tests--picker-get :at)))
+             (i (cl-position (cdr at) levels :test #'equal)))
+        (pcase key
+          ("down" (ghostherd-tests--picker-set :cursor (min (length ghostherd-tests--picker-models) (1+ cursor))))
+          ("up" (ghostherd-tests--picker-set :cursor (max 1 (1- cursor))))
+          ("right" (when i (setcdr at (nth (min (1- (length levels)) (1+ i)) levels))))
+          ("left" (when i (setcdr at (nth (max 0 (1- i)) levels))))
+          ("esc" (ghostherd-tests--picker-set :open nil)
+                 (ghostherd-tests--picker-set :said (concat "Kept model as " (ghostherd-tests--picker-get :model))))
+          ("s" (let ((model (car (nth (1- cursor) ghostherd-tests--picker-models))))
+                 (ghostherd-tests--picker-set :open nil)
+                 (ghostherd-tests--picker-set :model model)
+                 (ghostherd-tests--picker-set :effort (cdr at))
+                 (ghostherd-tests--picker-set
+                  :said (concat "Set model to " model " for this session only"
+                                (if (cdr at) (concat " with " (cdr at) " effort") ""))))))))))
+
+(defmacro ghostherd-tests--with-picker (&rest body)
+  "Run BODY with `s', an idle claude agent on the fake picker backend:
+on Opus 5.5 at xhigh, its picker answering as claude's does."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-herd ()
+     (ghostherd-tests--with-log
+       (let ((ghostherd-tests--picker (list :model "Opus 5.5" :effort "xhigh"))
+             (ghostherd-model-switch-wait 1)
+             (s (ghostherd-tests--session :name "rd" :kind 'claude :backend 'picker :state 'idle)))
+         ,@body))))
+
+(defun ghostherd-tests--switch (s model &optional effort)
+  "Switch S to MODEL at EFFORT, and wait: (OK . WHAT)."
+  (let (got)
+    (ghostherd-switch-model s model effort (lambda (ok what) (setq got (cons ok what))))
+    (with-timeout (10 (ert-fail "the switch never finished"))
+      (while (not got) (accept-process-output nil 0.02)))
+    got))
+
+(ert-deftest ghostherd-test-model-picker-is-read-under-its-title ()
+  "Its rows, the one it is on and that row's effort -- and not the
+numbered list the conversation above it holds."
+  (let ((ghostherd-tests--picker (list :model "Opus 5.5" :effort "xhigh" :open t :cursor 2
+                                       :at '((1 . "medium") (2 . "xhigh") (3 . "medium") (4 . "medium") (5)))))
+    (should (equal (ghostherd--model-picker (ghostherd-tests--picker-screen))
+                   '(:rows ((1 . "Default (recommended)") (2 . "Opus 5.5") (3 . "Sonnet 5.5")
+                            (4 . "Haiku 5.5") (5 . "Haiku 4.5"))
+                     :cursor 2 :effort "xhigh")))
+    (ghostherd-tests--picker-set :cursor 5)
+    (should (null (plist-get (ghostherd--model-picker (ghostherd-tests--picker-screen)) :effort)))
+    (ghostherd-tests--picker-set :open nil)
+    (should-not (ghostherd--model-picker (ghostherd-tests--picker-screen))))
+  ;; As claude draws it: a scrolled list, an older tick, a default effort.
+  (should (equal (ghostherd--model-picker
+                  (concat " Select model\n"
+                          "     1.  Default (recommended)  Opus 5.5 · Best for everyday\n"
+                          " ❯ 2. Opus ✓                    Opus 5.5 · Best for everyday\n"
+                          "   ↓ 10. Opus 4.8               Best for everyday\n"
+                          "      … +3 models\n"
+                          "   ◐ Medium effort (default) ←/→ to adjust\n"
+                          "   Enter to set as default · s to use this session only · Esc to cancel\n"))
+                 '(:rows ((1 . "Default (recommended)") (2 . "Opus") (10 . "Opus 4.8"))
+                   :cursor 2 :effort "medium"))))
+
+(ert-deftest ghostherd-test-picker-row-is-a-familys-newest ()
+  (let ((rows '((1 . "Default (recommended)") (2 . "Opus 5.5") (4 . "Sonnet 5.5")
+                (8 . "Opus 5") (9 . "Haiku 4.5"))))
+    (should (eql (ghostherd--picker-row rows "Opus") 2))
+    (should (eql (ghostherd--picker-row rows "default") 1))
+    (should (eql (ghostherd--picker-row rows "Haiku") 9))
+    (should-not (ghostherd--picker-row rows "Fable"))
+    (should-not (ghostherd--picker-row '((1 . "Opusplan")) "Opus"))))
+
+(ert-deftest ghostherd-test-model-said-is-the-last-models ()
+  (should (equal (ghostherd--model-said
+                  (concat "❯ /model\n  ⎿  Set model to Haiku 5.5 for this session only\n"
+                          "⏺ ok\n❯ /model\n  ⎿  Set model to Sonnet 5.5 for this session only with high effort\n"
+                          "────\n❯ \n"))
+                 "Set model to Sonnet 5.5 for this session only with high effort"))
+  (should (equal (ghostherd--model-said "❯ /model\n  ⎿  Kept model as Opus 5.5\n") "Kept model as Opus 5.5"))
+  (should-not (ghostherd--model-said "⏺ I will set model to Haiku\n❯ \n")))
+
+(ert-deftest ghostherd-test-switch-model-drives-the-picker ()
+  "`/model', down to the row, → to the effort, `s': this session alone,
+the way you would -- and said in the log."
+  (ghostherd-tests--with-picker
+    (should (equal (ghostherd-tests--switch s "Sonnet" "high")
+                   '(t . "Set model to Sonnet 5.5 for this session only with high effort")))
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "down" "right" "s")))
+    (should (equal (list (ghostherd-tests--picker-get :model) (ghostherd-tests--picker-get :effort))
+                   '("Sonnet 5.5" "high")))
+    (should (equal (ghostherd-log-entry-text (car ghostherd--log))
+                   "Set model to Sonnet 5.5 for this session only with high effort"))
+    (should-not (gethash (ghostherd-session-id s) ghostherd--switching))
+    ;; Up, and down the efforts; none asked, none touched.
+    (ghostherd-tests--picker-set :sent nil)
+    (should (car (ghostherd-tests--switch s "Default" "low")))
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "up" "up" "left" "s")))
+    (ghostherd-tests--picker-set :sent nil)
+    (should (car (ghostherd-tests--switch s "Opus")))
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "down" "s")))
+    (should (equal (ghostherd-tests--picker-get :effort) "medium"))))
+
+(ert-deftest ghostherd-test-switch-model-takes-what-a-model-has ()
+  "An effort past a model's top stops at its top, and one without an
+effort is switched all the same: what it set is what it says."
+  (ghostherd-tests--with-picker
+    (should (equal (ghostherd-tests--switch s "Haiku" "max")
+                   '(t . "Set model to Haiku 5.5 for this session only with high effort")))
+    (should (equal (ghostherd-tests--switch s "Default" "high")
+                   '(t . "Set model to Default (recommended) for this session only with high effort")))
+    (ghostherd-tests--picker-set :sent nil)
+    ;; Haiku 4.5, the second Haiku, is not a name the herd picks by;
+    ;; a picker without the name is let go of.
+    (should (equal (ghostherd-tests--switch s "Fable")
+                   '(nil . "its picker has no Fable")))
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "esc")))
+    (should-not (ghostherd-tests--picker-get :open))
+    (should (equal (ghostherd-log-entry-text (car ghostherd--log))
+                   "model not switched: its picker has no Fable"))))
+
+(ert-deftest ghostherd-test-switch-model-gives-up-on-a-picker-that-does-not-open ()
+  (ghostherd-tests--with-picker
+    (ghostherd-tests--picker-set :deaf t)
+    (should (equal (ghostherd-tests--switch s "Sonnet")
+                   '(nil . "its model picker did not open")))
+    ;; Nothing pressed into a screen it could not read.
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model"))))
+    (should-not (gethash (ghostherd-session-id s) ghostherd--switching))))
+
+(ert-deftest ghostherd-test-switch-model-refuses-what-it-should-not-touch ()
+  (ghostherd-tests--with-picker
+    (setf (ghostherd-session-state s) 'working)
+    (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
+    (setf (ghostherd-session-state s) 'idle)
+    ;; Words of yours in its input box -- a suggestion is not yours.
+    (puthash (ghostherd-session-id s) '(:input "half a thought") ghostherd--feet)
+    (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
+    (puthash (ghostherd-session-id s) '(:input "run the tests" :suggestion "run the tests") ghostherd--feet)
+    (should (car (ghostherd-tests--switch s "Sonnet")))
+    (remhash (ghostherd-session-id s) ghostherd--feet)
+    (should-error (ghostherd-switch-model s "GPT") :type 'user-error)
+    (should-error (ghostherd-switch-model s "Sonnet" "ludicrous") :type 'user-error)
+    (puthash (ghostherd-session-id s) t ghostherd--switching)
+    (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
+    (remhash (ghostherd-session-id s) ghostherd--switching)
+    (let ((g (ghostherd-tests--session :name "g" :kind 'grok :backend 'picker :state 'idle)))
+      (should-error (ghostherd-switch-model g "Sonnet") :type 'user-error))
+    (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "down" "s")))))
+
 ;;; Switcher annotation and notes
 
 (ert-deftest ghostherd-test-candidate-is-just-the-name ()
@@ -8143,6 +8363,73 @@ go; its Relay names the CLI, which must be one an agent runs on."
         (ghostherd-memory-page--agent-act "agent-relay" '((name . "rd") (kind . "agy")))
         (should (equal relayed (list rd 'agy)))
         (should-error (ghostherd-memory-page--agent-act "agent-relay" '((name . "rd") (kind . "shell")))
+                      :type 'user-error)))))
+
+(ert-deftest ghostherd-test-page-meters-each-agent-once-per-change ()
+  "Each agent's meter, read by the sidecar from its transcript when that
+changed -- not on every look -- and sent field by field.  None for an
+agent whose transcript is not known, or that has not replied yet."
+  (ghostherd-test--with-herd
+    (let* ((file (make-temp-file "gh-meter" nil ".jsonl" "{}\n"))
+           (ghostherd-memory-page--meters (make-hash-table :test 'equal))
+           (ghostherd-memory-page--metering (make-hash-table :test 'equal))
+           (ghostherd-memory-page--herd-soon nil)
+           (paths `(("claude-api" . ,file))))
+      (puthash "agy-x" (ghostherd-session--create :id "agy-x" :name "agy-x" :kind 'agy :state 'idle
+                                                  :project "/p/" :backend 'tmux)
+               ghostherd--sessions)
+      (cl-letf (((symbol-function 'ghostherd-session-transcript)
+                 (lambda (s) (cdr (assoc (ghostherd-session-name s) paths)))))
+        (unwind-protect
+            (let ((meter (lambda (name) (plist-get (ghostherd-memory-page--agent (ghostherd-get name)) :meter))))
+              (setq reply (lambda (_m _p) '(:model "Opus 5.5" :effort "xhigh" :tokens 833282 :window 1000000
+                                            :pending :json-false :compacted :json-false :ts "x" :secret "y")))
+              (ghostherd-memory-page--meter-look)
+              (ghostherd-memory-page--meter-look)
+              (should (equal requests `(("herd_meter" (:path ,file)))))
+              (should (equal (funcall meter "claude-api")
+                             '(:model "Opus 5.5" :effort "xhigh" :tokens 833282 :window 1000000
+                               :pending :json-false :compacted :json-false)))
+              (should (eq (funcall meter "agy-x") :json-false))
+              ;; Changed: asked again.  Compacted since its last reply: no size.
+              (with-temp-file file (insert "{}\n{}\n"))
+              (setq reply (lambda (_m _p) '(:model "Opus 5.5" :effort "xhigh" :tokens nil :window 1000000
+                                            :pending :json-false :compacted t)))
+              (ghostherd-memory-page--meter-look)
+              (should (= (length requests) 2))
+              (should (equal (plist-get (funcall meter "claude-api") :tokens) nil))
+              (should (eq (plist-get (funcall meter "claude-api") :compacted) t))
+              ;; A new conversation, not replied to yet: no meter.
+              (with-temp-file file (insert "{}\n"))
+              (setq reply (lambda (_m _p) nil))
+              (ghostherd-memory-page--meter-look)
+              (should (eq (funcall meter "claude-api") :json-false)))
+          (delete-file file))))))
+
+(ert-deftest ghostherd-test-page-switches-a-model ()
+  "The page is told whose model it can switch, and to what; its Switch
+goes to `ghostherd-switch-model', and the page hears how it went."
+  (ghostherd-test--with-herd
+    (ghostherd-memory-page--send-herd)
+    (let ((herd (ghostherd-test--call calls "renderHerd")))
+      (should (equal (plist-get (plist-get herd :pickers) :claude)
+                     '(:models ["Default" "Opus" "Fable" "Sonnet" "Haiku"]
+                       :efforts ["low" "medium" "high" "xhigh" "max"])))
+      (should-not (plist-get (plist-get herd :pickers) :agy))
+      (should (eq (plist-get (aref (plist-get herd :agents) 0) :switching) :json-false)))
+    (let (asked (said "Set model to Sonnet 5.5 for this session only"))
+      (cl-letf (((symbol-function 'ghostherd-switch-model)
+                 (lambda (s model effort done)
+                   (setq asked (list (ghostherd-session-name s) model effort))
+                   (funcall done (not (equal model "Fable")) (if (equal model "Fable") "its picker has no Fable" said)))))
+        (ghostherd-memory-page--agent-act "agent-model" '((name . "claude-api") (model . "Sonnet") (effort . "")))
+        (should (equal asked '("claude-api" "Sonnet" nil)))
+        (should (member (cons "flash" said) calls))
+        (should (member '("flash" . "Switching claude-api to Sonnet…") calls))
+        (ghostherd-memory-page--agent-act "agent-model" '((name . "claude-api") (model . "Fable") (effort . "max")))
+        (should (equal asked '("claude-api" "Fable" "max")))
+        (should (member '("flash" . "claude-api: its picker has no Fable") calls))
+        (should-error (ghostherd-memory-page--agent-act "agent-model" '((name . "claude-api")))
                       :type 'user-error)))))
 
 (provide 'ghostherd-tests)

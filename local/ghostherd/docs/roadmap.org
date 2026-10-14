@@ -712,6 +712,21 @@ builds, one tests, back and forth --- as one conversation, on the page.
   a redraw cannot hand over a neighbour's turn.  A turn the sidecar cut
   at =TEXT_MAX= (12,000 characters) copies cut.  33 WebKit checks
   (=herd-copy=); 12 guards broken on purpose, each caught
+- [X] What a claude agent runs on, and how full its context is: its
+  model and effort, and a bar of its window, on its row, its column and
+  above the chat's box --- from its transcript's last reply, which
+  records all three, read by the sidecar (=herd_meter=) when the file
+  has changed.  Not claude's status line, which takes =esc to
+  interrupt= off the screen
+- [X] Its model switched from the page, for its session alone.
+  =/model NAME= also saves NAME as the default of every new session
+  (tried, 2026-10-14), and only the picker's =s= does not; so Emacs
+  drives the picker as you would --- the row, the effort, =s= --- each
+  step on what the screen shows, Escaping out with the reason
+  otherwise.  Tried against claude 2.1.299 in a scratch agent: switched,
+  =settings.json= untouched.  34 pytest, 9 ERT on a fake claude whose
+  picker answers keys as claude's does, 47 WebKit checks
+  (=herd-meter=); 22 guards broken on purpose, each caught
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

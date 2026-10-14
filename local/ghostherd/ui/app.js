@@ -774,6 +774,8 @@
     // would come back empty, its first CLI picked.  Set afresh as each
     // form opens.
     notesText: "", newKind: "", newName: "",
+    // The model form: whose it is, and the model and effort picked.
+    modelFor: null, modelPick: {},
     // Images attached to each agent's next prompt: [{path, thumb}].
     attach: {},
     // The room: its project, each agent's conversation, the agents shown
@@ -1197,6 +1199,83 @@
       '<span class="cn">' + esc(String(o.n)) + "</span>" + esc(o.label) + "</button>").join("") + "</div>";
   }
 
+  // ---- What an agent runs on, and how full its context is ----------------
+  //
+  // Read from its transcript's last reply: the model and effort, a button
+  // where Emacs can switch them -- for this session only, in the CLI's own
+  // picker -- and the context as a bar of its model's window.  A switch
+  // since that reply is the model its next one will be on.
+
+  function tokens(n) {
+    if (n >= 1e6) return +(n / 1e6).toFixed(n % 1e6 ? 1 : 0) + "M";
+    return n >= 1000 ? Math.round(n / 1000) + "k" : String(n);
+  }
+
+  function pickerFor(a) {
+    const p = herdNow.data && herdNow.data.pickers;
+    return (p && p[a.kind]) || null;
+  }
+
+  function meterHtml(a) {
+    const m = a && a.meter;
+    if (!m) return "";
+    const label = esc(m.model) + (m.effort ? '<span class="meff">' + esc(m.effort) + "</span>" : "");
+    const cls = "mchip" + (m.pending ? " pending" : "");
+    const said = m.pending ? "Switched; its next reply is the first on it" : "What its last reply ran on";
+    const chip = a.switching
+      ? '<span class="' + cls + '">' + label + '<span class="meff">switching…</span></span>'
+      : pickerFor(a)
+        ? '<button type="button" class="' + cls + '" data-act="a:model" title="' + esc(said + ". Switch it, for this session only") + '">' + label + "</button>"
+        : '<span class="' + cls + '" title="' + esc(said) + '">' + label + "</span>";
+    let bar = "", words = "";
+    if (m.compacted || m.tokens == null) {
+      words = m.compacted ? "compacted" : "";
+    } else if (m.window) {
+      const pct = Math.round((m.tokens / m.window) * 100);
+      // Coloured as the usage bars are, and at the same marks.
+      bar = '<span class="ubar mbar"><span class="lvl-' + (pct >= 90 ? "hot" : pct >= 70 ? "warm" : "ok") + '" style="width:' +
+        Math.min(100, pct) + '%"></span></span>';
+      words = pct + "% · " + tokens(m.tokens) + " / " + tokens(m.window);
+    } else {
+      words = tokens(m.tokens);
+    }
+    return '<div class="meter">' + chip + (bar || words
+      ? '<span class="mctx" title="Context: what its last reply was given, of the window its model has">' + bar +
+        (words ? '<span class="mwords">' + esc(words) + "</span>" : "") + "</span>"
+      : "") + "</div>";
+  }
+
+  // The model and effort to switch to, picked as chips; the effort left
+  // unpicked stays as the picker has it.
+  function modelFormHtml(a) {
+    const p = a && herdNow.modelFor === a.name && pickerFor(a);
+    if (!p) return "";
+    const pick = herdNow.modelPick;
+    const busy = !["idle", "done"].includes(a.state);
+    const chips = (list, key) => list.map((v) =>
+      '<button type="button" class="mopt' + (pick[key] === v ? " on" : "") + '" data-act="a:model-pick" data-' + key + '="' + esc(v) + '">' +
+      esc(v) + "</button>").join("");
+    return '<div class="modelform">' +
+      '<div class="mrow"><span class="mlab">Model</span><span class="mopts">' + chips(p.models, "model") + "</span></div>" +
+      '<div class="mrow"><span class="mlab">Effort</span><span class="mopts">' + chips(p.efforts, "effort") + "</span></div>" +
+      '<div class="mrow mgo"><button type="button" class="primary small" data-act="a:model-go"' +
+      (busy || !pick.model ? " disabled" : "") + ">Switch</button>" +
+      '<button type="button" class="ghost small" data-act="a:model-cancel">Cancel</button>' +
+      '<span class="mnote">' + esc(busy ? "It is " + a.state + ": switch it once it is idle."
+        : "This session only: new sessions keep your default.") + "</span></div></div>";
+  }
+
+  function openModelForm(a) {
+    const p = pickerFor(a);
+    const m = a.meter || {};
+    const family = (m.model || "").split(" ")[0];
+    herdNow.modelFor = a.name;
+    herdNow.modelPick = {
+      model: p && p.models.includes(family) ? family : null,
+      effort: p && p.efforts.includes(m.effort) ? m.effort : null,
+    };
+  }
+
   function agentRow(a, kinds, asks) {
     const name = a.name;
     const acts = [];
@@ -1241,7 +1320,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      reasonHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) +
       (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
@@ -1396,7 +1475,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      reasonHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>";
@@ -1538,7 +1617,7 @@
 
   function chatHtml(agents) {
     const to = chatTo(agents);
-    return '<div class="chat"><div class="cbody"></div>' +
+    return '<div class="chat"><div class="cbody"></div><div class="cmeter"></div>' +
       '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
       '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
       chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
@@ -1563,6 +1642,17 @@
     foot.querySelector(".chat-to").value = to;
     suggestIn(foot, to, chatHint(to));
     renderAttach(to);
+    renderChatMeter();
+  }
+
+  // The chat's box writes to one agent at a time: its meter, above the box.
+  function renderChatMeter() {
+    const foot = app.querySelector(".chat .cfoot");
+    const box = app.querySelector(".chat .cmeter");
+    if (!foot || !box) return;
+    const a = roomAgents().find((x) => x.name === foot.getAttribute("data-name"));
+    box.setAttribute("data-name", a ? a.name : "");
+    box.innerHTML = a ? meterHtml(a) + modelFormHtml(a) : "";
   }
 
   // What the herd put before your words to a lead: a line each, not
@@ -1656,6 +1746,7 @@
     if (chat) {
       const foot = room.querySelector(".chat .cfoot");
       if (foot) suggestIn(foot, foot.getAttribute("data-name"), chatHint(foot.getAttribute("data-name")));
+      renderChatMeter();
       return;
     }
     agents.forEach((a) => {
@@ -1667,7 +1758,7 @@
   }
 
   function onAgentAction(act, el) {
-    const row = el.closest(".arow, .rcol, .cfoot");
+    const row = el.closest(".arow, .rcol, .cfoot, .cmeter");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
     const project = group && group.getAttribute("data-project");
@@ -1734,6 +1825,31 @@
       if (a) renderRoomBody(a);
       if (body) body.scrollTop = keep;
       return;
+    }
+    if (act === "model") {
+      const a = ((herdNow.data && herdNow.data.agents) || []).find((x) => x.name === name);
+      if (herdNow.modelFor === name) herdNow.modelFor = null;
+      else if (a) openModelForm(a);
+      return renderAgents();
+    }
+    if (act === "model-pick") {
+      const pick = herdNow.modelPick;
+      const model = el.getAttribute("data-model");
+      const effort = el.getAttribute("data-effort");
+      if (model) pick.model = model;
+      // An effort picked again is unpicked: the picker's own, then.
+      if (effort) pick.effort = pick.effort === effort ? null : effort;
+      return renderAgents();
+    }
+    if (act === "model-go") {
+      const pick = herdNow.modelPick;
+      herdNow.modelFor = null;
+      if (pick.model) emit("agent-model", { name, model: pick.model, effort: pick.effort || "" });
+      return renderAgents();
+    }
+    if (act === "model-cancel") {
+      herdNow.modelFor = null;
+      return renderAgents();
     }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
     if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort") return emit(act, { name });

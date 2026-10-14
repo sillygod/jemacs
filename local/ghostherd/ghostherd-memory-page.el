@@ -351,7 +351,82 @@ draws lanes from fields rather than parsing prose."
                  (mapcar (lambda (a) (or (alist-get 'kind a) "?"))
                          (ghostherd-session-lineage s)))
           :relayTo (format "%s" (ghostherd-relay-default-kind s))
-          :usedUp (or (ghostherd-usage-used-up-text (ghostherd-session-kind s)) ""))))
+          :usedUp (or (ghostherd-usage-used-up-text (ghostherd-session-kind s)) "")
+          :meter (ghostherd-memory-page--meter s)
+          :switching (if (gethash (ghostherd-session-id s) ghostherd--switching) t :json-false))))
+
+;; Each agent's meter: what it runs on and how full its context is, read
+;; by the sidecar from its transcript's tail -- asked again only when the
+;; file has changed, as the room's columns are.
+
+(defvar ghostherd-memory-page--meters (make-hash-table :test 'equal)
+  "Agent name -> (SIGNATURE . METER): its transcript as last read, and
+what the sidecar made of it, a plist or nil.")
+
+(defvar ghostherd-memory-page--metering (make-hash-table :test 'equal)
+  "Agent name -> t while the sidecar reads its meter.")
+
+(defun ghostherd-memory-page--meter (s)
+  "S's meter as the page takes it, field by field, or false."
+  (let ((m (cdr (gethash (ghostherd-session-name s) ghostherd-memory-page--meters))))
+    (if (not (plist-get m :model))
+        :json-false
+      (list :model (ghostherd-memory-page--str (plist-get m :model))
+            :effort (ghostherd-memory-page--str (plist-get m :effort))
+            :tokens (and (natnump (plist-get m :tokens)) (plist-get m :tokens))
+            :window (and (natnump (plist-get m :window)) (plist-get m :window))
+            :pending (if (eq (plist-get m :pending) t) t :json-false)
+            :compacted (if (eq (plist-get m :compacted) t) t :json-false)))))
+
+(defun ghostherd-memory-page--meter-look ()
+  "Ask the sidecar again for the meter of each agent whose transcript
+changed; the page hears of it on the next look."
+  (dolist (s (ghostherd-sessions))
+    (let* ((name (ghostherd-session-name s))
+           (path (ghostherd-session-transcript s))
+           (sig (ghostherd-memory-page--room-signature path)))
+      (cond
+       ((null sig) (remhash name ghostherd-memory-page--meters))
+       ((or (equal sig (car (gethash name ghostherd-memory-page--meters)))
+            (gethash name ghostherd-memory-page--metering)))
+       (t
+        (puthash name t ghostherd-memory-page--metering)
+        (let ((done (lambda (meter)
+                      (remhash name ghostherd-memory-page--metering)
+                      (let ((had (cdr (gethash name ghostherd-memory-page--meters))))
+                        (puthash name (cons sig meter) ghostherd-memory-page--meters)
+                        (unless (equal had meter)
+                          (ghostherd-memory-page--send-herd-soon))))))
+          (condition-case nil
+              (ghostherd-memory-request-async
+               "herd_meter" done (list :path path)
+               ;; A sidecar older than the meter, or a file gone: none, and
+               ;; not asked again until the file changes.
+               (lambda (_e) (funcall done nil)))
+            (error (remhash name ghostherd-memory-page--metering)))))))))
+
+(defvar ghostherd-memory-page--herd-soon nil
+  "The timer of a herd about to be sent, or nil.")
+
+(defun ghostherd-memory-page--send-herd-soon ()
+  "Send the herd in a moment, while the page shows it: once for however
+many meters came back together."
+  (when (and (timerp ghostherd-memory-page--herd-timer)
+             (not (timerp ghostherd-memory-page--herd-soon)))
+    (setq ghostherd-memory-page--herd-soon
+          (run-at-time 0.3 nil (lambda ()
+                                 (setq ghostherd-memory-page--herd-soon nil)
+                                 (ghostherd-memory-page--send-herd))))))
+
+(defun ghostherd-memory-page--pickers ()
+  "The kinds whose model the page can switch: kind -> models and efforts."
+  (let (out)
+    (dolist (kind (ghostherd--agent-kinds))
+      (when-let* ((p (plist-get (ignore-errors (ghostherd--spec kind)) :model-picker)))
+        (setq out (plist-put out (intern (format ":%s" kind))
+                             (list :models (ghostherd-memory-page--vec (plist-get p :models))
+                                   :efforts (ghostherd-memory-page--vec (plist-get p :efforts)))))))
+    (or out :json-false)))
 
 (defun ghostherd-memory-page--usage ()
   "The usage cache, one entry per CLI, windows as used percent."
@@ -1109,6 +1184,7 @@ forge or ClickUp instead, which want their own login."
                  (mapcar #'symbol-name
                          (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
                                      (ghostherd--agent-kinds))))
+         :pickers (ghostherd-memory-page--pickers)
          ;; Where an agent's work can be relayed, the herd's choice first,
          ;; and which of them have no usage left.
          :relayKinds (ghostherd-memory-page--vec
@@ -1129,6 +1205,7 @@ forge or ClickUp instead, which want their own login."
       (ghostherd-memory-page--chore #'ghostherd-usage-refresh))
     (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
       (ghostherd-memory-page--hooks-refresh))
+    (ghostherd-memory-page--meter-look)
     (ghostherd-memory-page--send-herd)))
 
 (defun ghostherd-memory-page--herd-watch ()
@@ -1408,6 +1485,17 @@ again only changes which those are."
             ("agent-notes"
              (ghostherd-set-notes s (or (alist-get 'text intent) ""))
              (format "Notes for %s saved" name))
+            ("agent-model"
+             (let ((model (alist-get 'model intent))
+                   (effort (alist-get 'effort intent)))
+               (unless (stringp model) (user-error "No model"))
+               (setq effort (and (stringp effort) (not (string-empty-p effort)) effort))
+               (ghostherd-switch-model
+                s model effort
+                (lambda (ok what)
+                  (ghostherd-memory-page--js "flash" (if ok what (format "%s: %s" name what)))
+                  (ghostherd-memory-page--send-herd)))
+               (format "Switching %s to %s%s…" name model (if effort (concat ", " effort) ""))))
             ("agent-screen"
              (ghostherd-memory-page--js
               "setScreen" (list :name name
