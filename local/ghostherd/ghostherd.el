@@ -109,6 +109,11 @@ made an unanchored `> \=' match the transcript.")
      :fork-args ("--fork-session")
      :transcript "~/.claude/projects/*/%s.jsonl"
      :prompt-replaces-input t
+     ;; "✽ Bloviating… (37s · ↓ 3.3k tokens)": its verb picked at
+     ;; random, its glyph one of these; past tense once the turn is over
+     ;; ("✻ Baked for 1s").  A narrow pane cuts `esc to interrupt' off
+     ;; its footer, and this is what is left.
+     :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+…[[:blank:]]+(\\(?:[0-9]+[hms]\\)"
      :model-picker (:models ("Default" "Opus" "Fable" "Sonnet" "Haiku")
                     :efforts ("low" "medium" "high" "xhigh" "max"))
      :screen-rules
@@ -219,6 +224,12 @@ Each entry is (KIND . PLIST) with keys:
                 pattern matched the conversation, not a prompt -- an
                 agent that wrote \"permission\" is not asking for it.
                 Seen of claude and agy; grok's prompts not yet.
+:spinner        a regexp for the line the CLI draws above its input box
+                while it works, matched against that line alone: the
+                first one above the box that is not indented
+                (`ghostherd--spinner-line').  `working' wherever it sits,
+                however far a todo list under it pushes it up.  nil when
+                the kind has none.
 :model-picker   (:models NAMES :efforts LEVELS): the CLI's `/model' picker,
                 which `ghostherd-switch-model' drives for this session
                 only.  NAMES pick a row by the words it begins with,
@@ -1213,7 +1224,7 @@ it: (\"1 shell\"), or nil."
   "The prompt SESSION suggests you send next, or nil."
   (plist-get (gethash (ghostherd-session-id session) ghostherd--feet) :suggestion))
 
-(defun ghostherd--match-rules (text rules &optional replaces-input)
+(defun ghostherd--match-rules (text rules &optional replaces-input spinner)
   "Return (STATE . REASON) for first matching rule in RULES against TEXT.
 RULES is an alist of (STATE . REGEXP-LIST).  Prefer blocked over
 working over idle (strict blocked detection, herdr-style).
@@ -1223,7 +1234,9 @@ working over idle (strict blocked detection, herdr-style).
 tail: a permission box can be tall, and `idle' is the fallback rather
 than positive evidence.  REPLACES-INPUT, a kind's
 `:prompt-replaces-input': `blocked' only while no input box is drawn at
-the foot -- with one there, what matched is the conversation's."
+the foot -- with one there, what matched is the conversation's.
+SPINNER, a kind's `:spinner': `working' too when it matches the line
+above the box, wherever that sits."
   (cl-labels ((try (state haystack)
                 (when-let* ((patterns (alist-get state rules)))
                   (cl-loop for pat in patterns
@@ -1232,7 +1245,30 @@ the foot -- with one there, what matched is the conversation's."
     (or (and (not (and replaces-input (ghostherd--input-at-foot-p text)))
              (try 'blocked text))
         (try 'working (ghostherd--status-region text))
+        (and (ghostherd--spinning-p text spinner) (cons 'working spinner))
         (try 'idle text))))
+
+(defun ghostherd--spinner-line (text)
+  "The line TEXT would draw its spinner on: the first above the input box
+at its foot that is not blank or indented -- under a spinner sit only
+indented lines, a tip or a todo list, and a right-aligned banner.  Nil
+when no box is drawn at the foot.
+
+Only a `:spinner' pattern is asked of it.  Idle, this is the first line
+of what the agent said last, and its words are not evidence."
+  (let* ((lines (vconcat (split-string (or text "") "\n")))
+         (at (ghostherd--foot-at lines)))
+    (when at
+      (cl-loop for i downfrom (- (car at) 2) to 0
+               for line = (aref lines i)
+               unless (or (string-blank-p line) (string-match-p "\\`[[:blank:]]" line))
+               return line))))
+
+(defun ghostherd--spinning-p (text spinner)
+  "Non-nil when TEXT's spinner line matches SPINNER, a kind's `:spinner'."
+  (when-let* ((spinner)
+              (line (ghostherd--spinner-line text)))
+    (ghostherd--rule-matches-p spinner line)))
 
 (defun ghostherd--progress-fresh-p (session)
   "Return non-nil if SESSION reported OSC progress recently enough to trust.
@@ -1251,13 +1287,14 @@ which is exactly when the screen rules should take back over."
         (format "osc progress %d%%" percent)
       "osc progress")))
 
-(defun ghostherd--match-all-rules (text rules &optional replaces-input)
+(defun ghostherd--match-all-rules (text rules &optional replaces-input spinner)
   "Return every (STATE . PATTERN) in RULES matching TEXT.
 `ghostherd--match-rules' stops at the first winner, which is what the
 state machine wants but hides why a rule lost.  This reports the lot, in
 precedence order, for `ghostherd-explain' -- against the same regions
 the state machine used, or the explanation would not explain it; and so
-no `blocked' where REPLACES-INPUT and the input box is at the foot."
+no `blocked' where REPLACES-INPUT and the input box is at the foot, and
+SPINNER among the `working' ones when its line matches."
   (let ((status (ghostherd--status-region text))
         (box (and replaces-input (ghostherd--input-at-foot-p text))))
     (cl-loop for state in (if box '(working idle) '(blocked working idle))
@@ -1265,7 +1302,9 @@ no `blocked' where REPLACES-INPUT and the input box is at the foot."
                              when (ghostherd--rule-matches-p
                                    pattern
                                    (if (eq state 'working) status text))
-                             collect (cons state pattern)))))
+                             collect (cons state pattern))
+             when (and (eq state 'working) (ghostherd--spinning-p text spinner))
+             collect (cons 'working spinner))))
 
 (defcustom ghostherd-reason-width 90
   "Characters of screen text kept as a session's state reason."
@@ -1377,7 +1416,12 @@ coincidence further up the scrollback."
   (let ((haystack (if (eq (car-safe hit) 'working)
                       (ghostherd--status-region text)
                     text)))
-    (or (ghostherd--matched-line haystack (cdr hit)) (cdr hit))))
+    (or (ghostherd--matched-line haystack (cdr hit))
+        ;; A spinner, matched on its own line above the box.
+        (and (eq (car-safe hit) 'working)
+             (when-let* ((line (ghostherd--spinner-line text)))
+               (ghostherd--matched-line line (cdr hit))))
+        (cdr hit))))
 
 ;;; A menu prompt, read off the screen
 ;;
@@ -1489,7 +1533,8 @@ does."
         (cons 'dead exited))
        (t
         (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
-               (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input))))
+               (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
+                                                      (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session)))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
@@ -2342,8 +2387,9 @@ otherwise prompts."
          (live (ghostherd--session-live-p session))
          (tail (and live (ghostherd--host-capture session)))
          (box (plist-get spec :prompt-replaces-input))
-         (hits (and tail rules (ghostherd--match-all-rules tail rules box)))
-         (winner (and tail rules (ghostherd--match-rules tail rules box))))
+         (spinner (plist-get spec :spinner))
+         (hits (and tail rules (ghostherd--match-all-rules tail rules box spinner)))
+         (winner (and tail rules (ghostherd--match-rules tail rules box spinner))))
     (ghostherd--sidebar-leave-overlay)
     (with-help-window "*ghostherd explain*"
       (with-current-buffer standard-output
@@ -2796,7 +2842,8 @@ Not on an agent that is working or on a menu: Return there is an answer."
         (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
                (rules (plist-get spec :screen-rules))
                (screen (and rules (ghostherd--host-capture session 20)))
-               (hit (and screen (ghostherd--match-rules screen rules (plist-get spec :prompt-replaces-input)))))
+               (hit (and screen (ghostherd--match-rules screen rules (plist-get spec :prompt-replaces-input)
+                                                        (plist-get spec :spinner)))))
           (when (and screen
                      (not (memq (car-safe hit) '(working blocked)))
                      (ghostherd--unsent-p screen text))

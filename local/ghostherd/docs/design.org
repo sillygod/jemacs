@@ -818,6 +818,16 @@ prompt), and the states a hook actually reports --- =working=,
 screens lie between two tool calls; a hook firing at the moment the CLI
 stops does not need it, and would be ruined by it.
 
+A narrow pane took the footer away.  claude cuts =esc to interrupt=
+off a footer that does not fit, and a turn longer than a hook's report
+is trusted (120s) then rested on the six status lines, where its
+spinner's verb, chosen at random, matched nothing.  The spinner line
+itself was there all along --- once quoted as the reason the agent was
+idle.  So claude's =:spinner= reads it by shape, on the one line it
+can be: the first unindented line above the input box.  That keeps the
+property the six lines bought: prose is indented or opens at =⏺=, so
+nothing the agent writes can be its spinner.
+
 What did need a rule is =done=: it means *finished while you were not
 looking*, and the promotion path carried that condition in its own
 =if=. A report can say =done= outright, so the rule moved out to where

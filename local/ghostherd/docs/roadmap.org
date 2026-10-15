@@ -756,6 +756,12 @@ builds, one tests, back and forth --- as one conversation, on the page.
   call says so and ended where it is told; each counts an hour from its
   start at most, since a shell need not end (a wait that matched
   itself ran 23 hours).
+- [X] claude read idle mid-turn in a narrow pane: its footer cut
+  =esc to interrupt= off, and its spinner's verb (=Bloviating…=) is
+  random.  Its =:spinner= is read by shape on the first unindented line
+  above its input box, however far a todo list pushes it up.  Twelve
+  turns read =done= mid-turn since 10-01, minutes each; one quoted the
+  spinner as its reason.  11 guards broken on purpose, each caught
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

@@ -885,6 +885,21 @@ is *not*: its hint lives mid-line, in
 kinds, two different discriminators --- which is why the region matters
 more than the patterns.
 
+The footer is not always there to lean on.  claude drops
+=esc to interrupt= from its footer when the pane is too narrow for it ---
+at 52 columns, with a =⧉= item in the footer, it never shows --- and its
+spinner's verb is picked at random (=Bloviating…=, =Pontificating…=), so
+no word rule catches it either.  Read as idle mid-turn, an agent was
+=done= for minutes at a time, twelve times in two weeks.  So a kind may
+name its =:spinner=: a pattern for the line it draws above its input box
+while it works, by its shape rather than its words ---
+=✽ Bloviating… (37s · ↓ 3.3k tokens)=, a glyph, a word, =…=, the time.
+It is asked of one line only, the first above the box that is not
+indented --- under a spinner sit only indented lines, a tip, a todo
+list, the right-aligned update banner --- however far up that is.  Idle,
+that line is the first of what the agent last said, which starts at
+=⏺=; and past tense, =✻ Baked for 1s=, is not the shape.
+
 A kind's =working= rules have to cover *every* indicator that CLI shows
 while busy. These TUIs draw their input box the whole time, so the
 empty-prompt =idle= rule matches during a task too --- precedence is the

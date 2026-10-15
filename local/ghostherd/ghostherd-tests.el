@@ -818,6 +818,93 @@ is the evidence -- claude drops the hint from it when nothing runs."
                       ghostherd-tests--claude-footer-working rules))
                 'working))))
 
+(defconst ghostherd-tests--claude-narrow-working
+  (concat
+   "  ⎿  $ tmux -L ghostherd capture-pane -p -t %74 |\n"
+   "     tail -14 | nl -ba | cut -c1-110\n"
+   "\n"
+   "✽ Bloviating… (37s · ↓ 3.3k tokens)\n"
+   "            ✔ Update installed · Restart to update\n"
+   "────────────────────────────────────────────────────\n"
+   "❯ \n"
+   "────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-ga\n"
+   "\n\n")
+  "claude mid-turn in a pane 52 columns wide, captured from its own pane
+\(2026-10-15): its footer cut off before `esc to interrupt', its spinner's
+verb one no rule knew.  Read as idle, it was `done' minutes at a time.")
+
+(defconst ghostherd-tests--claude-todo-working
+  (concat
+   "⏺ Now the rule itself.\n"
+   "\n"
+   "✶ Flummoxing… (1h 2m · still thinking with xhigh effort)\n"
+   "  ⎿  ☒ Read the log\n"
+   "     ☐ Fix the rule\n"
+   "     ☐ Write the test\n"
+   "     ☐ Break it on purpose\n"
+   "            ✔ Update installed · Restart to update\n"
+   "────────────────────────────────────────────────────\n"
+   "❯ \n"
+   "────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-ga\n")
+  "The same with its todo list under its spinner, an hour in: the spinner
+is ten lines up, far outside the status area.")
+
+(ert-deftest ghostherd-test-claude-spinner-says-working-in-a-narrow-pane ()
+  "Its spinner line, known by its shape -- glyph, a word, …, the time --
+and read where claude draws it, above the input box: the first line
+there that is not indented.  Seen (2026-10-15): twelve turns since 10-01
+read as done mid-turn, one quoting its spinner as the reason."
+  (let* ((spec (ghostherd--spec 'claude))
+         (rules (plist-get spec :screen-rules))
+         (spinner (plist-get spec :spinner))
+         (narrow ghostherd-tests--claude-narrow-working)
+         (with-box (lambda (above)
+                     (concat above "\n" (make-string 52 ?─) "\n❯ \n" (make-string 52 ?─)
+                             "\n  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-ga\n"))))
+    ;; As the herd read it.
+    (should-not (eq (car (ghostherd--match-rules narrow rules t)) 'working))
+    (should (equal (ghostherd--match-rules narrow rules t spinner) (cons 'working spinner)))
+    (should (equal (ghostherd--rule-reason narrow (cons 'working spinner))
+                   "✽ Bloviating… (37s · ↓ 3.3k tokens)"))
+    (should (member (cons 'working spinner) (ghostherd--match-all-rules narrow rules t spinner)))
+    ;; However far up its todo list pushes it.
+    (should (equal (ghostherd--spinner-line ghostherd-tests--claude-todo-working)
+                   "✶ Flummoxing… (1h 2m · still thinking with xhigh effort)"))
+    (should (eq (car (ghostherd--match-rules ghostherd-tests--claude-todo-working rules t spinner))
+                'working))
+    (should (equal (ghostherd--rule-reason ghostherd-tests--claude-todo-working (cons 'working spinner))
+                   "✶ Flummoxing… (1h 2m · still thinking with xhigh effort)"))
+    ;; Its glyphs, and its time as it grows.
+    (dolist (line '("· Considering… (1m 30s · ↓ 9.3k tokens)" "✢ Pontificating… (18s · ↓ 880 tokens)"
+                    "✳ Moseying… (0s)\n" "✻ Ruminating… (2h 1m · thought for 5s)"))
+      (should (eq (car (ghostherd--match-rules (funcall with-box line) rules t spinner)) 'working)))
+    ;; Its turn over: past tense.  Its own words, however they read:
+    ;; what it said starts at ⏺, and a line of it quoted is indented.
+    (dolist (above '("✻ Cogitated for 10s · done 2:34 PM"
+                     "✻ Baked for 1s · done 9:20 AM\n            ✔ Update installed · Restart to update"
+                     "⏺ Bloviating… (37s is what it said, verb and all)"
+                     "⏺ It read ✽ Bloviating… (37s, mid-line"
+                     "⏺ The spinner read:\n  ✽ Bloviating… (37s · ↓ 3.3k tokens)\n  and nothing matched it."
+                     "Bloviating… (37s, said plainly"))
+      (should-not (eq (car (ghostherd--match-rules (funcall with-box above) rules t spinner)) 'working)))
+    ;; No box at its foot -- a menu: nothing above it to read.
+    (should-not (ghostherd--spinner-line (concat "✽ Bloviating… (37s)\n" (make-string 52 ?─) "\n❯ 1. Yes\n  2. No\n")))
+    ;; Nor for a kind without one.
+    (should-not (ghostherd--spinning-p narrow nil))))
+
+(ert-deftest ghostherd-test-claude-spinner-through-detection ()
+  "The poll asks it, and explain lists it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "claude-x" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-live t))
+      (setq ghostherd-tests--fake-screen ghostherd-tests--claude-narrow-working)
+      (should (equal (ghostherd--detect-state s) '(working . "✽ Bloviating… (37s · ↓ 3.3k tokens)")))
+      (save-window-excursion (ghostherd-explain s))
+      (with-current-buffer "*ghostherd explain*"
+        (should (string-match-p "^  working +->" (buffer-string)))))))
+
 (defconst ghostherd-tests--grok-working
   (concat
    "  ┃  ◆ Thinking…\n"
@@ -6361,6 +6448,9 @@ holds the text are the conversation's, and Return goes."
   (let ((msg "please review the diff"))
     (dolist (screen (list (ghostherd-test--claude-screen "❯ please review the diff"
                                                          "  ⠋ Thinking… (esc to interrupt)\n\n")
+                          ;; At work in a narrow pane: its spinner alone says so.
+                          (ghostherd-test--claude-screen "❯ please review the diff"
+                                                         "✽ Bloviating… (37s · ↓ 3.3k tokens)\n")
                           ghostherd-test--claude-permission
                           (ghostherd-test--claude-screen "❯ ")))
       (ghostherd-test--confirming screen
