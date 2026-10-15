@@ -821,6 +821,47 @@ cites; a missing one, or a repo on no forge, says why."
       (pr-view-pr-brief "/tmp/" 9 (lambda (r) (setq got r))))
     (should (equal got '((error . "not a GitHub or Bitbucket repository"))))))
 
+(ert-deftest pr-view-test-pr-brief-of-a-repository ()
+  "A PR of a repository with no checkout here: asked of its forge by
+its name, git not asked; a name that is no repository's is not sent."
+  (let (got asked)
+    (cl-letf (((symbol-function 'pr-view--git-remote-url) (lambda () (error "Not git's to say")))
+              ((symbol-function 'pr-view--headers) (lambda (&rest _) nil))
+              ((symbol-function 'pr-view--http)
+               (lambda (url _headers cb &rest _)
+                 (setq asked url)
+                 (funcall cb (json-encode '((number . 2) (title . "Pair debug projects") (state . "open")
+                                            (draft . :json-false) (body . "")
+                                            (html_url . "https://github.com/wingeatech/backend-interview/pull/2")
+                                            (head . ((ref . "feat/pair-debug-projects")))))
+                          200 nil))))
+      (pr-view-repo-pr-brief '(:kind github :owner "wingeatech" :repo "backend-interview") 2
+                             (lambda (r) (setq got r)))
+      (should (equal asked "https://api.github.com/repos/wingeatech/backend-interview/pulls/2"))
+      (should (equal (list (alist-get 'id got) (alist-get 'state got) (alist-get 'source got) (alist-get 'url got))
+                     '(2 "OPEN" "feat/pair-debug-projects" "https://github.com/wingeatech/backend-interview/pull/2")))
+      (setq asked nil)
+      (dolist (bad '((:kind github :owner "../x" :repo "r") (:kind github :owner "w" :repo "r/pulls/1?x=")
+                     (:kind gitlab :owner "w" :repo "r") (:kind github :owner "w")))
+        (pr-view-repo-pr-brief bad 1 (lambda (r) (setq got r)))
+        (should (equal got '((error . "not a GitHub or Bitbucket repository")))))
+      (should-not asked))))
+
+(ert-deftest pr-view-test-open-a-pr-with-no-checkout ()
+  "A PR of another repository opens on that repository, its detail once
+the page is ready; a name that is no repository's is refused."
+  (let (opened fetched)
+    (cl-letf (((symbol-function 'xwapp-open) (lambda (&rest _) (setq opened pr-view--host)))
+              ((symbol-function 'pr-view--js) #'ignore)
+              ((symbol-function 'pr-view--fetch-detail) (lambda (id) (push (list 'detail id) fetched)))
+              ((symbol-function 'pr-view--fetch-list) (lambda () (push 'list fetched))))
+      (let ((pr-view--pending-pr nil) (pr-view--host nil))
+        (pr-view-open-remote-pr '(:kind github :owner "wingeatech" :repo "backend-interview") 2)
+        (should (equal opened '(:kind github :owner "wingeatech" :repo "backend-interview")))
+        (pr-view--handle-intent '((op . "ready")))
+        (should (equal fetched '((detail 2))))
+        (should-error (pr-view-open-remote-pr '(:kind github :owner "w" :repo "../../x") 1) :type 'user-error)))))
+
 (ert-deftest pr-view-test-open-pr-opens-it-once-ready ()
   "Opened for another package, the page shows that PR once ready, not
 the list; the next time it is ready, the list again."

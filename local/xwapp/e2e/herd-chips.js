@@ -54,6 +54,47 @@ const chips = (page) => page.$$eval(".wchip", (cs) => cs.map((c) => ({ tag: c.ta
     check("nor when Emacs does not say", (await chips(page)).find((c) => c.id === "378").href === BB);
     await show(herd({ pr: true, task: true }, (h) => { h.work[0].pr.url = "https://gitlab.example/unno/x/merge_requests/378"; }));
     check("a PR of no forge pr-view reads: its own page", (await chips(page)).find((c) => c.id === "378").href === "https://gitlab.example/unno/x/merge_requests/378");
+
+    // ---- Named in a conversation: another repository's too ----
+    // An agent at work on two: a PR of the other is named with it, and
+    // opened by it -- there may be no checkout of it here.
+    const GH = "https://github.com/wingeatech/backend-interview/pull/";
+    const ref = (id, own, state, url) => Object.assign({ id, own, title: "PR " + id, state, draft: false, url, error: null },
+      own ? { host: "bitbucket", owner: "unno", repo: "deploy-platform" } : { host: "github", owner: "wingeatech", repo: "backend-interview" });
+    const named = (h) => {
+      const lead = h.agents.find((a) => a.name === "lead-deploy-platform");
+      lead.links.tasks = [];
+      lead.links.prs = [ref(2, false, "OPEN", GH + "2"), ref(378, false, "OPEN", GH + "378"),
+                        ref(371, true, "OPEN", BB.replace("378", "371")), ref(378, true, "OPEN", BB)];
+    };
+    const namedChips = () => page.$$eval('.arow[data-name="lead-deploy-platform"] .links .wchip.pr', (cs) => cs.map((c) => ({
+      text: c.textContent, href: c.getAttribute("href"), title: c.title, tag: c.tagName.toLowerCase(),
+      root: c.getAttribute("data-root"), repo: c.getAttribute("data-repo") })));
+    await show(herd({ pr: true, task: true }, named));
+    let ns = await namedChips();
+    check("another repository's PR is named with it; its own is not",
+      JSON.stringify(ns.map((c) => c.text)) === JSON.stringify(["backend-interview#2 Open", "backend-interview#378 Open", "#371 Open"]), ns.map((c) => c.text));
+    check("its branch's PR is not said twice; another repository's of the same number is", ns.filter((c) => /378/.test(c.text)).length === 1);
+    check("whose it is, in full, on a hover", ns[0].title === "wingeatech/backend-interview#2: PR 2", ns[0].title);
+    check("on the phone, it opens in pr-view there by its address",
+      ns[0].tag === "a" && ns[0].href === "/open/pr-view#pr=" + encodeURIComponent(GH + "2"), ns[0]);
+    // At the desk: Emacs is told which -- another's by its repository.
+    const desk = await phonePage(browser, { host: "127.0.0.1", context: { viewport: { width: 1280, height: 900 }, isMobile: false, hasTouch: false } });
+    await desk.page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd({ pr: true, task: true }, named));
+    await sleep(80);
+    ns = await desk.page.$$eval('.arow[data-name="lead-deploy-platform"] .links .wchip.pr', (cs) => cs.map((c) => ({
+      tag: c.tagName.toLowerCase(), root: c.getAttribute("data-root"), repo: c.getAttribute("data-repo") })));
+    check("at the desk, another's names its repository, its own its checkout",
+      ns[0].tag === "button" && ns[0].repo === "github/wingeatech/backend-interview" && ns[0].root === null &&
+      ns[2].repo === null && ns[2].root === "~/src/deploy-platform/", ns);
+    await desk.page.click('.arow[data-name="lead-deploy-platform"] .links .wchip.pr[data-id="2"]');
+    await desk.page.click('.arow[data-name="lead-deploy-platform"] .links .wchip.pr[data-id="371"]');
+    await sleep(150);
+    const opened = desk.intents.filter((i) => i.op === "open-pr").map((i) => ({ id: i.id, root: i.root, repo: i.repo }));
+    check("and is asked to open it so",
+      JSON.stringify(opened) === JSON.stringify([{ id: 2, repo: "github/wingeatech/backend-interview" }, { id: 371, root: "~/src/deploy-platform/" }]), opened);
+    check("no page errors at the desk", desk.errors.length === 0, desk.errors);
+    await desk.ctx.close();
     check("no page errors", errors.length === 0, errors);
     await ctx.close();
   } finally {

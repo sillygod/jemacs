@@ -1074,11 +1074,18 @@
     return !!(o && o[what] === true);
   }
 
+  // A pull request of another repository than its project's -- an agent
+  // at work on two -- is named with it, and opened by it: there may be
+  // no checkout of it here.
   function prChip(root, pr, done) {
     const state = prState(pr);
-    const tip = pr.error || pr.title || (state ? "" : "Being looked up");
+    const other = pr.own === false;
+    const tip = (other ? pr.owner + "/" + pr.repo + "#" + pr.id + ": " : "") +
+      (pr.error || pr.title || (state ? "" : "Being looked up"));
+    const where = other ? ' data-repo="' + esc([pr.host, pr.owner, pr.repo].join("/")) + '"' : ' data-root="' + esc(root) + '"';
     return chip("wchip pr" + (state ? " pr-" + esc(state.toLowerCase()) : "") + (done ? " wdone" : ""),
-      ' data-act="a:work-pr" data-root="' + esc(root) + '" data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '"', pr.url,
+      ' data-act="a:work-pr"' + where + ' data-id="' + esc(String(pr.id)) + '" title="' + esc(tip) + '"', pr.url,
+      (other ? '<span class="wrepo">' + esc(pr.repo) + "</span>" : "") +
       "#" + esc(String(pr.id)) + " " + esc(state || (pr.error ? "?" : "…")),
       opens("pr") && /^https:\/\/(github\.com|bitbucket\.org)\//.test(pr.url || "")
         ? { href: "/open/pr-view#pr=" + encodeURIComponent(pr.url), tab: "pr-view" } : null);
@@ -1164,7 +1171,7 @@
     const w = a.work || workFor(a.project);
     const onBranch = w && w.root === l.root && w.pr ? w.pr.id : null;
     const branchTasks = new Set(((w && w.tasks) || []).map((t) => t.id));
-    const prs = (l.prs || []).filter((p) => p.id !== onBranch && !p.error).map((p) => {
+    const prs = (l.prs || []).filter((p) => !(p.own !== false && p.id === onBranch) && !p.error).map((p) => {
       const live = !p.state || p.state === "OPEN";
       return { live, html: prChip(l.root, p, !live) };
     });
@@ -1868,7 +1875,11 @@
     // A chip still a button on another device has no address yet: Emacs
     // would open it on the desk's screen.
     if ((act === "work-pr" || act === "work-task" || act === "work-changes") && XW.elsewhere) return setStatus("Its address is not known yet");
-    if (act === "work-pr") return emit("open-pr", { root: el.getAttribute("data-root"), id: +el.getAttribute("data-id") });
+    if (act === "work-pr") {
+      const repo = el.getAttribute("data-repo");
+      return emit("open-pr", Object.assign({ id: +el.getAttribute("data-id") },
+        repo ? { repo } : { root: el.getAttribute("data-root") }));
+    }
     if (act === "work-task") return emit("open-task", { id: el.getAttribute("data-id") });
     if (act === "work-changes") return emit("open-changes", { root: el.getAttribute("data-root") });
     if (act === "use-suggestion") return useSuggestion(name, row && row.querySelector("textarea.agent-text"));

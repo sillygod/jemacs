@@ -891,6 +891,19 @@ project's agents are on, and open them from there.
   the room and the chat the herd's notes are a line each, not the
   user's words (=ghostherd-project-work-functions=,
   =ghostherd--lead-work-note=, =LEAD_NOTE=)
+- [X] A PR of another repository than its project's, which it names:
+  an agent at work on two (claude-interview, in interview-ops, opened
+  wingeatech/backend-interview#2; 2026-10-15) had none shown, every PR
+  but its project's left out.  For no reason a forge has: pr-view's
+  token is the forge's, not a checkout's.  Now each is looked up by its
+  repository (=pr-view-repo-pr-brief=, new), named with it on its chip
+  (=backend-interview#2=), opened in pr-view on that repository with no
+  checkout of it (=pr-view-open-remote-pr=, new) --- one a conversation
+  named, and no other --- and so told to a lead.  The branch's own PR
+  is not said twice; another repository's of the same number is.  2
+  pr-view ERT, 2 ERT changed, 6 WebKit checks, the desk's served as
+  Emacs's WebKit has it (=127.0.0.1=); 14 guards broken on purpose,
+  each caught
 - [X] What the herd told a lead is not what its conversation names:
   the note named every ticket again, so the lead's column grew chips of
   tickets it had only been told of, and they would have come back to

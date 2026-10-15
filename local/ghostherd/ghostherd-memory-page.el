@@ -36,7 +36,8 @@
 
 (declare-function pr-view-branch-pr "pr-view" (dir callback))
 (declare-function pr-view-open-pr "pr-view" (dir id))
-(declare-function pr-view-pr-brief "pr-view" (dir id callback))
+(declare-function pr-view-repo-pr-brief "pr-view" (remote id callback))
+(declare-function pr-view-open-remote-pr "pr-view" (remote id))
 (declare-function pr-view-local-stat "pr-view" (dir))
 (declare-function pr-view-changes "pr-view" (&optional dir))
 (declare-function pr-view-remote "pr-view" (dir))
@@ -704,8 +705,9 @@ so git is asked once a directory.  nil when none is.")
 and tasks its transcript names, as the sidecar's `herd_links' read them
 when the transcript was as SIG says.")
 (defvar ghostherd-memory-page--pr-briefs (make-hash-table :test 'equal)
-  "(ROOT . ID) -> (:at WHEN :pr PR :pending BOOL), PR as
-`pr-view-pr-brief' gave it.")
+  "(HOST OWNER REPO ID) -> (:at WHEN :pr PR :pending BOOL): a pull
+request a conversation named, as `herd_links' names it, and PR as
+`pr-view-repo-pr-brief' gave it.")
 
 (defvar ghostherd-memory-page--remotes (make-hash-table :test 'equal)
   "Checkout root -> (WHEN . REMOTE), REMOTE as `pr-view-remote' gave it.")
@@ -765,21 +767,40 @@ is fresh; then the tasks it cites."
              (ghostherd-memory-page--chore #'ghostherd-memory-page--task-ask id)))
          (ghostherd-memory-page--work-changed))))))
 
-(defun ghostherd-memory-page--pr-brief-ask (root id)
-  "Look up pull request ID of ROOT's repository, unless what it said is fresh."
-  (let* ((key (cons root id))
+(defun ghostherd-memory-page--pr-ref-p (ref)
+  "Non-nil when REF, as `herd_links' names a pull request, is one: a
+forge, a repository's names, a number."
+  (and (member (plist-get ref :host) '("github" "bitbucket"))
+       (natnump (plist-get ref :id))
+       (seq-every-p (lambda (k)
+                      (let ((v (plist-get ref k)))
+                        (and (stringp v) (string-match-p "\\`[[:alnum:]_][[:alnum:]_.-]*\\'" v))))
+                    '(:owner :repo))))
+
+(defun ghostherd-memory-page--pr-key (ref)
+  "What pull request REF, as `herd_links' names one, is kept by."
+  (list (plist-get ref :host) (plist-get ref :owner) (plist-get ref :repo) (plist-get ref :id)))
+
+(defun ghostherd-memory-page--pr-remote (ref)
+  "The repository of pull request REF, as `pr-view-remote' gives one."
+  (list :kind (intern (plist-get ref :host)) :owner (plist-get ref :owner) :repo (plist-get ref :repo)))
+
+(defun ghostherd-memory-page--pr-brief-ask (ref)
+  "Look up pull request REF, as `herd_links' names one, unless what it
+said is fresh: of whichever repository, by its forge."
+  (let* ((key (ghostherd-memory-page--pr-key ref))
          (had (gethash key ghostherd-memory-page--pr-briefs))
          (ttl (if (member (alist-get 'state (plist-get had :pr)) '("MERGED" "DECLINED"))
                   ghostherd-memory-page--closed-ttl
                 ghostherd-memory-page--work-ttl)))
     (when (and (not (plist-get had :pending))
                (or (null had) (> (- (float-time) (plist-get had :at)) ttl))
-               (ghostherd-memory-page--have 'pr-view-pr-brief 'pr-view))
+               (ghostherd-memory-page--have 'pr-view-repo-pr-brief 'pr-view))
       (puthash key (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--pr-briefs)
-      (pr-view-pr-brief root id
-                        (lambda (pr)
-                          (puthash key (list :at (float-time) :pr pr) ghostherd-memory-page--pr-briefs)
-                          (ghostherd-memory-page--work-changed))))))
+      (pr-view-repo-pr-brief (ghostherd-memory-page--pr-remote ref) (plist-get ref :id)
+                             (lambda (pr)
+                               (puthash key (list :at (float-time) :pr pr) ghostherd-memory-page--pr-briefs)
+                               (ghostherd-memory-page--work-changed))))))
 
 (defun ghostherd-memory-page--remote (root)
   "The forge repository of checkout ROOT, asked of git once a while.
@@ -799,8 +820,15 @@ For a chore: the page is shown what the last one asked."
        (equal (plist-get pr :owner) (downcase (plist-get remote :owner)))
        (equal (plist-get pr :repo) (downcase (plist-get remote :repo)))))
 
+(defun ghostherd-memory-page--named-prs (links)
+  "The pull requests LINKS name that are looked up, the most recently
+named first: of any repository -- an agent may work on one beside its
+project's."
+  (seq-take (seq-filter #'ghostherd-memory-page--pr-ref-p (plist-get links :prs))
+            ghostherd-memory-page--links-max))
+
 (defun ghostherd-memory-page--links-root (s)
-  "The checkout root S's pull requests are looked up in."
+  "The checkout S works in: its pull requests are its project's own."
   (let ((co (or (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts)
                 (gethash (ghostherd--project-name (ghostherd-session-project s))
                          ghostherd-memory-page--checkouts))))
@@ -828,38 +856,40 @@ lately."
       (ghostherd-memory-page--links-ask id))))
 
 (defun ghostherd-memory-page--links-ask (id)
-  "Look up session ID's conversation's pull requests -- of its own
-repository -- and its tasks, the most recently named first."
+  "Look up session ID's conversation's pull requests and its tasks, the
+most recently named first; and which repository is its own."
   (when-let* ((s (ghostherd-get id)))
-    (let* ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
-           (root (ghostherd-memory-page--links-root s))
-           (remote (and root (ghostherd-memory-page--remote root))))
+    (let ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
+          (root (ghostherd-memory-page--links-root s)))
       (when root
-        (dolist (pr (seq-take (seq-filter (lambda (pr) (ghostherd-memory-page--repo-p pr remote))
-                                          (plist-get links :prs))
-                              ghostherd-memory-page--links-max))
-          (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-brief-ask root (plist-get pr :id))))
+        (ghostherd-memory-page--remote root))
+      (dolist (ref (ghostherd-memory-page--named-prs links))
+        (ghostherd-memory-page--chore #'ghostherd-memory-page--pr-brief-ask ref))
       (dolist (task (seq-take (plist-get links :tasks) ghostherd-memory-page--links-max))
         (ghostherd-memory-page--chore #'ghostherd-memory-page--task-ask (plist-get task :id))))))
 
 (defun ghostherd-memory-page--agent-links (s)
-  "What S's conversation names, as the page shows it: its repository's
-pull requests and its tasks, most recently named first."
+  "What S's conversation names, as the page shows it: pull requests --
+its project's own marked so, another's by its repository -- and its
+tasks, most recently named first."
   (let* ((links (plist-get (gethash (ghostherd-session-name s) ghostherd-memory-page--links) :links))
          (root (ghostherd-memory-page--links-root s))
          (remote (and root (cdr (gethash root ghostherd-memory-page--remotes))))
-         (prs (and root (seq-take (seq-filter (lambda (pr) (ghostherd-memory-page--repo-p pr remote))
-                                              (plist-get links :prs))
-                                  ghostherd-memory-page--links-max)))
+         (prs (ghostherd-memory-page--named-prs links))
          (tasks (seq-take (plist-get links :tasks) ghostherd-memory-page--links-max)))
     (if (not (or prs tasks))
         :json-false
       (list :root root
             :prs (ghostherd-memory-page--vec
                   (mapcar (lambda (ref)
-                            (let* ((entry (gethash (cons root (plist-get ref :id)) ghostherd-memory-page--pr-briefs))
+                            (let* ((entry (gethash (ghostherd-memory-page--pr-key ref)
+                                                   ghostherd-memory-page--pr-briefs))
                                    (pr (plist-get entry :pr)))
                               (list :id (plist-get ref :id)
+                                    :own (if (ghostherd-memory-page--repo-p ref remote) t :json-false)
+                                    :host (plist-get ref :host)
+                                    :owner (plist-get ref :owner)
+                                    :repo (plist-get ref :repo)
                                     :title (ghostherd-memory-page--str (alist-get 'title pr))
                                     :state (ghostherd-memory-page--str (alist-get 'state pr))
                                     :draft (if (eq (alist-get 'draft pr) t) t :json-false)
@@ -1100,7 +1130,9 @@ conversations name.")
 (defun ghostherd-memory-page--pr-said (pr)
   "PR, as the page has it, as a lead is told it; nil when it is not known."
   (when (and (consp pr) (plist-get pr :id) (not (plist-get pr :error)))
-    (concat (format "pull request #%s" (plist-get pr :id))
+    (concat (if (eq (plist-get pr :own) :json-false)
+                (format "pull request %s/%s#%s" (plist-get pr :owner) (plist-get pr :repo) (plist-get pr :id))
+              (format "pull request #%s" (plist-get pr :id)))
             (when-let* ((state (plist-get pr :state))) (concat ", " (downcase state)))
             (when (eq (plist-get pr :draft) t) ", draft")
             (when-let* ((title (plist-get pr :title))) (concat ": " (ghostherd-memory-page--line title)))
@@ -1155,7 +1187,7 @@ look found them -- starting another when that one is old."
             (seq-doseq (pr (plist-get links :prs))
               (when (and (< named ghostherd-memory-page--lead-named)
                          (equal (plist-get pr :state) "OPEN")
-                         (new-p (or (plist-get pr :url) (cons (plist-get links :root) (plist-get pr :id)))))
+                         (new-p (or (plist-get pr :url) (ghostherd-memory-page--pr-key pr))))
                 (cl-incf named)
                 (push (concat in (ghostherd-memory-page--pr-said pr)) lines)))
             (seq-doseq (task (plist-get links :tasks))
@@ -1192,16 +1224,26 @@ when the page is served to this machine alone."
 (setq ghostherd-room-url-function #'ghostherd-memory-page--room-url)
 
 (defun ghostherd-memory-page--open-pr (intent)
-  "Open the pull request INTENT names, of a checkout the herd is in."
+  "Open the pull request INTENT names: of a checkout the herd is in, by
+its ROOT; or one a conversation named, by its REPO (\"github/owner/repo\")
+-- with no checkout of it here."
   (let ((root (alist-get 'root intent))
+        (repo (alist-get 'repo intent))
         (id (alist-get 'id intent)))
-    (unless (and (integerp id)
-                 (or (seq-some (lambda (co) (equal (car co) root))
-                               (hash-table-keys ghostherd-memory-page--prs))
-                     (seq-some (lambda (key) (equal (car key) root))
-                               (hash-table-keys ghostherd-memory-page--pr-briefs))))
+    (unless (integerp id)
       (user-error "No such pull request here"))
-    (pr-view-open-pr root id)))
+    (cond
+     ((and (stringp root)
+           (or (seq-some (lambda (co) (equal (car co) root))
+                         (hash-table-keys ghostherd-memory-page--prs))
+               (gethash root ghostherd-memory-page--remotes)))
+      (pr-view-open-pr root id))
+     ((and (stringp repo)
+           (gethash (append (split-string repo "/") (list id)) ghostherd-memory-page--pr-briefs))
+      (pcase-let ((`(,host ,owner ,name) (split-string repo "/")))
+        (pr-view-open-remote-pr (ghostherd-memory-page--pr-remote (list :host host :owner owner :repo name))
+                                id)))
+     (t (user-error "No such pull request here")))))
 
 (defun ghostherd-memory-page--open-task (intent)
   "Open the ClickUp task INTENT names: in clickup-view, else the browser."

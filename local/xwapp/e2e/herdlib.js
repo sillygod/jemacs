@@ -17,7 +17,8 @@ async function phonePage(browser, opts) {
   opts = opts || {};
   const scheme = opts.scheme || "http";
   const intents = opts.intents || [];
-  const BOX = scheme + "://box.tail0.ts.net";
+  // Served as Emacs's own WebKit has it, with host 127.0.0.1: the desk.
+  const BOX = scheme + "://" + (opts.host || "box.tail0.ts.net");
   const ctx = await browser.newContext(Object.assign({}, PHONE, opts.context || {}));
   await ctx.route("**/*", async (route) => {
     const req = route.request();

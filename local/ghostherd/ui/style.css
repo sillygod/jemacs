@@ -757,6 +757,8 @@ pre.screen {
 .rrun .rparts { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rrun .when { margin-left: auto; flex-shrink: 0; }
 .rwork .work { margin: 2px 0 0; }
+/* A pull request of another repository: its name before its number. */
+.wrepo { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wbranch { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .wnote { color: var(--muted); }
 /* A chip is no wider than its line; a long name is cut short inside it. */

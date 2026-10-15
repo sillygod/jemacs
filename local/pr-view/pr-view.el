@@ -2122,16 +2122,32 @@ REPO), KIND `github' or `bitbucket'; or nil."
 CALLBACK gets it as `pr-view-branch-pr' gives one, or ((error . TEXT)).
 Nothing goes to pr-view's page."
   (if-let* ((host (pr-view-remote dir)))
-      (condition-case e
-          (pr-view--http
-           (pr-view--url host (format (if (eq (plist-get host :kind) 'github) "/pulls/%s" "/pullrequests/%s")
-                                      (pr-view--id-str id)))
-           (pr-view--headers host)
-           (xwapp-json-callback
-            "PR" (lambda (raw) (funcall callback (pr-view--brief host raw)))
-            (pr-view--brief-failed callback)))
-        (error (funcall callback `((error . ,(error-message-string e))))))
+      (pr-view-repo-pr-brief host id callback)
     (funcall callback '((error . "not a GitHub or Bitbucket repository")))))
+
+(defun pr-view--remote-p (remote)
+  "Non-nil when REMOTE names a repository as `pr-view-remote' does."
+  (and (memq (plist-get remote :kind) '(github bitbucket))
+       (seq-every-p (lambda (k)
+                      (let ((v (plist-get remote k)))
+                        (and (stringp v) (string-match-p "\\`[[:alnum:]_][[:alnum:]_.-]*\\'" v))))
+                    '(:owner :repo))))
+
+(defun pr-view-repo-pr-brief (remote id callback)
+  "Look up pull request ID of REMOTE's repository, with no checkout of
+it: REMOTE as `pr-view-remote' gives one.  A forge's token is the same
+for each of its repositories.  CALLBACK as for `pr-view-pr-brief'."
+  (if (not (pr-view--remote-p remote))
+      (funcall callback '((error . "not a GitHub or Bitbucket repository")))
+    (condition-case e
+        (pr-view--http
+         (pr-view--url remote (format (if (eq (plist-get remote :kind) 'github) "/pulls/%s" "/pullrequests/%s")
+                                      (pr-view--id-str id)))
+         (pr-view--headers remote)
+         (xwapp-json-callback
+          "PR" (lambda (raw) (funcall callback (pr-view--brief remote raw)))
+          (pr-view--brief-failed callback)))
+      (error (funcall callback `((error . ,(error-message-string e))))))))
 
 (defun pr-view-branch-pr (dir callback)
   "Look up the pull request of the branch checked out at DIR.
@@ -2165,6 +2181,16 @@ Nothing goes to pr-view's page."
           pr-view--pending-local nil)
     (pr-view)))
 
+(defun pr-view-open-remote-pr (remote id)
+  "Open pull request ID of REMOTE's repository in pr-view, with no
+checkout of it: REMOTE as `pr-view-remote' gives one -- as a tab on
+your phone opens one by its address."
+  (unless (pr-view--remote-p remote)
+    (user-error "Not a GitHub or Bitbucket repository"))
+  (setq pr-view--pending-pr id
+        pr-view--pending-local nil)
+  (pr-view--open-on remote))
+
 
 ;;; Commands
 
@@ -2192,12 +2218,16 @@ KIND is `github' or `bitbucket'; nil auto-detects from origin."
   (let ((host (pr-view--resolve-host kind)))
     (unless (and host (plist-get host :owner) (plist-get host :repo))
       (user-error "Cannot detect GitHub/Bitbucket repo. Set pr-view-github-* or pr-view-bitbucket-*"))
-    (setq pr-view--host host
-          pr-view--list-cache nil
-          pr-view--inflight nil)
-    (setf (xwapp-poll-interval pr-view--app) pr-view-poll-interval)
-    (xwapp-open pr-view--app)
-    (pr-view--js "setStatus" "Loading…")))
+    (pr-view--open-on host)))
+
+(defun pr-view--open-on (host)
+  "Open the page on HOST's repository."
+  (setq pr-view--host host
+        pr-view--list-cache nil
+        pr-view--inflight nil)
+  (setf (xwapp-poll-interval pr-view--app) pr-view-poll-interval)
+  (xwapp-open pr-view--app)
+  (pr-view--js "setStatus" "Loading…"))
 
 ;;;###autoload
 (defun pr-view-github ()

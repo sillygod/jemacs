@@ -6606,13 +6606,17 @@ once and only so many.  Nothing of another project's."
       ;; rd's conversation: the project's PR again, one open, one merged;
       ;; a ticket the PR names, one open, one done, one not looked up.
       (puthash "~/wt/fix/" (cons now '(:kind github :owner "O" :repo "R")) ghostherd-memory-page--remotes)
-      (dolist (pr '((12 "OPEN" "https://h/12") (20 "OPEN" "https://h/20") (21 "MERGED" "https://h/21")))
-        (puthash (cons "~/wt/fix/" (car pr))
+      (dolist (pr '((12 "OPEN" "https://h/12") (20 "OPEN" "https://h/20") (21 "MERGED" "https://h/21")
+                    (2 "OPEN" "https://w/b/2" "w" "b")))
+        (puthash (list "github" (or (nth 3 pr) "o") (or (nth 4 pr) "r") (car pr))
                  (list :at now :pr `((title . ,(format "PR %d" (car pr))) (state . ,(nth 1 pr)) (url . ,(nth 2 pr))))
                  ghostherd-memory-page--pr-briefs))
       (puthash "rd" (list :sig "s" :links
-                          (list :prs (mapcar (lambda (id) (list :host "github" :owner "o" :repo "r" :id id :last 1))
-                                             '(12 20 21))
+                          (list :prs (append
+                                      (mapcar (lambda (id) (list :host "github" :owner "o" :repo "r" :id id :last 1))
+                                              '(12 20 21))
+                                      ;; Another repository's, which it works on too.
+                                      '((:host "github" :owner "w" :repo "b" :id 2 :last 1)))
                                 :tasks (mapcar (lambda (id) (list :id id :last 1)) '("86a" "86c" "86d" "86e"))))
                ghostherd-memory-page--links)
       (should (equal (ghostherd-memory-page--lead-work "~/p/")
@@ -6622,6 +6626,7 @@ once and only so many.  Nothing of another project's."
                        "a ticket its pull request names: ClickUp task 86b"
                        "rd works on branch fix/typo in ~/wt/fix/"
                        "named in rd's conversation: pull request #20, open: PR 20 -- https://h/20"
+                       "named in rd's conversation: pull request w/b#2, open: PR 2 -- https://w/b/2"
                        "named in rd's conversation: ClickUp task 86c, to do: Typo -- https://c/t/typo")))
       (let ((ghostherd-memory-page--lead-named 1))
         (should (equal (last (ghostherd-memory-page--lead-work "~/p/"))
@@ -6743,8 +6748,8 @@ pr-view counted, as `stats' says them."
                    ((symbol-function 'pr-view-remote) (lambda (_dir) remote))
                    ((symbol-function 'pr-view-local-stat)
                     (lambda (dir) (push dir counted) (cdr (assoc dir stats))))
-                   ((symbol-function 'pr-view-pr-brief)
-                    (lambda (dir id cb) (push (list 'brief dir id) asked)
+                   ((symbol-function 'pr-view-repo-pr-brief)
+                    (lambda (remote id cb) (push (list 'brief remote id) asked)
                       (funcall cb (or (cdr (assoc id by-id)) '((error . "no such pull request"))))))
                    ((symbol-function 'ghostherd-session-transcript)
                     (lambda (s) (cdr (assoc (ghostherd-session-name (ghostherd-get s)) transcripts))))
@@ -6890,9 +6895,11 @@ directory, the agents and their project being in one."
           (should (equal (mapcar #'car asked) '(pr))))))))
 
 (ert-deftest ghostherd-test-an-agent-shows-what-its-conversation-names ()
-  "The PRs of its project's repository its conversation names, and its
-tasks, each looked up; read again only when the transcript changed,
-looked up again when stale -- a merged one much later."
+  "The PRs its conversation names -- its project's own, marked so, and
+another repository's, by that repository -- and its tasks, each looked
+up; read again only when the transcript changed, looked up again when
+stale -- a merged one much later.  Each opens in pr-view: its own by its
+checkout, another's by its repository."
   (ghostherd-test--with-herd
     (ghostherd-test--with-checkouts
       (let ((path (concat base "rd.jsonl"))
@@ -6903,7 +6910,11 @@ looked up again when stale -- a merged one much later."
               said `((,path :prs ((:host "bitbucket" :owner "team" :repo "deploy" :id 371 :count 2 :last "t3")
                                   (:host "github" :owner "team" :repo "deploy" :id 5 :count 1 :last "t2")
                                   (:host "bitbucket" :owner "other" :repo "deploy" :id 6 :count 1 :last "t2")
-                                  (:host "bitbucket" :owner "team" :repo "deploy" :id 360 :count 1 :last "t1"))
+                                  (:host "bitbucket" :owner "team" :repo "deploy" :id 360 :count 1 :last "t1")
+                                  ;; Not a pull request's names: not asked, not shown.
+                                  (:host "gitlab" :owner "team" :repo "deploy" :id 7 :count 1 :last "t0")
+                                  (:host "github" :owner "../x" :repo "deploy" :id 8 :count 1 :last "t0")
+                                  (:host "github" :owner "team" :repo "deploy" :id "9" :count 1 :last "t0"))
                             :tasks ((:id "86abc1def" :count 1 :last "t3") (:id "86done001" :count 1 :last "t0"))))
               by-id '((371 (id . 371) (title . "Retry alerts") (state . "OPEN") (draft . t) (url . "b371"))
                       (360 (id . 360) (title . "Sentry fix") (state . "MERGED") (draft . nil) (url . "b360")))
@@ -6919,8 +6930,12 @@ looked up again when stale -- a merged one much later."
                    (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
           (ghostherd-test--look)
           (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
-          (should (equal (sort (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) #'<) '(360 371)))
-          (should (seq-every-p (lambda (a) (equal (cadr a) root)) (seq-filter (lambda (a) (eq (car a) 'brief)) asked)))
+          (should (equal (sort (mapcar #'cdr (seq-filter (lambda (a) (eq (car a) 'brief)) asked))
+                               (lambda (x y) (< (cadr x) (cadr y))))
+                         '(((:kind github :owner "team" :repo "deploy") 5)
+                           ((:kind bitbucket :owner "other" :repo "deploy") 6)
+                           ((:kind bitbucket :owner "team" :repo "deploy") 360)
+                           ((:kind bitbucket :owner "team" :repo "deploy") 371))))
           (should (equal (sort (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'task)) asked)) #'string<)
                          '("86abc1def" "86done001")))
           (ghostherd-memory-page--send-herd)
@@ -6929,10 +6944,18 @@ looked up again when stale -- a merged one much later."
                  (rd (funcall of "rd")))
             (should (eq (funcall of "qa") :json-false))
             (should (equal (plist-get rd :root) root))
-            (should (equal (mapcar (lambda (pr) (list (plist-get pr :id) (plist-get pr :state) (plist-get pr :draft)
-                                                      (plist-get pr :title) (plist-get pr :url) (plist-get pr :last)))
+            (should (equal (mapcar (lambda (pr) (list (plist-get pr :id) (plist-get pr :own) (plist-get pr :state)
+                                                      (plist-get pr :draft) (plist-get pr :title) (plist-get pr :url)
+                                                      (plist-get pr :last) (plist-get pr :error)))
                                    (append (plist-get rd :prs) nil))
-                           '((371 "OPEN" t "Retry alerts" "b371" "t3") (360 "MERGED" :json-false "Sentry fix" "b360" "t1"))))
+                           '((371 t "OPEN" t "Retry alerts" "b371" "t3" nil)
+                             (5 :json-false nil :json-false nil nil "t2" "no such pull request")
+                             (6 :json-false nil :json-false nil nil "t2" "no such pull request")
+                             (360 t "MERGED" :json-false "Sentry fix" "b360" "t1" nil))))
+            (should (equal (mapcar (lambda (pr) (list (plist-get pr :host) (plist-get pr :owner) (plist-get pr :repo)))
+                                   (append (plist-get rd :prs) nil))
+                           '(("bitbucket" "team" "deploy") ("github" "team" "deploy")
+                             ("bitbucket" "other" "deploy") ("bitbucket" "team" "deploy"))))
             (should (equal (mapcar (lambda (tk) (list (plist-get tk :id) (plist-get tk :done) (plist-get tk :last)))
                                    (append (plist-get rd :tasks) nil))
                            '(("86abc1def" :json-false "t3") ("86done001" t "t0")))))
@@ -6944,18 +6967,27 @@ looked up again when stale -- a merged one much later."
           (maphash (lambda (k v) (puthash k (plist-put v :at (- (float-time) 600)) ghostherd-memory-page--pr-briefs))
                    ghostherd-memory-page--pr-briefs)
           (ghostherd-test--look)
-          (should (equal (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) '(371)))
+          (should (equal (sort (mapcar #'caddr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) #'<) '(5 6 371)))
           ;; It grew: read again.
           (setq asked nil)
           (with-temp-buffer (insert "{}\n") (append-to-file (point-min) (point-max) path))
           (ghostherd-test--look)
           (should (equal (seq-filter (lambda (a) (eq (car a) 'links)) asked) `((links "herd_links" ,path))))
-          ;; A PR it names opens in pr-view.
+          ;; A PR it names opens in pr-view: its own by its checkout,
+          ;; another's by its repository -- one it named, and no other.
           (let (opened)
-            (cl-letf (((symbol-function 'pr-view-open-pr) (lambda (dir id) (push (list dir id) opened))))
+            (cl-letf (((symbol-function 'pr-view-open-pr) (lambda (dir id) (push (list dir id) opened)))
+                      ((symbol-function 'pr-view-open-remote-pr) (lambda (r id) (push (list r id) opened))))
               (clrhash ghostherd-memory-page--prs)
               (ghostherd-memory-page--handle `((op . "open-pr") (root . ,root) (id . 360)))
-              (should (equal opened `((,root 360)))))))))))
+              (ghostherd-memory-page--handle '((op . "open-pr") (repo . "github/team/deploy") (id . 5)))
+              (dolist (bad '(((op . "open-pr") (repo . "github/team/deploy") (id . 6))
+                             ((op . "open-pr") (repo . "github/evil/x") (id . 5))
+                             ((op . "open-pr") (repo . "github/team/deploy/x") (id . 5))
+                             ((op . "open-pr") (root . "/etc/") (id . 360))))
+                (ghostherd-memory-page--handle bad))
+              (should (equal (reverse opened)
+                             `((,root 360) ((:kind github :owner "team" :repo "deploy") 5)))))))))))
 
 (ert-deftest ghostherd-test-the-page-counts-what-a-checkout-has-not-committed ()
   "Each checkout the herd is in is counted once a look, an agent's

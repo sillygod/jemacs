@@ -256,6 +256,12 @@ functions serve it, and anything else that wants the same:
   could not be read.  Nothing goes to pr-view's page.
 - =pr-view-pr-brief= =DIR ID CALLBACK=: pull request =ID= of =DIR='s
   repository, the same way; =((error . TEXT))= when it cannot be read.
+- =pr-view-repo-pr-brief= =REMOTE ID CALLBACK=: the same, of =REMOTE='s
+  repository, as =pr-view-remote= gives one, with no checkout of it: a
+  forge's token is the same for each of its repositories.
+- =pr-view-open-remote-pr= =REMOTE ID=: open PR =ID= of =REMOTE='s
+  repository here, with no checkout of it --- as a tab on the phone
+  opens one by its address.
 - =pr-view-remote= =DIR=: the forge repository =DIR='s origin is, as
   =(:kind :owner :repo)=.
 - =pr-view-open-pr= =DIR ID=: open PR =ID= of =DIR='s repository here,

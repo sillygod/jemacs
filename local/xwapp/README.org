@@ -292,7 +292,8 @@ so a page opens as it would on the phone.
 | =kit=          | the sanitizer, the bridge's queue, =XW.open=                    |
 | =herd-chips=   | the herd page's PR and task chips: pr-view's and                |
 |                | clickup-view's pages on the phone, one tab per app, else the    |
-|                | forge's                                                         |
+|                | forge's; a PR of another repository named with it, and opened   |
+|                | by it at the desk (served from =127.0.0.1=, as Emacs has it)    |
 | =herd-forms=   | the herd page's new agent and notes forms keep what was         |
 |                | picked and typed when the page is drawn again                   |
 | =herd-relay=   | the herd page's relay: an heir's place in its line, the CLI     |
