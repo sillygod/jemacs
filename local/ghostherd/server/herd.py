@@ -16,7 +16,10 @@ Agents report on themselves through their CLI's hooks (herd_report): a
 state, which conversation they are on, and the answer that ended a
 turn.  Emacs takes the states on its tick; the sidecar keeps the rest
 (`links'), and closes an unanswered ask with the taker's own last
-answer rather than its screen.
+answer rather than its screen.  A turn that ends with work it started
+still out -- asks of its own, sub-agents, shells or monitors running --
+ends to wait: `waiting', its ask left open, until a turn ends with
+nothing out.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import subagents
 from config import get_config
 
 _lock = threading.Lock()
@@ -40,7 +44,7 @@ ASK_CLOSED = ("answered", "failed", "cancelled")
 
 # Who takes an ask addressed to a kind, best first: free now, free soon,
 # waiting on the human.  A state not listed (dead) never takes one.
-_TAKER_RANK = {"idle": 0, "done": 0, "working": 1, "starting": 1, "blocked": 2}
+_TAKER_RANK = {"idle": 0, "done": 0, "working": 1, "starting": 1, "waiting": 1, "blocked": 2}
 
 # How many asks may wait on one another, lead to rd to qa: one may be
 # asked while a third of its chain waits on it, and asks no further.
@@ -59,6 +63,12 @@ ASK_ROUNDS_MAX = 20
 # to it instead: the `herd ask --wait' that would have printed it died.
 UNCOLLECTED_SECONDS = 120
 
+# An agent waiting on what it started, with nothing out any more and no
+# word from it or its conversation this long, did not wake to it -- its
+# sub-agents killed, say: done.  A sub-agent coming back writes to its
+# parent's conversation at once, and wakes it a moment later.
+WAIT_GRACE = 30
+
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
 
@@ -75,6 +85,34 @@ def _head(text: str | None, width: int = 120) -> str:
         if line:
             return line if len(line) <= width else line[: width - 1] + "…"
     return ""
+
+
+def _and(words: list[str]) -> str:
+    "WORDS as a list in a sentence: a, b and c."
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def _background(transcript: str | None) -> list[str]:
+    """What the claude conversation at TRANSCRIPT has running in the
+    background, which wakes it as each ends, in words: 2 sub-agents,
+    1 shell, 1 monitor."""
+    if not transcript:
+        return []
+    try:
+        subs = len(subagents.live(transcript)["subs"])
+        kinds = [t["kind"] for t in subagents.tasks(transcript)]
+    except (ValueError, OSError):
+        return []
+    counts = ((subs, "sub-agent"), (kinds.count("shell"), "shell"), (kinds.count("monitor"), "monitor"))
+    return [f"{n} {what}{'' if n == 1 else 's'}" for n, what in counts if n]
+
+
+def _mtime(path: str | None) -> float:
+    "When PATH last changed, or 0."
+    try:
+        return Path(path).stat().st_mtime if path else 0.0
+    except OSError:
+        return 0.0
 
 
 class HerdStore:
@@ -502,21 +540,34 @@ class HerdStore:
         ).fetchone()[0]
         return None, run[0], n, ASK_ROUNDS
 
-    def _waiting(self, name: str) -> bool:
-        """NAME has an ask of its own open, or an outcome on its way to
-        it: its run of asks goes on.  Caller holds `_mu`."""
-        return bool(self._conn.execute(
+    def _awaited(self, name: str) -> list[str]:
+        """The agents NAME has an ask of its own open with, or an outcome
+        on its way from: while any, its run of asks goes on.  Caller
+        holds `_mu`."""
+        rows = self._conn.execute(
             f"""
-            SELECT 1 FROM asks WHERE from_name = ? AND (
+            SELECT to_name FROM asks WHERE from_name = ? AND (
               status IN {ASK_OPEN}
               OR (wait = 1 AND collected = 0 AND status IN ('answered', 'failed')))
             UNION ALL
-            SELECT 1 FROM mail WHERE to_name = ? AND status = 'queued'
+            SELECT from_name FROM mail WHERE to_name = ? AND status = 'queued'
               AND ask_id IS NULL AND (body LIKE 'Answer to ask %' OR body LIKE 'Ask % failed:%')
-            LIMIT 1
             """,
             (name, name),
-        ).fetchone())
+        ).fetchall()
+        return list(dict.fromkeys(r[0] for r in rows))
+
+    def _transcript(self, name: str) -> str | None:
+        "NAME's conversation, as its hooks last named it.  Caller holds `_mu`."
+        row = self._conn.execute(
+            "SELECT transcript FROM links WHERE session = ?", (name,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def _out(self, name: str) -> list[str]:
+        """What NAME has still out, in words: the agents its asks are with,
+        what it has running in the background.  Caller holds `_mu`."""
+        return self._awaited(name) + _background(self._transcript(name))
 
     def _end_runs(self, old: dict[str, str], new: dict[str, str]) -> None:
         """End the run of each agent that just finished a turn -- came to
@@ -528,7 +579,7 @@ class HerdStore:
             state = new.get(name)
             if state in (None, "dead") or (
                 state in settled and old.get(name) not in settled
-                and not self._waiting(name)
+                and not self._awaited(name)
             ):
                 self._conn.execute("DELETE FROM runs WHERE session = ?", (name,))
 
@@ -718,8 +769,9 @@ class HerdStore:
         as failed when it died, or with ERROR when Emacs could not hand it
         the ask at all.  A no-op once the ask is closed: the taker's own
         reply, made before it went idle, always wins.  And a no-op while
-        the taker waits on asks of its own: it handed part of the work on
-        and ended its turn to wait, which is not stopping.
+        the taker waits on asks of its own or work in the background: it
+        handed part of the work on and ended its turn to wait, which is
+        not stopping.
         """
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
@@ -731,6 +783,7 @@ class HerdStore:
                     f"SELECT id FROM asks WHERE from_name = ? AND status IN {ASK_OPEN}",
                     (row["to_name"],),
                 ).fetchall()]
+                waiting += _background(self._transcript(row["to_name"]))
                 if waiting:
                     return {"id": row["id"], "status": "delivered", "waiting_on": waiting}
             if dead or error:
@@ -939,7 +992,9 @@ class HerdStore:
         STATE waits for Emacs's next tick, newest per session.  The rest
         is kept here.  A turn ending in `done' with LAST closes the
         agent's unanswered ask with that answer: the taker's own words,
-        where Emacs's fallback has only its screen.
+        where Emacs's fallback has only its screen.  Not one ending with
+        work it started still out: that is `waiting', its ask left open
+        for the turn that ends with nothing out.
         """
         session = (session or "").strip()
         if not session:
@@ -948,14 +1003,6 @@ class HerdStore:
             raise ValueError(f"state must be one of {', '.join(self.REPORT_STATES)}")
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
-            if state:
-                self._conn.execute(
-                    """
-                    INSERT OR REPLACE INTO reports (session, state, reason, at, taken)
-                    VALUES (?, ?, ?, ?, 0)
-                    """,
-                    (session, state, reason or None, now),
-                )
             if cli or conversation or transcript or last:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
@@ -988,6 +1035,18 @@ class HerdStore:
                     (cli or None, conversation or None, transcript or None,
                      last or None, last or None, now, now, session),
                 )
+            if state == "done":
+                out = self._out(session)
+                if out:
+                    state, reason = "waiting", "waiting on " + _and(out)
+            if state:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO reports (session, state, reason, at, taken)
+                    VALUES (?, ?, ?, ?, 0)
+                    """,
+                    (session, state, reason or None, now),
+                )
             closed = None
             if state == "done" and last:
                 open_ask = self._conn.execute(
@@ -1006,16 +1065,18 @@ class HerdStore:
                     self._mail_back(open_ask[0])
                     closed = open_ask[0]
             self._conn.commit()
-        return {"session": session, "closed_ask": closed}
+        return {"session": session, "state": state, "closed_ask": closed}
 
     def unlink(self, session: str) -> dict[str, Any]:
         """Forget what SESSION's hooks said: a new agent has its name now,
         on a conversation of its own -- one its hooks will name.  Until
-        they do, the last answer of the one before is not its."""
+        they do, the last answer of the one before is not its, nor what it
+        said it was doing: waiting on sub-agents gone with it."""
         session = (session or "").strip()
         if not session:
             raise ValueError("session is required")
         with self._mu:
+            self._conn.execute("DELETE FROM reports WHERE session = ?", (session,))
             n = self._conn.execute("DELETE FROM links WHERE session = ?", (session,)).rowcount
             self._conn.commit()
         return {"session": session, "forgot": bool(n)}
@@ -1221,6 +1282,7 @@ class HerdStore:
                     answering.add(row[2])
                 deliverable.append(row[:7] + row[8:])
             asks = self._recent_asks()
+            self._unwait(names, now)
             reports = [
                 {"session": r[0], "state": r[1], "reason": r[2] or ""}
                 for r in self._conn.execute(
@@ -1308,6 +1370,28 @@ class HerdStore:
             "reports": reports,
             "links": links,
         }
+
+    def _unwait(self, names: set[str], now: str) -> None:
+        """Each of NAMES waiting with nothing out, and quiet for WAIT_GRACE
+        since: `done', as if its turn had ended now.  Emacs then closes its
+        ask as for any taker that stopped.  Caller holds `_mu`."""
+        t = datetime.fromisoformat(now).timestamp()
+        for session, at in self._conn.execute(
+            "SELECT session, at FROM reports WHERE state = 'waiting'"
+        ).fetchall():
+            if session not in names or self._out(session):
+                continue
+            quiet = max(datetime.fromisoformat(at).timestamp(),
+                        _mtime(self._transcript(session)))
+            if t - quiet < WAIT_GRACE:
+                continue
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO reports (session, state, reason, at, taken)
+                VALUES (?, 'done', 'nothing left to wait on', ?, 0)
+                """,
+                (session, now),
+            )
 
     def _upsert_alias(self, name: str) -> str:
         "Caller holds `_mu`."

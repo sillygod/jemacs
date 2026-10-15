@@ -934,11 +934,17 @@ regexp happened to match the box it was drawn in."
   :type 'number
   :group 'ghostherd)
 
-(defconst ghostherd-report-states '(working blocked idle done)
+(defconst ghostherd-report-states '(working blocked waiting idle done)
   "States an agent may claim for itself.
 
 `dead' is not among them: liveness is the host's answer, and an agent
-that could still report is by definition not dead.")
+that could still report is by definition not dead.
+
+`waiting' is the sidecar's word, not a hook's: a turn that ended with
+work the agent started still out -- sub-agents running, asks of its own
+open.  Its box is free, but it is not done: it wakes as that work comes
+back.  It holds until the agent says otherwise or the sidecar sees
+nothing left out, which no screen can tell.")
 
 (defvar ghostherd--reports (make-hash-table :test 'equal)
   "Session id → (STATE REASON TIME), the last thing an agent said about itself.
@@ -1001,11 +1007,14 @@ expired, and announced a second time."
       (puthash id (cons 'idle (cdr entry)) ghostherd--reports))))
 
 (defun ghostherd--fresh-report (session)
-  "Return SESSION's own last report as (STATE . REASON) while it is trusted."
+  "Return SESSION's own last report as (STATE . REASON) while it is trusted.
+`waiting' is trusted until replaced: work out an hour is still out, and
+the screen would call it idle."
   (when-let* ((entry (gethash (ghostherd-session-id session) ghostherd--reports)))
     (pcase-let ((`(,state ,reason ,at) entry))
-      (when (< (float-time (time-subtract (current-time) at))
-               ghostherd-report-ttl)
+      (when (or (eq state 'waiting)
+                (< (float-time (time-subtract (current-time) at))
+                   ghostherd-report-ttl))
         (cons state (or reason (format "reported %s" state)))))))
 
 
@@ -1496,11 +1505,12 @@ does."
            ;; one exception.  A claimed `blocked' loses to a screen that
            ;; positively says `working', because those patterns match a
            ;; spinner: an agent generating tokens is not sitting on a
-           ;; prompt, whatever its last hook said.  `idle' is not
-           ;; positive evidence -- it is this function's fallback -- so it
-           ;; does not get the same veto.
+           ;; prompt, whatever its last hook said.  So does `waiting': a
+           ;; sub-agent back wakes it before its hook says so.  `idle' is
+           ;; not positive evidence -- it is this function's fallback --
+           ;; so it does not get the same veto.
            ((and report
-                 (not (and (eq (car report) 'blocked)
+                 (not (and (memq (car report) '(blocked waiting))
                            (eq (car-safe hit) 'working))))
             report)
            ;; A shell is not an agent, so nothing about it is detectable
@@ -1647,14 +1657,16 @@ SCREEN is SESSION's screen if the caller already fetched it; see
         ;; Freshly prompted agents are not idle, they are slow.  Before the
         ;; grace elapses the screen still shows whatever it showed when you
         ;; pressed Return, and believing it turns into a `done' notification
-        ;; for work that has not started.
+        ;; for work that has not started.  Nor still waiting: that was
+        ;; said before the prompt, and its hook says `working' only once
+        ;; the CLI has woken to it.
         ;;
         ;; Both this and the settle below only ever hold back an `idle',
         ;; and they exist because a *screen* is weak evidence.  The states
         ;; an agent actually reports about itself -- `working', `blocked',
         ;; `done' -- pass through untouched, which is the point: a hook
         ;; firing at the moment the CLI stops needs no hysteresis.
-        (when (and (eq state 'idle)
+        (when (and (memq state '(idle waiting))
                    (not (ghostherd-session-manual-state session))
                    (ghostherd--waking-up-p session))
           (setq state 'working
@@ -2349,11 +2361,13 @@ otherwise prompts."
         (when-let* ((entry (gethash (ghostherd-session-id session)
                                     ghostherd--reports)))
           (pcase-let ((`(,reported ,why ,at) entry))
-            (insert (format "  reports  %s%s  (%s ago, trusted for %ss)\n"
+            (insert (format "  reports  %s%s  (%s ago, trusted %s)\n"
                             reported
                             (if why (format "  %s" why) "")
                             (ghostherd--age-string at)
-                            ghostherd-report-ttl))
+                            (if (eq reported 'waiting)
+                                "until replaced"
+                              (format "for %ss" ghostherd-report-ttl))))
             (unless (ghostherd--fresh-report session)
               (insert "           expired — detection has it back\n"))))
         (when-let* ((link (ghostherd--link session)))
@@ -2634,7 +2648,7 @@ called with OK and what the picker said it did -- or why it was not."
       (user-error "No effort %s: one of %s" effort (string-join efforts ", ")))
      ((gethash id ghostherd--switching)
       (user-error "%s is switching its model already" name))
-     ((not (memq (ghostherd-session-state session) '(idle done)))
+     ((not (memq (ghostherd-session-state session) '(idle done waiting)))
       (user-error "%s is %s: switch its model once it is idle" name (ghostherd-session-state session)))
      ((and input (not (equal input (ghostherd-session-suggestion session))))
       (user-error "%s has words in its input box: send them or clear them first" name)))
@@ -3288,6 +3302,7 @@ NAME may be \"self\", which is how a CLI hook is expected to call this."
   (pcase state
     ('blocked "⚠")
     ('working "⟳")
+    ('waiting "◷")
     ('done    "✓")
     ('idle    "○")
     ('starting "…")
@@ -3299,6 +3314,7 @@ NAME may be \"self\", which is how a CLI hook is expected to call this."
   (pcase state
     ('blocked 'error)
     ('working 'warning)
+    ('waiting 'font-lock-constant-face)
     ('done    'success)
     ('dead    'shadow)
     ('starting 'font-lock-comment-face)
@@ -3813,7 +3829,7 @@ leader keys and then dismissed the overlay to show them."
      (mapconcat (lambda (state)
                   (format "%s %s"
                           (ghostherd--state-glyph state) state))
-                '(blocked working done idle starting dead)
+                '(blocked working waiting done idle starting dead)
                 "  ")
      (format "\n%s detached (nobody attached; RET attaches)"
              ghostherd-detached-glyph))))
@@ -4854,7 +4870,7 @@ is called instead."
     (cond
      ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session))
       (when fail (funcall fail)))
-     ((memq (ghostherd-session-state session) '(idle done))
+     ((memq (ghostherd-session-state session) '(idle done waiting))
       (funcall fn))
      ((<= tries 0)
       (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent")
@@ -6171,15 +6187,18 @@ sweeps every `ghostherd-poll-interval'."
                                sessions))
          (working (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'working))
                                sessions))
+         (waiting (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'waiting))
+                               sessions))
          (done (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'done))
                             sessions))
          (total (length sessions)))
     (when (> total 0)
       (propertize
-       (format " 🐄%d%s%s%s"
+       (format " 🐄%d%s%s%s%s"
                total
                (if (> blocked 0) (format " ⚠%d" blocked) "")
                (if (> working 0) (format " ⟳%d" working) "")
+               (if (> waiting 0) (format " ◷%d" waiting) "")
                (if (> done 0) (format " ✓%d" done) ""))
        'face (cond ((> blocked 0) 'error)
                    ((> done 0) 'success)

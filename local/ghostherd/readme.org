@@ -31,7 +31,7 @@ readers and different lifetimes:
 - Spawn *claude* / *grok* / *agy* (or a plain shell) as named sessions
 - Multiple concurrent agents per project (e.g. implementer + reviewer)
 - Session list (=ghostherd-sidebar=): posframe overlay when available, side window otherwise, plus consult switcher (=ghostherd-switch=). Footer shows account usage for claude / grok / agy -- bars fill as you spend, the number is the used percent, and the tooltip spells out used / left / reset (=U= to refresh).
-- State polling: =working= / =blocked= / =idle= / =done= / =dead=
+- State polling: =working= / =blocked= / =waiting= / =idle= / =done= / =dead=
 - Notifications via =alert= (config uses =osx-notifier=)
 - Inter-agent messaging: =ghostherd-message=, =ghostherd-prompt=, =ghostherd-read=, =ghostherd-wait=
 - Agents can mail each other through the sidecar (=herd_message= / =herd_list= on =GHOSTHERD_RPC=), without =bin/ghostherd=
@@ -200,8 +200,8 @@ the original side window is what you get. Set
 =ghostherd-sidebar-use-posframe= to nil to keep the side window even
 when posframe is there.
 
-=?= also prints the glyph legend: =⚠= blocked, =⟳= working, =✓= done,
-=○= idle, =…= starting, =✖= dead, and a trailing =▪= — in the row's own
+=?= also prints the glyph legend: =⚠= blocked, =⟳= working, =◷= waiting,
+=✓= done, =○= idle, =…= starting, =✖= dead, and a trailing =▪= — in the row's own
 colour — for a session with no view attached.
 
 =?= (=ghostherd-sidebar-help=) derives the listing from the buffer's live
@@ -521,8 +521,9 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   with its screen, marked as such; dying fails it, and so does an ask
   that never left the taker's input box, Return pressed and pressed
   again --- saying so, so the asker hears at once.  A taker that ended
-  its turn to wait on asks of its own has not stopped: its ask stays
-  open until it stops with none.  A real answer sent later still
+  its turn to wait --- on asks of its own, or work in the background ---
+  has not stopped: it is =waiting=, and its ask stays open until a turn
+  ends with nothing out.  A real answer sent later still
   replaces the screen or the failure; only a cancel is final.
 - *No loops.*  One open ask per agent, a second waits its turn.  An
   agent answering an ask may hand parts of it on --- the lead asks rd,
@@ -781,7 +782,7 @@ Who wins, in order:
 | Host says the process is gone    | everything below                         |
 | A =blocked= rule on the screen   | a report --- a real prompt is never masked |
 | A fresh report                   | progress, rules, the idle fallback       |
-| A =working= rule on the screen   | a report claiming =blocked= (see below)  |
+| A =working= rule on the screen   | a report of =blocked= or =waiting=       |
 | OSC progress                     | rules                                    |
 
 The one exception reads oddly and is deliberate: a claimed =blocked=
@@ -789,6 +790,25 @@ loses to a screen that positively says =working=, because those patterns
 match a spinner --- an agent generating tokens is not sitting on a prompt,
 whatever its last hook said. =idle= gets no such veto, because =idle= is
 not evidence; it is what detection falls back to.
+
+=waiting= is the one state the sidecar reports for an agent rather than
+the agent for itself.  A turn that ends with work it started still out
+--- sub-agents, shells or monitors running in the background, asks of
+its own open or an answer on its way to it --- ended to wait, not to
+stop: its hook says =done=, and the sidecar makes that =waiting on qa,
+2 sub-agents and 1 shell=.  Claude wakes an agent as each of these
+ends, which is what makes it a wait.  A shell or monitor counts for an
+hour from its start at most: a server left running, or a wait that is
+stuck, is not something it will be woken by.  Its input box is free, so
+mail and you reach it and its model can be switched; but there is no
+=done= banner, its ask stays open and its run of asks goes on.  It
+wakes as that work comes back --- a sub-agent's report starts a turn of
+its own --- and the turn that ends with nothing out is =done=.  It is
+trusted past =ghostherd-report-ttl=, since the screen would call it
+idle, until a =working= screen, a prompt you send or its next hook says
+otherwise.  One left waiting with nothing out and no word from it or its
+conversation for 30 seconds --- its sub-agents killed, and it never
+woke to it --- is =done=.
 
 Reports are for agent kinds. A =shell= session has no agent lifecycle to
 report, and a human claiming a state wants =ghostherd-mark-state=.
@@ -965,8 +985,8 @@ agent's own keys (=ctrl+o=, its pager) are what scroll it.
 (=ghostherd-log-page=); =M-x ghostherd-log= and the overlay's =L= are
 the text buffer described below.  The page puts one lane per agent
 above the entries: its states as coloured segments across the range
-(6h, 24h, 7d, all) --- working blue, blocked orange, idle grey, done
-green, dead red --- rebuilt from the transitions, with a count of how
+(6h, 24h, 7d, all) --- working blue, waiting teal, blocked orange, idle
+grey, done green, dead red --- rebuilt from the transitions, with a count of how
 often and how long it sat blocked.  Back from an absence, who was stuck
 and since when is one look.  A segment's tooltip has its span and
 reason, and a click goes to its entry.  Entries are newest first by
@@ -1175,8 +1195,8 @@ are the other tabs (below, and "What happened while you were away").
   =s= for this session only --- each step waiting for the screen to
   show it, and Escapes out with the reason when it does not; the
   picker's own line (=Set model to Sonnet 5.5 for this session only
-  with high effort=) goes to the page and the log.  An idle or done
-  agent only, with nothing of yours in its input box.  Typed in a box,
+  with high effort=) goes to the page and the log.  An idle, waiting or
+  done agent only, with nothing of yours in its input box.  Typed in a box,
   =/model sonnet= also makes Sonnet the default of every new session:
   that is the CLI's own.  =M-x ghostherd-switch-model= does the same
   from Emacs; =:model-picker= in =ghostherd-agent-specs= is what makes
@@ -1195,7 +1215,8 @@ are the other tabs (below, and "What happened while you were away").
   it stopped (failed, killed) --- not stopped with work of its own still
   in the background, which it goes on from; one sent another message
   runs again; one silent for an hour, or an agent dead, has none
-  running.
+  running.  An agent whose turn ended with some running is =waiting=
+  for them, not done.
 - What a sub-agent sent back, in its agent's column where it came back:
   whose it is and what it was asked, how it ended and what it took
   (=finished · 15m 31s · 61 tools · 196k tokens=), and its report, the

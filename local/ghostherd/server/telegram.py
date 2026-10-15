@@ -40,6 +40,7 @@ API = "https://api.telegram.org/bot{token}/{method}"
 GLYPH = {
     "blocked": "⚠",
     "working": "⟳",
+    "waiting": "◷",
     "done": "✓",
     "idle": "○",
     "starting": "…",
@@ -173,6 +174,8 @@ def format_herd(sessions: list[dict[str, Any]]) -> str:
         bits.append(f"⚠{counts['blocked']}")
     if counts.get("working"):
         bits.append(f"⟳{counts['working']}")
+    if counts.get("waiting"):
+        bits.append(f"◷{counts['waiting']}")
     extra = "  ".join(bits)
     line = f"Herd  {len(sessions)}"
     if extra:

@@ -1,5 +1,5 @@
 from herd import HerdStore, reset_herd
-from telegram import TelegramBot, format_herd, push_keyboard, session_keyboard
+from telegram import TelegramBot, format_herd, herd_keyboard, push_keyboard, session_keyboard
 
 
 def _bot(tmp_path, chats=(99,)):
@@ -40,6 +40,13 @@ def test_herd_lists_sessions(tmp_path):
     ]
     assert any("agy-commit" in t for t in labels)
     reset_herd()
+
+
+def test_a_waiting_agent_is_neither_at_work_nor_idle():
+    "Its turn over, its sub-agents still out."
+    herd = [{"name": "rd", "state": "waiting", "short": "r1"}, {"name": "qa", "state": "working", "short": "q1"}]
+    assert format_herd(herd) == "Herd  2   ⟳1  ◷1"
+    assert herd_keyboard(herd)["inline_keyboard"][0][0]["text"] == "◷ rd"
 
 
 def test_answer_only_when_blocked(tmp_path):

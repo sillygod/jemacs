@@ -310,7 +310,9 @@ so a page opens as it would on the phone.
 |                | themselves a size up from the page, code and headings with them |
 | =herd-meter=   | each agent's model, effort and context bar, on its row, its     |
 |                | column and above the chat's box; the form that switches it for  |
-|                | its session: what it sends, held while the agent works          |
+|                | its session: what it sends, held while the agent works, open    |
+|                | while it waits on its sub-agents --- =waiting= in its colour,   |
+|                | counted, and a run it asked in not yet done                     |
 | =herd-subs=    | an agent's sub-agents running, under its column and above the   |
 |                | chat's box, their time running on; the lines that started them  |
 |                | marked; each report where it came back, folded, opened, copied  |

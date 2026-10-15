@@ -771,7 +771,7 @@
   // overlay can do.  Emacs sends the herd every few seconds while this
   // tab is on screen, and at once when a state changes.
 
-  const RANK = { blocked: 0, working: 1, starting: 2, done: 3, idle: 4, dead: 5 };
+  const RANK = { blocked: 0, working: 1, starting: 2, waiting: 3, done: 4, idle: 5, dead: 6 };
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
@@ -1010,7 +1010,7 @@
       } else if (top.auto) {
         cls = "run-auto";
         parts.push(top.to + " stopped without answering");
-      } else if (asker && (asker.state === "working" || asker.state === "starting")) {
+      } else if (asker && ["working", "starting", "waiting"].includes(asker.state)) {
         parts.push(top.to + " answered; " + run.from + " at work");
       } else {
         cls = "run-done";
@@ -1266,7 +1266,7 @@
     const p = a && herdNow.modelFor === a.name && pickerFor(a);
     if (!p) return "";
     const pick = herdNow.modelPick;
-    const busy = !["idle", "done"].includes(a.state);
+    const busy = !["idle", "done", "waiting"].includes(a.state);
     const chips = (list, key) => list.map((v) =>
       '<button type="button" class="mopt' + (pick[key] === v ? " on" : "") + '" data-act="a:model-pick" data-' + key + '="' + esc(v) + '">' +
       esc(v) + "</button>").join("");

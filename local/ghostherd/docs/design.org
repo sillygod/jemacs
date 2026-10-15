@@ -812,7 +812,8 @@ Three smaller decisions inside it:
 
 The hedges in =ghostherd-poll-session= needed no exemption, which is
 worth writing down because it looks like an oversight: both only ever
-hold back an =idle=, and the states a hook actually reports --- =working=,
+hold back an =idle= (the input grace a =waiting= too: said before the
+prompt), and the states a hook actually reports --- =working=,
 =blocked=, =done= --- pass straight through. Hysteresis exists because
 screens lie between two tool calls; a hook firing at the moment the CLI
 stops does not need it, and would be ruined by it.
@@ -821,6 +822,25 @@ What did need a rule is =done=: it means *finished while you were not
 looking*, and the promotion path carried that condition in its own
 =if=. A report can say =done= outright, so the rule moved out to where
 both paths pass through it.
+
+=waiting= needed one of its own, being the one state no hook says.
+claude's Stop hook fires when a turn ends, and a turn ends to wait as
+readily as to stop: four sub-agents sent off in the background, a test
+suite in a background shell, an ask of its own out.  Only the sidecar can tell the two apart --- it holds
+the asks, and reads the sub-agents off the transcript --- so it
+rewrites that =done= before Emacs takes it.  Unlike every other report
+it does not expire, because what expiry falls back to, an agent's
+screen, shows an idle prompt while it waits.  What ends it is positive
+instead: the agent's next hook, a =working= screen, a prompt sent to
+it, or the sidecar finding nothing out and the conversation quiet.
+
+A shell is the one thing it waits on that need not end.  Sub-agents
+report back; a background shell may be a server, or a wait whose test
+can never pass --- =until ! pgrep -f mutate2.py=, which matches itself,
+ran 23 hours here.  So a shell or a monitor counts for STALE, an hour,
+from its start, the bound sub-agents have for silence.  Of the 110 the
+herd's agents ran in a month, half ended within 80 seconds and nine in
+ten within 11 minutes; but for that one, the longest took 30.
 
 ** What a state reason says
 

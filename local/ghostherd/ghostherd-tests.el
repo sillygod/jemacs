@@ -1593,6 +1593,67 @@ good: looking away while its report is still trusted does not make it
         (puthash (ghostherd-session-id s) (list 'done "old" (time-subtract nil 3600)) ghostherd--reports)
         (should (eq (ghostherd-poll-session s) 'done))))))
 
+(ert-deftest ghostherd-test-waiting-is-not-done ()
+  "A turn ended with sub-agents running, as the sidecar says: `waiting'.
+Seen live (2026-10-15) as `idle' -- a `done' banner had you looked away,
+and the ask it answered settled with \"still in progress\".  Held past
+the report's trust, since the screen would call it idle, until a
+`working' screen, a prompt or its next report says otherwise."
+  (ghostherd-tests--with-herd ((ghostherd-report-ttl 60)
+                               (ghostherd--asks-open (make-hash-table :test 'equal)))
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy :state 'working :seen nil))
+           (screen (lambda (text)
+                     (with-current-buffer (ghostherd-session-buffer s)
+                       (erase-buffer)
+                       (insert text))))
+           bannered settled)
+      (funcall screen "> \n")
+      (puthash "a1" "a" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'run-with-timer) #'ignore)
+                ((symbol-function 'ghostherd--watched-p) #'ignore)
+                ((symbol-function 'ghostherd--notify) (lambda (&rest _) (setq bannered t)))
+                ((symbol-function 'ghostherd--ask-settle)
+                 (lambda (id &rest _) (push id settled))))
+        (ghostherd--herd-take-reports
+         '((:session "a" :state "waiting" :reason "waiting on 4 sub-agents")))
+        (should (eq (ghostherd-poll-session s) 'waiting))
+        (should (equal (ghostherd-session-state-reason s) "waiting on 4 sub-agents"))
+        ;; An hour on, its screen an idle prompt all along.
+        (puthash "a" (list 'waiting "waiting on 4 sub-agents" (time-subtract nil 3600))
+                 ghostherd--reports)
+        (should (eq (ghostherd-poll-session s) 'waiting))
+        ;; A sub-agent back wakes it before its hook says so.
+        (funcall screen "Thinking…\n")
+        (should (eq (ghostherd-poll-session s) 'working))
+        (funcall screen "> \n")
+        (should (eq (ghostherd-poll-session s) 'waiting))
+        ;; A prompt sent to it: not awake to it yet, nor waiting.
+        (puthash "a" (float-time) ghostherd--input-at)
+        (should (eq (ghostherd-poll-session s) 'working))
+        (remhash "a" ghostherd--input-at)
+        (should (eq (ghostherd-poll-session s) 'waiting))
+        (should-not bannered)
+        (should-not settled)
+        ;; The turn that ends with nothing out.
+        (ghostherd--herd-take-reports
+         '((:session "a" :state "done" :reason "finished its turn")))
+        (should (eq (ghostherd-poll-session s) 'done))
+        (should bannered)
+        (should (equal settled '("a1")))))))
+
+(ert-deftest ghostherd-test-waiting-reads-as-such ()
+  "Its own glyph, counted on the mode line, in the legend; its box free
+for a message once it is ready."
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (let ((s (ghostherd-tests--session :name "a" :kind 'claude :state 'waiting))
+          said)
+      (should (equal (ghostherd--state-glyph 'waiting) "◷"))
+      (should-not (eq (ghostherd--state-face 'waiting) 'default))
+      (should (string-match-p "◷1" (substring-no-properties (ghostherd--mode-line-segment))))
+      (should (string-match-p "◷ waiting" (ghostherd--sidebar-help-text)))
+      (ghostherd--when-ready s (lambda () (push 'told said)) 0 (lambda () (push 'never said)))
+      (should (equal said '(told))))))
+
 (ert-deftest ghostherd-test-rename-carries-the-report ()
   "The report is keyed by id, and a rename changes the id -- which used to
 drop the input grace and the settle timestamp silently."
@@ -2596,7 +2657,8 @@ effort is switched all the same: what it set is what it says."
   (ghostherd-tests--with-picker
     (setf (ghostherd-session-state s) 'working)
     (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
-    (setf (ghostherd-session-state s) 'idle)
+    ;; Waiting on its sub-agents: its box is free.
+    (setf (ghostherd-session-state s) 'waiting)
     ;; Words of yours in its input box -- a suggestion is not yours.
     (puthash (ghostherd-session-id s) '(:input "half a thought") ghostherd--feet)
     (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
@@ -3405,7 +3467,13 @@ one whose hooks name another conversation is not found by stale args."
       (save-window-excursion (ghostherd-explain s))
       (with-current-buffer "*ghostherd explain*"
         (should (string-search "talks    a-456  (agy, by its hooks)" (buffer-string)))
-        (should (string-search "said     Committed ee5fee6." (buffer-string)))))))
+        (should (string-search "said     Committed ee5fee6." (buffer-string))))
+      ;; Waiting is trusted for as long as it is out, not for a TTL.
+      (puthash "agy-a" (list 'waiting "waiting on qa" (time-subtract nil 600)) ghostherd--reports)
+      (save-window-excursion (ghostherd-explain s))
+      (with-current-buffer "*ghostherd explain*"
+        (should (string-search "waiting on qa  (10m ago, trusted until replaced)" (buffer-string)))
+        (should-not (string-search "expired" (buffer-string)))))))
 
 (ert-deftest ghostherd-test-ask-outcome-says-whose-words ()
   (should (equal (ghostherd--ask-outcome
@@ -7037,6 +7105,13 @@ its checkouts counted again, while the page is open."
           (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_app) t)))
             (ghostherd--set-state (ghostherd-get "rd") 'idle)
             (ghostherd--set-state (ghostherd-get "qa") 'done))
+          (while ghostherd-memory-page--chores (ghostherd-memory-page--chore-next))
+          (should (equal counted (list root)))
+          ;; So does one that ends it to wait on its sub-agents.
+          (setq counted nil)
+          (setf (ghostherd-session-state (ghostherd-get "rd")) 'working)
+          (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_app) t)))
+            (ghostherd--set-state (ghostherd-get "rd") 'waiting))
           (while ghostherd-memory-page--chores (ghostherd-memory-page--chore-next))
           (should (equal counted (list root))))))))
 

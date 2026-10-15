@@ -192,6 +192,28 @@ def test_a_taker_waiting_on_its_own_ask_has_not_stopped(tmp_path):
     assert h.settle(again["id"], dead=True)["status"] == "failed"
 
 
+def test_its_hooks_say_so_too(tmp_path):
+    # The turn's end, as its hooks report it, closed the lead's ask with
+    # what rd said then -- that it had asked qa -- which settle never did.
+    h = _store(tmp_path)
+    h.tick(sessions=NESTED)
+    top = h.ask("rd", "build it and get it through qa", from_name="lead-a")
+    _deliver(h, NESTED)
+    mid = h.ask("qa", "test it", from_name="rd")
+    out = h.report("rd", state="done", last="Asked qa to test it.")
+    assert (out["state"], out["closed_ask"]) == ("waiting", None)
+    assert h.get_ask(top["id"])["status"] == "delivered"
+    _deliver(h, NESTED)
+    h.reply(mid["id"], "all green", from_name="qa")
+    # qa's answer on its way to rd: rd is waiting on it still.
+    assert h.report("rd", state="done", last="Still waiting.")["state"] == "waiting"
+    _deliver(h, NESTED)
+    h.report("rd", state="working")
+    out = h.report("rd", state="done", last="Built; qa says all green.")
+    assert (out["state"], out["closed_ask"]) == ("done", top["id"])
+    assert h.get_ask(top["id"])["reply"] == "Built; qa says all green."
+
+
 # ---- Rounds --------------------------------------------------------------
 
 

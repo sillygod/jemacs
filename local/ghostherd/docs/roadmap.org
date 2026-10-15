@@ -741,6 +741,21 @@ builds, one tests, back and forth --- as one conversation, on the page.
   checks (=herd-subs=); 40 guards broken on purpose, each caught.
   A sub-agent's own conversation is not shown in the room yet: its
   latest step and its tool count say whether it is stuck
+- [X] =waiting=: a turn ended with its sub-agents, shells or monitors
+  running, or asks of its own open, ended to wait, not to stop.  Seen live (2026-10-15):
+  four sub-agents handed out, the turn over, and the herd said idle ---
+  a =done= banner had you looked away, and the ask it answered, had a
+  lead asked, closed with "still in progress".  Its hooks' =done=
+  closed that ask even when it waited on asks of its own, which only
+  Emacs's settle had checked.  The sidecar now makes such a =done=
+  =waiting on qa and 2 sub-agents=: the ask open, the run of asks
+  going on, no banner; its box free, so mail, prompts and a model
+  switch still reach it.  The turn that ends with nothing out is
+  =done=; one left with nothing out and quiet for 30s, =done= too.
+  Shells and monitors are read off its conversation, begun where the
+  call says so and ended where it is told; each counts an hour from its
+  start at most, since a shell need not end (a wait that matched
+  itself ran 23 hours).
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

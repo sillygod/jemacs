@@ -970,7 +970,7 @@ changed."
 (defun ghostherd-memory-page--changes-on-state (session old new)
   "SESSION ended a turn, from OLD to NEW: count its checkouts again, while
 the page is open."
-  (when (and (eq old 'working) (memq new '(idle blocked done))
+  (when (and (eq old 'working) (memq new '(idle blocked done waiting))
              (xwapp-live-p ghostherd-memory-page--app))
     (dolist (key (list (cons 'agent (ghostherd-session-name session))
                        (ghostherd--project-name (ghostherd-session-project session))))

@@ -10,18 +10,27 @@ far, and what it is doing now.
 One has stopped once it handed its report back (its last call), or once
 its parent was told it stopped -- failed, killed: a task notification.
 Not when told it stopped with background work of its own still running:
-it goes on when that ends.  One sent another message runs again.  One silent for STALE is counted
-out, its parent likely gone with it.
+it goes on when that ends.  One sent another message runs again.  One
+silent for STALE is counted out, its parent likely gone with it.
+
+The shells and monitors an agent started in the background are read off
+its own conversation: begun where the call's result says so, ended where
+it was told -- a notice with a status, a monitor's expiry.  A monitor's
+events are not its end.  None is counted STALE after it began: a server
+left running, or a wait stuck, is not something it will be woken by.
 
 Each file is read as it grows, from where it was last read; the parent's
 from TAIL_MAX before its end.  Emacs asks again when the parent, the
-folder or one of the files this named as running has changed.
+folder or one of the files this named as running has changed.  The herd
+asks too, when an agent's turn ends: one with any of these running is
+waiting for them, not done.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -33,6 +42,9 @@ SLACK = 2.0
 CACHE_MAX = 256
 HANDBACK_TOOL = "SubagentHandback"
 TASK_ID = re.compile(r"<task-id>([A-Za-z0-9_-]{1,64})</task-id>")
+# What the Bash and Monitor tools answer, as Claude Code 2.1 says it.
+BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task )([A-Za-z0-9_-]{1,64})\b")
+EXPIRED = re.compile(r"\[Monitor expired after\b")
 
 
 class Follow:
@@ -124,30 +136,62 @@ class Sub:
 
 
 class Parent:
-    "When the parent was last told each of its tasks stopped."
+    """When the parent was last told each of its tasks stopped, and the
+    shells and monitors it started that it has not been told ended."""
 
     def __init__(self, path: Path) -> None:
         self.follow = Follow(path, conv.TAIL_MAX)
         self.stopped: dict[str, float] = {}
+        self.tasks: dict[str, dict[str, Any]] = {}
 
     def look(self) -> None:
         lines, fresh = self.follow.look()
         if fresh:
             self.stopped.clear()
+            self.tasks.clear()
         for line in lines:
-            if "<task-notification>" not in line:
+            told = "<task-notification>" in line
+            if not (told or "Command running in background" in line or "Monitor started" in line):
                 continue
             try:
                 o = json.loads(line)
             except ValueError:
                 continue
-            at = conv._epoch(o.get("timestamp"))
-            n = conv.notice(_said(o))
-            if n and n["interim"]:
-                continue  # it goes on when its own background work ends
-            for sid in TASK_ID.findall(line):
-                if at is not None and at > self.stopped.get(sid, 0):
-                    self.stopped[sid] = at
+            if told:
+                self._told(o, line)
+            self._started(o)
+
+    def _told(self, o: dict[str, Any], line: str) -> None:
+        at = conv._epoch(o.get("timestamp"))
+        said = _said(o)
+        for m in conv.NOTICE.finditer(said):
+            n = conv.notice(m.group(0))
+            if n["id"] in self.tasks and (n["status"] or EXPIRED.search(m.group(1))):
+                del self.tasks[n["id"]]
+        n = conv.notice(said)
+        if n and n["interim"]:
+            return  # it goes on when its own background work ends
+        for sid in TASK_ID.findall(line):
+            if at is not None and at > self.stopped.get(sid, 0):
+                self.stopped[sid] = at
+
+    def _started(self, o: dict[str, Any]) -> None:
+        "A shell or monitor begun, as its call's result says: nothing else."
+        msg = o.get("message") if o.get("type") == "user" else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        at = conv._epoch(o.get("timestamp"))
+        if not isinstance(content, list) or at is None:
+            return
+        for b in content:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                continue
+            text = b.get("content")
+            if isinstance(text, list):
+                text = "\n".join(t.get("text", "") for t in text if isinstance(t, dict))
+            m = BACKGROUND.match(text.strip()) if isinstance(text, str) else None
+            if m:
+                self.tasks[m.group(2)] = {"kind": "monitor" if m.group(1).startswith("Monitor") else "shell",
+                                          "started": at}
 
 
 def _said(o: dict[str, Any]) -> str:
@@ -166,6 +210,9 @@ def _said(o: dict[str, Any]) -> str:
 
 _subs: dict[str, Sub] = {}
 _parents: dict[str, Parent] = {}
+# The page's asking and the herd's run in threads of their own, and a
+# file read by two at once would hand the same lines to each.
+_mu = threading.Lock()
 
 
 def _kept(cache: dict[str, Any], key: str, make) -> Any:
@@ -181,6 +228,11 @@ def live(path: str) -> dict[str, Any]:
     """The sub-agents of the claude transcript PATH still running, oldest
     first, and what to watch for a change in them: the folder, where a
     new one appears, and each running one's file."""
+    with _mu:
+        return _live(path)
+
+
+def _live(path: str) -> dict[str, Any]:
     real, cli = conv.locate(path)
     if cli != "claude":
         return {"subs": [], "watch": []}
@@ -229,3 +281,18 @@ def live(path: str) -> dict[str, Any]:
         out["watch"].append(str(p))
     out["subs"].sort(key=lambda x: x["started"] or "")
     return out
+
+
+def tasks(path: str) -> list[dict[str, Any]]:
+    """The shells and monitors the claude conversation at PATH started in
+    the background and has not been told ended, oldest first: each as
+    {id, kind, started}.  None begun STALE ago or more."""
+    with _mu:
+        real, cli = conv.locate(path)
+        if cli != "claude":
+            return []
+        parent = _kept(_parents, str(real), lambda: Parent(real))
+        parent.look()
+        now = time.time()
+        return sorted(({"id": k, **v} for k, v in parent.tasks.items() if now - v["started"] < STALE),
+                      key=lambda t: t["started"])

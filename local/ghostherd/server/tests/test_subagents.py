@@ -5,12 +5,15 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 import conversation as conv
+import herd as herd_mod
 import subagents
+from herd import HerdStore, reset_herd
 from jsonrpc_handler import JsonRpcRequest, handler
 
 PROJ = Path(".claude") / "projects" / "-x-proj"
@@ -417,3 +420,226 @@ def test_rpc(home):
     r = call({"path": str(p)})
     assert r.error is None and [s["id"] for s in r.result["subs"]] == ["a6568"]
     assert call({"path": str(home / "x.jsonl")}).error.message == "no such transcript"
+
+
+# ---- Shells and monitors in the background --------------------------------
+
+
+def ago_at(seconds):
+    "A record's time, SECONDS before now."
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def shell(i, bid, seconds, desc="Run the full backend test suite"):
+    "A Bash call run in the background SECONDS ago, as Claude Code 2.1.299 answers it."
+    return [dict(a(use(i, "Bash", command="pytest -q", description=desc, run_in_background=True)),
+                 timestamp=ago_at(seconds)),
+            dict(u([result(i, "Command running in background with ID: %s. Output is being written to: "
+                              "/private/tmp/x/tasks/%s.output" % (bid, bid))]), timestamp=ago_at(seconds))]
+
+
+def monitor(i, mid, seconds):
+    return [dict(a(use(i, "Monitor", command="until [ -s f ]; do sleep 5; done", description="Wait for it")),
+                 timestamp=ago_at(seconds)),
+            dict(u([result(i, [{"type": "text", "text":
+                                "Monitor started (task %s, expires in 15m unless the source ends first; "
+                                "you get one notice at expiry — re-arm if you still need the watch). "
+                                "You will be notified on each event." % mid}])]), timestamp=ago_at(seconds))]
+
+
+def shell_ended(bid, status="completed"):
+    return queued("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n"
+                  "<output-file>/private/tmp/x/tasks/%s.output</output-file>\n<status>%s</status>\n"
+                  '<summary>Background command "Run the full backend test suite" %s (exit code 0)</summary>\n'
+                  "</task-notification>" % (bid, bid, status, status))
+
+
+def monitor_event(mid, event="Pytest: 3705 passed"):
+    return queued('<task-notification>\n<task-id>%s</task-id>\n<summary>Monitor event: "Wait for it"</summary>\n'
+                  "<event>%s</event>\n</task-notification>" % (mid, event))
+
+
+def test_shells_and_monitors_run_until_told_they_ended(home):
+    p = parent(home, started() + shell("t1", "bx1", 90) + shell("t2", "bx2", 120) + monitor("t3", "bm1", 60)
+               + [monitor_event("bm1")])
+    assert [(t["id"], t["kind"]) for t in subagents.tasks(str(p))] == [
+        ("bx2", "shell"), ("bx1", "shell"), ("bm1", "monitor")]  # an event is not its end
+    with p.open("a") as w:
+        w.write(lines([shell_ended("bx1"), shell_ended("bx2", "killed"),
+                       {"type": "attachment", "timestamp": at(9),
+                        "attachment": {"type": "queued_command", "prompt": shell_ended("bx1")}}]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bm1"]
+    with p.open("a") as w:
+        w.write(lines([monitor_event("bm1", "[Monitor expired after 15m with no events delivered. "
+                                            "Re-arm it if you still need the watch.]")]))
+    assert subagents.tasks(str(p)) == []
+    # A conversation begun again: what it had running is read anew.
+    p.write_text(lines(shell("t1", "bx3", 5)))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx3"]
+    p.write_text(lines(shell("t2", "bx4", 4, desc="Build")))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx4"]
+
+
+def test_one_begun_an_hour_ago_is_not_waited_on(home):
+    "A server left running, or a wait stuck: one ran 23 hours here (2026-10)."
+    p = parent(home, shell("t1", "bx1", subagents.STALE + 5) + shell("t2", "bx2", 10))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2"]
+
+
+def test_only_its_calls_results_begin_one(home):
+    said = "Command running in background with ID: bfake. Not really."
+    p = parent(home, [dict(u(said), timestamp=ago_at(5)),
+                      dict(a({"type": "text", "text": said}), timestamp=ago_at(4)),
+                      # A log it read that says so, further down.
+                      dict(a(use("r1", "Read", file_path="/tmp/log")), timestamp=ago_at(3)),
+                      dict(u([result("r1", "1\tstarting\n2\t" + said)]), timestamp=ago_at(3))])
+    assert subagents.tasks(str(p)) == []
+
+
+def test_none_for_another_cli(home):
+    path = home / ".grok" / "sessions" / "x" / "chat_history.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(lines(shell("t1", "bx1", 10)))
+    assert subagents.tasks(str(path)) == []
+
+
+# ---- A turn that ends with them running -----------------------------------
+
+TEAM = [
+    {"name": "lead", "kind": "claude", "state": "idle", "project": "/src/a/", "role": "lead"},
+    {"name": "rd", "kind": "claude", "state": "idle", "project": "/src/a/"},
+    {"name": "qa", "kind": "claude", "state": "idle", "project": "/src/a/"},
+]
+
+
+def team(home, p):
+    "The herd, with the lead's ask pasted into rd, whose conversation is P."
+    reset_herd()
+    h = HerdStore(home / "herd.sqlite")
+    h.tick(sessions=TEAM)
+    ask = h.ask("rd", "build the five rounds", from_name="lead")
+    out = h.tick(sessions=TEAM)
+    h.tick(sessions=TEAM, ack_ids=[m["id"] for m in out["pending"]])
+    h.report("rd", cli="claude", conversation="abc", transcript=str(p))
+    return h, ask
+
+
+def reports(h):
+    return [(r["session"], r["state"], r["reason"]) for r in h.tick(sessions=TEAM)["reports"]]
+
+
+def test_a_turn_ended_with_sub_agents_running_is_waiting(home):
+    "Seen live (2026-10-15): four handed out, the turn ended, and the herd said idle."
+    p = parent(home, started())
+    f = sub(home, "a6568", working())
+    h, ask = team(home, p)
+    out = h.report("rd", state="done", reason="finished its turn", last="Handed the rounds to a sub-agent.")
+    assert (out["state"], out["closed_ask"]) == ("waiting", None)
+    assert reports(h) == [("rd", "waiting", "waiting on 1 sub-agent")]
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    # It hands back; rd wakes to it and ends with nothing out.
+    with f.open("a") as w:
+        w.write(lines(handed_back()))
+    h.report("rd", state="working")
+    out = h.report("rd", state="done", reason="finished its turn", last="All five rounds built.")
+    assert (out["state"], out["closed_ask"]) == ("done", ask["id"])
+    assert h.get_ask(ask["id"])["reply"] == "All five rounds built."
+
+
+def test_waiting_says_on_what(home):
+    p = parent(home, started() + shell("t1", "bx1", 30) + monitor("t2", "bm1", 20))
+    sub(home, "a6568", working())
+    sub(home, "a7777", working())
+    h, _ = team(home, p)
+    h.ask("qa", "test round 1", from_name="rd")
+    h.report("rd", state="done", last="Asked qa; two sub-agents building, the suite running.")
+    assert reports(h) == [("rd", "waiting", "waiting on qa, 2 sub-agents, 1 shell and 1 monitor")]
+
+
+def test_a_turn_ended_with_a_shell_running_is_waiting(home):
+    "Seen live (2026-10-15): a wait for the staging triage in the background, and the herd said idle."
+    p = parent(home, shell("t1", "bx1", 30, "Wait until the requeued staging issues finish triage"))
+    h, ask = team(home, p)
+    out = h.report("rd", state="done", last="A check in the background waits for the triage.")
+    assert (out["state"], out["closed_ask"]) == ("waiting", None)
+    assert reports(h) == [("rd", "waiting", "waiting on 1 shell")]
+    assert h.settle(ask["id"], screen="")["waiting_on"] == ["1 shell"]
+    # It ends; rd wakes to it, and ends its turn with nothing out.
+    with p.open("a") as w:
+        w.write(lines([shell_ended("bx1")]))
+    h.report("rd", state="working")
+    out = h.report("rd", state="done", last="Gemini got 13 of 13 right on staging.")
+    assert (out["state"], out["closed_ask"]) == ("done", ask["id"])
+
+
+def test_a_waiting_agent_takes_an_ask_after_an_idle_one(home):
+    p = parent(home, started())
+    sub(home, "a6568", working())
+    h, _ = team(home, p)
+    snap = [dict(r, state="waiting") if r["name"] == "rd" else r for r in TEAM]
+    h.tick(sessions=snap)
+    assert h.ask("claude", "x", from_name="lead")["to"] == "qa"
+    assert h.ask("rd", "y", from_name="qa")["to"] == "rd"  # its box is free
+    h.tick(sessions=[dict(r, state="dead") if r["name"] == "qa" else r for r in snap])
+    assert h.ask("claude", "z", from_name="lead")["to"] == "rd"
+
+
+def test_settle_leaves_the_ask_open_while_sub_agents_run(home):
+    "Emacs's own, for a taker with no hooks or a waiting it did not hear."
+    p = parent(home, started())
+    sub(home, "a6568", working())
+    h, ask = team(home, p)
+    r = h.settle(ask["id"], screen="handed it on")
+    assert (r["status"], r["waiting_on"]) == ("delivered", ["1 sub-agent"])
+
+
+def ago(seconds):
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_waiting_with_nothing_out_and_no_word_is_done(home):
+    "Its sub-agent killed, say, and rd never woke to it."
+    p = parent(home, started())
+    f = sub(home, "a6568", working())
+    h, ask = team(home, p)
+    h.report("rd", state="done", last="Handed it on.")
+    assert reports(h)[0][1] == "waiting"
+    old = time.time() - subagents.STALE - 5
+    os.utime(f, (old, old))  # counted out
+    os.utime(p, (old, old))
+    assert reports(h) == []  # but it said so a moment ago
+    h._conn.execute("UPDATE reports SET at = ?", (ago(herd_mod.WAIT_GRACE + 1),))
+    p.touch()
+    assert reports(h) == []  # and its conversation just changed: a sub-agent's word, waking it
+    os.utime(p, (old, old))
+    assert h.tick(sessions=[r for r in TEAM if r["name"] != "rd"])["reports"] == []  # not in the herd now
+    assert reports(h) == [("rd", "done", "nothing left to wait on")]
+    assert reports(h) == []
+    # Its ask is closed as for any taker that stopped: Emacs settles it.
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    h.settle(ask["id"], screen="")
+    assert h.get_ask(ask["id"])["reply"] == "Handed it on."
+
+
+def test_still_out_it_waits_on(home):
+    p = parent(home, started())
+    sub(home, "a6568", working())
+    h, _ = team(home, p)
+    h.report("rd", state="done", last="Handed it on.")
+    reports(h)
+    old = time.time() - subagents.STALE - 5
+    os.utime(p, (old, old))
+    h._conn.execute("UPDATE reports SET at = ?", (ago(herd_mod.WAIT_GRACE + 1),))
+    assert reports(h) == []
+
+
+def test_an_heir_is_not_waiting_on_the_old_ones_sub_agents(home, monkeypatch):
+    p = parent(home, started())
+    f = sub(home, "a6568", working())
+    h, _ = team(home, p)
+    h.report("rd", state="done", last="Handed it on.")
+    h.unlink("rd")  # relayed: a new CLI has its name
+    monkeypatch.setattr(herd_mod, "WAIT_GRACE", 0)
+    old = time.time() - subagents.STALE - 5
+    os.utime(f, (old, old))
+    assert reports(h) == []

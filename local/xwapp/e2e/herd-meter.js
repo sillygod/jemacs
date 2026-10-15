@@ -113,6 +113,21 @@ const METERS = {
                                                        note: r.querySelector(".mnote").textContent }));
       check(W("an agent at work: Switch held, and why"), busy.go && /It is working/.test(busy.note), busy);
       await tap(row(RD) + ' [data-act="a:model-cancel"]');
+      // Waiting on the sub-agents it handed work to: its box is free.
+      await show(herd(METERS, { [RD]: { state: "waiting", reason: "waiting on 4 sub-agents" } }));
+      await sleep(100);
+      await tap(row(RD) + " .mchip");
+      await sleep(100);
+      const waiting = await page.$eval(row(RD), (r) => {
+        const st = r.querySelector(".amain .st");
+        return { go: r.querySelector('[data-act="a:model-go"]').disabled, badge: st.textContent,
+                 colour: getComputedStyle(st).backgroundColor, edge: getComputedStyle(r).borderLeftColor };
+      });
+      check(W("waiting: a badge and colour of its own, and Switch open to it"),
+        !waiting.go && waiting.badge === "waiting" && waiting.colour === "rgb(57, 197, 207)" && waiting.edge === waiting.colour, waiting);
+      const tally = await page.$$eval('.pgroup[data-project="' + DP + '"] .phead .st', (l) => l.map((s) => s.textContent));
+      check(W("counted after those at work, before the idle"), JSON.stringify(tally) === '["1 blocked","1 waiting","1 idle"]', tally);
+      await tap(row(RD) + ' [data-act="a:model-cancel"]');
       // While it switches: no second switch.
       await show(herd(METERS, { [LEAD]: { switching: true } }));
       await sleep(100);
@@ -139,6 +154,17 @@ const METERS = {
       await sleep(100);
       sent = intents.filter((i) => i.op === "agent-model");
       check(W("switched from its column"), sent.length === 3 && sent[2].name === LEAD && sent[2].model === "Haiku", sent[2]);
+      // Its ask of qa answered, and it waiting on its sub-agents since.
+      const asked = { id: "k1", run: "k1", from: RD, to: QA, status: "answered", auto: false,
+                      created: Date.now() - 120e3, answered: Date.now() - 60e3, replyHead: "all green" };
+      await page.evaluate((h) => GM.renderHerd(h), Object.assign(herd(METERS, { [RD]: { state: "waiting" } }), { asks: [asked] }));
+      await sleep(150);
+      const top = await page.$eval('.rcol[data-name="' + RD + '"]', (c) => getComputedStyle(c).borderTopColor);
+      check(W("a waiting agent's column says so in its colour"), top === "rgb(57, 197, 207)", top);
+      const run = await page.$eval(".room .rrun", (r) => r.textContent);
+      check(W("and its run is not done: it is at work"), run.includes("answered; " + RD + " at work"), run);
+      await page.evaluate((h) => GM.renderHerd(h), herd(METERS));
+      await sleep(100);
 
       // ---- In its chat ----
       await tap('.room [data-act="a:room-view"][data-view="chat"]');
