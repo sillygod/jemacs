@@ -144,6 +144,10 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
      :transcript "~/.grok/sessions/*/%s/chat_history.jsonl"
+     ;; "⠴ Sleep 30s then print probe-done… 0.3s   24s ⇣27.3k [stop]":
+     ;; braille, then its [stop] button.  What it said ends at the
+     ;; scrollbar instead.
+     :spinner "\\`[[:blank:]]*[⠁-⣿][[:blank:]].*[[:blank:]]\\[stop\\][[:blank:]]*\\'"
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -156,9 +160,11 @@ made an unanchored `> \=' match the transcript.")
                   "Running"
                   "esc to interrupt"
                   "ctrl\\+c to interrupt"
-                  ;; grok's footer hint, present only while a turn runs.
-                  ;; Its spinner sits above a three-line input box, out
-                  ;; of `ghostherd-status-lines', so this is what counts.
+                  ;; grok's footer hint, present while a turn runs --
+                  ;; but not while it waits on a task of its own, when
+                  ;; there is nothing to cancel.  Its spinner, over its
+                  ;; task list and a three-line box, is out of
+                  ;; `ghostherd-status-lines': that is its `:spinner'.
                   "Ctrl\\+c:cancel"
                   "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"))
       (idle . ("^›[[:blank:]]*$"
@@ -225,11 +231,11 @@ Each entry is (KIND . PLIST) with keys:
                 agent that wrote \"permission\" is not asking for it.
                 Seen of claude and agy; grok's prompts not yet.
 :spinner        a regexp for the line the CLI draws above its input box
-                while it works, matched against that line alone: the
-                first one above the box that is not indented
-                (`ghostherd--spinner-line').  `working' wherever it sits,
-                however far a todo list under it pushes it up.  nil when
-                the kind has none.
+                while it works, asked of the lines from the box up to the
+                first that is not indented (`ghostherd--spinner-line').
+                `working' wherever it sits, however far a todo list or a
+                task list under it pushes it up.  nil when the kind has
+                none.
 :model-picker   (:models NAMES :efforts LEVELS): the CLI's `/model' picker,
                 which `ghostherd-switch-model' drives for this session
                 only.  NAMES pick a row by the words it begins with,
@@ -1075,10 +1081,11 @@ Six is the tallest status area observed, not a margin on it:
 
 Both directions cost something, which is why this is a setting.  Too
 many lines reads scrollback as status, the bug above.  Too few misses a
-spinner drawn above a tall box -- survivable here, because every kind
-also prints a hint in the footer, one line from the bottom.  grok
-depends on it: its spinner sits seven lines up, above the input box,
-and only `Ctrl+c:cancel' in the footer is inside the region.
+spinner drawn above a tall box -- once survivable, since every kind
+also prints a hint in the footer, one line from the bottom.  Not
+always: claude cuts it off a narrow footer, and grok drops its
+`Ctrl+c:cancel' while it waits on a task.  A kind's `:spinner' finds
+the spinner itself, above the box, however far up.
 
 Anchoring the patterns cannot replace this: claude prints its hint
 mid-line, in the middle of that footer."
@@ -1248,27 +1255,58 @@ above the box, wherever that sits."
         (and (ghostherd--spinning-p text spinner) (cons 'working spinner))
         (try 'idle text))))
 
-(defun ghostherd--spinner-line (text)
-  "The line TEXT would draw its spinner on: the first above the input box
-at its foot that is not blank or indented -- under a spinner sit only
-indented lines, a tip or a todo list, and a right-aligned banner.  Nil
-when no box is drawn at the foot.
+(defconst ghostherd--spinner-reach 30
+  "Lines above its input box a spinner is looked for in, at most: claude
+lists its todos under its spinner, grok its tasks.")
 
-Only a `:spinner' pattern is asked of it.  Idle, this is the first line
-of what the agent said last, and its words are not evidence."
+(defconst ghostherd--box-prompt-re
+  "\\`\\(?:[[:blank:]]*[│┃][[:blank:]]*\\)?[❯›>]\\(?:[[:blank:]]\\|\\'\\)"
+  "An input box's first line: the prompt sign at its start, as claude draws
+it, or just inside a frame, as grok does.")
+
+(defun ghostherd--box-top (lines)
+  "Index in LINES of the top edge of the input box at their foot, or nil:
+a rule, and under it the prompt sign -- not a menu's first choice, which
+carries the sign before its number.  Looked for among the last 14 lines
+that are not padding, room for a box of several lines and a footer."
+  (let ((end (1- (length lines))))
+    (while (and (>= end 0) (string-blank-p (aref lines end)))
+      (setq end (1- end)))
+    (cl-loop for i downfrom end to (max 1 (- end 14))
+             for line = (aref lines i)
+             when (and (string-match-p ghostherd--box-prompt-re line)
+                       (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))
+                       (string-match-p ghostherd--input-rule-re (aref lines (1- i))))
+             return (1- i))))
+
+(defun ghostherd--spinner-line (text spinner)
+  "The line above TEXT's input box that SPINNER, a kind's `:spinner',
+matches; nil when none does, or no box is drawn at the foot.
+
+Read upward from the box.  What sits under a spinner is indented --
+claude's tip, its todo list, the right-aligned update banner; grok's
+task list -- so the search ends at the first line that is not, and
+`ghostherd--spinner-reach' lines up at most.  Idle, that line is the
+first of what the agent said last, and its words are not evidence: a
+spinner's shape is drawn by no sentence."
   (let* ((lines (vconcat (split-string (or text "") "\n")))
-         (at (ghostherd--foot-at lines)))
-    (when at
-      (cl-loop for i downfrom (- (car at) 2) to 0
-               for line = (aref lines i)
-               unless (or (string-blank-p line) (string-match-p "\\`[[:blank:]]" line))
-               return line))))
+         (top (ghostherd--box-top lines)))
+    (when (and top spinner)
+      (catch 'found
+        (let ((i (1- top)))
+          (while (>= i (max 0 (- top ghostherd--spinner-reach)))
+            (let ((line (aref lines i)))
+              (unless (string-blank-p line)
+                (when (ghostherd--rule-matches-p spinner line)
+                  (throw 'found line))
+                (unless (string-match-p "\\`[[:blank:]]" line)
+                  (throw 'found nil))))
+            (setq i (1- i))))))))
 
 (defun ghostherd--spinning-p (text spinner)
-  "Non-nil when TEXT's spinner line matches SPINNER, a kind's `:spinner'."
-  (when-let* ((spinner)
-              (line (ghostherd--spinner-line text)))
-    (ghostherd--rule-matches-p spinner line)))
+  "Non-nil when SPINNER, a kind's `:spinner', matches the line TEXT draws
+its spinner on."
+  (and (ghostherd--spinner-line text spinner) t))
 
 (defun ghostherd--progress-fresh-p (session)
   "Return non-nil if SESSION reported OSC progress recently enough to trust.
@@ -1419,7 +1457,7 @@ coincidence further up the scrollback."
     (or (ghostherd--matched-line haystack (cdr hit))
         ;; A spinner, matched on its own line above the box.
         (and (eq (car-safe hit) 'working)
-             (when-let* ((line (ghostherd--spinner-line text)))
+             (when-let* ((line (ghostherd--spinner-line text (cdr hit))))
                (ghostherd--matched-line line (cdr hit))))
         (cdr hit))))
 

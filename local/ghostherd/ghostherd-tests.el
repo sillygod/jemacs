@@ -870,7 +870,7 @@ read as done mid-turn, one quoting its spinner as the reason."
                    "✽ Bloviating… (37s · ↓ 3.3k tokens)"))
     (should (member (cons 'working spinner) (ghostherd--match-all-rules narrow rules t spinner)))
     ;; However far up its todo list pushes it.
-    (should (equal (ghostherd--spinner-line ghostherd-tests--claude-todo-working)
+    (should (equal (ghostherd--spinner-line ghostherd-tests--claude-todo-working spinner)
                    "✶ Flummoxing… (1h 2m · still thinking with xhigh effort)"))
     (should (eq (car (ghostherd--match-rules ghostherd-tests--claude-todo-working rules t spinner))
                 'working))
@@ -887,10 +887,17 @@ read as done mid-turn, one quoting its spinner as the reason."
                      "⏺ Bloviating… (37s is what it said, verb and all)"
                      "⏺ It read ✽ Bloviating… (37s, mid-line"
                      "⏺ The spinner read:\n  ✽ Bloviating… (37s · ↓ 3.3k tokens)\n  and nothing matched it."
-                     "Bloviating… (37s, said plainly"))
+                     "Bloviating… (37s, said plainly"
+                     ;; Above what it said last is the conversation.
+                     "✽ Bloviating… (37s · ↓ 3.3k tokens)\n⏺ Done: the tests pass."))
       (should-not (eq (car (ghostherd--match-rules (funcall with-box above) rules t spinner)) 'working)))
     ;; No box at its foot -- a menu: nothing above it to read.
-    (should-not (ghostherd--spinner-line (concat "✽ Bloviating… (37s)\n" (make-string 52 ?─) "\n❯ 1. Yes\n  2. No\n")))
+    (should-not (ghostherd--spinner-line (concat "✽ Bloviating… (37s)\n" (make-string 52 ?─) "\n❯ 1. Yes\n  2. No\n")
+                                         spinner))
+    ;; Nor an old prompt over one: a box opens under a rule.
+    (should-not (ghostherd--spinning-p
+                 "✽ Bloviating… (37s · ↓ 3.3k tokens)\n\n> run the tests\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n"
+                 spinner))
     ;; Nor for a kind without one.
     (should-not (ghostherd--spinning-p narrow nil))))
 
@@ -936,6 +943,68 @@ outside the status area -- so only the footer can say `working'.")
    "\n"
    "  Shift+Tab:mode  │  Ctrl+x:shortcuts\n")
   "The same grok after the turn ended: the footer drops `Ctrl+c:cancel'.")
+
+(defconst ghostherd-tests--grok-waiting
+  (concat
+   "     ◈ Read 1 skill                                                              █\n"
+   "                                                                                 █\n"
+   "     The command is a 30-second sleep, so I'll start it in the         4:32 PM   █\n"
+   "     background and then wait on that task.                                      █\n"
+   "                                                                                 █\n"
+   "     ◆ Task started: Sleep 30s then print probe-done                             █\n"
+   "                                                                                 █\n"
+   "\n"
+   "   ⠴ Sleep 30s then print probe-done… 0.3s                     24s ⇣27.3k [stop]\n"
+   "\n"
+   "   ▾ Tasks 1\n"
+   "   : Run Sleep 30s then print probe-done                                      3s\n"
+   "\n"
+   "  ╭────────────────────────────────────────────────────────────────────────────╮\n"
+   "  │ ❯                                                                          │\n"
+   "  ╰──────────────────────────────────────── Grok 4.7 (xhigh) · always-approve ─╯\n"
+   "\n"
+   "  Shift+Tab:mode  │  Ctrl+x:shortcuts\n")
+  "grok waiting on a command it sent to the background, captured from a
+grok 1.0.50 pane (2026-10-15): `Ctrl+c:cancel' gone from its footer, its
+spinner eleven lines up, over its task list.")
+
+(ert-deftest ghostherd-test-grok-waiting-on-a-task-is-working ()
+  "Read idle for as long as it waited on a task of its own -- twice on
+10-12, two minutes once: its footer drops `Ctrl+c:cancel' then.  Its
+spinner, braille to its [stop] button, says so wherever it sits."
+  (let* ((spec (ghostherd--spec 'grok))
+         (rules (plist-get spec :screen-rules))
+         (spinner (plist-get spec :spinner))
+         (waiting ghostherd-tests--grok-waiting))
+    (should-not (eq (car (ghostherd--match-rules waiting rules)) 'working))
+    (should (equal (ghostherd--match-rules waiting rules nil spinner) (cons 'working spinner)))
+    (should (equal (ghostherd--rule-reason waiting (cons 'working spinner))
+                   "⠴ Sleep 30s then print probe-done… 0.3s 24s ⇣27.3k [stop]"))
+    ;; Five more tasks: still found.
+    (should (eq (car (ghostherd--match-rules
+                      (replace-regexp-in-string
+                       "   : Run Sleep 30s then print probe-done +3s\n"
+                       (lambda (m) (apply #'concat (make-list 6 m))) waiting)
+                      rules nil spinner))
+                'working))
+    ;; Its spinner seven lines up, with no tasks.
+    (should (ghostherd--spinning-p ghostherd-tests--grok-working spinner))
+    ;; Thirty lines up at most: a screen is not read to its top.
+    (should-not (ghostherd--spinning-p
+                 (replace-regexp-in-string
+                  "   : Run Sleep 30s then print probe-done +3s\n"
+                  (lambda (m) (apply #'concat (make-list 30 m))) waiting)
+                 spinner))
+    ;; Its turn over; a line of what it said that reads like it ends at
+    ;; the scrollbar; the box a menu's.
+    (should-not (ghostherd--spinning-p ghostherd-tests--grok-idle spinner))
+    (should-not (ghostherd--spinning-p
+                 (replace-regexp-in-string "   ⠴ Sleep 30s.*\\[stop\\]\n"
+                                           "     ⠴ it showed … 24s ⇣27.3k [stop]                       █\n"
+                                           waiting)
+                 spinner))
+    (should-not (ghostherd--spinning-p
+                 (replace-regexp-in-string "  │ ❯ " "  │ 1. Yes" waiting) spinner))))
 
 (ert-deftest ghostherd-test-grok-footer-decides-working ()
   "Reported idle mid-turn: the spinner fell outside the status area and

@@ -762,6 +762,14 @@ builds, one tests, back and forth --- as one conversation, on the page.
   above its input box, however far a todo list pushes it up.  Twelve
   turns read =done= mid-turn since 10-01, minutes each; one quoted the
   spinner as its reason.  11 guards broken on purpose, each caught
+- [X] grok read idle while it waited on a task of its own
+  (=get_command_or_subagent_output=): its footer drops =Ctrl+c:cancel=
+  then, and its spinner sits over its task list, eleven lines up.
+  Reproduced on a throwaway grok 1.0.50 that sent =sleep 30= to the
+  background: 24s working, then nothing matched.  Its =:spinner= is
+  braille to its =[stop]= button, asked of the lines from its framed
+  box up to the first not indented, thirty at most.  9 guards broken
+  on purpose, each caught
 
 * Phase 3.19 — An image in a prompt  *(this tree)*
 

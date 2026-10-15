@@ -828,6 +828,14 @@ can be: the first unindented line above the input box.  That keeps the
 property the six lines bought: prose is indented or opens at =⏺=, so
 nothing the agent writes can be its spinner.
 
+grok lost its footer hint another way: =Ctrl+c:cancel= goes while it
+waits on a command it sent to the background, there being nothing to
+cancel.  Its spinner stays, over a task list as tall as its tasks, so
+the one line becomes the stretch from the box up to the first line
+that is not indented --- grok indents everything, so thirty lines at
+most --- and its shape, braille to a =[stop]= button, is what no line
+of its conversation can have: those end at its scrollbar.
+
 What did need a rule is =done=: it means *finished while you were not
 looking*, and the promotion path carried that condition in its own
 =if=. A report can say =done= outright, so the rule moved out to where

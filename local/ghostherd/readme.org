@@ -872,11 +872,10 @@ The bottom six lines are where all three TUIs draw live status --- the
 spinner, the input box, and the footer beneath it --- and nothing else.
 Both directions cost something, which is why it is a setting: more lines
 reads scrollback as status; fewer misses a spinner drawn above a tall
-box, survivable only because every kind repeats the hint in the footer
-one line from the bottom (grok's spinner sits seven lines up, so its
-=Ctrl+c:cancel= footer hint is the only one inside the region). =blocked= and =idle= still read the
-whole tail --- a permission box can be tall, and =idle= is the fallback
-rather than positive evidence.
+box, survivable only while every kind repeats the hint in the footer
+one line from the bottom --- which, below, they do not always.
+=blocked= and =idle= still read the whole tail --- a permission box can
+be tall, and =idle= is the fallback rather than positive evidence.
 
 agy's rules are additionally anchored to the start of a line, which is
 where a TUI draws a status line and prose quoting one does not. claude
@@ -899,6 +898,17 @@ indented --- under a spinner sit only indented lines, a tip, a todo
 list, the right-aligned update banner --- however far up that is.  Idle,
 that line is the first of what the agent last said, which starts at
 =⏺=; and past tense, =✻ Baked for 1s=, is not the shape.
+
+grok drops its footer's =Ctrl+c:cancel= while it waits on a task of its
+own --- =get_command_or_subagent_output=, a command it sent to the
+background --- since there is nothing to cancel then; it read idle for
+as long as it waited, twice in a day, two minutes once.  Its spinner
+stays, eleven lines up, over its task list and a framed box:
+=⠴ Sleep 30s then print probe-done… 0.3s   24s ⇣27.3k [stop]=.  Its
+=:spinner= is that shape, braille then its =[stop]= button; what it
+said ends at its scrollbar instead.  The lines asked run from the box
+up to the first that is not indented, thirty at most: grok indents
+everything, claude only what sits under its spinner.
 
 A kind's =working= rules have to cover *every* indicator that CLI shows
 while busy. These TUIs draw their input box the whole time, so the
