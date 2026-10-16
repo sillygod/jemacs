@@ -259,3 +259,35 @@ def test_herd_tick_takes_pushes_over_rpc(tmp_path: Path, monkeypatch):
         assert "pushes must be a list" in resp.json()["error"]["message"]
     reset_engine()
     reset_herd()
+
+
+def test_list_sessions_orders_by_state_rank_then_recency(tmp_path: Path):
+    """list_sessions matches the web page's order: state rank (blocked,
+    working, starting, waiting, done, idle, dead), then most recently
+    updated (`since' newest first), breaking ties by name."""
+    h = _store(tmp_path)
+    h.tick(
+        sessions=[
+            {"name": "z-idle-old", "state": "idle", "since": 1000, "project": "/p"},
+            {"name": "z-idle-new", "state": "idle", "since": 5000, "project": "/p"},
+            {"name": "a-dead", "state": "dead", "since": 9000, "project": "/p"},
+            {"name": "m-working", "state": "working", "since": 2000, "project": "/p"},
+            {"name": "b-blocked", "state": "blocked", "since": 500, "project": "/p"},
+            {"name": "c-waiting", "state": "waiting", "since": 3000, "project": "/p"},
+            {"name": "d-done", "state": "done", "since": 4000, "project": "/p"},
+        ],
+        ack_ids=[],
+    )
+    names = [s["name"] for s in h.list_sessions()["sessions"]]
+    assert names == [
+        "b-blocked",
+        "m-working",
+        "c-waiting",
+        "d-done",
+        "z-idle-new",
+        "z-idle-old",
+        "a-dead",
+    ]
+    assert [s["name"] for s in h.list_sessions(project="/p")["sessions"]] == names
+    reset_herd()
+

@@ -46,6 +46,18 @@ ASK_CLOSED = ("answered", "failed", "cancelled")
 # waiting on the human.  A state not listed (dead) never takes one.
 _TAKER_RANK = {"idle": 0, "done": 0, "working": 1, "starting": 1, "waiting": 1, "blocked": 2}
 
+# How list_sessions orders the herd, matching the web page's RANK:
+# the state that needs you first, then the most recently updated.
+_STATE_RANK = {
+    "blocked": 0,
+    "working": 1,
+    "starting": 2,
+    "waiting": 3,
+    "done": 4,
+    "idle": 5,
+    "dead": 6,
+}
+
 # How many asks may wait on one another, lead to rd to qa: one may be
 # asked while a third of its chain waits on it, and asks no further.
 ASK_DEPTH = 3
@@ -283,6 +295,8 @@ class HerdStore:
         # page's secret: for the bot to link to.
         if "room" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN room TEXT")
+        if "since" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN since REAL")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -317,19 +331,25 @@ class HerdStore:
             if project:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason, role
+                    SELECT name, kind, state, notes, project, reason, role, since
                     FROM snapshot WHERE project = ?
-                    ORDER BY name
                     """,
                     (project,),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason, role
-                    FROM snapshot ORDER BY name
+                    SELECT name, kind, state, notes, project, reason, role, since
+                    FROM snapshot
                     """
                 ).fetchall()
+        rows.sort(
+            key=lambda r: (
+                _STATE_RANK.get(r[2] or "", 9),
+                -(float(r[7]) if isinstance(r[7], (int, float)) else 0.0),
+                r[0],
+            )
+        )
         return {
             "sessions": [
                 {
@@ -1197,11 +1217,17 @@ class HerdStore:
                 name = str(row.get("name") or "").strip()
                 if not name:
                     continue
+                raw_since = row.get("since")
+                since = (
+                    float(raw_since)
+                    if isinstance(raw_since, (int, float)) and not isinstance(raw_since, bool)
+                    else 0.0
+                )
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason, screen, role, prompt, room)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen, role, prompt, room, since)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -1214,6 +1240,7 @@ class HerdStore:
                         str(row.get("role") or ""),
                         json.dumps(row["prompt"]) if isinstance(row.get("prompt"), dict) else None,
                         str(row.get("room") or ""),
+                        since,
                     ),
                 )
                 self._upsert_alias(name)
