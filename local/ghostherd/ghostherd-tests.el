@@ -5617,13 +5617,15 @@ was reads as current."
     (should (= (plist-get (nth 1 wins) :remaining) 88.0))))
 
 (ert-deftest ghostherd-test-usage-parse-agy-groups-names-each-group ()
-  "Two groups each with a `wk' read as two identical rows unless named."
+  "Each group's rows named from it, Gemini 4 Argon apart from the rest of
+Gemini: two `wk' rows under one `gem' would otherwise read as one."
   (let* ((raw (json-parse-string
-               "{\"groups\":[{\"displayName\":\"Gemini Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":0.993},{\"window\":\"5h\",\"remainingFraction\":1}]},{\"displayName\":\"Third-Party Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":1},{\"window\":\"5h\",\"remainingFraction\":1}]}]}"
+               "{\"groups\":[{\"displayName\":\"Gemini Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":0.993},{\"window\":\"5h\",\"remainingFraction\":1}]},{\"displayName\":\"Third-Party Models\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":1},{\"window\":\"5h\",\"remainingFraction\":1}]},{\"displayName\":\"Gemini 4 Argon\",\"buckets\":[{\"window\":\"weekly\",\"remainingFraction\":0}]}]}"
                :object-type 'alist :array-type 'list :null-object nil))
          (wins (ghostherd-usage--parse-agy-groups raw)))
     (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
-                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h")))))
+                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h" "g4-wk")))
+    (should (= (plist-get (car (last wins)) :remaining) 0.0))))
 
 (ert-deftest ghostherd-test-herd-page-usage-is-rounded ()
   "100 - 99.3 in floating point is 0.7000000000000028, and the page
@@ -5643,27 +5645,73 @@ printed every digit of it across the next column."
     (should (= (plist-get (nth 0 wins) :remaining) 80.0))
     (should (= (plist-get (nth 1 wins) :remaining) 55.0))))
 
-(ert-deftest ghostherd-test-usage-parse-agy-usage-screen ()
-  (let* ((text "GEMINI MODELS
-Weekly Limit Remaining
-98.49%]
-98% remaining · Refreshes in 117h 48m
-Five Hour Limit Remaining
-96.49%]
-96% remaining · Refreshes in 2h 20m
-CLAUDE AND GPT MODELS
-Weekly Limit Remaining
-Quota available
-Five Hour Limit Remaining
-Quota available")
-         (wins (ghostherd-usage--parse-agy-usage-screen text)))
-    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
-                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h")))
-    (should (= (plist-get (nth 0 wins) :remaining) 98))
-    (should (= (plist-get (nth 1 wins) :remaining) 96))
-    (should (= (plist-get (nth 2 wins) :remaining) 100))
-    (should (= (plist-get (nth 3 wins) :remaining) 100))))
+(defconst ghostherd-tests--agy-usage-14-screen
+  "└ Models & Quota
 
+  Account: sillygodprodigy@gmail.com
+
+GEMINI MODELS
+  Models within this group: Gemini Flash, Gemini Pro
+
+  Weekly Limit Remaining
+    [██████] 100.00%
+    Quota available
+
+  Five Hour Limit Remaining
+    [██████] 100.00%
+    Quota available
+
+
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+
+  Weekly Limit Remaining
+    [██████] 100.00%
+    Quota available
+
+  Five Hour Limit Remaining
+    [██████] 100.00%
+    Quota available
+
+
+GEMINI 4 ARGON
+  For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) i
+
+  Gemini 4 Argon Weekly Limit
+    [░░░░░░] 0.00%
+    Refreshes in 163h 41m
+
+
+  │Within each group, models share a weekly limit and a 5-hour limit. Quota is
+  │consumed proportionally to the cost of the tokens. Thus, limits will last
+  │longer with shorter tasks or using more cost-effective models. The 5-hour
+  │limit smooths out aggregate demand to fairly distribute global capacity
+  │across all users, while your weekly limit is tied directly to your individual
+  │tier.
+
+  ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close\n"
+  "agy 1.4.0's /usage panel, captured from a scratch agy: three groups --
+Gemini, Claude/GPT, and a separate Gemini 4 Argon whose weekly quota is
+spent (0%).")
+
+(ert-deftest ghostherd-test-usage-parse-agy-usage-screen ()
+  "agy 1.4.0's panel: a row per group's limit, labelled from its group so
+Gemini 4 Argon is its own `g4-wk' (and spent, 0%), not dropped or stuck
+onto `gem'; the Gemini and Claude/GPT rows still read."
+  (let ((wins (ghostherd-usage--parse-agy-usage-screen ghostherd-tests--agy-usage-14-screen)))
+    (should (equal (mapcar (lambda (w) (plist-get w :label)) wins)
+                   '("gem-wk" "gem-5h" "3p-wk" "3p-5h" "g4-wk")))
+    (should (= (plist-get (nth 0 wins) :remaining) 100.0))
+    (should (= (plist-get (nth 2 wins) :remaining) 100.0))
+    (should (= (plist-get (nth 4 wins) :remaining) 0.0))
+    (should (= (ghostherd-usage--used (plist-get (nth 4 wins) :remaining)) 100.0))))
+
+(ert-deftest ghostherd-test-usage-agy-group-prefix ()
+  "The group a row belongs to: Gemini 4 Argon apart from the rest of Gemini."
+  (should (equal (ghostherd-usage--agy-group-prefix "GEMINI MODELS") "gem"))
+  (should (equal (ghostherd-usage--agy-group-prefix "GEMINI 4 ARGON") "g4"))
+  (should (equal (ghostherd-usage--agy-group-prefix "Gemini 4 Argon") "g4"))
+  (should (equal (ghostherd-usage--agy-group-prefix "CLAUDE AND GPT MODELS") "3p")))
 (ert-deftest ghostherd-test-usage-used-from-remaining ()
   (should (= (ghostherd-usage--used 78.0) 22.0))
   (should (= (ghostherd-usage--used 0) 100.0))

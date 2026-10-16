@@ -162,11 +162,16 @@ yet, as every new week starts."
             (ghostherd-usage--parse-time (ghostherd-usage--alist w 'resets_at)))))))
 
 (defun ghostherd-usage--agy-group-prefix (name)
-  "Short name for agy quota group NAME, as the `/usage' panel's labels go."
-  (cond ((string-match-p "gemini" (downcase name)) "gem")
-        ((string-match-p "third\\|party\\|claude\\|anthropic\\|openai\\|gpt" (downcase name)) "3p")
-        (t (let ((word (car (split-string (downcase name) "[^a-z0-9]+" t))))
-             (if word (substring word 0 (min 4 (length word))) "grp")))))
+  "Short name for agy quota group NAME, as the `/usage' panel's labels go.
+Gemini 4 Argon is its own group, kept apart from the other Gemini models
+so it is a row of its own rather than a second `gem' that collides."
+  (let ((n (downcase name)))
+    (cond ((or (string-match-p "argon" n)
+               (string-match-p "gemini[^a-z0-9]*4\\b" n)) "g4")
+          ((string-match-p "gemini" n) "gem")
+          ((string-match-p "third\\|party\\|claude\\|anthropic\\|openai\\|gpt" n) "3p")
+          (t (let ((word (car (split-string n "[^a-z0-9]+" t))))
+               (if word (substring word 0 (min 4 (length word))) "grp"))))))
 
 (defun ghostherd-usage--parse-agy-groups (raw)
   "Parse retrieveUserQuotaSummary.  remainingFraction is remaining 0–1.
@@ -204,24 +209,51 @@ cannot be told apart."
                     out))))))
     (nreverse out)))
 
+(defconst ghostherd-usage--agy-header-re
+  "\\`[A-Z][A-Z0-9 &/-]*[A-Z0-9]\\'"
+  "A `/usage' group header: an all-caps line like \"GEMINI 4 ARGON\".")
+
+(defun ghostherd-usage--agy-screen-remaining (lines)
+  "The remaining percent of the window whose header LINES follow -- a
+bar's `N.NN%', or 100 for a `Quota available' with no bar -- read before
+the next window or group.  Nil when none is found."
+  (catch 'done
+    (dolist (l lines)
+      (let ((s (string-trim l)))
+        (cond
+         ;; The next window, or the next group: this window had no number.
+         ((string-match-p "Limit\\b" s) (throw 'done nil))
+         ((and (string-match-p ghostherd-usage--agy-header-re s)
+               (not (string-match-p "QUOTA\\|REMAINING" s)))
+          (throw 'done nil))
+         ((string-match "\\([0-9]+\\(?:\\.[0-9]+\\)?\\)%" s)
+          (throw 'done (string-to-number (match-string 1 s))))
+         ((string-match-p "Quota available" s) (throw 'done 100.0)))))
+    nil))
+
 (defun ghostherd-usage--parse-agy-usage-screen (text)
-  "Parse the `/usage` TUI.  Printed percents are remaining, not used."
-  (when (and text (string-match-p "Limit Remaining\\|Quota available" text))
-    (let ((vals nil)
-          (pos 0)
-          (labels '("gem-wk" "gem-5h" "3p-wk" "3p-5h")))
-      (while (string-match
-              "\\([0-9]+\\(?:\\.[0-9]+\\)?\\)% remaining\\|Quota available"
-              text pos)
-        (push (if (match-beginning 1)
-                  (string-to-number (match-string 1 text))
-                100.0)
-              vals)
-        (setq pos (match-end 0)))
-      (setq vals (nreverse vals))
-      (cl-mapcar #'ghostherd-usage--window
-                 labels
-                 vals))))
+  "Parse the `/usage' panel into one window per group's limit, labelled
+from the group it sits under -- `gem-wk', `3p-5h', `g4-wk' -- so a group
+the panel adds (Gemini 4 Argon) is a row of its own, not dropped or stuck
+onto the wrong one.  Printed percents are remaining, not used."
+  (when (and text (string-match-p "Limit Remaining\\|Limit\\b\\|Quota available" text))
+    (let ((lines (split-string text "\n"))
+          (prefix nil) (out nil))
+      (while lines
+        (let ((s (string-trim (car lines))))
+          (cond
+           ;; A group header names the rows under it until the next header.
+           ((and (string-match-p ghostherd-usage--agy-header-re s)
+                 (not (string-match-p "LIMIT\\|REMAINING\\|QUOTA" s)))
+            (setq prefix (ghostherd-usage--agy-group-prefix s)))
+           ;; A window: its span, then its remaining on a line soon after.
+           ((and prefix (string-match-p "\\(Weekly\\|Five[ -]?Hour\\|5[ -]?Hour\\) Limit" s))
+            (let ((span (if (string-match-p "Weekly" s) "wk" "5h"))
+                  (rem (ghostherd-usage--agy-screen-remaining (cdr lines))))
+              (when rem
+                (push (ghostherd-usage--window (concat prefix "-" span) rem nil) out))))))
+        (setq lines (cdr lines)))
+      (nreverse out))))
 
 (defun ghostherd-usage--put (kind windows &optional err fetched)
   "Record KIND's WINDOWS, ERR, and FETCHED, when they were read (now)."
