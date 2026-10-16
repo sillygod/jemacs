@@ -66,10 +66,16 @@ def home(tmp_path, monkeypatch):
     conv._cache.clear()
     subagents._subs.clear()
     subagents._parents.clear()
+    subagents._agy_subs.clear()
+    subagents._agy_parents.clear()
+    subagents._grok_parents.clear()
     yield tmp_path
     conv._cache.clear()
     subagents._subs.clear()
     subagents._parents.clear()
+    subagents._agy_subs.clear()
+    subagents._agy_parents.clear()
+    subagents._grok_parents.clear()
 
 
 def lines(records):
@@ -643,3 +649,352 @@ def test_an_heir_is_not_waiting_on_the_old_ones_sub_agents(home, monkeypatch):
     old = time.time() - subagents.STALE - 5
     os.utime(f, (old, old))
     assert reports(h) == []
+
+
+# ---- Agy and Grok sub-agents and background tasks --------------------------
+
+
+def agy_tx(home, cid, records):
+    p = home / ".gemini" / "antigravity-cli" / "brain" / cid / ".system_generated" / "logs" / "transcript.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(lines(records))
+    return p
+
+
+def test_agy_subagents_live_handoff_kill_and_stale(home):
+    t0 = ago_at(30)
+    t1 = ago_at(25)
+    t2 = ago_at(20)
+    p = agy_tx(
+        home,
+        "parent-1",
+        [
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "source": "MODEL",
+                "created_at": t0,
+                "content": "Spawning two researchers.",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": "invoke_subagent",
+                        "args": {
+                            "Subagents": json.dumps(
+                                [
+                                    {"TypeName": "research", "Role": "Explore importers", "Prompt": "check agy.py"},
+                                    {"TypeName": "self", "Role": "Audit tests", "Prompt": "check tests"},
+                                ]
+                            )
+                        },
+                    }
+                ],
+            },
+            {
+                "step_index": 2,
+                "type": "INVOKE_SUBAGENT",
+                "source": "MODEL",
+                "created_at": t0,
+                "content": '[{"conversationId": "sub-1"}, {"conversationId": "sub-2"}]',
+            },
+        ],
+    )
+    s1 = agy_tx(
+        home,
+        "sub-1",
+        [
+            {"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": t0, "content": "check agy.py"},
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "source": "MODEL",
+                "created_at": t1,
+                "input_tokens": 1200,
+                "cache_read_tokens": 300,
+                "content": "Reading agy.py.",
+                "tool_calls": [
+                    {
+                        "id": "x1",
+                        "name": "view_file",
+                        "args": {"AbsolutePath": json.dumps("/x/agy.py"), "toolSummary": json.dumps("View agy.py")},
+                    }
+                ],
+            },
+        ],
+    )
+    s2 = agy_tx(
+        home,
+        "sub-2",
+        [
+            {"step_index": 0, "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": t0, "content": "check tests"},
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "source": "MODEL",
+                "created_at": t2,
+                "content": "Running pytest.",
+                "tool_calls": [
+                    {
+                        "id": "x2",
+                        "name": "run_command",
+                        "args": {"CommandLine": json.dumps("pytest -q")},
+                    }
+                ],
+            },
+        ],
+    )
+    got = subagents.live(str(p))
+    assert got["subs"] == [
+        {
+            "id": "sub-1",
+            "who": "research",
+            "title": "Explore importers",
+            "started": t0,
+            "tools": 1,
+            "tokens": 1500,
+            "doing": "view_file · View agy.py",
+        },
+        {
+            "id": "sub-2",
+            "who": "self",
+            "title": "Audit tests",
+            "started": t0,
+            "tools": 1,
+            "tokens": None,
+            "doing": "run_command · pytest -q",
+        },
+    ]
+    assert set(got["watch"]) == {str(s1), str(s2)}
+
+    # sub-1 hands its report back via send_message -> no longer running.
+    with s1.open("a") as f:
+        f.write(
+            lines(
+                [
+                    {
+                        "step_index": 2,
+                        "type": "PLANNER_RESPONSE",
+                        "source": "MODEL",
+                        "created_at": ago_at(15),
+                        "content": "Done.",
+                        "tool_calls": [{"id": "x3", "name": "send_message", "args": {"Recipient": '"parent-1"', "Message": '"ok"'}}],
+                    }
+                ]
+            )
+        )
+    assert [s["id"] for s in subagents.live(str(p))["subs"]] == ["sub-2"]
+
+    # Parent kills sub-2 via manage_subagents -> no longer running.
+    with p.open("a") as f:
+        f.write(
+            lines(
+                [
+                    {
+                        "step_index": 3,
+                        "type": "PLANNER_RESPONSE",
+                        "source": "MODEL",
+                        "created_at": ago_at(10),
+                        "content": "Cancel sub-2.",
+                        "tool_calls": [
+                            {
+                                "id": "c2",
+                                "name": "manage_subagents",
+                                "args": {"Action": '"kill"', "ConversationIds": '["sub-2"]'},
+                            }
+                        ],
+                    }
+                ]
+            )
+        )
+    assert subagents.live(str(p))["subs"] == []
+
+
+def test_agy_background_tasks_termination_and_staleness(home):
+    t0 = ago_at(40)
+    t1 = ago_at(30)
+    p = agy_tx(
+        home,
+        "parent-bg",
+        [
+            {
+                "step_index": 1,
+                "type": "RUN_COMMAND",
+                "source": "MODEL",
+                "created_at": t0,
+                "content": "Tool is running as a background task with task id: parent-bg/task-1\n",
+            },
+            {
+                "step_index": 2,
+                "type": "GENERIC",
+                "source": "MODEL",
+                "created_at": t1,
+                "content": (
+                    "Tool is running as a background task with task id: parent-bg/timer-2\n"
+                    "Task Description: Timer: 60s (condition: any)\n"
+                ),
+            },
+        ],
+    )
+    assert [(t["id"], t["kind"]) for t in subagents.tasks(str(p))] == [
+        ("parent-bg/task-1", "shell"),
+        ("parent-bg/timer-2", "monitor"),
+    ]
+
+    # Task-1 finishes via SYSTEM_MESSAGE notification.
+    with p.open("a") as f:
+        f.write(
+            lines(
+                [
+                    {
+                        "step_index": 3,
+                        "type": "SYSTEM_MESSAGE",
+                        "source": "SYSTEM",
+                        "created_at": ago_at(20),
+                        "content": '[Message] sender=parent-bg/task-1 content=Task id "parent-bg/task-1" finished',
+                    }
+                ]
+            )
+        )
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["parent-bg/timer-2"]
+
+    # User interrupts turn: "All your subagents and background tasks have been terminated."
+    with p.open("a") as f:
+        f.write(
+            lines(
+                [
+                    {
+                        "step_index": 4,
+                        "type": "SYSTEM_MESSAGE",
+                        "source": "SYSTEM",
+                        "created_at": ago_at(10),
+                        "content": "All your subagents and background tasks have been terminated.",
+                    }
+                ]
+            )
+        )
+    assert subagents.tasks(str(p)) == []
+
+    # A task started more than STALE seconds ago is never waited on.
+    p_stale = agy_tx(
+        home,
+        "parent-stale",
+        [
+            {
+                "step_index": 1,
+                "type": "RUN_COMMAND",
+                "source": "MODEL",
+                "created_at": ago_at(subagents.STALE + 10),
+                "content": "Tool is running as a background task with task id: parent-stale/task-old\n",
+            }
+        ],
+    )
+    assert subagents.tasks(str(p_stale)) == []
+
+
+def test_grok_tasks_and_subagents_lifecycle_and_staleness(home):
+    g = home / ".grok" / "sessions" / "proj" / "s1" / "chat_history.jsonl"
+    g.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {
+            "type": "assistant",
+            "content": "Starting background work.",
+            "tool_calls": [
+                {
+                    "id": "call_sh",
+                    "name": "run_terminal_command",
+                    "arguments": json.dumps({"command": "pytest -q", "run_in_background": True}),
+                },
+                {
+                    "id": "call_mon",
+                    "name": "monitor_background",
+                    "arguments": json.dumps({"command": "watch_build", "description": "Watch build"}),
+                },
+                {
+                    "id": "call_sub",
+                    "name": "spawn_subagent",
+                    "arguments": json.dumps(
+                        {"subagent_type": "research", "description": "Audit Grok tools", "prompt": "inspect tools"}
+                    ),
+                },
+            ],
+        },
+        {
+            "type": "tool_result",
+            "tool_call_id": "call_sh",
+            "content": (
+                "<task-id>grok_sh1</task-id>\n<task-type>bash</task-type>\n"
+                "<status>running</status>\n<summary>pytest -q</summary>"
+            ),
+        },
+        {
+            "type": "tool_result",
+            "tool_call_id": "call_mon",
+            "content": (
+                "<task-id>grok_mon1</task-id>\n<task-type>monitor</task-type>\n"
+                "<status>running</status>\n<summary>Watch build</summary>"
+            ),
+        },
+        {
+            "type": "tool_result",
+            "tool_call_id": "call_sub",
+            "content": (
+                "<task-id>grok_sub1</task-id>\n<task-type>subagent</task-type>\n"
+                "<status>running</status>\n<summary>Audit Grok tools</summary>"
+            ),
+        },
+    ]
+    g.write_text(lines(records))
+
+    assert [(t["id"], t["kind"]) for t in subagents.tasks(str(g))] == [
+        ("grok_sh1", "shell"),
+        ("grok_mon1", "monitor"),
+    ]
+    subs = subagents.live(str(g))["subs"]
+    assert len(subs) == 1
+    assert (subs[0]["id"], subs[0]["who"], subs[0]["title"]) == ("grok_sub1", "research", "Audit Grok tools")
+
+    # check_command_or_subagent reports grok_sh1 completed, and kill_command_or_subagent kills grok_mon1.
+    with g.open("a") as f:
+        f.write(
+            lines(
+                [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_chk",
+                        "content": "=== Task grok_sh1 ===\nType: bash\nStatus: completed\nExit code: 0\n",
+                    },
+                    {
+                        "type": "assistant",
+                        "content": "Killing monitor.",
+                        "tool_calls": [
+                            {
+                                "id": "call_kill",
+                                "name": "kill_command_or_subagent",
+                                "arguments": json.dumps({"task_id": "grok_mon1"}),
+                            }
+                        ],
+                    },
+                    {
+                        "type": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '<system-reminder>Subagent "grok_sub1" completed.</system-reminder>',
+                            }
+                        ],
+                    },
+                ]
+            )
+        )
+    assert subagents.tasks(str(g)) == []
+    assert subagents.live(str(g))["subs"] == []
+
+    # A Grok transcript untouched for STALE seconds never keeps tasks or sub-agents waiting.
+    g_stale = home / ".grok" / "sessions" / "proj" / "s2" / "chat_history.jsonl"
+    g_stale.parent.mkdir(parents=True, exist_ok=True)
+    g_stale.write_text(lines(records))
+    old = time.time() - subagents.STALE - 10
+    os.utime(g_stale, (old, old))
+    assert subagents.tasks(str(g_stale)) == []
+    assert subagents.live(str(g_stale))["subs"] == []
+

@@ -35,6 +35,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+import os
+from datetime import datetime, timezone
+
 import conversation as conv
 
 STALE = 3600
@@ -45,6 +48,27 @@ TASK_ID = re.compile(r"<task-id>([A-Za-z0-9_-]{1,64})</task-id>")
 # What the Bash and Monitor tools answer, as Claude Code 2.1 says it.
 BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task )([A-Za-z0-9_-]{1,64})\b")
 EXPIRED = re.compile(r"\[Monitor expired after\b")
+
+# Agy sub-agent and background task markers in transcript.jsonl.
+AGY_SUB_ID = re.compile(r'"conversationId":\s*"([A-Za-z0-9_-]{1,64})"')
+AGY_BG_START = re.compile(r"Tool is running as a background task with task id:\s*(\S+)")
+AGY_TASK_STATUS = re.compile(r"^Task:\s*(\S+)\s*\nStatus:\s*(\S+)", re.M)
+AGY_SENDER = re.compile(r"\bsender=(\S+)")
+AGY_TASK_DONE = re.compile(r'Task id "([^"]+)"')
+
+# Grok background task and sub-agent markers in chat_history.jsonl.
+GROK_TASK_TYPE = re.compile(r"<task-type>\s*([A-Za-z0-9_-]+)\s*</task-type>")
+GROK_STATUS = re.compile(r"<status>\s*([A-Za-z0-9_-]+)\s*</status>")
+GROK_SUMMARY = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.S)
+GROK_OUTPUT = re.compile(r"<output-file>\s*(\S+?)\s*</output-file>")
+GROK_TASK_BLOCK = re.compile(r"=== Task ([A-Za-z0-9_-]{1,64}) ===\s*\n(?:.*?\n)*?Status:\s*(\S+)")
+GROK_WAIT_BLOCK = re.compile(r"--- Task ([A-Za-z0-9_-]{1,64}) \[([^\]]+)\] ---")
+GROK_DONE_NOTE = re.compile(
+    r'(?:Background task|Subagent|Task|Agent)\s+"?([A-Za-z0-9_-]{1,64})"?\s+'
+    r"(?:has\s+)?(completed|failed|killed|cancelled|canceled|stopped|terminated|timed\s*out|finished)",
+    re.I,
+)
+GROK_SPAWN_ID = re.compile(r'"?subagent_id"?\s*:\s*"?([A-Za-z0-9_-]{1,64})"?')
 
 
 class Follow:
@@ -208,8 +232,358 @@ def _said(o: dict[str, Any]) -> str:
     return content if isinstance(content, str) else ""
 
 
+def _agy_args(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if isinstance(v, str) and len(v) >= 2 and v[0] in '"[{':
+            try:
+                out[k] = json.loads(v)
+                continue
+            except ValueError:
+                pass
+        out[k] = v
+    return out
+
+
+class AgySub:
+    """An Agy sub-agent read from its own brain/<sid>/.system_generated/logs/transcript.jsonl."""
+
+    def __init__(self, path: Path) -> None:
+        self.follow = Follow(path)
+        self.clear()
+
+    def clear(self) -> None:
+        self.started: str | None = None
+        self.said_at: str | None = None
+        self.tools = 0
+        self.tokens: int | None = None
+        self.doing = ""
+        self.ended = False
+
+    def look(self) -> None:
+        lines, fresh = self.follow.look()
+        if fresh:
+            self.clear()
+        for o in conv._records(lines):
+            self._take(o)
+
+    def _take(self, o: dict[str, Any]) -> None:
+        kind, source, ts = o.get("type"), o.get("source"), o.get("created_at")
+        if o.get("status") in ("ERROR", "CANCELED", "CANCELLED") or kind == "ERROR_MESSAGE":
+            self.ended = True
+            return
+        if kind == "SYSTEM_MESSAGE" and "All your subagents and background tasks have been terminated" in str(
+            o.get("content") or ""
+        ):
+            self.ended = True
+            return
+        if kind == "USER_INPUT":
+            self.started = self.started or ts
+            self.said_at = ts or self.said_at
+            self.ended = False
+            return
+        if kind == "PLANNER_RESPONSE" and source == "MODEL":
+            self.started = self.started or ts
+            self.said_at = ts or self.said_at
+            self.ended = False
+            if o.get("input_tokens") is not None or o.get("cache_read_tokens") is not None:
+                self.tokens = int(o.get("input_tokens") or 0) + int(o.get("cache_read_tokens") or 0)
+            if (o.get("content") or "").strip():
+                self.doing = conv.first_line(str(o["content"]))
+            calls = [c for c in (o.get("tool_calls") or []) if isinstance(c, dict)]
+            for c in calls:
+                self.tools += 1
+                name = str(c.get("name") or "tool")
+                args = _agy_args(c.get("args"))
+                what = conv.hint(args)
+                self.doing = name + (" · " + what if what else "")
+                if name == "send_message":
+                    self.ended = True
+            if not calls:
+                self.ended = True
+            return
+        if source == "MODEL":
+            self.said_at = ts or self.said_at
+
+
+class AgyParent:
+    """Sub-agents and background tasks started in an Agy parent transcript."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.follow = Follow(path, conv.TAIL_MAX)
+        self.spawned: dict[str, dict[str, Any]] = {}
+        self.stopped: dict[str, float] = {}
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self._pending_subs: list[dict[str, str]] = []
+
+    def look(self) -> None:
+        lines, fresh = self.follow.look()
+        if fresh:
+            self.spawned.clear()
+            self.stopped.clear()
+            self.tasks.clear()
+            self._pending_subs.clear()
+        for o in conv._records(lines):
+            self._take(o)
+
+    def _take(self, o: dict[str, Any]) -> None:
+        kind, source = o.get("type"), o.get("source")
+        ts = str(o.get("created_at") or "")
+        at = conv._epoch(ts)
+        ep = at if at is not None else self.path.stat().st_mtime
+        if o.get("status") in ("CANCELED", "CANCELLED", "ERROR") and kind == "ERROR_MESSAGE":
+            self.tasks.clear()
+            for sid in self.spawned:
+                self.stopped[sid] = ep
+            return
+        if kind == "PLANNER_RESPONSE" and source == "MODEL":
+            for call in o.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name") or "")
+                args = _agy_args(call.get("args"))
+                if name == "invoke_subagent":
+                    subs_arg = args.get("Subagents")
+                    if isinstance(subs_arg, list):
+                        self._pending_subs = [
+                            {
+                                "who": str(s.get("TypeName") or "subagent"),
+                                "title": str(
+                                    s.get("Role") or conv.first_line(str(s.get("Prompt") or ""))
+                                ),
+                            }
+                            for s in subs_arg
+                            if isinstance(s, dict)
+                        ]
+                elif name == "manage_subagents":
+                    action = str(args.get("Action") or "")
+                    if action == "kill_all":
+                        for sid in self.spawned:
+                            self.stopped[sid] = ep
+                    elif action == "kill":
+                        cids = args.get("ConversationIds")
+                        for sid in cids if isinstance(cids, list) else []:
+                            self.stopped[str(sid)] = ep
+                elif name == "manage_task":
+                    if str(args.get("Action") or "") == "kill":
+                        tid = str(args.get("TaskId") or "")
+                        self.tasks.pop(tid, None)
+                elif name == "send_message":
+                    rec = str(args.get("Recipient") or "")
+                    if rec in self.spawned:
+                        # Sending a follow-up message wakes an idle sub-agent.
+                        self.stopped.pop(rec, None)
+        elif kind == "INVOKE_SUBAGENT":
+            content = str(o.get("content") or "")
+            if o.get("status") in ("ERROR", "CANCELED", "CANCELLED"):
+                self._pending_subs.clear()
+                return
+            for idx, sid in enumerate(AGY_SUB_ID.findall(content)):
+                info = (
+                    self._pending_subs[idx]
+                    if idx < len(self._pending_subs)
+                    else {"who": "subagent", "title": ""}
+                )
+                self.spawned[sid] = {
+                    "who": info["who"],
+                    "title": info["title"],
+                    "started": ts,
+                    "started_ep": ep,
+                }
+                self.stopped.pop(sid, None)
+            self._pending_subs.clear()
+        elif kind in ("RUN_COMMAND", "GENERIC"):
+            content = str(o.get("content") or "")
+            m = AGY_BG_START.search(content)
+            if m and o.get("status") not in ("ERROR", "CANCELED", "CANCELLED"):
+                tid = m.group(1).strip()
+                is_mon = kind == "GENERIC" and (
+                    "Timer" in content or "Cron" in content or "schedule" in content.lower()
+                )
+                self.tasks[tid] = {"kind": "monitor" if is_mon else "shell", "started": ep}
+            for tid, st_name in AGY_TASK_STATUS.findall(content):
+                if st_name.upper() not in ("RUNNING", "PENDING"):
+                    self.tasks.pop(tid, None)
+        elif kind == "SYSTEM_MESSAGE":
+            content = str(o.get("content") or "")
+            if "All your subagents and background tasks have been terminated" in content:
+                self.tasks.clear()
+                for sid in self.spawned:
+                    self.stopped[sid] = ep
+                return
+            for sender in AGY_SENDER.findall(content):
+                self.tasks.pop(sender, None)
+                if sender in self.spawned:
+                    self.stopped[sender] = ep
+            for tid in AGY_TASK_DONE.findall(content):
+                self.tasks.pop(tid, None)
+
+
+class GrokParent:
+    """Sub-agents and background tasks started in a Grok chat_history.jsonl."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.follow = Follow(path, conv.TAIL_MAX)
+        self.calls: dict[str, dict[str, Any]] = {}
+        self.tasks: dict[str, dict[str, Any]] = {}
+        self.subs: dict[str, dict[str, Any]] = {}
+
+    def look(self) -> None:
+        lines, fresh = self.follow.look()
+        if fresh:
+            self.calls.clear()
+            self.tasks.clear()
+            self.subs.clear()
+        for o in conv._records(lines):
+            self._take(o)
+
+    def _started_ep(self, output_file: str | None) -> float:
+        if output_file:
+            try:
+                return Path(output_file).stat().st_mtime
+            except OSError:
+                pass
+        try:
+            return self.path.stat().st_mtime
+        except OSError:
+            return time.time()
+
+    def _take(self, o: dict[str, Any]) -> None:
+        kind = o.get("type")
+        if kind == "assistant":
+            for call in o.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                cid = str(call.get("id") or "")
+                name = str(call.get("name") or "")
+                raw_args = call.get("arguments")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except ValueError:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                if cid:
+                    self.calls[cid] = {"name": name, "args": args}
+                if name == "kill_command_or_subagent":
+                    tid = str(args.get("task_id") or args.get("subagent_id") or "")
+                    self.tasks.pop(tid, None)
+                    self.subs.pop(tid, None)
+        elif kind == "tool_result":
+            cid = str(o.get("tool_call_id") or "")
+            call = self.calls.get(cid, {})
+            name = call.get("name") or ""
+            args = call.get("args") or {}
+            content = str(o.get("content") or "")
+
+            m_id = TASK_ID.search(content)
+            m_st = GROK_STATUS.search(content)
+            if m_id and m_st:
+                tid = m_id.group(1)
+                status = m_st.group(1).lower()
+                if status == "running":
+                    m_type = GROK_TASK_TYPE.search(content)
+                    ttype = m_type.group(1).lower() if m_type else ""
+                    m_sum = GROK_SUMMARY.search(content)
+                    summary = m_sum.group(1).strip() if m_sum else ""
+                    m_out = GROK_OUTPUT.search(content)
+                    out_file = m_out.group(1).strip() if m_out else None
+                    ep = self._started_ep(out_file)
+                    if ttype == "subagent" or name == "spawn_subagent":
+                        who = str(args.get("subagent_type") or args.get("agent_type") or "subagent")
+                        title = str(
+                            args.get("description")
+                            or summary
+                            or conv.first_line(str(args.get("prompt") or ""))
+                        )
+                        iso = (
+                            datetime.fromtimestamp(ep, tz=timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
+                        )
+                        self.subs[tid] = {
+                            "id": tid,
+                            "who": who,
+                            "title": title,
+                            "started": iso,
+                            "started_ep": ep,
+                            "tools": 0,
+                            "tokens": None,
+                            "doing": summary or title,
+                            "output": out_file,
+                        }
+                    else:
+                        is_mon = ttype == "monitor" or name == "monitor_background"
+                        self.tasks[tid] = {
+                            "kind": "monitor" if is_mon else "shell",
+                            "started": ep,
+                            "output": out_file,
+                        }
+                else:
+                    self.tasks.pop(tid, None)
+                    self.subs.pop(tid, None)
+            elif name == "spawn_subagent":
+                m_sid = GROK_SPAWN_ID.search(content)
+                if m_sid and "error" not in content.lower() and "failed" not in content.lower():
+                    tid = m_sid.group(1)
+                    if "completed" in content.lower() or "stopped" in content.lower():
+                        self.subs.pop(tid, None)
+                    elif "running" in content.lower() or "spawned" in content.lower() or "started" in content.lower():
+                        ep = self._started_ep(None)
+                        iso = (
+                            datetime.fromtimestamp(ep, tz=timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
+                        )
+                        who = str(args.get("subagent_type") or args.get("agent_type") or "subagent")
+                        title = str(
+                            args.get("description") or conv.first_line(str(args.get("prompt") or ""))
+                        )
+                        self.subs[tid] = {
+                            "id": tid,
+                            "who": who,
+                            "title": title,
+                            "started": iso,
+                            "started_ep": ep,
+                            "tools": 0,
+                            "tokens": None,
+                            "doing": title,
+                            "output": None,
+                        }
+
+            for tid, st_name in GROK_TASK_BLOCK.findall(content) + GROK_WAIT_BLOCK.findall(content):
+                if st_name.strip().lower() not in ("running", "pending"):
+                    self.tasks.pop(tid, None)
+                    self.subs.pop(tid, None)
+            for tid, _st in GROK_DONE_NOTE.findall(content):
+                self.tasks.pop(tid, None)
+                self.subs.pop(tid, None)
+        elif kind == "user":
+            raw = conv.content_to_text(o.get("content"))
+            for tid, _st in GROK_DONE_NOTE.findall(raw):
+                self.tasks.pop(tid, None)
+                self.subs.pop(tid, None)
+            m_id = TASK_ID.search(raw)
+            m_st = GROK_STATUS.search(raw)
+            if m_id and m_st and m_st.group(1).lower() not in ("running", "pending"):
+                self.tasks.pop(m_id.group(1), None)
+                self.subs.pop(m_id.group(1), None)
+
+
 _subs: dict[str, Sub] = {}
 _parents: dict[str, Parent] = {}
+_agy_subs: dict[str, AgySub] = {}
+_agy_parents: dict[str, AgyParent] = {}
+_grok_parents: dict[str, GrokParent] = {}
 # The page's asking and the herd's run in threads of their own, and a
 # file read by two at once would hand the same lines to each.
 _mu = threading.Lock()
@@ -225,15 +599,18 @@ def _kept(cache: dict[str, Any], key: str, make) -> Any:
 
 
 def live(path: str) -> dict[str, Any]:
-    """The sub-agents of the claude transcript PATH still running, oldest
-    first, and what to watch for a change in them: the folder, where a
-    new one appears, and each running one's file."""
+    """The sub-agents of the transcript PATH still running, oldest first,
+    and what to watch for a change in them."""
     with _mu:
         return _live(path)
 
 
 def _live(path: str) -> dict[str, Any]:
     real, cli = conv.locate(path)
+    if cli == "agy":
+        return _live_agy(real)
+    if cli == "grok":
+        return _live_grok(real)
     if cli != "claude":
         return {"subs": [], "watch": []}
     folder = real.with_suffix("") / "subagents"
@@ -283,16 +660,134 @@ def _live(path: str) -> dict[str, Any]:
     return out
 
 
+def _live_agy(real: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {"subs": [], "watch": []}
+    now = time.time()
+    try:
+        if now - real.stat().st_mtime >= STALE:
+            return out
+    except OSError:
+        return out
+    parent = _kept(_agy_parents, str(real), lambda: AgyParent(real))
+    parent.look()
+    if not parent.spawned:
+        return out
+    brain_dir = real.parent.parent.parent.parent
+    for sid, info in parent.spawned.items():
+        if not conv.SUB_ID.match(sid) or now - info["started_ep"] >= STALE:
+            continue
+        sub_path = brain_dir / sid / ".system_generated" / "logs" / "transcript.jsonl"
+        s: AgySub | None = None
+        if sub_path.is_file():
+            try:
+                if now - sub_path.stat().st_mtime >= STALE:
+                    continue
+                file, _ = conv.locate(str(sub_path))
+                s = _kept(_agy_subs, str(file), lambda: AgySub(file))
+                s.look()
+            except (ValueError, OSError):
+                continue
+            if s.ended:
+                continue
+        told = parent.stopped.get(sid)
+        if told is not None:
+            said = conv._epoch(s.said_at) if s and s.said_at else info["started_ep"]
+            if said is None or told >= said - SLACK:
+                continue
+        out["subs"].append({
+            "id": sid,
+            "who": info["who"],
+            "title": info["title"],
+            "started": (s.started if s and s.started else None) or info["started"],
+            "tools": s.tools if s else 0,
+            "tokens": s.tokens if s else None,
+            "doing": (s.doing if s and s.doing else info["title"]),
+        })
+        if sub_path.is_file():
+            out["watch"].append(str(sub_path))
+    out["subs"].sort(key=lambda x: x["started"] or "")
+    return out
+
+
+def _live_grok(real: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {"subs": [], "watch": []}
+    now = time.time()
+    try:
+        if now - real.stat().st_mtime >= STALE:
+            return out
+    except OSError:
+        return out
+    parent = _kept(_grok_parents, str(real), lambda: GrokParent(real))
+    parent.look()
+    for sid, info in parent.subs.items():
+        if not conv.SUB_ID.match(sid) or now - info["started_ep"] >= STALE:
+            continue
+        out_file = info.get("output")
+        if out_file:
+            try:
+                if now - Path(out_file).stat().st_mtime >= STALE:
+                    continue
+            except OSError:
+                pass
+        out["subs"].append({
+            "id": sid,
+            "who": info["who"],
+            "title": info["title"],
+            "started": info["started"],
+            "tools": info["tools"],
+            "tokens": info["tokens"],
+            "doing": info["doing"],
+        })
+    out["subs"].sort(key=lambda x: x["started"] or "")
+    return out
+
+
 def tasks(path: str) -> list[dict[str, Any]]:
-    """The shells and monitors the claude conversation at PATH started in
-    the background and has not been told ended, oldest first: each as
+    """The shells and monitors the conversation at PATH started in the
+    background and has not been told ended, oldest first: each as
     {id, kind, started}.  None begun STALE ago or more."""
     with _mu:
         real, cli = conv.locate(path)
-        if cli != "claude":
-            return []
-        parent = _kept(_parents, str(real), lambda: Parent(real))
-        parent.look()
         now = time.time()
-        return sorted(({"id": k, **v} for k, v in parent.tasks.items() if now - v["started"] < STALE),
-                      key=lambda t: t["started"])
+        if cli == "claude":
+            parent = _kept(_parents, str(real), lambda: Parent(real))
+            parent.look()
+            return sorted(
+                ({"id": k, **v} for k, v in parent.tasks.items() if now - v["started"] < STALE),
+                key=lambda t: t["started"],
+            )
+        if cli == "agy":
+            try:
+                if now - real.stat().st_mtime >= STALE:
+                    return []
+            except OSError:
+                return []
+            parent = _kept(_agy_parents, str(real), lambda: AgyParent(real))
+            parent.look()
+            return sorted(
+                ({"id": k, **v} for k, v in parent.tasks.items() if now - v["started"] < STALE),
+                key=lambda t: t["started"],
+            )
+        if cli == "grok":
+            try:
+                if now - real.stat().st_mtime >= STALE:
+                    return []
+            except OSError:
+                return []
+            parent = _kept(_grok_parents, str(real), lambda: GrokParent(real))
+            parent.look()
+            out = []
+            for k, v in parent.tasks.items():
+                if now - v["started"] >= STALE:
+                    continue
+                out_file = v.get("output")
+                if out_file:
+                    try:
+                        if now - Path(out_file).stat().st_mtime >= STALE:
+                            continue
+                    except OSError:
+                        pass
+                out.append({"id": k, "kind": v["kind"], "started": v["started"]})
+            return sorted(out, key=lambda t: t["started"])
+        return []
+
