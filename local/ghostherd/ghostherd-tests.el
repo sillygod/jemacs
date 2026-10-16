@@ -9052,6 +9052,40 @@ on the same CLI, its own flags kept, less what picked its conversation."
       (should-not (ghostherd--relay-hand rd 'grok "BRIEF" nil))
       (should-not spawned))))
 
+(ert-deftest ghostherd-test-usage-agy-used-up-is-per-model ()
+  "An agy's used-up is by its own model's group: on Gemini 3.8 Flash (gem,
+with quota) it is not used up because Gemini 4 Argon (g4) is spent; on
+Argon it is.  A model that cannot be read is not called used up, and grok
+with its one group is unchanged."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-usage--cache nil)
+          (ghostherd--screens (make-hash-table :test 'equal))
+          (flash (ghostherd-tests--session :name "jf" :kind 'agy :state 'idle :backend 'fake))
+          (argon (ghostherd-tests--session :name "ja" :kind 'agy :state 'idle :backend 'fake))
+          (blank (ghostherd-tests--session :name "jb" :kind 'agy :state 'idle :backend 'fake)))
+      (setf (alist-get 'agy ghostherd-usage--cache)
+            (list :windows (list (list :label "gem-wk" :remaining 100 :resets-at nil)
+                                 (list :label "gem-5h" :remaining 100 :resets-at nil)
+                                 (list :label "g4-wk" :remaining 0 :resets-at (+ (float-time) 600000)))
+                  :fetched (float-time)))
+      (puthash "jf" "? for shortcuts    Gemini 3.8 Flash · high · AI: Out of credits" ghostherd--screens)
+      (puthash "ja" "? for shortcuts    Gemini 4 Argon · medium" ghostherd--screens)
+      (puthash "jb" "? for shortcuts\n> \n" ghostherd--screens)
+      ;; The agy kind as a whole is used up (g4 is spent) ...
+      (should (ghostherd-usage-used-up 'agy))
+      ;; ... but the Flash agent, on gem, is not.
+      (should-not (ghostherd-usage-session-used-up flash))
+      (should-not (ghostherd-usage-session-used-up-text flash))
+      ;; The Argon agent, on g4, is.
+      (should (ghostherd-usage-session-used-up argon))
+      (should (string-match-p "g4-wk" (ghostherd-usage-session-used-up-text argon)))
+      ;; A model that cannot be read: not called used up.
+      (should-not (ghostherd-usage-session-used-up blank))
+      ;; grok has one group, so its session is used up when the kind is.
+      (let ((g (ghostherd-tests--session :name "gk" :kind 'grok :state 'idle :backend 'fake)))
+        (ghostherd-tests--used-up 'grok)
+        (should (ghostherd-usage-session-used-up g))))))
+
 (ert-deftest ghostherd-test-relay-goes-where-usage-is-left ()
   (ghostherd-tests--relaying
     (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)))

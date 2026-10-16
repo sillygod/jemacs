@@ -352,7 +352,7 @@ draws lanes from fields rather than parsing prose."
                  (mapcar (lambda (a) (or (alist-get 'kind a) "?"))
                          (ghostherd-session-lineage s)))
           :relayTo (format "%s" (ghostherd-relay-default-kind s))
-          :usedUp (or (ghostherd-usage-used-up-text (ghostherd-session-kind s)) "")
+          :usedUp (or (ghostherd-usage-session-used-up-text s) "")
           :meter (ghostherd-memory-page--meter s)
           :subs (ghostherd-memory-page--subs-of s)
           :switching (if (gethash (ghostherd-session-id s) ghostherd--switching) t :json-false))))

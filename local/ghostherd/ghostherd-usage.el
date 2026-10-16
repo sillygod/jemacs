@@ -329,29 +329,39 @@ The number is the used percent, like the provider panels print."
 (defconst ghostherd-usage-trusted-for 7200
   "Seconds a reading of usage is believed when it says some is used up.")
 
-(defun ghostherd-usage-used-up (kind)
+(defun ghostherd-usage-used-up (kind &optional model)
   "The window of KIND's usage that is used up, or nil.
 A window as the cache keeps it: :label, :remaining, :resets-at.  Less
 than 1% left counts.  Not one that has reset since it was read, nor
-any from a reading older than `ghostherd-usage-trusted-for'."
+any from a reading older than `ghostherd-usage-trusted-for'.
+
+With MODEL, and a KIND whose quota is split by model group (agy): only a
+window of the group MODEL belongs to counts -- so an agent on a group
+that has quota is not called used up because a different group is spent."
   (let* ((pl (alist-get kind ghostherd-usage--cache))
          (fetched (plist-get pl :fetched))
-         (now (float-time)))
+         (now (float-time))
+         (group (and model (eq kind 'agy) (ghostherd-usage--agy-group-prefix model))))
     (when (and (numberp fetched) (< (- now fetched) ghostherd-usage-trusted-for))
       (car (seq-sort-by
             (lambda (w) (or (plist-get w :resets-at) most-positive-fixnum))
             #'>
             (seq-filter (lambda (w)
                           (let ((left (plist-get w :remaining))
-                                (resets (plist-get w :resets-at)))
+                                (resets (plist-get w :resets-at))
+                                (label (plist-get w :label)))
                             (and (numberp left) (< left 1)
-                                 (not (and (numberp resets) (<= resets now))))))
+                                 (not (and (numberp resets) (<= resets now)))
+                                 (or (not group)
+                                     (and (stringp label)
+                                          (string-prefix-p (concat group "-") label))))))
                         (plist-get pl :windows)))))))
 
-(defun ghostherd-usage-used-up-text (kind)
+(defun ghostherd-usage-used-up-text (kind &optional model)
   "KIND's usage used up, in words -- \"its claude usage (5h) is used up,
-until 15:00\" -- or nil when it is not."
-  (when-let* ((w (ghostherd-usage-used-up kind)))
+until 15:00\" -- or nil when it is not.  MODEL narrows it to that model's
+group, for a KIND whose quota is split by model (agy)."
+  (when-let* ((w (ghostherd-usage-used-up kind model)))
     (let ((label (plist-get w :label))
           (resets (plist-get w :resets-at)))
       (format "its %s usage%s is used up%s" kind
@@ -360,6 +370,35 @@ until 15:00\" -- or nil when it is not."
                     ((< (- resets (float-time)) (* 20 3600))
                      (format-time-string ", until %H:%M" resets))
                     (t (format-time-string ", until %a %H:%M" resets)))))))
+
+(defun ghostherd-usage--agy-session-model (session)
+  "The model NAME agy SESSION's screen shows now, or nil -- read from the
+screen the state poll already captured, as the meter does."
+  (when (and (fboundp 'ghostherd--agy-model-line)
+             (boundp 'ghostherd--screens)
+             (fboundp 'ghostherd-session-id))
+    (car (ghostherd--agy-model-line
+          (gethash (ghostherd-session-id session) ghostherd--screens)))))
+
+(defun ghostherd-usage-session-used-up (session)
+  "The window of SESSION's usage that is used up, by its own model's group
+when its CLI splits quota by model (agy) -- so an agent on a group that
+has quota is not called used up because a different group is spent.  Nil
+when an agy's model cannot be read: better no relay than a wrong one."
+  (let ((kind (ghostherd-session-kind session)))
+    (if (eq kind 'agy)
+        (when-let* ((model (ghostherd-usage--agy-session-model session)))
+          (ghostherd-usage-used-up kind model))
+      (ghostherd-usage-used-up kind))))
+
+(defun ghostherd-usage-session-used-up-text (session)
+  "SESSION's usage used up, in words, by its own model's group for agy; nil
+when not, or when an agy's model cannot be read."
+  (let ((kind (ghostherd-session-kind session)))
+    (if (eq kind 'agy)
+        (when-let* ((model (ghostherd-usage--agy-session-model session)))
+          (ghostherd-usage-used-up-text kind model))
+      (ghostherd-usage-used-up-text kind))))
 
 (defun ghostherd-usage--entry-string (kind compact)
   (let* ((pl (alist-get kind ghostherd-usage--cache))
