@@ -25,6 +25,9 @@ const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
   { role: "tools", ts: "t", tools: [{ name: "Read", hint: "src/pay.py" }] },
   { role: "assistant", text: "Found the bug in the retry path.", ts: "t" },
 ] };
+// Tall enough to scroll, for the scroll-keeping check.
+const TALLSUB = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false,
+  entries: Array.from({ length: 40 }, (_, i) => ({ role: "assistant", text: "line " + i + "\nmore\nmore\nmore", ts: "t" })) };
 
 (async () => {
   const browser = await webkit.launch();
@@ -71,6 +74,17 @@ const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
       await page.evaluate(() => GM.setSubConversation({ name: "claude-deploy-platform", sub: "other", entries: [{ role: "assistant", text: "nope", ts: "t" }] }));
       await sleep(40);
       check(W("a push for another sub is not shown"), !/nope/.test(await page.$eval(".subview .subbody", (b) => b.textContent)));
+
+      // A poll while the reader is scrolled up keeps their place -- it must
+      // not snap the overlay back to the top each time Emacs answers.
+      await page.evaluate((p) => GM.setSubConversation(p), TALLSUB);
+      await sleep(60);
+      const mid = await page.$eval(".subview .subbody", (b) => {
+        b.scrollTop = Math.floor((b.scrollHeight - b.clientHeight) / 2); return b.scrollTop; });
+      await page.evaluate((p) => GM.setSubConversation(p), TALLSUB); // a poll, same content
+      await sleep(60);
+      const after = await page.$eval(".subview .subbody", (b) => b.scrollTop);
+      check(W("a poll while scrolled up keeps the reader's place"), mid > 0 && after === mid, { mid, after });
 
       await tap('.subview [data-act="a:sub-close"]');
       await sleep(80);

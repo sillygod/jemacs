@@ -1776,7 +1776,9 @@
       : (conv.earlier ? '<p class="rnote">Earlier turns are in the transcript, not shown here.</p>' : "") +
         (entries.length ? entries.map((e, i) => entryHtml(e, i, sv.name, "claude")).join("")
           : '<p class="rnote">Nothing said yet.</p>');
-    const atBottom = (() => { const b = ov.querySelector(".subbody"); return !b || b.scrollHeight - b.scrollTop - b.clientHeight < 40; })();
+    const prev = ov.querySelector(".subbody");
+    const atBottom = !prev || prev.scrollHeight - prev.scrollTop - prev.clientHeight < 40;
+    const keep = prev ? prev.scrollTop : 0;
     ov.innerHTML = '<div class="subhead"><span class="subwho">' + esc(sv.who || "sub-agent") + "</span>" +
       (sv.title ? '<span class="subtitle" title="' + esc(sv.title) + '">' + esc(sv.title) + "</span>" : "") +
       '<span class="submeta">of ' + esc(sv.name) + "</span>" +
@@ -1784,7 +1786,9 @@
       '<div class="subbody">' + body + "</div>";
     const b = ov.querySelector(".subbody");
     drawn.set(b, entries);
-    if (atBottom) b.scrollTop = b.scrollHeight;
+    // Stay where the reader is: pinned to the foot only if they were there,
+    // else hold the scroll instead of snapping to the top each poll.
+    b.scrollTop = atBottom ? b.scrollHeight : keep;
   }
 
   // ---- The room as one chat ----------------------------------------------
