@@ -82,6 +82,44 @@ const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }
+
+    // The chat view keeps no per-agent conversation, so a fresh page has an
+    // empty convs -- the state the chat view is always in.  The sub card
+    // there must still open: Emacs resolves the transcript from the name,
+    // not a path the page lacks.  (A new context each time, so nothing from a
+    // column flow has seeded convs.)
+    for (const where of ["phone", "desk"]) {
+      const intents = [];
+      const { ctx, page, errors } = await phonePage(browser, { intents, context: where === "desk" ? DESK : {} });
+      const W = (n) => "chat/" + where + ": " + n;
+      const tap = (sel) => (where === "phone" ? page.tap(sel) : page.click(sel));
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd());
+      await sleep(100);
+      await tap('.pgroup[data-project="' + DP + '"] [data-act="a:room"]');
+      await sleep(150);
+      await tap('.room [data-act="a:room-view"][data-view="chat"]');
+      await sleep(120);
+      await page.evaluate((p) => GM.setChat(p), { project: DP, earlier: false, missing: [],
+        entries: [{ who: RD, kind: "say", text: "hello", ts: "t" }] });
+      await sleep(60);
+      await page.selectOption(".chat .chat-to", RD);
+      await sleep(80);
+      const chatCard = '.chat .cmeter .sub[data-sub="a3db8f1c2e4a6b7c9"]';
+      check(W("the sub-agent card shows in the chat meter box"), !!(await page.$(chatCard)));
+      await tap(chatCard);
+      await sleep(80);
+      const cw = intents.filter((i) => i.op === "sub-watch").pop();
+      check(W("clicking it asks Emacs to watch that sub by name, no path needed"),
+        cw && cw.name === RD && cw.sub === "a3db8f1c2e4a6b7c9", cw);
+      const creading = await page.$eval(".subview .subbody", (b) => b.textContent).catch(() => "");
+      check(W("the overlay opens, not a dead 'not known yet'"), /Reading/.test(creading), creading);
+      await page.evaluate((p) => GM.setSubConversation(p), SUBCONV);
+      await sleep(60);
+      check(W("its conversation shows once Emacs answers"),
+        /Found the bug in the retry path\./.test(await page.$eval(".subview .subbody", (b) => b.textContent)));
+      check(W("no page errors"), errors.length === 0, errors);
+      await ctx.close();
+    }
   } finally {
     await browser.close();
   }

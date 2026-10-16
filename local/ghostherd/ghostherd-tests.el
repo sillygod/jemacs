@@ -6443,6 +6443,24 @@ it changes; closing it forgets it."
         (ghostherd-memory-page--sub-read)
         (should (= (length requests) n))))))
 
+(ert-deftest ghostherd-test-room-opens-a-sub-from-the-name-without-a-path ()
+  "The chat view keeps no per-agent conversation, so it opens a sub with an
+empty path.  Emacs resolves the transcript from the agent's name, so the
+sub is still read -- not left unknown."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:earlier :json-false
+                    :entries ((:role "assistant" :text "looking" :ts "t")))))
+    (let ((subf (ghostherd-memory-page--sub-file file "a51b15851f7c7ae94")))
+      (make-directory (file-name-directory subf) t)
+      (write-region "{}\n" nil subf nil 'silent)
+      (ghostherd-memory-page--handle
+       '((op . "sub-watch") (name . "claude-api") (path . "") (sub . "a51b15851f7c7ae94")))
+      (should (equal ghostherd-memory-page--sub
+                     (list "claude-api" file "a51b15851f7c7ae94")))
+      (should (equal (car (last requests))
+                     `("herd_sub_conversation" (:path ,file :sub "a51b15851f7c7ae94")))))))
+
 (ert-deftest ghostherd-test-room-load-earlier-reads-more-and-keeps-it ()
   "A column's `load earlier' asks for more; Emacs reads at that limit, and
 -- the limit being part of the signature -- keeps it across polls instead

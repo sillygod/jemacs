@@ -2033,12 +2033,14 @@
     }
     if (act === "sub-open") {
       const sub = el.getAttribute("data-sub");
+      if (!sub) return setStatus("Its transcript is not known yet");
+      // The parent path is a hint only: the chat view keeps no per-agent
+      // conversation, so convs[name] is empty there.  Emacs resolves the
+      // transcript from the name -- here we just name the sub to watch.
       const conv = herdNow.convs[name];
-      const path = conv && conv.path;
-      if (!sub || !path) return setStatus("Its transcript is not known yet");
       herdNow.subView = { name, sub, who: el.getAttribute("data-who"), title: el.getAttribute("data-title") };
       herdNow.subConv = null;
-      emit("sub-watch", { name, path, sub });
+      emit("sub-watch", { name, path: (conv && conv.path) || "", sub });
       return renderSubView();
     }
     if (act === "sub-close") {

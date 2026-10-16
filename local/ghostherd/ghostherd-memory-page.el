@@ -1568,11 +1568,17 @@ screen if that is what the page shows of it."
                                   (file-name-sans-extension path))))
 
 (defun ghostherd-memory-page--sub-watch (intent)
-  "Begin showing sub-agent SUB of agent NAME (parent transcript PATH), and
-read it at once so the page fills without waiting for the next tick."
-  (let ((name (ghostherd-memory-page--str (alist-get 'name intent)))
-        (path (ghostherd-memory-page--str (alist-get 'path intent)))
-        (sid (ghostherd-memory-page--str (alist-get 'sub intent))))
+  "Begin showing sub-agent SUB of agent NAME, and read it at once so the
+page fills without waiting for the next tick.  The parent transcript is
+resolved from NAME here, not taken from the page: the chat view keeps no
+per-agent conversation, so the path it sends is empty there and serves
+only as a fallback."
+  (let* ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+         (given (ghostherd-memory-page--str (alist-get 'path intent)))
+         (sid (ghostherd-memory-page--str (alist-get 'sub intent)))
+         (s (and name (ghostherd-get name)))
+         (path (or (and s (ghostherd-session-transcript s))
+                   (and given (not (string-empty-p given)) given))))
     (when (and name path sid)
       (setq ghostherd-memory-page--sub (list name path sid)
             ghostherd-memory-page--sub-sent nil
