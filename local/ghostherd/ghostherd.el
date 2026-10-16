@@ -123,7 +123,13 @@ made an unanchored `> \=' match the transcript.")
                   "Bash command"
                   ,ghostherd--rule-permission-prompt
                   "Yes, and don't ask again"
-                  "❯ 1\\. Yes"))
+                  "❯ 1\\. Yes"
+                  ;; AskUserQuestion's numbered menu, by its footer: it is
+                  ;; parked waiting for a pick (`ghostherd--prompt' reads
+                  ;; the options; the herd page offers them).  Distinct
+                  ;; from the model picker's "Enter to set as default".
+                  "Tab/Arrow keys to navigate"
+                  "Enter to select"))
       (working . ("esc to interrupt"
                   "Baking…"
                   "Baking..."

@@ -8230,6 +8230,21 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
 "
   "claude's permission prompt, in its box.")
 
+(defconst ghostherd-test--claude-ask
+  "│ DESIGN.md's markdown reading style never took effect; how to handle?
+❯ 1. Make it work  (Recommended)
+     Move the .wmde-markdown block out of @layer components.
+  2. Only the canvas cards
+     Keep the workspace reading area as it is.
+  3. Leave it for now
+     Keep just the known-issue note.
+  4. Type something.
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+"
+  "claude's AskUserQuestion menu whose choices say nothing a `Yes'/`proceed'
+rule would catch: only its footer marks it as waiting.")
+
 (ert-deftest ghostherd-test-prompt-read-off-the-screen ()
   "A menu's question and its choices, numbered as you answer them: the
 lines above the first choice up to a rule, each choice's first line."
@@ -8271,6 +8286,26 @@ lines above the first choice up to a rule, each choice's first line."
                                       "\n> 1. " (make-string 120 ?x) "\n  2. No\n"))))
     (should (= (length (cdr (assq 1 (plist-get p :options)))) 100))
     (should (equal (plist-get p :question) "line 4\nline 5\nline 6\nline 7\nline 8\nline 9"))))
+
+(ert-deftest ghostherd-test-claude-askuserquestion-is-blocked ()
+  "claude parked on an AskUserQuestion menu reads blocked -- so the herd
+page offers its choices, which `ghostherd--prompt' reads -- by its footer,
+not by any \"Yes\"/\"proceed\" wording.  An empty prompt is not blocked by
+the new rule, and a spinner above the box is still working."
+  (let* ((spec (ghostherd--spec 'claude))
+         (rules (plist-get spec :screen-rules))
+         (ri (plist-get spec :prompt-replaces-input))
+         (sp (plist-get spec :spinner))
+         ;; With the footer rule gone, nothing else in this menu is blocked.
+         (bare (cons (cons 'blocked (seq-remove (lambda (r) (member r '("Tab/Arrow keys to navigate" "Enter to select")))
+                                                (alist-get 'blocked rules)))
+                     (assq-delete-all 'blocked (copy-alist rules)))))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-ask rules ri sp)) 'blocked))
+    (should-not (eq (car (ghostherd--match-rules ghostherd-test--claude-ask bare ri sp)) 'blocked))
+    (should (plist-get (ghostherd--prompt ghostherd-test--claude-ask) :options))
+    (should (eq (car (ghostherd--match-rules "⏺ done.\n────\n❯ \n────\n" rules ri sp)) 'idle))
+    (should (eq (car (ghostherd--match-rules "✻ Baking… (3s · ↓ 1k tokens)\n────\n❯ \n────\n" rules ri sp))
+                'working))))
 
 ;;; Answering a menu
 
