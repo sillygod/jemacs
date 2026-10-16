@@ -419,13 +419,25 @@ on the next look."
            (lambda (_e) (funcall done nil)))
         (error (remhash name busy))))))
 
+(defun ghostherd-memory-page--meter-sig (s path)
+  "Signature of what agent S's meter at PATH depends on.  grok keeps its
+tokens and window in a `signals.json' beside the conversation, written a
+beat after the transcript and otherwise unchanged while it idles; fold
+that in, or the meter binds to the transcript's signature alone and goes
+stale -- never asked again until the conversation itself moves."
+  (let ((sig (ghostherd-memory-page--room-signature path)))
+    (if (and sig (eq (ghostherd-session-kind s) 'grok))
+        (cons sig (ghostherd-memory-page--room-signature
+                   (expand-file-name "signals.json" (file-name-directory path))))
+      sig)))
+
 (defun ghostherd-memory-page--meter-look ()
   "Ask the sidecar again for the meter of each agent whose transcript
 changed; the page hears of it on the next look."
   (dolist (s (ghostherd-sessions))
     (let* ((name (ghostherd-session-name s))
            (path (ghostherd-session-transcript s))
-           (sig (ghostherd-memory-page--room-signature path)))
+           (sig (ghostherd-memory-page--meter-sig s path)))
       (if (null sig)
           (remhash name ghostherd-memory-page--meters)
         (ghostherd-memory-page--ask-on-change

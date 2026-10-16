@@ -9109,6 +9109,39 @@ agent whose transcript is not known, or that has not replied yet."
               (should (eq (funcall meter "claude-api") :json-false)))
           (delete-file file))))))
 
+(ert-deftest ghostherd-test-meter-signature-follows-grok-signals ()
+  "A grok meter depends on its `signals.json' as much as its transcript:
+its tokens live there, written a beat after the conversation, so the
+signature must move when that file does -- or the meter binds stale and
+is never asked again while the agent idles.  A claude meter does not read
+the file, so its signature ignores it."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((ghostherd--sessions (make-hash-table :test #'equal))
+         (dir (make-temp-file "gh-metersig" t))
+         (tx (expand-file-name "chat_history.jsonl" dir))
+         (sig-file (expand-file-name "signals.json" dir))
+         (grok (ghostherd-tests--session :name "gk" :kind 'grok :backend 'fake))
+         (cl (ghostherd-tests--session :name "cl" :kind 'claude :backend 'fake)))
+    (unwind-protect
+        (progn
+          (write-region "{}\n" nil tx nil 'silent)
+          (write-region "{\"contextTokensUsed\":10}\n" nil sig-file nil 'silent)
+          (let ((g1 (ghostherd-memory-page--meter-sig grok tx))
+                (c1 (ghostherd-memory-page--meter-sig cl tx)))
+            ;; signals.json changes; the transcript does not.
+            (write-region "{\"contextTokensUsed\":123456}\n" nil sig-file nil 'silent)
+            (let ((g2 (ghostherd-memory-page--meter-sig grok tx))
+                  (c2 (ghostherd-memory-page--meter-sig cl tx)))
+              (should-not (equal g1 g2))       ; grok notices
+              (should (equal c1 c2))           ; claude does not
+              ;; grok's signature still carries the transcript's, so a change
+              ;; there is caught too.
+              (should (equal (car g2) (ghostherd-memory-page--room-signature tx))))))
+      (dolist (s (list grok cl))
+        (when (buffer-live-p (ghostherd-session-buffer s))
+          (kill-buffer (ghostherd-session-buffer s))))
+      (delete-directory dir t))))
+
 (ert-deftest ghostherd-test-page-reads-sub-agents-when-they-change ()
   "Each agent's sub-agents still running, read by the sidecar when its
 transcript changed or a file its last answer named -- not on every
