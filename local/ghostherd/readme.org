@@ -1448,9 +1448,10 @@ without xwidgets.
   again on the next import, every chunk after the first change embedded
   again: for Claude's version 2, here, about twenty minutes --- 120
   files, 15,283 chunks.
-- claude, grok and agy render as markdown, through a whitelist
-  sanitizer with no images: a transcript holds whatever an agent ever
-  read.  agy imports clean turns and tool names from =transcript.jsonl=
+- claude and grok render as markdown, and agy for the turns it imports
+  rather than its protobuf =.db= salvage, which stays plain text --- all
+  through a whitelist sanitizer with no images: a transcript holds
+  whatever an agent ever read.  agy imports clean turns and tool names from =transcript.jsonl=
   (falling back to protobuf UTF-8 salvage only when a session has no
   JSONL log).  Tool calls show as =⚙ Bash= chips.
 - Links go to =browse-url=; Copy takes a whole message; Import runs
