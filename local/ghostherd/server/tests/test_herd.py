@@ -291,3 +291,110 @@ def test_list_sessions_orders_by_state_rank_then_recency(tmp_path: Path):
     assert [s["name"] for s in h.list_sessions(project="/p")["sessions"]] == names
     reset_herd()
 
+
+def test_prune_removes_only_old_settled_rows(tmp_path: Path):
+    """tick prunes settled mail, asks, commands, replies, and pushes older
+    than HISTORY_SECONDS while keeping recent settled rows, open/queued
+    rows, uncollected waiting asks, and asks in an active run."""
+    from datetime import datetime, timedelta, timezone
+    import herd as herd_mod
+
+    h = _store(tmp_path)
+    now = datetime.now(timezone.utc)
+    old_iso = (now - timedelta(seconds=herd_mod.HISTORY_SECONDS + 3600)).isoformat()
+    recent_iso = (now - timedelta(seconds=60)).isoformat()
+
+    snap = [
+        {"name": "lead", "kind": "claude", "state": "working", "project": "/p", "role": "lead"},
+        {"name": "rd", "kind": "claude", "state": "idle", "project": "/p"},
+    ]
+    h.tick(sessions=snap)
+
+    # 1. Mail: old delivered, old failed, recent delivered, and old queued (must stay!).
+    h._conn.execute(
+        "INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at, delivered_at) "
+        "VALUES ('m-old-del', 'lead', 'rd', 'old', 1, 0, 'delivered', ?, ?)",
+        (old_iso, old_iso),
+    )
+    h._conn.execute(
+        "INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at) "
+        "VALUES ('m-old-fail', 'lead', 'rd', 'fail', 1, 0, 'failed', ?)",
+        (old_iso,),
+    )
+    h._conn.execute(
+        "INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at, delivered_at) "
+        "VALUES ('m-rec-del', 'lead', 'rd', 'rec', 1, 0, 'delivered', ?, ?)",
+        (recent_iso, recent_iso),
+    )
+    h._conn.execute(
+        "INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at) "
+        "VALUES ('m-old-queued', 'rd', 'lead', 'still queued', 1, 0, 'queued', ?)",
+        (old_iso,),
+    )
+
+    # 2. Asks: old settled, recent settled, old open ('delivered'), and old in active run.
+    h._conn.execute(
+        "INSERT INTO asks (id, from_name, to_name, body, wait, status, collected, created_at, answered_at) "
+        "VALUES ('a-old-done', 'lead', 'rd', 'q1', 0, 'answered', 1, ?, ?)",
+        (old_iso, old_iso),
+    )
+    h._conn.execute(
+        "INSERT INTO asks (id, from_name, to_name, body, wait, status, collected, created_at, answered_at) "
+        "VALUES ('a-rec-done', 'lead', 'rd', 'q2', 0, 'answered', 1, ?, ?)",
+        (recent_iso, recent_iso),
+    )
+    h._conn.execute(
+        "INSERT INTO asks (id, from_name, to_name, body, wait, status, collected, created_at, delivered_at) "
+        "VALUES ('a-open', 'lead', 'rd', 'q3', 0, 'delivered', 0, ?, ?)",
+        (old_iso, old_iso),
+    )
+    h._conn.execute("INSERT INTO runs (session, run) VALUES ('lead', 'run-active')")
+    h._conn.execute(
+        "INSERT INTO asks (id, from_name, to_name, body, wait, status, collected, created_at, answered_at, run) "
+        "VALUES ('a-in-run', 'lead', 'rd', 'q4', 0, 'answered', 1, ?, ?, 'run-active')",
+        (old_iso, old_iso),
+    )
+
+    # 3. Commands & Replies: old done+sent, recent done+sent, old queued+unsent.
+    h._conn.execute(
+        "INSERT INTO commands (id, op, session, status, created_at) VALUES ('c-old-done', 'answer', 'rd', 'done', ?)",
+        (old_iso,),
+    )
+    h._conn.execute("INSERT INTO replies (id, chat_id, text, sent) VALUES ('c-old-done', 1, 'ok', 1)")
+    h._conn.execute("INSERT INTO replies (id, chat_id, text, sent) VALUES ('c-old-unsent', 1, 'wait', 0)")
+    h._conn.execute(
+        "INSERT INTO commands (id, op, session, status, created_at) VALUES ('c-rec-done', 'answer', 'rd', 'done', ?)",
+        (recent_iso,),
+    )
+    h._conn.execute("INSERT INTO replies (id, chat_id, text, sent) VALUES ('c-rec-done', 1, 'rec', 1)")
+    h._conn.execute(
+        "INSERT INTO commands (id, op, session, status, created_at) VALUES ('c-old-queued', 'answer', 'rd', 'queued', ?)",
+        (old_iso,),
+    )
+
+    # 4. Pushes: old sent, recent sent, old unsent.
+    h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (1, '{}', ?, 1)", (old_iso,))
+    h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (2, '{}', ?, 1)", (recent_iso,))
+    h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (3, '{}', ?, 0)", (old_iso,))
+    h._conn.commit()
+
+    h.tick(sessions=snap)
+
+    mail_ids = {r[0] for r in h._conn.execute("SELECT id FROM mail").fetchall()}
+    assert mail_ids == {"m-rec-del", "m-old-queued"}
+
+    ask_ids = {r[0] for r in h._conn.execute("SELECT id FROM asks").fetchall()}
+    assert ask_ids == {"a-rec-done", "a-open", "a-in-run"}
+    assert [a["id"] for a in h.recent_asks()["asks"]] == ["a-rec-done", "a-open"]
+
+    cmd_ids = {r[0] for r in h._conn.execute("SELECT id FROM commands").fetchall()}
+    assert cmd_ids == {"c-rec-done", "c-old-queued"}
+
+    reply_ids = {r[0] for r in h._conn.execute("SELECT id FROM replies").fetchall()}
+    assert reply_ids == {"c-old-unsent", "c-rec-done"}
+
+    push_ids = {r[0] for r in h._conn.execute("SELECT id FROM pushes").fetchall()}
+    assert push_ids == {2, 3}
+    reset_herd()
+
+

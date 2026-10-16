@@ -84,6 +84,10 @@ WAIT_GRACE = 30
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
 
+# Settled mail, asks, commands, replies, and pushes kept in herd.sqlite
+# before tick prunes them.
+HISTORY_SECONDS = 7 * 86400
+
 
 def _ms(iso: str | None) -> float | None:
     "Epoch milliseconds of ISO, for pages that should not parse dates."
@@ -1280,6 +1284,7 @@ class HerdStore:
                 str(row.get("name") or "").strip(): str(row.get("state") or "")
                 for row in sessions
             })
+            self._prune(now)
             hold = {"working", "starting"}
             # One ask at a time per agent: a second one pasted on top of
             # the first would leave it unsure which it is answering.
@@ -1419,6 +1424,56 @@ class HerdStore:
                 """,
                 (session, now),
             )
+
+    def _prune(self, now: str) -> None:
+        """Delete terminal records older than HISTORY_SECONDS.  Never touch
+        queued/open mail, open or uncollected waiting asks, asks belonging
+        to an active run or an open parent ask, queued commands, or unsent
+        replies and pushes.  Caller holds `_mu`."""
+        cutoff = datetime.fromtimestamp(
+            datetime.fromisoformat(now).timestamp() - HISTORY_SECONDS,
+            tz=timezone.utc,
+        ).isoformat()
+        self._conn.execute(
+            """
+            DELETE FROM mail
+            WHERE status IN ('delivered', 'failed', 'cancelled')
+              AND COALESCE(delivered_at, created_at) < ?
+            """,
+            (cutoff,),
+        )
+        self._conn.execute(
+            f"""
+            DELETE FROM asks
+            WHERE status IN {ASK_CLOSED}
+              AND (wait = 0 OR collected = 1)
+              AND COALESCE(answered_at, created_at) < ?
+              AND (run IS NULL OR run NOT IN (SELECT run FROM runs))
+              AND (parent IS NULL OR parent NOT IN (
+                SELECT id FROM asks WHERE status IN {ASK_OPEN}))
+            """,
+            (cutoff,),
+        )
+        self._conn.execute(
+            """
+            DELETE FROM commands
+            WHERE status IN ('done', 'taken') AND created_at < ?
+            """,
+            (cutoff,),
+        )
+        self._conn.execute(
+            """
+            DELETE FROM replies
+            WHERE sent = 1 AND id NOT IN (SELECT id FROM commands)
+            """
+        )
+        self._conn.execute(
+            """
+            DELETE FROM pushes
+            WHERE sent = 1 AND created_at < ?
+            """,
+            (cutoff,),
+        )
 
     def _upsert_alias(self, name: str) -> str:
         "Caller holds `_mu`."
