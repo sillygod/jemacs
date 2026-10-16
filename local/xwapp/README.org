@@ -107,29 +107,45 @@ again from Emacs.
 ** From your other devices
 
 The pages can reach a phone or another computer through a proxy on
-this machine that knows who is asking: =tailscale serve=.  Emacs still
-listens on 127.0.0.1 alone; the proxy takes the request on your
-tailnet, passes it on, and names the user of the device it came from.
+this machine that knows who is asking: =tailscale serve=.  The proxy
+takes the request on your tailnet, passes it on, and names the user of
+the device it came from.
 
 #+begin_src emacs-lisp
-(setq xwapp-port 48123                      ; fixed, for the proxy
+(setq xwapp-port 48123                      ; fixed, for the browser here
       xwapp-remote-hosts '("box.tail1234.ts.net")
       xwapp-remote-users '("you@example.com"))
 #+end_src
 
+The proxy forwards to a *Unix socket*, not to the loopback port, and
+Emacs listens on both: the port on 127.0.0.1 for the browser on this
+machine, the socket (=xwapp-remote-socket=) for the proxy.
+
 #+begin_src sh
-tailscale serve --bg --https=443 http://127.0.0.1:48123
+# M-x xwapp-remote-serve-setup gives this with the socket's full path:
+tailscale serve --bg --https=443 unix:/Users/you/.emacs.d/xwapp/remote.sock
 #+end_src
 
 Then =M-x xwapp-copy-remote-url= copies a page's address there, which
 holds its secret, so it is not shown: =https://box.tail1234.ts.net/SECRET/...=.
 
+- *What came through the proxy is told by the socket, not a header.*
+  Were the proxy pointed at the loopback port, any program on this
+  machine that reaches 127.0.0.1 --- another account, a sandbox ---
+  could send the same port a request wearing your tailnet =Host= and
+  =Tailscale-User-Login=, and be answered as one of your devices, the
+  secret handed over through =/open/= (seen 2026-10-13).  =tailscale
+  serve= strips a device's own =Tailscale-User-Login= only on what
+  truly passes through it; a request straight to the port never did.
+  So the proxy forwards to a socket made yours alone, and only a
+  request arriving on it is treated as the proxy's.  The loopback port
+  answers this machine's browser and nothing else.  What a header
+  cannot forge is the transport.
 - *Under one of =xwapp-remote-hosts=, for one of =xwapp-remote-users=
-  only.*  =tailscale serve= puts the device's user in
-  =Tailscale-User-Login=, having taken off any such header the device
-  sent; a request with none --- a tagged device, anything not through
-  the proxy --- or another user's gets 404.  The secret is still
-  needed, the origin still checked: =https://= or =http://= the name.
+  only.*  On the socket, =tailscale serve= puts the device's user in
+  =Tailscale-User-Login=; a request with none --- a tagged device ---
+  or another user's gets 404.  The secret is still needed, the origin
+  still checked: =https://= or =http://= the name.
 - *The address is kept,* with no tab open and over restarts: an
   address saved on a phone keeps working.  At startup =xwapp-resume=
   loads the apps and Emacs listens on =xwapp-port= --- with remote
@@ -269,7 +285,10 @@ over a restart and renewed, in batch; then in WebKit, a page at
 =https://= under the box's name, its requests passed on as =tailscale
 serve= does --- served, its calls and intents through, another user and
 no user refused, and after a restart the open page back and a saved
-address working.
+address working.  The socket is the proof the proxy came through: the
+same box request on loopback, dressed in the proxy's headers, is
+refused, and =/open/= hands no secret there; the socket and its
+directory are yours alone.
 
 ** In a browser (=e2e/=)
 
@@ -278,8 +297,9 @@ need Emacs start one in batch (=e2e/apps.el=, =emacs -Q=) serving
 pr-view and clickup-view with Bitbucket and ClickUp answered from
 =e2e/fixtures/=: nothing reaches the network, no token is read, and a
 ClickUp write changes only the fixture's copy of the task.  The browser
-reaches that Emacs through a proxy doing what =tailscale serve= does,
-so a page opens as it would on the phone.
+reaches that Emacs through a proxy doing what =tailscale serve= does ---
+forwarding to the socket, not the loopback port --- so a page opens as
+it would on the phone.
 
 #+begin_src sh
   cd ~/.emacs.d/local/xwapp/e2e

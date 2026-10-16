@@ -20,6 +20,8 @@
       xwapp-port (string-to-number (getenv "E2E_PORT"))
       xwapp-remote-hosts '("box.tail0.ts.net")
       xwapp-remote-users '("me@example.com")
+      ;; The proxy forwards here, as `tailscale serve unix:' would.
+      xwapp-remote-socket (expand-file-name "remote.sock" e2e-dir)
       xwapp-browse-function #'ignore)
 (require 'pr-view)
 (require 'clickup-view)

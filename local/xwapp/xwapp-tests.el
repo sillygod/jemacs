@@ -206,6 +206,8 @@ global last session, which may be another app's page."
   (declare (indent 0))
   `(let* ((root (file-name-as-directory (make-temp-file "xwapp" t)))
           (xwapp--server nil)
+          (xwapp--unix-server nil)
+          (xwapp-remote-socket (expand-file-name "sock/remote.sock" root))
           (xwapp--served (make-hash-table :test 'eq))
           (xwapp-state-file (expand-file-name "state.eld" root))
           (xwapp--keep nil)
@@ -228,28 +230,54 @@ global last session, which may be another app's page."
        (when (get-buffer " *xwapp-test*")
          (let ((kill-buffer-hook nil)) (kill-buffer " *xwapp-test*")))
        (when xwapp--server (delete-process xwapp--server))
+       (when xwapp--unix-server (delete-process xwapp--unix-server))
        (delete-directory root t))))
 
-(defun xwapp-test--ask (method path &optional body headers)
+(defun xwapp-test--proxy-up ()
+  "Bring up the proxy's socket, as `xwapp--port' does under
+`xwapp-remote-hosts'.  For use once a test has bound the hosts."
+  (xwapp--port)
+  (unless (process-live-p xwapp--unix-server)
+    (error "proxy socket not listening")))
+
+(defun xwapp-test--ask (method path &optional body headers transport)
   "Send METHOD PATH with BODY and HEADERS.  Return a cell whose car
-becomes (CODE . BODY) once the server closes; its cdr is the client."
+becomes (CODE . BODY) once the server closes; its cdr is the client.
+TRANSPORT `proxy' goes over `xwapp-remote-socket', as the proxy does;
+else loopback, as the browser does."
   (let* ((cell (list nil))
          (port (process-contact xwapp--server :service))
          (out "")
-         (proc (make-network-process
-                :name "xwapp-test-client" :host "127.0.0.1" :service port
-                :coding 'binary :noquery t
-                :filter (lambda (_p s) (setq out (concat out s)))
-                :sentinel
-                (lambda (_p _e)
-                  (unless (car cell)
-                    (setcar cell
-                            (if (string-match "\\`HTTP/1.1 \\([0-9]+\\)" out)
-                                (cons (string-to-number (match-string 1 out))
-                                      (decode-coding-string
-                                       (substring out (+ 4 (string-search "\r\n\r\n" out)))
-                                       'utf-8))
-                              (cons 0 out)))))))
+         (proc (if (eq transport 'proxy)
+                   (make-network-process
+                    :name "xwapp-test-proxy" :family 'local
+                    :service (expand-file-name xwapp-remote-socket)
+                    :coding 'binary :noquery t
+                    :filter (lambda (_p s) (setq out (concat out s)))
+                    :sentinel
+                    (lambda (_p _e)
+                      (unless (car cell)
+                        (setcar cell
+                                (if (string-match "\\`HTTP/1.1 \\([0-9]+\\)" out)
+                                    (cons (string-to-number (match-string 1 out))
+                                          (decode-coding-string
+                                           (substring out (+ 4 (string-search "\r\n\r\n" out)))
+                                           'utf-8))
+                                  (cons 0 out))))))
+                 (make-network-process
+                  :name "xwapp-test-client" :host "127.0.0.1" :service port
+                  :coding 'binary :noquery t
+                  :filter (lambda (_p s) (setq out (concat out s)))
+                  :sentinel
+                  (lambda (_p _e)
+                    (unless (car cell)
+                      (setcar cell
+                              (if (string-match "\\`HTTP/1.1 \\([0-9]+\\)" out)
+                                  (cons (string-to-number (match-string 1 out))
+                                        (decode-coding-string
+                                         (substring out (+ 4 (string-search "\r\n\r\n" out)))
+                                         'utf-8))
+                                (cons 0 out))))))))
          (bytes (encode-coding-string (or body "") 'utf-8)))
     (setcdr cell proc)
     (process-send-string
@@ -268,8 +296,8 @@ becomes (CODE . BODY) once the server closes; its cdr is the client."
       (accept-process-output nil 0.02)))
   (car cell))
 
-(defun xwapp-test--do (method path &optional body headers)
-  (xwapp-test--answer (xwapp-test--ask method path body headers)))
+(defun xwapp-test--do (method path &optional body headers transport)
+  (xwapp-test--answer (xwapp-test--ask method path body headers transport)))
 
 (defun xwapp-test--turn (&optional secs)
   "Let the server and its timers run for SECS, 0.1 by default."
@@ -653,36 +681,42 @@ With no users, or no names, to none."
           (xwapp-remote-users (list "me@example.com"))
           (index (xwapp-test--at app "app/ui/index.html"))
           (https (concat "https://" xwapp-test--box)))
-      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))
+      (xwapp-test--proxy-up)
+      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com") 'proxy)
                      '(200 . "<app/ui/index.html>")))
       (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com" nil
-                                                                               "box.tail0.ts.net:8443")))
+                                                                               "box.tail0.ts.net:8443")
+                                          'proxy))
                      200))
       (dolist (h (list (xwapp-test--from-box nil)
                        (xwapp-test--from-box "someone@else.com")
                        (xwapp-test--from-box "me@example.com" nil "other.tail0.ts.net")
                        (xwapp-test--from-box "me@example.com" "https://evil.example")
                        (xwapp-test--from-box "me@example.com" "http://127.0.0.1:1")))
-        (should (equal (car (xwapp-test--do "GET" index nil h)) 404)))
+        (should (equal (car (xwapp-test--do "GET" index nil h 'proxy)) 404)))
+      ;; The very same box request on loopback -- a program dressing up
+      ;; as the proxy -- is not answered: the transport is the proof.
+      (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404))
+      (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com" https))) 404))
       ;; The page there, its own origin: hello, intents and calls.
       (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}"
-                                          (xwapp-test--from-box "me@example.com" https)))
+                                          (xwapp-test--from-box "me@example.com" https) 'proxy))
                      204))
       (should (xwapp-live-p app))
       (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"go\"}"
-                                          (xwapp-test--from-box "me@example.com" https)))
+                                          (xwapp-test--from-box "me@example.com" https) 'proxy))
                      204))
       (xwapp-test--turn)
       (should (equal intents '(((op . "go")))))
       (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"no\"}"
-                                          (xwapp-test--from-box "me@example.com" "https://evil.example")))
+                                          (xwapp-test--from-box "me@example.com" "https://evil.example") 'proxy))
                      404))
       ;; Refused in words: an empty answer, a browser would download.
-      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box nil)) '(404 . "Not Found")))
+      (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box nil) 'proxy) '(404 . "Not Found")))
       (let ((xwapp-remote-users nil))
-        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404)))
+        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com") 'proxy)) 404)))
       (let ((xwapp-remote-hosts nil))
-        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404)))
+        (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com") 'proxy)) 404)))
       ;; This machine as before.
       (should (equal (car (xwapp-test--do "GET" index)) 200)))))
 
@@ -733,9 +767,10 @@ its secret is renewed.  Only a page that can open again has one."
                (again (funcall made)))
           (should (equal (xwapp--secret again) secret))
           (xwapp-test--turn 0.3)
+          (xwapp-test--proxy-up)
           (should (equal (cadar (plist-get (xwapp--state) :pages)) secret))
           (should (equal (car (xwapp-test--do "GET" (concat "/" secret "/app/ui/index.html") nil
-                                              (xwapp-test--from-box "me@example.com")))
+                                              (xwapp-test--from-box "me@example.com") 'proxy))
                          200))
           ;; Renewed: the old address is no one's.
           (cl-letf (((symbol-function 'message) #'ignore))
@@ -743,7 +778,7 @@ its secret is renewed.  Only a page that can open again has one."
           (should-not (equal (xwapp--secret again) secret))
           (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret again)))
           (should (equal (car (xwapp-test--do "GET" (concat "/" secret "/app/ui/index.html") nil
-                                              (xwapp-test--from-box "me@example.com")))
+                                              (xwapp-test--from-box "me@example.com") 'proxy))
                          404))
           ;; Copied, not shown.
           (let (copied said)
@@ -769,12 +804,20 @@ another login, another package or a page that cannot open again, 404."
       (should (equal url (format "https://%s/open/app#room/chat/%%7Ew%%2Fx%%2F" xwapp-test--box)))
       (should-not (string-match-p (xwapp--secret app) url))
       (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret app)))
-      (let ((raw (lambda (headers)
-                   (let* ((port (process-contact xwapp--server :service))
-                          (out "")
-                          (proc (make-network-process
-                                 :name "xwapp-test-raw" :host "127.0.0.1" :service port :coding 'binary :noquery t
-                                 :filter (lambda (_p s) (setq out (concat out s))))))
+      (xwapp-test--proxy-up)
+      (let ((raw (lambda (headers transport)
+                   (let* ((out "")
+                          (proc (if (eq transport 'proxy)
+                                    (make-network-process
+                                     :name "xwapp-test-raw" :family 'local
+                                     :service (expand-file-name xwapp-remote-socket)
+                                     :coding 'binary :noquery t
+                                     :filter (lambda (_p s) (setq out (concat out s))))
+                                  (make-network-process
+                                   :name "xwapp-test-raw" :host "127.0.0.1"
+                                   :service (process-contact xwapp--server :service)
+                                   :coding 'binary :noquery t
+                                   :filter (lambda (_p s) (setq out (concat out s)))))))
                      (process-send-string
                       proc (concat "GET /open/app HTTP/1.1\r\n"
                                    (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
@@ -782,23 +825,27 @@ another login, another package or a page that cannot open again, 404."
                      (with-timeout (5 (error "No answer"))
                        (while (process-live-p proc) (accept-process-output nil 0.02)))
                      out))))
-        (let ((out (funcall raw (xwapp-test--from-box "me@example.com"))))
+        ;; Through the proxy: on to the page, the secret in the Location.
+        (let ((out (funcall raw (xwapp-test--from-box "me@example.com") 'proxy)))
           (should (string-prefix-p "HTTP/1.1 302 Found\r\n" out))
           (should (string-match-p (format "\r\nLocation: /%s/app/ui/index\\.html\r\n" (xwapp--secret app)) out)))
+        ;; The same request on loopback, dressed as the proxy, gets no
+        ;; secret -- the whole of the hole seen 2026-10-13.
+        (should (string-prefix-p "HTTP/1.1 404" (funcall raw (xwapp-test--from-box "me@example.com") nil)))
         (dolist (h (list `(("Host" . ,(format "127.0.0.1:%d" (process-contact xwapp--server :service))))
                          (xwapp-test--from-box "someone@else.com")
                          (xwapp-test--from-box nil)))
-          (should (string-prefix-p "HTTP/1.1 404" (funcall raw h)))))
+          (should (string-prefix-p "HTTP/1.1 404" (funcall raw h 'proxy)))))
       (dolist (path '("/open/other" "/open/ap" "/open/app/ui" "/open"))
-        (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com"))) 404)))
-      (should (equal (car (xwapp-test--do "POST" "/open/app" "{}" (xwapp-test--from-box "me@example.com"))) 404))
+        (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com") 'proxy)) 404)))
+      (should (equal (car (xwapp-test--do "POST" "/open/app" "{}" (xwapp-test--from-box "me@example.com") 'proxy)) 404))
       ;; A page given no address yet gets one there, kept as any is.
       (xwapp--put app :secret nil)
       (delete-file xwapp-state-file)
-      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com"))) 302))
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com") 'proxy)) 302))
       (should (equal (cadar (plist-get (xwapp--state) :pages)) (xwapp--secret app)))
       (xwapp--put app :reopen nil)
-      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com"))) 404)))))
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil (xwapp-test--from-box "me@example.com") 'proxy)) 404)))))
 
 (defun xwapp-test--json (s)
   (json-parse-string s :object-type 'alist :array-type 'list))
@@ -892,8 +939,45 @@ them it waits to be asked."
         (funcall (car startup))
         (should-not (process-live-p xwapp--server)))
       (let ((xwapp-remote-hosts (list xwapp-test--box)))
-        (funcall (car startup))
-        (should (process-live-p xwapp--server))))))
+        ;; A loose umask: the perms that stand are the ones xwapp pins.
+        (with-file-modes #o777 (funcall (car startup)))
+        (should (process-live-p xwapp--server))
+        ;; and the proxy's socket too, made yours alone.
+        (should (process-live-p xwapp--unix-server))
+        (let ((sock (expand-file-name xwapp-remote-socket)))
+          (should (eq (car (file-attributes sock)) nil))  ; a socket, not a dir
+          (should (= (file-modes sock) #o600))
+          (should (= (file-modes (file-name-directory sock)) #o700)))))))
+
+(ert-deftest xwapp-test-browser-the-proxy-socket-is-the-proof ()
+  "The transport, not a header, says a request came through the proxy: a
+page and an `/open/' secret are answered on the socket, and refused on
+loopback however the headers are dressed (the hole seen 2026-10-13)."
+  (xwapp-test--keeping
+    (let* ((xwapp-remote-hosts (list xwapp-test--box))
+           (xwapp-remote-users (list "me@example.com"))
+           (index (xwapp-test--at app "app/ui/index.html"))
+           (box (xwapp-test--from-box "me@example.com")))
+      (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+      (xwapp-remote-url app)               ; give it a secret, kept
+      (xwapp-test--proxy-up)
+      ;; On the socket: served, and `/open/' hands the secret on.
+      (should (equal (car (xwapp-test--do "GET" index nil box 'proxy)) 200))
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil box 'proxy)) 302))
+      ;; The identical bytes on loopback -- a sandbox or another program
+      ;; that reaches 127.0.0.1 and dresses up as the proxy -- get nothing.
+      (should (equal (car (xwapp-test--do "GET" index nil box)) 404))
+      (should (equal (car (xwapp-test--do "GET" "/open/app" nil box)) 404))
+      ;; Nor does loopback win by claiming to be loopback: `here' and
+      ;; `/open' both need the transport, not just the Host.
+      (let ((loop (list (cons "Host" (format "127.0.0.1:%d" (process-contact xwapp--server :service))))))
+        (should (equal (car (xwapp-test--do "GET" "/open/app" nil loop)) 404))
+        (should (equal (car (xwapp-test--do "GET" index nil loop 'proxy)) 404)))
+      ;; The command that points the proxy here names the socket.
+      (should (string-match-p (concat "unix:" (regexp-quote (expand-file-name xwapp-remote-socket)) "\\'")
+                              (xwapp-remote-serve-command)))
+      (let ((xwapp-remote-scheme "http"))
+        (should (string-match-p "--http=80 " (xwapp-remote-serve-command)))))))
 
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

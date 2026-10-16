@@ -89,6 +89,26 @@ a request with none, or another's, is not answered."
 \"http\" when it has none (`--http').  Only the addresses it gives say so."
   :type '(choice (const "https") (const "http")))
 
+(defcustom xwapp-remote-socket (locate-user-emacs-file "xwapp/remote.sock")
+  "A Unix socket the proxy for `xwapp-remote-hosts' forwards to, in place
+of the loopback port the browser uses.
+
+What a request came over is the one thing a header cannot forge.  The
+browser speaks TCP to 127.0.0.1, so a program that reaches loopback can
+dress a request as the proxy's -- its tailnet Host, its
+Tailscale-User-Login -- and be answered as one of your other devices,
+secret and all (seen 2026-10-13).  So the proxy is pointed at this
+socket instead, and only a request that arrives on it is treated as
+having come through the proxy: a page for your other devices, or a
+secret through `/open/'.  The loopback port serves this machine alone.
+
+The socket and the directory holding it are made yours alone, so another
+account cannot open it; a sandbox that reaches loopback but not this
+path cannot either.  One that is also you, with the run of your files,
+is not kept out -- that is past what a transport can tell.  Point the
+proxy here with `xwapp-remote-serve-command'."
+  :type 'string)
+
 
 ;;; HTTP
 
@@ -451,7 +471,11 @@ secret: Emacs makes it readable by you alone.")
   "Non-nil when addresses outlive Emacs.  A batch Emacs has no tabs.")
 
 (defvar xwapp--server nil
-  "The process listening for browsers, or nil.")
+  "The process listening on loopback for browsers, or nil.")
+
+(defvar xwapp--unix-server nil
+  "The process listening on `xwapp-remote-socket' for the proxy, or nil.
+A request on it came through the proxy; one on `xwapp--server' did not.")
 
 (defvar xwapp--served (make-hash-table :test 'eq)
   "App -> plist of its life in a browser:
@@ -507,17 +531,37 @@ The page reaches the kit as ../../xwapp/ui, there and here alike."
   (expand-file-name "../../" (file-name-directory (xwapp-index app))))
 
 (defun xwapp--listen (port)
-  "Listen for browsers on PORT, t for any."
+  "Listen for browsers on loopback PORT, t for any.
+A request here is `local': the browser's, or any program that reaches
+loopback -- never trusted as the proxy's, whatever its headers say."
   (make-network-process :name "xwapp" :server t :noquery t
                         :host "127.0.0.1" :service port :family 'ipv4
                         :coding 'binary
-                        :filter #'xwapp--filter
+                        :filter (lambda (proc bytes) (xwapp--filter proc bytes 'local))
                         :sentinel #'xwapp--sentinel))
+
+(defun xwapp--listen-unix ()
+  "Listen on `xwapp-remote-socket' for the proxy; return the process.
+The socket and its directory are made yours alone, so reaching it is
+what a request from the proxy can do and a forger on loopback cannot: a
+request here is `proxy'.  A stale socket from a past run is replaced."
+  (let* ((sock (expand-file-name xwapp-remote-socket))
+         (dir (file-name-directory sock)))
+    (make-directory dir t)
+    (set-file-modes dir #o700)
+    (when (file-exists-p sock) (delete-file sock))
+    (with-file-modes #o600
+      (make-network-process :name "xwapp-unix" :server t :noquery t
+                            :family 'local :service sock
+                            :coding 'binary
+                            :filter (lambda (proc bytes) (xwapp--filter proc bytes 'proxy))
+                            :sentinel #'xwapp--sentinel))))
 
 (defun xwapp--port ()
   "The port pages are served on, listening first if need be: on the one
 kept in `xwapp-state-file' while it is free, which a tab from before a
-restart still asks."
+restart still asks.  With `xwapp-remote-hosts', the proxy's socket is
+listened on too."
   (unless (process-live-p xwapp--server)
     (let ((kept (plist-get (xwapp--state) :port)))
       (setq xwapp--server
@@ -528,6 +572,11 @@ restart still asks."
                                         xwapp-port (error-message-string err)))))
                   ((and kept (ignore-errors (xwapp--listen kept))))
                   (t (xwapp--listen t))))))
+  (when (and xwapp-remote-hosts (not (process-live-p xwapp--unix-server)))
+    (condition-case err
+        (setq xwapp--unix-server (xwapp--listen-unix))
+      (error (message "xwapp: cannot listen on %s (`xwapp-remote-socket'): %s"
+                      xwapp-remote-socket (error-message-string err)))))
   (process-contact xwapp--server :service))
 
 (defun xwapp--page (app)
@@ -588,6 +637,28 @@ here lets go of it, as for any other tab."
   (xwapp-copy (xwapp-remote-url app))
   (message "Copied the address of %s for your other devices; it holds the page's secret"
            (string-trim (xwapp-buffer-name app))))
+
+(defun xwapp-remote-serve-command ()
+  "The `tailscale serve' command that points the proxy at
+`xwapp-remote-socket', reproducing `xwapp-remote-scheme'.
+It replaces the `/' mount of the serve config, so the pages reach your
+tailnet over the socket, not the loopback port a local program can
+dress up as the proxy."
+  (format "tailscale serve --bg %sunix:%s"
+          (if (equal xwapp-remote-scheme "http") "--http=80 " "")
+          (expand-file-name xwapp-remote-socket)))
+
+;;;###autoload
+(defun xwapp-remote-serve-setup ()
+  "Copy the `tailscale serve' command that points the proxy at this
+machine's socket, for you to run.  Reconfiguring the proxy is yours to
+do: this only hands you the exact command."
+  (interactive)
+  (unless xwapp-remote-hosts
+    (user-error "No `xwapp-remote-hosts': nothing reaches this machine from elsewhere"))
+  (let ((cmd (xwapp-remote-serve-command)))
+    (xwapp-copy cmd)
+    (message "Copied; run it to point the proxy at the socket:\n%s" cmd)))
 
 ;;;###autoload
 (defun xwapp-renew-secret (app)
@@ -742,8 +813,10 @@ takes it once loaded, and this buffer is killed."
 
 ;; Serving
 
-(defun xwapp--filter (proc bytes)
-  "Gather the request on PROC from BYTES as they come, then answer it."
+(defun xwapp--filter (proc bytes transport)
+  "Gather the request on PROC from BYTES as they come, then answer it.
+TRANSPORT is where it arrived -- `local' on loopback, `proxy' on the
+socket -- which, not any header, says whether it came through the proxy."
   (unless (process-get proc 'xwapp-taken)
     (set-process-query-on-exit-flag proc nil)
     (let ((in (concat (process-get proc 'xwapp-in) bytes)))
@@ -754,7 +827,7 @@ takes it once loaded, and this buffer is killed."
           (process-put proc 'xwapp-taken t)
           (process-put proc 'xwapp-in nil)
           (condition-case err
-              (xwapp--answer proc request)
+              (xwapp--answer proc request transport)
             (error
              (message "xwapp: %s" (error-message-string err))
              (xwapp--respond proc 500))))))))
@@ -774,31 +847,41 @@ takes it once loaded, and this buffer is killed."
         (pcase-let ((`(,method ,target) (split-string (car lines) " ")))
           (list method target headers (substring body 0 size)))))))
 
-(defun xwapp--from-here-p (headers)
-  "`here' when HEADERS name this server as the host, and as the origin
-when there is one: a name rebound to 127.0.0.1 gets nothing, nor does
-a page of another site that has the secret.  `elsewhere' under one of
-`xwapp-remote-hosts', for one of `xwapp-remote-users'."
+(defun xwapp--from-here-p (headers transport)
+  "Whether REQUEST's HEADERS and TRANSPORT make it one to answer.
+
+`here' for the browser on this machine: a request on loopback (TRANSPORT
+`local') naming this server as its host, and as its origin when there is
+one -- a name rebound to 127.0.0.1 gets nothing, nor does a page of
+another site that has the secret.
+
+`elsewhere' for your other devices: a request through the proxy
+(TRANSPORT `proxy', the one transport a header cannot forge) under one
+of `xwapp-remote-hosts', for one of `xwapp-remote-users'.  The proxy's
+own Tailscale-User-Login is believed only because it arrived this way;
+the same header on loopback is some program's own word, and gets
+nothing."
   (let* ((port (process-contact xwapp--server :service))
          (here (list (format "127.0.0.1:%d" port) (format "localhost:%d" port)))
          (host (downcase (or (cdr (assoc "host" headers)) "")))
          (origin (cdr (assoc "origin" headers))))
     (cond
-     ((member host here)
+     ((and (eq transport 'local) (member host here))
       (and (or (null origin)
                (member origin (mapcar (lambda (h) (concat "http://" h)) here)))
            'here))
-     ((member (car (split-string host ":")) (mapcar #'downcase xwapp-remote-hosts))
+     ((and (eq transport 'proxy)
+           (member (car (split-string host ":")) (mapcar #'downcase xwapp-remote-hosts)))
       (and (member (cdr (assoc "tailscale-user-login" headers)) xwapp-remote-users)
            (or (null origin)
                (member origin (list (concat "https://" host) (concat "http://" host))))
            'elsewhere)))))
 
-(defun xwapp--open (proc parts headers)
+(defun xwapp--open (proc parts headers transport)
   "Send PROC on to the page PARTS name, (PKG), under its secret: a
 request from your other devices for `xwapp-remote-open-url'.  Not from
 this machine, where any page in the browser could ask."
-  (let ((app (and (eq (xwapp--from-here-p headers) 'elsewhere)
+  (let ((app (and (eq (xwapp--from-here-p headers transport) 'elsewhere)
                   (= (length parts) 1)
                   (catch 'found
                     (maphash (lambda (app _)
@@ -812,8 +895,8 @@ this machine, where any page in the browser could ask."
       (xwapp--respond proc 302 nil nil `(("Location" . ,(xwapp--path app))))
       (xwapp--save))))
 
-(defun xwapp--answer (proc request)
-  "Answer REQUEST, which came on PROC."
+(defun xwapp--answer (proc request transport)
+  "Answer REQUEST, which came on PROC over TRANSPORT (see `xwapp--filter')."
   (pcase-let* ((`(,method ,target ,headers ,body) request)
                (`(,path ,query) (split-string (or target "") "?"))
                (`(,secret . ,rest) (split-string path "/" t))
@@ -821,8 +904,8 @@ this machine, where any page in the browser could ask."
                (args (url-parse-query-string (or query "")))
                (page (cadr (assoc "page" args))))
     (cond
-     ((and (equal secret "open") (equal method "GET")) (xwapp--open proc rest headers))
-     ((not (and app (xwapp--from-here-p headers))) (xwapp--respond proc 404))
+     ((and (equal secret "open") (equal method "GET")) (xwapp--open proc rest headers transport))
+     ((not (and app (xwapp--from-here-p headers transport))) (xwapp--respond proc 404))
      ((and (equal method "POST") (equal rest '("hello")) page)
       (xwapp--hello app proc page (equal (cadr (assoc "soft" args)) "1")))
      ((and (equal method "GET") (equal rest '("next")))
