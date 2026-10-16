@@ -57,6 +57,22 @@ is NULL once the view is gone, and posting then would crash Emacs."
           (jwebkit--give-focus-back)
           (should (= posted 0)))))))
 
+(ert-deftest jwebkit-test-cmd-c-copies-like-Y ()
+  "⌘C (M-c, since ⌘ is meta here) copies the page selection -- the same
+command Y does."
+  (let ((evil-collection-setup-hook nil)
+        (kill-buffer-hook nil)
+        (jwebkit--setup-done nil)
+        (bound nil))
+    (cl-letf (((symbol-function 'jwebkit-pdf-enable) #'ignore)
+              ((symbol-function 'jwebkit-md-enable) #'ignore)
+              ((symbol-function 'jwebkit--bind)
+               (lambda (_states key fn)
+                 (setf (alist-get key bound nil nil #'equal) fn))))
+      (jwebkit-setup)
+      (should (eq (alist-get (kbd "M-c") bound nil nil #'equal) #'xwidget-webkit-copy-selection-as-kill))
+      (should (eq (alist-get (kbd "Y") bound nil nil #'equal) #'xwidget-webkit-copy-selection-as-kill)))))
+
 (ert-deftest jwebkit-test-keys-survive-evil-collection ()
   "evil-collection binds f and gi to `undefined' in xwidget whenever its
 init reaches xwidget, which with evil on `:defer 0' is after

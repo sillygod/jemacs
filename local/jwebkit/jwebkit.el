@@ -458,6 +458,10 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
   (jwebkit--bind '(normal motion) (kbd "i") #'jwebkit-edit)
   (jwebkit--bind '(normal motion) (kbd "gi") #'jwebkit-focus-input)
   (jwebkit--bind '(normal motion) (kbd "Y") #'xwidget-webkit-copy-selection-as-kill)
+  ;; ⌘C too (⌘ is meta here), the habit from everywhere else -- copies the
+  ;; page selection, as Y does.  WebKit forwards the key to Emacs unless an
+  ;; input has focus, where it copies within the page itself instead.
+  (jwebkit--bind '(normal motion) (kbd "M-c") #'xwidget-webkit-copy-selection-as-kill)
   (jwebkit--bind '(normal motion) (kbd "&") #'jwebkit-open-external)
   (jwebkit--bind '(normal motion) (kbd "gp") #'jwebkit-pdf-goto-page)
   (jwebkit--bind '(normal motion) (kbd "gO") #'jwebkit-pdf-outline)
