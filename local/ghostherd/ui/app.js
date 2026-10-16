@@ -1437,11 +1437,15 @@
       by.get(k).push(a);
     });
     const rank = (s) => (s in RANK ? RANK[s] : 9);
+    // The state that needs you first (RANK), then the most recently
+    // updated -- not by name, so what just moved rises.  A group's
+    // recency is its most recent agent's.
     const groups = [...by.entries()].map(([project, list]) => ({
       project,
-      list: list.sort((a, b) => rank(a.state) - rank(b.state) || a.name.localeCompare(b.name)),
+      list: list.sort((a, b) => rank(a.state) - rank(b.state) || (b.since || 0) - (a.since || 0)),
+      since: Math.max(0, ...list.map((a) => a.since || 0)),
     }));
-    groups.sort((a, b) => rank(a.list[0].state) - rank(b.list[0].state) || leaf(a.project).localeCompare(leaf(b.project)));
+    groups.sort((a, b) => rank(a.list[0].state) - rank(b.list[0].state) || b.since - a.since);
     const keep = app.scrollTop;
     box.innerHTML = groups.length
       ? groups.map((g) => {
