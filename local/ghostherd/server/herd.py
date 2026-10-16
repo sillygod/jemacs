@@ -87,6 +87,10 @@ RECENT_SECONDS = 1800
 # Settled mail, asks, commands, replies, and pushes kept in herd.sqlite
 # before tick prunes them.
 HISTORY_SECONDS = 7 * 86400
+# How often `tick' actually prunes.  The tick fires several times a second;
+# the window is days, so a prune per second would be tens of thousands of
+# no-op full-table scans a day.  The last prune's time is kept in `meta'.
+PRUNE_EVERY = 3600
 
 
 def _ms(iso: str | None) -> float | None:
@@ -1429,11 +1433,18 @@ class HerdStore:
         """Delete terminal records older than HISTORY_SECONDS.  Never touch
         queued/open mail, open or uncollected waiting asks, asks belonging
         to an active run or an open parent ask, queued commands, or unsent
-        replies and pushes.  Caller holds `_mu`."""
-        cutoff = datetime.fromtimestamp(
-            datetime.fromisoformat(now).timestamp() - HISTORY_SECONDS,
-            tz=timezone.utc,
-        ).isoformat()
+        replies and pushes.  Runs at most once per PRUNE_EVERY -- the tick is
+        sub-second, the window is days -- keeping the last run's time in
+        `meta'.  Caller holds `_mu'."""
+        now_ts = datetime.fromisoformat(now).timestamp()
+        row = self._conn.execute("SELECT v FROM meta WHERE k = 'pruned'").fetchone()
+        if row is not None:
+            try:
+                if now_ts - float(row[0]) < PRUNE_EVERY:
+                    return
+            except (TypeError, ValueError):
+                pass
+        cutoff = datetime.fromtimestamp(now_ts - HISTORY_SECONDS, tz=timezone.utc).isoformat()
         self._conn.execute(
             """
             DELETE FROM mail
@@ -1454,6 +1465,9 @@ class HerdStore:
             """,
             (cutoff,),
         )
+        # `taken' is in flight (handed to Emacs, awaiting its reply), not
+        # strictly terminal; after a week with no reply it is a fire-and-
+        # forget command that will never come back, so it is collected too.
         self._conn.execute(
             """
             DELETE FROM commands
@@ -1473,6 +1487,9 @@ class HerdStore:
             WHERE sent = 1 AND created_at < ?
             """,
             (cutoff,),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta (k, v) VALUES ('pruned', ?)", (str(now_ts),)
         )
 
     def _upsert_alias(self, name: str) -> str:

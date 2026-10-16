@@ -355,9 +355,14 @@ def test_prune_removes_only_old_settled_rows(tmp_path: Path):
         (old_iso, old_iso),
     )
 
-    # 3. Commands & Replies: old done+sent, recent done+sent, old queued+unsent.
+    # 3. Commands & Replies: old done+sent, recent done+sent, old queued+unsent,
+    #    and an old 'taken' (in-flight but a week gone -> fire-and-forget, pruned).
     h._conn.execute(
         "INSERT INTO commands (id, op, session, status, created_at) VALUES ('c-old-done', 'answer', 'rd', 'done', ?)",
+        (old_iso,),
+    )
+    h._conn.execute(
+        "INSERT INTO commands (id, op, session, status, created_at) VALUES ('c-old-taken', 'answer', 'rd', 'taken', ?)",
         (old_iso,),
     )
     h._conn.execute("INSERT INTO replies (id, chat_id, text, sent) VALUES ('c-old-done', 1, 'ok', 1)")
@@ -376,6 +381,9 @@ def test_prune_removes_only_old_settled_rows(tmp_path: Path):
     h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (1, '{}', ?, 1)", (old_iso,))
     h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (2, '{}', ?, 1)", (recent_iso,))
     h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (3, '{}', ?, 0)", (old_iso,))
+    # The first tick above already pruned (nothing old then); clear its mark so
+    # this one prunes the rows just inserted, rather than being throttled.
+    h._conn.execute("DELETE FROM meta WHERE k = 'pruned'")
     h._conn.commit()
 
     h.tick(sessions=snap)
@@ -395,6 +403,32 @@ def test_prune_removes_only_old_settled_rows(tmp_path: Path):
 
     push_ids = {r[0] for r in h._conn.execute("SELECT id FROM pushes").fetchall()}
     assert push_ids == {2, 3}
+    reset_herd()
+
+
+def test_prune_is_throttled_to_once_per_interval(tmp_path: Path):
+    """tick prunes at most once per PRUNE_EVERY, not on every sub-second tick:
+    a row that comes due between ticks waits until the interval has passed."""
+    from datetime import datetime, timedelta, timezone
+    import herd as herd_mod
+
+    h = _store(tmp_path)
+    now = datetime.now(timezone.utc)
+    old_iso = (now - timedelta(seconds=herd_mod.HISTORY_SECONDS + 3600)).isoformat()
+    snap = [{"name": "rd", "kind": "claude", "state": "idle", "project": "/p"}]
+    h.tick(sessions=snap)  # first prune, marks 'pruned'
+
+    h._conn.execute("INSERT INTO pushes (id, push, created_at, sent) VALUES (9, '{}', ?, 1)", (old_iso,))
+    h._conn.commit()
+    h.tick(sessions=snap)  # within PRUNE_EVERY -> throttled
+    assert h._conn.execute("SELECT 1 FROM pushes WHERE id = 9").fetchone() is not None
+
+    # Pretend the last prune was more than an interval ago: the next tick prunes.
+    h._conn.execute("UPDATE meta SET v = ? WHERE k = 'pruned'",
+                    (str(now.timestamp() - herd_mod.PRUNE_EVERY - 1),))
+    h._conn.commit()
+    h.tick(sessions=snap)
+    assert h._conn.execute("SELECT 1 FROM pushes WHERE id = 9").fetchone() is None
     reset_herd()
 
 
