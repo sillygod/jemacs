@@ -164,7 +164,7 @@
       <div class="station" role="listitem">
         <div class="where">Mac · tailscale serve :80</div>
         <div class="what">代理，加上身分</div>
-        <div class="note">刪掉手機送來的 <code>Tailscale-User-Login</code>，換成 Tailscale 認證過的登入；轉到 Emacs 的 unix socket</div>
+        <div class="note">刪掉手機送來的 <code>Tailscale-User-Login</code>，換成 Tailscale 認證過的登入；轉到 Emacs 的 unix socket（轉給 socket 時會把 <code>Host</code> 改寫成 <code>localhost</code>，<code>Origin</code> 則原樣保留）</div>
       </div>
       <div class="hop" aria-hidden="true"><div class="gate"><span class="arrow">→</span><span>檢查 1·2</span></div></div>
       <div class="station" role="listitem">
@@ -199,10 +199,10 @@
       </div>
       <div class="check">
         <div class="num">檢查 2 · 誰在問</div>
-        <h3>看 Host 和身分標頭</h3>
+        <h3>看傳輸來源和身分</h3>
         <ul>
           <li><b>本機來的（走 loopback port）：</b>Host 必須是 <code>127.0.0.1:48123</code> 或 <code>localhost:48123</code>，Origin 要嘛沒有、要嘛就是它自己。別的網站的網頁改不了 Host，也假造不了 Origin</li>
-          <li><b>手機來的（走 unix socket）：</b>Host 必須是 <code>xwapp-remote-hosts</code> 之一，而且 <code>Tailscale-User-Login</code> 必須是你的登入</li>
+          <li><b>手機來的（走 unix socket）：</b><code>Tailscale-User-Login</code> 必須是你的登入（<code>xwapp-remote-users</code> 之一）。serve 轉給 socket 時把 <code>Host</code> 改寫成 <code>localhost</code>，所以 Host 不看——走哪條路才是證明。頁面自己的呼叫會帶 <code>Origin</code>，必須是 <code>xwapp-remote-hosts</code> 之一（你的 tailnet 名稱），擋掉手機上別的網站</li>
           <li>判斷是哪一種，看的是<b>請求從哪個監聽進來</b>，不是標頭：標頭能假造，走哪條路不能。只有真的從代理轉來的，才可能算「手機來的」</li>
           <li>兩種都不是 → 404</li>
         </ul>
@@ -223,7 +223,7 @@
         <ol>
           <li>手機打開 <code>http://&lt;tailnet 名稱&gt;/open/ghostherd#agents</code></li>
           <li>經隧道到 Mac 的 tailscale serve，它填上你的登入</li>
-          <li>Emacs 看 Host 和登入<span class="gatehit">檢查 2</span></li>
+          <li>Emacs 看傳輸來源和登入<span class="gatehit">檢查 2</span></li>
           <li>通過 → 回 302，轉到 <code>/&lt;密鑰&gt;/ghostherd/…#agents</code></li>
           <li>瀏覽器照轉址再要一次，這次兩道都看<span class="gatehit">檢查 1·2</span></li>
           <li>頁面打開，之後每個請求都帶著密鑰</li>

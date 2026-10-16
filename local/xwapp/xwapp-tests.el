@@ -665,52 +665,63 @@ port another Emacs has is not taken at all."
 (defconst xwapp-test--box "box.tail0.ts.net")
 
 (defun xwapp-test--from-box (&optional login origin host)
-  "Headers of a request through `tailscale serve' on the box, from a
-device of LOGIN (none when nil), its page at ORIGIN when given."
-  (append (list (cons "Host" (or host xwapp-test--box)))
+  "Headers of a request `tailscale serve' forwards from the box to the
+socket: the Host rewritten to \"localhost\" as serve does for a unix
+target (HOST overrides, to show it is not consulted), the device's LOGIN
+stamped in when non-nil, the page's ORIGIN added when the browser sends
+one (serve leaves Origin alone, so it stays the tailnet host)."
+  (append (list (cons "Host" (or host "localhost")))
           (when login (list (cons "Tailscale-User-Login" login)))
           (when origin (list (cons "Origin" origin)))))
 
 (ert-deftest xwapp-test-browser-remote-hosts-for-their-users-only ()
-  "Under a name of `xwapp-remote-hosts', a page is served to one of
-`xwapp-remote-users' alone: not without the login the proxy puts in,
-not for another's, not to another site's page, not under another name.
-With no users, or no names, to none."
+  "Through the proxy -- `tailscale serve' rewriting the Host to
+\"localhost\", stamping the login -- a page is served to one of
+`xwapp-remote-users' alone: not without the login, not for another's.
+The Host serve sends is not consulted -- the transport is the proof.
+The page's own calls carry an Origin, which must name one of
+`xwapp-remote-hosts' (its case need not match); a cross-site page's does
+not, and gets nothing.  With no users, or no names, to none."
   (xwapp-test--with-browser
-    (let ((xwapp-remote-hosts (list "Box.Tail0.ts.net"))
+    (let ((xwapp-remote-hosts (list "Box.Tail0.ts.net"))  ; its case need not match the browser's
           (xwapp-remote-users (list "me@example.com"))
           (index (xwapp-test--at app "app/ui/index.html"))
-          (https (concat "https://" xwapp-test--box)))
+          (https (concat "https://" xwapp-test--box))
+          (http (concat "http://" xwapp-test--box)))
       (xwapp-test--proxy-up)
+      ;; serve's request: Host localhost, login stamped, a navigation (no
+      ;; Origin).  Served.
       (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com") 'proxy)
                      '(200 . "<app/ui/index.html>")))
-      (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com" nil
-                                                                               "box.tail0.ts.net:8443")
+      ;; The Host serve sends is never consulted: even an odd one is served.
+      (should (equal (car (xwapp-test--do "GET" index nil
+                                          (xwapp-test--from-box "me@example.com" nil "whatever:8443")
                                           'proxy))
                      200))
+      ;; No login, or another's: nothing.
       (dolist (h (list (xwapp-test--from-box nil)
-                       (xwapp-test--from-box "someone@else.com")
-                       (xwapp-test--from-box "me@example.com" nil "other.tail0.ts.net")
-                       (xwapp-test--from-box "me@example.com" "https://evil.example")
-                       (xwapp-test--from-box "me@example.com" "http://127.0.0.1:1")))
+                       (xwapp-test--from-box "someone@else.com")))
         (should (equal (car (xwapp-test--do "GET" index nil h 'proxy)) 404)))
-      ;; The very same box request on loopback -- a program dressing up
+      ;; The very same serve request on loopback -- a program dressing up
       ;; as the proxy -- is not answered: the transport is the proof.
       (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com"))) 404))
-      (should (equal (car (xwapp-test--do "GET" index nil (xwapp-test--from-box "me@example.com" https))) 404))
-      ;; The page there, its own origin: hello, intents and calls.
-      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}"
-                                          (xwapp-test--from-box "me@example.com" https) 'proxy))
-                     204))
+      ;; The page there, its own origin (either scheme of a remote host,
+      ;; case aside): hello, intents and calls.
+      (dolist (o (list https http))
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}"
+                                            (xwapp-test--from-box "me@example.com" o) 'proxy))
+                       204)))
       (should (xwapp-live-p app))
       (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"go\"}"
                                           (xwapp-test--from-box "me@example.com" https) 'proxy))
                      204))
       (xwapp-test--turn)
       (should (equal intents '(((op . "go")))))
-      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"no\"}"
-                                          (xwapp-test--from-box "me@example.com" "https://evil.example") 'proxy))
-                     404))
+      ;; A cross-site page on the device, or a loopback origin: turned away.
+      (dolist (o (list "https://evil.example" "http://127.0.0.1:1"))
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") "{\"op\":\"no\"}"
+                                            (xwapp-test--from-box "me@example.com" o) 'proxy))
+                       404)))
       ;; Refused in words: an empty answer, a browser would download.
       (should (equal (xwapp-test--do "GET" index nil (xwapp-test--from-box nil) 'proxy) '(404 . "Not Found")))
       (let ((xwapp-remote-users nil))
@@ -968,8 +979,9 @@ loopback however the headers are dressed (the hole seen 2026-10-13)."
       ;; that reaches 127.0.0.1 and dresses up as the proxy -- get nothing.
       (should (equal (car (xwapp-test--do "GET" index nil box)) 404))
       (should (equal (car (xwapp-test--do "GET" "/open/app" nil box)) 404))
-      ;; Nor does loopback win by claiming to be loopback: `here' and
-      ;; `/open' both need the transport, not just the Host.
+      ;; Loopback cannot win by claiming to be loopback: `/open' needs
+      ;; `elsewhere', which loopback never is; and the trusted transport
+      ;; still asks for the login a header alone cannot supply.
       (let ((loop (list (cons "Host" (format "127.0.0.1:%d" (process-contact xwapp--server :service))))))
         (should (equal (car (xwapp-test--do "GET" "/open/app" nil loop)) 404))
         (should (equal (car (xwapp-test--do "GET" index nil loop 'proxy)) 404)))

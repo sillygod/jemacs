@@ -41,12 +41,15 @@ async function start() {
   // Away from the tailnet: the forge, ClickUp, any other site.  What
   // stays is forwarded to the socket, as `tailscale serve unix:' does --
   // not the loopback port, which now answers this machine's browser alone.
+  // Faithful to serve: the Host is rewritten to "localhost" (a unix
+  // target has no network host), while the browser's Origin is left as
+  // the tailnet host -- so the page's own calls carry it.
   const sock = path.join(E, "remote.sock");
   const away = [];
   const proxy = http.createServer((req, res) => {
     const u = new URL(req.url);
     if (u.host !== "box.tail0.ts.net") { away.push(req.url); res.writeHead(200, { "content-type": "text/plain" }); return res.end("away"); }
-    const headers = Object.assign({}, req.headers, { host: u.host, "tailscale-user-login": "me@example.com" });
+    const headers = Object.assign({}, req.headers, { host: "localhost", "tailscale-user-login": "me@example.com" });
     delete headers["proxy-connection"];
     const up = http.request({ socketPath: sock, path: u.pathname + u.search, method: req.method, headers }, (r) => {
       res.writeHead(r.statusCode, r.headers);

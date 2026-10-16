@@ -856,11 +856,15 @@ one -- a name rebound to 127.0.0.1 gets nothing, nor does a page of
 another site that has the secret.
 
 `elsewhere' for your other devices: a request through the proxy
-(TRANSPORT `proxy', the one transport a header cannot forge) under one
-of `xwapp-remote-hosts', for one of `xwapp-remote-users'.  The proxy's
-own Tailscale-User-Login is believed only because it arrived this way;
-the same header on loopback is some program's own word, and gets
-nothing."
+(TRANSPORT `proxy', the one transport a header cannot forge), for one of
+`xwapp-remote-users'.  `tailscale serve' rewrites the Host to
+\"localhost\" on the way to the socket, so the Host is no proof and no
+filter here -- the transport is.  The login serve stamps is believed
+only because it arrived this way; the same header on loopback is some
+program's own word, and gets nothing.  The page's own calls carry an
+Origin, which must name one of `xwapp-remote-hosts' (the page's own, as
+serve leaves Origin alone): a cross-site page on the device is turned
+away."
   (let* ((port (process-contact xwapp--server :service))
          (here (list (format "127.0.0.1:%d" port) (format "localhost:%d" port)))
          (host (downcase (or (cdr (assoc "host" headers)) "")))
@@ -870,11 +874,14 @@ nothing."
       (and (or (null origin)
                (member origin (mapcar (lambda (h) (concat "http://" h)) here)))
            'here))
-     ((and (eq transport 'proxy)
-           (member (car (split-string host ":")) (mapcar #'downcase xwapp-remote-hosts)))
-      (and (member (cdr (assoc "tailscale-user-login" headers)) xwapp-remote-users)
-           (or (null origin)
-               (member origin (list (concat "https://" host) (concat "http://" host))))
+     ((and (eq transport 'proxy) xwapp-remote-hosts
+           (member (cdr (assoc "tailscale-user-login" headers)) xwapp-remote-users))
+      (and (or (null origin)
+               (let ((o (downcase origin)))
+                 (seq-some (lambda (h)
+                             (or (equal o (concat "https://" (downcase h)))
+                                 (equal o (concat "http://" (downcase h)))))
+                           xwapp-remote-hosts)))
            'elsewhere)))))
 
 (defun xwapp--open (proc parts headers transport)
