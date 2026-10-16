@@ -9186,6 +9186,65 @@ agent whose transcript is not known, or that has not replied yet."
               (should (eq (funcall meter "claude-api") :json-false)))
           (delete-file file))))))
 
+(ert-deftest ghostherd-test-page-forgets-the-sidecars-answers-on-restart ()
+  "Stopping the sidecar drops what the old instance answered -- meters,
+sub-agents, links and the open conversations' signatures -- so an idle
+agent whose transcript will not change is read again by the new sidecar,
+instead of staying bound to the old one's empty answer.  The reader's own
+`load earlier' limits are intent, not an answer, and are kept."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--meters (make-hash-table :test 'equal))
+        (ghostherd-memory-page--metering (make-hash-table :test 'equal))
+        (ghostherd-memory-page--subs (make-hash-table :test 'equal))
+        (ghostherd-memory-page--subs-reading (make-hash-table :test 'equal))
+        (ghostherd-memory-page--links (make-hash-table :test 'equal))
+        (ghostherd-memory-page--room-sent (make-hash-table :test 'equal))
+        (ghostherd-memory-page--room-reading (make-hash-table :test 'equal))
+        (ghostherd-memory-page--room-limits (make-hash-table :test 'equal))
+        (ghostherd-memory-page--chat-sent "sig") (ghostherd-memory-page--chat-reading t)
+        (ghostherd-memory-page--sub-sent "sig") (ghostherd-memory-page--sub-reading t)
+        (ghostherd-memory--process nil))
+    (puthash "a" (cons "sig" nil) ghostherd-memory-page--meters)   ; the stuck empty answer
+    (puthash "a" (cons "sig" '(:subs nil)) ghostherd-memory-page--subs)
+    (puthash "a" t ghostherd-memory-page--subs-reading)
+    (puthash "a" (list :sig "sig" :links nil) ghostherd-memory-page--links)
+    (puthash "a" "sig" ghostherd-memory-page--room-sent)
+    (puthash "a" 120 ghostherd-memory-page--room-limits)
+    ;; Stopping the sidecar runs the hook that forgets them.
+    (ghostherd-memory-stop)
+    (should (= 0 (hash-table-count ghostherd-memory-page--meters)))
+    (should (= 0 (hash-table-count ghostherd-memory-page--metering)))
+    (should (= 0 (hash-table-count ghostherd-memory-page--subs)))
+    (should (= 0 (hash-table-count ghostherd-memory-page--subs-reading)))
+    (should (= 0 (hash-table-count ghostherd-memory-page--links)))
+    (should (= 0 (hash-table-count ghostherd-memory-page--room-sent)))
+    (should-not ghostherd-memory-page--chat-sent)
+    (should-not ghostherd-memory-page--sub-sent)
+    ;; Intent, not an answer: kept.
+    (should (= 120 (gethash "a" ghostherd-memory-page--room-limits)))))
+
+(ert-deftest ghostherd-test-page-a-failed-meter-is-not-cached ()
+  "A request that fails is not an answer: the cache is left empty, so the
+next look asks again rather than binding an idle agent to a sidecar that
+was gone or too old until its transcript happens to move.  A success --
+even an empty one -- is cached as before."
+  (ghostherd-test--with-page
+    (let ((ghostherd-memory-page--meters (make-hash-table :test 'equal))
+          (ghostherd-memory-page--metering (make-hash-table :test 'equal)))
+      (setq fail "sidecar gone")
+      (ghostherd-memory-page--ask-on-change
+       ghostherd-memory-page--meters ghostherd-memory-page--metering
+       "a" "sig" "herd_meter" "/p/a.jsonl")
+      (should (equal requests '(("herd_meter" (:path "/p/a.jsonl")))))
+      (should (= 0 (hash-table-count ghostherd-memory-page--meters)))     ; not poisoned
+      (should (= 0 (hash-table-count ghostherd-memory-page--metering)))   ; nothing in flight
+      ;; A success is cached, even a legitimately empty one.
+      (setq fail nil reply (lambda (_m _p) nil))
+      (ghostherd-memory-page--ask-on-change
+       ghostherd-memory-page--meters ghostherd-memory-page--metering
+       "a" "sig" "herd_meter" "/p/a.jsonl")
+      (should (equal (gethash "a" ghostherd-memory-page--meters) (cons "sig" nil))))))
+
 (ert-deftest ghostherd-test-meter-signature-follows-grok-signals ()
   "A grok meter depends on its `signals.json' as much as its transcript:
 its tokens live there, written a beat after the conversation, so the

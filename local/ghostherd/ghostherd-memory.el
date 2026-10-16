@@ -593,6 +593,15 @@ stuck, not a reason to burn the range."
         (accept-process-output ghostherd-memory--process 0.4))))
     (or result (if (ghostherd-memory-healthy-p) 'ok 'timeout))))
 
+(defvar ghostherd-memory-stopped-hook nil
+  "Run after the sidecar is stopped.
+A restart is a stop then a start, so this is where callers drop what the
+now-gone sidecar instance told them.  The page keys its caches of the
+sidecar's answers by a transcript's signature, and an idle agent's
+transcript does not change to re-trigger the question, so without this it
+would stay bound to whatever the old sidecar said -- empty, for one too
+old to read a non-claude agent.")
+
 (defun ghostherd-memory-stop ()
   "Stop the sidecar process this Emacs started."
   (interactive)
@@ -600,6 +609,7 @@ stuck, not a reason to burn the range."
     (delete-process ghostherd-memory--process))
   (setq ghostherd-memory--process nil
         ghostherd-memory--port nil)
+  (run-hooks 'ghostherd-memory-stopped-hook)
   (message "ghostherd-memory: stopped"))
 
 (defun ghostherd-memory-ensure ()

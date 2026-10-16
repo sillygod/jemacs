@@ -414,9 +414,11 @@ on the next look."
       (condition-case nil
           (ghostherd-memory-request-async
            method done (list :path path)
-           ;; A sidecar older than the question, or a file gone: none,
-           ;; and not asked again until the file changes.
-           (lambda (_e) (funcall done nil)))
+           ;; A failed request is not an answer: clear the in-flight flag
+           ;; and leave the cache be, so the next look asks again rather
+           ;; than binding the agent to a sidecar that was gone or older
+           ;; than the question until its (idle) transcript happens to move.
+           (lambda (_e) (remhash name busy)))
         (error (remhash name busy))))))
 
 (defun ghostherd-memory-page--meter-sig (s path)
@@ -1396,6 +1398,26 @@ NAME is the parent agent and PATH its transcript; nil when none is open.")
   "The signature last sent for the open sub-agent's transcript.")
 (defvar ghostherd-memory-page--sub-reading nil
   "Non-nil while the sidecar reads the open sub-agent's transcript.")
+
+(defun ghostherd-memory-page--forget-sidecar-answers ()
+  "Drop every cache that binds an agent to what the sidecar last answered.
+Each is keyed by a transcript's signature.  A restarted sidecar is a new
+instance, and an idle agent's transcript will not change to re-trigger the
+ask, so without this its meter -- and its sub-agents, its links and the
+open conversations -- would stay bound to what the old sidecar said, empty
+for one too old to read it.  Not the per-column `load earlier' limits:
+those are the reader's intent, not the sidecar's answer."
+  (dolist (tbl (list ghostherd-memory-page--meters ghostherd-memory-page--metering
+                     ghostherd-memory-page--subs ghostherd-memory-page--subs-reading
+                     ghostherd-memory-page--links
+                     ghostherd-memory-page--room-sent ghostherd-memory-page--room-reading))
+    (clrhash tbl))
+  (setq ghostherd-memory-page--chat-sent nil
+        ghostherd-memory-page--chat-reading nil
+        ghostherd-memory-page--sub-sent nil
+        ghostherd-memory-page--sub-reading nil))
+
+(add-hook 'ghostherd-memory-stopped-hook #'ghostherd-memory-page--forget-sidecar-answers)
 
 (defun ghostherd-memory-page--room-shows-p (s)
   "Non-nil when the page's room shows agent S and you could be looking:
