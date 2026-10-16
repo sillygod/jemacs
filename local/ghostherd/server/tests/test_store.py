@@ -366,3 +366,99 @@ def test_a_file_read_by_an_older_importer_is_read_again(tmp_path):
     assert idx.unchanged(second) and not idx.unchanged(first)
     assert idx.list_sources()[0][0]["chunks"] == 2
     assert SourceIndex(db).unchanged(second)
+
+
+def test_agy_switching_to_transcript_prunes_old_db_without_reembed_loop(tmp_path, monkeypatch):
+    """When an agy conversation previously imported from conversations/<id>.db
+    now has brain/<id>/.system_generated/logs/transcript.jsonl, the old .db
+    chunks must be deleted from Qdrant and retired from sources.sqlite, and
+    later imports must not re-process the .db or re-embed unchanged turns."""
+    import json
+    import sqlite3
+
+    from config import Config
+    from engine import MemoryEngine, reset_engine
+
+    agy = tmp_path / "agy"
+    (agy / "conversations").mkdir(parents=True)
+    db = agy / "conversations" / "conv-1.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE steps (idx INTEGER, step_payload BLOB)")
+    conn.executemany(
+        "INSERT INTO steps VALUES (?, ?)",
+        [(i, f"legacy db step {i}: old salvaged protobuf words".encode()) for i in range(3)],
+    )
+    conn.commit()
+    conn.close()
+
+    reset_engine()
+    cfg = Config(
+        data_dir=tmp_path / "mem",
+        fake_embed=True,
+        claude_root=tmp_path / "c",
+        grok_root=tmp_path / "g",
+        agy_root=agy,
+    )
+    eng = MemoryEngine(cfg)
+    embedded = []
+    real_dense = eng.embedder.dense
+    monkeypatch.setattr(
+        eng.embedder,
+        "dense",
+        lambda texts: embedded.append(len(list(texts))) or real_dense(texts),
+    )
+    try:
+        # 1. Initial import when only conversations/conv-1.db exists.
+        assert eng.import_transcripts(agents=["agy"])["imported"] == 3
+        assert len(eng.store.payloads_of(str(db))) == 3
+
+        # 2. Now brain/conv-1/.system_generated/logs/transcript.jsonl appears.
+        tx = agy / "brain" / "conv-1" / ".system_generated" / "logs" / "transcript.jsonl"
+        tx.parent.mkdir(parents=True)
+
+        def write_tx(n):
+            lines = []
+            for i in range(n):
+                lines.append(
+                    json.dumps(
+                        {
+                            "step_index": i,
+                            "type": "USER_INPUT" if i % 2 == 0 else "PLANNER_RESPONSE",
+                            "source": "USER_EXPLICIT" if i % 2 == 0 else "MODEL",
+                            "created_at": f"2026-10-16T12:00:0{i}Z",
+                            "content": f"structured transcript turn {i} with enough words to index",
+                        }
+                    )
+                )
+            tx.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        write_tx(2)
+        embedded.clear()
+        res = eng.import_transcripts(agents=["agy"])
+        assert res["imported"] == 2
+        assert embedded == [2]
+        # Old .db chunks are completely gone from Qdrant and hidden in sources.sqlite.
+        assert eng.store.payloads_of(str(db)) == {}
+        assert len(eng.store.payloads_of(str(tx))) == 2
+        listed_paths = [s["source_path"] for s in eng.list_sources(agent="agy")["sources"]]
+        assert listed_paths == [str(tx)]
+
+        # 3. Even if the .db file's mtime changes on disk, subsequent imports skip it.
+        os_mtime_bump(db)
+        embedded.clear()
+        res2 = eng.import_transcripts(agents=["agy"])
+        assert res2["imported"] == 0
+        assert embedded == []
+
+        # 4. Appending one turn to transcript.jsonl embeds only the new turn.
+        write_tx(3)
+        os_mtime_bump(tx)
+        embedded.clear()
+        res3 = eng.import_transcripts(agents=["agy"])
+        assert res3["imported"] == 1
+        assert embedded == [1]
+        assert eng.store.point_count() == 3
+    finally:
+        eng.close()
+        reset_engine()
+

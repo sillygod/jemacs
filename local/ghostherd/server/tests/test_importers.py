@@ -172,6 +172,101 @@ def test_agy_salvage_and_summaries(tmp_path: Path):
     assert "/tmp/demo-project" in projects
 
 
+def test_agy_prefers_transcript_jsonl_and_falls_back_to_db(tmp_path: Path):
+    from importers.agy import VERSION
+
+    conv = tmp_path / "conversations"
+    conv.mkdir()
+    for cid, text in (("conv-tx", "stale protobuf blob text from db"),
+                      ("conv-db", "only in sqlite steps blob works fine")):
+        conn = sqlite3.connect(conv / f"{cid}.db")
+        conn.execute("CREATE TABLE steps (idx INTEGER, step_payload BLOB)")
+        conn.execute("INSERT INTO steps VALUES (0, ?)", (text.encode(),))
+        conn.commit()
+        conn.close()
+
+    logs = tmp_path / "brain" / "conv-tx" / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    tx_lines = [
+        {
+            "step_index": 0,
+            "type": "CONVERSATION_HISTORY",
+            "source": "SYSTEM",
+            "created_at": "2026-10-16T10:00:00Z",
+            "content": "system history",
+        },
+        {
+            "step_index": 1,
+            "type": "USER_INPUT",
+            "source": "USER_EXPLICIT",
+            "created_at": "2026-10-16T10:01:00Z",
+            "content": (
+                "<user_information>\nCommand Working Directory: /tmp/tx-proj\n"
+                "</user_information>\n<USER_REQUEST>\nfix the agy importer\n</USER_REQUEST>"
+            ),
+        },
+        {
+            "step_index": 2,
+            "type": "PLANNER_RESPONSE",
+            "source": "MODEL",
+            "created_at": "2026-10-16T10:01:05Z",
+            "content": "Checking the importer now.",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "name": "run_command",
+                    "args": {
+                        "CommandLine": json.dumps("pytest -q"),
+                        "Cwd": json.dumps("/tmp/tx-proj"),
+                        "toolSummary": json.dumps("Run pytest suite"),
+                    },
+                }
+            ],
+        },
+        {
+            "step_index": 3,
+            "type": "RUN_COMMAND",
+            "source": "MODEL",
+            "created_at": "2026-10-16T10:01:10Z",
+            "content": "passed " + ("y" * 2000),
+        },
+    ]
+    (logs / "transcript.jsonl").write_text(
+        "\n".join(json.dumps(x) for x in tx_lines) + "\n", encoding="utf-8"
+    )
+
+    by_path = {meta.path: (meta, turns) for meta, turns in iter_agy(tmp_path, tool_truncate=100)}
+    tx_path = str(logs / "transcript.jsonl")
+    tx_db_path = str(conv / "conv-tx.db")
+    only_db_path = str(conv / "conv-db.db")
+
+    assert tx_path in by_path
+    tx_meta, tx_turns = by_path[tx_path]
+    assert tx_meta.parser == VERSION == 2
+    assert tx_meta.project == "/tmp/tx-proj"
+    assert [(t.role, t.text, t.ts, t.project) for t in tx_turns] == [
+        ("user", "fix the agy importer", "2026-10-16T10:01:00Z", "/tmp/tx-proj"),
+        (
+            "assistant",
+            "Checking the importer now.\n[tool run_command] Run pytest suite",
+            "2026-10-16T10:01:05Z",
+            "/tmp/tx-proj",
+        ),
+        ("tool", "passed " + ("y" * 93) + "\n…", "2026-10-16T10:01:10Z", "/tmp/tx-proj"),
+    ]
+    # Tombstone for the superseded .db so old chunks are pruned once.
+    assert tx_db_path in by_path
+    db_meta, db_turns = by_path[tx_db_path]
+    assert db_turns == []
+    assert db_meta.mtime == 0.0 and db_meta.size == 0
+
+    # Session without transcript.jsonl falls back to .db salvage.
+    assert only_db_path in by_path
+    _, fallback_turns = by_path[only_db_path]
+    assert len(fallback_turns) == 1
+    assert "only in sqlite steps blob" in fallback_turns[0].text
+
+
 def test_claude_skips_huge_jsonl_lines(tmp_path: Path):
     root = tmp_path / "projects" / "p"
     root.mkdir(parents=True)
