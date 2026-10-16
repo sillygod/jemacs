@@ -2827,8 +2827,295 @@ effort is switched all the same: what it set is what it says."
     (should-error (ghostherd-switch-model s "Sonnet") :type 'user-error)
     (remhash (ghostherd-session-id s) ghostherd--switching)
     (let ((g (ghostherd-tests--session :name "g" :kind 'grok :backend 'picker :state 'idle)))
+      ;; grok has a picker now, but "Sonnet" is not one of its models.
       (should-error (ghostherd-switch-model g "Sonnet") :type 'user-error))
     (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "down" "s")))))
+
+;;; Its model -- grok, by command
+
+(defvar ghostherd-tests--grok nil
+  "The fake grok: (:model DISPLAY :effort LEVEL :sent KEYS :deaf BOOL).")
+(defun ghostherd-tests--grok-get (k) (plist-get ghostherd-tests--grok k))
+(defun ghostherd-tests--grok-set (k v) (setq ghostherd-tests--grok (plist-put ghostherd-tests--grok k v)))
+
+(defconst ghostherd-tests--grok-labels
+  '(("grok-4.7" . "Grok 4.7") ("grok-4.7-build-fast" . "Grok 4.7 Fast")
+    ("grok-4.6" . "Grok 4.6") ("grok-4.5" . "Grok 4.5"))
+  "The fake grok's id -> the name its border shows, as the spec's `:labels'.")
+
+(defun ghostherd-tests--grok-screen ()
+  "The fake grok's screen: its model and effort in the input box's border."
+  (format "⏺ working on it\n ╭──────────────────────────────╮\n │ ❯                            │\n ╰───────── %s (%s) · always-approve ─╯\n Ctrl+x:shortcuts\n"
+          (ghostherd-tests--grok-get :model) (ghostherd-tests--grok-get :effort)))
+
+(cl-defmethod ghostherd-backend-capture ((_backend (eql grok-cmd)) _session &optional _n)
+  (ghostherd-tests--grok-screen))
+(cl-defmethod ghostherd-backend-live-p ((_backend (eql grok-cmd)) _session) t)
+(cl-defmethod ghostherd-backend-send-text ((_backend (eql grok-cmd)) _session text submit)
+  (ghostherd-tests--grok-set :sent (append (ghostherd-tests--grok-get :sent)
+                                           (list (if submit (list :submit text) text))))
+  (when (and submit (not (ghostherd-tests--grok-get :deaf))
+             (string-match "\\`/model[[:blank:]]+\\(.+?\\)\\(?:[[:blank:]]+\\(low\\|medium\\|high\\|xhigh\\)\\)?[[:blank:]]*\\'" text))
+    (let ((disp (cdr (assoc (match-string 1 text) ghostherd-tests--grok-labels)))
+          (eff (match-string 2 text)))
+      (when disp
+        (ghostherd-tests--grok-set :model disp)
+        (when eff (ghostherd-tests--grok-set :effort eff))))))
+(cl-defmethod ghostherd-backend-send-keys ((_backend (eql grok-cmd)) _session keys)
+  (ghostherd-tests--grok-set :sent (append (ghostherd-tests--grok-get :sent) keys)))
+
+(defmacro ghostherd-tests--with-grok (&rest body)
+  "Run BODY with `s', an idle grok agent on the fake command backend, on
+Grok 4.7 at xhigh."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-herd ()
+     (ghostherd-tests--with-log
+       (let ((ghostherd-tests--grok (list :model "Grok 4.7" :effort "xhigh"))
+             (ghostherd-model-switch-wait 1)
+             (s (ghostherd-tests--session :name "rd" :kind 'grok :backend 'grok-cmd :state 'idle)))
+         ,@body))))
+
+(ert-deftest ghostherd-test-grok-model-line-reads-the-border ()
+  "The model and effort from grok's border, the last one -- a model
+list's \"(current)\" is not an effort and is passed over."
+  (should (equal (ghostherd--grok-model-line " ╰── Grok 4.6 (medium) · always-approve ─╯\n")
+                 '("Grok 4.6" . "medium")))
+  (should (equal (ghostherd--grok-model-line
+                  "   ❯ Grok 4.7 (current) frontier\n ╰── Grok 4.5 (high) · always-approve ─╯\n")
+                 '("Grok 4.5" . "high")))
+  (should-not (ghostherd--grok-model-line "nothing on the screen\n")))
+
+(ert-deftest ghostherd-test-grok-switches-by-command ()
+  "`/model ID EFFORT' typed as one line; the border read back, and said
+to have become the default."
+  (ghostherd-tests--with-grok
+    (should (equal (ghostherd-tests--switch s "grok-4.6" "high")
+                   '(t . "Set model to Grok 4.6 with high effort (now its default)")))
+    (should (equal (ghostherd-tests--grok-get :sent) '((:submit "/model grok-4.6 high"))))
+    (should (equal (list (ghostherd-tests--grok-get :model) (ghostherd-tests--grok-get :effort))
+                   '("Grok 4.6" "high")))
+    (should (equal (ghostherd-log-entry-text (car ghostherd--log))
+                   "Set model to Grok 4.6 with high effort (now its default)"))
+    ;; No effort asked: the model changes, the effort is left as it was.
+    (ghostherd-tests--grok-set :sent nil)
+    (should (equal (ghostherd-tests--switch s "grok-4.5")
+                   '(t . "Set model to Grok 4.5 with high effort (now its default)")))
+    (should (equal (ghostherd-tests--grok-get :sent) '((:submit "/model grok-4.5"))))))
+
+(ert-deftest ghostherd-test-grok-gives-up-when-the-model-does-not-change ()
+  (ghostherd-tests--with-grok
+    (ghostherd-tests--grok-set :deaf t)
+    (should (equal (ghostherd-tests--switch s "grok-4.6")
+                   '(nil . "it did not switch to Grok 4.6")))
+    (should-not (gethash (ghostherd-session-id s) ghostherd--switching))))
+
+;;; Its model -- agy, by its search picker
+
+(defconst ghostherd-tests--agy-models
+  '(("Gemini 4 Argon" "low" "medium" "high")
+    ("Gemini 3.8 Flash" "low" "medium" "high")
+    ("Claude Opus 5.5" "low" "medium" "high")
+    ("Claude Sonnet 5.5" "low" "medium" "high")
+    ("GPT-OSS 120B" "medium"))
+  "The fake agy's models and the efforts each offers.")
+
+(defvar ghostherd-tests--agy nil
+  "The fake agy: (:model NAME :effort LEVEL :open BOOL :search STR :cursor
+NAME :at (NAME . LEVEL)... :said TEXT :sent KEYS :deaf BOOL).")
+(defun ghostherd-tests--agy-get (k) (plist-get ghostherd-tests--agy k))
+(defun ghostherd-tests--agy-set (k v) (setq ghostherd-tests--agy (plist-put ghostherd-tests--agy k v)))
+
+(defun ghostherd-tests--agy-efforts (model) (cdr (assoc model ghostherd-tests--agy-models)))
+(defun ghostherd-tests--agy-start-effort (model)
+  "Where MODEL's slider starts: its session effort when it is the live
+model, else medium, or its only step."
+  (if (equal model (ghostherd-tests--agy-get :model))
+      (ghostherd-tests--agy-get :effort)
+    (let ((es (ghostherd-tests--agy-efforts model)))
+      (if (member "medium" es) "medium" (car es)))))
+
+(defun ghostherd-tests--agy-rows ()
+  "The models whose name holds the search, in order."
+  (let ((q (downcase (or (ghostherd-tests--agy-get :search) ""))))
+    (seq-filter (lambda (m) (string-search q (downcase (car m)))) ghostherd-tests--agy-models)))
+
+(defun ghostherd-tests--agy-slider (effort efforts)
+  "agy's slider for EFFORT among EFFORTS: ● before it, ◉ on it, ○ after."
+  (let ((i (cl-position effort efforts :test #'equal)))
+    (concat "  Effort  ◂  "
+            (mapconcat (lambda (e) (let ((j (cl-position e efforts :test #'equal)))
+                                     (cond ((= j i) "◉") ((< j i) "●") (t "○"))))
+                       efforts "━━━━━━")
+            "  ▸")))
+
+(defun ghostherd-tests--agy-screen ()
+  "The fake agy's screen: the prompt, or the Switch Model picker over it."
+  (if (not (ghostherd-tests--agy-get :open))
+      (concat "  Antigravity CLI\n"
+              (if (ghostherd-tests--agy-get :said)
+                  (concat "> /model\n  ⎿  " (ghostherd-tests--agy-get :said) "\n") "")
+              "────\n>\n────\n? for shortcuts    "
+              (ghostherd-tests--agy-get :model) " · " (downcase (ghostherd-tests--agy-get :effort)) "\n")
+    (let* ((rows (ghostherd-tests--agy-rows))
+           (cursor (ghostherd-tests--agy-get :cursor))
+           (ceff (cdr (assoc cursor (ghostherd-tests--agy-get :at))))
+           (efforts (ghostherd-tests--agy-efforts cursor)))
+      (concat "Switch Model\n\n"
+              "  Search: " (or (ghostherd-tests--agy-get :search) "") "\n"
+              "          ────────────────────\n\n"
+              (mapconcat (lambda (m)
+                           (format "%s %s%s"
+                                   (if (equal (car m) cursor) ">" " ") (car m)
+                                   (if (equal (car m) (ghostherd-tests--agy-get :model)) "      (current)" "")))
+                         rows "\n")
+              "\n\n"
+              (ghostherd-tests--agy-slider ceff efforts) "\n"
+              "          " (string-join efforts "          ") "\n"
+              (format "  [1-%d of %d items]\n" (length rows) (length rows))
+              "Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back\n"))))
+
+(cl-defmethod ghostherd-backend-capture ((_backend (eql agy-picker)) _session &optional _n)
+  (ghostherd-tests--agy-screen))
+(cl-defmethod ghostherd-backend-live-p ((_backend (eql agy-picker)) _session) t)
+(cl-defmethod ghostherd-backend-send-text ((_backend (eql agy-picker)) _session text submit)
+  (ghostherd-tests--agy-set :sent (append (ghostherd-tests--agy-get :sent)
+                                          (list (if submit (list :submit text) text))))
+  (cond
+   ((and submit (equal text "/model") (not (ghostherd-tests--agy-get :deaf)))
+    (ghostherd-tests--agy-set :open t)
+    (ghostherd-tests--agy-set :search "")
+    (ghostherd-tests--agy-set :cursor (ghostherd-tests--agy-get :model))
+    (ghostherd-tests--agy-set
+     :at (mapcar (lambda (m) (cons (car m) (ghostherd-tests--agy-start-effort (car m))))
+                 ghostherd-tests--agy-models)))
+   ((and (not submit) (ghostherd-tests--agy-get :open))
+    (ghostherd-tests--agy-set :search text)
+    (ghostherd-tests--agy-set :cursor (car (car (ghostherd-tests--agy-rows)))))))
+(cl-defmethod ghostherd-backend-send-keys ((_backend (eql agy-picker)) _session keys)
+  (ghostherd-tests--agy-set :sent (append (ghostherd-tests--agy-get :sent) keys))
+  (dolist (key keys)
+    (when (ghostherd-tests--agy-get :open)
+      (let* ((cursor (ghostherd-tests--agy-get :cursor))
+             (at (assoc cursor (ghostherd-tests--agy-get :at)))
+             (efforts (and cursor (ghostherd-tests--agy-efforts cursor)))
+             (i (and at (cl-position (cdr at) efforts :test #'equal))))
+        (pcase key
+          ("right" (when i (setcdr at (nth (min (1- (length efforts)) (1+ i)) efforts))))
+          ("left" (when i (setcdr at (nth (max 0 (1- i)) efforts))))
+          ("return"
+           (when cursor
+             (ghostherd-tests--agy-set :model cursor)
+             (ghostherd-tests--agy-set :effort (cdr at))
+             (ghostherd-tests--agy-set :open nil)
+             (ghostherd-tests--agy-set :said (format "Model set to %s (%s)" cursor (capitalize (cdr at))))))
+          ("esc"
+           (if (not (string-empty-p (or (ghostherd-tests--agy-get :search) "")))
+               (progn (ghostherd-tests--agy-set :search "")
+                      (ghostherd-tests--agy-set :cursor (ghostherd-tests--agy-get :model)))
+             (ghostherd-tests--agy-set :open nil)
+             (ghostherd-tests--agy-set :said "Exited /model command"))))))))
+
+(defmacro ghostherd-tests--with-agy (&rest body)
+  "Run BODY with `s', an idle agy agent on the fake picker backend, on
+Gemini 3.8 Flash at high."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-herd ()
+     (ghostherd-tests--with-log
+       (let ((ghostherd-tests--agy (list :model "Gemini 3.8 Flash" :effort "high"))
+             (ghostherd-model-switch-wait 1)
+             (s (ghostherd-tests--session :name "ag" :kind 'agy :backend 'agy-picker :state 'idle)))
+         ,@body))))
+
+(ert-deftest ghostherd-test-agy-picker-reads-rows-cursor-and-effort ()
+  "The visible rows, the `>' cursor, the slider's steps and where its ◉
+sits -- and a model that offers one effort shows only it."
+  (let ((ghostherd-tests--agy
+         (list :model "Gemini 3.8 Flash" :effort "high" :open t :search "" :cursor "Claude Opus 5.5"
+               :at '(("Gemini 4 Argon" . "medium") ("Gemini 3.8 Flash" . "high")
+                     ("Claude Opus 5.5" . "medium") ("Claude Sonnet 5.5" . "medium")
+                     ("GPT-OSS 120B" . "medium")))))
+    (let ((p (ghostherd--agy-picker (ghostherd-tests--agy-screen))))
+      (should (equal (plist-get p :rows)
+                     '("Gemini 4 Argon" "Gemini 3.8 Flash" "Claude Opus 5.5"
+                       "Claude Sonnet 5.5" "GPT-OSS 120B")))
+      (should (equal (plist-get p :cursor) "Claude Opus 5.5"))
+      (should (equal (plist-get p :efforts) '("low" "medium" "high")))
+      (should (equal (plist-get p :effort) "medium")))
+    (ghostherd-tests--agy-set :search "GPT")
+    (ghostherd-tests--agy-set :cursor "GPT-OSS 120B")
+    (let ((p (ghostherd--agy-picker (ghostherd-tests--agy-screen))))
+      (should (equal (plist-get p :rows) '("GPT-OSS 120B")))
+      (should (equal (plist-get p :efforts) '("medium")))
+      (should (equal (plist-get p :effort) "medium")))
+    (ghostherd-tests--agy-set :open nil)
+    (should-not (ghostherd--agy-picker (ghostherd-tests--agy-screen)))))
+
+(ert-deftest ghostherd-test-agy-said-is-the-last ()
+  (should (equal (ghostherd--agy-said
+                  "x\n> /model\n  ⎿  Model set to Claude Opus 5.5 (High)\n>\n")
+                 "Model set to Claude Opus 5.5 (High)"))
+  (should (equal (ghostherd--agy-said "  ⎿  Exited /model command\n") "Exited /model command"))
+  (should-not (ghostherd--agy-said "nothing happened here\n")))
+
+(ert-deftest ghostherd-test-agy-switches-by-search-and-slider ()
+  "`/model', the name typed to pare the list to one, → to the effort,
+Enter; said to have become the default."
+  (ghostherd-tests--with-agy
+    (should (equal (ghostherd-tests--switch s "Claude Opus 5.5" "high")
+                   '(t . "Model set to Claude Opus 5.5 (High) (now its default)")))
+    (should (equal (ghostherd-tests--agy-get :sent)
+                   '((:submit "/model") "Claude Opus 5.5" "right" "return")))
+    (should (equal (list (ghostherd-tests--agy-get :model) (ghostherd-tests--agy-get :effort))
+                   '("Claude Opus 5.5" "high")))
+    (should (equal (ghostherd-log-entry-text (car ghostherd--log))
+                   "Model set to Claude Opus 5.5 (High) (now its default)"))))
+
+(ert-deftest ghostherd-test-agy-takes-the-effort-a-model-has ()
+  "An effort a model does not offer leaves it where it is; no effort
+asked, it is switched at the model's own."
+  (ghostherd-tests--with-agy
+    (should (equal (ghostherd-tests--switch s "GPT-OSS 120B" "high")
+                   '(t . "Model set to GPT-OSS 120B (Medium) (now its default)")))
+    (should (equal (ghostherd-tests--agy-get :sent)
+                   '((:submit "/model") "GPT-OSS 120B" "return")))
+    (ghostherd-tests--agy-set :sent nil)
+    (should (car (ghostherd-tests--switch s "Gemini 4 Argon")))
+    (should (equal (ghostherd-tests--agy-get :model) "Gemini 4 Argon"))))
+
+(ert-deftest ghostherd-test-agy-gives-up-on-a-picker-that-does-not-open ()
+  (ghostherd-tests--with-agy
+    (ghostherd-tests--agy-set :deaf t)
+    (should (equal (ghostherd-tests--switch s "Claude Opus 5.5")
+                   '(nil . "its model picker did not open")))
+    (should (equal (ghostherd-tests--agy-get :sent) '((:submit "/model"))))
+    (should-not (gethash (ghostherd-session-id s) ghostherd--switching))))
+
+(ert-deftest ghostherd-test-agy-model-line-reads-the-footer ()
+  "The model and effort from agy's footer, the last one, whether or not
+more follows the effort."
+  (should (equal (ghostherd--agy-model-line "? for shortcuts        Claude Opus 5.5 · high\n")
+                 '("Claude Opus 5.5" . "high")))
+  (should (equal (ghostherd--agy-model-line "Gemini 3.8 Flash · high · AI: Out of credits\n")
+                 '("Gemini 3.8 Flash" . "high")))
+  (should-not (ghostherd--agy-model-line "nothing on the footer\n")))
+
+(ert-deftest ghostherd-test-meter-falls-back-to-the-screen ()
+  "A CLI the sidecar reads no meter for shows the model its own screen
+does -- grok's border, agy's footer -- so its chip is not left bare."
+  (ghostherd-tests--with-herd ((ghostherd-memory-page--meters (make-hash-table :test 'equal)))
+    (let ((g (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle))
+          (a (ghostherd-tests--session :name "ag" :kind 'agy :state 'idle)))
+      (puthash (ghostherd-session-id g) " ╰── Grok 4.6 (high) · always-approve ─╯\n" ghostherd--screens)
+      (puthash (ghostherd-session-id a) "? for shortcuts    Gemini 3.8 Flash · medium\n" ghostherd--screens)
+      (should (equal (ghostherd-memory-page--meter g)
+                     '(:model "Grok 4.6" :effort "high" :tokens nil :window nil
+                       :pending :json-false :compacted :json-false)))
+      (should (equal (ghostherd-memory-page--meter a)
+                     '(:model "Gemini 3.8 Flash" :effort "medium" :tokens nil :window nil
+                       :pending :json-false :compacted :json-false)))
+      ;; No screen and no transcript meter: none, so the bare button stands.
+      (remhash (ghostherd-session-id g) ghostherd--screens)
+      (should (eq (ghostherd-memory-page--meter g) :json-false)))))
 
 ;;; Switcher annotation and notes
 
@@ -8763,8 +9050,14 @@ goes to `ghostherd-switch-model', and the page hears how it went."
     (let ((herd (ghostherd-test--call calls "renderHerd")))
       (should (equal (plist-get (plist-get herd :pickers) :claude)
                      '(:models ["Default" "Opus" "Fable" "Sonnet" "Haiku"]
-                       :efforts ["low" "medium" "high" "xhigh" "max"])))
-      (should-not (plist-get (plist-get herd :pickers) :agy))
+                       :efforts ["low" "medium" "high" "xhigh" "max"] :scope "session")))
+      (should (equal (plist-get (plist-get herd :pickers) :grok)
+                     '(:models ["grok-4.7" "grok-4.7-build-fast" "grok-4.6" "grok-4.5"]
+                       :efforts ["low" "medium" "high" "xhigh"] :scope "default")))
+      (should (equal (plist-get (plist-get herd :pickers) :agy)
+                     '(:models ["Gemini 4 Argon" "Gemini 3.8 Flash" "Claude Opus 5.5"
+                                "Claude Sonnet 5.5" "GPT-OSS 120B"]
+                       :efforts ["low" "medium" "high"] :scope "default")))
       (should (eq (plist-get (aref (plist-get herd :agents) 0) :switching) :json-false)))
     (let (asked (said "Set model to Sonnet 5.5 for this session only"))
       (cl-letf (((symbol-function 'ghostherd-switch-model)

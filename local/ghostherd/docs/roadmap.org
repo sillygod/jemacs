@@ -727,6 +727,18 @@ builds, one tests, back and forth --- as one conversation, on the page.
   =settings.json= untouched.  34 pytest, 9 ERT on a fake claude whose
   picker answers keys as claude's does, 47 WebKit checks
   (=herd-meter=); 22 guards broken on purpose, each caught
+- [X] And grok's and agy's models too, each as its own CLI lets you ---
+  one driver, three styles (=:model-picker='s =:style=).  grok takes
+  =/model NAME EFFORT= as words and shows them in its input box's border,
+  so the herd types the command and reads the border back; agy opens a
+  search picker, so the herd types the name to pare it to one, slides
+  ←/→ to the effort and Enters, reading \"Model set to …\".  Neither has
+  a session-only switch, so for them it becomes the CLI's default
+  (=:scope default=); claude stays its session alone.  Found by opening
+  each CLI's =/model= in a throwaway session (grok 1.0.60, agy 1.3.6,
+  2026-10-16), their defaults restored after.  8 ERT on fake grok and
+  agy backends whose pickers answer as the real ones do; 4 driver guards
+  broken on purpose, each caught.
 - [X] Its sub-agents, as its screen shows them at its foot and the room
   did not: the ones running under its column and above the chat's box
   --- what each is, how long, its tool calls and context, its latest

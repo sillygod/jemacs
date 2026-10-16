@@ -1231,16 +1231,34 @@
     return (p && p[a.kind]) || null;
   }
 
+  // How a switch is scoped, in words: claude's picker does this session
+  // alone; grok's and agy's have no such switch, so it is their default.
+  function switchHint(p) {
+    return p && p.scope === "default"
+      ? "Switch its model; it becomes this CLI's default"
+      : "Switch its model, for this session only";
+  }
+
   function meterHtml(a) {
     const m = a && a.meter;
-    if (!m) return "";
+    const p = pickerFor(a);
+    // No meter (grok, agy do not report one) but a picker the herd knows:
+    // still offer the switch, with no model to show until it is read.
+    if (!m) {
+      if (!p) return "";
+      const btn = a.switching
+        ? '<span class="mchip"><span class="meff">switching…</span></span>'
+        : '<button type="button" class="mchip mbare" data-act="a:model" title="' +
+          esc(switchHint(p)) + '">Model</button>';
+      return '<div class="meter">' + btn + "</div>";
+    }
     const label = esc(m.model) + (m.effort ? '<span class="meff">' + esc(m.effort) + "</span>" : "");
     const cls = "mchip" + (m.pending ? " pending" : "");
     const said = m.pending ? "Switched; its next reply is the first on it" : "What its last reply ran on";
     const chip = a.switching
       ? '<span class="' + cls + '">' + label + '<span class="meff">switching…</span></span>'
-      : pickerFor(a)
-        ? '<button type="button" class="' + cls + '" data-act="a:model" title="' + esc(said + ". Switch it, for this session only") + '">' + label + "</button>"
+      : p
+        ? '<button type="button" class="' + cls + '" data-act="a:model" title="' + esc(said + ". " + switchHint(p)) + '">' + label + "</button>"
         : '<span class="' + cls + '" title="' + esc(said) + '">' + label + "</span>";
     let bar = "", words = "";
     if (m.compacted || m.tokens == null) {
@@ -1277,7 +1295,8 @@
       (busy || !pick.model ? " disabled" : "") + ">Switch</button>" +
       '<button type="button" class="ghost small" data-act="a:model-cancel">Cancel</button>' +
       '<span class="mnote">' + esc(busy ? "It is " + a.state + ": switch it once it is idle."
-        : "This session only: new sessions keep your default.") + "</span></div></div>";
+        : p.scope === "default" ? "No session-only switch here: this becomes the CLI's default."
+          : "This session only: new sessions keep your default.") + "</span></div></div>";
   }
 
   function openModelForm(a) {

@@ -1,7 +1,9 @@
 // What each agent runs on and how full its context is -- a chip and a
-// bar -- and the chip's form that switches a claude's model for its
-// session alone, on a phone and at a desk: on the Agents tab, in a
-// room's columns, and in its chat for the agent the box writes to.
+// bar -- and the chip's form that switches a model: a claude's for its
+// session alone, grok's and agy's as their default (they have a picker
+// but no meter, so a bare "Model" button with no model to show).  On a
+// phone and at a desk: on the Agents tab, in a room's columns, and in
+// its chat for the agent the box writes to.
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep } = require("./herdlib");
 const results = [];
@@ -14,8 +16,14 @@ const QA = "qa-deploy-platform";
 
 const meter = (model, effort, tokens, window, extra) =>
   Object.assign({ model, effort, tokens, window, pending: false, compacted: false }, extra || {});
-const PICKERS = { claude: { models: ["Default", "Opus", "Fable", "Sonnet", "Haiku"],
-                            efforts: ["low", "medium", "high", "xhigh", "max"] } };
+const PICKERS = {
+  claude: { models: ["Default", "Opus", "Fable", "Sonnet", "Haiku"],
+            efforts: ["low", "medium", "high", "xhigh", "max"], scope: "session" },
+  grok: { models: ["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"],
+          efforts: ["low", "medium", "high", "xhigh"], scope: "default" },
+  agy: { models: ["Gemini 4 Argon", "Gemini 3.8 Flash", "Claude Opus 5.5", "Claude Sonnet 5.5", "GPT-OSS 120B"],
+         efforts: ["low", "medium", "high"], scope: "default" },
+};
 const herd = (meters, extra) => Object.assign({}, HERD, {
   pickers: PICKERS,
   agents: HERD.agents.map((a) => Object.assign({}, a, { meter: meters[a.name] || false, switching: false }, (extra || {})[a.name] || {})),
@@ -54,7 +62,11 @@ const METERS = {
         lead.chip === "Opus 5.5xhigh" && lead.words === "38% · 381k / 1M" && lead.width === "38%" && lead.level === "lvl-ok", lead);
       const rd = await read(row(RD));
       check(W("coloured as the usage bars are: past 70%"), rd.level === "lvl-warm" && rd.words === "83% · 833k / 1M", rd);
-      check(W("no meter for an agent without one"), (await read(row(QA))) === null);
+      // agy reports no meter, but the herd knows its picker, so a bare
+      // Model button stands in -- a switch, with no context to show.
+      const noMeter = await read(row(QA));
+      check(W("no meter for an agent without one: a bare switch, no context"),
+        noMeter && noMeter.button && noMeter.chip === "Model" && noMeter.words === "" && noMeter.width === "", noMeter);
       await show(herd(Object.assign({}, METERS, {
         [LEAD]: meter("Opus 4.6", "high", 230000, 200000),
         [RD]: meter("Sonnet 5.5", "", 833282, 1000000, { pending: true }),
@@ -68,8 +80,14 @@ const METERS = {
       check(W("a switch since its last reply: the model its next one is on, marked"),
         pending.pending && pending.chip === "Sonnet 5.5" && pending.words === "83% · 833k / 1M", pending);
       const compacted = await read(row(QA));
-      check(W("compacted since: no size, and no button on a CLI the herd cannot switch"),
-        compacted.words === "compacted" && compacted.level === "" && !compacted.button, compacted);
+      check(W("compacted since: no size, and -- agy being switchable -- a button all the same"),
+        compacted.words === "compacted" && compacted.level === "" && compacted.button, compacted);
+      // A kind whose picker the herd does not know: a meter, but no button.
+      await show(Object.assign(herd(Object.assign({}, METERS, {
+        [QA]: meter("whatever", "", null, 1000000, { compacted: true }) })),
+        { pickers: { claude: PICKERS.claude } }));
+      await sleep(100);
+      check(W("no button on a CLI whose picker the herd does not know"), !(await read(row(QA))).button);
 
       // ---- Switched ----
       await show(herd(METERS));
@@ -177,7 +195,9 @@ const METERS = {
       check(W("and of the next one, once the box writes to it"), other && other.words === "83% · 833k / 1M", other);
       await page.selectOption(".chat .chat-to", QA);
       await sleep(100);
-      check(W("none for one without"), (await page.$eval(".chat .cmeter", (m) => getComputedStyle(m).display)) === "none");
+      const chatBare = await read(".chat .cmeter");
+      check(W("a bare Model button for one with a picker but no meter"),
+        chatBare && chatBare.button && chatBare.chip === "Model", chatBare);
       await page.selectOption(".chat .chat-to", LEAD);
       await sleep(100);
       await tap(".chat .cmeter .mchip");
@@ -188,6 +208,43 @@ const METERS = {
       sent = intents.filter((i) => i.op === "agent-model");
       check(W("switched from the chat, for whom the box writes to"),
         sent.length === 4 && sent[3].name === LEAD && sent[3].model === "Fable" && sent[3].effort === "max", sent[3]);
+
+      // ---- grok and agy: switchable with no meter of their own ----
+      await show(herd(METERS, { [QA]: { state: "idle" } }));   // QA is agy; METERS gives it none
+      await sleep(100);
+      const agy = await read(row(QA));
+      const agyBare = await page.$eval(row(QA) + " .mchip", (b) => b.classList.contains("mbare"));
+      check(W("agy: no meter, still a bare Model button to switch by"),
+        agy && agy.button && agy.chip === "Model" && agyBare, { agy, agyBare });
+      await tap(row(QA) + " .mchip");
+      await sleep(100);
+      const agyNote = await page.$eval(row(QA) + " .mnote", (n) => n.textContent);
+      check(W("its form says the switch is the CLI's default, not the session"),
+        /becomes the CLI's default/.test(agyNote), agyNote);
+      await tap(row(QA) + ' .mopt[data-model="Claude Opus 5.5"]');
+      await tap(row(QA) + ' .mopt[data-effort="high"]');
+      await tap(row(QA) + ' [data-act="a:model-go"]');
+      await sleep(100);
+      const agySent = intents.filter((i) => i.op === "agent-model" && i.name === QA);
+      check(W("agy switched: its name, model and effort"),
+        agySent.length === 1 && agySent[0].model === "Claude Opus 5.5" && agySent[0].effort === "high", agySent);
+      // grok, in another project, offers the switch the same way.
+      const grokRow = '.arow[data-name="grok-jnotes"]';
+      const grok = await read(grokRow);
+      check(W("grok too: a bare Model button, no meter"), grok && grok.button && grok.chip === "Model", grok);
+      await tap(grokRow + " .mchip");
+      await sleep(100);
+      const grokModels = await page.$$eval(grokRow + ' .modelform .mopt[data-model]', (b) => b.map((x) => x.textContent));
+      check(W("grok's own models are offered"),
+        grokModels.includes("grok-4.6") && grokModels.includes("grok-4.7"), grokModels);
+      await tap(grokRow + ' [data-act="a:model-cancel"]');
+      // Once its model is read from its screen (a meter with no window),
+      // the chip shows it and stays a switch -- no context bar.
+      await show(herd(Object.assign({}, METERS, { "grok-jnotes": meter("Grok 4.6", "high", null, null) })));
+      await sleep(100);
+      const grokLit = await read(grokRow);
+      check(W("a read model shows in the chip, still a switch, no bar"),
+        grokLit && grokLit.button && grokLit.chip === "Grok 4.6high" && grokLit.words === "" && grokLit.width === "", grokLit);
 
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check(W("no sideways scroll"), wide <= 0, wide);

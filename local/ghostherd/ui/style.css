@@ -294,6 +294,9 @@ mark.here { background: var(--warn); color: #0e1116; }
 }
 button.mchip:hover { border-color: var(--accent); }
 .mchip.pending { border-style: dashed; }
+/* No model read yet (grok, agy): a switch control, not a shown value. */
+button.mchip.mbare { color: var(--muted); border-style: dashed; }
+button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .meff { color: var(--muted); }
 .mctx { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .mbar { flex: 1 1 60px; min-width: 40px; max-width: 220px; height: 6px; }

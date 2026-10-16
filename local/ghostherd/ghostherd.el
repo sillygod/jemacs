@@ -148,6 +148,15 @@ made an unanchored `> \=' match the transcript.")
      ;; braille, then its [stop] button.  What it said ends at the
      ;; scrollbar instead.
      :spinner "\\`[[:blank:]]*[⠁-⣿][[:blank:]].*[[:blank:]]\\[stop\\][[:blank:]]*\\'"
+     ;; grok's `/model' takes the model and effort as words -- `/model
+     ;; grok-4.6 high' -- and shows them in its input box's border, so the
+     ;; herd types the command rather than driving a picker.  Switching
+     ;; writes grok's default (`:scope default'), not this session alone.
+     :model-picker (:style command :scope default
+                    :models ("grok-4.7" "grok-4.7-build-fast" "grok-4.6" "grok-4.5")
+                    :efforts ("low" "medium" "high" "xhigh")
+                    :labels (("grok-4.7" . "Grok 4.7") ("grok-4.7-build-fast" . "Grok 4.7 Fast")
+                             ("grok-4.6" . "Grok 4.6") ("grok-4.5" . "Grok 4.5")))
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -179,6 +188,15 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("--conversation" "%s")
      :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
      :prompt-replaces-input t
+     ;; agy's `/model' opens a \"Switch Model\" picker with a search box, a
+     ;; windowed list and an effort slider.  The herd types the name into
+     ;; the search to pare it to one, slides ←/→ to the effort, and
+     ;; Enters.  Switching writes agy's default (`:scope default'), not
+     ;; this session alone; each model offers its own efforts.
+     :model-picker (:style search :scope default
+                    :models ("Gemini 4 Argon" "Gemini 3.8 Flash" "Claude Opus 5.5"
+                             "Claude Sonnet 5.5" "GPT-OSS 120B")
+                    :efforts ("low" "medium" "high"))
      :screen-rules
      ((blocked . ("Do you want to proceed"
                   "Allow this"
@@ -236,11 +254,23 @@ Each entry is (KIND . PLIST) with keys:
                 `working' wherever it sits, however far a todo list or a
                 task list under it pushes it up.  nil when the kind has
                 none.
-:model-picker   (:models NAMES :efforts LEVELS): the CLI's `/model' picker,
-                which `ghostherd-switch-model' drives for this session
-                only.  NAMES pick a row by the words it begins with,
-                LEVELS are its effort's steps, lowest first.  nil when
-                the herd does not know the CLI's picker.
+:model-picker   how `ghostherd-switch-model' changes this CLI's model, a
+                plist, nil when the herd does not know the CLI's.  Always
+                :models NAMES and :efforts LEVELS -- NAMES one of which to
+                pick, LEVELS its effort's steps lowest first -- and:
+                :style  how it is driven.  nil or `picker' drives claude's
+                        numbered picker (down to the row, ←/→ the effort,
+                        `s').  `command' types the CLI's `/model NAME
+                        EFFORT' and reads the model line it then shows
+                        (grok).  `search' opens the picker, types NAME into
+                        its search to pare it to one, slides ←/→ to the
+                        effort and Enters (agy).
+                :scope  `session' (claude's `s', this session alone) or
+                        `default' (grok and agy have no session-only
+                        switch; it becomes the CLI's default).  Shown in
+                        what the switch reports.
+                :labels for `command': (NAME . \"Display\")..., the name as
+                        the model line shows it, to read back the switch.
 
 A kind's `working' rules must cover *every* indicator that CLI shows
 while busy, because its input box is on screen the whole time and the
@@ -2609,16 +2639,27 @@ annotation, which is where you are choosing between agents."
     (message "Renamed to %s" new-name)))
 
 
-;;; Its model, switched for this session only
+;;; Its model, switched as that CLI lets you
 ;;
-;; claude's `/model NAME' switches and saves NAME as the default of
-;; every new session; only its picker switches one session alone -- its
-;; `s' on a row.  So the herd drives the picker as you would: `/model',
-;; down to the row, ←/→ to the effort, `s', each step waiting for the
-;; screen to show it.  Anything it does not see, it does not press past:
-;; Escape, and it says why.  Restarting the agent with `--model' would do
-;; it without a picker, and lose what the session had set by hand -- its
-;; mode, its shells in the background.
+;; Done in the running agent, the way you would, each step waiting for the
+;; screen to show it; never by restarting it with `--model', which would
+;; lose what the session set by hand -- its mode, its shells.  Each CLI is
+;; different, so `:model-picker' says how (`:style'):
+;;
+;; claude -- its `/model NAME' saves NAME as every new session's default;
+;; only its picker switches one session alone (`s' on a row).  So the herd
+;; drives the picker: `/model', down to the row, ←/→ to the effort, `s'.
+;;
+;; grok -- `/model NAME EFFORT' takes them as words and shows them in its
+;; input box's border; the herd types the command and reads the border.
+;;
+;; agy -- `/model' opens a search picker; the herd types NAME to pare it
+;; to one, slides ←/→ to the effort, and Enters.
+;;
+;; grok and agy have no session-only switch, so for them it becomes the
+;; CLI's default (`:scope default'); claude stays this session alone.
+;; Anything a step does not see, the herd does not press past: it backs
+;; out and says why.
 
 (defcustom ghostherd-model-switch-wait 6
   "Seconds each step of a model switch waits for the picker to show it."
@@ -2683,6 +2724,75 @@ with xhigh effort\"."
       (setq lines (cdr lines)))
     said))
 
+(defun ghostherd--grok-model-line (text)
+  "grok's model and effort, read from the line in its input box's border
+-- \"... Grok 4.6 (medium) · always-approve ...\" -> (\"Grok 4.6\" . \"medium\")
+-- the last one on screen, which is the live one; nil when there is none."
+  (let ((lines (split-string (or text "") "\n")) (case-fold-search nil) found)
+    (dolist (l lines found)
+      (when (string-match
+             "\\([[:upper:]][[:alnum:].[:blank:]-]*?\\)[[:blank:]]+(\\(low\\|medium\\|high\\|xhigh\\))"
+             l)
+        (setq found (cons (string-trim (match-string 1 l)) (match-string 2 l)))))))
+
+(defun ghostherd--agy-model-line (text)
+  "agy's model and effort, read from its footer status line -- \"… Claude
+Opus 5.5 · high\", or \"Gemini 3.8 Flash · high · AI: …\" -> (\"Claude Opus
+5.5\" . \"high\") -- the last one on screen; nil when there is none."
+  (let ((lines (split-string (or text "") "\n")) (case-fold-search nil) found)
+    (dolist (l lines found)
+      (when (string-match
+             "\\([[:upper:]][[:alnum:].[:blank:]-]*?\\)[[:blank:]]+·[[:blank:]]+\\(low\\|medium\\|high\\|xhigh\\|max\\)\\(?:[[:blank:]]+·\\|[[:blank:]]*\\'\\)"
+             l)
+        (setq found (cons (string-trim (match-string 1 l)) (match-string 2 l)))))))
+
+(defun ghostherd--agy-picker (text)
+  "agy's \"Switch Model\" picker on screen TEXT: (:rows (NAME...) :cursor
+NAME :efforts (WORD...) :effort WORD), or nil when it shows none.  ROWS
+are the names now visible -- the list is windowed and searched, so not all
+-- CURSOR the one marked `>'; EFFORTS the steps its slider offers for that
+row, lowest first, EFFORT the one its `◉' sits on."
+  (let* ((lines (split-string (or text "") "\n"))
+         (top (cl-position-if (lambda (l) (string-match-p "\\`[[:blank:]]*Switch Model[[:blank:]]*\\'" l))
+                              lines :from-end t)))
+    (when (and top (seq-some (lambda (l) (string-match-p "Navigate" l)) (nthcdr top lines)))
+      (let* ((rest (nthcdr (1+ top) lines))
+             (eff (cl-position-if (lambda (l) (and (string-match-p "Effort" l)
+                                                   (string-match-p "[●◉○]" l)))
+                                  rest))
+             rows cursor efforts effort)
+        ;; The model rows, between the search box and the effort slider.
+        (dolist (l (if eff (seq-take rest eff) rest))
+          (when (and (string-match "\\`[[:blank:]]*\\(>\\)?[[:blank:]]*\\([[:alpha:]][^\n]*?\\)[[:blank:]]*\\'" l)
+                     (not (string-prefix-p "Search" (match-string 2 l))))
+            (let ((nm (replace-regexp-in-string "[[:blank:]]+(current)\\'" ""
+                                                (string-trim (match-string 2 l)))))
+              (push nm rows)
+              (when (match-beginning 1) (setq cursor nm)))))
+        ;; The effort slider's stops -- ● done, ◉ here, ○ to go -- and the
+        ;; words under it name them.
+        (when eff
+          (let* ((stops (seq-filter (lambda (c) (memq c '(?● ?◉ ?○)))
+                                    (append (nth eff rest) nil)))
+                 (here (cl-position ?◉ stops))
+                 (labels (seq-find (lambda (l) (string-match-p "\\b\\(low\\|medium\\|high\\)\\b" l))
+                                   (nthcdr (1+ eff) rest))))
+            (when labels
+              (setq efforts (seq-filter (lambda (w) (member w '("low" "medium" "high")))
+                                        (split-string labels))))
+            (when (and here efforts (< here (length efforts)))
+              (setq effort (nth here efforts)))))
+        (and rows (list :rows (nreverse rows) :cursor cursor :efforts efforts :effort effort))))))
+
+(defun ghostherd--agy-said (text)
+  "What agy said its last `/model' did: \"Model set to Claude Opus 5.5
+(High)\", or \"Exited /model command\" when it was cancelled -- the last
+such line, nil when none."
+  (let ((lines (split-string (or text "") "\n")) said)
+    (dolist (l lines said)
+      (when (string-match "\\(Model set to .*\\|Exited /model command\\)" l)
+        (setq said (string-trim (match-string 1 l)))))))
+
 (defun ghostherd--await-screen (session pred then fail &optional wait)
   "Call THEN with what PRED makes of SESSION's screen once it is non-nil,
 looking five times a second; FAIL after WAIT seconds, by default
@@ -2697,20 +2807,133 @@ looking five times a second; FAIL after WAIT seconds, by default
                           (t (run-at-time 0.2 nil #'look))))))
       (look))))
 
+(defun ghostherd--model-switch-via-picker (session efforts model effort finish)
+  "Drive claude's picker: `/model', down to MODEL, ←/→ to EFFORT, `s'.
+EFFORTS is the kind's effort steps; call FINISH with OK and what it said."
+  (cl-labels
+      ((abandon (why)
+         (when (ghostherd--model-picker (ignore-errors (ghostherd--host-capture session 80)))
+           (ignore-errors (ghostherd--host-send-keys session '("esc"))))
+         (funcall finish nil why))
+       (press (key n)
+         (when (> n 0) (ghostherd--host-send-keys session (make-list n key))))
+       (confirm (&rest _)
+         (press "s" 1)
+         (ghostherd--await-screen
+          session
+          (lambda (text) (and (not (ghostherd--model-picker text)) (ghostherd--model-said text)))
+          (lambda (said) (if (string-prefix-p "Set " said) (funcall finish t said) (funcall finish nil said)))
+          (lambda () (abandon "it did not say it switched"))))
+       (to-effort (p)
+         (let* ((have (cl-position (plist-get p :effort) efforts :test #'equal))
+                (want (and effort (cl-position effort efforts :test #'equal)))
+                (by (and have want (- want have))))
+           (if (memq by '(nil 0))
+               (confirm)
+             (press (if (> by 0) "right" "left") (abs by))
+             ;; A model whose top is lower stops there; what it set is
+             ;; what it says it set.
+             (ghostherd--await-screen
+              session
+              (lambda (text) (equal (plist-get (ghostherd--model-picker text) :effort) effort))
+              #'confirm #'confirm (min 1.5 ghostherd-model-switch-wait)))))
+       (to-row (p)
+         (let ((row (ghostherd--picker-row (plist-get p :rows) model))
+               (at (plist-get p :cursor)))
+           (if (not row)
+               (abandon (format "its picker has no %s" model))
+             (press (if (> row at) "down" "up") (abs (- row at)))
+             (ghostherd--await-screen
+              session
+              (lambda (text) (let ((q (ghostherd--model-picker text)))
+                               (and q (eql (plist-get q :cursor) row) q)))
+              #'to-effort
+              (lambda () (abandon (format "it did not reach %s in its picker" model))))))))
+    (ghostherd--host-send-text session "/model" t)
+    (ghostherd--await-screen
+     session #'ghostherd--model-picker #'to-row
+     (lambda () (abandon "its model picker did not open")))))
+
+(defun ghostherd--model-switch-via-command (session picker model effort finish)
+  "Switch by typing grok's `/model MODEL EFFORT', then reading the model
+line it shows (`:labels' names it) to see it took.  Writes grok's default."
+  (let ((want (or (cdr (assoc model (plist-get picker :labels))) model)))
+    (ghostherd--host-send-text
+     session (concat "/model " model (and effort (concat " " effort))) t)
+    (ghostherd--await-screen
+     session
+     (lambda (text) (let ((cur (ghostherd--grok-model-line text)))
+                      (and cur (equal (car cur) want)
+                           (or (null effort) (equal (cdr cur) effort))
+                           cur)))
+     (lambda (cur) (funcall finish t (format "Set model to %s with %s effort (now its default)"
+                                             (car cur) (cdr cur))))
+     (lambda () (funcall finish nil (format "it did not switch to %s" want))))))
+
+(defun ghostherd--model-switch-via-search (session model effort finish)
+  "Drive agy's search picker: `/model', type MODEL to pare it to one,
+←/→ to EFFORT, Enter; read \"Model set to ...\" to see it took.  The
+effort steps are the ones the chosen row's slider offers.  Writes agy's
+default."
+  (cl-labels
+      ((abandon (why)
+         (when (ghostherd--agy-picker (ignore-errors (ghostherd--host-capture session 80)))
+           ;; One Escape clears a search, another backs out of the picker.
+           (ignore-errors (ghostherd--host-send-keys session '("esc" "esc"))))
+         (funcall finish nil why))
+       (press (key n)
+         (when (> n 0) (ghostherd--host-send-keys session (make-list n key))))
+       (select ()
+         (ghostherd--host-send-keys session '("return"))
+         (ghostherd--await-screen
+          session
+          (lambda (text) (and (not (ghostherd--agy-picker text)) (ghostherd--agy-said text)))
+          (lambda (said) (if (string-prefix-p "Model set to" said)
+                             (funcall finish t (concat said " (now its default)"))
+                           (funcall finish nil said)))
+          (lambda () (abandon "it did not say it switched"))))
+       (to-effort (p)
+         (let* ((offered (plist-get p :efforts))
+                (have (cl-position (plist-get p :effort) offered :test #'equal))
+                (want (and effort (cl-position effort offered :test #'equal)))
+                (by (and have want (- want have))))
+           (if (memq by '(nil 0))
+               (select)
+             (press (if (> by 0) "right" "left") (abs by))
+             (ghostherd--await-screen
+              session
+              (lambda (text) (equal (plist-get (ghostherd--agy-picker text) :effort) effort))
+              (lambda (_) (select)) #'select (min 1.5 ghostherd-model-switch-wait)))))
+       (to-row (_p)
+         (ghostherd--host-send-text session model nil)
+         (ghostherd--await-screen
+          session
+          (lambda (text) (let ((q (ghostherd--agy-picker text)))
+                           (and q (equal (plist-get q :rows) (list model))
+                                (equal (plist-get q :cursor) model) q)))
+          #'to-effort
+          (lambda () (abandon (format "its picker did not pare to %s" model))))))
+    (ghostherd--host-send-text session "/model" t)
+    (ghostherd--await-screen
+     session #'ghostherd--agy-picker #'to-row
+     (lambda () (funcall finish nil "its model picker did not open")))))
+
 (defun ghostherd-switch-model (session model &optional effort done)
-  "Switch SESSION to MODEL for this session only, at EFFORT when given.
-MODEL is one of the names its kind's `:model-picker' lists, EFFORT one
-of its levels.  Done in the CLI's own picker, as you would; not while it
-works, or with words of yours in its input box.  DONE, when given, is
-called with OK and what the picker said it did -- or why it was not."
+  "Switch SESSION to MODEL, at EFFORT when given, as that CLI allows.
+MODEL is one of the names its kind's `:model-picker' lists, EFFORT one of
+its levels.  Done in the running agent, as you would; not while it works,
+or with words of yours in its input box.  For claude this is the session
+alone; grok and agy have no such switch, so for them it becomes the CLI's
+default.  DONE, when given, is called with OK and what it said it did --
+or why it was not."
   (interactive
    (let* ((s (ghostherd--read-session "Switch the model of: "))
           (picker (plist-get (ignore-errors (ghostherd--spec (ghostherd-session-kind s))) :model-picker)))
      (unless picker
-       (user-error "The herd does not know %s's model picker" (ghostherd-session-kind s)))
+       (user-error "The herd does not know how to switch %s's model" (ghostherd-session-kind s)))
      (list s
            (completing-read "Model: " (plist-get picker :models) nil t)
-           (let ((e (completing-read "Effort (empty: as the picker has it): "
+           (let ((e (completing-read "Effort (empty: as it is): "
                                      (plist-get picker :efforts) nil t)))
              (and (not (string-empty-p e)) e)))))
   (setq session (ghostherd-get session))
@@ -2724,7 +2947,7 @@ called with OK and what the picker said it did -- or why it was not."
          (input (plist-get (gethash id ghostherd--feet) :input)))
     (cond
      ((null picker)
-      (user-error "The herd does not know %s's model picker" (ghostherd-session-kind session)))
+      (user-error "The herd does not know how to switch %s's model" (ghostherd-session-kind session)))
      ((not (member model (plist-get picker :models)))
       (user-error "No model %s for %s: one of %s" model name
                   (string-join (plist-get picker :models) ", ")))
@@ -2737,55 +2960,15 @@ called with OK and what the picker said it did -- or why it was not."
      ((and input (not (equal input (ghostherd-session-suggestion session))))
       (user-error "%s has words in its input box: send them or clear them first" name)))
     (puthash id t ghostherd--switching)
-    (cl-labels
-        ((finish (ok what)
-           (remhash id ghostherd--switching)
-           (ghostherd--log-add session 'life (if ok what (concat "model not switched: " what)))
-           (when done (funcall done ok what)))
-         (abandon (why)
-           (when (ghostherd--model-picker (ignore-errors (ghostherd--host-capture session 80)))
-             (ignore-errors (ghostherd--host-send-keys session '("esc"))))
-           (finish nil why))
-         (press (key n)
-           (when (> n 0) (ghostherd--host-send-keys session (make-list n key))))
-         (confirm (&rest _)
-           (press "s" 1)
-           (ghostherd--await-screen
-            session
-            (lambda (text) (and (not (ghostherd--model-picker text)) (ghostherd--model-said text)))
-            (lambda (said) (if (string-prefix-p "Set " said) (finish t said) (finish nil said)))
-            (lambda () (abandon "it did not say it switched"))))
-         (to-effort (p)
-           (let* ((have (cl-position (plist-get p :effort) efforts :test #'equal))
-                  (want (and effort (cl-position effort efforts :test #'equal)))
-                  (by (and have want (- want have))))
-             (if (memq by '(nil 0))
-                 (confirm)
-               (press (if (> by 0) "right" "left") (abs by))
-               ;; A model whose top is lower stops there; what it set is
-               ;; what it says it set.
-               (ghostherd--await-screen
-                session
-                (lambda (text) (equal (plist-get (ghostherd--model-picker text) :effort) effort))
-                #'confirm #'confirm (min 1.5 ghostherd-model-switch-wait)))))
-         (to-row (p)
-           (let ((row (ghostherd--picker-row (plist-get p :rows) model))
-                 (at (plist-get p :cursor)))
-             (if (not row)
-                 (abandon (format "its picker has no %s" model))
-               (press (if (> row at) "down" "up") (abs (- row at)))
-               (ghostherd--await-screen
-                session
-                (lambda (text) (let ((q (ghostherd--model-picker text)))
-                                 (and q (eql (plist-get q :cursor) row) q)))
-                #'to-effort
-                (lambda () (abandon (format "it did not reach %s in its picker" model))))))))
+    (cl-labels ((finish (ok what)
+                  (remhash id ghostherd--switching)
+                  (ghostherd--log-add session 'life (if ok what (concat "model not switched: " what)))
+                  (when done (funcall done ok what))))
       (condition-case err
-          (progn
-            (ghostherd--host-send-text session "/model" t)
-            (ghostherd--await-screen
-             session #'ghostherd--model-picker #'to-row
-             (lambda () (abandon "its model picker did not open"))))
+          (pcase (plist-get picker :style)
+            ('command (ghostherd--model-switch-via-command session picker model effort #'finish))
+            ('search (ghostherd--model-switch-via-search session model effort #'finish))
+            (_ (ghostherd--model-switch-via-picker session efforts model effort #'finish)))
         (error (finish nil (error-message-string err)))))))
 
 ;;;###autoload
