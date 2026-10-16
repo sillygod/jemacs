@@ -1647,7 +1647,7 @@
 
   // Each agent has one colour wherever it speaks, the Log's lane colour:
   // an entry's bar is whoever said it.  You are the blue.
-  function entryHtml(e, i, name, kind) {
+  function entryHtml(e, i, name, kind, keyns) {
     const from = e.who && e.who !== "user" ? e.who : "";
     const color = from ? sessionColor(from) : "";
     const bar = color ? ' style="border-left-color:' + color + '"' : "";
@@ -1658,7 +1658,9 @@
     }
     if (e.role === "tools") {
       const tools = e.tools || [];
-      const key = name + ":" + i;
+      // A key namespace keeps the sub-agent overlay's tool groups from
+      // sharing toolsOpen keys with the parent column's own entries.
+      const key = (keyns || name) + ":" + i;
       const open = herdNow.toolsOpen.has(key);
       // A sub-agent it started: running while its agent says so, else
       // how it ended -- nothing when that is not known.
@@ -1774,7 +1776,7 @@
     const body = !conv ? '<p class="rnote">Reading its transcript…</p>'
       : conv.error ? '<p class="rnote error">Could not read it: ' + esc(conv.error) + "</p>"
       : (conv.earlier ? '<p class="rnote">Earlier turns are in the transcript, not shown here.</p>' : "") +
-        (entries.length ? entries.map((e, i) => entryHtml(e, i, sv.name, "claude")).join("")
+        (entries.length ? entries.map((e, i) => entryHtml(e, i, sv.name, "claude", "sub:" + sv.name)).join("")
           : '<p class="rnote">Nothing said yet.</p>');
     const prev = ov.querySelector(".subbody");
     const atBottom = !prev || prev.scrollHeight - prev.scrollTop - prev.clientHeight < 40;
@@ -2067,6 +2069,18 @@
       const key = el.getAttribute("data-key");
       if (herdNow.toolsOpen.has(key)) herdNow.toolsOpen.delete(key);
       else herdNow.toolsOpen.add(key);
+      // In the sub-agent overlay there is no column to re-render, and `row'
+      // (closest .rcol/.cfoot/.cmeter) is null -- re-render the overlay,
+      // keeping the reader's place.
+      const sub = el.closest(".subview");
+      if (sub) {
+        const sb = sub.querySelector(".subbody");
+        const skeep = sb ? sb.scrollTop : 0;
+        renderSubView();
+        const nb = app.querySelector(".subview .subbody");
+        if (nb) nb.scrollTop = skeep;
+        return;
+      }
       const a = roomAgents().find((x) => x.name === name);
       const body = row && row.querySelector(".rbody");
       const keep = body ? body.scrollTop : 0;

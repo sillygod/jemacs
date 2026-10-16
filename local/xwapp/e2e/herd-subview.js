@@ -70,6 +70,19 @@ const TALLSUB = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false,
       check(W("its conversation and tool calls show"), /Found the bug in the retry path\./.test(body) && /Read/.test(body), body);
       const head = await page.$eval(".subview .subhead", (h) => h.textContent);
       check(W("its who and title are in the header"), /general-purpose/.test(head) && /Build R4 sync debug project/.test(head), head);
+
+      // The overlay's own tool groups fold and expand -- in the overlay, not
+      // by re-rendering a column, and with their own key namespace so they do
+      // not collide with the parent column's entries.
+      const toolBtn = '.subview [data-act="a:room-tools"]';
+      const subKey = await page.$eval(toolBtn, (b) => b.getAttribute("data-key"));
+      check(W("the overlay's tool group has its own key namespace"), /^sub:/.test(subKey), subKey);
+      check(W("the tool group starts folded"), !(await page.$(".subview .tlist")));
+      await tap(toolBtn);
+      await sleep(60);
+      const tlist = await page.$eval(".subview .tlist", (t) => t.textContent).catch(() => "");
+      check(W("clicking the tool group expands it in the overlay"), /src\/pay\.py/.test(tlist), tlist);
+
       // A stray push for a different sub is ignored.
       await page.evaluate(() => GM.setSubConversation({ name: "claude-deploy-platform", sub: "other", entries: [{ role: "assistant", text: "nope", ts: "t" }] }));
       await sleep(40);
