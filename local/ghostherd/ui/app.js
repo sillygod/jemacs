@@ -801,6 +801,9 @@
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
+    // How far back each column (by name) and the chat have been loaded with
+    // `load earlier'; kept so a poll does not shrink them.
+    roomLimit: {}, chatLimit: 0,
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
   };
@@ -1500,16 +1503,29 @@
     herdNow.chat = null;
     herdNow.subView = null;
     herdNow.subConv = null;
+    herdNow.roomLimit = {};
+    herdNow.chatLimit = 0;
     app.innerHTML = "";
     chrome();
     watchRoom();
     renderRoom();
   }
 
+  // The default count each view reads (conversation.LIMIT / CHAT_LIMIT) and
+  // the most the RPC will return (its clamp): `load earlier' grows from the
+  // one toward the other, a page at a time.
+  const ROOM_LIMIT = 60, ROOM_MAX = 200;
+  const CHAT_LIMIT = 200, CHAT_MAX = 500;
+
   // What Emacs should send for the room: each column's conversation and
-  // the screens shown instead, or the chat.
+  // the screens shown instead, or the chat; and how far back each has been
+  // loaded, so a poll keeps that, not the default.
   function watchRoom() {
-    emit("room-watch", { project: herdNow.room, screens: [...herdNow.roomScreen], view: herdNow.roomView });
+    emit("room-watch", {
+      project: herdNow.room, screens: [...herdNow.roomScreen], view: herdNow.roomView,
+      limits: Object.keys(herdNow.roomLimit).map((name) => ({ name, limit: herdNow.roomLimit[name] })),
+      chatLimit: herdNow.chatLimit || 0,
+    });
   }
 
   function closeRoom() {
@@ -1690,6 +1706,16 @@
     return '<div class="ent you">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
   }
 
+  // `Load earlier' when there is more to show and the limit can still grow;
+  // once it is at the most the sidecar returns, a note instead -- the rest
+  // stays in the transcript.
+  function earlierHtml(conv, canGrow, max, act) {
+    if (!conv || !conv.earlier) return "";
+    return canGrow
+      ? '<div class="loadmore"><button type="button" class="ghost small" data-act="' + act + '">Load earlier</button></div>'
+      : '<p class="rnote">The most recent ' + max + " shown; earlier is in the transcript.</p>";
+  }
+
   function roomBodyHtml(a) {
     const name = a.name;
     const conv = herdNow.convs[name];
@@ -1703,7 +1729,7 @@
     if (!conv) return '<p class="rnote">Reading its conversation…</p>';
     if (conv.error) return '<p class="rnote error">Could not read its conversation: ' + esc(conv.error) + "</p>";
     const entries = conv.entries || [];
-    return (conv.earlier ? '<p class="rnote">Earlier turns are in the transcript, not shown here.</p>' : "") +
+    return earlierHtml(conv, (conv.limit || ROOM_LIMIT) < ROOM_MAX, ROOM_MAX, "a:load-earlier") +
       (entries.length ? entries.map((e, i) => entryHtml(e, i, name, a.kind)).join("") : '<p class="rnote">Nothing said yet.</p>');
   }
 
@@ -1856,7 +1882,7 @@
     const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
     body.innerHTML = !c ? '<p class="rnote">Reading the conversations…</p>'
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
-      : (c.earlier ? '<p class="rnote">Earlier messages are in each agent\'s column, not shown here.</p>' : "") +
+      : earlierHtml(c, (herdNow.chatLimit || CHAT_LIMIT) < CHAT_MAX, CHAT_MAX, "a:chat-earlier") +
         ((c.entries || []).length ? c.entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
         (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
     drawn.set(body, (c && c.entries) || []);
@@ -2010,6 +2036,16 @@
       herdNow.subConv = null;
       emit("sub-unwatch", {});
       return renderSubView();
+    }
+    if (act === "load-earlier") {
+      const conv = herdNow.convs[name];
+      const cur = (conv && conv.limit) || ROOM_LIMIT;
+      herdNow.roomLimit[name] = Math.min(ROOM_MAX, cur + ROOM_LIMIT);
+      return watchRoom();
+    }
+    if (act === "chat-earlier") {
+      herdNow.chatLimit = Math.min(CHAT_MAX, (herdNow.chatLimit || CHAT_LIMIT) + CHAT_LIMIT);
+      return watchRoom();
     }
     if (act === "room-tools") {
       const key = el.getAttribute("data-key");

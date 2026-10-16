@@ -1371,6 +1371,12 @@ forge or ClickUp instead, which want their own login."
   "The transcripts' signatures the chat was last sent for.")
 (defvar ghostherd-memory-page--chat-reading nil
   "Non-nil while the sidecar builds the chat.")
+(defvar ghostherd-memory-page--room-limits (make-hash-table :test 'equal)
+  "Agent name -> how many entries its column asked for, when more than the
+default; nil for the default.  Kept so a `load earlier' does not shrink
+back on the next poll.")
+(defvar ghostherd-memory-page--chat-limit nil
+  "How many items the chat asked for, when more than the default, or nil.")
 (defvar ghostherd-memory-page--sub nil
   "The sub-agent transcript shown over the room: (NAME PATH SID), where
 NAME is the parent agent and PATH its transcript; nil when none is open.")
@@ -1467,8 +1473,10 @@ One timeline for the project, which the sidecar builds from them all."
                                   sessions)))
          (absent (seq-remove (lambda (n) (assoc n known))
                              (mapcar #'ghostherd-session-name sessions)))
-         (sig (cons absent (mapcar (lambda (a) (cons (car a) (ghostherd-memory-page--room-signature (cdr a))))
-                                   known))))
+         (limit ghostherd-memory-page--chat-limit)
+         ;; The limit is part of the signature, so `load earlier' re-reads.
+         (sig (list limit absent (mapcar (lambda (a) (cons (car a) (ghostherd-memory-page--room-signature (cdr a))))
+                                         known))))
     (unless (or (equal sig ghostherd-memory-page--chat-sent) ghostherd-memory-page--chat-reading)
       (setq ghostherd-memory-page--chat-reading t)
       (let ((done (lambda (&rest fields)
@@ -1484,11 +1492,13 @@ One timeline for the project, which the sidecar builds from them all."
              (lambda (r)
                (funcall done
                         :earlier (if (plist-get r :earlier) t :json-false)
+                        :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
                         :missing (ghostherd-memory-page--vec
                                   (mapcar #'ghostherd-memory-page--str (plist-get r :missing)))
                         :entries (ghostherd-memory-page--vec
                                   (mapcar #'ghostherd-memory-page--chat-entry (plist-get r :entries)))))
-             (list :agents (vconcat (mapcar (lambda (a) (list :name (car a) :path (cdr a))) known)))
+             (append (list :agents (vconcat (mapcar (lambda (a) (list :name (car a) :path (cdr a))) known)))
+                     (and limit (list :limit limit)))
              (lambda (e) (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
           (error (funcall done :entries [] :error (error-message-string err))))))))
 
@@ -1501,9 +1511,11 @@ screen if that is what the page shows of it."
   (let* ((name (ghostherd-session-name s))
          (room ghostherd-memory-page--room)
          (path (ghostherd-session-transcript s))
-         (sig (ghostherd-memory-page--room-signature path)))
+         (limit (gethash name ghostherd-memory-page--room-limits))
+         ;; The limit is part of the signature, so `load earlier' re-reads.
+         (sig (list (ghostherd-memory-page--room-signature path) limit)))
     (cond
-     ((null sig)
+     ((null (car sig))
       (unless (eq (gethash name ghostherd-memory-page--room-sent) 'none)
         (puthash name 'none ghostherd-memory-page--room-sent)
         (ghostherd-memory-page--room-send name :entries [] :none t)))
@@ -1523,14 +1535,15 @@ screen if that is what the page shows of it."
                (funcall done
                         :cli (ghostherd-memory-page--str (plist-get r :cli))
                         :earlier (if (plist-get r :earlier) t :json-false)
+                        :limit (and (natnump (plist-get r :limit)) (plist-get r :limit))
                         :entries (ghostherd-memory-page--vec
                                   (mapcar #'ghostherd-memory-page--room-entry
                                           (plist-get r :entries)))))
-             (list :path path)
+             (if limit (list :path path :limit limit) (list :path path))
              (lambda (e)
                (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
           (error (funcall done :entries [] :error (error-message-string err)))))))
-    (when (or (null sig) (member name ghostherd-memory-page--room-screens))
+    (when (or (null (car sig)) (member name ghostherd-memory-page--room-screens))
       (ghostherd-memory-page--js
        "setScreen" (list :name name
                          :text (or (ignore-errors (ghostherd--host-capture s))
@@ -1615,6 +1628,18 @@ again only changes which those are."
             ghostherd-memory-page--chat-sent nil)
       (clrhash ghostherd-memory-page--room-sent))
     (setq ghostherd-memory-page--room-screens screens)
+    ;; How much of each column, and of the chat, the page has expanded with
+    ;; `load earlier' -- so the next read stays that big, not back to the
+    ;; default.  The limit is part of each read's signature, so a change
+    ;; here re-reads on the next tick.
+    (dolist (o (append (alist-get 'limits intent) nil))
+      (when-let* ((name (ghostherd-memory-page--str (alist-get 'name o)))
+                  (n (alist-get 'limit o)))
+        (if (natnump n)
+            (puthash name n ghostherd-memory-page--room-limits)
+          (remhash name ghostherd-memory-page--room-limits))))
+    (setq ghostherd-memory-page--chat-limit (and (natnump (alist-get 'chatLimit intent))
+                                                 (alist-get 'chatLimit intent)))
     (unless (timerp ghostherd-memory-page--room-timer)
       (setq ghostherd-memory-page--room-timer
             (run-at-time 0 ghostherd-memory-page--room-every
@@ -1632,8 +1657,10 @@ again only changes which those are."
         ghostherd-memory-page--chat-reading nil
         ghostherd-memory-page--sub nil
         ghostherd-memory-page--sub-sent nil
-        ghostherd-memory-page--sub-reading nil)
-  (clrhash ghostherd-memory-page--room-sent))
+        ghostherd-memory-page--sub-reading nil
+        ghostherd-memory-page--chat-limit nil)
+  (clrhash ghostherd-memory-page--room-sent)
+  (clrhash ghostherd-memory-page--room-limits))
 
 (defun ghostherd-memory-page--session (intent)
   "The live herd session INTENT names, or a `user-error'."

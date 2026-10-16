@@ -655,3 +655,23 @@ def test_sub_conversation_rpc(home):
     assert call({"path": parent, "sub": "../x"}).error.message == "no such sub-agent"
     assert call({"path": parent, "sub": "nope"}).error is not None
     assert call({"path": parent, "sub": "x", "limit": "lots"}).error.message == "limit must be a number"
+
+
+# ---- Load earlier: a bigger limit returns more of the tail ----------------
+
+def test_a_bigger_limit_returns_more_of_the_tail(home):
+    "`load earlier' is a bigger limit: read returns more of the newest turns."
+    recs = []
+    for i in range(30):
+        recs += [u("m%d" % i), a("x%d" % i, text("r%d" % i))]
+    path = _claude_file(home, recs)
+    few, more = conv.read(path, 10), conv.read(path, 40)
+    assert len(few["entries"]) == 10 and few["earlier"] is True
+    assert len(more["entries"]) == 40 and more["limit"] == 40
+
+    def call(limit):
+        return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1,
+                           method="herd_conversation", params={"path": path, "limit": limit})))
+
+    assert call(40).result["limit"] == 40
+    assert call(9999).result["limit"] == 200  # clamped to the RPC's most

@@ -6342,7 +6342,9 @@ page as [] -- json.el writes nil as null, and the page stopped drawing."
             (ghostherd-memory-page--room-reading (make-hash-table :test 'equal))
             (ghostherd-memory-page--room-chat nil)
             (ghostherd-memory-page--chat-sent nil)
-            (ghostherd-memory-page--chat-reading nil))
+            (ghostherd-memory-page--chat-reading nil)
+            (ghostherd-memory-page--room-limits (make-hash-table :test 'equal))
+            (ghostherd-memory-page--chat-limit nil))
        (cl-letf (((symbol-function 'ghostherd-session-transcript) (lambda (_s) transcript))
                  ((symbol-function 'ghostherd--host-capture) (lambda (&rest _) "the screen"))
                  ((symbol-function 'xwapp-session) (lambda (&rest _) t)))
@@ -6412,6 +6414,36 @@ it changes; closing it forgets it."
       (let ((n (length requests)))
         (ghostherd-memory-page--sub-read)
         (should (= (length requests) n))))))
+
+(ert-deftest ghostherd-test-room-load-earlier-reads-more-and-keeps-it ()
+  "A column's `load earlier' asks for more; Emacs reads at that limit, and
+-- the limit being part of the signature -- keeps it across polls instead
+of shrinking back to the default."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:cli "claude" :earlier t :limit 120
+                    :entries ((:role "assistant" :text "hi" :ts "t")))))
+    (ghostherd-memory-page--room-tick)
+    (should (equal (car (last requests)) `("herd_conversation" (:path ,file))))
+    (should (eql (plist-get (ghostherd-test--call calls "setConversation") :limit) 120))
+    (ghostherd-memory-page--handle
+     '((op . "room-watch") (project . "/p/") (screens . [])
+       (limits . [((name . "claude-api") (limit . 120))]) (chatLimit . 0)))
+    (should (equal (car (last requests)) `("herd_conversation" (:path ,file :limit 120))))
+    (let ((n (length requests)))
+      (ghostherd-memory-page--room-tick)
+      (should (= (length requests) n)))))
+
+(ert-deftest ghostherd-test-chat-load-earlier-asks-for-more ()
+  "The chat's `load earlier' grows its one limit, passed on to herd_chat."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p) '(:earlier :json-false :entries [] :missing [])))
+    (ghostherd-memory-page--handle '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat")))
+    (should (equal (caar (last requests)) "herd_chat"))
+    (should-not (plist-member (cadar (last requests)) :limit))
+    (ghostherd-memory-page--handle
+     '((op . "room-watch") (project . "/p/") (screens . []) (view . "chat") (chatLimit . 400)))
+    (should (eql (plist-get (cadar (last requests)) :limit) 400))))
 
 (ert-deftest ghostherd-test-room-as-one-chat ()
   "Shown as a chat, the room asks the sidecar for the project's timeline

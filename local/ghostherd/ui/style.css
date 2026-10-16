@@ -496,6 +496,7 @@ button.pname:hover { color: var(--accent); text-decoration: underline; }
 .rbody pre.screen { margin: 6px 0; white-space: pre-wrap; }
 .rnote { color: var(--muted); font-size: 12px; margin: 8px 0; }
 .rnote.error { color: var(--minus); }
+.loadmore { display: flex; justify-content: center; margin: 4px 0 8px; }
 .rfoot { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; padding: 8px 10px; border-top: 1px solid var(--line); flex-shrink: 0; }
 .rfoot textarea {
   flex: 1;
