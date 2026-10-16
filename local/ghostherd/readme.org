@@ -7,12 +7,12 @@ control plane bound to the Emacs session.
 
 | Item        | Value                                                       |
 |-------------+-------------------------------------------------------------|
-| Phase       | *3.15* — the herd page: usage, agents by project, operations |
+| Phase       | *3.27* — uncommitted changes, relay, phone access, rooms & asks |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest             |
-| Branch      | developed on =chore/extract-personal-config=                |
+| Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest + =xwapp/e2e= WebKit |
+| Branch      | =master=                                                    |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
-| Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= · =ghostherd-memory.el= · =ghostherd-usage.el= · =server/= |
+| Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= · =ghostherd-memory.el= · =ghostherd-memory-page.el= · =ghostherd-usage.el= · =ghostherd-push.el= · =ui/= · =bin/= · =server/= |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                              |
 
 This file is the manual: what it does, how to drive it, what to do when
@@ -385,9 +385,17 @@ before tokens holds a bare URL and gets a 401 that points it at
     -d '{"jsonrpc":"2.0","id":1,"method":"herd_list","params":{}}'
 #+end_src
 
-=herd_message= queues ={from, to, body, handoff}=.  Each poll Emacs
-calls =herd_tick=: push the session snapshot, ack what it already
-pasted, pull whatever is deliverable.  A tick with no answer in
+=herd_list= (and =herd list= / Telegram's =/herd=) returns sessions in
+the same order as the herd page: by state priority (=blocked=,
+=working=, =starting=, =waiting=, =done=, =idle=, =dead=) and then most
+recently updated (=since= newest first).  =herd_message= queues
+={from, to, body, handoff}=.  Each poll Emacs calls =herd_tick=: push
+the session snapshot, ack what it already pasted, pull whatever is
+deliverable, and periodically prune settled history from =herd.sqlite=
+(delivered mail, finished and collected asks, completed commands,
+replies and pushes past the retention window, while never touching
+open or uncollected rows, active runs, or recent asks still shown by
+=herd asks=).  A tick with no answer in
 =ghostherd-memory-request-timeout= seconds (60) is given up, and the
 next one asks again: url.el now and then drops a request, and the mail
 used to stop there.  A target that is =working= is
@@ -411,7 +419,8 @@ you (below).
 Then restart the sidecar (=ghostherd-memory-stop= / enable
 =ghostherd-mode=, or restart Emacs) so uvicorn inherits the env.
 
-=/herd= lists sessions from the last Emacs poll.  Tap a row for
+=/herd= lists sessions from the last Emacs poll, ordered by state
+priority and recency just like the herd page.  Tap a row for
 screen / explain / prompt / interrupt.  =screen= and =explain= reply
 from that snapshot immediately (the pane Emacs already captured);
 they do not wait for another tick.  A =blocked= session also gets a
@@ -793,22 +802,24 @@ not evidence; it is what detection falls back to.
 
 =waiting= is the one state the sidecar reports for an agent rather than
 the agent for itself.  A turn that ends with work it started still out
---- sub-agents, shells or monitors running in the background, asks of
-its own open or an answer on its way to it --- ended to wait, not to
-stop: its hook says =done=, and the sidecar makes that =waiting on qa,
-2 sub-agents and 1 shell=.  Claude wakes an agent as each of these
-ends, which is what makes it a wait.  A shell or monitor counts for an
-hour from its start at most: a server left running, or a wait that is
-stuck, is not something it will be woken by.  Its input box is free, so
-mail and you reach it and its model can be switched; but there is no
-=done= banner, its ask stays open and its run of asks goes on.  It
-wakes as that work comes back --- a sub-agent's report starts a turn of
-its own --- and the turn that ends with nothing out is =done=.  It is
-trusted past =ghostherd-report-ttl=, since the screen would call it
-idle, until a =working= screen, a prompt you send or its next hook says
-otherwise.  One left waiting with nothing out and no word from it or its
-conversation for 30 seconds --- its sub-agents killed, and it never
-woke to it --- is =done=.
+--- sub-agents, shells, monitors or timers running in the background,
+asks of its own open or an answer on its way to it --- ended to wait,
+not to stop: its hook says =done=, and the sidecar makes that =waiting
+on qa, 2 sub-agents and 1 shell=.  claude, grok and agy all wake an
+agent as its background work or sub-agents finish, which is what makes
+it a wait.  A background task or sub-agent that was killed or
+cancelled is cleared, and one that has gone silent past the staleness
+cutoff stops counting: a server left running, or a wait that was
+interrupted, will not hold the agent in =waiting= forever.  Its input
+box is free, so mail and you reach it and its model can be switched;
+but there is no =done= banner, its ask stays open and its run of asks
+goes on.  It wakes as that work comes back --- a sub-agent's report
+starts a turn of its own --- and the turn that ends with nothing out is
+=done=.  It is trusted past =ghostherd-report-ttl=, since the screen
+would call it idle, until a =working= screen, a prompt you send or its
+next hook says otherwise.  One left waiting with nothing out and no
+word from it or its conversation for 30 seconds --- its sub-agents
+killed, and it never woke to it --- is =done=.
 
 Reports are for agent kinds. A =shell= session has no agent lifecycle to
 report, and a human claiming a state wants =ghostherd-mark-state=.
@@ -1062,8 +1073,10 @@ screens were for.
 
 Appended per entry, not saved on the way out: a =kill-emacs-hook= does
 not run for the crash this is meant to survive (verified with =kill -9=).
-Caps are applied when the file is *read*, so it grows with a session and
-is compacted once at the start of the next one.
+Caps are applied when the file is *read*, and the file is also compacted
+in place on write once its lines or kept screens grow well past
+=ghostherd-log-max= / =ghostherd-log-screens=, so a long-lived Emacs
+never grows =ghostherd-log.eld= without bound.
 
 =C= in the log buffer forgets the lot, file included --- quitting Emacs
 used to do that by accident, and now nothing does. Set
@@ -1119,10 +1132,12 @@ message with the command to stop it.
 |---------+-------------------------------------------------------+------------------------------------------|
 | claude  | =~/.claude/projects/**/*.jsonl= and =memory/*.md=     | mode / permission / snapshots / images   |
 | grok    | =chat_history.jsonl= + =summary.json=                 | recap_requests, updates.jsonl, images    |
-| agy     | conversation sqlite, UTF-8 salvage + summaries        | protobuf as protobuf (there is no schema)|
+| agy     | =brain/<id>/.system_generated/logs/transcript.jsonl= + summaries (fallback: =conversations/*.db= UTF-8 salvage) | internal thinking, sub-agent logs, raw protobuf |
 
 Grok's on-disk bulk is recaps, ACP streams and images, not chat.  Import
-does not touch those.
+does not touch those.  For agy, once a conversation has a
+=transcript.jsonl=, any earlier =conversations/<id>.db= source for it is
+retired so the index keeps only the clean JSONL turns.
 
 #+begin_src bash
   cd server && uv sync
@@ -1201,47 +1216,58 @@ are the other tabs (below, and "What happened while you were away").
   an empty box at the desk.  Faint is how it is told from what you
   typed in the CLI: when new text is in the box, tmux is asked once for
   the screen with its styles (=ghostherd-foot-kinds=).
-- What each claude agent runs on, on its row, its column's head and ---
-  in the chat --- above the box, for the agent it writes to: its model
-  and effort, and its context as a bar of its model's window, =38% ·
-  381k / 1M=, coloured as the usage bars are.  The sidecar reads it off
-  the tail of the transcript, when that has changed: the last reply's
-  own record of its model, the tokens it was given and its effort.  A
-  model switched since is the one its next reply will be on, its chip
-  dashed; a context compacted since says so until then.  The window is
-  as Claude Code documents it: 1M for =[1m]= and for the models that
-  have it natively (Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5,
-  Fable), 200K for the rest.  Not claude's status line: turning that on
+- What each agent runs on and how full its context is, on its row, its
+  column's head and --- in the chat --- above the box, for the agent it
+  writes to: its model and effort, and its context.  For claude, the
+  sidecar reads model, effort and tokens off the tail of the transcript
+  (=38% · 381k / 1M=, coloured as the usage bars are, 1M for =[1m]= and
+  the models that have it natively, 200K for the rest; a model switched
+  since is dashed, a context compacted since says so).  For grok, the
+  sidecar reads =contextTokensUsed= and =contextWindowTokens= from
+  =signals.json= beside =chat_history.jsonl= for its percentage bar
+  (=64% · 164k / 256k=).  For agy, it reads =input_tokens +
+  cache_read_tokens= from the last model =PLANNER_RESPONSE= in its
+  transcript and shows the token count without a bar (=189k=), since no
+  window cap is recorded on disk.  grok and agy record neither model
+  nor effort in their transcripts, so Emacs reads those off their
+  screen (grok's input-box border, agy's footer) and merges the
+  sidecar's tokens in.  Not claude's status line: turning that on
   takes =esc to interrupt= off the screen, which is how the herd knows
   an agent is working.
-- The model chip switches the model for that session alone: a model
-  and, if you like, an effort, then Switch.  Emacs drives claude's
-  =/model= picker as you would --- down to the row, ←/→ to the effort,
-  =s= for this session only --- each step waiting for the screen to
-  show it, and Escapes out with the reason when it does not; the
-  picker's own line (=Set model to Sonnet 5.5 for this session only
-  with high effort=) goes to the page and the log.  An idle, waiting or
-  done agent only, with nothing of yours in its input box.  Typed in a box,
-  =/model sonnet= also makes Sonnet the default of every new session:
-  that is the CLI's own.  =M-x ghostherd-switch-model= does the same
-  from Emacs; =:model-picker= in =ghostherd-agent-specs= is what makes
-  a kind switchable, claude so far.
-- What a claude agent's sub-agents are doing --- the ones its Agent
-  tool runs, each in a conversation of its own --- as its screen lists
-  them at its foot: a line each under its room column, and above the
-  chat's box for the agent it writes to, with what it is, how long it
-  has run, its tool calls and context so far, and its latest step
-  under it; counted on its row (=2 sub-agents running=).  The sidecar
-  reads them off their own transcripts, beside the agent's
-  (=<transcript>/subagents/agent-<id>.jsonl=, what each was started as
-  in its =.meta.json=), from where it last read each; Emacs asks again
-  when the agent's transcript changed or a file the last answer named.
-  One has stopped when it handed its report back, or its agent was told
-  it stopped (failed, killed) --- not stopped with work of its own still
-  in the background, which it goes on from; one sent another message
-  runs again; one silent for an hour, or an agent dead, has none
-  running.  An agent whose turn ended with some running is =waiting=
-  for them, not done.
+- The model chip switches the model: a model and, if you like, an
+  effort, then Switch.  All three CLIs have a =:model-picker= in
+  =ghostherd-agent-specs=, driven as each CLI allows: for claude, Emacs
+  drives its =/model= picker (down to the row, ←/→ to the effort, =s=
+  for this session only); for grok, it sends =/model NAME EFFORT= and
+  reads the border back; for agy, it opens =/model=, filters by name,
+  slides ←/→ to the effort and presses Enter (for grok and agy the
+  switch becomes the CLI's default, which the form notes).  Each step
+  waits for the screen to show it, and Escapes out with the reason when
+  it does not; the outcome goes to the page and the log.  An idle,
+  waiting or done agent only, with nothing of yours in its input box.
+  =M-x ghostherd-switch-model= does the same from Emacs.
+- What an agent's sub-agents are doing --- for claude, grok and agy ---
+  as a line each under its room column, and above the chat's box for
+  the agent it writes to, with what it is, how long it has run, its
+  tool calls and context so far, and its latest step under it; counted
+  on its row (=2 sub-agents running=).  The sidecar reads them off the
+  agent's and sub-agents' transcripts (claude's
+  =<transcript>/subagents/agent-<id>.jsonl= and =.meta.json=, agy's
+  =invoke_subagent= calls and sub-agent =transcript.jsonl=, grok's
+  =spawn_subagent= and background task records), from where it last
+  read each; Emacs asks again when the agent's transcript changed or a
+  file the last answer named.  One has stopped when it handed its
+  report back, or its agent was told it stopped (failed, killed,
+  cancelled) --- not stopped with work of its own still in the
+  background, which it goes on from; one sent another message runs
+  again; one silent past the staleness cutoff, or an agent dead, has
+  none running.  An agent whose turn ended with some running is
+  =waiting= for them, not done.  Clicking a /claude/ sub-agent card in a
+  room opens an overlay (=.subview=) showing that sub-agent's own
+  transcript --- its turns and tool calls, read via
+  =herd_sub_conversation= --- and Close or =Esc= returns to the room.
+  grok keeps no per-sub transcript and agy's is elsewhere in another
+  format, so their cards are shown but not clickable.
 - What a sub-agent sent back, in its agent's column where it came back:
   whose it is and what it was asked, how it ended and what it took
   (=finished · 15m 31s · 61 tools · 196k tokens=), and its report, the
@@ -1272,7 +1298,11 @@ are the other tabs (below, and "What happened while you were away").
   agent asked or answered it through the herd, what it said back, its
   tool calls folded to a line.  Each agent has one colour wherever it
   speaks (the Log's lane colour).  A column has its own prompt box, Esc
-  and 1 / 2 / 3, and can show the screen instead.  The transcript is
+  and 1 / 2 / 3, and can show the screen instead.  When a conversation
+  has more turns than the initial tail, /Load earlier/ at the top of
+  the column expands how far back is read, a page at a time up to the
+  sidecar's cap (where a note points to the transcript for anything
+  older), and keeps that expanded depth across polls.  The transcript is
   the one the agent's hooks name, or the conversation it was started
   on (=-r ID=, =--conversation ID=); a fresh agent without hooks shows
   its screen and says why.  Emacs looks every two seconds; the sidecar
@@ -1281,7 +1311,9 @@ are the other tabs (below, and "What happened while you were away").
 - /Chat/ in the room's header shows it as one conversation instead:
   who said what to whom --- your prompts, the asks and answers between
   agents, how each agent's every turn ended --- in the speakers'
-  colours, long messages folded.  What an agent did on the way stays in
+  colours, long messages folded, with /Load earlier/ at the top when
+  earlier messages exist (also kept across polls up to the chat cap).
+  What an agent did on the way stays in
   its column.  The box below writes to the agent picked beside it, or to
   the one named by =@name= at its start, images and ⌘V as in any box.
   The sidecar builds the timeline from the agents' transcripts, so it
@@ -1416,10 +1448,11 @@ without xwidgets.
   again on the next import, every chunk after the first change embedded
   again: for Claude's version 2, here, about twenty minutes --- 120
   files, 15,283 chunks.
-- claude and grok render as markdown, through a whitelist sanitizer
-  with no images: a transcript holds whatever an agent ever read.
-  agy's text is salvaged from protobuf and full of tag-like noise, so
-  it stays plain.  Tool calls show as =⚙ Bash= chips.
+- claude, grok and agy render as markdown, through a whitelist
+  sanitizer with no images: a transcript holds whatever an agent ever
+  read.  agy imports clean turns and tool names from =transcript.jsonl=
+  (falling back to protobuf UTF-8 salvage only when a session has no
+  JSONL log).  Tool calls show as =⚙ Bash= chips.
 - Links go to =browse-url=; Copy takes a whole message; Import runs
   without popping the log up beside the page.
 - While the sidecar imports --- from this page or in the background ---
@@ -1489,7 +1522,8 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
 
   ;; The herd log.  Entries are cheap; the screens kept behind `blocked'
   ;; transitions are the actual memory -- and now the actual disk (about
-  ;; 5K each).  Both caps are applied when the file is read.
+  ;; 5K each).  Both caps are applied when the file is read, and compacted
+  ;; on write when the file grows well past them.
   (setq ghostherd-log-max 500
         ghostherd-log-screens 20
         ;; nil = memory only, and gone with this Emacs

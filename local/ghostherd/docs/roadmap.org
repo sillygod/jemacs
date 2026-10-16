@@ -312,9 +312,12 @@ log outlives Emacs".
 
 ** What is left
 
-- [ ] Watch the file size over a week of real use. The bound is "one
+- [X] Watch the file size over a week of real use. The bound is "one
   session's activity", and if that turns out to mean megabytes then
-  compaction wants a size trigger rather than only a start-up one
+  compaction wants a size trigger rather than only a start-up one ---
+  /done/: =ghostherd--log-add= now compacts =ghostherd-log.eld= on write
+  once on-disk lines or kept screens grow well past =ghostherd-log-max=
+  or =ghostherd-log-screens=
 
 ** Deliberately not done
 
@@ -339,7 +342,12 @@ inside Emacs.
   over =POST /jsonrpc=, =/health=, =uv run uvicorn=, loopback, high
   ports from 49152, skip occupied, reuse a leftover sidecar
 - [X] Importers: Claude jsonl + MEMORY.md; Grok =chat_history.jsonl= +
-  =summary.json= (not recap/updates/images); Agy sqlite UTF-8 salvage
+  =summary.json= (not recap/updates/images); Agy
+  =brain/<id>/.system_generated/logs/transcript.jsonl= first (clean
+  turns and tool call names, skipping internal thinking and sub-agent
+  logs), falling back to =conversations/*.db= UTF-8 salvage only when no
+  =transcript.jsonl= exists, and retiring any earlier =.db= source for
+  that conversation without orphan chunks
 - [X] Qdrant local path + FastEmbed multilingual MiniLM, hybrid RRF
 - [X] Incremental import via a sqlite watermark
 - [X] Emacs client =ghostherd-memory.el=: start on first use, health
@@ -362,7 +370,11 @@ inside Emacs.
   =SPC a h /= — ranking and chunk size are judgement calls
 - [ ] Optional distill pass (summaries into AGENTS.md-shaped notes)
   once search is used enough to know what is missing
-- [ ] Agy protobuf, if a schema ever exists, instead of UTF-8 salvage
+- [X] Agy protobuf, if a schema ever exists, instead of UTF-8 salvage
+  --- /answered from the other side/: agy writes clean JSONL in
+  =brain/<id>/.system_generated/logs/transcript.jsonl=, which the
+  importer now reads first, keeping =.db= UTF-8 salvage only as a
+  fallback for older conversations without a JSONL log
 
 ** Deliberately not done
 
@@ -384,6 +396,15 @@ Goal: tmux-hosted agents mail each other without =bin/ghostherd= or
 
 - [X] =herd_list= / =herd_message= / =herd_inbox= / =herd_tick= on the
   existing FastAPI process; sqlite =herd.sqlite= next to the memory index
+- [X] =herd_list= (=HerdStore.list_sessions=, used by =herd list= and
+  Telegram's =/herd=) orders sessions by state rank (=blocked, working,
+  starting, waiting, done, idle, dead=) and then most recently updated
+  (=since= newest first), matching the herd page
+- [X] =HerdStore.tick= periodically prunes settled =herd.sqlite=
+  history (delivered =mail=, finished and collected =asks=, and
+  finished =commands=, =replies= and =pushes= past the retention
+  window), while never touching open or uncollected rows, active
+  =runs=, or recent asks shown by =herd asks=
 - [X] =GHOSTHERD_RPC= at spawn; =ghostherd-mode= starts the sidecar;
   =ghostherd-mail/rpc.url= + =PROTOCOL.md=
 - [X] Poll drains =herd_tick= asynchronously; =working= holds; overlay
@@ -467,7 +488,8 @@ page" in [[file:../readme.org][readme.org]].
 - [X] Open at the hit, 160-chunk windows, Earlier / Later keeping the
   reading position, =n= / =N= between matches
 - [X] Chunks joined back into messages, the overlap dropped
-- [X] Sanitized markdown without images; agy plain; tool-call chips
+- [X] Sanitized markdown without images for claude, grok and agy (now
+  that agy imports clean prose from =transcript.jsonl=); tool-call chips
 - [X] The sidecar's source index answers from any worker thread: =SPC a
   h v= failed whenever =asyncio.to_thread= handed =memory_list= another
   thread than the one that opened the sqlite connection
@@ -699,8 +721,10 @@ builds, one tests, back and forth --- as one conversation, on the page.
   one says it is done --- by the lead (3.21), the turn cap and where it
   stands by the herd (3.24); a herd-run loop choosing who goes next was
   not built
-- [ ] Earlier turns: the room shows the tail; the whole conversation is
-  on the Sessions tab once imported
+- [X] Earlier turns: in a room column or the chat, a =Load earlier=
+  button expands the limit a page at a time up to the RPC's clamp (where
+  a note points to the transcript for anything older), and the expanded
+  limit is kept across polls via =room-watch= and the read signature
 - [X] Copy on each turn, in the columns and the chat: what was said as
   it was written --- an agent's markdown, your words without the herd's
   notes, an ask and its answer each, a folded message whole --- onto
@@ -712,12 +736,19 @@ builds, one tests, back and forth --- as one conversation, on the page.
   a redraw cannot hand over a neighbour's turn.  A turn the sidecar cut
   at =TEXT_MAX= (12,000 characters) copies cut.  33 WebKit checks
   (=herd-copy=); 12 guards broken on purpose, each caught
-- [X] What a claude agent runs on, and how full its context is: its
-  model and effort, and a bar of its window, on its row, its column and
-  above the chat's box --- from its transcript's last reply, which
-  records all three, read by the sidecar (=herd_meter=) when the file
-  has changed.  Not claude's status line, which takes =esc to
-  interrupt= off the screen
+- [X] What each agent runs on, and how full its context is: its model
+  and effort, and its context, on its row, its column and above the
+  chat's box --- read by the sidecar (=herd_meter=) when the file has
+  changed.  For claude, model, effort and a bar of its window come from
+  its transcript's last reply (not claude's status line, which takes
+  =esc to interrupt= off the screen).  For grok, =contextTokensUsed= in
+  =contextWindowTokens= comes from =signals.json= beside
+  =chat_history.jsonl= (cached on =signals.json=, shown as a percentage
+  bar).  For agy, =input_tokens + cache_read_tokens= comes from the last
+  model =PLANNER_RESPONSE= in its transcript (shown as a token count
+  without a bar, since no window cap is written on disk).  grok and agy
+  keep neither model nor effort in their transcripts, so Emacs reads
+  those off their screen and merges the sidecar's tokens in
 - [X] Its model switched from the page, for its session alone.
   =/model NAME= also saves NAME as the default of every new session
   (tried, 2026-10-14), and only the picker's =s= does not; so Emacs
@@ -751,8 +782,20 @@ builds, one tests, back and forth --- as one conversation, on the page.
   live, 2026-10-14: a sub-agent's =sleep= sent to the background); it
   goes on, and reports, when that ends.  24 pytest, 2 ERT, 46 WebKit
   checks (=herd-subs=); 40 guards broken on purpose, each caught.
-  A sub-agent's own conversation is not shown in the room yet: its
-  latest step and its tool count say whether it is stuck
+- [X] Clicking a /claude/ sub-agent card in a room opens an overlay
+  (=.subview=) with its own transcript --- its conversation and tool
+  calls, read via =herd_sub_conversation= (=conversation.read_sub=,
+  =SUB_ID= held to a safe filename and resolved under the CLI root) ---
+  and Close or =Esc= returns to the room; grok keeps no per-sub
+  transcript and agy's is elsewhere in another format, so their cards are
+  shown but not clickable
+- [X] Sub-agents and background tasks for agy and grok too
+  (=server/subagents.py=): agy's =invoke_subagent= (with optional
+  sub-agent =transcript.jsonl=), background =run_command=, and
+  =schedule= timers/crons; grok's =spawn_subagent= and background
+  =bash= / =monitor= / =subagent= tasks.  Cancelled or killed tasks and
+  tasks past the staleness cutoff are cleared so an interrupted wait
+  never holds the agent in =waiting=
 - [X] =waiting=: a turn ended with its sub-agents, shells or monitors
   running, or asks of its own open, ended to wait, not to stop.  Seen live (2026-10-15):
   four sub-agents handed out, the turn over, and the herd said idle ---
@@ -1221,14 +1264,22 @@ looking.
 
 ** What is left
 
-- [ ] A program on this Mac can pass for your phone: =tailscale serve=
-  reaches xwapp from 127.0.0.1 like anything else here, so a direct
+- [X] A program on this Mac could pass for your phone: =tailscale serve=
+  reached xwapp from 127.0.0.1 like anything else here, so a direct
   connection with the tailnet's Host and your =Tailscale-User-Login=
-  is answered as one from the phone, and =/open/= hands it the secret
-  (tried on 2026-10-13).  Code running as you has =emacsclient= anyway;
-  another account on the Mac, or a sandboxed program that reaches its
-  localhost, does not.  Wants a way for xwapp to know a request came
-  through the serve.  Who gets past what: [[file:phone-access.html][phone-access.html]]
+  was answered as one from the phone, and =/open/= handed it the secret
+  (seen 2026-10-13).  Fixed by pointing the proxy at a Unix socket
+  (=xwapp-remote-socket=, 0600, its directory 0700) that only =tailscale
+  serve= can reach: xwapp listens on both the loopback port (this
+  machine's browser, transport =local=, never =/open/=) and the socket
+  (transport =proxy=, the only one that can be =elsewhere=), so which
+  listener a request arrived on --- not any header --- decides.  serve
+  rewrites the Host to =localhost= for a unix target, so the Host is no
+  proof and no filter; the login it stamps (one of =xwapp-remote-users=)
+  and the page's Origin (one of =xwapp-remote-hosts=) are.  Code running
+  as you has =emacsclient= and the socket path anyway (out of scope);
+  another account, or a loopback-only sandbox, is shut out.  Who gets
+  past what: [[file:phone-access.html][phone-access.html]]
 - [ ] grok's menu prompts, when one is on screen: whether it too takes
   the input box's place (=:prompt-replaces-input=)
 
