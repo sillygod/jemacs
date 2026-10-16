@@ -577,9 +577,10 @@
   }
 
   function messageHtml(m, agent) {
-    // agy's text is UTF-8 salvaged from protobuf, full of tag-like noise:
-    // as markdown the sanitizer would eat half of it.
-    const body = agent === "agy" ? '<div class="plain">' + esc(m.text) + "</div>" : markdown(m.text);
+    // agy once imported from a protobuf salvage full of tag-like noise and
+    // was shown as plain text; now it imports from transcript.jsonl, clean
+    // prose like the rest, so it renders as markdown too.
+    const body = markdown(m.text);
     const range = m.first === m.last ? "#" + m.first : "#" + m.first + "–" + m.last;
     return (
       '<section class="msg r-' + esc(m.role || "note") + '" data-first="' + m.first + '" data-last="' + m.last + '">' +
