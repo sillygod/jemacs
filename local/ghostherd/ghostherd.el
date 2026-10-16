@@ -194,11 +194,12 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("--conversation" "%s")
      :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
      :prompt-replaces-input t
-     ;; agy's `/model' opens a \"Switch Model\" picker with a search box, a
-     ;; windowed list and an effort slider.  The herd types the name into
-     ;; the search to pare it to one, slides ←/→ to the effort, and
-     ;; Enters.  Switching writes agy's default (`:scope default'), not
-     ;; this session alone; each model offers its own efforts.
+     ;; agy's `/model' opens a \"Switch Model\" picker with a list and an
+     ;; effort slider, the cursor on the current model.  The herd walks
+     ;; ↑/↓ to the name, slides ←/→ to the effort, and Enters -- its search
+     ;; box ignores the herd's bracketed paste, so the rows are not pared.
+     ;; Switching writes agy's default (`:scope default'), not this session
+     ;; alone; each model offers its own efforts.
      :model-picker (:style search :scope default
                     :models ("Gemini 4 Argon" "Gemini 3.8 Flash" "Claude Opus 5.5"
                              "Claude Sonnet 5.5" "GPT-OSS 120B")
@@ -2768,8 +2769,9 @@ annotation, which is where you are choosing between agents."
 ;; grok -- `/model NAME EFFORT' takes them as words and shows them in its
 ;; input box's border; the herd types the command and reads the border.
 ;;
-;; agy -- `/model' opens a search picker; the herd types NAME to pare it
-;; to one, slides ←/→ to the effort, and Enters.
+;; agy -- `/model' opens a picker, cursor on the current model; the herd
+;; walks ↑/↓ to NAME, slides ←/→ to the effort, and Enters.  (It has a
+;; search box, but ignores the herd's bracketed paste as a filter.)
 ;;
 ;; grok and agy have no session-only switch, so for them it becomes the
 ;; CLI's default (`:scope default'); claude stays this session alone.
@@ -2986,10 +2988,14 @@ line it shows (`:labels' names it) to see it took.  Writes grok's default."
      (lambda () (funcall finish nil (format "it did not switch to %s" want))))))
 
 (defun ghostherd--model-switch-via-search (session model effort finish)
-  "Drive agy's search picker: `/model', type MODEL to pare it to one,
+  "Drive agy's model picker: `/model', ↑/↓ to MODEL from the current one,
 ←/→ to EFFORT, Enter; read \"Model set to ...\" to see it took.  The
-effort steps are the ones the chosen row's slider offers.  Writes agy's
-default."
+cursor starts on the current model and the effort steps are the ones the
+chosen row's slider offers.  Writes agy's default.
+
+The picker has a search box, but the herd sends text as one bracketed
+paste, which the box does not take as a filter, so the rows are walked by
+arrow instead -- which is what its footer says to do."
   (cl-labels
       ((abandon (why)
          (when (ghostherd--agy-picker (ignore-errors (ghostherd--host-capture session 80)))
@@ -3019,15 +3025,50 @@ default."
               session
               (lambda (text) (equal (plist-get (ghostherd--agy-picker text) :effort) effort))
               (lambda (_) (select)) #'select (min 1.5 ghostherd-model-switch-wait)))))
-       (to-row (_p)
-         (ghostherd--host-send-text session model nil)
-         (ghostherd--await-screen
-          session
-          (lambda (text) (let ((q (ghostherd--agy-picker text)))
-                           (and q (equal (plist-get q :rows) (list model))
-                                (equal (plist-get q :cursor) model) q)))
-          #'to-effort
-          (lambda () (abandon (format "its picker did not pare to %s" model))))))
+       (to-row (p)
+         ;; agy 1.4.0's picker is arrow-driven -- the footer says so: ↑/↓
+         ;; the rows, ←/→ the effort, Enter to select -- with the cursor on
+         ;; the current model, and the list wraps top to bottom.  Walk to
+         ;; MODEL one row at a time, the shorter way round, re-reading after
+         ;; each step: a key the just-opened picker drops leaves the cursor
+         ;; put, so the next round presses again rather than losing the move.
+         ;; (Typing the name into its search box did filter, but only from a
+         ;; burst of keystrokes; the herd sends text as one bracketed paste,
+         ;; which the box does not take, so the list never pared and Enter
+         ;; kept the model it opened on.)
+         (let ((want (cl-position-if (lambda (nm) (string-prefix-p model nm))
+                                     (plist-get p :rows))))
+           (if (not want)
+               (abandon (format "its picker has no %s" model))
+             (cl-labels
+                 ((go (q budget)
+                    (let* ((rows (plist-get q :rows))
+                           (nm (plist-get q :cursor))
+                           (at (and nm (cl-position nm rows :test #'equal)))
+                           (n (length rows)))
+                      (cond
+                       ((and nm (string-prefix-p model nm)) (to-effort q))
+                       ((or (not at) (<= budget 0))
+                        (abandon (format "it did not reach %s in its picker" model)))
+                       (t
+                        (let* ((down (mod (- want at) n))
+                               (dir (if (<= down (- n down)) "down" "up"))
+                               (next (nth (mod (+ at (if (equal dir "down") 1 -1)) n) rows)))
+                          (press dir 1)
+                          (ghostherd--await-screen
+                           session
+                           (lambda (text) (let ((q2 (ghostherd--agy-picker text)))
+                                            (and q2 (equal (plist-get q2 :cursor) next) q2)))
+                           (lambda (q2) (go q2 (1- budget)))
+                           ;; The step may be slow, or lost to a picker not yet
+                           ;; ready; either way re-read and let `go' decide again.
+                           (lambda ()
+                             (ghostherd--await-screen
+                              session #'ghostherd--agy-picker
+                              (lambda (q2) (go q2 (1- budget)))
+                              (lambda () (abandon (format "it did not reach %s in its picker" model)))))
+                           (min 1.0 ghostherd-model-switch-wait))))))))
+               (go p (* 3 (length (plist-get p :rows)))))))))
     (ghostherd--host-send-text session "/model" t)
     (ghostherd--await-screen
      session #'ghostherd--agy-picker #'to-row

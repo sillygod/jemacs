@@ -3016,18 +3016,23 @@ model, else medium, or its only step."
     (ghostherd-tests--agy-set
      :at (mapcar (lambda (m) (cons (car m) (ghostherd-tests--agy-start-effort (car m))))
                  ghostherd-tests--agy-models)))
-   ((and (not submit) (ghostherd-tests--agy-get :open))
-    (ghostherd-tests--agy-set :search text)
-    (ghostherd-tests--agy-set :cursor (car (car (ghostherd-tests--agy-rows)))))))
+   ;; agy 1.4.0 ignores the herd's bracketed paste as a search filter, so a
+   ;; pasted name changes nothing: the rows are walked by arrow instead.
+   ((and (not submit) (ghostherd-tests--agy-get :open)) nil)))
 (cl-defmethod ghostherd-backend-send-keys ((_backend (eql agy-picker)) _session keys)
   (ghostherd-tests--agy-set :sent (append (ghostherd-tests--agy-get :sent) keys))
   (dolist (key keys)
     (when (ghostherd-tests--agy-get :open)
-      (let* ((cursor (ghostherd-tests--agy-get :cursor))
+      (let* ((rows (mapcar #'car (ghostherd-tests--agy-rows)))
+             (cursor (ghostherd-tests--agy-get :cursor))
+             (ri (cl-position cursor rows :test #'equal))
              (at (assoc cursor (ghostherd-tests--agy-get :at)))
              (efforts (and cursor (ghostherd-tests--agy-efforts cursor)))
              (i (and at (cl-position (cdr at) efforts :test #'equal))))
         (pcase key
+          ;; The real picker's list wraps top to bottom.
+          ("down" (when ri (ghostherd-tests--agy-set :cursor (nth (mod (1+ ri) (length rows)) rows))))
+          ("up" (when ri (ghostherd-tests--agy-set :cursor (nth (mod (1- ri) (length rows)) rows))))
           ("right" (when i (setcdr at (nth (min (1- (length efforts)) (1+ i)) efforts))))
           ("left" (when i (setcdr at (nth (max 0 (1- i)) efforts))))
           ("return"
@@ -3078,6 +3083,40 @@ sits -- and a model that offers one effort shows only it."
     (ghostherd-tests--agy-set :open nil)
     (should-not (ghostherd--agy-picker (ghostherd-tests--agy-screen)))))
 
+(defconst ghostherd-tests--agy-real-screen
+  "Switch Model
+
+  Search:
+          ────────────────────
+
+  Gemini 4 Argon
+> Gemini 3.8 Flash      (current)
+  Claude Opus 5.5
+  Claude Sonnet 5.5
+  GPT-OSS 120B (Medium)
+
+  Effort  ◂        ●━━━━━━━━━━━━━━●━━━━━━━━━━━━━━◉        ▸
+                  low          medium          high
+            Deepest reasoning for complex problems — slower but strongest
+
+Keyboard: ↑/↓ Navigate  ←/→ Effort  enter Select  esc Go Back
+
+                                                                            Gemini 3.8 Flash · high · AI: Out of credits
+"
+  "agy 1.4.0's real \"Switch Model\" picker, captured from a scratch agy:
+the cursor on the current model, the full list, an effort slider on high.")
+
+(ert-deftest ghostherd-test-agy-picker-reads-the-real-14-screen ()
+  "The reader on agy 1.4.0's actual picker: every row, the `>' cursor on
+the current model, the slider's steps and its ◉ on high."
+  (let ((p (ghostherd--agy-picker ghostherd-tests--agy-real-screen)))
+    (should (equal (plist-get p :rows)
+                   '("Gemini 4 Argon" "Gemini 3.8 Flash" "Claude Opus 5.5"
+                     "Claude Sonnet 5.5" "GPT-OSS 120B (Medium)")))
+    (should (equal (plist-get p :cursor) "Gemini 3.8 Flash"))
+    (should (equal (plist-get p :efforts) '("low" "medium" "high")))
+    (should (equal (plist-get p :effort) "high"))))
+
 (ert-deftest ghostherd-test-agy-said-is-the-last ()
   (should (equal (ghostherd--agy-said
                   "x\n> /model\n  ⎿  Model set to Claude Opus 5.5 (High)\n>\n")
@@ -3085,14 +3124,16 @@ sits -- and a model that offers one effort shows only it."
   (should (equal (ghostherd--agy-said "  ⎿  Exited /model command\n") "Exited /model command"))
   (should-not (ghostherd--agy-said "nothing happened here\n")))
 
-(ert-deftest ghostherd-test-agy-switches-by-search-and-slider ()
-  "`/model', the name typed to pare the list to one, → to the effort,
-Enter; said to have become the default."
+(ert-deftest ghostherd-test-agy-switches-by-arrowing-and-slider ()
+  "`/model', ↓/↑ from the current model to the chosen one, → to the
+effort, Enter; said to have become the default.  Not the search box: the
+herd's paste is not a filter there."
   (ghostherd-tests--with-agy
+    ;; Current is Gemini 3.8 Flash (row 2); Claude Opus 5.5 is row 3 -- one down.
     (should (equal (ghostherd-tests--switch s "Claude Opus 5.5" "high")
                    '(t . "Model set to Claude Opus 5.5 (High) (now its default)")))
     (should (equal (ghostherd-tests--agy-get :sent)
-                   '((:submit "/model") "Claude Opus 5.5" "right" "return")))
+                   '((:submit "/model") "down" "right" "return")))
     (should (equal (list (ghostherd-tests--agy-get :model) (ghostherd-tests--agy-get :effort))
                    '("Claude Opus 5.5" "high")))
     (should (equal (ghostherd-log-entry-text (car ghostherd--log))
@@ -3100,14 +3141,21 @@ Enter; said to have become the default."
 
 (ert-deftest ghostherd-test-agy-takes-the-effort-a-model-has ()
   "An effort a model does not offer leaves it where it is; no effort
-asked, it is switched at the model's own."
+asked, it is switched at the model's own.  The cursor walks up as well
+as down, from wherever the current model sits."
   (ghostherd-tests--with-agy
+    ;; Gemini 3.8 Flash (row 2) to GPT-OSS 120B (row 5) is shorter up and
+    ;; round -- row 2 → 1 → 5 -- than three down; it offers only medium, so
+    ;; high is left alone.
     (should (equal (ghostherd-tests--switch s "GPT-OSS 120B" "high")
                    '(t . "Model set to GPT-OSS 120B (Medium) (now its default)")))
     (should (equal (ghostherd-tests--agy-get :sent)
-                   '((:submit "/model") "GPT-OSS 120B" "return")))
+                   '((:submit "/model") "up" "up" "return")))
     (ghostherd-tests--agy-set :sent nil)
+    ;; Now current is GPT-OSS 120B (row 5); Gemini 4 Argon (row 1) is one down
+    ;; round the wrap.
     (should (car (ghostherd-tests--switch s "Gemini 4 Argon")))
+    (should (equal (ghostherd-tests--agy-get :sent) '((:submit "/model") "down" "return")))
     (should (equal (ghostherd-tests--agy-get :model) "Gemini 4 Argon"))))
 
 (ert-deftest ghostherd-test-agy-gives-up-on-a-picker-that-does-not-open ()
