@@ -150,9 +150,16 @@ def _agy_scan(records):
     """agy's context from the last planner reply: the prompt it was given
     (input + what it read from cache).  No window is written anywhere, so
     the herd shows the number without a bar.  Model and effort are only on
-    its screen, read there, not here."""
+    its screen, read there, not here.  A compaction since that reply -- a
+    CHECKPOINT record newer than it -- clears the number, the way claude
+    does on a compact_boundary: the context was just reset and no reply has
+    sized it yet, so the pre-compaction number would mislead."""
     for o in reversed(records):
-        if o.get("type") == "PLANNER_RESPONSE" and o.get("source") == "MODEL":
+        kind = o.get("type")
+        if kind == "CHECKPOINT":
+            return {"model": "", "effort": "", "tokens": None, "window": None,
+                    "pending": False, "compacted": True, "ts": o.get("created_at")}
+        if kind == "PLANNER_RESPONSE" and o.get("source") == "MODEL":
             inp = o.get("input_tokens")
             if isinstance(inp, int):
                 cached = o.get("cache_read_tokens")

@@ -241,6 +241,22 @@ def test_agy_without_a_model_reply_is_empty(home):
     assert meter.read(path) == {}
 
 
+def test_agy_clears_the_number_after_a_compaction(home):
+    "A CHECKPOINT newer than its last reply means the context was just reset:"
+    " show no number until agy replies again, as claude clears on a boundary."
+    path = _agy(home, [_planner(3000, 164000, 10),
+                       {"type": "CHECKPOINT", "created_at": "2026-10-16T00:11:00Z"},
+                       {"type": "USER_INPUT", "content": "continue", "created_at": "2026-10-16T00:12:00Z"}])
+    assert meter.read(path) == {"model": "", "effort": "", "tokens": None, "window": None,
+                                "pending": False, "compacted": True, "ts": "2026-10-16T00:11:00Z"}
+    # Once it replies again, the fresh reply's size shows and compacted clears.
+    path2 = _agy(home, [_planner(3000, 164000, 10),
+                        {"type": "CHECKPOINT", "created_at": "2026-10-16T00:11:00Z"},
+                        _planner(500, 2000, 12)])
+    m = meter.read(path2)
+    assert m["tokens"] == 2500 and m["compacted"] is False
+
+
 def test_agy_rpc_reports_the_number(home):
     path = _agy(home, [_planner(1000, 2000, 1)])
     r = asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_meter", params={"path": path})))
