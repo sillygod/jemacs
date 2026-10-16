@@ -109,9 +109,9 @@ def _and(words: list[str]) -> str:
 
 
 def _background(transcript: str | None) -> list[str]:
-    """What the claude conversation at TRANSCRIPT has running in the
-    background, which wakes it as each ends, in words: 2 sub-agents,
-    1 shell, 1 monitor."""
+    """What the conversation at TRANSCRIPT has running in the background,
+    which wakes it as each ends, in words: 2 sub-agents, 1 shell, 1 monitor.
+    Per-CLI dispatch is in subagents.py, so this serves claude, agy and grok."""
     if not transcript:
         return []
     try:

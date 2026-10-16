@@ -9,12 +9,16 @@ const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "F
 const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
 const DP = "~/src/deploy-platform/";
 const RD = "claude-deploy-platform";
+const QA = "qa-deploy-platform"; // kind agy
 const PATH = "/Users/x/.claude/projects/-p/abc.jsonl";
 
 const SUBS = [{ id: "a3db8f1c2e4a6b7c9", who: "general-purpose", title: "Build R4 sync debug project",
                 started: new Date(Date.now() - 90e3).toISOString(), tools: 12, tokens: 52000, doing: "" }];
+const AGY_SUB = [{ id: "b7c9d2e1f0a3b4c5d", who: "Explore", title: "Map the auth flow",
+                   started: new Date(Date.now() - 30e3).toISOString(), tools: 3, tokens: 9000, doing: "" }];
 const herd = () => Object.assign({}, HERD, {
-  agents: HERD.agents.map((a) => Object.assign({}, a, { meter: false, subs: a.name === RD ? SUBS : [] })),
+  agents: HERD.agents.map((a) => Object.assign({}, a, { meter: false,
+    subs: a.name === RD ? SUBS : a.name === QA ? AGY_SUB : [] })),
 });
 const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
   { role: "user", kind: "prompt", text: "Review target: src/pay.py", ts: "t" },
@@ -44,6 +48,11 @@ const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
 
       const card = '.rcol[data-name="' + RD + '"] .rsubs .sub[data-sub="a3db8f1c2e4a6b7c9"]';
       check(W("the sub-agent card is in the column"), !!(await page.$(card)));
+      // agy (and grok) keep no openable sub transcript -- the card shows but
+      // does not open, rather than opening a broken overlay.
+      const agyCard = '.rcol[data-name="' + QA + '"] .rsubs .sub';
+      check(W("an agy sub-agent card shows but is not clickable"),
+        !!(await page.$(agyCard)) && !(await page.$(agyCard + '[data-act="a:sub-open"]')));
       await tap(card);
       await sleep(80);
       const watch = intents.filter((i) => i.op === "sub-watch");

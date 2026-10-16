@@ -1350,11 +1350,17 @@
   function subsHtml(a) {
     const subs = (a && a.subs) || [];
     if (!subs.length) return "";
+    // Only claude keeps each sub-agent's own transcript where the herd can
+    // read it; grok has none, and agy's is elsewhere in another format.  So
+    // only a claude's cards open -- the others are shown, not clickable.
+    const open = a && a.kind === "claude";
     return '<div class="subs">' + subs.map((u) => {
       const stats = [runFor(u.started), esc(u.tools + (u.tools === 1 ? " tool" : " tools")),
         u.tokens != null ? esc(tokens(u.tokens)) : ""].filter(Boolean).join(" · ");
-      return '<div class="sub" data-act="a:sub-open" data-sub="' + esc(u.id) + '" data-who="' + esc(u.who || "") +
-        '" data-title="' + esc(u.title || "") + '" title="Open its transcript"><div class="sline"><span class="sdot" aria-hidden="true"></span>' +
+      return (open
+        ? '<div class="sub" data-act="a:sub-open" data-sub="' + esc(u.id) + '" data-who="' + esc(u.who || "") +
+          '" data-title="' + esc(u.title || "") + '" title="Open its transcript">'
+        : '<div class="sub">') + '<div class="sline"><span class="sdot" aria-hidden="true"></span>' +
         '<span class="swho">' + esc(u.who || "sub-agent") + "</span>" +
         '<span class="stitle" title="' + esc(u.title || "") + '">' + esc(u.title || "") + "</span>" +
         '<span class="sstat">' + stats + "</span></div>" +

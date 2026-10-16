@@ -320,8 +320,8 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .rsubs:empty { display: none; }
 .rsubs .subs { margin: 6px 0; }
 .sub { min-width: 0; }
-.rsubs .sub { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: 0 -4px; }
-.rsubs .sub:hover { background: var(--hover, rgba(127, 127, 127, 0.12)); }
+.rsubs .sub[data-act] { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: 0 -4px; }
+.rsubs .sub[data-act]:hover { background: var(--hover, rgba(127, 127, 127, 0.12)); }
 .sline { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 
 /* A sub-agent's own transcript, over the room. */
