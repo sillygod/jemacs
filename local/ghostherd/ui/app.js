@@ -576,11 +576,11 @@
     return role ? role.charAt(0).toUpperCase() + role.slice(1) : "Note";
   }
 
-  function messageHtml(m, agent) {
-    // agy once imported from a protobuf salvage full of tag-like noise and
-    // was shown as plain text; now it imports from transcript.jsonl, clean
-    // prose like the rest, so it renders as markdown too.
-    const body = markdown(m.text);
+  function messageHtml(m, agent, plain) {
+    // agy's clean transcript.jsonl prose renders as markdown like the rest;
+    // only the old =conversations/*.db= protobuf salvage -- tag-like noise
+    // the sanitizer would eat -- stays plain (PLAIN set by its source).
+    const body = plain ? '<div class="plain">' + esc(m.text) + "</div>" : markdown(m.text);
     const range = m.first === m.last ? "#" + m.first : "#" + m.first + "–" + m.last;
     return (
       '<section class="msg r-' + esc(m.role || "note") + '" data-first="' + m.first + '" data-last="' + m.last + '">' +
@@ -685,9 +685,12 @@
 
   function renderSourceBody() {
     const agent = src.meta.agent || (src.chunks[0] || {}).agent || "";
+    // An agy session imported from its =.db= salvage (no transcript.jsonl)
+    // stays plain; one from transcript.jsonl is clean prose, so markdown.
+    const plain = agent === "agy" && /\.db$/i.test(src.path || "");
     const msgs = messagesOf(src.chunks);
     $("src-body").innerHTML = msgs.length
-      ? msgs.map((m) => messageHtml(m, agent)).join("")
+      ? msgs.map((m) => messageHtml(m, agent, plain)).join("")
       : '<p class="empty">This session has no chunks.</p>';
     src.messages = msgs;
     if (src.re) {
