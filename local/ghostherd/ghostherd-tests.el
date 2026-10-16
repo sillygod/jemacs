@@ -8378,6 +8378,42 @@ Enter to select · Tab/Arrow keys to navigate · Esc to cancel
   "claude's AskUserQuestion menu whose choices say nothing a `Yes'/`proceed'
 rule would catch: only its footer marks it as waiting.")
 
+(defconst ghostherd-test--claude-ask-preview
+  "⏺ 我算出了調整方案：淺色 primary 改為 #8a5034、深色 destructive 改為
+  #e08478（按鈕文字需同步改為深墨色）以通過對比度檢查。搜尋命中字和深色
+  destructive 這兩項我會直接照既有模式修改，但 primary
+  屬於品牌色，想先跟你確認再動手。
+
+──────────────────────────────────────────────────────────────────────────────────
+ ☐ Primary
+
+│ 淺色主題的 primary（赤陶）當文字疊在淡色底上不夠清楚（啟用狀態、badge、選取項約
+│ 35 處），要怎麼修？
+
+❯ 1. 淺色 primary 調深            ┌──────────────────────────────────────────┐
+    (Recommended)                 │ 淺色 --primary  #9a5b3c → #8a5034        │
+  2. 品牌色不動，加新 token       │                                          │
+                                  │   當文字                                 │
+                                  │     選取底 sel      3.85 → 4.62          │
+                                  │     chip           4.14 → 4.98           │
+                                  │     primary/10     4.42 → 5.25           │
+                                  │     紙張底（連結） 4.82 → 5.79           │
+                                  │   當按鈕底（白字）  5.14 → 6.17          │
+                                  │                                          │
+                                  │ 改動：DESIGN.md + index.css 各 1 行      │
+                                  └──────────────────────────────────────────┘
+
+                                  Notes: press n to add notes
+
+──────────────────────────────────────────────────────────────────────────────────
+  Chat about this
+
+Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel
+"
+  "claude's AskUserQuestion with a preview box drawn to the right of the
+choices, a `(Recommended)' tag wrapped under choice 1, a checkbox header,
+and the footer far below the choices -- the variant 7b082a8 did not cover.")
+
 (ert-deftest ghostherd-test-prompt-read-off-the-screen ()
   "A menu's question and its choices, numbered as you answer them: the
 lines above the first choice up to a rule, each choice's first line."
@@ -8439,6 +8475,29 @@ the new rule, and a spinner above the box is still working."
     (should (eq (car (ghostherd--match-rules "⏺ done.\n────\n❯ \n────\n" rules ri sp)) 'idle))
     (should (eq (car (ghostherd--match-rules "✻ Baking… (3s · ↓ 1k tokens)\n────\n❯ \n────\n" rules ri sp))
                 'working))))
+
+(ert-deftest ghostherd-test-prompt-reads-the-preview-variant ()
+  "AskUserQuestion with a preview box to the right of the choices: read
+with the box's │…│ kept out, a wrapped `(Recommended)' rejoined onto its
+choice, the checkbox header left out of the question, and the footer far
+below the choices still anchoring them.  The card's reason is the
+question, not the `Chat about this' line the footer sits under."
+  (should (equal (ghostherd--prompt ghostherd-test--claude-ask-preview)
+                 '(:question "淺色主題的 primary（赤陶）當文字疊在淡色底上不夠清楚（啟用狀態、badge、選取項約\n35 處），要怎麼修？"
+                   :options ((1 . "淺色 primary 調深 (Recommended)")
+                             (2 . "品牌色不動，加新 token"))
+                   :on 1)))
+  (should (equal (ghostherd--prompt-reason ghostherd-test--claude-ask-preview)
+                 "淺色主題的 primary（赤陶）當文字疊在淡色底上不夠清楚（啟用狀態、badge、選取項約 35 處），要怎麼修？"))
+  ;; The whole way through: found blocked by the footer, its reason the
+  ;; question rather than "Chat about this".
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "cj" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-test--claude-ask-preview))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'blocked))
+        (should-not (string-match-p "Chat about this" reason))
+        (should (string-match-p "要怎麼修？" reason))))))
 
 ;;; Answering a menu
 

@@ -1539,6 +1539,63 @@ coincidence further up the scrollback."
   "Lines from the screen's foot within which a menu's last option sits.
 Further up, numbered lines are the conversation's, not a menu.")
 
+(defconst ghostherd--prompt-foot-re "Enter to select\\|to navigate"
+  "An AskUserQuestion's footer line.  Its choices are the numbered run just
+above it, however far a preview box and its notes have pushed them up --
+unlike a permission prompt, whose choices sit near the screen's foot, so
+only this footer lets the choices be read from that far up.")
+
+(defconst ghostherd--prompt-foot-patterns '("Enter to select" "Tab/Arrow keys to navigate")
+  "The blocked rules that are an AskUserQuestion's footer, not its words.
+When one of these found the menu, the reason is the question it asks, not
+the footer or the `Chat about this' line above it.")
+
+(defconst ghostherd--prompt-header-re "\\`[☐☑☒□▢▣◻◼]"
+  "A line opening with a checkbox: an AskUserQuestion's header chip, above
+the question and not part of it.")
+
+(defconst ghostherd--prompt-corner-re "[┌└╭╰]"
+  "A box's top- or bottom-left corner.")
+
+(defconst ghostherd--prompt-tag-re "\\`[[:blank:]│]*([^()]*)[[:blank:]│]*\\'"
+  "A line that is only a parenthetical tag, like `(Recommended)'.  An
+AskUserQuestion wraps it under its choice when a preview box leaves no
+room beside it, so it belongs to that choice's label.")
+
+(defun ghostherd--prompt-at-col-p (line col chars)
+  "Non-nil if LINE's character at display column COL is one of CHARS.
+Counts display width, so a box border lands on the same column whatever
+mix of single- and double-width characters comes before it."
+  (let ((i 0) (w 0) (len (length line)))
+    (while (and (< i len) (< w col))
+      (setq w (+ w (char-width (aref line i))) i (1+ i)))
+    (and (= w col) (< i len) (memq (aref line i) chars))))
+
+(defun ghostherd--prompt-strip-preview (lines)
+  "Return LINES with any right-hand preview box cut away.
+AskUserQuestion draws a preview box to the right of its choices, its
+border on the same rows; left in, its │…│ bleeds into the choices and the
+question.  A box whose left corner has real text before it is such a
+preview (a permission prompt's box sits at the left edge, nothing before
+it), so find that corner's column and drop each row from the box's left
+edge rightward -- only rows whose character there draws the box's edge, so
+the full-width question and the rule lines are left whole."
+  (let ((col nil)
+        (edge '(?│ ?┌ ?└ ?╭ ?╰)))
+    (dolist (line lines)
+      (when (string-match ghostherd--prompt-corner-re line)
+        (let ((before (substring line 0 (match-beginning 0))))
+          (when (string-match-p "[^[:blank:]│┌┐└┘╭╮╰╯─]" before)
+            (let ((c (string-width before)))
+              (setq col (if col (min col c) c)))))))
+    (if (not col)
+        lines
+      (mapcar (lambda (line)
+                (if (ghostherd--prompt-at-col-p line col edge)
+                    (truncate-string-to-width line col)
+                  line))
+              lines))))
+
 (defun ghostherd--prompt-label (lines i)
   "Option I of LINES, joined to the lines its CLI wrapped it onto.
 A wrapped line starts left of the option's words, under a long line;
@@ -1550,11 +1607,16 @@ short last choice is neither."
         (prev (aref lines i)))
     (cl-loop for j from (1+ i) below (length lines)
              for line = (aref lines j)
-             while (and (> (length (string-trim-right prev "[[:blank:]│]+")) 50)
-                        (not (string-match-p ghostherd--prompt-option-re line))
+             while (and (not (string-match-p ghostherd--prompt-option-re line))
                         (not (string-match-p ghostherd--prompt-rule-re line))
-                        (string-match "\\`\\([[:blank:]]*\\)[^[:blank:]]" line)
-                        (< (length (match-string 1 line)) column))
+                        ;; A parenthetical tag the CLI wrapped onto its own
+                        ;; line belongs to the label however short the choice
+                        ;; is; otherwise only the continuation of a line long
+                        ;; enough to have wrapped, left of the words.
+                        (or (string-match-p ghostherd--prompt-tag-re line)
+                            (and (> (length (string-trim-right prev "[[:blank:]│]+")) 50)
+                                 (string-match "\\`\\([[:blank:]]*\\)[^[:blank:]]" line)
+                                 (< (length (match-string 1 line)) column))))
              do (setq label (concat label " " (string-trim line)) prev line))
     (truncate-string-to-width label 100 nil nil "…")))
 
@@ -1564,11 +1626,21 @@ short last choice is neither."
 few lines from the next, the last near the foot; the question the lines
 above the first, up to a line that only draws, six at most; on, the
 option marked highlighted, nil when none is."
-  (let* ((lines (vconcat (split-string (string-trim-right (or screen "")) "\n")))
+  (let* ((lines (vconcat (ghostherd--prompt-strip-preview
+                          (split-string (string-trim-right (or screen "")) "\n"))))
          (n (length lines))
          (number (lambda (i) (and (string-match ghostherd--prompt-option-re (aref lines i))
                                   (string-to-number (match-string 1 (aref lines i))))))
-         (last (cl-loop for i downfrom (1- n) to (max 0 (- n ghostherd--prompt-near))
+         ;; An AskUserQuestion's footer anchors the run: its choices are just
+         ;; above it, however far the preview box and notes reach down.  With
+         ;; no such footer, keep to the old window near the screen's foot, so
+         ;; the conversation's own numbered lines are not mistaken for a menu.
+         (foot (cl-loop for i downfrom (1- n) to 0
+                        when (string-match-p ghostherd--prompt-foot-re (aref lines i))
+                        return i))
+         (from (or foot (1- n)))
+         (stop (if foot 0 (max 0 (- n ghostherd--prompt-near))))
+         (last (cl-loop for i downfrom from to stop
                         when (funcall number i) return i)))
     (when last
       (let ((at (list last)))
@@ -1583,7 +1655,9 @@ option marked highlighted, nil when none is."
           (let (question)
             (cl-loop for j downfrom (1- (car at)) to 0
                      for line = (string-trim (replace-regexp-in-string "\\`[[:blank:]]*│\\|│[[:blank:]]*\\'" "" (aref lines j)))
-                     until (or (string-match-p ghostherd--prompt-rule-re line) (>= (length question) 6))
+                     until (or (string-match-p ghostherd--prompt-rule-re line)
+                               (string-match-p ghostherd--prompt-header-re line)
+                               (>= (length question) 6))
                      unless (string-empty-p line) do (push line question))
             (list :question (string-join question "\n")
                   :options (mapcar (lambda (i) (cons (funcall number i) (ghostherd--prompt-label lines i)))
@@ -1592,6 +1666,16 @@ option marked highlighted, nil when none is."
                                when (and (string-match ghostherd--prompt-option-re (aref lines i))
                                          (match-beginning 3))
                                return (funcall number i)))))))))
+
+(defun ghostherd--prompt-reason (screen)
+  "The question the AskUserQuestion on SCREEN asks, as one line for the
+reason field, or nil when none reads.  Its footer (\"Enter to select …\")
+and the \"Chat about this\" line above it are furniture; the card should
+say what it actually asks."
+  (when-let* ((prompt (ghostherd--prompt screen))
+              (q (plist-get prompt :question)))
+    (unless (string-empty-p q)
+      (string-join (split-string q "\n" t) " "))))
 
 (defun ghostherd-session-prompt (session)
   "What blocked SESSION's menu asks and offers, read off its last screen;
@@ -1641,7 +1725,9 @@ does."
            ;; report must never mask an agent sitting on a prompt, and
            ;; neither may a stale report from the agent itself.
            ((eq (car-safe hit) 'blocked)
-            (cons 'blocked (ghostherd--rule-reason tail hit)))
+            (cons 'blocked (or (and (member (cdr hit) ghostherd--prompt-foot-patterns)
+                                    (ghostherd--prompt-reason tail))
+                               (ghostherd--rule-reason tail hit))))
            ;; What the agent says about itself beats reading its screen,
            ;; which is a rendering of a drawing of the same fact -- with
            ;; one exception.  A claimed `blocked' loses to a screen that
