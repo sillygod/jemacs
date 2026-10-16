@@ -70,6 +70,7 @@ class JsonRpcHandler:
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
             "herd_conversation": self._herd_conversation,
+            "herd_sub_conversation": self._herd_sub_conversation,
             "herd_chat": self._herd_chat,
             "herd_meter": self._herd_meter,
             "herd_subagents": self._herd_subagents,
@@ -292,6 +293,17 @@ class JsonRpcHandler:
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
         return conversation.read(str(params.get("path") or ""), limit)
+
+    def _herd_sub_conversation(self, params: dict) -> dict:
+        """Sub-agent SUB's own conversation, under parent transcript PATH.
+        SUB is held to a filename's shape and the path resolved under the
+        CLI root, so a crafted id cannot read outside it."""
+        try:
+            limit = max(1, min(200, int(params.get("limit") or conversation.LIMIT)))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        return conversation.read_sub(str(params.get("path") or ""),
+                                     str(params.get("sub") or ""), limit)
 
     def _herd_meter(self, params: dict) -> dict:
         """What a claude agent runs on and how full its context is, from

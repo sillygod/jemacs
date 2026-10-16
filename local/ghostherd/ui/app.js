@@ -754,6 +754,12 @@
   }
 
   function back() {
+    if (view === "agents" && herdNow.subView) {
+      herdNow.subView = null;
+      herdNow.subConv = null;
+      emit("sub-unwatch", {});
+      return renderSubView();
+    }
     if (view === "agents" && herdNow.room) return closeRoom();
     if (view !== "source") return;
     src = null;
@@ -789,6 +795,9 @@
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
     // The sub-agents' reports opened whole.
     subOpen: new Set(),
+    // A sub-agent's own transcript, opened over the room: which, and what
+    // Emacs sent of it.
+    subView: null, subConv: null,
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
@@ -1340,7 +1349,8 @@
     return '<div class="subs">' + subs.map((u) => {
       const stats = [runFor(u.started), esc(u.tools + (u.tools === 1 ? " tool" : " tools")),
         u.tokens != null ? esc(tokens(u.tokens)) : ""].filter(Boolean).join(" · ");
-      return '<div class="sub" data-sub="' + esc(u.id) + '"><div class="sline"><span class="sdot" aria-hidden="true"></span>' +
+      return '<div class="sub" data-act="a:sub-open" data-sub="' + esc(u.id) + '" data-who="' + esc(u.who || "") +
+        '" data-title="' + esc(u.title || "") + '" title="Open its transcript"><div class="sline"><span class="sdot" aria-hidden="true"></span>' +
         '<span class="swho">' + esc(u.who || "sub-agent") + "</span>" +
         '<span class="stitle" title="' + esc(u.title || "") + '">' + esc(u.title || "") + "</span>" +
         '<span class="sstat">' + stats + "</span></div>" +
@@ -1488,6 +1498,8 @@
     herdNow.roomScreen = new Set();
     herdNow.convs = {};
     herdNow.chat = null;
+    herdNow.subView = null;
+    herdNow.subConv = null;
     app.innerHTML = "";
     chrome();
     watchRoom();
@@ -1503,6 +1515,7 @@
   function closeRoom() {
     if (!herdNow.room) return;
     herdNow.room = null;
+    if (herdNow.subView) { herdNow.subView = null; herdNow.subConv = null; emit("sub-unwatch", {}); }
     emit("room-close");
     showAgents();
   }
@@ -1712,6 +1725,32 @@
     body.scrollTop = first || atBottom ? body.scrollHeight : keep;
   }
 
+  // A sub-agent's own transcript, over the room: its conversation and tool
+  // calls, read the same way a column's is.  Open from a sub-agent card,
+  // Close (or Esc) back to the room.
+  function renderSubView() {
+    const sv = herdNow.subView;
+    let ov = app.querySelector(".subview");
+    if (!sv || !herdNow.room) { if (ov) ov.remove(); return; }
+    if (!ov) { ov = document.createElement("div"); ov.className = "subview"; app.appendChild(ov); }
+    const conv = herdNow.subConv;
+    const entries = (conv && conv.entries) || [];
+    const body = !conv ? '<p class="rnote">Reading its transcript…</p>'
+      : conv.error ? '<p class="rnote error">Could not read it: ' + esc(conv.error) + "</p>"
+      : (conv.earlier ? '<p class="rnote">Earlier turns are in the transcript, not shown here.</p>' : "") +
+        (entries.length ? entries.map((e, i) => entryHtml(e, i, sv.name, "claude")).join("")
+          : '<p class="rnote">Nothing said yet.</p>');
+    const atBottom = (() => { const b = ov.querySelector(".subbody"); return !b || b.scrollHeight - b.scrollTop - b.clientHeight < 40; })();
+    ov.innerHTML = '<div class="subhead"><span class="subwho">' + esc(sv.who || "sub-agent") + "</span>" +
+      (sv.title ? '<span class="subtitle" title="' + esc(sv.title) + '">' + esc(sv.title) + "</span>" : "") +
+      '<span class="submeta">of ' + esc(sv.name) + "</span>" +
+      '<button type="button" class="ghost small" data-act="a:sub-close">Close</button></div>' +
+      '<div class="subbody">' + body + "</div>";
+    const b = ov.querySelector(".subbody");
+    drawn.set(b, entries);
+    if (atBottom) b.scrollTop = b.scrollHeight;
+  }
+
   // ---- The room as one chat ----------------------------------------------
   //
   // The same conversations at the level of who said what to whom: your
@@ -1862,6 +1901,7 @@
     const rwork = room.querySelector(".rwork");
     if (rwork) rwork.innerHTML = workHtml(workFor(project));
     room.querySelector(".rruns").innerHTML = runsHtml(agents, asks);
+    renderSubView();
     if (chat) {
       const foot = room.querySelector(".chat .cfoot");
       if (foot) suggestIn(foot, foot.getAttribute("data-name"), chatHint(foot.getAttribute("data-name")));
@@ -1921,7 +1961,7 @@
       return renderRoom();
     }
     if (act === "copy-entry") {
-      const list = drawn.get(el.closest(".rbody, .cbody"));
+      const list = drawn.get(el.closest(".rbody, .cbody, .subbody"));
       const e = list && list[+el.getAttribute("data-i")];
       const text = e && e[el.getAttribute("data-part") || "text"];
       return text ? copy(text) : setStatus("Nothing to copy", "error");
@@ -1954,6 +1994,22 @@
       if (a) renderRoomBody(a);
       if (body) body.scrollTop = keep;
       return;
+    }
+    if (act === "sub-open") {
+      const sub = el.getAttribute("data-sub");
+      const conv = herdNow.convs[name];
+      const path = conv && conv.path;
+      if (!sub || !path) return setStatus("Its transcript is not known yet");
+      herdNow.subView = { name, sub, who: el.getAttribute("data-who"), title: el.getAttribute("data-title") };
+      herdNow.subConv = null;
+      emit("sub-watch", { name, path, sub });
+      return renderSubView();
+    }
+    if (act === "sub-close") {
+      herdNow.subView = null;
+      herdNow.subConv = null;
+      emit("sub-unwatch", {});
+      return renderSubView();
     }
     if (act === "room-tools") {
       const key = el.getAttribute("data-key");
@@ -2839,6 +2895,13 @@
       // column: one that comes as the room turns to its chat has none.
       const col = roomColumn(a.name);
       if (col) col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
+    },
+
+    setSubConversation: (p) => {
+      const sv = herdNow.subView;
+      if (!p || !sv || p.name !== sv.name || p.sub !== sv.sub) return;
+      herdNow.subConv = p;
+      renderSubView();
     },
 
     renderLog: (p) => {

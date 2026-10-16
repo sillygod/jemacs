@@ -592,3 +592,66 @@ def test_what_the_herd_puts_before_your_words_to_a_lead_is_a_line_each():
     # Your own words in brackets are yours.
     e = conv.user_entry("[What this project works on] is the question\n\nanswer it", None)
     assert "notes" not in e and e["text"].startswith("[What this project")
+
+
+# ---- A sub-agent's own transcript ------------------------------------------
+
+def _sub_file(home, sid, records):
+    return _write(home / ".claude/projects/-x-proj/abc/subagents" / ("agent-%s.jsonl" % sid), records)
+
+
+def test_read_sub_reads_a_sidechain_transcript(home):
+    "A sub-agent's transcript is all sidechain; read_sub keeps it, with tools."
+    parent = _claude_file(home, [u("go"), a("m1", text("on it"))])
+    _sub_file(home, "a51b15851f7c7ae94",
+              [u("Review target: x", isSidechain=True),
+               a("s1", text("looking"), use("t1", "Read", file_path="/x"), isSidechain=True),
+               u([result("t1", "contents")], isSidechain=True),
+               a("s2", text("done"), isSidechain=True)])
+    r = conv.read_sub(parent, "a51b15851f7c7ae94")
+    assert r["cli"] == "claude"
+    says = [e.get("text") for e in r["entries"] if e["role"] == "assistant"]
+    assert says == ["looking", "done"]
+    assert any(e["role"] == "user" and "Review target: x" in e.get("text", "") for e in r["entries"])
+    assert any(e["role"] == "tools" and e["tools"][0]["name"] == "Read" for e in r["entries"])
+
+
+def test_the_main_reader_skips_what_read_sub_keeps(home):
+    "The room reader drops sidechain; read_sub is why a sub shows at all."
+    parent = _claude_file(home, [u("go")])
+    sp = _sub_file(home, "abc123", [u("hi", isSidechain=True), a("s1", text("yo"), isSidechain=True)])
+    assert conv.read(sp)["entries"] == []
+    r = conv.read_sub(parent, "abc123")
+    assert [e.get("text") for e in r["entries"] if e["role"] == "assistant"] == ["yo"]
+
+
+def test_read_sub_holds_the_id_to_a_filename(home):
+    "A crafted id cannot climb out: rejected by shape, or resolved and absent."
+    parent = _claude_file(home, [u("go")])
+    for bad in ["", "../../etc/passwd", "a/b", "nope..", "x" * 65]:
+        with pytest.raises(ValueError):
+            conv.read_sub(parent, bad)
+    with pytest.raises(ValueError):          # well-formed, but no such file
+        conv.read_sub(parent, "nosuchsub")
+
+
+def test_read_sub_only_for_claude(home):
+    "grok and agy keep no sub-agent transcripts."
+    g = _write(home / ".grok/sessions/enc/sid/chat_history.jsonl", [])
+    with pytest.raises(ValueError):
+        conv.read_sub(g, "abc123")
+
+
+def test_sub_conversation_rpc(home):
+    parent = _claude_file(home, [u("go")])
+    _sub_file(home, "deadbeef01", [u("hi", isSidechain=True), a("s1", text("yo"), isSidechain=True)])
+
+    def call(params):
+        return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1,
+                                                         method="herd_sub_conversation", params=params)))
+
+    r = call({"path": parent, "sub": "deadbeef01"})
+    assert r.error is None and any(e.get("text") == "yo" for e in r.result["entries"])
+    assert call({"path": parent, "sub": "../x"}).error.message == "no such sub-agent"
+    assert call({"path": parent, "sub": "nope"}).error is not None
+    assert call({"path": parent, "sub": "x", "limit": "lots"}).error.message == "limit must be a number"

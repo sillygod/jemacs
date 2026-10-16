@@ -1371,6 +1371,13 @@ forge or ClickUp instead, which want their own login."
   "The transcripts' signatures the chat was last sent for.")
 (defvar ghostherd-memory-page--chat-reading nil
   "Non-nil while the sidecar builds the chat.")
+(defvar ghostherd-memory-page--sub nil
+  "The sub-agent transcript shown over the room: (NAME PATH SID), where
+NAME is the parent agent and PATH its transcript; nil when none is open.")
+(defvar ghostherd-memory-page--sub-sent nil
+  "The signature last sent for the open sub-agent's transcript.")
+(defvar ghostherd-memory-page--sub-reading nil
+  "Non-nil while the sidecar reads the open sub-agent's transcript.")
 
 (defun ghostherd-memory-page--room-shows-p (s)
   "Non-nil when the page's room shows agent S and you could be looking:
@@ -1530,12 +1537,64 @@ screen if that is what the page shows of it."
                                    (gethash (ghostherd-session-id s) ghostherd--screens)
                                    ""))))))
 
+(defun ghostherd-memory-page--sub-file (path sid)
+  "Where sub-agent SID keeps its own transcript, beside parent PATH's."
+  (and path sid (expand-file-name (format "subagents/agent-%s.jsonl" sid)
+                                  (file-name-sans-extension path))))
+
+(defun ghostherd-memory-page--sub-watch (intent)
+  "Begin showing sub-agent SUB of agent NAME (parent transcript PATH), and
+read it at once so the page fills without waiting for the next tick."
+  (let ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+        (path (ghostherd-memory-page--str (alist-get 'path intent)))
+        (sid (ghostherd-memory-page--str (alist-get 'sub intent))))
+    (when (and name path sid)
+      (setq ghostherd-memory-page--sub (list name path sid)
+            ghostherd-memory-page--sub-sent nil
+            ghostherd-memory-page--sub-reading nil)
+      (ghostherd-memory-page--sub-read))))
+
+(defun ghostherd-memory-page--sub-forget ()
+  "Stop showing a sub-agent's transcript."
+  (setq ghostherd-memory-page--sub nil ghostherd-memory-page--sub-sent nil))
+
+(defun ghostherd-memory-page--sub-read ()
+  "Send the open sub-agent's conversation to the page if its transcript
+changed, as the room does for a column.  Its records are all sidechain, so
+the sidecar reads it with `read_sub', not the room reader."
+  (when ghostherd-memory-page--sub
+    (pcase-let* ((`(,name ,path ,sid) ghostherd-memory-page--sub)
+                 (file (ghostherd-memory-page--sub-file path sid))
+                 (sig (ghostherd-memory-page--room-signature file)))
+      (unless (or (equal sig ghostherd-memory-page--sub-sent)
+                  ghostherd-memory-page--sub-reading)
+        (setq ghostherd-memory-page--sub-reading t)
+        (let* ((open ghostherd-memory-page--sub)
+               (done (lambda (&rest fields)
+                       (setq ghostherd-memory-page--sub-reading nil
+                             ghostherd-memory-page--sub-sent sig)
+                       (when (equal open ghostherd-memory-page--sub)
+                         (ghostherd-memory-page--js
+                          "setSubConversation" (append (list :name name :sub sid) fields))))))
+          (condition-case err
+              (ghostherd-memory-request-async
+               "herd_sub_conversation"
+               (lambda (r)
+                 (funcall done
+                          :earlier (if (plist-get r :earlier) t :json-false)
+                          :entries (ghostherd-memory-page--vec
+                                    (mapcar #'ghostherd-memory-page--room-entry (plist-get r :entries)))))
+               (list :path path :sub sid)
+               (lambda (e) (funcall done :entries [] :error (ghostherd-memory-page--sidecar-error e))))
+            (error (funcall done :entries [] :error (error-message-string err)))))))))
+
 (defun ghostherd-memory-page--room-tick ()
   (if (not (and ghostherd-memory-page--room (xwapp-live-p ghostherd-memory-page--app)))
       (ghostherd-memory-page--room-close)
     (if ghostherd-memory-page--room-chat
         (ghostherd-memory-page--chat-read)
-      (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions)))))
+      (mapc #'ghostherd-memory-page--room-read (ghostherd-memory-page--room-sessions)))
+    (ghostherd-memory-page--sub-read)))
 
 (defun ghostherd-memory-page--room-open (intent)
   "Show the room INTENT names, its agents in the screens it lists by
@@ -1570,7 +1629,10 @@ again only changes which those are."
         ghostherd-memory-page--room-screens nil
         ghostherd-memory-page--room-chat nil
         ghostherd-memory-page--chat-sent nil
-        ghostherd-memory-page--chat-reading nil)
+        ghostherd-memory-page--chat-reading nil
+        ghostherd-memory-page--sub nil
+        ghostherd-memory-page--sub-sent nil
+        ghostherd-memory-page--sub-reading nil)
   (clrhash ghostherd-memory-page--room-sent))
 
 (defun ghostherd-memory-page--session (intent)
@@ -1870,6 +1932,8 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-memory-page--herd-unwatch))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-close" (ghostherd-memory-page--room-close))
+        ("sub-watch" (ghostherd-memory-page--sub-watch intent))
+        ("sub-unwatch" (ghostherd-memory-page--sub-forget))
         ("usage-refresh"
          (setq ghostherd-memory-page--usage-at (float-time))
          (ghostherd-usage-refresh t)

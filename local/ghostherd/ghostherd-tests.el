@@ -6380,6 +6380,39 @@ gets each entry's known fields, lists as arrays."
     (ghostherd-memory-page--room-tick)
     (should (= (length requests) 2))))
 
+(ert-deftest ghostherd-test-room-shows-a-sub-agents-transcript ()
+  "Open a sub-agent card: its own transcript is read with
+`herd_sub_conversation' and pushed as setSubConversation, re-read only when
+it changes; closing it forgets it."
+  (ghostherd-test--with-room
+    (setq reply (lambda (_m _p)
+                  '(:earlier :json-false
+                    :entries ((:role "user" :kind "prompt" :text "Review x" :ts "t")
+                              (:role "assistant" :text "looking" :ts "t")))))
+    (let ((subf (ghostherd-memory-page--sub-file file "a51b15851f7c7ae94")))
+      (make-directory (file-name-directory subf) t)
+      (write-region "{}\n" nil subf nil 'silent)
+      (ghostherd-memory-page--handle
+       `((op . "sub-watch") (name . "claude-api") (path . ,file) (sub . "a51b15851f7c7ae94")))
+      (should (equal (car (last requests))
+                     `("herd_sub_conversation" (:path ,file :sub "a51b15851f7c7ae94"))))
+      (let ((p (ghostherd-test--call calls "setSubConversation")))
+        (should (equal (plist-get p :name) "claude-api"))
+        (should (equal (plist-get p :sub) "a51b15851f7c7ae94"))
+        (should (equal (plist-get (aref (plist-get p :entries) 1) :text) "looking")))
+      ;; Not re-read until the sub transcript itself changes.
+      (let ((n (length requests)))
+        (ghostherd-memory-page--sub-read)
+        (should (= (length requests) n))
+        (write-region "more\n" nil subf t 'silent)
+        (ghostherd-memory-page--sub-read)
+        (should (= (length requests) (1+ n))))
+      (ghostherd-memory-page--handle '((op . "sub-unwatch")))
+      (should-not ghostherd-memory-page--sub)
+      (let ((n (length requests)))
+        (ghostherd-memory-page--sub-read)
+        (should (= (length requests) n))))))
+
 (ert-deftest ghostherd-test-room-as-one-chat ()
   "Shown as a chat, the room asks the sidecar for the project's timeline
 when any transcript changed -- once, not per agent -- naming the agents

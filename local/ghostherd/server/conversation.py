@@ -516,9 +516,11 @@ class Thread:
         return self.entries[-limit:], len(self.entries) > limit
 
 
-def _claude(records, thread: Thread) -> None:
+def _claude(records, thread: Thread, sub: bool = False) -> None:
+    # A sub-agent's own transcript is written entirely as sidechain; read
+    # SUB such a one, where that mark is the conversation, not an aside.
     for o in records:
-        if o.get("isSidechain") or o.get("isMeta"):
+        if (o.get("isSidechain") and not sub) or o.get("isMeta"):
             continue
         msg = o.get("message") if isinstance(o.get("message"), dict) else {}
         content = msg.get("content")
@@ -601,11 +603,9 @@ def _grok(records, thread: Thread) -> None:
 READERS = {"claude": _claude, "agy": _agy, "grok": _grok}
 
 
-def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
-    """The last LIMIT entries of the conversation in transcript PATH."""
-    real, cli = locate(path)
+def _read(real: Path, cli: str, limit: int, reader, key: str) -> dict[str, Any]:
+    "The last LIMIT entries REAL holds, parsed by READER, cached under KEY."
     st = real.stat()
-    key = str(real)
     hit = _cache.get(key)
     if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns and hit[2]["limit"] == limit:
         return hit[2]
@@ -613,7 +613,7 @@ def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
     while True:
         lines, cut = _tail(real, window)
         thread = Thread(real)
-        READERS[cli](_records(lines), thread)
+        reader(_records(lines), thread)
         if not cut or len(thread.entries) >= limit or window >= TAIL_MAX:
             break
         window *= 4
@@ -630,6 +630,33 @@ def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
         _cache.pop(next(iter(_cache)))
     _cache[key] = (st.st_size, st.st_mtime_ns, out)
     return out
+
+
+def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
+    """The last LIMIT entries of the conversation in transcript PATH."""
+    real, cli = locate(path)
+    return _read(real, cli, limit, READERS[cli], str(real))
+
+
+def sub_path(transcript: Path, sid: str) -> Path:
+    "Where sub-agent SID keeps its own conversation, beside its parent's."
+    return transcript.with_suffix("") / "subagents" / f"agent-{sid}.jsonl"
+
+
+def read_sub(path: str, sid: str, limit: int = LIMIT) -> dict[str, Any]:
+    """The last LIMIT entries of sub-agent SID's own transcript, under parent
+    transcript PATH.  Only claude keeps sub-agent transcripts; SID is held to
+    the same shape as a filename and the path resolved under the CLI root, so
+    it cannot climb out.  Its records are all sidechain, read as the thread."""
+    if not SUB_ID.match(sid or ""):
+        raise ValueError("no such sub-agent")
+    parent, cli = locate(path)
+    if cli != "claude":
+        raise ValueError("no sub-agents here")
+    real, _ = locate(str(sub_path(parent, sid)))
+    return _read(real, "claude", limit,
+                 lambda recs, thread: _claude(recs, thread, sub=True),
+                 "sub:" + str(real))
 
 
 # ---- A project's chat ------------------------------------------------------

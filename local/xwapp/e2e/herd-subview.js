@@ -1,0 +1,82 @@
+// Clicking a room sub-agent card opens that sub's own transcript over the
+// room -- its conversation and tool calls, read like a column's -- with its
+// who and title in the header; Close (the overlay) returns.  On a phone and
+// at a desk.
+const { webkit } = require("playwright");
+const { phonePage, HERD, sleep } = require("./herdlib");
+const results = [];
+const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
+const DESK = { viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2, isMobile: false, hasTouch: false };
+const DP = "~/src/deploy-platform/";
+const RD = "claude-deploy-platform";
+const PATH = "/Users/x/.claude/projects/-p/abc.jsonl";
+
+const SUBS = [{ id: "a3db8f1c2e4a6b7c9", who: "general-purpose", title: "Build R4 sync debug project",
+                started: new Date(Date.now() - 90e3).toISOString(), tools: 12, tokens: 52000, doing: "" }];
+const herd = () => Object.assign({}, HERD, {
+  agents: HERD.agents.map((a) => Object.assign({}, a, { meter: false, subs: a.name === RD ? SUBS : [] })),
+});
+const SUBCONV = { name: RD, sub: "a3db8f1c2e4a6b7c9", earlier: false, entries: [
+  { role: "user", kind: "prompt", text: "Review target: src/pay.py", ts: "t" },
+  { role: "tools", ts: "t", tools: [{ name: "Read", hint: "src/pay.py" }] },
+  { role: "assistant", text: "Found the bug in the retry path.", ts: "t" },
+] };
+
+(async () => {
+  const browser = await webkit.launch();
+  try {
+    for (const where of ["phone", "desk"]) {
+      const intents = [];
+      const { ctx, page, errors } = await phonePage(browser, { intents, context: where === "desk" ? DESK : {} });
+      const W = (n) => where + ": " + n;
+      const tap = (sel) => (where === "phone" ? page.tap(sel) : page.click(sel));
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd());
+      await sleep(100);
+      await tap('.pgroup[data-project="' + DP + '"] [data-act="a:room"]');
+      await sleep(150);
+      await tap('.room [data-act="a:room-view"][data-view="columns"]');
+      await sleep(120);
+      // The column needs a conversation first -- its parent transcript path
+      // is where a sub's path is built from.
+      await page.evaluate((p) => GM.setConversation(p),
+        { name: RD, path: PATH, cli: "claude", earlier: false, entries: [{ role: "assistant", text: "on it", ts: "t" }] });
+      await sleep(80);
+
+      const card = '.rcol[data-name="' + RD + '"] .rsubs .sub[data-sub="a3db8f1c2e4a6b7c9"]';
+      check(W("the sub-agent card is in the column"), !!(await page.$(card)));
+      await tap(card);
+      await sleep(80);
+      const watch = intents.filter((i) => i.op === "sub-watch");
+      check(W("clicking it asks Emacs to watch that sub, with the parent path"),
+        watch.length === 1 && watch[0].name === RD && watch[0].sub === "a3db8f1c2e4a6b7c9" && watch[0].path === PATH, watch);
+      const reading = await page.$eval(".subview .subbody", (b) => b.textContent).catch(() => "");
+      check(W("the overlay opens, reading until Emacs answers"), /Reading/.test(reading), reading);
+
+      await page.evaluate((p) => GM.setSubConversation(p), SUBCONV);
+      await sleep(80);
+      const body = await page.$eval(".subview .subbody", (b) => b.textContent);
+      check(W("its conversation and tool calls show"), /Found the bug in the retry path\./.test(body) && /Read/.test(body), body);
+      const head = await page.$eval(".subview .subhead", (h) => h.textContent);
+      check(W("its who and title are in the header"), /general-purpose/.test(head) && /Build R4 sync debug project/.test(head), head);
+      // A stray push for a different sub is ignored.
+      await page.evaluate(() => GM.setSubConversation({ name: "claude-deploy-platform", sub: "other", entries: [{ role: "assistant", text: "nope", ts: "t" }] }));
+      await sleep(40);
+      check(W("a push for another sub is not shown"), !/nope/.test(await page.$eval(".subview .subbody", (b) => b.textContent)));
+
+      await tap('.subview [data-act="a:sub-close"]');
+      await sleep(80);
+      check(W("Close removes the overlay and tells Emacs to stop"),
+        !(await page.$(".subview")) && intents.some((i) => i.op === "sub-unwatch"));
+
+      const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      check(W("no sideways scroll"), wide <= 0, wide);
+      check(W("no page errors"), errors.length === 0, errors);
+      await ctx.close();
+    }
+  } finally {
+    await browser.close();
+  }
+  const bad = results.filter((r) => !r).length;
+  console.log(bad ? bad + " of " + results.length + " failed" : "all " + results.length + " passed");
+  process.exit(bad ? 1 : 0);
+})();
