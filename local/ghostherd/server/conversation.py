@@ -745,10 +745,16 @@ def _keys(items: list[dict[str, Any]], mtime: float) -> list[float]:
 def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT) -> dict[str, Any]:
     """The conversations of AGENTS -- (name, transcript) pairs -- as one
     timeline, its last LIMIT items, each saying which agent's it is."""
+    # Read enough of each agent to fill the merged limit.  Folding turns can
+    # only shrink a stream, so for the timeline to reach LIMIT items a column
+    # must offer at least that many of its own.  `load earlier' is a bigger
+    # LIMIT, so the per-agent read grows with it rather than staying pinned
+    # at CHAT_PER_AGENT, where the button loaded nothing past the first look.
+    per = max(CHAT_PER_AGENT, limit)
     streams, missing, earlier = [], [], False
     for name, path in agents:
         try:
-            r = read(path, CHAT_PER_AGENT)
+            r = read(path, per)
         except ValueError:
             missing.append(name)
             continue
@@ -771,4 +777,4 @@ def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT) -> dict[str, An
     merged.sort(key=lambda m: m[0])
     entries = [item for _, item in merged]
     return {"entries": entries[-limit:], "earlier": earlier or len(entries) > limit,
-            "missing": missing}
+            "missing": missing, "limit": limit}

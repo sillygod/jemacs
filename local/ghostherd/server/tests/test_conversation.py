@@ -471,6 +471,19 @@ def test_chat_keeps_the_last_of_a_long_day(home):
     assert r["earlier"] is True
 
 
+def test_chat_load_earlier_reads_past_the_first_look(home):
+    "`load earlier' is a bigger limit; the per-agent read grows with it, so"
+    " more of a long day shows -- not capped at the first CHAT_PER_AGENT."
+    recs = [u("p%d" % n, timestamp="2026-10-09T%02d:%02d:00Z" % (1 + n // 60, n % 60))
+            for n in range(200)]
+    rd = _agent(home, "rd", recs)
+    few = conv.chat([("rd", rd)], limit=50)
+    assert len(few["entries"]) == 50 and few["earlier"] is True and few["limit"] == 50
+    more = conv.chat([("rd", rd)], limit=180)
+    assert len(more["entries"]) == 180 and more["limit"] == 180
+    assert more["entries"][-1]["text"] == "p199" and more["entries"][0]["text"] == "p20"
+
+
 def test_chat_rpc(home):
     rd = _agent(home, "rd", [u("hello", timestamp=at(0))])
 
