@@ -1369,6 +1369,8 @@ depend on any of them still existing."
           (ghostherd--log nil)
           (ghostherd--log-loaded nil)
           (ghostherd--log-writable t)
+          (ghostherd--log-disk-lines 0)
+          (ghostherd--log-disk-screens 0)
           (ghostherd-log-max 500)
           (ghostherd-log-screens 20))
      (unwind-protect
@@ -1484,6 +1486,32 @@ session and the caps are applied once, when something is reading anyway."
         ;; And the file was rewritten rather than appended to, so it does
         ;; not grow forever: five compacted lines plus the marker.
         (should (= (length (ghostherd-tests--log-lines file)) 6))))))
+
+(ert-deftest ghostherd-test-log-compacts-on-write ()
+  "An Emacs that stays up for weeks never calls `ghostherd-log-load'
+again; `ghostherd--log-add' rewrites the file once lines or screens on
+disk reach twice the cap."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((ghostherd-log-max 5)
+            (ghostherd-log-screens 2))
+        ;; Four screens reach 2x `ghostherd-log-screens' and compact on disk.
+        (dotimes (i 4)
+          (ghostherd--log-add "a" 'state (format "s %d" i) (format "screen %d" i)))
+        (let* ((forms (mapcar (lambda (l) (car (read-from-string l)))
+                              (ghostherd-tests--log-lines file)))
+               (screens (seq-filter (lambda (f) (plist-get f :screen)) forms)))
+          (should (= (length forms) 4))
+          (should (= (length screens) 2))
+          (should (equal (mapcar (lambda (f) (plist-get f :screen)) screens)
+                         '("screen 2" "screen 3"))))
+        ;; Many plain lines without screens also compact at 2x `ghostherd-log-max'.
+        (dotimes (i 12)
+          (ghostherd--log-add "a" 'state (format "line %d" i)))
+        (let ((lines (ghostherd-tests--log-lines file)))
+          (should (< (length lines) (* 2 ghostherd-log-max)))
+          (should (equal (plist-get (car (read-from-string (car (last lines)))) :text)
+                         "line 11")))))))
 
 (ert-deftest ghostherd-test-log-keeps-going-when-the-file-cannot-be-written ()
   "The write happens per state transition, so a read-only directory must

@@ -787,6 +787,12 @@ Cleared after one failure, because the write happens per state
 transition: a read-only directory would otherwise produce an error
 message every time an agent changed state.")
 
+(defvar ghostherd--log-disk-lines 0
+  "Lines written to `ghostherd-log-file' since it was last compacted.")
+
+(defvar ghostherd--log-disk-screens 0
+  "Captured screens written to `ghostherd-log-file' since it was last compacted.")
+
 (defun ghostherd--log-form (entry)
   "Return ENTRY as a plist ready to be printed on one line.
 
@@ -847,15 +853,20 @@ user who set them would get \"...\" written into their own log."
                 ghostherd-log-file (error-message-string error))
         :warning)))))
 
+(defun ghostherd--log-rewrite ()
+  "Rewrite `ghostherd-log-file' from the trimmed in-memory `ghostherd--log'."
+  (setq ghostherd--log-disk-lines (length ghostherd--log)
+        ghostherd--log-disk-screens (cl-count-if #'ghostherd-log-entry-screen
+                                                 ghostherd--log))
+  (ghostherd--log-write (ghostherd--log-print (reverse ghostherd--log)) nil))
+
 (defun ghostherd-log-load ()
   "Read `ghostherd-log-file' into the herd log and compact the file.
 
-Compaction happens here rather than on the way in: appending is what
-keeps logging cheap, so the file grows with whatever the session did, and
-the caps (`ghostherd-log-max', `ghostherd-log-screens') are applied once,
-when something is reading anyway.  A line that will not parse ends the
-read -- the expected corruption is a truncated tail from a crash, and
-what follows one is not worth guessing at."
+Compaction happens here and whenever `ghostherd--log-add' has doubled the
+entry or screen cap on disk.  A line that will not parse ends the read --
+the expected corruption is a truncated tail from a crash, and what
+follows one is not worth guessing at."
   (interactive)
   (setq ghostherd--log-loaded t)
   (when (and ghostherd-log-file (file-readable-p ghostherd-log-file))
@@ -874,7 +885,7 @@ what follows one is not worth guessing at."
           (error nil)))
       ;; `entries' is newest first already, which is how the log is kept.
       (setq ghostherd--log (ghostherd--log-trim entries))
-      (ghostherd--log-write (ghostherd--log-print (reverse ghostherd--log)) nil)
+      (ghostherd--log-rewrite)
       (let ((read (length ghostherd--log)))
         (when (> read 0)
           ;; Through `--log-add', so the seam is a line of the log like any
@@ -910,7 +921,9 @@ something has to do it on purpose."
   (interactive)
   (when (or (not (called-interactively-p 'interactive))
             (yes-or-no-p "Forget the herd log, including the kept screens? "))
-    (setq ghostherd--log nil)
+    (setq ghostherd--log nil
+          ghostherd--log-disk-lines 0
+          ghostherd--log-disk-screens 0)
     (when (and ghostherd-log-file (file-exists-p ghostherd-log-file))
       (ignore-errors (delete-file ghostherd-log-file)))
     (when-let* ((buf (get-buffer "*ghostherd-log*")))
@@ -919,29 +932,39 @@ something has to do it on purpose."
 
 (defun ghostherd--log-add (session kind text &optional screen)
   "Record TEXT about SESSION under KIND, optionally with a SCREEN."
-  (push (ghostherd-log-entry--create
-         :session (if (ghostherd-session-p session)
-                      (ghostherd-session-name session)
-                    (format "%s" session))
-         :kind kind :text text :screen screen)
-        ghostherd--log)
-  ;; Appended as it happens rather than saved on the way out: a
-  ;; `kill-emacs-hook' does not run for the crash this is meant to
-  ;; survive, and one line is cheap enough to write per transition.
-  (ghostherd--log-write (ghostherd--log-print (list (car ghostherd--log))) t)
-  (setq ghostherd--log (ghostherd--log-trim ghostherd--log))
-  (when-let* ((buf (get-buffer "*ghostherd-log*")))
-    (when (get-buffer-window buf t)
-      (ghostherd--log-render buf)))
-  ;; Each listener on its own, demoted: one listener's bug must neither
-  ;; cost the herd its log nor keep the next listener from hearing.
-  (run-hook-wrapped 'ghostherd-log-functions
-                    (lambda (fn entry)
-                      (with-demoted-errors "ghostherd: log listener: %S"
-                        (funcall fn entry))
-                      nil)
-                    (car ghostherd--log))
-  nil)
+  (let ((entry (ghostherd-log-entry--create
+                :session (if (ghostherd-session-p session)
+                             (ghostherd-session-name session)
+                           (format "%s" session))
+                :kind kind :text text :screen screen)))
+    (push entry ghostherd--log)
+    (setq ghostherd--log (ghostherd--log-trim ghostherd--log)
+          ghostherd--log-disk-lines (1+ ghostherd--log-disk-lines)
+          ghostherd--log-disk-screens (+ ghostherd--log-disk-screens
+                                         (if screen 1 0)))
+    ;; Appended as it happens rather than saved on the way out: a
+    ;; `kill-emacs-hook' does not run for the crash this is meant to
+    ;; survive, and one line is cheap enough to write per transition.
+    ;; Once disk lines or screens reach twice the cap, rewrite from the
+    ;; trimmed in-memory log so a long-running Emacs does not grow the
+    ;; file without bound.
+    (if (or (>= ghostherd--log-disk-lines (* 2 (max 1 ghostherd-log-max)))
+            (and (> ghostherd-log-screens 0)
+                 (>= ghostherd--log-disk-screens (* 2 ghostherd-log-screens))))
+        (ghostherd--log-rewrite)
+      (ghostherd--log-write (ghostherd--log-print (list entry)) t))
+    (when-let* ((buf (get-buffer "*ghostherd-log*")))
+      (when (get-buffer-window buf t)
+        (ghostherd--log-render buf)))
+    ;; Each listener on its own, demoted: one listener's bug must neither
+    ;; cost the herd its log nor keep the next listener from hearing.
+    (run-hook-wrapped 'ghostherd-log-functions
+                      (lambda (fn e)
+                        (with-demoted-errors "ghostherd: log listener: %S"
+                          (funcall fn e))
+                        nil)
+                      entry)
+    nil))
 
 (defun ghostherd--log-transition (session old new reason)
   "Log SESSION moving from OLD to NEW because of REASON."
