@@ -245,6 +245,18 @@ const METERS = {
       const grokLit = await read(grokRow);
       check(W("a read model shows in the chip, still a switch, no bar"),
         grokLit && grokLit.button && grokLit.chip === "Grok 4.6high" && grokLit.words === "" && grokLit.width === "", grokLit);
+      // grok carries a context window (from signals.json) -> a percent bar.
+      await show(herd(Object.assign({}, METERS, { "grok-jnotes": meter("Grok 4.6", "high", 163889, 256000) })));
+      await sleep(100);
+      const grokCtx = await read(grokRow);
+      check(W("grok with a window shows a bar and percent"),
+        grokCtx && grokCtx.words === "64% · 164k / 256k" && grokCtx.width === "64%" && grokCtx.level === "lvl-ok", grokCtx);
+      // agy has no window total -> the number alone, no bar.
+      await show(herd(Object.assign({}, METERS, { [QA]: meter("Gemini 3.8 Flash", "medium", 189225, null) })));
+      await sleep(100);
+      const agyCtx = await read(row(QA));
+      check(W("agy without a window shows the number, no bar"),
+        agyCtx && agyCtx.words === "189k" && agyCtx.width === "" && agyCtx.chip === "Gemini 3.8 Flashmedium", agyCtx);
 
       const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check(W("no sideways scroll"), wide <= 0, wide);

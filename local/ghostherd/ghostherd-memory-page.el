@@ -379,24 +379,24 @@ its frame rather than a transcript the sidecar can read: (DISPLAY
       (_ nil))))
 
 (defun ghostherd-memory-page--meter (s)
-  "S's meter as the page takes it, field by field, or false.
-When the sidecar has none (grok, agy keep no such transcript), the model
-and effort its own screen shows stand in, so the chip reflects them."
-  (let ((m (cdr (gethash (ghostherd-session-name s) ghostherd-memory-page--meters))))
-    (cond
-     ((plist-get m :model)
-      (list :model (ghostherd-memory-page--str (plist-get m :model))
-            :effort (ghostherd-memory-page--str (plist-get m :effort))
-            :tokens (and (natnump (plist-get m :tokens)) (plist-get m :tokens))
+  "S's meter for the page, or false when there is nothing to show.
+The sidecar gives the context tokens and the window they sit in; for
+claude the model and effort come with it, for grok and agy off the
+screen (they keep neither in a transcript).  grok has a window, so a
+bar; agy has only the number."
+  (let* ((m (cdr (gethash (ghostherd-session-name s) ghostherd-memory-page--meters)))
+         (live (ghostherd-memory-page--screen-model s))
+         (model (or (ghostherd-memory-page--str (plist-get m :model)) (car live)))
+         (effort (or (ghostherd-memory-page--str (plist-get m :effort)) (cdr live)))
+         (tokens (and (natnump (plist-get m :tokens)) (plist-get m :tokens))))
+    (if (not (or model tokens))
+        :json-false
+      (list :model (or model "")
+            :effort (or effort "")
+            :tokens tokens
             :window (and (natnump (plist-get m :window)) (plist-get m :window))
             :pending (if (eq (plist-get m :pending) t) t :json-false)
-            :compacted (if (eq (plist-get m :compacted) t) t :json-false)))
-     ((ghostherd-memory-page--screen-model s)
-      (let ((live (ghostherd-memory-page--screen-model s)))
-        (list :model (ghostherd-memory-page--str (car live))
-              :effort (ghostherd-memory-page--str (cdr live))
-              :tokens nil :window nil :pending :json-false :compacted :json-false)))
-     (t :json-false))))
+            :compacted (if (eq (plist-get m :compacted) t) t :json-false)))))
 
 (defun ghostherd-memory-page--ask-on-change (table busy name sig method path)
   "Ask the sidecar METHOD about agent NAME's transcript PATH, unless SIG

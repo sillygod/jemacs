@@ -18,6 +18,7 @@ Emacs asks again only when the file has changed, as it does for the room.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -129,25 +130,90 @@ def _scan(records: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
-def read(path: str) -> dict[str, Any]:
-    """The meter of the claude transcript PATH; empty when it has no reply
-    yet, or is another CLI's."""
-    real, cli = conv.locate(path)
-    if cli != "claude":
+def _grow(real, scan):
+    "Read REAL's tail, growing it until SCAN finds something or the file ends."
+    window_bytes = TAIL_BYTES
+    while True:
+        lines, cut = conv._tail(real, window_bytes)
+        found = scan(list(conv._records(lines)))
+        if found or not cut or window_bytes >= conv.TAIL_MAX:
+            return found or {}
+        window_bytes *= 4
+
+
+def _claude_meter(real):
+    "claude writes model, effort and usage on every reply; read the tail."
+    return _grow(real, _scan)
+
+
+def _agy_scan(records):
+    """agy's context from the last planner reply: the prompt it was given
+    (input + what it read from cache).  No window is written anywhere, so
+    the herd shows the number without a bar.  Model and effort are only on
+    its screen, read there, not here."""
+    for o in reversed(records):
+        if o.get("type") == "PLANNER_RESPONSE" and o.get("source") == "MODEL":
+            inp = o.get("input_tokens")
+            if isinstance(inp, int):
+                cached = o.get("cache_read_tokens")
+                return {"model": "", "effort": "",
+                        "tokens": inp + (cached if isinstance(cached, int) else 0),
+                        "window": None, "pending": False, "compacted": False,
+                        "ts": o.get("created_at")}
+    return None
+
+
+def _agy_meter(real):
+    return _grow(real, _agy_scan)
+
+
+def _grok_meter(real):
+    """grok keeps its context in signals.json beside the conversation: the
+    tokens in use and the window itself, in lockstep with it.  Its model and
+    effort are read off its screen, not here."""
+    try:
+        data = json.loads(real.with_name("signals.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
-    st = real.stat()
+    used = data.get("contextTokensUsed")
+    if not isinstance(used, int):
+        return {}
+    total = data.get("contextWindowTokens")
+    return {"model": "", "effort": "", "tokens": used,
+            "window": total if isinstance(total, int) and total > 0 else None,
+            "pending": False, "compacted": False, "ts": None}
+
+
+_READERS = {"claude": _claude_meter, "agy": _agy_meter, "grok": _grok_meter}
+
+
+def _target(real, cli):
+    "The file whose change means the meter changed; grok keeps it in signals.json."
+    if cli == "grok":
+        sig = real.with_name("signals.json")
+        if sig.is_file():
+            return sig
+    return real
+
+
+def read(path: str) -> dict[str, Any]:
+    """The meter of transcript PATH -- model, effort, context tokens and the
+    window they sit in; empty when the CLI is unknown or it has no reply yet.
+    claude, grok and agy each keep it differently; grok and agy carry no
+    model or effort here (the herd reads those off their screen)."""
+    real, cli = conv.locate(path)
+    reader = _READERS.get(cli)
+    if not reader:
+        return {}
+    try:
+        st = _target(real, cli).stat()
+    except OSError:
+        return {}
     key = str(real)
     hit = _cache.get(key)
     if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns:
         return hit[2]
-    window_bytes = TAIL_BYTES
-    while True:
-        lines, cut = conv._tail(real, window_bytes)
-        found = _scan(list(conv._records(lines)))
-        if found or not cut or window_bytes >= conv.TAIL_MAX:
-            break
-        window_bytes *= 4
-    out = found or {}
+    out = reader(real)
     if len(_cache) >= CACHE_MAX:
         _cache.pop(next(iter(_cache)))
     _cache[key] = (st.st_size, st.st_mtime_ns, out)

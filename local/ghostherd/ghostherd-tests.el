@@ -3117,6 +3117,28 @@ does -- grok's border, agy's footer -- so its chip is not left bare."
       (remhash (ghostherd-session-id g) ghostherd--screens)
       (should (eq (ghostherd-memory-page--meter g) :json-false)))))
 
+(ert-deftest ghostherd-test-meter-merges-sidecar-tokens-with-screen-model ()
+  "The sidecar gives grok/agy their context tokens (and grok its window);
+the model and effort come off the screen.  Merged into one meter: grok
+with a window for a bar, agy with the number alone."
+  (ghostherd-tests--with-herd ((ghostherd-memory-page--meters (make-hash-table :test 'equal)))
+    (let ((g (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle))
+          (a (ghostherd-tests--session :name "ag" :kind 'agy :state 'idle)))
+      (puthash (ghostherd-session-id g) " ╰── Grok 4.6 (high) · always-approve ─╯\n" ghostherd--screens)
+      (puthash (ghostherd-session-id a) "? for shortcuts    Gemini 3.8 Flash · medium\n" ghostherd--screens)
+      (puthash "rd" (cons "s1" '(:model "" :effort "" :tokens 163889 :window 256000
+                                 :pending :json-false :compacted :json-false))
+               ghostherd-memory-page--meters)
+      (should (equal (ghostherd-memory-page--meter g)
+                     '(:model "Grok 4.6" :effort "high" :tokens 163889 :window 256000
+                       :pending :json-false :compacted :json-false)))
+      (puthash "ag" (cons "s2" '(:model "" :effort "" :tokens 189225 :window nil
+                                 :pending :json-false :compacted :json-false))
+               ghostherd-memory-page--meters)
+      (should (equal (ghostherd-memory-page--meter a)
+                     '(:model "Gemini 3.8 Flash" :effort "medium" :tokens 189225 :window nil
+                       :pending :json-false :compacted :json-false))))))
+
 ;;; Switcher annotation and notes
 
 (ert-deftest ghostherd-test-candidate-is-just-the-name ()

@@ -172,3 +172,77 @@ def test_rpc(home):
     r = call({"path": path})
     assert r.error is None and r.result["tokens"] == 833282
     assert call({"path": str(home / "x.jsonl")}).error.message == "no such transcript"
+
+
+# ---- grok and agy: context from where each CLI keeps it --------------------
+
+def _grok(home, signals, name="chat_history.jsonl"):
+    d = home / ".grok/sessions/enc/sid"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text("")  # located, but holds no tokens
+    if signals is not None:
+        (d / "signals.json").write_text(json.dumps(signals))
+    return str(d / name)
+
+
+def _agy(home, records):
+    d = home / ".gemini/antigravity-cli/brain/bid/.system_generated/logs"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "transcript_full.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return str(p)
+
+
+def _planner(inp, cached, step, src="MODEL"):
+    return {"type": "PLANNER_RESPONSE", "source": src, "input_tokens": inp,
+            "cache_read_tokens": cached, "created_at": "2026-10-16T00:%02d:00Z" % step, "step_index": step}
+
+
+def test_grok_context_from_signals_with_a_window(home):
+    "grok keeps its context in signals.json beside the conversation: a bar."
+    path = _grok(home, {"contextTokensUsed": 163889, "contextWindowTokens": 256000, "contextWindowUsage": 64})
+    assert meter.read(path) == {"model": "", "effort": "", "tokens": 163889, "window": 256000,
+                                "pending": False, "compacted": False, "ts": None}
+
+
+def test_grok_without_a_window_shows_the_number_only(home):
+    path = _grok(home, {"contextTokensUsed": 5000})
+    m = meter.read(path)
+    assert (m["tokens"], m["window"]) == (5000, None)
+
+
+def test_grok_with_no_signals_or_no_count_is_empty(home):
+    assert meter.read(_grok(home, None)) == {}
+    assert meter.read(_grok(home, {"compactionCount": 8})) == {}
+
+
+def test_grok_caches_on_signals_not_the_conversation(home):
+    "The tokens live in signals.json, so its change is what must re-read."
+    path = _grok(home, {"contextTokensUsed": 100, "contextWindowTokens": 256000})
+    assert meter.read(path)["tokens"] == 100
+    sig = Path(path).with_name("signals.json")
+    sig.write_text(json.dumps({"contextTokensUsed": 200, "contextWindowTokens": 256000}))
+    os.utime(sig, ns=(sig.stat().st_size + 1, sig.stat().st_mtime_ns + 1000))
+    assert meter.read(path)["tokens"] == 200
+
+
+def test_agy_context_from_the_last_planner_reply(home):
+    "agy's prompt size -- input + cache-read -- from its last model reply; no window."
+    path = _agy(home, [{"type": "USER_INPUT", "content": "go", "created_at": "t0"},
+                       _planner(3002, 164600, 56), _planner(2927, 186298, 67)])
+    assert meter.read(path) == {"model": "", "effort": "", "tokens": 2927 + 186298, "window": None,
+                                "pending": False, "compacted": False, "ts": "2026-10-16T00:67:00Z"}
+
+
+def test_agy_without_a_model_reply_is_empty(home):
+    "A user turn, or a planner turn that is not the model's, carries no tokens."
+    path = _agy(home, [{"type": "USER_INPUT", "content": "go", "created_at": "t0"},
+                       _planner(10, 20, 1, src="PLANNER")])
+    assert meter.read(path) == {}
+
+
+def test_agy_rpc_reports_the_number(home):
+    path = _agy(home, [_planner(1000, 2000, 1)])
+    r = asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_meter", params={"path": path})))
+    assert r.error is None and r.result == {"model": "", "effort": "", "tokens": 3000, "window": None,
+                                            "pending": False, "compacted": False, "ts": "2026-10-16T00:01:00Z"}
