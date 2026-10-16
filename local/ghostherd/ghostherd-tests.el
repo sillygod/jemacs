@@ -3195,8 +3195,9 @@ does -- grok's border, agy's footer -- so its chip is not left bare."
 
 (ert-deftest ghostherd-test-meter-merges-sidecar-tokens-with-screen-model ()
   "The sidecar gives grok/agy their context tokens (and grok its window);
-the model and effort come off the screen.  Merged into one meter: grok
-with a window for a bar, agy with the number alone."
+the model and effort come off the screen.  Merged into one meter, each
+with a window for a bar: grok's from the sidecar, agy's the uniform 1.0M
+its `/context' reports, so agy is no longer the number alone."
   (ghostherd-tests--with-herd ((ghostherd-memory-page--meters (make-hash-table :test 'equal)))
     (let ((g (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle))
           (a (ghostherd-tests--session :name "ag" :kind 'agy :state 'idle)))
@@ -3208,11 +3209,12 @@ with a window for a bar, agy with the number alone."
       (should (equal (ghostherd-memory-page--meter g)
                      '(:model "Grok 4.6" :effort "high" :tokens 163889 :window 256000
                        :pending :json-false :compacted :json-false)))
+      ;; agy's transcript has no window; the page fills the 1.0M /context shows.
       (puthash "ag" (cons "s2" '(:model "" :effort "" :tokens 189225 :window nil
                                  :pending :json-false :compacted :json-false))
                ghostherd-memory-page--meters)
       (should (equal (ghostherd-memory-page--meter a)
-                     '(:model "Gemini 3.8 Flash" :effort "medium" :tokens 189225 :window nil
+                     '(:model "Gemini 3.8 Flash" :effort "medium" :tokens 189225 :window 1000000
                        :pending :json-false :compacted :json-false))))))
 
 ;;; Switcher annotation and notes

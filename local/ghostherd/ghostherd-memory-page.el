@@ -378,12 +378,20 @@ its frame rather than a transcript the sidecar can read: (DISPLAY
       ('agy (ghostherd--agy-model-line screen))
       (_ nil))))
 
+(defconst ghostherd-memory-page--agy-window 1000000
+  "agy's context window, in tokens.  Antigravity 1.4.0's `/context' panel
+shows the same 1.0M window for every model it offers -- Gemini Flash/Pro,
+Gemini 4 Argon, Claude Opus -- so this is the one window the CLI reports,
+not a per-model table guessed here, and the number agy's transcript gives
+can fill a bar like grok's and claude's.")
+
 (defun ghostherd-memory-page--meter (s)
   "S's meter for the page, or false when there is nothing to show.
 The sidecar gives the context tokens and the window they sit in; for
 claude the model and effort come with it, for grok and agy off the
-screen (they keep neither in a transcript).  grok has a window, so a
-bar; agy has only the number."
+screen (they keep neither in a transcript).  agy's window is not in its
+transcript, but its `/context' reports a uniform 1.0M, so it gets a bar
+too."
   (let* ((m (cdr (gethash (ghostherd-session-name s) ghostherd-memory-page--meters)))
          (live (ghostherd-memory-page--screen-model s))
          (model (or (ghostherd-memory-page--str (plist-get m :model)) (car live)))
@@ -394,7 +402,9 @@ bar; agy has only the number."
       (list :model (or model "")
             :effort (or effort "")
             :tokens tokens
-            :window (and (natnump (plist-get m :window)) (plist-get m :window))
+            :window (or (and (natnump (plist-get m :window)) (plist-get m :window))
+                        (and tokens (eq (ghostherd-session-kind s) 'agy)
+                             ghostherd-memory-page--agy-window))
             :pending (if (eq (plist-get m :pending) t) t :json-false)
             :compacted (if (eq (plist-get m :compacted) t) t :json-false)))))
 
