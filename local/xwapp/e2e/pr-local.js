@@ -46,6 +46,11 @@ const files = (page) => page.$$eval(".tree-file", (bs) => bs.map((b) => b.getAtt
     const diff = await tab.$$eval(".file-diff .diff-row", (rs) => rs.map((r) => r.className.replace("diff-row ", "") + " " + r.querySelector(".code").textContent));
     check("a file changed, line by line", diff.includes("del def pay(order):") && diff.includes("add def pay(order, retries=3):") &&
       diff.includes("ctx     total = order.total"), diff);
+    // Syntax highlighting: the python is tokenised (highlight.js loaded from
+    // the vendored file, no CDN), and the line text is unchanged.
+    const hlKw = await tab.$$eval(".file-diff .diff-row .code .hljs-keyword", (ss) => ss.map((s) => s.textContent));
+    check("the diff is syntax-highlighted (python keywords tokenised)",
+      hlKw.includes("def") || hlKw.includes("return"), hlKw);
     await tab.tap('.tree-file[data-path="notes/retry.md"]');
     await sleep(200);
     check("a new one, whole", (await text(tab, ".file-diff")).includes("Retry a failed charge three times."));

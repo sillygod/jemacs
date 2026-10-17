@@ -620,6 +620,25 @@ button.linkish:hover { color: var(--accent); }
 .diff-row.ctx .code { color: #c9d1d9; }
 .diff-row.hunk { background: #12182a; }
 .diff-row.hunk .code { color: var(--meta); }
+/* Syntax highlighting (highlight.js) of the diff's code.  Tokens are spans
+   inside .code, so their colour wins over the add/del tint while untyped
+   text keeps it; chosen for contrast on the diff's dark backgrounds (the
+   page is a single dark theme).  If a light theme is ever added, the diff
+   backgrounds and these move together. */
+.file-diff .code .hljs-comment, .file-diff .code .hljs-quote { color: #8b949e; font-style: italic; }
+.file-diff .code .hljs-keyword, .file-diff .code .hljs-selector-tag,
+.file-diff .code .hljs-literal, .file-diff .code .hljs-section,
+.file-diff .code .hljs-doctag, .file-diff .code .hljs-name { color: #ff7b72; }
+.file-diff .code .hljs-string, .file-diff .code .hljs-regexp,
+.file-diff .code .hljs-meta .hljs-string { color: #a5d6ff; }
+.file-diff .code .hljs-number, .file-diff .code .hljs-symbol,
+.file-diff .code .hljs-bullet, .file-diff .code .hljs-attr,
+.file-diff .code .hljs-variable, .file-diff .code .hljs-template-variable,
+.file-diff .code .hljs-attribute { color: #79c0ff; }
+.file-diff .code .hljs-title, .file-diff .code .hljs-title.class_,
+.file-diff .code .hljs-title.function_, .file-diff .code .hljs-type { color: #d2a8ff; }
+.file-diff .code .hljs-built_in, .file-diff .code .hljs-params { color: #ffa657; }
+.file-diff .code .hljs-meta { color: #8b949e; }
 .pane-msg { padding: 24px 16px; }
 
 /* A checkout's review: a line picked takes a comment, kept under it

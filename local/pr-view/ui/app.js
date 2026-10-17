@@ -408,8 +408,43 @@
 
   // A file's lines; with NOTES -- a checkout's, which takes comments --
   // each line says where it is, and what is said of it follows it.
+  // Syntax highlighting of the diff's code, by file extension, with the
+  // vendored highlight.js.  Per line (a diff is line-oriented), on the one
+  // file shown at a time, and skipped on a very large file so the page
+  // stays responsive.  Unknown languages (and .el on a build without lisp)
+  // fall back to plain escaped text.
+  const HL_MAX = 2000;
+  const HL_EXT = {
+    py: "python", pyi: "python", js: "javascript", jsx: "javascript", mjs: "javascript",
+    cjs: "javascript", ts: "typescript", tsx: "typescript", json: "json", sh: "bash",
+    bash: "bash", zsh: "bash", css: "css", scss: "scss", less: "less", html: "xml",
+    htm: "xml", xml: "xml", svg: "xml", vue: "xml", go: "go", rs: "rust", c: "c", h: "c",
+    cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp", java: "java", kt: "kotlin",
+    rb: "ruby", php: "php", sql: "sql", swift: "swift", yml: "yaml", yaml: "yaml",
+    md: "markdown", lua: "lua", pl: "perl", pm: "perl", r: "r", cs: "csharp",
+    toml: "ini", ini: "ini", el: "lisp", elisp: "lisp", lisp: "lisp", clj: "lisp",
+  };
+  function hlLangFor(file) {
+    if (typeof hljs === "undefined" || !hljs) return null;
+    const n = (file.hunks || []).reduce((s, h) => s + h.lines.length, 0);
+    if (n > HL_MAX) return null;
+    const ext = (file.path.split("/").pop().split(".").pop() || "").toLowerCase();
+    const lang = HL_EXT[ext];
+    return lang && hljs.getLanguage(lang) ? lang : null;
+  }
+  function hlCode(text, lang) {
+    if (text === "") return "";
+    try {
+      return hljs.highlight(text, { language: lang, ignoreIllegal: true }).value;
+    } catch (e) {
+      return escapeHtml(text);
+    }
+  }
+
   function renderFileLines(file, notes) {
     const rows = [];
+    const lang = hlLangFor(file);
+    const code = lang ? (t) => hlCode(t, lang) : escapeHtml;
     (file.hunks || []).forEach((h) => {
       rows.push(
         '<div class="diff-row hunk"><span class="ln"></span><span class="ln"></span><span class="gutter"></span><span class="code">' +
@@ -433,7 +468,7 @@
             '</span><span class="gutter">' +
             sign +
             '</span><span class="code">' +
-            escapeHtml(ln.text) +
+            code(ln.text) +
             "</span></div>"
         );
         if (notes) rows.push(notes.after(side, at, ln.text));
