@@ -1181,6 +1181,39 @@ so; not a comment, or none, or too many, it is refused."
       (should-error (pr-view--local-review-text root (make-list 3 pr-view-tests--comment) nil)
                     :type 'user-error))))
 
+(ert-deftest pr-view-test-review-text-covers-a-range ()
+  "A comment can cover a range of lines: file:start-end (or lines L-E
+before, taken out), each quoted; a single line (no `end' over `line', or
+the older `code'-only shape) reads as before."
+  (pr-view-tests--repo root
+    (pr-view-tests--write root "a.txt" "x\n")
+    (pr-view-tests--git root "add" ".")
+    (pr-view-tests--git root "commit" "-q" "-m" "x")
+    (pr-view-tests--git root "checkout" "-q" "--detach")
+    ;; A range on the new side.
+    (should (string-match-p
+             "\n1\\. src/pay\\.py:2-4\n   > a = 1\n   > b = 2\n   > c = 3\n   Name them\\.\n"
+             (pr-view--local-review-text
+              root '(((path . "src/pay.py") (side . "new") (line . 2) (end . 4)
+                      (lines . ("a = 1" "b = 2" "c = 3")) (code . "a = 1") (text . "Name them.")))
+              nil)))
+    ;; A range on the old side.
+    (should (string-match-p
+             "\n1\\. src/pay\\.py, lines 1-2 before, taken out:\n   > old1\n   > old2\n   Why\\?\n"
+             (pr-view--local-review-text
+              root '(((path . "src/pay.py") (side . "old") (line . 1) (end . 2)
+                      (lines . ("old1" "old2")) (text . "Why?")))
+              nil)))
+    ;; end not over line, or no lines: a single line, as before.
+    (should (string-match-p
+             "\n1\\. a\\.txt:1\n   > x\n   Why\\?\n"
+             (pr-view--local-review-text root (list pr-view-tests--comment) nil)))
+    ;; A range whose `lines' is not a list of strings is refused.
+    (should-error (pr-view--local-review-text
+                   root '(((path . "a") (side . "new") (line . 1) (end . 3) (lines . [1 2]) (text . "x")))
+                   nil)
+                  :type 'user-error)))
+
 (ert-deftest pr-view-test-local-review-goes-to-whom-it-names ()
   "From the page, a review goes to the one it names, of those another
 package says may get one for that checkout -- and the page is told so,

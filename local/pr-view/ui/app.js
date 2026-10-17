@@ -1149,7 +1149,13 @@
 
   function rvSound(c) {
     return !!c && typeof c.path === "string" && c.path && (c.side === "new" || c.side === "old") &&
-      Number.isInteger(c.line) && c.line > 0 && typeof c.code === "string" && typeof c.text === "string" && c.text.trim();
+      Number.isInteger(c.line) && c.line > 0 && typeof c.code === "string" && typeof c.text === "string" && c.text.trim() &&
+      (c.end == null || (Number.isInteger(c.end) && c.end >= c.line)) &&
+      (c.codes == null || (Array.isArray(c.codes) && c.codes.every((s) => typeof s === "string")));
+  }
+  // A comment on more than one line.
+  function rvRange(c) {
+    return !!(c && c.end && c.end > c.line);
   }
 
   // What this browser kept of ROOT's review.  Storage may be refused --
@@ -1186,13 +1192,17 @@
     rv.open = null;
     const text = o ? (o.text || "").trim() : "";
     if (!text) return;
-    if (o.index < 0) rv.comments.push({ path: o.path, side: o.side, line: o.line, code: o.code, text: text });
-    else if (rv.comments[o.index]) rv.comments[o.index].text = text;
+    if (o.index < 0) {
+      const c = { path: o.path, side: o.side, line: o.line, code: o.code, text: text };
+      if (rvRange(o)) { c.end = o.end; c.codes = o.codes; }
+      rv.comments.push(c);
+    } else if (rv.comments[o.index]) rv.comments[o.index].text = text;
     rvSave();
   }
 
   function rvWhere(c) {
-    return c.side === "old" ? "Line " + c.line + " before, taken out" : "Line " + c.line;
+    const span = rvRange(c) ? "Lines " + c.line + "–" + c.end : "Line " + c.line;
+    return c.side === "old" ? span + " before, taken out" : span;
   }
 
   // The file's comments, each after its line -- the same number on the
@@ -1209,7 +1219,8 @@
     const at = (c, side, line, code) => c.side === side && c.line === line && c.code === code;
     return {
       on: recipients.length > 0,
-      here: (side, line, code) => !!o && at(o, side, line, code),
+      // The open comment marks every line it covers, a range or the one.
+      here: (side, line) => !!o && o.side === side && line >= o.line && line <= (o.end || o.line),
       after: (side, line, code) => {
         let html = "";
         mine.forEach((i) => {
@@ -1257,7 +1268,7 @@
     const o = rv.open;
     return (
       '<div class="rv-box"><div class="rv-where">' + escapeHtml(rvWhere(o)) + "</div>" +
-      '<textarea class="rv-input" rows="3" placeholder="Your comment on this line"></textarea>' +
+      '<textarea class="rv-input" rows="3" placeholder="Your comment on ' + (rvRange(o) ? "these lines" : "this line") + '"></textarea>' +
       '<div class="rv-acts"><button type="button" class="ghost" data-rv-act="cancel">Cancel</button>' +
       '<button type="button" class="primary" data-rv-act="save">' + (o.index < 0 ? "Add" : "Save") + "</button></div></div>"
     );
@@ -1292,7 +1303,7 @@
           const i = rv.comments.indexOf(c);
           return (
             '<div class="rv-item"><button type="button" class="rv-go" data-rv-go="' + i + '">' +
-            '<span class="rv-item-at">' + escapeHtml(c.path + ":" + c.line + (c.side === "old" ? " before" : "")) + "</span>" +
+            '<span class="rv-item-at">' + escapeHtml(c.path + ":" + (rvRange(c) ? c.line + "-" + c.end : "" + c.line) + (c.side === "old" ? " before" : "")) + "</span>" +
             '<span class="rv-item-text">' + escapeHtml(c.text) + "</span></button>" +
             '<span data-rv="' + i + '"><button type="button" class="linkish" data-rv-act="remove">Remove</button></span></div>'
           );
@@ -1355,6 +1366,33 @@
     rvPaint(true);
   }
 
+  // A range from a selection that spans two or more lines on one side (the
+  // first selected line's side): its first and last line and the lines
+  // between, as shown, to quote.  nil when the selection is within one line.
+  function rvRangeFromSelection() {
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount === 0) return null;
+    const touched = Array.from(app.querySelectorAll(".file-diff .diff-row[data-line]"))
+      .filter((r) => sel.containsNode(r, true));
+    if (touched.length < 2) return null;
+    const side = touched[0].getAttribute("data-side");
+    const same = touched.filter((r) => r.getAttribute("data-side") === side);
+    if (same.length < 2) return null;
+    const nums = same.map((r) => Number(r.getAttribute("data-line")));
+    const lo = Math.min.apply(null, nums);
+    const hi = Math.max.apply(null, nums);
+    const span = Array.from(app.querySelectorAll('.file-diff .diff-row[data-side="' + side + '"][data-line]'))
+      .filter((r) => { const n = Number(r.getAttribute("data-line")); return n >= lo && n <= hi; });
+    return { side: side, line: lo, end: hi, codes: span.map((r) => r.querySelector(".code").textContent) };
+  }
+
+  function rvOpenRange(rg) {
+    rvSettle();
+    rv.open = { path: selectedDiffPath, side: rg.side, line: rg.line, end: rg.end,
+                code: rg.codes[0], codes: rg.codes, text: "", was: "", index: -1 };
+    rvPaint(true);
+  }
+
   function rvGo(i) {
     rvSettle();
     const c = rv.comments[i];
@@ -1386,7 +1424,11 @@
       root: rv.root,
       to: to,
       note: rv.note,
-      comments: rvSorted().map((c) => ({ path: c.path, side: c.side, line: c.line, code: c.code, text: c.text })),
+      comments: rvSorted().map((c) => {
+        const o = { path: c.path, side: c.side, line: c.line, code: c.code, text: c.text };
+        if (rvRange(c)) { o.end = c.end; o.lines = c.codes; }
+        return o;
+      }),
     });
   }
 
@@ -1435,9 +1477,14 @@
     if (go) return rvGo(Number(go.getAttribute("data-rv-go")));
     const row = t.closest(".diff-row[data-line]");
     if (!row || !recipients.length) return;
-    // Text being selected, not a line picked.
     const sel = window.getSelection ? window.getSelection() : null;
-    if (sel && !sel.isCollapsed && String(sel).trim()) return;
+    if (sel && !sel.isCollapsed && String(sel).trim()) {
+      // A selection across two or more lines: comment on the range.  One
+      // within a single line is left alone, to be copied.
+      const rg = rvRangeFromSelection();
+      if (rg) { sel.removeAllRanges(); return rvOpenRange(rg); }
+      return;
+    }
     rvOpenAt(row);
   }
 

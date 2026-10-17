@@ -2,7 +2,7 @@
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SUITES = ["kit", "herd-chips", "herd-forms", "herd-relay", "herd-changes", "herd-foot", "herd-copy", "herd-meter", "herd-order", "herd-subs", "herd-subview", "herd-earlier", "herd-source", "apps-phone", "pr-local", "pr-review", "narrow", "cu-edit"];
+const SUITES = ["kit", "herd-chips", "herd-forms", "herd-relay", "herd-changes", "herd-foot", "herd-copy", "herd-meter", "herd-order", "herd-subs", "herd-subview", "herd-earlier", "herd-source", "apps-phone", "pr-local", "pr-review", "pr-range", "narrow", "cu-edit"];
 const names = process.argv.length > 2 ? process.argv.slice(2) : SUITES;
 const failed = [];
 for (const name of names) {

@@ -1970,55 +1970,84 @@ shows them."
   (if (> (length s) max) (concat (substring s 0 max) "…") s))
 
 (defun pr-view--review-comment (c)
-  "Comment C as the page sent it, checked: (PATH SIDE LINE CODE TEXT)."
+  "Comment C as the page sent it, checked: (PATH SIDE LINE END QUOTED TEXT).
+A single line has END equal to LINE and QUOTED one line; a range has END
+greater than LINE and QUOTED the lines it covers.  The page sends `end'
+and `lines' (the lines, same side) for a range; a single-line comment with
+just `code' -- the shape sent before ranges -- still works."
   (let* ((c (and (consp c) c))
          (path (alist-get 'path c))
          (side (alist-get 'side c))
          (line (alist-get 'line c))
+         (end (alist-get 'end c))
+         (lines (alist-get 'lines c))
          (code (alist-get 'code c))
-         (text (alist-get 'text c)))
+         (text (alist-get 'text c))
+         (end (if (and (natnump end) (natnump line) (> end line)) end line)))
     (unless (and (stringp path) (not (string-empty-p path)) (not (string-match-p "[\n\r]" path))
                  (member side '("new" "old"))
                  (natnump line) (> line 0)
+                 (natnump end) (>= end line)
+                 (or (null lines) (and (listp lines) (seq-every-p #'stringp lines)))
                  (or (null code) (stringp code))
                  (stringp text) (not (string-empty-p (string-trim text))))
       (user-error "Not a comment on a line: %S" c))
-    (list path side line
-          (pr-view--review-cut (replace-regexp-in-string "[\n\r]" " " (or code "")) pr-view--review-code-max)
+    (list path side line end
+          (if (and (> end line) (consp lines))
+              (mapcar (lambda (l) (pr-view--review-cut l pr-view--review-code-max)) lines)
+            (list (pr-view--review-cut (replace-regexp-in-string "[\n\r]" " " (or code "")) pr-view--review-code-max)))
           (pr-view--review-cut (string-trim text) pr-view--review-text-max))))
+
+(defun pr-view--review-body (comments)
+  "The numbered body for COMMENTS (each from `pr-view--review-comment'):
+`N. file:line' or `file:start-end' for a range, the quoted line(s), then
+the comment's text.  Shared by the checkout and the PR reviews."
+  (let ((n 0))
+    (mapconcat
+     (pcase-lambda (`(,path ,side ,line ,end ,quoted ,text))
+       (concat "\n" (format "%d. " (cl-incf n))
+               (if (equal side "new")
+                   (if (> end line) (format "%s:%d-%d" path line end) (format "%s:%d" path line))
+                 (if (> end line)
+                     (format "%s, lines %d-%d before, taken out:" path line end)
+                   (format "%s, line %d before, taken out:" path line)))
+               "\n"
+               (mapconcat (lambda (cd) (concat "   " (if (string-blank-p cd) "(an empty line)" (concat "> " cd))))
+                          quoted "\n")
+               "\n"
+               (mapconcat (lambda (l) (if (string-empty-p l) "" (concat "   " l)))
+                          (split-string text "\n") "\n")
+               "\n"))
+     comments "")))
+
+(defun pr-view--review-note (note)
+  "NOTE after a review's comments, trimmed and cut, or empty."
+  (let ((note (if (stringp note) (string-trim note) "")))
+    (if (string-empty-p note) ""
+      (concat "\n" (pr-view--review-cut note pr-view--review-text-max) "\n"))))
+
+(defun pr-view--review-checked (comments)
+  "COMMENTS checked, as `pr-view--review-comment' makes them; refused when
+there are none or too many."
+  (let ((out (mapcar #'pr-view--review-comment comments)))
+    (unless out (user-error "No comments to send"))
+    (when (> (length out) pr-view--review-max)
+      (user-error "At most %d comments go in one review" pr-view--review-max))
+    out))
 
 (defun pr-view--local-review-text (root comments note)
   "What is sent for COMMENTS on checkout ROOT's changes, NOTE after them.
 COMMENTS as the page sends them: each an alist of `path', `side' --
 \"new\" for a line the changes have, \"old\" for one they took out --
-`line', its number on that side, `code', the line as the page showed
-it, and `text'."
-  (let* ((comments (mapcar #'pr-view--review-comment comments))
-         (branch (string-trim (or (pr-view--local-git root "rev-parse" "--abbrev-ref" "HEAD") "")))
-         (note (if (stringp note) (string-trim note) ""))
-         (n 0))
-    (unless comments (user-error "No comments to send"))
-    (when (> (length comments) pr-view--review-max)
-      (user-error "At most %d comments go in one review" pr-view--review-max))
+`line', its number on that side, `code', the line as the page showed it,
+`text', and, for a range, `end' and the `lines' it covers."
+  (let ((comments (pr-view--review-checked comments))
+        (branch (string-trim (or (pr-view--local-git root "rev-parse" "--abbrev-ref" "HEAD") ""))))
     (concat
      (format "Comments on what is not committed in %s%s, each on a line of its diff against HEAD:\n"
              root (if (member branch '("" "HEAD")) "" (format " (branch %s)" branch)))
-     (mapconcat
-      (pcase-lambda (`(,path ,side ,line ,code ,text))
-        (concat "\n" (format "%d. " (cl-incf n))
-                (if (equal side "new")
-                    (format "%s:%d" path line)
-                  (format "%s, line %d before, taken out:" path line))
-                "\n   "
-                (if (string-blank-p code) "(an empty line)" (concat "> " code))
-                "\n"
-                (mapconcat (lambda (l) (if (string-empty-p l) "" (concat "   " l)))
-                           (split-string text "\n") "\n")
-                "\n"))
-      comments "")
-     (if (string-empty-p note)
-         ""
-       (concat "\n" (pr-view--review-cut note pr-view--review-text-max) "\n")))))
+     (pr-view--review-body comments)
+     (pr-view--review-note note))))
 
 (defun pr-view--local-review (intent)
   "Send the review INTENT carries, of a checkout's changes, to the one it
