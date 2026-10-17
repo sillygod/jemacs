@@ -9240,6 +9240,51 @@ when the footer no longer shows it."
       (should-not (ghostherd-usage-session-used-up s))
       (should-not (ghostherd-usage-session-used-up-text s)))))
 
+(ert-deftest ghostherd-test-usage-agy-screen-overridden-by-poll ()
+  "`· AI: Out of credits' is agy's paid-overage note, not the model quota:
+a fresh poll showing the agent's own model group with quota overrides it,
+so no relay is offered when the model really has quota.  The footer still
+counts when the poll has no reading to go on (c9a18d0), and a poll that is
+too old, or only covers a different group, does not override it."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-usage--cache nil)
+          (ghostherd--screens (make-hash-table :test 'equal))
+          (s (ghostherd-tests--session :name "ja" :kind 'agy :state 'idle :backend 'fake)))
+      ;; agy-.emacs.d-2's live state: footer out of credits, model Gemini 4
+      ;; Argon, and a poll from a minute ago with the g4 group full.
+      (puthash "ja" (concat "⏺ some work\n────\n>\n────\n"
+                            "? for shortcuts    accept-edits · Gemini 4 Argon · medium · AI: Out of credits")
+               ghostherd--screens)
+      (setf (alist-get 'agy ghostherd-usage--cache)
+            (list :windows (list (list :label "g4-5h" :remaining 100 :resets-at nil)
+                                 (list :label "g4-wk" :remaining 100 :resets-at nil))
+                  :fetched (float-time)))
+      ;; The poll says the g4 group is full, so the footer is overridden.
+      (should-not (ghostherd-usage-session-used-up s))
+      (should-not (ghostherd-usage-session-used-up-text s))
+      ;; No poll reading at all: the live footer catch still fires.
+      (setq ghostherd-usage--cache nil)
+      (should (ghostherd-usage-session-used-up s))
+      (should (equal (ghostherd-usage-session-used-up-text s) "its agy is out of AI credits"))
+      ;; A reading too old to trust does not override the footer.
+      (setf (alist-get 'agy ghostherd-usage--cache)
+            (list :windows (list (list :label "g4-wk" :remaining 100 :resets-at nil))
+                  :fetched (- (float-time) (1+ ghostherd-usage-trusted-for))))
+      (should (ghostherd-usage-session-used-up s))
+      ;; A fresh reading of a DIFFERENT group (gem) is no reading of g4.
+      (setf (alist-get 'agy ghostherd-usage--cache)
+            (list :windows (list (list :label "gem-wk" :remaining 100 :resets-at nil))
+                  :fetched (float-time)))
+      (should (ghostherd-usage-session-used-up s))
+      ;; The g4 group spent is still used up -- the poll's own catch wins
+      ;; over any footer reasoning.
+      (setf (alist-get 'agy ghostherd-usage--cache)
+            (list :windows (list (list :label "g4-wk" :remaining 0
+                                       :resets-at (+ (float-time) 600000)))
+                  :fetched (float-time)))
+      (should (ghostherd-usage-session-used-up s))
+      (should (string-match-p "g4-wk" (ghostherd-usage-session-used-up-text s))))))
+
 (ert-deftest ghostherd-test-relay-request-guards ()
   "`herd relay's guardrails: only a project's lead, only its own project's
 agents, not itself, not one (or itself) already in a relay; and when it
@@ -9367,6 +9412,35 @@ once for that window: in the log, the echo area and a push."
         (ghostherd-tests--used-up 'agy)
         (ghostherd--set-state (ghostherd-get "qa") 'idle)
         (should (= (length pushed) 1))))))
+
+(ert-deftest ghostherd-test-relay-offer-forgotten-when-quota-returns ()
+  "Once an agent is no longer used up, settling forgets its relay offer, so
+a later, real used-up offers again rather than being taken for the one
+already sent."
+  (ghostherd-tests--relaying
+    (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake))
+          pushed)
+      (cl-letf (((symbol-function 'ghostherd--push)
+                 (lambda (kind s &rest _)
+                   (when (eq kind 'used-up) (push (ghostherd-session-name s) pushed))))
+                ((symbol-function 'ghostherd--maybe-notify-state) #'ignore))
+        (ghostherd-tests--used-up 'claude)
+        (ghostherd--set-state rd 'working)
+        (ghostherd--set-state rd 'idle)
+        (should (= (length pushed) 1))
+        (should (gethash (ghostherd-session-id rd) ghostherd--relay-offered))
+        ;; Its quota comes back: settling now forgets the offer, and the
+        ;; card (which reads the live used-up) clears with it.
+        (setq ghostherd-usage--cache nil)
+        (ghostherd--set-state rd 'working)
+        (ghostherd--set-state rd 'idle)
+        (should (= (length pushed) 1))
+        (should-not (gethash (ghostherd-session-id rd) ghostherd--relay-offered))
+        ;; Out again: offered afresh, not suppressed by the stale memo.
+        (ghostherd-tests--used-up 'claude)
+        (ghostherd--set-state rd 'working)
+        (ghostherd--set-state rd 'idle)
+        (should (= (length pushed) 2))))))
 
 (ert-deftest ghostherd-test-relay-a-link-another-cli-left-is-not-the-heirs ()
   "A hook of the killed claude reporting late under rd's name: the grok

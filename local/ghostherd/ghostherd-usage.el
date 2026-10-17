@@ -414,34 +414,80 @@ real sample of theirs."
         ('agy (ghostherd-usage--agy-screen-limited screen))
         (_ nil)))))
 
+(defun ghostherd-usage--session-has-quota (session)
+  "Non-nil when a fresh usage reading covers SESSION's own model group
+\(agy) or its CLI and shows quota left there.
+
+agy's footer `· AI: Out of credits' is its paid Google AI credits -- the
+overage past the model quota -- not the quota itself: a fresh session
+with the quota full shows it and its requests still go through.  So that
+line must not, on its own, mark a session used up when the poll can see
+the model's group still has quota.  Nil when no fresh reading covers the
+group (none yet, too old to trust, or a different group): then the live
+footer catch is the only signal left."
+  (let* ((kind (ghostherd-session-kind session))
+         (pl (alist-get kind ghostherd-usage--cache))
+         (fetched (plist-get pl :fetched))
+         (now (float-time))
+         (model (and (eq kind 'agy) (ghostherd-usage--agy-session-model session)))
+         (group (and model (ghostherd-usage--agy-group-prefix model))))
+    (when (and (numberp fetched) (< (- now fetched) ghostherd-usage-trusted-for)
+               (or (not (eq kind 'agy)) group))
+      (let ((wins (seq-filter
+                   (lambda (w)
+                     (or (not group)
+                         (let ((label (plist-get w :label)))
+                           (and (stringp label)
+                                (string-prefix-p (concat group "-") label)))))
+                   (plist-get pl :windows))))
+        (and wins
+             (seq-every-p (lambda (w)
+                            (let ((left (plist-get w :remaining))
+                                  (resets (plist-get w :resets-at)))
+                              (and (numberp left)
+                                   (or (>= left 1)
+                                       (and (numberp resets) (<= resets now))))))
+                          wins))))))
+
 (defun ghostherd-usage-session-used-up (session)
   "The window of SESSION's usage that is used up, by its own model's group
 when its CLI splits quota by model (agy) -- so an agent on a group that
 has quota is not called used up because a different group is spent.  Nil
 when an agy's model cannot be read: better no relay than a wrong one.
 
-Also used up the moment the CLI's own status line says it is out of
-credits / rate limited, without waiting for the usage poll; that reads as
-a window with no label, carrying the CLI's words as :reason."
-  (let ((kind (ghostherd-session-kind session)))
-    (or (if (eq kind 'agy)
-            (when-let* ((model (ghostherd-usage--agy-session-model session)))
-              (ghostherd-usage-used-up kind model))
-          (ghostherd-usage-used-up kind))
-        (when-let* ((reason (ghostherd-usage--screen-limited session)))
-          (list :label "" :remaining 0 :resets-at nil :reason reason)))))
+The usage poll is the authority.  When the poll says this agent's own
+group is spent, that is the catch.  When it says the group still has
+quota, it is not used up -- even if the CLI's footer shows it is out of
+paid credits, which is agy's overage, separate from the model quota.
+Only when the poll has no reading to go on does the CLI's own status line
+stand in, without waiting for the next poll (c9a18d0): that reads as a
+window with no label, carrying the CLI's words as :reason."
+  (let* ((kind (ghostherd-session-kind session))
+         (poll (if (eq kind 'agy)
+                   (when-let* ((model (ghostherd-usage--agy-session-model session)))
+                     (ghostherd-usage-used-up kind model))
+                 (ghostherd-usage-used-up kind))))
+    (cond
+     (poll poll)
+     ((ghostherd-usage--session-has-quota session) nil)
+     ((when-let* ((reason (ghostherd-usage--screen-limited session)))
+        (list :label "" :remaining 0 :resets-at nil :reason reason))))))
 
 (defun ghostherd-usage-session-used-up-text (session)
   "SESSION's usage used up, in words, by its own model's group for agy, or
-the CLI's own words when its status line says so live; nil when not, or
-when an agy's model cannot be read."
-  (let ((kind (ghostherd-session-kind session)))
-    (or (if (eq kind 'agy)
-            (when-let* ((model (ghostherd-usage--agy-session-model session)))
-              (ghostherd-usage-used-up-text kind model))
-          (ghostherd-usage-used-up-text kind))
-        (when-let* ((reason (ghostherd-usage--screen-limited session)))
-          (format "its %s is %s" kind reason)))))
+the CLI's own words when its status line says so live and the poll has no
+reading to contradict it; nil when not, or when an agy's model cannot be
+read.  Mirrors `ghostherd-usage-session-used-up'."
+  (let* ((kind (ghostherd-session-kind session))
+         (poll (if (eq kind 'agy)
+                   (when-let* ((model (ghostherd-usage--agy-session-model session)))
+                     (ghostherd-usage-used-up-text kind model))
+                 (ghostherd-usage-used-up-text kind))))
+    (cond
+     (poll poll)
+     ((ghostherd-usage--session-has-quota session) nil)
+     ((when-let* ((reason (ghostherd-usage--screen-limited session)))
+        (format "its %s is %s" kind reason))))))
 
 (defun ghostherd-usage--entry-string (kind compact)
   (let* ((pl (alist-get kind ghostherd-usage--cache))

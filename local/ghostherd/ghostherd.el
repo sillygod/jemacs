@@ -5853,21 +5853,29 @@ LEAD when it leads its project: it hears what a lead hears first."
 (defun ghostherd--relay-offer (session old new)
   "SESSION stopped working, from OLD to NEW, with its CLI's usage used
 up: say so, and that a relay would carry its work on -- once for each
-time its usage runs out."
-  (when-let* (((eq old 'working))
-              ((memq new '(idle blocked done)))
-              (kind (ghostherd-session-kind session))
-              (window (ghostherd-usage-session-used-up session))
-              (to (ghostherd-relay-default-kind session))
-              ((not (eq to kind)))
-              (key (list kind (plist-get window :label) (plist-get window :resets-at)))
-              ((not (equal (gethash (ghostherd-session-id session) ghostherd--relay-offered) key))))
-    (puthash (ghostherd-session-id session) key ghostherd--relay-offered)
-    (let ((why (ghostherd-usage-session-used-up-text session)))
-      (ghostherd--log-add session 'life (format "stopped: %s.  A relay hands its work to %s" why to))
-      (message "ghostherd: %s stopped: %s -- M-x ghostherd-relay hands its work to %s"
-               (ghostherd-session-name session) why to)
-      (ghostherd--push 'used-up session :from (symbol-name kind) :to (symbol-name to) :reason why))))
+time its usage runs out.
+
+When it settles and is no longer used up, the offer is forgotten.  The
+card's relay button reads the live used-up each poll, so it clears on its
+own; this is for the push memo, so a later, real used-up offers again
+rather than being taken for the one already sent."
+  (when (memq new '(idle blocked done))
+    (let* ((id (ghostherd-session-id session))
+           (kind (ghostherd-session-kind session))
+           (window (ghostherd-usage-session-used-up session)))
+      (if (not window)
+          (remhash id ghostherd--relay-offered)
+        (when-let* (((eq old 'working))
+                    (to (ghostherd-relay-default-kind session))
+                    ((not (eq to kind)))
+                    (key (list kind (plist-get window :label) (plist-get window :resets-at)))
+                    ((not (equal (gethash id ghostherd--relay-offered) key))))
+          (puthash id key ghostherd--relay-offered)
+          (let ((why (ghostherd-usage-session-used-up-text session)))
+            (ghostherd--log-add session 'life (format "stopped: %s.  A relay hands its work to %s" why to))
+            (message "ghostherd: %s stopped: %s -- M-x ghostherd-relay hands its work to %s"
+                     (ghostherd-session-name session) why to)
+            (ghostherd--push 'used-up session :from (symbol-name kind) :to (symbol-name to) :reason why)))))))
 
 (add-hook 'ghostherd-state-change-hook #'ghostherd--relay-offer)
 
