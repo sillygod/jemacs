@@ -1493,14 +1493,26 @@ send the comments to the agent doing the work, with syntax to read it by.
   branch's agent first, then the lead, then a lead to start, the repo
   matched to a project by its remote).  e2e (pr-pr-review) + the never-POST
   guard broken on purpose
+- [X] Which agent changed which file, marked on the diff's file tree, both
+  views, desk and phone: the sidecar reads the files each conversation
+  edited from its transcript tail (a confirmed edit tool's path argument),
+  returned by a new `herd_edits' RPC; the Emacs side caches it like the
+  meters/subs (`--edits-look', --ask-on-change + a transcript signature,
+  no re-read per poll) and builds a per-file editor map -- the agents of
+  the checkout, or of the PR's head branch, each path relative to its own
+  checkout so a worktree's edits never mark the main tree.  Edit tools
+  confirmed from real transcripts on this machine: claude Edit/Write
+  (file_path), grok search_replace/write (file_path), agy write_to_file /
+  replace_file_content / multi_replace_file_content (TargetFile, its
+  double-encoded value peeled); claude's MultiEdit and NotebookEdit are in
+  no transcript here, so they are left out.  pytest + ERT + e2e
+  (pr-editors), each broken on purpose
 - [X] Roadmap: a duplicate Phase 3.26 renumbered to 3.28; Phase 3.24's agy
   respawn item marked done (8311250)
 
 ** What is left
 
-- [ ] Which agent changed which file, marked on the diff's file tree, from
-  the Edit/Write/MultiEdit (and grok's and agy's) in each agent's
-  conversation, cached like the meters (its own ask next)
+- Nothing: the batch is shipped.
 
 ** Deliberately not done
 
