@@ -3964,6 +3964,42 @@ at once when its taker already sits idle."
       (ghostherd--herd-take-links '((:session "claude-a" :cli "claude" :conversation "")))
       (should-not (ghostherd-session-conversation s)))))
 
+(ert-deftest ghostherd-test-respawn-resends-agy-lead-role ()
+  "A lead on a CLI that carries its role in the first message (agy) is sent
+it again on a cold respawn -- a new conversation would otherwise come up
+without it.  Not on a continuing respawn (that conversation has it), not
+for a CLI that carries the role in its args (claude), not for a non-lead."
+  (ghostherd-tests--with-herd ((ghostherd--roles (make-hash-table :test 'equal)))
+    (let (prompted)
+      (cl-letf (((symbol-function 'ghostherd-spawn)
+                 (lambda (kind &rest plist)
+                   (ghostherd-tests--session :name (plist-get plist :name)
+                                             :kind kind :backend 'fake)))
+                ((symbol-function 'ghostherd--when-ready)
+                 (lambda (_s fn &rest _) (funcall fn)))
+                ((symbol-function 'ghostherd-prompt)
+                 (lambda (s text &rest _) (setq prompted (cons s text)))))
+        (cl-flet ((lead (name kind)
+                    (let ((s (ghostherd-tests--session :name name :kind kind :backend 'fake)))
+                      (puthash (ghostherd-session-id s) "lead" ghostherd--roles)
+                      s)))
+          ;; agy lead, cold respawn: the role is re-sent as the first message.
+          (setq prompted nil)
+          (ghostherd-respawn (lead "la" 'agy) nil)
+          (should (equal (cdr prompted) ghostherd--lead-role))
+          ;; agy lead, continuing respawn: the conversation has it, not re-sent.
+          (setq prompted nil)
+          (ghostherd-respawn (lead "lb" 'agy) t)
+          (should-not prompted)
+          ;; claude lead carries the role in its args, not a message.
+          (setq prompted nil)
+          (ghostherd-respawn (lead "lc" 'claude) nil)
+          (should-not prompted)
+          ;; agy, not a lead: nothing to re-send.
+          (setq prompted nil)
+          (ghostherd-respawn (ghostherd-tests--session :name "wk" :kind 'agy :backend 'fake) nil)
+          (should-not prompted))))))
+
 (ert-deftest ghostherd-test-respawn-resumes-its-own-conversation ()
   "`--continue' takes the newest conversation in the directory -- with two
 claudes in one project, possibly the other's.  The hooks know which."

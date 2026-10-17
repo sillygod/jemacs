@@ -2374,7 +2374,20 @@ one, and otherwise prompts."
     ;; Free both the buffer name and the registry id before respawning:
     ;; `ghostherd-spawn' refuses to clobber an existing buffer.
     (ghostherd-kill session t)
-    (apply #'ghostherd-spawn kind (plist-put (copy-sequence recipe) :args args))))
+    (let ((heir (apply #'ghostherd-spawn kind (plist-put (copy-sequence recipe) :args args))))
+      ;; A lead on a CLI that takes no role flag (agy) carries its role in
+      ;; the first message, not its args, so a fresh respawn -- a new, cold
+      ;; conversation -- would come up without it.  Re-send it once it is
+      ;; ready.  A continuing respawn resumes the conversation that already
+      ;; has it, and a relay carries its own handoff with the role, so
+      ;; neither reaches here: only a cold respawn of such a lead re-sends.
+      (when (and heir
+                 (equal (plist-get recipe :role) "lead")
+                 (not (ghostherd--lead-args kind))
+                 (not exact) (not continue))
+        (ghostherd--when-ready heir
+                               (lambda () (ghostherd-prompt heir ghostherd--lead-role))))
+      heir)))
 
 ;;;###autoload
 (defun ghostherd-new (&optional kind)
