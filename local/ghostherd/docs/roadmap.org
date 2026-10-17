@@ -1470,6 +1470,45 @@ each other, each in its own git worktree on its own branch.
 - A full copy of node_modules when copy-on-write is unavailable: the disk
   is not big, so it is skipped and said so instead
 
+* Phase 3.29 — Review on the diff: PR comments, ranges, highlighting  *(this tree)*
+
+Goal: review a diff -- a pull request's or a checkout's -- in pr-view and
+send the comments to the agent doing the work, with syntax to read it by.
+
+** What shipped
+
+- [X] Syntax highlighting of the diff, PR and checkout, desk and phone:
+  highlight.js vendored locally (no CDN, the strict CSP kept) + the lisp
+  grammar; the shared renderer colours each line by the file's language,
+  skipped past 2000 lines so a big diff stays responsive.  e2e (pr-local)
+  + broken on purpose
+- [X] A review comment can cover a range of lines, both views, desk and
+  phone: select the lines and click; the message cites file:start-end and
+  quotes them.  `pr-view--review-comment'/`--local-review-text' take `end'
+  and `lines', backward compatible.  ERT + e2e (pr-range) broken on purpose
+- [X] Comments on a PR's diff go to the agent on its head branch, never to
+  the forge: the rv* review flow generalized to the current diff;
+  `pr-view--pr-review' reuses the one recipients machinery
+  (`ghostherd-memory-page--review-recipients' with a PR context -- the
+  branch's agent first, then the lead, then a lead to start, the repo
+  matched to a project by its remote).  e2e (pr-pr-review) + the never-POST
+  guard broken on purpose
+- [X] Roadmap: a duplicate Phase 3.26 renumbered to 3.28; Phase 3.24's agy
+  respawn item marked done (8311250)
+
+** What is left
+
+- [ ] Which agent changed which file, marked on the diff's file tree, from
+  the Edit/Write/MultiEdit (and grok's and agy's) in each agent's
+  conversation, cached like the meters (its own ask next)
+
+** Deliberately not done
+
+- Posting a PR review or inline comment to GitHub/Bitbucket: the comments
+  go to a herd agent only; nothing is ever written to the forge
+- A second recipients mechanism for PRs: the checkout's is reused, the
+  order flipped so the branch's agent comes first
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
