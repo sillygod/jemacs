@@ -1332,13 +1332,16 @@ lead handoff, for every agent.
   the checkout, the size, go on or wait, what is not a transcript, the
   link, the push and its tap), 17 ERT, 11 WebKit checks of the page's
   relay; 74 guards broken on purpose, each caught
-- [X] Out of credits / rate limit caught live from the agent's own status
-  line, not only on the 90-second usage poll: agy's footer =· AI: Out of
-  credits= reads as used up at once --- the card's Relay, the =used-up=
-  push --- through the same used-up path, confined to the footer so the
-  same words quoted in the conversation do not trigger, per session,
-  clearing when the footer does.  Against agy 1.4.0's real screen; 1 ERT
-  broken on purpose
+- [X] agy's =· AI: Out of credits= footer is its paid Google AI credits ---
+  the overage past the model quota, a separate bucket --- not the quota: a
+  fresh session on a full quota shows that line and its requests still go
+  through.  So used-up is the per-group usage poll (feadc38) alone; the
+  footer is not read for it (a signal shown to mean something else should
+  decide nothing).  c9a18d0 first took the footer to mean out of quota and
+  offered a relay on a session that had quota; reverted once a scratch agy
+  proved the line is the overage.  The =used-up= push memo is forgotten
+  once an agent is no longer used up, so a later real one offers again; the
+  card's button reads the live used-up each poll.  1 ERT broken on purpose
 - [X] An agent relaying another --- a lead whose rd is used up --- through
   =herd relay TARGET [KIND] [--reason TEXT]=: the same commands queue to
   =ghostherd-relay=, guarded by who asks (a project's lead, its own
@@ -1348,9 +1351,12 @@ lead handoff, for every agent.
 
 ** What is left
 
-- [ ] The live catch for claude and grok too: a real rate-limited screen of
-  each, to anchor the match to the status line it is drawn on (agy done
-  from its footer; their binaries are compiled, no sample to hand)
+- [ ] A confirmed live status string for being out of model quota, for any
+  CLI, to catch it faster than the usage poll: a real rate-limited screen
+  to anchor the match to the status line it is drawn on.  None yet --- agy's
+  =· AI: Out of credits= turned out to be the paid overage, not the quota;
+  claude's and grok's binaries are compiled, no rate-limited sample to
+  hand.  Until then, used-up is the usage poll alone
 - [ ] Relay a real agent at a real limit: whether a brief from a long
   day's transcript is the right sixteen thousand characters
 

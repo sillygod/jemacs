@@ -617,11 +617,16 @@ reads (=ghostherd-usage-used-up=: under 1% left in a window not yet
 reset, read in the last two hours; for agy, by the group the agent's own
 model belongs to, so an agent on a group with quota is not called used
 up because another is spent).  When an agent stops working with its CLI
-used up --- or the moment its own status line says so, agy's =· AI: Out
-of credits= footer caught live rather than on the 90-second poll --- the
-herd says so once for that window --- in the log, the echo area, a
-=used-up= push --- and the herd page puts =Relay to grok= first on its
-row.
+used up, the herd says so once for that window --- in the log, the echo
+area, a =used-up= push --- and the herd page puts =Relay to grok= first
+on its row.
+
+Only the poll decides this.  agy's footer =· AI: Out of credits= is its
+paid Google AI credits --- the overage past the model quota, a separate
+bucket --- not the quota: a fresh session with the quota full shows that
+line and its requests still go through, so it is not read as used up.  No
+CLI has a confirmed status string for being out of quota live yet, so the
+screen is not read for one.
 
 A lead can relay a stuck or spent worker from the CLI, too: =herd relay
 TARGET [KIND] [--reason TEXT]= hands its work to a fresh agent through

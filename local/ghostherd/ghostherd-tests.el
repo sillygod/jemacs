@@ -9214,70 +9214,30 @@ with its one group is unchanged."
         (ghostherd-tests--used-up 'grok)
         (should (ghostherd-usage-session-used-up g))))))
 
-(ert-deftest ghostherd-test-usage-agy-screen-out-of-credits ()
-  "agy out of credits is caught the moment its footer says so -- its status
-line ending `· AI: Out of credits' -- without the usage poll; the same
-words quoted in the conversation above do not trigger it, and it clears
-when the footer no longer shows it."
+(ert-deftest ghostherd-test-usage-agy-footer-credits-not-used-up ()
+  "agy's `· AI: Out of credits' footer is its paid overage, not the model
+quota: a fresh session with the quota full shows it and its requests still
+go through, so it never, on its own, marks a session used up.  Only the
+per-group usage poll (feadc38) decides -- used up when the agent's own
+group is spent, not when it has quota, whatever the footer says and
+whether or not the poll has a reading."
   (ghostherd-tests--with-herd ()
     (let ((ghostherd-usage--cache nil)
           (ghostherd--screens (make-hash-table :test 'equal))
           (s (ghostherd-tests--session :name "ja" :kind 'agy :state 'idle :backend 'fake)))
-      ;; The CLI's own footer says it: used up, in the CLI's words.
-      (puthash "ja" (concat "⏺ some work\n"
-                            "⚠ Your AI credits balance is too low to continue.\n"
-                            "────\n>\n────\n"
-                            "? for shortcuts    accept-edits · Gemini 4 Argon · medium · AI: Out of credits")
-               ghostherd--screens)
-      (should (ghostherd-usage-session-used-up s))
-      (should (equal (ghostherd-usage-session-used-up-text s) "its agy is out of AI credits"))
-      ;; The very same words quoted in the conversation, footer normal: no.
-      (puthash "ja" (concat "user: the footer said \"Gemini 4 Argon · medium · AI: Out of credits\"\n"
-                            "⏺ noted; it was out of credits then\n"
-                            "────\n>\n────\n"
-                            "? for shortcuts    accept-edits · Gemini 4 Argon · medium")
-               ghostherd--screens)
-      (should-not (ghostherd-usage-session-used-up s))
-      (should-not (ghostherd-usage-session-used-up-text s)))))
-
-(ert-deftest ghostherd-test-usage-agy-screen-overridden-by-poll ()
-  "`· AI: Out of credits' is agy's paid-overage note, not the model quota:
-a fresh poll showing the agent's own model group with quota overrides it,
-so no relay is offered when the model really has quota.  The footer still
-counts when the poll has no reading to go on (c9a18d0), and a poll that is
-too old, or only covers a different group, does not override it."
-  (ghostherd-tests--with-herd ()
-    (let ((ghostherd-usage--cache nil)
-          (ghostherd--screens (make-hash-table :test 'equal))
-          (s (ghostherd-tests--session :name "ja" :kind 'agy :state 'idle :backend 'fake)))
-      ;; agy-.emacs.d-2's live state: footer out of credits, model Gemini 4
-      ;; Argon, and a poll from a minute ago with the g4 group full.
       (puthash "ja" (concat "⏺ some work\n────\n>\n────\n"
                             "? for shortcuts    accept-edits · Gemini 4 Argon · medium · AI: Out of credits")
                ghostherd--screens)
-      (setf (alist-get 'agy ghostherd-usage--cache)
-            (list :windows (list (list :label "g4-5h" :remaining 100 :resets-at nil)
-                                 (list :label "g4-wk" :remaining 100 :resets-at nil))
-                  :fetched (float-time)))
-      ;; The poll says the g4 group is full, so the footer is overridden.
+      ;; No poll reading at all: the footer does not stand in for one.
       (should-not (ghostherd-usage-session-used-up s))
       (should-not (ghostherd-usage-session-used-up-text s))
-      ;; No poll reading at all: the live footer catch still fires.
-      (setq ghostherd-usage--cache nil)
-      (should (ghostherd-usage-session-used-up s))
-      (should (equal (ghostherd-usage-session-used-up-text s) "its agy is out of AI credits"))
-      ;; A reading too old to trust does not override the footer.
+      ;; A fresh poll with the g4 group full: not used up, footer ignored.
       (setf (alist-get 'agy ghostherd-usage--cache)
             (list :windows (list (list :label "g4-wk" :remaining 100 :resets-at nil))
-                  :fetched (- (float-time) (1+ ghostherd-usage-trusted-for))))
-      (should (ghostherd-usage-session-used-up s))
-      ;; A fresh reading of a DIFFERENT group (gem) is no reading of g4.
-      (setf (alist-get 'agy ghostherd-usage--cache)
-            (list :windows (list (list :label "gem-wk" :remaining 100 :resets-at nil))
                   :fetched (float-time)))
-      (should (ghostherd-usage-session-used-up s))
-      ;; The g4 group spent is still used up -- the poll's own catch wins
-      ;; over any footer reasoning.
+      (should-not (ghostherd-usage-session-used-up s))
+      (should-not (ghostherd-usage-session-used-up-text s))
+      ;; The g4 group spent: used up -- by the poll, not the footer.
       (setf (alist-get 'agy ghostherd-usage--cache)
             (list :windows (list (list :label "g4-wk" :remaining 0
                                        :resets-at (+ (float-time) 600000)))
