@@ -9606,6 +9606,37 @@ unmerged or unclean one is kept, and `ghostherd-worktree-forget' removes it
               (should (file-directory-p (plist-get wt :path)))
               (should (branch-p "dirty")))))))))
 
+(ert-deftest ghostherd-test-worktree-cleanup-ignores-carried-deps ()
+  "A carried-in dependency -- a venv symlink a `.venv/' ignore does not
+match, so git calls it untracked -- does not keep a merged worktree from
+cleanup; real uncommitted work still does."
+  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (with-temp-file (expand-file-name ".gitignore" repo) (insert ".venv/\nnode_modules/\n"))
+      (funcall git repo "add" ".gitignore")
+      (funcall git repo "commit" "-q" "-m" "ignore")
+      (make-directory (expand-file-name ".venv" repo) t)
+      (let ((ghostherd-worktree-root (concat base "trees/"))
+            (ghostherd-worktree-deps '((".venv" . symlink))))
+        ;; Merged worktree with a carried-in venv symlink: removed.
+        (let ((wt (ghostherd--worktree-create repo "dep"))
+              (s (ghostherd-tests--session :name "dep" :kind 'claude :project repo)))
+          (make-symbolic-link (expand-file-name ".venv" repo)
+                              (directory-file-name (expand-file-name ".venv" (plist-get wt :path))))
+          (should-not (ghostherd--worktree-clean-p (plist-get wt :path)))
+          (should (ghostherd--worktree-clean-p (plist-get wt :path) '(".venv")))
+          (puthash "dep" wt ghostherd--worktrees)
+          (ghostherd--worktree-cleanup s)
+          (should-not (file-directory-p (plist-get wt :path))))
+        ;; A real untracked work file still keeps it.
+        (let ((wt (ghostherd--worktree-create repo "work"))
+              (s (ghostherd-tests--session :name "work" :kind 'claude :project repo)))
+          (with-temp-file (expand-file-name "real.txt" (plist-get wt :path)) (insert "x"))
+          (should-not (ghostherd--worktree-clean-p (plist-get wt :path) '(".venv")))
+          (puthash "work" wt ghostherd--worktrees)
+          (ghostherd--worktree-cleanup s)
+          (should (file-directory-p (plist-get wt :path))))))))
+
 (ert-deftest ghostherd-test-worktree-card-shows-ahead-and-size ()
   "A worktree agent's card carries its branch, how far it is ahead of its
 base, and the worktree's size on disk -- :json-false until measured."

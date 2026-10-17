@@ -711,14 +711,28 @@ plain directory."
         (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
     (list :path (file-name-as-directory path) :branch branch :base base)))
 
-(defun ghostherd--worktree-clean-p (path)
-  "Non-nil when git worktree PATH has no uncommitted or untracked change."
+(defun ghostherd--worktree-clean-p (path &optional ignore)
+  "Non-nil when git worktree PATH has no uncommitted or untracked change.
+IGNORE is relative paths to disregard -- the dependencies the herd carried
+in (a venv symlink, a node_modules clone), which are disposable and so are
+not work that removing the worktree would lose.  A symlinked venv shows as
+untracked when the project ignores a `.venv/' directory but not a link, so
+without this a worktree with deps would never read clean."
   (and (file-directory-p (expand-file-name path))
        (let ((default-directory (file-name-as-directory (expand-file-name path))))
          (with-temp-buffer
-           (and (eq 0 (ignore-errors
-                        (call-process "git" nil '(t nil) nil "status" "--porcelain")))
-                (= 0 (buffer-size)))))))
+           (when (eq 0 (ignore-errors
+                         (call-process "git" nil '(t nil) nil "status" "--porcelain")))
+             (seq-every-p
+              (lambda (line)
+                (and (> (length line) 3)
+                     (let ((p (substring line 3)))
+                       (seq-some (lambda (d)
+                                   (let ((d (directory-file-name d)))
+                                     (or (equal p d) (equal p (concat d "/"))
+                                         (string-prefix-p (concat d "/") p))))
+                                 ignore))))
+              (split-string (buffer-string) "\n" t)))))))
 
 (defun ghostherd--worktree-merged-p (main branch base)
   "Non-nil when BRANCH is merged into BASE in the MAIN checkout -- its tip
@@ -754,10 +768,14 @@ and never merges.  Safe to call for an agent with no worktree."
               (main (ghostherd-session-project session))
               ((file-directory-p (expand-file-name path))))
     (let ((branch (plist-get wt :branch))
-          (base (plist-get wt :base)))
-      (if (and (ghostherd--worktree-clean-p path)
+          (base (plist-get wt :base))
+          ;; The deps the herd carried in are disposable, so they do not
+          ;; make the worktree unclean; --force then discards them (and
+          ;; only them, since nothing else is uncommitted or untracked).
+          (ignore (mapcar #'car (ghostherd--worktree-deps-for (ghostherd-session-project session)))))
+      (if (and (ghostherd--worktree-clean-p path ignore)
                (ghostherd--worktree-merged-p main branch base)
-               (ghostherd--worktree-remove main path nil branch))
+               (ghostherd--worktree-remove main path t branch))
           (ghostherd--log-add session 'life
                               (format "worktree merged and clean: removed %s and branch %s"
                                       (abbreviate-file-name path) branch))
