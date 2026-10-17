@@ -7918,6 +7918,7 @@ repo the herd does not have has nobody."
       (let* ((ghostherd--roles (make-hash-table :test 'equal))
              (ghostherd--worktrees (make-hash-table :test 'equal))
              (ghostherd-memory-page--project-remotes (make-hash-table :test 'equal))
+             (ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
              (pname (ghostherd--project-name repo))
              (to (lambda (branch rp)
                    (mapcar (lambda (r) (list (plist-get r :id) (plist-get r :label)))
@@ -7927,6 +7928,9 @@ repo the herd does not have has nobody."
         (ghostherd-tests--session :name "qa" :kind 'grok :project repo :state 'idle)
         (ghostherd-tests--session :name "sh" :kind 'shell :project repo :state 'idle)
         (puthash "qa" '(:path nil :branch "feat/y" :base "feat/x") ghostherd--worktrees)
+        ;; A non-checkout agent's cached checkout is the symbol `none', not a
+        ;; cons -- reading a branch off it must not choke.
+        (puthash (cons 'agent "rd") 'none ghostherd-memory-page--checkouts)
         (funcall git repo "remote" "add" "origin" "https://example.com/own/thing.git")
         (cl-letf (((symbol-function 'ghostherd-session-directory)
                    (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
@@ -7948,7 +7952,10 @@ repo the herd does not have has nobody."
           (should (equal (funcall to "no-such-branch" "own/thing")
                          '(("lead-repo" "lead-repo · claude"))))
           ;; A repo the herd does not have, no agent on the branch: nobody.
-          (should-not (funcall to "no-such-branch" "other/elsewhere")))))))
+          (should-not (funcall to "no-such-branch" "other/elsewhere"))
+          ;; A repo the herd does not have is nobody even if a branch matches
+          ;; -- do not send to a same-named branch's agent in another repo.
+          (should-not (funcall to "feat/y" "other/elsewhere")))))))
 
 (ert-deftest ghostherd-test-a-review-from-pr-views-page-reaches-the-agent ()
   "Comments written on a herd checkout's diff in pr-view's page reach the

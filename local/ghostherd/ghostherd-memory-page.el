@@ -1179,9 +1179,11 @@ last look found, or one an agent's directory or project is in now."
 
 (defun ghostherd-memory-page--agent-branch (s)
   "The branch agent S is on: its worktree's, else its checkout's (from the
-cache the look fills, then git as a fallback)."
+cache the look fills -- where a non-checkout is the symbol `none', not a
+cons -- then git as a fallback)."
   (or (plist-get (ghostherd-session-worktree s) :branch)
-      (cdr (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts))
+      (let ((co (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts)))
+        (and (consp co) (cdr co)))
       (cdr (ghostherd-memory-page--checkout (ghostherd-session-directory s)))))
 
 (defvar ghostherd-memory-page--project-remotes (make-hash-table :test 'equal)
@@ -1212,7 +1214,11 @@ order the user's ask asked for, the agent on the branch first.  None when
 no herd agent is on the branch and REPO is not a herd project."
   (let* ((agents (ghostherd-memory-page--command-agents))
          (repo-project (ghostherd-memory-page--project-for-repo repo))
-         (here (and (stringp branch) (not (string-empty-p branch))
+         ;; A repo the page names must map to a herd project; only when the
+         ;; page could name none do we fall back to the branch alone -- so a
+         ;; same-named branch in a repo the herd does not have reaches nobody.
+         (known (or repo-project (null repo) (and (stringp repo) (string-empty-p repo))))
+         (here (and known (stringp branch) (not (string-empty-p branch))
                     (seq-filter (lambda (s)
                                   (and (equal (ghostherd-memory-page--agent-branch s) branch)
                                        (or (not repo-project)
