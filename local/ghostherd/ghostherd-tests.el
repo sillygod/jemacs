@@ -9070,7 +9070,7 @@ with its one group is unchanged."
                                  (list :label "gem-5h" :remaining 100 :resets-at nil)
                                  (list :label "g4-wk" :remaining 0 :resets-at (+ (float-time) 600000)))
                   :fetched (float-time)))
-      (puthash "jf" "? for shortcuts    Gemini 3.8 Flash · high · AI: Out of credits" ghostherd--screens)
+      (puthash "jf" "? for shortcuts    Gemini 3.8 Flash · high" ghostherd--screens)
       (puthash "ja" "? for shortcuts    Gemini 4 Argon · medium" ghostherd--screens)
       (puthash "jb" "? for shortcuts\n> \n" ghostherd--screens)
       ;; The agy kind as a whole is used up (g4 is spent) ...
@@ -9087,6 +9087,32 @@ with its one group is unchanged."
       (let ((g (ghostherd-tests--session :name "gk" :kind 'grok :state 'idle :backend 'fake)))
         (ghostherd-tests--used-up 'grok)
         (should (ghostherd-usage-session-used-up g))))))
+
+(ert-deftest ghostherd-test-usage-agy-screen-out-of-credits ()
+  "agy out of credits is caught the moment its footer says so -- its status
+line ending `· AI: Out of credits' -- without the usage poll; the same
+words quoted in the conversation above do not trigger it, and it clears
+when the footer no longer shows it."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-usage--cache nil)
+          (ghostherd--screens (make-hash-table :test 'equal))
+          (s (ghostherd-tests--session :name "ja" :kind 'agy :state 'idle :backend 'fake)))
+      ;; The CLI's own footer says it: used up, in the CLI's words.
+      (puthash "ja" (concat "⏺ some work\n"
+                            "⚠ Your AI credits balance is too low to continue.\n"
+                            "────\n>\n────\n"
+                            "? for shortcuts    accept-edits · Gemini 4 Argon · medium · AI: Out of credits")
+               ghostherd--screens)
+      (should (ghostherd-usage-session-used-up s))
+      (should (equal (ghostherd-usage-session-used-up-text s) "its agy is out of AI credits"))
+      ;; The very same words quoted in the conversation, footer normal: no.
+      (puthash "ja" (concat "user: the footer said \"Gemini 4 Argon · medium · AI: Out of credits\"\n"
+                            "⏺ noted; it was out of credits then\n"
+                            "────\n>\n────\n"
+                            "? for shortcuts    accept-edits · Gemini 4 Argon · medium")
+               ghostherd--screens)
+      (should-not (ghostherd-usage-session-used-up s))
+      (should-not (ghostherd-usage-session-used-up-text s)))))
 
 (ert-deftest ghostherd-test-relay-goes-where-usage-is-left ()
   (ghostherd-tests--relaying

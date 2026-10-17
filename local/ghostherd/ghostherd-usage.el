@@ -380,25 +380,64 @@ screen the state poll already captured, as the meter does."
     (car (ghostherd--agy-model-line
           (gethash (ghostherd-session-id session) ghostherd--screens)))))
 
+(defconst ghostherd-usage--agy-limited-re
+  "·[[:blank:]]*AI:[[:blank:]]*Out of credits\\b"
+  "agy's footer note that it has no AI credits -- its status line, the one
+carrying its model and effort, ends `… · AI: Out of credits'.")
+
+(defun ghostherd-usage--agy-screen-limited (screen)
+  "agy is out of AI credits, read from SCREEN's footer -- the status line
+that carries its model and effort, ending in `· AI: Out of credits' -- or
+nil.  Only the last lines are looked at, where that status line is drawn,
+so the same words quoted in the conversation above never trigger it."
+  (when (and (stringp screen) (fboundp 'ghostherd--agy-model-line))
+    (let ((foot (last (split-string (string-trim-right screen) "\n") 3)))
+      (cl-loop for l in (reverse foot)
+               when (and (ghostherd--agy-model-line l)
+                         (string-match-p ghostherd-usage--agy-limited-re l))
+               return "out of AI credits"))))
+
+(defun ghostherd-usage--screen-limited (session)
+  "The CLI's own words, off SESSION's live screen, that it is out of credits
+or rate limited right now -- or nil.  Read from the status line the CLI
+draws, not the conversation, and from the live screen each time, so it
+clears on its own when the line does and does not trigger on a quote.
+Only agy has a confirmed status string so far; claude and grok wait on a
+real sample of theirs."
+  (when (and (boundp 'ghostherd--screens) (fboundp 'ghostherd-session-id))
+    (let ((screen (gethash (ghostherd-session-id session) ghostherd--screens)))
+      (pcase (ghostherd-session-kind session)
+        ('agy (ghostherd-usage--agy-screen-limited screen))
+        (_ nil)))))
+
 (defun ghostherd-usage-session-used-up (session)
   "The window of SESSION's usage that is used up, by its own model's group
 when its CLI splits quota by model (agy) -- so an agent on a group that
 has quota is not called used up because a different group is spent.  Nil
-when an agy's model cannot be read: better no relay than a wrong one."
+when an agy's model cannot be read: better no relay than a wrong one.
+
+Also used up the moment the CLI's own status line says it is out of
+credits / rate limited, without waiting for the usage poll; that reads as
+a window with no label, carrying the CLI's words as :reason."
   (let ((kind (ghostherd-session-kind session)))
-    (if (eq kind 'agy)
-        (when-let* ((model (ghostherd-usage--agy-session-model session)))
-          (ghostherd-usage-used-up kind model))
-      (ghostherd-usage-used-up kind))))
+    (or (if (eq kind 'agy)
+            (when-let* ((model (ghostherd-usage--agy-session-model session)))
+              (ghostherd-usage-used-up kind model))
+          (ghostherd-usage-used-up kind))
+        (when-let* ((reason (ghostherd-usage--screen-limited session)))
+          (list :label "" :remaining 0 :resets-at nil :reason reason)))))
 
 (defun ghostherd-usage-session-used-up-text (session)
-  "SESSION's usage used up, in words, by its own model's group for agy; nil
-when not, or when an agy's model cannot be read."
+  "SESSION's usage used up, in words, by its own model's group for agy, or
+the CLI's own words when its status line says so live; nil when not, or
+when an agy's model cannot be read."
   (let ((kind (ghostherd-session-kind session)))
-    (if (eq kind 'agy)
-        (when-let* ((model (ghostherd-usage--agy-session-model session)))
-          (ghostherd-usage-used-up-text kind model))
-      (ghostherd-usage-used-up-text kind))))
+    (or (if (eq kind 'agy)
+            (when-let* ((model (ghostherd-usage--agy-session-model session)))
+              (ghostherd-usage-used-up-text kind model))
+          (ghostherd-usage-used-up-text kind))
+        (when-let* ((reason (ghostherd-usage--screen-limited session)))
+          (format "its %s is %s" kind reason)))))
 
 (defun ghostherd-usage--entry-string (kind compact)
   (let* ((pl (alist-get kind ghostherd-usage--cache))
