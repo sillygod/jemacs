@@ -8633,6 +8633,96 @@ question, not the `Chat about this' line the footer sits under."
         (should-not (string-match-p "Chat about this" reason))
         (should (string-match-p "要怎麼修？" reason))))))
 
+(defconst ghostherd-test--claude-trust
+  " ─────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/gh-scratch/demo
+
+ Quick safety check: Is this a project you created or one
+ you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to
+ review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files
+ here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+"
+  "claude's trust-folder prompt on startup in a directory it has not seen,
+captured from a real scratch claude: a marked [❯] menu with no numbers and
+no input box.  The agent is parked on it, not idle.")
+
+(defconst ghostherd-test--claude-trust-yes
+  (replace-regexp-in-string
+   "   Yes, I trust this folder" " ❯ Yes, I trust this folder"
+   (replace-regexp-in-string " ❯ No, exit" "   No, exit"
+                             ghostherd-test--claude-trust))
+  "The trust prompt with its highlight moved to the second choice.")
+
+(defconst ghostherd-test--claude-trust-quoted
+  "⏺ I read the onboarding note: \"Quick safety check: Is this a project you
+  created or one you trust?  …  Yes, I trust this folder\".  I summarised it.
+
+ ─────────────────────────────────────────────────────────────
+❯
+ ─────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+"
+  "The trust prompt's words merely quoted in the conversation, with claude's
+input box drawn at the foot: `:prompt-replaces-input' must keep it unblocked.")
+
+(ert-deftest ghostherd-test-claude-trust-prompt-is-blocked ()
+  "claude parked on its trust-folder prompt reads blocked -- by the safety
+question (which becomes the card's reason), not by any \"Yes\"/\"proceed\"
+wording -- so the page offers its two choices, which `ghostherd--prompt'
+reads off the marked [❯] menu though they carry no numbers.  The same
+sentence quoted in the chat, over a drawn input box, is not blocked; an
+empty prompt stays idle and a spinner stays working."
+  (let* ((spec (ghostherd--spec 'claude))
+         (rules (plist-get spec :screen-rules))
+         (ri (plist-get spec :prompt-replaces-input))
+         (sp (plist-get spec :spinner))
+         ;; With the trust rules gone, nothing else in this screen is blocked.
+         (bare (cons (cons 'blocked (seq-remove (lambda (r) (member r '("Quick safety check" "Yes, I trust this folder")))
+                                                (alist-get 'blocked rules)))
+                     (assq-delete-all 'blocked (copy-alist rules))))
+         (hit (ghostherd--match-rules ghostherd-test--claude-trust rules ri sp)))
+    ;; Found blocked, and by the trust rule -- not some other match.
+    (should (eq (car hit) 'blocked))
+    (should-not (eq (car (ghostherd--match-rules ghostherd-test--claude-trust bare ri sp)) 'blocked))
+    ;; The reason names the problem itself.
+    (should (string-match-p "Quick safety check" (ghostherd--rule-reason ghostherd-test--claude-trust hit)))
+    ;; Both un-numbered choices read off the menu, highlight on the first.
+    (should (equal (ghostherd--prompt ghostherd-test--claude-trust)
+                   '(:question ""
+                     :options ((1 . "No, exit") (2 . "Yes, I trust this folder"))
+                     :on 1)))
+    ;; Highlight tracked to the other choice (so `ghostherd-answer' counts right).
+    (should (= (plist-get (ghostherd--prompt ghostherd-test--claude-trust-yes) :on) 2))
+    ;; Quoted in the chat with the input box drawn: not a prompt.
+    (should-not (eq (car (ghostherd--match-rules ghostherd-test--claude-trust-quoted rules ri sp)) 'blocked))
+    (should-not (ghostherd--prompt ghostherd-test--claude-trust-quoted))
+    ;; Regressions: an empty prompt is idle, a spinner above the box working.
+    (should (eq (car (ghostherd--match-rules "⏺ done.\n────\n❯ \n────\n" rules ri sp)) 'idle))
+    (should (eq (car (ghostherd--match-rules "✻ Baking… (3s · ↓ 1k tokens)\n────\n❯ \n────\n" rules ri sp))
+                'working))))
+
+(ert-deftest ghostherd-test-claude-trust-prompt-detect-and-reason ()
+  "End to end: a claude sitting on the trust prompt is detected blocked and
+its reason names the safety check, so the card does not read it as ready."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "ct" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-test--claude-trust))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'blocked))
+        (should (string-match-p "Quick safety check" reason))))))
+
 ;;; Answering a menu
 
 (defun ghostherd-test--agy-menu-on (on)

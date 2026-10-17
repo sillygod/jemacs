@@ -129,7 +129,18 @@ made an unanchored `> \=' match the transcript.")
                   ;; the options; the herd page offers them).  Distinct
                   ;; from the model picker's "Enter to set as default".
                   "Tab/Arrow keys to navigate"
-                  "Enter to select"))
+                  "Enter to select"
+                  ;; The trust-folder prompt claude draws on startup in a
+                  ;; directory it has not seen: "Quick safety check: Is this
+                  ;; a project you created or one you trust?" over a marked
+                  ;; [❯] menu (No, exit / Yes, I trust this folder) with no
+                  ;; input box -- the agent is parked, not idle.  Matching
+                  ;; the question first makes it the reason the card shows;
+                  ;; `ghostherd--prompt-marker' reads the two choices, which
+                  ;; carry no numbers.  `:prompt-replaces-input' keeps the
+                  ;; same words quoted in the chat (box drawn) from tripping.
+                  "Quick safety check"
+                  "Yes, I trust this folder"))
       (working . ("esc to interrupt"
                   "Baking…"
                   "Baking..."
@@ -1563,6 +1574,23 @@ the question and not part of it.")
 AskUserQuestion wraps it under its choice when a preview box leaves no
 room beside it, so it belongs to that choice's label.")
 
+(defconst ghostherd--prompt-confirm-re "Enter to confirm"
+  "Footer of a marker-highlighted confirm menu -- claude's trust-folder
+prompt (\"Enter to confirm · Esc to cancel\").  Its choices carry no
+numbers, only a [❯] on the highlighted one, so the numbered reader does
+not see them; this footer anchors `ghostherd--prompt-marker' instead.")
+
+(defconst ghostherd--prompt-mark-re
+  "\\`[[:blank:]│]*[❯›▶][[:blank:]]+[^[:blank:]]"
+  "A marker-menu's highlighted option: leading blanks, a mark, then text.
+Requiring the text keeps a bare `❯ ' (an empty input box) out; leaving `>'
+out keeps the box's own sign, which is `>' or `❯', from being a choice --
+a trust menu marks with `❯' and always has words after it.")
+
+(defconst ghostherd--prompt-mark-prefix-re
+  "\\`[[:blank:]│]*[❯›▶][[:blank:]]+"
+  "The lead of a marked option up to its text: blanks, the mark, blanks.")
+
 (defun ghostherd--prompt-at-col-p (line col chars)
   "Non-nil if LINE's character at display column COL is one of CHARS.
 Counts display width, so a box border lands on the same column whatever
@@ -1623,13 +1651,21 @@ short last choice is neither."
 
 (defun ghostherd--prompt (screen)
   "The menu SCREEN ends on, as (:question TEXT :options ((N . LABEL) ...)
-:on N), or nil.  The options are the last run numbered from 1, each a
-few lines from the next, the last near the foot; the question the lines
-above the first, up to a line that only draws, six at most; on, the
-option marked highlighted, nil when none is."
-  (let* ((lines (vconcat (ghostherd--prompt-strip-preview
-                          (split-string (string-trim-right (or screen "")) "\n"))))
-         (n (length lines))
+:on N), or nil.  A numbered menu first -- an AskUserQuestion or a
+permission prompt -- then, failing that, a marker-highlighted confirm
+menu with no numbers, like claude's trust-folder prompt."
+  (let ((lines (vconcat (ghostherd--prompt-strip-preview
+                         (split-string (string-trim-right (or screen "")) "\n")))))
+    (or (ghostherd--prompt-numbered lines)
+        (ghostherd--prompt-marker lines))))
+
+(defun ghostherd--prompt-numbered (lines)
+  "The numbered menu LINES end on, as `ghostherd--prompt' returns, or nil.
+The options are the last run numbered from 1, each a few lines from the
+next, the last near the foot; the question the lines above the first, up
+to a line that only draws, six at most; on, the option marked
+highlighted, nil when none is."
+  (let* ((n (length lines))
          (number (lambda (i) (and (string-match ghostherd--prompt-option-re (aref lines i))
                                   (string-to-number (match-string 1 (aref lines i))))))
          ;; An AskUserQuestion's footer anchors the run: its choices are just
@@ -1667,6 +1703,60 @@ option marked highlighted, nil when none is."
                                when (and (string-match ghostherd--prompt-option-re (aref lines i))
                                          (match-beginning 3))
                                return (funcall number i)))))))))
+
+(defun ghostherd--prompt-text-col (line)
+  "The column LINE's words begin at, past a menu mark where it has one.
+A marked option (\"❯ Yes\") and its plain siblings (\"  No\") share this
+column, so it tells one menu row from the question or a drawing above."
+  (if (string-match ghostherd--prompt-mark-prefix-re line)
+      (match-end 0)
+    (and (string-match "[^[:blank:]│]" line) (match-beginning 0))))
+
+(defun ghostherd--prompt-marker (lines)
+  "The marker-highlighted confirm menu LINES end on, as `ghostherd--prompt'
+returns, or nil -- claude's trust-folder prompt, whose choices carry no
+numbers.  Anchored on the \"Enter to confirm\" footer and a [❯]-marked
+choice just above it, so an idle input box's own sign or the conversation
+is never read as a menu.  The choices are the run of lines sharing the
+marked one's text column; numbered from the top; :on the marked one.
+:question is left empty: the blocked rule that found it already names the
+prompt, and the card shows that reason."
+  (let* ((n (length lines))
+         (foot (cl-loop for i downfrom (1- n) to 0
+                        when (string-match-p ghostherd--prompt-confirm-re (aref lines i))
+                        return i))
+         (mark (and foot
+                    (cl-loop for i downfrom (1- foot) to (max 0 (- foot ghostherd--prompt-near))
+                             when (string-match-p ghostherd--prompt-mark-re (aref lines i))
+                             return i))))
+    (when mark
+      (let* ((col (ghostherd--prompt-text-col (aref lines mark)))
+             (optp (lambda (i)
+                     (and (>= i 0) (< i foot)
+                          (let ((l (aref lines i)))
+                            (and (not (string-blank-p l))
+                                 (not (string-match-p ghostherd--prompt-rule-re l))
+                                 (not (string-match-p ghostherd--prompt-header-re l))
+                                 (eql (ghostherd--prompt-text-col l) col))))))
+             (top mark) (bot mark))
+        (while (funcall optp (1- top)) (setq top (1- top)))
+        (while (funcall optp (1+ bot)) (setq bot (1+ bot)))
+        ;; A real menu has at least two choices; one marked line alone is
+        ;; some other `❯' (a lone bullet, a box) that happened to sit here.
+        (when (> bot top)
+          (let ((at (number-sequence top bot)))
+            (list :question ""
+                  :options (cl-loop for i in at for k from 1
+                                    collect (cons k (ghostherd--prompt-marker-label
+                                                     (aref lines i) col)))
+                  :on (cl-loop for i in at for k from 1
+                               when (string-match-p ghostherd--prompt-mark-re (aref lines i))
+                               return k))))))))
+
+(defun ghostherd--prompt-marker-label (line col)
+  "The words of marker-menu option LINE, from its text column COL, trimmed."
+  (string-trim (string-trim-right (substring line (min col (length line)))
+                                  "[[:blank:]│]+")))
 
 (defun ghostherd--prompt-reason (screen)
   "The question the AskUserQuestion on SCREEN asks, as one line for the
