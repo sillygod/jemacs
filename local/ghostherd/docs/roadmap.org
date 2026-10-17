@@ -1110,9 +1110,9 @@ loops.
 
 - [ ] See the herd refuse a round in a real loop: in the trial, rd
   stopped at its rounds by itself, as it was told to
-- [ ] A lead on a CLI that takes its role with its first message (agy)
-  is respawned fresh without it; a resumed claude keeps the system
-  prompt its conversation was recorded with
+- [X] A lead on a CLI that takes its role with its first message (agy)
+  is respawned fresh without it (8311250); a resumed claude keeps the
+  system prompt its conversation was recorded with
 - [ ] The run of an agent nobody asked ends on the tick's view of its
   state: a turn that ends and starts again within a tick is not seen
   to end, and its next asks count with the last
@@ -1414,7 +1414,7 @@ and all.
   conversations, on the file tree
 - [ ] Syntax in pr-view's diffs, a pull request's and a checkout's
 
-* Phase 3.26 — An agent in its own git worktree  *(this tree)*
+* Phase 3.28 — An agent in its own git worktree  *(this tree)*
 
 Goal: two agents write code in one project at once without stepping on
 each other, each in its own git worktree on its own branch.
