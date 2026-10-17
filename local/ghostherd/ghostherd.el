@@ -711,6 +711,127 @@ plain directory."
         (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
     (list :path (file-name-as-directory path) :branch branch :base base)))
 
+(defun ghostherd--worktree-clean-p (path)
+  "Non-nil when git worktree PATH has no uncommitted or untracked change."
+  (and (file-directory-p (expand-file-name path))
+       (let ((default-directory (file-name-as-directory (expand-file-name path))))
+         (with-temp-buffer
+           (and (eq 0 (ignore-errors
+                        (call-process "git" nil '(t nil) nil "status" "--porcelain")))
+                (= 0 (buffer-size)))))))
+
+(defun ghostherd--worktree-merged-p (main branch base)
+  "Non-nil when BRANCH is merged into BASE in the MAIN checkout -- its tip
+an ancestor of BASE, so removing BRANCH would lose no commit."
+  (and (stringp branch) (stringp base)
+       (let ((default-directory (file-name-as-directory (expand-file-name main))))
+         (eq 0 (ignore-errors
+                 (call-process "git" nil nil nil
+                               "merge-base" "--is-ancestor" branch base))))))
+
+(defun ghostherd--worktree-remove (main path &optional force branch)
+  "Remove git worktree PATH of the MAIN checkout; return t on success.
+With FORCE, discard the worktree's uncommitted changes.  With BRANCH, also
+delete it with `git branch -d', which refuses an unmerged branch -- so a
+branch's committed work is never lost here."
+  (let ((default-directory (file-name-as-directory (expand-file-name main))))
+    (with-temp-buffer
+      (when (eq 0 (apply #'call-process "git" nil '(t t) nil
+                         `("worktree" "remove" ,@(and force '("--force"))
+                           ,(directory-file-name (expand-file-name path)))))
+        (when branch
+          (call-process "git" nil nil nil "branch" "-d" branch))
+        t))))
+
+(defun ghostherd--worktree-cleanup (session)
+  "When a gone SESSION had its own git worktree, remove it and its branch if
+the branch is merged into its base and the worktree is clean; otherwise
+keep both -- the user removes an unmerged one by hand with
+`ghostherd-worktree-forget'.  Never removes unmerged or uncommitted work,
+and never merges.  Safe to call for an agent with no worktree."
+  (when-let* ((wt (ghostherd-session-worktree session))
+              (path (plist-get wt :path))
+              (main (ghostherd-session-project session))
+              ((file-directory-p (expand-file-name path))))
+    (let ((branch (plist-get wt :branch))
+          (base (plist-get wt :base)))
+      (if (and (ghostherd--worktree-clean-p path)
+               (ghostherd--worktree-merged-p main branch base)
+               (ghostherd--worktree-remove main path nil branch))
+          (ghostherd--log-add session 'life
+                              (format "worktree merged and clean: removed %s and branch %s"
+                                      (abbreviate-file-name path) branch))
+        (ghostherd--log-add session 'life
+                            (format "worktree kept, not merged/clean: %s on %s -- M-x ghostherd-worktree-forget"
+                                    (abbreviate-file-name path) branch))
+        (message "ghostherd: kept %s's worktree %s (branch %s): not merged or not clean"
+                 (ghostherd-session-name session) (abbreviate-file-name path) branch)))))
+
+(defun ghostherd--worktree-list (project)
+  "Linked git worktrees of the MAIN checkout PROJECT, as (PATH . BRANCH);
+the main checkout itself is left out."
+  (let ((main (file-truename (directory-file-name (expand-file-name project))))
+        (default-directory (file-name-as-directory (expand-file-name project)))
+        cur res)
+    (with-temp-buffer
+      (when (eq 0 (ignore-errors
+                    (call-process "git" nil '(t nil) nil
+                                  "worktree" "list" "--porcelain")))
+        (dolist (line (split-string (buffer-string) "\n"))
+          (cond
+           ((string-prefix-p "worktree " line)
+            (setq cur (list :path (substring line (length "worktree ")))))
+           ((string-prefix-p "branch " line)
+            (setq cur (plist-put cur :branch
+                                 (replace-regexp-in-string
+                                  "\\`refs/heads/" "" (substring line (length "branch "))))))
+           ((string-empty-p line)
+            (when (and cur (not (equal (file-truename (directory-file-name (plist-get cur :path))) main)))
+              (push (cons (file-name-as-directory (plist-get cur :path)) (plist-get cur :branch)) res))
+            (setq cur nil))))
+        (when (and cur (not (equal (file-truename (directory-file-name (plist-get cur :path))) main)))
+          (push (cons (file-name-as-directory (plist-get cur :path)) (plist-get cur :branch)) res))))
+    (nreverse res)))
+
+(defun ghostherd-worktree-forget (path)
+  "Remove the idle git worktree at PATH, after confirming; its branch is
+kept, so committed work is never lost.  Interactively, offers the
+worktrees of the project at point or the current directory that no live
+agent is in.  Uncommitted or untracked changes are discarded only after a
+second confirmation."
+  (interactive
+   (let* ((project (or (ghostherd--project-root) default-directory))
+          (busy (delq nil (mapcar (lambda (s)
+                                    (when-let* ((p (plist-get (ghostherd-session-worktree s) :path)))
+                                      (file-truename (directory-file-name p))))
+                                  (ghostherd-sessions))))
+          (choices (seq-remove (lambda (pb)
+                                 (member (file-truename (directory-file-name (car pb))) busy))
+                               (ghostherd--worktree-list project))))
+     (unless choices
+       (user-error "No idle worktree to remove under %s" (ghostherd--abbreviate project)))
+     (let ((alist (mapcar (lambda (pb)
+                            (cons (format "%s  [%s]" (abbreviate-file-name (car pb)) (or (cdr pb) "?"))
+                                  (car pb)))
+                          choices)))
+       (list (cdr (assoc (completing-read "Remove idle worktree: " alist nil t) alist))))))
+  (let* ((path (file-name-as-directory (expand-file-name path)))
+         (main (ghostherd--worktree-main-checkout path)))
+    (unless main
+      (user-error "Not a linked git worktree: %s" (abbreviate-file-name path)))
+    (unless (yes-or-no-p (format "Remove worktree %s?  Its branch and commits are kept. "
+                                 (abbreviate-file-name path)))
+      (user-error "Not removed"))
+    (let ((clean (ghostherd--worktree-clean-p path)))
+      (if (and (not clean)
+               (not (yes-or-no-p
+                     (format "%s has uncommitted or untracked changes; discard them? "
+                             (abbreviate-file-name path)))))
+          (user-error "Not removed")
+        (if (ghostherd--worktree-remove main path (not clean))
+            (message "ghostherd: removed worktree %s (branch kept)" (abbreviate-file-name path))
+          (user-error "git could not remove %s" (abbreviate-file-name path)))))))
+
 (defun ghostherd--roman (n)
   "N in Roman numerals, for the line of a name; past 39, the number."
   (if (and (integerp n) (< 0 n 40))
@@ -792,7 +913,10 @@ host no longer exists to ask."
        ;; Said: a herd that empties itself without a line leaves nothing
        ;; to go on.
        (ghostherd--log-add session 'life "dropped from the herd: its host is gone")
-       (run-hook-with-args 'ghostherd-session-removed-hook session)))
+       (run-hook-with-args 'ghostherd-session-removed-hook session)
+       ;; Its host is gone for good, so clean up its worktree if the branch
+       ;; is merged and the tree is clean; an unclean one is kept.
+       (ignore-errors (ghostherd--worktree-cleanup session))))
    ghostherd--sessions))
 
 
@@ -2942,7 +3066,10 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
       (when (buffer-live-p buf)
         (let ((kill-buffer-query-functions nil)
               (ghostel-query-before-killing nil))
-          (ignore-errors (kill-buffer buf)))))
+          (ignore-errors (kill-buffer buf))))
+      ;; A true kill, not a release: the agent is gone, so clean up its
+      ;; worktree (only if merged and clean -- see the function).
+      (ignore-errors (ghostherd--worktree-cleanup session)))
     (ghostherd--stop-poll-timer)
     (ghostherd--sidebar-refresh)
     (message "Killed session %s" (ghostherd-session-name session))))

@@ -9561,6 +9561,51 @@ tmux options round-trip; and restore rebuilds the worktree from them."
       (should (equal (ghostherd-session-worktree (ghostherd-get "rk"))
                      '(:path "/w/rk/" :branch "rk" :base "master"))))))
 
+(ert-deftest ghostherd-test-worktree-cleanup-removes-merged-keeps-unmerged ()
+  "On a kill, a merged-and-clean worktree and its branch are removed; an
+unmerged or unclean one is kept, and `ghostherd-worktree-forget' removes it
+-- keeping its branch -- after confirmation."
+  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (let ((ghostherd-worktree-root (concat base "trees/")))
+        (cl-letf (((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+          (cl-flet ((branch-p (b) (eq 0 (let ((default-directory repo))
+                                          (call-process "git" nil nil nil "rev-parse"
+                                                        "--verify" "-q"
+                                                        (concat "refs/heads/" b))))))
+            ;; Merged + clean (never committed): removed with its branch.
+            (let ((wt (ghostherd--worktree-create repo "clean"))
+                  (s (ghostherd-tests--session :name "clean" :kind 'claude :project repo)))
+              (should (ghostherd--worktree-clean-p (plist-get wt :path)))
+              (should (ghostherd--worktree-merged-p repo "clean" "main"))
+              (puthash "clean" wt ghostherd--worktrees)
+              (ghostherd--worktree-cleanup s)
+              (should-not (file-directory-p (plist-get wt :path)))
+              (should-not (branch-p "clean")))
+            ;; Unmerged (a commit on the branch): kept, branch kept.
+            (let ((wt (ghostherd--worktree-create repo "ahead"))
+                  (s (ghostherd-tests--session :name "ahead" :kind 'claude :project repo)))
+              (funcall git (plist-get wt :path) "commit" "-q" "--allow-empty" "-m" "work")
+              (should-not (ghostherd--worktree-merged-p repo "ahead" "main"))
+              (puthash "ahead" wt ghostherd--worktrees)
+              (ghostherd--worktree-cleanup s)
+              (should (file-directory-p (plist-get wt :path)))
+              (should (branch-p "ahead"))
+              ;; The user removes it by hand: worktree gone, branch kept.
+              (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+                (ghostherd-worktree-forget (plist-get wt :path)))
+              (should-not (file-directory-p (plist-get wt :path)))
+              (should (branch-p "ahead")))
+            ;; Unclean (an untracked file): kept.
+            (let ((wt (ghostherd--worktree-create repo "dirty"))
+                  (s (ghostherd-tests--session :name "dirty" :kind 'claude :project repo)))
+              (with-temp-file (expand-file-name "scratch.txt" (plist-get wt :path)) (insert "x"))
+              (should-not (ghostherd--worktree-clean-p (plist-get wt :path)))
+              (puthash "dirty" wt ghostherd--worktrees)
+              (ghostherd--worktree-cleanup s)
+              (should (file-directory-p (plist-get wt :path)))
+              (should (branch-p "dirty")))))))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))
