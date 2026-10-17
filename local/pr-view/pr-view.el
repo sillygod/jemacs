@@ -599,6 +599,7 @@ people who already answered have to be added back from REVIEWS."
              (pr-view--local-show root)
            (pr-view--local-asked root))))
       ("local-review" (pr-view--local-review intent))
+      ("pr-review" (pr-view--pr-review intent))
       ("refresh-list"
        (setq pr-view--list-states
              (pr-view--normalize-states (alist-get 'states intent)))
@@ -869,11 +870,21 @@ the unified diff on PRs over ~20k lines or 300 files."
     (like_count . ,(or (alist-get '+1 (alist-get 'reactions raw)) 0))))
 
 (defun pr-view--detail-payload (pr forge extra)
-  (append
-   `((pr . ,pr)
-     (forge . ,forge)
-     (comments . ,(vconcat (or pr-view--last-comments '()))))
-   extra))
+  (let* ((branch (let ((b (alist-get 'source pr))) (and (stringp b) (not (string-empty-p b)) b)))
+         (repo (and pr-view--host (plist-get pr-view--host :owner) (plist-get pr-view--host :repo)
+                    (format "%s/%s" (plist-get pr-view--host :owner) (plist-get pr-view--host :repo))))
+         ;; Who a review of this PR's diff may go to -- the agent on its head
+         ;; branch, the project's lead -- for the page to offer; the comments
+         ;; go to a herd agent, never to the forge.
+         (review `((branch . ,(or branch ""))
+                   (repo . ,(or repo ""))
+                   (recipients . ,(if branch (pr-view--local-recipients-json nil (list :branch branch :repo repo)) [])))))
+    (append
+     `((pr . ,pr)
+       (forge . ,forge)
+       (comments . ,(vconcat (or pr-view--last-comments '())))
+       (review . ,review))
+     extra)))
 
 (defun pr-view--fetch-comments (host kind id-str)
   (let ((url (pcase kind
@@ -1945,13 +1956,21 @@ DIR defaults to the current directory."
 (defconst pr-view--review-code-max 300
   "Most characters of the line a comment quotes.")
 
-(defun pr-view--local-recipients (root)
-  "Who a review of checkout ROOT's changes may be sent to, as
-`pr-view-local-recipients-functions' say, the well-formed only."
+(defun pr-view--local-recipients (root &optional pr)
+  "Who a review may be sent to, as `pr-view-local-recipients-functions'
+say, the well-formed only.  Of checkout ROOT's changes when PR is nil;
+with PR, a plist describing a pull request (its head branch and repo),
+of that PR -- passed only to a hook function that takes a second argument,
+so one written for a checkout still works."
   (let (out)
     (run-hook-wrapped 'pr-view-local-recipients-functions
                       (lambda (f)
-                        (setq out (append out (with-demoted-errors "pr-view: %S" (funcall f root))))
+                        (let ((res (with-demoted-errors "pr-view: %S"
+                                     (if (and pr (let ((m (cdr (func-arity f))))
+                                                   (or (eq m 'many) (and (integerp m) (>= m 2)))))
+                                         (funcall f root pr)
+                                       (funcall f root)))))
+                          (setq out (append out res)))
                         nil))
     (seq-filter (lambda (r)
                   (and (stringp (plist-get r :id)) (not (string-empty-p (plist-get r :id)))
@@ -1959,11 +1978,11 @@ DIR defaults to the current directory."
                        (functionp (plist-get r :send))))
                 out)))
 
-(defun pr-view--local-recipients-json (root)
-  "Who a review of checkout ROOT's changes may be sent to, as the page
-shows them."
+(defun pr-view--local-recipients-json (root &optional pr)
+  "Who a review may be sent to, as the page shows them (see
+`pr-view--local-recipients')."
   (vconcat (mapcar (lambda (r) `((id . ,(plist-get r :id)) (label . ,(plist-get r :label))))
-                   (pr-view--local-recipients root))))
+                   (pr-view--local-recipients root pr))))
 
 (defun pr-view--review-cut (s max)
   "S cut to MAX characters, the cut said."
@@ -2076,6 +2095,41 @@ names; the page is told it went, or why not, and who may get the next."
                       (recipients . ,(if (pr-view--local-allowed-p root)
                                          (pr-view--local-recipients-json root)
                                        []))))))))
+
+(defun pr-view--pr-review-text (branch comments note)
+  "What is sent for COMMENTS on a pull request's diff (head BRANCH), NOTE
+after them -- the same body and note as a checkout review, a header that
+names the pull request's branch."
+  (concat
+   (format "Comments on the pull request%s, each on a line of its diff:\n"
+           (if (and (stringp branch) (not (string-empty-p branch))) (format " (branch %s)" branch) ""))
+   (pr-view--review-body (pr-view--review-checked comments))
+   (pr-view--review-note note)))
+
+(defun pr-view--pr-review (intent)
+  "Send the review INTENT carries, of a pull request's diff, to the one it
+names -- an agent on the PR's head branch, its project's lead, or a lead to
+start, from the same recipients machinery.  Never to the forge: the
+comments go to a herd agent only.  The page is told it went, or why not."
+  (let* ((branch (let ((b (alist-get 'branch intent))) (and (stringp b) b)))
+         (repo (let ((r (alist-get 'repo intent))) (and (stringp r) r)))
+         (pr (list :branch branch :repo repo)))
+    (condition-case e
+        (let* ((to (alist-get 'to intent))
+               (who (or (seq-find (lambda (r) (equal (plist-get r :id) to))
+                                  (pr-view--local-recipients nil pr))
+                        (user-error "%s cannot be sent it now" to)))
+               (text (pr-view--pr-review-text branch (alist-get 'comments intent) (alist-get 'note intent)))
+               (said (funcall (plist-get who :send) text)))
+          (pr-view--js "reviewSent"
+                       `((pr . t)
+                         (said . ,(if (stringp said) said (format "Sent to %s" (plist-get who :label))))
+                         (recipients . ,(pr-view--local-recipients-json nil pr)))))
+      (error
+       (pr-view--js "reviewFailed"
+                    `((pr . t)
+                      (error . ,(xwapp-scrub-error (error-message-string e)))
+                      (recipients . ,(pr-view--local-recipients-json nil pr))))))))
 
 
 ;;; For other packages

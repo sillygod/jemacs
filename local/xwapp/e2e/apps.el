@@ -128,14 +128,21 @@
 ;; Who a review of it may go to: what each is sent is noted; qa is gone
 ;; by the time it is sent anything.
 (add-hook 'pr-view-local-recipients-functions
-          (lambda (root)
-            (when (equal root e2e-checkout-root)
+          (lambda (root &optional pr)
+            (cond
+             ;; A PR review: the agent on its head branch, then a lead.
+             (pr
+              (list (list :id "pr-rd" :label "pr-rd · claude"
+                          :send (lambda (text) (e2e-note (list :review "pr-rd" :text text :pr t)) "Sent to pr-rd"))
+                    (list :id "pr-lead" :label "pr-lead · claude"
+                          :send (lambda (text) (e2e-note (list :review "pr-lead" :text text :pr t)) "Sent to pr-lead"))))
+             ((equal root e2e-checkout-root)
               (list (list :id "lead-shop" :label "lead-shop · claude"
                           :send (lambda (text) (e2e-note (list :review "lead-shop" :text text)) "Sent to lead-shop"))
                     (list :id "rd" :label "rd · grok"
                           :send (lambda (text) (e2e-note (list :review "rd" :text text)) nil))
                     (list :id "qa" :label "qa · agy"
-                          :send (lambda (_text) (user-error "qa is not in the herd any more")))))))
+                          :send (lambda (_text) (user-error "qa is not in the herd any more"))))))))
 
 (write-region (json-encode (list (cons "pr" (xwapp-url pr-view--app))
                                  (cons "task" (xwapp-url clickup-view--app))

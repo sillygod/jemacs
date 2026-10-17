@@ -17,7 +17,7 @@
   // until they are sent, together.  OPEN is the comment being written:
   // a new one (index -1) or one changed.
   let recipients = [];
-  const rv = { root: null, comments: [], note: "", to: "", open: null, list: false, sending: false };
+  const rv = { scope: "local", root: null, branch: "", repo: "", comments: [], note: "", to: "", open: null, list: false, sending: false };
   const RV_KEY = "pr-view-review:";
   let selectedStates = ["OPEN", "MERGED"];
   let searchQ = "";
@@ -1160,20 +1160,50 @@
 
   // What this browser kept of ROOT's review.  Storage may be refused --
   // a private window -- and then the review lasts as long as the page.
-  function rvLoad(root) {
+  function rvLoad(root, scope) {
     let kept = null;
     try {
       kept = JSON.parse(localStorage.getItem(RV_KEY + root) || "null");
     } catch (e) {
       kept = null;
     }
+    rv.scope = scope || "local";
     rv.root = root;
+    rv.branch = "";
+    rv.repo = "";
     rv.comments = kept && Array.isArray(kept.comments) ? kept.comments.filter(rvSound) : [];
     rv.note = kept && typeof kept.note === "string" ? kept.note : "";
     rv.to = kept && typeof kept.to === "string" ? kept.to : "";
     rv.open = null;
     rv.list = false;
     rv.sending = false;
+  }
+
+  // The diff being reviewed now -- the checkout's, or the open PR's.
+  function rvDiffText() {
+    const p = rv.scope === "pr" ? lastDetail : lastLocal;
+    return (p && p.diff) || "";
+  }
+  // Repaint the view the review is in, keeping the page where it was.
+  function rvRedraw() {
+    if (rv.scope === "pr") {
+      if (page === "detail") renderDetail(lastDetail);
+    } else if (page === "local") drawLocal();
+  }
+
+  // Set up a review of the open PR's diff from what Emacs sent with the
+  // detail -- who may get it (the agent on its head branch), the branch and
+  // repo to send with it.  Returns the notes for the diff, or null when no
+  // agent may be sent a review of this PR.
+  function rvForPr(payload) {
+    const rev = (payload && payload.review) || {};
+    recipients = Array.isArray(rev.recipients) ? rev.recipients : [];
+    const pr = (payload && payload.pr) || {};
+    const key = "pr:" + (pr.url || pr.id || "");
+    if (rv.scope !== "pr" || rv.root !== key) rvLoad(key, "pr");
+    rv.branch = rev.branch || "";
+    rv.repo = rev.repo || "";
+    return recipients.length ? rvNotes : null;
   }
 
   function rvSave() {
@@ -1277,7 +1307,7 @@
   // In the order of the diff: by file, then by line.
   function rvSorted() {
     const order = {};
-    (lastLocal && lastLocal.diff ? parseUnifiedDiff(lastLocal.diff) : []).forEach((f, i) => {
+    parseUnifiedDiff(rvDiffText()).forEach((f, i) => {
       order[f.path] = i;
     });
     const rank = (c) => (Object.prototype.hasOwnProperty.call(order, c.path) ? order[c.path] : Infinity);
@@ -1333,7 +1363,7 @@
     const fd = app.querySelector(".file-diff");
     const tb = app.querySelector(".tree-body");
     const was = { app: app.scrollTop, top: fd ? fd.scrollTop : 0, left: fd ? fd.scrollLeft : 0, tree: tb ? tb.scrollTop : 0 };
-    drawLocal();
+    rvRedraw();
     app.scrollTop = was.app;
     const nfd = app.querySelector(".file-diff");
     if (nfd) {
@@ -1398,13 +1428,14 @@
     const c = rv.comments[i];
     if (!c) return;
     rv.list = false;
-    const files = lastLocal && lastLocal.diff ? parseUnifiedDiff(lastLocal.diff) : [];
+    const files = parseUnifiedDiff(rvDiffText());
     if (!files.some((f) => f.path === c.path)) {
       rvPaint();
-      return setStatus(c.path + " has nothing uncommitted now; its comment goes with the rest");
+      return setStatus(c.path + (rv.scope === "pr" ? " is not in the diff now" : " has nothing uncommitted now") +
+        "; its comment goes with the rest");
     }
     selectedDiffPath = c.path;
-    drawLocal();
+    rvRedraw();
     const card = app.querySelector('.rv-card[data-rv="' + i + '"]');
     if (card) card.scrollIntoView({ block: "center" });
   }
@@ -1420,16 +1451,16 @@
     rvPaint();
     const n = rv.comments.length;
     setStatus("Sending " + n + (n === 1 ? " comment…" : " comments…"));
-    emit("local-review", {
-      root: rv.root,
-      to: to,
-      note: rv.note,
-      comments: rvSorted().map((c) => {
-        const o = { path: c.path, side: c.side, line: c.line, code: c.code, text: c.text };
-        if (rvRange(c)) { o.end = c.end; o.lines = c.codes; }
-        return o;
-      }),
+    const comments = rvSorted().map((c) => {
+      const o = { path: c.path, side: c.side, line: c.line, code: c.code, text: c.text };
+      if (rvRange(c)) { o.end = c.end; o.lines = c.codes; }
+      return o;
     });
+    if (rv.scope === "pr") {
+      emit("pr-review", { branch: rv.branch, repo: rv.repo, to: to, note: rv.note, comments: comments });
+    } else {
+      emit("local-review", { root: rv.root, to: to, note: rv.note, comments: comments });
+    }
   }
 
   function rvAct(act, i) {
@@ -1489,7 +1520,8 @@
   }
 
   function bindReview() {
-    const wrap = app.querySelector(".detail-wrap.local");
+    // The checkout wrap (.detail-wrap.local) or the PR wrap (.detail-wrap).
+    const wrap = app.querySelector(".detail-wrap");
     if (!wrap) return;
     const input = wrap.querySelector(".rv-input");
     if (input && rv.open) input.value = rv.open.text;
@@ -1563,6 +1595,9 @@
     }
     if (tasks.pr !== String(pr.id)) tasks = { pr: String(pr.id), items: [], all: false };
     const commitsN = lastCommits.length;
+    // On the files tab, set up a review of the PR's diff for the agent on
+    // its head branch; filesNotes turns commenting on, or is null.
+    const filesNotes = selectedTab === "files" ? rvForPr(payload) : null;
     const ovOn = selectedTab === "overview" ? " on" : "";
     const fiOn = selectedTab === "files" ? " on" : "";
     const coOn = selectedTab === "commits" ? " on" : "";
@@ -1624,9 +1659,10 @@
       "</div></section></div>" +
       (selectedTab === "files"
         ? '<div id="panel-files" class="panel-files">' +
-          renderFileDiff(payload) +
+          renderFileDiff(payload, filesNotes) +
           "</div>"
         : "") +
+      (selectedTab === "files" && filesNotes ? rvBarHtml() : "") +
       (selectedTab === "commits"
         ? '<div id="panel-commits" class="panel-commits">' +
           commitsHtml(lastCommits) +
@@ -1635,7 +1671,11 @@
       "</div>";
     const ap = document.getElementById("act-approve");
     const mg = document.getElementById("act-merge");
-    bindFiles(() => renderDetail(lastDetail));
+    bindFiles(() => {
+      if (rv.scope === "pr") rvSettle();
+      renderDetail(lastDetail);
+    });
+    if (filesNotes) bindReview();
     const commitPanel = document.getElementById("panel-commits");
     if (commitPanel) {
       commitPanel.addEventListener("click", (ev) => {
@@ -1852,7 +1892,8 @@
     renderLocal: renderLocal,
     // The review went: what Emacs did with it, and who may get the next.
     reviewSent: (p) => {
-      if (!p || p.root !== rv.root) return;
+      if (!p) return;
+      if (p.pr ? rv.scope !== "pr" : p.root !== rv.root) return;
       rv.comments = [];
       rv.note = "";
       rv.open = null;
@@ -1860,15 +1901,16 @@
       rv.sending = false;
       if (Array.isArray(p.recipients)) recipients = p.recipients;
       rvSave();
-      if (page === "local") rvPaint();
+      rvRedraw();
       setStatus(p.said || "Sent", "ok");
     },
     // It did not: the comments stay, to send again.
     reviewFailed: (p) => {
-      if (!p || (p.root && p.root !== rv.root)) return;
+      if (!p) return;
+      if (p.pr ? rv.scope !== "pr" : (p.root && p.root !== rv.root)) return;
       rv.sending = false;
       if (Array.isArray(p.recipients)) recipients = p.recipients;
-      if (page === "local") rvPaint();
+      rvRedraw();
       setStatus(p.error || "Not sent", "error");
     },
     renderCreateForm: renderCreateForm,
