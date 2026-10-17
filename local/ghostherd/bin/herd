@@ -301,7 +301,6 @@ def cmd_relay(args):
         time.sleep(0.4)
     print("relay: timed out waiting for the herd to act")
     return 1
-    return 0
 
 
 # ---- Hooks ---------------------------------------------------------------

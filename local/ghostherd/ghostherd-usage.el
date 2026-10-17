@@ -391,6 +391,10 @@ that carries its model and effort, ending in `· AI: Out of credits' -- or
 nil.  Only the last lines are looked at, where that status line is drawn,
 so the same words quoted in the conversation above never trigger it."
   (when (and (stringp screen) (fboundp 'ghostherd--agy-model-line))
+    ;; agy 1.4.0 draws the status line last, under its input box (────/>/────),
+    ;; so the last three lines hold it and nothing from the conversation.  If
+    ;; a later agy ever drew it higher, this would miss the live catch and
+    ;; fall back to the usage poll -- never a false positive.
     (let ((foot (last (split-string (string-trim-right screen) "\n") 3)))
       (cl-loop for l in (reverse foot)
                when (and (ghostherd--agy-model-line l)

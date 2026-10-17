@@ -5479,8 +5479,10 @@ its answer rather than losing it."
      ((eq by-s tgt) "an agent cannot relay itself")
      ((not (equal (ghostherd-session-role by-s) "lead"))
       (format "only a project's lead may relay; %s is not a lead" by))
-     ((not (equal (ghostherd--project-name (ghostherd-session-project by-s))
-                  (ghostherd--project-name (ghostherd-session-project tgt))))
+     ((let ((p (ghostherd--project-name (ghostherd-session-project by-s))))
+        ;; A real, shared project -- not two project-less sessions reading
+        ;; equal because both are nil.
+        (not (and p (equal p (ghostherd--project-name (ghostherd-session-project tgt))))))
       (format "%s may only relay agents of its own project, not %s" by target))
      ((gethash (ghostherd-session-id by-s) ghostherd--relaying)
       (format "%s is being relayed itself; wait for that to finish" by))

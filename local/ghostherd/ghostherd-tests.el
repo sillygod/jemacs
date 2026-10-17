@@ -9164,14 +9164,19 @@ left empty taking the herd's default."
                    (setq relayed (list (ghostherd-session-name s) kind reason)))))
         (let ((lead (ghostherd-tests--session :name "lead-p" :kind 'claude :project "/p/" :backend 'fake))
               (rd (ghostherd-tests--session :name "rd" :kind 'agy :project "/p/" :backend 'fake))
-              (x (ghostherd-tests--session :name "x" :kind 'agy :project "/q/" :backend 'fake)))
+              (x (ghostherd-tests--session :name "x" :kind 'agy :project "/q/" :backend 'fake))
+              (nolead (ghostherd-tests--session :name "nolead" :kind 'claude :backend 'fake))
+              (noproj (ghostherd-tests--session :name "noproj" :kind 'agy :backend 'fake)))
           (puthash (ghostherd-session-id lead) "lead" ghostherd--roles)
+          (puthash (ghostherd-session-id nolead) "lead" ghostherd--roles)
           ;; not a lead
           (should (string-match-p "not a lead" (ghostherd--relay-request "rd" "lead-p" "grok" nil)))
           ;; itself
           (should (string-match-p "itself" (ghostherd--relay-request "lead-p" "lead-p" "grok" nil)))
           ;; another project's agent
           (should (string-match-p "own project" (ghostherd--relay-request "lead-p" "x" "grok" nil)))
+          ;; two project-less sessions do not read as the same project
+          (should (string-match-p "own project" (ghostherd--relay-request "nolead" "noproj" "grok" nil)))
           ;; target already relaying
           (puthash (ghostherd-session-id rd) t ghostherd--relaying)
           (should (string-match-p "already being relayed" (ghostherd--relay-request "lead-p" "rd" "grok" nil)))
