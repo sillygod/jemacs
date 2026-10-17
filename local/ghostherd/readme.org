@@ -635,6 +635,48 @@ the same path, guarded to the lead's own project's agents.
 The line of a name is kept with the recipe, so it outlives Emacs on
 tmux: the page shows the heir's =II= and, over it, the CLIs before it.
 
+* Worktrees: two agents in one project at once
+
+An agent can work in its own git worktree, so two agents write code in one
+project without stepping on each other.  Opt in when you start one: answer
+yes to "Own git worktree" in =M-x ghostherd-new=, or tick *worktree* in the
+page's *+ New agent* form.  The herd runs =git worktree add= itself, on a
+branch named for the agent off the project's current HEAD, under
+=ghostherd-worktree-root= (default =~/.ghostherd/worktrees/<project>/<name>=)
+--- outside the project tree, so grep, find and project search in the main
+checkout never meet a second copy of the code.
+
+An agent in a worktree still belongs to the project: it shares its room and
+its lead, and =ghostherd--project-root= resolves a worktree to its main
+checkout (by git's common dir), so an agent started by hand in a worktree
+directory is attributed the same way.  Its card shows its branch, how far
+it is ahead of its base (=↑N=) and the worktree's size on disk; the size is
+measured in the background and cached, not run on every poll.
+
+Dependencies are carried in when the worktree is made, in the background,
+by =ghostherd-worktree-deps= (per project, overridable with a
+=ghostherd-project-worktree-deps= dir-local): a Python venv is *symlinked*
+to the main checkout's (a venv holds absolute paths, so a copy breaks),
+=node_modules= is *cloned* copy-on-write (APFS =cp -c=, so the worktree may
+diverge it cheaply), and build caches are left off the list.  A dependency
+that cannot be cloned is skipped and said so on the card --- never copied in
+full.
+
+=herd list= shows each agent's directory and branch, so a lead can find a
+worktree agent's work and read it by its branch (=git diff BASE...BRANCH=).
+
+When a worktree agent is killed, the herd removes the worktree and deletes
+its branch only if the branch is merged into its base and the tree is
+clean; otherwise it keeps both and the project's work line shows it as an
+idle worktree.  Removing one is your call: =M-x ghostherd-worktree-forget=
+offers the project's idle worktrees and removes the one you pick --- keeping
+its branch, so committed work is never lost.  The herd never deletes
+unmerged or uncommitted work, and never merges.
+
+Because there is one running Emacs for all worktrees, =bin/reload= refuses a
+file that is not under the checkout the live Emacs loads from: reloading a
+worktree's copy would overwrite the live definitions with that branch's.
+
 * From a shell (=bin/ghostherd=)
 
 =ghostel_cmd= reaches the herd from inside an agent's own terminal. This is

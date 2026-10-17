@@ -1414,6 +1414,62 @@ and all.
   conversations, on the file tree
 - [ ] Syntax in pr-view's diffs, a pull request's and a checkout's
 
+* Phase 3.26 — An agent in its own git worktree  *(this tree)*
+
+Goal: two agents write code in one project at once without stepping on
+each other, each in its own git worktree on its own branch.
+
+** What shipped
+
+- [X] Opt in at creation: "Own git worktree" in =ghostherd-new=, a
+  *worktree* box in the page's +New.  =git worktree add= off the project's
+  HEAD, branch named for the agent, under =ghostherd-worktree-root=
+  (=~/.ghostherd/worktrees/<project>/<name>=), outside the project tree so
+  grep/find/project search meet no second copy.  Not the CLIs' own -w (agy
+  has none; claude's puts it inside the repo)
+- [X] Attribution: =ghostherd--project-root= resolves a linked worktree to
+  its main checkout (git's common dir), so a worktree agent -- even one
+  started by hand in a worktree dir -- shares the project's room and lead
+  rather than becoming a new project; its directory and branch stay the
+  worktree's.  Path, branch and base kept beside role and lineage and on
+  the host with the recipe, so a restart and a relay keep the worktree
+- [X] Card: branch, commits ahead of base, worktree size on disk (=du= in
+  the background, cached, not per poll)
+- [X] Dependencies carried in, in the background, by =ghostherd-worktree-
+  deps= (per project, a dir-local overrides): a venv symlinked (absolute
+  paths), node_modules cloned copy-on-write (=cp -c=), build caches left
+  off; a clone that cannot be made is skipped and said so on the card,
+  never a full copy
+- [X] Cleanup on kill: merged-into-base and clean -> worktree removed and
+  branch deleted; else both kept and the project shows the idle worktree,
+  removed on the user's call behind a confirmation (=ghostherd-worktree-
+  forget=, which keeps the branch).  Never removes unmerged or uncommitted
+  work; never merges
+- [X] =herd list= shows each agent's directory and branch; the lead role
+  says to name an agent's path and branch in briefs and to read another's
+  work by branch.  REQUIRES A SIDECAR RESTART for the two new snapshot
+  columns
+- [X] =bin/reload= refuses a file not under the checkout the live Emacs
+  loads from (one Emacs, many worktrees would overwrite each other's defuns)
+- [X] 11 ERT on real temp repos and worktrees (attribution, create,
+  spawn/recipe/restore, cleanup, card, +New, snapshot, deps, strays) + 1
+  pytest (list directory/branch); each defence broken on purpose, caught
+
+** What is left
+
+- [ ] A relay or respawn into a worktree whose branch has diverged far
+  from base: the brief is still the transcript's, not a diff of the branch
+- [ ] node_modules shared copy-on-write at a finer grain than the whole
+  tree; a venv per worktree when a project wants divergent Python deps
+- [ ] Worktree attribution for a bare-repo or submodule checkout
+
+** Deliberately not done
+
+- Auto-merge of a worktree's branch on cleanup: the herd never merges;
+  that is the user's call
+- A full copy of node_modules when copy-on-write is unavailable: the disk
+  is not big, so it is skipped and said so instead
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
