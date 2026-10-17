@@ -5249,6 +5249,14 @@ address of each one's room from your phone, for the bot to link to."
                                 (ghostherd-session-started-at s))))
                     (if t0 (* 1000 (float-time t0)) 0))
            :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
+           ;; Where it works and the branch it is on, so the lead can find
+           ;; and read its work.  A worktree agent is in its own directory
+           ;; on its own branch (from the recipe, no per-poll git); the
+           ;; others share the project's, so their branch is left blank.
+           :directory (let ((d (or (plist-get (ghostherd-session-worktree s) :path)
+                                   (ghostherd-session-project s))))
+                        (if d (ghostherd--abbreviate d) ""))
+           :branch (or (plist-get (ghostherd-session-worktree s) :branch) "")
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        "")))
    (hash-table-values ghostherd--sessions)))
@@ -5500,8 +5508,18 @@ what came back, and what you need from them -- briefly, and in the
 language they write to you in.
 
 Your team: \"$GHOSTHERD_HERD\" list shows every agent with its kind,
-state, notes and project; yours are the ones in this project.  You see
-what an agent does only through what it answers you.
+state, notes and project, and the directory and branch it works in;
+yours are the ones in this project.  You see what an agent does only
+through what it answers you.
+
+Some agents work in their own git worktree -- their own directory on
+their own branch off the project, so two can write code at once without
+colliding.  Name an agent's path and branch in the brief you give it, so
+it knows where to work; and read another agent's work by its branch
+rather than its files -- \"git diff BASE...BRANCH\", where BASE is the
+branch it came off (usually the project's main) and BRANCH is the one
+\"$GHOSTHERD_HERD\" list shows for it.  Do not edit in another agent's
+worktree.
 
 Hand work out as an ask, run in the background so you can go on:
 

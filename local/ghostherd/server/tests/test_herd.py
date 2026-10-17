@@ -220,6 +220,36 @@ def test_snapshot_keeps_screen(tmp_path: Path):
     reset_herd()
 
 
+def test_list_returns_directory_and_branch(tmp_path: Path):
+    h = _store(tmp_path)
+    h.tick(
+        sessions=[
+            {
+                "name": "wk",
+                "kind": "claude",
+                "state": "idle",
+                "project": "/src",
+                "directory": "~/.ghostherd/worktrees/src/wk/",
+                "branch": "wk",
+            },
+            {
+                "name": "pl",
+                "kind": "claude",
+                "state": "idle",
+                "project": "/src",
+                "directory": "/src/",
+            },
+        ],
+        ack_ids=[],
+    )
+    by_name = {s["name"]: s for s in h.list_sessions()["sessions"]}
+    assert by_name["wk"]["directory"] == "~/.ghostherd/worktrees/src/wk/"
+    assert by_name["wk"]["branch"] == "wk"
+    assert by_name["pl"]["directory"] == "/src/"
+    assert by_name["pl"]["branch"] == ""
+    reset_herd()
+
+
 def test_alias_is_stable(tmp_path: Path):
     h = _store(tmp_path)
     h.tick(sessions=[{"name": "agy-ghost-commit", "state": "idle"}], ack_ids=[])

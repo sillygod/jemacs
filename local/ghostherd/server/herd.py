@@ -305,6 +305,13 @@ class HerdStore:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN room TEXT")
         if "since" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN since REAL")
+        # Where each agent works, and the branch it is on: a worktree agent
+        # is in its own directory on its own branch (the others share the
+        # project's), so the lead can find and read its work.
+        if "directory" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN directory TEXT")
+        if "branch" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN branch TEXT")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -339,7 +346,8 @@ class HerdStore:
             if project:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason, role, since
+                    SELECT name, kind, state, notes, project, reason, role, since,
+                           directory, branch
                     FROM snapshot WHERE project = ?
                     """,
                     (project,),
@@ -347,7 +355,8 @@ class HerdStore:
             else:
                 rows = self._conn.execute(
                     """
-                    SELECT name, kind, state, notes, project, reason, role, since
+                    SELECT name, kind, state, notes, project, reason, role, since,
+                           directory, branch
                     FROM snapshot
                     """
                 ).fetchall()
@@ -368,6 +377,8 @@ class HerdStore:
                     "project": r[4] or "",
                     "reason": r[5] or "",
                     "role": r[6] or "",
+                    "directory": (r[8] if len(r) > 8 else "") or "",
+                    "branch": (r[9] if len(r) > 9 else "") or "",
                     "short": self.short_for(r[0]),
                 }
                 for r in rows
@@ -1234,8 +1245,9 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO snapshot
-                      (name, kind, state, notes, project, reason, screen, role, prompt, room, since)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
+                       directory, branch)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -1249,6 +1261,8 @@ class HerdStore:
                         json.dumps(row["prompt"]) if isinstance(row.get("prompt"), dict) else None,
                         str(row.get("room") or ""),
                         since,
+                        str(row.get("directory") or ""),
+                        str(row.get("branch") or ""),
                     ),
                 )
                 self._upsert_alias(name)

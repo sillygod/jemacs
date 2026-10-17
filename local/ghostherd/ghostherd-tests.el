@@ -9667,6 +9667,23 @@ when git cannot, it says so and spawns nothing."
           (should-not spawned)
           (should (seq-find (lambda (m) (and (stringp m) (string-match-p "No worktree" m))) flashed)))))))
 
+(ert-deftest ghostherd-test-worktree-snapshot-has-directory-and-branch ()
+  "The herd snapshot (what `herd list' reads) carries each agent's directory
+and branch: a worktree agent its worktree path and branch, others the
+project directory and no branch."
+  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal))
+                               (ghostherd--roles (make-hash-table :test 'equal)))
+    (ghostherd-tests--session :name "wk" :kind 'claude :project "/p/shop/")
+    (ghostherd-tests--session :name "pl" :kind 'claude :project "/p/shop/")
+    (puthash "wk" '(:path "/w/shop/wk/" :branch "wk" :base "main") ghostherd--worktrees)
+    (let* ((snap (ghostherd--herd-snapshot))
+           (wks (seq-find (lambda (e) (equal (plist-get e :name) "wk")) snap))
+           (pls (seq-find (lambda (e) (equal (plist-get e :name) "pl")) snap)))
+      (should (equal (plist-get wks :directory) "/w/shop/wk/"))
+      (should (equal (plist-get wks :branch) "wk"))
+      (should (equal (plist-get pls :directory) "/p/shop/"))
+      (should (equal (plist-get pls :branch) "")))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))
