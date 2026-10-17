@@ -1179,10 +1179,15 @@
     const deps = Array.isArray(w.deps) && w.deps.length
       ? '<span class="wchip dep-skip" title="' + esc(w.deps.map((d) => d.name + " skipped: " + d.reason).join("; ")) + '">deps: ' + esc(w.deps.map((d) => d.name).join(", ")) + " skipped</span>"
       : "";
+    // Worktrees a killed agent left behind, kept because unmerged or
+    // unclean; the user removes them with M-x ghostherd-worktree-forget.
+    const strays = Array.isArray(w.strays) && w.strays.length
+      ? '<span class="wchip stray" title="' + esc(w.strays.map((x) => x.path + " [" + x.branch + "]").join("; ")) + ", left by a killed agent; remove with M-x ghostherd-worktree-forget\">" + w.strays.length + " idle worktree" + (w.strays.length === 1 ? "" : "s") + "</span>"
+      : "";
     // The default branch without a PR says nothing of one -- but what it
     // has not committed, it says.
     const quiet = !pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch);
-    if (quiet && !changes && !ahead && !size && !deps) return "";
+    if (quiet && !changes && !ahead && !size && !deps && !strays) return "";
     const key = w.root + "|" + w.branch;
     const open = herdNow.workOpen.has(key);
     const prPart = quiet ? ""
@@ -1190,7 +1195,7 @@
       : w.error ? '<span class="wnote" title="' + esc(w.error) + '">PR not looked up</span>'
       : w.pending ? '<span class="wnote">PR…</span>'
       : '<span class="wnote">no PR</span>';
-    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes + ahead + size + deps +
+    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes + ahead + size + deps + strays +
       (open ? tasks : tasks.slice(0, 2)).map((t) => taskChip(t)).join("") +
       (tasks.length > 2 ? moreButton(key, open, tasks.length - 2) : "") + "</div>";
   }

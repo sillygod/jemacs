@@ -963,7 +963,10 @@ until they are done, the page shows the last look."
     ;; A worktree agent's branch-ahead and its worktree's size on disk.
     (when (ghostherd-session-worktree s)
       (ghostherd-memory-page--chore #'ghostherd-memory-page--worktree-ahead (ghostherd-session-id s))
-      (ghostherd-memory-page--chore #'ghostherd-memory-page--worktree-size (ghostherd-session-id s)))))
+      (ghostherd-memory-page--chore #'ghostherd-memory-page--worktree-size (ghostherd-session-id s)))
+    ;; Worktrees of its project that no agent is in -- left by a killed one.
+    (when-let* ((project (ghostherd-session-project s)))
+      (ghostherd-memory-page--chore #'ghostherd-memory-page--strays-look project))))
 
 (defun ghostherd-memory-page--look-at (id)
   "Put the checkouts of session ID, and of its project, in the look."
@@ -1098,6 +1101,32 @@ blocks Emacs, and never two `du's at once for one worktree."
                (message "ghostherd: du on %s: %s" (abbreviate-file-name path)
                         (error-message-string err)))))))
 
+;; A worktree a killed agent left behind -- kept because its branch was not
+;; merged or its tree was not clean -- has no card of its own, so the
+;; project it belongs to shows it: an idle worktree the user may remove with
+;; `ghostherd-worktree-forget'.
+
+(defvar ghostherd-memory-page--strays (make-hash-table :test 'equal)
+  "Project name -> its git worktrees no live agent is in, (PATH . BRANCH) each.")
+
+(defun ghostherd-memory-page--strays-look (project)
+  "Find PROJECT's git worktrees that no live agent occupies; the page is
+told when they change."
+  (when (and (fboundp 'ghostherd--worktree-list) (stringp project))
+    (let* ((busy (delq nil (mapcar (lambda (s)
+                                     (when-let* ((p (plist-get (ghostherd-session-worktree s) :path)))
+                                       (file-truename (directory-file-name p))))
+                                   (ghostherd-sessions))))
+           (strays (seq-remove (lambda (pb)
+                                 (member (file-truename (directory-file-name (car pb))) busy))
+                               (ghostherd--worktree-list project)))
+           (key (ghostherd--project-name project)))
+      (when key
+        (unless (equal strays (gethash key ghostherd-memory-page--strays))
+          (if strays (puthash key strays ghostherd-memory-page--strays)
+            (remhash key ghostherd-memory-page--strays))
+          (ghostherd-memory-page--work-changed))))))
+
 (defun ghostherd-memory-page--herd-checkout-p (root)
   "Non-nil when ROOT is the root of a checkout the herd is in: one the
 last look found, or one an agent's directory or project is in now."
@@ -1219,11 +1248,19 @@ the herd is not in."
           :tasks (ghostherd-memory-page--vec (mapcar #'ghostherd-memory-page--task tasks)))))
 
 (defun ghostherd-memory-page--projects-work ()
-  "Each project's checkout, as the page shows it."
+  "Each project's checkout, as the page shows it, with any idle worktrees
+it has left behind."
   (let (out)
     (maphash (lambda (k co)
                (when (and (stringp k) (consp co))
-                 (push (append (list :project k) (ghostherd-memory-page--work co)) out)))
+                 (push (append (list :project k
+                                     :strays (ghostherd-memory-page--vec
+                                              (mapcar (lambda (pb)
+                                                        (list :path (abbreviate-file-name (car pb))
+                                                              :branch (or (cdr pb) "")))
+                                                      (gethash k ghostherd-memory-page--strays))))
+                               (ghostherd-memory-page--work co))
+                       out)))
              ghostherd-memory-page--checkouts)
     (ghostherd-memory-page--vec (nreverse out))))
 

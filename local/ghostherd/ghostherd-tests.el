@@ -9739,6 +9739,41 @@ else the default `ghostherd-worktree-deps'."
              (current-buffer)))
     (should (equal (ghostherd--worktree-deps-for repo) '(("node_modules" . clone))))))
 
+(ert-deftest ghostherd-test-worktree-strays-shown-on-project ()
+  "A worktree no live agent is in is listed on its project as an idle
+worktree the user can remove; an occupied one is not."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd
+      ((ghostherd--worktrees (make-hash-table :test 'equal))
+       (ghostherd-memory-page--strays (make-hash-table :test 'equal))
+       (ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
+       (ghostherd-memory-page--prs (make-hash-table :test 'equal))
+       (ghostherd-memory-page--changes (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (let* ((ghostherd-worktree-root (concat base "trees/"))
+             (wt (ghostherd--worktree-create repo "ghost"))
+             (key (ghostherd--project-name repo)))
+        ;; No agent is in it: a stray.
+        (ghostherd-memory-page--strays-look repo)
+        (let ((strays (gethash key ghostherd-memory-page--strays)))
+          (should (equal (length strays) 1))
+          (should (equal (cdr (car strays)) "ghost")))
+        ;; An agent in it: no longer a stray.
+        (let ((s (ghostherd-tests--session :name "a" :kind 'claude :project repo)))
+          (ignore s)
+          (puthash "a" wt ghostherd--worktrees)
+          (ghostherd-memory-page--strays-look repo)
+          (should-not (gethash key ghostherd-memory-page--strays)))
+        ;; Gone again: the project payload carries it.
+        (remhash "a" ghostherd--worktrees)
+        (ghostherd-memory-page--strays-look repo)
+        (puthash key (cons repo "main") ghostherd-memory-page--checkouts)
+        (let* ((pw (append (ghostherd-memory-page--projects-work) nil))
+               (entry (seq-find (lambda (e) (equal (plist-get e :project) key)) pw))
+               (strays (append (plist-get entry :strays) nil)))
+          (should (equal (length strays) 1))
+          (should (equal (plist-get (car strays) :branch) "ghost")))))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))
