@@ -144,6 +144,22 @@
                     (list :id "qa" :label "qa · agy"
                           :send (lambda (_text) (user-error "qa is not in the herd any more"))))))))
 
+;; Which agent changed which file, for the file tree's marks: one file by
+;; one agent, one by two (merged), and in the PR a file by the agent on its
+;; head branch.  A file no agent is said to have edited gets no mark.
+(add-hook 'pr-view-local-editors-functions
+          (lambda (root &optional pr)
+            (cond
+             (pr
+              (list (list :file "shop/payments/webhook.py"
+                          :by (list (list :id "pr-rd" :label "pr-rd · claude")))))
+             ((equal root e2e-checkout-root)
+              (list (list :file "src/pay.py"
+                          :by (list (list :id "rd" :label "rd · grok")))
+                    (list :file "README.md"
+                          :by (list (list :id "rd" :label "rd · grok")
+                                    (list :id "lead-shop" :label "lead-shop · claude"))))))))
+
 (write-region (json-encode (list (cons "pr" (xwapp-url pr-view--app))
                                  (cons "task" (xwapp-url clickup-view--app))
                                  (cons "local" e2e-checkout-root)))
