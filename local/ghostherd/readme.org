@@ -614,10 +614,18 @@ new agent --- one CLI's flags mean nothing to another.
 Which CLI: the first of =ghostherd-relay-kinds= (=claude grok agy=)
 that is not the agent's own and has usage left, by the usage the herd
 reads (=ghostherd-usage-used-up=: under 1% left in a window not yet
-reset, read in the last two hours).  When an agent stops working with
-its CLI used up, the herd says so once for that window --- in the log,
-the echo area, a =used-up= push --- and the herd page puts =Relay to
-grok= first on its row.
+reset, read in the last two hours; for agy, by the group the agent's own
+model belongs to, so an agent on a group with quota is not called used
+up because another is spent).  When an agent stops working with its CLI
+used up --- or the moment its own status line says so, agy's =· AI: Out
+of credits= footer caught live rather than on the 90-second poll --- the
+herd says so once for that window --- in the log, the echo area, a
+=used-up= push --- and the herd page puts =Relay to grok= first on its
+row.
+
+A lead can relay a stuck or spent worker from the CLI, too: =herd relay
+TARGET [KIND] [--reason TEXT]= hands its work to a fresh agent through
+the same path, guarded to the lead's own project's agents.
 
 The line of a name is kept with the recipe, so it outlives Emacs on
 tmux: the page shows the heir's =II= and, over it, the CLIs before it.

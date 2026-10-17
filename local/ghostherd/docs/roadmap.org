@@ -745,8 +745,9 @@ builds, one tests, back and forth --- as one conversation, on the page.
   =contextWindowTokens= comes from =signals.json= beside
   =chat_history.jsonl= (cached on =signals.json=, shown as a percentage
   bar).  For agy, =input_tokens + cache_read_tokens= comes from the last
-  model =PLANNER_RESPONSE= in its transcript (shown as a token count
-  without a bar, since no window cap is written on disk).  grok and agy
+  model =PLANNER_RESPONSE= in its transcript; its window is not on disk,
+  so the page fills the uniform 1.0M its =/context= reports for every
+  model (verified on a scratch agy), shown as a bar like the rest.  grok and agy
   keep neither model nor effort in their transcripts, so Emacs reads
   those off their screen and merges the sidecar's tokens in
 - [X] Its model switched from the page, for its session alone.
@@ -901,6 +902,12 @@ lead is that, and every other flow besides.
 - [X] A role in the herd, written onto the host with the recipe: a
   lead is one again after a restore or a respawn, and the sidecar's
   snapshot and =herd list= say who it is
+- [X] An agy lead's role prompt re-sent on a cold respawn: claude and grok
+  carry it in their args (=--append-system-prompt=, =--rules=), re-added on
+  any respawn, but agy's rides in the first message, so a fresh respawn ---
+  a new conversation --- came up without it.  Now sent once it is ready; a
+  continuing respawn (the conversation already has it) and a relay (its
+  handoff carries it) do not double-send.  1 ERT broken on purpose
 - [X] Asks nest --- lead to rd, rd to qa --- three deep at most, never
   back up their chain; a kind never picks the lead, nor one waiting on
   the asker
@@ -1325,14 +1332,27 @@ lead handoff, for every agent.
   the checkout, the size, go on or wait, what is not a transcript, the
   link, the push and its tap), 17 ERT, 11 WebKit checks of the page's
   relay; 74 guards broken on purpose, each caught
+- [X] Out of credits / rate limit caught live from the agent's own status
+  line, not only on the 90-second usage poll: agy's footer =· AI: Out of
+  credits= reads as used up at once --- the card's Relay, the =used-up=
+  push --- through the same used-up path, confined to the footer so the
+  same words quoted in the conversation do not trigger, per session,
+  clearing when the footer does.  Against agy 1.4.0's real screen; 1 ERT
+  broken on purpose
+- [X] An agent relaying another --- a lead whose rd is used up --- through
+  =herd relay TARGET [KIND] [--reason TEXT]=: the same commands queue to
+  =ghostherd-relay=, guarded by who asks (a project's lead, its own
+  project's agents, not itself, neither it nor the target already in a
+  relay).  The lead's role says when to use it; =herd --help= lists it.
+  1 ERT (the guards) + 1 pytest (the command's reply) broken on purpose
 
 ** What is left
 
-- [ ] Relay a real agent at a real limit: what claude's screen says when
-  its usage runs out, so the state can say it too, and whether a brief
-  from a long day's transcript is the right sixteen thousand characters
-- [ ] An agent relaying another --- a lead whose rd is used up --- through
-  =herd relay=
+- [ ] The live catch for claude and grok too: a real rate-limited screen of
+  each, to anchor the match to the status line it is drawn on (agy done
+  from its footer; their binaries are compiled, no sample to hand)
+- [ ] Relay a real agent at a real limit: whether a brief from a long
+  day's transcript is the right sixteen thousand characters
 
 * Phase 3.27 — What a checkout has not committed  *(this tree)*
 
