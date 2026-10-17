@@ -9606,6 +9606,67 @@ unmerged or unclean one is kept, and `ghostherd-worktree-forget' removes it
               (should (file-directory-p (plist-get wt :path)))
               (should (branch-p "dirty")))))))))
 
+(ert-deftest ghostherd-test-worktree-card-shows-ahead-and-size ()
+  "A worktree agent's card carries its branch, how far it is ahead of its
+base, and the worktree's size on disk -- :json-false until measured."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd
+      ((ghostherd--worktrees (make-hash-table :test 'equal))
+       (ghostherd-memory-page--checkouts (make-hash-table :test 'equal))
+       (ghostherd-memory-page--prs (make-hash-table :test 'equal))
+       (ghostherd-memory-page--changes (make-hash-table :test 'equal))
+       (ghostherd-memory-page--ahead (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "wk" :kind 'claude :project "/p/")))
+      (puthash "wk" '(:path "/w/wk/" :branch "wk" :base "master") ghostherd--worktrees)
+      (puthash (cons 'agent "wk") '("/w/wk/" . "wk") ghostherd-memory-page--checkouts)
+      (puthash (ghostherd--project-name "/p/") '("/p/" . "main") ghostherd-memory-page--checkouts)
+      (puthash "wk" 3 ghostherd-memory-page--ahead)
+      (puthash "wk" 5242880 ghostherd-memory-page--size)
+      (let ((w (ghostherd-memory-page--agent-work s)))
+        (should (equal (plist-get w :root) "/w/wk/"))
+        (should (equal (plist-get w :branch) "wk"))
+        (should (equal (plist-get w :base) "master"))
+        (should (equal (plist-get w :ahead) 3))
+        (should (equal (plist-get w :size) 5242880)))
+      (remhash "wk" ghostherd-memory-page--ahead)
+      (remhash "wk" ghostherd-memory-page--size)
+      (let ((w (ghostherd-memory-page--agent-work s)))
+        (should (eq (plist-get w :ahead) :json-false))
+        (should (eq (plist-get w :size) :json-false))))))
+
+(ert-deftest ghostherd-test-worktree-new-agent-opts-in ()
+  "The page's +New with worktree on creates the worktree and spawns in it;
+when git cannot, it says so and spawns nothing."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-repo
+      (let ((ghostherd-worktree-root (concat base "trees/"))
+            spawned flashed)
+        (cl-letf (((symbol-function 'ghostherd-spawn)
+                   (lambda (kind &rest plist)
+                     (setq spawned (cons kind plist))
+                     (ghostherd-session--create :id "x" :name "wk")))
+                  ((symbol-function 'ghostherd-memory-page--js)
+                   (lambda (_fn &rest args) (push (car args) flashed)))
+                  ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore)
+                  ((symbol-function 'ghostherd-project-defaults) (lambda (&rest _) (cons nil nil))))
+          ;; worktree on: a worktree is made and the spawn is in it.
+          (ghostherd-memory-page--agent-new
+           `((kind . "claude") (project . ,repo) (name . "wk") (worktree . t)))
+          (should spawned)
+          (let ((plist (cdr spawned)))
+            (should (plist-get plist :worktree))
+            (should (equal (plist-get plist :branch) "wk"))
+            (should (equal (plist-get plist :directory) (plist-get plist :worktree)))
+            (should (file-directory-p (plist-get plist :worktree))))
+          ;; A non-git directory: no worktree, no spawn, a flash saying so.
+          (setq spawned nil flashed nil)
+          (ghostherd-memory-page--agent-new
+           `((kind . "claude") (project . ,base) (name . "nope") (worktree . t)))
+          (should-not spawned)
+          (should (seq-find (lambda (m) (and (stringp m) (string-match-p "No worktree" m))) flashed)))))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))

@@ -1058,6 +1058,18 @@
 
   const QUIET_BRANCHES = ["main", "master", "develop", "HEAD"];
 
+  function fmtBytes(n) {
+    if (typeof n !== "number" || n <= 0) return "";
+    if (n < 1024) return n + " B";
+    const u = ["KB", "MB", "GB", "TB"];
+    let i = -1;
+    do {
+      n /= 1024;
+      i++;
+    } while (n >= 1024 && i < u.length - 1);
+    return (n >= 10 ? Math.round(n) : n.toFixed(1)) + " " + u[i];
+  }
+
   function workFor(project) {
     const d = herdNow.data;
     return ((d && d.work) || []).find((w) => w.project === project) || null;
@@ -1157,10 +1169,17 @@
     const pr = w.pr || null;
     const tasks = w.tasks || [];
     const changes = changesChip(w);
+    // A worktree agent also shows how far its branch is ahead of its base
+    // and the worktree's size on disk.
+    const ahead = typeof w.ahead === "number" && w.ahead > 0
+      ? '<span class="wchip ahead" title="' + esc(w.ahead + " commit" + (w.ahead === 1 ? "" : "s") + " ahead of " + (w.base || "its base")) + '">↑' + w.ahead + "</span>"
+      : "";
+    const sized = fmtBytes(w.size);
+    const size = sized ? '<span class="wchip size" title="worktree on disk">' + esc(sized) + "</span>" : "";
     // The default branch without a PR says nothing of one -- but what it
     // has not committed, it says.
     const quiet = !pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch);
-    if (quiet && !changes) return "";
+    if (quiet && !changes && !ahead && !size) return "";
     const key = w.root + "|" + w.branch;
     const open = herdNow.workOpen.has(key);
     const prPart = quiet ? ""
@@ -1168,7 +1187,7 @@
       : w.error ? '<span class="wnote" title="' + esc(w.error) + '">PR not looked up</span>'
       : w.pending ? '<span class="wnote">PR…</span>'
       : '<span class="wnote">no PR</span>';
-    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes +
+    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes + ahead + size +
       (open ? tasks : tasks.slice(0, 2)).map((t) => taskChip(t)).join("") +
       (tasks.length > 2 ? moreButton(key, open, tasks.length - 2) : "") + "</div>";
   }
@@ -1480,6 +1499,7 @@
             ? '<div class="newform"><select class="new-kind">' + kinds.map((k) => '<option value="' + esc(k) + '"' +
               (k === herdNow.newKind ? " selected" : "") + ">" + esc(k) + "</option>").join("") +
               '</select><input class="new-name" value="' + esc(herdNow.newName) + '" placeholder="name (default: kind-' + esc(leaf(g.project)) + ')">' +
+              '<label class="new-worktree-l" title="Its own git worktree and branch, off the project\'s HEAD"><input type="checkbox" class="new-worktree"' + (herdNow.newWorktree ? " checked" : "") + "> worktree</label>" +
               '<button type="button" class="primary small" data-act="a:new-go">Start</button>' +
               '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button></div>'
             : "";
@@ -2181,6 +2201,7 @@
     if (act === "new-agent") {
       herdNow.newFor = project;
       herdNow.newKind = herdNow.newName = "";
+      herdNow.newWorktree = false;
       renderAgents();
       const sel = app.querySelector(".newform select");
       if (sel) sel.focus();
@@ -2188,8 +2209,14 @@
     }
     if (act === "new-go") {
       const form = el.closest(".newform");
+      const wt = form.querySelector(".new-worktree");
       herdNow.newFor = null;
-      emit("agent-new", { project, kind: form.querySelector(".new-kind").value, name: form.querySelector(".new-name").value.trim() });
+      emit("agent-new", {
+        project,
+        kind: form.querySelector(".new-kind").value,
+        name: form.querySelector(".new-name").value.trim(),
+        worktree: !!(wt && wt.checked),
+      });
       return renderAgents();
     }
     if (act === "new-cancel") {
@@ -2326,6 +2353,7 @@
   app.addEventListener("change", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
     if (ev.target.classList && ev.target.classList.contains("new-kind")) herdNow.newKind = ev.target.value;
+    if (ev.target.classList && ev.target.classList.contains("new-worktree")) herdNow.newWorktree = ev.target.checked;
   });
 
   app.addEventListener("input", (ev) => {

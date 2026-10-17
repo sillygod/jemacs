@@ -959,7 +959,11 @@ until they are done, the page shows the last look."
       (ghostherd-memory-page--chore #'ghostherd-memory-page--look-at (ghostherd-session-id s)))
     (ghostherd-memory-page--chore #'ghostherd-memory-page--look-done))
   (dolist (s (ghostherd-sessions))
-    (ghostherd-memory-page--chore #'ghostherd-memory-page--links-look (ghostherd-session-id s))))
+    (ghostherd-memory-page--chore #'ghostherd-memory-page--links-look (ghostherd-session-id s))
+    ;; A worktree agent's branch-ahead and its worktree's size on disk.
+    (when (ghostherd-session-worktree s)
+      (ghostherd-memory-page--chore #'ghostherd-memory-page--worktree-ahead (ghostherd-session-id s))
+      (ghostherd-memory-page--chore #'ghostherd-memory-page--worktree-size (ghostherd-session-id s)))))
 
 (defun ghostherd-memory-page--look-at (id)
   "Put the checkouts of session ID, and of its project, in the look."
@@ -1022,6 +1026,77 @@ the page is open."
           (ghostherd-memory-page--chore #'ghostherd-memory-page--changes-count (car co)))))))
 
 (add-hook 'ghostherd-state-change-hook #'ghostherd-memory-page--changes-on-state)
+
+;; A worktree agent's card also shows how far its branch is ahead of its
+;; base, and the worktree's size on disk.  Ahead is a cheap `git rev-list
+;; --count', done as a chore at each look.  Size is `du', which can be
+;; slow, so it runs in the background and is kept for a few minutes rather
+;; than measured on every poll.
+
+(defconst ghostherd-memory-page--size-ttl 300
+  "Seconds a worktree's measured size is kept before `du' runs again.")
+(defvar ghostherd-memory-page--ahead (make-hash-table :test 'equal)
+  "Session id -> commits its worktree branch is ahead of its base.")
+(defvar ghostherd-memory-page--size (make-hash-table :test 'equal)
+  "Session id -> its worktree's size on disk in bytes, as `du' measured it.")
+(defvar ghostherd-memory-page--size-at (make-hash-table :test 'equal)
+  "Session id -> when its worktree size was last measured.")
+(defvar ghostherd-memory-page--size-running (make-hash-table :test 'equal)
+  "Session ids whose `du' is in flight, so it is not started twice.")
+
+(defun ghostherd-memory-page--worktree-ahead (id)
+  "Count how far session ID's worktree branch is ahead of its base; the
+page is told when that changed."
+  (when-let* ((s (ghostherd-get id))
+              (wt (ghostherd-session-worktree s))
+              (main (ghostherd-session-project s))
+              (branch (plist-get wt :branch))
+              (base (plist-get wt :base)))
+    (let ((default-directory (file-name-as-directory (expand-file-name main))))
+      (with-temp-buffer
+        (when (eq 0 (ignore-errors
+                      (call-process "git" nil '(t nil) nil "rev-list" "--count"
+                                    (concat base ".." branch))))
+          (let ((n (string-to-number (string-trim (buffer-string)))))
+            (unless (equal n (gethash id ghostherd-memory-page--ahead))
+              (puthash id n ghostherd-memory-page--ahead)
+              (ghostherd-memory-page--work-changed))))))))
+
+(defun ghostherd-memory-page--worktree-size (id)
+  "Measure session ID's worktree size with `du' in the background, kept for
+`ghostherd-memory-page--size-ttl'; the page is told when it changed.  Never
+blocks Emacs, and never two `du's at once for one worktree."
+  (when-let* ((s (ghostherd-get id))
+              (wt (ghostherd-session-worktree s))
+              (path (plist-get wt :path))
+              ((file-directory-p (expand-file-name path)))
+              ((not (gethash id ghostherd-memory-page--size-running)))
+              ((let ((at (gethash id ghostherd-memory-page--size-at)))
+                 (or (null at) (> (- (float-time) at) ghostherd-memory-page--size-ttl)))))
+    (let ((buf (generate-new-buffer " *ghostherd-du*")))
+      (condition-case err
+          (progn
+            (puthash id t ghostherd-memory-page--size-running)
+            (make-process
+             :name "ghostherd-du" :buffer buf :noquery t
+             :command (list "du" "-sk" (expand-file-name path))
+             :sentinel
+             (lambda (proc _event)
+               (unless (process-live-p proc)
+                 (remhash id ghostherd-memory-page--size-running)
+                 (puthash id (float-time) ghostherd-memory-page--size-at)
+                 (when (buffer-live-p (process-buffer proc))
+                   (when (eq (process-exit-status proc) 0)
+                     (with-current-buffer (process-buffer proc)
+                       (let ((kb (string-to-number (car (split-string (buffer-string))))))
+                         (unless (equal (* kb 1024) (gethash id ghostherd-memory-page--size))
+                           (puthash id (* kb 1024) ghostherd-memory-page--size)
+                           (ghostherd-memory-page--work-changed)))))
+                   (kill-buffer (process-buffer proc)))))))
+        (error (remhash id ghostherd-memory-page--size-running)
+               (when (buffer-live-p buf) (kill-buffer buf))
+               (message "ghostherd: du on %s: %s" (abbreviate-file-name path)
+                        (error-message-string err)))))))
 
 (defun ghostherd-memory-page--herd-checkout-p (root)
   "Non-nil when ROOT is the root of a checkout the herd is in: one the
@@ -1153,12 +1228,21 @@ the herd is not in."
     (ghostherd-memory-page--vec (nreverse out))))
 
 (defun ghostherd-memory-page--agent-work (s)
-  "S's checkout as the page shows it, when it is not its project's."
+  "S's checkout as the page shows it, when it is not its project's.
+A herd-made worktree also carries how far it is ahead of its base and its
+size on disk, both measured and cached by the look."
   (let ((co (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts))
         (project (gethash (ghostherd--project-name (ghostherd-session-project s))
                           ghostherd-memory-page--checkouts)))
     (if (and (consp co) (not (equal co project)))
-        (ghostherd-memory-page--work co)
+        (let ((w (ghostherd-memory-page--work co))
+              (wt (ghostherd-session-worktree s))
+              (id (ghostherd-session-id s)))
+          (if wt
+              (append w (list :base (or (plist-get wt :base) "")
+                              :ahead (or (gethash id ghostherd-memory-page--ahead) :json-false)
+                              :size (or (gethash id ghostherd-memory-page--size) :json-false)))
+            w))
       :json-false)))
 
 (defconst ghostherd-memory-page--lead-named 6
@@ -1847,10 +1931,14 @@ attach it.  It comes from the page on another device -- a phone's photo
       (ghostherd-memory-page--send-herd))))
 
 (defun ghostherd-memory-page--agent-new (intent)
-  "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus."
+  "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus.
+With a true `worktree', give it its own git worktree off the project's
+HEAD on a branch named for the agent; when git cannot, say so and spawn
+nothing rather than a plain agent pretending to be in a worktree."
   (let* ((kind (intern-soft (or (alist-get 'kind intent) "")))
          (dir (alist-get 'project intent))
-         (name (string-trim (or (alist-get 'name intent) ""))))
+         (name (string-trim (or (alist-get 'name intent) "")))
+         (worktree (eq (alist-get 'worktree intent) t)))
     (unless (and kind (memq kind (ghostherd--agent-kinds))
                  (plist-get (ghostherd--spec kind) :command))
       (user-error "No agent kind %s" (alist-get 'kind intent)))
@@ -1859,19 +1947,28 @@ attach it.  It comes from the page on another device -- a phone's photo
     (unless (or (string-empty-p name) (string-match-p ghostherd-memory-page--agent-name-re name))
       (user-error "A name is letters, digits, . _ - (%s)" name))
     (let* ((defaults (ghostherd-project-defaults dir))
-           (s (ghostherd-spawn
-               kind
-               :name (ghostherd--unique-name
-                      (if (string-empty-p name)
-                          (format "%s-%s" kind (file-name-nondirectory (directory-file-name dir)))
-                        name))
-               :project (or (ghostherd--project-root dir) dir)
-               :directory dir
-               :args (or (and (eq (car defaults) kind) (cdr defaults))
-                         (plist-get (ghostherd--spec kind) :args))
-               :display nil)))
-      (ghostherd-memory-page--js "flash" (format "Started %s" (ghostherd-session-name s)))
-      (ghostherd-memory-page--send-herd))))
+           (project (or (ghostherd--project-root dir) dir))
+           (final (ghostherd--unique-name
+                   (if (string-empty-p name)
+                       (format "%s-%s" kind (file-name-nondirectory (directory-file-name dir)))
+                     name)))
+           (args (or (and (eq (car defaults) kind) (cdr defaults))
+                     (plist-get (ghostherd--spec kind) :args)))
+           (started (lambda (s)
+                      (ghostherd-memory-page--js "flash" (format "Started %s" (ghostherd-session-name s)))
+                      (ghostherd-memory-page--send-herd))))
+      (if (not worktree)
+          (funcall started (ghostherd-spawn kind :name final :project project
+                                            :directory dir :args args :display nil))
+        (condition-case err
+            (let ((wt (ghostherd--worktree-create project final)))
+              (funcall started (ghostherd-spawn kind :name final :project project
+                                                :directory (plist-get wt :path) :args args
+                                                :worktree (plist-get wt :path)
+                                                :branch (plist-get wt :branch)
+                                                :base (plist-get wt :base) :display nil)))
+          (error (ghostherd-memory-page--js
+                  "flash" (format "No worktree: %s" (error-message-string err)))))))))
 
 
 ;;; Intents
