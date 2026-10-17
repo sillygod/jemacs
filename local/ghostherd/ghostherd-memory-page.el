@@ -1156,43 +1156,107 @@ last look found, or one an agent's directory or project is in now."
                   (ghostherd-tell s text)
                   (format "Sent to %s" name)))))
 
-(defun ghostherd-memory-page--review-recipients (root)
-  "Who a review of what checkout ROOT has not committed may go to, as
-`pr-view-local-recipients-functions' wants them; none for a checkout
-the herd is not in."
-  (let* ((roots (make-hash-table :test 'equal))
-         (root-of (lambda (dir)
-                    (with-memoization (gethash dir roots)
-                      (car-safe (ghostherd-memory-page--checkout dir)))))
-         (agents (seq-filter (lambda (s)
-                               (and (not (eq (ghostherd-session-state s) 'dead))
-                                    (plist-get (ghostherd--spec (ghostherd-session-kind s)) :command)))
-                             (ghostherd-sessions)))
-         (here (seq-filter (lambda (s) (equal (funcall root-of (ghostherd-session-directory s)) root))
-                           agents))
-         ;; The projects of those here, and those whose own checkout it is.
-         (projects (delete-dups
-                    (delq nil (mapcar (lambda (s)
-                                        (let ((p (ghostherd--project-name (ghostherd-session-project s))))
-                                          (and p (or (memq s here) (equal (funcall root-of p) root)) p)))
-                                      (ghostherd-sessions)))))
-         (leads (seq-filter (lambda (s) (memq s agents))
-                            (delq nil (mapcar #'ghostherd-project-lead projects))))
-         (leaderless (seq-remove #'ghostherd-project-lead projects)))
+(defun ghostherd-memory-page--start-a-lead (projects)
+  "A `new lead' recipient to start, per leaderless PROJECT in PROJECTS."
+  (mapcar (lambda (p)
+            (list :id (concat "@lead " p)
+                  :label (format "new lead%s · %s"
+                                 (if (cdr projects)
+                                     (concat " for " (file-name-nondirectory (directory-file-name p)))
+                                   "")
+                                 ghostherd-lead-kind)
+                  :send (lambda (text)
+                          (format "Started %s; it gets the comments once it is ready"
+                                  (ghostherd-session-name (ghostherd-lead-say p text))))))
+          projects))
+
+(defun ghostherd-memory-page--command-agents ()
+  "The live agents that run a command (not shells, not dead)."
+  (seq-filter (lambda (s)
+                (and (not (eq (ghostherd-session-state s) 'dead))
+                     (plist-get (ghostherd--spec (ghostherd-session-kind s)) :command)))
+              (ghostherd-sessions)))
+
+(defun ghostherd-memory-page--agent-branch (s)
+  "The branch agent S is on: its worktree's, else its checkout's (from the
+cache the look fills, then git as a fallback)."
+  (or (plist-get (ghostherd-session-worktree s) :branch)
+      (cdr (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts))
+      (cdr (ghostherd-memory-page--checkout (ghostherd-session-directory s)))))
+
+(defvar ghostherd-memory-page--project-remotes (make-hash-table :test 'equal)
+  "Project name -> its origin remote URL, so a PR's repo is matched without
+a git call each time.")
+
+(defun ghostherd-memory-page--project-for-repo (repo)
+  "A herd project whose origin remote names REPO (e.g. \"owner/name\"), or
+nil.  REPO nil or unmatched gives nil."
+  (and (stringp repo) (not (string-empty-p repo))
+       (seq-find
+        (lambda (p)
+          (let ((remote (with-memoization (gethash p ghostherd-memory-page--project-remotes)
+                          (let ((default-directory (file-name-as-directory (expand-file-name p))))
+                            (with-temp-buffer
+                              (if (eq 0 (ignore-errors
+                                          (call-process "git" nil '(t nil) nil "remote" "get-url" "origin")))
+                                  (string-trim (buffer-string)) ""))))))
+            (and (stringp remote) (not (string-empty-p remote))
+                 (string-match-p (regexp-quote repo) remote))))
+        (delete-dups (delq nil (mapcar (lambda (s) (ghostherd--project-name (ghostherd-session-project s)))
+                                       (ghostherd-sessions)))))))
+
+(defun ghostherd-memory-page--pr-recipients (branch repo)
+  "Who a review of a PR on BRANCH (in repo REPO) may go to: the agent(s) on
+that branch first, then the project's lead, then a lead to start -- the
+order the user's ask asked for, the agent on the branch first.  None when
+no herd agent is on the branch and REPO is not a herd project."
+  (let* ((agents (ghostherd-memory-page--command-agents))
+         (repo-project (ghostherd-memory-page--project-for-repo repo))
+         (here (and (stringp branch) (not (string-empty-p branch))
+                    (seq-filter (lambda (s)
+                                  (and (equal (ghostherd-memory-page--agent-branch s) branch)
+                                       (or (not repo-project)
+                                           (equal (ghostherd--project-name (ghostherd-session-project s))
+                                                  repo-project))))
+                                agents)))
+         (project (or repo-project
+                      (and here (ghostherd--project-name (ghostherd-session-project (car here))))))
+         (lead (let ((l (and project (ghostherd-project-lead project))))
+                 (and l (memq l agents) l))))
     (append
-     (mapcar #'ghostherd-memory-page--review-to leads)
-     (mapcar #'ghostherd-memory-page--review-to (seq-remove (lambda (s) (memq s leads)) here))
-     (mapcar (lambda (p)
-               (list :id (concat "@lead " p)
-                     :label (format "new lead%s · %s"
-                                    (if (cdr leaderless)
-                                        (concat " for " (file-name-nondirectory (directory-file-name p)))
-                                      "")
-                                    ghostherd-lead-kind)
-                     :send (lambda (text)
-                             (format "Started %s; it gets the comments once it is ready"
-                                     (ghostherd-session-name (ghostherd-lead-say p text))))))
-             leaderless))))
+     (mapcar #'ghostherd-memory-page--review-to (seq-remove (lambda (s) (eq s lead)) here))
+     (and lead (list (ghostherd-memory-page--review-to lead)))
+     (and project (not lead) (ghostherd-memory-page--start-a-lead (list project))))))
+
+(defun ghostherd-memory-page--review-recipients (root &optional pr)
+  "Who a review may go to, as `pr-view-local-recipients-functions' wants
+them.  Without PR, of what checkout ROOT has not committed: its project's
+lead first, then the agents in it, then a lead to start -- none for a
+checkout the herd is not in.  With PR (a plist of :branch and :repo), of a
+pull request: the agent(s) on its head branch first, then the lead -- see
+`ghostherd-memory-page--pr-recipients'."
+  (if pr
+      (ghostherd-memory-page--pr-recipients (plist-get pr :branch) (plist-get pr :repo))
+    (let* ((roots (make-hash-table :test 'equal))
+           (root-of (lambda (dir)
+                      (with-memoization (gethash dir roots)
+                        (car-safe (ghostherd-memory-page--checkout dir)))))
+           (agents (ghostherd-memory-page--command-agents))
+           (here (seq-filter (lambda (s) (equal (funcall root-of (ghostherd-session-directory s)) root))
+                             agents))
+           ;; The projects of those here, and those whose own checkout it is.
+           (projects (delete-dups
+                      (delq nil (mapcar (lambda (s)
+                                          (let ((p (ghostherd--project-name (ghostherd-session-project s))))
+                                            (and p (or (memq s here) (equal (funcall root-of p) root)) p)))
+                                        (ghostherd-sessions)))))
+           (leads (seq-filter (lambda (s) (memq s agents))
+                              (delq nil (mapcar #'ghostherd-project-lead projects))))
+           (leaderless (seq-remove #'ghostherd-project-lead projects)))
+      (append
+       (mapcar #'ghostherd-memory-page--review-to leads)
+       (mapcar #'ghostherd-memory-page--review-to (seq-remove (lambda (s) (memq s leads)) here))
+       (ghostherd-memory-page--start-a-lead leaderless)))))
 
 (add-hook 'pr-view-local-recipients-functions #'ghostherd-memory-page--review-recipients)
 

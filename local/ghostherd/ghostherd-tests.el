@@ -7907,6 +7907,49 @@ A checkout the herd is not in has nobody."
           (should-not (ghostherd-memory-page--review-recipients "/etc/"))
           (should-not (ghostherd-memory-page--review-recipients (abbreviate-file-name base))))))))
 
+(ert-deftest ghostherd-test-a-pr-review-reaches-the-head-branchs-agent ()
+  "PR comments go to the agent on the PR's head branch first, then the
+project's lead, then a lead to start -- the agent on the branch first, as
+the user asked.  With no agent on the branch, the repo's project is found
+by its remote so the lead is still offered.  A branch no agent is on and a
+repo the herd does not have has nobody."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let* ((ghostherd--roles (make-hash-table :test 'equal))
+             (ghostherd--worktrees (make-hash-table :test 'equal))
+             (ghostherd-memory-page--project-remotes (make-hash-table :test 'equal))
+             (pname (ghostherd--project-name repo))
+             (to (lambda (branch rp)
+                   (mapcar (lambda (r) (list (plist-get r :id) (plist-get r :label)))
+                           (ghostherd-memory-page--review-recipients nil (list :branch branch :repo rp))))))
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'working)
+        (ghostherd-tests--session :name "qa" :kind 'grok :project repo :state 'idle)
+        (ghostherd-tests--session :name "sh" :kind 'shell :project repo :state 'idle)
+        (puthash "qa" '(:path nil :branch "feat/y" :base "feat/x") ghostherd--worktrees)
+        (funcall git repo "remote" "add" "origin" "https://example.com/own/thing.git")
+        (cl-letf (((symbol-function 'ghostherd-session-directory)
+                   (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
+                  ((symbol-function 'ghostherd-lead-say)
+                   (lambda (_project _text)
+                     (let ((lead (ghostherd-tests--session :name "lead-repo" :kind 'claude
+                                                           :project repo :state 'idle)))
+                       (puthash "lead-repo" "lead" ghostherd--roles) lead))))
+          ;; No lead yet: the agent on feat/y first, then a lead to start.
+          ;; rd, on feat/x in the main checkout, is not offered for a feat/y PR.
+          (should (equal (funcall to "feat/y" "own/thing")
+                         `(("qa" "qa · grok") (,(concat "@lead " pname) "new lead · claude"))))
+          ;; With a lead: the branch's agent still first, then the lead.
+          (ghostherd-tests--session :name "lead-repo" :kind 'claude :project repo :state 'idle)
+          (puthash "lead-repo" "lead" ghostherd--roles)
+          (should (equal (funcall to "feat/y" "own/thing")
+                         '(("qa" "qa · grok") ("lead-repo" "lead-repo · claude"))))
+          ;; No agent on the branch, but the repo maps to the project: the lead.
+          (should (equal (funcall to "no-such-branch" "own/thing")
+                         '(("lead-repo" "lead-repo · claude"))))
+          ;; A repo the herd does not have, no agent on the branch: nobody.
+          (should-not (funcall to "no-such-branch" "other/elsewhere")))))))
+
 (ert-deftest ghostherd-test-a-review-from-pr-views-page-reaches-the-agent ()
   "Comments written on a herd checkout's diff in pr-view's page reach the
 agent picked as one prompt, each at its file and line."
