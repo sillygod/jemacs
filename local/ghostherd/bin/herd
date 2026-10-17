@@ -6,6 +6,7 @@ Usage:
   herd reply ID [TEXT|-]
   herd status ID
   herd cancel ID
+  herd relay TARGET [KIND] [--reason TEXT]
   herd list
   herd asks
   herd hook [EVENT]                (from a CLI's lifecycle hook)
@@ -272,6 +273,34 @@ def cmd_list(_args):
 
 def cmd_asks(_args):
     print(json.dumps(rpc("herd_asks"), indent=2, ensure_ascii=False))
+
+
+def cmd_relay(args):
+    """Hand an agent's work to a fresh agent on another CLI, through the same
+    path the herd page and Telegram use.  Prints what the herd did, or why it
+    refused."""
+    kind = (args.kind or "").strip()
+    reason = text_arg(args.reason) if args.reason else ""
+    out = rpc("herd_relay", {"target": args.target, "kind": kind,
+                             "reason": reason, "by": me()})
+    cid = out.get("id")
+    if not cid:
+        print(out.get("text") or "relay: no reply from the herd")
+        return 1
+    # It runs in Emacs on the next herd tick; wait for its word.
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        r = rpc("herd_command_reply", {"id": cid})
+        status, text = r.get("status"), r.get("text")
+        if status == "done" and text is not None:
+            print(text)
+            return 0 if str(text).startswith("relaying ") else 1
+        if status == "gone":
+            print("relay: the request was dropped before it ran")
+            return 1
+        time.sleep(0.4)
+    print("relay: timed out waiting for the herd to act")
+    return 1
     return 0
 
 
@@ -896,6 +925,12 @@ def main(argv=None):
         p.set_defaults(fn=fn)
     sub.add_parser("list", help="the herd").set_defaults(fn=cmd_list)
     sub.add_parser("asks", help="open and recent asks").set_defaults(fn=cmd_asks)
+    p = sub.add_parser("relay",
+                       help="hand an agent's work to a fresh agent on another CLI")
+    p.add_argument("target")
+    p.add_argument("kind", nargs="?", help="claude, grok or agy; omitted, the herd picks one with usage left")
+    p.add_argument("--reason", help="why it is being relayed")
+    p.set_defaults(fn=cmd_relay)
     p = sub.add_parser("hook", help="run by a CLI's lifecycle hook, payload on stdin")
     p.add_argument("event", nargs="?")
     p.set_defaults(fn=cmd_hook)

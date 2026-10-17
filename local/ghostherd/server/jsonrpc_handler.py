@@ -76,6 +76,8 @@ class JsonRpcHandler:
             "herd_subagents": self._herd_subagents,
             "herd_links": self._herd_links,
             "herd_relay_brief": self._herd_relay_brief,
+            "herd_relay": self._herd_relay,
+            "herd_command_reply": self._herd_command_reply,
             "herd_unlink": self._herd_unlink,
         }
 
@@ -342,6 +344,28 @@ class JsonRpcHandler:
 
     def _herd_unlink(self, params: dict) -> dict:
         return get_herd().unlink(str(params.get("session") or ""))
+
+    def _herd_relay(self, params: dict) -> dict:
+        """Queue a relay of agent TARGET to KIND, asked by agent BY with
+        REASON, onto the same commands queue a Telegram tap uses; Emacs runs
+        it (guarded by who asks) and answers.  BY and the guards are Emacs's
+        to judge -- this only shapes and queues the request."""
+        target = str(params.get("target") or "").strip()
+        if not relay.NAME.match(target):
+            raise ValueError("target is an agent's name")
+        kind = str(params.get("kind") or "").strip()
+        if kind and not relay.KIND.match(kind):
+            raise ValueError("kind is a CLI's name")
+        by = str(params.get("by") or "").strip()
+        reason = str(params.get("reason") or "")[:300]
+        return get_herd().enqueue_command(
+            "relay", target, {"kind": kind, "reason": reason, "by": by}
+        )
+
+    def _herd_command_reply(self, params: dict) -> dict:
+        """A queued command's status and reply, by its id -- `herd relay'
+        polls it for what Emacs did."""
+        return get_herd().command_reply(str(params.get("id") or ""))
 
     def _herd_relay_brief(self, params: dict) -> dict:
         """What agent NAME hands its heir, as the heir's first message: its

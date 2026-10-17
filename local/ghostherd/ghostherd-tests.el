@@ -9150,6 +9150,47 @@ when the footer no longer shows it."
       (should-not (ghostherd-usage-session-used-up s))
       (should-not (ghostherd-usage-session-used-up-text s)))))
 
+(ert-deftest ghostherd-test-relay-request-guards ()
+  "`herd relay's guardrails: only a project's lead, only its own project's
+agents, not itself, not one (or itself) already in a relay; and when it
+passes it reaches `ghostherd-relay' with the kind and reason -- the kind
+left empty taking the herd's default."
+  (ghostherd-tests--with-herd ((ghostherd--roles (make-hash-table :test 'equal))
+                               (ghostherd--relaying (make-hash-table :test 'equal))
+                               (ghostherd-usage--cache nil))
+    (let (relayed)
+      (cl-letf (((symbol-function 'ghostherd-relay)
+                 (lambda (s kind &optional reason)
+                   (setq relayed (list (ghostherd-session-name s) kind reason)))))
+        (let ((lead (ghostherd-tests--session :name "lead-p" :kind 'claude :project "/p/" :backend 'fake))
+              (rd (ghostherd-tests--session :name "rd" :kind 'agy :project "/p/" :backend 'fake))
+              (x (ghostherd-tests--session :name "x" :kind 'agy :project "/q/" :backend 'fake)))
+          (puthash (ghostherd-session-id lead) "lead" ghostherd--roles)
+          ;; not a lead
+          (should (string-match-p "not a lead" (ghostherd--relay-request "rd" "lead-p" "grok" nil)))
+          ;; itself
+          (should (string-match-p "itself" (ghostherd--relay-request "lead-p" "lead-p" "grok" nil)))
+          ;; another project's agent
+          (should (string-match-p "own project" (ghostherd--relay-request "lead-p" "x" "grok" nil)))
+          ;; target already relaying
+          (puthash (ghostherd-session-id rd) t ghostherd--relaying)
+          (should (string-match-p "already being relayed" (ghostherd--relay-request "lead-p" "rd" "grok" nil)))
+          (remhash (ghostherd-session-id rd) ghostherd--relaying)
+          ;; the asker itself in a relay
+          (puthash (ghostherd-session-id lead) t ghostherd--relaying)
+          (should (string-match-p "being relayed itself" (ghostherd--relay-request "lead-p" "rd" "grok" nil)))
+          (remhash (ghostherd-session-id lead) ghostherd--relaying)
+          ;; unknown target
+          (should (string-match-p "no such agent" (ghostherd--relay-request "lead-p" "ghost" "grok" nil)))
+          ;; passes: reaches ghostherd-relay with the kind and reason
+          (setq relayed nil)
+          (should (equal (ghostherd--relay-request "lead-p" "rd" "grok" "stuck") "relaying rd to grok"))
+          (should (equal relayed '("rd" grok "stuck")))
+          ;; kind omitted: the herd's default is used, not refused
+          (setq relayed nil)
+          (should (string-prefix-p "relaying rd to" (ghostherd--relay-request "lead-p" "rd" "" nil)))
+          (should (eq (nth 1 relayed) (ghostherd-relay-default-kind rd))))))))
+
 (ert-deftest ghostherd-test-relay-goes-where-usage-is-left ()
   (ghostherd-tests--relaying
     (let ((rd (ghostherd-tests--session :name "rd" :kind 'claude :state 'idle :backend 'fake)))

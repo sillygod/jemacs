@@ -1603,6 +1603,23 @@ class HerdStore:
             self._conn.commit()
         return {"id": cid, "queued": True}
 
+    def command_reply(self, cmd_id: str) -> dict[str, Any]:
+        """A queued command's status and reply text, by its id -- what `herd
+        relay' waits on to learn what Emacs did.  `gone' when no such command
+        is on record (pruned, or never queued)."""
+        cmd_id = (cmd_id or "").strip()
+        with self._mu:
+            crow = self._conn.execute(
+                "SELECT status FROM commands WHERE id = ?", (cmd_id,)
+            ).fetchone()
+            rrow = self._conn.execute(
+                "SELECT text FROM replies WHERE id = ?", (cmd_id,)
+            ).fetchone()
+        return {
+            "status": crow[0] if crow else "gone",
+            "text": rrow[0] if rrow else None,
+        }
+
     def unsent_replies(self) -> list[dict[str, Any]]:
         with self._mu:
             rows = self._conn.execute(

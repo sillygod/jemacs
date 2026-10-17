@@ -5172,6 +5172,17 @@ When an ask fails, or comes back as the herd's answer rather than the
 agent's, say what happened and decide: ask again, ask someone else, or
 ask the user.
 
+When an agent is stuck for good -- its CLI out of credits or rate
+limited, or wedged with no way on -- hand its work to a fresh agent on
+another CLI:
+
+  \"$GHOSTHERD_HERD\" relay NAME [KIND] --reason \"why\"
+
+It reads where the work stood and starts a new agent of KIND that takes
+the name and carries on.  Leave KIND off to let the herd pick a CLI with
+usage left; name one (claude, grok, agy) to choose.  You may relay only
+your own project's agents, not yourself.
+
 What the project works on -- its branch, its pull request, the ClickUp
 tickets they and the team's conversations name -- opens the user's
 first message to you, and their next one whenever it changes.  Read the
@@ -5448,6 +5459,46 @@ on, would contradict it."
           (ghostherd-session-state session)
           (or (ghostherd-session-state-reason session) "—")))
 
+(defun ghostherd--relay-request (by target kind reason)
+  "Relay agent TARGET to KIND at the request of agent BY, with REASON, as
+`herd relay' asks over the wire.  The guardrails a page button or Telegram
+tap do not need: BY must be the lead of TARGET's own project, may not relay
+itself, and neither it nor TARGET may already be in a relay -- which also
+stops a relay from looping back on the one that asked for it.  KIND empty
+takes the herd's default for TARGET.  Returns what to tell BY: the relay
+started, or, clearly, why it was refused.
+
+A finer \"BY is waiting on an ask from TARGET\" guard is left to the ask
+machinery: a relay hands TARGET's open asks to its heir, so BY still gets
+its answer rather than losing it."
+  (let* ((by-s (ghostherd-get by))
+         (tgt (ghostherd-get target)))
+    (cond
+     ((not by-s) (format "no such agent: %s" by))
+     ((not tgt) (format "no such agent: %s" target))
+     ((eq by-s tgt) "an agent cannot relay itself")
+     ((not (equal (ghostherd-session-role by-s) "lead"))
+      (format "only a project's lead may relay; %s is not a lead" by))
+     ((not (equal (ghostherd--project-name (ghostherd-session-project by-s))
+                  (ghostherd--project-name (ghostherd-session-project tgt))))
+      (format "%s may only relay agents of its own project, not %s" by target))
+     ((gethash (ghostherd-session-id by-s) ghostherd--relaying)
+      (format "%s is being relayed itself; wait for that to finish" by))
+     ((gethash (ghostherd-session-id tgt) ghostherd--relaying)
+      (format "%s is already being relayed" target))
+     (t
+      (let ((k (if (and (stringp kind) (not (string-empty-p kind)))
+                   (intern kind)
+                 (ghostherd-relay-default-kind tgt))))
+        (if (not (memq k (ghostherd--relay-kinds)))
+            (format "relay to what: %s is not a CLI the herd relays to"
+                    (if (and (stringp kind) (not (string-empty-p kind))) kind k))
+          (condition-case err
+              (progn
+                (ghostherd-relay tgt k (and (stringp reason) (not (string-empty-p reason)) reason))
+                (format "relaying %s to %s" target k))
+            (error (error-message-string err)))))))))
+
 (defun ghostherd--herd-run-command (cmd)
   "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT)."
   (let* ((id (plist-get cmd :id))
@@ -5477,11 +5528,16 @@ on, would contradict it."
            (ghostherd-respawn name)
            (setq text "respawned"))
           ("relay"
-           (let ((kind (plist-get args :kind)))
-             (unless (and (stringp kind) (memq (intern kind) (ghostherd--relay-kinds)))
-               (error "Relay to what: %s" kind))
-             (ghostherd-relay name (intern kind))
-             (setq text (format "relaying %s to %s" name kind))))
+           (if-let* ((by (plist-get args :by)))
+               ;; Asked over the wire (`herd relay'): guarded by who asks.
+               (setq text (ghostherd--relay-request by name (plist-get args :kind)
+                                                    (plist-get args :reason)))
+             ;; A page button or Telegram tap: the user, already trusted.
+             (let ((kind (plist-get args :kind)))
+               (unless (and (stringp kind) (memq (intern kind) (ghostherd--relay-kinds)))
+                 (error "Relay to what: %s" kind))
+               (ghostherd-relay name (intern kind))
+               (setq text (format "relaying %s to %s" name kind)))))
           ("screen"
            (setq text (or (ghostherd-read name 40) "(empty)"))
            (when (> (length text) 3500)

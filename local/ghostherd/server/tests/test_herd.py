@@ -185,6 +185,22 @@ def test_command_round_trip(tmp_path: Path):
     reset_herd()
 
 
+def test_command_reply_reads_status_and_text(tmp_path: Path):
+    "`herd relay' queues a command and polls command_reply for Emacs's word."
+    h = _store(tmp_path)
+    h.tick(sessions=[{"name": "rd", "state": "idle"}], ack_ids=[])
+    queued = h.enqueue_command("relay", "rd", args={"kind": "grok", "by": "lead-p"})
+    cid = queued["id"]
+    assert h.command_reply(cid) == {"status": "queued", "text": None}
+    h.tick(sessions=[{"name": "rd", "state": "idle"}], ack_ids=[])  # taken
+    assert h.command_reply(cid)["status"] == "taken"
+    h.tick(sessions=[{"name": "rd", "state": "idle"}], ack_ids=[],
+           replies=[{"id": cid, "text": "relaying rd to grok"}])
+    assert h.command_reply(cid) == {"status": "done", "text": "relaying rd to grok"}
+    assert h.command_reply("nope")["status"] == "gone"
+    reset_herd()
+
+
 def test_snapshot_keeps_screen(tmp_path: Path):
     h = _store(tmp_path)
     h.tick(
