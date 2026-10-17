@@ -883,7 +883,9 @@ the unified diff on PRs over ~20k lines or 300 files."
      `((pr . ,pr)
        (forge . ,forge)
        (comments . ,(vconcat (or pr-view--last-comments '())))
-       (review . ,review))
+       (review . ,review)
+       ;; Which agent on the head branch edited each file, for the file tree.
+       (editors . ,(if branch (pr-view--local-editors-json nil (list :branch branch :repo repo)) [])))
      extra)))
 
 (defun pr-view--fetch-comments (host kind id-str)
@@ -1697,6 +1699,15 @@ review's text and returning a sentence saying what it did.  The first
 is offered first.  With nobody to send it to, the page takes no
 comments.")
 
+(defvar pr-view-local-editors-functions nil
+  "Functions of a checkout's root, as for `pr-view-local-recipients-functions'
+\(passed the PR plist too when they take it), saying which agent changed
+which file shown in a diff.  Each returns a list of plists (:file REL :by
+BY): REL a path as the diff's file tree names it, BY a list of (:id ID
+:label LABEL) -- the agents that edited that file, ID a string, LABEL how
+the page marks it.  Entries for a file are merged across functions, an
+agent named once per file.")
+
 (defvar pr-view--local-opened nil
   "Checkout roots opened here with `pr-view-changes'.")
 (defun pr-view--local-git (root &rest args)
@@ -1891,7 +1902,9 @@ not kept."
           (when (equal pr-view--local root)
             (pr-view--js "renderLocal"
                          (append payload
-                                 `((recipients . ,(pr-view--local-recipients-json root)))))))))
+                                 `((recipients . ,(pr-view--local-recipients-json root))
+                                   ;; Which agent here edited each file, for the file tree.
+                                   (editors . ,(pr-view--local-editors-json root)))))))))
 
 (defun pr-view--local-asked (root)
   "The page asks for checkout ROOT's changes: show them, if it may."
@@ -1983,6 +1996,48 @@ so one written for a checkout still works."
 `pr-view--local-recipients')."
   (vconcat (mapcar (lambda (r) `((id . ,(plist-get r :id)) (label . ,(plist-get r :label))))
                    (pr-view--local-recipients root pr))))
+
+(defun pr-view--local-editors (root &optional pr)
+  "Which agent(s) edited each file shown, as `pr-view-local-editors-functions'
+say.  Of checkout ROOT's changes when PR is nil; with PR, a plist of a pull
+request's head branch and repo, of that PR -- passed only to a function
+that takes a second argument, as for `pr-view--local-recipients'.  Each
+entry is (:file REL :by ((:id ID :label LABEL) ...))."
+  (let (out)
+    (run-hook-wrapped 'pr-view-local-editors-functions
+                      (lambda (f)
+                        (let ((res (with-demoted-errors "pr-view: %S"
+                                     (if (and pr (let ((m (cdr (func-arity f))))
+                                                   (or (eq m 'many) (and (integerp m) (>= m 2)))))
+                                         (funcall f root pr)
+                                       (funcall f root)))))
+                          (setq out (append out (if (vectorp res) (append res nil) res))))
+                        nil))
+    out))
+
+(defun pr-view--local-editors-json (root &optional pr)
+  "Which agent(s) edited each file, as the page marks them: a vector of
+ ((file . REL) (by . [((id . ID) (label . LABEL)) ...])), one entry per
+file, the agents merged across functions and named once each, the
+ill-formed dropped (see `pr-view--local-editors')."
+  (let ((by-file (make-hash-table :test 'equal)) (order nil))
+    (dolist (e (pr-view--local-editors root pr))
+      (let ((file (plist-get e :file)))
+        (when (and (stringp file) (not (string-empty-p file)))
+          (dolist (b (let ((by (plist-get e :by))) (if (vectorp by) (append by nil) by)))
+            (let ((id (plist-get b :id)) (label (plist-get b :label)))
+              (when (and (stringp id) (not (string-empty-p id)) (stringp label))
+                (unless (gethash file by-file) (push file order))
+                (let ((marks (gethash file by-file)))
+                  (unless (seq-find (lambda (m) (equal (plist-get m :id) id)) marks)
+                    (puthash file (append marks (list (list :id id :label label))) by-file)))))))))
+    (vconcat
+     (mapcar (lambda (file)
+               `((file . ,file)
+                 (by . ,(vconcat (mapcar (lambda (m)
+                                           `((id . ,(plist-get m :id)) (label . ,(plist-get m :label))))
+                                         (gethash file by-file))))))
+             (nreverse order)))))
 
 (defun pr-view--review-cut (s max)
   "S cut to MAX characters, the cut said."

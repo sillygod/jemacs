@@ -17,6 +17,11 @@
   // until they are sent, together.  OPEN is the comment being written:
   // a new one (index -1) or one changed.
   let recipients = [];
+  // Which agent changed which file, by path, as Emacs says: path -> [{id,
+  // label}].  Set with each diff (the checkout's, the open PR's); the file
+  // tree marks a file an agent of this checkout, or of the PR's head
+  // branch, edited.
+  let editorsByFile = {};
   const rv = { scope: "local", root: null, branch: "", repo: "", comments: [], note: "", to: "", open: null, list: false, sending: false };
   const RV_KEY = "pr-view-review:";
   let selectedStates = ["OPEN", "MERGED"];
@@ -360,6 +365,27 @@
     return '<span class="tree-mark mod"></span>';
   }
 
+  // path -> [{id, label}] from a diff's `editors`, the well-formed only.
+  function indexEditors(list) {
+    const by = {};
+    (Array.isArray(list) ? list : []).forEach((e) => {
+      if (!e || typeof e.file !== "string" || !e.file || !Array.isArray(e.by)) return;
+      const marks = e.by.filter((m) => m && typeof m.id === "string" && m.id);
+      if (marks.length) by[e.file] = marks;
+    });
+    return by;
+  }
+
+  // The mark on a file an agent changed: the editor's name, or the first and
+  // a count when more than one; the full names in its tooltip.
+  function editorBadge(path) {
+    const marks = editorsByFile[path];
+    if (!marks || !marks.length) return "";
+    const title = "Edited by " + marks.map((m) => m.label || m.id).join(", ");
+    const text = marks.length === 1 ? marks[0].id : marks[0].id + " +" + (marks.length - 1);
+    return '<span class="tree-editor" title="' + escapeHtml(title) + '">' + escapeHtml(text) + "</span>";
+  }
+
   function renderTreeNode(node, filter) {
     const q = (filter || "").toLowerCase();
     const match = (path) => !q || String(path).toLowerCase().indexOf(q) !== -1;
@@ -401,6 +427,7 @@
           (said
             ? '<span class="tree-rv" title="' + said + (said === 1 ? " comment" : " comments") + '">' + said + "</span>"
             : "") +
+          editorBadge(ent.file.path) +
           "</button>";
       });
     return html;
@@ -1096,6 +1123,7 @@
   function renderLocal(payload) {
     lastLocal = payload || {};
     recipients = Array.isArray(lastLocal.recipients) ? lastLocal.recipients : [];
+    editorsByFile = indexEditors(lastLocal.editors);
     if ((lastLocal.root || "") !== rv.root) rvLoad(lastLocal.root || "");
     else rvSettle();
     drawLocal();
@@ -1198,6 +1226,7 @@
   function rvForPr(payload) {
     const rev = (payload && payload.review) || {};
     recipients = Array.isArray(rev.recipients) ? rev.recipients : [];
+    editorsByFile = indexEditors(payload && payload.editors);
     const pr = (payload && payload.pr) || {};
     const key = "pr:" + (pr.url || pr.id || "");
     if (rv.scope !== "pr" || rv.root !== key) rvLoad(key, "pr");

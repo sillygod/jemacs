@@ -556,6 +556,7 @@ button.linkish:hover { color: var(--accent); }
 .tree-mark.del { color: var(--minus); }
 .tree-mark.ren { color: var(--meta); }
 .tree-name {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -696,6 +697,19 @@ button.linkish:hover { color: var(--accent); }
   border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 0 6px;
+}
+/* Which agent changed this file: a muted pill, after any comment count. */
+.tree-editor {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--meta);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 6px;
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .rv-hint { margin: 4px 0 0; }
 .rv-bar {

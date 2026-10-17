@@ -1293,6 +1293,58 @@ them, and with none when nobody may."
         (pr-view--local-read-for root)
         (should (equal (alist-get 'recipients (cdr (assoc "renderLocal" js))) []))))))
 
+(ert-deftest pr-view-test-local-editors-map-files-to-agents ()
+  "Which agent edited which file comes from the editors hooks, merged by
+file with each agent named once and the ill-formed dropped; a hook that
+takes the PR plist is given it, one that does not is not; a broken one
+does not stop the rest; and the checkout's changes carry the map."
+  (pr-view-tests--repo root
+    (let* ((pr-view--local root)
+           seen js
+           (pr-view-local-editors-functions
+            (list
+             ;; A one-argument hook (checkout only): never given the PR.
+             (lambda (r)
+               (push (list 1 r) seen)
+               (and (equal r root)
+                    (list (list :file "a.txt" :by (list (list :id "rd" :label "rd · grok")))
+                          ;; An ill-formed mark (no id) is dropped; an entry
+                          ;; with no file is dropped whole.
+                          (list :file "b.txt" :by (list '(:id "" :label "x") (list :id "qa" :label "qa · agy")))
+                          (list :by (list (list :id "z" :label "z"))))))
+             ;; A hook that also takes the PR plist: given it when there is
+             ;; one, called with one argument (pr nil) for a checkout.
+             (lambda (r &optional pr)
+               (push (list 2 r pr) seen)
+               (and (equal r root)
+                    ;; Another agent on a.txt, and rd again -- merged, rd once.
+                    (list (list :file "a.txt" :by (list (list :id "lead" :label "lead · claude")
+                                                        (list :id "rd" :label "rd · grok"))))))
+             ;; A broken one does not stop the rest.
+             (lambda (&rest _) (error "boom")))))
+      (cl-letf (((symbol-function 'pr-view--js) (lambda (fn arg) (push (cons fn arg) js)))
+                ((symbol-function 'pr-view--local-read) (lambda (r cb) (funcall cb `((root . ,r) (diff . ""))))))
+        ;; Of the checkout: merged by file, agents in order, each named once.
+        (should (equal (pr-view--local-editors-json root)
+                       [((file . "a.txt") (by . [((id . "rd") (label . "rd · grok"))
+                                                 ((id . "lead") (label . "lead · claude"))]))
+                        ((file . "b.txt") (by . [((id . "qa") (label . "qa · agy"))]))]))
+        ;; A checkout no hook speaks for: empty.
+        (should (equal (pr-view--local-editors-json "/etc/") []))
+        ;; The PR plist reaches only the two-argument hook.
+        (setq seen nil)
+        (pr-view--local-editors nil (list :branch "feat/y" :repo "o/r"))
+        (should (seq-find (lambda (x) (and (eq (car x) 2) (equal (nth 2 x) '(:branch "feat/y" :repo "o/r")))) seen))
+        (should-not (seq-find (lambda (x) (and (eq (car x) 1) (nth 2 x))) seen))
+        ;; The checkout's changes come to the page with the map.
+        (setq js nil)
+        (pr-view--local-read-for root)
+        (should (equal (alist-get 'editors (cdr (assoc "renderLocal" js)))
+                       (pr-view--local-editors-json root)))
+        ;; With no editors hook at all: an empty map, never an error.
+        (setq pr-view-local-editors-functions nil)
+        (should (equal (pr-view--local-editors-json root) []))))))
+
 (ert-deftest pr-view-test-ui-shows-local-changes ()
   "The page has a view for a checkout's changes, asks for one by its
 address, and says why a file is not shown."
