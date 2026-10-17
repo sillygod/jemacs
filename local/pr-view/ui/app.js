@@ -1657,6 +1657,9 @@
       '<textarea id="comment-body" rows="4" placeholder="Leave a comment (markdown)"></textarea>' +
       '<button type="button" class="primary" id="comment-post">Comment</button>' +
       "</div></section></div>" +
+      (selectedTab === "files" && filesNotes && !rv.comments.length
+        ? '<p class="muted rv-hint">Pick a line to comment on it, or select a range. The comments go together, to the one chosen below — an agent on this branch, or its lead.</p>'
+        : "") +
       (selectedTab === "files"
         ? '<div id="panel-files" class="panel-files">' +
           renderFileDiff(payload, filesNotes) +
