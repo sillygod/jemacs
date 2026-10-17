@@ -26,10 +26,32 @@ el=()
 ui=
 server=
 
+# Where the live Emacs loads ghostherd from.  Every git worktree has its
+# own copy of every file; reloading one into the single running Emacs would
+# overwrite the live defuns with another branch's.  So refuse any file not
+# under that directory.  Empty when it cannot be asked (no Emacs, or
+# ghostherd not on its load-path): then the reload would fail at emacsclient
+# anyway, so the guard steps aside rather than blocking on a guess.
+# `find-library-name' gives the .el source, whose symlink file-truename
+# follows to the checkout -- not the .elc a build directory may hold.
+live_root=$(emacsclient --eval \
+  '(or (ignore-errors (directory-file-name (file-name-directory (file-truename (find-library-name "ghostherd"))))) "")' \
+  2>/dev/null | sed 's/^"//; s/"$//')
+
 for arg in "$@"; do
   if [ "$arg" = --force ]; then force=1; continue; fi
   [ -e "$arg" ] || { echo "reload: no such file: $arg" >&2; exit 2; }
   path=$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")
+  if [ -n "$live_root" ]; then
+    real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$arg" 2>/dev/null || printf '%s' "$path")
+    case $real in
+      "$live_root"/*) : ;;
+      *) echo "reload: $arg is not under the Emacs's ghostherd directory:" >&2
+         echo "          $live_root" >&2
+         echo "       reloading a worktree's copy would overwrite the live defuns; reload the main checkout's file." >&2
+         exit 3 ;;
+    esac
+  fi
   case $path in
     "$here"/ui/* | "$kit"/*) ui=1 ;;
     "$here"/server/*) server=1 ;;
