@@ -9606,36 +9606,45 @@ unmerged or unclean one is kept, and `ghostherd-worktree-forget' removes it
               (should (file-directory-p (plist-get wt :path)))
               (should (branch-p "dirty")))))))))
 
-(ert-deftest ghostherd-test-worktree-cleanup-ignores-carried-deps ()
-  "A carried-in dependency -- a venv symlink a `.venv/' ignore does not
-match, so git calls it untracked -- does not keep a merged worktree from
-cleanup; real uncommitted work still does."
-  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal)))
+(ert-deftest ghostherd-test-worktree-deps-git-ignored ()
+  "What the herd carries in is ignored at the source: after setup the
+worktree's git status is clean -- even a venv symlink a `.venv/' ignore
+would miss -- the patterns are anchored in the shared info/exclude, the
+main checkout is unaffected, and a real untracked file still shows."
+  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal))
+                               (ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
     (ghostherd-tests--with-repo
       (with-temp-file (expand-file-name ".gitignore" repo) (insert ".venv/\nnode_modules/\n"))
       (funcall git repo "add" ".gitignore")
       (funcall git repo "commit" "-q" "-m" "ignore")
-      (make-directory (expand-file-name ".venv" repo) t)
-      (let ((ghostherd-worktree-root (concat base "trees/"))
-            (ghostherd-worktree-deps '((".venv" . symlink))))
-        ;; Merged worktree with a carried-in venv symlink: removed.
-        (let ((wt (ghostherd--worktree-create repo "dep"))
-              (s (ghostherd-tests--session :name "dep" :kind 'claude :project repo)))
-          (make-symbolic-link (expand-file-name ".venv" repo)
-                              (directory-file-name (expand-file-name ".venv" (plist-get wt :path))))
-          (should-not (ghostherd--worktree-clean-p (plist-get wt :path)))
-          (should (ghostherd--worktree-clean-p (plist-get wt :path) '(".venv")))
-          (puthash "dep" wt ghostherd--worktrees)
-          (ghostherd--worktree-cleanup s)
-          (should-not (file-directory-p (plist-get wt :path))))
-        ;; A real untracked work file still keeps it.
-        (let ((wt (ghostherd--worktree-create repo "work"))
-              (s (ghostherd-tests--session :name "work" :kind 'claude :project repo)))
-          (with-temp-file (expand-file-name "real.txt" (plist-get wt :path)) (insert "x"))
-          (should-not (ghostherd--worktree-clean-p (plist-get wt :path) '(".venv")))
-          (puthash "work" wt ghostherd--worktrees)
-          (ghostherd--worktree-cleanup s)
-          (should (file-directory-p (plist-get wt :path))))))))
+      (make-directory (expand-file-name ".venv/bin" repo) t)
+      (with-temp-file (expand-file-name ".venv/bin/python" repo) (insert "#!/bin/sh\n"))
+      (make-directory (expand-file-name "node_modules/pkg" repo) t)
+      (with-temp-file (expand-file-name "node_modules/pkg/i.js" repo) (insert "x\n"))
+      (let* ((ghostherd-worktree-root (concat base "trees/"))
+             (wt (ghostherd--worktree-create repo "dev"))
+             (path (plist-get wt :path)))
+        (ghostherd--worktree-deps-setup repo path "dev")
+        (let ((n 0)) (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< n 100))
+                       (accept-process-output nil 0.1) (setq n (1+ n))))
+        ;; venv is a symlink (a `.venv/' ignore misses it), yet the worktree
+        ;; reads clean because it is excluded at the source.
+        (should (file-symlink-p (directory-file-name (expand-file-name ".venv" path))))
+        (should (ghostherd--worktree-clean-p path))
+        ;; The main checkout is unaffected (its .venv/node_modules are
+        ;; already ignored there, so the anchored patterns are harmless).
+        (should (string-empty-p (with-temp-buffer
+                                  (let ((default-directory repo))
+                                    (call-process "git" nil '(t nil) nil "status" "--porcelain"))
+                                  (string-trim (buffer-string)))))
+        ;; Anchored patterns in the shared info/exclude.
+        (with-temp-buffer
+          (insert-file-contents (expand-file-name ".git/info/exclude" repo))
+          (should (string-match-p "^/\\.venv$" (buffer-string)))
+          (should (string-match-p "^/node_modules$" (buffer-string))))
+        ;; A real untracked file still shows -- cleanup would keep it.
+        (with-temp-file (expand-file-name "real.txt" path) (insert "x"))
+        (should-not (ghostherd--worktree-clean-p path))))))
 
 (ert-deftest ghostherd-test-worktree-card-shows-ahead-and-size ()
   "A worktree agent's card carries its branch, how far it is ahead of its
@@ -9717,11 +9726,14 @@ project directory and no branch."
 
 (ert-deftest ghostherd-test-worktree-deps-carried-in ()
   "Dependencies are carried into a worktree in the background: a venv is
-symlinked, node_modules is cloned (a real copy, not a link), a missing one
-is skipped, and the card surfaces only failures (not a missing source)."
+symlinked, node_modules is cloned (a real copy, not a link), an explicit
+path with no source is skipped, and the card surfaces only failures."
   (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal))
                                (ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
     (ghostherd-tests--with-repo
+      (with-temp-file (expand-file-name ".gitignore" repo) (insert ".venv/\nnode_modules/\n"))
+      (funcall git repo "add" ".gitignore")
+      (funcall git repo "commit" "-q" "-m" "ignore")
       (make-directory (expand-file-name ".venv/bin" repo) t)
       (with-temp-file (expand-file-name ".venv/bin/python" repo) (insert "#!/bin/sh\n"))
       (make-directory (expand-file-name "node_modules/pkg" repo) t)
@@ -9729,8 +9741,10 @@ is skipped, and the card surfaces only failures (not a missing source)."
       (let* ((ghostherd-worktree-root (concat base "trees/"))
              (wt (ghostherd--worktree-create repo "dev"))
              (path (plist-get wt :path)))
+        ;; Bare names resolve to the ignored dirs; an explicit missing path
+        ;; is kept and then skipped no-source.
         (ghostherd--worktree-deps-setup
-         repo path "dev" '((".venv" . symlink) ("node_modules" . clone) ("missing" . clone)))
+         repo path "dev" '((".venv" . symlink) ("node_modules" . clone) ("gone/dep" . clone)))
         (let ((tries 0))
           (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< tries 100))
             (accept-process-output nil 0.1)
@@ -9738,8 +9752,8 @@ is skipped, and the card surfaces only failures (not a missing source)."
         (let ((st (gethash "dev" ghostherd--worktree-deps-status)))
           (should (eq (plist-get (alist-get ".venv" st nil nil #'equal) :status) 'done))
           (should (eq (plist-get (alist-get "node_modules" st nil nil #'equal) :status) 'done))
-          (should (eq (plist-get (alist-get "missing" st nil nil #'equal) :status) 'skipped))
-          (should (equal (plist-get (alist-get "missing" st nil nil #'equal) :reason) "no-source")))
+          (should (eq (plist-get (alist-get "gone/dep" st nil nil #'equal) :status) 'skipped))
+          (should (equal (plist-get (alist-get "gone/dep" st nil nil #'equal) :reason) "no-source")))
         (should (file-symlink-p (directory-file-name (expand-file-name ".venv" path))))
         (should (file-directory-p (expand-file-name "node_modules/pkg" path)))
         (should-not (file-symlink-p (directory-file-name (expand-file-name "node_modules" path))))
@@ -9748,6 +9762,33 @@ is skipped, and the card surfaces only failures (not a missing source)."
             (puthash "dev" wt ghostherd--worktrees)
             ;; A missing source is not a failure worth a card chip.
             (should (eq (ghostherd-memory-page--worktree-deps s) :json-false))))))))
+
+(ert-deftest ghostherd-test-worktree-deps-resolve-finds-nested ()
+  "Bare-name deps are found by directory name among the main checkout's
+ignored directories at any depth; build caches and dirs inside an ignored
+dir are left out; explicit paths pass through."
+  (ghostherd-tests--with-repo
+    (with-temp-file (expand-file-name ".gitignore" repo)
+      (insert ".venv/\nnode_modules/\n.next/\nvendor/\n"))
+    (funcall git repo "add" ".gitignore")
+    (funcall git repo "commit" "-q" "-m" "ignore")
+    (dolist (d '("backend/.venv" "frontend/node_modules" ".next"
+                 "vendor/sub/node_modules"))
+      (make-directory (expand-file-name d repo) t)
+      (with-temp-file (expand-file-name (concat d "/f") repo) (insert "x")))
+    (let ((got (ghostherd--worktree-deps-resolve
+                repo '((".venv" . symlink) ("venv" . symlink)
+                       ("node_modules" . clone) ("explicit/dep" . symlink)))))
+      ;; Found at depth, by name.
+      (should (member '("backend/.venv" . symlink) got))
+      (should (member '("frontend/node_modules" . clone) got))
+      ;; A build cache (.next) is not a named dep -> out.
+      (should-not (assoc ".next" got))
+      ;; --directory does not descend into vendor/, so its nested
+      ;; node_modules is never seen.
+      (should-not (member '("vendor/sub/node_modules" . clone) got))
+      ;; An explicit path passes through unchanged.
+      (should (member '("explicit/dep" . symlink) got)))))
 
 (ert-deftest ghostherd-test-worktree-deps-script-never-full-copies ()
   "The dependency script clones with copy-on-write and symlinks, and on a

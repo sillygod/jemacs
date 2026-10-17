@@ -711,28 +711,17 @@ plain directory."
         (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
     (list :path (file-name-as-directory path) :branch branch :base base)))
 
-(defun ghostherd--worktree-clean-p (path &optional ignore)
+(defun ghostherd--worktree-clean-p (path)
   "Non-nil when git worktree PATH has no uncommitted or untracked change.
-IGNORE is relative paths to disregard -- the dependencies the herd carried
-in (a venv symlink, a node_modules clone), which are disposable and so are
-not work that removing the worktree would lose.  A symlinked venv shows as
-untracked when the project ignores a `.venv/' directory but not a link, so
-without this a worktree with deps would never read clean."
+The dependencies the herd carried in do not count against this: it marks
+them ignored in the worktree (`ghostherd--worktree-exclude'), so git does
+not list them here, in an agent's own `git status', or in the page's count."
   (and (file-directory-p (expand-file-name path))
        (let ((default-directory (file-name-as-directory (expand-file-name path))))
          (with-temp-buffer
-           (when (eq 0 (ignore-errors
-                         (call-process "git" nil '(t nil) nil "status" "--porcelain")))
-             (seq-every-p
-              (lambda (line)
-                (and (> (length line) 3)
-                     (let ((p (substring line 3)))
-                       (seq-some (lambda (d)
-                                   (let ((d (directory-file-name d)))
-                                     (or (equal p d) (equal p (concat d "/"))
-                                         (string-prefix-p (concat d "/") p))))
-                                 ignore))))
-              (split-string (buffer-string) "\n" t)))))))
+           (and (eq 0 (ignore-errors
+                        (call-process "git" nil '(t nil) nil "status" "--porcelain")))
+                (= 0 (buffer-size)))))))
 
 (defun ghostherd--worktree-merged-p (main branch base)
   "Non-nil when BRANCH is merged into BASE in the MAIN checkout -- its tip
@@ -768,14 +757,10 @@ and never merges.  Safe to call for an agent with no worktree."
               (main (ghostherd-session-project session))
               ((file-directory-p (expand-file-name path))))
     (let ((branch (plist-get wt :branch))
-          (base (plist-get wt :base))
-          ;; The deps the herd carried in are disposable, so they do not
-          ;; make the worktree unclean; --force then discards them (and
-          ;; only them, since nothing else is uncommitted or untracked).
-          (ignore (mapcar #'car (ghostherd--worktree-deps-for (ghostherd-session-project session)))))
-      (if (and (ghostherd--worktree-clean-p path ignore)
+          (base (plist-get wt :base)))
+      (if (and (ghostherd--worktree-clean-p path)
                (ghostherd--worktree-merged-p main branch base)
-               (ghostherd--worktree-remove main path t branch))
+               (ghostherd--worktree-remove main path nil branch))
           (ghostherd--log-add session 'life
                               (format "worktree merged and clean: removed %s and branch %s"
                                       (abbreviate-file-name path) branch))
@@ -903,6 +888,67 @@ left off this list.  Override per project with a
                    (assq 'ghostherd-project-worktree-deps file-local-variables-alist)))))
     (if local (cdr local) ghostherd-worktree-deps)))
 
+(defun ghostherd--worktree-ignored-dirs (main)
+  "The MAIN checkout's ignored directories, relative and without a trailing
+slash.  `git ls-files --directory' lists an ignored directory once and does
+not descend into it, so nothing inside one (a vendored repo, a build dir)
+is picked."
+  (let ((default-directory (file-name-as-directory (expand-file-name main))))
+    (with-temp-buffer
+      (when (eq 0 (ignore-errors
+                    (call-process "git" nil '(t nil) nil "ls-files" "-o" "-i"
+                                  "--exclude-standard" "--directory")))
+        (mapcar #'directory-file-name (split-string (buffer-string) "\n" t))))))
+
+(defun ghostherd--worktree-deps-resolve (main specs)
+  "Turn SPECS into concrete (RELPATH . METHOD) for the MAIN checkout.
+A spec whose path has a slash is explicit and kept as is.  A bare name is
+matched by directory name against the main checkout's ignored directories
+at any depth, so a project with its deps in subdirectories -- backend/.venv,
+frontend/node_modules -- gets them without naming each path."
+  (let ((ignored (ghostherd--worktree-ignored-dirs main))
+        out)
+    (dolist (spec specs)
+      (let ((name (car spec)) (method (cdr spec)))
+        (if (string-match-p "/" name)
+            (push (cons (directory-file-name name) method) out)
+          (dolist (d ignored)
+            (when (equal (file-name-nondirectory d) name)
+              (push (cons d method) out))))))
+    (seq-uniq (nreverse out))))
+
+(defun ghostherd--worktree-exclude (worktree relpaths)
+  "Make git ignore RELPATHS inside WORKTREE, at the source: anchored
+patterns (`/path') appended to the repo's info/exclude, which git keeps
+shared across a repo's worktrees.  Anchored, so in the main checkout each
+matches only the real dependency already at that path -- a venv or
+node_modules, ignorable anyway -- and nowhere else.  So an agent's own
+`git status', a `git add', and the page's uncommitted count never see a
+carried-in dependency.  Idempotent; `extensions.worktreeConfig' untouched."
+  (when relpaths
+    (let ((default-directory (file-name-as-directory (expand-file-name worktree))))
+      (when-let* ((raw (ignore-errors
+                         (with-temp-buffer
+                           (when (eq 0 (call-process "git" nil '(t nil) nil
+                                                     "rev-parse" "--git-path" "info/exclude"))
+                             (string-trim (buffer-string))))))
+                  ((not (string-empty-p raw)))
+                  (exclude (expand-file-name raw)))
+        (let* ((content (and (file-exists-p exclude)
+                             (with-temp-buffer (insert-file-contents exclude) (buffer-string))))
+               (have (and content (split-string content "\n")))
+               (want (seq-uniq (mapcar (lambda (p)
+                                         (concat "/" (directory-file-name (string-remove-prefix "/" p))))
+                                       relpaths)))
+               (new (seq-remove (lambda (p) (member p have)) want)))
+          (when new
+            (make-directory (file-name-directory exclude) t)
+            (let ((lead (if (and content (not (string-empty-p content))
+                                 (not (string-suffix-p "\n" content)))
+                            "\n" "")))
+              (write-region (concat lead (mapconcat #'identity new "\n") "\n")
+                            nil exclude t 'silent))))))))
+
 (defun ghostherd--worktree-deps-script (specs main worktree)
   "A /bin/sh script setting SPECS up into WORKTREE from MAIN, printing one
 status line per spec -- `done PATH' or `skip PATH REASON' -- and never
@@ -911,15 +957,17 @@ copying a dependency in full."
    (lambda (spec)
      (let* ((name (car spec))
             (src (shell-quote-argument (directory-file-name (expand-file-name name main))))
-            (dst (shell-quote-argument (directory-file-name (expand-file-name name worktree))))
+            (dstf (directory-file-name (expand-file-name name worktree)))
+            (dst (shell-quote-argument dstf))
+            (par (shell-quote-argument (directory-file-name (file-name-directory dstf))))
             (tag (shell-quote-argument name)))
        (pcase (cdr spec)
          ('symlink
-          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif ln -s %s %s 2>/dev/null; then echo done %s; else echo skip %s link-failed; fi"
-                  src tag dst tag src dst tag tag))
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && ln -s %s %s 2>/dev/null; then echo done %s; else echo skip %s link-failed; fi"
+                  src tag dst tag par src dst tag tag))
          ('clone
-          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif cp -c -R %s %s 2>/dev/null; then echo done %s; else echo skip %s no-copy-on-write; fi"
-                  src tag dst tag src dst tag tag))
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && cp -c -R %s %s 2>/dev/null; then echo done %s; else echo skip %s no-copy-on-write; fi"
+                  src tag dst tag par src dst tag tag))
          (_ (format "echo skip %s unknown-method" tag)))))
    specs
    "\n"))
@@ -942,9 +990,16 @@ project's (`ghostherd--worktree-deps-for').  Records each one's outcome and
 refreshes the page; never blocks Emacs, and never copies in full."
   (when-let* ((specs (or specs (ghostherd--worktree-deps-for main)))
               (main (file-name-as-directory (expand-file-name main)))
-              (worktree (file-name-as-directory (expand-file-name worktree))))
+              (worktree (file-name-as-directory (expand-file-name worktree)))
+              ;; Bare names found among the project's ignored dirs at any
+              ;; depth; explicit paths kept.  Resolving against the main
+              ;; checkout is read-only.
+              (resolved (ghostherd--worktree-deps-resolve main specs)))
+    ;; Mark them ignored in the worktree before they appear, so no agent's
+    ;; status or add, and no page count, ever sees a carried-in dependency.
+    (ignore-errors (ghostherd--worktree-exclude worktree (mapcar #'car resolved)))
     (let ((buf (generate-new-buffer " *ghostherd-deps*"))
-          (script (ghostherd--worktree-deps-script specs main worktree)))
+          (script (ghostherd--worktree-deps-script resolved main worktree)))
       (condition-case err
           (make-process
            :name "ghostherd-deps" :buffer buf :noquery t
