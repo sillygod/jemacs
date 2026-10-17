@@ -503,6 +503,35 @@ transcript, or whose sub-agents' files, changed."
          name (cons sig (mapcar #'ghostherd-memory-page--room-signature watch))
          "herd_subagents" path)))))
 
+;; Each agent's recently edited files, read by the sidecar from its
+;; transcript's tail (the files a confirmed edit tool named), so a diff's
+;; file tree can mark which agent changed which file.  Asked again only
+;; when the transcript has changed -- the paths are absolute here, turned
+;; relative to a checkout where the editor map is built, so the one answer
+;; serves both the checkout diff and the PR diff.
+
+(defvar ghostherd-memory-page--edits (make-hash-table :test 'equal)
+  "Agent name -> (SIGNATURE . ANSWER): its transcript as last read, and the
+sidecar's answer, a plist whose :files is the absolute paths it edited.")
+
+(defvar ghostherd-memory-page--editing (make-hash-table :test 'equal)
+  "Agent name -> t while the sidecar reads its edited files.")
+
+(defun ghostherd-memory-page--edits-look ()
+  "Ask the sidecar again for the edited files of each agent whose transcript
+changed; the editor map reads them from the cache on the next look.  Dead
+agents are asked too -- what they edited is a fact of their last
+conversation, and a file they touched is still theirs on a diff."
+  (dolist (s (ghostherd-sessions))
+    (let* ((name (ghostherd-session-name s))
+           (path (ghostherd-session-transcript s))
+           (sig (and (stringp path) (ghostherd-memory-page--room-signature path))))
+      (if (null sig)
+          (remhash name ghostherd-memory-page--edits)
+        (ghostherd-memory-page--ask-on-change
+         ghostherd-memory-page--edits ghostherd-memory-page--editing
+         name sig "herd_edits" path)))))
+
 (defvar ghostherd-memory-page--herd-soon nil
   "The timer of a herd about to be sent, or nil.")
 
@@ -1207,6 +1236,33 @@ nil.  REPO nil or unmatched gives nil."
         (delete-dups (delq nil (mapcar (lambda (s) (ghostherd--project-name (ghostherd-session-project s)))
                                        (ghostherd-sessions)))))))
 
+(defun ghostherd-memory-page--agents-in-checkout (root)
+  "The herd's command-agents working in checkout ROOT -- the set both a
+checkout review's recipients and its editor marks draw from."
+  (let* ((roots (make-hash-table :test 'equal))
+         (root-of (lambda (dir)
+                    (with-memoization (gethash dir roots)
+                      (car-safe (ghostherd-memory-page--checkout dir))))))
+    (seq-filter (lambda (s) (equal (funcall root-of (ghostherd-session-directory s)) root))
+                (ghostherd-memory-page--command-agents))))
+
+(defun ghostherd-memory-page--agents-on-pr (branch repo)
+  "The herd's command-agents on a PR's head BRANCH in repo REPO -- the set
+both a PR review's recipients and its editor marks draw from.  A repo the
+page names must map to a herd project; only when the page could name none
+do we fall back to the branch alone -- so a same-named branch in a repo
+the herd does not have reaches nobody.  Empty for no such agent."
+  (let* ((agents (ghostherd-memory-page--command-agents))
+         (repo-project (ghostherd-memory-page--project-for-repo repo))
+         (known (or repo-project (null repo) (and (stringp repo) (string-empty-p repo)))))
+    (and known (stringp branch) (not (string-empty-p branch))
+         (seq-filter (lambda (s)
+                       (and (equal (ghostherd-memory-page--agent-branch s) branch)
+                            (or (not repo-project)
+                                (equal (ghostherd--project-name (ghostherd-session-project s))
+                                       repo-project))))
+                     agents))))
+
 (defun ghostherd-memory-page--pr-recipients (branch repo)
   "Who a review of a PR on BRANCH (in repo REPO) may go to: the agent(s) on
 that branch first, then the project's lead, then a lead to start -- the
@@ -1214,17 +1270,7 @@ order the user's ask asked for, the agent on the branch first.  None when
 no herd agent is on the branch and REPO is not a herd project."
   (let* ((agents (ghostherd-memory-page--command-agents))
          (repo-project (ghostherd-memory-page--project-for-repo repo))
-         ;; A repo the page names must map to a herd project; only when the
-         ;; page could name none do we fall back to the branch alone -- so a
-         ;; same-named branch in a repo the herd does not have reaches nobody.
-         (known (or repo-project (null repo) (and (stringp repo) (string-empty-p repo))))
-         (here (and known (stringp branch) (not (string-empty-p branch))
-                    (seq-filter (lambda (s)
-                                  (and (equal (ghostherd-memory-page--agent-branch s) branch)
-                                       (or (not repo-project)
-                                           (equal (ghostherd--project-name (ghostherd-session-project s))
-                                                  repo-project))))
-                                agents)))
+         (here (ghostherd-memory-page--agents-on-pr branch repo))
          (project (or repo-project
                       (and here (ghostherd--project-name (ghostherd-session-project (car here))))))
          (lead (let ((l (and project (ghostherd-project-lead project))))
@@ -1248,8 +1294,7 @@ pull request: the agent(s) on its head branch first, then the lead -- see
                       (with-memoization (gethash dir roots)
                         (car-safe (ghostherd-memory-page--checkout dir)))))
            (agents (ghostherd-memory-page--command-agents))
-           (here (seq-filter (lambda (s) (equal (funcall root-of (ghostherd-session-directory s)) root))
-                             agents))
+           (here (ghostherd-memory-page--agents-in-checkout root))
            ;; The projects of those here, and those whose own checkout it is.
            (projects (delete-dups
                       (delq nil (mapcar (lambda (s)
@@ -1265,6 +1310,67 @@ pull request: the agent(s) on its head branch first, then the lead -- see
        (ghostherd-memory-page--start-a-lead leaderless)))))
 
 (add-hook 'pr-view-local-recipients-functions #'ghostherd-memory-page--review-recipients)
+
+;; Which agent changed which file, marked on a diff's file tree.  The
+;; sidecar reads the files each agent's conversation edited (its transcript
+;; tail), cached below like the meter and sub-agents; the map here turns
+;; that into, per file of the diff, the agents of this checkout -- or of
+;; the PR's head branch -- that edited it.  An agent's paths are relative
+;; to its own checkout, so a worktree's edits never mark another tree's
+;; file, and a file an agent touched outside the checkout is left unmarked.
+
+(defun ghostherd-memory-page--agent-root (s)
+  "The root of the checkout or worktree agent S works in, as its edited
+paths are relative to -- its worktree's path, else its checkout's root."
+  (or (plist-get (ghostherd-session-worktree s) :path)
+      (car-safe (ghostherd-memory-page--checkout (ghostherd-session-directory s)))))
+
+(defun ghostherd-memory-page--editor-mark (s)
+  "Agent S as a mark on a file it edited: (:id NAME :label LABEL)."
+  (list :id (ghostherd-session-name s)
+        :label (format "%s · %s" (ghostherd-session-name s) (ghostherd-session-kind s))))
+
+(defun ghostherd-memory-page--edited-under (name root)
+  "The files agent NAME edited that lie under ROOT, each relative to it, in
+order.  From the cache the look fills; empty when ROOT is unknown or NAME
+has nothing cached (then the file is left unmarked -- never guessed)."
+  (when (and (stringp root) (not (string-empty-p root)))
+    (let ((base (file-name-as-directory (expand-file-name root)))
+          out)
+      (dolist (f (plist-get (cdr (gethash name ghostherd-memory-page--edits)) :files))
+        (when (and (stringp f) (not (string-empty-p f)))
+          (let ((rel (file-relative-name (expand-file-name f) base)))
+            (unless (or (string-prefix-p "../" rel) (string-prefix-p "/" rel)
+                        (equal rel "..") (equal rel "."))
+              (push rel out)))))
+      (nreverse out))))
+
+(defun ghostherd-memory-page--editors (root &optional pr)
+  "Which agent(s) edited each file of a diff, as
+`pr-view-local-editors-functions' wants them: a list of (:file REL :by
+MARKS), REL a path relative to the diff's tree, MARKS a list of
+\(:id :label).  Without PR, of checkout ROOT -- the agents working in it.
+With PR (a plist of :branch and :repo), only the agents on its head
+branch -- the same set its review may go to.  Each agent's edits are
+relative to its own checkout, so the PR's repo-relative tree and the
+checkout's own tree both line up."
+  (let* ((agents (if pr
+                     (ghostherd-memory-page--agents-on-pr (plist-get pr :branch) (plist-get pr :repo))
+                   (ghostherd-memory-page--agents-in-checkout root)))
+         (by-file (make-hash-table :test 'equal))
+         (order nil))
+    (dolist (s agents)
+      (let ((mark (ghostherd-memory-page--editor-mark s)))
+        (dolist (rel (ghostherd-memory-page--edited-under
+                      (ghostherd-session-name s)
+                      (ghostherd-memory-page--agent-root s)))
+          (unless (gethash rel by-file) (push rel order))
+          (puthash rel (cons mark (gethash rel by-file)) by-file))))
+    (mapcar (lambda (rel)
+              (list :file rel :by (nreverse (gethash rel by-file))))
+            (nreverse order))))
+
+(add-hook 'pr-view-local-editors-functions #'ghostherd-memory-page--editors)
 
 (defun ghostherd-memory-page--open-changes (intent)
   "Open in pr-view what the checkout INTENT names has not committed."
@@ -1554,6 +1660,7 @@ forge or ClickUp instead, which want their own login."
       (ghostherd-memory-page--hooks-refresh))
     (ghostherd-memory-page--meter-look)
     (ghostherd-memory-page--subs-look)
+    (ghostherd-memory-page--edits-look)
     (ghostherd-memory-page--send-herd)))
 
 (defun ghostherd-memory-page--herd-watch ()

@@ -7957,6 +7957,60 @@ repo the herd does not have has nobody."
           ;; -- do not send to a same-named branch's agent in another repo.
           (should-not (funcall to "feat/y" "other/elsewhere")))))))
 
+(ert-deftest ghostherd-test-the-editor-map-marks-each-file-with-its-agent ()
+  "Which agent edited which file, for a diff's file tree: of a checkout, the
+agents working in it, by the files they edited there; of a PR, only the
+agents on its head branch.  Each agent's paths are relative to its own
+checkout, so a worktree's edits never mark the main checkout's tree, and a
+file edited outside the checkout is dropped.  Nothing cached for an agent
+\(a shell, one not read yet) means nothing marked."
+  (ghostherd-test--with-herd
+    (ghostherd-test--with-checkouts
+      (let* ((root (abbreviate-file-name repo))
+             (tree (abbreviate-file-name wt))
+             (ghostherd--roles (make-hash-table :test 'equal))
+             (ghostherd--worktrees (make-hash-table :test 'equal))
+             (ghostherd-memory-page--edits (make-hash-table :test 'equal))
+             ;; The map as (FILE . (AGENT-ID ...)), per file in order.
+             (edited (lambda (where &optional pr)
+                       (mapcar (lambda (e)
+                                 (cons (plist-get e :file)
+                                       (mapcar (lambda (b) (plist-get b :id)) (plist-get e :by))))
+                               (ghostherd-memory-page--editors where pr)))))
+        (clrhash ghostherd--sessions)
+        (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'working)
+        (ghostherd-tests--session :name "qa" :kind 'grok :project repo :state 'idle)
+        (ghostherd-tests--session :name "sh" :kind 'shell :project repo :state 'idle)
+        (puthash "qa" (list :path tree :branch "feat/y" :base "feat/x") ghostherd--worktrees)
+        ;; What each edited, as the sidecar read it: absolute paths.  rd, in
+        ;; the main checkout, also touched a file in the worktree and one
+        ;; outside any checkout -- neither may mark its tree.
+        (puthash "rd" (cons "s" (list :files (list (concat repo "src/pay.py")
+                                                   (concat repo "README.md")
+                                                   (concat wt "sneaky.py")
+                                                   "/etc/passwd")))
+                 ghostherd-memory-page--edits)
+        (puthash "qa" (cons "s" (list :files (list (concat wt "lib/a.py"))))
+                 ghostherd-memory-page--edits)
+        (cl-letf (((symbol-function 'ghostherd-session-directory)
+                   (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo))))
+          (should (memq #'ghostherd-memory-page--editors pr-view-local-editors-functions))
+          ;; The main checkout: rd's files under it, relative, in order; the
+          ;; worktree file and the outside one dropped; qa (in the worktree)
+          ;; does not mark the main tree; sh (a shell, nothing cached) marks
+          ;; nothing.
+          (should (equal (funcall edited root)
+                         '(("src/pay.py" "rd") ("README.md" "rd"))))
+          ;; The worktree, as its own checkout: qa's file; rd is not in it.
+          (should (equal (funcall edited tree) '(("lib/a.py" "qa"))))
+          ;; The PR on feat/y: only qa, on that branch, its file relative to
+          ;; its worktree; rd, on feat/x, is not marked.
+          (should (equal (funcall edited nil (list :branch "feat/y" :repo nil))
+                         '(("lib/a.py" "qa"))))
+          ;; A branch no agent is on, and a checkout the herd is not in: none.
+          (should-not (funcall edited nil (list :branch "no-such" :repo nil)))
+          (should-not (funcall edited "/etc/")))))))
+
 (ert-deftest ghostherd-test-a-review-from-pr-views-page-reaches-the-agent ()
   "Comments written on a herd checkout's diff in pr-view's page reach the
 agent picked as one prompt, each at its file and line."
