@@ -74,6 +74,7 @@ class JsonRpcHandler:
             "herd_chat": self._herd_chat,
             "herd_meter": self._herd_meter,
             "herd_subagents": self._herd_subagents,
+            "herd_edits": self._herd_edits,
             "herd_links": self._herd_links,
             "herd_relay_brief": self._herd_relay_brief,
             "herd_relay": self._herd_relay,
@@ -317,6 +318,19 @@ class JsonRpcHandler:
         at PATH and theirs beside it; and the files whose change is a
         change in them."""
         return subagents.live(str(params.get("path") or ""))
+
+    def _herd_edits(self, params: dict) -> dict:
+        """The files the conversation at PATH edited recently, relative to
+        ROOT (the checkout the agent works in) when given; empty for no
+        PATH."""
+        path = str(params.get("path") or "")
+        if not path:
+            return {"files": []}
+        root = params.get("root")
+        try:
+            return conversation.edited(path, str(root) if root else None)
+        except (OSError, ValueError):
+            return {"files": []}
 
     def _herd_chat(self, params: dict) -> dict:
         """A project's agents' conversations as one timeline.  AGENTS is a

@@ -82,6 +82,19 @@ LINE_NO = re.compile(r"^ *\d+(?:→|\t)", re.M)  # the Read tool's
 # queued for the agent as they arrive, read by it when it can.  Each has
 # a conversation of its own beside its parent's (subagents.py).
 SUB_TOOLS = {"Agent", "Task"}
+# Tools that write a file, and the argument that names it -- confirmed from
+# real transcripts on this machine: claude Edit/Write (file_path), grok
+# search_replace/write (file_path), agy write_to_file / replace_file_content
+# / multi_replace_file_content (TargetFile).  claude's MultiEdit and
+# NotebookEdit are in no transcript here, so they are left out (a one-line
+# addition when a real sample shows their shape).
+EDIT_TOOLS = {
+    "Edit", "Write",                                        # claude
+    "search_replace", "write",                             # grok
+    "write_to_file", "replace_file_content",              # agy
+    "multi_replace_file_content",
+}
+EDIT_PATH_KEYS = ("file_path", "TargetFile")
 SUB_ID = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 LAUNCHED = re.compile(r"\AAsync agent launched\b.*?\bagentId: ([A-Za-z0-9_-]{1,64})", re.S)
 AGENT_MESSAGE = re.compile(r'<agent-message from="([A-Za-z0-9_-]{1,64})">\n?(.*?)(?:</agent-message>|\Z)', re.S)
@@ -175,6 +188,21 @@ def hint(args: Any) -> str:
         if isinstance(v, str) and v.strip():
             return first_line(v)
     return ""
+
+
+def _unquote(v: str) -> str:
+    """agy double-encodes its tool arguments: each value is itself a JSON
+    string, so a path arrives as '"/x/a.py"', quotes and all.  Peel that one
+    layer; claude's and grok's plain values pass through untouched."""
+    s = v.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        try:
+            d = json.loads(s)
+        except ValueError:
+            return s
+        if isinstance(d, str):
+            return d.strip()
+    return s
 
 
 def _words(line: str) -> list[str]:
@@ -374,6 +402,9 @@ class Thread:
         self._reports: dict[str, dict[str, Any]] = {}
         self._queued: set[str] = set()
         self._metas: dict[str, dict[str, Any]] = {}
+        # Absolute paths this conversation edited, in order, deduped: what an
+        # edit tool (EDIT_TOOLS) named in its arguments.
+        self.edited: list[str] = []
 
     def user(self, text: str, ts: Any = None) -> None:
         e = user_entry(text, ts)
@@ -414,6 +445,14 @@ class Thread:
             self.entries.append(last)
         line = {"name": str(name or "tool"), "hint": hint(args)}
         last["tools"].append(line)
+        if name in EDIT_TOOLS and isinstance(args, dict):
+            for k in EDIT_PATH_KEYS:
+                p = args.get(k)
+                if isinstance(p, str) and p.strip():
+                    p = _unquote(p)
+                    if p and p not in self.edited:
+                        self.edited.append(p)
+                    break
         if name in SUB_TOOLS and call_id:
             self._subcalls[str(call_id)] = line
 
@@ -625,6 +664,7 @@ def _read(real: Path, cli: str, limit: int, reader, key: str) -> dict[str, Any]:
         "earlier": cut or more,
         "mtime": st.st_mtime,
         "limit": limit,
+        "edited": list(thread.edited),
     }
     if len(_cache) >= CACHE_MAX:
         _cache.pop(next(iter(_cache)))
@@ -636,6 +676,27 @@ def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
     """The last LIMIT entries of the conversation in transcript PATH."""
     real, cli = locate(path)
     return _read(real, cli, limit, READERS[cli], str(real))
+
+
+def edited(path: str, root: str | None = None, limit: int = LIMIT) -> dict[str, Any]:
+    """The files the conversation in transcript PATH edited recently (its
+    tail), as a confirmed edit tool named them.  With ROOT, only those under
+    it, relative to it, in order -- a worktree's edits never reach another
+    checkout's tree -- otherwise the absolute paths as seen."""
+    files = (read(path, limit) or {}).get("edited") or []
+    if root:
+        base = os.path.abspath(os.path.expanduser(root))
+        prefix = base if base.endswith(os.sep) else base + os.sep
+        rel = []
+        for p in files:
+            ap = os.path.abspath(os.path.expanduser(p))
+            if ap == base or ap.startswith(prefix):
+                r = os.path.relpath(ap, base)
+                if not r.startswith(".."):
+                    rel.append(r)
+        files = rel
+    seen: set[str] = set()
+    return {"files": [f for f in files if not (f in seen or seen.add(f))]}
 
 
 def sub_path(transcript: Path, sid: str) -> Path:

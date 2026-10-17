@@ -385,6 +385,92 @@ def test_rpc(home):
     assert call({"path": path, "limit": "lots"}).error.message == "limit must be a number"
 
 
+# ---- What a conversation edited --------------------------------------------
+# The edit tools are confirmed from real transcripts on this machine: claude
+# Edit/Write (file_path), grok search_replace/write (file_path), agy
+# write_to_file / replace_file_content / multi_replace_file_content
+# (TargetFile).  A read (Read/view_file/read_file) is not an edit.
+
+def test_edited_claude(home):
+    path = _claude_file(home, [
+        u("fix it"),
+        a("m1", use("t1", "Read", file_path="/proj/a.py")),      # looking, not editing
+        a("m1", use("t2", "Edit", file_path="/proj/a.py", old_string="a", new_string="b")),
+        a("m2", use("t3", "Write", file_path="/proj/sub/b.py", content="x")),
+        a("m2", use("t4", "Edit", file_path="/proj/a.py", old_string="b", new_string="c")),  # again
+    ])
+    # In order, deduped; the Read left out.
+    assert conv.read(path)["edited"] == ["/proj/a.py", "/proj/sub/b.py"]
+    assert conv.edited(path, "/proj") == {"files": ["a.py", "sub/b.py"]}
+
+
+def test_edited_grok(home):
+    path = _write(home / ".grok" / "sessions" / "%2Fproj" / "s1" / "chat_history.jsonl", [
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>go</user_query>"}]},
+        {"type": "assistant", "content": "ok", "tool_calls": [
+            {"id": "c1", "name": "read_file", "arguments": json.dumps({"target_file": "/proj/a.py"})},
+            {"id": "c2", "name": "search_replace",
+             "arguments": json.dumps({"file_path": "/proj/a.py", "old_string": "x", "new_string": "y"})},
+            {"id": "c3", "name": "write", "arguments": json.dumps({"file_path": "/proj/b.py", "content": "z"})}]},
+    ])
+    assert conv.edited(path, "/proj") == {"files": ["a.py", "b.py"]}
+
+
+def test_edited_agy_unwraps_its_double_encoded_paths(home):
+    # agy writes each argument value as its own JSON string, so a path arrives
+    # quoted -- '"/proj/a.py"'.  It must be peeled before it is used as a path.
+    def args(**kw):
+        return {k: json.dumps(v) for k, v in kw.items()}
+    path = _write(home / ".gemini" / "antigravity-cli" / "brain" / "c1" / ".system_generated" / "logs" / "transcript.jsonl", [
+        {"source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "t0", "step_index": 0,
+         "content": "<USER_REQUEST>\ngo\n</USER_REQUEST>"},
+        {"source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "t1", "step_index": 1, "tool_calls": [
+            {"name": "view_file", "args": args(AbsolutePath="/proj/a.py")},            # looking, not editing
+            {"name": "write_to_file", "args": args(TargetFile="/proj/a.py", CodeContent="x")},
+            {"name": "replace_file_content", "args": args(TargetFile="/proj/sub/b.py")},
+            {"name": "multi_replace_file_content", "args": args(TargetFile="/proj/a.py")}]},  # again
+    ])
+    r = conv.read(path)
+    assert r["cli"] == "agy"
+    assert r["edited"] == ["/proj/a.py", "/proj/sub/b.py"]
+    assert conv.edited(path, "/proj") == {"files": ["a.py", "sub/b.py"]}
+
+
+def test_edited_only_within_the_root(home):
+    # A worktree agent's edits are under its own tree; they must not mark
+    # another checkout's files, and vice versa.  Paths outside ROOT are dropped.
+    path = _claude_file(home, [
+        u("go"),
+        a("m1", use("t1", "Edit", file_path="/work/tree/a.py", old_string="a", new_string="b")),
+        a("m1", use("t2", "Write", file_path="/other/checkout/b.py", content="x")),
+        a("m2", use("t3", "Edit", file_path="/work/tree/sub/c.py", old_string="a", new_string="b")),
+    ])
+    assert conv.edited(path, "/work/tree") == {"files": ["a.py", "sub/c.py"]}
+    assert conv.edited(path, "/other/checkout") == {"files": ["b.py"]}
+    # A sibling whose name only begins the same is not under it.
+    assert conv.edited(path, "/work/tr") == {"files": []}
+    # Without a root, the absolute paths as seen.
+    assert conv.edited(path) == {"files": ["/work/tree/a.py", "/other/checkout/b.py", "/work/tree/sub/c.py"]}
+
+
+def test_edited_nothing_and_the_rpc(home):
+    quiet = _agent(home, "quiet", [u("hi"), a("m1", text("nothing to edit"))])
+    assert conv.read(quiet)["edited"] == []
+    assert conv.edited(quiet, "/proj") == {"files": []}
+
+    def call(params):
+        return asyncio.run(handler.handle(JsonRpcRequest(jsonrpc="2.0", id=1, method="herd_edits", params=params)))
+
+    busy = _agent(home, "busy", [u("go"),
+        a("m1", use("t1", "Edit", file_path="/proj/a.py", old_string="a", new_string="b"))])
+    r = call({"path": busy, "root": "/proj"})
+    assert r.error is None and r.result == {"files": ["a.py"]}
+    # No path -> nothing, never an error.
+    assert call({}).result == {"files": []}
+    # A transcript that is not there -> nothing, never an error.
+    assert call({"path": str(home / "nope.jsonl"), "root": "/proj"}).result == {"files": []}
+
+
 # ---- A project's chat ------------------------------------------------------
 
 def at(minute):
