@@ -355,7 +355,10 @@ the name we are about to take."
     (:args    . "@ghostherd-args")
     (:notes   . "@ghostherd-notes")
     (:role    . "@ghostherd-role")
-    (:lineage . "@ghostherd-lineage"))
+    (:lineage . "@ghostherd-lineage")
+    (:worktree . "@ghostherd-worktree")
+    (:branch  . "@ghostherd-branch")
+    (:base    . "@ghostherd-base"))
   "Recipe fields and the tmux user options that hold them.
 
 On the session itself rather than in a sidecar file: a file can be

@@ -9463,6 +9463,104 @@ an agent spawned without one is the first of its name."
                     (ghostherd-spawn 'grok :name "rd" :project "/p/" :backend 'fake :display nil))
                    1))))))
 
+(defmacro ghostherd-tests--with-repo (&rest body)
+  "BODY with `base' a temp dir, `repo' a git checkout on `main' in it with
+one commit, and `git' a lambda (DIR &rest ARGS) running git in DIR."
+  (declare (indent 0) (debug t))
+  `(let* ((base (file-name-as-directory (file-truename (make-temp-file "gh-wt" t))))
+          (repo (concat base "repo/"))
+          (git (lambda (dir &rest args)
+                 (let ((default-directory dir))
+                   (apply #'call-process "git" nil nil nil
+                          "-c" "user.email=t@t" "-c" "user.name=t" args)))))
+     (unwind-protect
+         (progn
+           (make-directory repo t)
+           (funcall git repo "init" "-q" "-b" "main")
+           (funcall git repo "commit" "-q" "--allow-empty" "-m" "start")
+           ,@body)
+       (delete-directory base t))))
+
+(ert-deftest ghostherd-test-worktree-attributed-to-main-checkout ()
+  "An agent in a project's git worktree belongs to the project, not a new
+one: `ghostherd--worktree-main-checkout' collapses a linked worktree to
+its main checkout -- nil for the main checkout itself or a plain directory
+-- and `ghostherd--project-root' of a worktree is the main checkout."
+  (ghostherd-tests--with-repo
+    (let ((wt (concat base "wt/"))
+          (plain (concat base "plain/")))
+      (make-directory plain t)
+      (funcall git repo "worktree" "add" "-q" "-b" "feat/y" (directory-file-name wt))
+      (should (equal (directory-file-name (file-truename (ghostherd--worktree-main-checkout wt)))
+                     (directory-file-name (file-truename repo))))
+      (should-not (ghostherd--worktree-main-checkout repo))
+      (should-not (ghostherd--worktree-main-checkout plain))
+      (should (equal (directory-file-name (file-truename (ghostherd--project-root wt)))
+                     (directory-file-name (file-truename repo)))))))
+
+(ert-deftest ghostherd-test-worktree-create-makes-a-branch-off-head ()
+  "`ghostherd--worktree-create' adds a git worktree under
+`ghostherd-worktree-root' on a branch named for the agent, off the main
+checkout's HEAD; a second at the same path refuses; a non-git dir refuses."
+  (ghostherd-tests--with-repo
+    (let ((ghostherd-worktree-root (concat base "trees/")))
+      (let ((wt (ghostherd--worktree-create repo "alice")))
+        (should (equal (plist-get wt :branch) "alice"))
+        (should (equal (plist-get wt :base) "main"))
+        (should (file-directory-p (plist-get wt :path)))
+        (should (string-prefix-p (file-truename ghostherd-worktree-root)
+                                 (file-truename (plist-get wt :path))))
+        (should (equal (with-temp-buffer
+                         (let ((default-directory (plist-get wt :path)))
+                           (call-process "git" nil '(t nil) nil "symbolic-ref" "--short" "HEAD"))
+                         (string-trim (buffer-string)))
+                       "alice"))
+        (should-error (ghostherd--worktree-create repo "alice") :type 'user-error))
+      (should-error (ghostherd--worktree-create base "bob") :type 'user-error))))
+
+(ert-deftest ghostherd-test-worktree-spawn-keeps-and-restores-it ()
+  "A spawned worktree agent carries its worktree in the hash and the
+recipe; the recipe respawns it in the worktree, not the main checkout; the
+tmux options round-trip; and restore rebuilds the worktree from them."
+  (should (equal (ghostherd-tmux--decode :worktree (ghostherd-tmux--encode :worktree "/w/")) "/w/"))
+  (should (assq :worktree ghostherd-tmux--recipe-options))
+  (should (assq :branch ghostherd-tmux--recipe-options))
+  (should (assq :base ghostherd-tmux--recipe-options))
+  (ghostherd-tests--with-herd ((ghostherd--lineage (make-hash-table :test 'equal))
+                               (ghostherd--roles (make-hash-table :test 'equal))
+                               (ghostherd--worktrees (make-hash-table :test 'equal))
+                               (ghostherd-known-backends '(fake))
+                               (ghostherd-tests--fake-recipes nil)
+                               (ghostherd-tests--fake-spawned nil))
+    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+              ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+              ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+      (let ((s (ghostherd-spawn 'claude :name "wk" :project "/p/" :backend 'fake
+                                :directory "/w/wk/" :worktree "/w/wk/"
+                                :branch "wk" :base "master" :display nil)))
+        (should (equal (ghostherd-session-worktree s)
+                       '(:path "/w/wk/" :branch "wk" :base "master")))
+        (should (equal (plist-get ghostherd-tests--fake-spawned :worktree) "/w/wk/"))
+        (should (equal (plist-get ghostherd-tests--fake-spawned :branch) "wk"))
+        (let ((r (ghostherd-session-recipe s)))
+          (should (equal (plist-get r :worktree) "/w/wk/"))
+          (should (equal (plist-get r :directory) "/w/wk/"))
+          (should (equal (plist-get r :branch) "wk"))
+          (should (equal (plist-get r :base) "master"))))
+      ;; An agent with no worktree: nothing in the hash; recipe stays in the project.
+      (let ((p (ghostherd-spawn 'claude :name "plain" :project "/p/" :backend 'fake :display nil)))
+        (should-not (ghostherd-session-worktree p))
+        (should-not (plist-get (ghostherd-session-recipe p) :worktree))
+        (should (equal (plist-get (ghostherd-session-recipe p) :directory) "/p/")))
+      ;; Restore rebuilds the worktree hash from the recipe.
+      (setq ghostherd-tests--fake-recipes
+            '((:name "rk" :kind claude :host-id "gh-rk" :project "/p/"
+               :worktree "/w/rk/" :branch "rk" :base "master")))
+      (ghostherd-restore)
+      (should (equal (ghostherd-session-worktree (ghostherd-get "rk"))
+                     '(:path "/w/rk/" :branch "rk" :base "master"))))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))

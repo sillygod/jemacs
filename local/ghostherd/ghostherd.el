@@ -568,10 +568,44 @@ around it, not for that case."
   (or (alist-get kind ghostherd-agent-specs)
       (user-error "Unknown agent kind: %s" kind)))
 
+(defcustom ghostherd-worktree-root "~/.ghostherd/worktrees"
+  "Directory an agent's own git worktree is created under.
+A worktree goes in <root>/<project>/<name>, outside the project's own
+tree, so grep, find and project search in the main checkout never meet a
+second copy of the code.  See `ghostherd-new'."
+  :type 'directory
+  :group 'ghostherd)
+
+(defun ghostherd--worktree-main-checkout (dir)
+  "If DIR is a linked git worktree, its main checkout's directory; else nil.
+A linked worktree's own git dir sits under the main repo's
+`.git/worktrees/', while its common dir is that main `.git'; the main
+checkout is the common dir's parent.  An ordinary checkout, where the two
+are the same, gives nil, as does a directory that is no worktree."
+  (when (and (stringp dir) (file-directory-p (expand-file-name dir)))
+    (let ((default-directory (file-name-as-directory (expand-file-name dir))))
+      (with-temp-buffer
+        (when (eq 0 (ignore-errors
+                      (call-process "git" nil '(t nil) nil "rev-parse"
+                                    "--path-format=absolute"
+                                    "--git-common-dir" "--git-dir")))
+          (pcase (split-string (buffer-string) "\n" t)
+            (`(,common ,gitdir)
+             (and (not (equal (file-name-as-directory common)
+                              (file-name-as-directory gitdir)))
+                  (let ((main (file-name-directory (directory-file-name common))))
+                    (and main (file-name-as-directory (expand-file-name main))))))))))))
+
 (defun ghostherd--project-root (&optional dir)
-  "Return project root for DIR, or nil."
-  (when-let* ((proj (project-current nil dir)))
-    (project-root proj)))
+  "Return project root for DIR, or nil.
+An agent working in one of a project's git worktrees belongs to that
+project, not to a new one: a linked worktree resolves to its main
+checkout (`ghostherd--worktree-main-checkout'), so it keeps its own
+directory and branch while sharing the project's room and lead."
+  (if-let* ((proj (project-current nil dir)))
+      (let ((root (project-root proj)))
+        (or (ghostherd--worktree-main-checkout root) root))
+    (ghostherd--worktree-main-checkout (or dir default-directory))))
 
 (defun ghostherd--abbreviate (path)
   "Abbreviate PATH for display."
@@ -607,6 +641,75 @@ as the role is.")
 (defun ghostherd-session-generation (session)
   "SESSION's place in the line of its name: 1 for the first to hold it."
   (1+ (length (ghostherd-session-lineage session))))
+
+
+;;; Git worktrees
+;;
+;; An agent can work in its own git worktree, so two agents write code in
+;; one project at once without stepping on each other.  The worktree is a
+;; real `git worktree' outside the project tree (`ghostherd-worktree-root'),
+;; on its own branch; the agent's directory is the worktree while its
+;; project stays the main checkout (`ghostherd--project-root'), so it shares
+;; the project's room and lead.  What branch and base a worktree is on is
+;; kept beside the role and lineage -- a table, not a slot -- and on the
+;; host with the recipe, so it survives a restart.
+
+(defvar ghostherd--worktrees (make-hash-table :test 'equal)
+  "Session id -> a plist of its git worktree: :path, :branch, :base.
+A table rather than a slot, as the role and lineage are; written onto the
+host with the recipe, so a worktree agent is still one after a restart.
+Nil for an agent not in a herd-made worktree.")
+
+(defun ghostherd-session-worktree (session)
+  "SESSION's git worktree as (:path :branch :base), or nil for none."
+  (gethash (ghostherd-session-id session) ghostherd--worktrees))
+
+(defun ghostherd--worktree-path (project name)
+  "Where agent NAME's worktree of PROJECT goes, under `ghostherd-worktree-root'."
+  (expand-file-name
+   name
+   (expand-file-name
+    (file-name-nondirectory (directory-file-name (expand-file-name project)))
+    (expand-file-name ghostherd-worktree-root))))
+
+(defun ghostherd--worktree-base (project)
+  "The ref PROJECT's worktrees branch from: the main checkout's current
+branch, or its HEAD commit when it is detached; nil when it is no git
+checkout with a commit."
+  (let ((default-directory (file-name-as-directory (expand-file-name project))))
+    (with-temp-buffer
+      (if (eq 0 (ignore-errors
+                  (call-process "git" nil '(t nil) nil
+                                "symbolic-ref" "--short" "-q" "HEAD")))
+          (let ((b (string-trim (buffer-string))))
+            (and (not (string-empty-p b)) b))
+        (erase-buffer)
+        (and (eq 0 (ignore-errors
+                     (call-process "git" nil '(t nil) nil "rev-parse" "-q" "HEAD")))
+             (let ((h (string-trim (buffer-string))))
+               (and (not (string-empty-p h)) h)))))))
+
+(defun ghostherd--worktree-create (project name &optional branch)
+  "Create a git worktree of PROJECT for agent NAME; return its plist.
+The worktree goes under `ghostherd-worktree-root' on a new BRANCH (NAME by
+default) off PROJECT's current HEAD.  Returns (:path :branch :base).
+Signals a `user-error' when git cannot, so the caller may fall back to a
+plain directory."
+  (let* ((project (file-name-as-directory (expand-file-name project)))
+         (branch (or branch name))
+         (path (directory-file-name (ghostherd--worktree-path project name)))
+         (base (ghostherd--worktree-base project))
+         (default-directory project))
+    (unless base
+      (user-error "Not a git checkout with a commit: %s" (abbreviate-file-name project)))
+    (when (file-exists-p path)
+      (user-error "Worktree path already exists: %s" (abbreviate-file-name path)))
+    (make-directory (file-name-directory path) t)
+    (with-temp-buffer
+      (unless (eq 0 (call-process "git" nil '(t t) nil
+                                  "worktree" "add" "-b" branch path base))
+        (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
+    (list :path (file-name-as-directory path) :branch branch :base base)))
 
 (defun ghostherd--roman (n)
   "N in Roman numerals, for the line of a name; past 39, the number."
@@ -2226,6 +2329,10 @@ PLIST keys:
   :role      its role in the herd: \"lead\" for a project's lead
   :lineage   the agents that held its name before it (`ghostherd-relay')
   :directory working directory (defaults to project or `default-directory')
+  :worktree  path of its own git worktree, when it has one; :branch and
+             :base then say the branch and the ref it came off
+  :branch    its worktree's branch (with :worktree)
+  :base      the ref its worktree branched from (with :worktree)
   :backend   host to start it on (defaults to `ghostherd-backend')
   :display   when non-nil (default t), pop to the buffer"
   (ghostherd--install-hooks)
@@ -2247,6 +2354,9 @@ PLIST keys:
          (notes (plist-get plist :notes))
          (role (plist-get plist :role))
          (lineage (plist-get plist :lineage))
+         (worktree (plist-get plist :worktree))
+         (branch (plist-get plist :branch))
+         (base (plist-get plist :base))
          (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
@@ -2255,7 +2365,8 @@ PLIST keys:
                    backend
                    (list :name name :kind kind :command command :args args
                          :directory directory :project project :notes notes
-                         :role role :lineage lineage)))
+                         :role role :lineage lineage
+                         :worktree worktree :branch branch :base base)))
          session)
     (setq session
           (ghostherd-session--create
@@ -2279,6 +2390,10 @@ PLIST keys:
     (if lineage
         (puthash name lineage ghostherd--lineage)
       (remhash name ghostherd--lineage))
+    (if worktree
+        (puthash name (list :path worktree :branch branch :base base)
+                 ghostherd--worktrees)
+      (remhash name ghostherd--worktrees))
     (ghostherd--log-add session 'life
                         (format "spawned %s on %s" kind backend))
     (ghostherd--ensure-poll-timer)
@@ -2381,6 +2496,12 @@ running, and a session keeps the backend it was born with anyway."
           (if-let* ((lineage (plist-get recipe :lineage)))
               (puthash name lineage ghostherd--lineage)
             (remhash name ghostherd--lineage))
+          (if-let* ((worktree (plist-get recipe :worktree)))
+              (puthash name (list :path worktree
+                                  :branch (plist-get recipe :branch)
+                                  :base (plist-get recipe :base))
+                       ghostherd--worktrees)
+            (remhash name ghostherd--worktrees))
           (ghostherd--log-add name 'life
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
@@ -2400,15 +2521,21 @@ Whether the *agent* survives depends on the backend.  On ghostel it
 cannot -- the agent is an Emacs child.  On tmux it does, and this same
 recipe is written onto the host so `ghostherd-restore' can rebuild the
 session around a process that never stopped."
-  (list :name (ghostherd-session-name session)
-        :project (ghostherd-session-project session)
-        :directory (ghostherd-session-project session)
-        :backend (ghostherd-session-backend session)
-        :command (ghostherd-session-command session)
-        :args (ghostherd-session-args session)
-        :notes (ghostherd-session-notes session)
-        :role (ghostherd-session-role session)
-        :lineage (ghostherd-session-lineage session)))
+  (let ((wt (ghostherd-session-worktree session)))
+    (list :name (ghostherd-session-name session)
+          :project (ghostherd-session-project session)
+          ;; A worktree agent respawns in its worktree, not the main
+          ;; checkout: its heir takes over the same branch, not a copy.
+          :directory (or (plist-get wt :path) (ghostherd-session-project session))
+          :backend (ghostherd-session-backend session)
+          :command (ghostherd-session-command session)
+          :args (ghostherd-session-args session)
+          :notes (ghostherd-session-notes session)
+          :role (ghostherd-session-role session)
+          :lineage (ghostherd-session-lineage session)
+          :worktree (plist-get wt :path)
+          :branch (plist-get wt :branch)
+          :base (plist-get wt :base))))
 
 ;;;###autoload
 (defun ghostherd-respawn (session &optional continue)
@@ -2502,6 +2629,7 @@ With prefix or KIND, skip the kind prompt."
          (directory (if project
                         (read-directory-name "Directory: " project nil t)
                       (read-directory-name "Directory: " default-directory nil t)))
+         (final-name (if (string-empty-p name) default-name name))
          (arg-string (read-string
                       (format "Extra args for %s (optional): "
                               (or (plist-get spec :command) "shell"))
@@ -2510,14 +2638,26 @@ With prefix or KIND, skip the kind prompt."
                         (string-join a " "))))
          (args (when (and arg-string (not (string-empty-p arg-string)))
                  (split-string-and-unquote arg-string)))
-         (notes (read-string "Role / notes (optional): ")))
+         (notes (read-string "Role / notes (optional): "))
+         ;; Opt in to the agent's own git worktree, off the project's HEAD,
+         ;; on a branch named for the agent.  Done last, after the prompts,
+         ;; so aborting one leaves no orphan worktree behind.
+         (wt-project (ghostherd--project-root directory))
+         (wt (and wt-project
+                  (y-or-n-p (format "Own git worktree off %s? "
+                                    (ghostherd--abbreviate wt-project)))
+                  (ghostherd--worktree-create
+                   wt-project final-name (read-string "Branch: " final-name)))))
     (ghostherd-spawn
      kind
-     :name (if (string-empty-p name) default-name name)
-     :project (ghostherd--project-root directory)
-     :directory directory
+     :name final-name
+     :project wt-project
+     :directory (or (plist-get wt :path) directory)
      :args args
-     :notes (and (not (string-empty-p notes)) notes))))
+     :notes (and (not (string-empty-p notes)) notes)
+     :worktree (plist-get wt :path)
+     :branch (plist-get wt :branch)
+     :base (plist-get wt :base))))
 
 (defconst ghostherd--session-id-re "\\`[A-Za-z0-9][A-Za-z0-9_.-]*\\'"
   "What a CLI's conversation id looks like: a UUID, or a plain token.
