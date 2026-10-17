@@ -1227,10 +1227,25 @@ the herd is not in."
              ghostherd-memory-page--checkouts)
     (ghostherd-memory-page--vec (nreverse out))))
 
+(defun ghostherd-memory-page--worktree-deps (s)
+  "S's worktree dependencies that could not be carried in, for the card: a
+vector of {name, reason}; :json-false when all were fine or absent."
+  (let ((skipped (seq-filter
+                  (lambda (d) (and (eq (plist-get (cdr d) :status) 'skipped)
+                                   (not (member (plist-get (cdr d) :reason) '("no-source" "exists")))))
+                  (and (fboundp 'ghostherd-session-worktree-deps)
+                       (ghostherd-session-worktree-deps s)))))
+    (if skipped
+        (ghostherd-memory-page--vec
+         (mapcar (lambda (d) (list :name (car d) :reason (or (plist-get (cdr d) :reason) "")))
+                 skipped))
+      :json-false)))
+
 (defun ghostherd-memory-page--agent-work (s)
   "S's checkout as the page shows it, when it is not its project's.
-A herd-made worktree also carries how far it is ahead of its base and its
-size on disk, both measured and cached by the look."
+A herd-made worktree also carries how far it is ahead of its base, its
+size on disk (both measured and cached by the look), and any dependency
+that could not be carried in."
   (let ((co (gethash (cons 'agent (ghostherd-session-name s)) ghostherd-memory-page--checkouts))
         (project (gethash (ghostherd--project-name (ghostherd-session-project s))
                           ghostherd-memory-page--checkouts)))
@@ -1241,7 +1256,8 @@ size on disk, both measured and cached by the look."
           (if wt
               (append w (list :base (or (plist-get wt :base) "")
                               :ahead (or (gethash id ghostherd-memory-page--ahead) :json-false)
-                              :size (or (gethash id ghostherd-memory-page--size) :json-false)))
+                              :size (or (gethash id ghostherd-memory-page--size) :json-false)
+                              :deps (ghostherd-memory-page--worktree-deps s)))
             w))
       :json-false)))
 
@@ -1962,6 +1978,7 @@ nothing rather than a plain agent pretending to be in a worktree."
                                             :directory dir :args args :display nil))
         (condition-case err
             (let ((wt (ghostherd--worktree-create project final)))
+              (ghostherd--worktree-deps-setup project (plist-get wt :path) final)
               (funcall started (ghostherd-spawn kind :name final :project project
                                                 :directory (plist-get wt :path) :args args
                                                 :worktree (plist-get wt :path)

@@ -9684,6 +9684,61 @@ project directory and no branch."
       (should (equal (plist-get pls :directory) "/p/shop/"))
       (should (equal (plist-get pls :branch) "")))))
 
+(ert-deftest ghostherd-test-worktree-deps-carried-in ()
+  "Dependencies are carried into a worktree in the background: a venv is
+symlinked, node_modules is cloned (a real copy, not a link), a missing one
+is skipped, and the card surfaces only failures (not a missing source)."
+  (ghostherd-tests--with-herd ((ghostherd--worktrees (make-hash-table :test 'equal))
+                               (ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (make-directory (expand-file-name ".venv/bin" repo) t)
+      (with-temp-file (expand-file-name ".venv/bin/python" repo) (insert "#!/bin/sh\n"))
+      (make-directory (expand-file-name "node_modules/pkg" repo) t)
+      (with-temp-file (expand-file-name "node_modules/pkg/index.js" repo) (insert "x\n"))
+      (let* ((ghostherd-worktree-root (concat base "trees/"))
+             (wt (ghostherd--worktree-create repo "dev"))
+             (path (plist-get wt :path)))
+        (ghostherd--worktree-deps-setup
+         repo path "dev" '((".venv" . symlink) ("node_modules" . clone) ("missing" . clone)))
+        (let ((tries 0))
+          (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< tries 100))
+            (accept-process-output nil 0.1)
+            (setq tries (1+ tries))))
+        (let ((st (gethash "dev" ghostherd--worktree-deps-status)))
+          (should (eq (plist-get (alist-get ".venv" st nil nil #'equal) :status) 'done))
+          (should (eq (plist-get (alist-get "node_modules" st nil nil #'equal) :status) 'done))
+          (should (eq (plist-get (alist-get "missing" st nil nil #'equal) :status) 'skipped))
+          (should (equal (plist-get (alist-get "missing" st nil nil #'equal) :reason) "no-source")))
+        (should (file-symlink-p (directory-file-name (expand-file-name ".venv" path))))
+        (should (file-directory-p (expand-file-name "node_modules/pkg" path)))
+        (should-not (file-symlink-p (directory-file-name (expand-file-name "node_modules" path))))
+        (when (require 'ghostherd-memory-page nil t)
+          (let ((s (ghostherd-tests--session :name "dev" :kind 'claude :project repo)))
+            (puthash "dev" wt ghostherd--worktrees)
+            ;; A missing source is not a failure worth a card chip.
+            (should (eq (ghostherd-memory-page--worktree-deps s) :json-false))))))))
+
+(ert-deftest ghostherd-test-worktree-deps-script-never-full-copies ()
+  "The dependency script clones with copy-on-write and symlinks, and on a
+failed clone skips rather than copying in full."
+  (let ((script (ghostherd--worktree-deps-script
+                 '(("node_modules" . clone) (".venv" . symlink)) "/m/" "/w/")))
+    (should (string-match-p "cp -c -R" script))
+    (should (string-match-p "no-copy-on-write" script))
+    (should (string-match-p "ln -s" script))
+    ;; No full-copy fallback anywhere.
+    (should-not (string-match-p "cp -R" script))))
+
+(ert-deftest ghostherd-test-worktree-deps-per-project-override ()
+  "`ghostherd--worktree-deps-for' uses the project's dir-local when set,
+else the default `ghostherd-worktree-deps'."
+  (ghostherd-tests--with-repo
+    (should (equal (ghostherd--worktree-deps-for repo) ghostherd-worktree-deps))
+    (with-temp-file (expand-file-name ".dir-locals.el" repo)
+      (prin1 '((nil . ((ghostherd-project-worktree-deps . (("node_modules" . clone))))))
+             (current-buffer)))
+    (should (equal (ghostherd--worktree-deps-for repo) '(("node_modules" . clone))))))
+
 (ert-deftest ghostherd-test-when-ready-says-when-it-will-not-be ()
   (ghostherd-tests--with-herd ((ghostherd--log nil))
     (let ((s (ghostherd-tests--session :name "rd" :kind 'grok :state 'starting))

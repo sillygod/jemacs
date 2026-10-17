@@ -1176,10 +1176,13 @@
       : "";
     const sized = fmtBytes(w.size);
     const size = sized ? '<span class="wchip size" title="worktree on disk">' + esc(sized) + "</span>" : "";
+    const deps = Array.isArray(w.deps) && w.deps.length
+      ? '<span class="wchip dep-skip" title="' + esc(w.deps.map((d) => d.name + " skipped: " + d.reason).join("; ")) + '">deps: ' + esc(w.deps.map((d) => d.name).join(", ")) + " skipped</span>"
+      : "";
     // The default branch without a PR says nothing of one -- but what it
     // has not committed, it says.
     const quiet = !pr && !tasks.length && !w.error && QUIET_BRANCHES.includes(w.branch);
-    if (quiet && !changes && !ahead && !size) return "";
+    if (quiet && !changes && !ahead && !size && !deps) return "";
     const key = w.root + "|" + w.branch;
     const open = herdNow.workOpen.has(key);
     const prPart = quiet ? ""
@@ -1187,7 +1190,7 @@
       : w.error ? '<span class="wnote" title="' + esc(w.error) + '">PR not looked up</span>'
       : w.pending ? '<span class="wnote">PR…</span>'
       : '<span class="wnote">no PR</span>';
-    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes + ahead + size +
+    return '<div class="work"><span class="wbranch" title="' + esc(w.root) + '">⎇ ' + esc(w.branch) + "</span>" + prPart + changes + ahead + size + deps +
       (open ? tasks : tasks.slice(0, 2)).map((t) => taskChip(t)).join("") +
       (tasks.length > 2 ? moreButton(key, open, tasks.length - 2) : "") + "</div>";
   }

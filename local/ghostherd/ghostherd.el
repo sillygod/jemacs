@@ -832,6 +832,117 @@ second confirmation."
             (message "ghostherd: removed worktree %s (branch kept)" (abbreviate-file-name path))
           (user-error "git could not remove %s" (abbreviate-file-name path)))))))
 
+;; A worktree is a fresh checkout: its code is there, but a project's
+;; uninstalled dependencies -- a Python venv, node_modules -- are not.
+;; Carrying them in makes a worktree usable at once.  A venv holds absolute
+;; paths, so it is symlinked to the main checkout's rather than copied; a
+;; node_modules is cloned copy-on-write (APFS `cp -c'), so the worktree may
+;; diverge it cheaply.  Build caches are simply left off the list.  A clone
+;; that cannot be made is skipped and said so on the card -- never a full
+;; copy, since the disk is not big.  All of it runs in the background.
+
+(defcustom ghostherd-worktree-deps
+  '((".venv" . symlink) ("venv" . symlink) ("node_modules" . clone))
+  "Dependencies carried into a new worktree, each (PATH . METHOD).
+PATH is relative to the checkout root.  METHOD is `symlink' -- a link to
+the main checkout's, for a thing that holds absolute paths and breaks when
+copied, like a Python venv -- or `clone', an APFS copy-on-write copy (cp
+-c) the worktree may then diverge, like node_modules.  A PATH with no
+source in the main checkout is skipped; a clone that cannot be made is
+skipped and said so on the card, never copied in full.  Build caches are
+left off this list.  Override per project with a
+`ghostherd-project-worktree-deps' dir-local."
+  :type '(alist :key-type string :value-type (choice (const symlink) (const clone)))
+  :group 'ghostherd)
+
+(defvar ghostherd-project-worktree-deps 'unset
+  "Per-project override of `ghostherd-worktree-deps', from .dir-locals.el.
+
+  ((nil . ((ghostherd-project-worktree-deps . ((\"node_modules\" . clone))))))")
+(put 'ghostherd-project-worktree-deps 'safe-local-variable
+     (lambda (v) (and (listp v)
+                      (seq-every-p (lambda (e) (and (consp e) (stringp (car e))
+                                                    (memq (cdr e) '(symlink clone))))
+                                   v))))
+
+(defvar ghostherd--worktree-deps-status (make-hash-table :test 'equal)
+  "Session id -> alist of its worktree dependencies' outcome: PATH ->
+(:status STATUS :reason REASON), STATUS `done' or `skipped'.")
+
+(defun ghostherd-session-worktree-deps (session)
+  "The outcome of SESSION's worktree dependencies (PATH -> plist), or nil."
+  (gethash (ghostherd-session-id session) ghostherd--worktree-deps-status))
+
+(defun ghostherd--worktree-deps-for (dir)
+  "The dependency specs for a worktree of the project at DIR: its
+`ghostherd-project-worktree-deps' dir-local when set, else
+`ghostherd-worktree-deps'."
+  (let ((local (ignore-errors
+                 (with-temp-buffer
+                   (setq default-directory (file-name-as-directory (expand-file-name dir)))
+                   (setq-local buffer-file-name (expand-file-name ".ghostherd" default-directory))
+                   (hack-dir-local-variables)
+                   (assq 'ghostherd-project-worktree-deps file-local-variables-alist)))))
+    (if local (cdr local) ghostherd-worktree-deps)))
+
+(defun ghostherd--worktree-deps-script (specs main worktree)
+  "A /bin/sh script setting SPECS up into WORKTREE from MAIN, printing one
+status line per spec -- `done PATH' or `skip PATH REASON' -- and never
+copying a dependency in full."
+  (mapconcat
+   (lambda (spec)
+     (let* ((name (car spec))
+            (src (shell-quote-argument (directory-file-name (expand-file-name name main))))
+            (dst (shell-quote-argument (directory-file-name (expand-file-name name worktree))))
+            (tag (shell-quote-argument name)))
+       (pcase (cdr spec)
+         ('symlink
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif ln -s %s %s 2>/dev/null; then echo done %s; else echo skip %s link-failed; fi"
+                  src tag dst tag src dst tag tag))
+         ('clone
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif cp -c -R %s %s 2>/dev/null; then echo done %s; else echo skip %s no-copy-on-write; fi"
+                  src tag dst tag src dst tag tag))
+         (_ (format "echo skip %s unknown-method" tag)))))
+   specs
+   "\n"))
+
+(defun ghostherd--worktree-deps-record (id output)
+  "Store the dependency OUTPUT (status lines) for session ID."
+  (let (alist)
+    (dolist (line (split-string (or output "") "\n" t))
+      (pcase (split-string (string-trim line) " ")
+        (`("done" ,name . ,_) (push (cons name (list :status 'done)) alist))
+        (`("skip" ,name . ,reason)
+         (push (cons name (list :status 'skipped :reason (string-join reason " "))) alist))))
+    (when alist
+      (puthash id (nreverse alist) ghostherd--worktree-deps-status))))
+
+(defun ghostherd--worktree-deps-setup (main worktree id &optional specs)
+  "Carry the project's dependencies into WORKTREE from the MAIN checkout,
+for the agent with session ID, in the background.  SPECS default to the
+project's (`ghostherd--worktree-deps-for').  Records each one's outcome and
+refreshes the page; never blocks Emacs, and never copies in full."
+  (when-let* ((specs (or specs (ghostherd--worktree-deps-for main)))
+              (main (file-name-as-directory (expand-file-name main)))
+              (worktree (file-name-as-directory (expand-file-name worktree))))
+    (let ((buf (generate-new-buffer " *ghostherd-deps*"))
+          (script (ghostherd--worktree-deps-script specs main worktree)))
+      (condition-case err
+          (make-process
+           :name "ghostherd-deps" :buffer buf :noquery t
+           :command (list "sh" "-c" script)
+           :sentinel
+           (lambda (proc _e)
+             (unless (process-live-p proc)
+               (when (buffer-live-p (process-buffer proc))
+                 (with-current-buffer (process-buffer proc)
+                   (ghostherd--worktree-deps-record id (buffer-string)))
+                 (kill-buffer (process-buffer proc)))
+               (when (fboundp 'ghostherd-memory-page--work-changed)
+                 (ignore-errors (ghostherd-memory-page--work-changed))))))
+        (error (when (buffer-live-p buf) (kill-buffer buf))
+               (message "ghostherd: worktree deps for %s: %s" id (error-message-string err)))))))
+
 (defun ghostherd--roman (n)
   "N in Roman numerals, for the line of a name; past 39, the number."
   (if (and (integerp n) (< 0 n 40))
@@ -2772,6 +2883,8 @@ With prefix or KIND, skip the kind prompt."
                                     (ghostherd--abbreviate wt-project)))
                   (ghostherd--worktree-create
                    wt-project final-name (read-string "Branch: " final-name)))))
+    (when wt
+      (ghostherd--worktree-deps-setup wt-project (plist-get wt :path) final-name))
     (ghostherd-spawn
      kind
      :name final-name
