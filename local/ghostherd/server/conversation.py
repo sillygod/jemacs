@@ -549,10 +549,16 @@ class Thread:
                 e["title"] = m.group(1)
         e.update(status=n["status"] or "completed", tokens=n["tokens"], uses=n["uses"], ms=n["ms"])
 
-    def done(self, limit: int) -> tuple[list[dict[str, Any]], bool]:
+    def done(self, limit: int, before: int = 0) -> tuple[list[dict[str, Any]], bool]:
+        """A page of at most LIMIT entries ending BEFORE from the newest
+        (BEFORE 0 is the newest), and whether older ones precede it in this
+        window.  `load earlier' walks back a page at a time with BEFORE."""
         for e in self.entries:
             e.pop("key", None)
-        return self.entries[-limit:], len(self.entries) > limit
+        n = len(self.entries)
+        end = max(0, n - max(0, before))
+        start = max(0, end - limit)
+        return self.entries[start:end], start > 0
 
 
 def _claude(records, thread: Thread, sub: bool = False) -> None:
@@ -642,10 +648,15 @@ def _grok(records, thread: Thread) -> None:
 READERS = {"claude": _claude, "agy": _agy, "grok": _grok}
 
 
-def _read(real: Path, cli: str, limit: int, reader, key: str) -> dict[str, Any]:
-    "The last LIMIT entries REAL holds, parsed by READER, cached under KEY."
+def _read(real: Path, cli: str, limit: int, reader, key: str,
+          before: int = 0) -> dict[str, Any]:
+    """A page of LIMIT entries of REAL ending BEFORE from the newest, parsed
+    by READER, cached under KEY.  BEFORE 0 is the newest LIMIT -- the tail a
+    poll refreshes; a larger BEFORE is a `load earlier' page further back."""
+    before = max(0, before)
     st = real.stat()
-    hit = _cache.get(key)
+    ckey = (key, before)
+    hit = _cache.get(ckey)
     if hit and hit[0] == st.st_size and hit[1] == st.st_mtime_ns and hit[2]["limit"] == limit:
         return hit[2]
     window = TAIL_BYTES
@@ -653,29 +664,35 @@ def _read(real: Path, cli: str, limit: int, reader, key: str) -> dict[str, Any]:
         lines, cut = _tail(real, window)
         thread = Thread(real)
         reader(_records(lines), thread)
-        if not cut or len(thread.entries) >= limit or window >= TAIL_MAX:
+        # Read enough of the tail to cover the page BEFORE+LIMIT from the end.
+        if not cut or len(thread.entries) >= before + limit or window >= TAIL_MAX:
             break
         window *= 4
-    entries, more = thread.done(limit)
+    entries, more = thread.done(limit, before)
     out = {
         "path": key,
         "cli": cli,
         "entries": entries,
-        "earlier": cut or more,
+        # Older entries precede this page: more within the window we read, or
+        # the window itself was cut (older beyond the tail we hold).  False
+        # only when this page reaches the true start of the conversation.
+        "earlier": more or cut,
         "mtime": st.st_mtime,
         "limit": limit,
+        "before": before,
         "edited": list(thread.edited),
     }
     if len(_cache) >= CACHE_MAX:
         _cache.pop(next(iter(_cache)))
-    _cache[key] = (st.st_size, st.st_mtime_ns, out)
+    _cache[ckey] = (st.st_size, st.st_mtime_ns, out)
     return out
 
 
-def read(path: str, limit: int = LIMIT) -> dict[str, Any]:
-    """The last LIMIT entries of the conversation in transcript PATH."""
+def read(path: str, limit: int = LIMIT, before: int = 0) -> dict[str, Any]:
+    """A page of LIMIT entries of transcript PATH ending BEFORE from the
+    newest (BEFORE 0 is the newest LIMIT)."""
     real, cli = locate(path)
-    return _read(real, cli, limit, READERS[cli], str(real))
+    return _read(real, cli, limit, READERS[cli], str(real), before)
 
 
 def edited(path: str, root: str | None = None, limit: int = LIMIT) -> dict[str, Any]:
@@ -803,15 +820,18 @@ def _keys(items: list[dict[str, Any]], mtime: float) -> list[float]:
     return keys
 
 
-def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT) -> dict[str, Any]:
+def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT,
+         before: int = 0) -> dict[str, Any]:
     """The conversations of AGENTS -- (name, transcript) pairs -- as one
-    timeline, its last LIMIT items, each saying which agent's it is."""
-    # Read enough of each agent to fill the merged limit.  Folding turns can
-    # only shrink a stream, so for the timeline to reach LIMIT items a column
-    # must offer at least that many of its own.  `load earlier' is a bigger
-    # LIMIT, so the per-agent read grows with it rather than staying pinned
-    # at CHAT_PER_AGENT, where the button loaded nothing past the first look.
-    per = max(CHAT_PER_AGENT, limit)
+    timeline: a page of LIMIT items ending BEFORE from the newest (BEFORE 0
+    is the newest LIMIT), each saying which agent's it is.  `load earlier'
+    walks the merged timeline back a page at a time with BEFORE."""
+    before = max(0, before)
+    # Read enough of each agent to reach the page BEFORE+LIMIT from the end of
+    # the merged timeline.  Folding turns can only shrink a stream, so the
+    # merged window of that depth is covered by the newest BEFORE+LIMIT of
+    # each column.
+    per = max(CHAT_PER_AGENT, before + limit)
     streams, missing, earlier = [], [], False
     for name, path in agents:
         try:
@@ -837,5 +857,11 @@ def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT) -> dict[str, An
             merged.append(((key, order, n), item))
     merged.sort(key=lambda m: m[0])
     entries = [item for _, item in merged]
-    return {"entries": entries[-limit:], "earlier": earlier or len(entries) > limit,
-            "missing": missing, "limit": limit}
+    total = len(entries)
+    end = max(0, total - before)
+    start = max(0, end - limit)
+    return {"entries": entries[start:end],
+            # Older precede this page: more in the merged window, or a column
+            # was cut.  False only at the true start of the timeline.
+            "earlier": start > 0 or earlier,
+            "missing": missing, "limit": limit, "before": before}

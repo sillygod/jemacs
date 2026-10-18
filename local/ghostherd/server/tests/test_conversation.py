@@ -513,6 +513,36 @@ def test_chat_is_the_projects_conversations_as_one(home):
     assert r["entries"][1]["ask"] == "1a2b3c4d" and r["missing"] == []
 
 
+def test_read_pages_backward_with_before(home):
+    "`load earlier' walks a conversation back a page at a time; the start ends it."
+    path = _claude_file(home, [u(f"msg {i}", timestamp=at(i)) for i in range(10)])
+    p0 = conv.read(path, 3, 0)          # the newest page -- what a poll reads
+    assert [e["text"] for e in p0["entries"]] == ["msg 7", "msg 8", "msg 9"]
+    assert p0["earlier"] is True
+    p1 = conv.read(path, 3, 3)          # the page before it
+    assert [e["text"] for e in p1["entries"]] == ["msg 4", "msg 5", "msg 6"]
+    assert p1["earlier"] is True
+    p3 = conv.read(path, 3, 9)          # reaches the start: nothing older
+    assert [e["text"] for e in p3["entries"]] == ["msg 0"]
+    assert p3["earlier"] is False
+    p4 = conv.read(path, 3, 12)         # past the start: empty, still the start
+    assert p4["entries"] == [] and p4["earlier"] is False
+
+
+def test_chat_pages_backward_with_before(home):
+    "The merged timeline pages back too, by an offset into the merge."
+    rd = _agent(home, "rd", [u("r0", timestamp=at(0)), u("r2", timestamp=at(2)), u("r4", timestamp=at(4))])
+    qa = _agent(home, "qa", [u("q1", timestamp=at(1)), u("q3", timestamp=at(3)), u("q5", timestamp=at(5))])
+    agents = [("rd", rd), ("qa", qa)]   # merged by ts: r0 q1 r2 q3 r4 q5
+    assert [e.get("text") for e in conv.chat(agents, 2, 0)["entries"]] == ["r4", "q5"]
+    assert conv.chat(agents, 2, 0)["earlier"] is True
+    assert [e.get("text") for e in conv.chat(agents, 2, 2)["entries"]] == ["r2", "q3"]
+    p2 = conv.chat(agents, 2, 4)
+    assert [e.get("text") for e in p2["entries"]] == ["r0", "q1"]
+    assert p2["earlier"] is False
+    assert conv.chat(agents, 2, 6)["entries"] == []
+
+
 def test_chat_shows_what_the_taker_never_saw(home):
     rd = _agent(home, "rd", [
         u("go", timestamp=at(0)),

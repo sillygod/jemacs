@@ -295,7 +295,11 @@ class JsonRpcHandler:
             limit = max(1, min(200, int(params.get("limit") or conversation.LIMIT)))
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
-        return conversation.read(str(params.get("path") or ""), limit)
+        try:
+            before = max(0, int(params.get("before") or 0))
+        except (TypeError, ValueError):
+            raise ValueError("before must be a number") from None
+        return conversation.read(str(params.get("path") or ""), limit, before)
 
     def _herd_sub_conversation(self, params: dict) -> dict:
         """Sub-agent SUB's own conversation, under parent transcript PATH.
@@ -349,7 +353,11 @@ class JsonRpcHandler:
             limit = max(1, min(500, int(params.get("limit") or conversation.CHAT_LIMIT)))
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
-        return conversation.chat(pairs, limit)
+        try:
+            before = max(0, int(params.get("before") or 0))
+        except (TypeError, ValueError):
+            raise ValueError("before must be a number") from None
+        return conversation.chat(pairs, limit, before)
 
     def _herd_links(self, params: dict) -> dict:
         """The pull requests and ClickUp tasks a transcript names, as given
