@@ -333,8 +333,9 @@ def test_the_heir_does_not_inherit_what_the_old_ones_hooks_said(tmp_path):
     assert h.link("rd")["conversation"] == "c1"
     assert h.unlink("rd") == {"session": "rd", "forgot": True}
     assert h.link("rd") is None and h.unlink("rd")["forgot"] is False
-    # Its inherited ask, settled before the heir's hooks say anything:
-    # the screen, not the first one's last answer.
+    # Its inherited ask, settled once the heir has begun a turn but before it
+    # has answered: the screen, not the first one's last answer.
+    h.report("rd", state="working")
     h.settle(given["id"], screen="the heir's screen")
     assert h.get_ask(given["id"])["reply"] == "the heir's screen"
     with pytest.raises(ValueError):

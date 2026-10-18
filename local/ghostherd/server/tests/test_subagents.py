@@ -608,6 +608,7 @@ def test_waiting_with_nothing_out_and_no_word_is_done(home):
     p = parent(home, started())
     f = sub(home, "a6568", working())
     h, ask = team(home, p)
+    h.report("rd", state="working")  # rd woke to the ask: a turn after delivery
     h.report("rd", state="done", last="Handed it on.")
     assert reports(h)[0][1] == "waiting"
     old = time.time() - subagents.STALE - 5

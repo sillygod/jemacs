@@ -176,6 +176,7 @@ def test_a_taker_waiting_on_its_own_ask_has_not_stopped(tmp_path):
     h.tick(sessions=NESTED)
     top = h.ask("rd", "build it and get it through qa", from_name="lead-a", wait=True)
     _deliver(h, NESTED)
+    h.report("rd", state="working")  # rd woke to the ask: a turn after delivery
     mid = h.ask("qa", "test it", from_name="rd", wait=True)
     r = h.settle(top["id"], screen="handed it to qa, waiting")
     assert (r["status"], r["waiting_on"]) == ("delivered", [mid["id"]])
@@ -428,6 +429,7 @@ def test_settle_answers_with_the_screen_unless_replied(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
     assert h.settle(ask["id"], screen="  the page says Y\n")["status"] == "answered"
     got = h.get_ask(ask["id"])
     assert (got["reply"], got["auto"]) == ("the page says Y", True)
@@ -481,6 +483,71 @@ def test_settle_before_delivery_is_a_no_op(tmp_path):
     assert h.settle(ask["id"], screen="x")["status"] == "queued"
 
 
+def test_a_settle_in_the_instant_of_delivery_is_refused(tmp_path):
+    """A taker only just handed an ask is starting its turn, not refusing it:
+    the `done' Emacs saw is the turn that was ending as the ask arrived.  The
+    settle must not close it until a turn has begun after delivery."""
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    # No `working' hook has reached us since delivery: left open, not closed.
+    r = h.settle(ask["id"], screen="· Hyperspacing…")
+    assert (r["status"], r.get("too_soon")) == ("delivered", True)
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    # It wakes to the ask (a turn after delivery) and stops without answering:
+    # now the screen settles it.
+    h.report("agy-a2", state="working")
+    assert h.settle(ask["id"], screen="the page says Y")["status"] == "answered"
+    got = h.get_ask(ask["id"])
+    assert (got["auto"], got["auto_source"]) == (True, "screen")
+
+
+def test_a_stale_done_after_a_restart_does_not_close_a_fresh_ask(tmp_path):
+    """The reported bug (ask 2d26a530): a restart clears `turn_at', so a `done'
+    hook from the turn that was ending as the ask arrived has no newer turn to
+    out-date it.  An unknown start must not count as "the turn began before the
+    ask" and close it with the previous turn's recap."""
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    # turn_at is unknown (a restart cleared it).  A `done' with last now is the
+    # previous turn's recap, not this ask answered.
+    out = h.report("agy-a2", state="done", last="the previous turn's recap")
+    assert out["closed_ask"] is None
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    # The real turn begins after delivery, and its `done' answers.
+    h.report("agy-a2", state="working")
+    out = h.report("agy-a2", state="done", last="here is the answer")
+    assert out["closed_ask"] == ask["id"]
+    got = h.get_ask(ask["id"])
+    assert (got["reply"], got["auto_source"]) == ("here is the answer", "message")
+
+
+def test_a_taker_with_no_turn_hook_settles_after_the_grace(tmp_path, monkeypatch):
+    """The grace is the fallback for a taker whose turn-start never reaches the
+    herd -- one with no hooks.  Within it the ask is left open; past it, a stop
+    closes it with the screen."""
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    assert h.settle(ask["id"], screen="x")["status"] == "delivered"
+    monkeypatch.setattr(herd_mod, "DELIVER_GRACE", -1)
+    assert h.settle(ask["id"], screen="the screen")["status"] == "answered"
+    assert h.get_ask(ask["id"])["auto_source"] == "screen"
+
+
+def test_a_done_with_no_turn_hook_closes_after_the_grace(tmp_path, monkeypatch):
+    "The same fallback on the message path: a hookless `done' with last."
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    assert h.report("agy-a2", state="done", last="recap")["closed_ask"] is None
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    monkeypatch.setattr(herd_mod, "DELIVER_GRACE", -1)
+    assert h.report("agy-a2", state="done", last="here it is")["closed_ask"] == ask["id"]
+    assert h.get_ask(ask["id"])["reply"] == "here it is"
+
+
 def test_cancel_withdraws_a_queued_ask(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "fetch", from_name="claude-main")
@@ -512,6 +579,7 @@ def test_an_auto_answer_says_so_and_a_failure_is_mailed_too(tmp_path):
     h = _store(tmp_path)
     one = h.ask("agy-a2", "fetch", from_name="claude-main")
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
     h.settle(one["id"], screen="screen text")
     body = _mail_to(h, "claude-main")[0]["body"]
     assert "no answer was sent; this is its screen" in body and body.endswith("screen text")
@@ -705,6 +773,7 @@ def test_client_wait_prints_the_answer(live):
         time.sleep(0.05)
     assert ask
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
     h.settle(ask["id"], screen="what the page said")
     out, err = proc.communicate(timeout=20)
     assert proc.returncode == 0, err

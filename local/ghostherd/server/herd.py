@@ -81,6 +81,19 @@ UNCOLLECTED_SECONDS = 120
 # parent's conversation at once, and wakes it a moment later.
 WAIT_GRACE = 30
 
+# A taker handed an ask is starting its turn, not refusing the ask: a
+# `done' hook or an idle screen in the instant after delivery is the turn
+# that was ending as the ask arrived -- the taker's previous turn -- not
+# this ask read and left unanswered.  So an ask closes on the taker
+# stopping only once a turn has begun after delivery (it read the ask and
+# worked, `turn_at' moving past `delivered_at'), or this grace has passed
+# since delivery.  The grace is the fallback for a taker whose turn-start
+# never reaches the herd: one with no hooks, or one a sidecar restart
+# cleared `turn_at' for, where an unknown start must not be read as "the
+# turn began before the ask" and close it.  A real turn's `working' hook
+# lands a tick or two after the paste, well inside this.
+DELIVER_GRACE = 8
+
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
 
@@ -855,6 +868,18 @@ class HerdStore:
                 waiting += _background(self._transcript(row["to_name"]))
                 if waiting:
                     return {"id": row["id"], "status": "delivered", "waiting_on": waiting}
+                # A settle must not close an ask in the same instant it is
+                # delivered: a taker only just handed it is starting its
+                # turn, and the `done' Emacs saw is the previous turn ending
+                # as the ask arrived -- which a restart, clearing `turn_at',
+                # leaves no newer turn to out-date.  Close only once a turn
+                # has begun after delivery, or the grace since has passed.
+                ref = row["delivered_at"] or row["created_at"]
+                if not (
+                    self._turn_after(row["to_name"], ref)
+                    or self._deliver_grace_passed(ref, now)
+                ):
+                    return {"id": row["id"], "status": "delivered", "too_soon": True}
             if dead or error:
                 self._close_ask(
                     row["id"], "failed", now,
@@ -1145,22 +1170,28 @@ class HerdStore:
                 turn_at = self._conn.execute(
                     "SELECT turn_at FROM links WHERE session = ?", (session,)
                 ).fetchone()
-                turn_at = turn_at[0] if turn_at else None
+                turn_at = turn_at[0] if turn_at and turn_at[0] else None
                 open_ask = self._conn.execute(
-                    "SELECT id, created_at FROM asks"
+                    "SELECT id, created_at, delivered_at FROM asks"
                     " WHERE to_name = ? AND status = 'delivered'",
                     (session,),
                 ).fetchone()
-                # Only a turn that began after the ask may answer it with its
-                # own last words.  When the turn's start is unknown (no
-                # `working' reached the herd), keep the old behaviour and
-                # close; a known start older than the ask leaves it open for
-                # the next turn.
-                if open_ask and (
-                    not turn_at or not open_ask[1]
-                    or datetime.fromisoformat(turn_at)
-                    > datetime.fromisoformat(open_ask[1])
-                ):
+                # Only a turn that began after the ask was delivered may answer
+                # it with its own last words.  A known start no later than the
+                # delivery is the turn that was ending as the ask arrived -- a
+                # recap -- and leaves the ask open for the next turn.  An
+                # unknown start (no `working' reached the herd -- a hookless
+                # agent, or a restart cleared it) must not be read as a start
+                # before the ask and close it in the instant of delivery: wait
+                # out the grace, then fall back to the old close for a taker
+                # whose hooks never say `working'.
+                ref = (open_ask[2] or open_ask[1]) if open_ask else None
+                close_now = bool(open_ask) and (
+                    (datetime.fromisoformat(turn_at) > datetime.fromisoformat(ref))
+                    if turn_at and ref
+                    else self._deliver_grace_passed(ref, now)
+                )
+                if close_now:
                     self._conn.execute(
                         """
                         UPDATE asks SET status = 'answered', reply = ?, auto = 1,
@@ -1187,6 +1218,32 @@ class HerdStore:
             n = self._conn.execute("DELETE FROM links WHERE session = ?", (session,)).rowcount
             self._conn.commit()
         return {"session": session, "forgot": bool(n)}
+
+    def _turn_after(self, session: str, ref: str | None) -> bool:
+        """SESSION began a turn after REF: a `working' hook reached the herd
+        since then, so the taker has read and worked on an ask delivered at
+        REF.  False when no turn-start is known -- a hookless taker, or one a
+        restart cleared -- which is not proof a turn began, either way.
+        Caller holds `_mu`."""
+        if not ref:
+            return False
+        row = self._conn.execute(
+            "SELECT turn_at FROM links WHERE session = ?", (session,)
+        ).fetchone()
+        turn_at = row[0] if row and row[0] else None
+        return bool(
+            turn_at
+            and datetime.fromisoformat(turn_at) > datetime.fromisoformat(ref)
+        )
+
+    def _deliver_grace_passed(self, ref: str | None, now: str) -> bool:
+        """REF (an ask's delivery) is far enough back to trust the taker
+        stopping without a turn-start having reached the herd."""
+        if not ref:
+            return True
+        return (
+            datetime.fromisoformat(now) - datetime.fromisoformat(ref)
+        ).total_seconds() >= DELIVER_GRACE
 
     def _last_since(
         self, session: str, created: str | None, delivered: str | None = None

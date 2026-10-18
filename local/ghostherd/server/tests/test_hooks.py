@@ -234,6 +234,7 @@ def test_done_with_an_answer_closes_the_takers_ask(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "commit it", from_name="claude-main")
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask: a turn after delivery
     out = h.report("agy-a2", state="done", last="Committed ee5fee6.")
     assert out["closed_ask"] == ask["id"]
     got = h.get_ask(ask["id"])
@@ -248,11 +249,13 @@ def test_settle_prefers_an_answer_given_after_the_ask(tmp_path):
     h.report("agy-a2", state="done", last="an answer from before the ask")
     ask = h.ask("agy-a2", "x", from_name="claude-main", wait=True)
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask: a turn after delivery
     h.settle(ask["id"], screen="the screen")
     got = h.get_ask(ask["id"])
     assert (got["reply"], got["auto_source"]) == ("the screen", "screen")
     two = h.ask("agy-a2", "y", from_name="claude-main", wait=True)
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to it, too
     h.report("agy-a2", last="the answer to y")  # no state: no close here
     assert h.get_ask(two["id"])["status"] == "delivered"
     h.settle(two["id"], screen="the screen")
@@ -291,6 +294,7 @@ def test_settle_does_not_answer_with_a_turn_that_predated_the_ask(tmp_path):
     _deliver(h)
     h.report("agy-a2", state="done", last="recap of the earlier turn")
     assert h.get_ask(ask["id"])["status"] == "delivered"  # report did not close it
+    h.report("agy-a2", state="working")  # a turn after delivery: now it has read the ask
     h.settle(ask["id"], screen="the screen")
     got = h.get_ask(ask["id"])
     assert (got["reply"], got["auto_source"]) == ("the screen", "screen")
@@ -302,6 +306,7 @@ def test_a_real_reply_reaches_an_asker_that_already_read_the_auto_answer(tmp_pat
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "commit it", from_name="claude-main", wait=True)
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask: a turn after delivery
     h.settle(ask["id"], screen="half-done screen")  # the herd auto-closes it
     h.collect(ask["id"], asker=True)                # the waiting asker reads it, moves on
     assert h._ask_row(ask["id"])["collected"] == 1
@@ -346,6 +351,7 @@ def test_hook_closes_an_ask_from_agys_transcript(live, tmp_path):
     h = herd_mod.get_herd()
     ask = h.ask("agy-a2", "commit it", from_name="claude-main", wait=True)
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask: a turn after delivery
     path = _jsonl(tmp_path / "transcript.jsonl", [
         _step("USER_EXPLICIT", "USER_INPUT", "commit it"),
         _step("MODEL", "PLANNER_RESPONSE", "Committed abc1234.")])

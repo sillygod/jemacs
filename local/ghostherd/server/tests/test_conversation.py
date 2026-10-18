@@ -668,6 +668,7 @@ def test_the_room_reads_what_ghostherd_writes(tmp_path):
 
     two = h.ask("agy-a2", "again (twice)", from_name="claude-main")
     _deliver(h)
+    h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
     h.settle(two["id"], screen="the screen")
     mail = _mail_to(h, "claude-main")[0]
     e = conv.user_entry(message(mail["from"], "claude-main", mail["body"]), None)
