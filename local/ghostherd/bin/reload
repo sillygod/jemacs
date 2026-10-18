@@ -6,10 +6,11 @@
 #
 #   *.el      every function and macro defined again, every constant set
 #             again; a variable keeps its value -- the sessions, timers
-#             and caches are the running herd, not code.  Other
-#             top-level forms are not run, and are named: a new add-hook
-#             or advice-add is yours to evaluate, a changed struct or
-#             mode wants a restart.
+#             and caches are the running herd, not code.  A new add-hook
+#             or advice-add on a named function is run too (idempotent);
+#             one on a lambda, and any other top-level form, is not run
+#             and is named -- a changed struct or mode wants a restart.
+#             Any package's .el, not ghostherd's alone (e.g. pr-view).
 #   ui/...    the herd page loaded again -- in Emacs or in a browser tab
 #             -- back on the tab it was on, a room too.  xwapp's ui/ too.
 #   server/.. the sidecar restarted -- not while an ask is open, whose
@@ -26,36 +27,54 @@ el=()
 ui=
 server=
 
-# Where the live Emacs loads ghostherd from.  Every git worktree has its
-# own copy of every file; reloading one into the single running Emacs would
-# overwrite the live defuns with another branch's.  So refuse any file not
-# under that directory.  Empty when it cannot be asked (no Emacs, or
-# ghostherd not on its load-path): then the reload would fail at emacsclient
-# anyway, so the guard steps aside rather than blocking on a guess.
-# `find-library-name' gives the .el source, whose symlink file-truename
-# follows to the checkout -- not the .elc a build directory may hold.
-live_root=$(emacsclient --eval \
-  '(or (ignore-errors (directory-file-name (file-name-directory (file-truename (find-library-name "ghostherd"))))) "")' \
-  2>/dev/null | sed 's/^"//; s/"$//')
+# Reload only what the live Emacs actually loads.  Every git worktree has
+# its own copy of every file; reloading one into the single running Emacs
+# would overwrite the live defuns with another branch's.  So, for an .el,
+# refuse any file that is not the one the live Emacs loads for that library
+# -- whatever its package, ghostherd or pr-view or another -- found by
+# `find-library-name' and followed to its source by `file-truename' (not
+# the .elc a build directory may hold).  A ui/ or server/ file is tied to
+# its package's checkout the same way, by that package's own library.  The
+# guard steps aside when the live Emacs cannot be asked (no Emacs, or the
+# library not on its load-path): the reload would fail at emacsclient
+# anyway.
+lib_file() {  # the .el the live Emacs loads for library $1, truename; or empty
+  emacsclient --eval \
+    "(or (ignore-errors (file-truename (find-library-name \"$1\"))) \"\")" \
+    2>/dev/null | sed 's/^"//; s/"$//' || true
+}
+lib_dir() { local f; f=$(lib_file "$1"); { [ -n "$f" ] && dirname "$f"; } || true; }
+
+live_gh=$(lib_dir ghostherd)   # the live ghostherd checkout (its page, sidecar)
+live_xw=$(lib_dir xwapp)       # the live xwapp checkout (the shared kit)
+
+refuse() {  # $1 = the arg, $2 = what the live Emacs loads there
+  echo "reload: $1 is not what the live Emacs loads there:" >&2
+  echo "          $2" >&2
+  echo "       reloading a worktree's or stale copy would overwrite the live code; reload the one it loads." >&2
+  exit 3
+}
+under() { case $1 in "$2"/*) return 0 ;; *) return 1 ;; esac; }
 
 for arg in "$@"; do
   if [ "$arg" = --force ]; then force=1; continue; fi
   [ -e "$arg" ] || { echo "reload: no such file: $arg" >&2; exit 2; }
   path=$(cd "$(dirname "$arg")" && pwd)/$(basename "$arg")
-  if [ -n "$live_root" ]; then
-    real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$arg" 2>/dev/null || printf '%s' "$path")
-    case $real in
-      "$live_root"/*) : ;;
-      *) echo "reload: $arg is not under the Emacs's ghostherd directory:" >&2
-         echo "          $live_root" >&2
-         echo "       reloading a worktree's copy would overwrite the live defuns; reload the main checkout's file." >&2
-         exit 3 ;;
-    esac
-  fi
+  real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$arg" 2>/dev/null || printf '%s' "$path")
   case $path in
-    "$here"/ui/* | "$kit"/*) ui=1 ;;
-    "$here"/server/*) server=1 ;;
-    *.el) el+=("$path") ;;
+    "$here"/server/*)
+      [ -n "$live_gh" ] && ! under "$real" "$live_gh" && refuse "$arg" "$live_gh/"
+      server=1 ;;
+    "$here"/ui/*)
+      [ -n "$live_gh" ] && ! under "$real" "$live_gh" && refuse "$arg" "$live_gh/"
+      ui=1 ;;
+    "$kit"/*)
+      [ -n "$live_xw" ] && ! under "$real" "$live_xw" && refuse "$arg" "$live_xw/"
+      ui=1 ;;
+    *.el)
+      live=$(lib_file "$(basename "$arg" .el)")
+      [ -n "$live" ] && [ "$real" != "$live" ] && refuse "$arg" "$live"
+      el+=("$path") ;;
     *) echo "reload: not an .el, ui/ or server/ file: $arg" >&2; exit 2 ;;
   esac
 done
@@ -94,6 +113,16 @@ for file in ${el[@]+"${el[@]}"}; do
              ((eq head 'defface)
               (if (facep (cadr form)) (setq kept (1+ kept))
                 (funcall run form)))
+             ;; A new add-hook or advice-add on a *named* function is
+             ;; idempotent -- the symbol is in the hook once, pointing at the
+             ;; freshly-defined function -- so run it: a changed file's new
+             ;; hook registers without a restart.  One on a lambda would be
+             ;; added afresh each reload, so it is left for you, named below.
+             ((and (memq head '(add-hook advice-add))
+                   (let ((fn (nth (if (eq head 'add-hook) 2 3) form)))
+                     (and (memq (car-safe fn) '(quote function))
+                          (symbolp (cadr fn)) (cadr fn))))
+              (funcall run form))
              ((memq head '(require provide declare-function eval-when-compile defgroup)))
              (head (push head skipped)))))
       (end-of-file nil)))
