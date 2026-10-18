@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,61 @@ def test_settle_prefers_an_answer_given_after_the_ask(tmp_path):
     assert (got["reply"], got["auto_source"]) == ("the answer to y", "message")
 
 
+def test_a_turn_already_running_when_the_ask_arrived_does_not_answer_it(tmp_path):
+    """An ask delivered mid-turn is not closed by that turn's recap: only a
+    turn begun after the ask may answer it with its own last words."""
+    h = _store(tmp_path)
+    h.report("agy-a2", state="working")  # a turn is already running
+    time.sleep(0.002)
+    ask = h.ask("agy-a2", "item 3", from_name="claude-main")
+    _deliver(h)
+    # The running turn ends with the recap of its own, earlier work.
+    out = h.report("agy-a2", state="done", last="done with item 2")
+    assert out["closed_ask"] is None
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    # The next turn, begun after the ask, answers it.
+    time.sleep(0.002)
+    h.report("agy-a2", state="working")
+    out = h.report("agy-a2", state="done", last="done with item 3")
+    assert out["closed_ask"] == ask["id"]
+    got = h.get_ask(ask["id"])
+    assert (got["reply"], got["auto_source"]) == ("done with item 3", "message")
+
+
+def test_settle_does_not_answer_with_a_turn_that_predated_the_ask(tmp_path):
+    """settle, too, refuses a recap: a turn already running when the ask
+    arrived ends after it but began before it, so the screen answers."""
+    h = _store(tmp_path)
+    h.report("agy-a2", state="working")
+    time.sleep(0.002)
+    ask = h.ask("agy-a2", "x", from_name="claude-main", wait=True)
+    _deliver(h)
+    h.report("agy-a2", state="done", last="recap of the earlier turn")
+    assert h.get_ask(ask["id"])["status"] == "delivered"  # report did not close it
+    h.settle(ask["id"], screen="the screen")
+    got = h.get_ask(ask["id"])
+    assert (got["reply"], got["auto_source"]) == ("the screen", "screen")
+
+
+def test_a_real_reply_reaches_an_asker_that_already_read_the_auto_answer(tmp_path):
+    """A taker's real answer supersedes an auto one the asker already read,
+    and reaches the asker as a message its own collect will not cancel."""
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "commit it", from_name="claude-main", wait=True)
+    _deliver(h)
+    h.settle(ask["id"], screen="half-done screen")  # the herd auto-closes it
+    h.collect(ask["id"], asker=True)                # the waiting asker reads it, moves on
+    assert h._ask_row(ask["id"])["collected"] == 1
+    h.reply(ask["id"], "Committed abc1234.", from_name="agy-a2")  # the real answer
+    got = h.get_ask(ask["id"])
+    assert (got["status"], got["auto"], got["reply"]) == ("answered", False, "Committed abc1234.")
+    # A stale collect by the asker must not cancel the correction.
+    h.collect(ask["id"], asker=True)
+    mail = [p for p in h.tick(sessions=SNAP)["pending"] if p["to"] == "claude-main"]
+    assert any("Committed abc1234." in m["body"] for m in mail), mail
+    assert any(m["body"].startswith("A later answer to ask") for m in mail)
+
+
 # ---- `herd hook', as a CLI runs it ----------------------------------------
 
 
@@ -297,6 +353,29 @@ def test_hook_closes_an_ask_from_agys_transcript(live, tmp_path):
     assert (out.returncode, out.stdout.strip()) == (0, "{}"), out.stderr
     got = h.get_ask(ask["id"])
     assert (got["status"], got["reply"], got["auto_source"]) == ("answered", "Committed abc1234.", "message")
+
+
+def test_hook_does_not_let_a_running_turn_answer_an_ask(live, tmp_path):
+    """Through the real `herd hook' binary (what a CLI runs), the incident
+    7cca60ba (2026-10-17): an ask delivered while a turn is already running
+    is not closed by that turn's recap -- only a turn begun after the ask
+    answers it."""
+    h = herd_mod.get_herd()
+    # A turn is already running when the ask arrives.
+    hook(live, dict(CLAUDE, hook_event_name="UserPromptSubmit"), tmp=tmp_path)
+    ask = h.ask("claude-main", "item 3", from_name="lead")
+    _deliver(h)
+    # The running turn ends with the recap of its own, earlier work.
+    hook(live, dict(CLAUDE, hook_event_name="Stop",
+                    last_assistant_message="done with item 2"), tmp=tmp_path)
+    assert h.get_ask(ask["id"])["status"] == "delivered"
+    # The next turn, begun after the ask, answers it.
+    hook(live, dict(CLAUDE, hook_event_name="UserPromptSubmit"), tmp=tmp_path)
+    hook(live, dict(CLAUDE, hook_event_name="Stop",
+                    last_assistant_message="done with item 3"), tmp=tmp_path)
+    got = h.get_ask(ask["id"])
+    assert (got["status"], got["reply"], got["auto_source"]) == (
+        "answered", "done with item 3", "message")
 
 
 def test_hook_outside_the_herd_does_nothing(live, tmp_path):

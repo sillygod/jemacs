@@ -322,6 +322,16 @@ class HerdStore:
         }
         if "auto_source" not in ask_cols:
             self._conn.execute("ALTER TABLE asks ADD COLUMN auto_source TEXT")
+        # When the agent's current turn began (its last `working'), and the
+        # turn that produced `last_message'.  An ask is answered by a turn's
+        # own words only when that turn began after the ask -- not by the
+        # recap of a turn already running when the ask arrived.
+        link_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(links)")
+        }
+        for col in ("turn_at", "last_turn_at"):
+            if col not in link_cols:
+                self._conn.execute(f"ALTER TABLE links ADD COLUMN {col} TEXT")
         # The ask its asker was answering, the run it belongs to, its round
         # with its taker and how many it may have; and how many its own
         # taker may have with any one agent (NULL: ASK_ROUNDS).
@@ -778,13 +788,19 @@ class HerdStore:
                 raise ValueError(f"ask {row['id']} is cancelled{why}")
             if row["status"] == "answered" and not row["auto"]:
                 raise ValueError(f"ask {row['id']} is already answered")
+            # The asker already read a provisional (auto) answer and moved on:
+            # a fresh `collected = 0' would be swept back to it as mail, but
+            # its own `collect' cancels that mail by the ask it names.  So
+            # send the real answer as its own message, which no collect undoes.
+            superseded_seen = bool(row["auto"]) and bool(row["collected"])
             self._conn.execute(
                 """
                 UPDATE asks SET status = 'answered', reply = ?, auto = 0,
-                  replied_by = ?, collected = 0, answered_at = ?
+                  replied_by = ?, collected = ?, answered_at = ?
                 WHERE id = ?
                 """,
-                (str(body), (from_name or "").strip() or None, now, row["id"]),
+                (str(body), (from_name or "").strip() or None,
+                 1 if superseded_seen else 0, now, row["id"]),
             )
             # Answered before Emacs pasted it: nothing left to deliver.
             self._conn.execute(
@@ -794,7 +810,21 @@ class HerdStore:
                 """,
                 (row["id"],),
             )
-            self._mail_back(row["id"])
+            if superseded_seen:
+                text = (
+                    f"A later answer to ask {row['id']} ({_head(row['body'], 80)}) "
+                    f"replaces the one the herd closed it with:\n{str(body)}"
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO mail (
+                        id, from_name, to_name, body, submit, handoff, status, created_at
+                    ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?)
+                    """,
+                    (str(uuid.uuid4()), row["to_name"], row["from_name"], text, now),
+                )
+            else:
+                self._mail_back(row["id"])
             self._conn.commit()
         return {"id": row["id"], "status": "answered"}
 
@@ -832,7 +862,8 @@ class HerdStore:
                 )
                 status = "failed"
             else:
-                last = self._last_since(row["to_name"], row["delivered_at"])
+                last = self._last_since(
+                    row["to_name"], row["created_at"], row["delivered_at"])
                 self._conn.execute(
                     """
                     UPDATE asks SET status = 'answered', reply = ?, auto = 1,
@@ -1056,7 +1087,8 @@ class HerdStore:
                     self._conn.execute(
                         """
                         UPDATE links SET transcript = NULL, last_message = NULL,
-                          last_at = NULL WHERE session = ?
+                          last_at = NULL, turn_at = NULL, last_turn_at = NULL
+                        WHERE session = ?
                         """,
                         (session,),
                     )
@@ -1068,11 +1100,26 @@ class HerdStore:
                       transcript = COALESCE(?, transcript),
                       last_message = COALESCE(?, last_message),
                       last_at = CASE WHEN ? IS NULL THEN last_at ELSE ? END,
+                      -- the message's turn began when this turn did (`turn_at'),
+                      -- so a later `settle' can tell a fresh answer from a recap.
+                      last_turn_at = CASE WHEN ? IS NULL THEN last_turn_at ELSE turn_at END,
                       updated_at = ?
                     WHERE session = ?
                     """,
                     (cli or None, conversation or None, transcript or None,
-                     last or None, last or None, now, now, session),
+                     last or None, last or None, now, last or None, now, session),
+                )
+            if state == "working":
+                # A turn begins.  Record when, so an ask delivered mid-turn is
+                # not answered by the turn already running (its `turn_at' is
+                # older than the ask); the next turn, begun after it, answers.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
+                    (session, now),
+                )
+                self._conn.execute(
+                    "UPDATE links SET turn_at = ?, updated_at = ? WHERE session = ?",
+                    (now, now, session),
                 )
             if state == "done":
                 out = self._out(session)
@@ -1088,11 +1135,25 @@ class HerdStore:
                 )
             closed = None
             if state == "done" and last:
+                turn_at = self._conn.execute(
+                    "SELECT turn_at FROM links WHERE session = ?", (session,)
+                ).fetchone()
+                turn_at = turn_at[0] if turn_at else None
                 open_ask = self._conn.execute(
-                    "SELECT id FROM asks WHERE to_name = ? AND status = 'delivered'",
+                    "SELECT id, created_at FROM asks"
+                    " WHERE to_name = ? AND status = 'delivered'",
                     (session,),
                 ).fetchone()
-                if open_ask:
+                # Only a turn that began after the ask may answer it with its
+                # own last words.  When the turn's start is unknown (no
+                # `working' reached the herd), keep the old behaviour and
+                # close; a known start older than the ask leaves it open for
+                # the next turn.
+                if open_ask and (
+                    not turn_at or not open_ask[1]
+                    or datetime.fromisoformat(turn_at)
+                    > datetime.fromisoformat(open_ask[1])
+                ):
                     self._conn.execute(
                         """
                         UPDATE asks SET status = 'answered', reply = ?, auto = 1,
@@ -1120,16 +1181,33 @@ class HerdStore:
             self._conn.commit()
         return {"session": session, "forgot": bool(n)}
 
-    def _last_since(self, session: str, since: str | None) -> str | None:
-        "SESSION's last answer if it came after SINCE.  Caller holds `_mu`."
+    def _last_since(
+        self, session: str, created: str | None, delivered: str | None = None
+    ) -> str | None:
+        """SESSION's last answer if its turn began after the ask.
+
+        The turn began at `last_turn_at'; prefer that against the ask's
+        CREATED time, so a turn already running when the ask arrived -- its
+        recap ended after the ask but began before it -- does not answer it.
+        When the turn's start is unknown (no `working' reached the herd),
+        fall back to the old test: the message came after DELIVERED.  Caller
+        holds `_mu`."""
         row = self._conn.execute(
-            "SELECT last_message, last_at FROM links WHERE session = ?", (session,)
+            "SELECT last_message, last_at, last_turn_at FROM links WHERE session = ?",
+            (session,),
         ).fetchone()
-        if not row or not row[0] or not row[1]:
+        if not row or not row[0]:
             return None
-        if since and datetime.fromisoformat(row[1]) <= datetime.fromisoformat(since):
+        last_message, last_at, last_turn_at = row
+        if last_turn_at:
+            if created and datetime.fromisoformat(last_turn_at) <= datetime.fromisoformat(created):
+                return None
+            return last_message
+        if not last_at:
             return None
-        return row[0]
+        if delivered and datetime.fromisoformat(last_at) <= datetime.fromisoformat(delivered):
+            return None
+        return last_message
 
     def link(self, session: str) -> dict[str, Any] | None:
         with self._mu:
