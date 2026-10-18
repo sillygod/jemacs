@@ -852,10 +852,11 @@ verb one no rule knew.  Read as idle, it was `done' minutes at a time.")
 is ten lines up, far outside the status area.")
 
 (ert-deftest ghostherd-test-claude-spinner-says-working-in-a-narrow-pane ()
-  "Its spinner line, known by its shape -- glyph, a word, …, the time --
-and read where claude draws it, above the input box: the first line
-there that is not indented.  Seen (2026-10-15): twelve turns since 10-01
-read as done mid-turn, one quoting its spinner as the reason."
+  "Its spinner line, known by its shape -- glyph, a word, …, and the time
+when it has one -- and read where claude draws it, above the input box:
+the first line there that is not indented.  Seen (2026-10-15): twelve
+turns since 10-01 read as done mid-turn, one quoting its spinner as the
+reason."
   (let* ((spec (ghostherd--spec 'claude))
          (rules (plist-get spec :screen-rules))
          (spinner (plist-get spec :spinner))
@@ -878,7 +879,10 @@ read as done mid-turn, one quoting its spinner as the reason."
                    "✶ Flummoxing… (1h 2m · still thinking with xhigh effort)"))
     ;; Its glyphs, and its time as it grows.
     (dolist (line '("· Considering… (1m 30s · ↓ 9.3k tokens)" "✢ Pontificating… (18s · ↓ 880 tokens)"
-                    "✳ Moseying… (0s)\n" "✻ Ruminating… (2h 1m · thought for 5s)"))
+                    "✳ Moseying… (0s)\n" "✻ Ruminating… (2h 1m · thought for 5s)"
+                    ;; And its first frame, before the elapsed-time counter is
+                    ;; drawn: a turn just begun (ask aed900f7).  Two words, too.
+                    "· Hyperspacing…" "✽ Compacting conversation…"))
       (should (eq (car (ghostherd--match-rules (funcall with-box line) rules t spinner)) 'working)))
     ;; Its turn over: past tense.  Its own words, however they read:
     ;; what it said starts at ⏺, and a line of it quoted is indented.

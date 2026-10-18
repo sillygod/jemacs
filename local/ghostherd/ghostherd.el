@@ -115,8 +115,12 @@ made an unanchored `> \=' match the transcript.")
      ;; its footer, and this is what is left -- so this must catch every
      ;; spinner, the fixed ones too: "✽ Compacting conversation… (22s)" at
      ;; an auto-compaction is working, not idle, and its label is two words,
-     ;; so allow more than one before the ellipsis.
-     :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+\\(?:[[:blank:]]+[[:alpha:]]+\\)*…[[:blank:]]+(\\(?:[0-9]+[hms]\\)"
+     ;; so allow more than one before the ellipsis.  The time in parens is
+     ;; optional: in the first frame of a turn claude draws "· Hyperspacing…"
+     ;; before the elapsed-time counter appears (ask aed900f7, 2026-10-18),
+     ;; and that first frame is working too.  The ellipsis still anchors it,
+     ;; so its past tense ("✻ Baked for 1s", no "…") stays idle.
+     :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+\\(?:[[:blank:]]+[[:alpha:]]+\\)*…\\(?:[[:blank:]]+(\\(?:[0-9]+[hms]\\)\\)?"
      :model-picker (:models ("Default" "Opus" "Fable" "Sonnet" "Haiku")
                     :efforts ("low" "medium" "high" "xhigh" "max"))
      :screen-rules
@@ -5626,10 +5630,16 @@ Such an ask is watched again, for the next time it stops."
          (when (equal (plist-get r :status) "delivered")
            (remhash id ghostherd--asks-settled)
            (puthash id (ghostherd-session-id session) ghostherd--asks-open)
+           ;; Watched again: `too_soon' is the sidecar holding it open until
+           ;; the taker has really worked on it after delivery -- the next
+           ;; stop, once it has, closes it.
            (ghostherd--log-add session 'ask
-                               (format "ask %s left open: %s waits on %s"
-                                       id (ghostherd-session-name session)
-                                       (mapconcat #'identity (plist-get r :waiting_on) ", ")))))
+                               (if (plist-get r :too_soon)
+                                   (format "ask %s left open: %s was only just handed it"
+                                           id (ghostherd-session-name session))
+                                 (format "ask %s left open: %s waits on %s"
+                                         id (ghostherd-session-name session)
+                                         (mapconcat #'identity (plist-get r :waiting_on) ", "))))))
        (append (list :id id
                      :screen (string-trim-right (or screen ""))
                      :dead (if dead t :json-false))
