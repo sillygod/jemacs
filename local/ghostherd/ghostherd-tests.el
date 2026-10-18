@@ -912,6 +912,48 @@ read as done mid-turn, one quoting its spinner as the reason."
       (with-current-buffer "*ghostherd explain*"
         (should (string-match-p "^  working +->" (buffer-string)))))))
 
+(defconst ghostherd-tests--claude-compacting
+  (concat
+   "⏺ I'll keep going.\n"
+   "\n"
+   "✽ Compacting conversation… (22s)\n"
+   "            ✔ Update installed · Restart to update\n"
+   "────────────────────────────────────────────────────\n"
+   "❯ \n"
+   "────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-gate · esc to interru\n")
+  "claude auto-compacting mid-turn (2026-10-17): its spinner label is two
+words -- \"Compacting conversation…\" -- and its footer is cut before `esc
+to interrupt'.  Read as idle, its ask was settled from the screen while it
+was still working.")
+
+(ert-deftest ghostherd-test-claude-compaction-is-working ()
+  "Auto-compaction is work, not a stop.  Its spinner label is two words, so
+the one-word spinner missed it; its footer is cut before `esc to
+interrupt', so no rule fired either -- and the agent read as done, its ask
+settled from the screen mid-compaction.  The spinner, read where claude
+draws it, is the evidence that it is working."
+  (let* ((spec (ghostherd--spec 'claude))
+         (rules (plist-get spec :screen-rules))
+         (spinner (plist-get spec :spinner))
+         (screen ghostherd-tests--claude-compacting))
+    ;; The cut footer leaves no working rule to fire...
+    (should-not (eq (car (ghostherd--match-rules screen rules t)) 'working))
+    (should-not (cl-find 'working (ghostherd--match-all-rules screen rules t) :key #'car))
+    ;; ...but the spinner line is found, two-word label and all, and it wins.
+    (should (equal (ghostherd--spinner-line screen spinner)
+                   "✽ Compacting conversation… (22s)"))
+    (should (equal (ghostherd--match-rules screen rules t spinner) (cons 'working spinner)))))
+
+(ert-deftest ghostherd-test-claude-compaction-through-detection ()
+  "The poll reads the compacting screen as working, end to end."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "claude-c" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-live t))
+      (setq ghostherd-tests--fake-screen ghostherd-tests--claude-compacting)
+      (should (equal (ghostherd--detect-state s)
+                     '(working . "✽ Compacting conversation… (22s)"))))))
+
 (defconst ghostherd-tests--grok-working
   (concat
    "  ┃  ◆ Thinking…\n"

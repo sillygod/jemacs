@@ -112,8 +112,11 @@ made an unanchored `> \=' match the transcript.")
      ;; "✽ Bloviating… (37s · ↓ 3.3k tokens)": its verb picked at
      ;; random, its glyph one of these; past tense once the turn is over
      ;; ("✻ Baked for 1s").  A narrow pane cuts `esc to interrupt' off
-     ;; its footer, and this is what is left.
-     :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+…[[:blank:]]+(\\(?:[0-9]+[hms]\\)"
+     ;; its footer, and this is what is left -- so this must catch every
+     ;; spinner, the fixed ones too: "✽ Compacting conversation… (22s)" at
+     ;; an auto-compaction is working, not idle, and its label is two words,
+     ;; so allow more than one before the ellipsis.
+     :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+\\(?:[[:blank:]]+[[:alpha:]]+\\)*…[[:blank:]]+(\\(?:[0-9]+[hms]\\)"
      :model-picker (:models ("Default" "Opus" "Fable" "Sonnet" "Haiku")
                     :efforts ("low" "medium" "high" "xhigh" "max"))
      :screen-rules
