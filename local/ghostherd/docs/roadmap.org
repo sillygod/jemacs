@@ -1049,9 +1049,10 @@ of Emacs.  How it is built is under "In a web browser" in
 
 ** What is left
 
-- [ ] A PR or task clicked in a tab opens a new tab each time: Emacs
+- [X] A PR or task clicked in a tab opens a new tab each time: Emacs
   cannot bring a tab it opened to the front, and the one before only
-  says it was taken
+  says it was taken --- /done in 3.30/: the same-origin tabs reuse and
+  refocus one among themselves over a BroadcastChannel
 - [X] pr-view's and clickup-view's tabs do not come back after a
   restart: neither has a =:reopen= --- pr-view would need the
   repository it was opened on --- /done in 3.25/: both have one, and
@@ -1407,12 +1408,13 @@ and all.
   is asked only of a checkout the page may show.  5 ERT, 39 WebKit
   checks (=pr-review=, a phone and the desk); 32 guards broken on
   purpose, each caught
-- [ ] Comments on a pull request's diff, to the agent on its branch:
-  pr-view's pull request view takes none
-- [ ] A comment on a run of lines, not only one
-- [ ] Which agent changed which file, from the Edit and Write in their
-  conversations, on the file tree
-- [ ] Syntax in pr-view's diffs, a pull request's and a checkout's
+- [X] Comments on a pull request's diff, to the agent on its branch:
+  pr-view's pull request view takes none --- /done in 3.29/
+- [X] A comment on a run of lines, not only one --- /done in 3.29/
+- [X] Which agent changed which file, from the Edit and Write in their
+  conversations, on the file tree --- /done in 3.29/
+- [X] Syntax in pr-view's diffs, a pull request's and a checkout's ---
+  /done in 3.29/
 
 * Phase 3.28 — An agent in its own git worktree  *(this tree)*
 
@@ -1520,6 +1522,43 @@ send the comments to the agent doing the work, with syntax to read it by.
   go to a herd agent only; nothing is ever written to the forge
 - A second recipients mechanism for PRs: the checkout's is reused, the
   order flipped so the branch's agent comes first
+
+* Phase 3.30 — The page in a browser: reuse tabs, read further back  *(this tree)*
+
+Goal: the loose ends of the herd page in a browser (3.23, 3.25) and the
+editor marks (3.29) -- make a second click reuse a tab, let a room read as
+far back as its history, and fill the marks in on a cold open.
+
+** What shipped
+
+- [X] A PR or task clicked again reuses and refocuses the tab already
+  showing that app, instead of a new tab each time: the same-origin tabs
+  arrange it over a BroadcastChannel (an app beats that it is open and
+  takes a request to show a url; the opener asks an open one first).  The
+  limits said plainly: a background tab is brought forward only as far as
+  the browser allows, and iOS does not reuse a named tab on a first open.
+  e2e (pr-reuse) broken on purpose
+- [X] A room's `load earlier' holds the message you were reading instead of
+  jumping: the view moves down by the height the prepended turns add.  e2e
+  (herd-earlier) broken on purpose
+- [X] The editor marks fill in on a cold open: asking for the map warms the
+  herd's edits cache, and the marks are pushed to pr-view when the answer
+  arrives -- no manual refresh, no transcript re-read for one unchanged.
+  ERT + e2e (pr-editors, now cold) broken on purpose
+- [X] Roadmap: Phase 3.27's four open items (PR comments, ranges, editor
+  marks, syntax) marked done in 3.29; the 3.23 tab item marked done here
+
+** What is left
+
+- [ ] Real cursor pagination for a room: `load earlier' still grows the
+  limit toward a fixed cap (200 a column, 500 the chat) and the poll
+  re-sends the grown window.  A cursor (fetch only the page before a point,
+  keep it client-side, poll only the recent tail) would read as far back as
+  the history goes without the page loading everything -- the reader already
+  grows to 8 MB, so the clamp, not the depth, is the wall.  Bigger than the
+  rest of this batch: it reworks the reader's window into an offset, the
+  room-watch protocol, and the merged chat's timeline.  Deferred, said to
+  the lead
 
 * Phase 4 — Ecosystem (only if still useful)
 
