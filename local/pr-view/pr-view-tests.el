@@ -717,7 +717,7 @@ taken for the last one."
                 (buffer-string))))
     (should (string-match-p "setTasks" js))
     (should (string-match-p "\"open-task\"" js))
-    (should (string-search "XW.bridge(PREFIX)" js))
+    (should (string-search "XW.bridge(PREFIX, \"pr-view\")" js))
     (should (string-search "../../xwapp/ui/xwapp.js" html))
     ;; The CSP refuses inline handlers, so the page must not have any.
     (should-not (string-match-p "on\\(error\\|click\\|load\\)=" js))))

@@ -8035,7 +8035,10 @@ file edited outside the checkout is dropped.  Nothing cached for an agent
         (puthash "qa" (cons "s" (list :files (list (concat wt "lib/a.py"))))
                  ghostherd-memory-page--edits)
         (cl-letf (((symbol-function 'ghostherd-session-directory)
-                   (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo))))
+                   (lambda (s) (if (equal (ghostherd-session-name s) "qa") wt repo)))
+                  ;; The map is built from the cache set above; warming (which
+                  ;; --editors also does) is its own test, not this one.
+                  ((symbol-function 'ghostherd-memory-page--edits-look) #'ignore))
           (should (memq #'ghostherd-memory-page--editors pr-view-local-editors-functions))
           ;; The main checkout: rd's files under it, relative, in order; the
           ;; worktree file and the outside one dropped; qa (in the worktree)
