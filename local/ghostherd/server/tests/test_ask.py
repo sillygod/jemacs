@@ -308,6 +308,31 @@ def test_rounds_of_an_agent_nobody_asked_last_a_run(tmp_path, monkeypatch):
     assert h.ask("qa", "after a respawn", from_name="rd")["round"] == 1
 
 
+def test_a_run_ends_from_the_hook_even_within_one_tick(tmp_path, monkeypatch):
+    """A turn that ends and starts again between two Emacs ticks: the agent's
+    own `done' hook ends its run, so the next turn's asks start a fresh one
+    -- where the tick's before/after view, seeing working both times, would
+    count them with the run that was already over."""
+    monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 2)
+    h = _store(tmp_path)
+    working = _nested(rd="working")
+    h.tick(sessions=working)
+    # Turn 1: rd, nobody asked it, asks qa once -- a new run, round 1.
+    a1 = h.ask("qa", "test it", from_name="rd", wait=True)
+    assert a1["round"] == 1
+    _deliver(h, working)                       # a1 reaches qa
+    h.reply(a1["id"], "all green", from_name="qa")
+    h.collect(a1["id"], asker=True)            # rd reads the answer: nothing left out
+    # Turn 1 ends with nothing open and turn 2 begins, both within one tick
+    # (no h.tick between) -- only the hooks mark the boundary.
+    h.report("rd", state="done")
+    h.report("rd", state="working")
+    # Turn 2's ask is a fresh run, round 1 -- not round 2 of the finished one.
+    a2 = h.ask("qa", "a new thing", from_name="rd")
+    assert a2["round"] == 1
+    assert h.recent_asks()["asks"][0]["run"] == a2["id"]
+
+
 def test_the_user_is_not_held_to_rounds(tmp_path, monkeypatch):
     monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 1)
     h = _store(tmp_path)

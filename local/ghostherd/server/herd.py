@@ -1125,6 +1125,13 @@ class HerdStore:
                 out = self._out(session)
                 if out:
                     state, reason = "waiting", "waiting on " + _and(out)
+            # A turn that ends with nothing out ends the agent's run of asks.
+            # Taken from the agent's own hook, this splits runs right even
+            # when a turn ends and the next begins within one Emacs tick --
+            # which the tick's before/after view (`_end_runs') cannot see; it
+            # stays the fallback for an agent with no hook to report `done'.
+            if state == "done":
+                self._conn.execute("DELETE FROM runs WHERE session = ?", (session,))
             if state:
                 self._conn.execute(
                     """
