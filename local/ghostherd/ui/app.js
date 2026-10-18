@@ -1782,6 +1782,7 @@
     if (conv.more) return '<div class="loadmore"><button type="button" class="ghost small" data-act="' + act + '">Load earlier</button></div>';
     // The clear end, once you have paged back to it; nothing for a short
     // conversation shown whole from the start (no note cluttering its top).
+    if (conv.limitReached) return '<p class="rnote">Earlier is in the transcript, past what is loaded here.</p>';
     if (conv.paged) return '<p class="rnote">Start of the conversation.</p>';
     return "";
   }
@@ -1843,16 +1844,24 @@
   }
 
   // An older page, P, prepended to column NAME's held entries, the newest
-  // trimmed to MAX_HELD (they reload at the foot).
+  // trimmed to MAX_HELD (they reload at the foot).  An empty page while more
+  // remains means the reader's window is exhausted (a transcript past the
+  // 8 MB tail it reads): stop, and say the rest is in the transcript.
   function prependConv(name, p) {
     const conv = herdNow.convs[name];
     if (!conv) return;
     conv.loading = false;
     conv.paged = true;
-    conv.more = !!p.earlier;
-    if (p.error) { conv.error = p.error; return; }
+    if (p.error) { conv.more = false; conv.error = p.error; return; }
     const page = p.entries || [];
-    if (page.length) conv.entries = trimTail(prependPage(page, conv.entries || []));
+    if (page.length) {
+      conv.entries = trimTail(prependPage(page, conv.entries || []));
+      conv.more = !!p.earlier;
+      conv.limitReached = false;
+    } else {
+      conv.more = false;
+      conv.limitReached = !!p.earlier;  // older exist but past the readable tail
+    }
   }
 
   // The chat's recent tail merged into what is held -- the merged timeline's
@@ -1881,10 +1890,16 @@
     if (!chat) return;
     chat.loading = false;
     chat.paged = true;
-    chat.more = !!p.earlier;
-    if (p.error) { chat.error = p.error; return; }
+    if (p.error) { chat.more = false; chat.error = p.error; return; }
     const page = p.entries || [];
-    if (page.length) chat.entries = trimTail(prependPage(page, chat.entries || []));
+    if (page.length) {
+      chat.entries = trimTail(prependPage(page, chat.entries || []));
+      chat.more = !!p.earlier;
+      chat.limitReached = false;
+    } else {
+      chat.more = false;
+      chat.limitReached = !!p.earlier;
+    }
   }
 
   // Redraw one column's body, staying at the bottom if it was there.  After

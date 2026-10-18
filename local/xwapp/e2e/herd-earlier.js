@@ -82,6 +82,17 @@ const chatTurns = (prefix, n, start) => Array.from({ length: n }, (_, i) =>
         !(await page.$(col + ' [data-act="a:load-earlier"]')) &&
         /Start of the conversation/.test(await page.$eval(col, (b) => b.textContent)));
 
+      // ---- An empty page while more remains: the reader's window limit ----
+      await page.evaluate((p) => GM.setConversation(p), { name: RD, path: PATH, cli: "claude", earlier: true, entries: turns("win", 3, 700) });
+      await sleep(40);
+      await page.$eval(col + ' [data-act="a:load-earlier"]', (el) => el.click());
+      await sleep(40);
+      await page.evaluate((p) => GM.earlierConversation(p), { name: RD, before: 3, earlier: true, entries: [] });
+      await sleep(60);
+      check(W("an empty page while more remains stops with a transcript note, no button"),
+        !(await page.$(col + ' [data-act="a:load-earlier"]')) &&
+        /Earlier is in the transcript/.test(await page.$eval(col, (b) => b.textContent)));
+
       // ---- What is held is bounded (MAX_HELD): a huge page slides the window ----
       await page.evaluate((p) => GM.setConversation(p), { name: RD, path: PATH, cli: "claude", earlier: true, entries: turns("fresh", 5, 9000) });
       await sleep(40);
