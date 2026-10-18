@@ -808,6 +808,10 @@
     // How far back each column (by name) and the chat have been loaded with
     // `load earlier'; kept so a poll does not shrink them.
     roomLimit: {}, chatLimit: 0,
+    // A column (by name) or the chat whose `load earlier' is in flight: when
+    // its grown answer arrives, the view holds the message you were reading
+    // instead of jumping, the prepended turns pushing it down by their height.
+    earlierPending: new Set(), chatEarlierPending: false,
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
   };
@@ -1777,18 +1781,28 @@
     return app.querySelector('.rcol[data-name="' + cssName(name) + '"]');
   }
 
-  // Redraw one column's body, staying at the bottom if it was there.
+  // Redraw one column's body, staying at the bottom if it was there.  After
+  // a `load earlier', the turns prepended at the top would push what you
+  // were reading down; keep it in place by moving the scroll down by the
+  // height that was added, so the view holds its message instead of jumping.
   function renderRoomBody(a) {
     const col = roomColumn(a.name);
     const body = col && col.querySelector(".rbody");
     if (!body) return;
     const first = !body.hasAttribute("data-drawn");
-    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const keep = body.scrollTop;
+    const prevLen = (drawn.get(body) || []).length;
+    const entries = (herdNow.convs[a.name] && herdNow.convs[a.name].entries) || [];
+    const grewEarlier = herdNow.earlierPending.has(a.name) && entries.length > prevLen;
+    const oldHeight = body.scrollHeight, keep = body.scrollTop;
+    const atBottom = oldHeight - keep - body.clientHeight < 40;
     body.innerHTML = roomBodyHtml(a);
-    drawn.set(body, (herdNow.convs[a.name] && herdNow.convs[a.name].entries) || []);
+    drawn.set(body, entries);
     body.setAttribute("data-drawn", "1");
-    body.scrollTop = first || atBottom ? body.scrollHeight : keep;
+    if (first || atBottom) body.scrollTop = body.scrollHeight;
+    else if (grewEarlier) {
+      body.scrollTop = keep + (body.scrollHeight - oldHeight);
+      herdNow.earlierPending.delete(a.name);
+    } else body.scrollTop = keep;
   }
 
   // A sub-agent's own transcript, over the room: its conversation and tool
@@ -1915,23 +1929,32 @@
       "</div>";
   }
 
-  // Redraw the timeline, staying at the bottom if it was there.
+  // Redraw the timeline, staying at the bottom if it was there -- and after
+  // a `load earlier', holding the message you were reading in place (the
+  // prepended turns push it down by their height), not jumping.
   function renderChatBody() {
     const body = app.querySelector(".chat .cbody");
     if (!body) return;
     const c = herdNow.chat;
     const first = !body.hasAttribute("data-drawn");
-    const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const keep = body.scrollTop;
+    const prevLen = (drawn.get(body) || []).length;
+    const entries = (c && c.entries) || [];
+    const grewEarlier = herdNow.chatEarlierPending && entries.length > prevLen;
+    const oldHeight = body.scrollHeight, keep = body.scrollTop;
+    const atBottom = oldHeight - keep - body.clientHeight < 40;
     const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
     body.innerHTML = !c ? '<p class="rnote">Reading the conversations…</p>'
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
       : earlierHtml(c, (herdNow.chatLimit || CHAT_LIMIT) < CHAT_MAX, CHAT_MAX, "a:chat-earlier") +
-        ((c.entries || []).length ? c.entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
+        (entries.length ? entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
         (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
-    drawn.set(body, (c && c.entries) || []);
+    drawn.set(body, entries);
     body.setAttribute("data-drawn", "1");
-    body.scrollTop = first || atBottom ? body.scrollHeight : keep;
+    if (first || atBottom) body.scrollTop = body.scrollHeight;
+    else if (grewEarlier) {
+      body.scrollTop = keep + (body.scrollHeight - oldHeight);
+      herdNow.chatEarlierPending = false;
+    } else body.scrollTop = keep;
   }
 
   function renderRoom() {
@@ -2087,10 +2110,12 @@
       const conv = herdNow.convs[name];
       const cur = (conv && conv.limit) || ROOM_LIMIT;
       herdNow.roomLimit[name] = Math.min(ROOM_MAX, cur + ROOM_LIMIT);
+      herdNow.earlierPending.add(name);
       return watchRoom();
     }
     if (act === "chat-earlier") {
       herdNow.chatLimit = Math.min(CHAT_MAX, (herdNow.chatLimit || CHAT_LIMIT) + CHAT_LIMIT);
+      herdNow.chatEarlierPending = true;
       return watchRoom();
     }
     if (act === "room-tools") {

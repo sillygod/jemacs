@@ -12,6 +12,10 @@ const PATH = "/Users/x/.claude/projects/-p/abc.jsonl";
 const herd = () => Object.assign({}, HERD, { agents: HERD.agents.map((a) => Object.assign({}, a, { meter: false, subs: [] })) });
 const conv = (limit, earlier, n) => ({ name: RD, path: PATH, cli: "claude", earlier, limit,
   entries: Array.from({ length: n }, (_, i) => ({ role: "assistant", text: "turn " + i, ts: "t" })) });
+// A `load earlier' result: EXTRA turns prepended before the N already shown.
+const convEarlier = (limit, earlier, n, extra) => ({ name: RD, path: PATH, cli: "claude", earlier, limit,
+  entries: Array.from({ length: n + extra }, (_, i) => ({ role: "assistant",
+    text: i < extra ? "earlier " + i : "turn " + (i - extra), ts: "t" })) });
 
 (async () => {
   const browser = await webkit.launch();
@@ -50,6 +54,25 @@ const conv = (limit, earlier, n) => ({ name: RD, path: PATH, cli: "claude", earl
       await sleep(60);
       check(W("at the cap, a note instead of the button"),
         !(await page.$(col + ' [data-act="a:load-earlier"]')) && /most recent 200/.test(await page.$eval(col, (b) => b.textContent)));
+
+      // ---- Load earlier holds the reading position, not a jump ----
+      // A tall column, scrolled to the middle: loading earlier prepends turns
+      // above, and the view should move down by their height so the message
+      // you were reading stays put, instead of keeping scrollTop (a jump).
+      await page.evaluate((p) => GM.setConversation(p), conv(60, true, 30));
+      await sleep(60);
+      await page.$eval(col, (b) => { b.scrollTop = Math.round((b.scrollHeight - b.clientHeight) / 2); });
+      const before = await page.$eval(col, (b) => ({ top: b.scrollTop, h: b.scrollHeight }));
+      // Click without Playwright scrolling the (off-screen) button into view,
+      // which would reset the scroll we are testing.
+      await page.$eval(col + ' [data-act="a:load-earlier"]', (el) => el.click());
+      await sleep(40);
+      await page.evaluate((p) => GM.setConversation(p), convEarlier(120, true, 30, 12));
+      await sleep(80);
+      const after = await page.$eval(col, (b) => ({ top: b.scrollTop, h: b.scrollHeight }));
+      check(W("loading earlier holds the reading position (scroll follows the prepended height)"),
+        after.h > before.h + 20 && before.top > 0 && Math.abs((after.top - before.top) - (after.h - before.h)) <= 3,
+        { before, after });
 
       // ---- The chat ----
       await tap('.room [data-act="a:room-view"][data-view="chat"]');
