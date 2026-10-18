@@ -9664,6 +9664,75 @@ its main checkout -- nil for the main checkout itself or a plain directory
       (should (equal (directory-file-name (file-truename (ghostherd--project-root wt)))
                      (directory-file-name (file-truename repo)))))))
 
+(ert-deftest ghostherd-test-worktree-attribution-for-bare-and-submodule ()
+  "A bare repo's worktrees group under the bare repo (it has no main
+checkout, so the common dir's parent is wrong); a submodule's worktree
+belongs to the submodule's own working tree, not the superproject's
+.git/modules it is folded under."
+  (ghostherd-tests--with-repo
+    (let* ((truename (lambda (d) (directory-file-name (file-truename d))))
+           (git* (lambda (dir &rest args)
+                   (let ((default-directory dir))
+                     (apply #'call-process "git" nil nil nil
+                            "-c" "user.email=t@t" "-c" "user.name=t"
+                            "-c" "protocol.file.allow=always" args)))))
+      ;; ---- A bare repo and a worktree of it ----
+      (let ((bare (concat base "bare.git/"))
+            (bare-wt (concat base "bare-wt/")))
+        (funcall git* base "clone" "-q" "--bare" (directory-file-name repo) (directory-file-name bare))
+        (funcall git* bare "worktree" "add" "-q" (directory-file-name bare-wt) "main")
+        (should (equal (funcall truename (ghostherd--worktree-main-checkout bare-wt))
+                       (funcall truename bare)))
+        (should (equal (funcall truename (ghostherd--project-root bare-wt))
+                       (funcall truename bare))))
+      ;; ---- A submodule and a linked worktree of it ----
+      (let ((super (concat base "super/"))
+            (sub (concat base "sub/"))
+            (sub-wt (concat base "sub-wt/"))
+            (subco (concat base "super/libs/foo/")))
+        (make-directory super t) (make-directory sub t)
+        (dolist (r (list super sub))
+          (funcall git* r "init" "-q" "-b" "main")
+          (funcall git* r "commit" "-q" "--allow-empty" "-m" "init"))
+        (funcall git* super "submodule" "add" "-q" (directory-file-name sub) "libs/foo")
+        (funcall git* super "commit" "-q" "-m" "addsub")
+        (funcall git* subco "worktree" "add" "-q" (directory-file-name sub-wt))
+        ;; Its own working tree, not .git/modules.
+        (should (equal (funcall truename (ghostherd--worktree-main-checkout sub-wt))
+                       (funcall truename subco)))
+        (should (equal (funcall truename (ghostherd--project-root sub-wt))
+                       (funcall truename subco)))))))
+
+(ert-deftest ghostherd-test-relay-brief-carries-the-worktree-branch-state ()
+  "A relay brief adds where a worktree branch stands against its base --
+base, ahead/behind, its own commits, a diffstat, what is uncommitted --
+so an heir to a diverged worktree is not left with only the transcript; no
+full diff.  Nil for an agent in no worktree."
+  (ghostherd-tests--with-repo
+    (let ((wt (concat base "wt/"))
+          (ghostherd--worktrees (make-hash-table :test 'equal)))
+      (funcall git repo "worktree" "add" "-q" "-b" "feat/x" (directory-file-name wt))
+      (with-temp-file (expand-file-name "a.txt" wt) (insert "one\n"))
+      (funcall git wt "add" "a.txt")
+      (funcall git wt "commit" "-q" "-m" "feat: add a")
+      (with-temp-file (expand-file-name "a.txt" wt) (insert "one\ntwo\n"))
+      (funcall git wt "commit" "-q" "-am" "feat: extend a")
+      (with-temp-file (expand-file-name "new.txt" wt) (insert "scratch\n"))
+      (let ((s (ghostherd-session--create :id "rd" :name "rd" :kind 'claude :project repo)))
+        (puthash "rd" (list :path wt :branch "feat/x" :base "main") ghostherd--worktrees)
+        (let ((brief (ghostherd--worktree-brief s)))
+          (should brief)
+          (should (string-match-p "branch feat/x, forked from main" brief))
+          (should (string-match-p "2 commit(s) ahead of main, 0 behind" brief))
+          (should (string-match-p "feat: add a" brief))
+          (should (string-match-p "feat: extend a" brief))
+          (should (string-match-p "a\\.txt" brief))          ; the diffstat
+          (should (string-match-p "Uncommitted in the worktree" brief))
+          (should (string-match-p "new\\.txt" brief))        ; git status
+          (should-not (string-match-p "diff --git" brief)))  ; no full diff
+        (clrhash ghostherd--worktrees)
+        (should-not (ghostherd--worktree-brief s))))))
+
 (ert-deftest ghostherd-test-worktree-create-makes-a-branch-off-head ()
   "`ghostherd--worktree-create' adds a git worktree under
 `ghostherd-worktree-root' on a branch named for the agent, off the main
@@ -9928,6 +9997,62 @@ path with no source is skipped, and the card surfaces only failures."
             (puthash "dev" wt ghostherd--worktrees)
             ;; A missing source is not a failure worth a card chip.
             (should (eq (ghostherd-memory-page--worktree-deps s) :json-false))))))))
+
+(ert-deftest ghostherd-test-worktree-venv-from-lock ()
+  "The venv method builds a per-worktree virtualenv from the worktree's own
+uv.lock (uv sync --frozen, uv hardlinking from its cache); it is skipped,
+and said so on the card, when there is no uv on PATH or no uv.lock there --
+never a full copy, never a lock-less install."
+  (ghostherd-tests--with-herd ((ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (let* ((ghostherd-worktree-root (concat base "trees/"))
+             (wt (ghostherd--worktree-create repo "dev"))
+             (path (plist-get wt :path))
+             (bin (concat base "bin/"))
+             (nox (concat base "nox/"))
+             (process-environment (copy-sequence process-environment))
+             (status (lambda () (plist-get (alist-get ".venv"
+                                                      (gethash "dev" ghostherd--worktree-deps-status)
+                                                      nil nil #'equal)
+                                           :status)))
+             (reason (lambda () (plist-get (alist-get ".venv"
+                                                      (gethash "dev" ghostherd--worktree-deps-status)
+                                                      nil nil #'equal)
+                                           :reason)))
+             (run (lambda ()
+                    (clrhash ghostherd--worktree-deps-status)
+                    (ghostherd--worktree-deps-setup repo path "dev" '((".venv" . venv)))
+                    (let ((n 0)) (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< n 100))
+                                   (accept-process-output nil 0.1) (setq n (1+ n)))))))
+        (make-directory nox t)
+        ;; No uv on PATH: skipped, said so (sh is found by `exec-path', not PATH).
+        (setenv "PATH" (directory-file-name nox))
+        (funcall run)
+        (should (eq (funcall status) 'skipped))
+        (should (equal (funcall reason) "no-uv"))
+        ;; A fake uv that honours UV_PROJECT_ENVIRONMENT and --frozen.
+        (make-directory bin t)
+        (with-temp-file (expand-file-name "uv" bin)
+          (insert "#!/bin/sh\n[ \"$1\" = sync ] || exit 2\n"
+                  "mkdir -p \"$UV_PROJECT_ENVIRONMENT\" && : > \"$UV_PROJECT_ENVIRONMENT/pyvenv.cfg\"\n"))
+        (set-file-modes (expand-file-name "uv" bin) #o755)
+        (setenv "PATH" (concat (directory-file-name bin) ":/usr/bin:/bin"))
+        ;; uv there but no uv.lock: skipped, said so -- never a lock-less install.
+        (funcall run)
+        (should (eq (funcall status) 'skipped))
+        (should (equal (funcall reason) "no-uv.lock"))
+        ;; And the card says so (a venv skip is worth a chip, unlike no-source).
+        (when (require 'ghostherd-memory-page nil t)
+          (let* ((sess (ghostherd-tests--session :name "dev" :kind 'claude :project repo))
+                 (card (ghostherd-memory-page--worktree-deps sess)))
+            (should (vectorp card))
+            (should (seq-find (lambda (c) (equal (plist-get c :reason) "no-uv.lock"))
+                              (append card nil)))))
+        ;; With the lock: built, the venv where the spec named it.
+        (with-temp-file (expand-file-name "uv.lock" path) (insert "version = 1\n"))
+        (funcall run)
+        (should (eq (funcall status) 'done))
+        (should (file-exists-p (expand-file-name ".venv/pyvenv.cfg" path)))))))
 
 (ert-deftest ghostherd-test-worktree-deps-resolve-finds-nested ()
   "Bare-name deps are found by directory name among the main checkout's

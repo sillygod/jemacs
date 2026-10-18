@@ -579,12 +579,52 @@ second copy of the code.  See `ghostherd-new'."
   :type 'directory
   :group 'ghostherd)
 
+(defun ghostherd--git-config (gitdir key)
+  "Git config KEY read against git dir GITDIR, trimmed; nil when unset."
+  (with-temp-buffer
+    (when (eq 0 (ignore-errors
+                  (call-process "git" nil '(t nil) nil
+                                "--git-dir" (expand-file-name gitdir) "config" key)))
+      (let ((s (string-trim (buffer-string))))
+        (and (not (string-empty-p s)) s)))))
+
+(defun ghostherd--git-lines (dir &rest args)
+  "Run git ARGS in DIR; its trimmed output, or nil when it failed or said
+nothing."
+  (when (and (stringp dir) (file-directory-p (expand-file-name dir)))
+    (with-temp-buffer
+      (let ((default-directory (file-name-as-directory (expand-file-name dir))))
+        (and (eq 0 (ignore-errors (apply #'call-process "git" nil '(t nil) nil args)))
+             (let ((s (string-trim (buffer-string))))
+               (and (not (string-empty-p s)) s)))))))
+
+(defun ghostherd--worktree-project (common)
+  "The project directory a linked git worktree whose common git dir is
+COMMON belongs to -- see `ghostherd--worktree-main-checkout'."
+  (let ((common (directory-file-name (expand-file-name common))) wt)
+    (cond
+     ;; A bare repo has no main checkout: its worktrees group under it.
+     ((equal (ghostherd--git-config common "core.bare") "true")
+      (file-name-as-directory common))
+     ;; A submodule's git dir names its own working tree (`core.worktree',
+     ;; relative to the git dir): that is its project, not the superproject's
+     ;; .git/modules it is folded under.
+     ((setq wt (ghostherd--git-config common "core.worktree"))
+      (file-name-as-directory (expand-file-name wt (file-name-as-directory common))))
+     ;; An ordinary repo: the main checkout is the common dir's parent.
+     (t (let ((main (file-name-directory common)))
+          (and main (file-name-as-directory (expand-file-name main))))))))
+
 (defun ghostherd--worktree-main-checkout (dir)
-  "If DIR is a linked git worktree, its main checkout's directory; else nil.
-A linked worktree's own git dir sits under the main repo's
-`.git/worktrees/', while its common dir is that main `.git'; the main
-checkout is the common dir's parent.  An ordinary checkout, where the two
-are the same, gives nil, as does a directory that is no worktree."
+  "If DIR is a linked git worktree, the project directory it belongs to;
+else nil.  A linked worktree's own git dir sits under its repository's
+common dir, while an ordinary checkout's two are the same (then nil, and
+the caller takes DIR's own project).  Which project the common dir names
+depends on the repository: a bare repo's worktrees group under the bare
+repo itself (it has no main checkout); a submodule is its own project, at
+its own working tree, not folded into the superproject's .git/modules; an
+ordinary repo's worktrees belong to its main checkout, the common dir's
+parent (`ghostherd--worktree-project')."
   (when (and (stringp dir) (file-directory-p (expand-file-name dir)))
     (let ((default-directory (file-name-as-directory (expand-file-name dir))))
       (with-temp-buffer
@@ -596,8 +636,7 @@ are the same, gives nil, as does a directory that is no worktree."
             (`(,common ,gitdir)
              (and (not (equal (file-name-as-directory common)
                               (file-name-as-directory gitdir)))
-                  (let ((main (file-name-directory (directory-file-name common))))
-                    (and main (file-name-as-directory (expand-file-name main))))))))))))
+                  (ghostherd--worktree-project common)))))))))
 
 (defun ghostherd--project-root (&optional dir)
   "Return project root for DIR, or nil.
@@ -850,25 +889,33 @@ second confirmation."
 (defcustom ghostherd-worktree-deps
   '((".venv" . symlink) ("venv" . symlink) ("node_modules" . clone))
   "Dependencies carried into a new worktree, each (PATH . METHOD).
-PATH is relative to the checkout root.  METHOD is `symlink' -- a link to
-the main checkout's, for a thing that holds absolute paths and breaks when
-copied, like a Python venv -- or `clone', an APFS copy-on-write copy (cp
--c) the worktree may then diverge, like node_modules.  A PATH with no
-source in the main checkout is skipped; a clone that cannot be made is
-skipped and said so on the card, never copied in full.  Build caches are
-left off this list.  Override per project with a
+PATH is relative to the checkout root.  METHOD is one of:
+ - `symlink' -- a link to the main checkout's, for a thing that holds
+   absolute paths and breaks when copied, like a Python venv;
+ - `clone' -- an APFS copy-on-write copy (cp -c) the worktree may then
+   diverge, like node_modules;
+ - `venv' -- a fresh per-worktree virtualenv built from the project's own
+   lock (`uv sync --frozen' when PATH's directory has a `uv.lock'; uv
+   hardlinks from its cache, so it is cheap), the worktree then free to
+   diverge its deps.  Opt in by naming a venv PATH with this method; the
+   default stays `symlink'.  Skipped, and said so on the card, when there
+   is no `uv.lock' there or no `uv' on PATH -- never a lock-less install.
+A symlink/clone PATH with no source in the main checkout is skipped; a
+clone that cannot be made is skipped and said so, never copied in full.
+Build caches are left off this list.  Override per project with a
 `ghostherd-project-worktree-deps' dir-local."
-  :type '(alist :key-type string :value-type (choice (const symlink) (const clone)))
+  :type '(alist :key-type string
+                :value-type (choice (const symlink) (const clone) (const venv)))
   :group 'ghostherd)
 
 (defvar ghostherd-project-worktree-deps 'unset
   "Per-project override of `ghostherd-worktree-deps', from .dir-locals.el.
 
-  ((nil . ((ghostherd-project-worktree-deps . ((\"node_modules\" . clone))))))")
+  ((nil . ((ghostherd-project-worktree-deps . ((\".venv\" . venv))))))")
 (put 'ghostherd-project-worktree-deps 'safe-local-variable
      (lambda (v) (and (listp v)
                       (seq-every-p (lambda (e) (and (consp e) (stringp (car e))
-                                                    (memq (cdr e) '(symlink clone))))
+                                                    (memq (cdr e) '(symlink clone venv))))
                                    v))))
 
 (defvar ghostherd--worktree-deps-status (make-hash-table :test 'equal)
@@ -913,11 +960,16 @@ frontend/node_modules -- gets them without naming each path."
         out)
     (dolist (spec specs)
       (let ((name (car spec)) (method (cdr spec)))
-        (if (string-match-p "/" name)
-            (push (cons (directory-file-name name) method) out)
-          (dolist (d ignored)
-            (when (equal (file-name-nondirectory d) name)
-              (push (cons d method) out))))))
+        (cond
+         ;; A venv is created, not found, so its path is taken as named
+         ;; (relative to the worktree) -- not matched against existing dirs.
+         ((eq method 'venv)
+          (push (cons (directory-file-name name) method) out))
+         ((string-match-p "/" name)
+          (push (cons (directory-file-name name) method) out))
+         (t (dolist (d ignored)
+              (when (equal (file-name-nondirectory d) name)
+                (push (cons d method) out)))))))
     (seq-uniq (nreverse out))))
 
 (defun ghostherd--worktree-exclude (worktree relpaths)
@@ -971,6 +1023,13 @@ copying a dependency in full."
          ('clone
           (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && cp -c -R %s %s 2>/dev/null; then echo done %s; else echo skip %s no-copy-on-write; fi"
                   src tag dst tag par src dst tag tag))
+         ;; A fresh virtualenv from the worktree's own lock: `uv sync
+         ;; --frozen' in the venv's directory (where uv.lock sits), uv
+         ;; hardlinking from its cache.  Skipped, not faked, when there is
+         ;; no uv.lock there or no uv -- never a lock-less install.
+         ('venv
+          (format "if [ -e %s ]; then echo skip %s exists; elif ! command -v uv >/dev/null 2>&1; then echo skip %s no-uv; elif [ ! -f %s/uv.lock ]; then echo skip %s no-uv.lock; elif ( cd %s && UV_PROJECT_ENVIRONMENT=%s uv sync --frozen >/dev/null 2>&1 ); then echo done %s; else echo skip %s uv-sync-failed; fi"
+                  dst tag tag par tag par dst tag tag))
          (_ (format "echo skip %s unknown-method" tag)))))
    specs
    "\n"))
@@ -6188,6 +6247,54 @@ or KIND gives an agent, since one CLI's flags mean nothing to another."
     (ended . ,(format-time-string "%FT%T%z"))
     (reason . ,(or reason ""))))
 
+(defcustom ghostherd-worktree-brief-commits 20
+  "Most of a worktree branch's own commits listed in a relay brief (git
+log base..branch) and files in its diffstat; the rest are counted, not
+listed.  So the branch state stays within the brief's budget."
+  :type 'integer
+  :group 'ghostherd)
+
+(defun ghostherd--worktree-brief (session)
+  "Where SESSION's worktree branch stands against its base, to add to a
+relay brief: the base, commits ahead and behind, the branch's own commits
+and a diffstat against the base (each capped by
+`ghostherd-worktree-brief-commits'), and what is uncommitted.  Nil for an
+agent not in a herd worktree.  No full diff -- the heir reads the branch
+itself; this orients it to a branch that has diverged from base."
+  (let* ((wt (ghostherd-session-worktree session))
+         (dir (and wt (plist-get wt :path)))
+         (branch (and wt (plist-get wt :branch)))
+         (base (and wt (plist-get wt :base))))
+    (when (and dir branch base (file-directory-p (expand-file-name dir)))
+      (let* ((cap (max 1 ghostherd-worktree-brief-commits))
+             (counts (ghostherd--git-lines dir "rev-list" "--left-right" "--count"
+                                           (concat base "..." branch)))
+             (ba (and counts (split-string counts)))
+             (behind (or (nth 0 ba) "0"))
+             (ahead (or (nth 1 ba) "0"))
+             (log (ghostherd--git-lines dir "log" "--oneline" "--no-decorate"
+                                        (format "-n%d" cap) (concat base ".." branch)))
+             (more (let ((n (string-to-number ahead))) (and (> n cap) (- n cap))))
+             (stat (ghostherd--git-lines dir "diff" (format "--stat-count=%d" cap) "--stat"
+                                         (concat base "..." branch)))
+             (dirty (ghostherd--git-lines dir "status" "--porcelain=v1")))
+        (when counts
+          (string-join
+           (delq nil
+                 (list
+                  (format "\n\n--- Your worktree: branch %s, forked from %s ---" branch base)
+                  (format "%s commit(s) ahead of %s, %s behind it." ahead base behind)
+                  (and log (concat "Its own commits (git log " base ".." branch "):\n" log
+                                   (and more (format "\n  … and %d more" more))))
+                  (and stat (concat "Changed against " base " (git diff --stat):\n" stat))
+                  (if dirty
+                      (concat "Uncommitted in the worktree:\n"
+                              (if (> (length dirty) 800)
+                                  (concat (substring dirty 0 800) "\n  …")
+                                dirty))
+                    "Nothing uncommitted in the worktree.")))
+           "\n"))))))
+
 ;;;###autoload
 (defun ghostherd-relay (session kind &optional reason)
   "Hand SESSION's work to a new agent on KIND, which takes its name.
@@ -6235,7 +6342,13 @@ Returns at once: the heir starts when the sidecar has the brief."
      "herd_relay_brief"
      (lambda (brief)
        (remhash id ghostherd--relaying)
-       (ghostherd--relay-hand session kind (plist-get brief :text) reason))
+       ;; Add where the worktree branch stands, so an heir to a worktree
+       ;; agent is not left with only the transcript when the branch has
+       ;; diverged from its base.
+       (ghostherd--relay-hand session kind
+                              (concat (plist-get brief :text)
+                                      (or (ghostherd--worktree-brief session) ""))
+                              reason))
      (list :name name
            :path (or (ghostherd-session-transcript session) "")
            :project (or (ghostherd-session-project session) "")
