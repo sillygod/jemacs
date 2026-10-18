@@ -44,7 +44,7 @@
   // The count is what keeps a second click on the same task chip, or a
   // second Refresh, from being taken for the last intent; the queue is
   // what keeps two quick ones from overwriting each other in the title.
-  const emit = XW.bridge(PREFIX);
+  const emit = XW.bridge(PREFIX, "pr-view");
   const escapeHtml = XW.esc;
 
   // window.confirm() returns false immediately inside xwidget's WebKit:

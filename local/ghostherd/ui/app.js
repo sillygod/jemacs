@@ -1096,8 +1096,11 @@
   function chip(cls, attrs, url, inner, app) {
     const href = !XW.elsewhere ? "" : app ? app.href : /^https?:\/\//i.test(url || "") ? url : "";
     const target = app ? app.tab : "_blank";
+    // An app chip (pr-view, clickup-view) carries its tab name so a click
+    // reuses the tab already showing that app -- see the a[data-app] handler.
+    const marker = app ? ' data-app="' + esc(app.tab) + '"' : "";
     return href
-      ? '<a class="' + cls + '" href="' + esc(href) + '" target="' + target + '"' + (app ? "" : ' rel="noopener noreferrer"') + attrs + ">" + inner + "</a>"
+      ? '<a class="' + cls + '" href="' + esc(href) + '" target="' + target + '"' + marker + (app ? "" : ' rel="noopener noreferrer"') + attrs + ">" + inner + "</a>"
       : '<button type="button" class="' + cls + '"' + attrs + ">" + inner + "</button>";
   }
 
@@ -2742,8 +2745,18 @@
         a.rel = "noopener noreferrer";
         return;
       }
-      // Emacs's page for a pull request or task, in that app's tab.
-      if (XW.elsewhere && /^\/open\//.test(href)) return;
+      // Emacs's page for a pull request or task: a plain click reuses the
+      // tab already showing that app and brings it forward, instead of a new
+      // tab each time; a modified or middle click still opens a new tab.
+      if (XW.elsewhere && /^\/open\//.test(href)) {
+        const appTab = a.getAttribute("data-app");
+        if (appTab && typeof XW.openApp === "function" &&
+            ev.button === 0 && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey && !ev.altKey) {
+          ev.preventDefault();
+          XW.openApp(href, appTab);
+        }
+        return;
+      }
       ev.preventDefault();
       if (/^https?:/i.test(href)) emit("open-browser", { url: href });
       return;

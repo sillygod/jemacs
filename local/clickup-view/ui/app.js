@@ -16,7 +16,7 @@
   //
   // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).
 
-  const emit = XW.bridge(PREFIX);
+  const emit = XW.bridge(PREFIX, "clickup-view");
 
   // ---- Small helpers ---------------------------------------------------
 

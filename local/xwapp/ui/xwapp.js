@@ -319,8 +319,69 @@
     return true;
   }
 
-  function bridge(prefix) {
-    if (BROWSER) return (kitEmit = servedBridge());
+  // ---- One tab per app, across same-origin tabs -------------------------
+  //
+  // Emacs opens pr-view and clickup-view in a tab of their own.  Clicking a
+  // PR or task again should reuse and refocus that tab, not pile up a new
+  // one -- but Emacs cannot reach across the browser's tabs to do it, so the
+  // tabs arrange it among themselves over a BroadcastChannel they share
+  // (same origin).  An app's page beats that it is open and listens for a
+  // request to show a url; another page, before opening one, asks an open
+  // tab to show it and come forward instead.  Bringing a background tab to
+  // the front is all a browser allows from a script, and it may be refused
+  // (iOS does not reuse a named tab either) -- the tab is at least sent to
+  // what was asked, and a first open, with no tab yet, still happens from
+  // the tap.
+  const NAV_CHANNEL = "xwapp-open";
+  const NAV_TTL = 6000;   // a tab counts as open this long after its last beat
+  const NAV_BEAT = 2000;
+  const navSeen = {};     // app name -> when a tab of it last beat
+  let navCh = null;
+
+  function navChannel() {
+    try { return "BroadcastChannel" in window ? new BroadcastChannel(NAV_CHANNEL) : null; }
+    catch (e) { return null; }
+  }
+
+  function navSetup(app) {
+    navCh = navChannel();
+    if (!navCh) return;
+    navCh.onmessage = (e) => {
+      const m = e && e.data;
+      if (!m) return;
+      if (m.alive) navSeen[m.alive] = Date.now();
+      else if (m.gone) delete navSeen[m.gone];
+      else if (app && m.nav === app && typeof m.url === "string") {
+        try { window.focus(); } catch (_) {}
+        const want = m.url.indexOf("#") >= 0 ? m.url.slice(m.url.indexOf("#")) : "";
+        if (!want || want !== location.hash) location.href = m.url;
+      }
+    };
+    if (app) {
+      const beat = () => { try { navCh.postMessage({ alive: app }); } catch (_) {} };
+      beat();
+      setInterval(beat, NAV_BEAT);
+      window.addEventListener("pagehide", () => { try { navCh.postMessage({ gone: app }); } catch (_) {} });
+    }
+  }
+
+  // Open APP's page at URL.  When a tab of APP is already open (it has beat
+  // lately), ask it to show URL and come forward, and open nothing here.
+  // Otherwise open one from this click, so iOS opens it.  Call from a click.
+  function openApp(url, app) {
+    url = String(url == null ? "" : url);
+    if (!/^(https?:|\/[^/])/i.test(url)) return false;
+    const live = app && navSeen[app] && Date.now() - navSeen[app] < NAV_TTL;
+    if (navCh && app) { try { navCh.postMessage({ nav: app, url }); } catch (_) {} }
+    if (!live) {
+      const w = window.open(url, app || "_blank", app ? "" : "noopener");
+      if (w) { try { w.focus(); } catch (_) {} }
+    }
+    return true;
+  }
+
+  function bridge(prefix, app) {
+    if (BROWSER) { navSetup(app); return (kitEmit = servedBridge()); }
     kitEmit = titleBridge(prefix);
     // In a browser the hello is the request that makes the page the
     // app's; in the xwidget it is the page's first intent.
@@ -578,6 +639,7 @@
     elsewhere: ELSEWHERE,
     copy: copy,
     open: open,
+    openApp: openApp,
     kit: kit,
   });
 })();
