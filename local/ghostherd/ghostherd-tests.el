@@ -3224,6 +3224,7 @@ more follows the effort."
 (ert-deftest ghostherd-test-meter-falls-back-to-the-screen ()
   "A CLI the sidecar reads no meter for shows the model its own screen
 does -- grok's border, agy's footer -- so its chip is not left bare."
+  (skip-unless (require 'ghostherd-memory-page nil t))
   (ghostherd-tests--with-herd ((ghostherd-memory-page--meters (make-hash-table :test 'equal)))
     (let ((g (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle))
           (a (ghostherd-tests--session :name "ag" :kind 'agy :state 'idle)))
@@ -3244,6 +3245,7 @@ does -- grok's border, agy's footer -- so its chip is not left bare."
 the model and effort come off the screen.  Merged into one meter, each
 with a window for a bar: grok's from the sidecar, agy's the uniform 1.0M
 its `/context' reports, so agy is no longer the number alone."
+  (skip-unless (require 'ghostherd-memory-page nil t))
   (ghostherd-tests--with-herd ((ghostherd-memory-page--meters (make-hash-table :test 'equal)))
     (let ((g (ghostherd-tests--session :name "rd" :kind 'grok :state 'idle))
           (a (ghostherd-tests--session :name "ag" :kind 'agy :state 'idle)))
