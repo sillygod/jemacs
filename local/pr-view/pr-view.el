@@ -98,6 +98,12 @@ as a password.  Nil means match any `api.bitbucket.org' entry."
 `pr-view-changes' sets it.")
 (defvar pr-view--local nil
   "The checkout root whose changes the page shows, or nil.")
+(defvar pr-view--editors-scope nil
+  "What `pr-view-refresh-editors' recomputes the editor map for: (:root ROOT)
+for a checkout's diff, (:pr PR-PLIST) for a pull request's, or nil when no
+diff is shown.")
+(defvar pr-view--editors-sent nil
+  "The editor map last sent to the page, so a refresh pushes only a change.")
 (defvar pr-view--last-comments nil)
 (defvar pr-view--last-members nil)
 (defvar pr-view--last-detail-raw nil
@@ -574,7 +580,7 @@ people who already answered have to be added back from REVIEWS."
              (repo (pr-view--repo-of (alist-get 'repo intent)))
              (local (let ((l (alist-get 'local intent)))
                       (and (stringp l) (not (string-empty-p l)) l))))
-         (setq pr-view--local nil)
+         (setq pr-view--local nil pr-view--editors-scope nil)
          (when (or pr repo)
            (setq pr-view--host (or (car pr) repo)
                  pr-view--list-cache nil
@@ -606,7 +612,7 @@ people who already answered have to be added back from REVIEWS."
        (pr-view--fetch-list))
       ("open-pr" (pr-view--fetch-detail (alist-get 'id intent)))
       ("back-list"
-       (setq pr-view--local nil)
+       (setq pr-view--local nil pr-view--editors-scope nil)
        (if pr-view--list-cache
            (pr-view--js "renderPrList" pr-view--list-cache)
          (pr-view--fetch-list)))
@@ -878,14 +884,18 @@ the unified diff on PRs over ~20k lines or 300 files."
          ;; go to a herd agent, never to the forge.
          (review `((branch . ,(or branch ""))
                    (repo . ,(or repo ""))
-                   (recipients . ,(if branch (pr-view--local-recipients-json nil (list :branch branch :repo repo)) [])))))
+                   (recipients . ,(if branch (pr-view--local-recipients-json nil (list :branch branch :repo repo)) []))))
+         ;; Which agent on the head branch edited each file, for the file tree.
+         (pr-scope (and branch (list :branch branch :repo repo)))
+         (editors (if pr-scope (pr-view--local-editors-json nil pr-scope) [])))
+    (setq pr-view--editors-scope (and pr-scope (list :pr pr-scope))
+          pr-view--editors-sent editors)
     (append
      `((pr . ,pr)
        (forge . ,forge)
        (comments . ,(vconcat (or pr-view--last-comments '())))
        (review . ,review)
-       ;; Which agent on the head branch edited each file, for the file tree.
-       (editors . ,(if branch (pr-view--local-editors-json nil (list :branch branch :repo repo)) [])))
+       (editors . ,editors))
      extra)))
 
 (defun pr-view--fetch-comments (host kind id-str)
@@ -1900,11 +1910,14 @@ not kept."
   (pr-view--local-read
    root (lambda (payload)
           (when (equal pr-view--local root)
-            (pr-view--js "renderLocal"
-                         (append payload
-                                 `((recipients . ,(pr-view--local-recipients-json root))
-                                   ;; Which agent here edited each file, for the file tree.
-                                   (editors . ,(pr-view--local-editors-json root)))))))))
+            (let ((editors (pr-view--local-editors-json root)))
+              (setq pr-view--editors-scope (list :root root)
+                    pr-view--editors-sent editors)
+              (pr-view--js "renderLocal"
+                           (append payload
+                                   `((recipients . ,(pr-view--local-recipients-json root))
+                                     ;; Which agent here edited each file, for the file tree.
+                                     (editors . ,editors)))))))))
 
 (defun pr-view--local-asked (root)
   "The page asks for checkout ROOT's changes: show them, if it may."
@@ -2038,6 +2051,21 @@ ill-formed dropped (see `pr-view--local-editors')."
                                            `((id . ,(plist-get m :id)) (label . ,(plist-get m :label))))
                                          (gethash file by-file))))))
              (nreverse order)))))
+
+;;;###autoload
+(defun pr-view-refresh-editors ()
+  "Re-send the shown diff's editor map to the page when it has changed.
+Another package (ghostherd) calls this when its edits cache changes, so a
+diff opened before the cache was warm gains its marks with no manual
+refresh and no re-read of the diff.  A no-op when no diff is shown, when
+the page is not up, or when the map is unchanged."
+  (when (and pr-view--editors-scope (xwapp-live-p pr-view--app))
+    (let ((editors (if (plist-get pr-view--editors-scope :pr)
+                       (pr-view--local-editors-json nil (plist-get pr-view--editors-scope :pr))
+                     (pr-view--local-editors-json (plist-get pr-view--editors-scope :root)))))
+      (unless (equal editors pr-view--editors-sent)
+        (setq pr-view--editors-sent editors)
+        (pr-view--js "setEditors" `((editors . ,editors)))))))
 
 (defun pr-view--review-cut (s max)
   "S cut to MAX characters, the cut said."

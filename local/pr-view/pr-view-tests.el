@@ -1345,6 +1345,36 @@ does not stop the rest; and the checkout's changes carry the map."
         (setq pr-view-local-editors-functions nil)
         (should (equal (pr-view--local-editors-json root) []))))))
 
+(ert-deftest pr-view-test-refresh-editors-pushes-only-a-change ()
+  "pr-view-refresh-editors re-sends the shown diff's map when it has changed
+-- so a diff opened before the herd's cache was warm gains its marks with
+no reload -- and is a no-op when unchanged or no diff is shown."
+  (pr-view-tests--repo root
+    (let* ((marks nil) js
+           (pr-view--editors-scope (list :root root))
+           (pr-view--editors-sent [])
+           (pr-view-local-editors-functions
+            (list (lambda (r) (and (equal r root) marks)))))
+      (cl-letf (((symbol-function 'pr-view--js) (lambda (fn arg) (push (cons fn arg) js)))
+                ((symbol-function 'xwapp-live-p) (lambda (_a) t)))
+        ;; Cold: the map is still empty, nothing to push.
+        (pr-view-refresh-editors)
+        (should-not js)
+        ;; The cache warms: a file now has a mark -> pushed once.
+        (setq marks (list (list :file "a.txt" :by (list (list :id "rd" :label "rd · grok")))))
+        (pr-view-refresh-editors)
+        (should (equal (caar js) "setEditors"))
+        (should (equal (alist-get 'editors (cdar js))
+                       [((file . "a.txt") (by . [((id . "rd") (label . "rd · grok"))]))]))
+        ;; Unchanged since: no second push.
+        (setq js nil)
+        (pr-view-refresh-editors)
+        (should-not js)
+        ;; No diff shown: a no-op even when the map would change.
+        (setq pr-view--editors-scope nil marks nil js nil)
+        (pr-view-refresh-editors)
+        (should-not js)))))
+
 (ert-deftest pr-view-test-ui-shows-local-changes ()
   "The page has a view for a checkout's changes, asks for one by its
 address, and says why a file is not shown."

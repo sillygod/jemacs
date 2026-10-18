@@ -147,18 +147,29 @@
 ;; Which agent changed which file, for the file tree's marks: one file by
 ;; one agent, one by two (merged), and in the PR a file by the agent on its
 ;; head branch.  A file no agent is said to have edited gets no mark.
-(add-hook 'pr-view-local-editors-functions
-          (lambda (root &optional pr)
-            (cond
-             (pr
-              (list (list :file "shop/payments/webhook.py"
-                          :by (list (list :id "pr-rd" :label "pr-rd · claude")))))
-             ((equal root e2e-checkout-root)
-              (list (list :file "src/pay.py"
-                          :by (list (list :id "rd" :label "rd · grok")))
-                    (list :file "README.md"
-                          :by (list (list :id "rd" :label "rd · grok")
-                                    (list :id "lead-shop" :label "lead-shop · claude"))))))))
+;;
+;; Cold open: the cache is empty when a diff first asks, and warms a beat
+;; later -- then `pr-view-refresh-editors' pushes the marks, no manual
+;; refresh.  `e2e-editors-warm' flips on the first ask's timer.
+(defvar e2e-editors-warm nil)
+(defvar e2e-editors-warming nil)
+(defun e2e-editors (root &optional pr)
+  (unless (or e2e-editors-warm e2e-editors-warming)
+    (setq e2e-editors-warming t)
+    (run-at-time 0.6 nil (lambda () (setq e2e-editors-warm t)
+                           (when (fboundp 'pr-view-refresh-editors) (pr-view-refresh-editors)))))
+  (when e2e-editors-warm
+    (cond
+     (pr
+      (list (list :file "shop/payments/webhook.py"
+                  :by (list (list :id "pr-rd" :label "pr-rd · claude")))))
+     ((equal root e2e-checkout-root)
+      (list (list :file "src/pay.py"
+                  :by (list (list :id "rd" :label "rd · grok")))
+            (list :file "README.md"
+                  :by (list (list :id "rd" :label "rd · grok")
+                            (list :id "lead-shop" :label "lead-shop · claude"))))))))
+(add-hook 'pr-view-local-editors-functions #'e2e-editors)
 
 (write-region (json-encode (list (cons "pr" (xwapp-url pr-view--app))
                                  (cons "task" (xwapp-url clickup-view--app))

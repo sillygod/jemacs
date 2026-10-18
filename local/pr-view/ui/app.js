@@ -1952,6 +1952,20 @@
       const el = document.getElementById("comments-list");
       if (el) el.innerHTML = commentsHtml(items);
     },
+    // Fresh editor marks for the diff on show (Emacs warmed its cache after
+    // the diff opened): update them in place, no reload of the diff itself.
+    setEditors: (payload) => {
+      const editors = (payload && payload.editors) || [];
+      if (rv.scope === "pr") {
+        if (!lastDetail) return;
+        lastDetail.editors = editors;
+      } else {
+        if (!lastLocal) return;
+        lastLocal.editors = editors;
+        editorsByFile = indexEditors(editors);
+      }
+      rvRedraw();
+    },
     setConflicts: (payload) => {
       conflictMessage = (payload && payload.message) || "";
       conflictFiles = (payload && payload.files) || [];

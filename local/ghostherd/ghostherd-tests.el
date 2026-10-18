@@ -8053,6 +8053,23 @@ file edited outside the checkout is dropped.  Nothing cached for an agent
           (should-not (funcall edited nil (list :branch "no-such" :repo nil)))
           (should-not (funcall edited "/etc/")))))))
 
+(ert-deftest ghostherd-test-asking-for-the-editor-map-warms-the-cache ()
+  "Asking for the editor map warms the edits cache (so a diff opened before
+the cache was warm fills in), and a fresh edits answer pushes the marks to
+pr-view -- no manual refresh."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (looked refreshed sent)
+    (cl-letf (((symbol-function 'ghostherd-memory-page--edits-look) (lambda () (setq looked t)))
+              ((symbol-function 'ghostherd-memory-page--agents-in-checkout) (lambda (_r) nil))
+              ((symbol-function 'ghostherd-memory-page--send-herd-soon) (lambda () (setq sent t)))
+              ((symbol-function 'pr-view-refresh-editors) (lambda () (setq refreshed t))))
+      ;; Asking warms the cache before it reads it.
+      (should-not (ghostherd-memory-page--editors "/some/root/"))
+      (should looked)
+      ;; A fresh answer refreshes the page and pushes the marks to pr-view.
+      (ghostherd-memory-page--edits-changed)
+      (should (and sent refreshed)))))
+
 (ert-deftest ghostherd-test-a-review-from-pr-views-page-reaches-the-agent ()
   "Comments written on a herd checkout's diff in pr-view's page reach the
 agent picked as one prompt, each at its file and line."

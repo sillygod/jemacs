@@ -408,11 +408,13 @@ too."
             :pending (if (eq (plist-get m :pending) t) t :json-false)
             :compacted (if (eq (plist-get m :compacted) t) t :json-false)))))
 
-(defun ghostherd-memory-page--ask-on-change (table busy name sig method path)
+(defun ghostherd-memory-page--ask-on-change (table busy name sig method path &optional notify)
   "Ask the sidecar METHOD about agent NAME's transcript PATH, unless SIG
 is what TABLE holds from the last answer, or an answer is on its way
 \(BUSY).  TABLE then holds (SIG . ANSWER); the page hears of a new one
-on the next look."
+on the next look.  When a new answer arrives, NOTIFY is called (it
+defaults to sending the herd to the page); a look that wants to react
+elsewhere -- the editor marks pushed to pr-view -- passes its own."
   (unless (or (equal sig (car (gethash name table))) (gethash name busy))
     (puthash name t busy)
     (let ((done (lambda (answer)
@@ -420,7 +422,7 @@ on the next look."
                   (let ((had (cdr (gethash name table))))
                     (puthash name (cons sig answer) table)
                     (unless (equal had answer)
-                      (ghostherd-memory-page--send-herd-soon))))))
+                      (funcall (or notify #'ghostherd-memory-page--send-herd-soon)))))))
       (condition-case nil
           (ghostherd-memory-request-async
            method done (list :path path)
@@ -517,6 +519,14 @@ sidecar's answer, a plist whose :files is the absolute paths it edited.")
 (defvar ghostherd-memory-page--editing (make-hash-table :test 'equal)
   "Agent name -> t while the sidecar reads its edited files.")
 
+(defun ghostherd-memory-page--edits-changed ()
+  "A fresh edits answer arrived: refresh the herd page, and push the marks
+to pr-view if it is showing a diff -- so a diff opened before the cache was
+warm gains its marks when the answer comes, with no manual refresh."
+  (ghostherd-memory-page--send-herd-soon)
+  (when (fboundp 'pr-view-refresh-editors)
+    (ignore-errors (pr-view-refresh-editors))))
+
 (defun ghostherd-memory-page--edits-look ()
   "Ask the sidecar again for the edited files of each agent whose transcript
 changed; the editor map reads them from the cache on the next look.  Dead
@@ -530,7 +540,7 @@ conversation, and a file they touched is still theirs on a diff."
           (remhash name ghostherd-memory-page--edits)
         (ghostherd-memory-page--ask-on-change
          ghostherd-memory-page--edits ghostherd-memory-page--editing
-         name sig "herd_edits" path)))))
+         name sig "herd_edits" path #'ghostherd-memory-page--edits-changed)))))
 
 (defvar ghostherd-memory-page--herd-soon nil
   "The timer of a herd about to be sent, or nil.")
@@ -1353,7 +1363,13 @@ MARKS), REL a path relative to the diff's tree, MARKS a list of
 With PR (a plist of :branch and :repo), only the agents on its head
 branch -- the same set its review may go to.  Each agent's edits are
 relative to its own checkout, so the PR's repo-relative tree and the
-checkout's own tree both line up."
+checkout's own tree both line up.
+
+Asking also warms the cache: a diff opened before the herd tick has read
+these agents' edits gets its marks when the answer arrives (it pushes them
+to pr-view), with no manual refresh and no transcript re-read for one that
+has not changed."
+  (ghostherd-memory-page--edits-look)
   (let* ((agents (if pr
                      (ghostherd-memory-page--agents-on-pr (plist-get pr :branch) (plist-get pr :repo))
                    (ghostherd-memory-page--agents-in-checkout root)))
