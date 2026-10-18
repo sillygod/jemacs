@@ -2042,6 +2042,57 @@ again only changes which those are."
   (clrhash ghostherd-memory-page--room-sent)
   (clrhash ghostherd-memory-page--room-limits))
 
+(defun ghostherd-memory-page--room-earlier (intent)
+  "Read one earlier page of a room column's conversation -- agent NAME's
+transcript, a page ending BEFORE from the newest -- and send it to the
+page to prepend.  A one-shot read: the poll keeps refreshing the recent
+tail, this fills older history a page at a time (`load earlier')."
+  (let* ((name (ghostherd-memory-page--str (alist-get 'name intent)))
+         (before (alist-get 'before intent))
+         (s (and name (ghostherd-get name)))
+         (path (and s (ghostherd-session-transcript s))))
+    (when (and name path (natnump before))
+      (let ((send (lambda (&rest fields)
+                    (ghostherd-memory-page--js
+                     "earlierConversation" (append (list :name name :before before) fields)))))
+        (condition-case err
+            (ghostherd-memory-request-async
+             "herd_conversation"
+             (lambda (r)
+               (funcall send
+                        :earlier (if (plist-get r :earlier) t :json-false)
+                        :entries (ghostherd-memory-page--vec
+                                  (mapcar #'ghostherd-memory-page--room-entry (plist-get r :entries)))))
+             (list :path path :before before)
+             (lambda (e) (funcall send :entries [] :error (ghostherd-memory-page--sidecar-error e))))
+          (error (funcall send :entries [] :error (error-message-string err))))))))
+
+(defun ghostherd-memory-page--chat-earlier (intent)
+  "Read one earlier page of the room's merged chat -- a page ending BEFORE
+from the newest -- and send it to the page to prepend."
+  (let* ((before (alist-get 'before intent))
+         (room ghostherd-memory-page--room)
+         (known (delq nil (mapcar (lambda (s)
+                                    (when-let* ((path (ghostherd-session-transcript s)))
+                                      (cons (ghostherd-session-name s) path)))
+                                  (ghostherd-memory-page--room-sessions)))))
+    (when (and room (natnump before))
+      (let ((send (lambda (&rest fields)
+                    (ghostherd-memory-page--js
+                     "earlierChat" (append (list :before before) fields)))))
+        (condition-case err
+            (ghostherd-memory-request-async
+             "herd_chat"
+             (lambda (r)
+               (funcall send
+                        :earlier (if (plist-get r :earlier) t :json-false)
+                        :entries (ghostherd-memory-page--vec
+                                  (mapcar #'ghostherd-memory-page--chat-entry (plist-get r :entries)))))
+             (list :agents (vconcat (mapcar (lambda (a) (list :name (car a) :path (cdr a))) known))
+                   :before before)
+             (lambda (e) (funcall send :entries [] :error (ghostherd-memory-page--sidecar-error e))))
+          (error (funcall send :entries [] :error (error-message-string err))))))))
+
 (defun ghostherd-memory-page--session (intent)
   "The live herd session INTENT names, or a `user-error'."
   (let ((name (alist-get 'name intent)))
@@ -2352,6 +2403,8 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
          (ghostherd-memory-page--room-close)
          (ghostherd-memory-page--herd-unwatch))
         ("room-watch" (ghostherd-memory-page--room-open intent))
+        ("room-earlier" (ghostherd-memory-page--room-earlier intent))
+        ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))
         ("room-close" (ghostherd-memory-page--room-close))
         ("sub-watch" (ghostherd-memory-page--sub-watch intent))
         ("sub-unwatch" (ghostherd-memory-page--sub-forget))

@@ -805,11 +805,8 @@
     // The room as one chat: the view shown, the timeline Emacs sent, who
     // the box writes to in each project, and the long messages opened.
     roomView: NARROW ? "chat" : "columns", chat: null, chatTo: {}, chatOpen: new Set(),
-    // How far back each column (by name) and the chat have been loaded with
-    // `load earlier'; kept so a poll does not shrink them.
-    roomLimit: {}, chatLimit: 0,
     // A column (by name) or the chat whose `load earlier' is in flight: when
-    // its grown answer arrives, the view holds the message you were reading
+    // its older page arrives, the view holds the message you were reading
     // instead of jumping, the prepended turns pushing it down by their height.
     earlierPending: new Set(), chatEarlierPending: false,
     // Checkouts whose every task is shown, not two.
@@ -1548,28 +1545,47 @@
     herdNow.chat = null;
     herdNow.subView = null;
     herdNow.subConv = null;
-    herdNow.roomLimit = {};
-    herdNow.chatLimit = 0;
     app.innerHTML = "";
     chrome();
     watchRoom();
     renderRoom();
   }
 
-  // The default count each view reads (conversation.LIMIT / CHAT_LIMIT) and
-  // the most the RPC will return (its clamp): `load earlier' grows from the
-  // one toward the other, a page at a time.
-  const ROOM_LIMIT = 60, ROOM_MAX = 200;
-  const CHAT_LIMIT = 200, CHAT_MAX = 500;
+  // Pagination: the poll refreshes the recent tail; `load earlier' fetches
+  // one older page before what is held, prepended and kept.  MAX_HELD bounds
+  // what a column or the chat keeps, so scrolling far back on a long day does
+  // not grow memory without limit: loading past it slides the window back
+  // (the newest, off-screen, drop and reload when you return to the foot).
+  const MAX_HELD = 800;
+
+  // A conversation entry's signature, to align an overlapping poll tail with
+  // what is held and to drop a prepend's overlap (entries carry no stable id).
+  function sigOf(e) {
+    return (e.ts || "") + "|" + (e.who || "") + "|" + (e.kind || "") + "|" + String(e.text || "").slice(0, 48);
+  }
+  function lastIndexOfSig(list, e) {
+    if (!e) return -1;
+    const s = sigOf(e);
+    for (let i = list.length - 1; i >= 0; i--) if (sigOf(list[i]) === s) return i;
+    return -1;
+  }
+  function trimHead(list) { return list.length > MAX_HELD ? list.slice(list.length - MAX_HELD) : list; }
+  function trimTail(list) { return list.length > MAX_HELD ? list.slice(0, MAX_HELD) : list; }
+  function prependPage(page, held) {
+    if (!held.length) return page.slice();
+    const seen = new Set(held.slice(0, page.length + 8).map(sigOf));
+    return page.filter((e) => !seen.has(sigOf(e))).concat(held);
+  }
+  function scrolledUp(body) {
+    return !!body && body.scrollHeight - body.scrollTop - body.clientHeight >= 40;
+  }
 
   // What Emacs should send for the room: each column's conversation and
-  // the screens shown instead, or the chat; and how far back each has been
-  // loaded, so a poll keeps that, not the default.
+  // the screens shown instead, or the chat.  The poll reads only the recent
+  // tail (default limit); `load earlier' pages are fetched on their own.
   function watchRoom() {
     emit("room-watch", {
       project: herdNow.room, screens: [...herdNow.roomScreen], view: herdNow.roomView,
-      limits: Object.keys(herdNow.roomLimit).map((name) => ({ name, limit: herdNow.roomLimit[name] })),
-      chatLimit: herdNow.chatLimit || 0,
     });
   }
 
@@ -1756,11 +1772,18 @@
   // `Load earlier' when there is more to show and the limit can still grow;
   // once it is at the most the sidecar returns, a note instead -- the rest
   // stays in the transcript.
-  function earlierHtml(conv, canGrow, max, act) {
-    if (!conv || !conv.earlier) return "";
-    return canGrow
-      ? '<div class="loadmore"><button type="button" class="ghost small" data-act="' + act + '">Load earlier</button></div>'
-      : '<p class="rnote">The most recent ' + max + " shown; earlier is in the transcript.</p>";
+  // The top of a paged view: a button while older turns remain, a note while
+  // a page is loading, and a clear end at the start of the conversation.
+  function earlierHtml(conv, act) {
+    if (!conv) return "";
+    // The loading state keeps the button element (same height), so a prepend's
+    // reading-position hold is not thrown off by the top changing size.
+    if (conv.loading) return '<div class="loadmore"><button type="button" class="ghost small" disabled>Loading earlier…</button></div>';
+    if (conv.more) return '<div class="loadmore"><button type="button" class="ghost small" data-act="' + act + '">Load earlier</button></div>';
+    // The clear end, once you have paged back to it; nothing for a short
+    // conversation shown whole from the start (no note cluttering its top).
+    if (conv.paged) return '<p class="rnote">Start of the conversation.</p>';
+    return "";
   }
 
   function roomBodyHtml(a) {
@@ -1776,12 +1799,92 @@
     if (!conv) return '<p class="rnote">Reading its conversation…</p>';
     if (conv.error) return '<p class="rnote error">Could not read its conversation: ' + esc(conv.error) + "</p>";
     const entries = conv.entries || [];
-    return earlierHtml(conv, (conv.limit || ROOM_LIMIT) < ROOM_MAX, ROOM_MAX, "a:load-earlier") +
+    return earlierHtml(conv, "a:load-earlier") +
       (entries.length ? entries.map((e, i) => entryHtml(e, i, name, a.kind)).join("") : '<p class="rnote">Nothing said yet.</p>');
   }
 
   function roomColumn(name) {
     return app.querySelector('.rcol[data-name="' + cssName(name) + '"]');
+  }
+
+  // A poll's recent tail, P, merged into column NAME's held entries.  At the
+  // foot it is live: the tail is aligned onto what is held (by the newest
+  // entry they share) and the new entries appended, the head trimmed to
+  // MAX_HELD.  Scrolled up it is frozen: the held view is left alone so it
+  // does not jump, and the tail catches up when you return to the foot.
+  // Returns whether the held entries changed (whether to redraw).
+  function mergeRecentConv(name, p) {
+    if (p.none || p.error) {
+      herdNow.convs[name] = { entries: [], more: false, none: p.none, error: p.error, cli: p.cli, path: p.path };
+      return true;
+    }
+    const recent = p.entries || [];
+    const prev = herdNow.convs[name];
+    // Until `load earlier' is used, the recent tail IS the whole view: just
+    // take it, as the room always has.  Only once paged does the tail have to
+    // be merged into the kept earlier pages.
+    if (!prev || !prev.paged) {
+      herdNow.convs[name] = { entries: recent.slice(), more: !!p.earlier, loading: false, paged: false, cli: p.cli, path: p.path };
+      return true;
+    }
+    prev.path = p.path || prev.path;
+    prev.cli = p.cli || prev.cli;
+    if (!recent.length) return false;
+    const i = lastIndexOfSig(prev.entries, recent[0]);
+    if (i < 0) { // a different conversation (a respawn, or the tail slid far): reset
+      herdNow.convs[name] = { entries: recent.slice(), more: !!p.earlier, loading: false, paged: false, cli: p.cli, path: p.path };
+      return true;
+    }
+    // A continuation of what is held: freeze while reading history (the tail
+    // catches up when you return to the foot), else align and append.
+    if (scrolledUp(roomColumn(name) && roomColumn(name).querySelector(".rbody"))) return false;
+    prev.entries = trimHead(prev.entries.slice(0, i).concat(recent));
+    return true;
+  }
+
+  // An older page, P, prepended to column NAME's held entries, the newest
+  // trimmed to MAX_HELD (they reload at the foot).
+  function prependConv(name, p) {
+    const conv = herdNow.convs[name];
+    if (!conv) return;
+    conv.loading = false;
+    conv.paged = true;
+    conv.more = !!p.earlier;
+    if (p.error) { conv.error = p.error; return; }
+    const page = p.entries || [];
+    if (page.length) conv.entries = trimTail(prependPage(page, conv.entries || []));
+  }
+
+  // The chat's recent tail merged into what is held -- the merged timeline's
+  // version of `mergeRecentConv'; the meta (absent, missing) is always
+  // refreshed, the entries only when at the foot.
+  function mergeRecentChat(p) {
+    const recent = p.entries || [];
+    const meta = { project: p.project, absent: p.absent, missing: p.missing, error: p.error };
+    const prev = herdNow.chat;
+    if (p.error) { herdNow.chat = Object.assign({ entries: [], more: false }, meta); return true; }
+    if (!prev || !prev.paged) {
+      herdNow.chat = Object.assign({ entries: recent.slice(), more: !!p.earlier, loading: false, paged: false }, meta);
+      return true;
+    }
+    Object.assign(prev, meta);
+    if (!recent.length) return false;
+    const i = lastIndexOfSig(prev.entries, recent[0]);
+    if (i < 0) { herdNow.chat = Object.assign({ entries: recent.slice(), more: !!p.earlier, loading: false, paged: false }, meta); return true; }
+    if (scrolledUp(app.querySelector(".chat .cbody"))) return false;
+    prev.entries = trimHead(prev.entries.slice(0, i).concat(recent));
+    return true;
+  }
+
+  function prependChat(p) {
+    const chat = herdNow.chat;
+    if (!chat) return;
+    chat.loading = false;
+    chat.paged = true;
+    chat.more = !!p.earlier;
+    if (p.error) { chat.error = p.error; return; }
+    const page = p.entries || [];
+    if (page.length) chat.entries = trimTail(prependPage(page, chat.entries || []));
   }
 
   // Redraw one column's body, staying at the bottom if it was there.  After
@@ -1948,7 +2051,7 @@
     const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
     body.innerHTML = !c ? '<p class="rnote">Reading the conversations…</p>'
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
-      : earlierHtml(c, (herdNow.chatLimit || CHAT_LIMIT) < CHAT_MAX, CHAT_MAX, "a:chat-earlier") +
+      : earlierHtml(c, "a:chat-earlier") +
         (entries.length ? entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
         (out.length ? '<p class="rnote">Not in the chat, no conversation known: ' + esc(out.join(", ")) + "</p>" : "");
     drawn.set(body, entries);
@@ -2111,15 +2214,24 @@
     }
     if (act === "load-earlier") {
       const conv = herdNow.convs[name];
-      const cur = (conv && conv.limit) || ROOM_LIMIT;
-      herdNow.roomLimit[name] = Math.min(ROOM_MAX, cur + ROOM_LIMIT);
+      if (!conv || conv.loading || !conv.more) return;
+      conv.loading = true;
+      conv.paged = true;  // the poll now merges its tail, not replaces the view
       herdNow.earlierPending.add(name);
-      return watchRoom();
+      emit("room-earlier", { project: herdNow.room, name: name, before: (conv.entries || []).length });
+      const a = roomAgents().find((x) => x.name === name);
+      if (a) renderRoomBody(a);  // show "Loading earlier…"
+      return;
     }
     if (act === "chat-earlier") {
-      herdNow.chatLimit = Math.min(CHAT_MAX, (herdNow.chatLimit || CHAT_LIMIT) + CHAT_LIMIT);
+      const c = herdNow.chat;
+      if (!c || c.loading || !c.more) return;
+      c.loading = true;
+      c.paged = true;
       herdNow.chatEarlierPending = true;
-      return watchRoom();
+      emit("chat-earlier", { project: herdNow.room, before: (c.entries || []).length });
+      renderChatBody();  // show "Loading earlier…"
+      return;
     }
     if (act === "room-tools") {
       const key = el.getAttribute("data-key");
@@ -2896,10 +3008,17 @@
   window.GM = {
     flash: (msg) => setStatus(msg),
 
-    // The room's chat: its timeline, for the project it is of.
+    // The room's chat: the poll's recent tail of its timeline, merged in.
     setChat: (p) => {
       if (!p || !herdNow.room || p.project !== herdNow.room) return;
-      herdNow.chat = p;
+      const changed = mergeRecentChat(p);
+      if (herdNow.roomView === "chat" && changed) renderChatBody();
+    },
+
+    // An older page of the chat timeline (from `load earlier'): prepended.
+    earlierChat: (p) => {
+      if (!p || !herdNow.room) return;
+      prependChat(p);
       if (herdNow.roomView === "chat") renderChatBody();
     },
 
@@ -3024,17 +3143,27 @@
       if (atBottom) body.scrollTop = body.scrollHeight;
     },
 
+    // The poll's recent tail for a column: merged into what is held.
     setConversation: (p) => {
       if (!p || !p.name || !herdNow.room) return;
-      herdNow.convs[p.name] = p;
+      const changed = mergeRecentConv(p.name, p);
       if (view !== "agents") return;
       const a = roomAgents().find((x) => x.name === p.name);
       if (!a) return;
-      renderRoomBody(a);
+      if (changed) renderRoomBody(a);
       // Whether it has a conversation decides its Screen button -- in a
       // column: one that comes as the room turns to its chat has none.
       const col = roomColumn(a.name);
       if (col) col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, (herdNow.data && herdNow.data.asks) || []));
+    },
+
+    // An older page for a column (from `load earlier'): prepended to it.
+    earlierConversation: (p) => {
+      if (!p || !p.name || !herdNow.room) return;
+      prependConv(p.name, p);
+      if (view !== "agents") return;
+      const a = roomAgents().find((x) => x.name === p.name);
+      if (a) renderRoomBody(a);
     },
 
     setSubConversation: (p) => {
