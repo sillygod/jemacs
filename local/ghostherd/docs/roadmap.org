@@ -1114,9 +1114,12 @@ loops.
 - [X] A lead on a CLI that takes its role with its first message (agy)
   is respawned fresh without it (8311250); a resumed claude keeps the
   system prompt its conversation was recorded with
-- [ ] The run of an agent nobody asked ends on the tick's view of its
+- [X] The run of an agent nobody asked ends on the tick's view of its
   state: a turn that ends and starts again within a tick is not seen
-  to end, and its next asks count with the last
+  to end, and its next asks count with the last --- /done (H)/:
+  the run now ends from the agent's own `done' hook (a turn ending with
+  nothing out), so it splits right even within a tick; the tick view stays
+  the fallback for an agent with no hook
 
 * Phase 3.25 — The herd page from your phone  *(this tree)*
 
@@ -1459,8 +1462,19 @@ each other, each in its own git worktree on its own branch.
 
 ** What is left
 
-- [ ] A relay or respawn into a worktree whose branch has diverged far
+- [X] A relay or respawn into a worktree whose branch has diverged far
   from base: the brief is still the transcript's, not a diff of the branch
+  --- /done (E)/: a relay brief now carries the branch's state (base,
+  ahead/behind, its own commits, a diffstat, what is uncommitted), capped;
+  a respawn resumes the conversation through the CLI, so no brief.
+
+Refined after the first pass:
+- [X] A per-worktree venv as an opt-in dep method (F): built from the
+  worktree's own uv.lock (=uv sync --frozen=), skipped and said on the card
+  when there is no lock or no uv; the default stays symlink
+- [X] Worktree attribution for a bare repo or a submodule (G): a bare repo's
+  worktrees group under the bare repo; a submodule is its own project, at its
+  own working tree, not folded into the superproject's .git/modules
 - [ ] node_modules shared copy-on-write at a finer grain than the whole
   tree; a venv per worktree when a project wants divergent Python deps
 - [ ] Worktree attribution for a bare-repo or submodule checkout
@@ -1547,18 +1561,20 @@ far back as its history, and fill the marks in on a cold open.
   ERT + e2e (pr-editors, now cold) broken on purpose
 - [X] Roadmap: Phase 3.27's four open items (PR comments, ranges, editor
   marks, syntax) marked done in 3.29; the 3.23 tab item marked done here
+- [X] Real cursor pagination for a room's `load earlier', replacing the
+  fixed 200/500 clamp: the conversation reader and the merged chat take a
+  `before' offset (a page ending BEFORE from the newest); the poll reads
+  only the recent tail, and `load earlier' fetches one older page before what
+  is held (room-earlier / chat-earlier), which the page prepends and keeps.
+  Both the column and the chat view.  The reading position holds across a
+  prepend, the start of the conversation is a clear end (and a transcript
+  past the reader's 8 MB tail says so), and what a view holds is bounded at
+  MAX_HELD (800) -- loading further back slides the window.  pytest + e2e
+  (herd-earlier) broken on purpose
 
 ** What is left
 
-- [ ] Real cursor pagination for a room: `load earlier' still grows the
-  limit toward a fixed cap (200 a column, 500 the chat) and the poll
-  re-sends the grown window.  A cursor (fetch only the page before a point,
-  keep it client-side, poll only the recent tail) would read as far back as
-  the history goes without the page loading everything -- the reader already
-  grows to 8 MB, so the clamp, not the depth, is the wall.  Bigger than the
-  rest of this batch: it reworks the reader's window into an offset, the
-  room-watch protocol, and the merged chat's timeline.  Deferred, said to
-  the lead
+- Nothing: the batch is shipped.
 
 * Phase 4 — Ecosystem (only if still useful)
 
