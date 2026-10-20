@@ -277,11 +277,17 @@ A state entry comes apart into old, new and reason here, so the page
 draws lanes from fields rather than parsing prose."
   (let* ((kind (ghostherd-log-entry-kind entry))
          (text (or (ghostherd-log-entry-text entry) ""))
-         (screen (ghostherd-log-entry-screen entry)))
-    (append (list :t (* 1000 (float-time (ghostherd-log-entry-time entry)))
+         (screen (ghostherd-log-entry-screen entry))
+         (why (ghostherd-log-entry-why entry)))
+    (append (list :id (ghostherd-log-entry-id entry)
+                  :t (* 1000 (float-time (ghostherd-log-entry-time entry)))
                   :session (format "%s" (or (ghostherd-log-entry-session entry) ""))
                   :kind (format "%s" (or kind ""))
-                  :text text)
+                  :text text
+                  :pinned (if (ghostherd-log-entry-pinned entry) t :json-false))
+            (and why (list :why (format "%s" why)))
+            (and (ghostherd-log-entry-note entry)
+                 (list :note (ghostherd-log-entry-note entry)))
             (and (eq kind 'state)
                  (string-match ghostherd-memory-page--transition-re text)
                  (list :old (match-string 1 text)
@@ -305,6 +311,27 @@ draws lanes from fields rather than parsing prose."
     (ghostherd-memory-page--js "logAdd" (ghostherd-memory-page--log-entry entry))))
 
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-log)
+
+(defun ghostherd-memory-page--log-id (intent)
+  "The log-entry id INTENT names, or a `user-error'."
+  (let ((id (alist-get 'id intent)))
+    (if (integerp id) id (user-error "No log entry named"))))
+
+(defun ghostherd-memory-page--log-pin (intent)
+  "Pin or un-pin the log entry INTENT names; tell the page the new state."
+  (let* ((id (ghostherd-memory-page--log-id intent))
+         (pinned (ghostherd-memory-page--truthy (alist-get 'pinned intent)))
+         (entry (or (ghostherd-log-set-pinned id pinned)
+                    (user-error "No such log entry"))))
+    (ghostherd-memory-page--js
+     "logPinned" (list :id id :pinned (if (ghostherd-log-entry-pinned entry)
+                                          t :json-false)))))
+
+(defun ghostherd-memory-page--log-delete (intent)
+  "Delete the log entry INTENT names; tell the page it is gone."
+  (let ((id (ghostherd-memory-page--log-id intent)))
+    (when (ghostherd-log-delete id)
+      (ghostherd-memory-page--js "logDeleted" (list :id id)))))
 
 
 ;;; The agents
@@ -2149,7 +2176,14 @@ from the newest -- and send it to the page to prepend."
                                 :text (or (ignore-errors (ghostherd--host-capture s))
                                           (gethash (ghostherd-session-id s) ghostherd--screens)
                                           "")))
-             nil))))
+             nil)
+            ("agent-capture"
+             ;; Pinned into the log; the Log tab hears it through `logAdd'.
+             (let* ((note (alist-get 'note intent))
+                    (note (and (stringp note) (not (string-empty-p (string-trim note)))
+                               (string-trim note))))
+               (ghostherd-capture-screen s note)
+               (format "Saved %s's screen to the log" name))))))
     (when said (ghostherd-memory-page--js "flash" said))
     (ghostherd-memory-page--send-herd)))
 
@@ -2387,6 +2421,8 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
       (pcase (alist-get 'op intent)
         ("ready" (ghostherd-memory-page--ready))
         ("log" (ghostherd-memory-page--send-log))
+        ("log-pin" (ghostherd-memory-page--log-pin intent))
+        ("log-delete" (ghostherd-memory-page--log-delete intent))
         ("refresh" (ghostherd-memory-page--send-context))
         ("search" (ghostherd-memory-page--search intent))
         ("open-source" (ghostherd-memory-page--open-source intent))

@@ -719,7 +719,22 @@ button.small { padding: 2px 10px; font-size: 12px; }
 .k-input { color: #a5d6ff; }
 .k-life, .k-report { color: var(--muted); font-style: italic; }
 .k-ask { color: var(--accent); }
+.k-screen { color: #d2a8ff; }
 .lrow .linkish { font-size: 12px; flex-shrink: 0; }
+.lrow.pinned { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.pinmark { margin-right: 5px; font-size: 11px; }
+.lnote { color: var(--fg); margin-left: 8px; }
+.why {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 999px; margin-right: 7px;
+  background: var(--chip-bg, rgba(127,127,127,.18)); color: var(--muted);
+}
+.why-limit { background: rgba(249,160,63,.22); color: #f9a03f; }
+.why-menu { background: rgba(130,170,255,.2); color: #82aaff; }
+.why-mismatch { background: rgba(240,113,120,.2); color: #f07178; }
+.why-compaction { background: rgba(210,168,255,.2); color: #d2a8ff; }
+.why-manual, .why-blocked { background: rgba(127,127,127,.18); color: var(--muted); }
+.more-log { display: block; margin: 12px auto; }
 pre.screen {
   margin: 4px 0 10px 6.5em;
   background: var(--code);

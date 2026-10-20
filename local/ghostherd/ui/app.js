@@ -784,7 +784,7 @@
   const RANK = { blocked: 0, working: 1, starting: 2, waiting: 3, done: 4, idle: 5, dead: 6 };
   let herdNow = {
     data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
-    compose: {}, composing: new Set(), notes: null, newFor: null, pending: false,
+    compose: {}, composing: new Set(), notes: null, capture: null, newFor: null, pending: false,
     // What the open forms say, kept here as the prompts are: the page is
     // drawn again every 5s and on news, and a form drawn from nothing
     // would come back empty, its first CLI picked.  Set afresh as each
@@ -1428,6 +1428,7 @@
     acts.push('<button type="button" class="ghost small" data-act="a:compose">Prompt</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     acts.push('<button type="button" class="ghost small" data-act="a:screen">' + (herdNow.open.has(name) ? "Hide screen" : "Screen") + "</button>");
+    acts.push('<button type="button" class="ghost small" data-act="a:capture" title="Save this screen to the log, pinned">Capture</button>');
     acts.push('<button type="button" class="linkish" data-act="a:more" title="More">' + (herdNow.more.has(name) ? "less" : "more") + "</button>");
     const more = herdNow.more.has(name)
       ? '<div class="aacts more">' +
@@ -1448,6 +1449,11 @@
         '<button type="button" class="primary small" data-act="a:notes-save">Save</button>' +
         '<button type="button" class="ghost small" data-act="a:notes-cancel">Cancel</button></div>'
       : "";
+    const capture = herdNow.capture === name
+      ? '<div class="notes-edit"><input class="capture-text" value="" placeholder="Save this screen — note (optional)">' +
+        '<button type="button" class="primary small" data-act="a:capture-save">Save screen</button>' +
+        '<button type="button" class="ghost small" data-act="a:capture-cancel">Cancel</button></div>'
+      : "";
     const screen = herdNow.open.has(name)
       ? '<pre class="screen">' + esc(herdNow.screens[name] || "Capturing…") + "</pre>"
       : "";
@@ -1467,7 +1473,7 @@
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
-      '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + screen + "</div>"
+      '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + capture + screen + "</div>"
     );
   }
 
@@ -2348,6 +2354,23 @@
       herdNow.notes = null;
       return renderAgents();
     }
+    if (act === "capture") {
+      herdNow.capture = name;
+      renderAgents();
+      const inp = app.querySelector(".capture-text");
+      if (inp) inp.focus();
+      return;
+    }
+    if (act === "capture-save") {
+      const inp = row.querySelector(".capture-text");
+      herdNow.capture = null;
+      emit("agent-capture", { name, note: inp ? inp.value : "" });
+      return renderAgents();
+    }
+    if (act === "capture-cancel") {
+      herdNow.capture = null;
+      return renderAgents();
+    }
     if (act === "respawn") {
       return ask("Respawn " + name + "?", "It is relaunched from its recipe. Continue picks the conversation up again; Fresh starts it cold.",
         [["Cancel", "ghost", null], ["Fresh", "ghost", () => emit("agent-respawn", { name, continue: false })],
@@ -2543,6 +2566,9 @@
     } else if (t.classList.contains("notes-text") && ev.key === "Enter") {
       ev.preventDefault();
       onAgentAction("notes-save", t);
+    } else if (t.classList.contains("capture-text") && ev.key === "Enter") {
+      ev.preventDefault();
+      onAgentAction("capture-save", t);
     }
   });
   // An edit in progress holds the 5s refresh back; let it through after
@@ -2572,7 +2598,13 @@
 
   const HOUR = 3600e3;
   const RANGES = [[6 * HOUR, "6h"], [24 * HOUR, "24h"], [7 * 24 * HOUR, "7d"], [0, "All"]];
-  let herd = { entries: null, range: 24 * HOUR, session: "", blocked: false, filter: "", open: new Set() };
+  // Rows drawn at once; the rest wait behind a "show earlier", so a week of
+  // entries does not build thousands of nodes in one pass.  `open' holds the
+  // ids of the entries whose screen is expanded -- ids, not indices, so a
+  // delete or a reload does not shift which screen is open.
+  const LOGCAP = 300;
+  let herd = { entries: null, range: 24 * HOUR, session: "", blocked: false,
+               screensOnly: false, filter: "", open: new Set(), shown: LOGCAP };
 
   function sessionColor(name) {
     let h = 0;
@@ -2695,6 +2727,7 @@
       RANGES.map(([ms, label]) => '<button type="button" class="chip' + (herd.range === ms ? " on" : "") +
         '" data-act="range" data-range="' + ms + '">' + label + "</button>").join("") +
       '<button type="button" class="chip' + (herd.blocked ? " on" : "") + '" data-act="blocked-only">Blocked only</button>' +
+      '<button type="button" class="chip' + (herd.screensOnly ? " on" : "") + '" data-act="screens-only">Screens</button>' +
       "</div>" +
       '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' + SLASH + '" value="' + esc(herd.filter) + '">' +
       '<select id="log-session" title="Agent">' + opts + "</select></div>" +
@@ -2739,17 +2772,27 @@
     } else {
       body = '<span class="k-' + esc(e.kind) + '">' + hl(e.text, re) + "</span>";
     }
+    const open = herd.open.has(e.id);
+    const why = e.why ? '<span class="why why-' + esc(e.why) + '" title="why this screen was kept">' + esc(e.why) + "</span>" : "";
+    const pin = e.pinned ? '<span class="pinmark" title="Pinned: kept until you remove it">📌</span>' : "";
+    const note = e.note ? '<span class="lnote">' + hl(e.note, re) + "</span>" : "";
     const screen = e.screen
-      ? '<button type="button" class="linkish" data-act="screen" data-i="' + i + '">' +
-        (herd.open.has(i) ? "Hide screen" : "Screen") + "</button>"
+      ? '<button type="button" class="linkish" data-act="screen" data-id="' + e.id + '">' +
+        (open ? "Hide screen" : "Screen") + "</button>"
+      : "";
+    // Pin/unpin and delete sit on a captured screen and on any pinned line.
+    const ops = (e.screen || e.pinned)
+      ? '<button type="button" class="linkish" data-act="' + (e.pinned ? "log-unpin" : "log-pin") +
+        '" data-id="' + e.id + '">' + (e.pinned ? "Unpin" : "Pin") + "</button>" +
+        '<button type="button" class="linkish danger" data-act="log-delete" data-id="' + e.id + '" title="Delete this entry">Delete</button>'
       : "";
     return (
-      '<div class="lrow" data-i="' + i + '"><span class="lt" title="' + esc(new Date(e.t).toLocaleString()) + '">' +
-      esc(clock(e.t)) + "</span>" +
+      '<div class="lrow' + (e.pinned ? " pinned" : "") + '" data-i="' + i + '" data-id="' + e.id + '">' +
+      '<span class="lt" title="' + esc(new Date(e.t).toLocaleString()) + '">' + esc(clock(e.t)) + "</span>" +
       '<button type="button" class="ls" data-act="log-session" data-session="' + esc(e.session) + '">' +
       '<span class="dot" style="background:' + sessionColor(e.session) + '"></span>' + esc(e.session) + "</button>" +
-      '<span class="lx">' + body + "</span>" + screen + "</div>" +
-      (e.screen && herd.open.has(i) ? '<pre class="screen">' + esc(e.screen) + "</pre>" : "")
+      '<span class="lx">' + pin + why + body + note + "</span>" + screen + ops + "</div>" +
+      (e.screen && open ? '<pre class="screen">' + esc(e.screen) + "</pre>" : "")
     );
   }
 
@@ -2764,20 +2807,28 @@
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
       if (e.t < start) break;
+      if (herd.screensOnly && !e.screen) continue;
       if (herd.session && e.session !== herd.session) continue;
       if (herd.blocked && !(e.kind === "state" && e.new === "blocked")) continue;
-      if (f && !(e.text + " " + e.session).toLowerCase().includes(f)) continue;
+      if (f && !(e.text + " " + e.session + " " + (e.why || "") + " " +
+                 (e.note || "") + " " + (e.screen || "")).toLowerCase().includes(f)) continue;
       rows.push([e, i]);
     }
+    // Draw the most recent `shown' at once; the rest wait behind a button.
+    const shown = rows.slice(0, herd.shown);
+    const more = rows.length - shown.length;
     let day = "";
     box.innerHTML = rows.length
-      ? '<div class="sum">' + rows.length + (rows.length === 1 ? " entry" : " entries") + "</div>" +
-        rows.map(([e, i]) => {
+      ? '<div class="sum">' + rows.length + (rows.length === 1 ? " entry" : " entries") +
+          (more > 0 ? ", showing " + shown.length : "") + "</div>" +
+        shown.map(([e, i]) => {
           const d = dayLabel(e.t);
           const head = d !== day ? '<h2 class="section">' + esc(d) + "</h2>" : "";
           day = d;
           return head + entryRow(e, i, re);
-        }).join("")
+        }).join("") +
+        (more > 0 ? '<button type="button" class="ghost more-log" data-act="log-more">Show earlier (' +
+          more + " more)</button>" : "")
       : '<p class="empty">' + (entries.length ? "Nothing matches in this range." : "Nothing logged yet.") + "</p>";
   }
 
@@ -2931,15 +2982,28 @@
       renderLog();
     } else if (act === "blocked-only") {
       herd.blocked = !herd.blocked;
+      herd.shown = LOGCAP;
+      renderLog();
+    } else if (act === "screens-only") {
+      herd.screensOnly = !herd.screensOnly;
+      herd.shown = LOGCAP;
       renderLog();
     } else if (act === "log-session") {
       herd.session = herd.session === el.getAttribute("data-session") ? "" : el.getAttribute("data-session");
+      herd.shown = LOGCAP;
       renderLog();
     } else if (act === "screen") {
-      const i = +el.getAttribute("data-i");
-      if (herd.open.has(i)) herd.open.delete(i);
-      else herd.open.add(i);
+      const id = +el.getAttribute("data-id");
+      if (herd.open.has(id)) herd.open.delete(id);
+      else herd.open.add(id);
       renderLogList();
+    } else if (act === "log-more") {
+      herd.shown += LOGCAP;
+      renderLogList();
+    } else if (act === "log-pin" || act === "log-unpin") {
+      emit("log-pin", { id: +el.getAttribute("data-id"), pinned: act === "log-pin" });
+    } else if (act === "log-delete") {
+      emit("log-delete", { id: +el.getAttribute("data-id") });
     } else if (act === "seg") {
       goToEntry(+el.getAttribute("data-i"));
     }
@@ -3202,6 +3266,20 @@
       const top = app.scrollTop;
       renderLog();
       if (top > 0) app.scrollTop = top + (app.scrollHeight - before);
+    },
+
+    logPinned: (p) => {
+      if (!herd.entries || !p) return;
+      const e = herd.entries.find((x) => x.id === p.id);
+      if (e) e.pinned = !!p.pinned;
+      if (view === "log") renderLogList();
+    },
+
+    logDeleted: (p) => {
+      if (!herd.entries || !p) return;
+      herd.entries = herd.entries.filter((x) => x.id !== p.id);
+      herd.open.delete(p.id);
+      if (view === "log") renderLogList();
     },
 
     renderHits: (p) => {
