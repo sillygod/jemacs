@@ -1316,8 +1316,11 @@ on screen at idle."
   "Run BODY with an empty herd log."
   (declare (indent 0) (debug t))
   `(let ((ghostherd--log nil)
+         (ghostherd-log-days 7)
          (ghostherd-log-max 500)
-         (ghostherd-log-screens 20))
+         (ghostherd-log-screens 20)
+         (ghostherd--log-seq 0)
+         (ghostherd--auto-capture-at (make-hash-table :test 'equal)))
      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
        ,@body)))
 
@@ -1381,6 +1384,186 @@ the actual memory.  Old entries stay, they just stop carrying one."
           (ghostherd--set-state s 'idle "i"))
         (should (= (length ghostherd--log) 4))))))
 
+(ert-deftest ghostherd-test-log-keeps-lines-by-day-not-count ()
+  "Retention is by age: a line older than `ghostherd-log-days' goes, a
+younger one stays, however many there are."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((ghostherd-log-days 7) (ghostherd-log-max 0))  ; time only, no ceiling
+        (ghostherd--log-add "a" 'life "old")
+        (setf (ghostherd-log-entry-time (car ghostherd--log))
+              (time-subtract (current-time) (seconds-to-time (* 8 86400))))
+        (dotimes (i 20) (ghostherd--log-add "a" 'life (format "fresh-%d" i)))
+        (let ((texts (mapcar #'ghostherd-log-entry-text ghostherd--log)))
+          (should (= (length ghostherd--log) 20))      ; all 20 fresh kept
+          (should-not (member "old" texts)))))))        ; the 8-day line gone
+
+(ert-deftest ghostherd-test-log-pins-survive-every-cap ()
+  "A pin is a promise: age, the ceiling and the screen cap all pass it by."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((ghostherd-log-max 2) (ghostherd-log-screens 1) (ghostherd-log-days 1))
+        (let ((pid (ghostherd--log-add "a" 'screen "pinned" "SCREEN" 'manual t)))
+          (setf (ghostherd-log-entry-time (ghostherd--log-entry-by-id pid))
+                (time-subtract (current-time) (seconds-to-time (* 10 86400))))
+          (dotimes (i 5) (ghostherd--log-add "a" 'screen (format "s%d" i) "SC" 'blocked))
+          (let ((e (ghostherd--log-entry-by-id pid)))
+            (should e)                                  ; kept, 10 days old, past the ceiling
+            (should (ghostherd-log-entry-screen e))     ; its screen kept, past the screen cap
+            (should (ghostherd-log-entry-pinned e)))
+          ;; The unpinned flood is still held to the caps.
+          (should (= (cl-count 'blocked ghostherd--log :key #'ghostherd-log-entry-why) 2))
+          (should (= (cl-count-if (lambda (e) (and (ghostherd-log-entry-screen e)
+                                                   (not (ghostherd-log-entry-pinned e))))
+                                  ghostherd--log)
+                     1)))))))
+
+(ert-deftest ghostherd-test-capture-screen-pins-with-a-note ()
+  "The button saves the current screen pinned, tagged `manual', with the
+note the user typed."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((s (ghostherd-tests--session :name "grok-x" :kind 'grok :backend 'fake))
+             (ghostherd-tests--fake-screen "the quota is gone\n❯ \n")
+             (id (ghostherd-capture-screen s "look at this")))
+        (let ((e (ghostherd--log-entry-by-id id)))
+          (should (eq (ghostherd-log-entry-kind e) 'screen))
+          (should (eq (ghostherd-log-entry-why e) 'manual))
+          (should (ghostherd-log-entry-pinned e))
+          (should (equal (ghostherd-log-entry-note e) "look at this"))
+          (should (string-match-p "the quota is gone" (ghostherd-log-entry-screen e)))
+          (should (string-match-p "look at this" (ghostherd-log-entry-text e))))))))
+
+(ert-deftest ghostherd-test-log-pin-unpin-and-delete-by-id ()
+  "The Log tab names an entry by its id to pin, un-pin or delete it."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((id (ghostherd--log-add "a" 'screen "cap" "SCREEN" 'menu)))
+        (should-not (ghostherd-log-entry-pinned (ghostherd--log-entry-by-id id)))
+        (ghostherd-log-set-pinned id t)
+        (should (ghostherd-log-entry-pinned (ghostherd--log-entry-by-id id)))
+        (ghostherd-log-set-pinned id nil)
+        (should-not (ghostherd-log-entry-pinned (ghostherd--log-entry-by-id id)))
+        (should (ghostherd-log-delete id))
+        (should-not (ghostherd--log-entry-by-id id))
+        (should-not (ghostherd-log-delete id))))))
+
+(ert-deftest ghostherd-test-log-ids-persist-across-a-restart ()
+  "An entry's id survives the file, so a pin made on the page outlives the
+Emacs that drew it, and a new entry never reuses an old id."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log-file
+      (let ((a (ghostherd--log-add "x" 'life "one"))
+            (b (ghostherd--log-add "x" 'life "two")))
+        (should (= b (1+ a)))
+        (let ((ghostherd--log nil) (ghostherd--log-loaded nil) (ghostherd--log-seq 0))
+          (ghostherd-log-load)
+          (let ((ids (delq nil (mapcar #'ghostherd-log-entry-id ghostherd--log))))
+            (should (member a ids))
+            (should (member b ids)))
+          (should (> (ghostherd--log-add "x" 'life "three") b)))))))
+
+(ert-deftest ghostherd-test-log-entry-round-trips-its-new-fields ()
+  "why / pinned / note / id survive the plist on disk."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((id (ghostherd--log-add "a" 'screen "t" "SCREEN" 'limit t "a note"))
+             (form (ghostherd--log-form (ghostherd--log-entry-by-id id)))
+             (back (ghostherd--log-entry-from-form (read (prin1-to-string form)))))
+        (should (eq (ghostherd-log-entry-why back) 'limit))
+        (should (ghostherd-log-entry-pinned back))
+        (should (equal (ghostherd-log-entry-note back) "a note"))
+        (should (eql (ghostherd-log-entry-id back) id))
+        (should (equal (ghostherd-log-entry-screen back) "SCREEN"))))))
+
+(ert-deftest ghostherd-test-auto-capture-why-names-the-trigger ()
+  "Each suspicious screen names the one reason it was kept, most
+actionable first; a clean one names none."
+  (let ((menu "Pick one:\n❯ 1. Keep it\n  2. Drop it\n")
+        (scrollback (concat "we discussed the rate limit earlier\n"
+                            (mapconcat (lambda (_) "doing some work here")
+                                       (number-sequence 1 20) "\n")
+                            "\nall done\n")))
+    ;; (a) a limit word at the foot...
+    (should (eq (ghostherd--auto-capture-why "working\n❯ \nout of credits\n" nil nil) 'limit))
+    ;; ...but the same word only up in the scrollback is not it.
+    (should-not (ghostherd--auto-capture-why scrollback nil nil))
+    ;; (d) a /compact in flight.
+    (should (eq (ghostherd--auto-capture-why "✽ Compacting conversation… (22s)\n" nil nil)
+                'compaction))
+    ;; (b) a menu no `blocked' rule matched (the hit is not blocked).
+    (should (eq (ghostherd--auto-capture-why menu nil nil) 'menu))
+    ;; ...but a recognised block (hit blocked) is not re-kept as a menu.
+    (should-not (ghostherd--auto-capture-why menu '(blocked . "x") nil))
+    ;; (c) the hook says busy, the screen does not.
+    (should (eq (ghostherd--auto-capture-why "plain idle text\n" nil '(working . "r"))
+                'mismatch))
+    ;; order: a limit word wins over a compaction and a mismatch together.
+    (should (eq (ghostherd--auto-capture-why
+                 "✽ Compacting conversation…\nout of quota\n" nil '(working . "r"))
+                'limit))
+    ;; a clean working screen keeps nothing.
+    (should-not (ghostherd--auto-capture-why
+                 "✶ Thinking… (3s · esc to interrupt)\n❯ \n" '(working . "s") nil))))
+
+(ert-deftest ghostherd-test-auto-capture-keeps-a-screen-once ()
+  "A suspicious screen is kept unpinned and tagged; the same one is not
+kept twice, and the trigger is throttled per agent."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((s (ghostherd-tests--session :name "grok-x" :kind 'grok :state 'idle))
+             (id (ghostherd-session-id s))
+             (limits (lambda () (cl-count 'limit ghostherd--log
+                                          :key #'ghostherd-log-entry-why))))
+        (puthash id "the agent\nis out of quota now\n❯ \n" ghostherd--screens)
+        (ghostherd--auto-capture s)
+        (should (= (funcall limits) 1))
+        (let ((e (cl-find 'limit ghostherd--log :key #'ghostherd-log-entry-why)))
+          (should (eq (ghostherd-log-entry-kind e) 'screen))
+          (should-not (ghostherd-log-entry-pinned e)))   ; auto, not pinned
+        ;; The identical screen again: deduped.
+        (ghostherd--auto-capture s)
+        (should (= (funcall limits) 1))
+        ;; A different limit screen, still inside the throttle: not kept.
+        (puthash id "the agent\nis rate limited now\n❯ \n" ghostherd--screens)
+        (ghostherd--auto-capture s)
+        (should (= (funcall limits) 1))
+        ;; Past the throttle, the new screen is kept.
+        (let ((ghostherd-auto-capture-throttle 0))
+          (ghostherd--auto-capture s)
+          (should (= (funcall limits) 2)))))))
+
+(ert-deftest ghostherd-test-log-screens-text-filters ()
+  "What `herd screens' prints: the saved screens, filtered by agent, time
+and trigger, newest first."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (ghostherd--log-add "grok-x" 'screen "grok: a limit" "QUOTA GONE" 'limit)
+      (ghostherd--log-add "claude-y" 'screen "claude: a menu" "A MENU" 'menu)
+      (ghostherd--log-add "grok-x" 'state "working → blocked  Approve?" "BLOCKED SCREEN" 'blocked)
+      (ghostherd--log-add "grok-x" 'life "no screen here")
+      (let ((all (ghostherd--log-screens-text nil nil nil)))
+        (should (string-match-p "3 screens" all))
+        (should (string-match-p "QUOTA GONE" all))
+        (should (string-match-p "BLOCKED SCREEN" all))
+        (should-not (string-match-p "no screen here" all)))
+      (let ((g (ghostherd--log-screens-text "grok-x" nil nil)))
+        (should (string-match-p "2 screens" g))
+        (should-not (string-match-p "claude-y" g)))
+      (let ((lim (ghostherd--log-screens-text nil nil "limit")))
+        (should (string-match-p "1 screen:" lim))
+        (should (string-match-p "QUOTA GONE" lim))
+        (should-not (string-match-p "A MENU" lim)))
+      ;; By time: backdate the limit screen past a one-day cutoff.
+      (let ((e (cl-find 'limit ghostherd--log :key #'ghostherd-log-entry-why)))
+        (setf (ghostherd-log-entry-time e)
+              (time-subtract (current-time) (seconds-to-time (* 3 86400)))))
+      (let ((recent (ghostherd--log-screens-text nil (- (float-time) 86400) nil)))
+        (should-not (string-match-p "QUOTA GONE" recent))
+        (should (string-match-p "A MENU" recent)))
+      (should (equal (ghostherd--log-screens-text "nobody" nil nil)
+                     "no saved screens match")))))
+
 (ert-deftest ghostherd-test-log-reads-in-causal-order ()
   "What you sent, then what it did -- not the other way round."
   (ghostherd-tests--with-herd ()
@@ -1417,6 +1600,8 @@ depend on any of them still existing."
           (ghostherd--log-writable t)
           (ghostherd--log-disk-lines 0)
           (ghostherd--log-disk-screens 0)
+          (ghostherd-log-days 7)
+          (ghostherd--log-seq 0)
           (ghostherd-log-max 500)
           (ghostherd-log-screens 20))
      (unwind-protect

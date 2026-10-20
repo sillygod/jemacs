@@ -1215,21 +1215,40 @@ host no longer exists to ask."
 ;; the screen behind each `blocked', it is also how `:screen-rules' get
 ;; tuned without anyone having to be present at the moment a rule fired.
 
-(defcustom ghostherd-log-max 500
-  "Entries kept in the herd log.  Oldest are dropped first."
+(defcustom ghostherd-log-days 7
+  "Days of herd-log lines kept.  A line older than this is dropped on the
+next trim -- unless it is pinned, which nothing drops.  0 keeps them by
+`ghostherd-log-max' alone.
+
+Retention is by age, not count: the question the log answers -- \"what was
+grok doing the day before yesterday afternoon\" -- is one about time, and
+a count cap turns a busy afternoon into an hour."
+  :type 'number
+  :group 'ghostherd)
+
+(defcustom ghostherd-log-max 10000
+  "An absolute ceiling on herd-log lines, pinned ones aside.
+
+The meaning changed: it was the log's one retention rule, keeping the
+newest N; now `ghostherd-log-days' keeps lines by age and this is only a
+safety ceiling so a flapping agent cannot grow the log without bound
+inside the window.  Reach it and the oldest unpinned lines go even if
+they are younger than the day cap.  0 lifts the ceiling."
   :type 'integer
   :group 'ghostherd)
 
-(defcustom ghostherd-log-screens 20
-  "How many captured screens the log keeps alongside `blocked' entries.
+(defcustom ghostherd-log-screens 200
+  "How many captured screens the log keeps, pinned ones aside.
 
 The point of keeping them: rule tuning needs the screen a rule fired
 against, and =ghostherd-explain= only offers that while the agent is
 still sitting on the prompt.  Storing it means the data accumulates
 whether or not you were watching.
 
-Only transitions into `blocked' are captured -- they are rare, and they
-are the ones worth arguing about.  0 disables it."
+Captures come from transitions into `blocked', the `capture screen'
+button, and the auto-capture of a suspicious screen; a pinned one is kept
+whatever this says, and does not count against it.  0 disables keeping
+screens for the unpinned ones."
   :type 'integer
   :group 'ghostherd)
 
@@ -1239,7 +1258,27 @@ are the ones worth arguing about.  0 disables it."
   session
   kind
   text
-  screen)
+  screen
+  ;; Why a screen was kept -- a symbol: `blocked', `manual' (the button),
+  ;; or an auto-capture trigger (`limit', `menu', `mismatch', `compaction').
+  ;; nil on an ordinary line.
+  why
+  ;; Non-nil: exempt from every retention rule, kept until the user says
+  ;; otherwise.  The `capture screen' button pins; the Log tab un-pins.
+  pinned
+  ;; A short note the user may attach when capturing, or nil.
+  note
+  ;; A number unique within the log, so the page and the CLI can name one
+  ;; entry to pin, un-pin or delete.
+  id)
+
+(defvar ghostherd--log-seq 0
+  "The last id handed to a log entry.  Bumped past what the file holds on
+load, so ids stay unique across an Emacs restart.")
+
+(defun ghostherd--log-next-id ()
+  "Return the next unique log-entry id."
+  (setq ghostherd--log-seq (1+ ghostherd--log-seq)))
 
 (defcustom ghostherd-log-file (locate-user-emacs-file "ghostherd-log.eld")
   "File the herd log is appended to, or nil to keep it in memory only.
@@ -1295,8 +1334,16 @@ tolerates a key that did not exist yet and one that no longer does."
                 :session (ghostherd-log-entry-session entry)
                 :kind (ghostherd-log-entry-kind entry)
                 :text (ghostherd-log-entry-text entry))
+          (when-let* ((id (ghostherd-log-entry-id entry)))
+            (list :id id))
           (when-let* ((screen (ghostherd-log-entry-screen entry)))
-            (list :screen screen))))
+            (list :screen screen))
+          (when-let* ((why (ghostherd-log-entry-why entry)))
+            (list :why why))
+          (when (ghostherd-log-entry-pinned entry)
+            (list :pinned t))
+          (when-let* ((note (ghostherd-log-entry-note entry)))
+            (list :note note))))
 
 (defun ghostherd--log-entry-from-form (form)
   "Rebuild a log entry from FORM, or nil when FORM is not one."
@@ -1306,7 +1353,11 @@ tolerates a key that did not exist yet and one that no longer does."
      :session (plist-get form :session)
      :kind (plist-get form :kind)
      :text (plist-get form :text)
-     :screen (plist-get form :screen))))
+     :screen (plist-get form :screen)
+     :why (plist-get form :why)
+     :pinned (plist-get form :pinned)
+     :note (plist-get form :note)
+     :id (plist-get form :id))))
 
 (defun ghostherd--log-print (entries)
   "Return ENTRIES, oldest first, as one printed form per line.
@@ -1373,6 +1424,14 @@ follows one is not worth guessing at."
                 nil))
           (error nil)))
       ;; `entries' is newest first already, which is how the log is kept.
+      ;; Seed the id sequence past what the file holds, and give an id to
+      ;; any line written before ids existed, oldest first so they rise
+      ;; with time -- so the page and CLI can always name one entry.
+      (setq ghostherd--log-seq
+            (apply #'max 0 (delq nil (mapcar #'ghostherd-log-entry-id entries))))
+      (dolist (entry (reverse entries))
+        (unless (ghostherd-log-entry-id entry)
+          (setf (ghostherd-log-entry-id entry) (ghostherd--log-next-id))))
       (setq ghostherd--log (ghostherd--log-trim entries))
       (ghostherd--log-rewrite)
       (let ((read (length ghostherd--log)))
@@ -1385,21 +1444,40 @@ follows one is not worth guessing at."
         read))))
 
 (defun ghostherd--log-trim (entries)
-  "Return ENTRIES (newest first) within both log caps.
+  "Return ENTRIES (newest first) within the log's retention.
 
-Entries and screens are capped separately because they cost differently:
-500 one-line entries are nothing, and twenty 40x120 screens are the
-actual memory -- and now the actual disk."
-  (let ((kept (if (> (length entries) ghostherd-log-max)
-                  (seq-take entries ghostherd-log-max)
-                entries))
-        (screens 0))
-    (dolist (entry kept)
-      (when (ghostherd-log-entry-screen entry)
-        (setq screens (1+ screens))
-        (when (> screens ghostherd-log-screens)
-          (setf (ghostherd-log-entry-screen entry) nil))))
-    kept))
+Lines older than `ghostherd-log-days' go; `ghostherd-log-max' is an
+absolute ceiling on the rest; and screens past `ghostherd-log-screens'
+lose the screen but keep the line.  A pinned entry is exempt from all
+three -- kept whole, and not counted against the ceiling or the screen
+cap, so a pin is a promise the retention does not quietly break.
+
+Entries and screens are bounded separately because they cost
+differently: a one-line entry is nothing, and a 40x120 screen is the
+actual memory, and now the actual disk."
+  (let ((cutoff (and (> ghostherd-log-days 0)
+                     (time-subtract (current-time)
+                                    (seconds-to-time (* ghostherd-log-days 86400)))))
+        (lines 0)
+        (screens 0)
+        (kept nil))
+    (dolist (entry entries)
+      (cond
+       ((ghostherd-log-entry-pinned entry)
+        (push entry kept))
+       ((and cutoff (time-less-p (ghostherd-log-entry-time entry) cutoff))
+        nil)
+       ((and (> ghostherd-log-max 0) (>= lines ghostherd-log-max))
+        nil)
+       (t
+        (setq lines (1+ lines))
+        (when (ghostherd-log-entry-screen entry)
+          (setq screens (1+ screens))
+          (when (and (>= ghostherd-log-screens 0)
+                     (> screens ghostherd-log-screens))
+            (setf (ghostherd-log-entry-screen entry) nil)))
+        (push entry kept))))
+    (nreverse kept)))
 
 ;;;###autoload
 (defun ghostherd-log-clear ()
@@ -1419,13 +1497,19 @@ something has to do it on purpose."
       (ghostherd--log-render buf))
     (message "Herd log cleared")))
 
-(defun ghostherd--log-add (session kind text &optional screen)
-  "Record TEXT about SESSION under KIND, optionally with a SCREEN."
-  (let ((entry (ghostherd-log-entry--create
-                :session (if (ghostherd-session-p session)
-                             (ghostherd-session-name session)
-                           (format "%s" session))
-                :kind kind :text text :screen screen)))
+(defun ghostherd--log-add (session kind text &optional screen why pinned note)
+  "Record TEXT about SESSION under KIND, optionally with a SCREEN.
+
+WHY, when a screen is kept, says what captured it (a symbol: `blocked',
+`manual', or an auto-capture trigger).  PINNED exempts the entry from
+retention.  NOTE is a short note to attach.  Returns the entry's id."
+  (let* ((id (ghostherd--log-next-id))
+         (entry (ghostherd-log-entry--create
+                 :session (if (ghostherd-session-p session)
+                              (ghostherd-session-name session)
+                            (format "%s" session))
+                 :kind kind :text text :screen screen
+                 :why why :pinned pinned :note note :id id)))
     (push entry ghostherd--log)
     (setq ghostherd--log (ghostherd--log-trim ghostherd--log)
           ghostherd--log-disk-lines (1+ ghostherd--log-disk-lines)
@@ -1434,10 +1518,12 @@ something has to do it on purpose."
     ;; Appended as it happens rather than saved on the way out: a
     ;; `kill-emacs-hook' does not run for the crash this is meant to
     ;; survive, and one line is cheap enough to write per transition.
-    ;; Once disk lines or screens reach twice the cap, rewrite from the
+    ;; Once disk lines or screens reach twice the ceiling, rewrite from the
     ;; trimmed in-memory log so a long-running Emacs does not grow the
-    ;; file without bound.
-    (if (or (>= ghostherd--log-disk-lines (* 2 (max 1 ghostherd-log-max)))
+    ;; file without bound.  With no ceiling, fall back to the screen cap
+    ;; and a fixed line bound, so time-only retention still compacts.
+    (if (or (>= ghostherd--log-disk-lines
+                (* 2 (if (> ghostherd-log-max 0) ghostherd-log-max 10000)))
             (and (> ghostherd-log-screens 0)
                  (>= ghostherd--log-disk-screens (* 2 ghostherd-log-screens))))
         (ghostherd--log-rewrite)
@@ -1453,18 +1539,259 @@ something has to do it on purpose."
                           (funcall fn e))
                         nil)
                       entry)
-    nil))
+    id))
 
 (defun ghostherd--log-transition (session old new reason)
   "Log SESSION moving from OLD to NEW because of REASON."
-  (ghostherd--log-add
-   session 'state
-   (format "%s → %s%s" (or old "?") new (if reason (format "  %s" reason) ""))
-   ;; One extra capture, only on the transition worth arguing about.  It
-   ;; is not free -- on the tmux backend it is a subprocess -- but an
-   ;; agent blocks once per prompt, not once per poll.
-   (when (and (eq new 'blocked) (> ghostherd-log-screens 0))
-     (ignore-errors (ghostherd--host-capture session)))))
+  (let ((screen
+         ;; One extra capture, only on the transition worth arguing about.
+         ;; It is not free -- on the tmux backend it is a subprocess -- but
+         ;; an agent blocks once per prompt, not once per poll.
+         (when (and (eq new 'blocked) (> ghostherd-log-screens 0))
+           (ignore-errors (ghostherd--host-capture session)))))
+    (ghostherd--log-add
+     session 'state
+     (format "%s → %s%s" (or old "?") new (if reason (format "  %s" reason) ""))
+     screen (and screen 'blocked))))
+
+(defun ghostherd--capture-text (name why note)
+  "The log line for a screen capture of NAME, triggered by WHY, with NOTE."
+  (let ((base (pcase why
+                ('manual (format "%s: screen captured" name))
+                ('limit (format "%s: a limit or quota message" name))
+                ('menu (format "%s: a menu no rule knew" name))
+                ('mismatch (format "%s: the screen and the hook disagreed" name))
+                ('compaction (format "%s: a /compact in progress" name))
+                (_ (format "%s: screen captured" name)))))
+    (if (and note (not (string-empty-p (string-trim note))))
+        (format "%s — %s" base (string-trim note))
+      base)))
+
+(defun ghostherd-capture-screen (session &optional note)
+  "Save SESSION's current screen to the herd log as a pinned entry.
+
+The manual capture, from the Log tab's button: pinned, so retention never
+drops it, and tagged `manual'.  NOTE is a short note to attach.  Returns
+the entry id; signals when there is no screen to read."
+  (let* ((s (or (ghostherd-get session) (user-error "No such session")))
+         (name (ghostherd-session-name s))
+         (screen (or (ignore-errors (ghostherd--host-capture s))
+                     (gethash (ghostherd-session-id s) ghostherd--screens))))
+    (unless (and screen (not (string-empty-p (string-trim screen))))
+      (user-error "No screen to capture for %s" name))
+    (ghostherd--log-add s 'screen (ghostherd--capture-text name 'manual note)
+                        screen 'manual t note)))
+
+(defun ghostherd--log-entry-by-id (id)
+  "The log entry whose id is ID, or nil."
+  (and id (seq-find (lambda (e) (eql (ghostherd-log-entry-id e) id))
+                    ghostherd--log)))
+
+(defun ghostherd--log-refresh ()
+  "Redraw the log buffer after the log changed in place."
+  (when-let* ((buf (get-buffer "*ghostherd-log*")))
+    (when (get-buffer-window buf t)
+      (ghostherd--log-render buf))))
+
+(defun ghostherd-log-set-pinned (id pinned)
+  "Pin, or with PINNED nil un-pin, the log entry with ID.
+
+A pin exempts it from retention; un-pinning returns it to the caps, but
+not retroactively -- it ages out on the next trim, not at once, so an
+un-pin-to-move does not lose it.  Persist, and return the entry or nil."
+  (when-let* ((entry (ghostherd--log-entry-by-id id)))
+    (setf (ghostherd-log-entry-pinned entry) (and pinned t))
+    (ghostherd--log-rewrite)
+    (ghostherd--log-refresh)
+    entry))
+
+(defun ghostherd-log-delete (id)
+  "Delete the log entry with ID.  Persist; return non-nil if one went."
+  (let ((before (length ghostherd--log)))
+    (setq ghostherd--log
+          (seq-remove (lambda (e) (eql (ghostherd-log-entry-id e) id))
+                      ghostherd--log))
+    (when (/= (length ghostherd--log) before)
+      (ghostherd--log-rewrite)
+      (ghostherd--log-refresh)
+      t)))
+
+(defcustom ghostherd-screens-cli-chars 1600
+  "Characters of each screen `herd screens' prints before it truncates.
+The CLI is a finding aid -- time, agent, reason and enough of the screen
+to recognise it; the whole of one is read on the Log tab."
+  :type 'integer
+  :group 'ghostherd)
+
+(defconst ghostherd-screens-cli-cap 20
+  "The most screens `herd screens' prints, newest first.")
+
+(defun ghostherd--log-screens-text (agent since why)
+  "The saved screens `herd screens' prints: time, agent, reason, screen.
+AGENT limits to one agent, SINCE (epoch seconds) to a time, WHY to a
+trigger; each may be nil or empty.  Newest first."
+  (let* ((agent (and (stringp agent) (not (string-empty-p agent)) agent))
+         (why (and (stringp why) (not (string-empty-p why)) (intern why)))
+         (since (and (numberp since) since))
+         (out nil) (shown 0) (total 0))
+    (dolist (e ghostherd--log)           ; newest first
+      (when (and (ghostherd-log-entry-screen e)
+                 (or (not agent) (equal (ghostherd-log-entry-session e) agent))
+                 (or (not why) (eq (ghostherd-log-entry-why e) why))
+                 (or (not since)
+                     (>= (float-time (ghostherd-log-entry-time e)) since)))
+        (setq total (1+ total))
+        (when (< shown ghostherd-screens-cli-cap)
+          (setq shown (1+ shown))
+          (let* ((raw (string-trim-right (ghostherd-log-entry-screen e)))
+                 (screen (if (> (length raw) ghostherd-screens-cli-chars)
+                             (concat (substring raw 0 ghostherd-screens-cli-chars)
+                                     "\n  …(truncated; open it on the Log tab)")
+                           raw)))
+            (push (format "%s  %s  [%s]%s\n%s"
+                          (format-time-string "%Y-%m-%d %H:%M:%S"
+                                              (ghostherd-log-entry-time e))
+                          (ghostherd-log-entry-session e)
+                          (or (ghostherd-log-entry-why e) "screen")
+                          (if (ghostherd-log-entry-note e)
+                              (concat "  — " (ghostherd-log-entry-note e)) "")
+                          (replace-regexp-in-string "^" "    " screen))
+                  out)))))
+    (if (zerop total)
+        "no saved screens match"
+      (concat (format "%d screen%s%s:\n\n" total (if (= total 1) "" "s")
+                      (if (> total shown) (format " (newest %d shown)" shown) ""))
+              (string-join (nreverse out) "\n\n")))))
+
+
+;;; Auto-capturing a suspicious screen
+;;
+;; The blocked-transition capture keeps the screens we already recognise.
+;; These keep the ones we do not: a quota message, a menu no rule knew, a
+;; screen that disagrees with the agent's own hook, a /compact in flight --
+;; the very screens a rule has to be built from, and the ones never saved
+;; before because no rule fired on them.  Each is tagged with why it was
+;; kept.  False positives are cheap -- the user deletes them from the Log
+;; tab -- but bounded: an identical screen is not kept twice, and a trigger
+;; fires for an agent at most once per `ghostherd-auto-capture-throttle'.
+
+(defcustom ghostherd-auto-capture t
+  "Whether to auto-capture a suspicious screen into the log.
+Off leaves only the blocked-transition and manual captures."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-auto-capture-throttle 1800
+  "Seconds before the same trigger may capture the same agent again.
+Thirty minutes by default: a suspicious screen tends to sit unchanged, so
+one sample of it is the sample, and the next is worth keeping only once
+the situation has had time to become a new one."
+  :type 'number
+  :group 'ghostherd)
+
+(defcustom ghostherd-auto-capture-foot 8
+  "Lines at the screen's foot an auto-capture limit-word search looks at.
+A fresh CLI message -- a quota notice, say -- lands here, by the input
+box; the words it uses are all over our own conversations higher up, so
+only the foot is searched."
+  :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-auto-capture-limit-re
+  (concat "\\b\\(?:quota\\|credits?\\|rate[ -]?limit\\(?:ed\\|s\\)?"
+          "\\|usage limit\\|out of \\(?:credit\\|tokens?\\|quota\\|messages?\\)"
+          "\\|limit \\(?:reached\\|exceeded\\|hit\\)\\|too many requests"
+          "\\|insufficient\\|429\\|upgrade to\\)\\b")
+  "What, near a screen's foot, reads as a limit or quota message.
+Tuned the way `:screen-rules' are; the Log tab's `limit'-tagged captures
+are the samples to tune it against."
+  :type 'regexp
+  :group 'ghostherd)
+
+(defvar ghostherd--auto-capture-at (make-hash-table :test 'equal)
+  "\"ID\\0WHY\" -> (TIME . SCREEN-HASH) of the last auto-capture, for the
+throttle and the identical-screen dedupe.")
+
+(defun ghostherd--screen-foot (screen n)
+  "The last N non-blank lines of SCREEN."
+  (let ((lines (seq-remove #'string-blank-p
+                           (split-string (or screen "") "\n"))))
+    (last lines (max 1 n))))
+
+(defun ghostherd--screen-limit-p (screen)
+  "Non-nil when a limit or quota message sits near SCREEN's foot."
+  (let ((case-fold-search t))
+    (seq-some (lambda (l) (string-match-p ghostherd-auto-capture-limit-re l))
+              (ghostherd--screen-foot screen ghostherd-auto-capture-foot))))
+
+(defun ghostherd--screen-compacting-p (screen)
+  "Non-nil when SCREEN shows a conversation compaction in progress."
+  (and screen (string-match-p "[Cc]ompacting conversation" screen)))
+
+(defun ghostherd--screen-menu-p (screen hit)
+  "Non-nil when SCREEN looks like a menu that no `blocked' rule matched."
+  (and (not (eq (car-safe hit) 'blocked))
+       ;; A cheap marker check before the full menu parse, since this runs
+       ;; every poll: ❯/› marks, or the confirm/pick footers.
+       (string-match-p "[❯›]\\|Enter to \\(?:confirm\\|select\\)\\|Tab/Arrow keys"
+                       screen)
+       (ghostherd--prompt screen)))
+
+(defun ghostherd--screen-hook-mismatch-p (hit report)
+  "Non-nil when the hook REPORT says busy and the screen read HIT does not
+-- the misdetection class (compaction, a first frame with no timer)."
+  (and report
+       (memq (car report) '(working blocked))
+       (not (memq (car-safe hit) '(working blocked)))))
+
+(defun ghostherd--auto-capture-why (screen hit report)
+  "The trigger SCREEN fires for an auto-capture, or nil.
+Checked in order, most actionable first, so one screen keeps one entry."
+  (cond
+   ((ghostherd--screen-limit-p screen) 'limit)
+   ((ghostherd--screen-compacting-p screen) 'compaction)
+   ((ghostherd--screen-menu-p screen hit) 'menu)
+   ((ghostherd--screen-hook-mismatch-p hit report) 'mismatch)))
+
+(defun ghostherd--auto-capture-ok (id why screen)
+  "Non-nil when WHY may capture SCREEN for agent ID now.
+Not within `ghostherd-auto-capture-throttle' of the last such capture, and
+not an identical screen to it."
+  (let ((last (gethash (concat id "\0" (symbol-name why))
+                       ghostherd--auto-capture-at)))
+    (cond
+     ((null last) t)
+     ((< (float-time (time-subtract (current-time) (car last)))
+         ghostherd-auto-capture-throttle)
+      nil)
+     ((eql (cdr last) (sxhash-equal screen)) nil)
+     (t t))))
+
+(defun ghostherd--auto-capture (session)
+  "Capture SESSION's screen if it looks suspicious, tagged with why.
+Reads the screen the poll just stored, so it adds no capture of its own."
+  (when (and ghostherd-auto-capture
+             (> ghostherd-log-screens 0)
+             (not (eq (ghostherd-session-kind session) 'shell)))
+    (let* ((id (ghostherd-session-id session))
+           (screen (gethash id ghostherd--screens)))
+      (when (and screen (not (string-blank-p screen)))
+        (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+               (rules (plist-get spec :screen-rules))
+               (hit (and rules (ghostherd--match-rules
+                                screen rules
+                                (plist-get spec :prompt-replaces-input)
+                                (plist-get spec :spinner))))
+               (report (ghostherd--fresh-report session))
+               (why (ghostherd--auto-capture-why screen hit report)))
+          (when (and why (ghostherd--auto-capture-ok id why screen))
+            (ghostherd--log-add
+             session 'screen
+             (ghostherd--capture-text (ghostherd-session-name session) why nil)
+             screen why nil nil)
+            (puthash (concat id "\0" (symbol-name why))
+                     (cons (current-time) (sxhash-equal screen))
+                     ghostherd--auto-capture-at)))))))
 
 
 ;;; What the agent says about itself
@@ -2513,7 +2840,12 @@ SCREEN is SESSION's screen if the caller already fetched it; see
                    (eq (ghostherd-session-state session) 'done)
                    (ghostherd-session-seen session))
           (setq reason "seen"))
-        (ghostherd--set-state session state reason)))))
+        (ghostherd--set-state session state reason)
+        ;; With the screen of this poll still in hand, keep it if it looks
+        ;; suspicious -- throttled and deduped, so this is nearly always a
+        ;; few regexps and no capture.
+        (ignore-errors (ghostherd--auto-capture session))
+        state))))
 
 (defvar ghostherd-restore-every 30
   "Seconds between the poll's looks for agents to re-adopt, while the
@@ -6177,6 +6509,11 @@ its answer rather than losing it."
            (setq text (or (ghostherd-read name 40) "(empty)"))
            (when (> (length text) 3500)
              (setq text (concat (substring text 0 3500) "\n…"))))
+          ("screens"
+           ;; `herd screens': the saved screens from the log, read-only.
+           (setq text (ghostherd--log-screens-text
+                       (plist-get args :agent) (plist-get args :since)
+                       (plist-get args :why))))
           ("explain"
            (setq text (ghostherd--explain-text name)))
           ("lead-say"
