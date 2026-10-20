@@ -78,6 +78,7 @@ class JsonRpcHandler:
             "herd_links": self._herd_links,
             "herd_relay_brief": self._herd_relay_brief,
             "herd_relay": self._herd_relay,
+            "herd_screens": self._herd_screens,
             "herd_command_reply": self._herd_command_reply,
             "herd_unlink": self._herd_unlink,
         }
@@ -382,6 +383,18 @@ class JsonRpcHandler:
         reason = str(params.get("reason") or "")[:300]
         return get_herd().enqueue_command(
             "relay", target, {"kind": kind, "reason": reason, "by": by}
+        )
+
+    def _herd_screens(self, params: dict) -> dict:
+        """Queue a read-only `screens' query onto the commands queue; Emacs
+        reads the matching saved screens from its log and answers.  The log
+        lives in Emacs, so this round-trips rather than reading sqlite."""
+        agent = str(params.get("agent") or "").strip()
+        why = str(params.get("why") or "").strip()
+        since = params.get("since")
+        since = float(since) if isinstance(since, (int, float)) else None
+        return get_herd().enqueue_command(
+            "screens", agent or "herd", {"agent": agent, "since": since, "why": why}
         )
 
     def _herd_command_reply(self, params: dict) -> dict:

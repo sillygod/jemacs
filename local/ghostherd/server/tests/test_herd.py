@@ -201,6 +201,30 @@ def test_command_reply_reads_status_and_text(tmp_path: Path):
     reset_herd()
 
 
+def test_screens_query_round_trips_through_emacs(tmp_path: Path, monkeypatch):
+    "`herd screens' queues a read-only command Emacs answers from its log."
+    import asyncio
+    from herd import get_herd
+    from jsonrpc_handler import JsonRpcRequest, handler
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    reset_herd()
+    h = get_herd()
+    h.tick(sessions=[{"name": "grok-x", "state": "idle"}], ack_ids=[])
+    r = asyncio.run(handler.handle(JsonRpcRequest(
+        jsonrpc="2.0", id=1, method="herd_screens",
+        params={"agent": "grok-x", "since": 123.0, "why": "limit", "by": "lead-p"})))
+    cid = r.result["id"]
+    out = h.tick(sessions=[{"name": "grok-x", "state": "idle"}], ack_ids=[])
+    cmd = out["commands"][0]
+    assert cmd["id"] == cid and cmd["op"] == "screens"
+    assert cmd["args"] == {"agent": "grok-x", "since": 123.0, "why": "limit"}
+    # Emacs reads its log and answers; the CLI polls that reply.
+    h.tick(sessions=[{"name": "grok-x", "state": "idle"}], ack_ids=[],
+           replies=[{"id": cid, "text": "1 screen:\n2026-10-20 …"}])
+    assert h.command_reply(cid)["text"].startswith("1 screen")
+    reset_herd()
+
+
 def test_snapshot_keeps_screen(tmp_path: Path):
     h = _store(tmp_path)
     h.tick(

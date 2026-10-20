@@ -51,6 +51,7 @@ under whatever python3 the agent's shell finds.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -300,6 +301,58 @@ def cmd_relay(args):
             return 1
         time.sleep(0.4)
     print("relay: timed out waiting for the herd to act")
+    return 1
+
+
+def _parse_since(s):
+    """WHEN as epoch seconds: `3d'/`2h'/`90m'/`30s' back, `today'/`yesterday',
+    or an ISO date (YYYY-MM-DD, optionally with a time).  None when S is empty."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    m = re.fullmatch(r"(\d+)\s*([dhms])", s, re.I)
+    if m:
+        unit = {"d": 86400, "h": 3600, "m": 60, "s": 1}[m.group(2).lower()]
+        return time.time() - int(m.group(1)) * unit
+    midnight = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if s.lower() == "today":
+        return midnight.timestamp()
+    if s.lower() == "yesterday":
+        return (midnight - datetime.timedelta(days=1)).timestamp()
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(s, fmt).timestamp()
+        except ValueError:
+            pass
+    raise HerdError("--since: use 3d/2h/90m, today, yesterday, or YYYY-MM-DD")
+
+
+def cmd_screens(args):
+    """Print saved agent screens from the herd log -- time, agent, reason and
+    the screen -- filtered by --agent, --since and --why.  Read-only; it
+    round-trips through Emacs on a herd tick, where the log lives, the same
+    path `relay' uses."""
+    since = _parse_since(args.since)
+    out = rpc("herd_screens", {"agent": (args.agent or "").strip(),
+                               "since": since, "why": (args.why or "").strip(),
+                               "by": me()})
+    cid = out.get("id")
+    if not cid:
+        say("no reply from the herd")
+        return 1
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        r = rpc("herd_command_reply", {"id": cid})
+        status, text = r.get("status"), r.get("text")
+        if status == "done" and text is not None:
+            print(text)
+            return 0
+        if status == "gone":
+            say("the request was dropped before it ran")
+            return 1
+        time.sleep(0.4)
+    say("timed out waiting for the herd")
     return 1
 
 
@@ -930,6 +983,11 @@ def main(argv=None):
     p.add_argument("kind", nargs="?", help="claude, grok or agy; omitted, the herd picks one with usage left")
     p.add_argument("--reason", help="why it is being relayed")
     p.set_defaults(fn=cmd_relay)
+    p = sub.add_parser("screens", help="saved agent screens from the log (read-only)")
+    p.add_argument("--agent", help="only this agent")
+    p.add_argument("--since", metavar="WHEN", help="3d / 2h / 90m, today, yesterday, or YYYY-MM-DD")
+    p.add_argument("--why", help="only this trigger: limit, menu, mismatch, compaction, blocked, manual")
+    p.set_defaults(fn=cmd_screens)
     p = sub.add_parser("hook", help="run by a CLI's lifecycle hook, payload on stdin")
     p.add_argument("event", nargs="?")
     p.set_defaults(fn=cmd_hook)
