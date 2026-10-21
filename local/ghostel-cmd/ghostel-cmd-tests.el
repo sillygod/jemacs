@@ -26,6 +26,23 @@
          (progn ,@body)
        (ignore-errors (delete-directory dir t)))))
 
+(defmacro ghostel-cmd-tests--with-overlay (cmds &rest body)
+  "Run BODY in the overlay buffer listing CMDS, shown in the selected window.
+Keys go through the real keymaps with `execute-kbd-macro'."
+  (declare (indent 1))
+  `(ghostel-cmd-tests--with-store
+     (let ((ghostel-cmd--query "")
+           (ghostel-cmd--filtering nil)
+           (ghostel-cmd--fill nil)
+           (ghostel-cmd--help-visible nil))
+       (ghostel-cmd--set-commands ,cmds ghostel-cmd--root)
+       (let ((buf (ghostel-cmd--prepare-buffer)))
+         (unwind-protect
+             (progn
+               (set-window-buffer (selected-window) buf)
+               (with-current-buffer buf ,@body))
+           (kill-buffer buf))))))
+
 (ert-deftest ghostel-cmd-test-extract-vars-order-and-defaults ()
   (let ((ghostel-cmd--caller-file nil)
         (ghostel-cmd--caller-line nil))
@@ -76,6 +93,22 @@
     (should (ghostel-cmd--query-matches-p rec "pyt"))
     (should (ghostel-cmd--query-matches-p rec "pt file"))
     (should-not (ghostel-cmd--query-matches-p rec "deploy"))))
+
+(ert-deftest ghostel-cmd-test-filter-types-every-printable-char ()
+  "n and p go into the query like any other char; C-n / C-p move."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "npm" :cmd "npm test")
+            (list :name "python" :cmd "python -m pytest"))
+    (ghostel-cmd--set-filtering t)
+    (execute-kbd-macro "npm")
+    (should (equal ghostel-cmd--query "npm"))
+    (ghostel-cmd-filter-clear)
+    (execute-kbd-macro (kbd "C-n"))
+    (should (equal (tabulated-list-get-id) "python"))
+    (execute-kbd-macro (kbd "C-p"))
+    (should (equal (tabulated-list-get-id) "npm"))
+    (execute-kbd-macro "python")
+    (should (equal ghostel-cmd--query "python"))))
 
 (ert-deftest ghostel-cmd-test-fill-commits-then-finishes ()
   (let ((ghostel-cmd--fill

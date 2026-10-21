@@ -446,7 +446,7 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
                  (car pair)
                  (if def (format " [%s]" def) ""))))
       (ghostel-cmd--filtering
-       "   RET apply  n/p move  Esc clear")
+       "   RET apply  C-n/C-p move  Esc clear")
       (ghostel-cmd--help-visible
        "   ? close help  Esc close")
       (t
@@ -506,8 +506,6 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
   "RET"         #'ghostel-cmd-filter-confirm
   "C-m"         #'ghostel-cmd-filter-confirm
   "<return>"    #'ghostel-cmd-filter-confirm
-  "n"           #'next-line
-  "p"           #'previous-line
   "C-n"         #'next-line
   "C-p"         #'previous-line
   "<down>"      #'next-line
@@ -524,15 +522,15 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
 (define-key ghostel-cmd-filter-map [return] #'ghostel-cmd-filter-confirm)
 (define-key ghostel-cmd-filter-map [kp-enter] #'ghostel-cmd-filter-confirm)
 
-(defun ghostel-cmd--bind-filter-query-keys ()
+(defun ghostel-cmd--bind-printable-keys (map command)
+  "Bind every printable ASCII key in MAP to COMMAND."
   (let ((c 32))
     (while (< c 127)
-      (unless (memq c '(?n ?p 127))
-        (define-key ghostel-cmd-filter-map (vector c)
-                    #'ghostel-cmd-filter-self-insert))
+      (define-key map (vector c) command)
       (setq c (1+ c)))))
 
-(ghostel-cmd--bind-filter-query-keys)
+(ghostel-cmd--bind-printable-keys ghostel-cmd-filter-map
+                                  #'ghostel-cmd-filter-self-insert)
 
 (define-minor-mode ghostel-cmd-filter-mode
   "Live-narrow the command overlay."
@@ -653,15 +651,8 @@ SUBMIT non-nil also presses Enter in the terminal."
 (define-key ghostel-cmd-fill-map [tab] #'ghostel-cmd-fill-accept)
 (define-key ghostel-cmd-fill-map [(control return)] #'ghostel-cmd-fill-accept-send)
 
-(defun ghostel-cmd--bind-fill-query-keys ()
-  (let ((c 32))
-    (while (< c 127)
-      (unless (eq c 127)
-        (define-key ghostel-cmd-fill-map (vector c)
-                    #'ghostel-cmd-fill-self-insert))
-      (setq c (1+ c)))))
-
-(ghostel-cmd--bind-fill-query-keys)
+(ghostel-cmd--bind-printable-keys ghostel-cmd-fill-map
+                                  #'ghostel-cmd-fill-self-insert)
 
 (define-minor-mode ghostel-cmd-fill-mode
   "Fill {{vars}} on the overlay footer."

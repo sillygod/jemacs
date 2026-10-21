@@ -20,6 +20,7 @@ Posframe when available, side window otherwise.
 | =RET=      | Paste (fill ={{vars}}= on the footer first) |
 | =C-RET=    | Paste and press Enter                       |
 | =/=        | Live-narrow (flex, whitespace is AND)       |
+|            | every printable key types; =C-n= =C-p= move |
 | =a= =e= =d=| Add / edit / delete                         |
 | =q= / Esc  | Quit; during fill, cancel fill              |
 
