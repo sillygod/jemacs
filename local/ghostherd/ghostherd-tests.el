@@ -10718,9 +10718,90 @@ the instruction to recall."
           (ghostherd-tests--write-memory-index
            tmp proj (cl-loop for i from 1 to 100
                              collect (format "- [Fact %d](f%d.md) — a reasonably long gloss" i i)))
-          (let ((op (ghostherd--memory-opening proj)))
-            (should (string-match-p "truncated" op))
-            (should (< (length op) (+ (length ghostherd--memory-rules) 400 200)))))
+          (let* ((op (ghostherd--memory-opening proj))
+                 (index (substring op (string-match "One line per fact" op))))
+            ;; Whole lines only, and how many were left out -- never a
+            ;; fact cut short or dropped without a word.
+            (should (cl-every (lambda (l) (string-match-p "\\`- \\[Fact [0-9]+\\](f[0-9]+\\.md) — a reasonably long gloss\\'" l))
+                              (seq-filter (lambda (l) (string-prefix-p "- " l))
+                                          (split-string op "\n"))))
+            (let ((shown (seq-count (lambda (l) (string-prefix-p "- " l)) (split-string op "\n"))))
+              (should (> shown 0))
+              (should (string-match-p (format "^%d more, not listed" (- 100 shown)) op)))
+            (should (<= (length (string-trim-right index)) (+ 400 (length "One line per fact:\n\n"))))))
+      (delete-directory tmp t))))
+
+(defmacro ghostherd-tests--with-opening-sidecar (reply &rest body)
+  "Run BODY with the sidecar answering `memory_opening' with REPLY (a
+plist, or `error' to fail), its calls collected in `asked'."
+  (declare (indent 1))
+  `(let ((asked nil))
+     (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+               ((symbol-function 'ghostherd-memory-request)
+                (lambda (method params &optional timeout)
+                  (push (list method params timeout) asked)
+                  (if (eq ,reply 'error) (error "sidecar down") ,reply))))
+       ,@body)))
+
+(defconst ghostherd-tests--composed-opening
+  (concat "Its rules, in full -- follow them:\n\n"
+          "### Branch discipline  (feedback)\nNever commit or push to main.\n\n"
+          "The other facts, one line each, newest first:\n\n"
+          "- [Deploy trigger](deploy-trigger.md) — the three entry points\n"
+          "3 more, not listed — \"$GHOSTHERD_HERD\" recall <topic> for any: a, b, c\n")
+  "An opening as the sidecar composes it (shared_memory.opening).")
+
+(ert-deftest ghostherd-test-memory-opening-is-the-sidecars-composition ()
+  "With the sidecar up, the opening is what it composes -- the rules in full,
+the lines, the names of the rest -- for the project's main checkout, within
+the cap this Emacs sets; and that is what grok's --rules carries."
+  (let ((ghostherd-memory-opening-max 1234)
+        (ghostherd-memory-opening-timeout 2)
+        (ghostherd-memory-dir (make-temp-file "gh-mem" t)))
+    (ghostherd-tests--with-opening-sidecar (list :text ghostherd-tests--composed-opening
+                                                 :full ["branch-discipline"])
+      (let ((op (ghostherd--memory-opening "~/work/proj/")))
+        (should (string-prefix-p ghostherd--memory-rules op))
+        (should (string-search "Never commit or push to main." op))
+        (should (string-search "3 more, not listed" op))
+        (pcase-let ((`(,method ,params ,timeout) (car asked)))
+          (should (equal method "memory_opening"))
+          (should (equal (plist-get params :project) (expand-file-name "~/work/proj/")))
+          (should (= (plist-get params :max) 1234))
+          (should (= timeout 2))))
+      (let ((rules (cadr (member "--rules" (ghostherd--args-with-memory "/p/" nil)))))
+        (should (string-search "### Branch discipline" rules))))))
+
+(ert-deftest ghostherd-test-memory-opening-of-an-empty-store-is-the-rule ()
+  "The sidecar finds no fact: just the rule to recall, no empty block --
+not a stale MEMORY.md left on disk."
+  (let ((ghostherd-memory-dir (make-temp-file "gh-mem" t)))
+    (ghostherd-tests--write-memory-index ghostherd-memory-dir "/p/" '("- [Stale](s.md) — gone"))
+    (ghostherd-tests--with-opening-sidecar (list :text "" :full [])
+      (should (equal (ghostherd--memory-opening "/p/") ghostherd--memory-rules)))))
+
+(ert-deftest ghostherd-test-memory-opening-falls-back-to-the-index ()
+  "The sidecar does not answer: the index lines from MEMORY.md instead,
+whole, within the cap, with how many were left out."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp)
+         (ghostherd-memory-opening-max 300)
+         (proj "/work/fb/"))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index
+           tmp proj (cl-loop for i from 1 to 20
+                             collect (format "- [Fact %d](f%d.md) — gloss number %d" i i i)))
+          (ghostherd-tests--with-opening-sidecar 'error
+            (let* ((op (ghostherd--memory-opening proj))
+                   (lines (seq-filter (lambda (l) (string-prefix-p "- " l)) (split-string op "\n"))))
+              (should asked)                       ; it asked first
+              (should (string-search "Fact 1]" op))
+              (should (cl-every (lambda (l) (string-match-p "\\`- \\[Fact \\([0-9]+\\)\\](f\\1\\.md) — gloss number \\1\\'" l))
+                                lines))
+              (should (string-match-p (format "^%d more, not listed" (- 20 (length lines))) op))
+              (should (<= (length (substring op (string-match "One line per fact" op)))
+                          (+ 300 (length "One line per fact:\n\n")))))))
       (delete-directory tmp t))))
 
 (ert-deftest ghostherd-test-spawn-grok-gets-the-index-in-rules ()

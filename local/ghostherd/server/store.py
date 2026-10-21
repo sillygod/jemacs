@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,24 @@ def payload_for(turn: Turn) -> dict[str, Any]:
     }
 
 
+class StoreClosed(RuntimeError):
+    "The store's client was closed (an engine reset); nothing more goes to it."
+
+
+def _locked(fn):
+    """Run a Store method holding `client_lock'.  QdrantLocal is not
+    thread-safe, and its one client -- one per path: it takes an exclusive
+    lock on the directory -- is shared by the transcripts' requests and the
+    fact index's background worker."""
+    @functools.wraps(fn)
+    def wrap(self, *args, **kwargs):
+        with self.client_lock:
+            if self.closed:
+                raise StoreClosed("the memory store is closed")
+            return fn(self, *args, **kwargs)
+    return wrap
+
+
 def rrf_merge(
     dense_hits: list[Any],
     sparse_hits: list[Any],
@@ -81,18 +101,30 @@ class Store:
         self.path.mkdir(parents=True, exist_ok=True)
         self.client = QdrantClient(path=str(self.path))
         self._ready_dim: int | None = None
+        # Every call into `client' holds this -- here, and in fact_index,
+        # whose worker shares the client.  Re-entrant, so a method holding
+        # it can call another that takes it.
+        self.client_lock = threading.RLock()
+        self.closed = False
 
     def close(self) -> None:
-        self.client.close()
+        "Close the client once no call is in it; later calls get StoreClosed."
+        with self.client_lock:
+            if not self.closed:
+                self.closed = True
+                self.client.close()
 
+    @_locked
     def collection_exists(self) -> bool:
         return bool(self.client.collection_exists(COLLECTION))
 
+    @_locked
     def point_count(self) -> int:
         if not self.collection_exists():
             return 0
         return int(self.client.count(COLLECTION, exact=True).count)
 
+    @_locked
     def ensure(self, dim: int, recreate: bool = False) -> None:
         exists = self.collection_exists()
         if exists:
@@ -122,6 +154,7 @@ class Store:
             # warn and do not make Filter faster.  Server Qdrant would.
         self._ready_dim = dim
 
+    @_locked
     def delete_source(self, source_path: str) -> None:
         if not self.collection_exists():
             return
@@ -139,6 +172,7 @@ class Store:
             ),
         )
 
+    @_locked
     def payloads_of(self, source_path: str) -> dict[int, dict[str, Any]]:
         """chunk_index -> stored payload for every chunk of SOURCE_PATH."""
         if not self.collection_exists():
@@ -162,6 +196,7 @@ class Store:
             if offset is None:
                 return out
 
+    @_locked
     def delete_chunks(self, source_path: str, indexes: list[int]) -> None:
         if indexes and self.collection_exists():
             self.client.delete(
@@ -169,6 +204,7 @@ class Store:
                 points_selector=PointIdsList(points=[point_id(source_path, i) for i in indexes]),
             )
 
+    @_locked
     def upsert(
         self,
         turns: list[Turn],
@@ -195,6 +231,7 @@ class Store:
         self.client.upsert(collection_name=COLLECTION, points=points)
         return len(points)
 
+    @_locked
     def restate(self, turns: list[Turn]) -> int:
         """What TURNS say of themselves -- a time, a title -- written over
         their stored chunks', whose words and so vectors are the same."""
@@ -214,6 +251,7 @@ class Store:
         )
         return len(turns)
 
+    @_locked
     def search(
         self,
         dense: list[float],
@@ -249,6 +287,7 @@ class Store:
             merged = rrf_merge(dense_hits, sparse_hits, limit)
         return [_hit_to_dict(h) for h in merged]
 
+    @_locked
     def list_chunks(
         self,
         source_path: str | None = None,

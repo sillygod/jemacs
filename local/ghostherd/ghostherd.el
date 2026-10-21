@@ -6698,9 +6698,20 @@ up yet (the migration covers the existing dirs; a later spawn covers this)."
 (add-hook 'ghostherd-session-created-hook #'ghostherd--memory-link-claude)
 
 (defcustom ghostherd-memory-opening-max 4000
-  "Most characters of the memory index to put in a grok/agy agent's opening.
-Over this it is truncated at a line, with a note pointing to `herd recall'."
+  "Most characters of the memory index in a grok/agy agent's opening.
+The index is every fact that is not a rule, one line each, then a line
+naming the facts that did not fit -- whole lines only, so none is cut
+and none dropped silently.  The rules (the user's facts and the feedback
+ones) come before it in full, outside this cap: they say how to work.
+See the sidecar's `shared_memory.opening'."
   :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-memory-opening-timeout 3
+  "Seconds to wait for the sidecar to compose a grok/agy opening.
+Past it, or with no sidecar, the opening is the index lines read from
+MEMORY.md, capped the same way."
+  :type 'number
   :group 'ghostherd)
 
 (defcustom ghostherd-memory-dir "~/.ghostherd/memory"
@@ -6738,27 +6749,66 @@ current -- so it needs no sidecar."
             (forward-line 1))
           (and lines (string-join (nreverse lines) "\n")))))))
 
+(defun ghostherd--memory-opening-composed (project)
+  "PROJECT's opening as the sidecar composes it (`memory_opening'): the
+rules in full, then the other facts within `ghostherd-memory-opening-max',
+then the names of what did not fit.  The text, \"\" for an empty store,
+or nil when the sidecar is not there to ask or does not answer in
+`ghostherd-memory-opening-timeout'."
+  (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
+             (fboundp 'ghostherd-memory-request))
+    (condition-case nil
+        (let ((r (ghostherd-memory-request
+                  "memory_opening"
+                  (list :project (expand-file-name project)
+                        :max ghostherd-memory-opening-max)
+                  ghostherd-memory-opening-timeout)))
+          (and (stringp (plist-get r :text)) (plist-get r :text)))
+      (error nil))))
+
+(defun ghostherd--memory-opening-lines (index max)
+  "INDEX's lines that fit in MAX characters, whole, and a note of how many
+did not -- the opening without the sidecar, which alone can read the
+rules out of the fact files."
+  (let* ((lines (split-string index "\n"))
+         (facts (seq-count (lambda (l) (string-prefix-p "- " l)) lines))
+         ;; Room for the note, when not every line fits.
+         (room (if (<= (length index) max) max (- max 80)))
+         (kept nil) (used 0))
+    (catch 'full
+      (dolist (l lines)
+        (when (> (+ used (length l) 1) room)
+          (throw 'full nil))
+        (push l kept)
+        (setq used (+ used (length l) 1))))
+    (let ((left (- facts (seq-count (lambda (l) (string-prefix-p "- " l)) kept))))
+      (concat (string-join (nreverse kept) "\n")
+              (if (> left 0)
+                  (format "\n%d more, not listed — \"$GHOSTHERD_HERD\" recall <topic> for any" left)
+                "")))))
+
 (defun ghostherd--memory-opening (project)
-  "The shared-memory opening for a grok or agy agent in PROJECT: the current
-index (one line per fact, capped at `ghostherd-memory-opening-max'), and the
-rule to recall for the full text and anything newer.  Just the rule when the
-store is empty or absent."
-  (let ((index (ghostherd--memory-index project)))
-    (if (not (and index (not (string-empty-p index))))
-        ghostherd--memory-rules
-      (let* ((head "\n\nThe project's memory now (one line per fact; run \
-\"$GHOSTHERD_HERD\" recall for the full text of any, and anything newer):\n\n")
-             (full (concat head index))
-             (max ghostherd-memory-opening-max))
-        (concat ghostherd--memory-rules
-                (if (<= (length full) max)
-                    full
-                  (let ((cut (or (and (> max 0)
-                                      (string-match "\n[^\n]*\\'"
-                                                    (substring full 0 (min max (length full)))))
-                                 max)))
-                    (concat (substring full 0 cut)
-                            "\n… (truncated; run \"$GHOSTHERD_HERD\" recall for all)"))))))))
+  "The shared-memory opening for a grok or agy agent in PROJECT.
+The sidecar composes it (`ghostherd--memory-opening-composed'): the
+project's rules in full, then every other fact one line each within
+`ghostherd-memory-opening-max', then the names of what did not fit.
+Without the sidecar, the index lines from MEMORY.md, whole, within the
+same cap, and how many were left out.  Before either, the rule to recall
+for the full text and anything newer; just that rule when the store is
+empty or absent."
+  (let ((composed (ghostherd--memory-opening-composed project))
+        (head "\n\nThe project's memory as you start (\"$GHOSTHERD_HERD\" recall \
+<topic> gives the full text of any fact, and anything newer).  "))
+    (cond
+     ((and composed (not (string-empty-p (string-trim composed))))
+      (concat ghostherd--memory-rules head (string-trim-right composed)))
+     (composed ghostherd--memory-rules)
+     (t
+      (let ((index (ghostherd--memory-index project)))
+        (if (not (and index (not (string-empty-p index))))
+            ghostherd--memory-rules
+          (concat ghostherd--memory-rules head "One line per fact:\n\n"
+                  (ghostherd--memory-opening-lines index ghostherd-memory-opening-max))))))))
 
 (defun ghostherd--args-with-memory (project args)
   "ARGS with the current memory opening folded into grok's --rules.

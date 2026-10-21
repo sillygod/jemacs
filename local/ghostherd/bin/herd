@@ -48,8 +48,9 @@ facts every agent of a project sees, whatever its CLI.  `remember TEXT'
 writes one fact to your project's store (a worktree shares its main
 checkout's), authored by you; `--type' is project (default), feedback,
 reference or user, `--name' sets its slug.  `recall' prints the project's
-index, or `recall QUERY' the matching facts in full.  `forget NAME'
-removes one.  `--user' is the store shared by every project (the user's
+index, or `recall QUERY' the facts most relevant to QUERY in full, best
+first -- by meaning as well as words, so a query in one language can
+find a fact written in another.  `forget NAME' removes one.  `--user' is the store shared by every project (the user's
 own preferences).  Run them from a plain shell too -- authored `user',
 for the project you are in.  claude reads this memory through its own
 memory dir; agy and grok are told to use these commands.
@@ -1141,7 +1142,7 @@ def main(argv=None):
     p.add_argument("--name", metavar="SLUG", help="its filename slug (default from the text)")
     p.add_argument("--user", action="store_true", help="the store shared by every project")
     p.set_defaults(fn=cmd_remember)
-    p = sub.add_parser("recall", help="print the memory index, or facts matching a query")
+    p = sub.add_parser("recall", help="print the memory index, or the facts most relevant to a query")
     p.add_argument("query", nargs="*")
     p.add_argument("--user", action="store_true", help="the user store, not the project's")
     p.set_defaults(fn=cmd_recall)

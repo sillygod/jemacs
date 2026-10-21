@@ -1758,6 +1758,41 @@ phase two.)
   went, so it is not loaded twice.  Facts tied to this machine or user (paths,
   credentials setup, personal preferences) stay memories.
 
+** Phase two, part two: retrieval (ask 7bb69512)
+
+Goal: no fact lost to the agents that cannot browse the store.  deploy-
+platform's index was past the opening's cap, so the facts after the cut
+never reached agy or grok unless they thought to recall.
+
+- [X] The opening never drops a fact silently: the rules (user and feedback
+  facts) in full, outside the cap; every other fact one line each, project
+  before reference, newest first, within =ghostherd-memory-opening-max=;
+  then one line naming every fact that did not fit.  Whole lines only.
+  Composed by the sidecar (=memory_opening=, =shared_memory.opening=);
+  without it, MEMORY.md's lines, capped the same way.  pytest + ERT broken
+  on purpose
+- [X] The facts in a Qdrant collection of their own (=ghostherd_facts=),
+  in sync with the files: writes through the herd at once (a listener on
+  the store), any other write (claude's own, a hand edit, the page) at the
+  next read by the files' stamps, re-embedding only what changed.  Warmed
+  at sidecar start, in the background.  =server/fact_index.py=
+- [X] =herd recall QUERY= and =memory_rank= (for the page) rank by meaning
+  and words: per query part, a z-score of cosine against the store plus a
+  fixed background, and BM25 over ASCII identifiers -- the two must agree
+  for an ask; a recall takes a looser bar.  Tuned on deploy-platform's real
+  facts and asks (read-only): bge-small-zh alone scored an unrelated React
+  ask as high as a real hit, and its Chinese facts close to every Chinese
+  ask; words alone matched long facts to everything.  Words alone when the
+  embedder is not up.  =server/memory_rank.py=
+- [X] An ask carries, under "Relevant memory", the few facts most relevant
+  to it (strict bar, at most three, deduped against a grok/agy taker's
+  rules), appended at delivery -- the stored ask unchanged, delivery held a
+  moment at most.  Typed prompts untouched
+- [ ] After the merge, by hand: restart the sidecar (new RPCs, the facts'
+  collection, the warm-up builds the first index); reload the =.el= (the
+  bound =ghostherd-memory-opening-max= keeps its 4000, now the cap on the
+  index lines only)
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

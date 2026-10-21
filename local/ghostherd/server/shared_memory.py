@@ -52,6 +52,32 @@ TYPES = ("user", "feedback", "project", "reference")
 DEFAULT_TYPE = "project"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,78}$")
 
+# Facts an agent must follow, not just know: given in full in an opening.
+RULE_TYPES = ("user", "feedback")
+# The rest of an opening, one line each: project facts before reference.
+LINE_ORDER = {"project": 0, "reference": 1}
+
+# Who to tell when a store's facts change -- the sidecar's fact index
+# registers here, so a fact written, edited or forgotten through this
+# module reaches it at once.  Writes that bypass it (claude's own, a hand
+# edit) are found when the index next reads the files.
+_LISTENERS: list = []
+
+
+def on_change(fn):
+    "Call FN(key, names) after facts NAMES of store KEY change."
+    if fn not in _LISTENERS:
+        _LISTENERS.append(fn)
+    return fn
+
+
+def _changed(key: str, names: list[str]) -> None:
+    for fn in list(_LISTENERS):
+        try:
+            fn(key, names)
+        except Exception:  # noqa: BLE001 -- a listener never fails a write
+            pass
+
 
 def root() -> Path:
     "The store's home.  GHOSTHERD_SHARED_MEMORY_DIR overrides it, for tests."
@@ -377,6 +403,7 @@ def write_fact(
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
+    _changed(key, [name])
     return {"name": name, "path": str(path), "type": typ, "store": key}
 
 
@@ -394,6 +421,7 @@ def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
     extra = {"originSessionId": meta.get("originSessionId"), "modified": meta.get("modified")}
     _atomic_write(path, render(f.name, f.description, f.body, type=f.type, author=author,
                                created=(f.created or now), updated=(f.updated or now), extra=extra))
+    _changed(path.parent.name, [f.name])
     return True
 
 
@@ -421,6 +449,7 @@ def edit_fact(store: Path, key: str, name: str, *, description: str, body: str,
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
+    _changed(key, [name])  # tell the fact index at once, not only on the next read
     return {"name": name, "type": typ, "store": key}
 
 
@@ -456,6 +485,8 @@ def forget(store: Path, key: str, name: str) -> dict:
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
+    if removed:
+        _changed(key, [name])
     return {"name": name, "removed": removed, "store": key}
 
 
@@ -467,6 +498,108 @@ def index_text(store: Path, key: str) -> str:
         return (store / INDEX).read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def pool(key: str) -> list[Fact]:
+    """Every fact an agent of store KEY sees: the shared user facts, then
+    the project's own -- a project fact of a user fact's name takes it, as
+    in the store's links.  Read from the files, writing nothing."""
+    own = own_facts(project_store(key)) if project_store(key).is_dir() else []
+    if key == USER_KEY:
+        return own
+    mine = {f.name for f in own}
+    return [f for f in user_facts() if f.name not in mine] + own
+
+
+def is_rule(f: Fact) -> bool:
+    "A fact to follow, given in full: a user fact, or a feedback one."
+    return f.shared or f.type in RULE_TYPES
+
+
+def _newest_first(facts: list[Fact]) -> list[Fact]:
+    "FACTS by their last change, newest first; undated ones last, by name."
+    dated = sorted((f for f in facts if f.updated or f.created),
+                   key=lambda f: f.updated or f.created, reverse=True)
+    return dated + sorted((f for f in facts if not (f.updated or f.created)),
+                          key=lambda f: f.name)
+
+
+def _line(f: Fact) -> str:
+    "A fact's index line, as MEMORY.md has it."
+    gloss = f" — {f.description}" if f.description else ""
+    return f"- [{f.title}]({f.name}.md){gloss}"
+
+
+RECALL = '"$GHOSTHERD_HERD" recall'
+
+
+def _more_note(rest: list[Fact], room: int) -> str:
+    """The line naming the facts an opening does not list, so none is
+    dropped silently: how many, how to read them, and their names -- every
+    one when they fit in ROOM characters, else as many as do, cut at a name
+    with how many are left.  When not one name fits, just the count."""
+    if not rest:
+        return ""
+    head = f"{len(rest)} more, not listed — {RECALL} <topic> for any: "
+    names = [f.name for f in rest]
+    if len(head) + len(", ".join(names)) <= room:
+        return head + ", ".join(names)
+    shown: list[str] = []
+    for i, name in enumerate(names):
+        left = len(names) - i - 1
+        if len(head) + len(", ".join(shown + [name])) + len(f" … and {left} more") > room:
+            break
+        shown.append(name)
+    if not shown:
+        return head.rstrip(": ") + "."
+    return head + ", ".join(shown) + f" … and {len(names) - len(shown)} more"
+
+
+def opening(key: str, cap: int = 4000) -> dict:
+    """What a grok or agy agent of store KEY is told of the memory as it starts.
+
+    The rules first, in full: the user facts and the feedback ones, which
+    say how to behave, not merely what is so -- never cut, so they sit
+    outside CAP.  Then the other facts one line each, project facts before
+    reference ones and each newest first, while the lines and a closing
+    note naming every fact left out fit in CAP characters -- whole lines
+    only.  So no fact is dropped silently and nothing is cut mid-line; only
+    a store too big to name in CAP has the names cut, at a name, with how
+    many are left.  Returns the text and which facts it gave in full,
+    listed, and left to the note.  Reads the files and writes nothing."""
+    facts = pool(key)
+    rules = [f for f in facts if is_rule(f)]
+    rules = [f for f in rules if f.shared] + _newest_first([f for f in rules if not f.shared])
+    rest = [f for f in facts if not is_rule(f)]
+    rest = sorted(_newest_first(rest), key=lambda f: LINE_ORDER.get(f.type, 0))
+    header = "The other facts, one line each, newest first:"
+    listed: list[str] = []
+    used = len(header) + 1
+    for i, f in enumerate(rest):
+        line = _line(f)
+        note = _more_note(rest[i + 1:], 1 << 30)  # every name: what the rest needs
+        if used + len(line) + 1 + len(note) > cap:
+            break
+        listed.append(line)
+        used += len(line) + 1
+    more = rest[len(listed):]
+    out = []
+    if rules:
+        out.append("Its rules, in full -- follow them:")
+        for f in rules:
+            where = "every project" if f.shared else f.type
+            out.append(f"\n### {f.title}  ({where})\n{f.body.strip()}")
+    if rest:
+        out.append(("\n" if rules else "") + header + "\n")
+        out += listed
+        if more:
+            out.append(_more_note(more, max(0, cap - used)))
+    return {
+        "text": "\n".join(out).strip() + "\n" if out else "",
+        "full": [f.name for f in rules],
+        "listed": [f.name for f in rest[: len(listed)]],
+        "more": [f.name for f in more],
+    }
 
 
 def _matches(f: Fact, needles: list[str]) -> bool:

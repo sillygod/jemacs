@@ -29,7 +29,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,10 @@ from config import get_config
 
 _lock = threading.Lock()
 _herd: "HerdStore | None" = None
+
+# The shared memory an ask carries, for every store made from here on --
+# the sidecar's handler sets it (fact_index); None leaves asks as asked.
+ASK_MEMORY = None
 
 ASK_OPEN = ("queued", "delivered")
 ASK_CLOSED = ("answered", "failed", "cancelled")
@@ -93,6 +97,11 @@ WAIT_GRACE = 30
 # turn began before the ask" and close it.  A real turn's `working' hook
 # lands a tick or two after the paste, well inside this.
 DELIVER_GRACE = 8
+
+# How long an ask's delivery waits for the shared memory it will carry to
+# be found (fact_index; tens of milliseconds once the embedder is up).
+# Past it, it goes without -- a crash in between never strands an ask.
+MEMORY_HOLD = 5
 
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
@@ -153,6 +162,10 @@ class HerdStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.inline_limit = max(1, int(inline_limit))
+        # What an ask carries from the shared memory: (taker's session, body)
+        # -> the text to deliver after the body, or None.  Set by the
+        # sidecar (fact_index); None leaves asks as they are.
+        self.ask_memory = ASK_MEMORY
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -339,6 +352,12 @@ class HerdStore:
         }
         if "ask_id" not in mail_cols:
             self._conn.execute("ALTER TABLE mail ADD COLUMN ask_id TEXT")
+        # The shared memory an ask carries, delivered after its body (the
+        # body itself stays as asked), and until when delivery waits for it
+        # to be found -- a moment; past it the ask goes without.
+        for col in ("memory", "memory_until"):
+            if col not in mail_cols:
+                self._conn.execute(f"ALTER TABLE mail ADD COLUMN {col} TEXT")
         ask_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(asks)")
         }
@@ -586,20 +605,42 @@ class HerdStore:
                  parent["id"] if parent else None, run,
                  n + 1 if cap is not None else None, cap, rounds),
             )
+            mail_id = str(uuid.uuid4())
+            hold = None
+            if self.ask_memory is not None:
+                hold = (datetime.now(timezone.utc) + timedelta(seconds=MEMORY_HOLD)).isoformat()
             self._conn.execute(
                 """
                 INSERT INTO mail (
                     id, from_name, to_name, body, submit, handoff,
-                    status, created_at, ask_id
-                ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?)
+                    status, created_at, ask_id, memory_until
+                ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), sender, target, str(body), now, ask_id),
+                (mail_id, sender, target, str(body), now, ask_id, hold),
             )
             self._conn.commit()
+        if hold is not None:
+            self._attach_memory(mail_id, target, str(body))
         out: dict[str, Any] = {"id": ask_id, "to": target, "queued": True}
         if cap is not None:
             out.update(round=n + 1, of=cap)
         return out
+
+    def _attach_memory(self, mail_id: str, target: str, body: str) -> None:
+        """Find what the shared memory says about BODY for TARGET and put it
+        on the ask's mail, then release it for delivery -- outside the lock,
+        since ranking embeds.  A failure releases it without memory."""
+        memory = None
+        try:
+            memory = self.ask_memory(self.session(target), body)
+        except Exception:  # noqa: BLE001 -- memory never holds up an ask
+            memory = None
+        with self._mu:
+            self._conn.execute(
+                "UPDATE mail SET memory = ?, memory_until = NULL WHERE id = ?",
+                (memory or None, mail_id),
+            )
+            self._conn.commit()
 
     def _round(self, sender: str, target: str, ask_id: str):
         """Where SENDER asking TARGET stands: (PARENT, RUN, N, CAP) --
@@ -1553,13 +1594,15 @@ class HerdStore:
             for row in self._conn.execute(
                 """
                 SELECT m.id, m.from_name, m.to_name, m.body,
-                       m.submit, m.handoff, m.ask_id, s.state, a.rounds
+                       m.submit, m.handoff, m.ask_id, s.state, a.rounds, m.memory
                 FROM mail m
                 JOIN snapshot s ON s.name = m.to_name
                 LEFT JOIN asks a ON a.id = m.ask_id
                 WHERE m.status = 'queued'
+                  AND (m.memory_until IS NULL OR m.memory_until < ?)
                 ORDER BY m.created_at
-                """
+                """,
+                (now,),
             ).fetchall():
                 if (row[7] or "") in hold:
                     continue
@@ -1623,7 +1666,7 @@ class HerdStore:
                 )
             self._conn.commit()
         pending = []
-        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds in deliverable:
+        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory in deliverable:
             text = body or ""
             truncated = len(text) > self.inline_limit
             if truncated:
@@ -1635,6 +1678,10 @@ class HerdStore:
                     + mail_id
                     + "]"
                 )
+            if memory:
+                # After the body, so what was asked comes first; whole, since
+                # it is capped where it is found.
+                text = text.rstrip() + "\n\n" + memory
             pending.append(
                 {
                     "id": mail_id,

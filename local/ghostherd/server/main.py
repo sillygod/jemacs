@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 
 from contextlib import asynccontextmanager
 
@@ -41,6 +42,11 @@ async def lifespan(app: FastAPI):
     app.state.token = load_or_create_token(cfg.data_dir)
     app.state.token_file = str(cfg.data_dir / "rpc.token")
     stop = asyncio.Event()
+    # The shared-memory facts' index: load the embedder and bring every
+    # store's facts up to date in the background, so the first ask after a
+    # restart is matched by meaning, not by words alone.  Health answers
+    # meanwhile; nothing here waits for it.
+    threading.Thread(target=_warm_facts, daemon=True, name="ghostherd-facts-warm").start()
     task = None
     if cfg.telegram_token and cfg.telegram_chat_ids:
         from telegram import run_bot
@@ -57,6 +63,15 @@ async def lifespan(app: FastAPI):
             except (asyncio.CancelledError, Exception):
                 pass
         reset_engine()
+
+
+def _warm_facts() -> None:
+    try:
+        import fact_index
+
+        fact_index.get_index().warm()
+    except Exception as exc:  # noqa: BLE001 -- recall and asks fall back to words
+        print(f"[ghostherd-memory] fact index warm-up failed: {exc}", flush=True)
 
 
 app = FastAPI(
