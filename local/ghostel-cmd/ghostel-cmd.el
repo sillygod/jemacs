@@ -248,6 +248,8 @@ edit of the save file is never written over."
 (defvar ghostel-cmd--posframe-fitted-width nil)
 (defvar ghostel-cmd--posframe-refitting nil)
 (defvar ghostel-cmd--match-count 0)
+(defvar ghostel-cmd--goto-id nil
+  "Name the next redraw puts point on, instead of the row at point.")
 (defvar ghostel-cmd--total-count 0)
 
 (defconst ghostel-cmd--buffer-name "*ghostel-cmd*")
@@ -407,7 +409,8 @@ edit of the save file is never written over."
       (restore-buffer-modified-p nil))))
 
 (defun ghostel-cmd--print (&optional update)
-  (let ((id (tabulated-list-get-id)))
+  (let ((id (or ghostel-cmd--goto-id (tabulated-list-get-id))))
+    (setq ghostel-cmd--goto-id nil)
     (ghostel-cmd--erase-preview)
     (tabulated-list-print update)
     (when id
@@ -683,6 +686,32 @@ SUBMIT non-nil also presses Enter in the terminal."
 
 ;;; Deliver / CRUD
 
+(defun ghostel-cmd--put-command (cmds record &optional old-name)
+  "CMDS with RECORD in place of OLD-NAME, else of its namesake, else last.
+Any other command with RECORD's name is dropped, so names stay unique."
+  (let* ((name (plist-get record :name))
+         (key (lambda (c) (plist-get c :name)))
+         (anchor (or (and old-name
+                          (cl-find old-name cmds :key key :test #'equal))
+                     (cl-find name cmds :key key :test #'equal))))
+    (if (null anchor)
+        (append cmds (list record))
+      (delq nil
+            (mapcar (lambda (c)
+                      (cond ((eq c anchor) record)
+                            ((equal (funcall key c) name) nil)
+                            (t c)))
+                    cmds)))))
+
+(defun ghostel-cmd--confirm-replace (cmds name &optional old-name)
+  "Ask before NAME takes the place of another command in CMDS."
+  (when (and (not (equal name old-name))
+             (cl-find name cmds
+                      :key (lambda (c) (plist-get c :name))
+                      :test #'equal)
+             (not (yes-or-no-p (format "Replace the existing '%s'? " name))))
+    (user-error "Kept the existing '%s'" name)))
+
 (defun ghostel-cmd--existing-terminal ()
   "Return the project Ghostel buffer if it already exists, else any Ghostel.
 Does not display the buffer."
@@ -797,18 +826,16 @@ split if none is showing."
                      (match-string 1 cmd)))
                   (name (read-string "Name / alias: " nil nil suggested))
                   (desc (read-string "Description (optional): "))
-                  (existing (ghostel-cmd--get-commands root)))
+                  (record (list :name name :cmd cmd :desc desc)))
              (when (string-empty-p name)
                (user-error "Command name cannot be empty"))
              (when (string-empty-p cmd)
                (user-error "Command cannot be empty"))
-             (ghostel-cmd--set-commands
-              (append
-               (cl-remove name existing
-                          :key (lambda (c) (plist-get c :name))
-                          :test #'equal)
-               (list (list :name name :cmd cmd :desc desc)))
+             (ghostel-cmd--confirm-replace (ghostel-cmd--get-commands root) name)
+             (ghostel-cmd--update-commands
+              (lambda (cmds) (ghostel-cmd--put-command cmds record))
               root)
+             (setq ghostel-cmd--goto-id name)
              (message "Added '%s'" name)))))
     (if (ghostel-cmd--posframe-showing-p)
         (ghostel-cmd--with-parent-input run)
@@ -832,18 +859,17 @@ split if none is showing."
                                           (plist-get record :cmd)))
                     (new-desc (read-string "Description (optional): "
                                            (or (plist-get record :desc) "")))
-                    (cmds (ghostel-cmd--get-commands root)))
+                    (new (list :name new-name :cmd new-cmd :desc new-desc)))
                (when (string-empty-p new-name)
                  (user-error "Command name cannot be empty"))
                (when (string-empty-p new-cmd)
                  (user-error "Command cannot be empty"))
-               (ghostel-cmd--set-commands
-                (append
-                 (cl-remove old-name cmds
-                            :key (lambda (c) (plist-get c :name))
-                            :test #'equal)
-                 (list (list :name new-name :cmd new-cmd :desc new-desc)))
+               (ghostel-cmd--confirm-replace
+                (ghostel-cmd--get-commands root) new-name old-name)
+               (ghostel-cmd--update-commands
+                (lambda (cmds) (ghostel-cmd--put-command cmds new old-name))
                 root)
+               (setq ghostel-cmd--goto-id new-name)
                (message "Updated '%s'" new-name)))))
       (if (ghostel-cmd--posframe-showing-p)
           (ghostel-cmd--with-parent-input run)
@@ -862,10 +888,11 @@ split if none is showing."
                               (ghostel-cmd--current-project-root)))
                     (name (plist-get record :name)))
                (when (yes-or-no-p (format "Delete '%s'? " name))
-                 (ghostel-cmd--set-commands
-                  (cl-remove name (ghostel-cmd--get-commands root)
-                             :key (lambda (c) (plist-get c :name))
-                             :test #'equal)
+                 (ghostel-cmd--update-commands
+                  (lambda (cmds)
+                    (cl-remove name cmds
+                               :key (lambda (c) (plist-get c :name))
+                               :test #'equal))
                   root)
                  (message "Deleted '%s'" name))))))
       (if (ghostel-cmd--posframe-showing-p)

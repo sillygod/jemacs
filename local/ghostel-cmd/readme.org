@@ -21,7 +21,8 @@ Posframe when available, side window otherwise.
 | =C-RET=    | Paste and press Enter                       |
 | =/=        | Live-narrow (flex, whitespace is AND)       |
 |            | every printable key types; =C-n= =C-p= move |
-| =a= =e= =d=| Add / edit / delete                         |
+| =a= =e= =d=| Add / edit / delete; edit keeps the place   |
+|            | a name already taken asks before replacing  |
 | =q= / Esc  | Quit; during fill, cancel fill              |
 
 Placeholders: ={{file}}=, ={{line}}=, ={{root}}=, ={{project-name}}=,

@@ -138,6 +138,72 @@ Keys go through the real keymaps with `execute-kbd-macro'."
                        (buffer-string))
                      broken)))))
 
+(defmacro ghostel-cmd-tests--answering (answers yes &rest body)
+  "Run BODY with `read-string' returning ANSWERS in turn.
+`yes-or-no-p' answers YES and counts its calls in `asked'."
+  (declare (indent 2))
+  `(let ((queue ,answers)
+         (asked 0))
+     (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (pop queue)))
+               ((symbol-function 'yes-or-no-p)
+                (lambda (&rest _) (cl-incf asked) ,yes)))
+       ,@body)))
+
+(defun ghostel-cmd-tests--abc ()
+  (list (list :name "a" :cmd "echo a")
+        (list :name "b" :cmd "echo b")
+        (list :name "c" :cmd "echo c")))
+
+(ert-deftest ghostel-cmd-test-edit-keeps-place ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (forward-line 1)
+    (ghostel-cmd-tests--answering '("b" "echo B" "") t
+      (ghostel-cmd-edit)
+      (should (= asked 0)))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b" "c")))
+    (should (equal (plist-get (nth 1 (ghostel-cmd--get-commands ghostel-cmd--root))
+                              :cmd)
+                   "echo B"))
+    (ghostel-cmd-tests--answering '("b2" "echo B" "") t
+      (ghostel-cmd-edit))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b2" "c")))
+    (should (equal (tabulated-list-get-id) "b2"))))
+
+(ert-deftest ghostel-cmd-test-rename-onto-a-name-replaces-it ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (forward-line 1)
+    (ghostel-cmd-tests--answering '("c" "echo B" "") nil
+      (should-error (ghostel-cmd-edit) :type 'user-error)
+      (should (= asked 1)))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b" "c")))
+    (ghostel-cmd-tests--answering '("c" "echo B" "") t
+      (ghostel-cmd-edit))
+    (should (equal (ghostel-cmd--get-commands ghostel-cmd--root)
+                   (list (list :name "a" :cmd "echo a")
+                         (list :name "c" :cmd "echo B" :desc ""))))))
+
+(ert-deftest ghostel-cmd-test-add-onto-a-name-replaces-it-in-place ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (ghostel-cmd-tests--answering '("echo A" "a" "") t
+      (ghostel-cmd-add)
+      (should (= asked 1)))
+    (ghostel-cmd-tests--answering '("echo d" "d" "") t
+      (ghostel-cmd-add)
+      (should (= asked 0)))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b" "c" "d")))
+    (should (equal (plist-get (car (ghostel-cmd--get-commands ghostel-cmd--root))
+                              :cmd)
+                   "echo A"))))
+
+(ert-deftest ghostel-cmd-test-put-command-heals-duplicates ()
+  (should (equal (ghostel-cmd--put-command
+                  (list (list :name "x" :cmd "1")
+                        (list :name "y" :cmd "2")
+                        (list :name "x" :cmd "3"))
+                  (list :name "x" :cmd "new"))
+                 (list (list :name "x" :cmd "new")
+                       (list :name "y" :cmd "2")))))
+
 (ert-deftest ghostel-cmd-test-query-flex-and ()
   (let ((rec (list :name "pytest" :cmd "pytest {{file}}" :desc "unit")))
     (should (ghostel-cmd--query-matches-p rec ""))
