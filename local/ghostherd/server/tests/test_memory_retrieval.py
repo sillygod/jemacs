@@ -114,3 +114,9 @@ def test_words_alone_when_the_embedder_is_not_up(rpc, monkeypatch, tmp_path):
     # Chinese words count in a recall's fallback.
     zh = rpc._herd_recall({"from": "claude-dp", "query": "憑證續簽"})
     assert zh["names"] and zh["names"][0] == "vm-playbook-nginx-certs"
+    # An ask still carries what its words find, never waiting on the model.
+    t0 = time.monotonic()
+    block = idx.ask_block({"project": PROJECT, "kind": "claude"}, DEPLOY_ASK)
+    assert time.monotonic() - t0 < 2.0
+    assert block and "branch-discipline" in block
+    assert idx.ask_block({"project": PROJECT, "kind": "claude"}, UNRELATED_ASKS[0]) is None

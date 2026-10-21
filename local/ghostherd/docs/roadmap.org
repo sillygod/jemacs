@@ -1784,6 +1784,10 @@ never reached agy or grok unless they thought to recall.
   ask as high as a real hit, and its Chinese facts close to every Chinese
   ask; words alone matched long facts to everything.  Words alone when the
   embedder is not up.  =server/memory_rank.py=
+- [X] An ask carries, under "Relevant memory", the few facts most relevant
+  to it (strict bar, at most three, deduped against a grok/agy taker's
+  rules), appended at delivery -- the stored ask unchanged, delivery held a
+  moment at most.  Typed prompts untouched
 - [ ] After the merge, by hand: restart the sidecar (new RPCs, the facts'
   collection, the warm-up builds the first index); reload the =.el= (the
   bound =ghostherd-memory-opening-max= keeps its 4000, now the cap on the

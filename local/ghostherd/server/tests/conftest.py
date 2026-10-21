@@ -10,3 +10,8 @@ os.environ.setdefault("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
 # a test that wants its own still sets the env itself.
 os.environ.setdefault("GHOSTHERD_MEMORY_DIR",
                       tempfile.mkdtemp(prefix="ghostherd-test-"))
+# The same for the shared-memory store: its default is the real
+# ~/.ghostherd/memory, and an ask now reads its taker's project store for
+# the memory it carries.  A test that wants a store of its own sets it.
+os.environ.setdefault("GHOSTHERD_SHARED_MEMORY_DIR",
+                      tempfile.mkdtemp(prefix="ghostherd-test-memory-"))

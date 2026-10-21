@@ -1,5 +1,6 @@
 """The shared-memory facts in a Qdrant collection of their own, and the
-ranking that reads it -- for `herd recall' and for the page.
+ranking that reads it -- for `herd recall', for the memory an ask carries,
+and for the page.
 
 The facts sit in `ghostherd_facts', beside the transcripts' collection in
 the same embedded Qdrant (one client per path: the engine's), never mixed
@@ -51,6 +52,11 @@ NAMESPACE = uuid.UUID("2f1d6c1e-9b2a-4d7e-8f51-6a0c3e9b7d24")
 RETRY_LOAD = 60.0
 # How long the worker idles before it ends; the next change starts another.
 WORKER_IDLE = 2.0
+# An ask's memory: at most this many characters, whole facts only; a fact
+# longer than BODY_MAX shows its start and how to read the rest.
+ASK_BLOCK_MAX = 1800
+BODY_MAX = 300
+ASK_HEADING = "Relevant memory"
 
 
 def point_id(key: str, name: str) -> str:
@@ -322,6 +328,24 @@ class FactIndex:
         hits = [h for h in hits if h.doc.name not in drop][:want]
         return {"mode": "meaning", "hits": [_hit_json(h) for h in hits]}
 
+    # -- what an ask carries ------------------------------------------------
+
+    def ask_block(self, taker: dict[str, Any] | None, body: str) -> str | None:
+        """The memory an ask to TAKER carries, under ASK_HEADING: the facts
+        most relevant to its BODY, from the taker's project, or None when
+        none passes the bar.  A grok or agy taker was given the rules in
+        full as it started, so they are not given again."""
+        project = (taker or {}).get("project") or ""
+        if not project or not (body or "").strip():
+            return None
+        key = sm.slug_for_path(project)
+        exclude: list[str] = []
+        if (taker or {}).get("kind") in ("grok", "agy"):
+            exclude = sm.opening(key)["full"]
+        found = self.rank(key, body, strict=True, exclude=exclude, wait=0.0)
+        return compose_block(found["hits"])
+
+
 def _hit_json(h: mr.Hit) -> dict[str, Any]:
     d = h.doc
     return {"name": d.name, "store": d.key, "type": d.type, "shared": d.shared,
@@ -329,6 +353,41 @@ def _hit_json(h: mr.Hit) -> dict[str, Any]:
             "author": d.extra.get("author") or "",
             "score": round(h.score, 3), "z": round(h.z, 3), "lex": round(h.lex, 3),
             "why": h.why}
+
+
+def _excerpt(body: str, limit: int) -> tuple[str, bool]:
+    "BODY whole when it fits in LIMIT, else its start cut at a line or word."
+    body = body.strip()
+    if len(body) <= limit:
+        return body, False
+    cut = body[:limit]
+    at = max(cut.rfind("\n"), cut.rfind(" "))
+    return (cut[:at] if at > limit // 2 else cut).rstrip(), True
+
+
+def compose_block(hits: list[dict[str, Any]]) -> str | None:
+    """HITS as the section an ask ends with, or None for no hits.  Whole
+    facts only, within ASK_BLOCK_MAX; a long one gives its start and how to
+    read the rest."""
+    if not hits:
+        return None
+    head = (f"{ASK_HEADING} (from the herd's shared memory, by this ask's "
+            f"subject; {sm.RECALL} NAME for the whole of one):")
+    out = [head]
+    used = len(head)
+    for h in hits:
+        where = "every project" if h.get("shared") else h.get("type") or "project"
+        body, cut = _excerpt(h.get("body") or "", BODY_MAX)
+        entry = f"\n- {h['name']} ({where}): {h.get('description') or h.get('title')}"
+        if body:
+            entry += "\n  " + body.replace("\n", "\n  ")
+        if cut:
+            entry += f" … ({sm.RECALL} {h['name']} for the rest)"
+        if used + len(entry) > ASK_BLOCK_MAX and len(out) > 1:
+            break
+        out.append(entry)
+        used += len(entry)
+    return "\n".join(out) if len(out) > 1 else None
 
 
 _lock = threading.Lock()

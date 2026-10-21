@@ -721,6 +721,20 @@ the files' stamps, re-embedding only a fact whose text changed.  Until the
 embedder is up the ranking falls back to words, and says so.  The page can
 call the same ranking (=memory_rank=).
 
+An *ask* carries what memory says about it.  When the herd delivers one,
+it appends, under *Relevant memory*, the few facts of the taker's project
+most relevant to the ask's text --- at most three, a short excerpt each,
+within 1800 characters --- and only when something passes the bar; a grok
+or agy taker, which had the rules in full at startup, is not given them
+again.  The bar is strict: a fact must stand out from the store by meaning
+*and* share words with the same part of the ask (an ask's paragraphs are
+weighed apart, since an ask names several things).  Tuned on
+deploy-platform's real asks, that found 11 of the 12 facts that clearly
+helped and nothing for an unrelated ask.  An ask in Chinese alone, with no
+identifier in it, carries nothing.  The ask as stored is what was asked;
+only the delivered text grows, and it never waits more than a moment for
+it.  Prompts you type yourself are left as they are.
+
 The existing claude memories were migrated in once (=herd memory migrate=,
 reversible with =herd memory unmigrate=): each is copied into its store
 verbatim, the original backed up (=memory.bak-<date>=, never deleted), and

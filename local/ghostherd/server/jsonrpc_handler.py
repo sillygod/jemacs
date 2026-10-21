@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import conversation
 import fact_index
+import herd as herd_module
 import links
 import memory_migrate
 import meter
@@ -24,6 +25,13 @@ from herd import ASK_CLOSED, get_herd
 # words alone.  The CLI's own timeout is 15s.
 RECALL_WAIT = 8.0
 
+
+def _ask_memory(taker, body):
+    "What an ask carries from the shared memory (herd.py's hook)."
+    return fact_index.get_index().ask_block(taker, body)
+
+
+herd_module.ASK_MEMORY = _ask_memory
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
