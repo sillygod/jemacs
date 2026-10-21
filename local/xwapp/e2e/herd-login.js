@@ -41,6 +41,20 @@ const herd = () => {
       check(W("a healthy agent has no /login"),
         !(await page.$('.arow[data-name="qa-deploy-platform"] [data-act="a:agent-login"]')));
 
+      // ---- The /login code-entry screen: open/copy the sign-in URL ----
+      const url = "https://claude.ai/oauth/authorize?client=cli&state=abc123";
+      const withUrl = () => { const h = herd(); const a = h.agents.find((x) => x.name === "claude-deploy-platform");
+        a.reason = "sign in: open the link, then paste the code"; a.login = false; a.url = url; return h; };
+      await page.evaluate((h) => GM.renderHerd(h), withUrl());
+      await sleep(100);
+      check(W("the sign-in URL is offered to open"), !!(await page.$(row + ' [data-act="a:login-open"]')));
+      await tap(row + ' [data-act="a:login-open"]');
+      await sleep(80);
+      check(W("Open sign-in link opens that URL"), (lastOf("open-browser") || {}).url === url, lastOf("open-browser"));
+      await tap(row + ' [data-act="a:login-copy"]');
+      await sleep(80);
+      check(W("Copy link copies that URL"), (lastOf("copy") || {}).text === url, lastOf("copy"));
+
       // ---- The room card ----
       await tap('.pgroup[data-project="' + DP + '"] [data-act="a:room"]');
       await sleep(150);

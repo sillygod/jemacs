@@ -413,6 +413,24 @@ not the error screen."
         (should (eq (ghostherd-session-state s) 'blocked))
         (should-not settled)))))
 
+(ert-deftest ghostherd-test-login-code-screen-surfaces-its-url ()
+  "The /login code-entry screen -- a URL to open, a field for the code --
+reads as blocked and carries the URL to the card.  Reconstructed from the
+flow's shape, not a real capture (a scratch /login shares the user's
+credentials); `ghostherd-login-code-re' is tunable against a real sample."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+          (url "https://claude.ai/oauth/authorize?client=cli&state=abc123"))
+      (let ((ghostherd-tests--fake-screen
+             (concat "Visit this URL to authenticate:\n" url "\n\n"
+                     "Paste code here if prompted:\n> \n")))
+        (should (eq (car (ghostherd--detect-state s)) 'blocked))
+        (should (string-match-p "sign in" (cdr (ghostherd--detect-state s))))
+        (should (equal (ghostherd--login-url s ghostherd-tests--fake-screen) url)))
+      ;; A plain response that merely links to claude.ai is not the flow.
+      (let ((ghostherd-tests--fake-screen "⏺ see https://claude.ai/docs\n────\n❯ \n────\n"))
+        (should-not (ghostherd--login-url s ghostherd-tests--fake-screen))))))
+
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
 moves nothing.  The wheel has to drive the host's own view, in one

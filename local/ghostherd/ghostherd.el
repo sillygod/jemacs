@@ -2639,6 +2639,37 @@ stuck, not idle, until the user acts."
                when (string-match-p re foot)
                return (cons reason action)))))
 
+(defcustom ghostherd-login-code-re
+  "paste.*code\\|code here\\|authoriz.*code\\|enter the code\\|paste it here"
+  "What claude's /login code-entry screen says near its field, after the
+subscription option: a URL to open above, a place to paste the code.
+
+UNCONFIRMED from a real capture -- a scratch /login shares the user's
+credentials, too risky to run just to read the screen -- so this is from
+the shape of the flow, not a sample.  Tune it, with `ghostherd-login-url-re',
+once a real one is in the Log tab (the auto-capture will keep it)."
+  :type 'regexp
+  :group 'ghostherd)
+
+(defcustom ghostherd-login-url-re
+  "https?://[^ \t\n\r\"'<>|]+"
+  "A URL on a screen, for the login flow's open/copy on the card."
+  :type 'regexp
+  :group 'ghostherd)
+
+(defun ghostherd--login-url (session &optional screen)
+  "The URL to open when SESSION sits on claude's /login code-entry screen
+-- a URL above a field for the code -- or nil.  See `ghostherd-login-code-re'
+for what is confirmed and what is not."
+  (when (eq (ghostherd-session-kind session) 'claude)
+    (let* ((screen (or screen (gethash (ghostherd-session-id session) ghostherd--screens)))
+           (foot (and screen (string-join (ghostherd--screen-foot screen 14) "\n")))
+           (case-fold-search t))
+      (when (and foot
+                 (string-match-p ghostherd-login-code-re foot)
+                 (string-match ghostherd-login-url-re foot))
+        (match-string 0 foot)))))
+
 (defun ghostherd--prompt-json (prompt)
   "PROMPT for JSON: its options as (:n N :label LABEL); false for none."
   (if prompt
@@ -2673,7 +2704,8 @@ does."
                (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
                                                       (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
-               (err (and tail (ghostherd--cli-error session tail))))
+               (err (and tail (ghostherd--cli-error session tail)))
+               (login-url (and tail (not err) (ghostherd--login-url session tail))))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
             (ghostherd--read-foot session tail))
@@ -2707,6 +2739,10 @@ does."
            ;; closed with the error screen, and say plainly why.  Ahead of
            ;; the report, so a stale `working' hook cannot mask it.
            (err (cons 'blocked (car err)))
+           ;; The /login code-entry screen: a URL to open and a field to
+           ;; paste the code into.  Blocked on the user, with the URL carried
+           ;; to the card so it can be opened or copied from there.
+           (login-url (cons 'blocked "sign in: open the link, then paste the code"))
            ;; What the agent says about itself beats reading its screen,
            ;; which is a rendering of a drawing of the same fact -- with
            ;; one exception.  A claimed `blocked' loses to a screen that
@@ -5923,6 +5959,11 @@ address of each one's room from your phone, for the bot to link to."
            :login (if (and (eq (ghostherd-session-state s) 'blocked)
                            (eq (cdr (ghostherd--cli-error s)) 'login))
                       t :json-false)
+           ;; The /login URL to open/copy from the card, while it waits on
+           ;; the code.
+           :url (or (and (eq (ghostherd-session-state s) 'blocked)
+                         (ghostherd--login-url s))
+                    "")
            ;; Where it works and the branch it is on, so the lead can find
            ;; and read its work.  A worktree agent is in its own directory
            ;; on its own branch (from the recipe, no per-poll git); the
