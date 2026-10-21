@@ -23,8 +23,10 @@ minibuffer does not count.
 | =C-RET=     | Paste and press Enter                             |
 | =/=         | Live-narrow (flex, whitespace is AND); every      |
 |             | printable key types, =C-n= / =C-p= move           |
-| =a= =e= =d= | Add / edit / delete; edit keeps the place, a name |
-|             | already taken asks before replacing               |
+| =a= =A=     | Add to the project / to the global commands       |
+| =e= =d=     | Edit / delete, in the command's own list; edit    |
+|             | keeps the place, a name already taken asks first  |
+| =m=         | Move the command to the global list, or back      |
 | =M-j= =M-k= | Move the command down / up, saved (=M-<down>= /   |
 |             | =M-<up>= too)                                     |
 | =C-n= =C-p= | While filling a variable with choices: the next / |
@@ -44,6 +46,15 @@ it on; the list follows as you type and =C-g= keeps the old text.
 The preview under the list wraps a long command onto at most
 =ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
 so a huge command never pushes the list away.
+
+* Global commands
+
+=A= adds a command every project shares.  The list shows the
+project's commands, then the global ones, and a From column tags each
+row (=proj=, =global=) once there is more than the project's own.  A
+name is unique within its list, so a project command and a global one
+may share it and both show.  =m= moves the command at point to the
+other list; =e=, =d= and =M-j= / =M-k= stay in the list it is in.
 
 * Placeholders
 
@@ -66,9 +77,9 @@ one with your own text.  A default meant to hold a literal =|= cannot:
 it always reads as choices.
 
 The value you last filled for a ={{name}}= (per project and command,
-for this Emacs session) is offered before its =:default=, and starts
-the next fill whether it was a choice or your own text.  Built-ins
-are always taken fresh.
+for this Emacs session; a global command's per project too) is
+offered before its =:default=, and starts the next fill whether it
+was a choice or your own text.  Built-ins are always taken fresh.
 
 A name starts with a letter or underscore; any other ={{...}}= stays
 literal, so docker's ={{.State.Status}}= and helm's ={{ .Values.x }}=
@@ -80,7 +91,8 @@ Filling happens on the overlay footer, not a chain of minibuffers.
 
 * Save file
 
-Commands live in =ghostel-cmd-save-file=; =o= opens it.  An edit made
+Commands live in =ghostel-cmd-save-file=, keyed by project root; the
+global ones sit under the =:global= key.  =o= opens it.  An edit made
 there, or by another Emacs, is read on the next open or redraw, and a
 save applies its change to the file as it is on disk.  A file that
 does not parse is left alone: the overlay keeps what it had and

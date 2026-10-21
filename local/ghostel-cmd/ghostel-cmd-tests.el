@@ -264,7 +264,7 @@ than the cap, and a long fill value by its end."
     (ghostel-cmd-tests--answering '("b2" "echo B" "") t
       (ghostel-cmd-edit))
     (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b2" "c")))
-    (should (equal (tabulated-list-get-id) "b2"))))
+    (should (equal (tabulated-list-get-id) '(project . "b2")))))
 
 (ert-deftest ghostel-cmd-test-rename-onto-a-name-replaces-it ()
   (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
@@ -295,7 +295,7 @@ than the cap, and a long fill value by its end."
 (ert-deftest ghostel-cmd-test-reorder-is-saved ()
   (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
     (execute-kbd-macro (kbd "M-j"))
-    (should (equal (tabulated-list-get-id) "a"))
+    (should (equal (tabulated-list-get-id) '(project . "a")))
     (setq ghostel-cmd--cache nil
           ghostel-cmd--cache-stamp nil)
     (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("b" "a" "c")))
@@ -306,7 +306,7 @@ than the cap, and a long fill value by its end."
     (execute-kbd-macro (kbd "M-<up>"))
     (execute-kbd-macro (kbd "M-k"))
     (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b" "c")))
-    (should (equal (tabulated-list-get-id) "a"))))
+    (should (equal (tabulated-list-get-id) '(project . "a")))))
 
 (ert-deftest ghostel-cmd-test-reorder-under-filter-skips-hidden ()
   (ghostel-cmd-tests--with-overlay
@@ -355,9 +355,9 @@ than the cap, and a long fill value by its end."
     (should (equal ghostel-cmd--query "npm"))
     (ghostel-cmd-filter-clear)
     (execute-kbd-macro (kbd "C-n"))
-    (should (equal (tabulated-list-get-id) "python"))
+    (should (equal (tabulated-list-get-id) '(project . "python")))
     (execute-kbd-macro (kbd "C-p"))
-    (should (equal (tabulated-list-get-id) "npm"))
+    (should (equal (tabulated-list-get-id) '(project . "npm")))
     (execute-kbd-macro "python")
     (should (equal ghostel-cmd--query "python"))))
 
@@ -590,6 +590,173 @@ as typed text when it was free text."
     (setq ghostel-cmd--fill (list :vars '(("q" . "50%")) :index 0 :input "50%"
                                   :choices '(("q" "50%" "90%"))))
     (should (string-search "[50%%] 90%%" (ghostel-cmd--footer)))))
+
+(defun ghostel-cmd-tests--ids ()
+  "Ids of the listed rows, top to bottom."
+  (save-excursion
+    (goto-char (point-min))
+    (let ((ids nil))
+      (while (tabulated-list-get-id)
+        (push (tabulated-list-get-id) ids)
+        (forward-line 1))
+      (nreverse ids))))
+
+(defun ghostel-cmd-tests--goto (id)
+  "Put point on the row ID."
+  (goto-char (point-min))
+  (while (and (not (eobp)) (not (equal (tabulated-list-get-id) id)))
+    (forward-line 1))
+  (should (equal (tabulated-list-get-id) id)))
+
+(defun ghostel-cmd-tests--line ()
+  (string-trim (buffer-substring-no-properties (line-beginning-position)
+                                               (line-end-position))))
+
+(defun ghostel-cmd-tests--globals (cmds)
+  "Make CMDS the global commands and redraw the overlay."
+  (ghostel-cmd--set-commands cmds ghostel-cmd--global-key)
+  (ghostel-cmd--refresh-overlay))
+
+(ert-deftest ghostel-cmd-test-global-commands-share-the-save-file ()
+  "Global commands sit in the save file under a key that is no path; a
+file without it reads as before, and an outside edit of it is seen."
+  (ghostel-cmd-tests--with-store
+    (let ((root ghostel-cmd--root)
+          (global ghostel-cmd--global-key))
+      (ghostel-cmd-tests--write-outside `((,root (:name "a" :cmd "echo a"))) 10)
+      (should (equal (ghostel-cmd-tests--names root) '("a")))
+      (should-not (ghostel-cmd--get-commands global))
+      (ghostel-cmd--set-commands (list (list :name "gs" :cmd "git status")) global)
+      (should (equal (with-temp-buffer
+                       (insert-file-contents ghostel-cmd-save-file)
+                       (read (current-buffer)))
+                     `((:global (:name "gs" :cmd "git status"))
+                       (,root (:name "a" :cmd "echo a")))))
+      (ghostel-cmd-tests--write-outside
+       `((:global (:name "gs" :cmd "git status") (:name "gl" :cmd "git log"))
+         (,root (:name "a" :cmd "echo a")))
+       20)
+      (should (equal (ghostel-cmd-tests--names global) '("gs" "gl")))
+      (should (equal (mapcar #'car (ghostel-cmd--rows root))
+                     '((project . "a") (global . "gs") (global . "gl")))))))
+
+(ert-deftest ghostel-cmd-test-global-listed-after-project-tagged ()
+  "The global commands follow the project's, every row tagged; a name
+in both lists shows twice.  Without globals there is no tag column."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "test" :cmd "pytest") (list :name "a" :cmd "echo a"))
+    (ghostel-cmd-tests--delivering
+      (should (= (length tabulated-list-format) 3))
+      (ghostel-cmd-tests--globals (list (list :name "gs" :cmd "git status")
+                                        (list :name "test" :cmd "make test")))
+      (should (equal (ghostel-cmd-tests--ids)
+                     '((project . "test") (project . "a")
+                       (global . "gs") (global . "test"))))
+      (should (= (length tabulated-list-format) 4))
+      (goto-char (point-min))
+      (should (string-match-p "\\`proj +test +pytest" (ghostel-cmd-tests--line)))
+      (ghostel-cmd-tests--goto '(global . "test"))
+      (should (string-match-p "\\`global +test +make test" (ghostel-cmd-tests--line)))
+      (execute-kbd-macro (kbd "RET"))
+      (should (equal sent '(("make test" . nil)))))))
+
+(ert-deftest ghostel-cmd-test-add-global-and-move-between-lists ()
+  "A adds a global command; m moves one between the project's list and
+the global one, asking before it replaces a namesake there."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (let ((root ghostel-cmd--root)
+          (global ghostel-cmd--global-key))
+      (ghostel-cmd-tests--answering '("git status" "gs" "") t
+        (execute-kbd-macro "A")
+        (should (= asked 0)))
+      (should (equal (ghostel-cmd-tests--names global) '("gs")))
+      (should (equal (ghostel-cmd-tests--names root) '("a" "b" "c")))
+      (should (equal (tabulated-list-get-id) '(global . "gs")))
+      (ghostel-cmd-tests--goto '(project . "b"))
+      (execute-kbd-macro "m")
+      (should (equal (tabulated-list-get-id) '(global . "b")))
+      (should (equal (ghostel-cmd-tests--names root) '("a" "c")))
+      (should (equal (ghostel-cmd-tests--names global) '("gs" "b")))
+      (execute-kbd-macro "m")
+      (should (equal (tabulated-list-get-id) '(project . "b")))
+      (setq ghostel-cmd--cache nil
+            ghostel-cmd--cache-stamp nil)
+      (should (equal (ghostel-cmd-tests--names root) '("a" "c" "b")))
+      (should (equal (ghostel-cmd-tests--names global) '("gs")))
+      (ghostel-cmd-tests--globals (list (list :name "gs" :cmd "git status")
+                                        (list :name "a" :cmd "echo global a")))
+      (ghostel-cmd-tests--goto '(project . "a"))
+      (ghostel-cmd-tests--answering nil nil
+        (should-error (ghostel-cmd-move-scope) :type 'user-error)
+        (should (= asked 1)))
+      (should (equal (ghostel-cmd-tests--names root) '("a" "c" "b")))
+      (ghostel-cmd-tests--answering nil t
+        (ghostel-cmd-move-scope))
+      (should (equal (ghostel-cmd-tests--names root) '("c" "b")))
+      (should (equal (ghostel-cmd--get-commands global)
+                     (list (list :name "gs" :cmd "git status")
+                           (list :name "a" :cmd "echo a")))))))
+
+(ert-deftest ghostel-cmd-test-edit-delete-reorder-stay-in-scope ()
+  "e, d and M-j / M-k act on the list the command at point is in;
+reordering never crosses into the other list."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "x" :cmd "echo px")
+            (list :name "w" :cmd "echo pw")
+            (list :name "y" :cmd "echo py"))
+    (let ((root ghostel-cmd--root)
+          (global ghostel-cmd--global-key))
+      (ghostel-cmd-tests--globals (list (list :name "x" :cmd "echo gx")
+                                        (list :name "z" :cmd "echo gz")))
+      ;; Below y is the global x: no neighbor, though the project has an x.
+      (ghostel-cmd-tests--goto '(project . "y"))
+      (execute-kbd-macro (kbd "M-j"))
+      (should (equal (ghostel-cmd-tests--ids)
+                     '((project . "x") (project . "w") (project . "y")
+                       (global . "x") (global . "z"))))
+      (execute-kbd-macro (kbd "M-k"))
+      (should (equal (ghostel-cmd-tests--names root) '("x" "y" "w")))
+      (ghostel-cmd-tests--goto '(global . "x"))
+      (execute-kbd-macro (kbd "M-k"))
+      (should (equal (ghostel-cmd-tests--names global) '("x" "z")))
+      (execute-kbd-macro (kbd "M-j"))
+      (should (equal (ghostel-cmd-tests--names global) '("z" "x")))
+      (should (equal (tabulated-list-get-id) '(global . "x")))
+      (ghostel-cmd-tests--answering '("x" "echo GX" "") t
+        (ghostel-cmd-edit)
+        (should (= asked 0)))
+      (should (equal (plist-get (nth 1 (ghostel-cmd--get-commands global)) :cmd)
+                     "echo GX"))
+      (should (equal (plist-get (car (ghostel-cmd--get-commands root)) :cmd)
+                     "echo px"))
+      (should (equal (tabulated-list-get-id) '(global . "x")))
+      (ghostel-cmd-tests--answering nil t
+        (ghostel-cmd-delete))
+      (should (equal (ghostel-cmd-tests--names global) '("z")))
+      (should (equal (ghostel-cmd-tests--names root) '("x" "y" "w"))))))
+
+(ert-deftest ghostel-cmd-test-last-value-per-project-for-global ()
+  "A global command remembers its values per project, apart from a
+project command of the same name."
+  (ghostel-cmd-tests--with-overlay (list (list :name "t" :cmd "proj {{v:p}}"))
+    (ghostel-cmd-tests--delivering
+      (ghostel-cmd-tests--globals (list (list :name "t" :cmd "glob {{v:g}}")))
+      (ghostel-cmd-tests--goto '(global . "t"))
+      (ghostel-cmd-paste)
+      (execute-kbd-macro (kbd "C-u o n e RET"))
+      (should (equal (car sent) '("glob one" . nil)))
+      (ghostel-cmd-paste)
+      (should (equal (ghostel-cmd-tests--input) "one"))
+      (ghostel-cmd-fill-cancel)
+      (ghostel-cmd-tests--goto '(project . "t"))
+      (ghostel-cmd-paste)
+      (should (equal (ghostel-cmd-tests--input) "p"))
+      (ghostel-cmd-fill-cancel)
+      (let ((rec (list :name "t" :cmd "glob {{v:g}}")))
+        (should (equal (ghostel-cmd--fill-vars rec ghostel-cmd--root 'global)
+                       '(("v" . "one"))))
+        (should (equal (ghostel-cmd--fill-vars rec "/elsewhere/" 'global)
+                       '(("v" . "g"))))))))
 
 (ert-deftest ghostel-cmd-test-help-text-lists-overlay-keys ()
   (let ((text (ghostel-cmd--help-text)))
