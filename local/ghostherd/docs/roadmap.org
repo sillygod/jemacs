@@ -1619,6 +1619,32 @@ closing it with the error screen.
 - A second agent runs in its own worktree on local/ghostel-cmd (the first
   real worktree-flow run); its branch is reviewed and merged separately.
 
+** Follow-up: only the CLI's own error (ask eb81eb50)
+
+- [X] An agent's words about an error no longer block it.  The foot rule
+  matched words anywhere in the screen's last ten lines, so the lead
+  quoting another agent's "API Error: Connection lost" and writing "Login
+  expired" read as blocked with a /login button -- and of the day's 22
+  blocked auto-captures, 13 were agents (the lead, claude-.emacs.d, the
+  fixer itself) writing or grepping the words, several mid-turn under a
+  spinner.  claude's transcript decides now: its own error is an entry
+  of its own (=isApiErrorMessage=), and the turn ended on it only while
+  it is the conversation's last.  Without a transcript the screen
+  decides, from the last message above the input box alone, anchored
+  at its start.  ERT on the real captures and transcript lines, broken
+  on purpose
+- [X] "API Error: Connection lost mid-response" continues on its own,
+  like the slept turn (approved by the user): a =continue= rule ahead of
+  the bare API error, the same delay, budget, guards and stop note.  The
+  prompt and the card follow the cause (=ghostherd--continue-causes=):
+  "continuing after a dropped connection in Ns", a prompt that says the
+  connection dropped, a log line naming it -- never that the computer
+  slept.  Login expired, a stalled response, no network and a 500 still
+  block.  ERT + e2e (herd-sleep, 30) broken on purpose
+- [ ] After the merge, set the live =ghostherd-cli-errors= by hand:
+  bin/reload keeps a bound defcustom, so the live Emacs keeps the old
+  unanchored rules and no =dropped= entry until then
+
 * Phase 3.32 — A lead starts and stops agents through the herd  *(this tree)*
 
 Goal: a lead runs agents without reaching into Emacs internals.  Before

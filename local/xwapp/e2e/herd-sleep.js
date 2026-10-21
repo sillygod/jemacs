@@ -1,8 +1,9 @@
 // A turn the Mac's sleep cut short: the agent reads as blocked, and its
 // card (herd and room) counts down to the herd continuing it on its own
 // ("continuing after sleep in Ns") with a Cancel that tells Emacs to leave
-// it blocked.  Once the herd has stopped retrying, the card says so.  Desk
-// and phone.
+// it blocked.  Once the herd has stopped retrying, the card says so.  A
+// dropped connection is carried on the same way, in its own words: the
+// card never says the computer slept.  Desk and phone.
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep } = require("./herdlib");
 const results = [];
@@ -51,6 +52,25 @@ const herd = (over) => {
       check(W("a stopped agent says it stopped retrying"),
         /stopped retrying/.test(await page.$eval(row, (r) => r.textContent)));
       check(W("a stopped agent has no Cancel"), !(await page.$(row + ' [data-act="a:agent-sleep-cancel"]')));
+
+      // A dropped connection: the same countdown and stop note, in its own
+      // words -- and the per-second tick keeps them.
+      const dropped = { reason: "its turn was cut off: the connection dropped",
+                        continueAfter: "after a dropped connection",
+                        continueAgain: "the connection dropped again" };
+      await page.evaluate((h) => GM.renderHerd(h), herd(dropped));
+      await sleep(100);
+      const said = async () => page.$eval(row, (r) => r.textContent);
+      check(W("a dropped connection counts down in its own words"),
+        /continuing after a dropped connection in \d+s/.test(await said()), await said());
+      check(W("it does not say the computer slept"), !/sleep|slept/.test(await said()));
+      await sleep(1100);
+      check(W("the tick keeps the dropped connection's words"),
+        /continuing after a dropped connection in \d+s/.test(await said()) && !/sleep/.test(await said()), await said());
+      await page.evaluate((h) => GM.renderHerd(h), herd(Object.assign({}, dropped, { continueAt: 0, continueStopped: true })));
+      await sleep(100);
+      check(W("a stopped dropped connection says so in its words"),
+        /stopped retrying — the connection dropped again/.test(await said()), await said());
 
       // A healthy agent shows none of this.
       check(W("a healthy agent has no continue line"),

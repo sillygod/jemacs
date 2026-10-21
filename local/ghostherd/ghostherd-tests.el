@@ -46,6 +46,9 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; Keyed by id and global, like `ghostherd--input-at': without this
          ;; one test's slept episode for "c" survives into the next test's.
          (ghostherd--sleep-continue (make-hash-table :test 'equal))
+         ;; Keyed by transcript path: what a test's transcript said stays
+         ;; that test's.
+         (ghostherd--turn-ends (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
          (ghostherd--screens (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
@@ -441,6 +444,286 @@ credentials); `ghostherd-login-code-re' is tunable against a real sample."
         (should-not (ghostherd--login-url s ghostherd-tests--fake-screen))))))
 
 
+;;; Only the CLI's own error ends a turn (ask eb81eb50)
+;;
+;; Real samples, 2026-10-21.  The screens are auto-captures the herd took
+;; when it read each agent as blocked; the transcript entries are claude's
+;; own, trimmed of paths and ids.
+
+(defconst ghostherd-tests--quoted-error-screen
+  (concat
+   "  - 你同意才改： 沒有你點頭，絕不寫進指示檔。\n"
+   "  - 升級後： 那條記憶會從記憶裡移除，留一句說明搬去了哪裡，避免同一件事被讀兩次。\n"
+   "  - 哪些不升級： 跟這台電腦或你個人有關的，例如路徑、帳號設定、個人偏好，一律留在記憶裡。\n"
+   "\n"
+   "  第一階段做完，我會連同各專案搬了多少條記憶一起跟你說。\n"
+   "\n"
+   "✻ Cooked for 20s · done 10:45 PM · 2 shells still running\n"
+   "\n"
+   "❯ [Image #34]然後問一下 這個是不是誤判block了\n"
+   "  ⎿ \u00a0[Image #34]\n"
+   "\n"
+   "  Ran 1 shell command\n"
+   "\n"
+   "⏺ 不是誤判，它真的停下來了。看截圖最後一行：\n"
+   "\n"
+   "  ▎ API Error: Connection lost mid-response. The response above may be incomplete.\n"
+   "\n"
+   "  claude-jnotes 正在用瀏覽器驗證時網路斷了，那一輪就中途結束。herd 的規則是 claude 的回應出現「API\n"
+   "  Error:」就標成 blocked、原因寫「its turn ended on an API\n"
+   "  error」，意思是「它停在半路，需要你推一下」，不是在等你回答問題。卡片上的「2 shells\n"
+   "  running」是它驗證用的後端還在背景跑，不影響。\n"
+   "\n"
+   "  現在的處理： 在它的輸入框送一句「繼續」就好。它會從中斷的地方接著做，之前的對話和背景跑的 shell\n"
+   "  都還在。它是 jnotes 專案的 agent，不是我這邊的，所以我沒有直接幫它送。\n"
+   "\n"
+   "  可以改進的地方： 「Connection lost\n"
+   "  mid-response」跟之前做的「電腦睡著被打斷」性質一樣，都是暫時性的斷線，不是真的出錯。現在只有睡著那種會\n"
+   "  自動接著做，因為當初我們定的是「其他錯誤一律停住等你」。我建議把「Connection lost」也加進自動接續：\n"
+   "\n"
+   "  - 一樣等 45 秒、每輪最多接一次。網路如果真的還沒恢復，再斷一次就停住，不會一直重試。\n"
+   "  - 「Login expired」和其他 API 錯誤（例如額度、權限問題）照舊停住等你。\n"
+   "\n"
+   "  這是設定裡加一行再補測試的事。要的話我排在共用記憶後面交給 claude-.emacs.d。\n"
+   "\n"
+   "✻ Churned for 19s · done 10:48 PM · 2 shells still running\n"
+   "                                                                 ✔ Update installed · Restart to update\n"
+   "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "❯\u00a0\n"
+   "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on · 2 shells · ← for agents · ↓ to manage\n")
+  "lead-.emacs.d's whole screen, auto-captured blocked at 22:48.  Its turn
+had ended normally: its reply quotes another agent's \"API Error:
+Connection lost mid-response\" in a blockquote (claude draws it \"▎\")
+and says 「Login expired」 in prose, and the old foot rule read both as
+claude's own errors -- the card even offered /login.")
+
+(defconst ghostherd-tests--mentioned-error-screens
+  (list
+   (concat
+   "     '((claude\n"
+   "     (\\\"Login expired\\\\\\\\|Please run /login\\\" login \\\"its login expired\n"
+   "     -- run /login\\\")\n"
+   "     (\\\"went to sleep mid-response\\\" continue \\\"its turn was cut off:\n"
+   "     the computer slept\\\")\n"
+   "     (\\\"API Error:\\\" nil \\\"its turn ended on an API error\\\"))))\n"
+   "     (fo…\n"
+   "\n"
+   "✻ Whatchamacalliting… (24m 21s · ↓ 89.2k tokens)\n"
+   "                                ✔ Update installed · Restart to update\n"
+   "────────────────────────────────────────────────────────────────────────\n"
+   "❯\u00a0\n"
+   "────────────────────────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-gate · esc to interru…\n")
+   (concat
+   "  the existing tests use as sample data.\n"
+   "\n"
+   "⏺ Running 1 shell command…\n"
+   "  ⎿  $ cd /Users/jing/.ghostherd/worktrees/.emacs.d/claude-.e\n"
+   "     macs.d-2/local/ghostherd && grep -n \"went to\n"
+   "     sleep\\|Login expired\\|API Error\\|cli-error\"\n"
+   "     ghostherd-tests.el | head -60\n"
+   "\n"
+   "✶ Sautéing… (1m 50s · ↓ 6.1k tokens · thought for 5s)\n"
+   "                   ✘ Auto-update failed · Run claude doctor\n"
+   "─────────────────────────────────────────────────────────────\n"
+   "❯\u00a0\n"
+   "─────────────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt\n"))
+  "Agents that wrote the error words while working, auto-captured blocked
+at 13:44 (claude-.emacs.d setting `ghostherd-cli-errors' live) and 22:53
+(this very fix, grepping its tests): the words in tool output, a spinner
+under them.")
+
+(defconst ghostherd-tests--connection-lost-screen
+  (concat
+   "\n"
+   "⏺ API Error: Connection lost mid-response. The response above may be incomplete.\n"
+   "\n"
+   "✻ Cooked for 22m 42s · done 10:42 PM · 2 shells still running\n"
+   "                                                                 ✔ Update installed · Restart to update\n"
+   "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "❯\u00a0\n"
+   "─────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on · 2 shells · ← for agents · ↓ to manage\n")
+  "claude-jnotes, auto-captured blocked at 22:42: a real \"API Error:
+Connection lost mid-response\", drawn as a message of its own above the
+turn's end.")
+
+(defconst ghostherd-tests--prompted-after-error-screen
+  (concat
+   "⏺ API Error: Connection lost mid-response. The response above may be incomplete.\n"
+   "\n"
+   "✻ Cooked for 22m 42s · done 10:42 PM · 2 shells still running\n"
+   "\n"
+   "❯ 你說的api error 是什麼\n"
+   "\n"
+   "✽ Mustering…\n"
+   "                                                       ✔ Update installed · Restart to update\n"
+   "───────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "❯\u00a0\n"
+   "───────────────────────────────────────────────────────────────────────────────────────────────\n"
+   "  ⏵⏵ auto mode on · 2 shells · esc to interrupt · ← for agents · ↓ to manage\n")
+  "claude-jnotes five minutes on, still read as blocked: the error is on
+screen, but a prompt was typed since and a new turn is running.")
+
+(defconst ghostherd-tests--claude-entries
+  '((dropped .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-21T14:42:33.859Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Connection lost mid-response. The response above may be incomplete.\"}]},\"error\":\"server_error\",\"truncatedAfterOutput\":true,\"isApiErrorMessage\":true}")
+    (dropped-turn .
+     "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":1361697,\"messageCount\":7845,\"timestamp\":\"2026-10-21T14:42:33.988Z\",\"isMeta\":false}")
+    (prompt-after .
+     "{\"isSidechain\":false,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"你說的api error 是什麼\"},\"timestamp\":\"2026-10-21T14:47:36.634Z\",\"permissionMode\":\"auto\",\"origin\":{\"kind\":\"human\"},\"promptSource\":\"typed\",\"turnOrigin\":\"human\"}")
+    (slept .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-20T10:14:28.796Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Your computer went to sleep mid-response. The response above may be incomplete.\"}]},\"error\":\"server_error\",\"truncatedAfterOutput\":true,\"isApiErrorMessage\":true}")
+    (login .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-11T01:40:31.714Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"Login expired · Please run /login\"}]},\"error\":\"authentication_failed\",\"isApiErrorMessage\":true,\"perTurnEffort\":\"xhigh\"}")
+    (login-turn .
+     "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":611,\"messageCount\":8622,\"timestamp\":\"2026-10-11T01:40:31.727Z\",\"isMeta\":false}")
+    (login-cmd .
+     "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"local_command\",\"content\":\"<command-name>/login</command-name>\\n            <command-message>login</command-message>\\n            <command-args></command-args>\",\"level\":\"info\",\"timestamp\":\"2026-10-11T01:53:42.661Z\",\"isMeta\":false}")
+    (login-out .
+     "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"local_command\",\"content\":\"<local-command-stdout>Login successful</local-command-stdout>\",\"level\":\"info\",\"timestamp\":\"2026-10-11T01:53:42.661Z\",\"isMeta\":false,\"commandRun\":{\"command\":\"login\",\"args\":\"\"}}")
+    (stalled .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-16T16:00:00.858Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: The response stopped arriving. The response above may be incomplete.\"}]},\"error\":\"server_error\",\"truncatedAfterOutput\":true,\"isApiErrorMessage\":true}")
+    (offline .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-09T01:37:31.761Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)\"}]},\"error\":\"server_error\",\"isApiErrorMessage\":true,\"perTurnEffort\":\"xhigh\"}")
+    (server .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-09-10T06:32:16.346Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.\"}]},\"error\":\"server_error\",\"isApiErrorMessage\":true,\"apiErrorStatus\":500}")
+    (model .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-21T07:25:20.423Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"There's an issue with the selected model (no-such-model-xyz). It may not exist or you may not have access to it. Run --model to pick a different model.\"}]},\"error\":\"model_not_found\",\"isApiErrorMessage\":true,\"apiErrorStatus\":404,\"perTurnEffort\":null}")
+    (lead-reply .
+     "{\"isSidechain\":false,\"message\":{\"model\":\"claude-opus-5-5\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"不是誤判，它真的停下來了。看截圖最後一行：\\n\\n> API Error: Connection lost mid-response. The response above may be incomplete.\\n\\nclaude-jnotes 正在用瀏覽器驗證時網路斷了，那一輪就中途結束。herd 的規則是 claude 的回應出現「API Error:」就標成 blocked、原因寫「its turn ended on an API error」，意思是「它停在半路，需要你推一下」，不是在等你回答問題。卡片上的「2 shells running」是它驗證用的後端還在背景跑，不影響。\\n\\n**現在的處理：** 在它的輸入框送一句「繼續」就好。它會從中斷的地方接著做，之前的對話和背景跑的 shell 都還在。它是 jnotes 專案的 agent，不是我這邊的，所以我沒有直接幫它送。\\n\\n**可以改進的地方：** 「Connection lost mid-response」跟之前做的「電腦睡著被打斷」性質一樣，都是暫時性的斷線，不是真的出錯。現在只有睡著那種會自動接著做，因為當初我們定的是「其他錯誤一律停住等你」。我建議把「Connection lost」也加進自動接續：\\n\\n- 一樣等 45 秒、每輪最多接一次。網路如果真的還沒恢復，再斷一次就停住，不會一直重試。\\n- 「Login expired」和其他 API 錯誤（例如額度、權限問題）照舊停住等你。\\n\\n這是設定裡加一行再補測試的事。要的話我排在共用記憶後面交給 claude-.emacs.d。\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"input_transformations\":[]},\"serverClassifierRequest\":\"a6bdebad-3fd8-475d-8aef-ad9db5b11da8\",\"apiBlockIndex\":1,\"requestRef\":\"e5b169ea-3122-4f98-b092-473db326c61c\",\"requestedModel\":\"claude-opus-5-5[1m]\",\"type\":\"assistant\",\"timestamp\":\"2026-10-21T14:48:30.570Z\",\"advisorModel\":\"claude-opus-5-5\",\"effort\":\"xhigh\",\"perTurnEffort\":\"xhigh\"}")
+    (lead-turn .
+     "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"hookCount\":1,\"hookErrors\":[],\"hookAdditionalContext\":[],\"preventedContinuation\":false,\"stopReason\":\"\",\"hasOutput\":false,\"level\":\"suggestion\",\"timestamp\":\"2026-10-21T14:48:30.678Z\",\"toolUseID\":\"04ab60ea-92f6-4247-8880-d03d8e0e46a7\"}"))
+  "Real claude transcript lines.  Its own errors carry `isApiErrorMessage'
+and model \"<synthetic>\"; lead-reply is lead-.emacs.d's reply behind
+`ghostherd-tests--quoted-error-screen', a model's message with no mark.
+The rest is what claude writes after an error: the turn's duration, a
+/login run, the stop hook's summary, the next prompt.")
+
+(defun ghostherd-tests--entries (&rest tags)
+  "The transcript lines TAGS name in `ghostherd-tests--claude-entries'."
+  (mapcar (lambda (tag) (alist-get tag ghostherd-tests--claude-entries)) tags))
+
+(defmacro ghostherd-tests--with-transcript (session lines &rest body)
+  "Run BODY with SESSION's hooks naming a transcript of LINES, bound to
+`path' so BODY can append to it."
+  (declare (indent 2))
+  `(let* ((dir (make-temp-file "gh-transcript-" t))
+          (path (expand-file-name "conv.jsonl" dir))
+          (ghostherd--herd-links (make-hash-table :test 'equal)))
+     (unwind-protect
+         (progn
+           (with-temp-file path
+             (insert (string-join ,lines "\n") "\n"))
+           (puthash (ghostherd-session-name ,session)
+                    (list :cli "claude" :transcript path)
+                    ghostherd--herd-links)
+           ,@body)
+       (delete-directory dir t))))
+
+(defconst ghostherd-tests--idle-screen
+  "⏺ earlier work\n\n✻ Baked for 1s\n────────────────────\n❯ \n────────────────────\n  ⏵⏵ auto mode on\n"
+  "A claude screen with no error on it.")
+
+(ert-deftest ghostherd-test-a-quoted-error-does-not-block ()
+  "An agent quoting or mentioning a CLI error is not stuck on one: not by
+its transcript, where its reply is the model's, and not by the screen,
+where its last message does not start with the error.  The real false
+blocks of 2026-10-21; each would have tripped the old foot rule."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "lead-x" :kind 'claude :backend 'fake)))
+      (dolist (screen (cons ghostherd-tests--quoted-error-screen
+                            ghostherd-tests--mentioned-error-screens))
+        (should (string-match-p "Login expired\\|went to sleep\\|API Error:"
+                                (string-join (ghostherd--screen-foot screen 10) "\n")))
+        ;; The screen alone: an agent with no transcript known yet.
+        (should-not (ghostherd--cli-error s screen))
+        (let ((ghostherd-tests--fake-screen screen))
+          (should-not (eq (car (ghostherd--detect-state s)) 'blocked))))
+      ;; Its transcript: the reply is the last entry, and a model's.
+      (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'lead-reply 'lead-turn)
+        (let ((ghostherd-tests--fake-screen ghostherd-tests--quoted-error-screen))
+          (should (eq (ghostherd--transcript-turn-end s) :clean))
+          (should-not (ghostherd--cli-error s))
+          (should-not (eq (car (ghostherd--detect-state s)) 'blocked)))))))
+
+(ert-deftest ghostherd-test-claude-own-errors-still-block ()
+  "claude's own errors, as its transcript marks them, block with the right
+action -- whatever the screen shows -- and so does a real one on the
+screen of an agent whose transcript is not known."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake)))
+      (pcase-dolist (`(,tag ,action ,reason)
+                     '((login login "login expired")
+                       (slept continue "computer slept")
+                       (dropped continue "connection dropped")
+                       (model nil "selected model")))
+        (ghostherd-tests--with-transcript s
+            (append (ghostherd-tests--entries 'lead-reply tag) (ghostherd-tests--entries 'login-turn))
+          (let ((ghostherd-tests--fake-screen ghostherd-tests--idle-screen))
+            (should (equal (car (ghostherd--transcript-turn-end s)) :error))
+            (should (eq (cdr (ghostherd--cli-error s)) action))
+            (pcase-let ((`(,state . ,why) (ghostherd--detect-state s)))
+              (should (eq state 'blocked))
+              (should (string-match-p reason why))))))
+      ;; No transcript: the real connection-lost screen still blocks.
+      (let ((ghostherd-tests--fake-screen ghostherd-tests--connection-lost-screen))
+        (should (equal (ghostherd--last-message ghostherd-tests--connection-lost-screen)
+                       "API Error: Connection lost mid-response. The response above may be incomplete."))
+        (should (equal (ghostherd--detect-state s)
+                       '(blocked . "its turn was cut off: the connection dropped")))))))
+
+(ert-deftest ghostherd-test-a-prompt-after-the-error-ends-it ()
+  "A prompt typed after the error starts a new turn: no longer stuck,
+by the transcript or by the screen.  What claude writes after an error
+that is not the conversation -- the turn's duration, a /login run, in
+the old shape or the new -- leaves it stuck."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake)))
+      (should-not (ghostherd--cli-error s ghostherd-tests--prompted-after-error-screen))
+      (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'dropped 'dropped-turn 'prompt-after)
+        (should (eq (ghostherd--transcript-turn-end s) :clean))
+        (should-not (ghostherd--cli-error s ghostherd-tests--connection-lost-screen)))
+      (ghostherd-tests--with-transcript s
+          (append (ghostherd-tests--entries 'login 'login-turn 'login-cmd 'login-out)
+                  (list "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"<local-command-caveat>Caveat</local-command-caveat>\"}}"
+                        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/login</command-name>\"}}"
+                        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Login interrupted</local-command-stdout>\"}}"
+                        "{\"type\":\"last-prompt\",\"lastPrompt\":\"go on\"}"))
+        (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) 'login))))))
+
+(ert-deftest ghostherd-test-the-turn-end-is-read-past-a-large-entry ()
+  "The transcript is read back from its end a chunk at a time, growing:
+an entry larger than a chunk after the error does not hide it."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake)))
+      (ghostherd-tests--with-transcript s
+          (append (ghostherd-tests--entries 'lead-reply 'slept)
+                  (list (format "{\"type\":\"file-history-snapshot\",\"blob\":\"%s\"}"
+                                (make-string 300000 ?x))))
+        (should (equal (ghostherd--transcript-turn-end s)
+                       '(:error "API Error: Your computer went to sleep mid-response. The response above may be incomplete.")))))))
+
+(ert-deftest ghostherd-test-the-turn-end-is-read-once-per-change ()
+  "The poll asks every second; an unchanged transcript is read once, and
+a changed one again."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+          (reads 0)
+          (read-turn-end (symbol-function 'ghostherd--claude-read-turn-end)))
+      (cl-letf (((symbol-function 'ghostherd--claude-read-turn-end)
+                 (lambda (&rest args) (cl-incf reads) (apply read-turn-end args))))
+        (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'dropped 'dropped-turn)
+          (dotimes (_ 3)
+            (should (eq (car (ghostherd--transcript-turn-end s)) :error)))
+          (should (= reads 1))
+          (write-region (concat (alist-get 'prompt-after ghostherd-tests--claude-entries) "\n")
+                        nil path t 'silent)
+          (should (eq (ghostherd--transcript-turn-end s) :clean))
+          (should (= reads 2)))))))
+
 ;;; Carry a turn on after the Mac slept (ask e8dbef6d)
 
 (defconst ghostherd-tests--slept-screen
@@ -602,6 +885,85 @@ and the prompt is never sent."
         (let ((snap (car (ghostherd--herd-snapshot))))
           (should (> (plist-get snap :continueAt) 0))
           (should (eq (plist-get snap :continueStopped) :json-false)))))))
+
+;;; A dropped connection is carried on too, in its own words (ask eb81eb50)
+
+(ert-deftest ghostherd-test-only-the-cut-short-errors-continue ()
+  "Of claude's own errors, the Mac sleeping and the connection dropping
+are continued, each with its cause; an expired login and every other
+API error -- a stalled response, no network, a 500, an unknown model --
+still block and wait.  Real transcript entries."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake)))
+      (pcase-dolist (`(,tag ,action ,cause)
+                     '((slept continue slept)
+                       (dropped continue dropped)
+                       (login login nil)
+                       (stalled nil nil)
+                       (offline nil nil)
+                       (server nil nil)
+                       (model nil nil)))
+        (ghostherd-tests--with-transcript s (ghostherd-tests--entries tag 'login-turn)
+          (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) action))
+          (should (eq (ghostherd--continue-cause s ghostherd-tests--idle-screen) cause))))
+      ;; The screen, for an agent with no transcript known, says the same.
+      (should (eq (ghostherd--continue-cause s ghostherd-tests--connection-lost-screen) 'dropped))
+      (should (eq (ghostherd--continue-cause s ghostherd-tests--slept-screen) 'slept))
+      ;; A `continue' rule that names no cause -- the shape of the value a
+      ;; live Emacs keeps until it is set again -- is the slept one.
+      (let ((ghostherd-cli-errors
+             '((claude ("went to sleep mid-response" continue "the computer slept")))))
+        (should (eq (ghostherd--continue-cause s ghostherd-tests--slept-screen) 'slept))))))
+
+(ert-deftest ghostherd-test-a-dropped-connection-is-continued-in-its-own-words ()
+  "claude-jnotes's turn, cut by a dropped connection: blocked, then after
+the same delay the herd sends a prompt that says the connection dropped
+-- never that the computer slept -- logs it so, and the card counts down
+and stops in those words.  The same guards hold, and the same budget: a
+continued turn that drops again stays blocked."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--connection-lost-screen)
+            (ghostherd-sleep-continue-delay 60)
+            (ghostherd-sleep-continue-max 1)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (_s text &optional submit) (push (list text submit) sends))))
+          (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'lead-reply 'dropped 'dropped-turn)
+            (ghostherd-poll-session s)
+            (should (eq (ghostherd-session-state s) 'blocked))
+            (should-not sends)
+            (let ((snap (car (ghostherd--herd-snapshot))))
+              (should (> (plist-get snap :continueAt) 0))
+              (should (equal (plist-get snap :continueAfter) "after a dropped connection")))
+            ;; Typed into since the wait began: left alone.
+            (plist-put (gethash (ghostherd-session-id s) ghostherd--sleep-continue)
+                       :since (- (float-time) 120))
+            (puthash (ghostherd-session-id s) (float-time) ghostherd--input-at)
+            (ghostherd-poll-session s)
+            (should-not sends)
+            (remhash (ghostherd-session-id s) ghostherd--input-at)
+            ;; Past the delay, untouched: continued once, in its own words.
+            (ghostherd-poll-session s)
+            (should (equal sends (list (list ghostherd-dropped-continue-prompt t))))
+            (should-not (string-match-p "sleep\\|slept" ghostherd-dropped-continue-prompt))
+            (should (string-match-p "connection" ghostherd-dropped-continue-prompt))
+            (let ((entry (cl-find 'continue ghostherd--log :key #'ghostherd-log-entry-kind)))
+              (should (string-match-p "a dropped connection cut short"
+                                      (ghostherd-log-entry-text entry))))
+            ;; The continued turn drops again: blocked, not prodded twice.
+            (write-region (concat (alist-get 'prompt-after ghostherd-tests--claude-entries) "\n"
+                                  (alist-get 'dropped ghostherd-tests--claude-entries) "\n")
+                          nil path t 'silent)
+            (ghostherd-poll-session s)
+            (ghostherd-poll-session s)
+            (should (= (length sends) 1))
+            (should (eq (ghostherd-session-state s) 'blocked))
+            (should (ghostherd--sleep-continue-stopped-p s))
+            (let ((snap (car (ghostherd--herd-snapshot))))
+              (should (eq (plist-get snap :continueStopped) t))
+              (should (equal (plist-get snap :continueAgain) "the connection dropped again")))))))))
 
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
