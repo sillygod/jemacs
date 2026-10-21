@@ -54,6 +54,24 @@
       ' title="Put what it suggests in the box">Use</button>';
   }
 
+  // The composer is one line that grows with what you type, up to a cap
+  // (CSS max-height) past which it scrolls -- but only on the phone, where
+  // every line costs the conversation.  A desktop keeps its fixed box and
+  // its drag-to-resize, so this leaves it alone.
+  const phone = () => window.matchMedia("(max-width: 640px)").matches;
+  function autoGrow(ta) {
+    if (!ta || !phone()) return;
+    // rows=2 in the markup (the desktop's box) would keep an empty textarea
+    // two lines tall; drop to one row and grow with the text.  Empty, it
+    // rests at the CSS one-line min-height -- a long placeholder must not
+    // puff `scrollHeight' up to the two lines it would wrap onto.
+    ta.rows = 1;
+    if (!ta.value) { ta.style.height = ""; return; }
+    ta.style.height = "auto";
+    const max = parseInt(getComputedStyle(ta).maxHeight, 10);
+    ta.style.height = (max ? Math.min(ta.scrollHeight, max) : ta.scrollHeight) + "px";
+  }
+
   // A box drawn once, kept as you type: its placeholder and Use follow
   // what the agent suggests now.
   function suggestIn(box, name, hint) {
@@ -62,6 +80,7 @@
     const a = agentByName(name);
     if (ta && ta.placeholder !== hint) ta.placeholder = hint;
     if (use) use.hidden = !(a && a.suggestion);
+    autoGrow(ta);
   }
 
   function useSuggestion(name, ta) {
@@ -797,6 +816,8 @@
     // The room: its project, each agent's conversation, the agents shown
     // by their screen instead, and the tool lines opened.
     room: null, convs: {}, roomScreen: new Set(), toolsOpen: new Set(),
+    // Room cards the phone has expanded past their two-line header.
+    cardOpen: new Set(),
     // The sub-agents' reports opened whole.
     subOpen: new Set(),
     // A sub-agent's own transcript, opened over the room: which, and what
@@ -1691,6 +1712,8 @@
     const name = a.name;
     const acts = [];
     const menu = choicesHtml(a);
+    // Anything that needs the user stays out of the ▾ fold on the phone:
+    // /login and its link are kept; Esc and Screen are `sec' (secondary).
     if (a.login) {
       acts.push('<button type="button" class="primary small" data-act="a:agent-login" title="Run /login to sign in again">/login</button>');
     }
@@ -1698,18 +1721,21 @@
       acts.push('<button type="button" class="primary small" data-act="a:login-open" data-url="' + esc(a.url) + '" title="Open the sign-in link">Open sign-in link</button>');
       acts.push('<button type="button" class="ghost small" data-act="a:login-copy" data-url="' + esc(a.url) + '">Copy link</button>');
     }
-    acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
+    acts.push('<button type="button" class="ghost small sec" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
-      acts.push('<button type="button" class="ghost small" data-act="a:room-screen">' +
+      acts.push('<button type="button" class="ghost small sec" data-act="a:room-screen">' +
         (herdNow.roomScreen.has(name) ? "Conversation" : "Screen") + "</button>");
     }
+    const expanded = herdNow.cardOpen.has(name);
+    const cx = '<button type="button" class="cx" data-act="a:card-expand" title="' +
+      (expanded ? "Less" : "More: notes, chips, branch, Esc / Screen") + '">' + (expanded ? "▴" : "▾") + "</button>";
     return '<div class="amain">' + stateBadge(a.state) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
       agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
-      esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
+      esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +
       meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
@@ -2314,7 +2340,7 @@
     }
     agents.forEach((a) => {
       const col = roomColumn(a.name);
-      col.className = "rcol s-" + a.state;
+      col.className = "rcol s-" + a.state + (herdNow.cardOpen.has(a.name) ? " expanded" : "");
       col.querySelector(".rtop").innerHTML = roomTop(a, asksFor(a.name, asks));
       const body = col.querySelector(".rbody");
       if ((body.getAttribute("data-subs") || "") !== subsKey(a)) {
@@ -2392,6 +2418,11 @@
       watchRoom();
       const a = roomAgents().find((x) => x.name === name);
       if (a) renderRoomBody(a);
+      return renderRoom();
+    }
+    if (act === "card-expand") {
+      if (herdNow.cardOpen.has(name)) herdNow.cardOpen.delete(name);
+      else herdNow.cardOpen.add(name);
       return renderRoom();
     }
     if (act === "sub-more") {
@@ -2740,6 +2771,7 @@
     if (c.contains("agent-text")) {
       const row = ev.target.closest(".arow, .rcol, .cfoot");
       if (row) herdNow.compose[row.getAttribute("data-name")] = ev.target.value;
+      autoGrow(ev.target);
     } else if (c.contains("new-name")) {
       herdNow.newName = ev.target.value;
     } else if (c.contains("notes-text")) {
@@ -3524,6 +3556,29 @@
       }
     },
   };
+
+  // Keep the page exactly as tall as the browser is showing.  The dynamic
+  // viewport (the phone's URL bar) is handled by CSS `100dvh'; the keyboard
+  // is not -- it covers the bottom without shrinking the layout -- so track
+  // the visual viewport into --app-h.  The room/chat is then a flex column
+  // of that height: the composer (flex-shrink:0) stays above the keyboard
+  // and the transcript (flex:1) shrinks, not the other way round.  On a
+  // desktop the visual viewport is the window, so this is a no-op.
+  function fitViewport() {
+    const vv = window.visualViewport;
+    const h = vv ? vv.height : window.innerHeight;
+    document.documentElement.style.setProperty("--app-h", Math.round(h) + "px");
+    // When the keyboard shifts the page down, pin it back so the top bar
+    // and the composer both sit in the visible band.
+    if (vv && vv.offsetTop > 0) window.scrollTo(0, 0);
+  }
+  if (window.visualViewport) {
+    visualViewport.addEventListener("resize", fitViewport);
+    visualViewport.addEventListener("scroll", fitViewport);
+  }
+  window.addEventListener("resize", fitViewport);
+  window.addEventListener("orientationchange", fitViewport);
+  fitViewport();
 
   emit("ready");
   restore();

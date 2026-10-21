@@ -10,7 +10,11 @@ html, body {
   color: var(--text);
   font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-body { display: flex; flex-direction: column; overflow: hidden; }
+/* The page is exactly as tall as the browser actually shows: the dynamic
+   viewport (so the phone's URL bar does not push the composer off), and,
+   when the keyboard is up, the space above it -- app.js tracks the visual
+   viewport into --app-h.  A desktop sees its window height, unchanged. */
+body { display: flex; flex-direction: column; overflow: hidden; height: var(--app-h, 100dvh); }
 
 button { font: inherit; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
@@ -402,6 +406,11 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .arow.s-done { border-left-color: var(--st-done); }
 .arow.s-dead { border-left-color: var(--st-dead); }
 .amain { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+/* The phone's tap-to-expand on a room card header: folds notes, the named
+   chips, branch and Esc/Screen away so the two lines that matter stay.
+   Hidden on a desktop, where the whole header is shown. */
+.cx { display: none; background: none; border: 0; color: var(--muted); padding: 2px 6px; font-size: 13px; line-height: 1; }
+.cx:hover { color: var(--text); }
 .aname {
   background: none;
   border: 0;
@@ -866,17 +875,17 @@ html { -webkit-text-size-adjust: 100%; }
   .page { padding: 10px 12px 32px; }
   .phead .ppath { display: none; }
 
-  /* The room's head in two lines: the project and the view; then how its
-     agents are, its branch, PR and tasks, in one row swiped sideways. */
-  .rhead { align-items: center; padding: 6px 12px; row-gap: 6px; }
-  .rhead .pname { order: 1; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The room's head folds to one line: the project, how its agents are,
+     and the view toggle.  The branch / PR / worktree chips do not hold
+     height here -- they are a tap away in each card (▾) and in the Agents
+     tab -- so the conversation below gets the room. */
+  .rhead { flex-wrap: nowrap; align-items: center; padding: 7px 12px; gap: 8px; row-gap: 0; min-width: 0; }
+  .rhead .pname { order: 1; font-size: 15px; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rhead .ppath { display: none; }
-  .rview { order: 2; }
-  .rhead::after { content: ""; order: 3; flex-basis: 100%; }
-  .rsum { order: 4; flex-shrink: 0; }
-  .rwork { order: 5; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  .rruns { order: 6; }
-  .rwork .work { margin: 0; }
+  .rhead .rsum { order: 2; flex: 0 0 auto; }
+  .rhead .rview { order: 3; margin-left: auto; flex: 0 0 auto; }
+  .rhead::after { display: none; }
+  .rhead .rwork, .rhead .rruns { display: none; }
   /* So too under a project, and what a conversation names. */
   .work { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .work > * { flex-shrink: 0; }
@@ -890,19 +899,43 @@ html { -webkit-text-size-adjust: 100%; }
   .cbody { padding: 8px 12px; }
   .cmeter { padding: 0 12px; }
 
-  /* A box to write in: the width of the screen, Send beside it; whom it
-     goes to, and Image, above. */
-  .cfoot, .rfoot, .agent-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
-  .cfoot { padding: 6px 10px 8px; }
-  .cfoot .attach, .rfoot .attach, .agent-compose .attach { grid-column: 1 / -1; }
-  .cfoot select { grid-column: 1; grid-row: 2; justify-self: start; max-width: 100%; }
-  .cfoot textarea, .rfoot textarea, .agent-compose textarea { grid-column: 1; grid-row: 3 / 5; min-width: 0; resize: none; }
-  .rfoot textarea, .agent-compose textarea { grid-row: 2 / 5; align-self: stretch; }
-  .cfoot [data-act="a:image"], .rfoot [data-act="a:image"], .agent-compose [data-act="a:image"] { grid-column: 2; grid-row: 2; }
-  /* Use, what the agent suggests, between them: there only when it does. */
-  .cfoot .use, .rfoot .use, .agent-compose .use { grid-column: 2; grid-row: 3; }
-  .cfoot [data-act="a:send"], .rfoot [data-act="a:send"], .agent-compose [data-act="a:send"] { grid-column: 2; grid-row: 4; }
+  /* A box to write in: one line that grows as you type (app.js, up to a
+     cap), with Image and Use as icon buttons beside Send -- not a stack --
+     so an idle composer is one line tall and the conversation gets the
+     rest.  The "to" select (Chat only) sits on its own line above. */
+  .cfoot, .rfoot, .agent-compose { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; }
+  .cfoot { padding: 6px 10px; }
+  .cfoot .attach, .rfoot .attach, .agent-compose .attach { flex-basis: 100%; }
+  .cfoot select.chat-to { flex-basis: 100%; max-width: 100%; }
+  .cfoot textarea, .rfoot textarea, .agent-compose textarea {
+    flex: 1 1 8em; min-width: 0; resize: none; min-height: 38px; max-height: 42vh; }
+  .cfoot [data-act="a:image"], .rfoot [data-act="a:image"], .agent-compose [data-act="a:image"],
+  .cfoot .use, .rfoot .use, .agent-compose .use,
+  .cfoot [data-act="a:send"], .rfoot [data-act="a:send"], .agent-compose [data-act="a:send"] { flex: 0 0 auto; }
+  /* Image and Use shrink to an icon; Send keeps its word. */
+  .cfoot [data-act="a:image"], .rfoot [data-act="a:image"], .agent-compose [data-act="a:image"],
+  .cfoot .use, .rfoot .use, .agent-compose .use { font-size: 0; padding: 0; width: 38px; justify-content: center; }
+  .cfoot [data-act="a:image"]::before, .rfoot [data-act="a:image"]::before, .agent-compose [data-act="a:image"]::before { content: "🖼"; font-size: 16px; }
+  .cfoot .use::before, .rfoot .use::before, .agent-compose .use::before { content: "💡"; font-size: 15px; }
   .choices { align-items: stretch; }
+
+  /* The room card header, two lines on the phone.  Line 1: state, name,
+     badges, time.  Line 2: model, meter, reason.  Notes, the named chips,
+     the branch and Esc/Screen fold behind ▾ on the header; anything that
+     needs the user -- a menu to answer, /login and its link, the
+     continue-after-sleep countdown, an ask owed -- is never folded away. */
+  .rcol .cx { display: inline-flex; align-items: center; margin-left: 4px; min-height: 28px; flex: 0 0 auto; }
+  /* Line 1 stays one line: the name gives way (ellipsis) so the badges, the
+     time and ▾ keep their place rather than wrapping to a second row. */
+  .rtop .amain { flex-wrap: nowrap; }
+  .rtop .amain > * { flex-shrink: 0; }
+  .rtop .amain .aname { flex: 0 1 auto; min-width: 2.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rtop .amain .when { margin-left: auto; }
+  .rcol:not(.expanded) .rtop .anotes,
+  .rcol:not(.expanded) .rtop .work,
+  .rcol:not(.expanded) .rtop .aacts .sec { display: none; }
+  /* Line 2 stays to one line when collapsed: the reason does not balloon. */
+  .rcol:not(.expanded) .rtop .areason { max-height: 3em; }
 
   /* Usage a line a window, when it resets beside it: the herd below is
      what the screen is for. */
