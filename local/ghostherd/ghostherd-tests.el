@@ -136,7 +136,13 @@ see the calls."
                     (or (alist-get (car args) ,responses nil nil #'equal)
                         (if (equal (car args) "list-panes")
                             (cons 0 (ghostherd-tests--tmux-panes))
-                          (cons 0 ""))))))
+                          (cons 0 "")))))
+                 ;; `--load-buffer' feeds tmux over stdin (call-process-region),
+                 ;; not `--call'; record the text it would send as the paste.
+                 ((symbol-function 'ghostherd-tmux--load-buffer)
+                  (lambda (name text)
+                    (push (list "load-buffer" "-b" name "-" text)
+                          ghostherd-tests--tmux-calls))))
          ,@body))
      (setq ghostherd-tests--tmux-calls
            (nreverse ghostherd-tests--tmux-calls))))
@@ -4930,13 +4936,38 @@ them as newlines; -p brackets the paste when the agent asked for it."
     (let ((s (ghostherd-tests--tmux-session :name "a")))
       (ghostherd-tests--with-tmux nil
         (ghostherd--host-send-text s "alpha\nbeta" nil))
-      (should (equal (ghostherd-tests--tmux-call "set-buffer")
-                     '("set-buffer" "-b" "ghostherd-paste" "--" "alpha\nbeta")))
+      ;; Loaded over stdin, not as a `set-buffer' argument, so a long or CJK
+      ;; prompt does not overrun tmux's command-length cap.
+      (should (equal (ghostherd-tests--tmux-call "load-buffer")
+                     '("load-buffer" "-b" "ghostherd-paste" "-" "alpha\nbeta")))
+      (should-not (ghostherd-tests--tmux-call "set-buffer"))
       (let ((paste (ghostherd-tests--tmux-call "paste-buffer")))
         (should (member "-r" paste))
         (should (member "-p" paste))
         (should (member "=gh-abc-rev:" paste)))
       (should-not (ghostherd-tests--tmux-call "send-keys")))))
+
+(ert-deftest ghostherd-test-tmux-load-buffer-carries-a-huge-paste ()
+  "A long prompt -- or a shorter CJK one, three bytes a character -- loads
+over stdin, so it does not overrun tmux's ~16 KB command-length cap the
+way `set-buffer -- TEXT' does: 120 KB of mixed CJK and ASCII with
+newlines round-trips byte-identical through a real scratch tmux buffer.
+The whole send path gets this: card prompt, chat composer, ask delivery
+and relay brief all reach it through `ghostherd-backend-send-text'."
+  (skip-unless (ghostherd-tmux-available-p))
+  (let* ((ghostherd-tmux-socket (format "ghostherd-test-%d" (emacs-pid)))
+         (ghostherd-tmux--status-cache nil)
+         (line "你好，世界 — hello world, 123 测試 with a newline\n")
+         (text (apply #'concat
+                      (make-list (1+ (/ (* 120 1024) (string-bytes line))) line))))
+    (should (> (string-bytes text) (* 120 1024)))
+    (unwind-protect
+        (progn
+          (ghostherd-tmux--run "new-session" "-d" "-s" "t" "-x" "80" "-y" "24")
+          (ghostherd-tmux--load-buffer "ghostherd-paste-test" text)
+          (should (equal (ghostherd-tmux--run "show-buffer" "-b" "ghostherd-paste-test")
+                         text)))
+      (ignore-errors (ghostherd-tmux--run "kill-server")))))
 
 (ert-deftest ghostherd-test-tmux-submit-presses-enter ()
   (ghostherd-tests--with-herd ()
@@ -7342,7 +7373,7 @@ backends; a short line, or text not submitted, does not wait."
         (ghostherd-tests--with-tmux nil
           (ghostherd--host-send-text s "line 1\nline 2" t))
         (should (equal (mapcar #'car ghostherd-tests--tmux-calls)
-                       '("set-buffer" "paste-buffer" "sleep" "send-keys")))
+                       '("load-buffer" "paste-buffer" "sleep" "send-keys")))
         (should (equal (cadr (funcall slept)) ghostherd-submit-delay))
         (ghostherd-tests--with-tmux nil
           (ghostherd--host-send-text s (make-string 300 ?x) t))

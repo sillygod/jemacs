@@ -252,6 +252,32 @@ coding system either mangles those or stops to ask."
   (pcase-let ((`(,status . ,output) (ghostherd-tmux--call args)))
     (and (eq status 0) output)))
 
+(defun ghostherd-tmux--load-buffer (name text)
+  "Load TEXT into tmux's paste buffer NAME over stdin.
+`load-buffer -' takes the text as the process's input, so a long prompt
+-- or a shorter CJK one, three bytes a character -- cannot overrun the
+client->server command-length cap the way `set-buffer -b NAME -- TEXT'
+does.  UTF-8 is pinned, as in `ghostherd-tmux--call'.  Signals on failure."
+  (condition-case error
+      (let ((out (generate-new-buffer " *ghostherd-tmux-load*")))
+        (unwind-protect
+            (with-temp-buffer
+              (let ((default-directory (ghostherd-tmux--directory))
+                    (coding-system-for-read 'utf-8)
+                    (coding-system-for-write 'utf-8))
+                (insert text)
+                (let ((status (apply #'call-process-region
+                                     (point-min) (point-max)
+                                     ghostherd-tmux-executable nil out nil
+                                     (append (ghostherd-tmux--socket-args)
+                                             (list "load-buffer" "-b" name "-")))))
+                  (unless (eql status 0)
+                    (user-error "tmux load-buffer failed: %s"
+                                (string-trim (with-current-buffer out (buffer-string))))))))
+          (kill-buffer out)))
+    (file-missing
+     (user-error "tmux load-buffer failed: %s" (error-message-string error)))))
+
 (defun ghostherd-tmux--run (&rest args)
   "Run tmux with ARGS, returning its output; signal when it failed.
 Used for the paths where silence would be worse than an error: a spawn
@@ -843,11 +869,13 @@ must not touch `state' -- the agent is still running."
 (cl-defmethod ghostherd-backend-send-text
   ((_backend (eql tmux)) session text submit)
   (let ((target (ghostherd-tmux--target (ghostherd-session-host-id session))))
-    ;; set-buffer + paste-buffer rather than `send-keys -l', so the agent
-    ;; sees one bracketed paste instead of a burst of typing.  -r keeps
-    ;; the newlines as newlines; the default turns each one into a
-    ;; carriage return, which submits every line of a multi-line prompt.
-    (ghostherd-tmux--run "set-buffer" "-b" "ghostherd-paste" "--" text)
+    ;; load-buffer + paste-buffer rather than `send-keys -l', so the agent
+    ;; sees one bracketed paste instead of a burst of typing.  Over stdin,
+    ;; not `set-buffer -- TEXT', so a long or CJK prompt does not overrun
+    ;; tmux's command-length cap.  -r keeps the newlines as newlines; the
+    ;; default turns each into a carriage return, which submits every line
+    ;; of a multi-line prompt.
+    (ghostherd-tmux--load-buffer "ghostherd-paste" text)
     (ghostherd-tmux--run "paste-buffer" "-d" "-p" "-r"
                          "-b" "ghostherd-paste" "-t" target)
     (when submit
