@@ -2605,6 +2605,40 @@ nil when it is not blocked, or sits on no menu with numbers."
   (when (eq (ghostherd-session-state session) 'blocked)
     (ghostherd--prompt (gethash (ghostherd-session-id session) ghostherd--screens))))
 
+(defcustom ghostherd-cli-error-foot 10
+  "Lines at a screen's foot searched for a turn-ending CLI error.
+The error lands in the last response, by the input box -- not the
+scrollback, where the same words may be the conversation's."
+  :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-cli-errors
+  '((claude
+     ("Login expired\\|Please run /login" login "its login expired -- run /login")
+     ("went to sleep mid-response" nil "its turn was cut off: the computer slept")
+     ("API Error:" nil "its turn ended on an API error")))
+  "Per-kind errors that end a turn without answering: (KIND (REGEXP ACTION
+REASON)...).  A REGEXP matching near a screen's foot means the agent's
+turn died and it is stuck -- not idle -- until acted on; it is read as
+blocked, so an ask it was answering is held, not closed, and REASON says
+why.  ACTION `login' offers a one-click /login on the card."
+  :type '(alist :key-type symbol
+                :value-type (repeat (list regexp (choice (const nil) symbol) string)))
+  :group 'ghostherd)
+
+(defun ghostherd--cli-error (session &optional screen)
+  "Return (REASON . ACTION) for a CLI error at SESSION's screen foot, or nil.
+SCREEN is that screen when the caller has it; otherwise the last one
+stored.  A turn that ended on such an error has not answered: the agent is
+stuck, not idle, until the user acts."
+  (when-let* ((rules (alist-get (ghostherd-session-kind session) ghostherd-cli-errors))
+              (screen (or screen (gethash (ghostherd-session-id session) ghostherd--screens)))
+              (foot (string-join (ghostherd--screen-foot screen ghostherd-cli-error-foot) "\n")))
+    (let ((case-fold-search t))
+      (cl-loop for (re action reason) in rules
+               when (string-match-p re foot)
+               return (cons reason action)))))
+
 (defun ghostherd--prompt-json (prompt)
   "PROMPT for JSON: its options as (:n N :label LABEL); false for none."
   (if prompt
@@ -2638,7 +2672,8 @@ does."
         (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
                (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
                                                       (plist-get spec :spinner))))
-               (report (ghostherd--fresh-report session)))
+               (report (ghostherd--fresh-report session))
+               (err (and tail (ghostherd--cli-error session tail))))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
             (ghostherd--read-foot session tail))
@@ -2660,8 +2695,18 @@ does."
            ((and (plist-get spec :prompt-replaces-input)
                  tail
                  (not (ghostherd--input-at-foot-p tail))
+                 ;; The model picker also replaces the input and is a numbered
+                 ;; list, but the herd drives it, not the user -- it is not a
+                 ;; block to answer from the card.
+                 (not (ghostherd--model-picker tail))
                  (ghostherd--prompt tail))
             (cons 'blocked (or (ghostherd--prompt-reason tail) "waiting for a choice")))
+           ;; A turn that ended on a CLI error -- login expired, the computer
+           ;; slept mid-response -- has not answered and is not idle: read it
+           ;; as blocked, so an ask it was answering is held rather than
+           ;; closed with the error screen, and say plainly why.  Ahead of
+           ;; the report, so a stale `working' hook cannot mask it.
+           (err (cons 'blocked (car err)))
            ;; What the agent says about itself beats reading its screen,
            ;; which is a rendering of a drawing of the same fact -- with
            ;; one exception.  A claimed `blocked' loses to a screen that
@@ -5872,6 +5917,12 @@ address of each one's room from your phone, for the bot to link to."
                                 (ghostherd-session-started-at s))))
                     (if t0 (* 1000 (float-time t0)) 0))
            :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
+           ;; A turn killed by an expired login: the card offers a one-click
+           ;; /login.  Only while blocked on it, so the button is there
+           ;; exactly when it would work.
+           :login (if (and (eq (ghostherd-session-state s) 'blocked)
+                           (eq (cdr (ghostherd--cli-error s)) 'login))
+                      t :json-false)
            ;; Where it works and the branch it is on, so the lead can find
            ;; and read its work.  A worktree agent is in its own directory
            ;; on its own branch (from the recipe, no per-poll git); the

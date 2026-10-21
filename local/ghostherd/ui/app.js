@@ -1426,6 +1426,10 @@
     const name = a.name;
     const acts = [];
     const menu = choicesHtml(a);
+    // A turn killed by an expired login: offer the one-click /login first.
+    if (a.login) {
+      acts.push('<button type="button" class="primary small" data-act="a:agent-login" title="Run /login to sign in again">/login</button>');
+    }
     // Its CLI's usage used up: its relay first.
     if (a.usedUp && a.relayTo && a.relayTo !== a.kind) {
       acts.push('<button type="button" class="primary small" data-act="a:relay" title="' + esc(a.usedUp) + '">Relay to ' + esc(a.relayTo) + "</button>");
@@ -1655,6 +1659,9 @@
     const name = a.name;
     const acts = [];
     const menu = choicesHtml(a);
+    if (a.login) {
+      acts.push('<button type="button" class="primary small" data-act="a:agent-login" title="Run /login to sign in again">/login</button>');
+    }
     acts.push('<button type="button" class="ghost small" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
@@ -2450,7 +2457,7 @@
       return renderAgents();
     }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
-    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort") return emit(act, { name });
+    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login") return emit(act, { name });
     if (act === "screen") {
       if (herdNow.open.has(name)) herdNow.open.delete(name);
       else {

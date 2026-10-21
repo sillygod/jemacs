@@ -2140,6 +2140,10 @@ from the newest -- and send it to the page to prepend."
                (ghostherd-tell s text)
                (format "Sent to %s" name)))
             ("agent-interrupt" (ghostherd-interrupt s) (format "Esc to %s" name))
+            ("agent-login"
+             ;; The card's one-click /login for an expired-login turn end.
+             (ghostherd-send s "/login" t)
+             (format "Running /login on %s" name))
             ("agent-abort" (ghostherd-abort s) (format "C-c to %s" name))
             ("agent-answer"
              (let ((n (alist-get 'n intent)))

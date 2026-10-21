@@ -51,7 +51,7 @@ const DP = "~/src/deploy-platform/";
 const JN = "~/src/jnotes/";
 const BB = "https://bitbucket.org/unno/deploy-platform/pull-requests/";
 const agent = (name, extra) => Object.assign({
-  name, kind: "claude", state: "idle", project: DP, role: "", reason: "", notes: "", backend: "tmux", detached: false, manual: false,
+  name, kind: "claude", state: "idle", project: DP, role: "", reason: "", notes: "", backend: "tmux", detached: false, manual: false, login: false,
   since: now - 2 * 3600e3, progress: null, said: null, saidAt: null, conversation: null, work: false, links: false }, extra || {});
 const task = (id, name, status, color) => ({ id, name, status, color: color || "#4194f6", url: "https://app.clickup.com/t/" + id,
   error: null, loading: false, done: false });

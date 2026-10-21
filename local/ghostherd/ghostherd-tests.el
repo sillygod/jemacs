@@ -378,6 +378,41 @@ does not block."
                    "  ⏵⏵ auto mode on\n")))
       (should-not (eq (car (ghostherd--detect-state s)) 'blocked)))))
 
+(ert-deftest ghostherd-test-cli-error-reads-as-blocked ()
+  "A turn that ends on a CLI error -- login expired, the computer slept --
+reads as blocked with a plain reason, not idle.  Ask a74e0a82."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+          (box "\n────────────────────\n❯ \n────────────────────\n  ⏵⏵ auto mode on\n"))
+      (dolist (case `(("⏺ Login expired · Please run /login" . "login expired")
+                      ("⏺ API Error: Your computer went to sleep mid-response" . "computer slept")))
+        (let ((ghostherd-tests--fake-screen (concat "⏺ earlier work\n\n" (car case) box)))
+          (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+            (should (eq state 'blocked))
+            (should (string-match-p (cdr case) reason)))))
+      ;; The login one carries the `login' action for the card.
+      (let ((ghostherd-tests--fake-screen (concat "⏺ Login expired · Please run /login" box)))
+        (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--fake-screen)) 'login))))))
+
+(ert-deftest ghostherd-test-a-cli-error-holds-its-open-ask ()
+  "A CLI error leaves the taker's ask open: it reads as blocked, and a
+blocked taker is not settled -- so the asker gets the real answer later,
+not the error screen."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+           (ghostherd--asks-open (make-hash-table :test 'equal))
+           (ghostherd--asks-settled (make-hash-table :test 'equal))
+           (settled nil))
+      (puthash "ask1" (ghostherd-session-id s) ghostherd--asks-open)
+      (cl-letf (((symbol-function 'ghostherd--ask-settle)
+                 (lambda (&rest _) (setq settled t))))
+        (ghostherd--set-state s 'working "on it")
+        (let ((ghostherd-tests--fake-screen
+               "⏺ Login expired · Please run /login\n────────\n❯ \n────────\n"))
+          (ghostherd-poll-session s))
+        (should (eq (ghostherd-session-state s) 'blocked))
+        (should-not settled)))))
+
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
 moves nothing.  The wheel has to drive the host's own view, in one
