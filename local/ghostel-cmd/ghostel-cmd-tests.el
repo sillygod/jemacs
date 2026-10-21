@@ -350,6 +350,68 @@ than the cap, and a long fill value by its end."
     (execute-kbd-macro "python")
     (should (equal ghostel-cmd--query "python"))))
 
+(ert-deftest ghostel-cmd-test-non-ascii-types-into-filter-and-fill ()
+  "Committed non-ASCII chars, as a system input method sends them,
+reach the query and the fill input through the [t] binding."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "say" :cmd "echo {{msg}}" :desc "說話"))
+    (ghostel-cmd--set-filtering t)
+    (execute-kbd-macro (vector ?說 ?話))
+    (should (equal ghostel-cmd--query "說話"))
+    (should (= ghostel-cmd--match-count 1))
+    (ghostel-cmd-filter-confirm)
+    (ghostel-cmd-paste)
+    (execute-kbd-macro (vector ?你 ?好 ?é))
+    (should (equal (plist-get ghostel-cmd--fill :input) "你好é"))))
+
+(defun ghostel-cmd-tests--type (keys)
+  "Type KEYS (`kbd' syntax), with the minibuffer reading them too.
+Batch Emacs reads the minibuffer from stdin unless `noninteractive'
+is nil; with it nil, the minibuffer reads the macro like a terminal."
+  (let ((noninteractive nil))
+    (execute-kbd-macro (kbd keys))))
+
+(ert-deftest ghostel-cmd-test-input-method-via-minibuffer ()
+  "An Emacs input method passes keys through raw in the read-only
+overlay; C-\\ edits the input in the minibuffer with it on."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "say" :cmd "echo {{msg}}" :desc "中文"))
+    (let ((default-input-method "chinese-py"))
+      (ghostel-cmd--set-filtering t)
+      (activate-input-method default-input-method)
+      (execute-kbd-macro "zhong")
+      (should (equal ghostel-cmd--query "zhong"))
+      (deactivate-input-method)
+      (ghostel-cmd-filter-clear)
+      (ghostel-cmd-tests--type "C-\\ zhong SPC RET")
+      (should (string-prefix-p "中" ghostel-cmd--query))
+      (should (= ghostel-cmd--match-count 1))
+      (should ghostel-cmd--filtering)
+      (let ((query ghostel-cmd--query))
+        (ghostel-cmd-tests--type "C-\\ xyz C-g")
+        (should (equal ghostel-cmd--query query)))
+      (ghostel-cmd-filter-clear)
+      (ghostel-cmd-filter-confirm)
+      (ghostel-cmd-paste)
+      (ghostel-cmd-tests--type "C-\\ zhong SPC RET")
+      (should (string-prefix-p "中" (plist-get ghostel-cmd--fill :input)))
+      (should ghostel-cmd--fill))))
+
+(ert-deftest ghostel-cmd-test-minibuffer-edit-narrows-live ()
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "npm" :cmd "npm test")
+            (list :name "python" :cmd "python x"))
+    (let ((default-input-method nil)
+          (minibuffer-local-map (copy-keymap minibuffer-local-map))
+          (seen nil))
+      (define-key minibuffer-local-map (kbd "<f12>")
+                  (lambda () (interactive)
+                    (push (cons ghostel-cmd--query ghostel-cmd--match-count) seen)))
+      (ghostel-cmd--set-filtering t)
+      (ghostel-cmd-tests--type "C-\\ py <f12> RET")
+      (should (equal seen '(("py" . 1))))
+      (should (equal ghostel-cmd--query "py")))))
+
 (ert-deftest ghostel-cmd-test-yank-into-filter-and-fill ()
   "C-y appends the latest kill as one line: newlines become spaces."
   (ghostel-cmd-tests--with-overlay

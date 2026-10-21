@@ -311,6 +311,7 @@ always taken fresh."
     ("M-j, M-k" "Move command down / up (saved)")
     ("/"        "Live-narrow (flex)")
     ("C-y"      "Yank into filter / fill input")
+    ("C-\\"     "Type filter / fill input with an input method")
     ("o"        "Open save file")
     ("?"        "This help")
     ("q, Esc"   "Quit / cancel fill"))
@@ -578,6 +579,30 @@ one-per-line list yanks as space-separated words."
    (string-trim (substring-no-properties (current-kill 0))
                 "[\r\n]+" "[\r\n]+")))
 
+(defvar ghostel-cmd--keep-focus nil
+  "Non-nil while the minibuffer edits an overlay input.
+Redraws then leave input focus in the minibuffer.")
+
+(defun ghostel-cmd--read-line (prompt initial on-change)
+  "Read PROMPT in the minibuffer from INITIAL, `default-input-method' on.
+ON-CHANGE gets the text after each command, so the overlay follows.
+Input methods such as rime or quail compose only in a writable buffer
+and evil turns them off in normal state; the minibuffer is neither."
+  (minibuffer-with-setup-hook
+      (lambda ()
+        (when default-input-method
+          (activate-input-method default-input-method))
+        (let ((last initial))
+          (add-hook 'post-command-hook
+                    (lambda ()
+                      (let ((text (minibuffer-contents-no-properties)))
+                        (unless (equal text last)
+                          (setq last text)
+                          (let ((ghostel-cmd--keep-focus t))
+                            (funcall on-change text)))))
+                    nil t)))
+    (read-string prompt initial)))
+
 (defun ghostel-cmd-filter-self-insert ()
   (interactive)
   (let ((ev last-command-event))
@@ -605,6 +630,18 @@ one-per-line list yanks as space-separated words."
   (interactive)
   (setq ghostel-cmd--query (concat ghostel-cmd--query (ghostel-cmd--yank-text)))
   (ghostel-cmd--refresh-overlay))
+
+(defun ghostel-cmd-filter-read ()
+  "Edit the query in the minibuffer, where an input method works.
+The list narrows as you type; C-g puts the old query back."
+  (interactive)
+  (let ((old ghostel-cmd--query)
+        (set (lambda (query)
+               (setq ghostel-cmd--query query)
+               (ghostel-cmd--refresh-overlay))))
+    (condition-case nil
+        (funcall set (ghostel-cmd--read-line "Filter: " old set))
+      (quit (funcall set old)))))
 
 (defun ghostel-cmd--set-filtering (on)
   (setq ghostel-cmd--filtering (and on t))
@@ -640,6 +677,7 @@ one-per-line list yanks as space-separated words."
   "C-h"         #'ghostel-cmd-filter-backspace
   "C-u"         #'ghostel-cmd-filter-clear
   "C-y"         #'ghostel-cmd-filter-yank
+  "C-\\"        #'ghostel-cmd-filter-read
   "C-g"         #'ghostel-cmd-quit
   "<escape>"    #'ghostel-cmd-quit)
 
@@ -701,6 +739,21 @@ one-per-line list yanks as space-separated words."
                        (ghostel-cmd--yank-text)))
     (ghostel-cmd--draw-preview)
     (force-mode-line-update t)))
+
+(defun ghostel-cmd-fill-read ()
+  "Edit the value being filled in the minibuffer, where an input
+method works.  The preview follows; C-g puts the old value back."
+  (interactive)
+  (when-let* ((fill ghostel-cmd--fill))
+    (let* ((old (or (plist-get fill :input) ""))
+           (name (car (nth (plist-get fill :index) (plist-get fill :vars))))
+           (set (lambda (input)
+                  (plist-put fill :input input)
+                  (ghostel-cmd--redraw)
+                  (force-mode-line-update t))))
+      (condition-case nil
+          (funcall set (ghostel-cmd--read-line (format "{{%s}}: " name) old set))
+        (quit (funcall set old))))))
 
 (defun ghostel-cmd--set-filling (on)
   (when-let* ((buf (get-buffer ghostel-cmd--buffer-name)))
@@ -781,6 +834,7 @@ SUBMIT non-nil also presses Enter in the terminal."
   "C-h"         #'ghostel-cmd-fill-backspace
   "C-u"         #'ghostel-cmd-fill-clear
   "C-y"         #'ghostel-cmd-fill-yank
+  "C-\\"        #'ghostel-cmd-fill-read
   "C-g"         #'ghostel-cmd-fill-cancel
   "<escape>"    #'ghostel-cmd-fill-cancel)
 
@@ -1217,7 +1271,8 @@ Under a filter that row is the next visible one, not a hidden one."
        :cursor 'box
        :accept-focus t
        :window-point (with-current-buffer buf (point))))
-    (when-let* ((frame (ghostel-cmd--posframe-frame))
+    (when-let* (((not ghostel-cmd--keep-focus))
+                (frame (ghostel-cmd--posframe-frame))
                 (win (get-buffer-window buf frame)))
       (select-frame-set-input-focus frame)
       (select-window win))))
