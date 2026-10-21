@@ -327,6 +327,17 @@ than the cap, and a long fill value by its end."
                  (list (list :name "x" :cmd "new")
                        (list :name "y" :cmd "2")))))
 
+(ert-deftest ghostel-cmd-test-blank-or-comment-file-reads-empty ()
+  (ghostel-cmd-tests--with-store
+    (dolist (text '("" "\n  \n" ";; my commands\n"))
+      (with-temp-file ghostel-cmd-save-file
+        (insert text))
+      (setq ghostel-cmd--cache-stamp nil)
+      (should-not (ghostel-cmd--get-commands ghostel-cmd--root))
+      (ghostel-cmd--set-commands (list (list :name "a" :cmd "echo a"))
+                                 ghostel-cmd--root)
+      (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a"))))))
+
 (ert-deftest ghostel-cmd-test-query-flex-and ()
   (let ((rec (list :name "pytest" :cmd "pytest {{file}}" :desc "unit")))
     (should (ghostel-cmd--query-matches-p rec ""))

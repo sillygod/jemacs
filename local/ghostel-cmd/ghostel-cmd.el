@@ -124,8 +124,9 @@ Signals when the file does not parse."
   (when (file-exists-p ghostel-cmd-save-file)
     (with-temp-buffer
       (insert-file-contents ghostel-cmd-save-file)
+      (set-syntax-table emacs-lisp-mode-syntax-table)
       (goto-char (point-min))
-      (skip-chars-forward " \t\n")
+      (forward-comment (buffer-size))
       (unless (eobp)
         (read (current-buffer))))))
 
