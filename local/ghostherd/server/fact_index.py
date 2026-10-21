@@ -29,6 +29,7 @@ import queue
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from typing import Any
 
 from qdrant_client.models import (
@@ -45,6 +46,7 @@ from qdrant_client.models import (
 
 import memory_rank as mr
 import shared_memory as sm
+from store import StoreClosed
 
 COLLECTION = "ghostherd_facts"
 NAMESPACE = uuid.UUID("2f1d6c1e-9b2a-4d7e-8f51-6a0c3e9b7d24")
@@ -206,16 +208,29 @@ class FactIndex:
 
     # -- the collection --------------------------------------------------
 
-    @property
-    def client(self):
-        return self.engine.store.client
+    @contextmanager
+    def _client(self):
+        """The engine's Qdrant client, held: QdrantLocal is not thread-safe,
+        and the transcripts' requests use the same client under the same
+        lock (store.client_lock), so this worker and a request are never
+        both in it.  Only the client calls hold it -- not the embedding
+        between them.  A closed store (an engine reset) raises StoreClosed
+        rather than reach a closed client."""
+        store = self.engine.store
+        with store.client_lock:
+            if store.closed:
+                raise StoreClosed("the memory store is closed")
+            yield store.client
 
     def _ensure(self) -> None:
         "The collection, sized for the embedder's vectors."
         dim = int(self.embedder.dim)
         if self._dim == dim:
             return
-        client = self.client
+        with self._client() as client:
+            self._ensure_in(client, dim)
+
+    def _ensure_in(self, client, dim: int) -> None:
         if client.collection_exists(COLLECTION):
             info = client.get_collection(COLLECTION)
             vectors = info.config.params.vectors
@@ -236,16 +251,17 @@ class FactIndex:
         out: dict[str, tuple[str, list[float]]] = {}
         offset = None
         flt = Filter(must=[FieldCondition(key="store", match=MatchValue(value=key))])
-        while True:
-            batch, offset = self.client.scroll(
-                collection_name=COLLECTION, scroll_filter=flt, limit=256,
-                offset=offset, with_payload=True, with_vectors=True)
-            for rec in batch:
-                p = rec.payload or {}
-                vec = rec.vector["dense"] if isinstance(rec.vector, dict) else rec.vector
-                out[str(p.get("name"))] = (str(p.get("digest") or ""), list(vec or []))
-            if offset is None:
-                return out
+        with self._client() as client:
+            while True:
+                batch, offset = client.scroll(
+                    collection_name=COLLECTION, scroll_filter=flt, limit=256,
+                    offset=offset, with_payload=True, with_vectors=True)
+                for rec in batch:
+                    p = rec.payload or {}
+                    vec = rec.vector["dense"] if isinstance(rec.vector, dict) else rec.vector
+                    out[str(p.get("name"))] = (str(p.get("digest") or ""), list(vec or []))
+                if offset is None:
+                    return out
 
     def sync(self, key: str) -> dict[str, Any]:
         """Bring store KEY's points in line with its files: embed a fact that
@@ -262,16 +278,19 @@ class FactIndex:
             names = {f.name for f in facts}
             gone = [n for n in stored if n not in names]
             if gone:
-                self.client.delete(collection_name=COLLECTION,
-                                   points_selector=PointIdsList(points=[point_id(key, n) for n in gone]))
+                with self._client() as client:
+                    client.delete(collection_name=COLLECTION,
+                                  points_selector=PointIdsList(points=[point_id(key, n) for n in gone]))
             vecs = {n: v for n, (_, v) in stored.items() if n in names}
             if fresh:
+                # Embedded outside the client's lock: a search need not wait.
                 dense = self.embedder.dense([fact_text(f) for f in fresh])
-                self.client.upsert(collection_name=COLLECTION, points=[
-                    PointStruct(id=point_id(key, f.name), vector={"dense": v},
-                                payload={"store": key, "name": f.name, "type": f.type,
-                                         "digest": digest(f), "updated": f.updated})
-                    for f, v in zip(fresh, dense, strict=True)])
+                with self._client() as client:
+                    client.upsert(collection_name=COLLECTION, points=[
+                        PointStruct(id=point_id(key, f.name), vector={"dense": v},
+                                    payload={"store": key, "name": f.name, "type": f.type,
+                                             "digest": digest(f), "updated": f.updated})
+                        for f, v in zip(fresh, dense, strict=True)])
                 vecs.update({f.name: v for f, v in zip(fresh, dense)})
             self._vecs[key] = vecs
             self._seen[key] = stamps
@@ -279,9 +298,9 @@ class FactIndex:
 
     def drop(self, key: str) -> None:
         "Forget store KEY's points (a test's, or a store removed by hand)."
-        with self._mu:
-            if self.client.collection_exists(COLLECTION):
-                self.client.delete(collection_name=COLLECTION, points_selector=FilterSelector(
+        with self._mu, self._client() as client:
+            if client.collection_exists(COLLECTION):
+                client.delete(collection_name=COLLECTION, points_selector=FilterSelector(
                     filter=Filter(must=[FieldCondition(key="store", match=MatchAny(any=[key]))])))
             self._seen.pop(key, None)
             self._vecs.pop(key, None)

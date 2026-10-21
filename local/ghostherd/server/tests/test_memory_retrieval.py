@@ -2,6 +2,7 @@
 `herd recall' and the page's ranking read it, by meaning and words, and
 fall back to words alone when the embedder is not up."""
 
+import threading
 import time
 
 import pytest
@@ -120,3 +121,96 @@ def test_words_alone_when_the_embedder_is_not_up(rpc, monkeypatch, tmp_path):
     assert time.monotonic() - t0 < 2.0
     assert block and "branch-discipline" in block
     assert idx.ask_block({"project": PROJECT, "kind": "claude"}, UNRELATED_ASKS[0]) is None
+
+
+# ---- One client, one lock ------------------------------------------------------
+
+
+class _Watch:
+    """The real Qdrant client, watched: how many threads are inside it at
+    once.  Each call lingers a few milliseconds, so two that could overlap
+    do."""
+
+    def __init__(self, real):
+        self.real = real
+        self.inside = 0
+        self.most = 0
+        self.calls = 0
+        self.after_close = 0
+        self.closed = False
+        self._mu = threading.Lock()
+
+    def __getattr__(self, name):
+        attr = getattr(self.real, name)
+        if not callable(attr):
+            return attr
+
+        def call(*args, **kwargs):
+            with self._mu:
+                self.inside += 1
+                self.calls += 1
+                self.most = max(self.most, self.inside)
+                if self.closed and name != "close":
+                    self.after_close += 1
+            try:
+                time.sleep(0.003)
+                return attr(*args, **kwargs)
+            finally:
+                with self._mu:
+                    self.inside -= 1
+                    if name == "close":
+                        self.closed = True
+        return call
+
+
+def test_the_worker_and_a_search_never_share_the_client(store):
+    idx = fact_index.get_index()
+    engine = idx.engine
+    engine.embedder.load()
+    engine.store.ensure(engine.embedder.dim)    # the transcripts' collection
+    watch = _Watch(engine.store.client)
+    engine.store.client = watch
+    errors = []
+
+    def searches():
+        try:
+            for _ in range(25):
+                engine.search("deploy staging", limit=3)
+                engine.store.point_count()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def syncs():
+        try:
+            for _ in range(8):
+                idx._seen.clear()
+                idx._vecs.clear()
+                idx._dim = None              # and the collection check, each time
+                idx.sync(KEY)
+                idx.rank(KEY, "feature branch push main", strict=False)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=searches), threading.Thread(target=syncs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    assert not errors
+    assert watch.calls > 50
+    assert watch.most == 1                   # never two threads in QdrantLocal
+
+
+def test_a_closed_store_is_never_called(store):
+    idx = fact_index.get_index()
+    idx.sync(KEY)
+    watch = _Watch(idx.engine.store.client)
+    idx.engine.store.client = watch
+    idx.engine.store.close()
+    with pytest.raises(fact_index.StoreClosed):
+        idx.sync("another-store")
+    idx.notify(KEY, ["x"])                   # the worker: swallowed, not sent
+    idx.close()
+    with pytest.raises(fact_index.StoreClosed):
+        idx.engine.store.point_count()
+    assert watch.after_close == 0
