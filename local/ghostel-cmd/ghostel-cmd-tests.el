@@ -866,18 +866,68 @@ dist/app.tar.gz: all
 (ert-deftest ghostel-cmd-test-make-targets ()
   "Real targets only: no assignments, .PHONY or other dotted targets,
 pattern or variable rules, recipe or continuation lines, define
-bodies or target-specific variables.  GNUmakefile wins, as in make."
+bodies, target-specific variables or file targets that are not
+.PHONY.  GNUmakefile wins, as in make."
   (ghostel-cmd-tests--with-store
     (ghostel-cmd-tests--write "Makefile" ghostel-cmd-tests--makefile)
     (let ((rows (ghostel-cmd--discover ghostel-cmd--root)))
       (should (equal (mapcar #'car rows)
                      '((make . "all") (make . "build") (make . "test")
                        (make . "lint") (make . "install") (make . "clean")
-                       (make . "win") (make . "dist/app.tar.gz"))))
+                       (make . "win"))))
       (should (equal (cdar rows) '(:name "all" :cmd "make all"
                                    :desc "Build and test everything"))))
     (ghostel-cmd-tests--write "GNUmakefile" "gnu:\n\ttrue\n")
     (should (equal (ghostel-cmd-tests--task-cmds) '("make gnu")))))
+
+(defconst ghostel-cmd-tests--c-makefile "\
+CC = cc
+CFLAGS = -O2 -Wall
+OBJS = main.o util.o parse.o
+
+.PHONY: all clean test docker/build
+
+all: app
+
+app: $(OBJS)
+\t$(CC) -o $@ $(OBJS)
+
+main.o: main.c util.h
+\t$(CC) $(CFLAGS) -c main.c
+
+util.o: util.c util.h
+\t$(CC) $(CFLAGS) -c util.c
+
+parse.o: parse.c
+\t$(CC) $(CFLAGS) -c parse.c
+
+build/out.bin: app
+\tobjcopy -O binary app $@
+
+libfoo.so.1: $(OBJS)
+\t$(CC) -shared -o $@ $(OBJS)
+
+test: app ## Run the self-test
+\t./app --selftest
+
+docker/build:
+\tdocker build .
+
+clean:
+\trm -f app $(OBJS) build/out.bin
+")
+
+(ert-deftest ghostel-cmd-test-make-file-targets-are-not-tasks ()
+  "A C-style Makefile lists its tasks, not its files: a target with a /
+or a file extension shows only when it is declared .PHONY."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "Makefile" ghostel-cmd-tests--c-makefile)
+    (let ((rows (ghostel-cmd--discover ghostel-cmd--root)))
+      (should (equal (mapcar #'cdar rows)
+                     '("all" "app" "test" "docker/build" "clean")))
+      (should-not (cl-some (lambda (row) (string-suffix-p ".o" (cdar row))) rows))
+      (should (equal (plist-get (cdr (assoc '(make . "test") rows)) :desc)
+                     "Run the self-test")))))
 
 (defconst ghostel-cmd-tests--justfile "\
 #!/usr/bin/env just --justfile

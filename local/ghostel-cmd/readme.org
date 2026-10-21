@@ -67,7 +67,7 @@ parsed, never run, and parsed again once one of them changes.
 | File                    | Tasks           | Pasted as         |
 |-------------------------+-----------------+-------------------|
 | =package.json=          | ="scripts"=     | =RUNNER run NAME= |
-| =GNUmakefile=,          | literal targets | =make TARGET=     |
+| =GNUmakefile=,          | task targets    | =make TARGET=     |
 | =makefile=, =Makefile=  |                 |                   |
 | =justfile=, =Justfile=, | public recipes  | =just RECIPE=     |
 | =.justfile=             |                 |                   |
@@ -76,11 +76,13 @@ parsed, never run, and parsed again once one of them changes.
   =pnpm-lock.yaml= → pnpm, =yarn.lock= → yarn, =bun.lock= or
   =bun.lockb= → bun; without one, the =packageManager= field's, else
   npm.  The script itself is the description.
-- Make reads the first of its three files, as make does.  Left out:
-  assignments, =.PHONY= and every other target starting with =.=,
-  pattern rules, targets built from a variable, target-specific
-  variables and =define= bodies.  =## text= after a rule describes it.
-  Included makefiles are not followed.
+- Make reads the first of its three files, as make does, and lists a
+  target when it is declared =.PHONY=, or has no =/= and no file
+  extension: =foo.o= and =build/out.bin= are files, not tasks.  Left
+  out too: assignments, =.PHONY= itself and every other target
+  starting with =.=, pattern rules, targets built from a variable,
+  target-specific variables and =define= bodies.  =## text= after a
+  rule describes it.  Included makefiles are not followed.
 - Just recipes marked =[private]= or starting with =_= are left out,
   as =just --list= leaves them out; the comment right above a recipe,
   or its =[doc(...)]=, describes it.

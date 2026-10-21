@@ -307,8 +307,10 @@ The script itself is the desc."
 Targets holding a $ (built from a variable) never match.")
 
 (defun ghostel-cmd--make-targets (file)
-  "Alist of (TARGET . DESC) for the literal targets the rules of FILE name.
-Left out: recipe lines, assignments, define blocks, directives, rules
+  "Alist of (TARGET . DESC) for the tasks the rules of FILE name.
+A task is a literal target declared .PHONY, or one with no / and no
+file extension: foo.o and build/out.bin are files, not tasks.  Left
+out too: recipe lines, assignments, define blocks, directives, rules
 built from variables, pattern rules, targets starting with a dot
 (.PHONY and the other special ones) and target-specific variables.
 A `## text' after a rule is its DESC."
@@ -319,6 +321,7 @@ A `## text' after a rule is its DESC."
       (replace-match " " t t))
     (goto-char (point-min))
     (let ((targets nil)
+          (phony nil)
           (depth 0))
       (while (not (eobp))
         (let ((line (buffer-substring-no-properties
@@ -339,18 +342,26 @@ A `## text' after a rule is its DESC."
                    (desc (when (string-match "##+[ \t]*\\(.*?\\)[ \t]*\\'" rest)
                            (match-string 1 rest)))
                    (prereqs (car (split-string rest "[#;]"))))
-              (unless (or (string-search "=" prereqs)
-                          (string-match-p "[()]" head))
+              (cond
+               ((equal (string-trim head) ".PHONY")
+                (setq phony (append (split-string prereqs) phony)))
+               ((or (string-search "=" prereqs)
+                    (string-match-p "[()]" head)))
+               (t
                 (dolist (name (split-string head))
                   (unless (or (string-prefix-p "." name)
                               (string-match-p "[%*?[\\]" name))
                     (let ((known (assoc name targets)))
                       (cond ((null known) (push (cons name desc) targets))
-                            ((null (cdr known)) (setcdr known desc))))))))))
+                            ((null (cdr known)) (setcdr known desc)))))))))))
           (forward-line 1)))
       (when (> depth 0)
         (error "A define has no endef"))
-      (nreverse targets))))
+      (cl-remove-if-not (lambda (target)
+                          (or (member (car target) phony)
+                              (not (string-match-p "/\\|\\.[^./]+\\'"
+                                                   (car target)))))
+                        (nreverse targets)))))
 
 (defun ghostel-cmd--make-tasks (file)
   "The targets of make FILE, run as `make TARGET'."
