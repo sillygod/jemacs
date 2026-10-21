@@ -180,3 +180,60 @@ def test_stamp_author_fills_a_missing_author(home):
     # never follows a shared symlink
     (store / "u.md").symlink_to("../user/u.md")
     assert sm.stamp_author(store / "u.md", "claude-x") is False
+
+
+def test_edit_fact_rewrites_and_reauthors(home):
+    store = sm.project_store("proj")
+    sm.write_fact(store, "proj", "old body", name="e", type="project",
+                  author="claude-x", now="2026-10-01T00:00:00Z")
+    out = sm.edit_fact(store, "proj", "e", description="new desc", type="feedback",
+                       body="new body here", now="2026-10-21T00:00:00Z")
+    assert out == {"name": "e", "type": "feedback", "store": "proj"}
+    f = sm.parse(store / "e.md")
+    assert f.description == "new desc" and f.type == "feedback"
+    assert "new body here" in f.body and "old body" not in f.body
+    assert f.author == "user"                      # the edit is the user's
+    assert f.created == "2026-10-01T00:00:00Z"      # created is kept
+    assert f.updated == "2026-10-21T00:00:00Z"
+    # the index reflects the new description
+    assert "new desc" in (store / "MEMORY.md").read_text()
+
+
+def test_edit_refuses_a_shared_symlink_and_a_missing_fact(home):
+    proj = sm.project_store("proj")
+    sm.write_fact(proj, "proj", "x", name="own", now="t")
+    sm.write_fact(sm.user_store(), "user", "u", name="shared", type="user", now="t")
+    with pytest.raises(ValueError):
+        sm.edit_fact(proj, "proj", "shared", description="d", body="b")  # a shared symlink
+    with pytest.raises(ValueError):
+        sm.edit_fact(proj, "proj", "ghost", description="d", body="b")   # no such fact
+
+
+def test_names_and_keys_guard_against_path_tricks(home):
+    for bad in ("../x", "a/b", "..", "", "A B", "x\\y"):
+        with pytest.raises(ValueError):
+            sm.valid_name(bad)
+    assert sm.valid_name("never-commit") == "never-commit"
+    for bad in ("../../etc", "a/b", "..", "."):
+        with pytest.raises(ValueError):
+            sm.valid_key(bad)
+    assert sm.valid_key("user") == "user"
+    assert sm.valid_key("-Users-jing--emacs-d") == "-Users-jing--emacs-d"
+    # forget and edit refuse a path-trick name before touching the fs
+    with pytest.raises(ValueError):
+        sm.forget(sm.project_store("proj"), "proj", "../../x")
+
+
+def test_facts_for_and_project_keys(home):
+    pa = sm.project_store("pa"); pb = sm.project_store("pb")
+    sm.write_fact(pa, "pa", "a1 body", name="a1", now="t")
+    sm.write_fact(pb, "pb", "b1 body", name="b1", now="t")
+    sm.write_fact(sm.user_store(), "user", "u body", name="u1", type="user", now="t")
+    assert sm.project_keys() == ["pa", "pb"]
+    # a project view: the user facts, then the project's own
+    names = [f["name"] for f in sm.facts_for("pa")]
+    assert names == ["u1", "a1"]
+    shared = {f["name"]: f["shared"] for f in sm.facts_for("pa")}
+    assert shared == {"u1": True, "a1": False}
+    # the user view: only the user facts
+    assert [f["name"] for f in sm.facts_for("user")] == ["u1"]

@@ -87,3 +87,43 @@ def test_claude_native_writes_are_attributed_on_recall(mem, monkeypatch):
     before = (store / "native.md").read_text()
     mem._herd_recall({"from": "claude-proj"})
     assert (store / "native.md").read_text() == before
+
+
+def test_memory_projects_lists_stores_with_labels(mem):
+    key = sm.slug_for_path("~/work/proj")
+    sm.write_fact(sm.project_store(key), key, "a", name="a", now="t")
+    out = mem._herd_memory_projects({})
+    assert out["user"] == {"key": "user", "label": "User (shared)"}
+    entry = next(p for p in out["projects"] if p["key"] == key)
+    assert entry["label"] == "proj"              # label from the snapshot
+    assert entry["project"] == "~/work/proj"     # path, so the page can match a room
+
+
+def test_memory_list_edit_delete_round_trip(mem):
+    key = sm.slug_for_path("~/work/proj")
+    sm.write_fact(sm.project_store(key), key, "a body", name="a", type="project", now="t")
+    sm.write_fact(sm.user_store(), "user", "shared body", name="s", type="user", now="t")
+    # list a project: the user fact (shared), then the project's own
+    lst = mem._herd_memory_list({"key": key})
+    names = [(f["name"], f["shared"]) for f in lst["facts"]]
+    assert names == [("s", True), ("a", False)]
+    assert any(f["body"] == "a body" for f in lst["facts"])   # body is sent, for read/filter
+    # edit the project fact
+    mem._herd_memory_edit({"key": key, "name": "a", "description": "d2",
+                           "type": "feedback", "body": "b2"})
+    f = next(f for f in mem._herd_memory_list({"key": key})["facts"] if f["name"] == "a")
+    assert f["description"] == "d2" and f["type"] == "feedback" and f["author"] == "user"
+    # delete it
+    assert mem._herd_memory_delete({"key": key, "name": "a"})["removed"] is True
+    assert all(f["name"] != "a" for f in mem._herd_memory_list({"key": key})["facts"])
+
+
+def test_memory_rpcs_refuse_path_tricks(mem):
+    key = sm.slug_for_path("~/work/proj")
+    with pytest.raises(ValueError):
+        mem._herd_memory_delete({"key": key, "name": "../../x"})
+    with pytest.raises(ValueError):
+        mem._herd_memory_edit({"key": "../../etc", "name": "a", "description": "d", "body": "b"})
+    with pytest.raises(ValueError):
+        mem._herd_memory_edit({"key": key, "name": "a", "type": "nonsense",
+                               "description": "d", "body": "b"})

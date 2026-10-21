@@ -91,6 +91,10 @@ class JsonRpcHandler:
             "memory_link_claude": self._memory_link_claude,
             "memory_migrate": self._memory_migrate,
             "memory_unmigrate": self._memory_unmigrate,
+            "herd_memory_projects": self._herd_memory_projects,
+            "herd_memory_list": self._herd_memory_list,
+            "herd_memory_edit": self._herd_memory_edit,
+            "herd_memory_delete": self._herd_memory_delete,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -575,6 +579,70 @@ class JsonRpcHandler:
         if not isinstance(projects, list):
             raise ValueError("projects must be a list")
         return memory_migrate.unmigrate(projects)
+
+    # ---- The Memory tab on the page -----------------------------------
+
+    def _project_paths(self) -> dict:
+        "Store key (slug) -> the project path the herd knows for it, if any."
+        out = {}
+        for s in get_herd().list_sessions().get("sessions", []):
+            p = (s.get("project") or "").strip()
+            if p:
+                out[shared_memory.slug_for_path(p)] = p
+        return out
+
+    def _memory_store_by_key(self, params: dict):
+        """Resolve (store path, key) from a page request: a `key' (slug) or a
+        `project' (path), guarded against path tricks."""
+        key = str(params.get("key") or "").strip()
+        if not key:
+            proj = str(params.get("project") or "").strip()
+            key = shared_memory.slug_for_path(proj) if proj else ""
+        key = shared_memory.valid_key(key)
+        store = (shared_memory.user_store() if key == shared_memory.USER_KEY
+                 else shared_memory.project_store(key))
+        return store, key
+
+    def _herd_memory_projects(self, _params: dict) -> dict:
+        """The stores for the tab's picker: the user store and each project's,
+        each with its slug key, a label and the project path (so the page can
+        match an open room's project to its store)."""
+        import os
+        paths = self._project_paths()
+        projects = []
+        for k in shared_memory.project_keys():
+            path = paths.get(k, "")
+            label = (os.path.basename(os.path.normpath(os.path.expanduser(path)))
+                     if path else k)
+            projects.append({"key": k, "label": label or k, "project": path})
+        return {"user": {"key": shared_memory.USER_KEY, "label": "User (shared)"},
+                "projects": projects}
+
+    def _herd_memory_list(self, params: dict) -> dict:
+        "The facts for store KEY -- the user facts, and a project's own too."
+        store, key = self._memory_store_by_key(params)
+        if key != shared_memory.USER_KEY:
+            try:
+                self._attribute_project(key)
+            except Exception:  # noqa: BLE001 — attribution must never fail a read
+                pass
+        return {"key": key, "facts": shared_memory.facts_for(key)}
+
+    def _herd_memory_edit(self, params: dict) -> dict:
+        "Rewrite a fact (description, type, body) from the page, authored `user'."
+        typ = str(params.get("type") or shared_memory.DEFAULT_TYPE).strip()
+        if typ not in shared_memory.TYPES:
+            raise ValueError("type is one of: " + ", ".join(shared_memory.TYPES))
+        store, key = self._memory_store_by_key(params)
+        return shared_memory.edit_fact(
+            store, key, str(params.get("name") or ""),
+            description=str(params.get("description") or ""),
+            body=str(params.get("body") or ""), type=typ, author="user")
+
+    def _herd_memory_delete(self, params: dict) -> dict:
+        "Delete a fact by NAME from store KEY (the page's confirmed delete)."
+        store, key = self._memory_store_by_key(params)
+        return shared_memory.forget(store, key, str(params.get("name") or ""))
 
     def _herd_relay_brief(self, params: dict) -> dict:
         """What agent NAME hands its heir, as the heir's first message: its

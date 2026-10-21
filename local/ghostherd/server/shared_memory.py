@@ -123,6 +123,33 @@ class Fact:
     def title(self) -> str:
         return _title(self.name)
 
+    def as_dict(self) -> dict:
+        "The fact as the page sees it (its body included, for read and filter)."
+        return {"name": self.name, "title": self.title, "description": self.description,
+                "type": self.type, "author": self.author, "created": self.created,
+                "updated": self.updated, "body": self.body, "shared": self.shared}
+
+
+def valid_name(name: str) -> str:
+    """NAME lower-cased and checked -- lowercase letters, digits and dashes,
+    1 to 79 long.  Rejects a path trick (no `/', `.', `..') by construction;
+    raises ValueError otherwise."""
+    name = (name or "").strip().lower()
+    if not NAME_RE.match(name):
+        raise ValueError("name is lowercase letters, digits and dashes (1–79)")
+    return name
+
+
+def valid_key(key: str) -> str:
+    """A store KEY (`user' or a project slug) checked against path tricks: a
+    single path segment, no separators.  Raises ValueError otherwise."""
+    key = (key or "").strip()
+    if key == USER_KEY:
+        return key
+    if not key or "/" in key or "\\" in key or key in (".", "..") or key.startswith("."):
+        raise ValueError("bad project key")
+    return key
+
 
 def _quote(value: str) -> str:
     "A double-quoted frontmatter scalar, backslash-escaped, as claude writes."
@@ -371,9 +398,52 @@ def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
 
 
 @_locked
+def edit_fact(store: Path, key: str, name: str, *, description: str, body: str,
+              type: str = DEFAULT_TYPE, author: str = "user", now: str | None = None) -> dict:
+    """Rewrite an existing fact NAME in STORE with a new description, type and
+    body, re-authored (the page's edit is the user's), updated now; keeps its
+    created and claude's originSessionId, and regenerates the index."""
+    name = valid_name(name)
+    typ = type if type in TYPES else DEFAULT_TYPE
+    now = now or iso_now()
+    path = store / f"{name}.md"
+    if path.is_symlink():
+        raise ValueError(f"{name} is a shared user fact; edit it in the user store")
+    if not path.exists():
+        raise ValueError(f"no fact named {name}")
+    old = parse(path)
+    created = (old.created if old else "") or now
+    front, _ = _split_front(path.read_text(encoding="utf-8"))
+    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    extra = {"originSessionId": meta.get("originSessionId")}
+    _atomic_write(path, render(name, (description or "").strip(), body or "", type=typ,
+                               author=author, created=created, updated=now, extra=extra))
+    regenerate(store, key)
+    if key == USER_KEY:
+        regenerate_all_projects()
+    return {"name": name, "type": typ, "store": key}
+
+
+def facts_for(key: str) -> list[dict]:
+    "The facts to show for store KEY: the user facts, and a project's own too."
+    rows = [f.as_dict() for f in user_facts()]
+    if key != USER_KEY:
+        rows += [f.as_dict() for f in own_facts(project_store(key))]
+    return rows
+
+
+def project_keys() -> list[str]:
+    "Every project store's key (slug), those that have a directory, sorted."
+    base = root()
+    if not base.is_dir():
+        return []
+    return sorted(d.name for d in base.iterdir() if d.is_dir() and d.name != USER_KEY)
+
+
+@_locked
 def forget(store: Path, key: str, name: str) -> dict:
     "Remove fact NAME from STORE.  Returns whether it was there."
-    name = (name or "").strip().lower()
+    name = valid_name(name)
     path = store / f"{name}.md"
     removed = False
     # A real file only -- never follow a shared symlink and delete a user fact
