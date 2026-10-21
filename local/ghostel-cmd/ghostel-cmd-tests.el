@@ -564,6 +564,23 @@ as typed text when it was free text."
       (execute-kbd-macro (kbd "<up>"))
       (should (equal (ghostel-cmd-tests--input) "prod")))))
 
+(ert-deftest ghostel-cmd-test-choices-input-method-edits-the-pick ()
+  "C-\\ edits a picked choice as text, which typing then extends; C-g
+puts the pick back."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "dep" :cmd "deploy {{env:dev|staging}}"))
+    (let ((default-input-method nil))
+      (ghostel-cmd-paste)
+      (ghostel-cmd-tests--type "C-\\ - 2 RET")
+      (should (equal (ghostel-cmd-tests--input) "dev-2"))
+      (execute-kbd-macro "x")
+      (should (equal (ghostel-cmd-tests--input) "dev-2x"))
+      (execute-kbd-macro (kbd "C-n"))
+      (ghostel-cmd-tests--type "C-\\ y C-g")
+      (should (equal (ghostel-cmd-tests--input) "dev"))
+      (execute-kbd-macro "q")
+      (should (equal (ghostel-cmd-tests--input) "q")))))
+
 (ert-deftest ghostel-cmd-test-empty-choice-pastes-empty ()
   "An empty choice, picked, pastes as empty, not as the default."
   (ghostel-cmd-tests--with-overlay
