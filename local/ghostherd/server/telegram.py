@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -217,6 +218,165 @@ def _clip(text: str, n: int = 3500) -> str:
     if len(text) > n:
         return text[:n] + "\n…"
     return text
+
+
+# ---- Markdown to Telegram HTML ---------------------------------------
+#
+# Telegram pushes are sent with parse_mode=HTML (less escaping than
+# MarkdownV2).  A lead's report -- and any other agent prose -- is written
+# in Markdown; this turns it into the small tag set Telegram renders, so
+# **原因：**, `code' and "- " lists read as formatted text instead of their
+# markers.  Plain text is escaped (& < >).  What is not markup stays as
+# typed.  Markdown is clipped before converting, so a cut never lands in
+# the middle of a tag or an entity, and the converter only ever emits
+# balanced tags.
+
+TG_LIMIT = 4096  # Telegram's message-length ceiling.
+
+
+def _esc(s: str) -> str:
+    "Escape the three characters Telegram's HTML parser treats as markup."
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _esc_attr(s: str) -> str:
+    return _esc(s).replace('"', "&quot;")
+
+
+_CODE = re.compile(r"`([^`\n]+)`")
+_LINK = re.compile(r"\[([^\]\n]*)\]\(([^)\s]+)\)")
+# **bold** / __bold__: the span starts and ends on a non-space, so a bare
+# marker or spaced-out asterisks (2 * 3 * 4) are left alone; __ wants a
+# non-word boundary too, so snake_case is not italicised, while **原因：**
+# right against CJK still matches.
+_BOLD1 = re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", re.S)
+_BOLD2 = re.compile(r"(?<![0-9A-Za-z])__(?=\S)(.+?)(?<=\S)__(?![0-9A-Za-z])", re.S)
+_IT1 = re.compile(r"\*(?=\S)(.+?)(?<=\S)\*", re.S)
+_IT2 = re.compile(r"(?<![0-9A-Za-z])_(?=\S)(.+?)(?<=\S)_(?![0-9A-Za-z])", re.S)
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
+_LIST = re.compile(r"^\s*[-*]\s+(.*)$")
+_FENCE = re.compile(r"^\s*(?:```|~~~)(\w*)\s*$")
+_FENCE_END = re.compile(r"^\s*(?:```|~~~)\s*$")
+_TABLE_SEP = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")
+
+
+def _inline(s: str) -> str:
+    "Convert the inline Markdown in one span; escape everything else."
+    out: list[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        m = _CODE.match(s, i)
+        if m:
+            out.append("<code>" + _esc(m.group(1)) + "</code>")
+            i = m.end()
+            continue
+        m = _LINK.match(s, i)
+        if m:
+            out.append('<a href="' + _esc_attr(m.group(2)) + '">' + _inline(m.group(1)) + "</a>")
+            i = m.end()
+            continue
+        m = _BOLD1.match(s, i) or _BOLD2.match(s, i)
+        if m:
+            out.append("<b>" + _inline(m.group(1)) + "</b>")
+            i = m.end()
+            continue
+        m = _IT1.match(s, i) or _IT2.match(s, i)
+        if m:
+            out.append("<i>" + _inline(m.group(1)) + "</i>")
+            i = m.end()
+            continue
+        out.append(_esc(s[i]))
+        i += 1
+    return "".join(out)
+
+
+def md_to_html(md: str) -> str:
+    "Markdown to the HTML subset Telegram renders."
+    lines = md.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        fence = _FENCE.match(line)
+        if fence:  # ``` ... ``` -> <pre>, code taken literally
+            body: list[str] = []
+            i += 1
+            while i < n and not _FENCE_END.match(lines[i]):
+                body.append(lines[i])
+                i += 1
+            i += 1  # the closing fence, if any
+            code = _esc("\n".join(body))
+            lang = fence.group(1)
+            if lang:
+                out.append(f'<pre><code class="language-{_esc(lang)}">{code}</code></pre>')
+            else:
+                out.append(f"<pre>{code}</pre>")
+            continue
+        if "|" in line and i + 1 < n and _TABLE_SEP.match(lines[i + 1]):
+            block: list[str] = []  # a table -> a <pre> block, kept monospace
+            while i < n and "|" in lines[i]:
+                block.append(lines[i])
+                i += 1
+            out.append("<pre>" + _esc("\n".join(block)) + "</pre>")
+            continue
+        if line.lstrip().startswith(">"):
+            quote: list[str] = []  # > quote -> <blockquote>
+            while i < n and lines[i].lstrip().startswith(">"):
+                quote.append(_inline(re.sub(r"^\s*>\s?", "", lines[i])))
+                i += 1
+            out.append("<blockquote>" + "\n".join(quote) + "</blockquote>")
+            continue
+        h = _HEADING.match(line)
+        if h:  # # heading -> a bold line
+            out.append("<b>" + _inline(h.group(1)) + "</b>")
+            i += 1
+            continue
+        li = _LIST.match(line)
+        if li:  # "- "/"* " -> "• "; numbered items are left as typed
+            out.append("• " + _inline(li.group(1)))
+            i += 1
+            continue
+        out.append(_inline(line))
+        i += 1
+    return "\n".join(out)
+
+
+def to_html(text: str, limit: int = TG_LIMIT) -> str:
+    """TEXT (Markdown) as Telegram HTML, within LIMIT.  The Markdown is
+    clipped before it is converted, so a cut never splits a tag or an
+    entity.  Escaping and tags can lengthen the text, so the cut is chosen
+    by the converted length (a search over how much source fits), not the
+    source length."""
+    html = md_to_html(text)
+    if len(html) <= limit:
+        return html
+    lo, hi, best = 0, len(text), md_to_html(_clip(text, 0))
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = md_to_html(_clip(text, mid))
+        if len(cand) <= limit:
+            best, lo = cand, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _strip_html(html: str) -> str:
+    "HTML back to plain text, for the message that Telegram would not parse."
+    text = re.sub(r"<[^>]+>", "", html)
+    return (text.replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", '"').replace("&amp;", "&"))
+
+
+def _parse_error(resp: Any) -> bool:
+    "A 400 from Telegram that means it could not parse our entities."
+    if getattr(resp, "status_code", 200) != 400:
+        return False
+    try:
+        desc = ((resp.json() or {}).get("description") or "").lower()
+    except Exception:
+        desc = ""
+    return "parse" in desc or "entit" in desc or "tag" in desc
 
 
 def _leaf(project: str | None) -> str:
@@ -460,18 +620,23 @@ class TelegramBot:
         if not session:
             return {"chat_id": chat_id, "text": "session not in last snapshot"}
         if kind == "screen":
-            text = format_screen(session)
-            if not text:
+            body = format_screen(session)
+            if not body:
                 return self._enqueue(chat_id, "screen", short)
+            # The pane is terminal output, not prose: keep it monospace in a
+            # <pre>, only escaped, never run through the Markdown converter.
+            text = "<pre>" + _esc(_clip(body)) + "</pre>"
         else:
             glyph = GLYPH.get(session.get("state") or "", "?")
-            text = (
+            # explain is the agent's own reason -- prose, so Markdown.
+            text = to_html(
                 f"{glyph} {session.get('state') or '?'}\n"
                 f"{session.get('reason') or '—'}"
             )
         return {
             "chat_id": chat_id,
-            "text": _clip(text),
+            "text": text,
+            "parse_mode": "HTML",
             "reply_markup": session_keyboard(session),
         }
 
@@ -499,6 +664,18 @@ class TelegramBot:
         text = format_push(push, words, session)
         return text, (push_keyboard(push, session) if text else None)
 
+    async def _send(self, client: httpx.AsyncClient, url: str, payload: dict) -> Any:
+        """sendMessage PAYLOAD.  When it carries HTML that Telegram will not
+        parse (400 can't parse entities), resend it as plain text, so a push
+        is never lost."""
+        resp = await client.post(url.format(method="sendMessage"), json=payload)
+        if payload.get("parse_mode") and _parse_error(resp):
+            plain = {k: v for k, v in payload.items() if k != "parse_mode"}
+            plain["text"] = _strip_html(payload["text"])
+            resp = await client.post(url.format(method="sendMessage"), json=plain)
+        resp.raise_for_status()
+        return resp
+
     async def _flush_pushes(self, client: httpx.AsyncClient, url: str, now: float | None = None) -> None:
         now = now if now is not None else datetime.now().timestamp()
         done = []
@@ -507,12 +684,12 @@ class TelegramBot:
             if ready is None:
                 continue
             text, markup = ready
+            html = to_html(text) if text else ""
             for chat_id in sorted(self.chat_ids) if text else []:
-                payload = {"chat_id": chat_id, "text": _clip(text)}
+                payload = {"chat_id": chat_id, "text": html, "parse_mode": "HTML"}
                 if markup:
                     payload["reply_markup"] = markup
-                resp = await client.post(url.format(method="sendMessage"), json=payload)
-                resp.raise_for_status()
+                resp = await self._send(client, url, payload)
                 mid = ((resp.json() or {}).get("result") or {}).get("message_id")
                 if mid and push.get("project"):
                     self.herd.remember_pushed(chat_id, mid, push["project"])
@@ -587,7 +764,7 @@ class TelegramBot:
                 reply_to=(msg.get("reply_to_message") or {}).get("message_id"),
             )
         if payload:
-            await client.post(url.format(method="sendMessage"), json=payload)
+            await self._send(client, url, payload)
 
     async def _flush_replies(self, client: httpx.AsyncClient, url: str) -> None:
         pending = self.herd.unsent_replies()

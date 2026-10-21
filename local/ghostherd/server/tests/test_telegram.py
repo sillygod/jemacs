@@ -471,3 +471,161 @@ def test_herd_links_the_page_and_a_card_its_room(tmp_path):
         assert _urls(bot.handle_callback(99, f"o:{short}")) == []
         assert push_keyboard({"kind": "report", "session": "agy-commit", "url": url}) is None
     reset_herd()
+
+
+# ---- Markdown to Telegram HTML ----------------------------------------
+
+from telegram import md_to_html, to_html, _strip_html, _esc
+
+# The report from the screenshot: **原因：** and friends against CJK, a
+# backtick commit, "- " bullets, plain paragraphs.
+REPORT = (
+    "捲軸顏色改好了（`8f162b2`），網頁已經重新載入。\n\n"
+    "**原因：** ghostherd 頁面和 PR 頁面（pr-view）共用同一份基本樣式。\n\n"
+    "**修法：** 只改這一份共用樣式，兩邊一致。\n\n"
+    "- 標明是深色頁面。\n"
+    "- 捲軸用主題現有的線條顏色，滑鼠移上去時變亮。\n\n"
+    "**測試：** 新的捲軸測試 13 個全過。"
+)
+REPORT_HTML = (
+    "捲軸顏色改好了（<code>8f162b2</code>），網頁已經重新載入。\n\n"
+    "<b>原因：</b> ghostherd 頁面和 PR 頁面（pr-view）共用同一份基本樣式。\n\n"
+    "<b>修法：</b> 只改這一份共用樣式，兩邊一致。\n\n"
+    "• 標明是深色頁面。\n"
+    "• 捲軸用主題現有的線條顏色，滑鼠移上去時變亮。\n\n"
+    "<b>測試：</b> 新的捲軸測試 13 個全過。"
+)
+
+
+def test_a_report_markdown_renders_as_telegram_html():
+    assert md_to_html(REPORT) == REPORT_HTML
+    # The CJK markers that came through raw in the screenshot are gone.
+    assert "**" not in md_to_html(REPORT) and "`" not in md_to_html(REPORT)
+
+
+def test_markdown_covers_the_inline_and_block_cases():
+    # & < > escaped.
+    assert md_to_html("a & b < c > d") == "a &amp; b &lt; c &gt; d"
+    # bold/italic, both markers; __/_ leave snake_case alone, ** hugs CJK.
+    assert md_to_html("**b** __b__ *i* _i_") == "<b>b</b> <b>b</b> <i>i</i> <i>i</i>"
+    assert md_to_html("foo_bar_baz stays") == "foo_bar_baz stays"
+    assert md_to_html("**原因：**對") == "<b>原因：</b>對"
+    # spaced-out asterisks are arithmetic, not italics.
+    assert md_to_html("2 * 3 * 4") == "2 * 3 * 4"
+    # code hides its contents from the converter and escapes them.
+    assert md_to_html("`a <b> & *c*`") == "<code>a &lt;b&gt; &amp; *c*</code>"
+    # links, with the url's & escaped in the attribute.
+    assert md_to_html("[x](https://h.co/a?b=1&c=2)") == '<a href="https://h.co/a?b=1&amp;c=2">x</a>'
+    # headings -> bold; "- "/"* " -> bullets; numbered left as typed.
+    assert md_to_html("## Title") == "<b>Title</b>"
+    assert md_to_html("- one\n* two") == "• one\n• two"
+    assert md_to_html("1. one\n2. two") == "1. one\n2. two"
+    # blockquote and fenced code.
+    assert md_to_html("> quoted") == "<blockquote>quoted</blockquote>"
+    assert md_to_html("```py\nx = 1 < 2\n```") == '<pre><code class="language-py">x = 1 &lt; 2</code></pre>'
+    assert md_to_html("```\nplain\n```") == "<pre>plain</pre>"
+    # a table -> a <pre> block (kept monospace).
+    assert md_to_html("| a | b |\n|---|---|\n| 1 | 2 |") == "<pre>| a | b |\n|---|---|\n| 1 | 2 |</pre>"
+
+
+def test_a_report_push_is_sent_as_html(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.report(session="lead-tmp", state="done", last=REPORT)
+    _push(herd, kind="report", session="lead-tmp", project="/tmp/shop", url=ROOM, since=0)
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert tg.sent, "the push was sent"
+    _, payload = tg.sent[0]
+    assert payload["parse_mode"] == "HTML"
+    assert "<b>原因：</b>" in payload["text"] and "<code>8f162b2</code>" in payload["text"]
+    assert "**" not in payload["text"]
+    # The herd chrome is still there, escaped-safe.
+    assert payload["text"].startswith("✓ lead-tmp · shop") and "Reply to tell the lead" in payload["text"]
+    reset_herd()
+
+
+class FakeParseFail:
+    """Rejects a message with parse_mode (400 can't parse entities); takes
+    the plain retry."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def post(self, url, json=None):
+        self.sent.append((url, json))
+        has_pm = "parse_mode" in (json or {})
+        mid = 1000 + len(self.sent)
+
+        class Resp:
+            status_code = 400 if has_pm else 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if has_pm:
+                    return {"ok": False, "description": "Bad Request: can't parse entities: unsupported start tag"}
+                return {"ok": True, "result": {"message_id": mid}}
+
+        return Resp()
+
+
+def test_a_message_telegram_cannot_parse_is_resent_as_plain(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.report(session="lead-tmp", state="done", last="**原因：** `x` and <y>")
+    _push(herd, kind="report", session="lead-tmp", project="/tmp/shop", url=ROOM, since=0)
+    tg = FakeParseFail()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    # Two posts: the HTML try, then the plain retry.
+    assert len(tg.sent) == 2
+    assert tg.sent[0][1]["parse_mode"] == "HTML"
+    plain = tg.sent[1][1]
+    assert "parse_mode" not in plain
+    assert "<b>" not in plain["text"] and "原因：" in plain["text"] and "<y>" in plain["text"]
+    # The push is not lost: it is marked sent.
+    assert herd.unsent_pushes() == []
+    reset_herd()
+
+
+def test_the_markdown_is_clipped_before_a_tag_or_entity_is_cut():
+    # A clip that lands inside a bold span leaves the marker literal, never a
+    # half-written <b>; the result stays within the limit and well-formed.
+    html = to_html("**bold** " * 400, limit=300)
+    assert len(html) <= 300
+    assert html.count("<b>") == html.count("</b>")
+    import re as _re
+    assert not _re.search(r"<[a-z/][^>]*$", html)  # no tag left open at the cut
+    # Entities are whole: escaping happens after the clip.
+    ents = to_html("&" * 400, limit=120)
+    assert len(ents) <= 120
+    assert not _re.search(r"&(?!amp;|lt;|gt;|quot;)", ents)
+
+
+def test_a_blocked_push_escapes_its_screen_and_keeps_numbers(tmp_path):
+    bot, herd = _bot(tmp_path)
+    menu = {"question": "Run `rm -rf <dir>` & proceed?",
+            "options": [{"n": 1, "label": "Yes"}, {"n": 2, "label": "No"}]}
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "blocked",
+                         "reason": "?", "project": "/tmp", "prompt": menu}],
+              pushes=[{"kind": "blocked", "session": "agy-commit", "project": "/tmp/shop", "url": ROOM, "reason": "?"}])
+    push = herd.unsent_pushes()[-1]
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    text = tg.sent[0][1]["text"]
+    # The shell is escaped into a code span, not run as markup; the numbered
+    # choices stay as typed.
+    assert "<code>rm -rf &lt;dir&gt;</code> &amp; proceed?" in text
+    assert "1. Yes\n2. No" in text
+    reset_herd()
+
+
+def test_the_screen_snapshot_is_a_pre_block(tmp_path):
+    bot, herd = _bot(tmp_path)
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "blocked",
+                         "reason": "?", "screen": "line one\n<tag> & more"}], ack_ids=[])
+    agy = herd.session("agy-commit")
+    msg = bot.handle_callback(99, f"sc:{agy['short']}")
+    assert msg["parse_mode"] == "HTML"
+    assert msg["text"].startswith("<pre>") and msg["text"].endswith("</pre>")
+    assert "&lt;tag&gt; &amp; more" in msg["text"]
+    reset_herd()
