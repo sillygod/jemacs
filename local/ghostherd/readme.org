@@ -635,6 +635,38 @@ the same path, guarded to the lead's own project's agents.
 The line of a name is kept with the recipe, so it outlives Emacs on
 tmux: the page shows the heir's =II= and, over it, the CLIs before it.
 
+* A lead starts and stops agents (=herd start= / =herd stop=)
+
+A project's lead runs agents through the herd rather than by hand:
+
+#+begin_src sh
+herd start KIND [--worktree [BRANCH] | --no-worktree] [--name NAME] [--notes TEXT] [--new]
+herd stop NAME
+#+end_src
+
+=start= prints the agent's name (and its worktree) for the lead to ask.
+It *reuses* an idle agent the lead started whose branch is merged and
+worktree clean --- the same agent, with its context, fast-forwarded onto
+the main branch --- before spawning a new one; =--new= forces a fresh one.
+A worktree is the default once another agent works in the checkout, so two
+do not collide; =--no-worktree= runs it in the main checkout.
+
+The herd guards it: only a lead, for its own project (anyone else is
+refused); =ghostherd-lead-may-start= (default t) turns the whole thing off;
+=ghostherd-lead-start-max= (default 2) caps how many a lead has up per
+project; a used-up kind is refused, naming one with quota.  Each agent
+carries =started-by= (kept with its recipe, so it survives an Emacs
+restart), the log records it, and the card shows "by lead-…".
+
+=stop= kills an agent the caller started --- not one owing an open or
+queued ask --- and removes its worktree when merged and clean, else keeps
+it.
+
+=herd list= shows a lead what it needs to decide whether to queue work
+behind a busy agent or start another: per agent, the open ask and how many
+wait behind it, the files its turn is editing, who started it, its worktree
+branch, how many commits ahead of its base, and whether it is merged.
+
 * Worktrees: two agents in one project at once
 
 An agent can work in its own git worktree, so two agents write code in one

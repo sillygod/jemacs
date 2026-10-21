@@ -384,7 +384,8 @@ the name we are about to take."
     (:lineage . "@ghostherd-lineage")
     (:worktree . "@ghostherd-worktree")
     (:branch  . "@ghostherd-branch")
-    (:base    . "@ghostherd-base"))
+    (:base    . "@ghostherd-base")
+    (:started-by . "@ghostherd-started-by"))
   "Recipe fields and the tmux user options that hold them.
 
 On the session itself rather than in a sidecar file: a file can be

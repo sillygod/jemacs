@@ -125,6 +125,16 @@ const herd = () => {
       check("the desktop keeps the word Image", imgText === "Image");
       const inlineH = await page.$eval(".rcol .rfoot textarea", (t) => t.style.height || "");
       check("the desktop composer is not auto-grown", inlineH === "", { inlineH });
+      // An agent started by a lead through `herd start' says so on its card.
+      await page.evaluate((hd) => {
+        hd.agents.find((x) => x.name === "claude-deploy-platform").startedBy = "lead-deploy-platform";
+        GM.renderHerd(hd);
+      }, HERD);
+      await sleep(120);
+      check("a lead-started agent shows 'by <lead>' on its card",
+        /by lead-deploy-platform/.test(await page.$eval('.rcol[data-name="claude-deploy-platform"] .amain', (el) => el.textContent)));
+      check("an agent nobody started shows no 'by' label",
+        !/by /.test(await page.$eval('.rcol[data-name="qa-deploy-platform"] .amain', (el) => el.textContent)));
       await ctx.close();
     }
   } finally {

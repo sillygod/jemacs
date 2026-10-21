@@ -225,6 +225,89 @@ def test_screens_query_round_trips_through_emacs(tmp_path: Path, monkeypatch):
     reset_herd()
 
 
+def test_start_queues_a_start_command(tmp_path: Path, monkeypatch):
+    "`herd start' queues a `start' command Emacs acts on; the args ride along."
+    import asyncio
+    from herd import get_herd
+    from jsonrpc_handler import JsonRpcRequest, handler
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    reset_herd()
+    h = get_herd()
+    r = asyncio.run(handler.handle(JsonRpcRequest(
+        jsonrpc="2.0", id=1, method="herd_start",
+        params={"by": "lead-p", "kind": "claude", "worktree": "yes",
+                "branch": "feat/x", "name": "", "notes": "impl", "new": True})))
+    cid = r.result["id"]
+    cmd = h.tick(sessions=[], ack_ids=[])["commands"][0]
+    assert cmd["id"] == cid and cmd["op"] == "start" and cmd["session"] == "lead-p"
+    assert cmd["args"] == {"by": "lead-p", "kind": "claude", "worktree": "yes",
+                           "branch": "feat/x", "name": "", "notes": "impl", "new": True}
+    h.tick(sessions=[], ack_ids=[], replies=[{"id": cid, "text": "started claude-p (…)"}])
+    assert h.command_reply(cid)["text"].startswith("started ")
+    reset_herd()
+
+
+def test_start_rejects_a_bad_kind_or_worktree(tmp_path: Path, monkeypatch):
+    "A mis-shapen kind or unknown worktree mode is refused before queuing."
+    import asyncio
+    from jsonrpc_handler import JsonRpcRequest, handler
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    reset_herd()
+    for params in ({"by": "lead-p", "kind": "Not A CLI"},
+                   {"by": "lead-p", "kind": "claude", "worktree": "maybe"}):
+        r = asyncio.run(handler.handle(JsonRpcRequest(
+            jsonrpc="2.0", id=1, method="herd_start", params=params)))
+        assert r.error is not None and r.result is None
+    reset_herd()
+
+
+def test_list_enriches_agents_for_the_queue_decision(tmp_path: Path, monkeypatch):
+    "`herd list' shows started-by, ahead/merged, the open ask and how many queue."
+    from herd import get_herd
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    reset_herd()
+    h = get_herd()
+    h.tick(sessions=[{"name": "imp", "kind": "grok", "state": "working",
+                      "project": "/p/", "startedBy": "lead-p", "branch": "feat/x",
+                      "ahead": 3, "merged": False}], ack_ids=[])
+    # One ask delivered to imp (it owes it), two more queued behind.
+    now = "2026-10-21T00:00:00+00:00"
+    with h._mu:
+        h._conn.execute(
+            "INSERT INTO asks (id, from_name, to_name, body, wait, status, created_at, delivered_at)"
+            " VALUES ('a1', 'lead-p', 'imp', 'do', 0, 'delivered', ?, ?)", (now, now))
+        for i in (2, 3):
+            h._conn.execute(
+                "INSERT INTO asks (id, from_name, to_name, body, wait, status, created_at)"
+                f" VALUES ('a{i}', 'qa', 'imp', 'later', 0, 'queued', ?)", (now,))
+        h._conn.commit()
+    s = next(x for x in h.list_sessions()["sessions"] if x["name"] == "imp")
+    assert s["started_by"] == "lead-p" and s["ahead"] == 3 and s["merged"] is False
+    assert s["branch"] == "feat/x"
+    assert s["ask"] == {"id": "a1", "from": "lead-p"}
+    assert s["queued"] == 2
+    assert isinstance(s["editing"], list)
+    reset_herd()
+
+
+def test_stop_queues_a_stop_command(tmp_path: Path, monkeypatch):
+    "`herd stop NAME' queues a `stop' command against that agent."
+    import asyncio
+    from herd import get_herd
+    from jsonrpc_handler import JsonRpcRequest, handler
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    reset_herd()
+    h = get_herd()
+    r = asyncio.run(handler.handle(JsonRpcRequest(
+        jsonrpc="2.0", id=1, method="herd_stop",
+        params={"by": "lead-p", "name": "claude-p-2"})))
+    cid = r.result["id"]
+    cmd = h.tick(sessions=[], ack_ids=[])["commands"][0]
+    assert cmd["op"] == "stop" and cmd["session"] == "claude-p-2"
+    assert cmd["args"] == {"by": "lead-p"}
+    reset_herd()
+
+
 def test_snapshot_keeps_screen(tmp_path: Path):
     h = _store(tmp_path)
     h.tick(

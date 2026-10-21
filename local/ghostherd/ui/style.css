@@ -423,6 +423,8 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .det { font-size: 11px; color: var(--muted); }
 /* Work it has running in the background: it is not done yet. */
 .det.bgw { color: #58a6ff; }
+/* Started by a lead through `herd start'. */
+.det.startedby { color: var(--muted); }
 .anotes { color: var(--muted); font-style: italic; max-width: 30em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .amain .when { margin-left: auto; font-size: 11.5px; color: var(--muted); }
 .areason {

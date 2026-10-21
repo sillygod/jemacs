@@ -79,6 +79,8 @@ class JsonRpcHandler:
             "herd_relay_brief": self._herd_relay_brief,
             "herd_relay": self._herd_relay,
             "herd_screens": self._herd_screens,
+            "herd_start": self._herd_start,
+            "herd_stop": self._herd_stop,
             "herd_command_reply": self._herd_command_reply,
             "herd_unlink": self._herd_unlink,
         }
@@ -396,6 +398,38 @@ class JsonRpcHandler:
         return get_herd().enqueue_command(
             "screens", agent or "herd", {"agent": agent, "since": since, "why": why}
         )
+
+    def _herd_start(self, params: dict) -> dict:
+        """Queue a `herd start': a lead starts (or reuses) an agent of KIND in
+        its own project.  Emacs judges BY (a lead, its project), the reuse, the
+        limits and the usage; this only shapes and queues the request."""
+        by = str(params.get("by") or "").strip()
+        kind = str(params.get("kind") or "").strip()
+        if not relay.KIND.match(kind):
+            raise ValueError("kind is a CLI's name: claude, grok or agy")
+        worktree = str(params.get("worktree") or "auto").strip()
+        if worktree not in ("yes", "no", "auto"):
+            raise ValueError("worktree is yes, no or auto")
+        branch = str(params.get("branch") or "").strip()
+        name = str(params.get("name") or "").strip()
+        if name and not relay.NAME.match(name):
+            raise ValueError("name is letters, digits, . _ -")
+        notes = str(params.get("notes") or "")[:2000]
+        return get_herd().enqueue_command(
+            "start", by,
+            {"by": by, "kind": kind, "worktree": worktree, "branch": branch,
+             "name": name, "notes": notes, "new": bool(params.get("new"))},
+        )
+
+    def _herd_stop(self, params: dict) -> dict:
+        """Queue a `herd stop': a lead stops an agent it started.  Emacs checks
+        BY started NAME and that NAME owes no open or queued ask, then kills it
+        with the worktree cleanup."""
+        by = str(params.get("by") or "").strip()
+        name = str(params.get("name") or "").strip()
+        if not relay.NAME.match(name):
+            raise ValueError("name is an agent's name")
+        return get_herd().enqueue_command("stop", name, {"by": by})
 
     def _herd_command_reply(self, params: dict) -> dict:
         """A queued command's status and reply, by its id -- `herd relay'

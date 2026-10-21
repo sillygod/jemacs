@@ -364,6 +364,8 @@ draws lanes from fields rather than parsing prose."
           ;; `ghostherd--herd-snapshot'.)
           :login (if (eq (cdr err) 'login) t :json-false)
           :url (or (and blocked (ghostherd--login-url s)) "")
+          ;; Who started it through `herd start', shown on the card.
+          :startedBy (or (ghostherd-session-started-by s) "")
           ;; A turn killed by the Mac sleeping: the herd continues it itself.
           ;; `continueAt' (float ms) drives the card's "continuing after
           ;; sleep in Ns" countdown and its Cancel; `continueStopped' is t

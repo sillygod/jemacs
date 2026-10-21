@@ -325,6 +325,15 @@ class HerdStore:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN directory TEXT")
         if "branch" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN branch TEXT")
+        # Who started the agent through `herd start', and where its worktree
+        # branch stands: so `herd list' shows a lead what it owns and whether
+        # an agent's work is done (merged) -- the queue-or-start decision.
+        if "started_by" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN started_by TEXT")
+        if "ahead" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN ahead INTEGER")
+        if "merged" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN merged INTEGER")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -365,24 +374,15 @@ class HerdStore:
         return bool(row and row[0] == "1")
 
     def list_sessions(self, project: str | None = None) -> dict[str, Any]:
+        cols = ("name, kind, state, notes, project, reason, role, since, "
+                "directory, branch, started_by, ahead, merged")
         with self._mu:
             if project:
                 rows = self._conn.execute(
-                    """
-                    SELECT name, kind, state, notes, project, reason, role, since,
-                           directory, branch
-                    FROM snapshot WHERE project = ?
-                    """,
-                    (project,),
+                    f"SELECT {cols} FROM snapshot WHERE project = ?", (project,)
                 ).fetchall()
             else:
-                rows = self._conn.execute(
-                    """
-                    SELECT name, kind, state, notes, project, reason, role, since,
-                           directory, branch
-                    FROM snapshot
-                    """
-                ).fetchall()
+                rows = self._conn.execute(f"SELECT {cols} FROM snapshot").fetchall()
         rows.sort(
             key=lambda r: (
                 _STATE_RANK.get(r[2] or "", 9),
@@ -400,13 +400,46 @@ class HerdStore:
                     "project": r[4] or "",
                     "reason": r[5] or "",
                     "role": r[6] or "",
-                    "directory": (r[8] if len(r) > 8 else "") or "",
-                    "branch": (r[9] if len(r) > 9 else "") or "",
+                    "directory": r[8] or "",
+                    "branch": r[9] or "",
+                    "started_by": (r[10] if len(r) > 10 else "") or "",
+                    "ahead": (r[11] if len(r) > 11 else 0) or 0,
+                    "merged": bool(r[12]) if len(r) > 12 and r[12] is not None else False,
+                    # What a lead needs to decide queue-or-start: the ask this
+                    # agent owes now and how many wait behind it, and the files
+                    # its turn is editing (so work on the same files queues).
+                    **self._agent_work(r[0], r[2] or "", r[8] or ""),
                     "short": self.short_for(r[0]),
                 }
                 for r in rows
             ]
         }
+
+    def _agent_work(self, name: str, state: str, root: str) -> dict[str, Any]:
+        """For `herd list': NAME's open ask (id, from), how many asks wait
+        queued behind it, and the files its current turn is editing."""
+        with self._mu:
+            delivered = self._conn.execute(
+                "SELECT id, from_name FROM asks "
+                "WHERE to_name = ? AND status = 'delivered' ORDER BY created_at LIMIT 1",
+                (name,),
+            ).fetchone()
+            queued = self._conn.execute(
+                "SELECT COUNT(*) FROM asks WHERE to_name = ? AND status = 'queued'",
+                (name,),
+            ).fetchone()[0]
+            transcript = self._transcript(name)
+        ask = {"id": delivered[0], "from": delivered[1]} if delivered else None
+        editing: list[str] = []
+        # Only an agent mid-turn is editing; reading every idle agent's
+        # transcript on each `herd list' is not worth it.
+        if transcript and state in ("working", "blocked", "waiting"):
+            try:
+                import conversation
+                editing = conversation.edited(transcript, root or None).get("files", [])
+            except (OSError, ValueError, ImportError):
+                editing = []
+        return {"ask": ask, "queued": int(queued or 0), "editing": editing}
 
     def enqueue(
         self,
@@ -1388,8 +1421,8 @@ class HerdStore:
                     """
                     INSERT INTO snapshot
                       (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
-                       directory, branch)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       directory, branch, started_by, ahead, merged)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -1405,6 +1438,9 @@ class HerdStore:
                         since,
                         str(row.get("directory") or ""),
                         str(row.get("branch") or ""),
+                        str(row.get("startedBy") or ""),
+                        int(row.get("ahead") or 0),
+                        1 if row.get("merged") is True else 0,
                     ),
                 )
                 self._upsert_alias(name)

@@ -1619,6 +1619,51 @@ closing it with the error screen.
 - A second agent runs in its own worktree on local/ghostel-cmd (the first
   real worktree-flow run); its branch is reviewed and merged separately.
 
+* Phase 3.32 — A lead starts and stops agents through the herd  *(this tree)*
+
+Goal: a lead runs agents without reaching into Emacs internals.  Before
+this, starting an agent meant emacsclient-evaluating =ghostherd--worktree-create=
+/ =ghostherd-spawn= by hand -- fragile, unrecorded, unlimited, and not
+something a fresh lead's prompt taught it.
+
+** What shipped
+
+- [X] =herd start KIND [--worktree [BRANCH] | --no-worktree] [--name NAME]
+  [--notes TEXT] [--new]=: sidecar RPC -> a queued command -> a public Emacs
+  function (=ghostherd-lead-start=) that reuses what =ghostherd-new= does
+  (worktree off HEAD + deps setup).  Only a lead, for its own project;
+  anyone else refused.  A worktree is the default once another agent works
+  in the checkout; =--no-worktree= overrides.  pytest + ERT (real temp git
+  repos, fake "shell" agents) broken on purpose
+- [X] Reuse before spawning (unless =--new=): an idle agent the lead
+  started, same kind and project, its branch merged into its base and its
+  worktree clean, is fast-forwarded to the base and handed back -- "reused
+  NAME", its context kept -- rather than started from scratch
+- [X] Limits the herd enforces: =ghostherd-lead-may-start= (t) turns it off;
+  =ghostherd-lead-start-max= (2) caps the lead-started agents alive per
+  project, and past it refuses, listing them; a used-up kind is refused,
+  naming one with quota (=ghostherd-usage=)
+- [X] Recorded: the session carries =started-by=, kept on the host with the
+  recipe so a lead still owns its agents after a restart; the herd log gets
+  a `started by lead-…' life entry; the card shows "by lead-…"
+- [X] =herd stop NAME=: only an agent the caller started, and not one owing
+  an open or queued ask; otherwise =ghostherd-kill= with the worktree
+  cleanup (merged + clean -> removed, else kept, and the answer says which)
+- [X] =herd list= per agent gains the open ask (id, from), how many queue
+  behind it, the files its turn is editing (from the transcript), started-by,
+  the worktree branch, its commits ahead and whether it is merged -- what a
+  lead weighs to queue rather than start.  ahead/merged are cached
+  (=ghostherd-worktree-stat-ttl=) so the poll does not run git each tick
+- [X] The lead prompt replaces "ask the user to start one" with start/stop,
+  reuse first, and when to queue (same files, small, waits on a result,
+  needs context) versus start (independent, substantial); =herd --help=
+  documents them
+
+** What is left
+
+- Nothing: the batch is shipped.  A sidecar restart lands the server/
+  changes; the =.el= and page are live.
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

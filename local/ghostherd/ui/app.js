@@ -1523,6 +1523,7 @@
       '<div class="arow s-' + esc(a.state) + '" data-name="' + esc(name) + '">' +
       '<div class="amain">' + stateBadge(a.state) +
       agentName(name) + genBadge(a) + agentBadge(a.kind) + leadBadge(a) +
+      (a.startedBy ? '<span class="det startedby" title="Started by ' + esc(a.startedBy) + ' through herd start">by ' + esc(a.startedBy) + "</span>" : "") +
       (a.detached ? '<span class="det" title="Running, no view attached">▪ detached</span>' : "") +
       (a.manual ? '<span class="det" title="State set by hand">manual</span>' : "") +
       (a.progress != null ? '<span class="det">' + esc(a.progress) + "%</span>" : "") + backgroundHtml(a) +
@@ -1733,6 +1734,7 @@
     return '<div class="amain">' + stateBadge(a.state) +
       '<span class="rdot" style="color:' + sessionColor(name) + '" title="Its colour in every column">●</span>' +
       agentName(name) + agentBadge(a.kind) + leadBadge(a) + backgroundHtml(a) +
+      (a.startedBy ? '<span class="det startedby" title="Started by ' + esc(a.startedBy) + ' through herd start">by ' + esc(a.startedBy) + "</span>" : "") +
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +

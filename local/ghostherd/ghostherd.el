@@ -710,6 +710,16 @@ Nil for an agent not in a herd-made worktree.")
   "SESSION's git worktree as (:path :branch :base), or nil for none."
   (gethash (ghostherd-session-id session) ghostherd--worktrees))
 
+(defvar ghostherd--started-by (make-hash-table :test 'equal)
+  "Session id -> the lead that started it through `herd start', or nothing.
+A table rather than a slot, as the role and worktree are; written onto the
+host with the recipe, so a lead still owns the agents it started after a
+restart.  `herd stop' and the reuse in `herd start' act only on these.")
+
+(defun ghostherd-session-started-by (session)
+  "The lead that started SESSION through the herd, or nil."
+  (gethash (ghostherd-session-id session) ghostherd--started-by))
+
 (defun ghostherd--worktree-path (project name)
   "Where agent NAME's worktree of PROJECT goes, under `ghostherd-worktree-root'."
   (expand-file-name
@@ -777,6 +787,43 @@ an ancestor of BASE, so removing BRANCH would lose no commit."
          (eq 0 (ignore-errors
                  (call-process "git" nil nil nil
                                "merge-base" "--is-ancestor" branch base))))))
+
+(defcustom ghostherd-worktree-stat-ttl 20
+  "Seconds a worktree's commits-ahead and merged state are cached for the
+snapshot `herd list' reads, so git is not run every poll.  A worktree's
+branch moves rarely; this bounds the cost to one check every so often."
+  :type 'number
+  :group 'ghostherd)
+
+(defvar ghostherd--worktree-stat (make-hash-table :test 'equal)
+  "Session id -> (AT AHEAD MERGED): a worktree's commits ahead of its base
+and whether it is merged, cached for `ghostherd-worktree-stat-ttl' seconds.")
+
+(defun ghostherd--worktree-stat (session)
+  "(:ahead N :merged BOOL) for SESSION's worktree, cached; nil with no
+worktree.  AHEAD is its own commits past its base; MERGED is t once the
+base contains them -- the work is in, the worktree removable."
+  (when-let* ((wt (ghostherd-session-worktree session))
+              (path (plist-get wt :path))
+              (branch (plist-get wt :branch))
+              (base (plist-get wt :base))
+              (main (ghostherd-session-project session)))
+    (let* ((id (ghostherd-session-id session))
+           (c (gethash id ghostherd--worktree-stat)))
+      (if (and c (< (- (float-time) (nth 0 c)) ghostherd-worktree-stat-ttl))
+          (list :ahead (nth 1 c) :merged (nth 2 c))
+        (let* ((ahead (or (and (file-directory-p (expand-file-name main))
+                               (let ((default-directory
+                                      (file-name-as-directory (expand-file-name main))))
+                                 (with-temp-buffer
+                                   (and (eq 0 (ignore-errors
+                                                (call-process "git" nil '(t nil) nil "rev-list"
+                                                              "--count" (concat base ".." branch))))
+                                        (string-to-number (string-trim (buffer-string)))))))
+                          0))
+               (merged (ghostherd--worktree-merged-p main branch base)))
+          (puthash id (list (float-time) ahead merged) ghostherd--worktree-stat)
+          (list :ahead ahead :merged merged))))))
 
 (defun ghostherd--worktree-remove (main path &optional force branch)
   "Remove git worktree PATH of the MAIN checkout; return t on success.
@@ -3327,6 +3374,7 @@ PLIST keys:
          (worktree (plist-get plist :worktree))
          (branch (plist-get plist :branch))
          (base (plist-get plist :base))
+         (started-by (plist-get plist :started-by))
          (backend (or (plist-get plist :backend) ghostherd-backend))
          (display (if (plist-member plist :display)
                       (plist-get plist :display)
@@ -3336,7 +3384,8 @@ PLIST keys:
                    (list :name name :kind kind :command command :args args
                          :directory directory :project project :notes notes
                          :role role :lineage lineage
-                         :worktree worktree :branch branch :base base)))
+                         :worktree worktree :branch branch :base base
+                         :started-by started-by)))
          session)
     (setq session
           (ghostherd-session--create
@@ -3364,8 +3413,13 @@ PLIST keys:
         (puthash name (list :path worktree :branch branch :base base)
                  ghostherd--worktrees)
       (remhash name ghostherd--worktrees))
+    (if started-by
+        (puthash name started-by ghostherd--started-by)
+      (remhash name ghostherd--started-by))
     (ghostherd--log-add session 'life
-                        (format "spawned %s on %s" kind backend))
+                        (if started-by
+                            (format "started by %s (%s on %s)" started-by kind backend)
+                          (format "spawned %s on %s" kind backend)))
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
     (when display
@@ -3472,6 +3526,9 @@ running, and a session keeps the backend it was born with anyway."
                                   :base (plist-get recipe :base))
                        ghostherd--worktrees)
             (remhash name ghostherd--worktrees))
+          (if-let* ((started-by (plist-get recipe :started-by)))
+              (puthash name started-by ghostherd--started-by)
+            (remhash name ghostherd--started-by))
           (ghostherd--log-add name 'life
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
@@ -3505,7 +3562,8 @@ session around a process that never stopped."
           :lineage (ghostherd-session-lineage session)
           :worktree (plist-get wt :path)
           :branch (plist-get wt :branch)
-          :base (plist-get wt :base))))
+          :base (plist-get wt :base)
+          :started-by (ghostherd-session-started-by session))))
 
 ;;;###autoload
 (defun ghostherd-respawn (session &optional continue)
@@ -3903,6 +3961,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--reports)
     (remhash id ghostherd--screens)
     (remhash id ghostherd--feet)
+    (remhash id ghostherd--started-by)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
@@ -6085,7 +6144,8 @@ address of each one's room from your phone, for the bot to link to."
    (lambda (s)
      (let* ((blocked (eq (ghostherd-session-state s) 'blocked))
             (err (and blocked (ghostherd--cli-error s)))
-            (continue-at (and blocked (ghostherd--sleep-continue-at s))))
+            (continue-at (and blocked (ghostherd--sleep-continue-at s)))
+            (wstat (and (ghostherd-session-worktree s) (ghostherd--worktree-stat s))))
       (list :name (ghostherd-session-name s)
            :kind (symbol-name (or (ghostherd-session-kind s) 'shell))
            :state (symbol-name (or (ghostherd-session-state s) 'idle))
@@ -6123,6 +6183,11 @@ address of each one's room from your phone, for the bot to link to."
                                    (ghostherd-session-project s))))
                         (if d (ghostherd--abbreviate d) ""))
            :branch (or (plist-get (ghostherd-session-worktree s) :branch) "")
+           ;; Who started it through `herd start', and where its worktree
+           ;; branch stands -- for `herd list' and the card's "started by".
+           :startedBy (or (ghostherd-session-started-by s) "")
+           :ahead (if wstat (plist-get wstat :ahead) 0)
+           :merged (if (and wstat (plist-get wstat :merged)) t :json-false)
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        ""))))
    (hash-table-values ghostherd--sessions)))
@@ -6412,8 +6477,37 @@ others; nobody may ask you back while you wait on them -- the herd
 refuses it.
 
 Do small things yourself: read a file to plan, answer from what you
-know.  Do not do an agent's work for it.  When the team has nobody for
-a job, say so and ask the user to start one.
+know.  Do not do an agent's work for it.
+
+When the team has nobody for a job, start one yourself:
+
+  \"$GHOSTHERD_HERD\" start KIND [--worktree [BRANCH] | --no-worktree] [--name NAME] [--notes TEXT]
+
+KIND is claude, grok or agy.  It prints the agent's name (and its
+worktree), which you then ask.  It reuses an idle agent you started whose
+branch is merged and worktree clean -- the same agent, with its context,
+fresh off the main branch -- before starting a new one; pass --new to
+force a fresh one.  A worktree is the default once another agent works in
+the checkout, so two do not collide; --no-worktree runs it in the main
+checkout.  The herd caps how many you may have up (it lists them when you
+hit the cap) and refuses a used-up kind, naming one with quota.
+
+Queue rather than start when the work touches the same files as a busy
+agent's (its files are in \"$GHOSTHERD_HERD\" list), is small, waits on
+that agent's result, or needs its context: send it as an ask that waits
+its turn behind the one it has.  Start or reuse an agent when the area is
+independent and the work is substantial enough to run on its own.  Several
+agents of one kind draw on one quota, so do not start more than the work
+needs.
+
+Stop an agent you started when the user says so or its work is done:
+
+  \"$GHOSTHERD_HERD\" stop NAME
+
+It refuses one still owing an ask; a merged, clean worktree is removed, an
+unmerged one kept.  Keep an agent while more of its work is likely rather
+than stopping and restarting it from scratch.  Either way -- started,
+reused or stopped -- tell the user, briefly, in the chat.
 
 When an ask fails, or comes back as the herd's answer rather than the
 agent's, say what happened and decide: ask again, ask someone else, or
@@ -6748,6 +6842,200 @@ its answer rather than losing it."
                 (format "relaying %s to %s" target k))
             (error (error-message-string err)))))))))
 
+
+;;; A lead starts and stops agents through the herd
+;;
+;; `herd start' / `herd stop' let a lead run agents without reaching into
+;; Emacs internals: the sidecar queues the request, Emacs acts here, guarded
+;; by who asks.  Only a lead, for its own project, may start; only the agents
+;; a lead started may be stopped or reused by it.  Reuse before spawning: an
+;; idle agent the lead started, same kind, whose branch is merged and
+;; worktree clean, is fast-forwarded and handed back with its context rather
+;; than started anew.  The herd caps how many a lead has up and refuses a
+;; used-up kind.  `started-by' is kept on the host with the recipe, so a
+;; lead still owns its agents after a restart.
+
+(defcustom ghostherd-lead-may-start t
+  "Whether a lead may start and stop agents through `herd start' / `herd stop'.
+Nil refuses every such request, and the lead is told to ask the user."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-lead-start-max 2
+  "How many agents one lead may have alive at once in a project, through
+`herd start'.  Past it the herd refuses and lists the ones already up, so a
+lead reuses or stops one instead of piling them on.  Reuse and stop are not
+capped; neither are agents the user started by hand."
+  :type 'integer
+  :group 'ghostherd)
+
+(defun ghostherd--session-project-name (session)
+  "The project name SESSION belongs to, or nil."
+  (ghostherd--project-name (ghostherd-session-project session)))
+
+(defun ghostherd--lead-started-alive (lead project)
+  "The live sessions LEAD started in PROJECT (by project name)."
+  (seq-filter (lambda (s)
+                (and (equal (ghostherd-session-started-by s) lead)
+                     (equal (ghostherd--session-project-name s) project)
+                     (ghostherd--session-live-p s)))
+              (ghostherd-sessions)))
+
+(defun ghostherd--worktree-ff (path base)
+  "Fast-forward the git worktree at PATH onto BASE; non-nil on success."
+  (and (file-directory-p (expand-file-name path))
+       (let ((default-directory (file-name-as-directory (expand-file-name path))))
+         (eq 0 (ignore-errors
+                 (call-process "git" nil nil nil "merge" "--ff-only" base))))))
+
+(defun ghostherd--lead-reuse-candidate (lead kind project)
+  "An idle agent LEAD started in PROJECT, same KIND, its branch merged into
+its base and its worktree clean -- to refresh rather than spawn anew; or nil."
+  (seq-find
+   (lambda (s)
+     (let ((wt (ghostherd-session-worktree s)))
+       (and (eq (ghostherd-session-kind s) kind)
+            (eq (ghostherd-session-state s) 'idle)
+            wt (plist-get wt :path) (plist-get wt :branch) (plist-get wt :base)
+            (ghostherd--worktree-clean-p (plist-get wt :path))
+            (ghostherd--worktree-merged-p project (plist-get wt :branch)
+                                           (plist-get wt :base)))))
+   (ghostherd--lead-started-alive lead project)))
+
+(defun ghostherd--project-main-busy-p (project)
+  "Non-nil when some live agent already works in PROJECT's main checkout --
+no worktree of its own -- so a second agent wants its own worktree."
+  (seq-some (lambda (s)
+              (and (equal (ghostherd--session-project-name s) project)
+                   (ghostherd--session-live-p s)
+                   (not (ghostherd-session-worktree s))))
+            (ghostherd-sessions)))
+
+(defun ghostherd--agent-owes-ask-p (name)
+  "Non-nil when agent NAME is the taker of an ask still open or queued,
+by the asks the last herd tick gave this Emacs."
+  (seq-some (lambda (a)
+              (and (equal (plist-get a :to) name)
+                   (member (plist-get a :status) '("queued" "delivered"))))
+            ghostherd--herd-asks))
+
+(defun ghostherd-lead-start (by kind-str &rest opts)
+  "Start, or reuse, an agent for lead BY, as `herd start' asks over the wire.
+KIND-STR is the CLI kind.  OPTS: :worktree (\"yes\"/\"no\"/\"auto\"), :branch,
+:name, :notes, :new.  Returns the line to tell BY -- the agent started or was
+reused (with its name and worktree), or, plainly, why it was refused."
+  (let* ((by-s (ghostherd-get by))
+         (kind (and (stringp kind-str) (not (string-empty-p kind-str))
+                    (intern kind-str)))
+         (wmode (or (plist-get opts :worktree) "auto"))
+         (branch (let ((b (plist-get opts :branch)))
+                   (and (stringp b) (not (string-empty-p b)) b)))
+         (want-name (let ((n (plist-get opts :name)))
+                      (and (stringp n) (not (string-empty-p n)) n)))
+         (notes (plist-get opts :notes))
+         (new (eq (plist-get opts :new) t)))
+    (cond
+     ((not ghostherd-lead-may-start)
+      "the herd is set not to start agents (ghostherd-lead-may-start is off); ask the user")
+     ((not by-s) (format "no such agent: %s" by))
+     ((not (equal (ghostherd-session-role by-s) "lead"))
+      (format "only a project's lead may start agents; %s is not a lead" by))
+     ((not (and kind (memq kind (ghostherd--agent-kinds))
+                (plist-get (ghostherd--spec kind) :command)))
+      (format "no agent kind %s" kind-str))
+     (t
+      (let ((project (ghostherd--session-project-name by-s))
+            (dir (ghostherd-session-project by-s)))
+        (cond
+         ((not (and project dir (file-directory-p (expand-file-name dir))))
+          (format "%s has no project to start an agent in" by))
+         ;; Reuse before spawning.
+         ((and (not new)
+               (when-let* ((r (ghostherd--lead-reuse-candidate by kind project))
+                           (wt (ghostherd-session-worktree r)))
+                 (ghostherd--worktree-ff (plist-get wt :path) (plist-get wt :base))
+                 (ghostherd--log-add r 'life
+                                     (format "reused by %s: worktree fast-forwarded to %s"
+                                             by (plist-get wt :base)))
+                 (format "reused %s (%s on %s, fresh off %s); it keeps its context"
+                         (ghostherd-session-name r)
+                         (ghostherd--abbreviate (plist-get wt :path))
+                         (plist-get wt :branch) (plist-get wt :base)))))
+         ;; A used-up kind: name one that is not.
+         ((ghostherd-usage-used-up kind)
+          (let ((alt (seq-find (lambda (k) (and (not (eq k kind))
+                                                (not (ghostherd-usage-used-up k))
+                                                (plist-get (ghostherd--spec k) :command)))
+                               (ghostherd--agent-kinds))))
+            (format "%s is used up or out of quota%s" kind-str
+                    (if alt (format "; start a %s instead" alt)
+                      ", and so is every kind the herd knows"))))
+         ;; The per-lead cap.
+         ((let ((alive (ghostherd--lead-started-alive by project)))
+            (when (>= (length alive) (max 0 ghostherd-lead-start-max))
+              (format "%s already has %d agent%s up in %s (max %d): %s -- reuse or stop one"
+                      by (length alive) (if (= (length alive) 1) "" "s") project
+                      ghostherd-lead-start-max
+                      (mapconcat #'ghostherd-session-name alive ", ")))))
+         (t
+          (condition-case err
+              (let* ((want-wt (pcase wmode
+                                ("yes" t) ("no" nil)
+                                (_ (or branch (ghostherd--project-main-busy-p project)))))
+                     (final (ghostherd--unique-name
+                             (or want-name
+                                 (format "%s-%s" kind
+                                         (file-name-nondirectory (directory-file-name dir))))))
+                     (defaults (ghostherd-project-defaults dir))
+                     (args (or (and (eq (car defaults) kind) (cdr defaults))
+                               (plist-get (ghostherd--spec kind) :args)))
+                     (spawn (lambda (directory wt)
+                              (ghostherd-spawn kind :name final :project dir
+                                               :directory directory :args args :notes notes
+                                               :started-by by :display nil
+                                               :worktree (and wt (plist-get wt :path))
+                                               :branch (and wt (plist-get wt :branch))
+                                               :base (and wt (plist-get wt :base))))))
+                (if (not want-wt)
+                    (progn
+                      (funcall spawn dir nil)
+                      (format "started %s (%s, in the main checkout)" final kind))
+                  (let ((wt (ghostherd--worktree-create dir final branch)))
+                    (ghostherd--worktree-deps-setup dir (plist-get wt :path) final)
+                    (funcall spawn (plist-get wt :path) wt)
+                    (format "started %s (%s, worktree %s on %s off %s)"
+                            final kind (ghostherd--abbreviate (plist-get wt :path))
+                            (plist-get wt :branch) (plist-get wt :base)))))
+            (error (format "could not start a %s: %s" kind-str (error-message-string err)))))))))))
+
+(defun ghostherd-lead-stop (by name)
+  "Stop agent NAME for lead BY, as `herd stop' asks over the wire.  Only an
+agent BY started, and not one holding an open or queued ask.  Removes a
+merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
+  (let ((s (ghostherd-get name)))
+    (cond
+     ((not ghostherd-lead-may-start)
+      "the herd is set not to stop agents (ghostherd-lead-may-start is off); ask the user")
+     ((not s) (format "no such agent: %s" name))
+     ((not (equal (ghostherd-session-started-by s) by))
+      (format "%s did not start %s through the herd, so it may not stop it" by name))
+     ((ghostherd--agent-owes-ask-p name)
+      (format "%s holds an open or queued ask; let it answer, or cancel it, first" name))
+     (t
+      (let* ((wt (ghostherd-session-worktree s))
+             (will-remove (and wt (plist-get wt :path)
+                               (ghostherd--worktree-clean-p (plist-get wt :path))
+                               (ghostherd--worktree-merged-p (ghostherd-session-project s)
+                                                             (plist-get wt :branch)
+                                                             (plist-get wt :base)))))
+        (ghostherd-kill s t)
+        (cond
+         ((not wt) (format "stopped %s" name))
+         (will-remove
+          (format "stopped %s; its worktree was merged and clean, so it was removed" name))
+         (t (format "stopped %s; its worktree was not merged or not clean, so it was kept (M-x ghostherd-worktree-forget)"
+                    name))))))))
+
 (defun ghostherd--herd-run-command (cmd)
   "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT)."
   (let* ((id (plist-get cmd :id))
@@ -6796,6 +7084,18 @@ its answer rather than losing it."
            (setq text (ghostherd--log-screens-text
                        (plist-get args :agent) (plist-get args :since)
                        (plist-get args :why))))
+          ("start"
+           ;; `herd start': a lead starts or reuses an agent in its project.
+           (setq text (apply #'ghostherd-lead-start
+                             (plist-get args :by) (plist-get args :kind)
+                             (list :worktree (plist-get args :worktree)
+                                   :branch (plist-get args :branch)
+                                   :name (plist-get args :name)
+                                   :notes (plist-get args :notes)
+                                   :new (plist-get args :new)))))
+          ("stop"
+           ;; `herd stop': a lead stops an agent it started.
+           (setq text (ghostherd-lead-stop (plist-get args :by) name)))
           ("explain"
            (setq text (ghostherd--explain-text name)))
           ("lead-say"

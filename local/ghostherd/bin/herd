@@ -7,6 +7,8 @@ Usage:
   herd status ID
   herd cancel ID
   herd relay TARGET [KIND] [--reason TEXT]
+  herd start KIND [--worktree [BRANCH] | --no-worktree] [--name NAME] [--notes TEXT] [--new]
+  herd stop NAME
   herd list
   herd asks
   herd hook [EVENT]                (from a CLI's lifecycle hook)
@@ -26,6 +28,17 @@ times at most -- --rounds N, 5 when not given; past that the herd
 refuses, and the taker answers you with where it stands.  You are held
 to the same with each agent you ask: for the ask you are answering, or,
 asked by nobody, until you finish a turn with no ask open.
+
+`start' and `stop' are for a lead: it runs agents in its own project
+through the herd rather than by hand.  `start KIND' reuses an idle agent
+it started whose branch is merged and worktree clean (fast-forwarding it,
+keeping its context) before spawning a new one -- `--new' skips the
+reuse.  A worktree is the default once another agent works in the
+checkout; `--worktree [BRANCH]' forces one, `--no-worktree' runs in the
+main checkout.  The herd caps how many a lead has up and refuses a
+used-up kind, naming one with quota.  `stop NAME' kills an agent the
+caller started -- not one owing an open or queued ask -- and removes its
+worktree when merged and clean, else keeps it.
 
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
@@ -326,6 +339,59 @@ def _parse_since(s):
         except ValueError:
             pass
     raise HerdError("--since: use 3d/2h/90m, today, yesterday, or YYYY-MM-DD")
+
+
+def _await_command(out, label, ok_prefixes):
+    """Poll a queued command (start/stop) to its reply, print it, and return an
+    exit code: 0 when the reply begins with one of OK_PREFIXES, else 1."""
+    cid = out.get("id")
+    if not cid:
+        text = out.get("text")
+        print(text if text else "herd: %s: no reply from the herd" % label,
+              file=sys.stderr if not text else sys.stdout)
+        return 1
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        r = rpc("herd_command_reply", {"id": cid})
+        status, text = r.get("status"), r.get("text")
+        if status == "done" and text is not None:
+            print(text)
+            return 0 if str(text).startswith(tuple(ok_prefixes)) else 1
+        if status == "gone":
+            say("%s: the request was dropped before it ran" % label)
+            return 1
+        time.sleep(0.4)
+    say("%s: timed out waiting for the herd (it may be busy or just restarted; try again)" % label)
+    return 1
+
+
+def cmd_start(args):
+    """Start, or reuse, an agent in your project.  Only a lead may, for its own
+    project.  Prints the agent's name (and its worktree), or why it was
+    refused."""
+    if args.no_worktree:
+        worktree, branch = "no", ""
+    elif args.worktree is True:
+        worktree, branch = "yes", ""
+    elif isinstance(args.worktree, str):
+        worktree, branch = "yes", args.worktree
+    else:
+        worktree, branch = "auto", ""
+    out = rpc("herd_start", {
+        "by": me(), "kind": (args.kind or "").strip(),
+        "worktree": worktree, "branch": branch,
+        "name": (args.name or "").strip(),
+        "notes": text_arg(args.notes) if args.notes else "",
+        "new": bool(args.new),
+    })
+    return _await_command(out, "start", ("started ", "reused "))
+
+
+def cmd_stop(args):
+    """Stop an agent you started.  Refused for one you did not start, or one
+    holding an open or queued ask."""
+    out = rpc("herd_stop", {"by": me(), "name": (args.name or "").strip()})
+    return _await_command(out, "stop", ("stopped ",))
 
 
 def cmd_screens(args):
@@ -985,6 +1051,22 @@ def main(argv=None):
     p.add_argument("kind", nargs="?", help="claude, grok or agy; omitted, the herd picks one with usage left")
     p.add_argument("--reason", help="why it is being relayed")
     p.set_defaults(fn=cmd_relay)
+    p = sub.add_parser("start",
+                       help="start or reuse an agent in your project (lead only)")
+    p.add_argument("kind", help="claude, grok or agy")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--worktree", nargs="?", const=True, default=False, metavar="BRANCH",
+                   help="its own git worktree off HEAD (optionally naming the branch)")
+    g.add_argument("--no-worktree", action="store_true",
+                   help="run it in the main checkout, not a worktree")
+    p.add_argument("--name", help="a name for it (default kind-project)")
+    p.add_argument("--notes", help="its role / notes")
+    p.add_argument("--new", action="store_true",
+                   help="start a fresh agent; do not reuse an idle one")
+    p.set_defaults(fn=cmd_start)
+    p = sub.add_parser("stop", help="stop an agent you started (lead only)")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_stop)
     p = sub.add_parser("screens", help="saved agent screens from the log (read-only)")
     p.add_argument("--agent", help="only this agent")
     p.add_argument("--since", metavar="WHEN", help="3d / 2h / 90m, today, yesterday, or YYYY-MM-DD")

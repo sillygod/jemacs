@@ -10161,6 +10161,143 @@ one commit, and `git' a lambda (DIR &rest ARGS) running git in DIR."
            ,@body)
        (delete-directory base t))))
 
+
+;;; A lead starts and stops agents through the herd (ask 7f220a2e)
+
+(defmacro ghostherd-tests--with-lead-start (&rest body)
+  "BODY in a clean herd over a temp git `repo' (`with-repo'), with the
+lead-start hashes and the fake backend bound, a lead `lead-p' in `repo',
+and worktrees under the temp dir -- never the user's tmux or worktree root."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-repo
+     (ghostherd-tests--with-herd
+         ((ghostherd--roles (make-hash-table :test 'equal))
+          (ghostherd--worktrees (make-hash-table :test 'equal))
+          (ghostherd--started-by (make-hash-table :test 'equal))
+          (ghostherd--lineage (make-hash-table :test 'equal))
+          (ghostherd--herd-asks nil)
+          (ghostherd-tests--fake-spawned nil)
+          (ghostherd-backend 'fake)
+          (ghostherd-worktree-root (concat base "wts/"))
+          (ghostherd-lead-may-start t)
+          (ghostherd-lead-start-max 2))
+       (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+                 ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+                 ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                 ((symbol-function 'ghostherd--worktree-deps-setup) #'ignore)
+                 ((symbol-function 'ghostherd--host-kill) #'ignore)
+                 ((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
+                 ((symbol-function 'ghostherd-usage-used-up) (lambda (&rest _) nil)))
+         (ghostherd-tests--session :name "lead-p" :kind 'claude :backend 'fake :project repo)
+         (puthash "lead-p" "lead" ghostherd--roles)
+         ,@body))))
+
+(ert-deftest ghostherd-test-started-by-rides-the-recipe ()
+  "started-by is kept with the recipe -- in the hash, on the host, and for a
+respawn -- so a lead still owns an agent it started after a restart."
+  (ghostherd-tests--with-herd
+      ((ghostherd--roles (make-hash-table :test 'equal))
+       (ghostherd--started-by (make-hash-table :test 'equal))
+       (ghostherd--lineage (make-hash-table :test 'equal))
+       (ghostherd-tests--fake-spawned nil))
+    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+              ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+              ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+              ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+      (let ((s (ghostherd-spawn 'grok :name "imp" :project "/p/" :backend 'fake
+                                :started-by "lead-p" :display nil)))
+        (should (equal (ghostherd-session-started-by s) "lead-p"))
+        (should (equal (plist-get ghostherd-tests--fake-spawned :started-by) "lead-p"))
+        (should (equal (plist-get (ghostherd-session-recipe s) :started-by) "lead-p"))))))
+
+(ert-deftest ghostherd-test-lead-start-guards ()
+  "Only a lead may start, only a real kind, and not at all when turned off."
+  (ghostherd-tests--with-lead-start
+    (let ((ghostherd-lead-may-start nil))
+      (should (string-match-p "set not to start" (ghostherd-lead-start "lead-p" "grok"))))
+    (should (string-match-p "no agent kind" (ghostherd-lead-start "lead-p" "zzz")))
+    (puthash "lead-p" nil ghostherd--roles)
+    (should (string-match-p "not a lead" (ghostherd-lead-start "lead-p" "grok")))))
+
+(ert-deftest ghostherd-test-lead-start-caps-per-project ()
+  "Past the per-lead cap the herd refuses and lists the ones already up."
+  (ghostherd-tests--with-lead-start
+    (dotimes (i 2)
+      (ghostherd-tests--session :name (format "a%d" i) :kind 'grok :backend 'fake :project repo)
+      (puthash (format "a%d" i) "lead-p" ghostherd--started-by))
+    (let ((r (ghostherd-lead-start "lead-p" "grok" :new t)))
+      (should (string-match-p "max 2" r))
+      (should (string-match-p "a0" r))
+      (should (string-match-p "a1" r)))))
+
+(ert-deftest ghostherd-test-lead-start-refuses-a-used-up-kind ()
+  "A used-up kind is refused, naming one with quota left."
+  (ghostherd-tests--with-lead-start
+    (cl-letf (((symbol-function 'ghostherd-usage-used-up)
+               (lambda (k &optional _) (eq k 'grok))))
+      (let ((r (ghostherd-lead-start "lead-p" "grok")))
+        (should (string-match-p "used up" r))
+        (should (string-match-p "claude\\|agy" r))))))
+
+(ert-deftest ghostherd-test-lead-start-reuses-an-idle-merged-agent ()
+  "An idle agent the lead started, merged and clean, is reused -- not started
+anew -- its worktree fast-forwarded, its context kept."
+  (ghostherd-tests--with-lead-start
+    (let ((wt (ghostherd--worktree-create repo "old-imp")))
+      (ghostherd-tests--session :name "old-imp" :kind 'grok :backend 'fake
+                                :project repo :state 'idle)
+      (puthash "old-imp" "lead-p" ghostherd--started-by)
+      (puthash "old-imp" wt ghostherd--worktrees)
+      (let ((r (ghostherd-lead-start "lead-p" "grok")))
+        (should (string-match-p "reused old-imp" r))
+        ;; it is the same agent, still alive -- not a fresh spawn
+        (should (ghostherd-get "old-imp"))
+        (should-not (ghostherd-get "grok-repo"))))))
+
+(ert-deftest ghostherd-test-lead-start-spawns-a-worktree-agent ()
+  "With the lead already in the main checkout, a new agent defaults to its own
+worktree, off HEAD, carrying started-by."
+  (ghostherd-tests--with-lead-start
+    (let ((r (ghostherd-lead-start "lead-p" "grok" :new t)))
+      (should (string-match-p "\\`started grok-repo (grok, worktree" r))
+      (let ((s (ghostherd-get "grok-repo")))
+        (should s)
+        (should (equal (ghostherd-session-started-by s) "lead-p"))
+        (should (ghostherd-session-worktree s))
+        (should (file-directory-p (plist-get (ghostherd-session-worktree s) :path)))))))
+
+(ert-deftest ghostherd-test-lead-start-no-worktree-override ()
+  "--no-worktree runs the agent in the main checkout."
+  (ghostherd-tests--with-lead-start
+    (let ((r (ghostherd-lead-start "lead-p" "grok" :worktree "no" :new t)))
+      (should (string-match-p "in the main checkout" r))
+      (should-not (ghostherd-session-worktree (ghostherd-get "grok-repo"))))))
+
+(ert-deftest ghostherd-test-lead-stop-guards-and-cleans ()
+  "Stop only an agent this lead started, not one owing an ask; a merged, clean
+worktree is removed."
+  (ghostherd-tests--with-lead-start
+    (ghostherd-tests--session :name "imp" :kind 'grok :backend 'fake :project repo)
+    (should (string-match-p "did not start" (ghostherd-lead-stop "lead-p" "imp")))
+    (puthash "imp" "lead-p" ghostherd--started-by)
+    (setq ghostherd--herd-asks (list (list :to "imp" :from "x" :status "delivered")))
+    (should (string-match-p "open or queued ask" (ghostherd-lead-stop "lead-p" "imp")))
+    (setq ghostherd--herd-asks nil)
+    (should (string-match-p "\\`stopped imp" (ghostherd-lead-stop "lead-p" "imp")))
+    (should-not (ghostherd-get "imp"))))
+
+(ert-deftest ghostherd-test-lead-stop-removes-a-merged-worktree ()
+  "A stopped agent's worktree, merged and clean, is removed and said to be."
+  (ghostherd-tests--with-lead-start
+    (let ((wt (ghostherd--worktree-create repo "imp")))
+      (ghostherd-tests--session :name "imp" :kind 'grok :backend 'fake :project repo)
+      (puthash "imp" "lead-p" ghostherd--started-by)
+      (puthash "imp" wt ghostherd--worktrees)
+      (should (file-directory-p (plist-get wt :path)))
+      (let ((r (ghostherd-lead-stop "lead-p" "imp")))
+        (should (string-match-p "merged and clean, so it was removed" r))
+        (should-not (file-directory-p (plist-get wt :path)))))))
+
 (ert-deftest ghostherd-test-worktree-attributed-to-main-checkout ()
   "An agent in a project's git worktree belongs to the project, not a new
 one: `ghostherd--worktree-main-checkout' collapses a linked worktree to
