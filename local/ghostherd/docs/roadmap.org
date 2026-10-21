@@ -1619,6 +1619,21 @@ closing it with the error screen.
 - A second agent runs in its own worktree on local/ghostel-cmd (the first
   real worktree-flow run); its branch is reviewed and merged separately.
 
+** Follow-up: only the CLI's own error (ask eb81eb50)
+
+- [X] An agent's words about an error no longer block it.  The foot rule
+  matched words anywhere in the screen's last ten lines, so the lead
+  quoting another agent's "API Error: Connection lost" and writing "Login
+  expired" read as blocked with a /login button -- and of the day's 22
+  blocked auto-captures, 13 were agents (the lead, claude-.emacs.d, the
+  fixer itself) writing or grepping the words, several mid-turn under a
+  spinner.  claude's transcript decides now: its own error is an entry
+  of its own (=isApiErrorMessage=), and the turn ended on it only while
+  it is the conversation's last.  Without a transcript the screen
+  decides, from the last message above the input box alone, anchored
+  at its start.  ERT on the real captures and transcript lines, broken
+  on purpose
+
 * Phase 3.32 — A lead starts and stops agents through the herd  *(this tree)*
 
 Goal: a lead runs agents without reaching into Emacs internals.  Before

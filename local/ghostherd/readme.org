@@ -1043,11 +1043,26 @@ transition to =idle= rather than =done= means you were watching.
 
 A turn can die without answering: "Login expired · Please run /login",
 or "API Error: … Your computer went to sleep mid-response".  The herd
-reads such an error at the screen's foot (=ghostherd-cli-errors=, per
-CLI kind) as =blocked=, not idle --- so an ask the agent was answering is
-*held, not closed* with the error screen, the asker sees the plain reason,
-and it is answered for real once the agent can work again.  For an expired
-login the card, herd and room, offers a one-click =/login=.
+reads such an error (=ghostherd-cli-errors=, per CLI kind) as =blocked=,
+not idle --- so an ask the agent was answering is *held, not closed* with
+the error screen, the asker sees the plain reason, and it is answered for
+real once the agent can work again.  For an expired login the card, herd
+and room, offers a one-click =/login=.
+
+Only the CLI's own error counts, never an agent's words about one.  An
+agent that quotes "API Error: Connection lost mid-response" in a reply,
+or prints "Login expired" in a test it runs, puts the same characters
+at its screen's foot and is not stuck.  claude's transcript tells them
+apart: claude writes its own error as an entry of its own
+(=isApiErrorMessage=, model =<synthetic>=), and a reply quoting it is the
+model's message with no such mark.  So the turn ended on an error only
+while that entry is the conversation's last --- what claude writes after
+it (the turn's duration, a =/login= run) does not count, and a prompt
+typed since starts a new turn.  An error the transcript marks that no
+rule names still blocks, with its own words as the reason.  Without a
+transcript --- an agent whose hooks have not named one yet --- the screen
+decides, and only the last message above the input box counts, when it
+begins with the error.
 
 One of these the herd handles itself: a turn the Mac's sleep cut short.
 That error appears only once the machine is awake again, so a poll seeing
