@@ -27,8 +27,18 @@ Posframe when available, side window otherwise.
 |            | line, newlines become spaces                |
 | =q= / Esc  | Quit; during fill, cancel fill              |
 
-Placeholders: ={{file}}=, ={{line}}=, ={{root}}=, ={{project-name}}=,
-={{branch}}=, or ={{name:default}}=.  A name starts with a letter or
+Placeholders, the built-ins taken from where you opened the overlay:
+
+| Placeholder                  | Value                                      |
+|------------------------------+--------------------------------------------|
+| ={{file}}= / ={{file-abs}}=  | caller's file, relative to the root / absolute |
+| ={{dir}}=                    | caller's directory relative to the root (=.=) |
+| ={{line}}=                   | caller's line                              |
+| ={{symbol}}=                 | symbol at point in the caller              |
+| ={{root}}= ={{project-name}}= ={{branch}}= | the project                  |
+| ={{name}}= / ={{name:default}}= | asked on the footer                     |
+
+A name starts with a letter or
 underscore; any other ={{...}}= stays literal, so docker's
 ={{.State.Status}}= and helm's ={{ .Values.x }}= paste as written (Go's
 ={{end}}= still reads as a variable).  Filling happens on the overlay

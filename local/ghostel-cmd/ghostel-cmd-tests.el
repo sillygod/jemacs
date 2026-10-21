@@ -11,6 +11,7 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'project)
 (require 'ghostel-cmd)
 
 (defmacro ghostel-cmd-tests--with-store (&rest body)
@@ -82,6 +83,45 @@ Keys go through the real keymaps with `execute-kbd-macro'."
     (should (equal (ghostel-cmd--builtin-var "project-name" ghostel-cmd--root)
                    (file-name-nondirectory
                     (directory-file-name ghostel-cmd--root))))))
+
+(ert-deftest ghostel-cmd-test-builtin-symbol-file-abs-dir ()
+  (ghostel-cmd-tests--with-store
+    (let* ((root ghostel-cmd--root)
+           (ghostel-cmd--caller-file (expand-file-name "src/app/foo.py" root))
+           (ghostel-cmd--caller-dir (expand-file-name "src/app/" root))
+           (ghostel-cmd--caller-symbol "test_login"))
+      (should (equal (ghostel-cmd--builtin-var "file-abs" root)
+                     (expand-file-name "src/app/foo.py" root)))
+      (should (equal (ghostel-cmd--builtin-var "file" root) "src/app/foo.py"))
+      (should (equal (ghostel-cmd--builtin-var "dir" root) "src/app"))
+      (should (equal (ghostel-cmd--builtin-var "symbol" root) "test_login"))
+      (let ((ghostel-cmd--caller-dir root))
+        (should (equal (ghostel-cmd--builtin-var "dir" root) "."))))))
+
+(ert-deftest ghostel-cmd-test-open-captures-caller-symbol-and-dir ()
+  "Opening the overlay takes {{symbol}} and {{dir}} from the caller."
+  (ghostel-cmd-tests--with-store
+    (let* ((root ghostel-cmd--root)
+           (project-find-functions (list (lambda (_) (cons 'transient root))))
+           (ghostel-cmd-use-posframe nil)
+           (caller (get-buffer-create " *ghostel-cmd-caller*")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (set-window-buffer (selected-window) caller)
+            (with-current-buffer caller
+              (insert "def test_login():\n    pass\n")
+              (goto-char 7)
+              (setq default-directory (expand-file-name "src/" root))
+              (ghostel-cmd-sidebar))
+            (should (equal ghostel-cmd--caller-symbol "test_login"))
+            (should (equal (ghostel-cmd--extract-variables
+                            "pytest {{dir}} -k {{symbol}}" root)
+                           '(("dir" . "src") ("symbol" . "test_login")))))
+        (kill-buffer caller)
+        (when (get-buffer ghostel-cmd--buffer-name)
+          (kill-buffer ghostel-cmd--buffer-name))
+        (delete-other-windows)))))
 
 (ert-deftest ghostel-cmd-test-apply-replaces-all-occurrences ()
   (should (equal (ghostel-cmd--apply

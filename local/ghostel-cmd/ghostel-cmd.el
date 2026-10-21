@@ -9,7 +9,9 @@
 ;;; Commentary:
 ;;
 ;; Bookmark command templates per project, with {{var}} / {{var:default}}
-;; placeholders.  The overlay (posframe when available, side window
+;; placeholders and built-ins taken from the caller: {{file}},
+;; {{file-abs}}, {{dir}}, {{line}}, {{symbol}}, {{root}},
+;; {{project-name}}, {{branch}}.  The overlay (posframe when available, side window
 ;; otherwise) is the main UI:
 ;;
 ;;   j/k move   RET paste (fill vars first)   C-RET paste+Enter
@@ -178,6 +180,8 @@ edit of the save file is never written over."
 
 (defvar ghostel-cmd--caller-file nil)
 (defvar ghostel-cmd--caller-line nil)
+(defvar ghostel-cmd--caller-dir nil)
+(defvar ghostel-cmd--caller-symbol nil)
 (defvar ghostel-cmd--root nil)
 
 (defun ghostel-cmd--builtin-var (var-name root)
@@ -195,6 +199,14 @@ edit of the save file is never written over."
     ("file"
      (when-let* ((file (or ghostel-cmd--caller-file buffer-file-name)))
        (file-relative-name file root)))
+    ("file-abs"
+     (when-let* ((file (or ghostel-cmd--caller-file buffer-file-name)))
+       (expand-file-name file)))
+    ("dir"
+     (directory-file-name
+      (file-relative-name (or ghostel-cmd--caller-dir default-directory) root)))
+    ("symbol"
+     ghostel-cmd--caller-symbol)
     ("line"
      (number-to-string (or ghostel-cmd--caller-line (line-number-at-pos))))
     (_ nil)))
@@ -829,7 +841,9 @@ split if none is showing."
   (let ((parent ghostel-cmd--posframe-parent)
         (root ghostel-cmd--root)
         (file ghostel-cmd--caller-file)
-        (line ghostel-cmd--caller-line))
+        (line ghostel-cmd--caller-line)
+        (dir ghostel-cmd--caller-dir)
+        (symbol ghostel-cmd--caller-symbol))
     (ghostel-cmd--hide-posframe)
     (when (and parent (frame-live-p parent))
       (select-frame-set-input-focus parent))
@@ -837,7 +851,9 @@ split if none is showing."
         (funcall fn)
       (setq ghostel-cmd--root root
             ghostel-cmd--caller-file file
-            ghostel-cmd--caller-line line)
+            ghostel-cmd--caller-line line
+            ghostel-cmd--caller-dir dir
+            ghostel-cmd--caller-symbol symbol)
       (when (and root (not (minibufferp)))
         (ghostel-cmd-sidebar)))))
 
@@ -1141,6 +1157,8 @@ presses Enter."
   (setq ghostel-cmd--root (ghostel-cmd--current-project-root)
         ghostel-cmd--caller-file buffer-file-name
         ghostel-cmd--caller-line (line-number-at-pos)
+        ghostel-cmd--caller-dir default-directory
+        ghostel-cmd--caller-symbol (thing-at-point 'symbol t)
         ghostel-cmd--query ""
         ghostel-cmd--help-visible nil
         ghostel-cmd--fill nil
