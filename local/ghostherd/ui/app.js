@@ -1278,25 +1278,32 @@
     return text && text !== "—" ? '<div class="areason' + (p && p.question ? " aprompt" : "") + '">' + esc(text) + "</div>" : "";
   }
 
-  // A turn the Mac's sleep cut short: the herd continues it on its own.
-  // `continueAt' is when (ms); the slim line counts down to it (ticked by
-  // the per-second loop below) with a Cancel.  Once the herd has stopped
-  // retrying, `continueStopped' shows plainly that it will not try again.
+  // A turn the Mac's sleep or a dropped connection cut short: the herd
+  // continues it on its own.  `continueAt' is when (ms); the slim line
+  // counts down to it (ticked by the per-second loop below) with a
+  // Cancel.  Once the herd has stopped retrying, `continueStopped' shows
+  // plainly that it will not try again.  `continueAfter' and
+  // `continueAgain' are the cause's words ("after a dropped connection",
+  // "the connection dropped again"); sleep's when Emacs sends none.
   function continueHtml(a) {
+    const after = a.continueAfter || "after sleep";
     if (a.continueAt > 0) {
       const secs = Math.max(0, Math.round((a.continueAt - Date.now()) / 1000));
-      return '<div class="contline"><span class="cont" data-continue-at="' + a.continueAt + '">' +
-        esc(contText(secs)) + "</span>" +
+      return '<div class="contline"><span class="cont" data-continue-at="' + a.continueAt +
+        '" data-continue-after="' + esc(after) + '">' +
+        esc(contText(secs, after)) + "</span>" +
         '<button type="button" class="ghost small" data-act="a:agent-sleep-cancel" title="Leave it blocked; do not continue it">Cancel</button></div>';
     }
     if (a.continueStopped) {
-      return '<div class="contline"><span class="cont stopped">stopped retrying — the computer slept again</span></div>';
+      return '<div class="contline"><span class="cont stopped">stopped retrying — ' +
+        esc(a.continueAgain || "the computer slept again") + "</span></div>";
     }
     return "";
   }
 
-  function contText(secs) {
-    return secs > 0 ? "continuing after sleep in " + secs + "s" : "continuing after sleep now…";
+  function contText(secs, after) {
+    after = after || "after sleep";
+    return secs > 0 ? "continuing " + after + " in " + secs + "s" : "continuing " + after + " now…";
   }
 
   function choicesHtml(a) {
@@ -1426,10 +1433,12 @@
     app.querySelectorAll("[data-since]").forEach((el) => {
       el.textContent = elapsed(Date.now() - +el.getAttribute("data-since"));
     });
-    // The continue-after-sleep countdown ticks here too, off its absolute
-    // target, so it stays live between herd pushes without a re-render.
+    // The continue countdown ticks here too, off its absolute target, so
+    // it stays live between herd pushes without a re-render -- in the
+    // cause's words, kept on the element.
     app.querySelectorAll("[data-continue-at]").forEach((el) => {
-      el.textContent = contText(Math.max(0, Math.round((+el.getAttribute("data-continue-at") - Date.now()) / 1000)));
+      el.textContent = contText(Math.max(0, Math.round((+el.getAttribute("data-continue-at") - Date.now()) / 1000)),
+                                el.getAttribute("data-continue-after"));
     });
   }, 1000);
 

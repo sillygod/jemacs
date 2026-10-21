@@ -351,7 +351,8 @@ draws lanes from fields rather than parsing prose."
   (let* ((buf (ghostherd-session-buffer s))
          (blocked (eq (ghostherd-session-state s) 'blocked))
          (err (and blocked (ghostherd--cli-error s)))
-         (continue-at (and blocked (ghostherd--sleep-continue-at s))))
+         (continue-at (and blocked (ghostherd--sleep-continue-at s)))
+         (words (and blocked (ghostherd--continue-words s))))
     (list :name (ghostherd-session-name s)
           :kind (format "%s" (or (ghostherd-session-kind s) "shell"))
           :state (format "%s" (or (ghostherd-session-state s) "idle"))
@@ -366,12 +367,16 @@ draws lanes from fields rather than parsing prose."
           :url (or (and blocked (ghostherd--login-url s)) "")
           ;; Who started it through `herd start', shown on the card.
           :startedBy (or (ghostherd-session-started-by s) "")
-          ;; A turn killed by the Mac sleeping: the herd continues it itself.
-          ;; `continueAt' (float ms) drives the card's "continuing after
-          ;; sleep in Ns" countdown and its Cancel; `continueStopped' is t
-          ;; once the herd has stopped retrying.
+          ;; A turn killed by the Mac sleeping or a dropped connection: the
+          ;; herd continues it itself.  `continueAt' (float ms) drives the
+          ;; card's "continuing after sleep in Ns" countdown and its Cancel;
+          ;; `continueStopped' is t once the herd has stopped retrying.
+          ;; `continueAfter' / `continueAgain' say it in the cause's words
+          ;; ("after a dropped connection", "the connection dropped again").
           :continueAt (if continue-at (* 1000 continue-at) 0)
           :continueStopped (if (ghostherd--sleep-continue-stopped-p s) t :json-false)
+          :continueAfter (or (car words) "")
+          :continueAgain (or (cdr words) "")
           :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
           :role (or (ghostherd-session-role s) "")
           :work (ghostherd-memory-page--agent-work s)

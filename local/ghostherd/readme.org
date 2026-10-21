@@ -1039,7 +1039,7 @@ count: a line of what it said is not having read it.
 If nothing arrived and you expected it, the herd log says why: a
 transition to =idle= rather than =done= means you were watching.
 
-* A turn that ended on a CLI error, and a turn the Mac's sleep cut short
+* A turn that ended on a CLI error, and a turn cut short
 
 A turn can die without answering: "Login expired · Please run /login",
 or "API Error: … Your computer went to sleep mid-response".  The herd
@@ -1064,22 +1064,28 @@ transcript --- an agent whose hooks have not named one yet --- the screen
 decides, and only the last message above the input box counts, when it
 begins with the error.
 
-One of these the herd handles itself: a turn the Mac's sleep cut short.
-That error appears only once the machine is awake again, so a poll seeing
-it is the wake signal.  The herd waits =ghostherd-sleep-continue-delay=
-(45s, for the network to come back), then sends the agent a prompt --- your
-turn was cut by the computer sleeping, pick up where you left off --- and
-the held ask is answered by the continued turn as usual.  The card counts
-down to it ("continuing after sleep in /N/s") with a Cancel that leaves it
-blocked.
+Two of these the herd handles itself: a turn the Mac's sleep cut short,
+and a turn a dropped connection cut short ("API Error: Connection lost
+mid-response").  The slept error appears only once the machine is awake
+again, so a poll seeing it is the wake signal.  The herd waits
+=ghostherd-sleep-continue-delay= (45s, for the network to come back), then
+sends the agent a prompt --- your turn was cut short, pick up where you
+left off --- and the held ask is answered by the continued turn as usual.
+The prompt and the card speak of the cause: a dropped connection is
+=ghostherd-dropped-continue-prompt=, which says the connection dropped
+and never that the computer slept, and the card counts down "continuing
+after a dropped connection in /N/s" where a slept turn's says "continuing
+after sleep in /N/s", each with a Cancel that leaves it blocked.
 
-It is deliberately timid.  Only the computer-slept error continues ---
-=ghostherd-cli-errors= marks it =continue=, and nothing else is; never a
-login or any other error.  At most =ghostherd-sleep-continue-max= times per
-stuck turn (1): a continued turn that dies the same way again stays
-blocked, and the card says the herd stopped retrying.  It does not fire if,
-by the end of the delay, you have typed into the agent, the error is gone,
-or the session is.  Each continue is in the herd log.
+It is deliberately timid.  Only these two errors continue ---
+=ghostherd-cli-errors= marks them =continue=, ahead of the bare API error,
+and nothing else; never a login or any other error (a stalled response, no
+network, a 500).  At most =ghostherd-sleep-continue-max= times per stuck
+turn (1), whatever cut it: a continued turn that dies again stays blocked,
+and the card says the herd stopped retrying ("the connection dropped
+again").  It does not fire if, by the end of the delay, you have typed into
+the agent, the error is gone, or the session is.  Each continue is in the
+herd log, with its cause.
 
 * Scrolling
 

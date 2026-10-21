@@ -2656,10 +2656,12 @@ nil when it is not blocked, or sits on no menu with numbers."
   '((claude
      ("\\`\\(?:Login expired\\|Not logged in\\)" login "its login expired -- run /login")
      ("\\`API Error: Your computer went to sleep mid-response" continue
-      "its turn was cut off: the computer slept")
+      "its turn was cut off: the computer slept" slept)
+     ("\\`API Error: Connection lost mid-response" continue
+      "its turn was cut off: the connection dropped" dropped)
      ("\\`API Error:" nil "its turn ended on an API error")))
   "Per-kind errors that end a turn without answering: (KIND (REGEXP ACTION
-REASON)...).  REGEXP is matched against the error's own words, from
+REASON [CAUSE])...).  REGEXP is matched against the error's own words, from
 their start -- never against the conversation, where an agent may
 quote or mention the same words (the herd once blocked an agent for
 writing \"API Error:\" and \"Login expired\" in a reply).  Those words
@@ -2674,13 +2676,18 @@ held, not closed, and REASON says why.  An error the transcript marks
 that no rule names still blocks, with its own words as the reason.
 
 ACTION `login' offers a one-click /login on the card.  ACTION
-`continue' lets the herd carry the turn on by itself once the Mac is
-awake again (see `ghostherd-sleep-continue-delay' and `-max'); the set of
-errors safe to auto-continue is exactly those marked `continue' here, so
-adding one is a line in this alist -- and only the computer-slept error
-is, since a continue prompt is the right answer to nothing else."
+`continue' lets the herd carry the turn on by itself after
+`ghostherd-sleep-continue-delay', at most `ghostherd-sleep-continue-max'
+times per stuck turn; CAUSE, a key of `ghostherd--continue-causes'
+(`slept' when left out), picks the prompt it sends and the card's
+words.  The errors safe to auto-continue are exactly those marked
+`continue' here, ahead of the bare API error: the Mac sleeping and the
+connection dropping mid-response, both a turn cut short with nothing
+wrong in it.  Login expired and every other error stay blocked for you."
   :type '(alist :key-type symbol
-                :value-type (repeat (list regexp (choice (const nil) symbol) string)))
+                :value-type (repeat (choice (list regexp (choice (const nil) symbol) string)
+                                            (list regexp (choice (const nil) symbol) string
+                                                  symbol))))
   :group 'ghostherd)
 
 ;; What tells the CLI's own error from an agent's words about one.  The
@@ -2816,7 +2823,8 @@ start gone above it -- and the last thing on screen is not a message."
             (string-join (nreverse words) " ")))))))
 
 (defun ghostherd--cli-error-match (session &optional screen)
-  "The CLI error SESSION's last turn ended on, as (:reason :action), or nil.
+  "The CLI error SESSION's last turn ended on, as (:reason :action
+:cause), or nil.
 SESSION's transcript decides where it can
 (`ghostherd--transcript-turn-end'); the screen only when it cannot --
 SCREEN when the caller has it, else the last one stored -- and then
@@ -2824,16 +2832,16 @@ only the last message above the input box counts."
   (when-let* ((rules (alist-get (ghostherd-session-kind session) ghostherd-cli-errors)))
     (cl-flet ((rule-for (text)
                 (let ((case-fold-search t))
-                  (cl-loop for (re action reason) in rules
+                  (cl-loop for (re action reason cause) in rules
                            when (string-match-p re text)
-                           return (list :reason reason :action action)))))
+                           return (list :reason reason :action action :cause cause)))))
       (pcase (ghostherd--transcript-turn-end session)
         (`(:error ,text)
          (or (rule-for text)
              (list :reason (concat "its turn ended on an error: "
                                    (truncate-string-to-width
                                     (car (split-string text "\n")) 80 nil nil "…"))
-                   :action nil)))
+                   :action nil :cause nil)))
         (:clean nil)
         (_ (when-let* ((screen (or screen (gethash (ghostherd-session-id session)
                                                    ghostherd--screens)))
@@ -2842,13 +2850,22 @@ only the last message above the input box counts."
 
 (defun ghostherd--cli-error (session &optional screen)
   "Return (REASON . ACTION) for the CLI error SESSION's turn ended on, or nil.
-See `ghostherd--cli-error-match'.  A turn
+See `ghostherd--cli-error-match', which also gives the cause.  A turn
 that ended on such an error has not answered: the agent is stuck, not
 idle, until the user acts."
   (when-let* ((m (ghostherd--cli-error-match session screen)))
     (cons (plist-get m :reason) (plist-get m :action))))
 
-;;; Carry a turn on after the Mac slept
+(defun ghostherd--continue-cause (session &optional screen)
+  "What cut SESSION's turn short, when the herd may carry it on itself:
+a key of `ghostherd--continue-causes', or nil when the turn did not end
+on a `continue' error."
+  (when-let* ((m (ghostherd--cli-error-match session screen)))
+    (and (eq (plist-get m :action) 'continue)
+         (or (plist-get m :cause) 'slept))))
+
+
+;;; Carry a turn on after the Mac slept, or the connection dropped
 ;;
 ;; A turn killed by "API Error: … Your computer went to sleep mid-response"
 ;; reads as `blocked' on a `continue' CLI error, so the ask it was
@@ -2856,23 +2873,31 @@ idle, until the user acts."
 ;; error appears only once the machine is awake again -- so a poll seeing
 ;; it is the wake signal, and the herd can finish the thought itself: wait
 ;; a settle delay for the network to come back, then send a prompt telling
-;; the agent its turn was cut by sleep and to pick up where it left off.
-;; The held ask is then answered by the continued turn as usual.
+;; the agent its turn was cut short and to pick up where it left off.
+;; The held ask is then answered by the continued turn as usual.  A turn
+;; killed by "API Error: Connection lost mid-response" is the same thing
+;; with another cause, and is carried on the same way, in its own words:
+;; the prompt and the card say the connection dropped, not that the
+;; computer slept (`ghostherd--continue-causes').
 ;;
-;; Guard rails: only the slept error (`ghostherd-cli-errors'), at most
-;; `ghostherd-sleep-continue-max' times per stuck turn, and not at all if
-;; by the end of the delay the user has stepped in, the error is gone, or
-;; the session is.  A continued turn that dies the same way stays blocked.
+;; Guard rails: only the errors `ghostherd-cli-errors' marks `continue',
+;; at most `ghostherd-sleep-continue-max' times per stuck turn, and not at
+;; all if by the end of the delay the user has stepped in, the error is
+;; gone, or the session is.  A continued turn that dies again stays
+;; blocked.
 
 (defcustom ghostherd-sleep-continue-delay 45
-  "Seconds to wait, after first seeing a sleep-killed turn, before
-continuing it.  The error only shows once the Mac is awake, so this is
-the grace for the network to come back before the prompt is sent."
+  "Seconds to wait, after first seeing a turn cut short -- the Mac slept,
+the connection dropped -- before continuing it.  The slept error only
+shows once the Mac is awake, so this is the grace for the network to
+come back before the prompt is sent; a dropped connection wants the
+same."
   :type 'number
   :group 'ghostherd)
 
 (defcustom ghostherd-sleep-continue-max 1
-  "How many times the herd continues one turn cut short by the Mac sleeping.
+  "How many times the herd continues one turn cut short, whatever cut it:
+the Mac sleeping, the connection dropping.
 Once spent, a turn that dies the same way again stays blocked, and the
 card says the herd stopped retrying.  The budget resets when the agent
 reaches a settled state (idle/done/waiting) under its own steam -- a new
@@ -2886,67 +2911,100 @@ stuck turn is a fresh one."
   :type 'string
   :group 'ghostherd)
 
+(defcustom ghostherd-dropped-continue-prompt
+  "Your last turn was cut off because the connection to the API dropped mid-response -- not because the work was finished. Pick up exactly where you left off and carry on to the end."
+  "The prompt sent to an agent whose turn a dropped connection cut short.
+It says nothing of sleep: the computer did not sleep."
+  :type 'string
+  :group 'ghostherd)
+
+(defconst ghostherd--continue-causes
+  '((slept :prompt ghostherd-sleep-continue-prompt
+           :cut "the computer's sleep"
+           :after "after sleep"
+           :again "the computer slept again")
+    (dropped :prompt ghostherd-dropped-continue-prompt
+             :cut "a dropped connection"
+             :after "after a dropped connection"
+             :again "the connection dropped again"))
+  "How the herd speaks of each cause of a `continue' CLI error (see
+`ghostherd-cli-errors'): the variable holding the prompt it sends the
+agent, what cut the turn short in its log, and the card's words --
+\"continuing AFTER in Ns\" while it counts down, \"stopped retrying --
+AGAIN\" once it has stopped.")
+
 (defvar ghostherd--sleep-continue (make-hash-table :test 'equal)
-  "Session id -> the plist of its current sleep-stuck episode, or nothing.
+  "Session id -> the plist of its current cut-short episode, or nothing.
 The plist is (:since FLOAT :attempts INT :cancelled BOOL): when the block
 was first seen, how many continues have been sent, and whether the user
 waved it off.  A hash rather than a session slot, for the reason
 `ghostherd--input-at' gives.  Cleared when the agent settles.")
 
 (defun ghostherd--sleep-continue-at (session)
-  "When SESSION's sleep-killed turn will be continued, as a float time, or nil.
-Non-nil only while a continue is actually pending -- blocked on the slept
-error, budget left, not cancelled -- so the card shows a countdown exactly
-then.  See `ghostherd--sleep-maybe-continue'."
+  "When SESSION's cut-short turn will be continued, as a float time, or nil.
+Non-nil only while a continue is actually pending -- blocked on a
+`continue' error, budget left, not cancelled -- so the card shows a
+countdown exactly then.  See `ghostherd--sleep-maybe-continue'."
   (when-let* ((ep (gethash (ghostherd-session-id session) ghostherd--sleep-continue)))
     (when (and (eq (ghostherd-session-state session) 'blocked)
                (not (plist-get ep :cancelled))
                (< (plist-get ep :attempts) ghostherd-sleep-continue-max)
-               (eq (cdr (ghostherd--cli-error session)) 'continue))
+               (ghostherd--continue-cause session))
       (+ (plist-get ep :since) ghostherd-sleep-continue-delay))))
 
 (defun ghostherd--sleep-continue-stopped-p (session)
-  "Non-nil when SESSION sits on a slept turn the herd has stopped retrying.
-Either the budget is spent or the user cancelled -- the card then says so
-instead of counting down."
+  "Non-nil when SESSION sits on a cut-short turn the herd has stopped
+retrying.  Either the budget is spent or the user cancelled -- the card
+then says so instead of counting down."
   (when-let* ((ep (gethash (ghostherd-session-id session) ghostherd--sleep-continue)))
     (and (eq (ghostherd-session-state session) 'blocked)
-         (eq (cdr (ghostherd--cli-error session)) 'continue)
+         (ghostherd--continue-cause session)
          (or (plist-get ep :cancelled)
              (>= (plist-get ep :attempts) ghostherd-sleep-continue-max)))))
 
+(defun ghostherd--continue-words (session)
+  "The card's words for SESSION's cut-short turn, as (AFTER . AGAIN) from
+`ghostherd--continue-causes'; nil when it sits on no `continue' error."
+  (when-let* ((says (alist-get (ghostherd--continue-cause session)
+                               ghostherd--continue-causes)))
+    (cons (plist-get says :after) (plist-get says :again))))
+
 (defun ghostherd--sleep-continue-ok-p (session screen ep)
-  "The fire-time guards for continuing SESSION's slept turn.
-By the end of the delay: the error must still be on SCREEN, nobody may
-have typed into the agent since the wait began (EP's `:since'), and the
-session must be live."
+  "The fire-time guards for continuing SESSION's cut-short turn.
+By the end of the delay: the error must still be the turn's end (read
+off SCREEN only where no transcript says), nobody may have typed into
+the agent since the wait began (EP's `:since'), and the session must be
+live."
   (and (ghostherd--session-live-p session)
-       (eq (cdr (ghostherd--cli-error session screen)) 'continue)
+       (ghostherd--continue-cause session screen)
        (let ((at (gethash (ghostherd-session-id session) ghostherd--input-at)))
          (or (null at) (< at (plist-get ep :since))))))
 
-(defun ghostherd--sleep-continue-fire (session ep)
-  "Send the continue prompt to SESSION, log it, and spend one of EP's tries."
-  (let ((n (1+ (plist-get ep :attempts))))
+(defun ghostherd--sleep-continue-fire (session ep cause)
+  "Send SESSION the continue prompt for CAUSE, log it, and spend one of
+EP's tries.  CAUSE is a key of `ghostherd--continue-causes'."
+  (let ((n (1+ (plist-get ep :attempts)))
+        (says (alist-get cause ghostherd--continue-causes)))
     (puthash (ghostherd-session-id session)
              (plist-put ep :attempts n)
              ghostherd--sleep-continue)
     (ghostherd--log-add
      session 'continue
-     (format "↻ continuing a turn the computer's sleep cut short (try %d of %d)"
-             n ghostherd-sleep-continue-max))
-    (ghostherd-send session ghostherd-sleep-continue-prompt t)))
+     (format "↻ continuing a turn %s cut short (try %d of %d)"
+             (plist-get says :cut) n ghostherd-sleep-continue-max))
+    (ghostherd-send session (symbol-value (plist-get says :prompt)) t)))
 
 (defun ghostherd--sleep-maybe-continue (session screen)
-  "After a poll set SESSION's state, carry its turn on if the Mac slept.
-SCREEN is the screen that poll read.  A sleep-killed turn reads as
-`blocked' on a `continue' CLI error; once `ghostherd-sleep-continue-delay'
-has passed and the guards hold, send the continue prompt, at most
+  "After a poll set SESSION's state, carry its turn on if it was cut short.
+SCREEN is the screen that poll read.  A turn the Mac's sleep or a
+dropped connection killed reads as `blocked' on a `continue' CLI error;
+once `ghostherd-sleep-continue-delay' has passed and the guards hold,
+send the continue prompt for its cause, at most
 `ghostherd-sleep-continue-max' times per stuck turn."
   (let* ((id (ghostherd-session-id session))
          (state (ghostherd-session-state session))
-         (slept (and (eq state 'blocked)
-                     (eq (cdr (ghostherd--cli-error session screen)) 'continue))))
+         (cause (and (eq state 'blocked)
+                     (ghostherd--continue-cause session screen))))
     (cond
      ;; A settled, non-stuck state ends the episode: the next sleep is a
      ;; fresh one with a full budget.  `working' does NOT end it -- sending
@@ -2956,7 +3014,7 @@ has passed and the guards hold, send the continue prompt, at most
      ;; alone: harmless, and clears when it finally settles.
      ((memq state '(idle done waiting dead))
       (remhash id ghostherd--sleep-continue))
-     ((not slept) nil)
+     ((not cause) nil)
      (t
       (let ((ep (or (gethash id ghostherd--sleep-continue)
                     (puthash id (list :since (float-time) :attempts 0 :cancelled nil)
@@ -2966,10 +3024,10 @@ has passed and the guards hold, send the continue prompt, at most
                    (>= (- (float-time) (plist-get ep :since))
                        ghostherd-sleep-continue-delay)
                    (ghostherd--sleep-continue-ok-p session screen ep))
-          (ghostherd--sleep-continue-fire session ep)))))))
+          (ghostherd--sleep-continue-fire session ep cause)))))))
 
 (defun ghostherd-sleep-continue-cancel (session)
-  "Wave off the pending auto-continue for SESSION's slept turn.
+  "Wave off the pending auto-continue for SESSION's cut-short turn.
 The card's Cancel: it stays blocked, and the herd will not continue this
 turn.  The next stuck turn is unaffected -- the episode clears when the
 agent settles."
@@ -6301,6 +6359,7 @@ address of each one's room from your phone, for the bot to link to."
      (let* ((blocked (eq (ghostherd-session-state s) 'blocked))
             (err (and blocked (ghostherd--cli-error s)))
             (continue-at (and blocked (ghostherd--sleep-continue-at s)))
+            (words (and blocked (ghostherd--continue-words s)))
             (wstat (and (ghostherd-session-worktree s) (ghostherd--worktree-stat s))))
       (list :name (ghostherd-session-name s)
            :kind (symbol-name (or (ghostherd-session-kind s) 'shell))
@@ -6320,12 +6379,16 @@ address of each one's room from your phone, for the bot to link to."
            ;; /login.  Only while blocked on it, so the button is there
            ;; exactly when it would work.
            :login (if (eq (cdr err) 'login) t :json-false)
-           ;; A turn killed by the Mac sleeping: the herd continues it
-           ;; itself.  `continueAt' is when (float ms), for the card's
-           ;; "continuing after sleep in Ns" countdown and its Cancel;
-           ;; `continueStopped' is t once it has stopped retrying.
+           ;; A turn killed by the Mac sleeping or a dropped connection: the
+           ;; herd continues it itself.  `continueAt' is when (float ms), for
+           ;; the card's "continuing after sleep in Ns" countdown and its
+           ;; Cancel; `continueStopped' is t once it has stopped retrying.
+           ;; `continueAfter' / `continueAgain' are the cause's words for
+           ;; each (`ghostherd--continue-causes').
            :continueAt (if continue-at (* 1000 continue-at) 0)
            :continueStopped (if (ghostherd--sleep-continue-stopped-p s) t :json-false)
+           :continueAfter (or (car words) "")
+           :continueAgain (or (cdr words) "")
            ;; The /login URL to open/copy from the card, while it waits on
            ;; the code.
            :url (or (and (eq (ghostherd-session-state s) 'blocked)

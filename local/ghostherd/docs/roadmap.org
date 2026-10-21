@@ -1633,6 +1633,17 @@ closing it with the error screen.
   decides, from the last message above the input box alone, anchored
   at its start.  ERT on the real captures and transcript lines, broken
   on purpose
+- [X] "API Error: Connection lost mid-response" continues on its own,
+  like the slept turn (approved by the user): a =continue= rule ahead of
+  the bare API error, the same delay, budget, guards and stop note.  The
+  prompt and the card follow the cause (=ghostherd--continue-causes=):
+  "continuing after a dropped connection in Ns", a prompt that says the
+  connection dropped, a log line naming it -- never that the computer
+  slept.  Login expired, a stalled response, no network and a 500 still
+  block.  ERT + e2e (herd-sleep, 30) broken on purpose
+- [ ] After the merge, set the live =ghostherd-cli-errors= by hand:
+  bin/reload keeps a bound defcustom, so the live Emacs keeps the old
+  unanchored rules and no =dropped= entry until then
 
 * Phase 3.32 — A lead starts and stops agents through the herd  *(this tree)*
 

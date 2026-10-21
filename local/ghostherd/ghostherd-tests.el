@@ -584,6 +584,12 @@ screen, but a prompt was typed since and a new turn is running.")
      "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"local_command\",\"content\":\"<command-name>/login</command-name>\\n            <command-message>login</command-message>\\n            <command-args></command-args>\",\"level\":\"info\",\"timestamp\":\"2026-10-11T01:53:42.661Z\",\"isMeta\":false}")
     (login-out .
      "{\"isSidechain\":false,\"type\":\"system\",\"subtype\":\"local_command\",\"content\":\"<local-command-stdout>Login successful</local-command-stdout>\",\"level\":\"info\",\"timestamp\":\"2026-10-11T01:53:42.661Z\",\"isMeta\":false,\"commandRun\":{\"command\":\"login\",\"args\":\"\"}}")
+    (stalled .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-16T16:00:00.858Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: The response stopped arriving. The response above may be incomplete.\"}]},\"error\":\"server_error\",\"truncatedAfterOutput\":true,\"isApiErrorMessage\":true}")
+    (offline .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-09T01:37:31.761Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)\"}]},\"error\":\"server_error\",\"isApiErrorMessage\":true,\"perTurnEffort\":\"xhigh\"}")
+    (server .
+     "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-09-10T06:32:16.346Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com.\"}]},\"error\":\"server_error\",\"isApiErrorMessage\":true,\"apiErrorStatus\":500}")
     (model .
      "{\"isSidechain\":false,\"type\":\"assistant\",\"timestamp\":\"2026-10-21T07:25:20.423Z\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"stop_sequence\":\"\",\"type\":\"message\",\"content\":[{\"type\":\"text\",\"text\":\"There's an issue with the selected model (no-such-model-xyz). It may not exist or you may not have access to it. Run --model to pick a different model.\"}]},\"error\":\"model_not_found\",\"isApiErrorMessage\":true,\"apiErrorStatus\":404,\"perTurnEffort\":null}")
     (lead-reply .
@@ -652,7 +658,7 @@ screen of an agent whose transcript is not known."
       (pcase-dolist (`(,tag ,action ,reason)
                      '((login login "login expired")
                        (slept continue "computer slept")
-                       (dropped nil "API error")
+                       (dropped continue "connection dropped")
                        (model nil "selected model")))
         (ghostherd-tests--with-transcript s
             (append (ghostherd-tests--entries 'lead-reply tag) (ghostherd-tests--entries 'login-turn))
@@ -666,7 +672,8 @@ screen of an agent whose transcript is not known."
       (let ((ghostherd-tests--fake-screen ghostherd-tests--connection-lost-screen))
         (should (equal (ghostherd--last-message ghostherd-tests--connection-lost-screen)
                        "API Error: Connection lost mid-response. The response above may be incomplete."))
-        (should (eq (car (ghostherd--detect-state s)) 'blocked))))))
+        (should (equal (ghostherd--detect-state s)
+                       '(blocked . "its turn was cut off: the connection dropped")))))))
 
 (ert-deftest ghostherd-test-a-prompt-after-the-error-ends-it ()
   "A prompt typed after the error starts a new turn: no longer stuck,
@@ -878,6 +885,85 @@ and the prompt is never sent."
         (let ((snap (car (ghostherd--herd-snapshot))))
           (should (> (plist-get snap :continueAt) 0))
           (should (eq (plist-get snap :continueStopped) :json-false)))))))
+
+;;; A dropped connection is carried on too, in its own words (ask eb81eb50)
+
+(ert-deftest ghostherd-test-only-the-cut-short-errors-continue ()
+  "Of claude's own errors, the Mac sleeping and the connection dropping
+are continued, each with its cause; an expired login and every other
+API error -- a stalled response, no network, a 500, an unknown model --
+still block and wait.  Real transcript entries."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake)))
+      (pcase-dolist (`(,tag ,action ,cause)
+                     '((slept continue slept)
+                       (dropped continue dropped)
+                       (login login nil)
+                       (stalled nil nil)
+                       (offline nil nil)
+                       (server nil nil)
+                       (model nil nil)))
+        (ghostherd-tests--with-transcript s (ghostherd-tests--entries tag 'login-turn)
+          (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) action))
+          (should (eq (ghostherd--continue-cause s ghostherd-tests--idle-screen) cause))))
+      ;; The screen, for an agent with no transcript known, says the same.
+      (should (eq (ghostherd--continue-cause s ghostherd-tests--connection-lost-screen) 'dropped))
+      (should (eq (ghostherd--continue-cause s ghostherd-tests--slept-screen) 'slept))
+      ;; A `continue' rule that names no cause -- the shape of the value a
+      ;; live Emacs keeps until it is set again -- is the slept one.
+      (let ((ghostherd-cli-errors
+             '((claude ("went to sleep mid-response" continue "the computer slept")))))
+        (should (eq (ghostherd--continue-cause s ghostherd-tests--slept-screen) 'slept))))))
+
+(ert-deftest ghostherd-test-a-dropped-connection-is-continued-in-its-own-words ()
+  "claude-jnotes's turn, cut by a dropped connection: blocked, then after
+the same delay the herd sends a prompt that says the connection dropped
+-- never that the computer slept -- logs it so, and the card counts down
+and stops in those words.  The same guards hold, and the same budget: a
+continued turn that drops again stays blocked."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--connection-lost-screen)
+            (ghostherd-sleep-continue-delay 60)
+            (ghostherd-sleep-continue-max 1)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (_s text &optional submit) (push (list text submit) sends))))
+          (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'lead-reply 'dropped 'dropped-turn)
+            (ghostherd-poll-session s)
+            (should (eq (ghostherd-session-state s) 'blocked))
+            (should-not sends)
+            (let ((snap (car (ghostherd--herd-snapshot))))
+              (should (> (plist-get snap :continueAt) 0))
+              (should (equal (plist-get snap :continueAfter) "after a dropped connection")))
+            ;; Typed into since the wait began: left alone.
+            (plist-put (gethash (ghostherd-session-id s) ghostherd--sleep-continue)
+                       :since (- (float-time) 120))
+            (puthash (ghostherd-session-id s) (float-time) ghostherd--input-at)
+            (ghostherd-poll-session s)
+            (should-not sends)
+            (remhash (ghostherd-session-id s) ghostherd--input-at)
+            ;; Past the delay, untouched: continued once, in its own words.
+            (ghostherd-poll-session s)
+            (should (equal sends (list (list ghostherd-dropped-continue-prompt t))))
+            (should-not (string-match-p "sleep\\|slept" ghostherd-dropped-continue-prompt))
+            (should (string-match-p "connection" ghostherd-dropped-continue-prompt))
+            (let ((entry (cl-find 'continue ghostherd--log :key #'ghostherd-log-entry-kind)))
+              (should (string-match-p "a dropped connection cut short"
+                                      (ghostherd-log-entry-text entry))))
+            ;; The continued turn drops again: blocked, not prodded twice.
+            (write-region (concat (alist-get 'prompt-after ghostherd-tests--claude-entries) "\n"
+                                  (alist-get 'dropped ghostherd-tests--claude-entries) "\n")
+                          nil path t 'silent)
+            (ghostherd-poll-session s)
+            (ghostherd-poll-session s)
+            (should (= (length sends) 1))
+            (should (eq (ghostherd-session-state s) 'blocked))
+            (should (ghostherd--sleep-continue-stopped-p s))
+            (let ((snap (car (ghostherd--herd-snapshot))))
+              (should (eq (plist-get snap :continueStopped) t))
+              (should (equal (plist-get snap :continueAgain) "the connection dropped again")))))))))
 
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
