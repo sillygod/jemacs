@@ -1719,6 +1719,16 @@ phase two.)
 
 - A Memory tab on the page; indexing the facts into the transcript search;
   pruning / curation UI
+- Promote memory into instructions.  A memory lives only on this machine; a
+  stable, general fact belongs in the project's instruction file (=CLAUDE.md=,
+  or =AGENTS.md= where it links to it), versioned with the code so every agent
+  and machine sees it -- e.g. deploy-platform's "never commit to main".  The
+  lead (or, with no lead, any agent when asked) proposes promotions from time
+  to time: which facts, and the exact diff to the instruction file.  Nothing
+  is written to an instruction file without the user's approval; on approval
+  the diff is applied and the fact leaves memory, with a note saying where it
+  went, so it is not loaded twice.  Facts tied to this machine or user (paths,
+  credentials setup, personal preferences) stay memories.
 
 * Phase 4 — Ecosystem (only if still useful)
 
