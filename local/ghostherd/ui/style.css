@@ -774,7 +774,13 @@ pre.screen {
 .cfoot textarea { flex: 1; min-width: 0; resize: vertical; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
 .cfoot select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font: inherit; align-self: stretch; }
-.cmsg { max-width: 920px; }
+/* Timeline and composer share one centred column on a wide window, so the
+   two line up and the right half is not left empty.  Scoped to the chat, so
+   the Columns view is untouched; on a narrow screen the max-width is moot and
+   margin:auto is a no-op, so the phone is unchanged. */
+.chat { --chatcol: 1040px; }
+.chat .cmsg, .chat .cmeter { max-width: var(--chatcol); margin-inline: auto; }
+.chat .cfoot { max-width: var(--chatcol); margin-inline: auto; width: 100%; box-sizing: border-box; }
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
 .cmore { margin-top: 2px; font-size: 12px; }
 .leadb { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid #a371f7; color: #d2a8ff; }
