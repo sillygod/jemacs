@@ -246,6 +246,23 @@ Keys go through the real keymaps with `execute-kbd-macro'."
     (execute-kbd-macro "python")
     (should (equal ghostel-cmd--query "python"))))
 
+(ert-deftest ghostel-cmd-test-yank-into-filter-and-fill ()
+  "C-y appends the latest kill as one line: newlines become spaces."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "rm" :cmd "rm {{files}}"))
+    (let ((kill-ring nil)
+          (interprogram-paste-function nil))
+      (kill-new "a.py\nb.py\n")
+      (ghostel-cmd--set-filtering t)
+      (execute-kbd-macro "r")
+      (execute-kbd-macro (kbd "C-y"))
+      (should (equal ghostel-cmd--query "ra.py b.py"))
+      (ghostel-cmd-filter-clear)
+      (ghostel-cmd-filter-confirm)
+      (ghostel-cmd-paste)
+      (execute-kbd-macro (kbd "C-y"))
+      (should (equal (plist-get ghostel-cmd--fill :input) "a.py b.py")))))
+
 (ert-deftest ghostel-cmd-test-fill-commits-then-finishes ()
   (let ((ghostel-cmd--fill
          (list :record (list :name "t" :cmd "a {{x}} {{y}}")

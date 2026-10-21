@@ -264,6 +264,7 @@ edit of the save file is never written over."
     ("e"        "Edit at point")
     ("d"        "Delete at point")
     ("/"        "Live-narrow (flex)")
+    ("C-y"      "Yank into filter / fill input")
     ("o"        "Open save file")
     ("?"        "This help")
     ("q, Esc"   "Quit / cancel fill"))
@@ -486,6 +487,15 @@ edit of the save file is never written over."
       (and (characterp ev) (memq ev '(?\r ?\n)))
       (memq (event-basic-type ev) '(return kp-enter newline))))
 
+(defun ghostel-cmd--yank-text ()
+  "The latest kill as one line: outer newlines dropped, inner ones spaces.
+A query or a {{var}} value lives on one line of one command, so a
+one-per-line list yanks as space-separated words."
+  (replace-regexp-in-string
+   "[\r\n]+" " "
+   (string-trim (substring-no-properties (current-kill 0))
+                "[\r\n]+" "[\r\n]+")))
+
 (defun ghostel-cmd-filter-self-insert ()
   (interactive)
   (let ((ev last-command-event))
@@ -506,6 +516,12 @@ edit of the save file is never written over."
 (defun ghostel-cmd-filter-clear ()
   (interactive)
   (setq ghostel-cmd--query "")
+  (ghostel-cmd--refresh-overlay))
+
+(defun ghostel-cmd-filter-yank ()
+  "Append the latest kill to the query."
+  (interactive)
+  (setq ghostel-cmd--query (concat ghostel-cmd--query (ghostel-cmd--yank-text)))
   (ghostel-cmd--refresh-overlay))
 
 (defun ghostel-cmd--set-filtering (on)
@@ -541,6 +557,7 @@ edit of the save file is never written over."
   "<delete>"    #'ghostel-cmd-filter-backspace
   "C-h"         #'ghostel-cmd-filter-backspace
   "C-u"         #'ghostel-cmd-filter-clear
+  "C-y"         #'ghostel-cmd-filter-yank
   "C-g"         #'ghostel-cmd-quit
   "<escape>"    #'ghostel-cmd-quit)
 
@@ -590,6 +607,16 @@ edit of the save file is never written over."
   (interactive)
   (when ghostel-cmd--fill
     (plist-put ghostel-cmd--fill :input "")
+    (ghostel-cmd--draw-preview)
+    (force-mode-line-update t)))
+
+(defun ghostel-cmd-fill-yank ()
+  "Append the latest kill to the value being filled."
+  (interactive)
+  (when ghostel-cmd--fill
+    (plist-put ghostel-cmd--fill :input
+               (concat (or (plist-get ghostel-cmd--fill :input) "")
+                       (ghostel-cmd--yank-text)))
     (ghostel-cmd--draw-preview)
     (force-mode-line-update t)))
 
@@ -669,6 +696,7 @@ SUBMIT non-nil also presses Enter in the terminal."
   "<delete>"    #'ghostel-cmd-fill-backspace
   "C-h"         #'ghostel-cmd-fill-backspace
   "C-u"         #'ghostel-cmd-fill-clear
+  "C-y"         #'ghostel-cmd-fill-yank
   "C-g"         #'ghostel-cmd-fill-cancel
   "<escape>"    #'ghostel-cmd-fill-cancel)
 
