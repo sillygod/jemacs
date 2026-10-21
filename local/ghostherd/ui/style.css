@@ -766,10 +766,13 @@ pre.screen {
 /* ---- Memory tab ------------------------------------------------------ */
 
 .mem-tools { display: flex; gap: 10px; align-items: center; }
-.mem-tools select {
+/* The filter shares the picker's height and border, so it does not read as a
+   thinner, lower-contrast box beside it. */
+.mem-tools select, .mem-tools input {
   background: var(--bg); color: var(--text); border: 1px solid var(--line);
-  border-radius: 6px; padding: 8px 10px; font: inherit; max-width: 60%;
+  border-radius: 6px; padding: 8px 10px; font: inherit;
 }
+.mem-tools select { max-width: 60%; }
 .mem-tools #mem-filter { flex: 1; min-width: 0; }
 
 .mfact { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 8px; }

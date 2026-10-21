@@ -3223,7 +3223,7 @@
     const open = mem.open.has(f.name);
     const badge = '<span class="mtype t-' + esc(f.type) + '">' + esc(f.type) + "</span>";
     const where = f.shared ? '<span class="mshared" title="Shared by every project">shared</span>' : "";
-    const upd = f.updated ? elapsed(Date.now() - Date.parse(f.updated)) : "";
+    const upd = when(f.updated); // the page's usual relative style: "1h ago", "yesterday", a date when older
     const meta = (f.author ? "by " + esc(f.author) : "") + (f.author && upd ? " · " : "") + (upd ? esc(upd) : "");
     const head =
       '<div class="mhead" data-act="mem-open" data-name="' + esc(f.name) + '" tabindex="0" role="button">' +
