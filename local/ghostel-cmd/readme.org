@@ -4,29 +4,78 @@ Per-project Ghostel command bookmarks with a GhostHerd-style overlay.
 
 * Status
 
-| Item     | Value                                            |
-|----------+--------------------------------------------------|
-| Package  | =local/ghostel-cmd/= (straight =:local-repo=)     |
-| Files    | =ghostel-cmd.el= · =ghostel-cmd-tests.el=         |
-| Wired in | =jemacs-project= · =SPC p c= · Ghostel =C-c c=    |
+| Item     | Value                                          |
+|----------+------------------------------------------------|
+| Package  | =local/ghostel-cmd/= (straight =:local-repo=)  |
+| Files    | =ghostel-cmd.el= · =ghostel-cmd-tests.el=      |
+| Wired in | =jemacs-project= · =SPC p c= · Ghostel =C-c c= |
 
 * Overlay
 
-Posframe when available, side window otherwise.
+Posframe when available, side window otherwise.  Selecting another
+window (a click, say) closes the posframe and leaves focus there; the
+minibuffer does not count.
 
-| Key        | Action                                      |
-|------------+---------------------------------------------|
-| =j= / =k=  | Move                                        |
-| =RET=      | Paste (fill ={{vars}}= on the footer first) |
-| =C-RET=    | Paste and press Enter                       |
-| =/=        | Live-narrow (flex, whitespace is AND)       |
-| =a= =e= =d=| Add / edit / delete                         |
-| =q= / Esc  | Quit; during fill, cancel fill              |
+| Key         | Action                                            |
+|-------------+---------------------------------------------------|
+| =j= / =k=   | Move                                              |
+| =RET=       | Paste (fill ={{vars}}= on the footer first)       |
+| =C-RET=     | Paste and press Enter                             |
+| =/=         | Live-narrow (flex, whitespace is AND); every      |
+|             | printable key types, =C-n= / =C-p= move           |
+| =a= =e= =d= | Add / edit / delete; edit keeps the place, a name |
+|             | already taken asks before replacing               |
+| =M-j= =M-k= | Move the command down / up, saved (=M-<down>= /   |
+|             | =M-<up>= too)                                     |
+| =C-y=       | Yank into the filter or fill input, as one line:  |
+|             | newlines become spaces                            |
+| =C-\=       | Type the filter or fill input in the minibuffer,  |
+|             | =default-input-method= on                         |
+| =q= / Esc   | Quit; during fill, cancel fill                    |
 
-Placeholders: ={{file}}=, ={{line}}=, ={{root}}=, ={{project-name}}=,
-={{branch}}=, or ={{name:default}}=.  Filling happens on the overlay
-footer, not a chain of minibuffers.  =RET= never sends Enter unless
-you use =C-RET=.
+Any character types into the filter and the fill input, and so does
+text a system input method (Squirrel) commits.  An Emacs input method
+(rime, quail) cannot compose in the read-only overlay, and evil turns
+it off in normal state, so =C-\= edits the input in the minibuffer with
+it on; the list follows as you type and =C-g= keeps the old text.
+
+The preview under the list wraps a long command onto at most
+=ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
+so a huge command never pushes the list away.
+
+* Placeholders
+
+Built-ins are taken from where you opened the overlay:
+
+| Placeholder                     | Value                                          |
+|---------------------------------+------------------------------------------------|
+| ={{file}}= / ={{file-abs}}=     | caller's file, relative to the root / absolute |
+| ={{dir}}=                       | caller's directory, relative to the root (=.=) |
+| ={{line}}=                      | caller's line                                  |
+| ={{symbol}}=                    | symbol at point in the caller                  |
+| ={{root}}= ={{project-name}}=   | the project                                    |
+| ={{branch}}=                    | the git branch                                 |
+| ={{name}}= / ={{name:default}}= | asked on the footer                            |
+
+The value you last filled for a ={{name}}= (per project and command,
+for this Emacs session) is offered before its =:default=.  Built-ins
+are always taken fresh.
+
+A name starts with a letter or underscore; any other ={{...}}= stays
+literal, so docker's ={{.State.Status}}= and helm's ={{ .Values.x }}=
+paste as written.  There is no escape, so Go's ={{end}}= still reads
+as a variable.
+
+Filling happens on the overlay footer, not a chain of minibuffers.
+=RET= never sends Enter unless you use =C-RET=.
+
+* Save file
+
+Commands live in =ghostel-cmd-save-file=; =o= opens it.  An edit made
+there, or by another Emacs, is read on the next open or redraw, and a
+save applies its change to the file as it is on disk.  A file that
+does not parse is left alone: the overlay keeps what it had and
+refuses to save until the file reads again.
 
 The overlay is the only menu.  Open a terminal with =SPC '=, replay
 the last command with =SPC TAB=, send a region with =SPC x s=.
