@@ -331,6 +331,53 @@ that it never reaches the state machine."
         (let ((ghostherd-reason-context context))
           (should (eq (car (ghostherd--detect-state s)) 'blocked)))))))
 
+(defconst ghostherd-tests--claude-login-menu
+  (concat
+   "⏺ Login expired · Please run /login\n\n"
+   "✻ Churned for 2s · done 9:12 AM\n"
+   "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\n"
+   "   Login\n\n"
+   "   Claude Code can be used with your Claude subscription or billed based on API usage\n"
+   "   through your Console account.\n\n"
+   "   Select login method:\n\n"
+   "   ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise\n"
+   "     2. Anthropic Console account · API usage billing\n"
+   "     3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, Google Vertex AI\n\n"
+   "   Esc to cancel\n")
+  "claude's /login method picker, as auto-capture caught it (ask a74e0a82):
+a ❯-marked numbered list that replaced the input box, no rule per menu.")
+
+(ert-deftest ghostherd-test-claude-login-menu-is-blocked ()
+  "The /login method picker reads as blocked with its options, by the
+general menu rule -- `ghostherd--prompt' on a box that replaced the input
+-- not a rule written for it.  Real sample, ask a74e0a82."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "lead-x" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-screen ghostherd-tests--claude-login-menu))
+      (should (eq (car (ghostherd--detect-state s)) 'blocked))
+      (ghostherd-poll-session s)
+      (should (eq (ghostherd-session-state s) 'blocked))
+      (let ((p (ghostherd-session-prompt s)))
+        (should p)
+        (should (= (length (plist-get p :options)) 3))
+        (should (string-match-p "Claude account"
+                                (cdr (assq 1 (plist-get p :options))))))
+      (should (string-match-p "login method" (cdr (ghostherd--detect-state s)))))))
+
+(ert-deftest ghostherd-test-a-menu-quoted-in-the-conversation-does-not-block ()
+  "The `:prompt-replaces-input' guard holds: the same menu with a real
+input box still drawn under it -- quoted in the chat, not the live one --
+does not block."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "lead-y" :kind 'claude :backend 'fake))
+          (ghostherd-tests--fake-screen
+           (concat ghostherd-tests--claude-login-menu
+                   "\n────────────────────────────────────────\n"
+                   "❯ \n"
+                   "────────────────────────────────────────\n"
+                   "  ⏵⏵ auto mode on\n")))
+      (should-not (eq (car (ghostherd--detect-state s)) 'blocked)))))
+
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
 moves nothing.  The wheel has to drive the host's own view, in one

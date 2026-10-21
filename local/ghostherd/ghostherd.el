@@ -2373,8 +2373,10 @@ coincidence further up the scrollback."
   "A menu's option: its number, its first line, the highlight's mark.")
 
 (defconst ghostherd--prompt-rule-re
-  "\\`[[:blank:]]*[─━═╭╮╰╯┌┐└┘├┤-]\\{3,\\}[[:blank:]]*\\'"
-  "A line that only draws: the edge of what a menu asks.")
+  "\\`[[:blank:]]*[─━═╭╮╰╯┌┐└┘├┤▔▁▀▄-]\\{3,\\}[[:blank:]]*\\'"
+  "A line that only draws: the edge of what a menu asks.  Includes the
+block-rule (▔) claude draws the top of its /login box with, so the menu's
+question stops there and does not swallow the turn above it.")
 
 (defconst ghostherd--prompt-near 8
   "Lines from the screen's foot within which a menu's last option sits.
@@ -2648,6 +2650,18 @@ does."
             (cons 'blocked (or (and (member (cdr hit) ghostherd--prompt-foot-patterns)
                                     (ghostherd--prompt-reason tail))
                                (ghostherd--rule-reason tail hit))))
+           ;; A menu that has replaced the input box, caught in general
+           ;; rather than by a rule per menu: AskUserQuestion, the trust
+           ;; prompt, the /login method picker, whatever the next release
+           ;; draws next.  Only while the box at the foot is the menu's own
+           ;; (`:prompt-replaces-input', and no input box under it), so a
+           ;; numbered list quoted in the conversation never trips it;
+           ;; `ghostherd--prompt' then reads its options for the card.
+           ((and (plist-get spec :prompt-replaces-input)
+                 tail
+                 (not (ghostherd--input-at-foot-p tail))
+                 (ghostherd--prompt tail))
+            (cons 'blocked (or (ghostherd--prompt-reason tail) "waiting for a choice")))
            ;; What the agent says about itself beats reading its screen,
            ;; which is a rendering of a drawing of the same fact -- with
            ;; one exception.  A claimed `blocked' loses to a screen that
