@@ -77,6 +77,13 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
   :type '(choice (const :tag "Fixed width" nil) number)
   :group 'ghostel-cmd)
 
+(defcustom ghostel-cmd-preview-max-lines 3
+  "Most lines the preview under the list wraps a long command onto.
+The rest is cut with an ellipsis, so a huge command never pushes the
+list out of the overlay."
+  :type 'integer
+  :group 'ghostel-cmd)
+
 (defcustom ghostel-cmd-sidebar-side 'right
   "Side window side when not using posframe."
   :type '(choice (const left) (const right))
@@ -351,6 +358,38 @@ always taken fresh."
 (defun ghostel-cmd--truncate (s width)
   (truncate-string-to-width (or s "") (max 1 width) nil nil t))
 
+(defun ghostel-cmd--wrap (s width max-lines)
+  "S cut into at most MAX-LINES lines of at most WIDTH columns.
+A line breaks at a space in its second half, else mid-word; when S
+does not fit, the last line ends in an ellipsis."
+  (let ((rest (string-trim-right (or s "") "\n+"))
+        (max-lines (max 1 max-lines))
+        (lines nil))
+    (while (and rest (< (length lines) max-lines))
+      (let* ((nl (string-search "\n" rest))
+             (line (if nl (substring rest 0 nl) rest)))
+        (if (<= (string-width line) width)
+            (setq rest (and nl (substring rest (1+ nl))))
+          (let* ((head (truncate-string-to-width line width))
+                 (space (cl-position ?\s head :from-end t))
+                 (cut (if (and space (> space (/ width 2)))
+                          space
+                        (max 1 (length head)))))
+            (setq rest (substring rest (if (eql cut space) (1+ cut) cut))
+                  line (substring line 0 cut))))
+        (push line lines)))
+    (when rest
+      (setcar lines (concat (truncate-string-to-width (car lines) (1- width))
+                            "…")))
+    (nreverse lines)))
+
+(defun ghostel-cmd--tail (s width)
+  "S, or an ellipsis and the end of S when S is wider than WIDTH."
+  (let ((w (string-width s)))
+    (if (<= w width)
+        s
+      (concat "…" (truncate-string-to-width s w (- w (1- width)))))))
+
 (defun ghostel-cmd--build-entries ()
   "Rebuild `tabulated-list-entries' from the current project."
   (setq tabulated-list-format (ghostel-cmd--format))
@@ -416,19 +455,23 @@ always taken fresh."
              (name (car pair))
              (input (plist-get fill :input))
              (shown (ghostel-cmd--preview
-                     tmpl root (plist-get fill :values) name input)))
+                     tmpl root (plist-get fill :values) name input))
+             (label (format "{{%s}}  " name)))
         (concat
-         (truncate-string-to-width shown width nil nil t)
+         (string-join
+          (ghostel-cmd--wrap shown width ghostel-cmd-preview-max-lines) "\n")
          "\n"
          (propertize
-          (format "{{%s}}  %s"
-                  name
-                  (if (and input (not (string-empty-p input)))
-                      input
-                    (or (cdr pair) "")))
+          (concat label
+                  (ghostel-cmd--tail
+                   (if (and input (not (string-empty-p input)))
+                       input
+                     (or (cdr pair) ""))
+                   (max 8 (- width (string-width label)))))
           'face 'highlight))))
      (t
-      (truncate-string-to-width tmpl width nil nil t)))))
+      (string-join
+       (ghostel-cmd--wrap tmpl width ghostel-cmd-preview-max-lines) "\n")))))
 
 (defun ghostel-cmd--draw-preview ()
   (when (derived-mode-p 'ghostel-cmd-sidebar-mode)
@@ -1136,7 +1179,8 @@ Under a filter that row is the next visible one, not a hidden one."
 (defun ghostel-cmd--preview-reserved-lines ()
   (if ghostel-cmd--help-visible
       (max 8 (length (split-string (ghostel-cmd--help-text) "\n")))
-    5))
+    ;; Separator, the wrapped command, and the fill input line.
+    (+ 2 ghostel-cmd-preview-max-lines)))
 
 (defun ghostel-cmd--show-posframe (buf)
   (ghostel-cmd--close-side-windows buf)

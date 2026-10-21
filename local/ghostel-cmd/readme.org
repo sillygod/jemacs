@@ -29,6 +29,10 @@ Posframe when available, side window otherwise.
 |            | line, newlines become spaces                |
 | =q= / Esc  | Quit; during fill, cancel fill              |
 
+The preview under the list wraps a long command onto at most
+=ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
+so a huge command never pushes the list away.
+
 Placeholders, the built-ins taken from where you opened the overlay:
 
 | Placeholder                  | Value                                      |

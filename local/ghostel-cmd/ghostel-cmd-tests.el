@@ -137,6 +137,44 @@ Keys go through the real keymaps with `execute-kbd-macro'."
                   "expr" "foo")
                  "pytest a.py -k foo")))
 
+(ert-deftest ghostel-cmd-test-wrap-within-cap ()
+  (should (equal (ghostel-cmd--wrap "short" 20 3) '("short")))
+  (should (equal (ghostel-cmd--wrap "aaaa bbbb cccc dddd eeee" 10 3)
+                 '("aaaa bbbb" "cccc dddd" "eeee")))
+  (should (equal (ghostel-cmd--wrap (make-string 25 ?x) 10 3)
+                 (list (make-string 10 ?x) (make-string 10 ?x) (make-string 5 ?x))))
+  (should (equal (ghostel-cmd--wrap "中文中文中文" 5 3) '("中文" "中文" "中文")))
+  (should (equal (ghostel-cmd--wrap "a\nb\n" 10 3) '("a" "b")))
+  (let ((lines (ghostel-cmd--wrap (string-join (make-list 40 "word") " ") 20 3)))
+    (should (= (length lines) 3))
+    (should (string-suffix-p "…" (car (last lines))))
+    (should (cl-every (lambda (l) (<= (string-width l) 20)) lines))))
+
+(ert-deftest ghostel-cmd-test-preview-wraps-long-command ()
+  "The preview shows a long command over several lines, never more
+than the cap, and a long fill value by its end."
+  (let* ((words (cl-loop for i below 60 collect (format "arg%d" i)))
+         (cmd (concat "run " (string-join words " ") " {{v}}")))
+    (ghostel-cmd-tests--with-overlay (list (list :name "long" :cmd cmd))
+      (let ((ghostel-cmd--target-width 41)
+            (ghostel-cmd-preview-max-lines 3))
+        (ghostel-cmd--refresh-overlay)
+        (let ((lines (cdr (split-string (buffer-substring-no-properties
+                                         ghostel-cmd--preview-start (point-max))
+                                        "\n" t))))
+          (should (= (length lines) 3))
+          (should (string-prefix-p "run arg0 arg1" (car lines)))
+          (should (string-prefix-p "arg" (nth 1 lines)))
+          (should (string-suffix-p "…" (nth 2 lines))))
+        (ghostel-cmd-paste)
+        (execute-kbd-macro (make-string 60 ?z))
+        (let ((lines (cdr (split-string (buffer-substring-no-properties
+                                         ghostel-cmd--preview-start (point-max))
+                                        "\n" t))))
+          (should (= (length lines) 4))
+          (should (string-match-p "\\`{{v}}  …z+\\'" (nth 3 lines)))
+          (should (<= (string-width (nth 3 lines)) 40)))))))
+
 (ert-deftest ghostel-cmd-test-persist-roundtrip ()
   (ghostel-cmd-tests--with-store
     (ghostel-cmd--set-commands
