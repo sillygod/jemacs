@@ -9,14 +9,21 @@
 ;;; Commentary:
 ;;
 ;; Bookmark command templates per project, with {{var}} / {{var:default}}
-;; placeholders and built-ins taken from the caller: {{file}},
-;; {{file-abs}}, {{dir}}, {{line}}, {{symbol}}, {{root}},
-;; {{project-name}}, {{branch}}.  The overlay (posframe when available,
-;; side window otherwise) is the main UI:
+;; / {{var:a|b|c}} (choices) placeholders and built-ins taken from the
+;; caller: {{file}}, {{file-abs}}, {{dir}}, {{line}}, {{symbol}},
+;; {{root}}, {{project-name}}, {{branch}}.  The overlay (posframe when
+;; available, side window otherwise) is the main UI:
 ;;
 ;;   j/k move   RET paste (fill vars first)   C-RET paste+Enter
 ;;   / filter   a add   e edit   d delete   M-j/M-k reorder   q quit
+;;   A add global   m move to global / back (a task: copy into the project)
 ;;   C-y yank, C-\ input method (in the filter and fill input)
+;;   C-n/C-p pick a choice while filling {{var:a|b|c}}
+;;
+;; Global commands, shared by every project, follow the project's own
+;; in the list, then the tasks found in the project root: package.json
+;; scripts, Makefile targets and justfile recipes, read-only.  The
+;; files are only parsed, never run; `ghostel-cmd-discover' picks them.
 ;;
 ;; Filling happens on a footer line in the overlay, not a chain of
 ;; minibuffers.  Paste does not press Enter unless C-RET.
@@ -85,6 +92,16 @@ list out of the overlay."
   :type 'integer
   :group 'ghostel-cmd)
 
+(defcustom ghostel-cmd-discover t
+  "Which tasks the overlay finds in the project root, after the bookmarks.
+t lists package.json scripts, Makefile targets and justfile recipes,
+nil none, and a list the sources named in it: npm, make, just.  The
+files are only parsed; nothing is run to find the tasks."
+  :type '(choice (const :tag "All" t)
+                 (const :tag "None" nil)
+                 (set (const npm) (const make) (const just)))
+  :group 'ghostel-cmd)
+
 (defcustom ghostel-cmd-sidebar-side 'right
   "Side window side when not using posframe."
   :type '(choice (const left) (const right))
@@ -99,7 +116,12 @@ list out of the overlay."
 ;;; Store
 
 (defvar ghostel-cmd--cache nil
-  "Alist of (PROJECT-ROOT . (CMD-PLIST ...)).")
+  "Alist of (PROJECT-ROOT . (CMD-PLIST ...)).
+The global commands sit under `ghostel-cmd--global-key'.")
+
+(defconst ghostel-cmd--global-key :global
+  "Save-file key of the commands every project shares.
+Not a path, so no project root can take it.")
 
 (defvar ghostel-cmd--cache-stamp nil
   "(FILE . MTIME) of the save file when we last read or wrote it.
@@ -169,20 +191,280 @@ it signals instead, so a save never writes over a half-done edit."
   (let ((r (or root (ghostel-cmd--current-project-root))))
     (alist-get r ghostel-cmd--cache nil nil #'equal)))
 
+(defun ghostel-cmd--update-many (changes)
+  "Apply each (KEY . FN) of CHANGES to the commands under KEY; persist once.
+Each FN sees the commands as they are on disk right now, so an outside
+edit of the save file is never written over.  Return the new lists."
+  (ghostel-cmd--ensure-cache t)
+  (let ((new (mapcar (lambda (change)
+                       (funcall (cdr change)
+                                (alist-get (car change) ghostel-cmd--cache
+                                           nil nil #'equal)))
+                     changes)))
+    (cl-mapc (lambda (change cmds)
+               (setf (alist-get (car change) ghostel-cmd--cache nil t #'equal)
+                     cmds))
+             changes new)
+    (ghostel-cmd--save)
+    new))
+
 (defun ghostel-cmd--update-commands (fn &optional root)
   "Replace ROOT's commands with (FN COMMANDS) and persist.
 FN sees the commands as they are on disk right now, so an outside
 edit of the save file is never written over."
-  (ghostel-cmd--ensure-cache t)
-  (let* ((r (or root (ghostel-cmd--current-project-root)))
-         (cmds (funcall fn (alist-get r ghostel-cmd--cache nil nil #'equal))))
-    (setf (alist-get r ghostel-cmd--cache nil t #'equal) cmds)
-    (ghostel-cmd--save)
-    cmds))
+  (car (ghostel-cmd--update-many
+        (list (cons (or root (ghostel-cmd--current-project-root)) fn)))))
 
 (defun ghostel-cmd--set-commands (cmds &optional root)
   "Replace commands for ROOT with CMDS and persist."
   (ghostel-cmd--update-commands (lambda (_) cmds) root))
+
+(defun ghostel-cmd--store-key (scope root)
+  "Save-file key of the commands of SCOPE, project or global, under ROOT."
+  (if (eq scope 'global) ghostel-cmd--global-key root))
+
+(defun ghostel-cmd--scope-rows (scope records)
+  "RECORDS as rows ((SCOPE . NAME) . RECORD)."
+  (mapcar (lambda (r) (cons (cons scope (plist-get r :name)) r)) records))
+
+(defun ghostel-cmd--rows (root)
+  "Every command listed for ROOT, as rows ((SCOPE . NAME) . RECORD):
+the project's own, then the global ones, then the tasks found in ROOT."
+  (append (ghostel-cmd--scope-rows 'project (ghostel-cmd--get-commands root))
+          (ghostel-cmd--scope-rows
+           'global (ghostel-cmd--get-commands ghostel-cmd--global-key))
+          (ghostel-cmd--tasks root)))
+
+(defun ghostel-cmd--task-p (scope)
+  "Non-nil when SCOPE is a discovered task's, not a bookmark's."
+  (not (memq scope '(project global))))
+
+
+;;; Discovered tasks
+
+(defconst ghostel-cmd--task-sources
+  '((npm ghostel-cmd--npm-tasks "package.json")
+    (make ghostel-cmd--make-tasks "GNUmakefile" "makefile" "Makefile")
+    (just ghostel-cmd--just-tasks "justfile" "Justfile" ".justfile"))
+  "Per source: its parser and the files it reads, the first found wins,
+in the order make and just themselves look for them.")
+
+(defconst ghostel-cmd--npm-lockfiles
+  '(("pnpm-lock.yaml" . "pnpm")
+    ("yarn.lock" . "yarn")
+    ("bun.lock" . "bun")
+    ("bun.lockb" . "bun"))
+  "Lockfiles that name the runner of package.json scripts, first wins.")
+
+(defvar ghostel-cmd--tasks-cache nil
+  "Alist of (ROOT STAMP . ROWS): the tasks found in ROOT while the
+files they come from had the mtimes in STAMP.")
+
+(defun ghostel-cmd--shell-arg (s)
+  "S as one shell word, quoted only when it needs it."
+  (if (string-match-p "\\`[[:alnum:]_:./@%+=,-]+\\'" s)
+      s
+    (shell-quote-argument s)))
+
+(defun ghostel-cmd--task (scope name cmd desc)
+  "A row for the task NAME of SCOPE, running CMD."
+  (cons (cons scope name)
+        (list :name name :cmd cmd :desc (or desc ""))))
+
+(defun ghostel-cmd--npm-runner (root json)
+  "The runner of ROOT's package.json scripts: the one its lockfile
+names, else the packageManager field of JSON, else npm."
+  (or (cdr (cl-find-if (lambda (lock)
+                         (file-exists-p (expand-file-name (car lock) root)))
+                       ghostel-cmd--npm-lockfiles))
+      (let ((pm (alist-get 'packageManager json)))
+        (and (stringp pm)
+             (string-match "\\`\\(npm\\|pnpm\\|yarn\\|bun\\)\\(?:@\\|\\'\\)" pm)
+             (match-string 1 pm)))
+      "npm"))
+
+(defun ghostel-cmd--npm-tasks (file)
+  "The scripts of package.json FILE, run as `RUNNER run NAME'.
+The script itself is the desc."
+  (let* ((json (with-temp-buffer
+                 (insert-file-contents file)
+                 (json-parse-buffer :object-type 'alist
+                                    :null-object nil :false-object nil)))
+         (json (and (consp json) json))
+         (scripts (alist-get 'scripts json))
+         (runner (ghostel-cmd--npm-runner (file-name-directory file) json)))
+    (cl-loop for (key . body) in (and (consp scripts) scripts)
+             for name = (symbol-name key)
+             when (and (stringp body) (not (string-empty-p name)))
+             collect (ghostel-cmd--task
+                      (intern runner) name
+                      (format "%s run %s" runner (ghostel-cmd--shell-arg name))
+                      body))))
+
+(defconst ghostel-cmd--make-rule-regexp
+  "\\`\\([^:#=\t$][^:#=$]*\\)::?\\([^:=].*\\)?\\'"
+  "A rule line: targets, then : or ::, not an assignment such as :=.
+Targets holding a $ (built from a variable) never match.")
+
+(defun ghostel-cmd--make-targets (file)
+  "Alist of (TARGET . DESC) for the tasks the rules of FILE name.
+A task is a literal target declared .PHONY, or one with no / and no
+file extension: foo.o and build/out.bin are files, not tasks.  Left
+out too: recipe lines, assignments, define blocks, directives, rules
+built from variables, pattern rules, targets starting with a dot
+(.PHONY and the other special ones) and target-specific variables.
+A `## text' after a rule is its DESC."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (while (search-forward "\\\n" nil t)
+      (replace-match " " t t))
+    (goto-char (point-min))
+    (let ((targets nil)
+          (phony nil)
+          (depth 0))
+      (while (not (eobp))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position))))
+          (cond
+           ((string-match-p "\\`[ \t]*\\(?:\\(?:export\\|override\\|private\\)[ \t]+\\)*define\\_>"
+                            line)
+            (cl-incf depth))
+           ((> depth 0)
+            (when (string-match-p "\\`[ \t]*endef\\_>" line)
+              (cl-decf depth)))
+           ((string-prefix-p "\t" line))
+           ((string-match-p "\\`[ \t]*-?\\(?:s?include\\|if\\(?:n?eq\\|n?def\\)\\|else\\|endif\\|\\(?:un\\)?export\\|override\\|private\\|vpath\\|undefine\\)\\_>"
+                            line))
+           ((string-match ghostel-cmd--make-rule-regexp line)
+            (let* ((head (match-string 1 line))
+                   (rest (or (match-string 2 line) ""))
+                   (desc (when (string-match "##+[ \t]*\\(.*?\\)[ \t]*\\'" rest)
+                           (match-string 1 rest)))
+                   (prereqs (car (split-string rest "[#;]"))))
+              (cond
+               ((equal (string-trim head) ".PHONY")
+                (setq phony (append (split-string prereqs) phony)))
+               ((or (string-search "=" prereqs)
+                    (string-match-p "[()]" head)))
+               (t
+                (dolist (name (split-string head))
+                  (unless (or (string-prefix-p "." name)
+                              (string-match-p "[%*?[\\]" name))
+                    (let ((known (assoc name targets)))
+                      (cond ((null known) (push (cons name desc) targets))
+                            ((null (cdr known)) (setcdr known desc)))))))))))
+          (forward-line 1)))
+      (when (> depth 0)
+        (error "A define has no endef"))
+      (cl-remove-if-not (lambda (target)
+                          (or (member (car target) phony)
+                              (not (string-match-p "/\\|\\.[^./]+\\'"
+                                                   (car target)))))
+                        (nreverse targets)))))
+
+(defun ghostel-cmd--make-tasks (file)
+  "The targets of make FILE, run as `make TARGET'."
+  (mapcar (lambda (target)
+            (ghostel-cmd--task 'make (car target)
+                               (concat "make " (ghostel-cmd--shell-arg (car target)))
+                               (cdr target)))
+          (ghostel-cmd--make-targets file)))
+
+(defun ghostel-cmd--just-recipe-name (line)
+  "The name of the recipe LINE starts, or nil.
+A recipe is a name and its parameters up to an unquoted colon that
+does not start :=, which would make it an assignment, an alias or a
+setting."
+  (when (string-match "\\`@?\\([[:alpha:]_][[:alnum:]_-]*\\)" line)
+    (let ((name (match-string 1 line))
+          (i (match-end 0))
+          (quoting nil)
+          (found nil))
+      (while (and (not found) (< i (length line)))
+        (let ((ch (aref line i)))
+          (cond (quoting (when (eq ch quoting) (setq quoting nil)))
+                ((memq ch '(?\" ?\' ?`)) (setq quoting ch))
+                ((eq ch ?#) (setq found 'no))
+                ((eq ch ?:)
+                 (setq found (if (eq (and (< (1+ i) (length line))
+                                          (aref line (1+ i)))
+                                     ?=)
+                                 'no
+                               'yes)))))
+        (setq i (1+ i)))
+      (and (eq found 'yes) name))))
+
+(defun ghostel-cmd--just-tasks (file)
+  "The public recipes of justfile FILE, run as `just RECIPE'.
+A comment right above one, or its [doc(...)] attribute, is the desc;
+[private] ones and those starting with _ are left out, as just
+--list leaves them out."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let ((tasks nil)
+          (doc nil)
+          (private nil))
+      (while (not (eobp))
+        (let* ((line (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position)))
+               (name (ghostel-cmd--just-recipe-name line)))
+          (cond
+           ((string-match "\\`#\\(?:[^!].*\\)?\\'" line)
+            (setq doc (string-trim (substring line 1))))
+           ((string-prefix-p "[" line)
+            (when (string-match-p "\\_<private\\_>" line)
+              (setq private t))
+            (when (string-match "\\_<doc(\\s-*\\([\"']\\)\\(.*?\\)\\1" line)
+              (setq doc (match-string 2 line))))
+           (t
+            (when (and name (not private) (not (string-prefix-p "_" name)))
+              (push (ghostel-cmd--task 'just name (concat "just " name) doc)
+                    tasks))
+            (setq doc nil
+                  private nil))))
+        (forward-line 1))
+      (nreverse tasks))))
+
+(defun ghostel-cmd--discover (root)
+  "Rows of the tasks in ROOT's files, source by source.
+A file that does not parse gives no tasks, and a message."
+  (cl-loop
+   for (source parser . files) in ghostel-cmd--task-sources
+   for file = (cl-loop for f in files
+                       for path = (expand-file-name f root)
+                       when (file-regular-p path) return path)
+   when (and file
+             (or (eq ghostel-cmd-discover t)
+                 (memq source ghostel-cmd-discover)))
+   append (condition-case err
+              (cl-remove-duplicates (funcall parser file)
+                                    :key #'car :test #'equal :from-end t)
+            (error
+             (message "ghostel-cmd: could not read %s: %s"
+                      (abbreviate-file-name file) (error-message-string err))
+             nil))))
+
+(defun ghostel-cmd--tasks (root)
+  "Rows of the tasks found in ROOT, parsed again once one of their
+files, or `ghostel-cmd-discover', changed."
+  (when ghostel-cmd-discover
+    (let ((stamp (cons ghostel-cmd-discover
+                       (mapcar (lambda (f)
+                                 (file-attribute-modification-time
+                                  (file-attributes (expand-file-name f root))))
+                               (append (mapcar #'car ghostel-cmd--npm-lockfiles)
+                                       (mapcan (lambda (source)
+                                                 (copy-sequence (cddr source)))
+                                               ghostel-cmd--task-sources)))))
+          (cached (assoc root ghostel-cmd--tasks-cache)))
+      (if (equal (cadr cached) stamp)
+          (cddr cached)
+        (let ((rows (ghostel-cmd--discover root)))
+          (setf (alist-get root ghostel-cmd--tasks-cache nil nil #'equal)
+                (cons stamp rows))
+          rows)))))
 
 
 ;;; Templates
@@ -199,7 +481,7 @@ edit of the save file is never written over."
   "Placeholders taken fresh from the caller, never remembered.")
 
 (defvar ghostel-cmd--last-values (make-hash-table :test #'equal)
-  "Value last filled per (ROOT COMMAND-NAME VAR), for this Emacs session.")
+  "Value last filled per (ROOT SCOPE COMMAND-NAME VAR), for this Emacs session.")
 
 (defun ghostel-cmd--builtin-var (var-name root)
   "Auto default for VAR-NAME under ROOT, or nil."
@@ -228,38 +510,67 @@ edit of the save file is never written over."
      (number-to-string (or ghostel-cmd--caller-line (line-number-at-pos))))
     (_ nil)))
 
+(defun ghostel-cmd--split-choices (spec)
+  "The choices SPEC lists as a|b|c, trimmed, or nil when it has no `|'."
+  (when (and spec (string-search "|" spec))
+    (delete-dups (mapcar #'string-trim (split-string spec "|")))))
+
 (defun ghostel-cmd--extract-variables (template root)
-  "Ordered alist of (NAME . DEFAULT) from TEMPLATE."
+  "Ordered alist of (NAME . DEFAULT) from TEMPLATE.
+The default of {{name:a|b|c}} is its first choice."
   (let ((vars nil)
         (start 0))
     (while (string-match ghostel-cmd--var-regexp template start)
+      (setq start (match-end 0))
       (let* ((name (match-string 1 template))
-             (def-val (match-string 2 template))
+             (spec (match-string 2 template))
+             (def-val (or (car (ghostel-cmd--split-choices spec)) spec))
              (existing (assoc name vars)))
         (if existing
             (when (and (null (cdr existing)) def-val)
               (setcdr existing def-val))
           (push (cons name
                       (or def-val (ghostel-cmd--builtin-var name root)))
-                vars)))
-      (setq start (match-end 0)))
+                vars))))
     (nreverse vars)))
 
-(defun ghostel-cmd--fill-vars (record root)
+(defun ghostel-cmd--extract-choices (template)
+  "Alist of (NAME . CHOICES) for the {{name:a|b|c}} in TEMPLATE.
+The first {{name:...}} of a name decides, as it does its default."
+  (let ((specs nil)
+        (start 0))
+    (while (string-match ghostel-cmd--var-regexp template start)
+      (setq start (match-end 0))
+      (let ((name (match-string 1 template))
+            (spec (match-string 2 template)))
+        (when (and spec (not (assoc name specs)))
+          (push (cons name spec) specs))))
+    (cl-loop for (name . spec) in (nreverse specs)
+             for choices = (ghostel-cmd--split-choices spec)
+             when choices collect (cons name choices))))
+
+(defun ghostel-cmd--memory-key (root scope record var)
+  "Key of the last value of VAR for RECORD, of SCOPE, run under ROOT.
+ROOT counts for a global command too: each project fills its own."
+  (list root (or scope 'project) (plist-get record :name) var))
+
+(defun ghostel-cmd--fill-vars (record root &optional scope)
   "Ordered alist of (NAME . DEFAULT) for RECORD's template under ROOT.
 The value last filled beats the template's default; built-ins are
-always taken fresh."
+always taken fresh.  SCOPE is RECORD's, project by default."
   (mapcar (lambda (pair)
-            (let ((last (gethash (list root (plist-get record :name) (car pair))
+            (let ((last (gethash (ghostel-cmd--memory-key root scope record
+                                                          (car pair))
                                  ghostel-cmd--last-values)))
               (if last (cons (car pair) last) pair)))
           (ghostel-cmd--extract-variables (plist-get record :cmd) root)))
 
-(defun ghostel-cmd--remember (root record var value)
-  "Keep VALUE as the last one filled for VAR of RECORD under ROOT."
+(defun ghostel-cmd--remember (root scope record var value &optional keep-empty)
+  "Keep VALUE as the last one filled for VAR of RECORD, of SCOPE, under ROOT.
+An empty VALUE forgets it, unless KEEP-EMPTY: an empty choice was picked."
   (unless (member var ghostel-cmd--builtin-names)
-    (let ((key (list root (plist-get record :name) var)))
-      (if (string-empty-p value)
+    (let ((key (ghostel-cmd--memory-key root scope record var)))
+      (if (and (string-empty-p value) (not keep-empty))
           (remhash key ghostel-cmd--last-values)
         (puthash key value ghostel-cmd--last-values)))))
 
@@ -288,7 +599,9 @@ always taken fresh."
 (defvar ghostel-cmd--query "")
 (defvar ghostel-cmd--filtering nil)
 (defvar ghostel-cmd--fill nil
-  "Plist while filling: :record :root :vars :index :values :input :submit.")
+  "Plist while filling: :record :root :scope :vars :choices :index :values
+:input :picked :submit.  :picked is non-nil while :input is a choice
+picked as a whole, which typing replaces.")
 (defvar ghostel-cmd--help-visible nil)
 (defvar ghostel-cmd--preview-start nil)
 (defvar ghostel-cmd--preview-id nil)
@@ -307,10 +620,13 @@ always taken fresh."
   '(("RET"      "Paste into Ghostel (fill {{vars}} first)")
     ("C-RET"    "Paste and press Enter")
     ("j, k"     "Move")
-    ("a"        "Add template")
+    ("a"        "Add template to the project")
+    ("A"        "Add global template, shared by every project")
     ("e"        "Edit at point")
     ("d"        "Delete at point")
+    ("m"        "Move to the global list / back; a task: copy to the project")
     ("M-j, M-k" "Move command down / up (saved)")
+    ("C-n, C-p" "Filling {{name:a|b}}: pick the next / previous choice")
     ("/"        "Live-narrow (flex)")
     ("C-y"      "Yank into filter / fill input")
     ("C-\\"     "Type filter / fill input with an input method")
@@ -348,15 +664,27 @@ always taken fresh."
         (window-body-width win))
       ghostel-cmd-sidebar-width))
 
-(defun ghostel-cmd--format ()
-  "Tabulated-list format for the current width."
+(defun ghostel-cmd--format (&optional tagged)
+  "Tabulated-list format for the current width.
+TAGGED adds a first column telling where each command comes from.  No
+column sorts: the list keeps your order, its sections never mix."
   (let* ((budget (max 24 (1- (ghostel-cmd--available-width))))
+         (tag (if tagged 6 0))
          (name 16)
          (desc 14)
-         (cmd (max 12 (- budget name desc 2))))
-    (vector (list "Name" name t)
-            (list "Command" cmd t)
-            (list "Desc" desc t))))
+         (cmd (max 12 (- budget (if tagged (1+ tag) 0) name desc 2))))
+    (vconcat (when tagged (list (list "From" tag nil)))
+             (vector (list "Name" name nil)
+                     (list "Command" cmd nil)
+                     (list "Desc" desc nil)))))
+
+(defun ghostel-cmd--tag (scope)
+  "The From column of a row of SCOPE."
+  (propertize (if (eq scope 'project) "proj" (symbol-name scope))
+              'face (pcase scope
+                      ('project 'font-lock-type-face)
+                      ('global 'font-lock-constant-face)
+                      (_ 'font-lock-comment-face))))
 
 (defun ghostel-cmd--truncate (s width)
   (truncate-string-to-width (or s "") (max 1 width) nil nil t))
@@ -394,39 +722,59 @@ does not fit, the last line ends in an ellipsis."
       (concat "…" (truncate-string-to-width s w (- w (1- width)))))))
 
 (defun ghostel-cmd--build-entries ()
-  "Rebuild `tabulated-list-entries' from the current project."
-  (setq tabulated-list-format (ghostel-cmd--format))
-  (tabulated-list-init-header)
+  "Rebuild `tabulated-list-entries' from the current project.
+A row's id is (SCOPE . NAME); a From column tags each row as soon as
+the list holds more than the project's own commands."
   (let* ((root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
-         (cmds (or (ghostel-cmd--get-commands root) '()))
+         (rows (ghostel-cmd--rows root))
+         (tagged (cl-some (lambda (row) (not (eq (caar row) 'project))) rows))
          (query ghostel-cmd--query)
-         (fmt tabulated-list-format)
-         (nw (cadr (aref fmt 0)))
-         (cw (cadr (aref fmt 1)))
-         (dw (cadr (aref fmt 2)))
-         (matched (seq-filter (lambda (c) (ghostel-cmd--query-matches-p c query))
-                              cmds)))
-    (setq ghostel-cmd--total-count (length cmds)
+         (fmt (setq tabulated-list-format (ghostel-cmd--format tagged)))
+         (off (if tagged 1 0))
+         (nw (cadr (aref fmt off)))
+         (cw (cadr (aref fmt (+ off 1))))
+         (dw (cadr (aref fmt (+ off 2))))
+         (matched (seq-filter (lambda (row)
+                                (ghostel-cmd--query-matches-p (cdr row) query))
+                              rows)))
+    (tabulated-list-init-header)
+    (setq ghostel-cmd--total-count (length rows)
           ghostel-cmd--match-count (length matched)
           tabulated-list-entries
           (mapcar
-           (lambda (c)
-             (list (plist-get c :name)
-                   (vector
-                    (propertize (ghostel-cmd--truncate (plist-get c :name) nw)
-                                'face 'font-lock-keyword-face)
-                    (ghostel-cmd--truncate (plist-get c :cmd) cw)
-                    (propertize (ghostel-cmd--truncate (or (plist-get c :desc) "") dw)
-                                'face 'font-lock-comment-face))))
+           (lambda (row)
+             (let ((c (cdr row)))
+               (list (car row)
+                     (vconcat
+                      (when tagged (list (ghostel-cmd--tag (caar row))))
+                      (vector
+                       (propertize (ghostel-cmd--truncate (plist-get c :name) nw)
+                                   'face 'font-lock-keyword-face)
+                       (ghostel-cmd--truncate (plist-get c :cmd) cw)
+                       (propertize (ghostel-cmd--truncate (or (plist-get c :desc) "") dw)
+                                   'face 'font-lock-comment-face))))))
            matched))))
+
+(defun ghostel-cmd--row-at-point ()
+  "(SCOPE . RECORD) for the row at point."
+  (when-let* ((id (tabulated-list-get-id))
+              (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+              (row (assoc id (ghostel-cmd--rows root))))
+    (cons (car id) (cdr row))))
 
 (defun ghostel-cmd--record-at-point ()
   "Command plist for the row at point."
-  (when-let* ((name (tabulated-list-get-id))
-              (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
-    (cl-find name (ghostel-cmd--get-commands root)
-             :key (lambda (c) (plist-get c :name))
-             :test #'equal)))
+  (cdr (ghostel-cmd--row-at-point)))
+
+(defun ghostel-cmd--bookmark-at-point ()
+  "(SCOPE . RECORD) for the project or global command at point.
+A discovered task is read-only: it signals."
+  (let ((row (or (ghostel-cmd--row-at-point)
+                 (user-error "No command at point"))))
+    (when (ghostel-cmd--task-p (car row))
+      (user-error "'%s' is a %s task, read-only: m copies it to the project"
+                  (plist-get (cdr row) :name) (car row)))
+    row))
 
 (defun ghostel-cmd--erase-preview ()
   (when (and ghostel-cmd--preview-start
@@ -467,8 +815,9 @@ does not fit, the last line ends in an ellipsis."
          (propertize
           (concat label
                   (ghostel-cmd--tail
-                   (if (and input (not (string-empty-p input)))
-                       input
+                   (if (or (plist-get fill :picked)
+                           (and input (not (string-empty-p input))))
+                       (or input "")
                      (or (cdr pair) ""))
                    (max 8 (- width (string-width label)))))
           'face 'highlight))))
@@ -535,34 +884,51 @@ does not fit, the last line ends in an ellipsis."
     (when (ghostel-cmd--posframe-showing-p)
       (ghostel-cmd--show-posframe buf))))
 
+(defun ghostel-cmd--choices-text (choices current)
+  "CHOICES on one line, CURRENT marked with brackets."
+  (mapconcat (lambda (choice)
+               (let ((shown (if (string-empty-p choice) "\"\"" choice)))
+                 (if (equal choice current)
+                     (propertize (format "[%s]" shown) 'face 'bold)
+                   shown)))
+             choices " "))
+
 (defun ghostel-cmd--footer ()
+  "The overlay's mode line; a % in it shows as itself."
   (let* ((root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
          (name (file-name-nondirectory (directory-file-name root)))
          (fill ghostel-cmd--fill)
          (querying (or ghostel-cmd--filtering
                        (and ghostel-cmd--query
                             (not (string-empty-p ghostel-cmd--query))))))
-    (concat
-     " "
-     name
-     (when querying
-       (format "  /%s  %d/%d"
-               ghostel-cmd--query
-               ghostel-cmd--match-count
-               ghostel-cmd--total-count))
-     (cond
-      (fill
-       (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
-              (def (cdr pair)))
-         (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
-                 (car pair)
-                 (if def (format " [%s]" def) ""))))
-      (ghostel-cmd--filtering
-       "   RET apply  C-n/C-p move  Esc clear")
-      (ghostel-cmd--help-visible
-       "   ? close help  Esc close")
-      (t
-       "   RET paste  C-RET send  a add  / filter  ? keys  Esc close")))))
+    (string-replace
+     "%" "%%"
+     (concat
+      " "
+      name
+      (when querying
+        (format "  /%s  %d/%d"
+                ghostel-cmd--query
+                ghostel-cmd--match-count
+                ghostel-cmd--total-count))
+      (cond
+       (fill
+        (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
+               (def (cdr pair))
+               (choices (ghostel-cmd--fill-choices fill)))
+          (if choices
+              (format "   {{%s}} %s  C-n/C-p pick  TAB next  RET paste  Esc cancel"
+                      (car pair)
+                      (ghostel-cmd--choices-text choices (plist-get fill :input)))
+            (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
+                    (car pair)
+                    (if def (format " [%s]" def) "")))))
+       (ghostel-cmd--filtering
+        "   RET apply  C-n/C-p move  Esc clear")
+       (ghostel-cmd--help-visible
+        "   ? close help  Esc close")
+       (t
+        "   RET paste  C-RET send  a add  / filter  ? keys  Esc close"))))))
 
 
 ;;; Filter / fill maps
@@ -710,37 +1076,84 @@ The list narrows as you type; C-g puts the old query back."
       (ghostel-cmd-fill-accept nil))
      ((and (characterp ev) (>= ev 32) (not (eq ev 127)))
       (when ghostel-cmd--fill
-        (plist-put ghostel-cmd--fill :input
-                   (concat (or (plist-get ghostel-cmd--fill :input) "")
-                           (char-to-string ev)))
-        (ghostel-cmd--draw-preview)
-        (force-mode-line-update t))))))
+        (ghostel-cmd--fill-insert (char-to-string ev)))))))
+
+(defun ghostel-cmd--fill-set-input (input)
+  "Make INPUT, typed rather than picked, the value being filled."
+  (plist-put ghostel-cmd--fill :input input)
+  (plist-put ghostel-cmd--fill :picked nil)
+  (ghostel-cmd--draw-preview)
+  (force-mode-line-update t))
+
+(defun ghostel-cmd--fill-insert (text)
+  "Append TEXT to the value being filled; it replaces a picked choice."
+  (ghostel-cmd--fill-set-input
+   (concat (if (plist-get ghostel-cmd--fill :picked)
+               ""
+             (or (plist-get ghostel-cmd--fill :input) ""))
+           text)))
 
 (defun ghostel-cmd-fill-backspace ()
+  "Delete the last char of the value being filled, or a picked choice."
   (interactive)
   (when-let* ((fill ghostel-cmd--fill)
               (input (plist-get fill :input)))
-    (when (> (length input) 0)
-      (plist-put fill :input (substring input 0 -1))
-      (ghostel-cmd--draw-preview)
-      (force-mode-line-update t))))
+    (cond ((plist-get fill :picked)
+           (ghostel-cmd--fill-set-input ""))
+          ((> (length input) 0)
+           (ghostel-cmd--fill-set-input (substring input 0 -1))))))
 
 (defun ghostel-cmd-fill-clear ()
   (interactive)
   (when ghostel-cmd--fill
-    (plist-put ghostel-cmd--fill :input "")
-    (ghostel-cmd--draw-preview)
-    (force-mode-line-update t)))
+    (ghostel-cmd--fill-set-input "")))
 
 (defun ghostel-cmd-fill-yank ()
   "Append the latest kill to the value being filled."
   (interactive)
   (when ghostel-cmd--fill
-    (plist-put ghostel-cmd--fill :input
-               (concat (or (plist-get ghostel-cmd--fill :input) "")
-                       (ghostel-cmd--yank-text)))
-    (ghostel-cmd--draw-preview)
-    (force-mode-line-update t)))
+    (ghostel-cmd--fill-insert (ghostel-cmd--yank-text))))
+
+(defun ghostel-cmd--fill-choices (&optional fill)
+  "The choices of the variable FILL is asking for, or nil."
+  (let ((fill (or fill ghostel-cmd--fill)))
+    (cdr (assoc (car (nth (plist-get fill :index) (plist-get fill :vars)))
+                (plist-get fill :choices)))))
+
+(defun ghostel-cmd--fill-enter (fill index)
+  "Make the variable at INDEX the one FILL asks for.
+Its input starts at its value, picked when that is one of its choices."
+  (let ((value (or (cdr (nth index (plist-get fill :vars))) "")))
+    (plist-put fill :index index)
+    (plist-put fill :input value)
+    (plist-put fill :picked
+               (and (member value (ghostel-cmd--fill-choices fill)) t))))
+
+(defun ghostel-cmd--fill-cycle (step)
+  "Pick the choice STEP away from the current one, wrapping around.
+From free text, down picks the first choice and up the last."
+  (when-let* ((fill ghostel-cmd--fill)
+              (choices (ghostel-cmd--fill-choices fill)))
+    (let ((n (length choices))
+          (pos (cl-position (plist-get fill :input) choices :test #'equal)))
+      (plist-put fill :input
+                 (nth (cond (pos (mod (+ pos step) n))
+                            ((> step 0) 0)
+                            (t (1- n)))
+                      choices))
+      (plist-put fill :picked t)
+      (ghostel-cmd--draw-preview)
+      (force-mode-line-update t))))
+
+(defun ghostel-cmd-fill-next-choice ()
+  "Pick the next choice of a {{name:a|b|c}} variable."
+  (interactive)
+  (ghostel-cmd--fill-cycle 1))
+
+(defun ghostel-cmd-fill-previous-choice ()
+  "Pick the previous choice of a {{name:a|b|c}} variable."
+  (interactive)
+  (ghostel-cmd--fill-cycle -1))
 
 (defun ghostel-cmd-fill-read ()
   "Edit the value being filled in the minibuffer, with an input method.
@@ -748,14 +1161,16 @@ The preview follows as you type; C-g puts the old value back."
   (interactive)
   (when-let* ((fill ghostel-cmd--fill))
     (let* ((old (or (plist-get fill :input) ""))
+           (old-picked (plist-get fill :picked))
            (name (car (nth (plist-get fill :index) (plist-get fill :vars))))
-           (set (lambda (input)
+           (set (lambda (input &optional picked)
                   (plist-put fill :input input)
+                  (plist-put fill :picked picked)
                   (ghostel-cmd--redraw)
                   (force-mode-line-update t))))
       (condition-case nil
           (funcall set (ghostel-cmd--read-line (format "{{%s}}: " name) old set))
-        (quit (funcall set old))))))
+        (quit (funcall set old old-picked))))))
 
 (defun ghostel-cmd--set-filling (on)
   (when-let* ((buf (get-buffer ghostel-cmd--buffer-name)))
@@ -782,20 +1197,19 @@ The preview follows as you type; C-g puts the old value back."
          (name (car pair))
          (default (or (cdr pair) ""))
          (raw (or (plist-get fill :input) ""))
-         (val (if (string-empty-p raw) default raw))
+         (picked (plist-get fill :picked))
+         (val (if (and (string-empty-p raw) (not picked)) default raw))
          (values (cons (cons name val)
                        (cl-remove name (plist-get fill :values)
                                   :key #'car :test #'equal)))
          (next (1+ idx)))
-    (ghostel-cmd--remember (plist-get fill :root) (plist-get fill :record)
-                           name val)
+    (ghostel-cmd--remember (plist-get fill :root) (plist-get fill :scope)
+                           (plist-get fill :record) name val picked)
     (plist-put fill :values values)
     (if (>= next (length vars))
         nil
-      (let ((npair (nth next vars)))
-        (plist-put fill :index next)
-        (plist-put fill :input (or (cdr npair) ""))
-        t))))
+      (ghostel-cmd--fill-enter fill next)
+      t)))
 
 (defun ghostel-cmd-fill-accept (&optional submit)
   "Accept the current field; paste when it was the last.
@@ -837,6 +1251,10 @@ SUBMIT non-nil also presses Enter in the terminal."
   "C-u"         #'ghostel-cmd-fill-clear
   "C-y"         #'ghostel-cmd-fill-yank
   "C-\\"        #'ghostel-cmd-fill-read
+  "C-n"         #'ghostel-cmd-fill-next-choice
+  "C-p"         #'ghostel-cmd-fill-previous-choice
+  "<down>"      #'ghostel-cmd-fill-next-choice
+  "<up>"        #'ghostel-cmd-fill-previous-choice
   "C-g"         #'ghostel-cmd-fill-cancel
   "<escape>"    #'ghostel-cmd-fill-cancel)
 
@@ -942,21 +1360,27 @@ split if none is showing."
   (interactive)
   (when ghostel-cmd--filtering
     (ghostel-cmd--set-filtering nil))
-  (let* ((record (ghostel-cmd--record-at-point))
+  (let* ((row (ghostel-cmd--row-at-point))
+         (record (cdr row))
          (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
     (unless record
       (user-error "No command at point"))
-    (let ((vars (ghostel-cmd--fill-vars record root)))
+    (let ((vars (ghostel-cmd--fill-vars record root (car row))))
       (if (null vars)
           (ghostel-cmd--deliver (plist-get record :cmd) submit)
         (setq ghostel-cmd--fill
               (list :record record
                     :root root
+                    :scope (car row)
                     :vars vars
+                    :choices (ghostel-cmd--extract-choices
+                              (plist-get record :cmd))
                     :index 0
                     :values nil
-                    :input (or (cdar vars) "")
+                    :input ""
+                    :picked nil
                     :submit submit))
+        (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
         (ghostel-cmd--set-filling t)
         (ghostel-cmd--draw-preview)
         (force-mode-line-update t)))))
@@ -986,16 +1410,17 @@ split if none is showing."
       (when (and root (not (minibufferp)))
         (ghostel-cmd-sidebar)))))
 
-(defun ghostel-cmd-add (&optional initial-cmd)
-  "Add a command template.  Region text is the default command."
-  (interactive
-   (list (when (use-region-p)
-           (buffer-substring-no-properties (region-beginning) (region-end)))))
+(defun ghostel-cmd--add (initial-cmd scope)
+  "Ask for a command template from INITIAL-CMD and add it to SCOPE."
   (let ((run
          (lambda ()
            (let* ((root (or ghostel-cmd--root
                             (ghostel-cmd--current-project-root)))
-                  (cmd (read-string "Command template: " (or initial-cmd "")))
+                  (key (ghostel-cmd--store-key scope root))
+                  (cmd (read-string (if (eq scope 'global)
+                                        "Global command template: "
+                                      "Command template: ")
+                                    (or initial-cmd "")))
                   (suggested
                    (when (string-match "\\`[ \t]*\\([a-zA-Z0-9_-]+\\)" cmd)
                      (match-string 1 cmd)))
@@ -1006,28 +1431,43 @@ split if none is showing."
                (user-error "Command name cannot be empty"))
              (when (string-empty-p cmd)
                (user-error "Command cannot be empty"))
-             (ghostel-cmd--confirm-replace (ghostel-cmd--get-commands root) name)
+             (ghostel-cmd--confirm-replace (ghostel-cmd--get-commands key) name)
              (ghostel-cmd--update-commands
               (lambda (cmds) (ghostel-cmd--put-command cmds record))
-              root)
-             (setq ghostel-cmd--goto-id name)
-             (message "Added '%s'" name)))))
+              key)
+             (setq ghostel-cmd--goto-id (cons scope name))
+             (message (if (eq scope 'global) "Added global '%s'" "Added '%s'")
+                      name)))))
     (if (ghostel-cmd--posframe-showing-p)
         (ghostel-cmd--with-parent-input run)
       (funcall run)
       (when (get-buffer ghostel-cmd--buffer-name)
         (ghostel-cmd--refresh-overlay)))))
 
+(defun ghostel-cmd-add (&optional initial-cmd)
+  "Add a command template to the project.  Region text is the default command."
+  (interactive
+   (list (when (use-region-p)
+           (buffer-substring-no-properties (region-beginning) (region-end)))))
+  (ghostel-cmd--add initial-cmd 'project))
+
+(defun ghostel-cmd-add-global (&optional initial-cmd)
+  "Add a command template every project shares.
+Region text is the default command."
+  (interactive
+   (list (when (use-region-p)
+           (buffer-substring-no-properties (region-beginning) (region-end)))))
+  (ghostel-cmd--add initial-cmd 'global))
+
 (defun ghostel-cmd-edit ()
-  "Edit the command at point."
+  "Edit the command at point, in its own list."
   (interactive)
-  (let ((record (ghostel-cmd--record-at-point)))
-    (unless record
-      (user-error "No command at point"))
+  (pcase-let ((`(,scope . ,record) (ghostel-cmd--bookmark-at-point)))
     (let ((run
            (lambda ()
              (let* ((root (or ghostel-cmd--root
                               (ghostel-cmd--current-project-root)))
+                    (key (ghostel-cmd--store-key scope root))
                     (old-name (plist-get record :name))
                     (new-name (read-string "Name / alias: " old-name))
                     (new-cmd (read-string "Command template: "
@@ -1040,23 +1480,25 @@ split if none is showing."
                (when (string-empty-p new-cmd)
                  (user-error "Command cannot be empty"))
                (ghostel-cmd--confirm-replace
-                (ghostel-cmd--get-commands root) new-name old-name)
+                (ghostel-cmd--get-commands key) new-name old-name)
                (ghostel-cmd--update-commands
                 (lambda (cmds) (ghostel-cmd--put-command cmds new old-name))
-                root)
-               (setq ghostel-cmd--goto-id new-name)
+                key)
+               (setq ghostel-cmd--goto-id (cons scope new-name))
                (message "Updated '%s'" new-name)))))
       (if (ghostel-cmd--posframe-showing-p)
           (ghostel-cmd--with-parent-input run)
         (funcall run)
         (ghostel-cmd--refresh-overlay)))))
 
+(defun ghostel-cmd--remove-command (cmds name)
+  "CMDS without the one called NAME."
+  (cl-remove name cmds :key (lambda (c) (plist-get c :name)) :test #'equal))
+
 (defun ghostel-cmd-delete ()
-  "Delete the command at point."
+  "Delete the command at point from its list."
   (interactive)
-  (let ((record (ghostel-cmd--record-at-point)))
-    (unless record
-      (user-error "No command at point"))
+  (pcase-let ((`(,scope . ,record) (ghostel-cmd--bookmark-at-point)))
     (let ((run
            (lambda ()
              (let* ((root (or ghostel-cmd--root
@@ -1064,16 +1506,53 @@ split if none is showing."
                     (name (plist-get record :name)))
                (when (yes-or-no-p (format "Delete '%s'? " name))
                  (ghostel-cmd--update-commands
-                  (lambda (cmds)
-                    (cl-remove name cmds
-                               :key (lambda (c) (plist-get c :name))
-                               :test #'equal))
-                  root)
+                  (lambda (cmds) (ghostel-cmd--remove-command cmds name))
+                  (ghostel-cmd--store-key scope root))
                  (message "Deleted '%s'" name))))))
       (if (ghostel-cmd--posframe-showing-p)
           (ghostel-cmd--with-parent-input run)
         (funcall run)
         (ghostel-cmd--refresh-overlay)))))
+
+(defun ghostel-cmd-move-scope ()
+  "Move the command at point from the project's list to the global one,
+or back.  A discovered task is copied into the project's list, where
+it can be edited."
+  (interactive)
+  (pcase-let* ((`(,from . ,record) (or (ghostel-cmd--row-at-point)
+                                       (user-error "No command at point")))
+               (task (ghostel-cmd--task-p from))
+               (record (if task (copy-sequence record) record))
+               (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
+               (name (plist-get record :name))
+               (to (if (eq from 'project) 'global 'project))
+               (to-key (ghostel-cmd--store-key to root))
+               (taken (cl-find name (ghostel-cmd--get-commands to-key)
+                               :key (lambda (c) (plist-get c :name))
+                               :test #'equal))
+               (run
+                (lambda ()
+                  (ghostel-cmd--confirm-replace
+                   (ghostel-cmd--get-commands to-key) name)
+                  (ghostel-cmd--update-many
+                   (cons (cons to-key
+                               (lambda (cmds)
+                                 (ghostel-cmd--put-command cmds record)))
+                         (unless task
+                           (list (cons (ghostel-cmd--store-key from root)
+                                       (lambda (cmds)
+                                         (ghostel-cmd--remove-command
+                                          cmds name)))))))
+                  (setq ghostel-cmd--goto-id (cons to name))
+                  (message (cond (task "Saved '%s' to the project")
+                                 ((eq to 'global)
+                                  "Moved '%s' to the global commands")
+                                 (t "Moved '%s' to the project"))
+                           name))))
+    (if (and taken (ghostel-cmd--posframe-showing-p))
+        (ghostel-cmd--with-parent-input run)
+      (funcall run)
+      (ghostel-cmd--refresh-overlay))))
 
 (defun ghostel-cmd--move-command (cmds name neighbor after)
   "CMDS with NAME moved just AFTER NEIGHBOR, or just before it."
@@ -1088,19 +1567,22 @@ split if none is showing."
 
 (defun ghostel-cmd--move-at-point (step)
   "Move the command at point past the row STEP lines away, and save.
-Under a filter that row is the next visible one, not a hidden one."
-  (let ((name (tabulated-list-get-id))
+Under a filter that row is the next visible one, not a hidden one.  A
+command stays in its own list: the first row of the next list is no
+neighbor."
+  (ghostel-cmd--bookmark-at-point)
+  (let ((id (tabulated-list-get-id))
         (neighbor (save-excursion
                     (forward-line step)
                     (tabulated-list-get-id)))
         (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
-    (unless name
-      (user-error "No command at point"))
-    (when (and neighbor (not (equal neighbor name)))
+    (when (and neighbor
+               (not (equal neighbor id))
+               (eq (car neighbor) (car id)))
       (ghostel-cmd--update-commands
        (lambda (cmds)
-         (ghostel-cmd--move-command cmds name neighbor (> step 0)))
-       root)
+         (ghostel-cmd--move-command cmds (cdr id) (cdr neighbor) (> step 0)))
+       (ghostel-cmd--store-key (car id) root))
       (ghostel-cmd--refresh-overlay))))
 
 (defun ghostel-cmd-move-down ()
@@ -1141,6 +1623,16 @@ Under a filter that row is the next visible one, not a hidden one."
     (and (frame-live-p frame)
          (frame-visible-p frame))))
 
+(defun ghostel-cmd--posframe-hooks (on)
+  "Add the global hooks a shown posframe needs when ON, else remove them."
+  (dolist (hook '((window-size-change-functions
+                   . ghostel-cmd--posframe-on-parent-resize)
+                  (window-selection-change-functions
+                   . ghostel-cmd--hide-on-focus-leave)))
+    (if on
+        (add-hook (car hook) (cdr hook))
+      (remove-hook (car hook) (cdr hook)))))
+
 (defun ghostel-cmd--hide-posframe (&optional keep-focus)
   "Hide the posframe and give focus back to its parent frame.
 KEEP-FOCUS non-nil leaves focus where it is."
@@ -1152,6 +1644,7 @@ KEEP-FOCUS non-nil leaves focus where it is."
           ghostel-cmd--help-visible nil)
     (ghostel-cmd--set-filtering nil)
     (ghostel-cmd--set-filling nil)
+    (ghostel-cmd--posframe-hooks nil)
     (when (and buf (fboundp 'posframe-hide))
       (posframe-hide buf))
     (when (and parent (frame-live-p parent) (not keep-focus))
@@ -1265,10 +1758,7 @@ editing for the overlay."
          (height (+ 1 table preview)))
     (setq ghostel-cmd--posframe-parent parent
           ghostel-cmd--posframe-fitted-width width)
-    (add-hook 'window-size-change-functions
-              #'ghostel-cmd--posframe-on-parent-resize)
-    (add-hook 'window-selection-change-functions
-              #'ghostel-cmd--hide-on-focus-leave)
+    (ghostel-cmd--posframe-hooks t)
     (with-selected-frame parent
       (posframe-show
        buf
@@ -1311,6 +1801,7 @@ editing for the overlay."
 (defun ghostel-cmd--show-side-window (buf)
   (when (fboundp 'posframe-hide)
     (posframe-hide buf))
+  (ghostel-cmd--posframe-hooks nil)
   (setq ghostel-cmd--posframe-parent nil)
   (pop-to-buffer
    buf
@@ -1371,8 +1862,10 @@ presses Enter."
   "C-RET"      #'ghostel-cmd-paste-send
   "C-<return>" #'ghostel-cmd-paste-send
   "a"          #'ghostel-cmd-add
+  "A"          #'ghostel-cmd-add-global
   "e"          #'ghostel-cmd-edit
   "d"          #'ghostel-cmd-delete
+  "m"          #'ghostel-cmd-move-scope
   "M-j"        #'ghostel-cmd-move-down
   "M-k"        #'ghostel-cmd-move-up
   "M-<down>"   #'ghostel-cmd-move-down
@@ -1401,6 +1894,10 @@ presses Enter."
       (kbd "<tab>") #'ghostel-cmd-fill-accept
       (kbd "C-RET") #'ghostel-cmd-fill-accept-send
       (kbd "C-<return>") #'ghostel-cmd-fill-accept-send
+      (kbd "C-n") #'ghostel-cmd-fill-next-choice
+      (kbd "C-p") #'ghostel-cmd-fill-previous-choice
+      (kbd "<down>") #'ghostel-cmd-fill-next-choice
+      (kbd "<up>") #'ghostel-cmd-fill-previous-choice
       (kbd "<escape>") #'ghostel-cmd-fill-cancel)
     (evil-define-key* 'normal ghostel-cmd-sidebar-mode-map
       (kbd "?") #'ghostel-cmd-help
@@ -1409,8 +1906,10 @@ presses Enter."
       (kbd "C-RET") #'ghostel-cmd-paste-send
       (kbd "C-<return>") #'ghostel-cmd-paste-send
       (kbd "a") #'ghostel-cmd-add
+      (kbd "A") #'ghostel-cmd-add-global
       (kbd "e") #'ghostel-cmd-edit
       (kbd "d") #'ghostel-cmd-delete
+      (kbd "m") #'ghostel-cmd-move-scope
       (kbd "M-j") #'ghostel-cmd-move-down
       (kbd "M-k") #'ghostel-cmd-move-up
       (kbd "M-<down>") #'ghostel-cmd-move-down

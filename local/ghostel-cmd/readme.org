@@ -14,7 +14,8 @@ Per-project Ghostel command bookmarks with a GhostHerd-style overlay.
 
 Posframe when available, side window otherwise.  Selecting another
 window (a click, say) closes the posframe and leaves focus there; the
-minibuffer does not count.
+minibuffer does not count.  The list keeps the order you give it with
+=M-j= / =M-k=: no column sorts it, so its sections never mix.
 
 | Key         | Action                                            |
 |-------------+---------------------------------------------------|
@@ -23,10 +24,15 @@ minibuffer does not count.
 | =C-RET=     | Paste and press Enter                             |
 | =/=         | Live-narrow (flex, whitespace is AND); every      |
 |             | printable key types, =C-n= / =C-p= move           |
-| =a= =e= =d= | Add / edit / delete; edit keeps the place, a name |
-|             | already taken asks before replacing               |
+| =a= =A=     | Add to the project / to the global commands       |
+| =e= =d=     | Edit / delete, in the command's own list; edit    |
+|             | keeps the place, a name already taken asks first  |
+| =m=         | Move the command to the global list, or back; a   |
+|             | task is copied into the project's list            |
 | =M-j= =M-k= | Move the command down / up, saved (=M-<down>= /   |
 |             | =M-<up>= too)                                     |
+| =C-n= =C-p= | While filling a variable with choices: the next / |
+|             | previous choice (=<down>= / =<up>= too)           |
 | =C-y=       | Yank into the filter or fill input, as one line:  |
 |             | newlines become spaces                            |
 | =C-\=       | Type the filter or fill input in the minibuffer,  |
@@ -43,6 +49,50 @@ The preview under the list wraps a long command onto at most
 =ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
 so a huge command never pushes the list away.
 
+* Global commands
+
+=A= adds a command every project shares.  The list shows the
+project's commands, then the global ones, and a From column tags each
+row (=proj=, =global=) once there is more than the project's own.  A
+name is unique within its list, so a project command and a global one
+may share it and both show.  =m= moves the command at point to the
+other list; =e=, =d= and =M-j= / =M-k= stay in the list it is in.
+
+* Tasks
+
+After the bookmarks the overlay lists the tasks it finds in the
+project root, tagged by where they come from.  The files are only
+parsed, never run, and parsed again once one of them changes.
+
+| File                    | Tasks           | Pasted as         |
+|-------------------------+-----------------+-------------------|
+| =package.json=          | ="scripts"=     | =RUNNER run NAME= |
+| =GNUmakefile=,          | task targets    | =make TARGET=     |
+| =makefile=, =Makefile=  |                 |                   |
+| =justfile=, =Justfile=, | public recipes  | =just RECIPE=     |
+| =.justfile=             |                 |                   |
+
+- The runner, and the tag, is the one the lockfile names:
+  =pnpm-lock.yaml= → pnpm, =yarn.lock= → yarn, =bun.lock= or
+  =bun.lockb= → bun; without one, the =packageManager= field's, else
+  npm.  The script itself is the description.
+- Make reads the first of its three files, as make does, and lists a
+  target when it is declared =.PHONY=, or has no =/= and no file
+  extension: =foo.o= and =build/out.bin= are files, not tasks.  Left
+  out too: assignments, =.PHONY= itself and every other target
+  starting with =.=, pattern rules, targets built from a variable,
+  target-specific variables and =define= bodies.  =## text= after a
+  rule describes it.  Included makefiles are not followed.
+- Just recipes marked =[private]= or starting with =_= are left out,
+  as =just --list= leaves them out; the comment right above a recipe,
+  or its =[doc(...)]=, describes it.
+
+Tasks are read-only: =RET= / =C-RET= paste them like any command, and
+=m= copies the one at point into the project's list to edit there.  A
+=package.json= or Makefile that does not parse lists nothing, with a
+message.  =ghostel-cmd-discover= turns discovery off (=nil=) or keeps
+some sources (='(npm just)=).
+
 * Placeholders
 
 Built-ins are taken from where you opened the overlay:
@@ -57,9 +107,16 @@ Built-ins are taken from where you opened the overlay:
 | ={{branch}}=                    | the git branch                                 |
 | ={{name}}= / ={{name:default}}= | asked on the footer                            |
 
+={{name:a|b|c}}= offers choices, the first one the default.  The
+footer lists them with the current one in brackets; =C-n= / =C-p= (or
+the arrows) pick another, and typing, =C-y= or =DEL= replace the picked
+one with your own text.  A default meant to hold a literal =|= cannot:
+it always reads as choices.
+
 The value you last filled for a ={{name}}= (per project and command,
-for this Emacs session) is offered before its =:default=.  Built-ins
-are always taken fresh.
+for this Emacs session; a global command's per project too) is
+offered before its =:default=, and starts the next fill whether it
+was a choice or your own text.  Built-ins are always taken fresh.
 
 A name starts with a letter or underscore; any other ={{...}}= stays
 literal, so docker's ={{.State.Status}}= and helm's ={{ .Values.x }}=
@@ -71,7 +128,8 @@ Filling happens on the overlay footer, not a chain of minibuffers.
 
 * Save file
 
-Commands live in =ghostel-cmd-save-file=; =o= opens it.  An edit made
+Commands live in =ghostel-cmd-save-file=, keyed by project root; the
+global ones sit under the =:global= key.  =o= opens it.  An edit made
 there, or by another Emacs, is read on the next open or redraw, and a
 save applies its change to the file as it is on disk.  A file that
 does not parse is left alone: the overlay keeps what it had and
