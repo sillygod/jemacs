@@ -184,6 +184,14 @@ edit of the save file is never written over."
 (defvar ghostel-cmd--caller-symbol nil)
 (defvar ghostel-cmd--root nil)
 
+(defconst ghostel-cmd--builtin-names
+  '("root" "project-root" "project-name" "project" "branch"
+    "file" "file-abs" "dir" "line" "symbol")
+  "Placeholders taken fresh from the caller, never remembered.")
+
+(defvar ghostel-cmd--last-values (make-hash-table :test #'equal)
+  "Value last filled per (ROOT COMMAND-NAME VAR), for this Emacs session.")
+
 (defun ghostel-cmd--builtin-var (var-name root)
   "Auto default for VAR-NAME under ROOT, or nil."
   (pcase var-name
@@ -228,6 +236,24 @@ edit of the save file is never written over."
       (setq start (match-end 0)))
     (nreverse vars)))
 
+(defun ghostel-cmd--fill-vars (record root)
+  "Ordered alist of (NAME . DEFAULT) for RECORD's template under ROOT.
+The value last filled beats the template's default; built-ins are
+always taken fresh."
+  (mapcar (lambda (pair)
+            (let ((last (gethash (list root (plist-get record :name) (car pair))
+                                 ghostel-cmd--last-values)))
+              (if last (cons (car pair) last) pair)))
+          (ghostel-cmd--extract-variables (plist-get record :cmd) root)))
+
+(defun ghostel-cmd--remember (root record var value)
+  "Keep VALUE as the last one filled for VAR of RECORD under ROOT."
+  (unless (member var ghostel-cmd--builtin-names)
+    (let ((key (list root (plist-get record :name) var)))
+      (if (string-empty-p value)
+          (remhash key ghostel-cmd--last-values)
+        (puthash key value ghostel-cmd--last-values)))))
+
 (defun ghostel-cmd--apply (template values)
   "Replace {{name}} in TEMPLATE using VALUES alist."
   (let ((result template))
@@ -253,7 +279,7 @@ edit of the save file is never written over."
 (defvar ghostel-cmd--query "")
 (defvar ghostel-cmd--filtering nil)
 (defvar ghostel-cmd--fill nil
-  "Plist while filling: :record :vars :index :values :input :submit.")
+  "Plist while filling: :record :root :vars :index :values :input :submit.")
 (defvar ghostel-cmd--help-visible nil)
 (defvar ghostel-cmd--preview-start nil)
 (defvar ghostel-cmd--preview-id nil)
@@ -662,6 +688,8 @@ one-per-line list yanks as space-separated words."
                        (cl-remove name (plist-get fill :values)
                                   :key #'car :test #'equal)))
          (next (1+ idx)))
+    (ghostel-cmd--remember (plist-get fill :root) (plist-get fill :record)
+                           name val)
     (plist-put fill :values values)
     (if (>= next (length vars))
         nil
@@ -818,11 +846,12 @@ split if none is showing."
          (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
     (unless record
       (user-error "No command at point"))
-    (let ((vars (ghostel-cmd--extract-variables (plist-get record :cmd) root)))
+    (let ((vars (ghostel-cmd--fill-vars record root)))
       (if (null vars)
           (ghostel-cmd--deliver (plist-get record :cmd) submit)
         (setq ghostel-cmd--fill
               (list :record record
+                    :root root
                     :vars vars
                     :index 0
                     :values nil

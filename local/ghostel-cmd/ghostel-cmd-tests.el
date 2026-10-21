@@ -322,6 +322,31 @@ Keys go through the real keymaps with `execute-kbd-macro'."
                               nil nil #'equal)
                    "2"))))
 
+(ert-deftest ghostel-cmd-test-last-value-beats-default-not-builtins ()
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "k" :cmd "pytest {{file}} -k {{expr:all}}"))
+    (let ((ghostel-cmd--last-values (make-hash-table :test #'equal)))
+      (ghostel-cmd-paste)
+      (should (equal (plist-get ghostel-cmd--fill :vars)
+                     '(("file" . "foo.py") ("expr" . "all"))))
+      (dolist (typed '("other.py" "login"))
+        (ghostel-cmd-fill-clear)
+        (execute-kbd-macro typed)
+        (ghostel-cmd--fill-commit-current))
+      (ghostel-cmd-fill-cancel)
+      (ghostel-cmd-paste)
+      (should (equal (plist-get ghostel-cmd--fill :vars)
+                     '(("file" . "foo.py") ("expr" . "login"))))
+      (should (equal (plist-get ghostel-cmd--fill :input) "foo.py"))
+      (ghostel-cmd-fill-cancel)
+      ;; Per project and per command.
+      (should (equal (ghostel-cmd--fill-vars
+                      (list :name "k" :cmd "x {{expr:all}}") "/elsewhere/")
+                     '(("expr" . "all"))))
+      (should (equal (ghostel-cmd--fill-vars
+                      (list :name "k2" :cmd "x {{expr:all}}") ghostel-cmd--root)
+                     '(("expr" . "all")))))))
+
 (ert-deftest ghostel-cmd-test-help-text-lists-overlay-keys ()
   (let ((text (ghostel-cmd--help-text)))
     (should (string-match-p "RET" text))
