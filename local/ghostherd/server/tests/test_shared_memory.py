@@ -129,3 +129,36 @@ def test_a_claude_written_fact_parses_without_author(home):
     sm.write_fact(store, "proj", "new body", name="c", author="claude-x", now="t")
     text = (store / "c.md").read_text()
     assert "originSessionId: abc-123" in text and "author: claude-x" in text
+
+
+def test_claude_symlink_points_a_worktree_at_its_main_store(home, tmp_path):
+    claude = tmp_path / "claude"
+    main = "/work/proj"
+    wt = "/work/worktrees/proj/feat"
+    out = sm.ensure_project_symlink(claude, wt, main)
+    assert out["status"] == "linked"
+    link = claude / sm.slug_for_path(wt) / "memory"
+    assert link.is_symlink()
+    # the worktree's claude dir points at the MAIN project's store
+    assert os.path.realpath(link) == os.path.realpath(sm.project_store(sm.slug_for_path(main)))
+    # idempotent
+    assert sm.ensure_project_symlink(claude, wt, main)["status"] == "ok"
+
+
+def test_claude_symlink_leaves_a_real_dir_with_facts(home, tmp_path):
+    claude = tmp_path / "claude"
+    main = "/work/proj"
+    cmem = claude / sm.slug_for_path(main) / "memory"
+    cmem.mkdir(parents=True)
+    (cmem / "x.md").write_text("---\nname: x\ndescription: \"d\"\nmetadata:\n  type: project\n---\n\nbody\n")
+    out = sm.ensure_project_symlink(claude, main, main)
+    assert out["status"] == "has-content" and not cmem.is_symlink()
+
+
+def test_claude_symlink_replaces_an_empty_real_dir(home, tmp_path):
+    claude = tmp_path / "claude"
+    main = "/work/proj"
+    cmem = claude / sm.slug_for_path(main) / "memory"
+    cmem.mkdir(parents=True)
+    out = sm.ensure_project_symlink(claude, main, main)
+    assert out["status"] == "linked" and cmem.is_symlink()

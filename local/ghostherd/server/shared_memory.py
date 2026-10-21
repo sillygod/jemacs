@@ -388,6 +388,38 @@ def _matches(f: Fact, needles: list[str]) -> bool:
 
 
 @_locked
+def ensure_project_symlink(claude_root, cwd: str, project: str) -> dict:
+    """Make ~/.claude/projects/<slug(cwd)>/memory a symlink to the project's
+    store, so claude writes the herd's shared memory.  CWD is the agent's
+    working directory (a worktree or the main checkout); PROJECT is the
+    canonical main checkout, whose store a worktree shares.  A real memory
+    dir with facts is left for the migration, not clobbered."""
+    key = slug_for_path(project)
+    store = project_store(key)
+    cmem = Path(os.path.expanduser(str(claude_root))) / slug_for_path(cwd) / "memory"
+    store.mkdir(parents=True, exist_ok=True)
+    regenerate(store, key)
+    target = str(store.resolve())
+    if cmem.is_symlink():
+        if Path(os.path.realpath(cmem)) == Path(os.path.realpath(store)):
+            return {"status": "ok", "link": str(cmem)}
+        cmem.unlink()
+        os.symlink(target, str(cmem))
+        return {"status": "relinked", "link": str(cmem)}
+    if cmem.exists():
+        if any(p.name != INDEX for p in cmem.glob("*.md")):
+            return {"status": "has-content", "link": str(cmem)}
+        try:
+            (cmem / INDEX).unlink(missing_ok=True)
+            cmem.rmdir()
+        except OSError:
+            return {"status": "has-content", "link": str(cmem)}
+    cmem.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(target, str(cmem))
+    return {"status": "linked", "link": str(cmem)}
+
+
+@_locked
 def recall(store: Path, key: str, query: str | None = None, include_shared: bool = True) -> dict:
     """The index when QUERY is empty, else the matching facts in full.
     Searches the project's own facts and the shared user facts."""

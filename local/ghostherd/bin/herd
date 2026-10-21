@@ -358,6 +358,26 @@ def cmd_forget(args):
     return 0 if out["removed"] else 1
 
 
+def cmd_memory(args):
+    """Move the existing claude memories into the store, or put them back.
+    Backs each original up first and is reversible; prints a report."""
+    params = {}
+    if args.project:
+        params["projects"] = args.project
+    if args.action == "unmigrate":
+        out = rpc("memory_unmigrate", params, timeout=120)
+    else:
+        if args.user_name:
+            params["user_names"] = args.user_name
+        params["dry_run"] = args.action == "plan"
+        out = rpc("memory_migrate", params, timeout=120)
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    if args.action in ("migrate",) and not (out.get("verify") or {}).get("ok", True):
+        say("migration done but verify found problems; see the report")
+        return 1
+    return 0
+
+
 def cmd_relay(args):
     """Hand an agent's work to a fresh agent on another CLI, through the same
     path the herd page and Telegram use.  Prints what the herd did, or why it
@@ -1129,6 +1149,14 @@ def main(argv=None):
     p.add_argument("name")
     p.add_argument("--user", action="store_true", help="from the user store")
     p.set_defaults(fn=cmd_forget)
+    p = sub.add_parser("memory",
+                       help="migrate the existing claude memories into the store (reversible)")
+    p.add_argument("action", choices=("plan", "migrate", "unmigrate"))
+    p.add_argument("--project", action="append", metavar="PATH",
+                   help="only this project (repeatable; default: all the herd knows)")
+    p.add_argument("--user-name", action="append", metavar="SLUG",
+                   help="a fact to route to the user store (repeatable)")
+    p.set_defaults(fn=cmd_memory)
     p = sub.add_parser("relay",
                        help="hand an agent's work to a fresh agent on another CLI")
     p.add_argument("target")

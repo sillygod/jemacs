@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import conversation
 import links
+import memory_migrate
 import meter
 import relay
 import shared_memory
@@ -87,6 +88,9 @@ class JsonRpcHandler:
             "herd_remember": self._herd_remember,
             "herd_recall": self._herd_recall,
             "herd_forget": self._herd_forget,
+            "memory_link_claude": self._memory_link_claude,
+            "memory_migrate": self._memory_migrate,
+            "memory_unmigrate": self._memory_unmigrate,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -486,6 +490,48 @@ class JsonRpcHandler:
             raise ValueError("which fact? give its name")
         store, key = self._memory_store(params)
         return shared_memory.forget(store, key, name)
+
+    def _memory_link_claude(self, params: dict) -> dict:
+        """Point a claude agent's memory dir at its project's store.  Emacs
+        calls this at spawn / worktree creation / reuse.  CWD is the agent's
+        working dir (worktree or main), PROJECT the canonical main checkout."""
+        cwd = str(params.get("cwd") or params.get("project") or "").strip()
+        project = str(params.get("project") or cwd).strip()
+        if not project:
+            raise ValueError("project is required")
+        from config import get_config
+        return shared_memory.ensure_project_symlink(get_config().claude_root, cwd, project)
+
+    def _known_projects(self) -> list[str]:
+        "The distinct projects the herd has in its snapshot, main checkouts."
+        seen, out = set(), []
+        for s in get_herd().list_sessions().get("sessions", []):
+            p = (s.get("project") or "").strip()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def _memory_migrate(self, params: dict) -> dict:
+        """Move existing claude memories into the store.  PROJECTS defaults to
+        the projects the herd knows; USER_NAMES are facts to route to the user
+        store on top of every type:user one; DRY_RUN plans without touching."""
+        projects = params.get("projects") or self._known_projects()
+        if not isinstance(projects, list):
+            raise ValueError("projects must be a list")
+        user_names = set(params.get("user_names") or [])
+        if params.get("dry_run"):
+            return memory_migrate.plan(projects, user_names=user_names)
+        report = memory_migrate.migrate(projects, user_names=user_names)
+        report["verify"] = memory_migrate.verify(projects, user_names=user_names)
+        return report
+
+    def _memory_unmigrate(self, params: dict) -> dict:
+        "Put the claude memory backups back, dropping the store symlinks."
+        projects = params.get("projects") or self._known_projects()
+        if not isinstance(projects, list):
+            raise ValueError("projects must be a list")
+        return memory_migrate.unmigrate(projects)
 
     def _herd_relay_brief(self, params: dict) -> dict:
         """What agent NAME hands its heir, as the heir's first message: its
