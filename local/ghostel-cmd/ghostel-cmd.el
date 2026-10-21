@@ -11,11 +11,12 @@
 ;; Bookmark command templates per project, with {{var}} / {{var:default}}
 ;; placeholders and built-ins taken from the caller: {{file}},
 ;; {{file-abs}}, {{dir}}, {{line}}, {{symbol}}, {{root}},
-;; {{project-name}}, {{branch}}.  The overlay (posframe when available, side window
-;; otherwise) is the main UI:
+;; {{project-name}}, {{branch}}.  The overlay (posframe when available,
+;; side window otherwise) is the main UI:
 ;;
 ;;   j/k move   RET paste (fill vars first)   C-RET paste+Enter
-;;   / filter   a add   e edit   d delete   q quit
+;;   / filter   a add   e edit   d delete   M-j/M-k reorder   q quit
+;;   C-y yank, C-\ input method (in the filter and fill input)
 ;;
 ;; Filling happens on a footer line in the overlay, not a chain of
 ;; minibuffers.  Paste does not press Enter unless C-RET.
@@ -296,9 +297,9 @@ always taken fresh."
 (defvar ghostel-cmd--posframe-fitted-width nil)
 (defvar ghostel-cmd--posframe-refitting nil)
 (defvar ghostel-cmd--match-count 0)
+(defvar ghostel-cmd--total-count 0)
 (defvar ghostel-cmd--goto-id nil
   "Name the next redraw puts point on, instead of the row at point.")
-(defvar ghostel-cmd--total-count 0)
 
 (defconst ghostel-cmd--buffer-name "*ghostel-cmd*")
 
@@ -742,8 +743,8 @@ The list narrows as you type; C-g puts the old query back."
     (force-mode-line-update t)))
 
 (defun ghostel-cmd-fill-read ()
-  "Edit the value being filled in the minibuffer, where an input
-method works.  The preview follows; C-g puts the old value back."
+  "Edit the value being filled in the minibuffer, with an input method.
+The preview follows as you type; C-g puts the old value back."
   (interactive)
   (when-let* ((fill ghostel-cmd--fill))
     (let* ((old (or (plist-get fill :input) ""))
