@@ -13,6 +13,7 @@ import conversation
 import links
 import meter
 import relay
+import shared_memory
 import subagents
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
@@ -83,6 +84,9 @@ class JsonRpcHandler:
             "herd_stop": self._herd_stop,
             "herd_command_reply": self._herd_command_reply,
             "herd_unlink": self._herd_unlink,
+            "herd_remember": self._herd_remember,
+            "herd_recall": self._herd_recall,
+            "herd_forget": self._herd_forget,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -435,6 +439,53 @@ class JsonRpcHandler:
         """A queued command's status and reply, by its id -- `herd relay'
         polls it for what Emacs did."""
         return get_herd().command_reply(str(params.get("id") or ""))
+
+    def _memory_store(self, params: dict):
+        """Resolve (store path, key) for a memory call: the user store with
+        --user; otherwise the caller's project -- from its session (the herd
+        has it resolved to the main checkout, so a worktree shares the main
+        store), or the PROJECT hint a plain shell passes from its cwd."""
+        if params.get("user"):
+            return shared_memory.user_store(), shared_memory.USER_KEY
+        who = str(params.get("from") or "").strip()
+        project = ""
+        if who and who != "user":
+            session = get_herd().session(who) or {}
+            project = session.get("project") or ""
+        if not project:
+            project = str(params.get("project") or "").strip()
+        if not project:
+            raise ValueError(
+                "no project for this memory: run inside one, or use --user")
+        key = shared_memory.slug_for_path(project)
+        return shared_memory.project_store(key), key
+
+    def _herd_remember(self, params: dict) -> dict:
+        """Write a fact to the caller's project store (or --user), authored by
+        the caller (GHOSTHERD_SESSION, or `user')."""
+        text = str(params.get("text") or "")
+        if not text.strip():
+            raise ValueError("nothing to remember")
+        typ = str(params.get("type") or shared_memory.DEFAULT_TYPE).strip()
+        if typ not in shared_memory.TYPES:
+            raise ValueError("type is one of: " + ", ".join(shared_memory.TYPES))
+        name = str(params.get("name") or "").strip() or None
+        store, key = self._memory_store(params)
+        author = str(params.get("from") or "user").strip() or "user"
+        return shared_memory.write_fact(store, key, text, type=typ, name=name, author=author)
+
+    def _herd_recall(self, params: dict) -> dict:
+        "The project's index, or the facts matching QUERY in full."
+        store, key = self._memory_store(params)
+        return shared_memory.recall(store, key, query=str(params.get("query") or ""))
+
+    def _herd_forget(self, params: dict) -> dict:
+        "Remove a fact by NAME from the caller's project store (or --user)."
+        name = str(params.get("name") or "").strip()
+        if not name:
+            raise ValueError("which fact? give its name")
+        store, key = self._memory_store(params)
+        return shared_memory.forget(store, key, name)
 
     def _herd_relay_brief(self, params: dict) -> dict:
         """What agent NAME hands its heir, as the heir's first message: its

@@ -11,6 +11,9 @@ Usage:
   herd stop NAME
   herd list
   herd asks
+  herd remember [--type T] [--name SLUG] [--user] [TEXT|-]
+  herd recall [--user] [QUERY...]
+  herd forget [--user] NAME
   herd hook [EVENT]                (from a CLI's lifecycle hook)
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
@@ -39,6 +42,17 @@ main checkout.  The herd caps how many a lead has up and refuses a
 used-up kind, naming one with quota.  `stop NAME' kills an agent the
 caller started -- not one owing an open or queued ask -- and removes its
 worktree when merged and clean, else keeps it.
+
+`remember', `recall' and `forget' are the herd's shared memory: curated
+facts every agent of a project sees, whatever its CLI.  `remember TEXT'
+writes one fact to your project's store (a worktree shares its main
+checkout's), authored by you; `--type' is project (default), feedback,
+reference or user, `--name' sets its slug.  `recall' prints the project's
+index, or `recall QUERY' the matching facts in full.  `forget NAME'
+removes one.  `--user' is the store shared by every project (the user's
+own preferences).  Run them from a plain shell too -- authored `user',
+for the project you are in.  claude reads this memory through its own
+memory dir; agy and grok are told to use these commands.
 
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
@@ -70,6 +84,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -287,6 +302,60 @@ def cmd_list(_args):
 
 def cmd_asks(_args):
     print(json.dumps(rpc("herd_asks"), indent=2, ensure_ascii=False))
+
+
+def _cwd_project():
+    "The git checkout of the shell's cwd, a project hint for a plain user."
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             timeout=5)
+        return out.stdout.decode("utf-8", "replace").strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _mem_params(args):
+    "Common memory params: who asks and, as a fallback, the project in cwd."
+    params = {"from": me(), "project": _cwd_project()}
+    if getattr(args, "user", False):
+        params["user"] = True
+    return params
+
+
+def cmd_remember(args):
+    text = text_arg(args.text)
+    if not text.strip():
+        raise HerdError("nothing to remember")
+    params = _mem_params(args)
+    params["text"] = text
+    if args.type:
+        params["type"] = args.type
+    if args.name:
+        params["name"] = args.name
+    out = rpc("herd_remember", params)
+    where = "user memory" if out["store"] == "user" else "this project"
+    say("remembered `%s' (%s, %s)" % (out["name"], out["type"], where))
+    return 0
+
+
+def cmd_recall(args):
+    params = _mem_params(args)
+    query = " ".join(args.query or []).strip()
+    if query:
+        params["query"] = query
+    out = rpc("herd_recall", params)
+    sys.stdout.write((out.get("text") or out.get("index") or "").rstrip() + "\n")
+    return 0
+
+
+def cmd_forget(args):
+    params = _mem_params(args)
+    params["name"] = args.name
+    out = rpc("herd_forget", params)
+    say(("forgot `%s'" % out["name"]) if out["removed"]
+        else ("no fact named `%s'" % out["name"]))
+    return 0 if out["removed"] else 1
 
 
 def cmd_relay(args):
@@ -1045,6 +1114,21 @@ def main(argv=None):
         p.set_defaults(fn=fn)
     sub.add_parser("list", help="the herd").set_defaults(fn=cmd_list)
     sub.add_parser("asks", help="open and recent asks").set_defaults(fn=cmd_asks)
+    p = sub.add_parser("remember", help="write a fact to the herd's shared memory")
+    p.add_argument("text", nargs="?")
+    p.add_argument("--type", choices=("project", "feedback", "reference", "user"),
+                   help="the fact's kind (default project)")
+    p.add_argument("--name", metavar="SLUG", help="its filename slug (default from the text)")
+    p.add_argument("--user", action="store_true", help="the store shared by every project")
+    p.set_defaults(fn=cmd_remember)
+    p = sub.add_parser("recall", help="print the memory index, or facts matching a query")
+    p.add_argument("query", nargs="*")
+    p.add_argument("--user", action="store_true", help="the user store, not the project's")
+    p.set_defaults(fn=cmd_recall)
+    p = sub.add_parser("forget", help="remove a fact from shared memory")
+    p.add_argument("name")
+    p.add_argument("--user", action="store_true", help="from the user store")
+    p.set_defaults(fn=cmd_forget)
     p = sub.add_parser("relay",
                        help="hand an agent's work to a fresh agent on another CLI")
     p.add_argument("target")
