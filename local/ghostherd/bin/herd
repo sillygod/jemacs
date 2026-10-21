@@ -352,7 +352,9 @@ def cmd_screens(args):
             say("the request was dropped before it ran")
             return 1
         time.sleep(0.4)
-    say("timed out waiting for the herd")
+    # The query rides a herd tick; if Emacs is mid-reconnect after a sidecar
+    # restart it may not have ticked yet.  A second call lands normally.
+    say("timed out waiting for the herd (it may be busy or just restarted; try again)")
     return 1
 
 

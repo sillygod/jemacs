@@ -1708,9 +1708,24 @@ are the samples to tune it against."
   :type 'regexp
   :group 'ghostherd)
 
+(defcustom ghostherd-auto-capture-mismatch-grace 8
+  "Seconds a screen/hook mismatch must hold before it is kept.
+
+The noisy trigger: as a turn ends, the agent's last `working' hook has
+not expired yet while the screen already reads idle -- a disagreement
+that is the hook lagging, not the screen misreading, and it lasts an
+instant.  A real misread -- a compaction, a first frame with no timer, an
+agent streaming with its spinner scrolled out of the captured tail --
+holds, so waiting this out keeps those and drops the turn-end flicker."
+  :type 'number
+  :group 'ghostherd)
+
 (defvar ghostherd--auto-capture-at (make-hash-table :test 'equal)
   "\"ID\\0WHY\" -> (TIME . SCREEN-HASH) of the last auto-capture, for the
 throttle and the identical-screen dedupe.")
+
+(defvar ghostherd--mismatch-since (make-hash-table :test 'equal)
+  "Session id → when its screen/hook mismatch began, while one holds.")
 
 (defun ghostherd--screen-foot (screen n)
   "The last N non-blank lines of SCREEN."
@@ -1784,6 +1799,16 @@ Reads the screen the poll just stored, so it adds no capture of its own."
                                 (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
                (why (ghostherd--auto-capture-why screen hit report)))
+          ;; A mismatch must hold a moment before it counts: a hook lagging
+          ;; a turn's end disagrees with a correctly-idle screen for an
+          ;; instant, which is noise.  A real misread persists.
+          (if (eq why 'mismatch)
+              (let ((since (or (gethash id ghostherd--mismatch-since)
+                               (puthash id (current-time) ghostherd--mismatch-since))))
+                (when (< (float-time (time-subtract (current-time) since))
+                         ghostherd-auto-capture-mismatch-grace)
+                  (setq why nil)))
+            (remhash id ghostherd--mismatch-since))
           (when (and why (ghostherd--auto-capture-ok id why screen))
             (ghostherd--log-add
              session 'screen

@@ -1320,7 +1320,8 @@ on screen at idle."
          (ghostherd-log-max 500)
          (ghostherd-log-screens 20)
          (ghostherd--log-seq 0)
-         (ghostherd--auto-capture-at (make-hash-table :test 'equal)))
+         (ghostherd--auto-capture-at (make-hash-table :test 'equal))
+         (ghostherd--mismatch-since (make-hash-table :test 'equal)))
      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
        ,@body)))
 
@@ -1532,6 +1533,31 @@ kept twice, and the trigger is throttled per agent."
         (let ((ghostherd-auto-capture-throttle 0))
           (ghostherd--auto-capture s)
           (should (= (funcall limits) 2)))))))
+
+(ert-deftest ghostherd-test-auto-capture-mismatch-must-hold ()
+  "A screen/hook mismatch is kept only once it has held the grace: a
+turn-end flicker is dropped, a mismatch that persists is kept."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((s (ghostherd-tests--session :name "grok-x" :kind 'grok :state 'idle))
+             (id (ghostherd-session-id s))
+             (miss (lambda () (cl-count 'mismatch ghostherd--log
+                                        :key #'ghostherd-log-entry-why))))
+        ;; The hook says working; the screen reads idle (no spinner/menu/limit).
+        (puthash id "just some finished prose here\n" ghostherd--screens)
+        (puthash id (list 'working "r" (current-time)) ghostherd--reports)
+        ;; Within the grace: seen, not kept.
+        (ghostherd--auto-capture s)
+        (should (= (funcall miss) 0))
+        (should (gethash id ghostherd--mismatch-since))
+        ;; Held past the grace: kept.
+        (let ((ghostherd-auto-capture-mismatch-grace 0))
+          (ghostherd--auto-capture s)
+          (should (= (funcall miss) 1)))
+        ;; A spinner shows: the screen agrees again, the mismatch clears.
+        (puthash id "✶ Thinking… (3s · esc to interrupt)\n" ghostherd--screens)
+        (ghostherd--auto-capture s)
+        (should-not (gethash id ghostherd--mismatch-since))))))
 
 (ert-deftest ghostherd-test-log-screens-text-filters ()
   "What `herd screens' prints: the saved screens, filtered by agent, time
