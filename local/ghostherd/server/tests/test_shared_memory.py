@@ -162,3 +162,21 @@ def test_claude_symlink_replaces_an_empty_real_dir(home, tmp_path):
     cmem.mkdir(parents=True)
     out = sm.ensure_project_symlink(claude, main, main)
     assert out["status"] == "linked" and cmem.is_symlink()
+
+
+def test_stamp_author_fills_a_missing_author(home):
+    store = sm.project_store("proj")
+    store.mkdir(parents=True)
+    (store / "c.md").write_text(
+        '---\nname: c\ndescription: "d"\nmetadata:\n  node_type: memory\n'
+        '  type: project\n  originSessionId: abc\n  modified: 2026-01-01T00:00:00Z\n---\n\nBody.\n')
+    assert sm.stamp_author(store / "c.md", "claude-x") is True
+    f = sm.parse(store / "c.md")
+    assert f.author == "claude-x" and "Body." in f.body
+    assert "originSessionId: abc" in (store / "c.md").read_text()  # claude's provenance kept
+    # idempotent: a fact that already has an author is left alone
+    assert sm.stamp_author(store / "c.md", "claude-y") is False
+    assert sm.parse(store / "c.md").author == "claude-x"
+    # never follows a shared symlink
+    (store / "u.md").symlink_to("../user/u.md")
+    assert sm.stamp_author(store / "u.md", "claude-x") is False

@@ -478,9 +478,52 @@ class JsonRpcHandler:
         author = str(params.get("from") or "user").strip() or "user"
         return shared_memory.write_fact(store, key, text, type=typ, name=name, author=author)
 
+    def _attribute_project(self, key: str) -> list:
+        """Stamp the agent's name onto store files a claude agent of this
+        project wrote natively (its memory dir is a symlink to the store), from
+        the edit marks in its transcript.  Only files it edited recently and
+        that have no author yet -- so old migrated facts are left as they are,
+        and it is cheap to run on a read."""
+        from config import get_config
+        claude_root = get_config().claude_root
+        store = shared_memory.project_store(key)
+        if not store.is_dir():
+            return []
+        changed = []
+        for s in get_herd().list_sessions().get("sessions", []):
+            if s.get("kind") != "claude":
+                continue
+            if shared_memory.slug_for_path(s.get("project") or "") != key:
+                continue
+            link = get_herd().link(s.get("name") or "") or {}
+            transcript = link.get("transcript")
+            if not transcript:
+                continue
+            cmem = claude_root / shared_memory.slug_for_path(
+                s.get("directory") or s.get("project") or "") / "memory"
+            try:
+                edited = conversation.edited(transcript, str(cmem)).get("files", [])
+            except (OSError, ValueError):
+                edited = []
+            for fname in edited:
+                if not fname.endswith(".md") or fname == shared_memory.INDEX:
+                    continue
+                path = store / fname
+                if path.exists() and not path.is_symlink():
+                    if shared_memory.stamp_author(path, s["name"]):
+                        changed.append({"name": fname[:-3], "author": s["name"]})
+        if changed:
+            shared_memory.regenerate(store, key)
+        return changed
+
     def _herd_recall(self, params: dict) -> dict:
         "The project's index, or the facts matching QUERY in full."
         store, key = self._memory_store(params)
+        if key != shared_memory.USER_KEY:
+            try:
+                self._attribute_project(key)
+            except Exception:  # noqa: BLE001 — attribution must never fail a read
+                pass
         return shared_memory.recall(store, key, query=str(params.get("query") or ""))
 
     def _herd_forget(self, params: dict) -> dict:

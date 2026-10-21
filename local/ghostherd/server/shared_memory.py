@@ -354,6 +354,23 @@ def write_fact(
 
 
 @_locked
+def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
+    """Record AUTHOR on the fact at PATH when it has none -- for claude's own
+    writes, which carry claude's originSessionId but no agent name.  Keeps the
+    description, body and claude's provenance; returns whether it changed."""
+    f = parse(path)
+    if f is None or f.author or path.is_symlink() or not author:
+        return False
+    now = now or iso_now()
+    front, _ = _split_front(path.read_text(encoding="utf-8"))
+    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    extra = {"originSessionId": meta.get("originSessionId"), "modified": meta.get("modified")}
+    _atomic_write(path, render(f.name, f.description, f.body, type=f.type, author=author,
+                               created=(f.created or now), updated=(f.updated or now), extra=extra))
+    return True
+
+
+@_locked
 def forget(store: Path, key: str, name: str) -> dict:
     "Remove fact NAME from STORE.  Returns whether it was there."
     name = (name or "").strip().lower()

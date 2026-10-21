@@ -67,3 +67,23 @@ def test_no_project_and_not_user_is_an_error(mem):
 def test_a_bad_type_is_refused(mem):
     with pytest.raises(ValueError):
         mem._herd_remember({"from": "claude-proj", "text": "z", "type": "nonsense"})
+
+
+def test_claude_native_writes_are_attributed_on_recall(mem, monkeypatch):
+    import conversation
+    key = sm.slug_for_path("~/work/proj")
+    store = sm.project_store(key)
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "native.md").write_text(
+        '---\nname: native\ndescription: "d"\nmetadata:\n  type: project\n'
+        '  originSessionId: s1\n---\n\nBody.\n')
+    # the herd knows claude-proj's transcript; its edit marks name the file
+    get_herd().report(session="claude-proj", transcript="/x/t.jsonl")
+    monkeypatch.setattr(conversation, "edited",
+                        lambda path, root=None, limit=0: {"files": ["native.md"]})
+    mem._herd_recall({"from": "claude-proj"})
+    assert sm.parse(store / "native.md").author == "claude-proj"
+    # the index reflects it; a second recall is a no-op (already attributed)
+    before = (store / "native.md").read_text()
+    mem._herd_recall({"from": "claude-proj"})
+    assert (store / "native.md").read_text() == before
