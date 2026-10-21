@@ -514,6 +514,25 @@ overlay; C-\\ edits the input in the minibuffer with it on."
       (when (buffer-live-p term-buf) (kill-buffer term-buf))
       (delete-other-windows))))
 
+(ert-deftest ghostel-cmd-test-focus-leaving-hides-posframe ()
+  "Selecting a window outside the posframe hides it, focus staying put;
+the minibuffer and the posframe's own window do not."
+  (let ((pf 'elsewhere)
+        (hidden nil))
+    (cl-letf (((symbol-function 'ghostel-cmd--posframe-frame) (lambda () pf))
+              ((symbol-function 'ghostel-cmd--posframe-showing-p) (lambda () t))
+              ((symbol-function 'ghostel-cmd--hide-posframe)
+               (lambda (&optional keep-focus) (push keep-focus hidden))))
+      (ghostel-cmd--hide-on-focus-leave (selected-frame))
+      (should (equal hidden '(t)))
+      (setq hidden nil)
+      (with-selected-window (minibuffer-window)
+        (ghostel-cmd--hide-on-focus-leave (selected-frame)))
+      (should-not hidden)
+      (setq pf (selected-frame))
+      (ghostel-cmd--hide-on-focus-leave (selected-frame))
+      (should-not hidden))))
+
 (ert-deftest ghostel-cmd-test-alias-run-is-sidebar ()
   (should (eq (indirect-function 'ghostel-project-cmd-run)
               (indirect-function 'ghostel-cmd-sidebar))))

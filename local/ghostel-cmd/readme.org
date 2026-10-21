@@ -12,7 +12,9 @@ Per-project Ghostel command bookmarks with a GhostHerd-style overlay.
 
 * Overlay
 
-Posframe when available, side window otherwise.
+Posframe when available, side window otherwise.  Selecting another
+window (a click, say) closes the posframe and leaves focus there; the
+minibuffer does not count.
 
 | Key        | Action                                      |
 |------------+---------------------------------------------|

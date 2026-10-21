@@ -1139,7 +1139,9 @@ Under a filter that row is the next visible one, not a hidden one."
     (and (frame-live-p frame)
          (frame-visible-p frame))))
 
-(defun ghostel-cmd--hide-posframe ()
+(defun ghostel-cmd--hide-posframe (&optional keep-focus)
+  "Hide the posframe and give focus back to its parent frame.
+KEEP-FOCUS non-nil leaves focus where it is."
   (let ((parent ghostel-cmd--posframe-parent)
         (buf (get-buffer ghostel-cmd--buffer-name)))
     (setq ghostel-cmd--posframe-parent nil
@@ -1150,8 +1152,20 @@ Under a filter that row is the next visible one, not a hidden one."
     (ghostel-cmd--set-filling nil)
     (when (and buf (fboundp 'posframe-hide))
       (posframe-hide buf))
-    (when (and parent (frame-live-p parent))
+    (when (and parent (frame-live-p parent) (not keep-focus))
       (select-frame-set-input-focus parent))))
+
+(defun ghostel-cmd--hide-on-focus-leave (_frame)
+  "Hide the posframe once a window outside it is selected.
+A click in another window would otherwise leave it in the middle of
+the frame, deaf to q.  The minibuffer does not count: it may be
+editing for the overlay."
+  (when-let* ((frame (ghostel-cmd--posframe-frame))
+              ((ghostel-cmd--posframe-showing-p))
+              (win (selected-window))
+              ((not (eq (window-frame win) frame)))
+              ((not (window-minibuffer-p win))))
+    (ghostel-cmd--hide-posframe t)))
 
 (defun ghostel-cmd--hide-overlay ()
   (if (ghostel-cmd--posframe-showing-p)
@@ -1251,6 +1265,8 @@ Under a filter that row is the next visible one, not a hidden one."
           ghostel-cmd--posframe-fitted-width width)
     (add-hook 'window-size-change-functions
               #'ghostel-cmd--posframe-on-parent-resize)
+    (add-hook 'window-selection-change-functions
+              #'ghostel-cmd--hide-on-focus-leave)
     (with-selected-frame parent
       (posframe-show
        buf
