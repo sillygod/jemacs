@@ -18,6 +18,7 @@
   `(let* ((dir (make-temp-file "ghostel-cmd-" t))
           (ghostel-cmd-save-file (expand-file-name "cmds.eld" dir))
           (ghostel-cmd--cache nil)
+          (ghostel-cmd--cache-stamp nil)
           (ghostel-cmd--root (file-name-as-directory dir))
           (ghostel-cmd--caller-file (expand-file-name "foo.py" dir))
           (ghostel-cmd--caller-line 12)
@@ -82,10 +83,60 @@ Keys go through the real keymaps with `execute-kbd-macro'."
     (ghostel-cmd--set-commands
      (list (list :name "test" :cmd "pytest {{file}}" :desc "run"))
      ghostel-cmd--root)
-    (setq ghostel-cmd--cache nil)
+    (setq ghostel-cmd--cache nil
+          ghostel-cmd--cache-stamp nil)
     (let ((got (car (ghostel-cmd--get-commands ghostel-cmd--root))))
       (should (equal (plist-get got :name) "test"))
       (should (equal (plist-get got :cmd) "pytest {{file}}")))))
+
+;; An outside edit (`o', another Emacs) stamps the file 10s and 20s on,
+;; so its mtime differs from ours even on a coarse clock.
+(defun ghostel-cmd-tests--write-outside (form seconds)
+  (with-temp-file ghostel-cmd-save-file
+    (prin1 form (current-buffer)))
+  (set-file-times ghostel-cmd-save-file (time-add (current-time) seconds)))
+
+(defun ghostel-cmd-tests--names (root)
+  (mapcar (lambda (c) (plist-get c :name)) (ghostel-cmd--get-commands root)))
+
+(ert-deftest ghostel-cmd-test-outside-edit-is-read-and-kept ()
+  (ghostel-cmd-tests--with-store
+    (let ((root ghostel-cmd--root))
+      (ghostel-cmd--set-commands (list (list :name "a" :cmd "echo a")) root)
+      (should (equal (ghostel-cmd-tests--names root) '("a")))
+      (ghostel-cmd-tests--write-outside
+       `((,root (:name "a" :cmd "echo a") (:name "b" :cmd "echo b"))
+         ("/other/" (:name "o" :cmd "echo o")))
+       10)
+      (should (equal (ghostel-cmd-tests--names root) '("a" "b")))
+      ;; Edited again after our last read: our next save builds on it.
+      (ghostel-cmd-tests--write-outside
+       `((,root (:name "a" :cmd "echo a") (:name "c" :cmd "echo c"))
+         ("/other/" (:name "o" :cmd "echo o")))
+       20)
+      (ghostel-cmd--update-commands
+       (lambda (cmds) (append cmds (list (list :name "d" :cmd "echo d"))))
+       root)
+      (setq ghostel-cmd--cache nil
+            ghostel-cmd--cache-stamp nil)
+      (should (equal (ghostel-cmd-tests--names root) '("a" "c" "d")))
+      (should (equal (ghostel-cmd-tests--names "/other/") '("o"))))))
+
+(ert-deftest ghostel-cmd-test-unreadable-file-is-not-written-over ()
+  (ghostel-cmd-tests--with-store
+    (let ((root ghostel-cmd--root)
+          (broken "((\"/x/\" (:name")
+          (inhibit-message t))
+      (ghostel-cmd--set-commands (list (list :name "a" :cmd "echo a")) root)
+      (with-temp-file ghostel-cmd-save-file
+        (insert broken))
+      (set-file-times ghostel-cmd-save-file (time-add (current-time) 10))
+      (should (equal (ghostel-cmd-tests--names root) '("a")))
+      (should-error (ghostel-cmd--set-commands nil root) :type 'user-error)
+      (should (equal (with-temp-buffer
+                       (insert-file-contents ghostel-cmd-save-file)
+                       (buffer-string))
+                     broken)))))
 
 (ert-deftest ghostel-cmd-test-query-flex-and ()
   (let ((rec (list :name "pytest" :cmd "pytest {{file}}" :desc "unit")))

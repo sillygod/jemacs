@@ -91,6 +91,10 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
 (defvar ghostel-cmd--cache nil
   "Alist of (PROJECT-ROOT . (CMD-PLIST ...)).")
 
+(defvar ghostel-cmd--cache-stamp nil
+  "(FILE . MTIME) of the save file when we last read or wrote it.
+Nil until the first read; MTIME is nil when the file did not exist.")
+
 (defconst ghostel-cmd--var-regexp
   "{{\\s-*\\([^:} \t\n]+\\)\\(?::\\([^}]*\\)\\)?\\s-*}}"
   "Match {{var}} or {{var:default}}.")
@@ -104,18 +108,20 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
         default-directory))))
 
 (defun ghostel-cmd--load ()
-  "Read `ghostel-cmd-save-file', or nil."
+  "Read `ghostel-cmd-save-file', or nil when it is missing or empty.
+Signals when the file does not parse."
   (when (file-exists-p ghostel-cmd-save-file)
-    (condition-case err
-        (with-temp-buffer
-          (insert-file-contents ghostel-cmd-save-file)
-          (goto-char (point-min))
-          (unless (= (point-min) (point-max))
-            (read (current-buffer))))
-      (error
-       (message "ghostel-cmd: could not load %s: %s"
-                ghostel-cmd-save-file (error-message-string err))
-       nil))))
+    (with-temp-buffer
+      (insert-file-contents ghostel-cmd-save-file)
+      (goto-char (point-min))
+      (skip-chars-forward " \t\n")
+      (unless (eobp)
+        (read (current-buffer))))))
+
+(defun ghostel-cmd--file-stamp ()
+  (cons ghostel-cmd-save-file
+        (file-attribute-modification-time
+         (file-attributes ghostel-cmd-save-file))))
 
 (defun ghostel-cmd--save ()
   "Write `ghostel-cmd--cache' to disk."
@@ -127,11 +133,22 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
           (print-level nil)
           (print-circle nil))
       (prin1 (or ghostel-cmd--cache '()) (current-buffer))
-      (insert "\n"))))
+      (insert "\n")))
+  (setq ghostel-cmd--cache-stamp (ghostel-cmd--file-stamp)))
 
-(defun ghostel-cmd--ensure-cache ()
-  (unless ghostel-cmd--cache
-    (setq ghostel-cmd--cache (ghostel-cmd--load))))
+(defun ghostel-cmd--ensure-cache (&optional for-write)
+  "Re-read the save file when it changed since we last read or wrote it.
+A file that does not parse leaves the cache as it was; with FOR-WRITE
+it signals instead, so a save never writes over a half-done edit."
+  (let ((stamp (ghostel-cmd--file-stamp)))
+    (unless (equal stamp ghostel-cmd--cache-stamp)
+      (condition-case err
+          (setq ghostel-cmd--cache (ghostel-cmd--load)
+                ghostel-cmd--cache-stamp stamp)
+        (error
+         (funcall (if for-write #'user-error #'message)
+                  "ghostel-cmd: could not load %s: %s"
+                  ghostel-cmd-save-file (error-message-string err)))))))
 
 (defun ghostel-cmd--get-commands (&optional root)
   "Command plists for ROOT."
@@ -139,16 +156,20 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
   (let ((r (or root (ghostel-cmd--current-project-root))))
     (alist-get r ghostel-cmd--cache nil nil #'equal)))
 
-(defun ghostel-cmd--set-commands (cmds &optional root)
-  "Replace commands for ROOT with CMDS and persist."
-  (ghostel-cmd--ensure-cache)
-  (let ((r (or root (ghostel-cmd--current-project-root))))
-    (setq ghostel-cmd--cache
-          (assoc-delete-all r ghostel-cmd--cache #'equal))
-    (when cmds
-      (push (cons r cmds) ghostel-cmd--cache))
+(defun ghostel-cmd--update-commands (fn &optional root)
+  "Replace ROOT's commands with (FN COMMANDS) and persist.
+FN sees the commands as they are on disk right now, so an outside
+edit of the save file is never written over."
+  (ghostel-cmd--ensure-cache t)
+  (let* ((r (or root (ghostel-cmd--current-project-root)))
+         (cmds (funcall fn (alist-get r ghostel-cmd--cache nil nil #'equal))))
+    (setf (alist-get r ghostel-cmd--cache nil t #'equal) cmds)
     (ghostel-cmd--save)
     cmds))
+
+(defun ghostel-cmd--set-commands (cmds &optional root)
+  "Replace commands for ROOT with CMDS and persist."
+  (ghostel-cmd--update-commands (lambda (_) cmds) root))
 
 
 ;;; Templates
