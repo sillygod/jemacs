@@ -428,6 +428,11 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .arow.s-blocked .areason { color: var(--text); }
 /* What a blocked agent's menu asks, and its choices in their words. */
 .areason.aprompt { max-height: 9em; overflow-y: auto; }
+/* A turn the Mac's sleep cut short: the herd's countdown to continuing it,
+   with a Cancel -- and, once it has stopped, that it will not try again. */
+.contline { display: flex; align-items: center; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
+.cont { font-size: 12px; color: var(--warn); }
+.cont.stopped { color: var(--muted); font-style: italic; }
 .choices { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 6px; }
 .choices .choice { display: flex; gap: 8px; align-items: baseline; text-align: left; }
 .choices .cn { color: var(--warn); font-weight: 700; flex-shrink: 0; }

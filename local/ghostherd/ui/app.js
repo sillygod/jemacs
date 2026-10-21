@@ -1257,6 +1257,27 @@
     return text && text !== "—" ? '<div class="areason' + (p && p.question ? " aprompt" : "") + '">' + esc(text) + "</div>" : "";
   }
 
+  // A turn the Mac's sleep cut short: the herd continues it on its own.
+  // `continueAt' is when (ms); the slim line counts down to it (ticked by
+  // the per-second loop below) with a Cancel.  Once the herd has stopped
+  // retrying, `continueStopped' shows plainly that it will not try again.
+  function continueHtml(a) {
+    if (a.continueAt > 0) {
+      const secs = Math.max(0, Math.round((a.continueAt - Date.now()) / 1000));
+      return '<div class="contline"><span class="cont" data-continue-at="' + a.continueAt + '">' +
+        esc(contText(secs)) + "</span>" +
+        '<button type="button" class="ghost small" data-act="a:agent-sleep-cancel" title="Leave it blocked; do not continue it">Cancel</button></div>';
+    }
+    if (a.continueStopped) {
+      return '<div class="contline"><span class="cont stopped">stopped retrying — the computer slept again</span></div>';
+    }
+    return "";
+  }
+
+  function contText(secs) {
+    return secs > 0 ? "continuing after sleep in " + secs + "s" : "continuing after sleep now…";
+  }
+
   function choicesHtml(a) {
     if (a.state !== "blocked") return "";
     const options = (a.prompt && a.prompt.options) || [];
@@ -1384,6 +1405,11 @@
     app.querySelectorAll("[data-since]").forEach((el) => {
       el.textContent = elapsed(Date.now() - +el.getAttribute("data-since"));
     });
+    // The continue-after-sleep countdown ticks here too, off its absolute
+    // target, so it stays live between herd pushes without a re-render.
+    app.querySelectorAll("[data-continue-at]").forEach((el) => {
+      el.textContent = contText(Math.max(0, Math.round((+el.getAttribute("data-continue-at") - Date.now()) / 1000)));
+    });
   }, 1000);
 
   function subsHtml(a) {
@@ -1482,7 +1508,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
       (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
@@ -1684,7 +1710,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>";
@@ -2467,7 +2493,7 @@
       return renderAgents();
     }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
-    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login") return emit(act, { name });
+    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login" || act === "agent-sleep-cancel") return emit(act, { name });
     if (act === "login-open") return emit("open-browser", { url: el.getAttribute("data-url") });
     if (act === "login-copy") return emit("copy", { text: el.getAttribute("data-url") });
     if (act === "screen") {

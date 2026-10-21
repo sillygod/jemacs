@@ -348,12 +348,28 @@ draws lanes from fields rather than parsing prose."
 
 (defun ghostherd-memory-page--agent (s)
   "Session S as the page shows it."
-  (let ((buf (ghostherd-session-buffer s)))
+  (let* ((buf (ghostherd-session-buffer s))
+         (blocked (eq (ghostherd-session-state s) 'blocked))
+         (err (and blocked (ghostherd--cli-error s)))
+         (continue-at (and blocked (ghostherd--sleep-continue-at s))))
     (list :name (ghostherd-session-name s)
           :kind (format "%s" (or (ghostherd-session-kind s) "shell"))
           :state (format "%s" (or (ghostherd-session-state s) "idle"))
           :reason (or (ghostherd-session-state-reason s) "")
           :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
+          ;; A turn killed by an expired login offers a one-click /login;
+          ;; the /login code-entry screen offers its URL to open/copy.  Only
+          ;; while blocked on each, so the card's buttons are there exactly
+          ;; when they would work.  (The phone path mirrors this in
+          ;; `ghostherd--herd-snapshot'.)
+          :login (if (eq (cdr err) 'login) t :json-false)
+          :url (or (and blocked (ghostherd--login-url s)) "")
+          ;; A turn killed by the Mac sleeping: the herd continues it itself.
+          ;; `continueAt' (float ms) drives the card's "continuing after
+          ;; sleep in Ns" countdown and its Cancel; `continueStopped' is t
+          ;; once the herd has stopped retrying.
+          :continueAt (if continue-at (* 1000 continue-at) 0)
+          :continueStopped (if (ghostherd--sleep-continue-stopped-p s) t :json-false)
           :project (or (ghostherd--project-name (ghostherd-session-project s)) "")
           :role (or (ghostherd-session-role s) "")
           :work (ghostherd-memory-page--agent-work s)
@@ -2144,6 +2160,11 @@ from the newest -- and send it to the page to prepend."
              ;; The card's one-click /login for an expired-login turn end.
              (ghostherd-send s "/login" t)
              (format "Running /login on %s" name))
+            ("agent-sleep-cancel"
+             ;; The card's Cancel on a pending continue-after-sleep: it stays
+             ;; blocked, and the herd will not carry this turn on.
+             (ghostherd-sleep-continue-cancel s)
+             (format "%s stays blocked; the herd will not continue it" name))
             ("agent-abort" (ghostherd-abort s) (format "C-c to %s" name))
             ("agent-answer"
              (let ((n (alist-get 'n intent)))

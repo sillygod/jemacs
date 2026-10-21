@@ -1576,6 +1576,49 @@ far back as its history, and fill the marks in on a cold open.
 
 - Nothing: the batch is shipped.
 
+* Phase 3.31 — An agent carries on after the Mac slept  *(this tree)*
+
+Goal: a turn killed by the Mac sleeping mid-response finishes itself once
+the machine is awake, instead of waiting all night for a human.  Builds on
+b82d102, where such a turn reads as =blocked= and holds its ask rather than
+closing it with the error screen.
+
+** What shipped
+
+- [X] The computer-slept error (=ghostherd-cli-errors=) carries a new
+  =continue= action, the only one that does; login-expired and a bare API
+  error still block and wait, never continue.  The error shows only once
+  the Mac is awake, so a poll seeing it is the wake signal: the herd waits
+  =ghostherd-sleep-continue-delay= (45s, for the network to come back) and
+  sends a prompt -- your turn was cut by the computer sleeping, pick up
+  where you left off.  The held ask is then answered by the continued turn
+  as usual; f6e3425 / 9da1556 close it (the turn began after the ask) and
+  queued asks advance behind it, unchanged.  ERT (7, scratch tmux) +
+  server pytest (unchanged, 325) broken on purpose
+- [X] At most =ghostherd-sleep-continue-max= times per stuck turn (1).  A
+  continued turn that dies the same way again stays blocked, as before, and
+  the card says the herd stopped retrying.  The budget resets only when the
+  agent reaches a settled state (idle/done/waiting) under its own steam --
+  =working= does not reset it, since sending the prompt itself turns the
+  agent working, so a turn cannot be prodded twice
+- [X] It does not fire if, by the end of the delay, the user has typed into
+  the agent (Emacs-mediated input since the wait began, or a new turn that
+  pushed the error off the screen), the error is gone, or the session is
+- [X] The herd log records each continue (=continue= kind); the CLI-error
+  screen capture still happens as before
+- [X] Card and chat, herd and room, show "continuing after sleep in Ns"
+  counting down (ticked off an absolute =continueAt=, live between herd
+  pushes) with a Cancel that leaves it blocked; once stopped, that it will
+  not try again.  The desktop card builder gained =login= / =url= too,
+  which only the phone snapshot had before.  e2e (herd-sleep, 22) broken on
+  purpose
+
+** What is left
+
+- Nothing: the batch is shipped.
+- A second agent runs in its own worktree on local/ghostel-cmd (the first
+  real worktree-flow run); its branch is reviewed and merged separately.
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

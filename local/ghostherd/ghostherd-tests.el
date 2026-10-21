@@ -43,6 +43,9 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; input grace -- which is exactly how this line got written.
          (ghostherd--input-at (make-hash-table :test 'equal))
          (ghostherd--idle-since (make-hash-table :test 'equal))
+         ;; Keyed by id and global, like `ghostherd--input-at': without this
+         ;; one test's slept episode for "c" survives into the next test's.
+         (ghostherd--sleep-continue (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
          (ghostherd--screens (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
@@ -436,6 +439,169 @@ credentials); `ghostherd-login-code-re' is tunable against a real sample."
       ;; A plain response that merely links to claude.ai is not the flow.
       (let ((ghostherd-tests--fake-screen "⏺ see https://claude.ai/docs\n────\n❯ \n────\n"))
         (should-not (ghostherd--login-url s ghostherd-tests--fake-screen))))))
+
+
+;;; Carry a turn on after the Mac slept (ask e8dbef6d)
+
+(defconst ghostherd-tests--slept-screen
+  (concat "⏺ earlier work\n\n"
+          "⏺ API Error: Your computer went to sleep mid-response\n"
+          "────────────────────\n❯ \n────────────────────\n"
+          "  ⏵⏵ auto mode on\n")
+  "A claude turn killed by the Mac going to sleep mid-response.")
+
+(ert-deftest ghostherd-test-a-slept-turn-reads-as-continue ()
+  "The computer-slept error carries the `continue' action; login-expired
+and a bare API error do not -- only a slept turn is safe to auto-continue."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+          (box "\n────────\n❯ \n────────\n"))
+      (let ((ghostherd-tests--fake-screen ghostherd-tests--slept-screen))
+        (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--fake-screen)) 'continue)))
+      (let ((ghostherd-tests--fake-screen (concat "⏺ Login expired · Please run /login" box)))
+        (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--fake-screen)) 'login)))
+      (let ((ghostherd-tests--fake-screen (concat "⏺ API Error: service unavailable" box)))
+        (should (null (cdr (ghostherd--cli-error s ghostherd-tests--fake-screen))))))))
+
+(ert-deftest ghostherd-test-a-slept-turn-is-continued-after-a-delay ()
+  "A turn the Mac's sleep cut short is read as blocked, and once the settle
+delay is up the herd sends the continue prompt itself -- not before -- and
+logs it.  Until then the card has a countdown, not a `stopped'."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--slept-screen)
+            (ghostherd-sleep-continue-delay 60)
+            (ghostherd-sleep-continue-max 1)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (_s text &optional submit) (push (list text submit) sends))))
+          ;; First poll: blocked, an episode opened, nothing sent yet (the
+          ;; delay has not passed), and the card counts down to a continue.
+          (ghostherd-poll-session s)
+          (should (eq (ghostherd-session-state s) 'blocked))
+          (should-not sends)
+          (should (ghostherd--sleep-continue-at s))
+          (should-not (ghostherd--sleep-continue-stopped-p s))
+          ;; Wind the episode's clock back past the delay, then poll again.
+          (plist-put (gethash (ghostherd-session-id s) ghostherd--sleep-continue)
+                     :since (- (float-time) 120))
+          (ghostherd-poll-session s)
+          (should (= (length sends) 1))
+          (should (equal (caar sends) ghostherd-sleep-continue-prompt))
+          (should (eq (cadr (car sends)) t))   ; submitted with Return
+          (should (cl-find 'continue ghostherd--log
+                           :key #'ghostherd-log-entry-kind)))))))
+
+(ert-deftest ghostherd-test-a-slept-turn-is-continued-at-most-once ()
+  "Once the budget is spent, a turn that dies the same way again stays
+blocked -- the herd does not keep prodding it -- and the card says it has
+stopped retrying rather than counting down."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--slept-screen)
+            (ghostherd-sleep-continue-delay 0)
+            (ghostherd-sleep-continue-max 1)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (&rest _) (push t sends))))
+          (ghostherd-poll-session s)        ; delay 0: continues at once
+          (should (= (length sends) 1))
+          (ghostherd-poll-session s)        ; still the slept error: no retry
+          (ghostherd-poll-session s)
+          (should (= (length sends) 1))
+          (should (eq (ghostherd-session-state s) 'blocked))
+          (should (ghostherd--sleep-continue-stopped-p s))
+          (should-not (ghostherd--sleep-continue-at s)))))))
+
+(ert-deftest ghostherd-test-a-slept-continue-respects-its-guards ()
+  "At the end of the delay the herd does not continue if the user has typed
+into the agent, or the error has left the screen."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-sleep-continue-delay 30)
+            (ghostherd-idle-settle 0)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (&rest _) (push t sends))))
+          (cl-flet ((seed ()
+                      (puthash (ghostherd-session-id s)
+                               (list :since (- (float-time) 60) :attempts 0 :cancelled nil)
+                               ghostherd--sleep-continue)))
+            ;; (a) the user typed after the wait began -> left alone.
+            (seed)
+            (puthash (ghostherd-session-id s) (float-time) ghostherd--input-at)
+            (let ((ghostherd-tests--fake-screen ghostherd-tests--slept-screen))
+              (ghostherd-poll-session s))
+            (should-not sends)
+            ;; (b) the error has left the screen -> left alone, episode cleared.
+            (remhash (ghostherd-session-id s) ghostherd--input-at)
+            (seed)
+            (let ((ghostherd-tests--fake-screen
+                   "⏺ back to work\n────────\n❯ \n────────\n  ⏵⏵ auto mode on\n"))
+              (ghostherd-poll-session s))
+            (should-not sends)))))))
+
+(ert-deftest ghostherd-test-a-new-slept-turn-is-a-fresh-continue ()
+  "The budget is per stuck turn: once the agent reaches a settled state on
+its own, a later sleep is continued again."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-sleep-continue-delay 0)
+            (ghostherd-sleep-continue-max 1)
+            (ghostherd-idle-settle 0)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (&rest _) (push t sends))))
+          (let ((ghostherd-tests--fake-screen ghostherd-tests--slept-screen))
+            (ghostherd-poll-session s))            ; continues (1)
+          (should (= (length sends) 1))
+          ;; It finishes on its own: a settled screen clears the episode.
+          (let ((ghostherd-tests--fake-screen
+                 "⏺ all done\n────────\n❯ \n────────\n  ⏵⏵ auto mode on\n"))
+            (ghostherd-poll-session s))
+          (should-not (gethash (ghostherd-session-id s) ghostherd--sleep-continue))
+          ;; A fresh sleep later is a fresh continue.
+          (let ((ghostherd-tests--fake-screen ghostherd-tests--slept-screen))
+            (ghostherd-poll-session s))            ; continues (2)
+          (should (= (length sends) 2)))))))
+
+(ert-deftest ghostherd-test-cancelling-a-slept-continue-leaves-it-blocked ()
+  "The card's Cancel waves the auto-continue off: the agent stays blocked
+and the prompt is never sent."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--slept-screen)
+            (ghostherd-sleep-continue-delay 0)
+            (sends nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (&rest _) (push t sends))))
+          (puthash (ghostherd-session-id s)
+                   (list :since (- (float-time) 60) :attempts 0 :cancelled nil)
+                   ghostherd--sleep-continue)
+          (ghostherd-sleep-continue-cancel s)
+          (ghostherd-poll-session s)
+          (should-not sends)
+          (should (eq (ghostherd-session-state s) 'blocked))
+          (should (ghostherd--sleep-continue-stopped-p s))
+          (should-not (ghostherd--sleep-continue-at s)))))))
+
+(ert-deftest ghostherd-test-the-snapshot-carries-the-continue-countdown ()
+  "The card's countdown and Cancel are driven by `continueAt' /
+`continueStopped' in the snapshot pushed to the page."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--slept-screen)
+            (ghostherd-sleep-continue-delay 60))
+        (ghostherd-poll-session s)
+        (let ((snap (car (ghostherd--herd-snapshot))))
+          (should (> (plist-get snap :continueAt) 0))
+          (should (eq (plist-get snap :continueStopped) :json-false)))))))
 
 (ert-deftest ghostherd-test-wheel-scrolls-the-host-view ()
   "The buffer behind tmux holds one screen, so scrolling it in Emacs
