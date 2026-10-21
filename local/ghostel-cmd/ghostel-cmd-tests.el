@@ -544,6 +544,28 @@ the minibuffer and the posframe's own window do not."
       (ghostel-cmd--hide-on-focus-leave (selected-frame))
       (should-not hidden))))
 
+(ert-deftest ghostel-cmd-test-hiding-removes-global-hooks ()
+  "Showing the posframe adds its global hooks; hiding it removes them."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (let ((window-size-change-functions nil)
+          (window-selection-change-functions nil)
+          (hooked (lambda ()
+                    (list (memq #'ghostel-cmd--posframe-on-parent-resize
+                                (default-value 'window-size-change-functions))
+                          (memq #'ghostel-cmd--hide-on-focus-leave
+                                (default-value
+                                 'window-selection-change-functions))))))
+      (cl-letf (((symbol-function 'posframe-show) #'ignore)
+                ((symbol-function 'posframe-hide) #'ignore))
+        (ghostel-cmd--show-posframe (current-buffer))
+        (should (cl-every #'identity (funcall hooked)))
+        (ghostel-cmd--hide-posframe t)
+        (should-not (cl-some #'identity (funcall hooked)))
+        (ghostel-cmd--show-posframe (current-buffer))
+        (should (cl-every #'identity (funcall hooked)))
+        (ghostel-cmd--show-side-window (current-buffer))
+        (should-not (cl-some #'identity (funcall hooked)))))))
+
 (ert-deftest ghostel-cmd-test-alias-run-is-sidebar ()
   (should (eq (indirect-function 'ghostel-project-cmd-run)
               (indirect-function 'ghostel-cmd-sidebar))))

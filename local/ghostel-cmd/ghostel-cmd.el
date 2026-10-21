@@ -1141,6 +1141,16 @@ Under a filter that row is the next visible one, not a hidden one."
     (and (frame-live-p frame)
          (frame-visible-p frame))))
 
+(defun ghostel-cmd--posframe-hooks (on)
+  "Add the global hooks a shown posframe needs when ON, else remove them."
+  (dolist (hook '((window-size-change-functions
+                   . ghostel-cmd--posframe-on-parent-resize)
+                  (window-selection-change-functions
+                   . ghostel-cmd--hide-on-focus-leave)))
+    (if on
+        (add-hook (car hook) (cdr hook))
+      (remove-hook (car hook) (cdr hook)))))
+
 (defun ghostel-cmd--hide-posframe (&optional keep-focus)
   "Hide the posframe and give focus back to its parent frame.
 KEEP-FOCUS non-nil leaves focus where it is."
@@ -1152,6 +1162,7 @@ KEEP-FOCUS non-nil leaves focus where it is."
           ghostel-cmd--help-visible nil)
     (ghostel-cmd--set-filtering nil)
     (ghostel-cmd--set-filling nil)
+    (ghostel-cmd--posframe-hooks nil)
     (when (and buf (fboundp 'posframe-hide))
       (posframe-hide buf))
     (when (and parent (frame-live-p parent) (not keep-focus))
@@ -1265,10 +1276,7 @@ editing for the overlay."
          (height (+ 1 table preview)))
     (setq ghostel-cmd--posframe-parent parent
           ghostel-cmd--posframe-fitted-width width)
-    (add-hook 'window-size-change-functions
-              #'ghostel-cmd--posframe-on-parent-resize)
-    (add-hook 'window-selection-change-functions
-              #'ghostel-cmd--hide-on-focus-leave)
+    (ghostel-cmd--posframe-hooks t)
     (with-selected-frame parent
       (posframe-show
        buf
@@ -1311,6 +1319,7 @@ editing for the overlay."
 (defun ghostel-cmd--show-side-window (buf)
   (when (fboundp 'posframe-hide)
     (posframe-hide buf))
+  (ghostel-cmd--posframe-hooks nil)
   (setq ghostel-cmd--posframe-parent nil)
   (pop-to-buffer
    buf
