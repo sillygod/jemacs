@@ -10316,6 +10316,115 @@ no-op for another CLI or when no sidecar is up."
       (should calls)                     ; claude + sidecar -> asks to link
       (should (equal (nth 0 (car calls)) "memory_link_claude")))))
 
+(defun ghostherd-tests--write-memory-index (dir project lines)
+  "Write LINES as PROJECT's generated MEMORY.md under store root DIR."
+  (let ((store (expand-file-name (ghostherd--memory-slug project) dir)))
+    (make-directory store t)
+    (with-temp-file (expand-file-name "MEMORY.md" store)
+      (insert "# Memory\n\n## This project\n\n" (string-join lines "\n") "\n"))))
+
+(ert-deftest ghostherd-test-memory-opening-embeds-the-index ()
+  "A grok/agy opening carries the index itself (one line per fact), not only
+the instruction to recall."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp)
+         (proj "/work/proj/"))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index
+           tmp proj '("- [Never commit to main](branch.md) — use a branch"
+                      "- [Retry](retry.md) — worker.py"))
+          (let ((op (ghostherd--memory-opening proj)))
+            (should (string-match-p "recall" op))               ; the rule stays
+            (should (string-match-p "Never commit to main" op)) ; the index is in it
+            (should (string-match-p "retry.md" op))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostherd-test-memory-opening-is-just-the-rule-without-a-store ()
+  "No store yet -> just the rule, no empty index block."
+  (let ((ghostherd-memory-dir (make-temp-file "gh-mem" t)))
+    (should (equal (ghostherd--memory-opening "/no/such/proj/") ghostherd--memory-rules))))
+
+(ert-deftest ghostherd-test-memory-opening-caps-a-huge-index ()
+  "Over the cap, the index is truncated with a note pointing to recall."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp)
+         (ghostherd-memory-opening-max 400)
+         (proj "/work/big/"))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index
+           tmp proj (cl-loop for i from 1 to 100
+                             collect (format "- [Fact %d](f%d.md) — a reasonably long gloss" i i)))
+          (let ((op (ghostherd--memory-opening proj)))
+            (should (string-match-p "truncated" op))
+            (should (< (length op) (+ (length ghostherd--memory-rules) 400 200)))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostherd-test-spawn-grok-gets-the-index-in-rules ()
+  "Any grok spawn -- not only `herd start' -- gets the index in --rules."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index tmp "/p/" '("- [Fact A](a.md) — gloss"))
+          (ghostherd-tests--with-herd
+              ((ghostherd--roles (make-hash-table :test 'equal))
+               (ghostherd--started-by (make-hash-table :test 'equal))
+               (ghostherd--lineage (make-hash-table :test 'equal))
+               (ghostherd-tests--fake-spawned nil))
+            (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+                      ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+                      ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                      ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+              (ghostherd-spawn 'grok :name "g" :project "/p/" :backend 'fake :display nil)
+              (let* ((args (plist-get ghostherd-tests--fake-spawned :args))
+                     (rules (cadr (member "--rules" args))))
+                (should (member "--rules" args))
+                (should (string-match-p "Fact A" rules))
+                (should (string-match-p (regexp-quote ghostherd--memory-mark) rules))))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostherd-test-grok-rules-replace-a-stale-memory-block ()
+  "A re-launch whose args already carry a memory block replaces it, keeping
+role text before it -- never two blocks, always the current index."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index tmp "/p/" '("- [New](n.md) — now"))
+          (let* ((stale (concat "role text\n\n" ghostherd--memory-mark "\nOLD INDEX"))
+                 (out (ghostherd--args-with-memory "/p/" (list "--rules" stale)))
+                 (rules (cadr (member "--rules" out))))
+            (should (string-match-p "role text" rules))        ; role kept
+            (should (string-match-p "New" rules))              ; current index
+            (should-not (string-match-p "OLD INDEX" rules))    ; stale replaced
+            (should (= 2 (length (split-string rules (regexp-quote ghostherd--memory-mark)))))))
+      (delete-directory tmp t))))
+
+(ert-deftest ghostherd-test-spawn-agy-is-told-the-index ()
+  "Any agy spawn is told the opening, with the index, as a first message."
+  (let* ((tmp (make-temp-file "gh-mem" t))
+         (ghostherd-memory-dir tmp) (told nil))
+    (unwind-protect
+        (progn
+          (ghostherd-tests--write-memory-index tmp "/p/" '("- [Fact B](b.md) — gloss"))
+          (ghostherd-tests--with-herd
+              ((ghostherd--roles (make-hash-table :test 'equal))
+               (ghostherd--started-by (make-hash-table :test 'equal))
+               (ghostherd--lineage (make-hash-table :test 'equal))
+               (ghostherd-tests--fake-spawned nil))
+            (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+                      ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+                      ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                      ((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
+                      ((symbol-function 'ghostherd--when-ready) (lambda (_s fn &rest _) (funcall fn)))
+                      ((symbol-function 'ghostherd-prompt) (lambda (_s text &rest _) (push text told))))
+              (ghostherd-spawn 'agy :name "a" :project "/p/" :backend 'fake :display nil)
+              (should (string-match-p "Fact B" (or (car told) "")))
+              (should (string-match-p "recall" (or (car told) ""))))))
+      (delete-directory tmp t))))
+
 (ert-deftest ghostherd-test-lead-stop-guards-and-cleans ()
   "Stop only an agent this lead started, not one owing an ask; a merged, clean
 worktree is removed."

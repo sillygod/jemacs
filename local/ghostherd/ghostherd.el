@@ -3365,9 +3365,16 @@ PLIST keys:
                          default-directory)))
          (command (or (plist-get plist :command)
                       (plist-get spec :command)))
-         (args (if (plist-member plist :args)
-                   (plist-get plist :args)
-                 (plist-get spec :args)))
+         (args (let ((base (if (plist-member plist :args)
+                               (plist-get plist :args)
+                             (plist-get spec :args))))
+                 ;; grok reads the shared-memory opening (rules + index) from
+                 ;; --rules at launch; agy, which has no such flag, is told it
+                 ;; as a first message below; claude reads memory through its
+                 ;; linked dir.  Here for every grok/agy, whatever spawned it.
+                 (if (eq kind 'grok)
+                     (ghostherd--args-with-memory project base)
+                   base)))
          (notes (plist-get plist :notes))
          (role (plist-get plist :role))
          (lineage (plist-get plist :lineage))
@@ -3422,6 +3429,12 @@ PLIST keys:
                           (format "spawned %s on %s" kind backend)))
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
+    ;; agy has no --rules flag: tell it the shared-memory opening as its first
+    ;; message once it is ready.  Only on a real launch -- a restored agy kept
+    ;; the opening it was first told, and an adopted shell gets none.
+    (when (and (eq kind 'agy) (plist-get started :started))
+      (ghostherd--when-ready
+       session (lambda () (ghostherd-prompt session (ghostherd--memory-opening project)))))
     (when display
       (ghostherd-visit session))
     (ghostherd--sidebar-refresh)
@@ -6465,6 +6478,89 @@ up yet (the migration covers the existing dirs; a later spawn covers this)."
 
 (add-hook 'ghostherd-session-created-hook #'ghostherd--memory-link-claude)
 
+(defcustom ghostherd-memory-opening-max 4000
+  "Most characters of the memory index to put in a grok/agy agent's opening.
+Over this it is truncated at a line, with a note pointing to `herd recall'."
+  :type 'integer
+  :group 'ghostherd)
+
+(defcustom ghostherd-memory-dir "~/.ghostherd/memory"
+  "The shared-memory store root -- the same as the sidecar's
+GHOSTHERD_SHARED_MEMORY_DIR.  One directory per project (its main
+checkout's slug) plus `user'; each holds the fact files and MEMORY.md."
+  :type 'directory
+  :group 'ghostherd)
+
+(defconst ghostherd--memory-mark "### ghostherd shared memory — do not edit ###"
+  "Marks the memory block inside grok's --rules, so a re-launch replaces it.")
+
+(defun ghostherd--memory-slug (path)
+  "PATH as a store key -- the same scheme as server/shared_memory.py:
+`/' and `.' become `-' in the absolute, un-slashed path."
+  (replace-regexp-in-string "[/.]" "-" (directory-file-name (expand-file-name path))))
+
+(defun ghostherd--memory-index (project)
+  "PROJECT store's MEMORY.md as the agent should see it: the section and
+fact lines (one per fact, the user facts and the project's), or nil when
+there is no store yet.  Read straight from the file -- the herd keeps it
+current -- so it needs no sidecar."
+  (let ((f (expand-file-name (concat (ghostherd--memory-slug project) "/MEMORY.md")
+                             ghostherd-memory-dir)))
+    (when (file-readable-p f)
+      (with-temp-buffer
+        (insert-file-contents f)
+        (let (lines)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((l (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position))))
+              (when (string-match-p "\\`\\(- \\|## \\)" l)
+                (push l lines)))
+            (forward-line 1))
+          (and lines (string-join (nreverse lines) "\n")))))))
+
+(defun ghostherd--memory-opening (project)
+  "The shared-memory opening for a grok or agy agent in PROJECT: the current
+index (one line per fact, capped at `ghostherd-memory-opening-max'), and the
+rule to recall for the full text and anything newer.  Just the rule when the
+store is empty or absent."
+  (let ((index (ghostherd--memory-index project)))
+    (if (not (and index (not (string-empty-p index))))
+        ghostherd--memory-rules
+      (let* ((head "\n\nThe project's memory now (one line per fact; run \
+\"$GHOSTHERD_HERD\" recall for the full text of any, and anything newer):\n\n")
+             (full (concat head index))
+             (max ghostherd-memory-opening-max))
+        (concat ghostherd--memory-rules
+                (if (<= (length full) max)
+                    full
+                  (let ((cut (or (and (> max 0)
+                                      (string-match "\n[^\n]*\\'"
+                                                    (substring full 0 (min max (length full)))))
+                                 max)))
+                    (concat (substring full 0 cut)
+                            "\n… (truncated; run \"$GHOSTHERD_HERD\" recall for all)"))))))))
+
+(defun ghostherd--args-with-memory (project args)
+  "ARGS with the current memory opening folded into grok's --rules.
+A previous memory block (from a re-launch, marked by `ghostherd--memory-mark')
+is replaced, so there is always exactly one, with the current index; any role
+text already in --rules is kept before it."
+  (let ((opening (ghostherd--memory-opening project))
+        (rules nil) (out nil))
+    (while args
+      (let ((a (pop args)))
+        (if (and (equal a "--rules") args)
+            (setq rules (pop args))
+          (push a out))))
+    (when (and rules (string-match (regexp-quote ghostherd--memory-mark) rules))
+      (setq rules (string-trim-right (substring rules 0 (match-beginning 0)))))
+    (let ((block (concat ghostherd--memory-mark "\n" opening)))
+      (append (nreverse out)
+              (list "--rules" (if (and rules (not (string-empty-p rules)))
+                                  (concat rules "\n\n" block)
+                                block))))))
+
 (defconst ghostherd--lead-role "\
 You are the lead of this project's herd of agents: you plan the work,
 hand it out to the other agents, and report to the user.
@@ -7027,26 +7123,18 @@ reused (with its name and worktree), or, plainly, why it was refused."
                                  (format "%s-%s" kind
                                          (file-name-nondirectory (directory-file-name dir))))))
                      (defaults (ghostherd-project-defaults dir))
-                     (args (let ((base (or (and (eq (car defaults) kind) (cdr defaults))
-                                           (plist-get (ghostherd--spec kind) :args))))
-                             ;; grok reads the shared-memory rules from --rules
-                             ;; at startup; agy has no such flag, so it is told
-                             ;; them as a first message once it is ready (below);
-                             ;; claude reads memory through its linked memory dir.
-                             (if (eq kind 'grok)
-                                 (append base (list "--rules" ghostherd--memory-rules))
-                               base)))
+                     (args (or (and (eq (car defaults) kind) (cdr defaults))
+                               (plist-get (ghostherd--spec kind) :args)))
+                     ;; The shared-memory opening (rules + index) is added for
+                     ;; every grok/agy by `ghostherd-spawn', so it rides every
+                     ;; path, not only this one.
                      (spawn (lambda (directory wt)
-                              (let ((s (ghostherd-spawn kind :name final :project dir
-                                                        :directory directory :args args :notes notes
-                                                        :started-by by :display nil
-                                                        :worktree (and wt (plist-get wt :path))
-                                                        :branch (and wt (plist-get wt :branch))
-                                                        :base (and wt (plist-get wt :base)))))
-                                (when (eq kind 'agy)
-                                  (ghostherd--when-ready
-                                   s (lambda () (ghostherd-prompt s ghostherd--memory-rules))))
-                                s))))
+                              (ghostherd-spawn kind :name final :project dir
+                                               :directory directory :args args :notes notes
+                                               :started-by by :display nil
+                                               :worktree (and wt (plist-get wt :path))
+                                               :branch (and wt (plist-get wt :branch))
+                                               :base (and wt (plist-get wt :base))))))
                 (if (not want-wt)
                     (progn
                       (funcall spawn dir nil)
