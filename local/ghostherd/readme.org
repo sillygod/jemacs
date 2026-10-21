@@ -700,6 +700,16 @@ store, made at spawn / worktree / restore (a worktree's points at the main
 store).  *grok* and *agy* are told at startup to use =herd
 remember/recall/forget= --- grok in =--rules=, agy as a first message.
 
+That opening never drops a fact silently.  The *rules* come first, in full:
+the user's facts and the =feedback= ones, which say how to work, not only
+what is so.  Then every other fact one line each, =project= before
+=reference=, newest first, within =ghostherd-memory-opening-max= (4000
+characters, the rules not counted), whole lines only.  Then one line naming
+every fact that did not fit, and how to read it (=herd recall <topic>=).
+The sidecar composes it from the fact files; without the sidecar the
+opening falls back to MEMORY.md's lines under the same cap, with how many
+were left out.
+
 The existing claude memories were migrated in once (=herd memory migrate=,
 reversible with =herd memory unmigrate=): each is copied into its store
 verbatim, the original backed up (=memory.bak-<date>=, never deleted), and

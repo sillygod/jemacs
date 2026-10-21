@@ -1758,6 +1758,23 @@ phase two.)
   went, so it is not loaded twice.  Facts tied to this machine or user (paths,
   credentials setup, personal preferences) stay memories.
 
+** Phase two, part two: retrieval (ask 7bb69512)
+
+Goal: no fact lost to the agents that cannot browse the store.  deploy-
+platform's index was past the opening's cap, so the facts after the cut
+never reached agy or grok unless they thought to recall.
+
+- [X] The opening never drops a fact silently: the rules (user and feedback
+  facts) in full, outside the cap; every other fact one line each, project
+  before reference, newest first, within =ghostherd-memory-opening-max=;
+  then one line naming every fact that did not fit.  Whole lines only.
+  Composed by the sidecar (=memory_opening=, =shared_memory.opening=);
+  without it, MEMORY.md's lines, capped the same way.  pytest + ERT broken
+  on purpose
+- [ ] After the merge, by hand: restart the sidecar (the new =memory_opening=
+  RPC); reload the =.el= (the bound =ghostherd-memory-opening-max= keeps its
+  4000, now the cap on the index lines only)
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

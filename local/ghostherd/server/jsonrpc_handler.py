@@ -88,6 +88,7 @@ class JsonRpcHandler:
             "herd_remember": self._herd_remember,
             "herd_recall": self._herd_recall,
             "herd_forget": self._herd_forget,
+            "memory_opening": self._memory_opening,
             "memory_link_claude": self._memory_link_claude,
             "memory_migrate": self._memory_migrate,
             "memory_unmigrate": self._memory_unmigrate,
@@ -525,6 +526,15 @@ class JsonRpcHandler:
             except Exception:  # noqa: BLE001 — attribution must never fail a read
                 pass
         return shared_memory.recall(store, key, query=str(params.get("query") or ""))
+
+    def _memory_opening(self, params: dict) -> dict:
+        """What a grok or agy agent of the caller's project is told of the
+        memory as it starts (shared_memory.opening): the rules in full, the
+        rest one line each within MAX characters, then the names of what did
+        not fit.  Emacs asks for it at spawn."""
+        _store, key = self._memory_store(params)
+        cap = int(params.get("max") or 4000)
+        return shared_memory.opening(key, max(0, cap))
 
     def _herd_forget(self, params: dict) -> dict:
         "Remove a fact by NAME from the caller's project store (or --user)."
