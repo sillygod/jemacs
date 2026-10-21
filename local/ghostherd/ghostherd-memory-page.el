@@ -88,7 +88,8 @@
                            (setq ghostherd-memory-page--pending nil
                                  ghostherd-memory-page--importing nil)
                            (ghostherd-memory-page--unwatch)
-                           (ghostherd-memory-page--herd-unwatch))
+                           (ghostherd-memory-page--herd-unwatch)
+                           (ghostherd-memory-page--memory-unwatch))
                 :reopen #'ghostherd-memory-page-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
@@ -1749,6 +1750,110 @@ forge or ClickUp instead, which want their own login."
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-herd-change)
 
 
+;;; The Memory tab: the shared-memory facts, live, editable
+;;
+;; The page watches one store (the user store or a project's) and the herd
+;; pushes its facts, re-read from the sidecar every few seconds, so a fact
+;; an agent's `herd remember' or claude's own write adds elsewhere appears
+;; without a reload.  Edits and deletes go through the store's own code
+;; (the index regenerated, provenance updated), guarded against path tricks
+;; sidecar-side.
+
+(defconst ghostherd-memory-page--memory-every 3
+  "Seconds between looks at the shared-memory facts the tab shows.")
+(defvar ghostherd-memory-page--memory-key nil
+  "The store key (a slug, or `user') the Memory tab watches, or nil.")
+(defvar ghostherd-memory-page--memory-timer nil)
+(defvar ghostherd-memory-page--memory-sig nil
+  "A signature of the facts last pushed, so an unchanged store is not re-sent
+and the page is not re-rendered under an open editor every few seconds.")
+
+(defun ghostherd-memory-page--memory-send-projects ()
+  "Push the picker -- the user store and each project store -- to the page."
+  (ghostherd-memory-request-async
+   "herd_memory_projects"
+   (lambda (result)
+     (ghostherd-memory-page--js
+      "setMemoryProjects"
+      (list :user (plist-get result :user)
+            :projects (ghostherd-memory-page--vec (plist-get result :projects)))))
+   nil
+   (ghostherd-memory-page--fail "Memory projects")))
+
+(defun ghostherd-memory-page--memory-tick ()
+  "Fetch the watched store's facts; push them to the page when they changed."
+  (if (not (and ghostherd-memory-page--memory-key
+                (xwapp-live-p ghostherd-memory-page--app)))
+      (ghostherd-memory-page--memory-unwatch)
+    (let ((key ghostherd-memory-page--memory-key))
+      (ghostherd-memory-request-async
+       "herd_memory_list"
+       (lambda (result)
+         (when (equal key ghostherd-memory-page--memory-key)
+           (let* ((facts (ghostherd-memory-page--vec (plist-get result :facts)))
+                  (sig (sxhash-equal (list key (append facts nil)))))
+             (unless (equal sig ghostherd-memory-page--memory-sig)
+               (setq ghostherd-memory-page--memory-sig sig)
+               (ghostherd-memory-page--js
+                "renderMemory"
+                (list :key (or (plist-get result :key) key) :facts facts))))))
+       (list :key key)
+       (ghostherd-memory-page--fail "Memory")))))
+
+(defun ghostherd-memory-page--memory-watch (intent)
+  "Watch the store INTENT names (its `key', or a `project' path), pushing its
+facts live.  Re-emitting with another key switches the watched store."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (project (ghostherd-memory-page--str (alist-get 'project intent))))
+    (setq ghostherd-memory-page--memory-key (or key project "user")
+          ghostherd-memory-page--memory-sig nil)   ; force a push for the new key
+    (ghostherd-memory-page--memory-send-projects)
+    (unless (timerp ghostherd-memory-page--memory-timer)
+      (setq ghostherd-memory-page--memory-timer
+            (run-at-time 0 ghostherd-memory-page--memory-every
+                         #'ghostherd-memory-page--memory-tick)))
+    (ghostherd-memory-page--memory-tick)))
+
+(defun ghostherd-memory-page--memory-unwatch ()
+  (when (timerp ghostherd-memory-page--memory-timer)
+    (cancel-timer ghostherd-memory-page--memory-timer))
+  (setq ghostherd-memory-page--memory-timer nil
+        ghostherd-memory-page--memory-key nil
+        ghostherd-memory-page--memory-sig nil))
+
+(defun ghostherd-memory-page--memory-edit (intent)
+  "Save a fact's edit (description, type, body) through the store, then refresh."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (name (ghostherd-memory-page--str (alist-get 'name intent)))
+        (description (or (ghostherd-memory-page--str (alist-get 'description intent)) ""))
+        (type (ghostherd-memory-page--str (alist-get 'type intent)))
+        (body (let ((b (alist-get 'body intent))) (if (stringp b) b ""))))
+    (unless (and key name) (user-error "No fact"))
+    (ghostherd-memory-request-async
+     "herd_memory_edit"
+     (lambda (_r)
+       (setq ghostherd-memory-page--memory-sig nil)  ; force a refresh now
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" "Saved"))
+     (append (list :key key :name name :description description :body body)
+             (and type (list :type type)))
+     (ghostherd-memory-page--fail "Saving fact"))))
+
+(defun ghostherd-memory-page--memory-delete (intent)
+  "Delete a fact through the store (the page's confirmed delete), then refresh."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (name (ghostherd-memory-page--str (alist-get 'name intent))))
+    (unless (and key name) (user-error "No fact"))
+    (ghostherd-memory-request-async
+     "herd_memory_delete"
+     (lambda (_r)
+       (setq ghostherd-memory-page--memory-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" "Deleted"))
+     (list :key key :name name)
+     (ghostherd-memory-page--fail "Deleting fact"))))
+
+
 ;;; A project's room: its agents' conversations side by side
 ;;
 ;; Each agent's transcript, read by the sidecar from its tail: what was
@@ -2470,6 +2575,10 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("herd-unwatch"
          (ghostherd-memory-page--room-close)
          (ghostherd-memory-page--herd-unwatch))
+        ("memory-watch" (ghostherd-memory-page--memory-watch intent))
+        ("memory-unwatch" (ghostherd-memory-page--memory-unwatch))
+        ("memory-edit" (ghostherd-memory-page--memory-edit intent))
+        ("memory-delete" (ghostherd-memory-page--memory-delete intent))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-earlier" (ghostherd-memory-page--room-earlier intent))
         ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))

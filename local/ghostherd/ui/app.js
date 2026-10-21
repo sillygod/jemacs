@@ -327,6 +327,10 @@
   let src = null; // the session on screen: { path, meta, total, offset, chunks, focus, re, marks, at }
   let listScroll = { search: 0, sessions: 0 };
   let lastOpened = null; // key of the card a source was opened from
+  // The Memory tab's store, facts and view state (see showMemory).
+  let mem = { key: "", projects: [], user: { key: "user", label: "User (shared)" },
+              facts: [], filter: "", open: new Set(), editing: "", confirmDel: "" };
+  let memWatching = false; // Emacs is pushing this store's facts
 
   function sourceMeta(path) {
     return ctx.byPath[path] || { source_path: path, agent: "", project: "", kind: "", chunks: 0 };
@@ -338,6 +342,10 @@
     if (watching && view !== "agents") {
       watching = false;
       emit("herd-unwatch");
+    }
+    if (memWatching && view !== "memory") {
+      memWatching = false;
+      emit("memory-unwatch");
     }
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
@@ -380,6 +388,7 @@
       openRoom(project);
     } else if (where === "agents") showAgents();
     else if (where === "log") showLog();
+    else if (where === "memory") showMemory();
     else if (where === "sessions") showSessions();
     else if (where === "search") showSearch();
   }
@@ -2322,7 +2331,9 @@
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
       app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
-        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views + '</span><div class="rwork"></div>' +
+        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views +
+        '<button type="button" class="ghost small" data-act="room-memory" title="This project\'s shared memory">Memory</button>' +
+        '</span><div class="rwork"></div>' +
         '<div class="rruns"></div></div>' +
         (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
@@ -3116,6 +3127,9 @@
     } else if (ev.target.id === "log-filter") {
       herd.filter = ev.target.value;
       renderLogList();
+    } else if (ev.target.id === "mem-filter") {
+      mem.filter = ev.target.value;
+      renderMemoryList();
     }
   });
 
@@ -3123,6 +3137,12 @@
     if (ev.target.id === "log-session") {
       herd.session = ev.target.value;
       renderLog();
+      return;
+    }
+    if (ev.target.id === "mem-project") {
+      mem.key = ev.target.value;
+      mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+      emit("memory-watch", { key: mem.key });
       return;
     }
     if (ev.target.id !== "project") return;
@@ -3142,6 +3162,100 @@
     limit = 30;
     if (query.trim()) search(true);
     else renderResults();
+  }
+
+  // ---- Memory tab ------------------------------------------------------
+  // The shared-memory facts of one store (the user store, or a project's),
+  // pushed live by Emacs (memory-watch/renderMemory) so a fact added
+  // elsewhere appears without a reload.  Open a fact to read its body, edit
+  // or delete it -- through the store's own code, sidecar-side.
+
+  function showMemory(opts) {
+    view = tab = "memory";
+    src = null;
+    mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+    const target = (opts && opts.project) || herdNow.room || ctx.currentProject || "";
+    chrome();
+    app.innerHTML =
+      '<div class="page wide memory">' +
+      '<div class="filters mem-tools">' +
+      '<select id="mem-project" title="Project store"></select>' +
+      '<input id="mem-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' +
+      SLASH + '" value="' + esc(mem.filter) + '"></div>' +
+      '<div id="mem-list" class="results"><p class="empty">Reading memory…</p></div></div>';
+    renderMemPicker();
+    emit("memory-watch", target ? { project: target } : { key: "user" });
+    memWatching = true;
+  }
+
+  function memProjectOptions() {
+    const opts = [mem.user].concat(mem.projects);
+    if (mem.key && mem.key !== "user" && !mem.projects.some((p) => p.key === mem.key)) {
+      opts.push({ key: mem.key, label: mem.key }); // a store the picker list has not caught up to
+    }
+    return opts.map((o) => '<option value="' + esc(o.key) + '"' +
+      (o.key === mem.key ? " selected" : "") + ">" + esc(o.label) + "</option>").join("");
+  }
+
+  function renderMemPicker() {
+    const sel = $("mem-project");
+    if (sel) sel.innerHTML = memProjectOptions();
+  }
+
+  function memFact(name) { return mem.facts.find((f) => f.name === name); }
+  function memKeyFor(f) { return f && f.shared ? "user" : mem.key; } // a shared fact lives in the user store
+
+  function renderMemoryList() {
+    const list = $("mem-list");
+    if (!list) return;
+    if (!mem.facts.length) { list.innerHTML = '<p class="empty">No memory here yet.</p>'; return; }
+    const needles = mem.filter.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = mem.facts.filter((f) => {
+      const hay = (f.name + "\n" + f.description + "\n" + f.body).toLowerCase();
+      return needles.every((n) => hay.includes(n));
+    });
+    list.innerHTML = shown.length
+      ? shown.map(renderMemRow).join("")
+      : '<p class="empty">Nothing matches.</p>';
+  }
+
+  function renderMemRow(f) {
+    const open = mem.open.has(f.name);
+    const badge = '<span class="mtype t-' + esc(f.type) + '">' + esc(f.type) + "</span>";
+    const where = f.shared ? '<span class="mshared" title="Shared by every project">shared</span>' : "";
+    const upd = f.updated ? elapsed(Date.now() - Date.parse(f.updated)) : "";
+    const meta = (f.author ? "by " + esc(f.author) : "") + (f.author && upd ? " · " : "") + (upd ? esc(upd) : "");
+    const head =
+      '<div class="mhead" data-act="mem-open" data-name="' + esc(f.name) + '" tabindex="0" role="button">' +
+      '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where +
+      '<span class="mmeta">' + meta + "</span></div>" +
+      (f.description ? '<div class="mdesc">' + esc(f.description) + "</div>" : "") + "</div>";
+    if (!open) return '<div class="mfact">' + head + "</div>";
+    if (mem.editing === f.name) return '<div class="mfact open editing">' + head + memEditForm(f) + "</div>";
+    const confirming = mem.confirmDel === f.name;
+    const actions =
+      '<div class="macts">' +
+      '<button type="button" class="ghost small" data-act="mem-edit" data-name="' + esc(f.name) + '">Edit</button>' +
+      (confirming
+        ? '<span class="mconfirm">Delete this fact?</span>' +
+          '<button type="button" class="ghost small danger" data-act="mem-delete" data-name="' + esc(f.name) + '">Delete</button>' +
+          '<button type="button" class="ghost small" data-act="mem-delcancel" data-name="' + esc(f.name) + '">Keep</button>'
+        : '<button type="button" class="ghost small" data-act="mem-delask" data-name="' + esc(f.name) + '">Delete</button>') +
+      "</div>";
+    return '<div class="mfact open">' + head + '<div class="mbody">' + markdown(f.body) + "</div>" + actions + "</div>";
+  }
+
+  function memEditForm(f) {
+    const types = ["project", "feedback", "reference", "user"];
+    return '<div class="medit">' +
+      '<input id="mem-edit-desc" type="text" value="' + esc(f.description) + '" placeholder="Description">' +
+      '<select id="mem-edit-type" title="Type">' + types.map((t) =>
+        '<option value="' + t + '"' + (t === f.type ? " selected" : "") + ">" + t + "</option>").join("") + "</select>" +
+      '<textarea id="mem-edit-body" rows="8" spellcheck="false">' + esc(f.body) + "</textarea>" +
+      '<div class="macts">' +
+      '<button type="button" class="primary small" data-act="mem-save" data-name="' + esc(f.name) + '">Save</button>' +
+      '<button type="button" class="ghost small" data-act="mem-editcancel" data-name="' + esc(f.name) + '">Cancel</button>' +
+      "</div></div>";
   }
 
   app.addEventListener("click", (ev) => {
@@ -3241,6 +3355,44 @@
       emit("log-delete", { id: +el.getAttribute("data-id") });
     } else if (act === "seg") {
       goToEntry(+el.getAttribute("data-i"));
+    } else if (act === "room-memory") {
+      lastOpened = null;
+      showMemory({ project: herdNow.room });
+    } else if (act === "mem-open") {
+      const n = el.getAttribute("data-name");
+      if (mem.open.has(n)) mem.open.delete(n);
+      else mem.open.add(n);
+      mem.confirmDel = "";
+      renderMemoryList();
+    } else if (act === "mem-edit") {
+      mem.editing = el.getAttribute("data-name");
+      mem.confirmDel = "";
+      renderMemoryList();
+      const d = $("mem-edit-desc");
+      if (d) d.focus();
+    } else if (act === "mem-editcancel") {
+      mem.editing = "";
+      renderMemoryList();
+    } else if (act === "mem-save") {
+      const n = el.getAttribute("data-name");
+      const f = memFact(n);
+      const desc = $("mem-edit-desc"), type = $("mem-edit-type"), body = $("mem-edit-body");
+      emit("memory-edit", { key: memKeyFor(f), name: n,
+        description: desc ? desc.value : "", type: type ? type.value : "project",
+        body: body ? body.value : "" });
+      mem.editing = "";
+      renderMemoryList();
+    } else if (act === "mem-delask") {
+      mem.confirmDel = el.getAttribute("data-name");
+      renderMemoryList();
+    } else if (act === "mem-delcancel") {
+      mem.confirmDel = "";
+      renderMemoryList();
+    } else if (act === "mem-delete") {
+      const n = el.getAttribute("data-name");
+      const f = memFact(n);
+      emit("memory-delete", { key: memKeyFor(f), name: n });
+      mem.confirmDel = ""; mem.open.delete(n);
     }
   });
 
@@ -3252,6 +3404,7 @@
       if (which === "sessions") showSessions();
       else if (which === "log") showLog();
       else if (which === "agents") showAgents();
+      else if (which === "memory") showMemory();
       else showSearch();
     }));
   btnBack.addEventListener("click", back);
@@ -3426,8 +3579,24 @@
     showView: (v) => {
       if (v === "agents") showAgents();
       else if (v === "log") showLog();
+      else if (v === "memory") showMemory();
       else if (v === "sessions") showSessions();
       else showSearch();
+    },
+
+    setMemoryProjects: (p) => {
+      mem.user = (p && p.user) || mem.user;
+      mem.projects = (p && p.projects) || [];
+      if (view === "memory") renderMemPicker();
+    },
+
+    renderMemory: (p) => {
+      if (view !== "memory") return;
+      mem.key = (p && p.key) || mem.key;
+      mem.facts = (p && p.facts) || [];
+      renderMemPicker();
+      // Not while an editor is open, so a live push does not wipe it.
+      if (!mem.editing) renderMemoryList();
     },
 
     renderHerd: (p) => {
