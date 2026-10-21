@@ -1641,9 +1641,11 @@ closing it with the error screen.
   connection dropped, a log line naming it -- never that the computer
   slept.  Login expired, a stalled response, no network and a 500 still
   block.  ERT + e2e (herd-sleep, 30) broken on purpose
-- [ ] After the merge, set the live =ghostherd-cli-errors= by hand:
-  bin/reload keeps a bound defcustom, so the live Emacs keeps the old
-  unanchored rules and no =dropped= entry until then
+- [X] After the merge, set the live =ghostherd-cli-errors= by hand:
+  bin/reload keeps a bound defcustom -- it keeps the whole form, so even
+  =custom-reevaluate-setting= saw the old standard value; re-evaluated the
+  defcustom form from source (the user had not customised it), and the live
+  value now has the =dropped= rule and the anchored patterns (4 rules)
 
 * Phase 3.32 — A lead starts and stops agents through the herd  *(this tree)*
 
