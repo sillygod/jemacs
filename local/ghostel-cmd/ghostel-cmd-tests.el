@@ -1015,6 +1015,18 @@ them, e / d / M-j / M-k refuse, and m copies one into the project."
         (should-error (ghostel-cmd-move-scope) :type 'user-error)
         (should (= asked 1))))))
 
+(ert-deftest ghostel-cmd-test-columns-do-not-sort ()
+  "No column sorts (tabulated-list S), so the sections never mix."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "zz" :cmd "echo z") (list :name "aa" :cmd "echo a"))
+    (ghostel-cmd-tests--globals (list (list :name "bb" :cmd "echo b")))
+    (let ((ids (ghostel-cmd-tests--ids)))
+      (should (equal ids '((project . "zz") (project . "aa") (global . "bb"))))
+      (should (cl-notany (lambda (col) (nth 2 col)) tabulated-list-format))
+      (dotimes (n (length tabulated-list-format))
+        (should-error (tabulated-list-sort n) :type 'user-error))
+      (should (equal (ghostel-cmd-tests--ids) ids)))))
+
 (ert-deftest ghostel-cmd-test-help-text-lists-overlay-keys ()
   (let ((text (ghostel-cmd--help-text)))
     (should (string-match-p "RET" text))

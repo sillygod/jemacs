@@ -655,16 +655,17 @@ picked as a whole, which typing replaces.")
 
 (defun ghostel-cmd--format (&optional tagged)
   "Tabulated-list format for the current width.
-TAGGED adds a first column telling where each command comes from."
+TAGGED adds a first column telling where each command comes from.  No
+column sorts: the list keeps your order, its sections never mix."
   (let* ((budget (max 24 (1- (ghostel-cmd--available-width))))
          (tag (if tagged 6 0))
          (name 16)
          (desc 14)
          (cmd (max 12 (- budget (if tagged (1+ tag) 0) name desc 2))))
-    (vconcat (when tagged (list (list "From" tag t)))
-             (vector (list "Name" name t)
-                     (list "Command" cmd t)
-                     (list "Desc" desc t)))))
+    (vconcat (when tagged (list (list "From" tag nil)))
+             (vector (list "Name" name nil)
+                     (list "Command" cmd nil)
+                     (list "Desc" desc nil)))))
 
 (defun ghostel-cmd--tag (scope)
   "The From column of a row of SCOPE."
