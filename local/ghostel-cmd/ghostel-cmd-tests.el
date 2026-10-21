@@ -20,6 +20,8 @@
           (ghostel-cmd-save-file (expand-file-name "cmds.eld" dir))
           (ghostel-cmd--cache nil)
           (ghostel-cmd--cache-stamp nil)
+          (ghostel-cmd--tasks-cache nil)
+          (ghostel-cmd-discover t)
           (ghostel-cmd--root (file-name-as-directory dir))
           (ghostel-cmd--caller-file (expand-file-name "foo.py" dir))
           (ghostel-cmd--caller-line 12)
@@ -757,6 +759,244 @@ project command of the same name."
                        '(("v" . "one"))))
         (should (equal (ghostel-cmd--fill-vars rec "/elsewhere/" 'global)
                        '(("v" . "g"))))))))
+
+(defun ghostel-cmd-tests--write (file text &optional seconds)
+  "Write TEXT to FILE in the project root, stamped SECONDS from now."
+  (let ((path (expand-file-name file ghostel-cmd--root)))
+    (with-temp-file path
+      (insert text))
+    (when seconds
+      (set-file-times path (time-add (current-time) seconds)))))
+
+(defun ghostel-cmd-tests--task-cmds ()
+  (mapcar (lambda (row) (plist-get (cdr row) :cmd))
+          (ghostel-cmd--discover ghostel-cmd--root)))
+
+(ert-deftest ghostel-cmd-test-npm-scripts-and-runner ()
+  "package.json scripts run with the runner the lockfile names, else
+the one in packageManager, else npm; the script is the desc."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write
+     "package.json"
+     "{\"scripts\": {\"dev\": \"vite\", \"build:prod\": \"vite build\",
+                   \"weird name\": \"echo\", \"nested\": {\"a\": 1}}}")
+    (should (equal (ghostel-cmd--discover ghostel-cmd--root)
+                   `(((npm . "dev") :name "dev" :cmd "npm run dev" :desc "vite")
+                     ((npm . "build:prod") :name "build:prod"
+                      :cmd "npm run build:prod" :desc "vite build")
+                     ((npm . "weird name") :name "weird name"
+                      :cmd ,(concat "npm run " (shell-quote-argument "weird name"))
+                      :desc "echo"))))
+    (ghostel-cmd-tests--write
+     "package.json"
+     "{\"packageManager\": \"yarn@4.1.0\", \"scripts\": {\"dev\": \"vite\"}}")
+    (should (equal (ghostel-cmd-tests--task-cmds) '("yarn run dev")))
+    (should (equal (caar (ghostel-cmd--discover ghostel-cmd--root)) '(yarn . "dev")))
+    (dolist (case '(("bun.lockb" . "bun run dev")
+                    ("bun.lock" . "bun run dev")
+                    ("yarn.lock" . "yarn run dev")
+                    ("pnpm-lock.yaml" . "pnpm run dev")))
+      (ghostel-cmd-tests--write (car case) "")
+      (should (equal (ghostel-cmd-tests--task-cmds) (list (cdr case)))))))
+
+(defconst ghostel-cmd-tests--makefile "\
+# comment: not a target
+CC := gcc
+CFLAGS ?= -O2
+LDFLAGS += -lm
+X = a:b
+Y ::= z
+SRCS = a.c \\
+b.c: \\
+c.c
+.PHONY: all test clean
+.DEFAULT_GOAL := all
+
+all: build test ## Build and test everything
+
+build: $(OUT)/app
+\t$(CC) -o $@ main.c
+\t@echo \"done: ok\"
+
+$(OUT)/app: main.c
+\tmkdir -p $(OUT)
+
+%.o: %.c
+\t$(CC) -c $<
+
+test lint: build
+\t./run-tests \\
+--flag: value
+
+install:: all
+clean:
+\trm -rf $(OUT)
+
+debug: CFLAGS += -g
+.hidden:
+\ttrue
+
+define HELP
+fake: target
+endef
+
+ifneq (,a:b)
+win: ; echo x=1
+endif
+dist/app.tar.gz: all
+")
+
+(ert-deftest ghostel-cmd-test-make-targets ()
+  "Real targets only: no assignments, .PHONY or other dotted targets,
+pattern or variable rules, recipe or continuation lines, define
+bodies or target-specific variables.  GNUmakefile wins, as in make."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "Makefile" ghostel-cmd-tests--makefile)
+    (let ((rows (ghostel-cmd--discover ghostel-cmd--root)))
+      (should (equal (mapcar #'car rows)
+                     '((make . "all") (make . "build") (make . "test")
+                       (make . "lint") (make . "install") (make . "clean")
+                       (make . "win") (make . "dist/app.tar.gz"))))
+      (should (equal (cdar rows) '(:name "all" :cmd "make all"
+                                   :desc "Build and test everything"))))
+    (ghostel-cmd-tests--write "GNUmakefile" "gnu:\n\ttrue\n")
+    (should (equal (ghostel-cmd-tests--task-cmds) '("make gnu")))))
+
+(defconst ghostel-cmd-tests--justfile "\
+#!/usr/bin/env just --justfile
+set shell := [\"bash\", \"-c\"]
+set positional-arguments
+export RUST_LOG := \"info\"
+version := \"1.0\"
+alias b := build
+
+# Build the project
+build target=\"debug\":
+    cargo build --profile {{target}}
+
+# not a doc: a blank line follows
+
+@test *args: build
+    cargo test {{args}}
+
+[private]
+helper:
+    echo hi
+
+_hidden:
+    echo no
+
+[group('ci')]
+# Run CI
+ci: build test
+
+serve addr=\"localhost:8000\":
+    ./serve {{addr}}
+
+[doc('Deploy it')]
+deploy env='prod':
+    ./deploy
+")
+
+(ert-deftest ghostel-cmd-test-just-recipes ()
+  "Public recipes only, with the comment right above or [doc] as desc;
+settings, assignments, aliases and private recipes are left out."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "justfile" ghostel-cmd-tests--justfile)
+    (should (equal (mapcar (lambda (row)
+                             (list (cdar row) (plist-get (cdr row) :cmd)
+                                   (plist-get (cdr row) :desc)))
+                           (ghostel-cmd--discover ghostel-cmd--root))
+                   '(("build" "just build" "Build the project")
+                     ("test" "just test" "")
+                     ("ci" "just ci" "Run CI")
+                     ("serve" "just serve" "")
+                     ("deploy" "just deploy" "Deploy it"))))))
+
+(ert-deftest ghostel-cmd-test-tasks-cached-by-mtime-never-run ()
+  "The files are parsed again only when one changes or appears, or the
+setting does; nothing is ever run to find tasks."
+  (ghostel-cmd-tests--with-store
+    (let ((root ghostel-cmd--root)
+          (parsed 0)
+          (make-tasks (symbol-function 'ghostel-cmd--make-tasks))
+          (ran (lambda (&rest _) (error "Discovery ran a process"))))
+      (cl-letf (((symbol-function 'ghostel-cmd--make-tasks)
+                 (lambda (file) (cl-incf parsed) (funcall make-tasks file)))
+                ((symbol-function 'call-process) ran)
+                ((symbol-function 'process-file) ran)
+                ((symbol-function 'start-process) ran)
+                ((symbol-function 'make-process) ran))
+        (ghostel-cmd-tests--write "Makefile" "build:\n\tcc\n")
+        (should (equal (mapcar #'car (ghostel-cmd--tasks root)) '((make . "build"))))
+        (ghostel-cmd--tasks root)
+        (should (= parsed 1))
+        (ghostel-cmd-tests--write "Makefile" "build:\n\tcc\ntest:\n" 10)
+        (should (equal (mapcar #'car (ghostel-cmd--tasks root))
+                       '((make . "build") (make . "test"))))
+        (should (= parsed 2))
+        (ghostel-cmd-tests--write "justfile" "fmt:\n    gofmt\n")
+        (should (equal (mapcar #'car (ghostel-cmd--tasks root))
+                       '((make . "build") (make . "test") (just . "fmt"))))
+        (should (= parsed 3))
+        (let ((ghostel-cmd-discover '(just)))
+          (should (equal (mapcar #'car (ghostel-cmd--tasks root)) '((just . "fmt")))))
+        (let ((ghostel-cmd-discover nil))
+          (should-not (ghostel-cmd--tasks root)))
+        (should (= parsed 3))))))
+
+(ert-deftest ghostel-cmd-test-broken-task-file-shows-nothing ()
+  "A package.json or Makefile that does not parse lists nothing for its
+source, says so once, and the overlay keeps working."
+  (ghostel-cmd-tests--with-overlay (list (list :name "a" :cmd "echo a"))
+    (let ((messages nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (when fmt (push (apply #'format-message fmt args) messages)))))
+        (ghostel-cmd-tests--write "package.json" "{\"scripts\": {\"dev\": ")
+        (ghostel-cmd-tests--write "Makefile" "define HELP\nfoo: bar\n")
+        (ghostel-cmd-tests--write "justfile" "fmt:\n    gofmt\n")
+        (ghostel-cmd--refresh-overlay)
+        (should (equal (ghostel-cmd-tests--ids) '((project . "a") (just . "fmt"))))
+        (should (= (length messages) 2))
+        (should (cl-some (lambda (m) (string-match-p "could not read .*package\\.json" m))
+                         messages))
+        (should (cl-some (lambda (m) (string-match-p "could not read .*Makefile: .*endef" m))
+                         messages))
+        (ghostel-cmd--refresh-overlay)
+        (should (= (length messages) 2))))))
+
+(ert-deftest ghostel-cmd-test-tasks-listed-read-only-after-bookmarks ()
+  "Tasks follow the bookmarks, tagged by source; RET and C-RET paste
+them, e / d / M-j / M-k refuse, and m copies one into the project."
+  (ghostel-cmd-tests--with-overlay (list (list :name "build" :cmd "./build.sh"))
+    (ghostel-cmd-tests--delivering
+      (ghostel-cmd-tests--write "Makefile" "build: ## Compile\n\tcc\nclean:\n\trm\n")
+      (ghostel-cmd-tests--globals (list (list :name "gs" :cmd "git status")))
+      (should (equal (ghostel-cmd-tests--ids)
+                     '((project . "build") (global . "gs")
+                       (make . "build") (make . "clean"))))
+      (ghostel-cmd-tests--goto '(make . "build"))
+      (should (string-match-p "\\`make +build +make build +Compile"
+                              (ghostel-cmd-tests--line)))
+      (dolist (cmd '(ghostel-cmd-edit ghostel-cmd-delete
+                     ghostel-cmd-move-down ghostel-cmd-move-up))
+        (should-error (funcall cmd) :type 'user-error))
+      (execute-kbd-macro (kbd "RET"))
+      (should (equal (car sent) '("make build" . nil)))
+      (ghostel-cmd-tests--goto '(make . "clean"))
+      (execute-kbd-macro (kbd "C-<return>"))
+      (should (equal (car sent) '("make clean" . t)))
+      (execute-kbd-macro "m")
+      (should (equal (tabulated-list-get-id) '(project . "clean")))
+      (should (equal (ghostel-cmd--get-commands ghostel-cmd--root)
+                     (list (list :name "build" :cmd "./build.sh")
+                           (list :name "clean" :cmd "make clean" :desc ""))))
+      (should (member '(make . "clean") (ghostel-cmd-tests--ids)))
+      (ghostel-cmd-tests--goto '(make . "build"))
+      (ghostel-cmd-tests--answering nil nil
+        (should-error (ghostel-cmd-move-scope) :type 'user-error)
+        (should (= asked 1))))))
 
 (ert-deftest ghostel-cmd-test-help-text-lists-overlay-keys ()
   (let ((text (ghostel-cmd--help-text)))

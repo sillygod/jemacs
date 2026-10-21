@@ -16,12 +16,14 @@
 ;;
 ;;   j/k move   RET paste (fill vars first)   C-RET paste+Enter
 ;;   / filter   a add   e edit   d delete   M-j/M-k reorder   q quit
-;;   A add a global command   m move between project and global
+;;   A add global   m move to global / back (a task: copy into the project)
 ;;   C-y yank, C-\ input method (in the filter and fill input)
 ;;   C-n/C-p pick a choice while filling {{var:a|b|c}}
 ;;
 ;; Global commands, shared by every project, follow the project's own
-;; in the list.
+;; in the list, then the tasks found in the project root: package.json
+;; scripts, Makefile targets and justfile recipes, read-only.  The
+;; files are only parsed, never run; `ghostel-cmd-discover' picks them.
 ;;
 ;; Filling happens on a footer line in the overlay, not a chain of
 ;; minibuffers.  Paste does not press Enter unless C-RET.
@@ -88,6 +90,16 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
 The rest is cut with an ellipsis, so a huge command never pushes the
 list out of the overlay."
   :type 'integer
+  :group 'ghostel-cmd)
+
+(defcustom ghostel-cmd-discover t
+  "Which tasks the overlay finds in the project root, after the bookmarks.
+t lists package.json scripts, Makefile targets and justfile recipes,
+nil none, and a list the sources named in it: npm, make, just.  The
+files are only parsed; nothing is run to find the tasks."
+  :type '(choice (const :tag "All" t)
+                 (const :tag "None" nil)
+                 (set (const npm) (const make) (const just)))
   :group 'ghostel-cmd)
 
 (defcustom ghostel-cmd-sidebar-side 'right
@@ -217,10 +229,231 @@ edit of the save file is never written over."
 
 (defun ghostel-cmd--rows (root)
   "Every command listed for ROOT, as rows ((SCOPE . NAME) . RECORD):
-the project's own, then the global ones."
+the project's own, then the global ones, then the tasks found in ROOT."
   (append (ghostel-cmd--scope-rows 'project (ghostel-cmd--get-commands root))
           (ghostel-cmd--scope-rows
-           'global (ghostel-cmd--get-commands ghostel-cmd--global-key))))
+           'global (ghostel-cmd--get-commands ghostel-cmd--global-key))
+          (ghostel-cmd--tasks root)))
+
+(defun ghostel-cmd--task-p (scope)
+  "Non-nil when SCOPE is a discovered task's, not a bookmark's."
+  (not (memq scope '(project global))))
+
+
+;;; Discovered tasks
+
+(defconst ghostel-cmd--task-sources
+  '((npm ghostel-cmd--npm-tasks "package.json")
+    (make ghostel-cmd--make-tasks "GNUmakefile" "makefile" "Makefile")
+    (just ghostel-cmd--just-tasks "justfile" "Justfile" ".justfile"))
+  "Per source: its parser and the files it reads, the first found wins,
+in the order make and just themselves look for them.")
+
+(defconst ghostel-cmd--npm-lockfiles
+  '(("pnpm-lock.yaml" . "pnpm")
+    ("yarn.lock" . "yarn")
+    ("bun.lock" . "bun")
+    ("bun.lockb" . "bun"))
+  "Lockfiles that name the runner of package.json scripts, first wins.")
+
+(defvar ghostel-cmd--tasks-cache nil
+  "Alist of (ROOT STAMP . ROWS): the tasks found in ROOT while the
+files they come from had the mtimes in STAMP.")
+
+(defun ghostel-cmd--shell-arg (s)
+  "S as one shell word, quoted only when it needs it."
+  (if (string-match-p "\\`[[:alnum:]_:./@%+=,-]+\\'" s)
+      s
+    (shell-quote-argument s)))
+
+(defun ghostel-cmd--task (scope name cmd desc)
+  "A row for the task NAME of SCOPE, running CMD."
+  (cons (cons scope name)
+        (list :name name :cmd cmd :desc (or desc ""))))
+
+(defun ghostel-cmd--npm-runner (root json)
+  "The runner of ROOT's package.json scripts: the one its lockfile
+names, else the packageManager field of JSON, else npm."
+  (or (cdr (cl-find-if (lambda (lock)
+                         (file-exists-p (expand-file-name (car lock) root)))
+                       ghostel-cmd--npm-lockfiles))
+      (let ((pm (alist-get 'packageManager json)))
+        (and (stringp pm)
+             (string-match "\\`\\(npm\\|pnpm\\|yarn\\|bun\\)\\(?:@\\|\\'\\)" pm)
+             (match-string 1 pm)))
+      "npm"))
+
+(defun ghostel-cmd--npm-tasks (file)
+  "The scripts of package.json FILE, run as `RUNNER run NAME'.
+The script itself is the desc."
+  (let* ((json (with-temp-buffer
+                 (insert-file-contents file)
+                 (json-parse-buffer :object-type 'alist
+                                    :null-object nil :false-object nil)))
+         (json (and (consp json) json))
+         (scripts (alist-get 'scripts json))
+         (runner (ghostel-cmd--npm-runner (file-name-directory file) json)))
+    (cl-loop for (key . body) in (and (consp scripts) scripts)
+             for name = (symbol-name key)
+             when (and (stringp body) (not (string-empty-p name)))
+             collect (ghostel-cmd--task
+                      (intern runner) name
+                      (format "%s run %s" runner (ghostel-cmd--shell-arg name))
+                      body))))
+
+(defconst ghostel-cmd--make-rule-regexp
+  "\\`\\([^:#=\t$][^:#=$]*\\)::?\\([^:=].*\\)?\\'"
+  "A rule line: targets, then : or ::, not an assignment such as :=.
+Targets holding a $ (built from a variable) never match.")
+
+(defun ghostel-cmd--make-targets (file)
+  "Alist of (TARGET . DESC) for the literal targets the rules of FILE name.
+Left out: recipe lines, assignments, define blocks, directives, rules
+built from variables, pattern rules, targets starting with a dot
+(.PHONY and the other special ones) and target-specific variables.
+A `## text' after a rule is its DESC."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (while (search-forward "\\\n" nil t)
+      (replace-match " " t t))
+    (goto-char (point-min))
+    (let ((targets nil)
+          (depth 0))
+      (while (not (eobp))
+        (let ((line (buffer-substring-no-properties
+                     (line-beginning-position) (line-end-position))))
+          (cond
+           ((string-match-p "\\`[ \t]*\\(?:\\(?:export\\|override\\|private\\)[ \t]+\\)*define\\_>"
+                            line)
+            (cl-incf depth))
+           ((> depth 0)
+            (when (string-match-p "\\`[ \t]*endef\\_>" line)
+              (cl-decf depth)))
+           ((string-prefix-p "\t" line))
+           ((string-match-p "\\`[ \t]*-?\\(?:s?include\\|if\\(?:n?eq\\|n?def\\)\\|else\\|endif\\|\\(?:un\\)?export\\|override\\|private\\|vpath\\|undefine\\)\\_>"
+                            line))
+           ((string-match ghostel-cmd--make-rule-regexp line)
+            (let* ((head (match-string 1 line))
+                   (rest (or (match-string 2 line) ""))
+                   (desc (when (string-match "##+[ \t]*\\(.*?\\)[ \t]*\\'" rest)
+                           (match-string 1 rest)))
+                   (prereqs (car (split-string rest "[#;]"))))
+              (unless (or (string-search "=" prereqs)
+                          (string-match-p "[()]" head))
+                (dolist (name (split-string head))
+                  (unless (or (string-prefix-p "." name)
+                              (string-match-p "[%*?[\\]" name))
+                    (let ((known (assoc name targets)))
+                      (cond ((null known) (push (cons name desc) targets))
+                            ((null (cdr known)) (setcdr known desc))))))))))
+          (forward-line 1)))
+      (when (> depth 0)
+        (error "A define has no endef"))
+      (nreverse targets))))
+
+(defun ghostel-cmd--make-tasks (file)
+  "The targets of make FILE, run as `make TARGET'."
+  (mapcar (lambda (target)
+            (ghostel-cmd--task 'make (car target)
+                               (concat "make " (ghostel-cmd--shell-arg (car target)))
+                               (cdr target)))
+          (ghostel-cmd--make-targets file)))
+
+(defun ghostel-cmd--just-recipe-name (line)
+  "The name of the recipe LINE starts, or nil.
+A recipe is a name and its parameters up to an unquoted colon that
+does not start :=, which would make it an assignment, an alias or a
+setting."
+  (when (string-match "\\`@?\\([[:alpha:]_][[:alnum:]_-]*\\)" line)
+    (let ((name (match-string 1 line))
+          (i (match-end 0))
+          (quoting nil)
+          (found nil))
+      (while (and (not found) (< i (length line)))
+        (let ((ch (aref line i)))
+          (cond (quoting (when (eq ch quoting) (setq quoting nil)))
+                ((memq ch '(?\" ?\' ?`)) (setq quoting ch))
+                ((eq ch ?#) (setq found 'no))
+                ((eq ch ?:)
+                 (setq found (if (eq (and (< (1+ i) (length line))
+                                          (aref line (1+ i)))
+                                     ?=)
+                                 'no
+                               'yes)))))
+        (setq i (1+ i)))
+      (and (eq found 'yes) name))))
+
+(defun ghostel-cmd--just-tasks (file)
+  "The public recipes of justfile FILE, run as `just RECIPE'.
+A comment right above one, or its [doc(...)] attribute, is the desc;
+[private] ones and those starting with _ are left out, as just
+--list leaves them out."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (let ((tasks nil)
+          (doc nil)
+          (private nil))
+      (while (not (eobp))
+        (let* ((line (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position)))
+               (name (ghostel-cmd--just-recipe-name line)))
+          (cond
+           ((string-match "\\`#\\(?:[^!].*\\)?\\'" line)
+            (setq doc (string-trim (substring line 1))))
+           ((string-prefix-p "[" line)
+            (when (string-match-p "\\_<private\\_>" line)
+              (setq private t))
+            (when (string-match "\\_<doc(\\s-*\\([\"']\\)\\(.*?\\)\\1" line)
+              (setq doc (match-string 2 line))))
+           (t
+            (when (and name (not private) (not (string-prefix-p "_" name)))
+              (push (ghostel-cmd--task 'just name (concat "just " name) doc)
+                    tasks))
+            (setq doc nil
+                  private nil))))
+        (forward-line 1))
+      (nreverse tasks))))
+
+(defun ghostel-cmd--discover (root)
+  "Rows of the tasks in ROOT's files, source by source.
+A file that does not parse gives no tasks, and a message."
+  (cl-loop
+   for (source parser . files) in ghostel-cmd--task-sources
+   for file = (cl-loop for f in files
+                       for path = (expand-file-name f root)
+                       when (file-regular-p path) return path)
+   when (and file
+             (or (eq ghostel-cmd-discover t)
+                 (memq source ghostel-cmd-discover)))
+   append (condition-case err
+              (cl-remove-duplicates (funcall parser file)
+                                    :key #'car :test #'equal :from-end t)
+            (error
+             (message "ghostel-cmd: could not read %s: %s"
+                      (abbreviate-file-name file) (error-message-string err))
+             nil))))
+
+(defun ghostel-cmd--tasks (root)
+  "Rows of the tasks found in ROOT, parsed again once one of their
+files, or `ghostel-cmd-discover', changed."
+  (when ghostel-cmd-discover
+    (let ((stamp (cons ghostel-cmd-discover
+                       (mapcar (lambda (f)
+                                 (file-attribute-modification-time
+                                  (file-attributes (expand-file-name f root))))
+                               (append (mapcar #'car ghostel-cmd--npm-lockfiles)
+                                       (mapcan (lambda (source)
+                                                 (copy-sequence (cddr source)))
+                                               ghostel-cmd--task-sources)))))
+          (cached (assoc root ghostel-cmd--tasks-cache)))
+      (if (equal (cadr cached) stamp)
+          (cddr cached)
+        (let ((rows (ghostel-cmd--discover root)))
+          (setf (alist-get root ghostel-cmd--tasks-cache nil nil #'equal)
+                (cons stamp rows))
+          rows)))))
 
 
 ;;; Templates
@@ -380,7 +613,7 @@ picked as a whole, which typing replaces.")
     ("A"        "Add global template, shared by every project")
     ("e"        "Edit at point")
     ("d"        "Delete at point")
-    ("m"        "Move to the global list / back to the project")
+    ("m"        "Move to the global list / back; a task: copy to the project")
     ("M-j, M-k" "Move command down / up (saved)")
     ("C-n, C-p" "Filling {{name:a|b}}: pick the next / previous choice")
     ("/"        "Live-narrow (flex)")
@@ -522,9 +755,14 @@ the list holds more than the project's own commands."
   (cdr (ghostel-cmd--row-at-point)))
 
 (defun ghostel-cmd--bookmark-at-point ()
-  "(SCOPE . RECORD) for the project or global command at point."
-  (or (ghostel-cmd--row-at-point)
-      (user-error "No command at point")))
+  "(SCOPE . RECORD) for the project or global command at point.
+A discovered task is read-only: it signals."
+  (let ((row (or (ghostel-cmd--row-at-point)
+                 (user-error "No command at point"))))
+    (when (ghostel-cmd--task-p (car row))
+      (user-error "'%s' is a %s task, read-only: m copies it to the project"
+                  (plist-get (cdr row) :name) (car row)))
+    row))
 
 (defun ghostel-cmd--erase-preview ()
   (when (and ghostel-cmd--preview-start
@@ -1266,9 +1504,13 @@ Region text is the default command."
 
 (defun ghostel-cmd-move-scope ()
   "Move the command at point from the project's list to the global one,
-or back."
+or back.  A discovered task is copied into the project's list, where
+it can be edited."
   (interactive)
-  (pcase-let* ((`(,from . ,record) (ghostel-cmd--bookmark-at-point))
+  (pcase-let* ((`(,from . ,record) (or (ghostel-cmd--row-at-point)
+                                       (user-error "No command at point")))
+               (task (ghostel-cmd--task-p from))
+               (record (if task (copy-sequence record) record))
                (root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
                (name (plist-get record :name))
                (to (if (eq from 'project) 'global 'project))
@@ -1281,16 +1523,19 @@ or back."
                   (ghostel-cmd--confirm-replace
                    (ghostel-cmd--get-commands to-key) name)
                   (ghostel-cmd--update-many
-                   (list (cons to-key
+                   (cons (cons to-key
                                (lambda (cmds)
                                  (ghostel-cmd--put-command cmds record)))
-                         (cons (ghostel-cmd--store-key from root)
-                               (lambda (cmds)
-                                 (ghostel-cmd--remove-command cmds name)))))
+                         (unless task
+                           (list (cons (ghostel-cmd--store-key from root)
+                                       (lambda (cmds)
+                                         (ghostel-cmd--remove-command
+                                          cmds name)))))))
                   (setq ghostel-cmd--goto-id (cons to name))
-                  (message (if (eq to 'global)
-                               "Moved '%s' to the global commands"
-                             "Moved '%s' to the project")
+                  (message (cond (task "Saved '%s' to the project")
+                                 ((eq to 'global)
+                                  "Moved '%s' to the global commands")
+                                 (t "Moved '%s' to the project"))
                            name))))
     (if (and taken (ghostel-cmd--posframe-showing-p))
         (ghostel-cmd--with-parent-input run)

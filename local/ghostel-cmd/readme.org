@@ -26,7 +26,8 @@ minibuffer does not count.
 | =a= =A=     | Add to the project / to the global commands       |
 | =e= =d=     | Edit / delete, in the command's own list; edit    |
 |             | keeps the place, a name already taken asks first  |
-| =m=         | Move the command to the global list, or back      |
+| =m=         | Move the command to the global list, or back; a   |
+|             | task is copied into the project's list            |
 | =M-j= =M-k= | Move the command down / up, saved (=M-<down>= /   |
 |             | =M-<up>= too)                                     |
 | =C-n= =C-p= | While filling a variable with choices: the next / |
@@ -55,6 +56,39 @@ row (=proj=, =global=) once there is more than the project's own.  A
 name is unique within its list, so a project command and a global one
 may share it and both show.  =m= moves the command at point to the
 other list; =e=, =d= and =M-j= / =M-k= stay in the list it is in.
+
+* Tasks
+
+After the bookmarks the overlay lists the tasks it finds in the
+project root, tagged by where they come from.  The files are only
+parsed, never run, and parsed again once one of them changes.
+
+| File                    | Tasks           | Pasted as         |
+|-------------------------+-----------------+-------------------|
+| =package.json=          | ="scripts"=     | =RUNNER run NAME= |
+| =GNUmakefile=,          | literal targets | =make TARGET=     |
+| =makefile=, =Makefile=  |                 |                   |
+| =justfile=, =Justfile=, | public recipes  | =just RECIPE=     |
+| =.justfile=             |                 |                   |
+
+- The runner, and the tag, is the one the lockfile names:
+  =pnpm-lock.yaml= → pnpm, =yarn.lock= → yarn, =bun.lock= or
+  =bun.lockb= → bun; without one, the =packageManager= field's, else
+  npm.  The script itself is the description.
+- Make reads the first of its three files, as make does.  Left out:
+  assignments, =.PHONY= and every other target starting with =.=,
+  pattern rules, targets built from a variable, target-specific
+  variables and =define= bodies.  =## text= after a rule describes it.
+  Included makefiles are not followed.
+- Just recipes marked =[private]= or starting with =_= are left out,
+  as =just --list= leaves them out; the comment right above a recipe,
+  or its =[doc(...)]=, describes it.
+
+Tasks are read-only: =RET= / =C-RET= paste them like any command, and
+=m= copies the one at point into the project's list to edit there.  A
+=package.json= or Makefile that does not parse lists nothing, with a
+message.  =ghostel-cmd-discover= turns discovery off (=nil=) or keeps
+some sources (='(npm just)=).
 
 * Placeholders
 
