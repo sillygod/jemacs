@@ -10273,6 +10273,49 @@ worktree, off HEAD, carrying started-by."
       (should (string-match-p "in the main checkout" r))
       (should-not (ghostherd-session-worktree (ghostherd-get "grok-repo"))))))
 
+(ert-deftest ghostherd-test-lead-start-grok-gets-the-memory-rules ()
+  "A grok agent is started with the shared-memory rules in --rules."
+  (ghostherd-tests--with-lead-start
+    (ghostherd-lead-start "lead-p" "grok" :worktree "no" :new t)
+    (let ((args (plist-get ghostherd-tests--fake-spawned :args)))
+      (should (member "--rules" args))
+      (should (seq-some (lambda (a) (and (stringp a)
+                                         (string-match-p "recall" a)))
+                        args)))))
+
+(ert-deftest ghostherd-test-lead-start-agy-is-told-the-memory-rules ()
+  "agy has no rules flag, so it is told the memory rules as a first message."
+  (ghostherd-tests--with-lead-start
+    (let (told)
+      (cl-letf (((symbol-function 'ghostherd--when-ready)
+                 (lambda (_s fn &rest _) (funcall fn)))
+                ((symbol-function 'ghostherd-prompt)
+                 (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) told) s)))
+        (ghostherd-lead-start "lead-p" "agy" :worktree "no" :new t)
+        (should (string-match-p "recall" (or (cdr (assoc "agy-repo" told)) "")))))))
+
+(ert-deftest ghostherd-test-claude-memory-link-is-a-noop-without-the-sidecar ()
+  "The claude memory-link hook asks the sidecar for a claude session, and is a
+no-op for another CLI or when no sidecar is up."
+  (should (memq #'ghostherd--memory-link-claude ghostherd-session-created-hook))
+  (let (calls)
+    (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () nil))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (&rest a) (push a calls))))
+      (ghostherd--memory-link-claude
+       (ghostherd-session--create :id "c" :name "c" :kind 'claude :project "/p/"))
+      (should-not calls))                ; no sidecar -> no call
+    (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (&rest a) (push a calls))))
+      (ghostherd--memory-link-claude
+       (ghostherd-session--create :id "g" :name "g" :kind 'grok :project "/p/"))
+      (should-not calls)                 ; not claude -> no call
+      (ghostherd--memory-link-claude
+       (ghostherd-session--create :id "c" :name "c" :kind 'claude :project "/p/"))
+      (should calls)                     ; claude + sidecar -> asks to link
+      (should (equal (nth 0 (car calls)) "memory_link_claude")))))
+
 (ert-deftest ghostherd-test-lead-stop-guards-and-cleans ()
   "Stop only an agent this lead started, not one owing an ask; a merged, clean
 worktree is removed."

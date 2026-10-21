@@ -6435,6 +6435,36 @@ Its model is the CLI's to change: tell a claude lead `/model sonnet'."
   :type 'symbol
   :group 'ghostherd)
 
+(defconst ghostherd--memory-rules "\
+The herd keeps shared memory for this project -- curated facts every
+agent of the project sees, whatever its CLI, and the user's own
+preferences across projects.  It is the source of truth: use it, not
+your own memory.  Read it with \"$GHOSTHERD_HERD\" recall (no argument
+prints the index; a query prints the matching facts in full).  Add a
+fact with \"$GHOSTHERD_HERD\" remember [--type project|feedback|reference]
+and drop one with \"$GHOSTHERD_HERD\" forget NAME."
+  "Shared-memory rules, given to a grok or agy agent as it starts.")
+
+(defun ghostherd--memory-link-claude (session)
+  "Point a claude SESSION's memory dir at its project's shared store.
+Asks the sidecar (memory_link_claude), which resolves a worktree to its
+main checkout so worktrees share the main store, and never clobbers a real
+memory dir with facts.  A no-op for other CLIs, or when the sidecar is not
+up yet (the migration covers the existing dirs; a later spawn covers this)."
+  (when (and (eq (ghostherd-session-kind session) 'claude)
+             (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
+             (fboundp 'ghostherd-memory-request-async))
+    (let* ((project (ghostherd-session-project session))
+           (wt (ghostherd-session-worktree session))
+           (dir (or (and wt (plist-get wt :path)) project)))
+      (when (and project dir)
+        (ghostherd-memory-request-async
+         "memory_link_claude" #'ignore
+         (list :cwd (expand-file-name dir) :project (expand-file-name project))
+         #'ignore)))))
+
+(add-hook 'ghostherd-session-created-hook #'ghostherd--memory-link-claude)
+
 (defconst ghostherd--lead-role "\
 You are the lead of this project's herd of agents: you plan the work,
 hand it out to the other agents, and report to the user.
@@ -6523,6 +6553,16 @@ It reads where the work stood and starts a new agent of KIND that takes
 the name and carries on.  Leave KIND off to let the herd pick a CLI with
 usage left; name one (claude, grok, agy) to choose.  You may relay only
 your own project's agents, not yourself.
+
+The herd keeps shared memory for this project -- curated facts every
+agent sees, whatever its CLI, and the user's preferences across
+projects.  Read it with \"$GHOSTHERD_HERD\" recall (no argument prints
+the index; a query prints the matching facts in full), add a fact with
+\"$GHOSTHERD_HERD\" remember, drop one with \"$GHOSTHERD_HERD\" forget.
+It is the source of truth: use it, not notes kept elsewhere.  Record what
+the team learns -- a decision, a gotcha, how a thing is done -- so the
+next agent starts with it.  If you are claude this is your own memory
+dir: keep writing it as you do, and the herd shares it with the project.
 
 What the project works on -- its branch, its pull request, the ClickUp
 tickets they and the team's conversations name -- opens the user's
@@ -6987,15 +7027,26 @@ reused (with its name and worktree), or, plainly, why it was refused."
                                  (format "%s-%s" kind
                                          (file-name-nondirectory (directory-file-name dir))))))
                      (defaults (ghostherd-project-defaults dir))
-                     (args (or (and (eq (car defaults) kind) (cdr defaults))
-                               (plist-get (ghostherd--spec kind) :args)))
+                     (args (let ((base (or (and (eq (car defaults) kind) (cdr defaults))
+                                           (plist-get (ghostherd--spec kind) :args))))
+                             ;; grok reads the shared-memory rules from --rules
+                             ;; at startup; agy has no such flag, so it is told
+                             ;; them as a first message once it is ready (below);
+                             ;; claude reads memory through its linked memory dir.
+                             (if (eq kind 'grok)
+                                 (append base (list "--rules" ghostherd--memory-rules))
+                               base)))
                      (spawn (lambda (directory wt)
-                              (ghostherd-spawn kind :name final :project dir
-                                               :directory directory :args args :notes notes
-                                               :started-by by :display nil
-                                               :worktree (and wt (plist-get wt :path))
-                                               :branch (and wt (plist-get wt :branch))
-                                               :base (and wt (plist-get wt :base))))))
+                              (let ((s (ghostherd-spawn kind :name final :project dir
+                                                        :directory directory :args args :notes notes
+                                                        :started-by by :display nil
+                                                        :worktree (and wt (plist-get wt :path))
+                                                        :branch (and wt (plist-get wt :branch))
+                                                        :base (and wt (plist-get wt :base)))))
+                                (when (eq kind 'agy)
+                                  (ghostherd--when-ready
+                                   s (lambda () (ghostherd-prompt s ghostherd--memory-rules))))
+                                s))))
                 (if (not want-wt)
                     (progn
                       (funcall spawn dir nil)
