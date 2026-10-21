@@ -484,6 +484,113 @@ overlay; C-\\ edits the input in the minibuffer with it on."
                       (list :name "k2" :cmd "x {{expr:all}}") ghostel-cmd--root)
                      '(("expr" . "all")))))))
 
+(ert-deftest ghostel-cmd-test-choices-parse ()
+  "{{name:a|b|c}} lists choices, trimmed, the first the default; one
+without a | stays a plain default."
+  (let ((tmpl "deploy {{env: dev | staging |prod}} {{tag:latest}} {{flag:|-f}} {{env}}"))
+    (should (equal (ghostel-cmd--extract-variables tmpl "/tmp/")
+                   '(("env" . "dev") ("tag" . "latest") ("flag" . ""))))
+    (should (equal (ghostel-cmd--extract-choices tmpl)
+                   '(("env" "dev" "staging" "prod") ("flag" "" "-f"))))
+    (should (equal (ghostel-cmd--apply
+                    tmpl '(("env" . "prod") ("tag" . "v1") ("flag" . "")))
+                   "deploy prod v1  prod"))))
+
+(defmacro ghostel-cmd-tests--delivering (&rest body)
+  "Run BODY with pastes into the terminal collected in `sent', newest first."
+  (declare (indent 0))
+  `(let ((sent nil)
+         (ghostel-cmd--last-values (make-hash-table :test #'equal)))
+     (cl-letf (((symbol-function 'ghostel-cmd--deliver)
+                (lambda (cmd submit) (push (cons cmd submit) sent))))
+       ,@body)))
+
+(defun ghostel-cmd-tests--input ()
+  (plist-get ghostel-cmd--fill :input))
+
+(ert-deftest ghostel-cmd-test-choices-cycle-and-type-over ()
+  "C-n / C-p and the arrows cycle the choices, marked on the footer;
+typing, C-y and DEL replace a picked choice."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "dep" :cmd "deploy {{env:dev|staging|prod}} {{n:1}}"))
+    (ghostel-cmd-tests--delivering
+      (let ((kill-ring nil)
+            (interprogram-paste-function nil))
+        (ghostel-cmd-paste)
+        (should (equal (ghostel-cmd-tests--input) "dev"))
+        (should (string-search "{{env}} [dev] staging prod  C-n/C-p pick"
+                               (ghostel-cmd--footer)))
+        (execute-kbd-macro (kbd "C-n"))
+        (should (equal (ghostel-cmd-tests--input) "staging"))
+        (execute-kbd-macro (kbd "<down> C-n"))
+        (should (equal (ghostel-cmd-tests--input) "dev"))
+        (execute-kbd-macro (kbd "C-p <up>"))
+        (should (equal (ghostel-cmd-tests--input) "staging"))
+        (should (string-search "dev [staging] prod" (ghostel-cmd--footer)))
+        (execute-kbd-macro "qa")
+        (should (equal (ghostel-cmd-tests--input) "qa"))
+        (should (string-search "{{env}} dev staging prod" (ghostel-cmd--footer)))
+        (execute-kbd-macro (kbd "C-n"))
+        (should (equal (ghostel-cmd-tests--input) "dev"))
+        (kill-new "eu-1")
+        (execute-kbd-macro (kbd "C-y"))
+        (should (equal (ghostel-cmd-tests--input) "eu-1"))
+        (execute-kbd-macro (kbd "C-p DEL"))
+        (should (equal (ghostel-cmd-tests--input) ""))
+        (execute-kbd-macro (kbd "u s RET"))
+        (should (string-search "{{n}} [1]" (ghostel-cmd--footer)))
+        (execute-kbd-macro (kbd "C-n RET"))
+        (should (equal sent '(("deploy us 1" . nil))))))))
+
+(ert-deftest ghostel-cmd-test-choices-start-from-last-value ()
+  "The last value starts the next fill, picked when it is a choice and
+as typed text when it was free text."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "dep" :cmd "deploy {{env:dev|staging|prod}}"))
+    (ghostel-cmd-tests--delivering
+      (ghostel-cmd-paste)
+      (execute-kbd-macro (kbd "C-n C-n RET"))
+      (ghostel-cmd-paste)
+      (should (equal (ghostel-cmd-tests--input) "prod"))
+      (should (string-search "[prod]" (ghostel-cmd--footer)))
+      (execute-kbd-macro (kbd "C-n e u RET"))
+      (should (equal (car sent) '("deploy eu" . nil)))
+      (ghostel-cmd-paste)
+      (should (equal (ghostel-cmd-tests--input) "eu"))
+      (execute-kbd-macro "-1")
+      (should (equal (ghostel-cmd-tests--input) "eu-1"))
+      (execute-kbd-macro (kbd "<up>"))
+      (should (equal (ghostel-cmd-tests--input) "prod")))))
+
+(ert-deftest ghostel-cmd-test-empty-choice-pastes-empty ()
+  "An empty choice, picked, pastes as empty, not as the default."
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "rm" :cmd "rm {{flag:-i|}} x"))
+    (ghostel-cmd-tests--delivering
+      (ghostel-cmd-paste)
+      (should (string-search "[-i] \"\"" (ghostel-cmd--footer)))
+      (execute-kbd-macro (kbd "C-n"))
+      (should (string-match-p "^rm  x\n{{flag}}  $"
+                              (buffer-substring-no-properties
+                               ghostel-cmd--preview-start (point-max))))
+      (execute-kbd-macro (kbd "RET"))
+      (should (equal (car sent) '("rm  x" . nil)))
+      (ghostel-cmd-paste)
+      (should (string-search "-i [\"\"]" (ghostel-cmd--footer)))
+      (execute-kbd-macro (kbd "RET"))
+      (should (equal (car sent) '("rm  x" . nil))))))
+
+(ert-deftest ghostel-cmd-test-footer-shows-percent ()
+  "A % in a choice or the query shows as itself on the mode line."
+  (let ((ghostel-cmd--root "/tmp/p/")
+        (ghostel-cmd--query "50%")
+        (ghostel-cmd--filtering t)
+        (ghostel-cmd--fill nil))
+    (should (string-search "/50%%" (ghostel-cmd--footer)))
+    (setq ghostel-cmd--fill (list :vars '(("q" . "50%")) :index 0 :input "50%"
+                                  :choices '(("q" "50%" "90%"))))
+    (should (string-search "[50%%] 90%%" (ghostel-cmd--footer)))))
+
 (ert-deftest ghostel-cmd-test-help-text-lists-overlay-keys ()
   (let ((text (ghostel-cmd--help-text)))
     (should (string-match-p "RET" text))

@@ -27,6 +27,8 @@ minibuffer does not count.
 |             | already taken asks before replacing               |
 | =M-j= =M-k= | Move the command down / up, saved (=M-<down>= /   |
 |             | =M-<up>= too)                                     |
+| =C-n= =C-p= | While filling a variable with choices: the next / |
+|             | previous choice (=<down>= / =<up>= too)           |
 | =C-y=       | Yank into the filter or fill input, as one line:  |
 |             | newlines become spaces                            |
 | =C-\=       | Type the filter or fill input in the minibuffer,  |
@@ -57,8 +59,15 @@ Built-ins are taken from where you opened the overlay:
 | ={{branch}}=                    | the git branch                                 |
 | ={{name}}= / ={{name:default}}= | asked on the footer                            |
 
+={{name:a|b|c}}= offers choices, the first one the default.  The
+footer lists them with the current one in brackets; =C-n= / =C-p= (or
+the arrows) pick another, and typing, =C-y= or =DEL= replace the picked
+one with your own text.  A default meant to hold a literal =|= cannot:
+it always reads as choices.
+
 The value you last filled for a ={{name}}= (per project and command,
-for this Emacs session) is offered before its =:default=.  Built-ins
+for this Emacs session) is offered before its =:default=, and starts
+the next fill whether it was a choice or your own text.  Built-ins
 are always taken fresh.
 
 A name starts with a letter or underscore; any other ={{...}}= stays

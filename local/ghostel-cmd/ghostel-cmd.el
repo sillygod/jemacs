@@ -9,14 +9,15 @@
 ;;; Commentary:
 ;;
 ;; Bookmark command templates per project, with {{var}} / {{var:default}}
-;; placeholders and built-ins taken from the caller: {{file}},
-;; {{file-abs}}, {{dir}}, {{line}}, {{symbol}}, {{root}},
-;; {{project-name}}, {{branch}}.  The overlay (posframe when available,
-;; side window otherwise) is the main UI:
+;; / {{var:a|b|c}} (choices) placeholders and built-ins taken from the
+;; caller: {{file}}, {{file-abs}}, {{dir}}, {{line}}, {{symbol}},
+;; {{root}}, {{project-name}}, {{branch}}.  The overlay (posframe when
+;; available, side window otherwise) is the main UI:
 ;;
 ;;   j/k move   RET paste (fill vars first)   C-RET paste+Enter
 ;;   / filter   a add   e edit   d delete   M-j/M-k reorder   q quit
 ;;   C-y yank, C-\ input method (in the filter and fill input)
+;;   C-n/C-p pick a choice while filling {{var:a|b|c}}
 ;;
 ;; Filling happens on a footer line in the overlay, not a chain of
 ;; minibuffers.  Paste does not press Enter unless C-RET.
@@ -228,22 +229,44 @@ edit of the save file is never written over."
      (number-to-string (or ghostel-cmd--caller-line (line-number-at-pos))))
     (_ nil)))
 
+(defun ghostel-cmd--split-choices (spec)
+  "The choices SPEC lists as a|b|c, trimmed, or nil when it has no `|'."
+  (when (and spec (string-search "|" spec))
+    (delete-dups (mapcar #'string-trim (split-string spec "|")))))
+
 (defun ghostel-cmd--extract-variables (template root)
-  "Ordered alist of (NAME . DEFAULT) from TEMPLATE."
+  "Ordered alist of (NAME . DEFAULT) from TEMPLATE.
+The default of {{name:a|b|c}} is its first choice."
   (let ((vars nil)
         (start 0))
     (while (string-match ghostel-cmd--var-regexp template start)
+      (setq start (match-end 0))
       (let* ((name (match-string 1 template))
-             (def-val (match-string 2 template))
+             (spec (match-string 2 template))
+             (def-val (or (car (ghostel-cmd--split-choices spec)) spec))
              (existing (assoc name vars)))
         (if existing
             (when (and (null (cdr existing)) def-val)
               (setcdr existing def-val))
           (push (cons name
                       (or def-val (ghostel-cmd--builtin-var name root)))
-                vars)))
-      (setq start (match-end 0)))
+                vars))))
     (nreverse vars)))
+
+(defun ghostel-cmd--extract-choices (template)
+  "Alist of (NAME . CHOICES) for the {{name:a|b|c}} in TEMPLATE.
+The first {{name:...}} of a name decides, as it does its default."
+  (let ((specs nil)
+        (start 0))
+    (while (string-match ghostel-cmd--var-regexp template start)
+      (setq start (match-end 0))
+      (let ((name (match-string 1 template))
+            (spec (match-string 2 template)))
+        (when (and spec (not (assoc name specs)))
+          (push (cons name spec) specs))))
+    (cl-loop for (name . spec) in (nreverse specs)
+             for choices = (ghostel-cmd--split-choices spec)
+             when choices collect (cons name choices))))
 
 (defun ghostel-cmd--fill-vars (record root)
   "Ordered alist of (NAME . DEFAULT) for RECORD's template under ROOT.
@@ -255,11 +278,12 @@ always taken fresh."
               (if last (cons (car pair) last) pair)))
           (ghostel-cmd--extract-variables (plist-get record :cmd) root)))
 
-(defun ghostel-cmd--remember (root record var value)
-  "Keep VALUE as the last one filled for VAR of RECORD under ROOT."
+(defun ghostel-cmd--remember (root record var value &optional keep-empty)
+  "Keep VALUE as the last one filled for VAR of RECORD under ROOT.
+An empty VALUE forgets it, unless KEEP-EMPTY: an empty choice was picked."
   (unless (member var ghostel-cmd--builtin-names)
     (let ((key (list root (plist-get record :name) var)))
-      (if (string-empty-p value)
+      (if (and (string-empty-p value) (not keep-empty))
           (remhash key ghostel-cmd--last-values)
         (puthash key value ghostel-cmd--last-values)))))
 
@@ -288,7 +312,9 @@ always taken fresh."
 (defvar ghostel-cmd--query "")
 (defvar ghostel-cmd--filtering nil)
 (defvar ghostel-cmd--fill nil
-  "Plist while filling: :record :root :vars :index :values :input :submit.")
+  "Plist while filling: :record :root :vars :choices :index :values
+:input :picked :submit.  :picked is non-nil while :input is a choice
+picked as a whole, which typing replaces.")
 (defvar ghostel-cmd--help-visible nil)
 (defvar ghostel-cmd--preview-start nil)
 (defvar ghostel-cmd--preview-id nil)
@@ -311,6 +337,7 @@ always taken fresh."
     ("e"        "Edit at point")
     ("d"        "Delete at point")
     ("M-j, M-k" "Move command down / up (saved)")
+    ("C-n, C-p" "Filling {{name:a|b}}: pick the next / previous choice")
     ("/"        "Live-narrow (flex)")
     ("C-y"      "Yank into filter / fill input")
     ("C-\\"     "Type filter / fill input with an input method")
@@ -467,8 +494,9 @@ does not fit, the last line ends in an ellipsis."
          (propertize
           (concat label
                   (ghostel-cmd--tail
-                   (if (and input (not (string-empty-p input)))
-                       input
+                   (if (or (plist-get fill :picked)
+                           (and input (not (string-empty-p input))))
+                       (or input "")
                      (or (cdr pair) ""))
                    (max 8 (- width (string-width label)))))
           'face 'highlight))))
@@ -535,34 +563,51 @@ does not fit, the last line ends in an ellipsis."
     (when (ghostel-cmd--posframe-showing-p)
       (ghostel-cmd--show-posframe buf))))
 
+(defun ghostel-cmd--choices-text (choices current)
+  "CHOICES on one line, CURRENT marked with brackets."
+  (mapconcat (lambda (choice)
+               (let ((shown (if (string-empty-p choice) "\"\"" choice)))
+                 (if (equal choice current)
+                     (propertize (format "[%s]" shown) 'face 'bold)
+                   shown)))
+             choices " "))
+
 (defun ghostel-cmd--footer ()
+  "The overlay's mode line; a % in it shows as itself."
   (let* ((root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
          (name (file-name-nondirectory (directory-file-name root)))
          (fill ghostel-cmd--fill)
          (querying (or ghostel-cmd--filtering
                        (and ghostel-cmd--query
                             (not (string-empty-p ghostel-cmd--query))))))
-    (concat
-     " "
-     name
-     (when querying
-       (format "  /%s  %d/%d"
-               ghostel-cmd--query
-               ghostel-cmd--match-count
-               ghostel-cmd--total-count))
-     (cond
-      (fill
-       (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
-              (def (cdr pair)))
-         (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
-                 (car pair)
-                 (if def (format " [%s]" def) ""))))
-      (ghostel-cmd--filtering
-       "   RET apply  C-n/C-p move  Esc clear")
-      (ghostel-cmd--help-visible
-       "   ? close help  Esc close")
-      (t
-       "   RET paste  C-RET send  a add  / filter  ? keys  Esc close")))))
+    (string-replace
+     "%" "%%"
+     (concat
+      " "
+      name
+      (when querying
+        (format "  /%s  %d/%d"
+                ghostel-cmd--query
+                ghostel-cmd--match-count
+                ghostel-cmd--total-count))
+      (cond
+       (fill
+        (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
+               (def (cdr pair))
+               (choices (ghostel-cmd--fill-choices fill)))
+          (if choices
+              (format "   {{%s}} %s  C-n/C-p pick  TAB next  RET paste  Esc cancel"
+                      (car pair)
+                      (ghostel-cmd--choices-text choices (plist-get fill :input)))
+            (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
+                    (car pair)
+                    (if def (format " [%s]" def) "")))))
+       (ghostel-cmd--filtering
+        "   RET apply  C-n/C-p move  Esc clear")
+       (ghostel-cmd--help-visible
+        "   ? close help  Esc close")
+       (t
+        "   RET paste  C-RET send  a add  / filter  ? keys  Esc close"))))))
 
 
 ;;; Filter / fill maps
@@ -710,37 +755,84 @@ The list narrows as you type; C-g puts the old query back."
       (ghostel-cmd-fill-accept nil))
      ((and (characterp ev) (>= ev 32) (not (eq ev 127)))
       (when ghostel-cmd--fill
-        (plist-put ghostel-cmd--fill :input
-                   (concat (or (plist-get ghostel-cmd--fill :input) "")
-                           (char-to-string ev)))
-        (ghostel-cmd--draw-preview)
-        (force-mode-line-update t))))))
+        (ghostel-cmd--fill-insert (char-to-string ev)))))))
+
+(defun ghostel-cmd--fill-set-input (input)
+  "Make INPUT, typed rather than picked, the value being filled."
+  (plist-put ghostel-cmd--fill :input input)
+  (plist-put ghostel-cmd--fill :picked nil)
+  (ghostel-cmd--draw-preview)
+  (force-mode-line-update t))
+
+(defun ghostel-cmd--fill-insert (text)
+  "Append TEXT to the value being filled; it replaces a picked choice."
+  (ghostel-cmd--fill-set-input
+   (concat (if (plist-get ghostel-cmd--fill :picked)
+               ""
+             (or (plist-get ghostel-cmd--fill :input) ""))
+           text)))
 
 (defun ghostel-cmd-fill-backspace ()
+  "Delete the last char of the value being filled, or a picked choice."
   (interactive)
   (when-let* ((fill ghostel-cmd--fill)
               (input (plist-get fill :input)))
-    (when (> (length input) 0)
-      (plist-put fill :input (substring input 0 -1))
-      (ghostel-cmd--draw-preview)
-      (force-mode-line-update t))))
+    (cond ((plist-get fill :picked)
+           (ghostel-cmd--fill-set-input ""))
+          ((> (length input) 0)
+           (ghostel-cmd--fill-set-input (substring input 0 -1))))))
 
 (defun ghostel-cmd-fill-clear ()
   (interactive)
   (when ghostel-cmd--fill
-    (plist-put ghostel-cmd--fill :input "")
-    (ghostel-cmd--draw-preview)
-    (force-mode-line-update t)))
+    (ghostel-cmd--fill-set-input "")))
 
 (defun ghostel-cmd-fill-yank ()
   "Append the latest kill to the value being filled."
   (interactive)
   (when ghostel-cmd--fill
-    (plist-put ghostel-cmd--fill :input
-               (concat (or (plist-get ghostel-cmd--fill :input) "")
-                       (ghostel-cmd--yank-text)))
-    (ghostel-cmd--draw-preview)
-    (force-mode-line-update t)))
+    (ghostel-cmd--fill-insert (ghostel-cmd--yank-text))))
+
+(defun ghostel-cmd--fill-choices (&optional fill)
+  "The choices of the variable FILL is asking for, or nil."
+  (let ((fill (or fill ghostel-cmd--fill)))
+    (cdr (assoc (car (nth (plist-get fill :index) (plist-get fill :vars)))
+                (plist-get fill :choices)))))
+
+(defun ghostel-cmd--fill-enter (fill index)
+  "Make the variable at INDEX the one FILL asks for.
+Its input starts at its value, picked when that is one of its choices."
+  (let ((value (or (cdr (nth index (plist-get fill :vars))) "")))
+    (plist-put fill :index index)
+    (plist-put fill :input value)
+    (plist-put fill :picked
+               (and (member value (ghostel-cmd--fill-choices fill)) t))))
+
+(defun ghostel-cmd--fill-cycle (step)
+  "Pick the choice STEP away from the current one, wrapping around.
+From free text, down picks the first choice and up the last."
+  (when-let* ((fill ghostel-cmd--fill)
+              (choices (ghostel-cmd--fill-choices fill)))
+    (let ((n (length choices))
+          (pos (cl-position (plist-get fill :input) choices :test #'equal)))
+      (plist-put fill :input
+                 (nth (cond (pos (mod (+ pos step) n))
+                            ((> step 0) 0)
+                            (t (1- n)))
+                      choices))
+      (plist-put fill :picked t)
+      (ghostel-cmd--draw-preview)
+      (force-mode-line-update t))))
+
+(defun ghostel-cmd-fill-next-choice ()
+  "Pick the next choice of a {{name:a|b|c}} variable."
+  (interactive)
+  (ghostel-cmd--fill-cycle 1))
+
+(defun ghostel-cmd-fill-previous-choice ()
+  "Pick the previous choice of a {{name:a|b|c}} variable."
+  (interactive)
+  (ghostel-cmd--fill-cycle -1))
 
 (defun ghostel-cmd-fill-read ()
   "Edit the value being filled in the minibuffer, with an input method.
@@ -748,14 +840,16 @@ The preview follows as you type; C-g puts the old value back."
   (interactive)
   (when-let* ((fill ghostel-cmd--fill))
     (let* ((old (or (plist-get fill :input) ""))
+           (old-picked (plist-get fill :picked))
            (name (car (nth (plist-get fill :index) (plist-get fill :vars))))
-           (set (lambda (input)
+           (set (lambda (input &optional picked)
                   (plist-put fill :input input)
+                  (plist-put fill :picked picked)
                   (ghostel-cmd--redraw)
                   (force-mode-line-update t))))
       (condition-case nil
           (funcall set (ghostel-cmd--read-line (format "{{%s}}: " name) old set))
-        (quit (funcall set old))))))
+        (quit (funcall set old old-picked))))))
 
 (defun ghostel-cmd--set-filling (on)
   (when-let* ((buf (get-buffer ghostel-cmd--buffer-name)))
@@ -782,20 +876,19 @@ The preview follows as you type; C-g puts the old value back."
          (name (car pair))
          (default (or (cdr pair) ""))
          (raw (or (plist-get fill :input) ""))
-         (val (if (string-empty-p raw) default raw))
+         (picked (plist-get fill :picked))
+         (val (if (and (string-empty-p raw) (not picked)) default raw))
          (values (cons (cons name val)
                        (cl-remove name (plist-get fill :values)
                                   :key #'car :test #'equal)))
          (next (1+ idx)))
     (ghostel-cmd--remember (plist-get fill :root) (plist-get fill :record)
-                           name val)
+                           name val picked)
     (plist-put fill :values values)
     (if (>= next (length vars))
         nil
-      (let ((npair (nth next vars)))
-        (plist-put fill :index next)
-        (plist-put fill :input (or (cdr npair) ""))
-        t))))
+      (ghostel-cmd--fill-enter fill next)
+      t)))
 
 (defun ghostel-cmd-fill-accept (&optional submit)
   "Accept the current field; paste when it was the last.
@@ -837,6 +930,10 @@ SUBMIT non-nil also presses Enter in the terminal."
   "C-u"         #'ghostel-cmd-fill-clear
   "C-y"         #'ghostel-cmd-fill-yank
   "C-\\"        #'ghostel-cmd-fill-read
+  "C-n"         #'ghostel-cmd-fill-next-choice
+  "C-p"         #'ghostel-cmd-fill-previous-choice
+  "<down>"      #'ghostel-cmd-fill-next-choice
+  "<up>"        #'ghostel-cmd-fill-previous-choice
   "C-g"         #'ghostel-cmd-fill-cancel
   "<escape>"    #'ghostel-cmd-fill-cancel)
 
@@ -953,10 +1050,14 @@ split if none is showing."
               (list :record record
                     :root root
                     :vars vars
+                    :choices (ghostel-cmd--extract-choices
+                              (plist-get record :cmd))
                     :index 0
                     :values nil
-                    :input (or (cdar vars) "")
+                    :input ""
+                    :picked nil
                     :submit submit))
+        (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
         (ghostel-cmd--set-filling t)
         (ghostel-cmd--draw-preview)
         (force-mode-line-update t)))))
@@ -1410,6 +1511,10 @@ presses Enter."
       (kbd "<tab>") #'ghostel-cmd-fill-accept
       (kbd "C-RET") #'ghostel-cmd-fill-accept-send
       (kbd "C-<return>") #'ghostel-cmd-fill-accept-send
+      (kbd "C-n") #'ghostel-cmd-fill-next-choice
+      (kbd "C-p") #'ghostel-cmd-fill-previous-choice
+      (kbd "<down>") #'ghostel-cmd-fill-next-choice
+      (kbd "<up>") #'ghostel-cmd-fill-previous-choice
       (kbd "<escape>") #'ghostel-cmd-fill-cancel)
     (evil-define-key* 'normal ghostel-cmd-sidebar-mode-map
       (kbd "?") #'ghostel-cmd-help
