@@ -283,6 +283,11 @@ def get_engine() -> MemoryEngine:
 
 def reset_engine() -> None:
     global _engine
+    # The fact index works on this engine's Qdrant in the background: stop
+    # it first.  (Imported here: fact_index imports this module.)
+    from fact_index import reset_index
+
+    reset_index()
     with _lock:
         if _engine is not None:
             try:

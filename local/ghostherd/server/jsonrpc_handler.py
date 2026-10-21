@@ -10,6 +10,7 @@ from typing import Any, Callable
 from pydantic import BaseModel
 
 import conversation
+import fact_index
 import links
 import memory_migrate
 import meter
@@ -18,6 +19,11 @@ import shared_memory
 import subagents
 from engine import get_engine
 from herd import ASK_CLOSED, get_herd
+
+# How long a recall waits for the embedder to come up before it ranks by
+# words alone.  The CLI's own timeout is 15s.
+RECALL_WAIT = 8.0
+
 
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
@@ -89,6 +95,7 @@ class JsonRpcHandler:
             "herd_recall": self._herd_recall,
             "herd_forget": self._herd_forget,
             "memory_opening": self._memory_opening,
+            "memory_rank": self._memory_rank,
             "memory_link_claude": self._memory_link_claude,
             "memory_migrate": self._memory_migrate,
             "memory_unmigrate": self._memory_unmigrate,
@@ -518,14 +525,31 @@ class JsonRpcHandler:
         return changed
 
     def _herd_recall(self, params: dict) -> dict:
-        "The project's index, or the facts matching QUERY in full."
+        """The project's index, or the facts relevant to QUERY in full, best
+        first -- ranked by meaning and words (fact_index), or by words alone
+        when the embedder is not up within RECALL_WAIT."""
         store, key = self._memory_store(params)
         if key != shared_memory.USER_KEY:
             try:
                 self._attribute_project(key)
             except Exception:  # noqa: BLE001 — attribution must never fail a read
                 pass
-        return shared_memory.recall(store, key, query=str(params.get("query") or ""))
+        query = str(params.get("query") or "").strip()
+        if not query:
+            return shared_memory.recall(store, key, query="")
+        found = fact_index.get_index().rank(key, query, strict=False, wait=RECALL_WAIT)
+        hits = found["hits"]
+        blocks = [
+            f"# {h['title']}  ({h['type']}, by {h['author'] or 'unknown'}, "
+            f"{'user' if h['shared'] else key})\n{h['body']}"
+            for h in hits
+        ]
+        note = "" if found["mode"] != "words" else (
+            "(ranked by words alone: the embedder is not up yet)\n\n")
+        return {"query": query, "count": len(hits), "mode": found["mode"],
+                "text": (note + "\n\n---\n\n".join(blocks)) if blocks
+                else f"no fact matches {query!r}",
+                "names": [h["name"] for h in hits]}
 
     def _memory_opening(self, params: dict) -> dict:
         """What a grok or agy agent of the caller's project is told of the
@@ -535,6 +559,21 @@ class JsonRpcHandler:
         _store, key = self._memory_store(params)
         cap = int(params.get("max") or 4000)
         return shared_memory.opening(key, max(0, cap))
+
+    def _memory_rank(self, params: dict) -> dict:
+        """The facts of the caller's project (or --user) relevant to QUERY,
+        best first, each with its score and why -- the one ranking `herd
+        recall' and asks use, for the page to call.  STRICT (default false)
+        takes an ask's bar; LIMIT caps the hits; WAIT is how long to wait for
+        the embedder before words alone rank them."""
+        _store, key = self._memory_store(params)
+        query = str(params.get("query") or "")
+        limit = params.get("limit")
+        wait = params.get("wait")
+        return fact_index.get_index().rank(
+            key, query, strict=bool(params.get("strict")),
+            k=int(limit) if limit not in (None, "") else None,
+            wait=float(wait) if wait not in (None, "") else RECALL_WAIT)
 
     def _herd_forget(self, params: dict) -> dict:
         "Remove a fact by NAME from the caller's project store (or --user)."

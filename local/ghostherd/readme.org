@@ -685,7 +685,7 @@ from =~/.emacs.d/ghostherd-memory= (the raw Qdrant transcripts): that is
 
 #+begin_src sh
 herd remember [--type project|feedback|reference] [--name SLUG] [--user] [TEXT|-]
-herd recall [--user] [QUERY...]     # no query prints the index; a query, the facts
+herd recall [--user] [QUERY...]     # no query prints the index; a query, the most relevant facts
 herd forget [--user] NAME
 #+end_src
 
@@ -709,6 +709,17 @@ every fact that did not fit, and how to read it (=herd recall <topic>=).
 The sidecar composes it from the fact files; without the sidecar the
 opening falls back to MEMORY.md's lines under the same cap, with how many
 were left out.
+
+=herd recall QUERY= ranks by meaning as well as words, so a query in one
+language finds a fact written in another.  The facts are embedded (the same
+=bge-small-zh= as the transcripts) into a Qdrant collection of their own,
+=ghostherd_facts= --- never mixed with the transcripts --- and kept in sync
+with the files however they change: a write, edit or forget through the
+herd is indexed at once, and a write that bypasses it (claude writing its
+own memory file, a hand edit) is found the next time the store is read, by
+the files' stamps, re-embedding only a fact whose text changed.  Until the
+embedder is up the ranking falls back to words, and says so.  The page can
+call the same ranking (=memory_rank=).
 
 The existing claude memories were migrated in once (=herd memory migrate=,
 reversible with =herd memory unmigrate=): each is copied into its store

@@ -1771,9 +1771,23 @@ never reached agy or grok unless they thought to recall.
   Composed by the sidecar (=memory_opening=, =shared_memory.opening=);
   without it, MEMORY.md's lines, capped the same way.  pytest + ERT broken
   on purpose
-- [ ] After the merge, by hand: restart the sidecar (the new =memory_opening=
-  RPC); reload the =.el= (the bound =ghostherd-memory-opening-max= keeps its
-  4000, now the cap on the index lines only)
+- [X] The facts in a Qdrant collection of their own (=ghostherd_facts=),
+  in sync with the files: writes through the herd at once (a listener on
+  the store), any other write (claude's own, a hand edit, the page) at the
+  next read by the files' stamps, re-embedding only what changed.  Warmed
+  at sidecar start, in the background.  =server/fact_index.py=
+- [X] =herd recall QUERY= and =memory_rank= (for the page) rank by meaning
+  and words: per query part, a z-score of cosine against the store plus a
+  fixed background, and BM25 over ASCII identifiers -- the two must agree
+  for an ask; a recall takes a looser bar.  Tuned on deploy-platform's real
+  facts and asks (read-only): bge-small-zh alone scored an unrelated React
+  ask as high as a real hit, and its Chinese facts close to every Chinese
+  ask; words alone matched long facts to everything.  Words alone when the
+  embedder is not up.  =server/memory_rank.py=
+- [ ] After the merge, by hand: restart the sidecar (new RPCs, the facts'
+  collection, the warm-up builds the first index); reload the =.el= (the
+  bound =ghostherd-memory-opening-max= keeps its 4000, now the cap on the
+  index lines only)
 
 * Phase 4 — Ecosystem (only if still useful)
 

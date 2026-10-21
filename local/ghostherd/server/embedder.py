@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sys
+import threading
 from typing import Iterable
 
 from config import Config
@@ -37,10 +38,18 @@ class Embedder:
         self._dense = None
         self._sparse = None
         self.loaded = False
+        # The import, a recall and the fact index's worker may all ask at
+        # once; the model is loaded once.
+        self._load_lock = threading.Lock()
 
     def load(self) -> None:
         if self.loaded:
             return
+        with self._load_lock:
+            if not self.loaded:
+                self._load()
+
+    def _load(self) -> None:
         if self.fake:
             self.dim = FAKE_DIM
             self.loaded = True

@@ -57,6 +57,28 @@ RULE_TYPES = ("user", "feedback")
 # The rest of an opening, one line each: project facts before reference.
 LINE_ORDER = {"project": 0, "reference": 1}
 
+# Who to tell when a store's facts change -- the sidecar's fact index
+# registers here, so a fact written, edited or forgotten through this
+# module reaches it at once.  Writes that bypass it (claude's own, a hand
+# edit) are found when the index next reads the files.
+_LISTENERS: list = []
+
+
+def on_change(fn):
+    "Call FN(key, names) after facts NAMES of store KEY change."
+    if fn not in _LISTENERS:
+        _LISTENERS.append(fn)
+    return fn
+
+
+def _changed(key: str, names: list[str]) -> None:
+    for fn in list(_LISTENERS):
+        try:
+            fn(key, names)
+        except Exception:  # noqa: BLE001 -- a listener never fails a write
+            pass
+
+
 def root() -> Path:
     "The store's home.  GHOSTHERD_SHARED_MEMORY_DIR overrides it, for tests."
     return Path(
@@ -354,6 +376,7 @@ def write_fact(
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
+    _changed(key, [name])
     return {"name": name, "path": str(path), "type": typ, "store": key}
 
 
@@ -371,6 +394,7 @@ def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
     extra = {"originSessionId": meta.get("originSessionId"), "modified": meta.get("modified")}
     _atomic_write(path, render(f.name, f.description, f.body, type=f.type, author=author,
                                created=(f.created or now), updated=(f.updated or now), extra=extra))
+    _changed(path.parent.name, [f.name])
     return True
 
 
@@ -390,6 +414,8 @@ def forget(store: Path, key: str, name: str) -> dict:
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
+    if removed:
+        _changed(key, [name])
     return {"name": name, "removed": removed, "store": key}
 
 
