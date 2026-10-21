@@ -779,9 +779,27 @@ pre.screen {
    the Columns view is untouched; on a narrow screen the max-width is moot and
    margin:auto is a no-op, so the phone is unchanged. */
 .chat { --chatcol: 1040px; }
-.chat .cmsg, .chat .cmeter { max-width: var(--chatcol); margin-inline: auto; }
+.chat .cmsg { max-width: var(--chatcol); margin-inline: auto; }
 .chat .cfoot { max-width: var(--chatcol); margin-inline: auto; width: 100%; box-sizing: border-box; }
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
+
+/* Jump to what you asked: a slim sticky line above the timeline / each
+   column, with your latest message and ↑/↓ through the earlier ones. */
+.chat .cjump:empty, .rcol .rjump:empty { display: none; }
+.jump { display: flex; align-items: center; gap: 8px; padding: 5px 16px; border-bottom: 1px solid var(--line);
+  font-size: 12px; background: var(--bg); box-sizing: border-box; }
+.chat .jump { max-width: 1040px; margin-inline: auto; width: 100%; }
+.jline { flex: 1; min-width: 0; text-align: left; display: flex; gap: 6px; align-items: baseline; overflow: hidden;
+  background: none; border: none; color: inherit; cursor: pointer; padding: 0; font: inherit; }
+.jline .jwho { color: var(--open); font-weight: 600; flex-shrink: 0; }
+.jline .jtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.jline:hover .jtext { color: var(--text); }
+.jpos { color: var(--muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.jstep { flex-shrink: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; color: var(--text);
+  cursor: pointer; padding: 1px 7px; font: inherit; line-height: 1.3; }
+.jstep:disabled { opacity: .35; cursor: default; }
+.jnote { color: var(--muted); }
+.cmsg.flash, .ent.you.flash { animation: flash 1.6s ease-out; }
 .cmore { margin-top: 2px; font-size: 12px; }
 .leadb { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid #a371f7; color: #d2a8ff; }
 /* The second of a name, the third: it took over another's work. */

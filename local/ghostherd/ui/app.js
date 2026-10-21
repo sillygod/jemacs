@@ -809,6 +809,11 @@
     // its older page arrives, the view holds the message you were reading
     // instead of jumping, the prepended turns pushing it down by their height.
     earlierPending: new Set(), chatEarlierPending: false,
+    // Jump to what you asked: which of your own messages is the one the
+    // sticky line points at (by its ts, or null = the latest), per view; a
+    // pending flag while a `load earlier' fired to reach an older one; and a
+    // transient note ("older than what is loaded") on a view's jump line.
+    jump: { chat: null, col: {} }, jumpPend: null, jumpNote: {},
     // Checkouts whose every task is shown, not two.
     workOpen: new Set(),
   };
@@ -1772,7 +1777,7 @@
       return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     }
     if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
-    return '<div class="ent you">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
+    return '<div class="ent you" data-i="' + i + '">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
   }
 
   // `Load earlier' when there is more to show and the limit can still grow;
@@ -1930,6 +1935,16 @@
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.earlierPending.delete(a.name);
     } else body.scrollTop = keep;
+    renderColJump(a.name);
+    const conv = herdNow.convs[a.name];
+    if (herdNow.jumpPend === "col:" + a.name && conv && !conv.loading) {
+      herdNow.jumpPend = null;
+      const list = youItems(entries), k = youAt(list, herdNow.jump.col[a.name]);
+      if (k < list.length - 1) {
+        herdNow.jump.col[a.name] = list[k + 1].ts; renderColJump(a.name);
+        flashMsg(body, '.ent.you[data-i="' + list[k + 1].i + '"]');
+      } else noteJump("col:" + a.name, "Older questions are in the transcript, past what is loaded here.", () => renderColJump(a.name));
+    }
   }
 
   // A sub-agent's own transcript, over the room: its conversation and tool
@@ -1986,7 +2001,7 @@
 
   function chatHtml(agents) {
     const to = chatTo(agents);
-    return '<div class="chat"><div class="cbody"></div><div class="cmeter"></div>' +
+    return '<div class="chat"><div class="cjump"></div><div class="cbody"></div><div class="cmeter"></div>' +
       '<div class="cfoot" data-name="' + esc(to) + '"><div class="attach">' + attachHtml(to) + "</div>" +
       '<select class="chat-to" title="Who it goes to (or start with @name, @lead)">' +
       chatTargets(agents).map(([v, label]) => '<option value="' + esc(v) + '"' + (v === to ? " selected" : "") + ">" + esc(label) + "</option>").join("") +
@@ -2049,7 +2064,7 @@
       : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || ""), copyButton(i, e.answer, "answer")) +
         plainBody(e.answer) + "</div>"
       : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
-    return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '"' +
+    return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '" data-i="' + i + '"' +
       (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
       entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + outcome +
       (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
@@ -2082,6 +2097,132 @@
       body.scrollTop = keep + (body.scrollHeight - oldHeight);
       herdNow.chatEarlierPending = false;
     } else body.scrollTop = keep;
+    renderChatJump();
+    // A `load earlier' fired to reach an older "You" has arrived: step to it.
+    if (herdNow.jumpPend === "chat" && c && !c.loading) {
+      herdNow.jumpPend = null;
+      const list = youItems(entries), k = youAt(list, herdNow.jump.chat);
+      if (k < list.length - 1) {
+        herdNow.jump.chat = list[k + 1].ts;
+        renderChatJump();
+        flashMsg(body, '.cmsg[data-i="' + list[k + 1].i + '"]');
+      } else noteJump("chat", "Older questions are in the transcript, past what is loaded here.", renderChatJump);
+    }
+  }
+
+  // ---- Jump to what you asked --------------------------------------------
+  //
+  // Coming back, the user forgets what they asked.  A sticky line shows their
+  // latest message in the view (in the merged chat, to any agent); clicking
+  // it jumps there and flashes it, and ↑/↓ step through earlier ones -- paging
+  // back with the B(2) cursor when one is older than what is loaded, and
+  // saying so once nothing older can be loaded.
+
+  function youItems(entries) {
+    const out = [];
+    for (let i = (entries || []).length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e && (e.who === "user" || e.role === "user"))
+        out.push({ ts: e.ts, i, text: (e.text || "").replace(/\s+/g, " ").trim() });
+    }
+    return out; // newest first
+  }
+
+  function youAt(list, ts) {
+    if (!ts) return 0;
+    const k = list.findIndex((x) => x.ts === ts);
+    return k < 0 ? 0 : k;
+  }
+
+  function jumpBarHtml(list, curTs, conv, note) {
+    if (note) return '<div class="jump"><span class="jnote">' + esc(note) + "</span></div>";
+    if (!list.length) return "";
+    const k = youAt(list, curTs), cur = list[k];
+    const older = k < list.length - 1 || !!(conv && conv.more);
+    return '<div class="jump">' +
+      '<button type="button" class="jline" data-act="a:jump-go" title="Jump to this message">' +
+      '<span class="jwho">You:</span> <span class="jtext">' + esc(cur.text || "(no text)") + "</span></button>" +
+      (list.length > 1 ? '<span class="jpos">' + (list.length - k) + "/" + list.length + "</span>" : "") +
+      '<button type="button" class="jstep" data-act="a:jump-prev"' + (older ? "" : " disabled") + ' title="Earlier question">↑</button>' +
+      '<button type="button" class="jstep" data-act="a:jump-next"' + (k > 0 ? "" : " disabled") + ' title="Later question">↓</button>' +
+      "</div>";
+  }
+
+  function renderChatJump() {
+    const bar = app.querySelector(".chat .cjump");
+    if (!bar) return;
+    bar.innerHTML = jumpBarHtml(youItems((herdNow.chat && herdNow.chat.entries) || []),
+      herdNow.jump.chat, herdNow.chat, herdNow.jumpNote.chat);
+  }
+
+  function flashMsg(body, sel) {
+    const el = body && body.querySelector(sel);
+    if (!el) return false;
+    el.scrollIntoView({ block: "center" });
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+    return true;
+  }
+
+  function noteJump(key, msg, renderFn) {
+    herdNow.jumpNote[key] = msg;
+    renderFn();
+    setTimeout(() => { if (herdNow.jumpNote[key] === msg) { herdNow.jumpNote[key] = ""; renderFn(); } }, 2800);
+  }
+
+  // The same, per column: its own conversation, body, bar, cursor and the
+  // room-earlier cursor for paging back.
+  function renderColJump(name) {
+    const col = roomColumn(name), bar = col && col.querySelector(".rjump");
+    if (!bar) return;
+    const conv = herdNow.convs[name];
+    bar.innerHTML = jumpBarHtml(youItems((conv && conv.entries) || []),
+      herdNow.jump.col[name], conv, herdNow.jumpNote["col:" + name]);
+  }
+
+  function colJump(name, dir) {
+    const conv = herdNow.convs[name], entries = (conv && conv.entries) || [];
+    const list = youItems(entries);
+    if (!list.length) return;
+    const col = roomColumn(name), body = col && col.querySelector(".rbody");
+    const k = youAt(list, herdNow.jump.col[name]);
+    if (dir === 0) return void flashMsg(body, '.ent.you[data-i="' + list[k].i + '"]');
+    if (dir > 0) {               // ↑ earlier
+      if (k < list.length - 1) {
+        herdNow.jump.col[name] = list[k + 1].ts; renderColJump(name);
+        flashMsg(body, '.ent.you[data-i="' + list[k + 1].i + '"]');
+      } else if (conv && conv.more && !conv.loading) {
+        const a = roomAgents().find((x) => x.name === name);
+        if (!a) return;
+        herdNow.jumpPend = "col:" + name; conv.loading = true; conv.paged = true; herdNow.earlierPending.add(name);
+        emit("room-earlier", { project: herdNow.room, name: name, before: entries.length });
+        renderRoomBody(a);
+      } else noteJump("col:" + name, "Older questions are in the transcript, past what is loaded here.", () => renderColJump(name));
+    } else if (k > 0) {          // ↓ later
+      herdNow.jump.col[name] = list[k - 1].ts; renderColJump(name);
+      flashMsg(body, '.ent.you[data-i="' + list[k - 1].i + '"]');
+    }
+  }
+
+  function chatJump(dir) {
+    const chat = herdNow.chat, entries = (chat && chat.entries) || [];
+    const list = youItems(entries);
+    if (!list.length) return;
+    const body = app.querySelector(".chat .cbody");
+    const k = youAt(list, herdNow.jump.chat);
+    if (dir === 0) return void flashMsg(body, '.cmsg[data-i="' + list[k].i + '"]');
+    if (dir > 0) {               // ↑ earlier
+      if (k < list.length - 1) {
+        herdNow.jump.chat = list[k + 1].ts; renderChatJump();
+        flashMsg(body, '.cmsg[data-i="' + list[k + 1].i + '"]');
+      } else if (chat && chat.more && !chat.loading) {
+        herdNow.jumpPend = "chat"; chat.loading = true; chat.paged = true; herdNow.chatEarlierPending = true;
+        emit("chat-earlier", { project: herdNow.room, before: entries.length });
+        renderChatBody();
+      } else noteJump("chat", "Older questions are in the transcript, past what is loaded here.", renderChatJump);
+    } else if (k > 0) {          // ↓ later
+      herdNow.jump.chat = list[k - 1].ts; renderChatJump();
+      flashMsg(body, '.cmsg[data-i="' + list[k - 1].i + '"]');
+    }
   }
 
   function renderRoom() {
@@ -2106,7 +2247,7 @@
         (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
-              '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rbody"></div><div class="rsubs"></div>' +
+              '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rjump"></div><div class="rbody"></div><div class="rsubs"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
               '<textarea class="agent-text" rows="2" placeholder="' + esc(promptHint(a.name)) + '">' +
               esc(herdNow.compose[a.name] || "") + '</textarea>' + IMAGE_BUTTON + useButton(a.name) +
@@ -2139,6 +2280,7 @@
       }
       stripUnder(body, col.querySelector(".rsubs"), subsHtml(a));
       suggestIn(col, a.name, promptHint(a.name));
+      renderColJump(a.name);
     });
   }
 
@@ -2154,6 +2296,11 @@
       return renderAgents();
     }
     if (act === "hook-open") return emit("hook-open", { i: +el.getAttribute("data-i") });
+    if (act === "jump-go" || act === "jump-prev" || act === "jump-next") {
+      const dir = act === "jump-go" ? 0 : act === "jump-prev" ? 1 : -1;
+      const col = el.closest(".rcol");
+      return col ? colJump(col.getAttribute("data-name"), dir) : chatJump(dir);
+    }
     if (act === "room") return openRoom(project);
     // A chip still a button on another device has no address yet: Emacs
     // would open it on the desk's screen.
