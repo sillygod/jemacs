@@ -301,6 +301,7 @@ always taken fresh."
     ("a"        "Add template")
     ("e"        "Edit at point")
     ("d"        "Delete at point")
+    ("M-j, M-k" "Move command down / up (saved)")
     ("/"        "Live-narrow (flex)")
     ("C-y"      "Yank into filter / fill input")
     ("o"        "Open save file")
@@ -975,6 +976,44 @@ split if none is showing."
         (funcall run)
         (ghostel-cmd--refresh-overlay)))))
 
+(defun ghostel-cmd--move-command (cmds name neighbor after)
+  "CMDS with NAME moved just AFTER NEIGHBOR, or just before it."
+  (let* ((key (lambda (c) (plist-get c :name)))
+         (rec (cl-find name cmds :key key :test #'equal))
+         (rest (remq rec cmds))
+         (pos (cl-position neighbor rest :key key :test #'equal)))
+    (if (not (and rec pos))
+        cmds
+      (let ((i (if after (1+ pos) pos)))
+        (append (take i rest) (list rec) (nthcdr i rest))))))
+
+(defun ghostel-cmd--move-at-point (step)
+  "Move the command at point past the row STEP lines away, and save.
+Under a filter that row is the next visible one, not a hidden one."
+  (let ((name (tabulated-list-get-id))
+        (neighbor (save-excursion
+                    (forward-line step)
+                    (tabulated-list-get-id)))
+        (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
+    (unless name
+      (user-error "No command at point"))
+    (when (and neighbor (not (equal neighbor name)))
+      (ghostel-cmd--update-commands
+       (lambda (cmds)
+         (ghostel-cmd--move-command cmds name neighbor (> step 0)))
+       root)
+      (ghostel-cmd--refresh-overlay))))
+
+(defun ghostel-cmd-move-down ()
+  "Move the command at point one row down; the order is saved."
+  (interactive)
+  (ghostel-cmd--move-at-point 1))
+
+(defun ghostel-cmd-move-up ()
+  "Move the command at point one row up; the order is saved."
+  (interactive)
+  (ghostel-cmd--move-at-point -1))
+
 (defun ghostel-cmd-open-save-file ()
   "Visit the on-disk bookmark file."
   (interactive)
@@ -1217,6 +1256,10 @@ presses Enter."
   "a"          #'ghostel-cmd-add
   "e"          #'ghostel-cmd-edit
   "d"          #'ghostel-cmd-delete
+  "M-j"        #'ghostel-cmd-move-down
+  "M-k"        #'ghostel-cmd-move-up
+  "M-<down>"   #'ghostel-cmd-move-down
+  "M-<up>"     #'ghostel-cmd-move-up
   "/"          #'ghostel-cmd-filter
   "o"          #'ghostel-cmd-open-save-file
   "g"          #'tabulated-list-revert
@@ -1251,6 +1294,10 @@ presses Enter."
       (kbd "a") #'ghostel-cmd-add
       (kbd "e") #'ghostel-cmd-edit
       (kbd "d") #'ghostel-cmd-delete
+      (kbd "M-j") #'ghostel-cmd-move-down
+      (kbd "M-k") #'ghostel-cmd-move-up
+      (kbd "M-<down>") #'ghostel-cmd-move-down
+      (kbd "M-<up>") #'ghostel-cmd-move-up
       (kbd "/") #'ghostel-cmd-filter
       (kbd "o") #'ghostel-cmd-open-save-file
       (kbd "gr") #'tabulated-list-revert

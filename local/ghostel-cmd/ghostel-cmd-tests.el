@@ -254,6 +254,32 @@ Keys go through the real keymaps with `execute-kbd-macro'."
                               :cmd)
                    "echo A"))))
 
+(ert-deftest ghostel-cmd-test-reorder-is-saved ()
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--abc)
+    (execute-kbd-macro (kbd "M-j"))
+    (should (equal (tabulated-list-get-id) "a"))
+    (setq ghostel-cmd--cache nil
+          ghostel-cmd--cache-stamp nil)
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("b" "a" "c")))
+    (execute-kbd-macro (kbd "M-<down>"))
+    (execute-kbd-macro (kbd "M-j"))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("b" "c" "a")))
+    (execute-kbd-macro (kbd "M-k"))
+    (execute-kbd-macro (kbd "M-<up>"))
+    (execute-kbd-macro (kbd "M-k"))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("a" "b" "c")))
+    (should (equal (tabulated-list-get-id) "a"))))
+
+(ert-deftest ghostel-cmd-test-reorder-under-filter-skips-hidden ()
+  (ghostel-cmd-tests--with-overlay
+      (list (list :name "x1" :cmd "echo 1")
+            (list :name "y" :cmd "echo y")
+            (list :name "x2" :cmd "echo 2"))
+    (setq ghostel-cmd--query "x")
+    (ghostel-cmd--refresh-overlay)
+    (execute-kbd-macro (kbd "M-j"))
+    (should (equal (ghostel-cmd-tests--names ghostel-cmd--root) '("y" "x2" "x1")))))
+
 (ert-deftest ghostel-cmd-test-put-command-heals-duplicates ()
   (should (equal (ghostel-cmd--put-command
                   (list (list :name "x" :cmd "1")

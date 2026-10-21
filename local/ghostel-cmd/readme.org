@@ -23,6 +23,8 @@ Posframe when available, side window otherwise.
 |            | every printable key types; =C-n= =C-p= move |
 | =a= =e= =d=| Add / edit / delete; edit keeps the place   |
 |            | a name already taken asks before replacing  |
+| =M-j= =M-k=| Move the command down / up, saved           |
+|            | (=M-<down>= =M-<up>= too)                   |
 | =C-y=      | Yank into the filter or fill input; one     |
 |            | line, newlines become spaces                |
 | =q= / Esc  | Quit; during fill, cancel fill              |
