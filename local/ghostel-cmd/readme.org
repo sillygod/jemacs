@@ -26,7 +26,10 @@ Posframe when available, side window otherwise.
 | =q= / Esc  | Quit; during fill, cancel fill              |
 
 Placeholders: ={{file}}=, ={{line}}=, ={{root}}=, ={{project-name}}=,
-={{branch}}=, or ={{name:default}}=.  Filling happens on the overlay
+={{branch}}=, or ={{name:default}}=.  A name starts with a letter or
+underscore; any other ={{...}}= stays literal, so docker's
+={{.State.Status}}= and helm's ={{ .Values.x }}= paste as written (Go's
+={{end}}= still reads as a variable).  Filling happens on the overlay
 footer, not a chain of minibuffers.  =RET= never sends Enter unless
 you use =C-RET=.
 

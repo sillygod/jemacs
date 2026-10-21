@@ -52,6 +52,25 @@ Keys go through the real keymaps with `execute-kbd-macro'."
                    '(("file" . nil)
                      ("expr" . "all"))))))
 
+(ert-deftest ghostel-cmd-test-go-templates-stay-literal ()
+  (dolist (tmpl '("docker inspect --format '{{.State.Status}}' web"
+                  "docker inspect --format '{{json .}}' web"
+                  "helm template . --set x={{ .Values.x }}"))
+    (should-not (ghostel-cmd--extract-variables tmpl "/tmp/"))
+    (should (equal (ghostel-cmd--apply tmpl '(("json" . "1"))) tmpl)))
+  ;; The rule has no escape: a Go action that starts with a letter,
+  ;; like {{end}}, reads as a variable.
+  (should (equal (ghostel-cmd--extract-variables
+                  "-o go-template='{{range .items}}{{.name}}{{end}}'" "/tmp/")
+                 '(("end" . nil))))
+  (let ((tmpl "docker inspect -f '{{.State.Status}}' {{ctr:web}} {{_id}}"))
+    (should (equal (ghostel-cmd--extract-variables tmpl "/tmp/")
+                   '(("ctr" . "web") ("_id" . nil))))
+    (should (equal (ghostel-cmd--apply tmpl '(("ctr" . "db") ("_id" . "7")))
+                   "docker inspect -f '{{.State.Status}}' db 7")))
+  (should (equal (ghostel-cmd--extract-variables "echo {{ name }} {{n2:x y}}" "/tmp/")
+                 '(("name" . nil) ("n2" . "x y")))))
+
 (ert-deftest ghostel-cmd-test-builtin-file-and-root ()
   (ghostel-cmd-tests--with-store
     (should (equal (ghostel-cmd--builtin-var "root" ghostel-cmd--root)

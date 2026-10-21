@@ -96,8 +96,10 @@ Nil means a fixed `ghostel-cmd-posframe-width'."
 Nil until the first read; MTIME is nil when the file did not exist.")
 
 (defconst ghostel-cmd--var-regexp
-  "{{\\s-*\\([^:} \t\n]+\\)\\(?::\\([^}]*\\)\\)?\\s-*}}"
-  "Match {{var}} or {{var:default}}.")
+  "{{\\s-*\\([[:alpha:]_][^:} \t\n]*\\)\\(?::\\([^}]*\\)\\)?\\s-*}}"
+  "Match {{var}} or {{var:default}}.
+A name starts with a letter or underscore; any other {{...}} is
+literal, such as docker's {{.State.Status}} or helm's {{ .Values.x }}.")
 
 (defun ghostel-cmd--current-project-root ()
   "Normalized project root, or `default-directory'."
