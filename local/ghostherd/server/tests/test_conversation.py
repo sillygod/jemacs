@@ -665,6 +665,7 @@ def test_the_room_reads_what_ghostherd_writes(tmp_path):
     e = conv.user_entry(message(mail["from"], "claude-main", mail["body"]), None)
     assert (e["kind"], e["who"], e["ask"], e["text"], e["auto"]) == ("answer", "agy-a2", ask["id"], "X\n(with parens): yes", False)
     h.tick(sessions=SNAP, ack_ids=[mail["id"]])
+    h.report("agy-a2", state="done")  # its turn ends, freeing it for the next ask
 
     two = h.ask("agy-a2", "again (twice)", from_name="claude-main")
     _deliver(h)

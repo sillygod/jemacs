@@ -351,7 +351,12 @@ class HerdStore:
         link_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(links)")
         }
-        for col in ("turn_at", "last_turn_at"):
+        # `turn_end_at': when a turn last ended (a `done'/`idle' hook).  A
+        # queued ask is not delivered while a turn is still in flight by the
+        # hooks -- a `working' with no end since -- so it does not land in the
+        # moment a turn is ending (the screen reads idle a beat before the
+        # turn-end hook lands), to be answered by that ending turn's recap.
+        for col in ("turn_at", "last_turn_at", "turn_end_at"):
             if col not in link_cols:
                 self._conn.execute(f"ALTER TABLE links ADD COLUMN {col} TEXT")
         # The ask its asker was answering, the run it belongs to, its round
@@ -901,16 +906,27 @@ class HerdStore:
                 waiting += _background(self._transcript(row["to_name"]))
                 if waiting:
                     return {"id": row["id"], "status": "delivered", "waiting_on": waiting}
-                # A settle must not close an ask in the same instant it is
-                # delivered: a taker only just handed it is starting its
-                # turn, and the `done' Emacs saw is the previous turn ending
-                # as the ask arrived -- which a restart, clearing `turn_at',
-                # leaves no newer turn to out-date.  Close only once a turn
-                # has begun after delivery, or the grace since has passed.
+                # An ask is closed only by a turn that began after it reached
+                # the taker.  The `done' Emacs saw as the ask arrived is the
+                # previous turn ending -- its `turn_at' is older than the
+                # delivery -- so it must not answer this ask; the next turn,
+                # begun after delivery, does.  The grace is the fallback ONLY
+                # when no turn-start is known at all (turn_at NULL: a hookless
+                # taker, or one a restart cleared) -- there an unknown start
+                # cannot be read as "before the ask".  When turn_at IS known
+                # and sits at or before delivery, the taker is still on the
+                # old turn: wait, do not let the grace close it with that
+                # turn's recap.  (This is the bug that closed ask f2bd1c46
+                # with the herd-start turn's recap: delivered mid-turn-end,
+                # then grace-closed 12s on though no new turn had begun.)
                 ref = row["delivered_at"] or row["created_at"]
+                turn_at = self._turn_at(row["to_name"])
+                began_after = bool(
+                    turn_at and ref
+                    and datetime.fromisoformat(turn_at) > datetime.fromisoformat(ref))
                 if not (
-                    self._turn_after(row["to_name"], ref)
-                    or self._deliver_grace_passed(ref, now)
+                    began_after
+                    or (turn_at is None and self._deliver_grace_passed(ref, now))
                 ):
                     return {"id": row["id"], "status": "delivered", "too_soon": True}
             if dead or error:
@@ -1179,6 +1195,18 @@ class HerdStore:
                     "UPDATE links SET turn_at = ?, updated_at = ? WHERE session = ?",
                     (now, now, session),
                 )
+            if state in ("done", "idle"):
+                # A turn ends.  A queued ask waits for this -- the turn-end
+                # hook -- rather than the screen reading idle a beat sooner,
+                # so it is not delivered into the moment a turn is ending.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
+                    (session, now),
+                )
+                self._conn.execute(
+                    "UPDATE links SET turn_end_at = ?, updated_at = ? WHERE session = ?",
+                    (now, now, session),
+                )
             if state == "done":
                 out = self._out(session)
                 if out:
@@ -1252,6 +1280,15 @@ class HerdStore:
             self._conn.commit()
         return {"session": session, "forgot": bool(n)}
 
+    def _turn_at(self, session: str) -> str | None:
+        """When SESSION's turn last reported `working', or None when no
+        turn-start is known -- a hookless taker, or one a restart cleared.
+        Caller holds `_mu`."""
+        row = self._conn.execute(
+            "SELECT turn_at FROM links WHERE session = ?", (session,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
     def _turn_after(self, session: str, ref: str | None) -> bool:
         """SESSION began a turn after REF: a `working' hook reached the herd
         since then, so the taker has read and worked on an ask delivered at
@@ -1260,10 +1297,7 @@ class HerdStore:
         Caller holds `_mu`."""
         if not ref:
             return False
-        row = self._conn.execute(
-            "SELECT turn_at FROM links WHERE session = ?", (session,)
-        ).fetchone()
-        turn_at = row[0] if row and row[0] else None
+        turn_at = self._turn_at(session)
         return bool(
             turn_at
             and datetime.fromisoformat(turn_at) > datetime.fromisoformat(ref)
@@ -1281,14 +1315,15 @@ class HerdStore:
     def _last_since(
         self, session: str, created: str | None, delivered: str | None = None
     ) -> str | None:
-        """SESSION's last answer if its turn began after the ask.
+        """SESSION's last answer if its turn began after the ask REACHED it.
 
-        The turn began at `last_turn_at'; prefer that against the ask's
-        CREATED time, so a turn already running when the ask arrived -- its
-        recap ended after the ask but began before it -- does not answer it.
-        When the turn's start is unknown (no `working' reached the herd),
-        fall back to the old test: the message came after DELIVERED.  Caller
-        holds `_mu`."""
+        The turn began at `last_turn_at'; weigh that against when the ask was
+        DELIVERED -- when it reached the taker -- not when it was created,
+        which can be long before, queued behind another ask.  A turn already
+        running at delivery (its recap ended after, but began before) does
+        not answer it.  When the turn's start is unknown (no `working'
+        reached the herd), fall back to the old test: the message came after
+        delivery.  Caller holds `_mu`."""
         row = self._conn.execute(
             "SELECT last_message, last_at, last_turn_at FROM links WHERE session = ?",
             (session,),
@@ -1296,13 +1331,14 @@ class HerdStore:
         if not row or not row[0]:
             return None
         last_message, last_at, last_turn_at = row
+        ref = delivered or created
         if last_turn_at:
-            if created and datetime.fromisoformat(last_turn_at) <= datetime.fromisoformat(created):
+            if ref and datetime.fromisoformat(last_turn_at) <= datetime.fromisoformat(ref):
                 return None
             return last_message
         if not last_at:
             return None
-        if delivered and datetime.fromisoformat(last_at) <= datetime.fromisoformat(delivered):
+        if ref and datetime.fromisoformat(last_at) <= datetime.fromisoformat(ref):
             return None
         return last_message
 
@@ -1490,6 +1526,29 @@ class HerdStore:
                     "SELECT to_name FROM asks WHERE status = 'delivered'"
                 )
             }
+            # An agent that just answered an ask (`herd reply') is not yet free
+            # for the next: the reply is a tool call inside a turn that is still
+            # ending.  Hold the next ask until that turn has ended by the hooks
+            # (a `done'/`idle' after the answer), or the grace passes -- so it
+            # does not land in the turn-ending moment and get answered by this
+            # turn's recap (the bug that mis-closed ask f2bd1c46).  Only asks
+            # wait this way; ordinary mail delivers on state alone.
+            finishing = {
+                r[0]
+                for r in self._conn.execute(
+                    """
+                    SELECT a.to_name
+                    FROM asks a
+                    LEFT JOIN links l ON l.session = a.to_name
+                    WHERE a.status = 'answered' AND a.answered_at IS NOT NULL
+                      AND a.auto = 0  -- its own `herd reply', mid-turn; an
+                                      -- auto-close means the turn already ended
+                      AND (julianday(?) - julianday(a.answered_at)) * 86400.0 < ?
+                      AND (l.turn_end_at IS NULL OR l.turn_end_at < a.answered_at)
+                    """,
+                    (now, DELIVER_GRACE),
+                )
+            }
             deliverable = []
             for row in self._conn.execute(
                 """
@@ -1505,7 +1564,7 @@ class HerdStore:
                 if (row[7] or "") in hold:
                     continue
                 if row[6]:
-                    if row[2] in answering:
+                    if row[2] in answering or row[2] in finishing:
                         continue
                     answering.add(row[2])
                 deliverable.append(row[:7] + row[8:])

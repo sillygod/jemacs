@@ -300,6 +300,45 @@ def test_settle_does_not_answer_with_a_turn_that_predated_the_ask(tmp_path):
     assert (got["reply"], got["auto_source"]) == ("the screen", "screen")
 
 
+def test_grace_does_not_close_an_ask_delivered_as_a_turn_ended(tmp_path, monkeypatch):
+    """The bug that mis-closed ask f2bd1c46: delivered as a turn was ending,
+    then the deliver-grace closed it with that turn's recap.  The grace is
+    only for an unknown turn-start (hookless/restart); when turn_at IS known
+    and sits before delivery, the taker is on the old turn -- wait, do not
+    let the grace close it.  A turn begun after delivery answers it."""
+    monkeypatch.setattr(herd_mod, "DELIVER_GRACE", 0)  # the grace has "passed"
+    h = _store(tmp_path)
+    h.report("agy-a2", state="working")          # the old turn's last `working'
+    time.sleep(0.002)
+    ask = h.ask("agy-a2", "review it", from_name="claude-main")
+    _deliver(h)                                  # delivered after that working
+    # No turn has begun after delivery.  Even with the grace elapsed, the ask
+    # is not closed: turn_at is known and before delivery.
+    r = h.settle(ask["id"], screen="the old turn's recap")
+    assert r.get("too_soon") and h.get_ask(ask["id"])["status"] == "delivered"
+    # The next turn, begun after delivery, answers it with its own words.
+    time.sleep(0.002)
+    h.report("agy-a2", state="working")
+    out = h.report("agy-a2", state="done", last="the real review")
+    assert out["closed_ask"] == ask["id"]
+    assert h.get_ask(ask["id"])["reply"] == "the real review"
+
+
+def test_the_next_ask_waits_until_the_answered_turn_ends(tmp_path):
+    """Answering an ask with `herd reply' does not free the agent for the next
+    queued ask until that turn has ended by the hooks -- so the next does not
+    land in the turn-ending moment and get answered by this turn's recap."""
+    h = _store(tmp_path)
+    first = h.ask("agy-a2", "one", from_name="claude-main")
+    second = h.ask("agy-a2", "two", from_name="user")
+    assert [p["ask"] for p in _deliver(h)] == [first["id"]]
+    h.reply(first["id"], "done one")             # its own reply, a tool call mid-turn
+    # Held while the turn ends...
+    assert [p["ask"] for p in h.tick(sessions=SNAP)["pending"] if p["to"] == "agy-a2"] == []
+    h.report("agy-a2", state="done")             # ...and delivered once it has.
+    assert [p["ask"] for p in h.tick(sessions=SNAP)["pending"] if p["to"] == "agy-a2"] == [second["id"]]
+
+
 def test_a_real_reply_reaches_an_asker_that_already_read_the_auto_answer(tmp_path):
     """A taker's real answer supersedes an auto one the asker already read,
     and reaches the asker as a message its own collect will not cancel."""

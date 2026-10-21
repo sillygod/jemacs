@@ -123,6 +123,10 @@ def test_one_open_ask_per_agent(tmp_path):
     # ...and the second waits while the first is open, idle or not.
     assert h.tick(sessions=SNAP)["pending"] == []
     h.reply(first["id"], "done")
+    # The reply is a tool call in its turn; the second waits until that turn
+    # ends (its `done' hook), not the instant the first is answered.
+    assert [p["ask"] for p in h.tick(sessions=SNAP)["pending"] if p["to"] == "agy-a2"] == []
+    h.report("agy-a2", state="done")
     pending = h.tick(sessions=SNAP)["pending"]
     assert [p["ask"] for p in pending if p["to"] == "agy-a2"] == [second["id"]]
 
