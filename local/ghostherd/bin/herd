@@ -108,6 +108,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fnmatch
 import hashlib
 import json
 import os
@@ -949,13 +950,28 @@ def cmd_guard(args):
     return 0
 
 
+# A URL's user part: `http://user:password@proxy', `https://TOKEN@host'.
+_URL_CREDENTIAL = re.compile(r"://[^/\s@]+@")
+
+
+def allowed_env(environ, allow):
+    """ENVIRON with only the names ALLOW lets through -- exact names, or
+    globs (LC_*, XDG_*) -- and none whose value carries a credential in a
+    URL (a proxy with a password): what is not there cannot leak."""
+    return {k: v for k, v in environ.items()
+            if any(fnmatch.fnmatchcase(k, pat) for pat in allow) and not _URL_CREDENTIAL.search(v)}
+
+
 def cmd_scrub_exec(args):
-    """Run CMD with the variables whose names match --scrub dropped from the
-    environment it really has -- what is not there cannot leak -- keeping the
-    --keep names, and replacing this process with it (one pid, the CLI's)."""
-    pats = [re.compile(p) for p in args.scrub or []]
-    keep = set(args.keep or [])
-    env = {k: v for k, v in os.environ.items() if k in keep or not any(p.search(k) for p in pats)}
+    """Run CMD with only the --allow names in the environment it really has
+    -- or, without --allow, with the names --scrub matches dropped and the
+    --keep ones kept -- replacing this process with it (one pid, the CLI's)."""
+    if args.allow:
+        env = allowed_env(os.environ, args.allow)
+    else:
+        pats = [re.compile(p) for p in args.scrub or []]
+        keep = set(args.keep or [])
+        env = {k: v for k, v in os.environ.items() if k in keep or not any(p.search(k) for p in pats)}
     cmd = [c for c in (args.cmd or []) if c != "--"]
     if not cmd:
         raise HerdError("scrub-exec: give the command after --")
@@ -1447,8 +1463,9 @@ def main(argv=None):
     p = sub.add_parser("guard", help="a guarded agy agent's PreToolUse hook, payload on stdin")
     p.add_argument("dir", help="the agent's guard directory")
     p.set_defaults(fn=cmd_guard)
-    p = sub.add_parser("scrub-exec", help="run a command with secret-looking variables removed")
-    p.add_argument("--scrub", action="append", metavar="REGEX", help="drop names matching (repeatable)")
+    p = sub.add_parser("scrub-exec", help="run a command with only the allowed variables")
+    p.add_argument("--allow", action="append", metavar="NAME", help="keep this name, or names matching this glob (repeatable)")
+    p.add_argument("--scrub", action="append", metavar="REGEX", help="without --allow: drop names matching (repeatable)")
     p.add_argument("--keep", action="append", metavar="NAME", help="keep this name anyway (repeatable)")
     p.add_argument("cmd", nargs=argparse.REMAINDER)
     p.set_defaults(fn=cmd_scrub_exec)

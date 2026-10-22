@@ -52,7 +52,7 @@
 (defvar ghostel-command-finish-functions)
 
 ;; server.el's, read for `GHOSTHERD_SOCKET' in `ghostherd-agent-environment'.
-(declare-function ghostherd-memory-rpc-url "ghostherd-memory")
+(declare-function ghostherd-memory-agent-rpc-url "ghostherd-memory")
 (declare-function ghostherd-memory--mail-directory "ghostherd-memory")
 (declare-function ghostherd-herd-client "ghostherd-memory")
 (defvar server-name)
@@ -296,9 +296,11 @@ shell ghostel spawns, which there is `tmux attach' -- so the wrapper is
 its only way back into the herd, and it should reach *this* Emacs
 without anyone having configured it.
 
-`GHOSTHERD_RPC' is the sidecar JSON-RPC URL, its token included.
-Agents mail siblings through it so they need neither the binary nor
-emacsclient.  Omitted until the sidecar has a bound port.
+`GHOSTHERD_RPC' is the sidecar JSON-RPC URL, the agents' token
+included -- never the herd's own, which approves a guard's refusals and
+edits memory (`ghostherd-memory-agent-rpc-url').  Agents mail siblings
+through it so they need neither the binary nor emacsclient.  Omitted
+until the sidecar has a bound port and an agent token.
 `GHOSTHERD_RPC_FILE' is where Emacs keeps the same URL, for an agent
 that outlives a sidecar restart, and `GHOSTHERD_HERD' is the client
 that asks and answers through it (`bin/herd').
@@ -313,9 +315,9 @@ loading a subsystem to read one variable off it would be backwards."
          (format "GHOSTHERD_BACKEND=%s" backend))
    (when (and (boundp 'server-name) (stringp server-name))
      (list (format "GHOSTHERD_SOCKET=%s" server-name)))
-   (when (and (fboundp 'ghostherd-memory-rpc-url)
-              (ghostherd-memory-rpc-url))
-     (list (format "GHOSTHERD_RPC=%s" (ghostherd-memory-rpc-url))))
+   (when-let* (((fboundp 'ghostherd-memory-agent-rpc-url))
+               (url (ghostherd-memory-agent-rpc-url)))
+     (list (format "GHOSTHERD_RPC=%s" url)))
    (when (fboundp 'ghostherd-memory--mail-directory)
      (list (format "GHOSTHERD_RPC_FILE=%s"
                    (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))

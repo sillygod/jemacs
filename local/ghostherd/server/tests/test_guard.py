@@ -651,6 +651,42 @@ def test_the_hook_answers_allow_or_deny_and_fails_closed(guard, home, tmp_path):
     assert json.loads(out.stdout)["decision"] == "deny"
 
 
+def test_the_herds_own_token_is_never_an_agents(home):
+    """rpc.token is the herd's: no approval hands it to an agent.  The rest of
+    the data directory is a secret, approvable once."""
+    token = home["home"] / "data" / "rpc.token"
+    token.write_text("t" * 64)
+    gd = policy(home, never_files=[str(token)])
+    for line in [f"cat {token}", f"head -c 64 {token}", "cat ~/data/rpc.token", f"grep -r x {token}"]:
+        v = cmd(gd, line)
+        assert (v.decision, v.kind, v.approvable) == ("deny", "never", False), (line, v.reason)
+        assert "the herd's own token" in v.reason
+    v = verdict(gd, "read_file", Path=str(token))
+    assert (v.kind, v.approvable) == ("never", False)
+    call = {"name": "run_command", "args": {"CommandLine": f"cat {token}"}}
+    g.add_approval(str(gd), g.fingerprint(call), "sneaky")
+    assert g.judge(str(gd), {"toolCall": call, "workspacePaths": agy_paths(gd)})[1].kind == "never"
+    assert cmd(gd, "cat ~/data/rpc.token.bak").kind == "secret"   # the data dir: secret, approvable
+
+
+def test_scrub_exec_keeps_only_what_is_allowed(tmp_path):
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "LC_ALL": "C", "XDG_CONFIG_HOME": "/x",
+           "DATABASE_URL": "postgres://u:p@db/x", "SENTRY_DSN": "https://k@o.ingest.sentry.io/1",
+           "GITLAB_PAT": "glpat", "DISCORD_WEBHOOK": "https://discord.com/api/webhooks/1/x",
+           "GHOSTHERD_RPC": "http://127.0.0.1:1/jsonrpc/agent", "SSH_AUTH_SOCK": "/tmp/agent",
+           "HTTPS_PROXY": "http://proxy:3128", "HTTP_PROXY": "http://me:pw@proxy:3128", "PLAIN": "x"}
+    allow = ["PATH", "HOME", "LC_*", "XDG_*", "GHOSTHERD_RPC", "SSH_AUTH_SOCK", "HTTPS_PROXY", "HTTP_PROXY"]
+    out = subprocess.run(
+        [str(HERD), "scrub-exec", *[a for n in allow for a in ("--allow", n)], "--",
+         sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"],
+        capture_output=True, text=True, env=env, timeout=20)
+    got = json.loads(out.stdout)
+    assert set(got) - {"__CF_USER_TEXT_ENCODING"} == {"PATH", "HOME", "LC_ALL", "XDG_CONFIG_HOME", "GHOSTHERD_RPC",
+                                                      "SSH_AUTH_SOCK", "HTTPS_PROXY"}, sorted(got)
+    # A proxy with a password in it is dropped though its name is allowed.
+    assert "HTTP_PROXY" not in got
+
+
 def test_scrub_exec_drops_secret_names_and_keeps_the_rest(tmp_path):
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "GITHUB_TOKEN": "s1", "BITBUCKET_TOKEN": "s2",
            "GRAFANA_API_KEY": "s3", "AWS_REGION": "s4", "MY_PASSWORD": "s5", "GHOSTHERD_RPC": "keep",

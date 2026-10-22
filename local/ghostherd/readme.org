@@ -376,12 +376,27 @@ the file it just wrote.
 tmux-hosted agents have no =ghostel_cmd=, and =bin/ghostherd= is not on
 their PATH.  The sidecar they already share for memory is the bus.
 
-At spawn they get =GHOSTHERD_RPC= (JSON-RPC URL, token included).
-=ghostherd-mode= starts the sidecar so that URL exists.  The same URL
-is written to =ghostherd-mail/rpc.url= (0600) under
-=user-emacs-directory=, with =PROTOCOL.md= next to it.  An agent spawned
-before tokens holds a bare URL and gets a 401 that points it at
-=rpc.url=; respawning it fixes the environment for good.
+At spawn they get =GHOSTHERD_RPC= (JSON-RPC URL, the agents' token
+included).  =ghostherd-mode= starts the sidecar so that URL exists.  The
+same URL is written to =ghostherd-mail/rpc.url= (0600) under
+=user-emacs-directory=, with =PROTOCOL.md= next to it.  An agent whose
+URL is refused (401) falls back to =rpc.url=; respawning it fixes the
+environment for good.
+
+The agents' token is not the herd's.  It reaches what an agent does ---
+its asks, handoffs, replies and waits, =herd list= and =herd asks=,
+message and inbox, its memory (=remember=, =recall=, =forget=, =promote=
+proposals), a lead's =start=, =stop=, =relay= and =screens=, its hooks
+and its guard's refusals --- and nothing that is the herd's own: approving
+a guard's refusal, the Memory tab's edits and promotions, the tick, the
+transcript index, migrating claude's memory dirs.  Those answer an agent
+with a refusal (JSON-RPC error -32003), never a 401, so its client does
+not take them for a sidecar to wait for.  Emacs, and the page through it,
+use the herd's token (=rpc.token=), which goes to no agent: not in its
+environment, not in =rpc.url=, and a guarded agent may not read the file,
+even approved.  One token for all agents, not one each: what it guards
+against is an agent's code acting as the herd, not one agent posing as
+another --- all are yours, and their asks are in the open.
 
 #+begin_src bash
   curl -sS "$GHOSTHERD_RPC" -H 'Content-Type: application/json' \
@@ -965,20 +980,21 @@ anything touching the guard's own directory.
 quietly gets a token or a key:
 
 1. *Not in its environment.*  A guarded agent starts through =herd
-   scrub-exec=, which drops every variable matching
-   =ghostherd-agent-env-scrub= --- names with a =TOKEN=, =SECRET=, =KEY=,
-   =PASSWORD=, =CREDENTIAL=, =AUTH=, ... word, and the =AWS_=, =GH_=,
-   =GITHUB_=, =ANTHROPIC_=, =OPENAI_=, =GOOGLE_=, =GEMINI_=,
-   =GHOSTHERD_TELEGRAM_= ... families --- keeping
-   =ghostherd-agent-env-keep= (=GHOSTHERD_RPC= and the herd's others,
-   =SSH_AUTH_SOCK=).  agy logs in from its files in =~/.gemini=, not the
-   environment, and runs without them.  What is not there cannot leak.
-   The scrub goes by *name*, a deny list: a credential under a name with
-   none of those words --- =DATABASE_URL=, =SENTRY_DSN=, =MONGO_URI=, a
-   =*_PAT=, a bare =DISCORD_WEBHOOK= --- stays in the agent's environment
-   (and in the project commands it runs).  Give such a variable a word the
-   scrub knows, add a pattern to =ghostherd-agent-env-scrub=, or do not
-   count on the scrub for it
+   scrub-exec= with only the names =ghostherd-agent-env-allow= lists ---
+   an allowlist, so a credential under any name, =DATABASE_URL=,
+   =SENTRY_DSN=, a =*_PAT=, a webhook, never reaches it.  It lists where
+   it is and who (=PATH=, =HOME=, =USER=, =SHELL=, =PWD=, =TMPDIR=, =TZ=),
+   its terminal and language (=TERM*=, =COLORTERM=, =LANG=, =LC_*=),
+   =EDITOR= and =PAGER=, =XDG_*=, git's author and committer names, the
+   herd's own (=GHOSTHERD_RPC= with the agents' token), and two ways out:
+   a proxy, since agy needs the network --- dropped when its value has a
+   password in it --- and =SSH_AUTH_SOCK=, since ssh-agent signs and gives
+   no key away, and every use of it (=git push=, =ssh=) asks you first.
+   agy needs nothing else: it logs in from its files in =~/.gemini=
+   (measured: a guarded agy runs on exactly these).  Add names with
+   =ghostherd-agent-env-allow-extra=, yours or a project's in its
+   =.dir-locals.el= --- which Emacs asks you about, since a project could
+   name a secret there.  What is not there cannot leak
 2. *Commands that show the environment or credentials are denied* ---
    =env=, =printenv=, =set=, =export -p=, =declare -p/-x=, any =$VAR=,
    =${...}= or backtick, =ps e=, =launchctl getenv=, =security
@@ -990,8 +1006,9 @@ quietly gets a token or a key:
    =id_rsa*=, =.netrc=, =.npmrc=, =.pypirc=, =.git-credentials=,
    =credentials*=, =*secret*=, =*token*=; =~/.ssh=, =~/.aws=,
    =~/.kube=, =~/.docker=, =~/.config/gh=, =~/.claude=, =~/.gemini=,
-   =~/.grok=, the herd's =rpc.token= and =rpc.url=, and git's =.git/config=
-   (a remote URL can carry a token).  A symlink is judged by where it
+   =~/.grok=, the herd's data directory and =rpc.url=, and git's =.git/config=
+   (a remote URL can carry a token).  The herd's own token, =rpc.token=,
+   is refused even approved.  A symlink is judged by where it
    leads as well as its name, and a file named in an option (=-fFILE=,
    =--from-file=FILE=, =git commit -F FILE=) like any other.  A recursive
    search does not sweep them in passing: the guard rewrites =grep -r= and
@@ -1021,12 +1038,12 @@ cannot cover, by their nature:
 - A project command from =ghostherd-guard-allow-commands= is *complete
   trust* in the agent, not a guarded command.  It runs code the agent can
   change --- tests, =package.json= scripts --- as you, so it can read any
-  file you can.  And the scrub keeps =GHOSTHERD_RPC= (the sidecar's
-  address and token, in =ghostherd-agent-env-keep=: the herd's own
-  commands need it), so that code reaches the sidecar as the herd does:
-  it can approve its own guard requests (=herd_guard_approve=) and call
-  any other RPC --- read any memory store, message any agent.  Allow only
-  what you would let the agent run unwatched with the herd's keys
+  file you can.  Its =GHOSTHERD_RPC= holds only the agents' token, which
+  approves nothing; but the herd's own token is a file of yours
+  (=rpc.token=), and code running as you can read it --- the guard keeps
+  the agent's own calls off it, not that code.  So it can still approve
+  its own guard requests and call any RPC.  Allow only what you would let
+  the agent run unwatched with the herd's keys
 - What the agent writes, you may run later yourself (its tests, a hook
   config in the tree, a script): read its diff first
 - The guard is per agent.  It bounds what /this/ agent reads itself, not
@@ -1038,9 +1055,11 @@ cannot cover, by their nature:
   says: a refusal by its wording is reworded at once, and would only give
   false assurance.  =read-only= does not stop it either --- the herd's
   commands run in both modes.  If an agent must not reach what its
-  teammates can read, do not run it beside them, and watch its asks.  (A
-  later hardening could mark, on the taker's side, an ask or handoff that
-  comes from a guarded agent.)
+  teammates can read, do not run it beside them, and watch its asks.  The
+  herd marks them: an ask or handoff from a guarded agent shows "from a
+  guarded agent" on its taker's card and its own, the log says so, and
+  the taker reads first that it must not read or pass back secrets for
+  it --- the agent must ask you on its own card
 
 *Approve once.*  A denial the user may lift says so ("they can approve
 this exact call once on your card"), and shows on the agent's card and
@@ -1644,9 +1663,12 @@ our token.
 
 It binds loopback, and loopback is not the auth: any web page in a
 browser on this machine can POST to =127.0.0.1=.  JSON-RPC is
-=POST /jsonrpc/<token>= with =Content-Type: application/json=, the
-token in =rpc.token= (0600) under the data directory, created on the
-sidecar's first start.  No CORS, and a =Host= other than loopback is
+=POST /jsonrpc/<token>= with =Content-Type: application/json=, the herd's
+token in =rpc.token= and the agents' in =rpc.agent-token= (both 0600)
+under the data directory, created on the sidecar's first start.  The
+first start that creates the agents' token also replaces the herd's: an
+agent spawned before it held the herd's URL, which is refused from then
+on (see "Mail without the binary").  No CORS, and a =Host= other than loopback is
 refused.  Why each of those: "Why the sidecar wants a token" in
 [[file:docs/design.org][docs/design.org]].
 
@@ -2072,8 +2094,8 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
   (setq ghostherd-agy-guard 'auto         ; or read-only, or nil: agy prompts
         ghostherd-guard-allow-commands nil ; ("npm test" "pytest")
         ghostherd-guard-root "~/.ghostherd/guard/")
-  ;; ghostherd-agent-env-scrub / ghostherd-agent-env-keep: the variables a
-  ;; guarded agent starts without, and those it keeps all the same.
+  ;; ghostherd-agent-env-allow / ghostherd-agent-env-allow-extra: the only
+  ;; variables a guarded agent starts with, and more of yours or a project's.
 
   ;; How long an agent's own report about itself is believed.  Short is
   ;; safe: when the report was true the prompt is still on screen, so

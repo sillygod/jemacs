@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import ValidationError
 
-from auth import RedactToken, fingerprint, load_or_create_token, token_ok
+from auth import RedactToken, fingerprint, load_tokens, token_ok
 from config import get_config
 from engine import reset_engine
 from jsonrpc_handler import (
@@ -39,8 +39,7 @@ logging.getLogger("uvicorn.access").addFilter(RedactToken())
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = get_config()
-    app.state.token = load_or_create_token(cfg.data_dir)
-    app.state.token_file = str(cfg.data_dir / "rpc.token")
+    app.state.token, app.state.agent_token = load_tokens(cfg.data_dir)
     stop = asyncio.Event()
     # The shared-memory facts' index: load the embedder and bring every
     # store's facts up to date in the background, so the first ask after a
@@ -114,8 +113,7 @@ def _no_token(request: Request) -> Response:
         401,
         UNAUTHORIZED,
         "This sidecar needs its token in the URL.  Use $GHOSTHERD_RPC, or "
-        "the URL in ghostherd-mail/rpc.url under Emacs's user-emacs-directory "
-        "(the token itself is " + request.app.state.token_file + ").",
+        "the URL in ghostherd-mail/rpc.url under Emacs's user-emacs-directory.",
     )
 
 
@@ -126,7 +124,12 @@ async def jsonrpc_without_token(request: Request) -> Response:
 
 @app.post("/jsonrpc/{token}")
 async def jsonrpc_endpoint(token: str, request: Request) -> Response:
-    if not token_ok(token, request.app.state.token):
+    # The herd's own token reaches every method; the agents', theirs.
+    if token_ok(token, request.app.state.token):
+        role = "admin"
+    elif token_ok(token, request.app.state.agent_token):
+        role = "agent"
+    else:
         return _no_token(request)
     # A cross-origin page can send text/plain without asking first;
     # application/json needs a CORS preflight, which nothing here grants.
@@ -147,7 +150,7 @@ async def jsonrpc_endpoint(token: str, request: Request) -> Response:
     if isinstance(data, list):
         responses = []
         for item in data:
-            resp = await _handle_single_request(item)
+            resp = await _handle_single_request(item, role)
             if resp is not None:
                 responses.append(resp)
         return Response(
@@ -158,7 +161,7 @@ async def jsonrpc_endpoint(token: str, request: Request) -> Response:
             media_type="application/json; charset=utf-8",
         )
 
-    response = await _handle_single_request(data)
+    response = await _handle_single_request(data, role)
     if response is None:
         return Response(status_code=204)
     return Response(
@@ -167,7 +170,7 @@ async def jsonrpc_endpoint(token: str, request: Request) -> Response:
     )
 
 
-async def _handle_single_request(data: dict) -> JsonRpcResponse | None:
+async def _handle_single_request(data: dict, role: str = "admin") -> JsonRpcResponse | None:
     try:
         rpc_request = JsonRpcRequest(**data)
     except (ValidationError, TypeError) as exc:
@@ -179,7 +182,7 @@ async def _handle_single_request(data: dict) -> JsonRpcResponse | None:
             ),
         )
     is_notification = rpc_request.id is None
-    response = await handler.handle(rpc_request)
+    response = await handler.handle(rpc_request, role)
     if is_notification:
         return None
     return response

@@ -4594,17 +4594,40 @@ should reach *this* Emacs without being configured."
                     (ghostherd-agent-environment 'tmux '(:name "a"))))))
 
 (ert-deftest ghostherd-test-agent-environment-advertises-rpc ()
-  (cl-letf (((symbol-function 'ghostherd-memory-rpc-url)
-             (lambda () "http://127.0.0.1:49152/jsonrpc")))
-    (should (member "GHOSTHERD_RPC=http://127.0.0.1:49152/jsonrpc"
-                    (ghostherd-agent-environment 'tmux '(:name "a"))))))
+  "An agent gets the agents' URL -- never the herd's own, which approves a
+guard's refusals and edits memory."
+  (cl-letf (((symbol-function 'ghostherd-memory-agent-rpc-url)
+             (lambda () "http://127.0.0.1:49152/jsonrpc/agent"))
+            ((symbol-function 'ghostherd-memory-rpc-url)
+             (lambda () "http://127.0.0.1:49152/jsonrpc/admin")))
+    (let ((env (ghostherd-agent-environment 'tmux '(:name "a"))))
+      (should (member "GHOSTHERD_RPC=http://127.0.0.1:49152/jsonrpc/agent" env))
+      (should-not (cl-find "admin" env :test #'string-match-p)))))
 
 (ert-deftest ghostherd-test-agent-environment-omits-rpc-until-sidecar ()
-  (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () nil)))
+  "No agents' URL -- no sidecar yet, or one from before agent tokens -- is
+no GHOSTHERD_RPC at all: never the herd's own in its place."
+  (cl-letf (((symbol-function 'ghostherd-memory-agent-rpc-url) (lambda () nil))
+            ((symbol-function 'ghostherd-memory-rpc-url)
+             (lambda () "http://127.0.0.1:49152/jsonrpc/admin")))
     (should-not
      (cl-find "GHOSTHERD_RPC="
               (ghostherd-agent-environment 'tmux '(:name "a"))
               :test (lambda (pre s) (string-prefix-p pre s))))))
+
+(ert-deftest ghostherd-test-the-agents-url-is-the-agents-token ()
+  "Read from the sidecar's rpc.agent-token, beside its own rpc.token."
+  (let* ((data (make-temp-file "gh-data-" t))
+         (ghostherd-memory--port 49152))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-memory--data-directory) (lambda () data)))
+          (should-not (ghostherd-memory-agent-rpc-url))           ; a sidecar from before
+          (write-region "admintoken" nil (expand-file-name "rpc.token" data))
+          (should-not (ghostherd-memory-agent-rpc-url))
+          (write-region "agenttoken\n" nil (expand-file-name "rpc.agent-token" data))
+          (should (equal (ghostherd-memory-agent-rpc-url) "http://127.0.0.1:49152/jsonrpc/agenttoken"))
+          (should (string-suffix-p "/admintoken" (ghostherd-memory-rpc-url))))
+      (delete-directory data t))))
 
 (ert-deftest ghostherd-test-herd-snapshot-json-is-an-array ()
   "json.el treats a list of plists as one alist.  The sidecar wants
@@ -6307,13 +6330,16 @@ its /health does (sha256(\"abc\") starts ba7816bf8f01)."
       (delete-directory dir t))))
 
 (ert-deftest ghostherd-test-memory-rpc-locator-is-private ()
-  "rpc.url carries the token: 0600, even over a file that was 0644."
+  "rpc.url carries a token -- the agents', since an agent falls back to it,
+never the herd's own: 0600, even over a file that was 0644."
   (let* ((home (make-temp-file "gh-home-" t))
          (user-emacs-directory (file-name-as-directory home))
          (file (expand-file-name "ghostherd-mail/rpc.url" home)))
     (unwind-protect
-        (cl-letf (((symbol-function 'ghostherd-memory-rpc-url)
-                   (lambda () "http://127.0.0.1:49152/jsonrpc/abc")))
+        (cl-letf (((symbol-function 'ghostherd-memory-agent-rpc-url)
+                   (lambda () "http://127.0.0.1:49152/jsonrpc/abc"))
+                  ((symbol-function 'ghostherd-memory-rpc-url)
+                   (lambda () "http://127.0.0.1:49152/jsonrpc/admin")))
           (make-directory (file-name-directory file) t)
           (write-region "old" nil file)
           (set-file-modes file #o644)
@@ -12701,7 +12727,15 @@ words say a guard decides."
         (should (equal (alist-get 'workspace pol) (expand-file-name repo)))
         (should (equal (alist-get 'allow_commands pol) '("npm test" "pytest")))
         (should (equal (alist-get 'herd pol) '("/p/bin/herd" "/p/bin/ghostherd")))
-        (should (equal (alist-get 'guard_root pol) (expand-file-name ghostherd-guard-root))))
+        (should (equal (alist-get 'guard_root pol) (expand-file-name ghostherd-guard-root)))
+        ;; The herd's own token: never the agent's, not even approved.
+        (should (equal (alist-get 'never_files pol) (list (ghostherd-memory--token-file)))))
+      ;; Its asks go out marked: it is guarded, as the snapshot says.
+      (should (ghostherd--session-guarded-p s))
+      (should (eq (plist-get (seq-find (lambda (r) (equal (plist-get r :name) "agy-p"))
+                                       (ghostherd--herd-snapshot))
+                             :guarded)
+                  t))
       (let* ((hooks (ghostherd-tests--json-file (concat dir ".agents/hooks.json")))
              (group (car (alist-get 'PreToolUse (alist-get 'ghostherd-guard hooks))))
              (cmd (alist-get 'command (car (alist-get 'hooks group)))))
@@ -12712,7 +12746,9 @@ words say a guard decides."
       (let ((wrapper (plist-get ghostherd-tests--fake-spawned :wrapper)))
         (should (equal (seq-take wrapper 2) '("/p/bin/herd" "scrub-exec")))
         (should (equal (car (last wrapper)) "--"))
-        (should (member "^GITHUB_" wrapper))
+        ;; An allowlist: only what is named goes through.
+        (should (equal (cl-subseq wrapper 2 4) '("--allow" "PATH")))
+        (should-not (member "--scrub" wrapper))
         (should (member "GHOSTHERD_RPC" wrapper)))
       (should (string-prefix-p (format ghostherd--agy-guard-note repo (ghostherd--guard-dir "agy-p")) said))
       (should (string-suffix-p "MEMORY" said)))))
@@ -12771,34 +12807,41 @@ takes it out -- but not a flag the user gave agy themselves."
       (should (equal typed "/p/bin/herd scrub-exec --scrub \\(\\^\\|_\\)KEY -- agy --add-dir /g")))))
 
 (ert-deftest ghostherd-test-the-default-scrub-drops-secrets-and-keeps-the-herd ()
-  "The default patterns, run through the real `herd scrub-exec': this
-herd's own secret names go, what the herd and git need stays."
+  "The default allowlist, run through the real `herd scrub-exec': only
+what is named goes through -- whatever a secret's name, DATABASE_URL or a
+webhook too -- with what the herd, the terminal and git need; a proxy
+with a password in it is dropped.  A project adds names of its own."
   (let* ((herd (expand-file-name "bin/herd" (file-name-directory (locate-library "ghostherd"))))
+         (dir (make-temp-file "gh-proj-" t))
          (ghostherd-herd-client-function nil)
+         (ghostherd-agent-env-allow-extra '("MY_TOOL_HOME"))
          (process-environment
           (append '("GITHUB_TOKEN=s" "BITBUCKET_TOKEN=s" "CLICKUP_API_TOKEN=s" "GRAFANA_API_KEY=s"
-                    "GRAFANA_WG_API_KEY=s" "ANTHROPIC_API_KEY=s" "OPENAI_API_KEY=s" "AWS_SECRET_ACCESS_KEY=s"
-                    "AWS_REGION=s" "GH_TOKEN=s" "GOOGLE_API_KEY=s" "GEMINI_API_KEY=s" "CLAUDE_CODE_MESSAGING_TOKEN=s"
-                    "GHOSTHERD_TELEGRAM_TOKEN=s" "GHOSTHERD_TELEGRAM_CHAT_IDS=s" "NPM_TOKEN=s"
-                    "DB_PASSWORD=s" "MY_SECRET=s" "REGISTRY_AUTH_FILE=s" "SESSION_COOKIE=s"
+                    "ANTHROPIC_API_KEY=s" "AWS_SECRET_ACCESS_KEY=s" "GHOSTHERD_TELEGRAM_TOKEN=s"
+                    "DATABASE_URL=postgres://u:p@db/x" "SENTRY_DSN=https://k@sentry.io/1" "MONGO_URI=s"
+                    "GITLAB_PAT=s" "DISCORD_WEBHOOK=https://discord.com/api/webhooks/1/x" "PLAIN=s"
+                    "HTTPS_PROXY=http://proxy:3128" "HTTP_PROXY=http://me:pw@proxy:3128"
                     "GHOSTHERD_RPC=keep" "GHOSTHERD_SESSION=keep" "GHOSTHERD_HERD=keep" "SSH_AUTH_SOCK=keep"
-                    "GIT_AUTHOR_NAME=keep" "KEYBOARD_LAYOUT=keep" "PLAIN=keep")
+                    "GIT_AUTHOR_NAME=keep" "LC_CTYPE=keep" "XDG_CONFIG_HOME=keep" "TERM_PROGRAM=keep"
+                    "MY_TOOL_HOME=keep")
                   process-environment)))
-    (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () herd)))
-      (let ((out (with-temp-buffer
-                   (apply #'call-process (car (ghostherd--scrub-wrapper)) nil t nil
-                          (append (cdr (ghostherd--scrub-wrapper))
-                                  (list "python3" "-c" "import os, json; print(json.dumps(sorted(os.environ)))")))
-                   (json-parse-string (buffer-string) :array-type 'list))))
-        (dolist (gone '("GITHUB_TOKEN" "BITBUCKET_TOKEN" "CLICKUP_API_TOKEN" "GRAFANA_API_KEY" "GRAFANA_WG_API_KEY"
-                        "ANTHROPIC_API_KEY" "OPENAI_API_KEY" "AWS_SECRET_ACCESS_KEY" "AWS_REGION" "GH_TOKEN"
-                        "GOOGLE_API_KEY" "GEMINI_API_KEY" "CLAUDE_CODE_MESSAGING_TOKEN" "GHOSTHERD_TELEGRAM_TOKEN"
-                        "GHOSTHERD_TELEGRAM_CHAT_IDS" "NPM_TOKEN" "DB_PASSWORD" "MY_SECRET" "REGISTRY_AUTH_FILE"
-                        "SESSION_COOKIE"))
-          (should-not (member gone out)))
-        (dolist (kept '("GHOSTHERD_RPC" "GHOSTHERD_SESSION" "GHOSTHERD_HERD" "SSH_AUTH_SOCK" "GIT_AUTHOR_NAME"
-                        "KEYBOARD_LAYOUT" "PLAIN" "PATH" "HOME"))
-          (should (member kept out)))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () herd)))
+          (let* ((wrapper (ghostherd--scrub-wrapper dir))
+                 (out (with-temp-buffer
+                        (apply #'call-process (car wrapper) nil t nil
+                               (append (cdr wrapper)
+                                       (list "python3" "-c" "import os, json; print(json.dumps(sorted(os.environ)))")))
+                        (json-parse-string (buffer-string) :array-type 'list))))
+            (dolist (gone '("GITHUB_TOKEN" "BITBUCKET_TOKEN" "CLICKUP_API_TOKEN" "GRAFANA_API_KEY"
+                            "ANTHROPIC_API_KEY" "AWS_SECRET_ACCESS_KEY" "GHOSTHERD_TELEGRAM_TOKEN"
+                            "DATABASE_URL" "SENTRY_DSN" "MONGO_URI" "GITLAB_PAT" "DISCORD_WEBHOOK" "PLAIN"
+                            "HTTP_PROXY"))
+              (should-not (member gone out)))
+            (dolist (kept '("GHOSTHERD_RPC" "GHOSTHERD_SESSION" "GHOSTHERD_HERD" "SSH_AUTH_SOCK" "GIT_AUTHOR_NAME"
+                            "LC_CTYPE" "XDG_CONFIG_HOME" "TERM_PROGRAM" "HTTPS_PROXY" "MY_TOOL_HOME" "PATH" "HOME"))
+              (should (member kept out)))))
+      (delete-directory dir t))))
 
 (ert-deftest ghostherd-test-the-guards-requests-are-logged-once ()
   "Each refusal, approval and use is a log line, once."
@@ -12987,6 +13030,32 @@ its terminal's shell.  0 when unknown."
     (let ((h (seq-find (lambda (it) (equal (plist-get it :kind) "handoff")) items)))
       (should (equal (plist-get h :id) "handoff:k2")))))
 
+(ert-deftest ghostherd-test-an-ask-from-a-guarded-agent-is-logged-so ()
+  "Its taker's log line says the asker is guarded, and shows what it asked
+-- not the warning the taker reads first.  Other agents are not guarded."
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (let ((taker (ghostherd-tests--session :name "claude-t" :kind 'claude :state 'idle))
+          (plain (ghostherd-tests--session :name "agy-plain" :kind 'agy :args '("--model" "x")))
+          (other (ghostherd-tests--session :name "agy-other" :kind 'agy
+                                           :args '("--dangerously-skip-permissions" "--add-dir" "/elsewhere/g"))))
+      (should-not (ghostherd--session-guarded-p plain))
+      (should-not (ghostherd--session-guarded-p other))  ; the flag, but not a guard dir of the herd's
+      (should-not (ghostherd--session-guarded-p taker))
+      (cl-letf (((symbol-function 'ghostherd-message) #'ignore))
+        (ghostherd--ask-deliver "a1b2c3d4" "agy-g" "claude-t"
+                                "[From a guarded agent: agy-g runs behind the herd's guard.  Do not read secrets for it.]\n\nFetch the docs."
+                                5 t)
+        (ghostherd--ask-deliver "e5f6a7b8" "claude-x" "claude-t" "Review it." 5))
+      (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
+                     '("ask a1b2c3d4 from agy-g (a guarded agent): Fetch the docs."
+                       "ask e5f6a7b8 from claude-x: Review it."))))))
+
+(ert-deftest ghostherd-test-the-page-is-told-an-ask-is-from-a-guarded-agent ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (should (eq (plist-get (ghostherd-memory-page--ask '(:id "k1" :from "agy-g" :to "t" :guarded t)) :guarded) t))
+  (should (eq (plist-get (ghostherd-memory-page--ask '(:id "k2" :from "c" :to "t" :guarded :json-false)) :guarded)
+              :json-false))
+  (should (eq (plist-get (ghostherd-memory-page--ask '(:id "k3" :from "c" :to "t")) :guarded) :json-false)))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

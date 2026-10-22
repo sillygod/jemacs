@@ -1,12 +1,19 @@
-"""Who may call the sidecar: whoever can read rpc.token.
+"""Who may call the sidecar, and what: two tokens.
 
 Loopback keeps other machines out, not other origins.  Any web page
 open in a browser on this machine can POST to 127.0.0.1, and before
 the token one could read the whole transcript index (CORS allowed
 every origin) or queue a prompt that Emacs would paste into an agent
-and submit.  The token lives in the data directory, mode 0600; the
-URL handed to agents carries it, so they call "$GHOSTHERD_RPC" as
-before.
+and submit.
+
+rpc.token is the herd's own -- Emacs's, and through it the page's -- and
+reaches every method.  rpc.agent-token is the agents': the URL in their
+GHOSTHERD_RPC and in the rpc.url they fall back to carries it, and it
+reaches only what an agent does (`AGENT_METHODS' in jsonrpc_handler.py)
+-- not approving a guard's refusal, not the Memory tab, not the tick.
+Before it, the one token was in every agent's environment, so any code
+an agent ran could approve its own guard requests.  Both live in the
+data directory, mode 0600.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import secrets
 from pathlib import Path
 
 TOKEN_FILE = "rpc.token"
+AGENT_TOKEN_FILE = "rpc.agent-token"
 
 
 def load_or_create_token(data_dir: Path) -> str:
@@ -43,6 +51,38 @@ def load_or_create_token(data_dir: Path) -> str:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(token)
     return token
+
+
+def _write_new(path: Path) -> str:
+    "A fresh token in PATH, replacing whatever was there, mode 0600 throughout."
+    token = secrets.token_hex(32)
+    tmp = path.with_name(path.name + ".new")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token)
+    os.replace(tmp, path)
+    return token
+
+
+def load_tokens(data_dir: Path) -> tuple[str, str]:
+    """(ADMIN, AGENT): the herd's token and the agents'.
+
+    The first start with an agent token -- no rpc.agent-token yet -- also
+    replaces the admin token.  Agents spawned before it hold the admin
+    URL in their environment; once it is refused, `bin/herd' falls back
+    to rpc.url, which Emacs rewrites with the agent URL, and goes on.
+    The old admin token is then in no agent's hands.
+    """
+    admin = load_or_create_token(data_dir)
+    path = data_dir / AGENT_TOKEN_FILE
+    if path.exists():
+        os.chmod(path, 0o600)
+        agent = path.read_text(encoding="utf-8").strip()
+        if not agent:
+            raise RuntimeError(f"{path} is empty; delete it and restart the sidecar")
+        return admin, agent
+    admin = _write_new(data_dir / TOKEN_FILE)
+    return admin, _write_new(path)
 
 
 def fingerprint(token: str) -> str:

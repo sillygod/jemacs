@@ -258,6 +258,8 @@ class Policy:
         self.secret_names = tuple(n.lower() for n in (data.get("secret_names") or SECRET_NAMES))
         self.secret_dirs = [_real(d) for d in list(SECRET_HOME) + list(data.get("secret_dirs") or [])]
         self.secret_files = [_real(f) for f in data.get("secret_files") or []]
+        # The herd's own token: no approval hands it to an agent.
+        self.never_files = [_real(f) for f in data.get("never_files") or []]
 
     # -- Paths
 
@@ -301,6 +303,9 @@ class Policy:
         real = _real(p)
         if self.guarded_path(real):
             return _never("%s holds the herd's guard, which no agent reads or changes." % given, "guard-dir")
+        if real in self.never_files:
+            return _never("%s is the herd's own token, which no agent reads -- not even approved."
+                          % given, "herd-token")
         why = None if quiet_secret else self.secret_path(real, given)
         if why:
             return _secret("%s: %s.  Reading it needs the user's approval -- they can approve this "
