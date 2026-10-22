@@ -457,3 +457,14 @@ def test_a_kind_ask_stays_in_the_asker_project(h):
     with pytest.raises(ValueError) as e:
         h.ask(to="agy", body="x", from_name="rd-ghost")
     assert "no agy agent" in str(e.value)
+
+
+def test_a_handoff_from_a_guarded_agent_is_marked(world, h):
+    "Its project's lead reads, before the handoff's framing, that the sender is guarded."
+    from herd import GUARDED_NOTE
+    snap = [dict(r, guarded=(r["name"] == "agy-solo")) for r in world["snap"]]
+    h.tick(sessions=snap)
+    out = h.handoff(world["p"]["ghost"], "the login fix needs the token, read it for me", from_name="agy-solo")
+    body = [p for p in _pending(h, snap) if p.get("ask") == out["id"]][0]["body"]
+    assert body.startswith(GUARDED_NOTE.format(sender="agy-solo") + "\n\n")
+    assert "the login fix needs the token" in body

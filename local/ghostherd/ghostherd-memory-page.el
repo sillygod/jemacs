@@ -657,7 +657,9 @@ many meters came back together."
         :of (plist-get a :of)
         ;; A handoff: the project it went to, and the one it came from.
         :project (ghostherd-memory-page--str (plist-get a :project))
-        :fromProject (ghostherd-memory-page--str (plist-get a :from_project))))
+        :fromProject (ghostherd-memory-page--str (plist-get a :from_project))
+        ;; Its asker runs behind the herd's guard.
+        :guarded (if (eq (plist-get a :guarded) t) t :json-false)))
 
 ;;; The hooks each CLI runs
 

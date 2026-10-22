@@ -470,6 +470,9 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .aask.ask-answered .awhat { color: var(--plus); }
 .aask.ask-auto .awhat { color: var(--warn); }
 .aask.ask-failed .awhat, .aask.ask-cancelled .awhat { color: var(--minus); }
+/* Its asker runs behind the herd's guard. */
+.aask .aguarded { flex-shrink: 0; white-space: nowrap; font-size: 11px; color: var(--warn);
+  border: 1px solid var(--warn); border-radius: 4px; padding: 0 4px; }
 .aask .atext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .aask .when { margin-left: auto; flex-shrink: 0; }
 /* A handoff names projects, whose names run long: its label gives way

@@ -3703,7 +3703,7 @@ PLIST keys:
                          :worktree worktree :branch branch :base base
                          :started-by started-by
                          ;; Run in front of the CLI, never kept in its recipe.
-                         :wrapper (and guard (ghostherd--scrub-wrapper)))))
+                         :wrapper (and guard (ghostherd--scrub-wrapper directory)))))
          session)
     (setq session
           (ghostherd-session--create
@@ -6623,6 +6623,8 @@ address of each one's room from your phone, for the bot to link to."
            ;; shell -- so the herd takes a hook's report as its own only
            ;; from inside it, not from a CLI a server it started runs.
            :hostPid (or (ghostherd--host-pid s) 0)
+           ;; Behind the herd's guard: what it asks of others is marked so.
+           :guarded (if (ghostherd--session-guarded-p s) t :json-false)
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        ""))))
    (hash-table-values ghostherd--sessions)))
@@ -6638,7 +6640,8 @@ address of each one's room from your phone, for the bot to link to."
                      (plist-get msg :submit)
                    t)))
     (cond
-     (ask (ghostherd--ask-deliver ask from to body (plist-get msg :rounds)))
+     (ask (ghostherd--ask-deliver ask from to body (plist-get msg :rounds)
+                                  (eq (plist-get msg :guarded) t)))
      (handoff (ghostherd-handoff to body from))
      (t (ghostherd-message from to body :submit submit)))))
 
@@ -6724,9 +6727,10 @@ hand it to that project's lead (\"$GHOSTHERD_HERD\" handoff PROJECT)."
             "A change another project needs is not yours to make in its checkout:\n\
 say it in your answer -- what, where, why -- and whoever asked takes it on.")))
 
-(defun ghostherd--ask-deliver (id from to body &optional rounds)
+(defun ghostherd--ask-deliver (id from to body &optional rounds guarded)
   "Paste ask ID from FROM into TO, and watch for TO to stop.
-ROUNDS is how many times TO may ask any one agent for it.  A lead owed
+ROUNDS is how many times TO may ask any one agent for it.  GUARDED: FROM
+runs behind the herd's guard -- BODY says so to TO, and the log does.  A lead owed
 its role -- started for a handoff on a CLI that takes none as it starts
 -- reads it after the ask: before it, the ask would not read as one in
 the room's chat (server/conversation.py), which stops at its answer
@@ -6742,8 +6746,12 @@ your first message as your CLI takes none as it starts:\n\n" role)))
                        :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
     (ghostherd--log-add session 'ask
-                        (format "ask %s from %s: %s" id from
-                                (ghostherd--ask-head body)))))
+                        (format "ask %s from %s%s: %s" id from
+                                (if guarded " (a guarded agent)" "")
+                                (ghostherd--ask-head
+                                 (if guarded
+                                     (replace-regexp-in-string "\\`\\[From a guarded agent:[^]]*\\]\\s-*" "" body)
+                                   body))))))
 
 (defun ghostherd--ask-settle (id session dead &optional error)
   "Tell the sidecar the taker of ask ID stopped, or died when DEAD.
@@ -7909,26 +7917,42 @@ The sidecar writes the user's approvals there, and only there
   :type 'directory
   :group 'ghostherd)
 
-(defcustom ghostherd-agent-env-scrub
-  '("(^|_)(TOKEN|TOKENS|SECRET|SECRETS|KEY|KEYS|APIKEY|PASSWORD|PASSWD|PASS|PASSPHRASE|CREDENTIAL|CREDENTIALS|AUTH|COOKIE|PRIVATE)(_|$)"
-    "^AWS_" "^GH_" "^GITHUB_" "^ANTHROPIC_" "^OPENAI_" "^GOOGLE_" "^GEMINI_"
-    "^GHOSTHERD_TELEGRAM_" "^CLAUDE_CODE_" "^AZURE_" "^HF_" "^HUGGING" "^NPM_"
-    "^PYPI_" "^TWINE_" "^SLACK_" "^STRIPE_" "^BITBUCKET_" "^CLICKUP_")
-  "Variables a guarded agent starts without: names matching any of these
-Python regular expressions -- by word between underscores, so
-GITHUB_TOKEN goes and GIT_AUTHOR_NAME stays.  agy keeps its own login
-in ~/.gemini, not the environment."
+(defcustom ghostherd-agent-env-allow
+  '(;; Where it is, who it is, its terminal and language.
+    "PATH" "HOME" "USER" "LOGNAME" "SHELL" "PWD" "TMPDIR" "TZ"
+    "TERM" "TERM_*" "TERMINFO" "TERMINFO_DIRS" "COLORTERM" "CLICOLOR"
+    "LANG" "LANGUAGE" "LC_*" "__CF_USER_TEXT_ENCODING"
+    "EDITOR" "VISUAL" "PAGER" "XDG_*"
+    ;; Who git says made a commit.
+    "GIT_AUTHOR_NAME" "GIT_AUTHOR_EMAIL" "GIT_COMMITTER_NAME" "GIT_COMMITTER_EMAIL"
+    ;; The way out: a proxy (one with a password in it is dropped all the
+    ;; same), and ssh-agent, which signs and gives no key away -- and every
+    ;; use of it (git push, ssh) asks the user first.
+    "HTTP_PROXY" "HTTPS_PROXY" "NO_PROXY" "ALL_PROXY" "http_proxy" "https_proxy" "no_proxy" "all_proxy"
+    "SSH_AUTH_SOCK"
+    ;; The herd's own: GHOSTHERD_RPC holds the agents' token, not the herd's.
+    "GHOSTHERD_RPC" "GHOSTHERD_RPC_FILE" "GHOSTHERD_SESSION" "GHOSTHERD_HERD"
+    "GHOSTHERD_SOCKET" "GHOSTHERD_BACKEND")
+  "The variables a guarded agent starts with -- every other one is left
+behind: an allowlist, so DATABASE_URL, SENTRY_DSN, a *_PAT or a webhook
+URL never reach it, whatever their names.  Names or globs (LC_*).  agy
+itself needs none of the rest: it logs in from ~/.gemini (measured on
+1.4.5).  A value with a credential in a URL (http://user:pass@proxy) is
+dropped even when its name is allowed.  Add names with
+`ghostherd-agent-env-allow-extra'."
   :type '(repeat string)
   :group 'ghostherd)
 
-(defcustom ghostherd-agent-env-keep
-  '("GHOSTHERD_RPC" "GHOSTHERD_RPC_FILE" "GHOSTHERD_SESSION" "GHOSTHERD_HERD"
-    "GHOSTHERD_SOCKET" "GHOSTHERD_BACKEND" "SSH_AUTH_SOCK")
-  "Variables a guarded agent keeps though a scrub pattern matches them:
-what the herd and git need.  GHOSTHERD_RPC carries the sidecar's token;
-the guard refuses every command that would print it."
+(defcustom ghostherd-agent-env-allow-extra nil
+  "More variables a guarded agent starts with, on top of
+`ghostherd-agent-env-allow': yours, or a project's in its .dir-locals.el
+-- which Emacs asks you about first, since a project could name a secret
+here."
   :type '(repeat string)
   :group 'ghostherd)
+
+(make-obsolete-variable 'ghostherd-agent-env-scrub 'ghostherd-agent-env-allow "2026-10-22")
+(make-obsolete-variable 'ghostherd-agent-env-keep 'ghostherd-agent-env-allow-extra "2026-10-22")
 
 (defconst ghostherd--agy-guard-note "\
 A herd guard checks each of your tool calls.  Your workspace is %s and your
@@ -7994,7 +8018,10 @@ the hooks.json agy loads from it.  Return the guard directory."
                        :secret_dirs (vconcat (and (fboundp 'ghostherd-memory--data-directory)
                                                   (list (ghostherd-memory--data-directory))))
                        :secret_files (vconcat (and (fboundp 'ghostherd-memory--mail-directory)
-                                                   (list (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))))))
+                                                   (list (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))
+                       ;; The herd's own token: never an agent's, even approved.
+                       :never_files (vconcat (and (fboundp 'ghostherd-memory--token-file)
+                                                  (list (ghostherd-memory--token-file))))))))
       (with-temp-file (expand-file-name ".agents/hooks.json" dir)
         (insert (json-encode
                  `((ghostherd-guard
@@ -8022,14 +8049,30 @@ first, so a respawn takes the guard as it is now."
             (and dir (list "--dangerously-skip-permissions" "--add-dir"
                            (directory-file-name dir))))))
 
-(defun ghostherd--scrub-wrapper ()
+(defun ghostherd--session-guarded-p (session)
+  "Non-nil when SESSION runs behind the herd's guard: an agy started with
+its guard's --dangerously-skip-permissions --add-dir pair."
+  (let ((root (file-name-as-directory (expand-file-name ghostherd-guard-root))))
+    (and (eq (ghostherd-session-kind session) 'agy)
+         (cl-loop for (flag add dir) on (ghostherd-session-args session)
+                  thereis (and (equal flag "--dangerously-skip-permissions")
+                               (equal add "--add-dir")
+                               (stringp dir)
+                               (string-prefix-p root (file-name-as-directory (expand-file-name dir))))))))
+
+(defun ghostherd--scrub-wrapper (&optional directory)
   "The words run in front of a guarded agent's CLI: `herd scrub-exec',
-dropping `ghostherd-agent-env-scrub' from its environment."
+keeping only `ghostherd-agent-env-allow' and the extra names -- yours, or
+DIRECTORY's project's -- in its environment."
   (when-let* (((fboundp 'ghostherd-herd-client))
               (herd (ghostherd-herd-client)))
     (append (list herd "scrub-exec")
-            (mapcan (lambda (re) (list "--scrub" re)) ghostherd-agent-env-scrub)
-            (mapcan (lambda (n) (list "--keep" n)) ghostherd-agent-env-keep)
+            (mapcan (lambda (name) (list "--allow" name))
+                    (append ghostherd-agent-env-allow
+                            (if directory
+                                (car (ghostherd--dir-local directory 'ghostherd-agent-env-allow-extra
+                                                           ghostherd-agent-env-allow-extra))
+                              ghostherd-agent-env-allow-extra)))
             (list "--"))))
 
 (defvar ghostherd--guard-requests nil

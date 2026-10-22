@@ -39,6 +39,22 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+FORBIDDEN = -32003
+
+# What an agent does, through `bin/herd' (its asks, its memory, a lead's
+# start / stop / relay / screens and their replies), its hooks (report,
+# the guard's refusals and uses) and PROTOCOL.md (message, inbox): the
+# methods the agents' token reaches.  The rest is the herd's own -- Emacs
+# and the page: the tick, approving a guard's refusal, the Memory tab, the
+# transcript index, migrating claude's memory dirs.
+AGENT_METHODS = frozenset({
+    "ping",
+    "herd_list", "herd_message", "herd_inbox",
+    "herd_ask", "herd_handoff", "herd_reply", "herd_await", "herd_cancel", "herd_detach", "herd_asks",
+    "herd_report", "herd_guard_denied", "herd_guard_used",
+    "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose",
+    "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
+})
 
 AWAIT_MAX = 55.0
 AWAIT_POLL = 0.5
@@ -125,7 +141,7 @@ class JsonRpcHandler:
             "herd_memory_suggest": self._herd_memory_suggest,
         }
 
-    async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
+    async def handle(self, request: JsonRpcRequest, role: str = "admin") -> JsonRpcResponse:
         method = self._methods.get(request.method)
         if method is None:
             return JsonRpcResponse(
@@ -133,6 +149,17 @@ class JsonRpcHandler:
                 error=JsonRpcError(
                     code=METHOD_NOT_FOUND,
                     message=f"Method not found: {request.method}",
+                ),
+            )
+        if role != "admin" and request.method not in AGENT_METHODS:
+            # An answer, not a refusal of the URL: `bin/herd' must not take
+            # it for a sidecar away and retry.
+            return JsonRpcResponse(
+                id=request.id,
+                error=JsonRpcError(
+                    code=FORBIDDEN,
+                    message=f"{request.method} is the herd's own, not an agent's: Emacs and the "
+                            "page call it, with the user.  Ask the user.",
                 ),
             )
         try:

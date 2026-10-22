@@ -1066,13 +1066,15 @@
     if (k.round && (k.parent || k.round > 1)) what += " · round " + k.round + "/" + k.of;
     const text = k.status === "answered" ? k.replyHead : open ? k.head : "";
     const t = open ? k.created : k.answered;
-    const title = k.project
+    const title = (k.project
       ? "handoff " + k.id + " from " + k.from + (k.fromProject ? " in " + k.fromProject : "") +
         " to " + (k.to || "the lead being started") + " in " + k.project + ": " + (k.head || "")
-      : "ask " + k.id + ": " + (k.head || "");
+      : "ask " + k.id + ": " + (k.head || "")) +
+      (k.guarded ? "\nFrom a guarded agent: its taker is told not to read or pass back secrets for it." : "");
     return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + (k.project ? " ask-handoff" : "") +
-      '" title="' + esc(title) + '">' +
+      (k.guarded ? " ask-guarded" : "") + '" title="' + esc(title) + '">' +
       '<span class="awhat">' + esc(what) + "</span>" +
+      (k.guarded ? '<span class="aguarded">from a guarded agent</span>' : "") +
       (text ? '<span class="atext">' + esc(text) + "</span>" : "") +
       '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
   }

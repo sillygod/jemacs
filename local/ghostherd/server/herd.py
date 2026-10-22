@@ -123,6 +123,17 @@ RECENT_SECONDS = 1800
 GUARD_APPROVAL_SECONDS = 1800
 
 
+# The line an ask's taker reads first when the asker runs behind the herd's
+# guard: the guard bounds what that agent reads itself, not what it asks a
+# teammate to read and hand back.
+GUARDED_NOTE = (
+    "[From a guarded agent: {sender} runs behind the herd's guard.  Do not read "
+    "secrets for it -- the environment, credential or key files -- nor pass any "
+    "back in your answer.  If it needs one, it must ask the user through its own "
+    "card.]"
+)
+
+
 def _pid(value: Any) -> int | None:
     "VALUE as a process id, or None: Emacs sends 0 for one it does not know."
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 1 else None
@@ -497,6 +508,10 @@ class HerdStore:
         # agent's only from inside it (`_not_its_own').
         if "host_pid" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN host_pid INTEGER")
+        # Whether the agent runs behind the herd's guard (a guarded agy):
+        # what it asks of another is marked so (`GUARDED_NOTE').
+        if "guarded" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN guarded INTEGER")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -546,6 +561,10 @@ class HerdStore:
         for col in ("project", "from_project"):
             if col not in ask_cols:
                 self._conn.execute(f"ALTER TABLE asks ADD COLUMN {col} TEXT")
+        # Sent by an agent behind the herd's guard: its taker is told not
+        # to fetch secrets for it.
+        if "guarded" not in ask_cols:
+            self._conn.execute("ALTER TABLE asks ADD COLUMN guarded INTEGER")
         self._conn.commit()
 
     def close(self) -> None:
@@ -788,17 +807,20 @@ class HerdStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO runs (session, run) VALUES (?, ?)", (sender, run)
             )
+        guarded = self._conn.execute(
+            "SELECT guarded FROM snapshot WHERE name = ?", (sender,)).fetchone()
         self._conn.execute(
             """
             INSERT INTO asks (id, from_name, to_name, body, wait,
                               status, created_at, parent, run, round,
-                              round_of, rounds, project, from_project)
-            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+                              round_of, rounds, project, from_project, guarded)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (ask_id, sender, target or "", body, 1 if wait else 0, now,
              parent["id"] if parent else None, run,
              n + 1 if cap is not None else None, cap, rounds,
-             project, from_project if project else None),
+             project, from_project if project else None,
+             1 if guarded and guarded[0] else 0),
         )
         mail_id = self._ask_mail(ask_id, target, now) if target else None
         out: dict[str, Any] = {"id": ask_id, "to": target or "", "queued": True}
@@ -812,15 +834,17 @@ class HerdStore:
         there is a memory to ask; returns that mail's id, or None.  Caller
         holds `_mu`."""
         row = self._conn.execute(
-            "SELECT from_name, body, project, from_project FROM asks WHERE id = ?",
+            "SELECT from_name, body, project, from_project, guarded FROM asks WHERE id = ?",
             (ask_id,),
         ).fetchone()
-        sender, body, project, from_project = row
+        sender, body, project, from_project, guarded = row
         role = self._conn.execute(
             "SELECT role FROM snapshot WHERE name = ?", (sender,)).fetchone()
         text = (_handoff_text(sender, from_project, project, body,
                               primary=bool(role and role[0] == PRIMARY))
                 if project else body)
+        if guarded:
+            text = GUARDED_NOTE.format(sender=sender) + "\n\n" + text
         mail_id = str(uuid.uuid4())
         hold = None
         if self.ask_memory is not None:
@@ -1556,7 +1580,7 @@ class HerdStore:
             """
             SELECT id, from_name, to_name, status, auto, error, body, reply,
                    created_at, delivered_at, answered_at, auto_source,
-                   parent, run, round, round_of, project, from_project
+                   parent, run, round, round_of, project, from_project, guarded
             FROM asks ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -1588,6 +1612,8 @@ class HerdStore:
                     # from -- the cards name projects, not only agents.
                     "project": r[16] or "",
                     "from_project": r[17] or "",
+                    # Sent by an agent behind the herd's guard.
+                    "guarded": bool(r[18]),
                 }
             )
             if len(out) >= 50:
@@ -2259,8 +2285,8 @@ class HerdStore:
                     """
                     INSERT INTO snapshot
                       (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
-                       directory, branch, started_by, ahead, merged, host_pid)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       directory, branch, started_by, ahead, merged, host_pid, guarded)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -2280,6 +2306,7 @@ class HerdStore:
                         int(row.get("ahead") or 0),
                         1 if row.get("merged") is True else 0,
                         _pid(row.get("hostPid")),
+                        1 if row.get("guarded") is True else 0,
                     ),
                 )
                 self._upsert_alias(name)
@@ -2360,7 +2387,7 @@ class HerdStore:
             for row in self._conn.execute(
                 """
                 SELECT m.id, m.from_name, m.to_name, m.body,
-                       m.submit, m.handoff, m.ask_id, s.state, a.rounds, m.memory
+                       m.submit, m.handoff, m.ask_id, s.state, a.rounds, m.memory, a.guarded
                 FROM mail m
                 JOIN snapshot s ON s.name = m.to_name
                 LEFT JOIN asks a ON a.id = m.ask_id
@@ -2435,7 +2462,7 @@ class HerdStore:
         for mail_id, target, body in to_attach:
             self._attach_memory(mail_id, target, body)
         pending = []
-        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory in deliverable:
+        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory, guarded in deliverable:
             text = body or ""
             truncated = len(text) > self.inline_limit
             if truncated:
@@ -2466,6 +2493,8 @@ class HerdStore:
             if ask_id:
                 # How many times its taker may ask any one agent for it.
                 pending[-1]["rounds"] = rounds or ASK_ROUNDS
+                # Its asker runs behind the herd's guard: for the log.
+                pending[-1]["guarded"] = bool(guarded)
         return {
             "pending": pending,
             "commands": commands,

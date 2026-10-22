@@ -2038,6 +2038,36 @@ or deny --- with what wants the user a denial they approve once.
   they run code the agent can change, so the readme says to allow only
   what may run unwatched
 
+** Follow-up: the agents' token, an allowlisted env, marked asks (ask 33c4af1d)
+
+- [X] Agents hold a token of their own (=rpc.agent-token=): their
+  =GHOSTHERD_RPC= and =rpc.url= carry it, and it reaches only what an
+  agent does (=AGENT_METHODS=: every method =bin/herd= and =PROTOCOL.md=
+  call, but =herd memory migrate=).  The herd's own -- approving a guard's
+  refusal, the Memory tab, the tick, the transcript index -- answer it
+  with -32003, never a 401.  Emacs keeps =rpc.token=, which a guarded
+  agent may not read even approved.  One token for all agents, not one
+  each: the threat is an agent's code acting as the herd, not agents
+  posing as each other
+- [X] Migration: the first start with an agent token replaces the herd's;
+  an agent spawned before holds a URL now refused, and =bin/herd= falls
+  back to =rpc.url=, which Emacs rewrites with the agents' URL -- a wait
+  rides it out (its client waits five minutes for a sidecar)
+- [X] A guarded agent's env is an allowlist (=ghostherd-agent-env-allow=,
+  =-extra= per user or project), a proxy kept unless its value holds a
+  password, =SSH_AUTH_SOCK= kept (it signs, gives no key away, and its
+  uses ask)
+- [X] An ask or handoff from a guarded agent is marked: its taker reads
+  first not to fetch or pass back secrets for it, the cards say "from a
+  guarded agent", the log says so
+- [X] pytest, ERT, e2e, each broken on purpose; a scratch run: master's
+  sidecar and an agent waiting on it, upgraded to the new one mid-wait;
+  the agents' token refused at the herd's methods; a real guarded agy on
+  only allowlisted names, asking a fake taker that reads the mark
+- [ ] After the merge, by hand: reload the =.el= first, then restart the
+  sidecar from Emacs (it replaces the herd's token and writes the agents'
+  URL to =rpc.url=); respawn agents when convenient
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

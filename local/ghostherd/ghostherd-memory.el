@@ -206,6 +206,21 @@ outlive a deleted file."
         (let ((token (string-trim (buffer-string))))
           (and (not (string-empty-p token)) token))))))
 
+(defun ghostherd-memory--agent-token-file ()
+  (expand-file-name "rpc.agent-token" (ghostherd-memory--data-directory)))
+
+(defun ghostherd-memory--agent-token ()
+  "The agents' token from `rpc.agent-token', or nil when the sidecar has
+none (one from before agent tokens).  It reaches what an agent does --
+its asks, its memory, its hooks -- and not the herd's own methods: the
+tick, approving a guard's refusal, the Memory tab."
+  (let ((file (ghostherd-memory--agent-token-file)))
+    (when (file-readable-p file)
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let ((token (string-trim (buffer-string))))
+          (and (not (string-empty-p token)) token))))))
+
 (defun ghostherd-memory--token-id (token)
   "TOKEN's public name, as the sidecar's /health reports it."
   (substring (secure-hash 'sha256 token) 0 12))
@@ -223,11 +238,19 @@ outlive a deleted file."
   (format "%s:%d" ghostherd-memory-host (ghostherd-memory--current-port)))
 
 (defun ghostherd-memory-rpc-url ()
-  "Public JSON-RPC URL, token included, once this Emacs has a sidecar.
-Nil until `ghostherd-memory-start' succeeds, so spawn does not advertise
-a port we never opened."
+  "This Emacs's JSON-RPC URL, the herd's token included, once it has a
+sidecar.  Nil until `ghostherd-memory-start' succeeds.  Emacs's own: it
+never goes to an agent (`ghostherd-memory-agent-rpc-url')."
   (and ghostherd-memory--port (ghostherd-memory--token)
        (ghostherd-memory--rpc-url)))
+
+(defun ghostherd-memory-agent-rpc-url ()
+  "The agents' JSON-RPC URL, their token included: what spawned agents
+get as GHOSTHERD_RPC and find in rpc.url.  Nil until this Emacs has a
+sidecar that gives agents a token of their own -- never the herd's."
+  (when-let* ((port ghostherd-memory--port)
+              (token (ghostherd-memory--agent-token)))
+    (format "http://%s:%d/jsonrpc/%s" ghostherd-memory-host port token)))
 
 (defun ghostherd-memory--health-url (&optional port)
   (format "http://%s:%d/health"
@@ -567,10 +590,12 @@ not ours are skipped; a bind race that kills uvicorn tries the next."
   (expand-file-name "ghostherd-mail" user-emacs-directory))
 
 (defun ghostherd-memory--write-rpc-locator ()
-  "Write the bound RPC URL so a stale spawn env can be recovered.
-Mode 0600: the URL carries the token.  `set-file-modes' as well,
-because writing over an existing file keeps its old mode."
-  (when-let* ((url (ghostherd-memory-rpc-url)))
+  "Write the agents' RPC URL so a stale spawn env can be recovered.
+The agents' URL, never the herd's: an agent whose GHOSTHERD_RPC is
+refused falls back to this file.  Mode 0600: the URL carries a token.
+`set-file-modes' as well, because writing over an existing file keeps
+its old mode."
+  (when-let* ((url (ghostherd-memory-agent-rpc-url)))
     (let ((dir (ghostherd-memory--mail-directory))
           (file (expand-file-name "rpc.url" (ghostherd-memory--mail-directory))))
       (with-file-modes #o700 (make-directory dir t))
