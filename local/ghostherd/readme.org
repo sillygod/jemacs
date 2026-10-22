@@ -745,6 +745,55 @@ CLI that takes no role as it starts (agy) reads it after its first ask.
 (handoff)"; the room's run names the taker with its project.  Then the
 answer, "⇠ unnoiac answered (handoff)", or why it failed.
 
+* Primary: the herd-wide lead
+
+The user's one entry point for what crosses projects, or where they do
+not know which project it belongs to --- and "what is everyone doing?",
+"what is stuck?".  One agent, =primary=, that routes and tracks: it hands
+work to the projects' leads with =herd handoff= (a project with no lead
+gets one), tells the user what came back, and never writes code.
+
+*Where it lives.* The herd's own directory, =ghostherd-primary-directory=
+(=~/.ghostherd/primary/=), outside every repo, on
+=ghostherd-primary-kind= (claude).  That directory is its project: it has
+a memory store of its own, the user's with it as every project has, and
+a room.  So the herd's rules hold for it as for any agent, with no
+special case --- it may hand off, as an agent in a project with no lead
+may; it may not =herd ask= another project's agents (nor their leads:
+that is a handoff); and no agent may ask it, which says to tell one's
+own lead instead.
+
+*What it does.* =herd list= and =herd asks= across the herd; =herd recall
+--project P= on any project; =herd handoff PROJECT= --- a path, or the
+name of a project with agents, a memory store, or one claude has run in
+(the herd reads =~/.claude/projects= for those).  It writes only its own
+memory: a project's is its lead's, the user's the user's.  What is the
+user's to decide --- stopping agents, approving a promotion, merging ---
+it recommends.  Its role says all this, and how to report: what went
+where, who is on it, what to wait for.
+
+*On demand, one conversation.* Started the first time it is written to
+--- the page, Telegram, =M-x ghostherd-primary= (with a prefix, a
+message too) --- and up until it is stopped.  Stopped, or gone with
+Emacs and its host, the next word resumes it on its last conversation:
+the one its hooks named, kept beside its directory
+(=~/.ghostherd/primary.eld=), on the same CLI.  Nothing of its own runs on
+a timer: it wakes when spoken to, or when an answer comes back --- a
+handoff's answer is an ask's, back to it.
+
+*Where you reach it.*
+- The page: the Agents tab's header opens the Primary room, a chat ---
+  there before primary runs; your first message starts it.  Desk and
+  phone.
+- Telegram: anything you write that is not a command and not a reply to
+  a push goes to primary, started or resumed if need be.  A reply to a
+  push still goes to that project's lead --- and a reply to primary's own
+  report, to primary.
+- Emacs: =M-x ghostherd-primary=.
+
+Its report at the end of a turn is pushed while you are away, as a
+lead's is (=report=, "↩ Reply to tell primary").
+
 * Shared memory: one memory a project's agents share
 
 A project's agents keep *curated* facts in one place every one of them
@@ -1896,6 +1945,10 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
   ;; herd may have up that it started so.
   (setq ghostherd-handoff-may-start-lead t
         ghostherd-handoff-lead-max 3)
+
+  ;; Primary, the herd-wide lead: its CLI, and where it works.
+  (setq ghostherd-primary-kind 'claude
+        ghostherd-primary-directory "~/.ghostherd/primary/")
 
   ;; Permanent default args example:
   (setf (alist-get 'claude ghostherd-agent-specs)

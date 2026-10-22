@@ -1906,6 +1906,52 @@ lead, as an ask the herd frames.
   the sender does not own it -- it cannot stop it -- and what the cap
   guards against, leads fanning out across projects, is herd-wide
 
+* Phase 3.35 — Primary, the herd-wide lead  *(this tree)*
+
+Ask 9622f1e9.  The user's one entry point for what crosses projects, or
+where they do not know it belongs: an agent that routes and tracks,
+built on the handoff.
+
+** What shipped
+
+- [X] One agent, =primary=, role primary, on =ghostherd-primary-kind=
+  (claude), in =ghostherd-primary-directory= (=~/.ghostherd/primary/=),
+  outside every repo.  That directory is its project: its own memory
+  store and the user's, a room, and the herd's rules with no special
+  case -- it hands off as an agent in a project with no lead may, the
+  cross-project =herd ask= refusal holds it from any project's agents
+- [X] On demand: started when first written to; stopped or gone with the
+  host, resumed on its last conversation -- its hooks' id, kept in
+  =~/.ghostherd/primary.eld=, on the same CLI.  No timers of its own
+- [X] Its role: list, asks, recall --project, handoff; never code, never
+  a checkout, never another project's agents; what is the user's it
+  recommends; report what went where, who is on it, what to wait for
+- [X] The herd: no agent asks primary; a handoff into its directory is
+  refused; its handoff is framed "from primary, the herd-wide lead, for
+  the user"; it writes only its own memory (remember, forget, promote).
+  A handoff's PROJECT names also those claude has run in
+  (=~/.claude/projects=), so primary routes to projects nobody works in
+- [X] Entry points: the page's Primary room from the Agents tab header
+  (a chat, there before primary runs), Telegram free-form messages
+  (a reply to a push still goes to that project's lead; to primary's own
+  report, to primary), =M-x ghostherd-primary=.  Its report is pushed
+  under the same away rules as a lead's
+- [X] pytest + ERT + e2e (herd-primary, desk and phone), broken on
+  purpose; a scratch run of the real stack -- Telegram's routing, start,
+  handoff, a lead started, the answer back, the refusals, stop, resume
+- [ ] After the merge, by hand: restart the sidecar; reload the =.el=
+  (two new defcustoms; =ghostherd-push= unchanged); the page reloads its
+  =ui= itself
+
+** Deliberately not done
+
+- Scheduled digests ("every morning, what moved"): primary wakes only
+  when spoken to or answered
+- Automatic quota actions (pausing or relaying agents as quota runs
+  low): the user's to decide; primary recommends
+- Primary editing memory beyond its own store: a project's memory is its
+  lead's, the user's preferences the user's -- refused, not only advised
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
