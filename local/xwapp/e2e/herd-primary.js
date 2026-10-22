@@ -76,6 +76,18 @@ const herd = (running) => {
       await sleep(120);
       const to2 = await page.$eval(".chat .chat-to", (s) => [...s.options].map((o) => o.value));
       check(W("up, the box writes to primary itself"), JSON.stringify(to2) === JSON.stringify(["primary"]), to2);
+      // The live bug: on the desktop the primary room's roomView is "columns"
+      // (it has no toggle), so setChat took the conversation but never painted
+      // it -- the render keyed on roomView, not that the room is a chat.  The
+      // chat must fill with primary's conversation, not sit on "Reading…".
+      await page.evaluate((pd) => GM.setChat({ project: pd, earlier: false, missing: [], absent: [], entries: [
+        { who: "user", to: "primary", kind: "turn", ts: "p1", text: "what is everyone doing?" },
+        { who: "primary", kind: "turn", ts: "p2", text: "jnotes is idle; deploy-platform is mid-deploy." }] }), PD);
+      await sleep(80);
+      const cbody = await txt(".chat .cbody");
+      check(W("the chat paints primary's conversation, not stuck on Reading…"),
+        /what is everyone doing\?/.test(cbody) && /jnotes is idle/.test(cbody) &&
+        !/Reading the conversations/.test(cbody), cbody.slice(0, 80));
       await page.fill(".chat textarea", "and the login?");
       await tap('.chat [data-act="a:send"]');
       await sleep(120);

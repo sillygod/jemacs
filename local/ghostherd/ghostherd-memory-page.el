@@ -2310,12 +2310,18 @@ again only changes which those are."
     (unless (equal project ghostherd-memory-page--room)
       (ghostherd-memory-page--room-close)
       (setq ghostherd-memory-page--room project))
-    ;; A view the page had not been sent is sent whole: the columns it
-    ;; left were not kept up while it showed the chat.
-    (unless (eq chat ghostherd-memory-page--room-chat)
-      (setq ghostherd-memory-page--room-chat chat
-            ghostherd-memory-page--chat-sent nil)
-      (clrhash ghostherd-memory-page--room-sent))
+    (let ((mode-changed (not (eq chat ghostherd-memory-page--room-chat))))
+      (setq ghostherd-memory-page--room-chat chat)
+      ;; Re-send the room's conversation when the page (re)opened it or changed
+      ;; its view -- not on a mere screen toggle (same room and view), which
+      ;; must not re-read the whole conversation.  `reopen' is set by the page
+      ;; only in its openRoom, so a page that RELOADED (losing its chat/columns
+      ;; while Emacs kept the room) gets the conversation again, rather than
+      ;; the reopened same room reading as unchanged (`--chat-sent'/
+      ;; `--room-sent') and sitting on "Reading the conversations…".
+      (when (or mode-changed (alist-get 'reopen intent))
+        (setq ghostherd-memory-page--chat-sent nil)
+        (clrhash ghostherd-memory-page--room-sent)))
     (setq ghostherd-memory-page--room-screens screens)
     ;; How much of each column, and of the chat, the page has expanded with
     ;; `load earlier' -- so the next read stays that big, not back to the

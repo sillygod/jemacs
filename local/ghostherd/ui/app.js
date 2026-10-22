@@ -900,6 +900,15 @@
     return !!(p && herdNow.room && herdNow.room === p.directory);
   }
 
+  // The room is shown as a chat when its view is "chat" OR it is the primary
+  // room (which is always a chat and carries no view toggle, so its roomView
+  // stays at the device default -- "columns" on the desktop).  Chat renders
+  // must use this, not roomView alone, or a desktop/after-reload primary room
+  // takes the chat data but never paints it ("Reading the conversations…").
+  function roomIsChat() {
+    return isPrimaryRoom() || herdNow.roomView === "chat";
+  }
+
   function primaryBarHtml(p) {
     if (!p) return "";
     const a = agentByName(p.name);
@@ -1701,7 +1710,7 @@
     herdNow.subConv = null;
     app.innerHTML = "";
     chrome();
-    watchRoom();
+    watchRoom(true); // a (re)open: Emacs re-sends the conversation
     renderRoom();
   }
 
@@ -1737,13 +1746,18 @@
   // What Emacs should send for the room: each column's conversation and
   // the screens shown instead, or the chat.  The poll reads only the recent
   // tail (default limit); `load earlier' pages are fetched on their own.
-  function watchRoom() {
+  // REOPEN is true when the page is opening (or reopening after a reload) the
+  // room, false for a screen or view toggle of a room already open: on a
+  // reopen Emacs re-sends the conversation, since a reloaded page lost it while
+  // Emacs kept the room; a screen toggle must not re-read the whole thing.
+  function watchRoom(reopen) {
     emit("room-watch", {
       project: herdNow.room, screens: [...herdNow.roomScreen],
       // The primary room is always a chat (it has no columns view), so ask
       // Emacs for the chat whatever roomView's default is on this device --
       // otherwise the desktop default (columns) leaves it "Reading…" forever.
       view: isPrimaryRoom() ? "chat" : herdNow.roomView,
+      reopen: !!reopen,
     });
   }
 
@@ -3650,14 +3664,14 @@
     setChat: (p) => {
       if (!p || !herdNow.room || p.project !== herdNow.room) return;
       const changed = mergeRecentChat(p);
-      if (herdNow.roomView === "chat" && changed) renderChatBody();
+      if (roomIsChat() && changed) renderChatBody();
     },
 
     // An older page of the chat timeline (from `load earlier'): prepended.
     earlierChat: (p) => {
       if (!p || !herdNow.room) return;
       prependChat(p);
-      if (herdNow.roomView === "chat") renderChatBody();
+      if (roomIsChat()) renderChatBody();
     },
 
     // An image saved for NAME's next prompt: shown above its box, sent

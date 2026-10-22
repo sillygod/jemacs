@@ -7600,6 +7600,36 @@ read.  A normal room follows the view it is given."
       (should ghostherd-memory-page--room-chat)
       (ghostherd-memory-page--room-close))))
 
+(ert-deftest ghostherd-test-reopening-a-room-resends-it ()
+  "A room-watch is always a (re)open: a page that reloaded has lost its
+conversation while Emacs kept the room, so `--room-open' clears what the page
+is thought to already have -- even for the same room and view -- so the next
+tick re-sends it, not leaves it on \"Reading the conversations…\"."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--room nil)
+        (ghostherd-memory-page--room-chat nil)
+        (ghostherd-memory-page--room-timer nil)
+        (ghostherd-memory-page--room-screens nil)
+        (ghostherd-memory-page--chat-sent nil)
+        (ghostherd-memory-page--chat-limit nil)
+        (ghostherd-memory-page--room-sent (make-hash-table :test 'equal))
+        (ghostherd-memory-page--room-limits (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'ghostherd-memory-page--room-tick) #'ignore)
+              ((symbol-function 'ghostherd--primary-dir-p) (lambda (_p) nil)))
+      (ghostherd-memory-page--room-open '((project . "~/p/") (view . "chat")))
+      ;; Pretend the page has been sent the room's state.
+      (setq ghostherd-memory-page--chat-sent '(a-signature))
+      (puthash "col-a" t ghostherd-memory-page--room-sent)
+      ;; A screen toggle (same room and view, no reopen) must NOT re-read.
+      (ghostherd-memory-page--room-open '((project . "~/p/") (view . "chat") (screens . ["x"])))
+      (should (equal ghostherd-memory-page--chat-sent '(a-signature)))
+      (should (= 1 (hash-table-count ghostherd-memory-page--room-sent)))
+      ;; A reopen (a page reload re-opening the same room) DOES: it clears.
+      (ghostherd-memory-page--room-open '((project . "~/p/") (view . "chat") (reopen . t)))
+      (should-not ghostherd-memory-page--chat-sent)
+      (should (zerop (hash-table-count ghostherd-memory-page--room-sent)))
+      (ghostherd-memory-page--room-close))))
+
 (ert-deftest ghostherd-test-room-reads-a-conversation-once-per-change ()
   "The sidecar reads a transcript when it changed, not every 2s; the page
 gets each entry's known fields, lists as arrays."
