@@ -4909,7 +4909,8 @@ claudes in one project, possibly the other's.  The hooks know which."
       (ghostherd--herd-take-links
        `((:session "claude-a" :cli "claude" :conversation ,ghostherd-tests--conv)))
       (cl-letf (((symbol-function 'ghostherd-spawn)
-                 (lambda (_kind &rest plist) (setq spawned plist) nil)))
+                 (lambda (_kind &rest plist) (setq spawned plist) nil))
+                ((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil)))
         (ghostherd-respawn s t))
       (should (equal (plist-get spawned :args)
                      (list "--model" "opus" "-r" ghostherd-tests--conv))))))
@@ -7138,16 +7139,102 @@ entries reach an open page only."
 ;;; Resuming a past conversation
 
 (ert-deftest ghostherd-test-resume-args ()
-  (should (equal (ghostherd--resume-args 'claude "a0c6b62b-e1d2") '("-r" "a0c6b62b-e1d2")))
-  (should (equal (ghostherd--resume-args 'claude "a0c6" t) '("-r" "a0c6" "--fork-session")))
-  (should (equal (ghostherd--resume-args 'grok "g1" t) '("-r" "g1" "--fork-session")))
-  (should (equal (ghostherd--resume-args 'agy "c9") '("--conversation" "c9")))
-  (should-not (ghostherd--resume-args 'agy "c9" t))
-  (should-not (ghostherd--resume-args 'shell "x"))
-  ;; An id comes from an index of files: one that reads as a flag is refused.
-  (should-not (ghostherd--resume-args 'claude "-rf"))
-  (should-not (ghostherd--resume-args 'claude "a b"))
-  (should-not (ghostherd--resume-args 'claude nil)))
+  ;; The conversation existing is checked separately (see the gone-p tests);
+  ;; here the flag/format contract, with it assumed present.
+  (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil)))
+    (should (equal (ghostherd--resume-args 'claude "a0c6b62b-e1d2") '("-r" "a0c6b62b-e1d2")))
+    (should (equal (ghostherd--resume-args 'claude "a0c6" t) '("-r" "a0c6" "--fork-session")))
+    (should (equal (ghostherd--resume-args 'grok "g1" t) '("-r" "g1" "--fork-session")))
+    (should (equal (ghostherd--resume-args 'agy "c9") '("--conversation" "c9")))
+    (should-not (ghostherd--resume-args 'agy "c9" t))
+    (should-not (ghostherd--resume-args 'shell "x"))
+    ;; An id comes from an index of files: one that reads as a flag is refused.
+    (should-not (ghostherd--resume-args 'claude "-rf"))
+    (should-not (ghostherd--resume-args 'claude "a b"))
+    (should-not (ghostherd--resume-args 'claude nil))))
+
+(ert-deftest ghostherd-test-a-gone-conversation-is-seen ()
+  "A claude or agy conversation missing from where its CLI keeps it reads as
+gone; grok's live on its server, so a local file is not a sure signal and it
+is not checked; a malformed id is not probed."
+  (let* ((dir (file-name-as-directory (make-temp-file "gh-conv-" t)))
+         (pattern (concat dir "p/%s.jsonl")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd--spec)
+                   (lambda (_k) (list :transcript pattern :resume-args '("-r" "%s")))))
+          (should (ghostherd--conversation-gone-p 'claude "aaa111"))   ; no file -> gone
+          (make-directory (concat dir "p"))
+          (write-region "" nil (format pattern "aaa111"))
+          (should-not (ghostherd--conversation-gone-p 'claude "aaa111")) ; there -> not
+          (should (ghostherd--conversation-gone-p 'agy "bbb222"))        ; agy checkable too
+          (should-not (ghostherd--conversation-gone-p 'grok "ccc333"))   ; remote -> unchecked
+          (should-not (ghostherd--conversation-gone-p 'claude "../etc"))) ; malformed -> unprobed
+      (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-resume-args-drops-a-gone-conversation ()
+  "A conversation no longer on disk is not handed to the resume flag -- the
+caller starts fresh rather than the CLI exiting on an id it cannot open."
+  (cl-letf (((symbol-function 'ghostherd--conversation-gone-p)
+             (lambda (kind _id) (eq kind 'claude))))   ; claude's gone, grok's not checked
+    (should-not (ghostherd--resume-args 'claude "x1"))
+    (should (equal (ghostherd--resume-args 'grok "g1") '("-r" "g1")))))
+
+(ert-deftest ghostherd-test-started-on-resume-is-detected ()
+  (ghostherd-tests--with-herd ()
+    (let ((r (ghostherd-tests--session :name "c-r" :kind 'claude :args '("--model" "o" "-r" "id9")))
+          (f (ghostherd-tests--session :name "c-f" :kind 'claude :args '("--model" "o"))))
+      (should (ghostherd--started-on-resume-p r))
+      (should-not (ghostherd--started-on-resume-p f)))))
+
+(ert-deftest ghostherd-test-a-failed-resume-restarts-fresh-once ()
+  "An agent that dies just after a resumed start -- the CLI could not open its
+conversation (claude \"No conversation found with session ID\", grok a remote
+404) -- is started once more, FRESH (no resume flag), so a pruned conversation
+never wedges it.  A death long after the start is a crash, not a resume
+failure; and a fresh start carries no resume flag, so this never loops."
+  (ghostherd-tests--with-herd ((ghostherd-notify-on-exit nil))
+    (let (spawned)
+      (cl-letf (((symbol-function 'run-at-time) (lambda (_t _r fn &rest _) (funcall fn)))
+                ((symbol-function 'ghostherd-kill) (lambda (&rest _) nil))
+                ((symbol-function 'ghostherd-spawn)
+                 (lambda (_kind &rest plist) (push (plist-get plist :args) spawned) nil)))
+        ;; grok, resumed, dies at once with its remote 404: respawned fresh.
+        (let ((s (ghostherd-tests--session :name "grok-dp" :kind 'grok :state 'working
+                                           :args '("--model" "x" "-r" "gone-id"))))
+          (setf (ghostherd-session-started-at s) (current-time))
+          (ghostherd--set-state
+           s 'dead "Error: Failed to restore session from remote: session get failed: 404 Not Found")
+          (should (equal (car spawned) '("--model" "x")))   ; -r gone-id stripped
+          (should-not (member "-r" (car spawned))))
+        ;; A death long after the start is a crash, not a resume failure.
+        (setq spawned nil)
+        (let ((s (ghostherd-tests--session :name "c-late" :kind 'claude :state 'working
+                                           :args '("-r" "id2"))))
+          (setf (ghostherd-session-started-at s) (time-subtract (current-time) (seconds-to-time 120)))
+          (ghostherd--set-state s 'dead "exited")
+          (should-not spawned))
+        ;; A fresh start (no resume flag) that dies at once is not retried.
+        (setq spawned nil)
+        (let ((s (ghostherd-tests--session :name "c-fresh" :kind 'claude :state 'working
+                                           :args '("--model" "x"))))
+          (setf (ghostherd-session-started-at s) (current-time))
+          (ghostherd--set-state s 'dead "No conversation found with session ID: id3")
+          (should-not spawned))))))
+
+(ert-deftest ghostherd-test-primary-drops-a-gone-kept-conversation ()
+  "Primary's kept conversation gone (claude's, verifiable): the start drops
+the kept id, logs why, and comes up fresh rather than exiting on it."
+  (ghostherd-tests--with-primary
+    (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) t)))
+      (make-directory (file-name-directory (ghostherd--primary-state-file)) t)
+      (with-temp-file (ghostherd--primary-state-file)
+        (prin1 '(:kind claude :conversation "c-gone") (current-buffer)))
+      (ghostherd-primary-start)
+      (should-not (file-exists-p (ghostherd--primary-state-file)))   ; kept id cleared
+      (should-not (member "-r" (plist-get ghostherd-tests--fake-spawned :args))) ; fresh
+      (should (seq-find (lambda (e) (string-match-p "kept conversation c-gone is gone"
+                                                    (ghostherd-log-entry-text e)))
+                        ghostherd--log)))))
 
 (ert-deftest ghostherd-test-resume-spawns-in-the-directory ()
   (let ((ghostherd--sessions (make-hash-table :test #'equal))
@@ -7156,6 +7243,7 @@ entries reach an open page only."
     (unwind-protect
         (cl-letf (((symbol-function 'ghostherd-spawn)
                    (lambda (kind &rest plist) (setq spawned (cons kind plist))))
+                  ((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil))
                   ((symbol-function 'ghostherd-project-defaults)
                    (lambda (&rest _) '(claude "--permission-mode" "acceptEdits")))
                   ((symbol-function 'ghostherd--project-root) (lambda (&rest _) nil)))
@@ -7205,7 +7293,10 @@ there, and it is a conversation; otherwise the page is told why."
                   (append kv (list :agent "claude" :session_id "inside-id" :project proj
                                    :source_kind "transcript" :title "T")))))
     (unwind-protect
-        (cl-letf (((symbol-function 'ghostherd--resumed-by) (lambda (_) nil)))
+        (cl-letf (((symbol-function 'ghostherd--resumed-by) (lambda (_) nil))
+                  ;; resume-info's own file-exists-p check (below) is what
+                  ;; this covers; the global glob is checked in the gone-p tests.
+                  ((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil)))
           (make-directory proj)
           (write-region "{}" nil file)
           (let ((ok (ghostherd-memory-page--resume-info file (list (funcall chunk)))))
@@ -12242,6 +12333,9 @@ herd's links its own, and `said' what was prompted, newest first."
            (said nil))
        (cl-letf (((symbol-function 'ghostherd-prompt)
                   (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) said)))
+                 ;; The kept conversation is assumed to still exist; a test of
+                 ;; the gone case overrides this with its own cl-letf.
+                 ((symbol-function 'ghostherd--conversation-gone-p) (lambda (&rest _) nil))
                  ((symbol-function 'message) #'ignore))
          ,@body))))
 

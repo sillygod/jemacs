@@ -3971,16 +3971,97 @@ With prefix or KIND, skip the kind prompt."
 Checked before it becomes an argument: it arrives from an index of
 files, and an id starting with \"-\" would read as a flag.")
 
+(defconst ghostherd--resume-checkable '(claude agy)
+  "Kinds whose conversation can be checked to still exist before resuming.
+claude keeps each in ~/.claude/projects, agy in ~/.gemini/.../brain (its
+`:transcript'), so a missing file means the conversation is gone and
+`-r'/`--conversation' would make the CLI exit (claude: \"No conversation
+found\"; agy warns and starts fresh on its own).  grok's sessions live on
+its server -- a bad id there is a 404, not a local file -- so it is not
+checked here; the fresh-start backstop (`ghostherd--resume-backstop')
+covers it.")
+
+(defun ghostherd--conversation-gone-p (kind id)
+  "Non-nil when KIND's conversation ID can be checked for sure and is no
+longer on disk where its CLI keeps it (`:transcript').  nil when it is
+there, or when KIND's store cannot be checked (grok, or no pattern)."
+  (and (memq kind ghostherd--resume-checkable)
+       (stringp id) (string-match-p ghostherd--session-id-re id)
+       (when-let* ((place (plist-get (ghostherd--spec kind) :transcript)))
+         (not (file-expand-wildcards (expand-file-name (format place id)) t)))))
+
 (defun ghostherd--resume-args (kind id &optional fork)
   "Arguments that make KIND resume conversation ID, or nil if it cannot.
-With FORK, branch a new conversation off it; nil if KIND cannot fork."
+With FORK, branch a new conversation off it; nil if KIND cannot fork.
+Nil, too, when ID's conversation is verifiably gone -- so a pruned one is
+not handed to the CLI's resume flag, which would make it exit without
+starting (`ghostherd--conversation-gone-p'); the caller starts fresh."
   (let* ((spec (ghostherd--spec kind))
          (resume (plist-get spec :resume-args))
          (forking (plist-get spec :fork-args)))
     (when (and resume (stringp id) (string-match-p ghostherd--session-id-re id)
-               (or (not fork) forking))
+               (or (not fork) forking)
+               (not (ghostherd--conversation-gone-p kind id)))
       (append (mapcar (lambda (a) (format a id)) resume)
               (and fork forking)))))
+
+;; The backstop: the pre-check verifies claude's and agy's conversations
+;; from a local file, but grok's live on its server (a bad id is a 404, not
+;; a missing file), and a claude id whose file is there could still be
+;; refused.  So when an agent started on a resume dies at once -- the CLI
+;; exiting on a conversation it could not open -- start it fresh, once, with
+;; the kept id dropped.  A fresh start carries no resume flag, so it can
+;; never loop.
+(defconst ghostherd--resume-fail-window 25
+  "Seconds after a resumed start within which a death is taken as a resume
+failure, not a later crash: a CLI that cannot open its conversation exits
+in a second or two, while a resume that worked is long up by now.")
+
+(defun ghostherd--started-on-resume-p (session)
+  "Non-nil when SESSION was started with a resume flag among its args."
+  (when-let* ((kind (ghostherd-session-kind session))
+              (flag (car (plist-get (ignore-errors (ghostherd--spec kind)) :resume-args))))
+    (and (member flag (ghostherd-session-args session)) t)))
+
+(defun ghostherd--respawn-fresh (session)
+  "Respawn SESSION cold -- its args stripped of any resume flag.  A lead on
+a CLI that takes no role flag re-reads its role, as a cold respawn does."
+  (let* ((kind (ghostherd-session-kind session))
+         (recipe (ghostherd-session-recipe session))
+         (role (plist-get recipe :role))
+         (args (ghostherd--without-resume kind (plist-get recipe :args))))
+    (ghostherd-kill session t)
+    (let ((heir (apply #'ghostherd-spawn kind (plist-put (copy-sequence recipe) :args args))))
+      (when (and heir (equal role "lead") (not (ghostherd--lead-args kind)))
+        (ghostherd--when-ready heir (lambda () (ghostherd-prompt heir ghostherd--lead-role))))
+      heir)))
+
+(defun ghostherd--resume-backstop (session _old new)
+  "On SESSION dying just after a resumed start, start it fresh once and drop
+the kept conversation.  For `ghostherd-state-change-hook'."
+  (when (and (eq new 'dead)
+             (ghostherd--started-on-resume-p session)
+             (let ((at (ghostherd-session-started-at session)))
+               (and at (< (- (float-time) (float-time at)) ghostherd--resume-fail-window))))
+    (let ((name (ghostherd-session-name session))
+          (primary (equal (ghostherd-session-role session) "primary")))
+      (ghostherd--log-add
+       session 'life
+       (format "resume failed (%s); starting %s fresh, the kept conversation dropped"
+               (or (ghostherd-session-state-reason session) "it exited at once") name))
+      ;; After this poll, not inside the state change, so killing and
+      ;; respawning do not run while the herd is mid-sweep.
+      (run-at-time
+       0 nil
+       (lambda ()
+         (if primary
+             (progn (ghostherd--primary-forget)
+                    (when-let* ((s (ghostherd-get name))) (ghostherd-kill s t))
+                    (ghostherd-primary-start))
+           (when-let* ((s (ghostherd-get name)))
+             (ghostherd--respawn-fresh s))))))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--resume-backstop)
 
 (defun ghostherd--resumed-by (id)
   "The live herd agent that was started on conversation ID, or nil.
@@ -4008,6 +4089,8 @@ count.  One that reached ID some other way is not found:
 With FORK, branch a new conversation off it.  TITLE goes in the
 notes.  The agent is named KIND-<project>, made unique, and takes the
 project's own default args before the resume ones."
+  (when (ghostherd--conversation-gone-p kind id)
+    (user-error "%s's conversation %s no longer exists" kind id))
   (let* ((args (or (ghostherd--resume-args kind id fork)
                    (user-error "%s cannot %s a conversation by id" kind
                                (if fork "fork" "resume"))))
@@ -7862,6 +7945,12 @@ agent but not this."
         (with-temp-file (ghostherd--primary-state-file)
           (prin1 now (current-buffer)))))))
 
+(defun ghostherd--primary-forget ()
+  "Drop the kept conversation, so the next start is fresh."
+  (let ((file (ghostherd--primary-state-file)))
+    (when (file-exists-p file)
+      (ignore-errors (delete-file file)))))
+
 (defun ghostherd-primary-start (&optional display)
   "Primary, up: the one already up, or one started.  A primary stopped or
 gone with its host is resumed on its last conversation -- the one its
@@ -7876,6 +7965,15 @@ starts afresh.  With DISPLAY, show it."
            (id (or (and old (eq (ghostherd-session-kind old) kind)
                         (ghostherd-session-conversation old))
                    (and (eq (plist-get kept :kind) kind) (plist-get kept :conversation))))
+           ;; A kept conversation that is gone (claude/agy, verifiable) would
+           ;; make the CLI exit on resume: drop it so the next start is fresh,
+           ;; not wedged.  grok's remote ones fall to the backstop.
+           (_ (when (and id (ghostherd--conversation-gone-p kind id))
+                (ghostherd--log-add
+                 ghostherd--primary-name 'life
+                 (format "kept conversation %s is gone; starting fresh" id))
+                (ghostherd--primary-forget)
+                (setq id nil)))
            (resume (and id (ghostherd--resume-args kind id)))
            (dir (ghostherd--primary-dir)))
       (when old (ghostherd-kill old t))
