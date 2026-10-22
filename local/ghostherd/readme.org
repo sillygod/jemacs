@@ -538,6 +538,17 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   has not stopped: it is =waiting=, and its ask stays open until a turn
   ends with nothing out.  A real answer sent later still
   replaces the screen or the failure; only a cancel is final.
+- *Stopped means its turn ended.*  For a taker whose hooks report, the
+  ask closes only on a turn's end its hook says (=Stop=, or grok's
+  interrupt) or its transcript does --- claude's marks a turn over
+  (=turn_duration=, its final message, the user's interrupt, which
+  fires no hook) and one still running, a turn a background task woke
+  with no hook saying so --- never on its screen reading idle.  The
+  screen is weak evidence: a claude view scrolled back ("Jump to bottom
+  (click) ↓") has the spinner out of it and reads idle mid-turn; ask
+  18f57d20 was closed that way 23 minutes into one.  Such a view, and
+  agy's =/usage= panel, are not read for a state at all: the agent keeps
+  the one it had.  A taker with no hooks still settles on its screen.
 - *No loops.*  One open ask per agent, a second waits its turn.  An
   agent answering an ask may hand parts of it on --- the lead asks rd,
   rd asks qa --- three asks deep at most, but never to one waiting on

@@ -187,7 +187,9 @@ def test_a_taker_waiting_on_its_own_ask_has_not_stopped(tmp_path):
     assert h.get_ask(top["id"])["status"] == "delivered"
     _deliver(h, NESTED)
     h.reply(mid["id"], "all green", from_name="qa")
-    # Stopped again with nothing it waits on: that is stopping.
+    # Stopped again with nothing it waits on -- its hook says the turn
+    # ended: that is stopping.
+    h.report("rd", state="done")
     assert h.settle(top["id"], screen="done here")["status"] == "answered"
     assert h.get_ask(top["id"])["auto"] is True
     # And dying is dying, waiting or not.
@@ -434,6 +436,7 @@ def test_settle_answers_with_the_screen_unless_replied(tmp_path):
     ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
     _deliver(h)
     h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
+    h.report("agy-a2", state="done")
     assert h.settle(ask["id"], screen="  the page says Y\n")["status"] == "answered"
     got = h.get_ask(ask["id"])
     assert (got["reply"], got["auto"]) == ("the page says Y", True)
@@ -501,6 +504,7 @@ def test_a_settle_in_the_instant_of_delivery_is_refused(tmp_path):
     # It wakes to the ask (a turn after delivery) and stops without answering:
     # now the screen settles it.
     h.report("agy-a2", state="working")
+    h.report("agy-a2", state="done")
     assert h.settle(ask["id"], screen="the page says Y")["status"] == "answered"
     got = h.get_ask(ask["id"])
     assert (got["auto"], got["auto_source"]) == (True, "screen")
@@ -584,6 +588,7 @@ def test_an_auto_answer_says_so_and_a_failure_is_mailed_too(tmp_path):
     one = h.ask("agy-a2", "fetch", from_name="claude-main")
     _deliver(h)
     h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
+    h.report("agy-a2", state="done")
     h.settle(one["id"], screen="screen text")
     body = _mail_to(h, "claude-main")[0]["body"]
     assert "no answer was sent; this is its screen" in body and body.endswith("screen text")
@@ -778,6 +783,7 @@ def test_client_wait_prints_the_answer(live):
     assert ask
     _deliver(h)
     h.report("agy-a2", state="working")  # woke to the ask, then stopped unanswered
+    h.report("agy-a2", state="done")
     h.settle(ask["id"], screen="what the page said")
     out, err = proc.communicate(timeout=20)
     assert proc.returncode == 0, err

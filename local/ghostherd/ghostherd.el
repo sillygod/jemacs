@@ -121,6 +121,13 @@ made an unanchored `> \=' match the transcript.")
      ;; and that first frame is working too.  The ellipsis still anchors it,
      ;; so its past tense ("✻ Baked for 1s", no "…") stays idle.
      :spinner "\\`[·✢✳✶✻✽*][[:blank:]]+[[:alpha:]]+\\(?:[[:blank:]]+[[:alpha:]]+\\)*…\\(?:[[:blank:]]+(\\(?:[0-9]+[hms]\\)\\)?"
+     ;; Scrolled back through its conversation, claude draws "Jump to
+     ;; bottom (click) ↓" -- "3 new messages (click) ↓" once more came in;
+     ;; "(KEY) ↓", " ↓" or ": fn+↓ to scroll" for the key -- over the last
+     ;; line of the view, above its input box.  The view is history then:
+     ;; the spinner is out of it (ask 18f57d20 was closed on such a view
+     ;; of an agent 23 minutes into its turn).
+     :scrolled "\\(?:Jump to bottom\\|[0-9]+ new messages?\\)\\(?:\\(?: ([^)\n]*)\\)? ↓\\|: .* to scroll\\)"
      :model-picker (:models ("Default" "Opus" "Fable" "Sonnet" "Haiku")
                     :efforts ("low" "medium" "high" "xhigh" "max"))
      :screen-rules
@@ -212,6 +219,11 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("--conversation" "%s")
      :transcript "~/.gemini/antigravity-cli/brain/%s/.system_generated/logs/transcript.jsonl"
      :prompt-replaces-input t
+     ;; A panel paged over the conversation -- `/usage', which the herd
+     ;; itself types to read agy's quota -- ends "↑/↓ Scroll · pgup/pgdown
+     ;; Page · ctrl+end Bottom · ctrl+home Top · esc Close", no input box
+     ;; under it: its view is the panel, not the agent's state.
+     :scrolled "ctrl\\+end Bottom · ctrl\\+home Top"
      ;; agy's `/model' opens a \"Switch Model\" picker with a list and an
      ;; effort slider, the cursor on the current model.  The herd walks
      ;; ↑/↓ to the name, slides ←/→ to the effort, and Enters -- its search
@@ -273,6 +285,11 @@ Each entry is (KIND . PLIST) with keys:
                 pattern matched the conversation, not a prompt -- an
                 agent that wrote \"permission\" is not asking for it.
                 Seen of claude and agy; grok's prompts not yet.
+:scrolled       a regexp for what the CLI draws over its view while you
+                have it scrolled back -- asked of the few lines just above
+                its input box (`ghostherd--scrolled-back-p').  The screen
+                is then history, not the agent's state, and is not read
+                for one.  nil when the kind has no such view.
 :spinner        a regexp for the line the CLI draws above its input box
                 while it works, asked of the lines from the box up to the
                 first that is not indented (`ghostherd--spinner-line').
@@ -2255,6 +2272,27 @@ spinner's shape is drawn by no sentence."
 its spinner on."
   (and (ghostherd--spinner-line text spinner) t))
 
+(defconst ghostherd--scrolled-reach 4
+  "Lines above the input box the scrolled-back marker is looked for in:
+the view's last line, under which only a banner may sit.")
+
+(defun ghostherd--scrolled-back-p (text scrolled)
+  "Non-nil when TEXT is a view scrolled back, by SCROLLED, a kind's
+`:scrolled': it matches one of the lines just above the input box --
+the foot of the view, where the CLI draws its way back to the bottom --
+or, with no box drawn, one of the last lines.  Not higher up, where it
+would be the conversation quoting it."
+  (when scrolled
+    (let* ((lines (vconcat (split-string (or text "") "\n")))
+           (top (ghostherd--box-top lines))
+           (end (or top
+                    (let ((i (length lines)))
+                      (while (and (> i 0) (string-blank-p (aref lines (1- i))))
+                        (setq i (1- i)))
+                      i))))
+      (cl-loop for i from (max 0 (- end (if top ghostherd--scrolled-reach 8))) below end
+               thereis (ghostherd--rule-matches-p scrolled (aref lines i))))))
+
 (defun ghostherd--progress-fresh-p (session)
   "Return non-nil if SESSION reported OSC progress recently enough to trust.
 `remove' and `pause' are excluded: they say the agent stopped reporting,
@@ -3101,15 +3139,27 @@ does."
         (cons 'dead exited))
        (t
         (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
-               (hit (and tail (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
-                                                      (plist-get spec :spinner))))
+               ;; Scrolled back, the screen is history: none of it is read
+               ;; for a state -- not a spinner gone from view, nor an old
+               ;; prompt or error the view happens to show.
+               (scrolled (and tail (ghostherd--scrolled-back-p tail (plist-get spec :scrolled))))
+               (hit (and tail (not scrolled)
+                         (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
+                                                 (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
-               (err (and tail (ghostherd--cli-error session tail)))
-               (login-url (and tail (not err) (ghostherd--login-url session tail))))
+               (err (and tail (not scrolled) (ghostherd--cli-error session tail)))
+               (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail))))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
             (ghostherd--read-foot session tail))
           (cond
+           ;; Scrolled back: what the agent last said of itself, if it is
+           ;; still believed, or else the state it was in -- the view tells
+           ;; nothing new until it is back at the bottom.
+           (scrolled
+            (or report
+                (cons (ghostherd-session-state session)
+                      "scrolled back: the screen shows history, not its state")))
            ;; Screen rules keep priority for `blocked': a stale progress
            ;; report must never mask an agent sitting on a prompt, and
            ;; neither may a stale report from the agent itself.
@@ -6572,12 +6622,21 @@ Such an ask is watched again, for the next time it stops."
            ;; the taker has really worked on it after delivery -- the next
            ;; stop, once it has, closes it.
            (ghostherd--log-add session 'ask
-                               (if (plist-get r :too_soon)
-                                   (format "ask %s left open: %s was only just handed it"
-                                           id (ghostherd-session-name session))
+                               (cond
+                                ((plist-get r :too_soon)
+                                 (format "ask %s left open: %s was only just handed it"
+                                         id (ghostherd-session-name session)))
+                                ;; Its screen read idle, but its hook has not
+                                ;; said the turn ended (nor its transcript):
+                                ;; a view scrolled back, say.  Its turn's end
+                                ;; closes it.
+                                ((plist-get r :turn_on)
+                                 (format "ask %s left open: %s's turn has not ended by its hook or transcript"
+                                         id (ghostherd-session-name session)))
+                                (t
                                  (format "ask %s left open: %s waits on %s"
                                          id (ghostherd-session-name session)
-                                         (mapconcat #'identity (plist-get r :waiting_on) ", "))))))
+                                         (mapconcat #'identity (plist-get r :waiting_on) ", ")))))))
        (append (list :id id
                      :screen (string-trim-right (or screen ""))
                      :dead (if dead t :json-false))
@@ -7188,7 +7247,13 @@ agent's environment carries.")
           (reason (plist-get r :reason)))
       (when (and session (or (eq state 'auto) (memq state ghostherd-report-states)))
         (ghostherd-report session state
-                          (and reason (not (string-empty-p reason)) reason))))))
+                          (and reason (not (string-empty-p reason)) reason))
+        ;; Its turn's end, by its hook, while its screen already reads it
+        ;; stopped: no change of state follows to settle its ask on, and
+        ;; the sidecar left that ask open for exactly this.
+        (when (and (memq state '(done idle auto))
+                   (memq (ghostherd-session-state session) '(idle done)))
+          (ghostherd--ask-on-state session nil (ghostherd-session-state session)))))))
 
 (defun ghostherd--herd-take-links (links)
   "Keep LINKS from a `herd_tick', replacing the last set."

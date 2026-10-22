@@ -177,6 +177,14 @@ How to use it is in [[file:../readme.org][readme.org]] under "Agents that report
   timestamp) to the new id instead of dropping them
 - [X] 20 new ERT tests, mutation-checked; plus a real round trip through
   tmux, emacsclient and =bin/ghostherd=
+- [X] An ask closes only on its taker's turn ending (ask b77cf6dd): for
+  a taker whose hooks report, a turn end its hook says or its transcript
+  does (claude's: =turn_duration=, the final message, an interrupt; and a
+  turn still running that no hook announced) -- never its screen reading
+  idle.  A claude view scrolled back ("Jump to bottom (click) ↓") and
+  agy's =/usage= panel are not read for a state: the agent keeps the one
+  it had.  Ask 18f57d20 had been closed on such a view 23 minutes into a
+  turn.  =conversation.turn_ended=, =HerdStore._turn_over=, =:scrolled=
 
 ** What is left
 
