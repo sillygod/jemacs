@@ -1797,7 +1797,10 @@ and the page is not re-rendered under an open editor every few seconds.")
                (ghostherd-memory-page--js
                 "renderMemory"
                 (list :key (or (plist-get result :key) key) :facts facts))))))
-       (list :key key)
+       ;; The watched store is a slug key (the picker, or `user') or a project
+       ;; path (the default / a room link, which has a `/').  The sidecar's
+       ;; `key' must be a slug; a path goes as `project' for it to slug.
+       (if (string-match-p "/" key) (list :project key) (list :key key))
        (ghostherd-memory-page--fail "Memory")))))
 
 (defun ghostherd-memory-page--memory-watch (intent)

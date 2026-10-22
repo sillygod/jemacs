@@ -11562,6 +11562,26 @@ the file, so its signature ignores it."
           (kill-buffer (ghostherd-session-buffer s))))
       (delete-directory dir t))))
 
+(ert-deftest ghostherd-test-memory-tick-routes-a-path-as-project ()
+  "The Memory tab watches a store by its slug `key' (the picker, or `user') or
+by a project `path' (the default, a room link).  The sidecar's `key' must be a
+slug; a path -- which has a `/' -- must go as `project' for the sidecar to slug
+it, else it is refused with \"bad project key\" (live bug 5c17375e).  A slug and
+`user' go as `key'."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (sent)
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (_method _cb params &rest _) (push params sent))))
+      (dolist (case '(("/Users/jing/.emacs.d" . (:project "/Users/jing/.emacs.d"))
+                      ("~/src/deploy-platform/" . (:project "~/src/deploy-platform/"))
+                      ("-Users-jing--emacs-d" . (:key "-Users-jing--emacs-d"))
+                      ("user" . (:key "user"))))
+        (setq sent nil)
+        (let ((ghostherd-memory-page--memory-key (car case)))
+          (ghostherd-memory-page--memory-tick)
+          (should (equal (car sent) (cdr case))))))))
+
 (ert-deftest ghostherd-test-page-reads-sub-agents-when-they-change ()
   "Each agent's sub-agents still running, read by the sidecar when its
 transcript changed or a file its last answer named -- not on every

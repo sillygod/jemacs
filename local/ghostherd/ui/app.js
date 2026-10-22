@@ -3594,6 +3594,9 @@
       if (view !== "memory") return;
       mem.key = (p && p.key) || mem.key;
       mem.facts = (p && p.facts) || [];
+      // The facts loaded: drop a stale memory error (e.g. a resolved
+      // "bad project key") so the banner does not linger over a live list.
+      if (statusEl.classList.contains("error")) setStatus("");
       renderMemPicker();
       // Not while an editor is open, so a live push does not wipe it.
       if (!mem.editing) renderMemoryList();

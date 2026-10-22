@@ -127,3 +127,17 @@ def test_memory_rpcs_refuse_path_tricks(mem):
     with pytest.raises(ValueError):
         mem._herd_memory_edit({"key": key, "name": "a", "type": "nonsense",
                                "description": "d", "body": "b"})
+
+
+def test_memory_list_resolves_a_project_path(mem):
+    # The page's default open / a room link sends a project PATH (it has a
+    # "/"), not a slug key; the sidecar slugs it.  (Live bug 5c17375e: a path
+    # must not arrive as `key', which valid_key refuses.)
+    sm.write_fact(sm.project_store(sm.slug_for_path("~/work/proj")),
+                  sm.slug_for_path("~/work/proj"), "p body", name="p", now="t")
+    out = mem._herd_memory_list({"project": "~/work/proj"})
+    assert out["key"] == sm.slug_for_path("~/work/proj")
+    assert any(f["name"] == "p" for f in out["facts"])
+    # a path arriving as `key' is refused (path tricks / the old bug)
+    with pytest.raises(ValueError):
+        mem._herd_memory_list({"key": "~/work/proj"})

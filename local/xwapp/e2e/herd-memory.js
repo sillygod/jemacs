@@ -50,6 +50,18 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
     for (const [label, ctxOpts] of [["desk", DESK], ["phone", PHONE]]) {
       const { ctx, page, intents } = await phonePage(browser, { context: ctxOpts });
       const W = (n) => label + ": " + n;
+
+      // ---- the default open sends the current project as a PATH under
+      // `project' (so Emacs slugs it), never as `key' -- the live
+      // "bad project key" bug (5c17375e): a path has a "/", which valid_key
+      // refuses, so a project must not ride in `key'.
+      await page.evaluate(() => GM.setContext({ sources: [], current_project: "/Users/jing/.emacs.d" }));
+      await page.evaluate(() => GM.showView("memory"));
+      await sleep(50);
+      const w0 = intents.filter((i) => i.op === "memory-watch").pop();
+      check(W("the default open sends the project as a path, not a key"),
+        w0 && w0.project === "/Users/jing/.emacs.d" && w0.key === undefined, w0);
+
       await openMemory(page);
 
       // ---- list ----
