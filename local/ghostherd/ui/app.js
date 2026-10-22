@@ -3353,6 +3353,22 @@
       pend.map(renderMemProposal).join("") + "</div>";
   }
 
+  // A unified diff, coloured by each line's FIRST character: an added line
+  // (+) green, a removed line (-) red -- so "+- Never commit…", an added
+  // bullet, is green -- the file headers (---/+++) and hunk headers (@@)
+  // muted, context plain.  Theme tokens only; wrapping/scrolling is the
+  // block's (.mpdiff), so a long line never widens the page.
+  function diffHtml(diff) {
+    return (diff || "").split("\n").map((line) => {
+      const cls = line.startsWith("+++") || line.startsWith("---") ? "dhead"
+        : line.startsWith("@@") ? "dhunk"
+        : line[0] === "+" ? "dadd"
+        : line[0] === "-" ? "ddel"
+        : "";
+      return cls ? '<span class="' + cls + '">' + esc(line) + "</span>" : esc(line);
+    }).join("\n");
+  }
+
   function renderMemProposal(p) {
     const facts = (p.facts || []).map((f) =>
       '<span class="mpfact' + (f.gone ? " gone" : "") + '" title="' + esc(f.name) + '">' +
@@ -3369,7 +3385,7 @@
       '<div class="mptop"><span class="mpfacts">' + facts + '</span>' +
       '<span class="mpinto">→ ' + esc(p.file) + "</span>" +
       '<span class="mpby">' + (p.author ? "by " + esc(p.author) : "") + "</span></div>" +
-      '<pre class="mpdiff">' + esc(p.diff || "") + "</pre>" + acts + "</div>";
+      '<pre class="mpdiff">' + diffHtml(p.diff) + "</pre>" + acts + "</div>";
   }
 
   function memEditForm(f) {

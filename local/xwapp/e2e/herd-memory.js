@@ -174,13 +174,29 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
         { id: "p1", project: "-src-dp", file: "CLAUDE.md", author: "claude-deploy-platform",
           status: "pending",
           facts: [{ name: "never-commit-to-main", title: "Never commit to main", gone: false, promoted: false }],
-          diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@\n+Never commit to main; use a branch.\n" }] }));
+          diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1,2 +1,3 @@\n a context line\n-an old rule\n+a new rule\n+- Never commit to main\n" }] }));
       await sleep(60);
       check(W("a pending proposal shows its fact, file and diff"),
         (await page.$$eval(".mprop", (es) => es.length)) === 1 &&
         /Never commit to main/.test(await page.$eval(".mpfacts", (e) => e.textContent)) &&
         /CLAUDE\.md/.test(await page.$eval(".mpinto", (e) => e.textContent)) &&
-        /\+Never commit to main/.test(await page.$eval(".mpdiff", (e) => e.textContent)));
+        /\+a new rule/.test(await page.$eval(".mpdiff", (e) => e.textContent)));
+      // The diff is coloured by each line's FIRST character.
+      const dlines = await page.$$eval(".mpdiff span", (es) => es.map((e) => ({ cls: e.className, text: e.textContent })));
+      const classOf = (needle) => (dlines.find((d) => d.text.includes(needle)) || {}).cls;
+      check(W("the diff colours by the first char: +/- added/removed, headers/hunks muted"),
+        classOf("--- a/CLAUDE.md") === "dhead" && classOf("+++ b/CLAUDE.md") === "dhead" &&
+        classOf("@@ -1,2") === "dhunk" && classOf("-an old rule") === "ddel" &&
+        classOf("+a new rule") === "dadd" &&
+        // an added bullet: first char + -> green, though its second char is -
+        classOf("+- Never commit to main") === "dadd", dlines);
+      check(W("a context line is plain (no colour span)"),
+        !dlines.some((d) => d.text.includes("a context line")));
+      // The colours are the theme tokens: --plus green, --minus red.
+      const addC = await page.$eval(".mpdiff .dadd", (e) => getComputedStyle(e).color);
+      const delC = await page.$eval(".mpdiff .ddel", (e) => getComputedStyle(e).color);
+      check(W("added is the green token, removed the red (var(--plus)/var(--minus))"),
+        addC === "rgb(63, 185, 80)" && delC === "rgb(248, 81, 73)", { addC, delC });
       // Approve → emit memory-proposal-approve.
       await page.click('[data-act="prop-approve"][data-id="p1"]');
       await sleep(40);

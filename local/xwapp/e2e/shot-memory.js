@@ -27,7 +27,7 @@ const FACTS = [
 const PROPOSALS = [
   { id: "p1", project: "-src-dp", file: "CLAUDE.md", author: "claude-deploy-platform", status: "pending",
     facts: [{ name: "never-commit-to-main", title: "Never commit to main", gone: false, promoted: false }],
-    diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ Working conventions @@\n+- Never commit straight to `main`: cut a branch and open a PR.\n" }];
+    diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -8,6 +8,8 @@ Working conventions\n ## Working conventions\n \n-- Commit directly to main for small fixes.\n+- Never commit straight to `main`: cut a branch and open a PR.\n+- Let qa review before merge.\n" }];
 async function shot(browser, name, ctxOpts, opener) {
   const { ctx, page } = await phonePage(browser, { context: ctxOpts });
   await page.evaluate(() => GM.showView("memory"));

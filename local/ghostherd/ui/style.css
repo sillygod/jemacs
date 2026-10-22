@@ -851,6 +851,10 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
   border-radius: 6px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
   overflow-wrap: anywhere; max-height: 16em; overflow: auto;
 }
+/* Coloured like a diff, theme tokens only (readable in dark and light). */
+.mpdiff .dadd { color: var(--plus); }
+.mpdiff .ddel { color: var(--minus); }
+.mpdiff .dhead, .mpdiff .dhunk { color: var(--muted); }
 .mpacts, .mpreject { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .mpreject input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; }

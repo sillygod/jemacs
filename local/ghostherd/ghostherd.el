@@ -2749,6 +2749,41 @@ wrong in it.  Login expired and every other error stay blocked for you."
 read there while the file had that size and mtime, so the poll reads an
 unchanged transcript once, not every second.")
 
+(defconst ghostherd--turn-ends-max 500
+  "A last-guard ceiling on `ghostherd--turn-ends'.  The real bound is
+`ghostherd--prune-turn-ends' dropping the transcripts no live agent
+follows; this only trips if the followed set itself grows absurd, and
+clears the cache -- each live agent re-reads its own on the next poll.")
+
+(defun ghostherd--prune-turn-ends (&rest _)
+  "Drop `ghostherd--turn-ends' entries for transcripts no live agent follows
+any more -- a removed agent's, or an old conversation a live one has since
+left.  A live agent's current transcript is kept, so nothing it needs is
+dropped.  Cheap: runs when an agent leaves and every so many polls.  Takes
+and ignores args, so it also serves as a `ghostherd-session-removed-hook'."
+  (let ((keep (make-hash-table :test 'equal)))
+    (dolist (s (ghostherd-sessions))
+      (when-let* ((p (ignore-errors (ghostherd-session-transcript s))))
+        (puthash p t keep)))
+    (maphash (lambda (path _v)
+               (unless (gethash path keep)
+                 (remhash path ghostherd--turn-ends)))
+             ghostherd--turn-ends)
+    ;; A pathological herd (more followed transcripts than the ceiling):
+    ;; clear and let the live agents re-read theirs -- never wedged, just
+    ;; the one slower poll.
+    (when (> (hash-table-count ghostherd--turn-ends) ghostherd--turn-ends-max)
+      (clrhash ghostherd--turn-ends))))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--prune-turn-ends)
+
+(defconst ghostherd--turn-ends-prune-every 120
+  "Poll ticks between a sweep of `ghostherd--turn-ends', for a live agent
+that left an old conversation for a new one without any agent being removed.")
+
+(defvar ghostherd--poll-count 0
+  "Poll ticks since start, for occasional housekeeping.")
+
 (defun ghostherd--claude-entry-text (message)
   "The words of transcript MESSAGE, its text parts joined, trimmed."
   (let ((content (plist-get message :content)))
@@ -6369,6 +6404,11 @@ while the sidebar is actually on screen.
 Sidecar mail/Telegram is not on this timer.  `url-retrieve' on every
 poll hitchs typing; that path is `ghostherd--herd-tick-timer'."
   (ghostherd-poll-all)
+  ;; Housekeeping on a cheap cadence: drop the turn-end cache's dead
+  ;; transcripts even when no agent was removed (a live one may have moved
+  ;; to a new conversation).
+  (when (zerop (% (cl-incf ghostherd--poll-count) ghostherd--turn-ends-prune-every))
+    (ghostherd--prune-turn-ends))
   (when (ghostherd--sidebar-on-screen-p)
     (ghostherd--sidebar-refresh)))
 

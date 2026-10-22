@@ -728,6 +728,48 @@ a changed one again."
           (should (eq (ghostherd--transcript-turn-end s) :clean))
           (should (= reads 2)))))))
 
+(ert-deftest ghostherd-test-turn-ends-prune-drops-dead-transcripts ()
+  "The turn-end cache keeps only transcripts live agents still follow: a
+removed agent's, or an old conversation a live one has left, is dropped;
+the one a live agent is on now is kept."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "claude-a" :kind 'claude)
+    (ghostherd-tests--session :name "claude-b" :kind 'claude)
+    (cl-letf (((symbol-function 'ghostherd-session-transcript)
+               (lambda (s) (pcase (ghostherd-session-name s)
+                             ("claude-a" "/t/a.jsonl")
+                             ("claude-b" "/t/b-new.jsonl")))))
+      (dolist (p '("/t/a.jsonl" "/t/b-old.jsonl" "/t/b-new.jsonl" "/t/gone.jsonl"))
+        (puthash p '(1 nil . :clean) ghostherd--turn-ends))
+      (ghostherd--prune-turn-ends)
+      (should (gethash "/t/a.jsonl" ghostherd--turn-ends))       ; a's current, kept
+      (should (gethash "/t/b-new.jsonl" ghostherd--turn-ends))   ; b's current, kept
+      (should-not (gethash "/t/b-old.jsonl" ghostherd--turn-ends)) ; b left it, dropped
+      (should-not (gethash "/t/gone.jsonl" ghostherd--turn-ends))  ; no agent, dropped
+      (should (= (hash-table-count ghostherd--turn-ends) 2)))))
+
+(ert-deftest ghostherd-test-turn-ends-pruned-on-removal-and-capped ()
+  "Removing an agent prunes the cache (`ghostherd-session-removed-hook'); and
+past the ceiling the cache is cleared, never grown without bound."
+  (ghostherd-tests--with-herd ()
+    (let ((a (ghostherd-tests--session :name "claude-a" :kind 'claude)))
+      (cl-letf (((symbol-function 'ghostherd-session-transcript)
+                 (lambda (s) (and (ghostherd-get (ghostherd-session-id s)) "/t/a.jsonl")))
+                ((symbol-function 'ghostherd--host-kill) #'ignore))
+        (puthash "/t/a.jsonl" '(1 nil . :clean) ghostherd--turn-ends)
+        (puthash "/t/stale.jsonl" '(1 nil . :clean) ghostherd--turn-ends)
+        ;; Killing a removes it: the hook prunes, and a is gone from the
+        ;; registry, so both its transcript and the stale one go.
+        (ghostherd-kill a t)
+        (should (zerop (hash-table-count ghostherd--turn-ends))))
+      ;; The cap: more followed transcripts than the ceiling clears the lot.
+      (cl-letf (((symbol-function 'ghostherd-session-transcript) (lambda (_s) "/t/x.jsonl")))
+        (ghostherd-tests--session :name "claude-c" :kind 'claude)
+        (let ((ghostherd--turn-ends-max 0))   ; any followed entry is "over"
+          (puthash "/t/x.jsonl" '(1 nil . :clean) ghostherd--turn-ends)
+          (ghostherd--prune-turn-ends)
+          (should (zerop (hash-table-count ghostherd--turn-ends))))))))
+
 ;;; Carry a turn on after the Mac slept (ask e8dbef6d)
 
 (defconst ghostherd-tests--slept-screen
