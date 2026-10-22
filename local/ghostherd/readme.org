@@ -972,7 +972,13 @@ quietly gets a token or a key:
    =GHOSTHERD_TELEGRAM_= ... families --- keeping
    =ghostherd-agent-env-keep= (=GHOSTHERD_RPC= and the herd's others,
    =SSH_AUTH_SOCK=).  agy logs in from its files in =~/.gemini=, not the
-   environment, and runs without them.  What is not there cannot leak
+   environment, and runs without them.  What is not there cannot leak.
+   The scrub goes by *name*, a deny list: a credential under a name with
+   none of those words --- =DATABASE_URL=, =SENTRY_DSN=, =MONGO_URI=, a
+   =*_PAT=, a bare =DISCORD_WEBHOOK= --- stays in the agent's environment
+   (and in the project commands it runs).  Give such a variable a word the
+   scrub knows, add a pattern to =ghostherd-agent-env-scrub=, or do not
+   count on the scrub for it
 2. *Commands that show the environment or credentials are denied* ---
    =env=, =printenv=, =set=, =export -p=, =declare -p/-x=, any =$VAR=,
    =${...}= or backtick, =ps e=, =launchctl getenv=, =security
@@ -991,7 +997,13 @@ quietly gets a token or a key:
    search does not sweep them in passing: the guard rewrites =grep -r= and
    =rg= to leave them and =.git= out (=--exclude=, =--glob '!...'=) and
    =git diff/show/log/grep= to skip them by pathspec, and refuses agy's
-   own =grep_search= over a folder that holds one
+   own =grep_search= over a folder that holds one.  Nor does a search
+   follow a link out: the name excludes cannot see past a link (to
+   =~/.config/gh=, say) to what it holds, so a walk that follows links
+   --- =grep -R=, =grep -S=, =rg -L=, =find -L=, =ls -RL=, =tree -l= ---
+   asks, as does =diff -r=, which reads every file below; =grep -r=, =rg=
+   and =find= do not follow links and run.  =grep_search= is refused over
+   a folder holding a link out of the workspace or to a secret
 4. *No redaction after the fact.*  agy's =PostToolUse= cannot change what
    a tool returned --- its payload does not even carry it --- so the first
    three layers hold on their own
@@ -1026,7 +1038,9 @@ cannot cover, by their nature:
   says: a refusal by its wording is reworded at once, and would only give
   false assurance.  =read-only= does not stop it either --- the herd's
   commands run in both modes.  If an agent must not reach what its
-  teammates can read, do not run it beside them, and watch its asks
+  teammates can read, do not run it beside them, and watch its asks.  (A
+  later hardening could mark, on the taker's side, an ask or handoff that
+  comes from a guarded agent.)
 
 *Approve once.*  A denial the user may lift says so ("they can approve
 this exact call once on your card"), and shows on the agent's card and

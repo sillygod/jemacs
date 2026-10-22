@@ -33,7 +33,9 @@ The policy (`auto', the default; `read-only' is jnotes' rules):
 - deny, the user may approve the call once ("ask"), as code that would run
   outside the guard: writes into .git and the workspace's .agents, .gemini,
   .claude, .grok; awk -f and awk that writes; sort --compress-program, rg
-  --hostname-bin, git grep -O, git --output.
+  --hostname-bin, git grep -O, git --output.  And a walk that would follow
+  a symlink out of the workspace (grep -R, rg -L, find -L, ls -RL, tree -l)
+  or read every file below (diff -r).
 - deny, not approvable ("never"): rm -rf, sudo, git push --force, git reset
   --hard, git clean -f, and the guard's own directory.
 
@@ -119,6 +121,10 @@ UNSAFE_OPTIONS = {
     "tree": ("-o",),
     "file": ("-C", "--compile"),
 }
+# Short options that take a value, per program: a cluster of flags (-nR)
+# ends at one, the rest its value (-eRESULT is a pattern, not -e -R ...).
+_VALUE_LETTERS = {"grep": "efmABCdD", "rg": "efgtTmABCjMrE", "diff": "CUDFILSWxX", "ls": "wIT",
+                  "tree": "LIPHT"}
 # awk's ways to run a program from a file or load code: refused.
 AWK_CODE_OPTIONS = ("-f", "--file", "-i", "--include", "-l", "--load", "-E", "--exec")
 # Options taking a value, per program (the next word, when not attached).
@@ -447,6 +453,49 @@ def _recursive(program, options):
     return False
 
 
+def _flags(program, words):
+    """The one-letter flags PROGRAM's WORDS set, clusters undone, and its long
+    options (without values): ({"n", "R"}, {"--follow"}) for -nR --follow."""
+    takes = _VALUE_LETTERS.get("grep" if program in GREP_FAMILY else program, "")
+    letters, longs = set(), set()
+    for w in words:
+        if w == "--":
+            break
+        if w.startswith("--"):
+            longs.add(w.split("=", 1)[0])
+        elif w.startswith("-") and len(w) > 1:
+            for ch in w[1:]:
+                letters.add(ch)
+                if ch in takes:
+                    break
+    return letters, longs
+
+
+def _follows_links(program, words):
+    """Why PROGRAM's walk would follow a symbolic link out of the workspace
+    -- past the guard, which judges a path by where it leads only when it
+    is named -- or None.  grep -r, rg and find do not follow; these do."""
+    letters, longs = _flags(program, words)
+    if program in GREP_FAMILY:
+        recursive = _recursive(program, [w for w in words if w.startswith("-")])
+        if ("R" in letters or "--dereference-recursive" in longs or any("dereference" in w for w in words)
+                or (recursive and ("S" in letters or "--dereference-files" in longs))):
+            return "%s -R follows symbolic links, out of your workspace; use %s -r, which does not" % (
+                program, program)
+    elif program == "rg" and ("L" in letters or "--follow" in longs):
+        return "rg -L follows symbolic links, out of your workspace; rg alone does not"
+    elif program == "find" and any(w == "-follow" or re.match(r"\A-[HLP]*L[HLP]*\Z", w) for w in words):
+        return "find -L follows symbolic links, out of your workspace; find alone does not"
+    elif program == "ls" and "L" in letters and ("R" in letters or "--recursive" in longs):
+        return "ls -RL follows symbolic links, out of your workspace; ls -R does not"
+    elif program == "tree" and "l" in letters:
+        return "tree -l follows symbolic links, out of your workspace; tree alone does not"
+    elif program == "diff" and ("r" in letters or "--recursive" in longs):
+        return ("diff -r reads every file below, secret ones and links out of your workspace too; "
+                "compare the files you mean one by one")
+    return None
+
+
 def _excludes(program, policy):
     "Options that keep a recursive search off secret files."
     names = list(policy.secret_names)
@@ -609,6 +658,10 @@ class Guard:
             if any(w == o or w.startswith(o + "=") for o in UNSAFE_OPTIONS.get(program, ())):
                 return _ask("%s %s could write files or run programs; the user can approve this exact "
                             "call once on your card." % (program, w), "unsafe-option"), None
+        why = _follows_links(program, [w for w, _ in args])
+        if why:
+            return _ask("%s -- or the user can approve this exact call once on your card." % why,
+                        "follows-links"), None
         if program in ("awk", "gawk", "mawk"):
             v = self._awk(args)
             if v is not None:
@@ -819,10 +872,10 @@ class Guard:
                 for p in paths or [self.p.workspace]:
                     hit = self._secret_inside(p)
                     if hit:
-                        return _secret("Searching %s would read %s, a secret file; search with "
-                                       "run_command (grep -r, rg), which the herd runs with secret files "
-                                       "left out -- or the user can approve this exact call once on your "
-                                       "card." % (p, hit), "search-sweeps-secrets")
+                        return _secret("Searching %s would read %s; search with run_command (grep -r, "
+                                       "rg), which the herd runs with secret files left out -- or the user "
+                                       "can approve this exact call once on your card." % (p, hit),
+                                       "search-sweeps-secrets")
             return _allow("read")
         if name in WRITE_TOOLS:
             paths = _call_paths(args)
@@ -855,10 +908,13 @@ class Guard:
         return None
 
     def _secret_inside(self, path, most=20000):
-        "A secret file under PATH (a file or directory), or None; looks at MOST entries."
+        """What a search of PATH (a file or directory) must not read -- a
+        secret file, git's config holding a credential, a link out of the
+        workspace or to a secret -- said for the agent, or None.  Looks at
+        MOST entries."""
         real = _real(path if os.path.isabs(os.path.expanduser(path)) else os.path.join(self.p.workspace, path))
         if os.path.isfile(real):
-            return os.path.basename(real) if self.p.secret_path(real) else None
+            return "%s, a secret file" % os.path.basename(real) if self.p.secret_path(real) else None
         seen = 0
         for root, dirs, files in os.walk(real):
             if ".git" in dirs:
@@ -866,14 +922,17 @@ class Guard:
                 try:
                     with open(config, encoding="utf-8", errors="replace") as f:
                         if _GIT_CREDENTIAL.search(f.read(200000)):
-                            return os.path.relpath(config, real)
+                            return "%s, git's config, which holds a credential" % os.path.relpath(config, real)
                 except OSError:
                     pass
             dirs[:] = [d for d in dirs if d != ".git"]
             for f in files + dirs:
                 seen += 1
-                if self.p.secret_path(os.path.join(root, f)):
-                    return os.path.relpath(os.path.join(root, f), real)
+                full = os.path.join(root, f)
+                if self.p.secret_path(full):
+                    return "%s, a secret file" % os.path.relpath(full, real)
+                if os.path.islink(full) and self.p.check_path(full) is not None:
+                    return "%s, a link to %s" % (os.path.relpath(full, real), os.path.realpath(full))
                 if seen >= most:
                     return "(more than %d files, not all looked at)" % most
         return None

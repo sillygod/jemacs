@@ -273,7 +273,7 @@ def test_every_other_way_round_is_denied(guard, line):
 
 
 @pytest.mark.parametrize("line", [
-    "grep -r TOKEN .", "grep -rn TOKEN", "grep -R TOKEN src", "grep -rni token . | head -20",
+    "grep -r TOKEN .", "grep -rn TOKEN", "grep -r TOKEN src", "grep -rni token . | head -20",
     "grep --recursive TOKEN .", "egrep -r TOKEN .", "rg TOKEN", "rg --hidden TOKEN", "rg -uu TOKEN .",
 ])
 def test_recursive_searches_are_rewritten_to_skip_secrets(guard, line):
@@ -317,6 +317,64 @@ def test_git_shows_no_secret_file_from_history(guard, home):
         assert SECRET not in out, (line, new)
     raw = subprocess.run("git show HEAD", shell=True, cwd=ws, capture_output=True, text=True).stdout
     assert SECRET in raw
+
+
+# ---- Links out of the workspace -------------------------------------------------
+
+
+@pytest.mark.parametrize("line", [
+    "grep -R SECRETVALUE .", "grep -rR SECRETVALUE .", "grep -nR SECRETVALUE .", "grep -Rn SECRETVALUE .",
+    "grep --dereference-recursive SECRETVALUE .", "grep -rS SECRETVALUE .", "grep -r --dereference-files x .",
+    "grep -d dereference-recurse x .", "grep --directories=dereference-recurse x .", "egrep -R x .",
+    "rg -L SECRETVALUE", "rg --follow SECRETVALUE .", "rg -nL SECRETVALUE", "rg -uuL SECRETVALUE",
+    "find -L . -name hosts.yml", "find . -follow -name hosts.yml", "find -HL . -name x",
+    "ls -RL", "ls -LR .", "ls -R -L", "tree -l", "tree -al .",
+    "diff -r . src", "diff -rN . src", "diff -Nru . src", "diff --recursive . src",
+])
+def test_a_walk_that_follows_links_asks(guard, line):
+    """A link in the workspace to ~/.config/gh, say: a search that follows
+    links would read past the guard, which judges a link by where it leads
+    only when it is named.  grep -r, rg and find do not follow links."""
+    v = cmd(guard, line)
+    assert (v.decision, v.rule, v.approvable) == ("deny", "follows-links", True), (line, v.reason)
+
+
+@pytest.mark.parametrize("line", ["grep -eR notes.md", "grep -e RESULT -r .", "grep -A3 -rn x .", "rg -e L x",
+                                  "rg -tpy -n x", "find . -links 1", "ls -R", "ls -L notes.md", "diff notes.md src/main.py"])
+def test_flags_that_do_not_follow_links_run(guard, line):
+    assert allowed(cmd(guard, line)), line
+
+
+def test_a_search_does_not_follow_a_link_out(guard, home):
+    "Run for real: a link to a folder outside, and to a file, holding a token."
+    ws, out = home["ws"], home["home"] / "other" / "gh"
+    out.mkdir(parents=True)
+    (out / "hosts.yml").write_text(f"oauth_token: {SECRET}\n")
+    (ws / "pub").mkdir()
+    (ws / "pub" / "cfgs").symlink_to(out)
+    (ws / "pub" / "tok").symlink_to(out / "hosts.yml")
+    (ws / "pub" / "a.txt").write_text("SECRETVALUE is a word here\n")
+    for line in ["grep -r SECRETVALUE .", "grep -rn SECRETVALUE pub", "rg SECRETVALUE", "rg --hidden SECRETVALUE ."]:
+        prog = line.split()[0]
+        if not shutil.which(prog):
+            continue
+        answer, v, _ = judge(guard, "run_command", CommandLine=line)
+        assert v.decision == "allow", (line, v.reason)
+        out_ = subprocess.run(answer["overwrite"]["CommandLine"], shell=True, cwd=home["guard"],
+                              capture_output=True, text=True).stdout
+        assert "a word here" in out_ and SECRET not in out_, (line, out_)
+    if shutil.which("rg"):  # unguarded, following links, it reads the token
+        assert SECRET in subprocess.run("rg -L SECRETVALUE", shell=True, cwd=ws, capture_output=True, text=True).stdout
+    # Named, a link is judged by where it leads.
+    assert cmd(guard, "cat pub/tok").kind == "ask" and cmd(guard, "grep -r x pub/cfgs").kind == "ask"
+    # agy's own search: a link out in its scope stops it.
+    v = verdict(guard, "grep_search", Query="SECRETVALUE", SearchPath=str(ws / "pub"))
+    assert v.decision == "deny" and "a link to" in v.reason, v.reason
+    (ws / "pub" / "cfgs").unlink()
+    (ws / "pub" / "tok").unlink()
+    assert allowed(verdict(guard, "grep_search", Query="SECRETVALUE", SearchPath=str(ws / "pub")))
+    (ws / "pub" / "env").symlink_to(ws / ".env")  # in the workspace, but to a secret
+    assert verdict(guard, "grep_search", Query="x", SearchPath=str(ws / "pub")).kind == "secret"
 
 
 # ---- Code that would run outside the guard --------------------------------------
