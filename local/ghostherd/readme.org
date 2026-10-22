@@ -1971,6 +1971,49 @@ are the other tabs (below, and "What happened while you were away").
     view --- and goes back there when it is loaded again, in a tab or
     in Emacs.
 
+*** Threads: who is talking to whom
+
+The Threads tab shows the herd's conversations with each other, across
+projects.  Read-only: it only shows, and leads where you click.
+
+- *Talking now*, across the top: every open ask and handoff in the
+  herd, =from → to= (=⇢= for a handoff to another project), queued, or
+  working or waiting and for how long.  A click opens its thread.  The
+  tab's badge counts the threads with something open (=3 live=).
+- The threads, newest activity first.  A thread is a chain of work: a
+  root ask --- one its asker made while answering none --- and every ask
+  made while answering one in it (the herd keeps which ask an agent is
+  answering, for its rounds), handoffs included, with what came back:
+  the answer, the taker's last words when it stopped without one, the
+  failure.  Each row: Live (an ask open, its taker working), Waiting
+  (open, nobody on it working), Answered or Failed; its first ask's
+  first line; its participants as a path; its projects,
+  =cross-project=, how many messages, how long ago.  Older threads
+  forty at a time.
+- The open thread as a sequence diagram: a lane per participant, in its
+  CLI's colour with its project and role; a row per message --- ask,
+  answer, a handoff dashed, the user's message dotted --- an arrow
+  between their lanes, pointing the way it went, with its round, time
+  and first lines; a click shows the whole of it.  Under it, where it
+  waits now: =lead-jnotes waits on claude-jnotes · primary waits on
+  lead-jnotes=, or who is working and for how long.
+- The user's own prompt that set a thread going opens it, =You → lead=:
+  the last thing you typed to its first asker in the two hours before
+  its first ask, from the herd log --- which keeps the first line of
+  each, so that is what shows, marked =as the herd log has it=.  The
+  log keeps no link from a prompt to the asks it led to, so this is a
+  best guess: the prompt before, not certainly the one.
+- From the Inbox, =Open thread= on an item opens the thread of its ask
+  (a failed ask, an answered handoff) or, for an agent's item, that
+  agent's latest.
+- On the phone: the strip, the list; a thread opens as a conversation,
+  each message =A → B=, since lanes do not fit 390 px.
+
+The page asks for the list while the tab is shown (every few seconds,
+forty threads) and for one thread at a time, never the whole history;
+the herd's own retention applies --- a closed ask goes after a week, and
+an ask whose parent went before it is a thread of its own.
+
 ** The memory page
 
 =SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=

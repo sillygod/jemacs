@@ -3125,6 +3125,12 @@ user's state (or none) and push."
         ("herd-unwatch"
          (ghostherd-memory-page--room-close)
          (ghostherd-memory-page--herd-unwatch))
+        ("threads-watch" (ghostherd-threads--watch))
+        ("threads-unwatch" (ghostherd-threads--unwatch))
+        ("threads-more" (ghostherd-threads--more))
+        ("threads-peek" (ghostherd-threads--peek))
+        ("thread-open" (ghostherd-threads--open intent))
+        ("thread-close" (ghostherd-threads--close))
         ("inbox-watch" (ghostherd-inbox--watch))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
@@ -3251,6 +3257,180 @@ The overlay's operations are there too, for when the mouse is in hand."
 Kept screens open in place; new entries arrive as they are logged."
   (interactive)
   (ghostherd-memory-page--open "log"))
+
+;;; The Threads tab: who is talking to whom, across the herd
+;;
+;; A thread is a chain of work: a root ask and every ask made while
+;; answering one in it, handoffs too, with their answers -- the sidecar
+;; builds them from its asks (herd_threads, herd_thread; server/threads.py).
+;; What it cannot see is the user's own prompt that set a root going: that
+;; is in the herd log here, so it is added here, as the thread's first
+;; message.  The page asks for the list while the tab is shown and for one
+;; thread at a time, never the whole history.
+
+(defvar ghostherd-threads--watching nil)
+(defvar ghostherd-threads--timer nil)
+(defvar ghostherd-threads--limit 40 "How many threads the list holds; `threads-more' grows it.")
+(defvar ghostherd-threads--req nil
+  "The open thread, as the page asked for it: (:id ID), (:ask ID) or (:agent NAME).")
+(defvar ghostherd-threads--sig nil "Signature of the last list pushed.")
+(defvar ghostherd-threads--thread-sig nil "Signature of the last thread pushed.")
+(defconst ghostherd-threads--every 4 "Seconds between refreshes while the tab is shown.")
+(defconst ghostherd-threads--opener-window (* 2 3600)
+  "How long before a thread's first ask the user's prompt to its asker may
+be, to be taken for what set it going: the log keeps no link, so a prompt
+much older is more likely about something else.")
+
+(defun ghostherd-threads--herd-made-p (text)
+  "Non-nil when TEXT, an input line of the herd log (\"← ...\"), is not the
+user's own: the herd's deliveries (asks, messages, a lead's context, all
+in brackets), the first words a guarded agent or a memory opening gets."
+  (let ((said (and (string-prefix-p "← " text) (substring text 2))))
+    (or (null said)
+        (string-suffix-p "(not submitted)" said)
+        (string-prefix-p "[" said)
+        (string-prefix-p "still in its input box" said)
+        (and (boundp 'ghostherd--agy-guard-note)
+             (string-prefix-p (car (split-string ghostherd--agy-guard-note "\\." t)) said))
+        (and (boundp 'ghostherd--memory-rules)
+             (string-prefix-p (car (split-string ghostherd--memory-rules " -- " t)) said)))))
+
+(defun ghostherd-threads--prompts ()
+  "The user's prompts in the herd log, by session: (MS . TEXT), newest first."
+  (let ((by (make-hash-table :test #'equal)))
+    (dolist (e (and (boundp 'ghostherd--log) ghostherd--log))
+      (when (eq (ghostherd-log-entry-kind e) 'input)
+        (let ((text (or (ghostherd-log-entry-text e) "")))
+          (unless (ghostherd-threads--herd-made-p text)
+            (push (cons (* 1000 (float-time (ghostherd-log-entry-time e))) (substring text 2))
+                  (gethash (ghostherd-log-entry-session e) by))))))
+    (maphash (lambda (k v) (puthash k (sort v (lambda (a b) (> (car a) (car b)))) by)) by)
+    by))
+
+(defun ghostherd-threads--opener (prompts from started)
+  "The user's last prompt to FROM before STARTED (ms) -- what set the thread
+going -- from PROMPTS (`ghostherd-threads--prompts'): (MS . TEXT) or nil.
+A thread the user asked from a shell (FROM \"user\") has none: nothing is
+typed to \"user\"."
+  (and (stringp from) (numberp started)
+       (seq-find (lambda (p) (and (< (car p) started)
+                                  (> (car p) (- started (* 1000 ghostherd-threads--opener-window)))))
+                 (gethash from prompts))))
+
+(defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged)
+  "Keys that are true or false: the reply reads JSON false as nil.")
+(defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking)
+  "Keys that are arrays: the reply reads [] as nil.")
+
+(defun ghostherd-threads--js (v)
+  "V, a reply's plist or list, as the page should get it: objects as
+plists, arrays as vectors, true and false as such."
+  (cond
+   ((and (consp v) (keywordp (car v)))
+    (cl-loop for (k x) on v by #'cddr
+             append (list k (cond ((memq k ghostherd-threads--bools) (if x t :json-false))
+                                  ((memq k ghostherd-threads--lists) (vconcat (mapcar #'ghostherd-threads--js x)))
+                                  (t (ghostherd-threads--js x))))))
+   ((consp v) (vconcat (mapcar #'ghostherd-threads--js v)))
+   (t v)))
+
+(defun ghostherd-threads--with-opener (th prompts)
+  "Thread TH, a list's summary or a whole one, with the user's prompt that
+set it going: \"You\" as its first participant, and -- a whole thread --
+the prompt as its first message, as the herd log has it (its first line)."
+  (let ((op (ghostherd-threads--opener prompts (plist-get th :rootFrom) (plist-get th :started))))
+    (if (not op)
+        th
+      (let ((th (copy-sequence th)))
+        (setq th (plist-put th :participants (cons "user" (remove "user" (plist-get th :participants)))))
+        (setq th (plist-put th :count (1+ (or (plist-get th :count) 0))))
+        (when (plist-member th :msgs)
+          (setq th (plist-put th :lanes (cons (list :name "user" :kind "you" :project "" :role "" :worktree nil)
+                                              (seq-remove (lambda (l) (equal (plist-get l :name) "user"))
+                                                          (plist-get th :lanes)))))
+          (setq th (plist-put th :msgs (cons (list :kind "message" :from "user" :to (plist-get th :rootFrom)
+                                                   :at (car op) :head (cdr op) :text (cdr op) :logged t)
+                                             (plist-get th :msgs)))))
+        th))))
+
+(defun ghostherd-threads--push-list (result)
+  "Push RESULT, a `herd_threads' reply, with the user's prompts added."
+  (let* ((prompts (ghostherd-threads--prompts))
+         (out (list :threads (mapcar (lambda (th) (ghostherd-threads--with-opener th prompts))
+                                     (plist-get result :threads))
+                    :talking (plist-get result :talking)
+                    :live (or (plist-get result :live) 0)
+                    :more (plist-get result :more)))
+         (sig (sxhash-equal out)))
+    (unless (equal sig ghostherd-threads--sig)
+      (setq ghostherd-threads--sig sig)
+      (ghostherd-memory-page--js "renderThreads" (ghostherd-threads--js out)))))
+
+(defun ghostherd-threads--push-thread (result)
+  (let* ((out (ghostherd-threads--with-opener result (ghostherd-threads--prompts)))
+         (sig (sxhash-equal out)))
+    (unless (equal sig ghostherd-threads--thread-sig)
+      (setq ghostherd-threads--thread-sig sig)
+      (ghostherd-memory-page--js "renderThread" (ghostherd-threads--js out)))))
+
+(defun ghostherd-threads--fetch-thread ()
+  (when-let* ((req ghostherd-threads--req))
+    (ghostherd-memory-request-async
+     "herd_thread"
+     (lambda (r) (when (equal req ghostherd-threads--req) (ghostherd-threads--push-thread r)))
+     req
+     (lambda (e)
+       (when (equal req ghostherd-threads--req)
+         (setq ghostherd-threads--thread-sig nil)
+         (ghostherd-memory-page--js "renderThread" (list :error (format "%s" e))))))))
+
+(defun ghostherd-threads--tick ()
+  "Refresh the list, and the open thread, while the tab is shown."
+  (if (not (and ghostherd-threads--watching (xwapp-live-p ghostherd-memory-page--app)))
+      (ghostherd-threads--unwatch)
+    (ghostherd-memory-request-async
+     "herd_threads"
+     (lambda (r) (when ghostherd-threads--watching (ghostherd-threads--push-list r)))
+     (list :limit ghostherd-threads--limit)
+     #'ignore)
+    (ghostherd-threads--fetch-thread)))
+
+(defun ghostherd-threads--watch ()
+  (setq ghostherd-threads--watching t ghostherd-threads--sig nil ghostherd-threads--thread-sig nil)
+  (unless (timerp ghostherd-threads--timer)
+    (setq ghostherd-threads--timer
+          (run-at-time ghostherd-threads--every ghostherd-threads--every #'ghostherd-threads--tick)))
+  (ghostherd-threads--tick))
+
+(defun ghostherd-threads--unwatch ()
+  (when (timerp ghostherd-threads--timer) (cancel-timer ghostherd-threads--timer))
+  (setq ghostherd-threads--timer nil ghostherd-threads--watching nil
+        ghostherd-threads--req nil ghostherd-threads--limit 40))
+
+(defun ghostherd-threads--more ()
+  "Forty more threads in the list."
+  (setq ghostherd-threads--limit (min 200 (+ ghostherd-threads--limit 40)) ghostherd-threads--sig nil)
+  (ghostherd-threads--tick))
+
+(defun ghostherd-threads--peek ()
+  "Just the tab's badge -- how many threads are live -- once, for a page
+that has not opened the tab."
+  (ghostherd-memory-request-async
+   "herd_threads" (lambda (r) (ghostherd-memory-page--js "threadsBadge" (list :live (or (plist-get r :live) 0))))
+   (list :limit 1) #'ignore))
+
+(defun ghostherd-threads--close ()
+  "No thread open (the phone's back to the list)."
+  (setq ghostherd-threads--req nil ghostherd-threads--thread-sig nil))
+
+(defun ghostherd-threads--open (intent)
+  "Open the thread INTENT names: by its id, an ask in it, or an agent's latest."
+  (let* ((str (lambda (k) (let ((v (alist-get k intent))) (and (stringp v) (not (string-empty-p v)) v))))
+         (req (cond ((funcall str 'id) (list :id (funcall str 'id)))
+                    ((funcall str 'ask) (list :ask (funcall str 'ask)))
+                    ((funcall str 'agent) (list :agent (funcall str 'agent))))))
+    (setq ghostherd-threads--req req ghostherd-threads--thread-sig nil)
+    (ghostherd-threads--fetch-thread)))
 
 (provide 'ghostherd-memory-page)
 ;;; ghostherd-memory-page.el ends here

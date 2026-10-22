@@ -41,6 +41,7 @@ from typing import Any
 
 import projects
 import subagents
+import threads as threads_mod
 from config import get_config
 
 _lock = threading.Lock()
@@ -1527,6 +1528,82 @@ class HerdStore:
     def recent_asks(self) -> dict[str, Any]:
         with self._mu:
             return {"asks": self._recent_asks()}
+
+    # ---- Threads: who is talking to whom (threads.py) --------------------
+
+    _THREAD_COLS = ("id, from_name, to_name, body, reply, status, auto, error, created_at, "
+                    "delivered_at, answered_at, parent, round, round_of, project, from_project")
+
+    def _thread_rows(self, where: str, args: tuple = ()) -> list[dict[str, Any]]:
+        "Asks as dicts, for threads.py.  Caller holds `_mu`."
+        cur = self._conn.execute(f"SELECT {self._THREAD_COLS} FROM asks {where}", args)
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+    def _with_ancestors(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        "ROWS by id, with the parents they name fetched too.  Caller holds `_mu`."
+        by_id = {r["id"]: r for r in rows}
+        for _ in range(ASK_DEPTH + 2):
+            missing = {r["parent"] for r in by_id.values() if r.get("parent") and r["parent"] not in by_id}
+            if not missing:
+                break
+            marks = ",".join("?" * len(missing))
+            for r in self._thread_rows(f"WHERE id IN ({marks})", tuple(missing)):
+                by_id[r["id"]] = r
+        return by_id
+
+    def _thread_snap(self) -> dict[str, dict[str, Any]]:
+        "Each agent's CLI, state, project, role and branch.  Caller holds `_mu`."
+        return {r[0]: {"kind": r[1], "state": r[2], "project": r[3], "role": r[4], "branch": r[5]}
+                for r in self._conn.execute(
+                    "SELECT name, kind, state, project, role, branch FROM snapshot").fetchall()}
+
+    def threads(self, limit: int = 40) -> dict[str, Any]:
+        """The threads with the latest activity (LIMIT of them), every open
+        ask in the herd for the strip across the top, and how many threads
+        are live -- an ask in them still open."""
+        limit = max(1, min(200, int(limit)))
+        with self._mu:
+            rows = self._thread_rows(
+                "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT ?",
+                (max(threads_mod.WINDOW, limit * 10),))
+            open_rows = self._thread_rows(f"WHERE status IN {ASK_OPEN}")
+            by_id = self._with_ancestors(rows + open_rows)
+            snap = self._thread_snap()
+        listed, more = threads_mod.summaries(list(by_id.values()), snap, limit)
+        talking = threads_mod.talking(open_rows, snap, by_id)
+        return {"threads": listed, "more": more, "talking": talking,
+                "live": len({t["thread"] for t in talking})}
+
+    def thread(self, id: str | None = None, ask: str | None = None,
+               agent: str | None = None) -> dict[str, Any]:
+        """One thread, whole: by its root ID, by an ASK in it, or AGENT's
+        latest -- the one with the newest ask to or from it."""
+        with self._mu:
+            start = (id or ask or "").strip()
+            if not start and agent:
+                row = self._conn.execute(
+                    "SELECT id FROM asks WHERE from_name = ? OR to_name = ? "
+                    "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT 1",
+                    (agent, agent)).fetchone()
+                if not row:
+                    raise ValueError(f"no thread with {agent} in it")
+                start = row[0]
+            first = self._thread_rows("WHERE id = ?", (start,))
+            if not first:
+                raise ValueError(f"no ask {start}")
+            by_id = self._with_ancestors(first)
+            root = threads_mod.root_of(start, by_id)
+            rows, frontier = {root: by_id[root]}, [root]
+            for _ in range(ASK_DEPTH + 2):
+                if not frontier:
+                    break
+                marks = ",".join("?" * len(frontier))
+                kids = self._thread_rows(f"WHERE parent IN ({marks})", tuple(frontier))
+                frontier = [k["id"] for k in kids if k["id"] not in rows]
+                rows.update({k["id"]: k for k in kids})
+            snap = self._thread_snap()
+        return threads_mod.detail(root, list(rows.values()), snap)
 
     def _close_ask(self, ask_id: str, status: str, now: str, error: str) -> None:
         "Caller holds `_mu`."

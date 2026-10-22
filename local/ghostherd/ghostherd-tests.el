@@ -13150,5 +13150,128 @@ pending ask mark is one-shot."
               :json-false))
   (should (eq (plist-get (ghostherd-memory-page--ask '(:id "k3" :from "c" :to "t")) :guarded) :json-false)))
 
+;;; The Threads tab (ask 2ad58ec8)
+
+(defun ghostherd-tests--input (session text secs-ago)
+  "A herd-log input line to SESSION, SECS-AGO seconds ago."
+  (ghostherd-log-entry--create :session session :kind 'input :text text
+                               :time (time-subtract (current-time) secs-ago)))
+
+(ert-deftest ghostherd-test-threads-take-only-the-users-prompts ()
+  "The herd log's input lines that are the user's: not the herd's deliveries
+(in brackets), not the first words a guarded agent or a memory opening
+gets, not text left unsubmitted."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (dolist (herd (list "← [ghostherd message from lead → rd] [ask 1a2b3c4d -- ...]"
+                      "← [What this project works on, as the herd sees it.]"
+                      (concat "← " (substring ghostherd--agy-guard-note 0 60))
+                      (concat "← " (substring ghostherd--memory-rules 0 60))
+                      "← commit  (not submitted)" "← still in its input box: not submitted"
+                      "↵ again: it was still in the input box"))
+    (should (ghostherd-threads--herd-made-p herd)))
+  (dolist (user '("← commit" "← 還有什麼沒做的" "← ! bash run.sh"))
+    (should-not (ghostherd-threads--herd-made-p user))))
+
+(ert-deftest ghostherd-test-a-thread-opens-with-the-users-prompt ()
+  "The user's last prompt to a thread's first asker before its first ask --
+within the window -- is its first message, as the log has it; the list's
+summary names \"user\" first and counts it."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (ghostherd--log (list (ghostherd-tests--input "lead-x" "← [ghostherd message from a → lead-x]" 60)
+                               (ghostherd-tests--input "lead-x" "← 三項補強都做" 300)
+                               (ghostherd-tests--input "lead-x" "← an older prompt" 900)
+                               (ghostherd-tests--input "lead-x" "← a prompt from a day ago" 90000)
+                               (ghostherd-tests--input "rd" "← to someone else" 200)))
+         (prompts (ghostherd-threads--prompts))
+         (sum (list :id "t1" :participants '("lead-x" "rd") :count 2 :rootFrom "lead-x" :started (- now 120000)))
+         (whole (append sum (list :lanes (list (list :name "lead-x" :kind "claude")) :msgs (list (list :kind "ask"))))))
+    (should (equal (cdr (ghostherd-threads--opener prompts "lead-x" (- now 120000))) "三項補強都做"))
+    (let ((s (ghostherd-threads--with-opener sum prompts)))
+      (should (equal (plist-get s :participants) '("user" "lead-x" "rd")))
+      (should (= (plist-get s :count) 3))
+      (should-not (plist-member s :msgs)))
+    (let* ((w (ghostherd-threads--with-opener whole prompts))
+           (m (car (plist-get w :msgs))))
+      (should (equal (mapcar (lambda (l) (plist-get l :name)) (plist-get w :lanes)) '("user" "lead-x")))
+      (should (equal (list (plist-get m :kind) (plist-get m :from) (plist-get m :to) (plist-get m :text) (plist-get m :logged))
+                     '("message" "user" "lead-x" "三項補強都做" t))))
+    ;; Nothing within the window, or the user asked it themselves: no opener.
+    (should-not (ghostherd-threads--opener prompts "lead-x" (- now (* 3 86400000))))  ; before them all
+    (should-not (ghostherd-threads--opener prompts "lead-x" (- now (* 1000 (+ 900 (* 3 3600))))))  ; 3h on: out of the window
+    (should-not (ghostherd-threads--opener prompts "user" now))
+    (should (equal (ghostherd-threads--with-opener (plist-put (copy-sequence sum) :rootFrom "nobody") prompts)
+                   (plist-put (copy-sequence sum) :rootFrom "nobody")))))
+
+(ert-deftest ghostherd-test-threads-go-to-the-page-as-json ()
+  "The reply reads false and [] as nil: the page gets them back as false
+and arrays, objects as objects."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((js (ghostherd-threads--js
+             (list :threads (list (list :id "t1" :participants '("a" "b") :projects nil :cross nil :count 2))
+                   :talking nil :live 0 :more t))))
+    (should (equal (plist-get js :talking) []))
+    (should (eq (plist-get js :more) t))
+    (let ((t1 (aref (plist-get js :threads) 0)))
+      (should (equal (plist-get t1 :participants) ["a" "b"]))
+      (should (equal (plist-get t1 :projects) []))
+      (should (eq (plist-get t1 :cross) :json-false))))
+  (should (equal (json-encode (ghostherd-threads--js (list :msgs (list (list :kind "ask" :auto nil)))))
+                 "{\"msgs\":[{\"kind\":\"ask\",\"auto\":false}]}")))
+
+(ert-deftest ghostherd-test-the-threads-tab-asks-for-the-list-and-one-thread ()
+  "Watching asks the sidecar for the list (forty, then forty more) and the
+page gets it; a thread is asked for by its id, an ask or an agent, and
+comes to the page whole -- or why it could not be read."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (asked shown fail
+        (ghostherd--log nil)
+        (ghostherd-threads--watching nil) (ghostherd-threads--timer nil)
+        (ghostherd-threads--limit 40) (ghostherd-threads--req nil)
+        (ghostherd-threads--sig nil) (ghostherd-threads--thread-sig nil))
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'run-at-time) (lambda (&rest _) 'a-timer))
+              ((symbol-function 'timerp) (lambda (x) (eq x 'a-timer)))
+              ((symbol-function 'cancel-timer) #'ignore)
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) shown)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &optional err)
+                 (push (cons method params) asked)
+                 (if fail (funcall err "ghostherd-memory JSON-RPC -32602: no thread with nobody in it")
+                   (funcall ok (pcase method
+                                 ("herd_threads" (list :threads (list (list :id "t1" :participants '("a" "b") :count 2))
+                                                       :talking nil :live 1 :more nil))
+                                 ("herd_thread" (list :id "t1" :lanes nil :msgs nil :waiting nil))))))))
+      (ghostherd-memory-page--handle '((op . "threads-watch")))
+      (should (equal (car asked) '("herd_threads" :limit 40)))
+      (should (equal (car (car shown)) "renderThreads"))
+      (should (equal (plist-get (cdr (car shown)) :live) 1))
+      ;; The same list again is not pushed again.
+      (setq shown nil)
+      (ghostherd-threads--tick)
+      (should-not shown)
+      (ghostherd-memory-page--handle '((op . "threads-more")))
+      (should (equal (car asked) '("herd_threads" :limit 80)))
+      (ghostherd-memory-page--handle '((op . "thread-open") (ask . "1a2b3c4d")))
+      (should (equal (car asked) '("herd_thread" :ask "1a2b3c4d")))
+      (should (equal (car (car shown)) "renderThread"))
+      (ghostherd-memory-page--handle '((op . "thread-open") (agent . "rd")))
+      (should (equal (car asked) '("herd_thread" :agent "rd")))
+      ;; The tick refreshes the open thread too.
+      (setq asked nil)
+      (ghostherd-threads--tick)
+      (should (member '("herd_thread" :agent "rd") asked))
+      (setq fail t)
+      (ghostherd-memory-page--handle '((op . "thread-open") (agent . "nobody")))
+      (should (string-match-p "no thread with nobody" (plist-get (cdr (car shown)) :error)))
+      (setq fail nil)
+      (ghostherd-memory-page--handle '((op . "thread-close")))
+      (should-not ghostherd-threads--req)
+      (ghostherd-memory-page--handle '((op . "threads-peek")))
+      (should (equal (car (car shown)) "threadsBadge"))
+      (ghostherd-memory-page--handle '((op . "threads-unwatch")))
+      (should-not ghostherd-threads--watching)
+      (should (= ghostherd-threads--limit 40)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

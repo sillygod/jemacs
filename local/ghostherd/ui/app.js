@@ -353,7 +353,14 @@
       inboxWatching = false;
       emit("inbox-unwatch");
     }
+    if (threadsWatching && view !== "threads") {
+      threadsWatching = false;
+      threads.req = null;
+      threads.cur = null;
+      emit("threads-unwatch");
+    }
     inboxBadge();
+    threadsBadge();
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
     });
@@ -399,6 +406,7 @@
     else if (where === "sessions") showSessions();
     else if (where === "search") showSearch();
     else if (where === "inbox") showInbox();
+    else if (where === "threads") showThreads();
     // Home: the page opens on the Inbox when nothing else is asked for.
     else showInbox();
   }
@@ -3575,6 +3583,8 @@
       onAgentAction(act.slice(2), el);
     } else if (act.startsWith("ib:")) {
       onInboxAction(act.slice(3), el);
+    } else if (act.startsWith("th:")) {
+      onThreadsAction(act.slice(3), el);
     } else if (act === "resume") {
       resume(false);
     } else if (act === "fork") {
@@ -3681,6 +3691,7 @@
       src = null;
       const which = b.getAttribute("data-tab");
       if (which === "inbox") showInbox();
+      else if (which === "threads") showThreads();
       else if (which === "sessions") showSessions();
       else if (which === "log") showLog();
       else if (which === "agents") showAgents();
@@ -3913,7 +3924,7 @@
         '<div class="ibmeta">' + inboxCli(cur) + '<span class="ibagent">' + esc(cur.agent) + "</span>" +
         (cur.project ? "<span>· " + esc(leaf(cur.project)) + "</span>" : "") +
         (cur.state ? "<span>· " + esc(cur.state) + "</span>" : "") +
-        '<span>· ' + esc(inboxAge(cur.at)) + "</span></div>" +
+        '<span>· ' + esc(inboxAge(cur.at)) + "</span>" + inboxThreadBtn(cur) + "</div>" +
         inboxWhy(cur) + inboxActions(cur, false)
       : '<div class="ibzero"><p class="ibzh">Inbox zero</p><p>Everything that needed you is answered. Updates keep arriving here.</p></div>';
     return '<section class="iblistcol">' + inboxList() + "</section>" +
@@ -3933,7 +3944,7 @@
       '<span class="ibcardwho">' + esc(it.agent) + (it.cli ? " · " + esc(it.cli) : "") +
       (it.project ? " · " + esc(leaf(it.project)) : "") + "</span>" +
       (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
-      inboxActions(it, true) + "</div>";
+      inboxActions(it, true) + inboxThreadBtn(it) + "</div>";
     return (inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
             (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
       '<div class="ibfilters">' + filters + "</div>" +
@@ -4019,9 +4030,277 @@
     if (b) { b.textContent = inbox.count ? String(inbox.count) : ""; b.classList.toggle("hidden", !inbox.count); }
   }
 
+  // ---- Threads ---------------------------------------------------------
+  // Who is talking to whom, across the herd, and about what.  Across the
+  // top, every open ask and handoff; then the threads -- a chain of work: a
+  // root ask, every ask made while answering one in it (handoffs to other
+  // projects too) and the answers, with the user's prompt that set it going
+  // -- and the open one as a sequence diagram, a lane per participant.
+  // Read-only.  Emacs pushes the list while the tab is shown (threads-watch
+  // / renderThreads) and one thread at a time (thread-open / renderThread).
+  // Phone: the list, then the thread as a conversation, "A → B".
+
+  let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false };
+  let threadsWatching = false;
+
+  const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
+  const TH_LABEL = { ask: "ask", handoff: "handoff", answer: "answer", message: "message", failed: "failed", cancelled: "cancelled" };
+
+  function thNarrow() { return window.innerWidth < 720; }
+  function thWho(n) { return n === "user" ? "You" : String(n || "?"); }
+  function thAge(ms) {
+    if (!ms) return "";
+    const s = Math.max(0, (Date.now() - ms) / 1000);
+    return s < 60 ? "now" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d";
+  }
+  function thTime(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    const p = (n) => String(n).padStart(2, "0");
+    const day = d.toDateString() === new Date().toDateString() ? "" : (d.getMonth() + 1) + "/" + d.getDate() + " ";
+    return day + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function thStatus(st) { return '<span class="thst s-' + esc(st) + '">' + esc(TH_STATUS[st] || st) + "</span>"; }
+  function thLabel(m) { return m.kind === "answer" && m.auto ? "stopped · its last words" : TH_LABEL[m.kind] || m.kind; }
+  function thRound(m) { return m.round && m.of ? "round " + m.round + "/" + m.of : ""; }
+
+  function threadsBadge() {
+    const b = $("threads-n");
+    if (b) { b.textContent = threads.live ? threads.live + " live" : ""; b.classList.toggle("hidden", !threads.live); }
+  }
+
+  function showThreads(req) {
+    if (herdNow.room) closeRoomState();
+    view = tab = "threads";
+    src = null;
+    chrome();
+    app.innerHTML = '<div class="page wide threadspage"></div>';
+    if (!threadsWatching) { threadsWatching = true; emit("threads-watch"); }
+    if (req) openThread(req);
+    else renderThreads();
+  }
+
+  function openThread(req) {
+    threads.req = req;
+    threads.cur = null;
+    threads.error = "";
+    threads.open = {};
+    threads.phone = true;
+    emit("thread-open", req);
+    renderThreads();
+  }
+
+  function renderThreads() {
+    if (view !== "threads") return;
+    const box = app.querySelector(".threadspage");
+    if (!box) return;
+    const narrow = thNarrow();
+    box.classList.toggle("narrow", narrow);
+    box.innerHTML = narrow ? threadsPhoneHtml() : threadsDeskHtml();
+  }
+
+  function thTalk() {
+    const chips = threads.talking.map((e) =>
+      '<button type="button" class="thchip" data-act="th:open" data-ask="' + esc(e.ask) + '" title="' + esc(e.kind + " " + e.ask) + '">' +
+      '<span class="thname">' + esc(thWho(e.from)) + "</span>" +
+      '<span class="tharrow k-' + esc(e.kind) + '">' + (e.kind === "handoff" ? "⇢" : "→") + "</span>" +
+      '<span class="thname">' + esc(thWho(e.to)) + "</span>" +
+      '<span class="thwhat">' + esc(e.status === "queued" ? "queued" : (e.working ? "working " : "waiting ") + thAge(e.since)) + "</span></button>").join("");
+    return '<section class="thtalk" aria-label="Talking now"><div class="thtalkhead"><h2>Talking now</h2>' +
+      '<span class="thsub">every open ask and handoff in the herd, across projects</span></div>' +
+      (chips ? '<div class="thchips">' + chips + "</div>" : '<p class="thquiet">Nobody is waiting on anyone right now.</p>') + "</section>";
+  }
+
+  function thRow(t) {
+    const on = !!(threads.cur ? t.id === threads.cur.id : threads.req && threads.req.id === t.id);
+    return '<button type="button" class="throw' + (on ? " on" : "") + '" data-act="th:open" data-id="' + esc(t.id) + '" aria-current="' + (on ? "true" : "false") + '">' +
+      '<span class="thr1">' + thStatus(t.status) + '<span class="thtitle">' + esc(t.title || "(no text)") + "</span>" +
+      '<span class="thage">' + esc(thAge(t.at)) + "</span></span>" +
+      '<span class="thpath">' + esc((t.participants || []).map(thWho).join(" → ")) + "</span>" +
+      '<span class="thr3">' + (t.projects || []).map((p) => '<span class="thproj">' + esc(p) + "</span>").join("") +
+      (t.cross ? '<span class="thcross">cross-project</span>' : "") +
+      '<span class="thcount">' + t.count + (t.count === 1 ? " message" : " messages") + "</span></span></button>";
+  }
+
+  function thList() {
+    return '<section class="thlist" aria-label="Threads">' +
+      (threads.list.length ? threads.list.map(thRow).join("")
+        : '<p class="thquiet thpad">No threads yet: one starts when an agent asks another, or hands work to another project.</p>') +
+      (threads.more ? '<button type="button" class="ghost thmore" data-act="th:more">Older threads</button>' : "") + "</section>";
+  }
+
+  function thLaneSub(l) {
+    if (l.name === "user") return "the user";
+    if (l.role === "primary") return "herd-wide";
+    return [l.project, l.worktree ? "worktree" : l.role === "lead" ? "lead" : ""].filter(Boolean).join(" · ") || l.kind || "";
+  }
+
+  // Where it is waiting now: the deepest open asks first.
+  function thWaiting(t) {
+    const w = t.waiting || [];
+    if (!w.length) return "";
+    const deepest = Math.max(...w.map((x) => x.depth || 0));
+    return w.map((x) => {
+      if ((x.depth || 0) === deepest && x.working) return thWho(x.to) + " is working · " + thAge(x.since);
+      if (x.status === "queued") return thWho(x.from) + "'s ask to " + thWho(x.to) + " is queued";
+      return thWho(x.from) + " waits on " + thWho(x.to);
+    }).join(" · ");
+  }
+
+  function thSummary(t) {
+    const first = (t.msgs || [])[0];
+    const ask = (t.msgs || []).find((m) => m.kind === "ask" || m.kind === "handoff");
+    const who = (t.lanes || []).length;
+    return (first && first.kind === "message" ? "You asked " + thWho(first.to) + "; " : "") +
+      (ask ? thWho(ask.from) + (ask.kind === "handoff" ? " handed it to " : " asked ") + thWho(ask.to) : "") +
+      (who > 2 ? " · " + who + " in it" : "") + (t.cross ? " · across projects" : "");
+  }
+
+  function thDiagram(t) {
+    const lanes = t.lanes || [];
+    const n = Math.max(1, lanes.length);
+    const at = {};
+    lanes.forEach((l, i) => (at[l.name] = i));
+    const cols = "grid-template-columns:repeat(" + n + ",minmax(0,1fr));";
+    const heads = lanes.map((l) =>
+      '<div class="thlanehead"><span class="thlanechip k-' + esc(l.kind || "none") + '">' + esc(thWho(l.name)) + "</span>" +
+      '<span class="thlanesub">' + esc(thLaneSub(l)) + "</span></div>").join("");
+    const rows = (t.msgs || []).map((m, i) => {
+      const a = at[m.from], b = at[m.to];
+      if (a === undefined || b === undefined) return "";
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      const inset = (50 / (hi - lo + 1)).toFixed(3) + "%";
+      const gc = "grid-column:" + (lo + 1) + " / " + (hi + 2) + ";";
+      const right = b >= a;
+      const open = !!threads.open[i];
+      const round = thRound(m);
+      const life = lanes.map((_, j) => '<div class="thlife" style="grid-column:' + (j + 1) + '"></div>').join("");
+      return '<div class="thmsg k-' + esc(m.kind) + '" style="' + cols + '" data-i="' + i + '" data-dir="' + (right ? "right" : "left") + '">' + life +
+        '<div class="tharrowcell" style="' + gc + '">' +
+        '<div class="thline" style="left:' + inset + ";right:" + inset + '"></div>' +
+        '<svg class="thhead" style="' + (right ? "right:calc(" + inset + " - 2px)" : "left:calc(" + inset + " - 2px)") + '" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">' +
+        '<path d="' + (right ? "M1 1 L9 5 L1 9" : "M9 1 L1 5 L9 9") + '"></path></svg>' +
+        '<span class="thlabel">' + esc(thLabel(m)) + "</span></div>" +
+        '<button type="button" class="thcard" style="' + gc + '" data-act="th:msg" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
+        '<span class="thmeta"><span>' + esc(thWho(m.from)) + " → " + esc(thWho(m.to)) + "</span><span>· " + esc(thTime(m.at)) + "</span>" +
+        (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") + "</span>" +
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button></div>";
+    }).join("");
+    const wait = thWaiting(t);
+    return '<div class="thdiagwrap"><div class="thdiag">' +
+      '<div class="thlanes" style="' + cols + '">' + heads + "</div>" + rows +
+      (wait ? '<div class="thwaitrow"><span class="thwait">' + esc(wait) + "</span></div>" : "") + "</div></div>" +
+      '<div class="thlegend"><span><i class="lg k-ask"></i>ask</span><span><i class="lg k-answer"></i>answer</span>' +
+      '<span><i class="lg k-handoff"></i>handoff to another project</span><span><i class="lg k-message"></i>message</span>' +
+      '<span><i class="lg k-failed"></i>failed</span></div>';
+  }
+
+  function thHeader(t) {
+    return '<div class="thhead1">' + thStatus(t.status) + '<h1 class="thh1">' + esc(t.title || "(no text)") + "</h1></div>" +
+      '<p class="thsummary">' + esc(thSummary(t)) + "</p>";
+  }
+
+  function thMain() {
+    const t = threads.cur;
+    if (threads.error) return '<p class="thquiet">' + esc(threads.error.replace(/^.*?:\s*/, "")) + "</p>";
+    if (!t) return threads.req ? '<p class="thquiet">Reading the thread…</p>'
+      : '<p class="thquiet">Pick a thread to see who said what to whom.</p>';
+    return thHeader(t) + thDiagram(t);
+  }
+
+  function threadsDeskHtml() {
+    return thTalk() + '<div class="thbody">' + thList() + '<main class="thmain" aria-label="Thread">' + thMain() + "</main></div>";
+  }
+
+  // The phone: the thread as a conversation, each message "A → B".
+  function thConv(t) {
+    const wait = thWaiting(t);
+    return (t.msgs || []).map((m, i) => {
+      const open = !!threads.open[i];
+      const round = thRound(m);
+      return '<button type="button" class="thpmsg k-' + esc(m.kind) + '" data-act="th:msg" data-i="' + i + '" aria-expanded="' + open + '">' +
+        '<span class="thphead"><span class="thpwho">' + esc(thWho(m.from)) + "</span>" +
+        '<span class="tharrow k-' + esc(m.kind) + '">' + (m.kind === "handoff" ? "⇢" : "→") + "</span>" +
+        '<span class="thpwho">' + esc(thWho(m.to)) + "</span>" +
+        '<span class="thpkind">' + esc(thLabel(m)) + "</span></span>" +
+        '<span class="thmeta"><span>' + esc(thTime(m.at)) + "</span>" + (round ? "<span>· " + esc(round) + "</span>" : "") + "</span>" +
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>";
+    }).join("") + (wait ? '<p class="thwait">' + esc(wait) + "</p>" : "");
+  }
+
+  function threadsPhoneHtml() {
+    if (threads.phone && threads.req) {
+      const t = threads.cur;
+      return '<div class="thpback"><button type="button" class="ghost" data-act="th:back">← Threads</button></div>' +
+        (t ? thHeader(t) + '<div class="thconv">' + thConv(t) + "</div>" : thMain());
+    }
+    return thTalk() + thList();
+  }
+
+  // The Inbox's way here: the thread of the ask an item is about, or of
+  // the agent it names.
+  function inboxThreadBtn(it) {
+    const ask = /^(?:ask-failed|handoff):(.+)$/.exec(it.id || "");
+    if (!ask && !it.agent) return "";
+    return '<button type="button" class="ibthread" data-act="th:from-inbox" data-id="' + esc(it.id) + '">Open thread</button>';
+  }
+
+  function onThreadsAction(act, el) {
+    if (act === "open") {
+      const id = el.getAttribute("data-id"), ask = el.getAttribute("data-ask");
+      if (view !== "threads") showThreads(id ? { id } : { ask });
+      else openThread(id ? { id } : { ask });
+    } else if (act === "more") {
+      emit("threads-more");
+    } else if (act === "msg") {
+      const i = el.getAttribute("data-i");
+      threads.open[i] = !threads.open[i];
+      renderThreads();
+    } else if (act === "back") {
+      threads.phone = false;
+      threads.req = null;
+      threads.cur = null;
+      emit("thread-close");
+      renderThreads();
+    } else if (act === "from-inbox") {
+      const it = inbox.items.find((x) => x.id === el.getAttribute("data-id"));
+      if (!it) return;
+      const ask = /^(?:ask-failed|handoff):(.+)$/.exec(it.id);
+      showThreads(ask ? { ask: ask[1] } : { agent: it.agent });
+    }
+  }
+
 
   window.GM = {
     flash: (msg) => setStatus(msg),
+
+    // The Threads tab's list and what is open now, pushed while it is
+    // shown.  The desk opens the newest thread when none is open.
+    renderThreads: (p) => {
+      threads.list = (p && p.threads) || [];
+      threads.talking = (p && p.talking) || [];
+      threads.live = (p && p.live) || 0;
+      threads.more = !!(p && p.more);
+      threadsBadge();
+      if (view !== "threads") return;
+      if (!threads.req && !thNarrow() && threads.list.length) openThread({ id: threads.list[0].id });
+      else renderThreads();
+    },
+
+    // One thread, whole -- or why it could not be read.
+    renderThread: (p) => {
+      if (!threads.req || !p) return;
+      if (p.error) { threads.error = String(p.error); threads.cur = null; }
+      else {
+        if (threads.cur && threads.cur.id !== p.id) threads.open = {};
+        threads.cur = p;
+        threads.error = "";
+      }
+      renderThreads();
+    },
+
+    // Just the tab's badge, for a page that has not opened it yet.
+    threadsBadge: (p) => { threads.live = (p && p.live) || 0; threadsBadge(); },
 
     // The Inbox items and the Needs-you count, pushed by Emacs every few
     // seconds (and after an action).  The badge updates whatever the view.
@@ -4331,4 +4610,6 @@
 
   emit("ready");
   restore();
+  // The Threads tab's badge, before the tab is opened.
+  emit("threads-peek");
 })();

@@ -1183,3 +1183,137 @@ html { -webkit-text-size-adjust: 100%; }
 .ibcardwho { color: var(--muted); font-size: 12.5px; }
 .inboxpage.narrow .ibopts { gap: 8px; }
 .inboxpage.narrow .ibbtn, .inboxpage.narrow .iboptbtn { flex: 1 1 44%; }
+
+/* ---- Threads: who is talking to whom, across the herd -------------------- */
+
+:root {
+  --th-ask: #79c0ff;
+  --th-answer: #3fb950;
+  --th-handoff: #d2a8ff;
+  --th-message: #8b949e;
+  --th-failed: #f85149;
+}
+.tab .count.live { color: #79c0ff; border: 1px solid #388bfd; border-radius: 10px; padding: 0 7px; }
+.tab .count.live.hidden { display: none; }
+.threadspage { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0; }
+.threadspage.narrow { overflow-y: auto; padding: 10px 12px 24px; gap: 10px; }
+
+.thtalk { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.thtalkhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.thtalkhead h2 { margin: 0; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--th-ask); }
+.thsub, .thquiet { color: var(--muted); font-size: 12px; }
+.thquiet { margin: 0; }
+.thpad { padding: 16px; }
+.thchips { display: flex; flex-wrap: wrap; gap: 8px; }
+.thchip { display: flex; align-items: center; gap: 7px; background: var(--panel, #161b22); border: 1px solid var(--line);
+  border-radius: 20px; padding: 5px 12px; color: var(--text); min-height: 36px; max-width: 100%; }
+.thchip:hover { border-color: var(--accent); }
+.thname { font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tharrow { font-weight: 700; }
+.tharrow.k-ask, .thpmsg.k-ask .tharrow { color: var(--th-ask); }
+.tharrow.k-handoff, .thpmsg.k-handoff .tharrow { color: var(--th-handoff); }
+.thpmsg.k-answer .tharrow { color: var(--th-answer); }
+.thpmsg.k-message .tharrow { color: var(--th-message); }
+.thpmsg.k-failed .tharrow, .thpmsg.k-cancelled .tharrow { color: var(--th-failed); }
+.thwhat { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.thbody { display: flex; flex: 1; min-height: 0; }
+.thlist { flex: 1 1 340px; max-width: 420px; border-right: 1px solid var(--line); overflow-y: auto; min-height: 0;
+  display: flex; flex-direction: column; }
+.throw { display: flex; flex-direction: column; gap: 5px; width: 100%; text-align: left; background: transparent; color: inherit;
+  border: none; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; padding: 11px 16px 11px 13px; }
+.throw:hover { background: rgba(255,255,255,.03); }
+.throw.on { background: #1c2330; border-left-color: var(--accent); }
+.thr1 { display: flex; align-items: center; gap: 8px; width: 100%; }
+.thtitle { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thage { color: var(--muted); font-size: 12px; flex: none; }
+.thpath { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.thr3 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.thproj { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
+.thcross { font-size: 11px; color: var(--th-handoff); border: 1px solid #6e40c9; border-radius: 4px; padding: 0 6px; }
+.thcount { font-size: 11px; color: var(--muted); }
+.thmore { margin: 12px 16px; align-self: flex-start; }
+.thst { flex: none; font-size: 11px; font-weight: 700; border: 1px solid currentColor; border-radius: 4px; padding: 0 6px; }
+.thst.s-live { color: var(--th-ask); }
+.thst.s-waiting { color: var(--warn, #d29922); }
+.thst.s-answered { color: var(--th-answer); }
+.thst.s-failed { color: var(--th-failed); }
+
+.thmain { flex: 999 1 600px; min-width: 0; padding: 18px 24px 28px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.thhead1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.thh1 { margin: 0; font-size: 19px; font-weight: 650; overflow-wrap: anywhere; }
+.thsummary { margin: 0; color: var(--muted); font-size: 13px; }
+
+/* The sequence diagram: a lane per participant, a row per message. */
+.thdiagwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: #0f141b; }
+.thdiag { min-width: 600px; padding: 12px 10px 16px; }
+.thlanes { display: grid; }
+.thlanehead { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 0 4px 10px; min-width: 0; }
+.thlanechip { font-size: 12.5px; font-weight: 650; border: 1px solid currentColor; border-radius: 14px; padding: 2px 10px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.thlanechip.k-claude { color: #f0883e; }
+.thlanechip.k-agy { color: #79c0ff; }
+.thlanechip.k-grok { color: #c9d1d9; }
+.thlanechip.k-you { color: var(--text); }
+.thlanesub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.thmsg { display: grid; grid-template-rows: auto auto; row-gap: 2px; padding: 4px 0 8px; }
+.thlife { grid-row: 1 / 3; justify-self: center; width: 1px; background: var(--line); }
+.tharrowcell { grid-row: 1; position: relative; height: 24px; }
+.thline { position: absolute; top: 11px; border-top: 2px solid var(--th-ask); }
+.thhead { position: absolute; top: 7px; }
+.thhead path { fill: none; stroke: var(--th-ask); stroke-width: 2; }
+.thlabel { position: absolute; top: -3px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--th-ask);
+  background: #0f141b; padding: 0 6px; white-space: nowrap; }
+.thmsg.k-answer .thline { border-top-color: var(--th-answer); }
+.thmsg.k-answer .thhead path { stroke: var(--th-answer); }
+.thmsg.k-answer .thlabel { color: var(--th-answer); }
+.thmsg.k-handoff .thline { border-top: 2px dashed var(--th-handoff); }
+.thmsg.k-handoff .thhead path { stroke: var(--th-handoff); }
+.thmsg.k-handoff .thlabel { color: var(--th-handoff); }
+.thmsg.k-message .thline { border-top: 2px dotted var(--th-message); }
+.thmsg.k-message .thhead path { stroke: var(--th-message); }
+.thmsg.k-message .thlabel { color: var(--th-message); }
+.thmsg.k-failed .thline, .thmsg.k-cancelled .thline { border-top-color: var(--th-failed); }
+.thmsg.k-failed .thhead path, .thmsg.k-cancelled .thhead path { stroke: var(--th-failed); }
+.thmsg.k-failed .thlabel, .thmsg.k-cancelled .thlabel { color: var(--th-failed); }
+.thcard { grid-row: 2; position: relative; z-index: 1; margin: 0 8px; text-align: left; color: var(--text);
+  background: var(--panel, #161b22); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.thcard:hover { border-color: var(--accent); }
+.thmeta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.thtext { font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thcard[aria-expanded="true"] .thtext, .thpmsg[aria-expanded="true"] .thtext { max-height: 60vh; overflow-y: auto; }
+.thwaitrow { display: flex; justify-content: center; padding-top: 6px; }
+.thwait { display: inline-block; border: 1px dashed var(--warn, #d29922); color: #e3b341; border-radius: 16px; padding: 3px 12px;
+  font-size: 12.5px; margin: 0; }
+.thlegend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); font-size: 12px; }
+.thlegend span { display: flex; align-items: center; gap: 6px; }
+.thlegend .lg { width: 22px; border-top: 2px solid var(--th-ask); display: inline-block; }
+.thlegend .lg.k-answer { border-top-color: var(--th-answer); }
+.thlegend .lg.k-handoff { border-top: 2px dashed var(--th-handoff); }
+.thlegend .lg.k-message { border-top: 2px dotted var(--th-message); }
+.thlegend .lg.k-failed { border-top-color: var(--th-failed); }
+
+/* The phone: the list, then the thread as a conversation. */
+.threadspage.narrow .thtalk { padding: 0 2px 8px; }
+.threadspage.narrow .thchips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+.threadspage.narrow .thchip { flex: none; min-height: 44px; }
+.threadspage.narrow .thlist { max-width: none; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; flex: none; }
+.threadspage.narrow .throw { min-height: 44px; }
+.thpback .ghost { min-height: 44px; }
+.thconv { display: flex; flex-direction: column; gap: 8px; }
+.thpmsg { display: flex; flex-direction: column; gap: 4px; text-align: left; color: var(--text); background: var(--panel, #161b22);
+  border: 1px solid var(--line); border-left: 3px solid var(--th-ask); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.thpmsg.k-answer { border-left-color: var(--th-answer); }
+.thpmsg.k-handoff { border-left: 3px dashed var(--th-handoff); }
+.thpmsg.k-message { border-left: 3px dotted var(--th-message); }
+.thpmsg.k-failed, .thpmsg.k-cancelled { border-left-color: var(--th-failed); }
+.thphead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.thpwho { font-weight: 650; overflow-wrap: anywhere; }
+.thpkind { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+/* The Inbox's way to its item's thread. */
+.ibthread { margin-left: auto; background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+  padding: 4px 10px; font-size: 12.5px; }
+.ibthread:hover { border-color: var(--accent); color: var(--accent); }
+.ibcard .ibthread { margin-left: 0; align-self: flex-start; min-height: 40px; }
