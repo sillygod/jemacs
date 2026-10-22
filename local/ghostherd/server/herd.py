@@ -1445,6 +1445,15 @@ class HerdStore:
                 if turn_at is not None and not self._turn_over(row["to_name"], turn_at):
                     return {"id": row["id"], "status": "delivered", "turn_on": True}
             if dead or error:
+                # Emacs has not restored its herd yet (a fresh Emacs ticking
+                # an empty snapshot): its `dead' is not proof the taker died.
+                # Hold the ask delivered; Emacs settles it again once it has
+                # restored, and a taker that comes back answers it normally.
+                restored_row = self._conn.execute(
+                    "SELECT v FROM meta WHERE k = 'restored'"
+                ).fetchone()
+                if restored_row is not None and restored_row[0] == "0":
+                    return {"id": row["id"], "status": "delivered", "unrestored": True}
                 self._close_ask(
                     row["id"], "failed", now,
                     error=error or f"{row['to_name']} exited before answering",
@@ -2346,9 +2355,17 @@ class HerdStore:
         ack_cmd_ids: list[str] | None = None,
         pushes: list[dict[str, Any]] | None = None,
         page_url: str | None = None,
+        restored: bool | None = None,
     ) -> dict[str, Any]:
         """PAGE_URL is the herd page's address from your phone, without its
-        secret, as Emacs says it each tick; none, it is not linked."""
+        secret, as Emacs says it each tick; none, it is not linked.
+
+        RESTORED is whether this Emacs has restored its herd yet.  A fresh
+        Emacs, before it has, ticks an empty or partial snapshot that is a
+        herd not yet picked up -- not agents that died -- so an open ask for
+        a taker missing from it is held, not failed.  None (an Emacs too old
+        to say) is read as restored, keeping the old behaviour."""
+        restored_flag = True if restored is None else bool(restored)
         sessions = sessions or []
         pushes = [p for p in (pushes or []) if isinstance(p, dict) and p.get("kind") and p.get("session")]
         ack_ids = [i for i in (ack_ids or []) if i]
@@ -2468,6 +2485,13 @@ class HerdStore:
                 "INSERT OR REPLACE INTO meta (k, v) VALUES ('page_url', ?)",
                 (page_url if isinstance(page_url, str) else "",),
             )
+            # Remember whether Emacs has restored, for `settle' (a separate
+            # call) to read: it must not fail a taker's ask while the herd
+            # is not yet picked up.
+            self._conn.execute(
+                "INSERT OR REPLACE INTO meta (k, v) VALUES ('restored', ?)",
+                ("1" if restored_flag else "0",),
+            )
             names = {
                 str(row.get("name") or "").strip()
                 for row in sessions
@@ -2477,7 +2501,10 @@ class HerdStore:
                 "SELECT id, to_name, ask_id FROM mail WHERE status = 'queued'"
             ).fetchall()
             for mail_id, to_name, ask_id in queued:
-                if to_name not in names:
+                # A taker missing from the snapshot of an Emacs that has not
+                # restored yet is a herd not yet picked up, not a gone agent:
+                # hold its queued ask rather than fail it.
+                if to_name not in names and restored_flag:
                     self._conn.execute(
                         """
                         UPDATE mail

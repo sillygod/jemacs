@@ -3794,6 +3794,15 @@ design where a second terminal emulator is in the picture."
     buffer))
 
 ;;;###autoload
+(defvar ghostherd--restored nil
+  "Non-nil once this Emacs has restored its herd (or found nothing to).
+Until then an empty or partial session snapshot is a herd not yet picked
+up after a restart, not agents that died, so the sidecar must not fail an
+open ask on it -- `ghostherd--herd-tick' sends this as `restored'.")
+
+(defvar ghostherd--restore-timer nil
+  "The pending deferred-restore retry timer, or nil.")
+
 (defun ghostherd-restore ()
   "Register agents the host still has but this Emacs does not.
 
@@ -3861,7 +3870,37 @@ running, and a session keeps the backend it was born with anyway."
     (when (> restored 0)
       (ghostherd--ensure-poll-timer)
       (ghostherd--sidebar-refresh))
+    (setq ghostherd--restored t)
     restored))
+
+(defun ghostherd--restore-now (&optional attempt)
+  "Attempt `ghostherd-restore'; on a load race, schedule a retry.
+`restored' stays nil until a try succeeds, so the sidecar holds open asks
+rather than failing them for takers whose live hosts this Emacs has not
+picked up yet."
+  (let ((attempt (or attempt 1)))
+    (setq ghostherd--restore-timer nil)
+    (condition-case err
+        (ghostherd-restore)                 ; sets `ghostherd--restored' on success
+      (error
+       (if (< attempt 6)
+           (setq ghostherd--restore-timer
+                 (run-at-time (* attempt 0.3) nil #'ghostherd--restore-now (1+ attempt)))
+         (message "ghostherd: automatic restore kept failing (%s); run M-x ghostherd-restore"
+                  (error-message-string err)))))))
+
+(defun ghostherd--restore-deferred ()
+  "Schedule the herd restore for after load and init settle.
+`ghostherd-mode' calls this instead of `ghostherd-restore' directly: a
+zero-delay timer runs it once the current load or command returns, so the
+whole file and its state (e.g. `ghostherd--worktrees') are bound first --
+a synchronous restore during mode enable could race them void from a
+stale build or an unfinished load.  Idempotent: `ghostherd-restore'
+registers only agents not already known, so the automatic restore and any
+later manual one do not clash."
+  (when (timerp ghostherd--restore-timer)
+    (cancel-timer ghostherd--restore-timer))
+  (setq ghostherd--restore-timer (run-at-time 0 nil #'ghostherd--restore-now 1)))
 
 (defun ghostherd-session-recipe (session)
   "Return the plist `ghostherd-spawn' needs to recreate SESSION.
@@ -8926,6 +8965,10 @@ reaches you there."
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :page_url (or (ghostherd--room-url) "")
+             ;; Whether this Emacs has restored its herd yet: before it, an
+             ;; empty snapshot is a herd not yet picked up, and the sidecar
+             ;; must not fail an open ask for a taker missing from it.
+             :restored (if ghostherd--restored t :json-false)
              :ack_ids (vconcat (append acks nil))
              :replies (vconcat (or replies []))
              :pushes (vconcat (reverse pushes)))
@@ -9734,9 +9777,11 @@ want it loaded, and after a restart nothing here has opened it yet."
         (unless ghostherd--log-loaded
           (ignore-errors (ghostherd-log-load)))
         ;; Enabling the mode is the restore hook: a herd left running by
-        ;; a previous Emacs is picked up here, before anything asks for
-        ;; a session list.
-        (ignore-errors (ghostherd-restore))
+        ;; a previous Emacs is picked up here.  Deferred to a zero-delay
+        ;; timer so the whole file and its state are loaded first (a
+        ;; synchronous restore here could race `ghostherd--worktrees' void),
+        ;; and retried past a transient; idempotent.
+        (ghostherd--restore-deferred)
         ;; Demoted, not ignored: a sidecar on an old token makes start
         ;; refuse, and without a word agents would just spawn with no
         ;; GHOSTHERD_RPC.

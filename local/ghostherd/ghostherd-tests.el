@@ -5353,6 +5353,25 @@ not taken."
         (when (process-live-p proc) (delete-process proc))
         (kill-buffer view)))))
 
+(ert-deftest ghostherd-test-restore-is-idempotent-and-marks-restored ()
+  "A second restore registers nothing new, and restore marks the herd
+restored so the sidecar may trust the session snapshot."
+  (ghostherd-tests--with-herd ((ghostherd--restored nil)
+                               (ghostherd--roles (make-hash-table :test 'equal))
+                               (ghostherd--lineage (make-hash-table :test 'equal)))
+    (let ((ghostherd-known-backends '(fake))
+          (ghostherd-tests--fake-recipes '((:host-id "gh-x-a" :name "a" :kind agy)
+                                           (:host-id "gh-x-b" :name "b" :kind claude))))
+      (cl-letf (((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
+                ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                ((symbol-function 'ghostherd--orphan-view) #'ignore))
+        (should-not ghostherd--restored)
+        (should (= 2 (ghostherd-restore)))      ; both agents registered
+        (should ghostherd--restored)            ; and the herd is marked restored
+        (should (ghostherd-get "a"))
+        (should (ghostherd-get "b"))
+        (should (= 0 (ghostherd-restore)))))))  ; idempotent: nothing new the 2nd time
+
 (ert-deftest ghostherd-test-an-empty-herd-is-looked-for-again ()
   "The poll looks for agents to re-adopt while the herd is empty -- not on
 every tick -- so a herd emptied by a moment its host could not be

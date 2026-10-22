@@ -283,6 +283,7 @@ class JsonRpcHandler:
             replies=replies,
             pushes=pushes,
             page_url=params.get("page_url"),
+            restored=params.get("restored"),
         )
 
     def _herd_ask(self, params: dict) -> dict:

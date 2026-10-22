@@ -462,6 +462,45 @@ def test_settle_dead_fails(tmp_path):
     assert (h.get_ask(ask["id"])["status"], h.get_ask(ask["id"])["reply"]) == ("answered", "late")
 
 
+def test_a_fresh_emacs_empty_snapshot_does_not_fail_an_open_ask(tmp_path):
+    "After a restart, a fresh Emacs ticks an empty snapshot before it has"
+    " restored.  A settle for a taker missing from it must be held, not failed."
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    # Emacs restarts: a fresh Emacs, not yet restored, ticks an empty snapshot.
+    h.tick(sessions=[], restored=False)
+    held = h.settle(ask["id"], dead=True)
+    assert held["status"] == "delivered" and held.get("unrestored")
+    assert h.get_ask(ask["id"])["status"] == "delivered"      # still open, not failed
+    # Emacs restores; the still-alive taker is back and answers normally.
+    h.tick(sessions=SNAP, restored=True)
+    h.reply(ask["id"], "here", from_name="agy-a2")
+    got = h.get_ask(ask["id"])
+    assert (got["status"], got["reply"]) == ("answered", "here")
+
+
+def test_after_restore_a_gone_taker_still_fails(tmp_path):
+    "Once Emacs has restored, a taker truly gone is failed as before."
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main", wait=True)
+    _deliver(h)
+    h.tick(sessions=SNAP, restored=True)
+    h.settle(ask["id"], dead=True)
+    assert h.get_ask(ask["id"])["status"] == "failed"
+
+
+def test_a_queued_ask_is_held_until_emacs_has_restored(tmp_path):
+    "The tick's own fail-on-absence is gated too: a queued ask for a taker"
+    " missing from an un-restored snapshot is held, then fails once restored."
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")   # queued, not delivered
+    h.tick(sessions=[], restored=False)
+    assert h.get_ask(ask["id"])["status"] == "queued"          # not failed while fresh
+    h.tick(sessions=[r for r in SNAP if r["name"] != "agy-a2"], restored=True)
+    assert h.get_ask(ask["id"])["status"] == "failed"          # gone once restored
+
+
 def test_settle_can_say_why_it_failed(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "fetch", from_name="claude-main")
