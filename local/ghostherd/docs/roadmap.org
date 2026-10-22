@@ -1883,9 +1883,12 @@ lead, as an ask the herd frames.
 - [ ] A herd-wide "primary" lead, its project the herd itself, routing the
   user's cross-project requests through =herd handoff=.  The send rule and
   the brief already take a sender in no project
-- [ ] =herd ask NAME= still crosses projects by name, around the lead.
-  Whether a cross-project ask of an agent that is not a lead should be
-  refused in favour of a handoff is the user's call
+- [X] =herd ask NAME= across projects is refused (ask 299ed112, decided
+  with the user: cross-project work goes lead to lead).  An agent naming an
+  agent in another project is pointed to =herd handoff PROJECT=; asks within
+  a project are unchanged; the user from a shell and the herd's own
+  lead-addressed asks (the promotion approve→lead ask, the handoff itself)
+  are free.  =HerdStore._resolve_taker=
 
 ** Deliberately not done
 

@@ -1042,14 +1042,28 @@ class HerdStore:
         rows = self._conn.execute(
             "SELECT name, kind, state, project, role FROM snapshot"
         ).fetchall()
-        for name, _kind, state, _project, _role in rows:
+        # The asker's own project, when it is an agent: the user (not in the
+        # snapshot) and an agent in no project are free, as with a handoff.
+        mine = next((r[3] for r in rows if r[0] == sender), None)
+        for name, _kind, state, project, _role in rows:
             if name == want:
                 if state not in _TAKER_RANK:
                     raise ValueError(f"{want} is {state or 'not running'}")
+                # Cross-project work goes lead to lead: an agent may not reach
+                # into another project by naming an agent in it.  Hand it to
+                # that project's lead instead, who plans it with its agents.
+                # (A kind-ask below already stays in the asker's project; the
+                # herd's own internals address a lead as the user, so are free.)
+                if mine and project and not projects.same(mine, project):
+                    raise ValueError(
+                        f"{want} is in {projects.leaf(project)}, another project; "
+                        f"cross-project work goes lead to lead -- hand it to "
+                        f"{projects.leaf(project)}'s lead with "
+                        f"`herd handoff {projects.leaf(project)}', do not ask its agents"
+                    )
                 return name
         if not any(r[1] == want for r in rows):
             raise ValueError(f"no agent or kind named {want}")
-        mine = next((r[3] for r in rows if r[0] == sender), None)
         alive = [
             r for r in rows
             if r[1] == want and r[0] != sender and r[2] in _TAKER_RANK

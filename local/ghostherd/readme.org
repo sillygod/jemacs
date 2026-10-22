@@ -703,6 +703,12 @@ about the sender's project, not its role: a herd-wide lead to come,
 whose project is the herd itself, routes the user's cross-project
 requests through this same handoff unchanged.
 
+The other side of the same rule: an agent's =herd ask NAME= whose taker
+is in *another* project is refused, pointing to =herd handoff PROJECT=
+--- so cross-project work always goes lead to lead, never straight to an
+agent elsewhere.  Asks within a project are unchanged, and the user from
+a shell (not an agent) still asks anyone by name.
+
 *The brief.* The herd frames it for the taker: from which project and
 agent, that the sender waits on it, and what to do --- plan it in that
 project, by its rules, with its agents, and answer with the result.  The

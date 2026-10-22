@@ -406,3 +406,40 @@ def _wait_command(h, seconds=10):
             return row[0]
         time.sleep(0.05)
     raise AssertionError("no handoff command queued")
+
+
+# ---- Cross-project `herd ask' is refused, pointing to a handoff ---------------
+# Decided with the user: cross-project work goes lead to lead.  An agent's
+# `herd ask NAME' whose taker is in another project is refused; asks within a
+# project are unchanged; the user and the herd's own internals (which address
+# a lead as the user) stay free.
+
+def test_an_agent_asking_across_projects_is_refused(h):
+    with pytest.raises(ValueError) as e:
+        h.ask(to="qa-unnoiac", body="look at this", from_name="rd-ghost")
+    msg = str(e.value)
+    assert "another project" in msg and "handoff" in msg and "unnoiac" in msg
+
+
+def test_an_ask_within_a_project_still_works(h):
+    # A named taker in the asker's own project: unchanged.
+    out = h.ask(to="lead-ghost", body="a question", from_name="rd-ghost")
+    assert out["to"] == "lead-ghost" and out["queued"]
+
+
+def test_the_user_and_the_herds_internals_ask_across_projects_freely(h):
+    # The user from a shell is not an agent: free to ask any agent by name.
+    out = h.ask(to="qa-unnoiac", body="hi", from_name="user")
+    assert out["to"] == "qa-unnoiac"
+    # The herd's own lead-addressed asks (e.g. a promotion's approve->lead ask)
+    # come from="user", so they cross projects too.
+    out = h.ask(to="lead-unnoiac", body="apply this", from_name="user")
+    assert out["to"] == "lead-unnoiac"
+
+
+def test_a_kind_ask_stays_in_the_asker_project(h):
+    # A kind names agents in the asker's project only -- unchanged by the
+    # cross-project rule (there is no agy in ghost to take it).
+    with pytest.raises(ValueError) as e:
+        h.ask(to="agy", body="x", from_name="rd-ghost")
+    assert "no agy agent" in str(e.value)
