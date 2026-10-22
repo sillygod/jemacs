@@ -10330,7 +10330,8 @@ spinner says -- not blocked on what it wrote."
   "BODY in a clean herd that can relay.  Sidecar requests land in
 `requests' as (METHOD PARAMS); the brief is \"BRIEF\".  `spawned' holds
 the heir's (KIND . PLIST); the heir is registered idle on the fake
-backend.  `told' holds (FN SESSION TEXT ROLE) for what it was told.
+backend.  `told' holds (FN SESSION TEXT ROLE) for what it was told, FN
+`tell-by-herd' for what it was told as the herd's.
 `ready' is the heir's wait for its prompt, (FN FAIL), when `hold' is
 set; otherwise it is told at once."
   (declare (indent 0))
@@ -10381,7 +10382,8 @@ set; otherwise it is told at once."
                ((symbol-function 'ghostherd-prompt)
                 (lambda (s text &rest _) (push (list 'prompt s text nil) told)))
                ((symbol-function 'ghostherd-tell)
-                (lambda (s text &optional role) (push (list 'tell s text role) told))))
+                (lambda (s text &optional role by-herd)
+                  (push (list (if by-herd 'tell-by-herd 'tell) s text role) told))))
        ,@body)))
 
 (defun ghostherd-tests--used-up (kind &optional resets fetched label)
@@ -10504,7 +10506,7 @@ on the same CLI, its own flags kept, less what picked its conversation."
         ;; Even on the same CLI, the old conversation is not the heir's.
         (should-not (ghostherd-session-conversation (ghostherd-get "lead-shop")))
         (pcase-let ((`(,fn ,_s ,text ,given) (car told)))
-          (should (eq fn 'tell))
+          (should (eq fn 'tell-by-herd))       ; the brief is the herd's, not the user's
           (should (equal text "BRIEF"))
           (if role
               (should (string-prefix-p ghostherd--lead-role given))
@@ -13231,6 +13233,111 @@ request, by its id; anything not an id goes nowhere."
       (dolist (bad '("../x" "" nil "1a2b3c4d; rm"))
         (ghostherd-memory-page--handle `((op . "guard-reject") (id . ,bad))))
       (should (= (length asked) 1)))))
+
+;;; The Threads opener, from the user's real use (ask dbd3994a)
+
+(ert-deftest ghostherd-test-the-log-keeps-the-users-words-behind-the-herds-notes ()
+  "A prompt the herd put its notes before -- what the project works on,
+what the user said to the team, a role -- is logged as the user's own
+words, the herd's notes left out; the herd's own words (a relay's brief)
+are logged as the herd's."
+  (ghostherd-tests--with-leads
+    (let* ((ghostherd--log nil)
+           (ghostherd-submit-check-after nil)
+           (ghostherd-project-work-functions (list (lambda (_p) (list "branch x in ~/p/"))))
+           (lead (ghostherd-tests--session :name "lead-p" :kind 'claude :project "~/p/" :state 'idle))
+           (rd (ghostherd-tests--session :name "rd" :kind 'claude :project "~/p/" :state 'idle))
+           (sent nil))
+      (puthash "lead-p" "lead" ghostherd--roles)
+      (cl-letf (((symbol-function 'ghostherd--session-live-p) (lambda (_s) t))
+                ((symbol-function 'ghostherd--host-send-text) (lambda (_s text _submit) (push text sent)))
+                ((symbol-function 'ghostherd--set-state) #'ignore))
+        (ghostherd-tell rd "check the footer")
+        (ghostherd-tell lead "剛剛是我重開的沒錯 因爲emacs 突然卡 cpu100%\nsecond line")
+        (should (string-prefix-p "[Since you last heard from me" (car sent)))   ; the notes went to the agent
+        (ghostherd-tell lead "a brief from the herd" nil t)
+        (ghostherd--relay-tell rd "where the work stands" nil nil))     ; an heir told by the herd
+      (should (equal (mapcar #'ghostherd-log-entry-text
+                             (seq-filter (lambda (e) (eq (ghostherd-log-entry-kind e) 'input)) (reverse ghostherd--log)))
+                     '("← check the footer"
+                       "← 剛剛是我重開的沒錯 因爲emacs 突然卡 cpu100%"
+                       "← [from the herd] a brief from the herd"
+                       "← [from the herd] where the work stands"))))))
+
+(ert-deftest ghostherd-test-only-the-last-prompt-can-open-a-thread ()
+  "The live case (2026-10-23): the user asked lead-.emacs.d something at
+00:55; at 01:01 an answer came back to it and the user wrote again,
+behind a note the log of then could not see past; at 01:02 it asked.
+The 00:55 prompt is not what set it going -- and with the user's words
+logged, 01:01's is."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (ask (- now 60000))
+         (entry (lambda (session text secs) (ghostherd-tests--input session text secs)))
+         (old-log (list (funcall entry "lead-x" "← [What this project works on, as the herd sees it. Read them for the work; change none of …" 120)
+                        (funcall entry "lead-x" "← [ghostherd message from claude-x → lead-x]" 160)
+                        (funcall entry "lead-x" "← 然後 thread 現在是空的？" 540)))
+         (new-log (cons (funcall entry "lead-x" "← 剛剛是我重開的沒錯 因爲emacs 突然卡 cpu100%" 120) (cdr old-log))))
+    (let ((ghostherd--log old-log))
+      (should-not (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask)))
+    (let ((ghostherd--log new-log))
+      (should (equal (cdr (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask))
+                     "剛剛是我重開的沒錯 因爲emacs 突然卡 cpu100%")))
+    ;; An answer come back is the last input: it set the turn going, not the user.
+    (let ((ghostherd--log (list (funcall entry "lead-x" "← [ghostherd message from rd → lead-x]" 90)
+                                (funcall entry "lead-x" "← an earlier prompt" 600))))
+      (should-not (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask)))
+    ;; The herd's word that a prompt did not go in is no prompt: the prompt still opens.
+    (let ((ghostherd--log (list (funcall entry "lead-x" "← still in its input box: not submitted" 80)
+                                (funcall entry "lead-x" "← fix it" 100))))
+      (should (equal (cdr (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask)) "fix it")))))
+
+(ert-deftest ghostherd-test-a-turn-ended-since-the-prompt-means-no-opener ()
+  "The live case (2026-10-23): the user asked lead-.emacs.d for a doc at
+00:06, and its turn ended at 00:07 waiting on the team; at 00:29 an
+answer the hook brought began another turn -- no line in the log -- and
+it asked again.  That ask is not the 00:06 prompt's.  A permission
+prompt in the middle of a turn ends nothing."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (ask (- now 60000))
+         (state (lambda (text secs) (ghostherd-log-entry--create :session "lead-x" :kind 'state :text text
+                                                                 :time (time-subtract (current-time) secs))))
+         (prompt (ghostherd-tests--input "lead-x" "← 那通行碼的機制寫個文檔幫助了解好了~" 1400)))
+    (let ((ghostherd--log (list (funcall state "waiting → working  reported working" 70)
+                                (funcall state "working → waiting  waiting on claude-x and 3 shells" 1360)
+                                (funcall state "waiting → working  input sent" 1400)
+                                prompt)))
+      (should-not (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask)))
+    (let ((ghostherd--log (list (funcall state "blocked → working  reported working" 90)
+                                (funcall state "working → blocked  a permission prompt" 100)
+                                (funcall state "done → idle  seen" 1300)
+                                (funcall state "idle → done  seen" 1350)
+                                (funcall state "waiting → working  input sent" 1400)
+                                prompt)))
+      (should (equal (cdr (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask))
+                     "那通行碼的機制寫個文檔幫助了解好了~")))))
+
+(ert-deftest ghostherd-test-an-opener-is-the-askers-and-within-two-hours ()
+  "Only the thread's first asker's prompts count -- never another agent's
+-- and only one in the two hours before its first ask."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (ask (- now 1000))
+         (ghostherd--log (list (ghostherd-tests--input "rd" "← to rd, just before" 30)
+                               (ghostherd-tests--input "lead-x" "← to the lead" (+ 1 (* 2 3600) -120))))
+         (prompts (ghostherd-threads--prompts)))
+    (should (equal (cdr (ghostherd-threads--opener prompts "lead-x" ask)) "to the lead"))
+    (should (equal (cdr (ghostherd-threads--opener prompts "rd" ask)) "to rd, just before"))
+    (should-not (ghostherd-threads--opener prompts "qa" ask))                          ; nobody spoke to qa
+    ;; Two hours and a minute before: out.
+    (let ((ghostherd--log (list (ghostherd-tests--input "lead-x" "← too old" (+ 1 (* 2 3600) 60)))))
+      (should-not (ghostherd-threads--opener (ghostherd-threads--prompts) "lead-x" ask)))
+    ;; The herd's deliveries and openings are never the user's.
+    (dolist (herd (list "← [from the herd] a relay brief" "← [ghostherd message from a → b]"
+                        (concat "← " (substring ghostherd--agy-guard-note 0 50))
+                        (concat "← " (car (split-string ghostherd--lead-role "\n")))))
+      (should (eq (ghostherd-threads--said herd) 'herd)))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

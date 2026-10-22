@@ -2117,12 +2117,38 @@ what, across projects -- and where each one waits now.
   (arrows' heads on their lanes), each broken on purpose; screenshots;
   a read-only look at the live herd's threads
 
+** From the user's first night with it
+
+- [X] The desk scrolled as one page: a thread picked far down the list
+  left its reading scrolled away.  Now the Threads and Inbox tabs are
+  the window, each column scrolling by itself under the tabs and
+  Talking now; a thread or item picked shows from its top; Emacs's
+  pushes keep both columns where they were.  The phone keeps one flow
+- [X] The opener picked the wrong prompt, live: the user's prompt came
+  to the lead behind the herd's note on what the project works on, the
+  log kept the note's first line, the herd-made filter dropped it, and
+  the opener reached back to an older prompt about something else.
+  Now the log keeps the user's own words (the herd's notes left out; a
+  relay's brief logged as =[from the herd]=), and only the prompt the
+  ask's turn began with may open a thread: the asker's last input, the
+  user's, with no turn ended since.  Otherwise none --- never an older
+  one.  Replayed on the live log: of the lead's eleven threads tonight,
+  five that opened with an older prompt, not the one, now have none;
+  the other six keep theirs
+- [X] ERT for what the review found untested: the herd-made filter, no
+  prompt to one agent taken for another's thread, the two-hour edge,
+  the note-prefixed prompt, the last-input rule, a turn ended since;
+  e2e on a short desk (a thread far down, the right pane's top in
+  view) and the phone; each broken on purpose
+
 ** Deliberately not done
 
 - Any action in the tab: it shows; the Inbox and the cards act
 - A link from a prompt to the asks it led to: the herd log keeps
   neither the whole prompt nor that link, so the opener is a labelled
-  guess; recording it would mean logging every prompt in full
+  guess; recording it would mean logging every prompt in full.  A
+  prompt typed while the agent was still busy runs in a later turn, so
+  its thread has no opener: it fails to nothing
 
 * Phase 4 — Ecosystem (only if still useful)
 

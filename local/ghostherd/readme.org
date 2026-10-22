@@ -2008,16 +2008,29 @@ projects.  Read-only: it only shows, and leads where you click.
   waits now: =lead-jnotes waits on claude-jnotes · primary waits on
   lead-jnotes=, or who is working and for how long.
 - The user's own prompt that set a thread going opens it, =You → lead=:
-  the last thing you typed to its first asker in the two hours before
-  its first ask, from the herd log --- which keeps the first line of
-  each, so that is what shows, marked =as the herd log has it=.  The
-  log keeps no link from a prompt to the asks it led to, so this is a
-  best guess: the prompt before, not certainly the one.
+  the prompt the turn its first ask was made in began with, from the
+  herd log.  That is the last thing its first asker was told before the
+  ask, when you said it, within the two hours before, and with no turn
+  of its ended in between.  When the last thing was the herd's (an
+  answer come back, a message, a brief), or a turn ended since (an
+  answer the hook brought began the next, which the log does not see),
+  the thread has none --- never an older prompt.  The log keeps the
+  first line of what you typed, without the notes the herd put before
+  it (what the project works on, what you told the team), so that is
+  what shows, marked =as the herd log has it=.  It keeps no link from a
+  prompt to the asks it led to, so this is still a guess, one that
+  fails to nothing rather than to the wrong prompt.
 - From the Inbox, =Open thread= on an item opens the thread of its ask
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.
+- On the desk the tab is the window: the list and the open thread each
+  scroll by themselves, under the tabs and Talking now, which stay put.
+  A thread picked far down the list shows from its top, as does another
+  pushed in its place; the refresh every few seconds leaves both where
+  they were.  The Inbox's list and item do the same.
 - On the phone: the strip, the list; a thread opens as a conversation,
-  each message =A → B=, since lanes do not fit 390 px.
+  each message =A → B=, since lanes do not fit 390 px.  The page
+  scrolls as one, and a thread opens at its top.
 
 The page asks for the list while the tab is shown (every few seconds,
 forty threads) and for one thread at a time, never the whole history;

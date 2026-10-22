@@ -4855,6 +4855,12 @@ on a menu, ghostherd presses Return again, up to
   :type 'natnum
   :group 'ghostherd)
 
+(defvar ghostherd--input-said nil
+  "What the herd log records of the next input, when not its first line:
+the user's own words, though the herd put a note before them
+(`ghostherd-tell'), or the herd's words marked as its own.  The Threads
+tab reads the log to say who set a thread going.")
+
 (defun ghostherd-send (session text &optional submit)
   "Send TEXT to SESSION's terminal.
 When SUBMIT is non-nil, also send RET (Enter)."
@@ -4868,7 +4874,7 @@ When SUBMIT is non-nil, also send RET (Enter)."
   (ghostherd--log-add session 'input
                       (format "← %s%s"
                               (ghostherd--clean-screen-line
-                               (car (split-string text "\n" t)))
+                               (car (split-string (or ghostherd--input-said text) "\n" t)))
                               (if submit "" "  (not submitted)")))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
@@ -7330,8 +7336,9 @@ unless I ask you to:\n"
               (mapconcat (lambda (l) (concat "- " l)) lines "\n")
               "]\n\n"))))
 
-(defun ghostherd-tell (session text &optional role)
-  "Prompt SESSION with TEXT from the user.
+(defun ghostherd-tell (session text &optional role by-herd)
+  "Prompt SESSION with TEXT from the user -- or, BY-HERD, the herd's own.
+The herd log records TEXT, not the notes put before it.
 A project's lead hears first what the user said to its agents directly
 since it last heard from them, and what the project works on when that
 is news to it -- after ROLE, the role of a lead that took none as it
@@ -7340,7 +7347,8 @@ Any other agent owed its role -- primary, on such a CLI -- reads it
 first too.  Said to another agent of a project that has a lead, TEXT is
 kept for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
-         (lead (and project (ghostherd-project-lead project))))
+         (lead (and project (ghostherd-project-lead project)))
+         (ghostherd--input-said (if by-herd (concat "[from the herd] " text) text)))
     (if (eq lead session)
         (progn
           (ghostherd-prompt session (concat (or role
@@ -8703,8 +8711,10 @@ herd while the brief was written."
 LEAD when it leads its project: it hears what a lead hears first."
   (if lead
       (ghostherd-tell heir text (unless (ghostherd--lead-args (ghostherd-session-kind heir))
-                                  (concat ghostherd--lead-role "\n---\n\n")))
-    (ghostherd-prompt heir text))
+                                  (concat ghostherd--lead-role "\n---\n\n"))
+                      t)
+    (let ((ghostherd--input-said (concat "[from the herd] " text)))
+      (ghostherd-prompt heir text)))
   (dolist (ask held)
     (remhash ask ghostherd--relay-held)
     (puthash ask (ghostherd-session-id heir) ghostherd--asks-open))

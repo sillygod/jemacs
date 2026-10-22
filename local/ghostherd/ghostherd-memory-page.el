@@ -3248,41 +3248,64 @@ Kept screens open in place; new entries arrive as they are logged."
 be, to be taken for what set it going: the log keeps no link, so a prompt
 much older is more likely about something else.")
 
-(defun ghostherd-threads--herd-made-p (text)
-  "Non-nil when TEXT, an input line of the herd log (\"← ...\"), is not the
-user's own: the herd's deliveries (asks, messages, a lead's context, all
-in brackets), the first words a guarded agent or a memory opening gets."
+(defun ghostherd-threads--said (text)
+  "What TEXT, an input line of the herd log, says of who spoke: the user's
+words (a string); `herd' -- the herd's deliveries (asks, messages, a
+note before a prompt the log could not see past, all in brackets), the
+first words a guarded agent, a memory opening or a lead's role gets;
+or nil, a line that is not a prompt (a retry, text left unsubmitted)."
   (let ((said (and (string-prefix-p "← " text) (substring text 2))))
-    (or (null said)
-        (string-suffix-p "(not submitted)" said)
-        (string-prefix-p "[" said)
-        (string-prefix-p "still in its input box" said)
-        (and (boundp 'ghostherd--agy-guard-note)
-             (string-prefix-p (car (split-string ghostherd--agy-guard-note "\\." t)) said))
-        (and (boundp 'ghostherd--memory-rules)
-             (string-prefix-p (car (split-string ghostherd--memory-rules " -- " t)) said)))))
+    (cond
+     ((null said) nil)
+     ((or (string-suffix-p "(not submitted)" said) (string-prefix-p "still in its input box" said)) nil)
+     ((or (string-prefix-p "[" said)
+          (and (boundp 'ghostherd--agy-guard-note)
+               (string-prefix-p (car (split-string ghostherd--agy-guard-note "\\." t)) said))
+          (and (boundp 'ghostherd--memory-rules)
+               (string-prefix-p (car (split-string ghostherd--memory-rules " -- " t)) said))
+          (and (boundp 'ghostherd--lead-role)
+               (string-prefix-p (car (split-string ghostherd--lead-role "\n" t)) said)))
+      'herd)
+     (t said))))
+
+(defun ghostherd-threads--herd-made-p (text)
+  "Non-nil when TEXT, an input line of the herd log, is not the user's."
+  (not (stringp (ghostherd-threads--said text))))
+
+(defconst ghostherd-threads--turn-end
+  "\\`\\(?:working\\|blocked\\) → \\(?:idle\\|done\\|waiting\\)\\b"
+  "A state line of the herd log that ends an agent's turn.")
 
 (defun ghostherd-threads--prompts ()
-  "The user's prompts in the herd log, by session: (MS . TEXT), newest first."
+  "What began and ended each agent's turns, from the herd log, newest
+first: (MS . WHAT), WHAT the user's words (a string) or `herd' for a
+prompt, `end' for a turn that ended."
   (let ((by (make-hash-table :test #'equal)))
     (dolist (e (and (boundp 'ghostherd--log) ghostherd--log))
-      (when (eq (ghostherd-log-entry-kind e) 'input)
-        (let ((text (or (ghostherd-log-entry-text e) "")))
-          (unless (ghostherd-threads--herd-made-p text)
-            (push (cons (* 1000 (float-time (ghostherd-log-entry-time e))) (substring text 2))
-                  (gethash (ghostherd-log-entry-session e) by))))))
+      (when-let* ((text (or (ghostherd-log-entry-text e) ""))
+                  (what (pcase (ghostherd-log-entry-kind e)
+                          ('input (ghostherd-threads--said text))
+                          ('state (and (string-match-p ghostherd-threads--turn-end text) 'end)))))
+        (push (cons (* 1000 (float-time (ghostherd-log-entry-time e))) what)
+              (gethash (ghostherd-log-entry-session e) by))))
     (maphash (lambda (k v) (puthash k (sort v (lambda (a b) (> (car a) (car b)))) by)) by)
     by))
 
 (defun ghostherd-threads--opener (prompts from started)
-  "The user's last prompt to FROM before STARTED (ms) -- what set the thread
-going -- from PROMPTS (`ghostherd-threads--prompts'): (MS . TEXT) or nil.
-A thread the user asked from a shell (FROM \"user\") has none: nothing is
-typed to \"user\"."
-  (and (stringp from) (numberp started)
-       (seq-find (lambda (p) (and (< (car p) started)
-                                  (> (car p) (- started (* 1000 ghostherd-threads--opener-window)))))
-                 (gethash from prompts))))
+  "The user's prompt that set going a thread whose first ask FROM made at
+STARTED (ms), from PROMPTS (`ghostherd-threads--prompts'): (MS . TEXT),
+or nil.  Only the prompt the turn the ask was made in began with can be:
+FROM's last prompt before it, with no turn ended between.  When the last
+is the herd's -- an answer come back, a message, a prompt behind a note
+the log could not see past -- or a turn ended after it (an answer the
+hook brought began the next, with no line in the log), or it is older
+than the window, there is none: never one from before it.  A thread the
+user asked from a shell (FROM \"user\") has none."
+  (when-let* (((and (stringp from) (numberp started)))
+              (last (seq-find (lambda (p) (< (car p) started)) (gethash from prompts))))
+    (and (stringp (cdr last))
+         (> (car last) (- started (* 1000 ghostherd-threads--opener-window)))
+         last)))
 
 (defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged)
   "Keys that are true or false: the reply reads JSON false as nil.")
