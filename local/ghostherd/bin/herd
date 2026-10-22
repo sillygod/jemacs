@@ -888,6 +888,74 @@ def cmd_hook(args):
     return 0
 
 
+# ---- The guard of an agy agent --------------------------------------------
+#
+# A guarded agy runs with --dangerously-skip-permissions and this as its
+# PreToolUse hook: the only gate, deciding here, from the policy the herd
+# wrote into the agent's guard directory (bin/herd_guard.py).  A denial is
+# told to the herd, for the card and the log, and one the user may approve
+# names its request.  The answer never waits on that: no sidecar, or a slow
+# one, changes nothing but the telling.
+
+
+def _guard_module():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import herd_guard
+    return herd_guard
+
+
+GUARD_REPORT_TIMEOUT = 2
+
+
+def cmd_guard(args):
+    "agy's PreToolUse hook for a guarded agent: allow or deny, never anything else."
+    verdict = call = None
+    try:
+        guard = _guard_module()
+        payload = json.loads(sys.stdin.read() or "{}")
+        answer, verdict, call = guard.judge(args.dir, payload)
+    except Exception as exc:  # noqa: BLE001 -- the guard's failure is a denial
+        answer = {"decision": "deny",
+                  "reason": "The herd's guard could not check this call (%s); tell the user." % exc}
+    if verdict is not None and (verdict.decision == "deny" or verdict.kind == "approved"):
+        try:
+            if verdict.kind == "approved":
+                rpc("herd_guard_used", {"id": verdict.rule.split(":", 1)[1]},
+                    timeout=GUARD_REPORT_TIMEOUT)
+            else:
+                out = rpc("herd_guard_denied", {
+                    "session": os.environ.get("GHOSTHERD_SESSION") or "",
+                    "guard_dir": os.path.realpath(args.dir),
+                    "tool": str((call or {}).get("name") or ""),
+                    "summary": guard.summary(call),
+                    "reason": verdict.reason, "rule": verdict.rule, "kind": verdict.kind,
+                    "approvable": verdict.approvable, "fp": guard.fingerprint(call),
+                    "call": json.dumps(call, ensure_ascii=False)[:4000],
+                }, timeout=GUARD_REPORT_TIMEOUT)
+                if verdict.approvable and isinstance(out, dict) and out.get("id"):
+                    answer["reason"] = answer.get("reason", "") + " [request %s]" % out["id"]
+        except (HerdError, OSError, ValueError):
+            pass
+    print(json.dumps(answer, ensure_ascii=False))
+    return 0
+
+
+def cmd_scrub_exec(args):
+    """Run CMD with the variables whose names match --scrub dropped from the
+    environment it really has -- what is not there cannot leak -- keeping the
+    --keep names, and replacing this process with it (one pid, the CLI's)."""
+    pats = [re.compile(p) for p in args.scrub or []]
+    keep = set(args.keep or [])
+    env = {k: v for k, v in os.environ.items() if k in keep or not any(p.search(k) for p in pats)}
+    cmd = [c for c in (args.cmd or []) if c != "--"]
+    if not cmd:
+        raise HerdError("scrub-exec: give the command after --")
+    try:
+        os.execvpe(cmd[0], cmd, env)
+    except OSError as exc:
+        raise HerdError("scrub-exec: %s: %s" % (cmd[0], exc))
+
+
 # ---- Installing the hooks ------------------------------------------------
 #
 # claude reads ~/.claude/settings.json, and grok reads the same file
@@ -1367,6 +1435,14 @@ def main(argv=None):
     p = sub.add_parser("hook", help="run by a CLI's lifecycle hook, payload on stdin")
     p.add_argument("event", nargs="?")
     p.set_defaults(fn=cmd_hook)
+    p = sub.add_parser("guard", help="a guarded agy agent's PreToolUse hook, payload on stdin")
+    p.add_argument("dir", help="the agent's guard directory")
+    p.set_defaults(fn=cmd_guard)
+    p = sub.add_parser("scrub-exec", help="run a command with secret-looking variables removed")
+    p.add_argument("--scrub", action="append", metavar="REGEX", help="drop names matching (repeatable)")
+    p.add_argument("--keep", action="append", metavar="NAME", help="keep this name anyway (repeatable)")
+    p.add_argument("cmd", nargs=argparse.REMAINDER)
+    p.set_defaults(fn=cmd_scrub_exec)
     p = sub.add_parser("hooks", help="wire `hook' into claude, grok and agy, or list every hook")
     p.add_argument("action", choices=("install", "uninstall", "status", "list"))
     p.add_argument("--dry-run", action="store_true")

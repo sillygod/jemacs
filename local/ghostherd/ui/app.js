@@ -1077,6 +1077,39 @@
       '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
   }
 
+  // ---- What an agent's guard refused ---------------------------------------
+  //
+  // A guarded agy's guard denies what is not its to allow, with a reason;
+  // what the user may approve says so here, with Approve -- once, for that
+  // exact call: the herd lets it through that once and tells the agent to
+  // run it again.  Waiting and approved ones stay; the rest for a while.
+
+  function guardFor(name) {
+    const recent = Date.now() - 30 * 60 * 1000;
+    return ((herdNow.data && herdNow.data.guard) || []).filter((r) => r.session === name &&
+      (r.status === "pending" || r.status === "approved" || (r.created || 0) > recent));
+  }
+
+  function guardLine(r) {
+    const what = r.status === "pending" ? "⛔ needs your approval"
+      : r.status === "approved" ? "✓ approved once, not yet run"
+      : r.status === "used" ? "✓ ran once, approved"
+      : r.status === "lapsed" ? "approval lapsed"
+      : "⛔ denied";
+    return '<div class="gline g-' + esc(r.status) + '" title="' + esc((r.reason || "") + (r.rule ? "\n(" + r.rule + ")" : "")) + '">' +
+      '<span class="gwhat">' + esc(what) + "</span>" +
+      '<span class="gtext">' + esc(r.summary || "") + "</span>" +
+      (r.status === "pending" && r.approvable
+        ? '<button type="button" class="primary small" data-act="a:guard-approve" data-id="' + esc(r.id) +
+          '" title="Let exactly this call run, once">Approve once</button>' : "") +
+      '<span class="when">' + esc(r.created ? when(r.created / 1000) : "") + "</span></div>";
+  }
+
+  function guardHtml(name) {
+    const rs = guardFor(name);
+    return rs.length ? '<div class="aguard">' + rs.map(guardLine).join("") + "</div>" : "";
+  }
+
   // ---- Where a run of asks stands ----------------------------------------
   //
   // A run: the asks of an agent nobody asked, and those made to answer
@@ -1652,6 +1685,7 @@
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
+      guardHtml(name) +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>" + more + compose + notes + capture + screen + "</div>"
     );
@@ -1873,6 +1907,7 @@
       esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +
       meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
+      guardHtml(name) +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
       '<div class="aacts">' + acts.join("") + "</div>";
   }
@@ -2518,6 +2553,10 @@
       return col ? colJump(col.getAttribute("data-name"), dir) : chatJump(dir);
     }
     if (act === "room") return openRoom(project);
+    if (act === "guard-approve") {
+      el.disabled = true;
+      return emit("guard-approve", { id: el.getAttribute("data-id") });
+    }
     if (act === "primary-room") {
       const p = primaryInfo();
       return p ? openRoom(p.directory) : undefined;

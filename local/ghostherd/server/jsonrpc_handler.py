@@ -79,6 +79,10 @@ class JsonRpcHandler:
             "herd_tick": self._herd_tick,
             "herd_ask": self._herd_ask,
             "herd_handoff": self._herd_handoff,
+            "herd_guard_denied": self._herd_guard_denied,
+            "herd_guard_approve": self._herd_guard_approve,
+            "herd_guard_used": self._herd_guard_used,
+            "herd_guard_requests": self._herd_guard_requests,
             "herd_reply": self._herd_reply,
             "herd_await": self._herd_await,
             "herd_cancel": self._herd_cancel,
@@ -274,6 +278,25 @@ class JsonRpcHandler:
             wait=bool(params.get("wait")),
             rounds=params.get("rounds"),
         )
+
+    def _herd_guard_denied(self, params: dict) -> dict:
+        "A guarded agent's guard refused a call (`herd guard')."
+        return get_herd().guard_denied(
+            str(params.get("session") or ""), str(params.get("guard_dir") or ""),
+            str(params.get("tool") or ""), str(params.get("summary") or ""),
+            str(params.get("reason") or ""), str(params.get("rule") or ""),
+            str(params.get("kind") or ""), bool(params.get("approvable")),
+            str(params.get("fp") or ""), str(params.get("call") or ""))
+
+    def _herd_guard_approve(self, params: dict) -> dict:
+        "The user approves a refused call once (the card, the phone)."
+        return get_herd().guard_approve(str(params.get("id") or ""))
+
+    def _herd_guard_used(self, params: dict) -> dict:
+        return get_herd().guard_used(str(params.get("id") or ""))
+
+    def _herd_guard_requests(self, _params: dict) -> dict:
+        return get_herd().guard_requests()
 
     @staticmethod
     def _claude_slugs() -> list[str]:

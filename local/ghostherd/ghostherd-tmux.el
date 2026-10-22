@@ -1038,7 +1038,9 @@ will not know their own name: %s" (string-trim (or output "")))
                          (or (plist-get plist :directory) "~/"))
                    "-x" (number-to-string (car size))
                    "-y" (number-to-string (cdr size)))
-             (when command (cons command args)))
+             ;; A guarded agent's wrapper first (`herd scrub-exec'), which
+             ;; execs the CLI: one process, the CLI's.
+             (when command (append (plist-get plist :wrapper) (cons command args))))
      (ghostherd-agent-environment 'tmux plist))
     (ghostherd-tmux--write-recipe id plist)
     (ghostherd-tmux--forget)

@@ -685,6 +685,11 @@ _KIND is reserved for kind-specific quoting later."
                   (plist-get plist :kind)
                   (plist-get plist :command)
                   (plist-get plist :args)))
+         ;; A guarded agent's wrapper first (`herd scrub-exec'), which execs
+         ;; the CLI in the shell's place.
+         (launch (if (and launch (plist-get plist :wrapper))
+                     (concat (ghostherd--shell-quote-args (plist-get plist :wrapper)) " " launch)
+                   launch))
          buffer)
     (when (get-buffer bufname)
       (user-error "Buffer already exists: %s" bufname))

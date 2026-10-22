@@ -3674,6 +3674,16 @@ PLIST keys:
                  (if (eq kind 'grok)
                      (ghostherd--args-with-memory project base)
                    base)))
+         ;; A guarded agy: its guard written, and agy started with the flag
+         ;; and the guard's --add-dir -- or, the guard off, without them,
+         ;; whatever an earlier start of it had.
+         (guard (and (eq kind 'agy) command
+                     (ghostherd--agy-guard-mode directory)))
+         (args (if (eq kind 'agy)
+                   (ghostherd--with-agy-guard
+                    args (and guard (ghostherd--agy-guard-setup
+                                     (or (plist-get plist :name) name) guard directory project)))
+                 args))
          (notes (plist-get plist :notes))
          (role (plist-get plist :role))
          (lineage (plist-get plist :lineage))
@@ -3691,7 +3701,9 @@ PLIST keys:
                          :directory directory :project project :notes notes
                          :role role :lineage lineage
                          :worktree worktree :branch branch :base base
-                         :started-by started-by)))
+                         :started-by started-by
+                         ;; Run in front of the CLI, never kept in its recipe.
+                         :wrapper (and guard (ghostherd--scrub-wrapper)))))
          session)
     (setq session
           (ghostherd-session--create
@@ -3733,7 +3745,9 @@ PLIST keys:
     ;; the opening it was first told, and an adopted shell gets none.
     (when (and (eq kind 'agy) (plist-get started :started))
       (ghostherd--when-ready
-       session (lambda () (ghostherd-prompt session (ghostherd--memory-opening project)))))
+       session (lambda () (ghostherd-prompt session (concat (and guard (format ghostherd--agy-guard-note
+                                                                              directory (ghostherd--guard-dir name)))
+                                                            (ghostherd--memory-opening project))))))
     (when display
       (ghostherd-visit session))
     (ghostherd--sidebar-refresh)
@@ -7840,6 +7854,218 @@ handoffs (max %d): %s -- ask the user to start one there, or to stop one of thos
             (error (cons nil (format "could not start %s's lead: %s" (funcall leaf name)
                                      (error-message-string err)))))))))))
 
+;;; The guard of an agy agent
+;;
+;; A herd agy agent runs with --dangerously-skip-permissions, and its guard
+;; -- `herd guard', bin/herd_guard.py -- is the only gate: a PreToolUse hook
+;; (from the hooks.json in `--add-dir <its guard dir>') that answers allow
+;; or deny.  agy 1.4.5's own `allow' does not skip its prompt without that
+;; flag, and with it `ask' does not prompt (ask 134ac578), so what wants the
+;; user is a denial they approve once, for that exact call, on the agent's
+;; card (ask 75362f01).  The agent also starts with secret-looking variables
+;; gone from its environment (`herd scrub-exec'): what is not there cannot
+;; leak.  The guard directory -- its policy, its approvals -- is one per
+;; agent, under `ghostherd-guard-root', and the guard refuses the agent
+;; every look at it.  agy runs its tools in its first workspace, which is
+;; that --add-dir, not the agent's own: the guard sends each command it
+;; allows to where it checked it (`cd WORKSPACE && ...'), refuses relative
+;; file paths, and the agent's first message names its workspace.
+
+(defcustom ghostherd-agy-guard 'auto
+  "How a herd agy agent's tool calls are checked.
+`auto': its workspace's reads and writes, read-only commands, the herd's
+and the project's own commands run; secrets, the world outside the
+workspace and what the guard does not know are denied with a reason --
+those the user may approve once on the agent's card.  `read-only':
+reads in the workspace and read-only commands only (jnotes' rules).
+nil: no guard, agy prompting for each command as it does.  A project
+sets its own in .dir-locals.el.  Takes effect when an agy agent starts
+or is respawned."
+  :type '(choice (const :tag "Auto (guarded)" auto)
+                 (const :tag "Read-only (guarded)" read-only)
+                 (const :tag "Off: agy prompts" nil))
+  :group 'ghostherd)
+(put 'ghostherd-agy-guard 'safe-local-variable (lambda (v) (memq v '(nil read-only auto))))
+
+(defcustom ghostherd-guard-allow-commands nil
+  "A project's own commands its guarded agents run without asking, as
+prefixes: (\"npm test\" \"pytest\").  Set it per project in .dir-locals.el.
+Their files are checked all the same; not in `read-only'.  They run code
+the agent can change (its tests, package scripts), which the guard never
+sees: allow only what you would let it run unwatched."
+  :type '(repeat string)
+  :group 'ghostherd)
+(put 'ghostherd-guard-allow-commands 'safe-local-variable
+     (lambda (v) (and (listp v) (seq-every-p #'stringp v))))
+
+(defcustom ghostherd-guard-root "~/.ghostherd/guard/"
+  "Where each guarded agent's guard directory goes: <root>/<agent>/.
+The sidecar writes the user's approvals there, and only there
+(GHOSTHERD_GUARD_ROOT)."
+  :type 'directory
+  :group 'ghostherd)
+
+(defcustom ghostherd-agent-env-scrub
+  '("(^|_)(TOKEN|TOKENS|SECRET|SECRETS|KEY|KEYS|APIKEY|PASSWORD|PASSWD|PASS|PASSPHRASE|CREDENTIAL|CREDENTIALS|AUTH|COOKIE|PRIVATE)(_|$)"
+    "^AWS_" "^GH_" "^GITHUB_" "^ANTHROPIC_" "^OPENAI_" "^GOOGLE_" "^GEMINI_"
+    "^GHOSTHERD_TELEGRAM_" "^CLAUDE_CODE_" "^AZURE_" "^HF_" "^HUGGING" "^NPM_"
+    "^PYPI_" "^TWINE_" "^SLACK_" "^STRIPE_" "^BITBUCKET_" "^CLICKUP_")
+  "Variables a guarded agent starts without: names matching any of these
+Python regular expressions -- by word between underscores, so
+GITHUB_TOKEN goes and GIT_AUTHOR_NAME stays.  agy keeps its own login
+in ~/.gemini, not the environment."
+  :type '(repeat string)
+  :group 'ghostherd)
+
+(defcustom ghostherd-agent-env-keep
+  '("GHOSTHERD_RPC" "GHOSTHERD_RPC_FILE" "GHOSTHERD_SESSION" "GHOSTHERD_HERD"
+    "GHOSTHERD_SOCKET" "GHOSTHERD_BACKEND" "SSH_AUTH_SOCK")
+  "Variables a guarded agent keeps though a scrub pattern matches them:
+what the herd and git need.  GHOSTHERD_RPC carries the sidecar's token;
+the guard refuses every command that would print it."
+  :type '(repeat string)
+  :group 'ghostherd)
+
+(defconst ghostherd--agy-guard-note "\
+A herd guard checks each of your tool calls.  Your workspace is %s and your
+commands run there.  %s is the herd's guard, listed among your workspaces:
+it is not yours -- leave it alone.  Reading and changing files in your
+workspace and read-only commands run; anything else is denied, with a
+reason saying what to do instead.  A denial that needs the user says so:
+they can approve that exact call once on your card, and the herd tells you
+when -- then run exactly that call again.  Do not look for another way
+around a denial, and never read secrets (.env, keys, tokens, the
+environment) without that approval.
+
+"
+  "What a guarded agy agent is told first, before its memory opening: a
+format string, its workspace and its guard directory.")
+
+(defun ghostherd--dir-local (directory var default)
+  "VAR as DIRECTORY's .dir-locals.el sets it, or DEFAULT when it does not --
+nil set there counts.  Read as `ghostherd-project-defaults' reads them."
+  (let ((directory (file-name-as-directory (expand-file-name directory))))
+    (or (ignore-errors
+          (with-temp-buffer
+            (setq default-directory directory)
+            (setq-local buffer-file-name (expand-file-name ".ghostherd" directory))
+            (hack-dir-local-variables)
+            (when-let* ((cell (assq var file-local-variables-alist)))
+              (list (cdr cell)))))
+        (list default))))
+
+(defun ghostherd--agy-guard-mode (directory)
+  "The guard mode an agy agent in DIRECTORY runs under: auto, read-only or nil."
+  (let ((mode (car (ghostherd--dir-local directory 'ghostherd-agy-guard ghostherd-agy-guard))))
+    (and (memq mode '(auto read-only)) mode)))
+
+(defun ghostherd--guard-dir (name)
+  "Agent NAME's guard directory."
+  (file-name-as-directory (expand-file-name name (expand-file-name ghostherd-guard-root))))
+
+(defun ghostherd--agy-guard-setup (name mode directory project)
+  "Write agent NAME's guard: its policy -- MODE, its workspace DIRECTORY,
+PROJECT to read too, the project's own commands, the herd's secrets -- and
+the hooks.json agy loads from it.  Return the guard directory."
+  (let* ((dir (ghostherd--guard-dir name))
+         (herd (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client)))
+         (cmd (concat (shell-quote-argument (or herd "herd")) " guard " (shell-quote-argument dir)
+                      " || echo '{\"decision\":\"deny\",\"reason\":\"The herd guard did not answer; tell the user.\"}'")))
+    (make-directory (expand-file-name ".agents" dir) t)
+    (set-file-modes dir #o700)
+    (let ((coding-system-for-write 'utf-8)
+          (json-encoding-pretty-print t))
+      (with-temp-file (expand-file-name "policy.json" dir)
+        (insert (json-encode
+                 (list :agent name
+                       :mode (symbol-name mode)
+                       :workspace (expand-file-name directory)
+                       :read_roots (vconcat (and project (list (expand-file-name project))))
+                       :allow_commands (vconcat (car (ghostherd--dir-local
+                                                      directory 'ghostherd-guard-allow-commands
+                                                      ghostherd-guard-allow-commands)))
+                       :herd (vconcat (delq nil (list herd (and herd (expand-file-name
+                                                                      "ghostherd" (file-name-directory herd))))))
+                       :guard_root (expand-file-name ghostherd-guard-root)
+                       :secret_dirs (vconcat (and (fboundp 'ghostherd-memory--data-directory)
+                                                  (list (ghostherd-memory--data-directory))))
+                       :secret_files (vconcat (and (fboundp 'ghostherd-memory--mail-directory)
+                                                   (list (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))))))
+      (with-temp-file (expand-file-name ".agents/hooks.json" dir)
+        (insert (json-encode
+                 `((ghostherd-guard
+                    . ((PreToolUse
+                        . [((matcher . "*")
+                            (hooks . [((type . "command") (command . ,cmd) (timeout . 15))]))]))))))))
+    dir))
+
+(defun ghostherd--with-agy-guard (args dir)
+  "ARGS with the guard's flags for DIR -- --dangerously-skip-permissions
+and --add-dir DIR -- or, DIR nil, without them.  Any earlier start's pair
+(an --add-dir under `ghostherd-guard-root', the flag before it) goes
+first, so a respawn takes the guard as it is now."
+  (let ((root (file-name-as-directory (expand-file-name ghostherd-guard-root)))
+        (in (copy-sequence args)) out)
+    (while in
+      (let ((a (pop in)))
+        (if (and (equal a "--dangerously-skip-permissions")
+                 (equal (car in) "--add-dir")
+                 (stringp (cadr in))
+                 (string-prefix-p root (file-name-as-directory (expand-file-name (cadr in)))))
+            (setq in (cddr in))
+          (push a out))))
+    (append (nreverse out)
+            (and dir (list "--dangerously-skip-permissions" "--add-dir"
+                           (directory-file-name dir))))))
+
+(defun ghostherd--scrub-wrapper ()
+  "The words run in front of a guarded agent's CLI: `herd scrub-exec',
+dropping `ghostherd-agent-env-scrub' from its environment."
+  (when-let* (((fboundp 'ghostherd-herd-client))
+              (herd (ghostherd-herd-client)))
+    (append (list herd "scrub-exec")
+            (mapcan (lambda (re) (list "--scrub" re)) ghostherd-agent-env-scrub)
+            (mapcan (lambda (n) (list "--keep" n)) ghostherd-agent-env-keep)
+            (list "--"))))
+
+(defvar ghostherd--guard-requests nil
+  "The guard's requests from the last `herd_tick', newest first.")
+
+(defvar ghostherd--guard-seen (make-hash-table :test 'equal)
+  "Guard request id -> the status the log last told of it.")
+
+(defun ghostherd--herd-take-guard (requests)
+  "Keep REQUESTS from a `herd_tick', and log each refusal, approval and
+use once."
+  (dolist (r requests)
+    (let ((id (plist-get r :id))
+          (status (plist-get r :status)))
+      (unless (equal (gethash id ghostherd--guard-seen) status)
+        (puthash id status ghostherd--guard-seen)
+        (ghostherd--log-add
+         (or (plist-get r :session) "?") 'guard
+         (pcase status
+           ((or "pending" "denied")
+            (format "guard %s %s: %s -- %s" (if (equal status "pending") "needs approval" "denied")
+                    id (plist-get r :summary) (plist-get r :rule)))
+           ("approved" (format "guard %s approved once: %s" id (plist-get r :summary)))
+           ("used" (format "guard %s ran, approved: %s" id (plist-get r :summary)))
+           (_ (format "guard %s %s: %s" id status (plist-get r :summary))))))))
+  (setq ghostherd--guard-requests requests))
+
+(defun ghostherd-guard-approve (id)
+  "Approve the guard's request ID once: the agent may run that exact call
+again, this once (the sidecar writes it into the agent's guard, and tells
+it)."
+  (interactive (list (completing-read "Approve guard request: "
+                                      (mapcar (lambda (r) (plist-get r :id))
+                                              (seq-filter (lambda (r) (equal (plist-get r :status) "pending"))
+                                                          ghostherd--guard-requests)))))
+  (ghostherd-memory-request-async
+   "herd_guard_approve" (lambda (_r) (message "ghostherd: approved %s once" id))
+   (list :id id)
+   (lambda (err) (message "ghostherd: approving %s: %s" id err))))
+
 ;;; Primary: the herd-wide lead
 ;;
 ;; The user's one entry point for what crosses projects, or where they do
@@ -8578,6 +8804,7 @@ reaches you there."
          (ghostherd--herd-take-asks (plist-get result :asks))
          (ghostherd--herd-take-links (plist-get result :links))
          (ghostherd--herd-take-reports (plist-get result :reports))
+         (ghostherd--herd-take-guard (plist-get result :guard))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :page_url (or (ghostherd--room-url) "")
