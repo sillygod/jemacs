@@ -1952,6 +1952,76 @@ built on the handoff.
 - Primary editing memory beyond its own store: a project's memory is its
   lead's, the user's preferences the user's -- refused, not only advised
 
+* Phase 3.36 — An agy agent with no prompts, behind the herd's guard  *(this tree)*
+
+Goal: a herd agy agent works without stopping at a permission prompt for
+every command, and still never quietly gets a secret.  agy 1.4.5's own
+=allow= from a hook does not skip its prompt; under
+=--dangerously-skip-permissions= a hook's =deny= blocks and =ask= runs
+unprompted.  So the flag, and the herd's guard as the only gate --- allow
+or deny --- with what wants the user a denial they approve once.
+
+** What shipped
+
+- [X] Measured first, in scratch (real agy, own tmux socket, every
+  =GHOSTHERD_*= unset, agy's settings restored byte for byte): an
+  =--add-dir='s =.agents/hooks.json= loads beside the global one;
+  =overwrite= rewrites a =run_command= under the flag; a scrubbed
+  environment reaches =run_command=, and agy logs in from =~/.gemini=
+  files; =PostToolUse= cannot change output (its payload has none);
+  agy runs its tools in its *first* workspace --- the =--add-dir= ---
+  even with the workspace listed first
+- [X] =herd guard DIR= (=bin/herd_guard.py=, stdlib): allowlist first,
+  jnotes' command parsing ported.  =auto= and =read-only=
+  (=ghostherd-agy-guard=, per project), the project's own commands
+  (=ghostherd-guard-allow-commands=).  Unknown tools, unreadable calls
+  and the guard's own failure deny
+- [X] Secrets in layers: the env scrubbed at spawn (=herd scrub-exec=,
+  =ghostherd-agent-env-scrub= / =-keep=); commands revealing the env or
+  credentials denied; secret files denied to read and to search, with
+  =grep -r=, =rg= and =git diff/show/log/grep= rewritten to leave them out
+- [X] Every command the guard allows runs where it checked it (=cd
+  WORKSPACE && ...=), and relative file paths are refused unless agy says
+  it runs in the workspace --- else the guard checked one file and agy
+  read another
+- [X] Nothing runs outside it: writes into =.git= and the workspace's
+  agent-CLI folders ask, the agent's git runs no hooks, and the commands
+  that run or write code (=awk -f=, =print > file=, =sort
+  --compress-program=, =git grep -O=, =--output==) are refused; git's
+  config is a secret and searches leave =.git= out; a file named in an
+  option is checked like any other
+- [X] Approve once: the denial's reason says so; the card and the room's
+  column show it with *Approve once* (desk and phone); the sidecar writes
+  an allowance for that exact call into the agent's guard dir (which the
+  agent cannot read), tells the agent to run it again, and records its
+  use; a second tap is a no-op; unused, it lapses in 30 minutes.  The herd
+  log has each step
+- [X] The agent's first message: a guard decides, its workspace, the
+  guard's folder is not its own.  A respawn takes the guard as it is then
+- [X] pytest (the guard, jnotes' bypass cases, a secrets suite in quoted
+  and obfuscated forms, searches rewritten and run for real, approvals,
+  the sidecar), ERT (spawn, scrub through the real =scrub-exec=, both
+  backends' wrapper, the log, the card's intent), e2e (=herd-guard=, desk
+  and phone) --- each broken on purpose and caught; a scratch run of real
+  agy: a planted =.env= and an env token denied, approved once, run once,
+  denied again
+- [ ] After the merge, by hand: restart the sidecar (new table, RPCs,
+  =GHOSTHERD_GUARD_ROOT= in its env from the reloaded
+  =ghostherd-memory.el=); reload the =.el= (new defcustoms); the page
+  reloads its =ui= itself; running agy agents get the guard on their
+  next respawn
+
+** Deliberately not done
+
+- Redacting a tool's output: agy's =PostToolUse= cannot change it, so
+  nothing claims to; the other layers hold alone
+- A Telegram button for Approve once: the page is the phone's way, for now
+- grok: investigated only --- its =ask= prompts even when always
+  approving, and an unknown decision fails open unless the hook exits 2
+- Guarding a project's own commands (=ghostherd-guard-allow-commands=):
+  they run code the agent can change, so the readme says to allow only
+  what may run unwatched
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

@@ -470,6 +470,10 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
            (list (format "GHOSTHERD_MEMORY_HOST=%s" ghostherd-memory-host)
                  (format "GHOSTHERD_MEMORY_PORT=%d" port)
                  (format "GHOSTHERD_MEMORY_DIR=%s" data))
+           ;; Where guarded agents' guards live: the one place the sidecar
+           ;; writes the user's approvals into.
+           (when (boundp 'ghostherd-guard-root)
+             (list (format "GHOSTHERD_GUARD_ROOT=%s" (expand-file-name ghostherd-guard-root))))
            (when (getenv "GHOSTHERD_TELEGRAM_TOKEN")
              (list (format "GHOSTHERD_TELEGRAM_TOKEN=%s"
                            (getenv "GHOSTHERD_TELEGRAM_TOKEN"))))

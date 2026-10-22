@@ -1755,6 +1755,17 @@ forge or ClickUp instead, which want their own login."
                          (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
                                      (ghostherd--agent-kinds))))
          :pickers (ghostherd-memory-page--pickers)
+         ;; What guarded agents' guards refused, and what was approved once.
+         :guard (ghostherd-memory-page--vec
+                 (mapcar (lambda (r)
+                           (list :id (plist-get r :id) :session (plist-get r :session)
+                                 :tool (or (plist-get r :tool) "") :summary (or (plist-get r :summary) "")
+                                 :reason (or (plist-get r :reason) "") :rule (or (plist-get r :rule) "")
+                                 :kind (or (plist-get r :kind) "")
+                                 :approvable (if (eq (plist-get r :approvable) t) t :json-false)
+                                 :status (or (plist-get r :status) "")
+                                 :created (plist-get r :created_ms)))
+                         (and (boundp 'ghostherd--guard-requests) ghostherd--guard-requests)))
          ;; Primary, the herd-wide lead: where its room is, up or not --
          ;; the Agents tab opens it from its header, and the room's chat
          ;; starts it with the first message.
@@ -2582,6 +2593,18 @@ attach it.  It comes from the page on another device -- a phone's photo
                "Starting primary; it gets your message once it is ready"))
     (ghostherd-memory-page--send-herd)))
 
+(defun ghostherd-memory-page--guard-approve (intent)
+  "Approve INTENT's guard request once: the agent may run that exact call again."
+  (let ((id (alist-get 'id intent)))
+    (unless (and (stringp id) (string-match-p "\\`[0-9a-f]\\{4,32\\}\\'" id))
+      (user-error "No such request"))
+    (ghostherd-memory-request-async
+     "herd_guard_approve"
+     (lambda (_r)
+       (ghostherd-memory-page--js "flash" "Approved once; the agent is told to run it again"))
+     (list :id id)
+     (lambda (err) (ghostherd-memory-page--js "showError" (format "Could not approve: %s" err))))))
+
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus.
 With a true `worktree', give it its own git worktree off the project's
@@ -2782,6 +2805,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("agent-image-upload" (ghostherd-memory-page--agent-image-upload intent))
         ("lead-say" (ghostherd-memory-page--lead-say intent))
         ("primary-say" (ghostherd-memory-page--primary-say intent))
+        ("guard-approve" (ghostherd-memory-page--guard-approve intent))
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))

@@ -118,6 +118,26 @@ MEMORY_HOLD = 5
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
 
+# How long the user's one-time approval of a guarded call waits to be used
+# (bin/herd_guard.py, APPROVAL_SECONDS).
+GUARD_APPROVAL_SECONDS = 1800
+
+
+def guard_root() -> str:
+    "Where guarded agents' guard directories live: GHOSTHERD_GUARD_ROOT, as Emacs says."
+    return os.environ.get("GHOSTHERD_GUARD_ROOT") or os.path.expanduser("~/.ghostherd/guard")
+
+
+def _guard_lib():
+    "bin/herd_guard.py, whose approvals file this writes."
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "bin" / "herd_guard.py"
+    spec = importlib.util.spec_from_file_location("herd_guard", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # A handoff to a project with no lead waits this long for Emacs to start
 # one; past it, it fails -- Emacs never took the request, or never said.
 HANDOFF_START_SECONDS = 180
@@ -363,6 +383,30 @@ class HerdStore:
                 project TEXT NOT NULL,
                 at TEXT NOT NULL,
                 PRIMARY KEY (chat_id, message_id)
+            )
+            """
+        )
+        # What a guarded agent's guard refused, and what the user approved of
+        # it, once (bin/herd_guard.py): for the card, the log and the
+        # one-time allowance.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guard_requests (
+                id TEXT PRIMARY KEY,
+                session TEXT NOT NULL,
+                guard_dir TEXT,
+                tool TEXT,
+                summary TEXT,
+                reason TEXT,
+                rule TEXT,
+                kind TEXT,
+                approvable INTEGER NOT NULL DEFAULT 0,
+                fp TEXT,
+                call TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                approved_at TEXT,
+                used_at TEXT
             )
             """
         )
@@ -1658,6 +1702,120 @@ class HerdStore:
             )
             self._conn.commit()
 
+    # ---- A guarded agent's guard -------------------------------------------
+    #
+    # Its guard decides alone (bin/herd_guard.py); what it refused comes here
+    # for the card and the log.  A refusal the user may approve is approved
+    # once, for that exact call: the herd writes the allowance into the
+    # agent's guard directory -- only there, under the guard root, whatever
+    # the request says -- and tells the agent to run it again.
+
+    def guard_denied(self, session: str, guard_dir: str, tool: str, summary: str, reason: str,
+                     rule: str, kind: str, approvable: bool, fp: str, call: str) -> dict[str, Any]:
+        "Record a refusal; the same call refused again while it waits keeps its request."
+        session = (session or "").strip()
+        if not session:
+            raise ValueError("session is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            if approvable and fp:
+                row = self._conn.execute(
+                    "SELECT id FROM guard_requests WHERE session = ? AND fp = ? AND status = 'pending'",
+                    (session, fp)).fetchone()
+                if row:
+                    return {"id": row[0], "status": "pending"}
+            gid = uuid.uuid4().hex[:8]
+            self._conn.execute(
+                """
+                INSERT INTO guard_requests (id, session, guard_dir, tool, summary, reason, rule, kind,
+                                            approvable, fp, call, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (gid, session, guard_dir or "", tool or "", (summary or "")[:400], (reason or "")[:1000],
+                 rule or "", kind or "", 1 if approvable else 0, fp or "", (call or "")[:4000],
+                 "pending" if approvable else "denied", now),
+            )
+            self._conn.commit()
+        return {"id": gid, "status": "pending" if approvable else "denied"}
+
+    def guard_approve(self, gid: str, root: str | None = None) -> dict[str, Any]:
+        """The user approves refused call GID, once: its allowance goes into its
+        agent's guard directory under ROOT (GUARD_ROOT), and the agent is told."""
+        root = os.path.realpath(os.path.expanduser(root or guard_root()))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT session, guard_dir, summary, approvable, fp, status FROM guard_requests WHERE id = ?",
+                ((gid or "").strip(),)).fetchone()
+            if not row:
+                raise ValueError(f"no guard request {gid}")
+            session, guard_dir, summary, approvable, fp, status = row
+            if not approvable:
+                raise ValueError("that call is never run by an agent; it cannot be approved")
+            if status == "approved":  # approved already (a second tap): once is once
+                return {"id": gid, "status": "approved"}
+            if status != "pending":
+                raise ValueError(f"guard request {gid} is {status}")
+            mine = os.path.join(root, session)
+            if not guard_dir or os.path.realpath(guard_dir) != os.path.realpath(mine) or not os.path.isdir(mine):
+                raise ValueError(f"guard request {gid} is not from {session}'s guard")
+            _guard_lib().add_approval(mine, fp, gid)
+            self._conn.execute(
+                "UPDATE guard_requests SET status = 'approved', approved_at = ? WHERE id = ?", (now, gid))
+            self._conn.execute(
+                """
+                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at)
+                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?)
+                """,
+                (str(uuid.uuid4()), session,
+                 f"[guard] The user approved, once: {summary}.  Run exactly that call again -- it is "
+                 f"allowed this once (request {gid}).", now),
+            )
+            self._conn.commit()
+        return {"id": gid, "status": "approved"}
+
+    def guard_used(self, gid: str) -> dict[str, Any]:
+        "The approved call ran: its approval is spent."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "UPDATE guard_requests SET status = 'used', used_at = ? WHERE id = ? AND status = 'approved'",
+                (now, (gid or "").strip()))
+            self._conn.commit()
+        return {"id": gid, "status": "used"}
+
+    def _guard_recent(self) -> list[dict[str, Any]]:
+        """Requests the card shows: waiting or approved, and the rest of the
+        last RECENT_SECONDS.  An approval unused past its time has lapsed.
+        Caller holds `_mu`."""
+        now = datetime.now(timezone.utc).timestamp()
+        out = []
+        for r in self._conn.execute(
+            """
+            SELECT id, session, tool, summary, reason, rule, kind, approvable, status,
+                   created_at, approved_at, used_at
+            FROM guard_requests ORDER BY created_at DESC LIMIT 200
+            """
+        ).fetchall():
+            status = r[8]
+            if status == "approved" and r[10] and now - datetime.fromisoformat(r[10]).timestamp() > GUARD_APPROVAL_SECONDS:
+                status = "lapsed"
+                self._conn.execute("UPDATE guard_requests SET status = 'lapsed' WHERE id = ?", (r[0],))
+            if status not in ("pending", "approved") and now - datetime.fromisoformat(r[9]).timestamp() > RECENT_SECONDS:
+                continue
+            out.append({"id": r[0], "session": r[1], "tool": r[2], "summary": r[3], "reason": r[4],
+                        "rule": r[5], "kind": r[6], "approvable": bool(r[7]), "status": status,
+                        "created_ms": _ms(r[9]), "approved_ms": _ms(r[10]), "used_ms": _ms(r[11])})
+            if len(out) >= 50:
+                break
+        return out
+
+    def guard_requests(self) -> dict[str, Any]:
+        with self._mu:
+            out = self._guard_recent()
+            self._conn.commit()
+        return {"requests": out}
+
     # ---- What agents say about themselves ----------------------------------
 
     REPORT_STATES = ("working", "blocked", "idle", "done", "auto")
@@ -2176,6 +2334,7 @@ class HerdStore:
                     answering.add(row[2])
                 deliverable.append(row[:7] + row[8:])
             asks = self._recent_asks()
+            guard = self._guard_recent()
             self._unwait(names, now)
             reports = [
                 {"session": r[0], "state": r[1], "reason": r[2] or ""}
@@ -2269,6 +2428,7 @@ class HerdStore:
             "asks": asks,
             "reports": reports,
             "links": links,
+            "guard": guard,
         }
 
     def _unwait(self, names: set[str], now: str) -> None:

@@ -33,6 +33,9 @@
 (defvar ghostel-progress-function nil)
 (defvar evil-local-mode nil)
 
+(defvar ghostherd-tests--guard-root (file-name-as-directory (make-temp-file "gh-guard-" t))
+  "Where a test's guarded agents' guards go: never the user's ~/.ghostherd/guard.")
+
 (defmacro ghostherd-tests--with-herd (bindings &rest body)
   "Run BODY with an empty session registry.
 BINDINGS are extra `let' bindings evaluated inside the clean registry."
@@ -55,6 +58,12 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; its role in the next.
          (ghostherd--role-owed (make-hash-table :test 'equal))
          (ghostherd--handoff-leads (make-hash-table :test 'equal))
+         ;; An agy spawned by a test is not guarded unless the test says so,
+         ;; and a guard it writes goes under a temp root -- never the user's.
+         (ghostherd-agy-guard nil)
+         (ghostherd-guard-root ghostherd-tests--guard-root)
+         (ghostherd--guard-requests nil)
+         (ghostherd--guard-seen (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
          ;; with a temporary file, and nowhere else.
@@ -12626,6 +12635,196 @@ collapse was the live bug: the page's `renderMemProposal' threw on
         (should (= 2 (length facts)))                    ; both facts kept, not one
         (should (equal "a" (plist-get (car facts) :name)))
         (should (equal "b" (plist-get (cadr facts) :name)))))))
+;;; The guard of an agy agent (ask 75362f01)
+
+(defmacro ghostherd-tests--with-guard (&rest body)
+  "BODY in a clean herd with the fake backend, a temp `repo' (a project),
+the guard on (auto) under a temp root, and the herd client at /p/bin/herd."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-repo
+     (ghostherd-tests--with-herd
+         ((ghostherd--roles (make-hash-table :test 'equal))
+          (ghostherd-tests--fake-spawned nil)
+          (ghostherd-agy-guard 'auto)
+          (ghostherd-guard-root (concat base "guard/"))
+          (ghostherd-guard-allow-commands nil))
+       (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+                 ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+                 ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                 ((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
+                 ((symbol-function 'ghostherd--when-ready) #'ignore)
+                 ((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd")))
+         ,@body))))
+
+(defun ghostherd-tests--json-file (file)
+  (with-temp-buffer
+    (insert-file-contents file)
+    (json-parse-buffer :object-type 'alist :array-type 'list)))
+
+(ert-deftest ghostherd-test-guard-mode-per-project ()
+  "auto unless a project's .dir-locals.el says otherwise -- read-only, or
+nil, which counts as said."
+  (ghostherd-tests--with-guard
+    (should (eq (ghostherd--agy-guard-mode repo) 'auto))
+    (let ((ghostherd-agy-guard nil)) (should-not (ghostherd--agy-guard-mode repo)))
+    (with-temp-file (concat repo ".dir-locals.el")
+      (insert "((nil . ((ghostherd-agy-guard . read-only) (ghostherd-guard-allow-commands . (\"npm test\")))))\n"))
+    (should (eq (ghostherd--agy-guard-mode repo) 'read-only))
+    (with-temp-file (concat repo ".dir-locals.el")
+      (insert "((nil . ((ghostherd-agy-guard . nil))))\n"))
+    (should-not (ghostherd--agy-guard-mode repo))))
+
+(ert-deftest ghostherd-test-a-guarded-agy-spawns-with-its-guard ()
+  "The flag and the --add-dir of its own guard dir, which holds its policy
+and the hooks.json agy loads; the env scrub runs in front of it; its first
+words say a guard decides."
+  (ghostherd-tests--with-guard
+    (with-temp-file (concat repo ".dir-locals.el")
+      (insert "((nil . ((ghostherd-guard-allow-commands . (\"npm test\" \"pytest\")))))\n"))
+    (let* ((said nil)
+           (s (cl-letf (((symbol-function 'ghostherd--when-ready) (lambda (_s f &rest _) (funcall f)))
+                        ((symbol-function 'ghostherd-prompt) (lambda (_s text &rest _) (setq said text)))
+                        ((symbol-function 'ghostherd--memory-opening) (lambda (_p) "MEMORY")))
+                (ghostherd-spawn 'agy :name "agy-p" :project repo :directory repo :backend 'fake :display nil)))
+           (dir (ghostherd--guard-dir "agy-p"))
+           (args (plist-get ghostherd-tests--fake-spawned :args)))
+      (should s)
+      (should (equal (last args 3) (list "--dangerously-skip-permissions" "--add-dir" (directory-file-name dir))))
+      (should (equal (file-modes dir) #o700))
+      (let ((pol (ghostherd-tests--json-file (concat dir "policy.json"))))
+        (should (equal (alist-get 'agent pol) "agy-p"))
+        (should (equal (alist-get 'mode pol) "auto"))
+        (should (equal (alist-get 'workspace pol) (expand-file-name repo)))
+        (should (equal (alist-get 'allow_commands pol) '("npm test" "pytest")))
+        (should (equal (alist-get 'herd pol) '("/p/bin/herd" "/p/bin/ghostherd")))
+        (should (equal (alist-get 'guard_root pol) (expand-file-name ghostherd-guard-root))))
+      (let* ((hooks (ghostherd-tests--json-file (concat dir ".agents/hooks.json")))
+             (group (car (alist-get 'PreToolUse (alist-get 'ghostherd-guard hooks))))
+             (cmd (alist-get 'command (car (alist-get 'hooks group)))))
+        (should (equal (alist-get 'matcher group) "*"))
+        (should (string-prefix-p (concat "/p/bin/herd guard " (shell-quote-argument dir)) cmd))
+        ;; No answer from the guard is a denial, never a silent allow.
+        (should (string-match-p "|| echo '{\"decision\":\"deny\"" cmd)))
+      (let ((wrapper (plist-get ghostherd-tests--fake-spawned :wrapper)))
+        (should (equal (seq-take wrapper 2) '("/p/bin/herd" "scrub-exec")))
+        (should (equal (car (last wrapper)) "--"))
+        (should (member "^GITHUB_" wrapper))
+        (should (member "GHOSTHERD_RPC" wrapper)))
+      (should (string-prefix-p (format ghostherd--agy-guard-note repo (ghostherd--guard-dir "agy-p")) said))
+      (should (string-suffix-p "MEMORY" said)))))
+
+(ert-deftest ghostherd-test-a-respawn-takes-the-guard-as-it-is-now ()
+  "The guard's pair goes once, however often it is started; the guard off
+takes it out -- but not a flag the user gave agy themselves."
+  (ghostherd-tests--with-guard
+    (let* ((dir (directory-file-name (ghostherd--guard-dir "a")))
+           (once (ghostherd--with-agy-guard '("--model" "x") (ghostherd--guard-dir "a"))))
+      (should (equal once (list "--model" "x" "--dangerously-skip-permissions" "--add-dir" dir)))
+      (should (equal (ghostherd--with-agy-guard once (ghostherd--guard-dir "a")) once))
+      (should (equal (ghostherd--with-agy-guard once nil) '("--model" "x")))
+      (should (equal (ghostherd--with-agy-guard '("--dangerously-skip-permissions") nil)
+                     '("--dangerously-skip-permissions"))))
+    ;; Respawned from a recipe that had it, with the guard now off.
+    (let ((ghostherd-agy-guard nil))
+      (ghostherd-spawn 'agy :name "agy-q" :project repo :directory repo :backend 'fake :display nil
+                       :args (list "--dangerously-skip-permissions" "--add-dir"
+                                   (directory-file-name (ghostherd--guard-dir "agy-q"))))
+      (should-not (member "--dangerously-skip-permissions" (plist-get ghostherd-tests--fake-spawned :args)))
+      (should-not (plist-get ghostherd-tests--fake-spawned :wrapper)))))
+
+(ert-deftest ghostherd-test-only-agy-is-guarded ()
+  "claude and grok spawn as they did: no flag, no guard, no wrapper."
+  (ghostherd-tests--with-guard
+    (dolist (kind '(claude grok))
+      (ghostherd-spawn kind :name (format "%s-p" kind) :project repo :directory repo :backend 'fake :display nil)
+      (should-not (member "--dangerously-skip-permissions" (plist-get ghostherd-tests--fake-spawned :args)))
+      (should-not (plist-get ghostherd-tests--fake-spawned :wrapper))
+      (should-not (file-exists-p (ghostherd--guard-dir (format "%s-p" kind)))))))
+
+(ert-deftest ghostherd-test-the-backends-run-the-wrapper-first ()
+  "tmux execs the wrapper, which execs the CLI; ghostel types it first."
+  (let ((got nil))
+    (cl-letf (((symbol-function 'ghostherd-tmux--ensure-available) #'ignore)
+              ((symbol-function 'ghostherd-tmux--unique-id) (lambda (&rest _) "gh-x"))
+              ((symbol-function 'ghostherd-tmux--write-recipe) #'ignore)
+              ((symbol-function 'ghostherd-tmux--forget) #'ignore)
+              ((symbol-function 'ghostherd-agent-environment) (lambda (&rest _) nil))
+              ((symbol-function 'ghostherd-tmux--new-session) (lambda (args _env) (setq got args))))
+      (ghostherd-backend-spawn 'tmux (list :name "x" :command "agy" :args '("--add-dir" "/g")
+                                           :directory "/tmp/" :wrapper '("/p/bin/herd" "scrub-exec" "--"))))
+    (should (equal (last got 6) '("/p/bin/herd" "scrub-exec" "--" "agy" "--add-dir" "/g")))
+    ;; ghostel types the launch line into its shell: the wrapper, quoted, first.
+    (let ((buf (generate-new-buffer " *gh-wrapper-test*")) typed)
+      (unwind-protect
+          (cl-letf (((symbol-function 'ghostherd--require-ghostel) #'ignore)
+                    ((symbol-function 'ghostherd-agent-environment) (lambda (&rest _) nil))
+                    ((symbol-function 'ghostel) (lambda (&rest _) buf))
+                    ((symbol-function 'ghostherd--launch-in-buffer) (lambda (_b launch) (setq typed launch))))
+            (ghostherd-backend-spawn 'ghostel (list :name "gh-wrapper-test" :command "agy" :args '("--add-dir" "/g")
+                                                    :directory "/tmp/"
+                                                    :wrapper '("/p/bin/herd" "scrub-exec" "--scrub" "(^|_)KEY" "--"))))
+        (kill-buffer buf))
+      (should (equal typed "/p/bin/herd scrub-exec --scrub \\(\\^\\|_\\)KEY -- agy --add-dir /g")))))
+
+(ert-deftest ghostherd-test-the-default-scrub-drops-secrets-and-keeps-the-herd ()
+  "The default patterns, run through the real `herd scrub-exec': this
+herd's own secret names go, what the herd and git need stays."
+  (let* ((herd (expand-file-name "bin/herd" (file-name-directory (locate-library "ghostherd"))))
+         (ghostherd-herd-client-function nil)
+         (process-environment
+          (append '("GITHUB_TOKEN=s" "BITBUCKET_TOKEN=s" "CLICKUP_API_TOKEN=s" "GRAFANA_API_KEY=s"
+                    "GRAFANA_WG_API_KEY=s" "ANTHROPIC_API_KEY=s" "OPENAI_API_KEY=s" "AWS_SECRET_ACCESS_KEY=s"
+                    "AWS_REGION=s" "GH_TOKEN=s" "GOOGLE_API_KEY=s" "GEMINI_API_KEY=s" "CLAUDE_CODE_MESSAGING_TOKEN=s"
+                    "GHOSTHERD_TELEGRAM_TOKEN=s" "GHOSTHERD_TELEGRAM_CHAT_IDS=s" "NPM_TOKEN=s"
+                    "DB_PASSWORD=s" "MY_SECRET=s" "REGISTRY_AUTH_FILE=s" "SESSION_COOKIE=s"
+                    "GHOSTHERD_RPC=keep" "GHOSTHERD_SESSION=keep" "GHOSTHERD_HERD=keep" "SSH_AUTH_SOCK=keep"
+                    "GIT_AUTHOR_NAME=keep" "KEYBOARD_LAYOUT=keep" "PLAIN=keep")
+                  process-environment)))
+    (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () herd)))
+      (let ((out (with-temp-buffer
+                   (apply #'call-process (car (ghostherd--scrub-wrapper)) nil t nil
+                          (append (cdr (ghostherd--scrub-wrapper))
+                                  (list "python3" "-c" "import os, json; print(json.dumps(sorted(os.environ)))")))
+                   (json-parse-string (buffer-string) :array-type 'list))))
+        (dolist (gone '("GITHUB_TOKEN" "BITBUCKET_TOKEN" "CLICKUP_API_TOKEN" "GRAFANA_API_KEY" "GRAFANA_WG_API_KEY"
+                        "ANTHROPIC_API_KEY" "OPENAI_API_KEY" "AWS_SECRET_ACCESS_KEY" "AWS_REGION" "GH_TOKEN"
+                        "GOOGLE_API_KEY" "GEMINI_API_KEY" "CLAUDE_CODE_MESSAGING_TOKEN" "GHOSTHERD_TELEGRAM_TOKEN"
+                        "GHOSTHERD_TELEGRAM_CHAT_IDS" "NPM_TOKEN" "DB_PASSWORD" "MY_SECRET" "REGISTRY_AUTH_FILE"
+                        "SESSION_COOKIE"))
+          (should-not (member gone out)))
+        (dolist (kept '("GHOSTHERD_RPC" "GHOSTHERD_SESSION" "GHOSTHERD_HERD" "SSH_AUTH_SOCK" "GIT_AUTHOR_NAME"
+                        "KEYBOARD_LAYOUT" "PLAIN" "PATH" "HOME"))
+          (should (member kept out)))))))
+
+(ert-deftest ghostherd-test-the-guards-requests-are-logged-once ()
+  "Each refusal, approval and use is a log line, once."
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (let ((r (lambda (status) (list (list :id "g1" :session "agy-p" :status status
+                                         :summary "run_command: cat .env" :rule "secret-file")))))
+      (ghostherd--herd-take-guard (funcall r "pending"))
+      (ghostherd--herd-take-guard (funcall r "pending"))
+      (ghostherd--herd-take-guard (funcall r "approved"))
+      (ghostherd--herd-take-guard (funcall r "used"))
+      (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
+                     '("guard needs approval g1: run_command: cat .env -- secret-file"
+                       "guard g1 approved once: run_command: cat .env"
+                       "guard g1 ran, approved: run_command: cat .env")))
+      (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'guard)))))
+
+(ert-deftest ghostherd-test-the-cards-approve-once-reaches-the-herd ()
+  "Approve once on the card asks the sidecar to approve that request, by
+its id; anything not an id is refused before it goes anywhere."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (asked shown)
+    (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &rest _) (push (list method params) asked) (funcall ok nil)))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (&rest args) (push args shown))))
+      (ghostherd-memory-page--handle '((op . "guard-approve") (id . "1a2b3c4d")))
+      (should (equal asked '(("herd_guard_approve" (:id "1a2b3c4d")))))
+      (should (equal (car shown) '("flash" "Approved once; the agent is told to run it again")))
+      (dolist (bad '("../x" "" nil "1a2b3c4d; rm" "ZZZZ"))
+        (ghostherd-memory-page--handle `((op . "guard-approve") (id . ,bad))))
+      (should (= (length asked) 1)))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

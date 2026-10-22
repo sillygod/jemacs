@@ -932,6 +932,115 @@ Because there is one running Emacs for all worktrees, =bin/reload= refuses a
 file that is not under the checkout the live Emacs loads from: reloading a
 worktree's copy would overwrite the live definitions with that branch's.
 
+* The guard: an agy agent with no prompts, and no secrets
+
+agy asks before each command it runs, and its own hooks cannot answer
+that: an =allow= from a hook does not skip the prompt (agy 1.4.5).  So a
+herd agy agent runs with =--dangerously-skip-permissions=, and the herd's
+guard is the only gate.  Every tool call goes first to =herd guard=
+(=bin/herd_guard.py=, stdlib only), which answers *allow* or *deny* ---
+never "ask", which under that flag does not prompt.  A tool it does not
+know, a call it cannot read, and the guard failing are all denials.
+
+=ghostherd-agy-guard= (per project in =.dir-locals.el=) picks the rules:
+
+- =auto= (the default) --- reads and writes inside the agent's workspace;
+  read-only commands (=grep=, =rg=, =ls=, =cat=, =head=, =find= without
+  =-exec= or =-delete=, ...); =git status/diff/log/show/branch/...= and
+  the local writes (=add=, =commit=, =switch=, =stash=, =restore=, =mv=),
+  which run with git's hooks off; the herd's own commands; and the
+  project's own, from =ghostherd-guard-allow-commands= (=("npm test"
+  "pytest")=)
+- =read-only= --- jnotes' rules: reads and read-only commands only
+- =nil= --- no guard; agy prompts as it always has
+
+Everything else is denied with a reason the agent reads.  Some denials are
+the user's to lift, *once, for that exact call*: reading outside the
+workspace, =git push=, package installs, the network, an unknown command
+or tool, and every secret.  Some are never run by an agent, and have no
+way through: =rm -rf=, =sudo=, =git push --force=, =git reset --hard=, and
+anything touching the guard's own directory.
+
+*Secrets, in layers.*  Where reads are allowed, the agent still never
+quietly gets a token or a key:
+
+1. *Not in its environment.*  A guarded agent starts through =herd
+   scrub-exec=, which drops every variable matching
+   =ghostherd-agent-env-scrub= --- names with a =TOKEN=, =SECRET=, =KEY=,
+   =PASSWORD=, =CREDENTIAL=, =AUTH=, ... word, and the =AWS_=, =GH_=,
+   =GITHUB_=, =ANTHROPIC_=, =OPENAI_=, =GOOGLE_=, =GEMINI_=,
+   =GHOSTHERD_TELEGRAM_= ... families --- keeping
+   =ghostherd-agent-env-keep= (=GHOSTHERD_RPC= and the herd's others,
+   =SSH_AUTH_SOCK=).  agy logs in from its files in =~/.gemini=, not the
+   environment, and runs without them.  What is not there cannot leak
+2. *Commands that show the environment or credentials are denied* ---
+   =env=, =printenv=, =set=, =export -p=, =declare -p/-x=, any =$VAR=,
+   =${...}= or backtick, =ps e=, =launchctl getenv=, =security
+   find-*-password=, =gh auth token=, =gcloud auth print-*=, =git
+   credential=, =git config credential.*=, an interpreter's inline code
+   (=python -c=, =node -e=, =perl -e=, ...), =/proc/*/environ=
+3. *Secret files are denied*, to read and to search, inside the workspace
+   too: =.env=, =.env.*=, =.envrc=, =*.pem=, =*.key=, =*.p12=,
+   =id_rsa*=, =.netrc=, =.npmrc=, =.pypirc=, =.git-credentials=,
+   =credentials*=, =*secret*=, =*token*=; =~/.ssh=, =~/.aws=,
+   =~/.kube=, =~/.docker=, =~/.config/gh=, =~/.claude=, =~/.gemini=,
+   =~/.grok=, the herd's =rpc.token= and =rpc.url=, and git's =.git/config=
+   (a remote URL can carry a token).  A symlink is judged by where it
+   leads as well as its name, and a file named in an option (=-fFILE=,
+   =--from-file=FILE=, =git commit -F FILE=) like any other.  A recursive
+   search does not sweep them in passing: the guard rewrites =grep -r= and
+   =rg= to leave them and =.git= out (=--exclude=, =--glob '!...'=) and
+   =git diff/show/log/grep= to skip them by pathspec, and refuses agy's
+   own =grep_search= over a folder that holds one
+4. *No redaction after the fact.*  agy's =PostToolUse= cannot change what
+   a tool returned --- its payload does not even carry it --- so the first
+   three layers hold on their own
+
+*Code outside the guard.*  The layers hold only while everything the agent
+runs passes the guard, so the guard also refuses what would run code it
+never sees: writing into =.git= (hooks, =core.fsmonitor= in its config)
+or the workspace's =.agents=, =.gemini=, =.claude= or =.grok= (agent CLIs'
+hooks) asks; git's hooks are off for the agent's own git (a hook is code
+it can change --- a tracked =.husky/=, a pre-commit config); =awk -f=,
+=awk= that writes (=print > file=), =sort --compress-program=, =rg
+--hostname-bin=, =git grep -O=, =--output== are refused.  Two things it
+cannot cover, by their nature:
+
+- A project command from =ghostherd-guard-allow-commands= runs code the
+  agent can change --- tests, =package.json= scripts --- and so can do
+  anything you can, unguarded; only the scrubbed environment holds there.
+  Allow only what you would let it run unwatched
+- What the agent writes, you may run later yourself (its tests, a hook
+  config in the tree, a script): read its diff first
+
+*Approve once.*  A denial the user may lift says so ("they can approve
+this exact call once on your card"), and shows on the agent's card and
+its room's column, on the desk and the phone: "⛔ needs your approval",
+the call, the reason on hover, *Approve once* (also =M-x
+ghostherd-guard-approve=).  Approving writes an allowance for that call
+--- its tool and arguments, exactly --- into the agent's guard directory,
+which the agent cannot read; the herd tells the agent "approved: <call>,
+run it again"; the next identical call runs and spends it.  An allowance
+unused for 30 minutes lapses.  The herd log has each step: =guard needs
+approval=, =approved once=, =ran, approved=.
+
+*Where it runs.*  The guard lives in =~/.ghostherd/guard/<agent>/=
+(=ghostherd-guard-root=): its =policy.json=, its =approved.json=, and the
+=.agents/hooks.json= agy loads through =--add-dir=, merged with
+=~/.gemini/config/hooks.json= (which the herd leaves alone).  agy runs its
+tools in its *first* workspace --- that =--add-dir=, not the agent's own
+--- so the guard sends every command it allows to where it checked it
+(=cd WORKSPACE && ...=, or the call's =Cwd=), and refuses relative file
+paths unless agy says it is in the workspace.  The agent's first message
+says that a guard decides, names its workspace, and says the guard's
+folder is not its own.  The first start of a new agent's guard folder
+may ask, on agy's screen, whether to trust it.
+
+A respawn takes the guard as it is then: the flags are worked out at each
+start, so turning =ghostherd-agy-guard= on or off reaches an agent the
+next time it starts.  grok is not guarded (its =PreToolUse= =ask= prompts
+even when always-approving, so it would need its own design).
+
 * From a shell (=bin/ghostherd=)
 
 =ghostel_cmd= reaches the herd from inside an agent's own terminal. This is
@@ -1912,6 +2021,14 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
   ;; OSC 9;4 progress as evidence of `working'
   (setq ghostherd-use-osc-progress t
         ghostherd-progress-ttl 5)         ; seconds a report stays trusted
+
+  ;; The guard of an agy agent (see "The guard").  Per project in
+  ;; .dir-locals.el: ghostherd-agy-guard, ghostherd-guard-allow-commands.
+  (setq ghostherd-agy-guard 'auto         ; or read-only, or nil: agy prompts
+        ghostherd-guard-allow-commands nil ; ("npm test" "pytest")
+        ghostherd-guard-root "~/.ghostherd/guard/")
+  ;; ghostherd-agent-env-scrub / ghostherd-agent-env-keep: the variables a
+  ;; guarded agent starts without, and those it keeps all the same.
 
   ;; How long an agent's own report about itself is believed.  Short is
   ;; safe: when the report was true the prompt is still on screen, so
