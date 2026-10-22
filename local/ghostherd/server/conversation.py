@@ -758,6 +758,78 @@ def _epoch(ts: Any) -> float | None:
         return None
 
 
+# ---- Whether a turn is over -------------------------------------------------
+#
+# What the herd closes an ask on, for a taker whose hooks report: a turn's
+# end, never its screen reading idle (a claude view scrolled back hides the
+# spinner).  claude's transcript marks the end itself: `turn_duration' once
+# a turn is over (after the Stop hooks' summary), its final message
+# (`end_turn') a moment before that, or the user's interrupt -- which fires
+# no Stop hook.  And it marks a turn still running: a tool call or its
+# result last, or a prompt -- a background task's notice among them, which
+# wakes the agent with no hook saying so.
+
+# Read back from the end this much at first, four times more each time
+# no whole entry is in it -- a prompt or tool result carrying images can
+# run to megabytes -- up to TAIL_MAX.
+TURN_TAIL = 256 * 1024
+_TURN_SKIP = ("<command-", "<local-command-", "<bash-")
+_ENDED_BY = ("end_turn", "stop_sequence")
+
+
+def _turn_mark(rec: dict[str, Any]) -> bool | None:
+    """What claude transcript entry REC says of its turn: True, it ended;
+    False, it runs; None, nothing -- an entry to read past."""
+    if rec.get("isSidechain"):
+        return None
+    kind = rec.get("type")
+    message = rec.get("message") or {}
+    if kind == "system":
+        # Not the Stop hooks' summary, a compaction, a local command.
+        return True if rec.get("subtype") == "turn_duration" else None
+    if kind == "assistant":
+        return message.get("stop_reason") in _ENDED_BY
+    if kind != "user" or rec.get("isMeta"):
+        return None
+    content = message.get("content")
+    texts = [content] if isinstance(content, str) else [
+        part.get("text") or "" for part in content or []
+        if isinstance(part, dict) and part.get("type") == "text"]
+    if any(t.startswith("[Request interrupted") for t in texts):
+        return True
+    if isinstance(content, str) and content.startswith(_TURN_SKIP):
+        return None  # a slash command's own bookkeeping, not a turn
+    return False  # a tool's result, or a prompt: a turn runs
+
+
+def turn_ended(path: str, since: float | None = None) -> bool | None:
+    """Whether the last turn in transcript PATH is over, by its own entries:
+    True once it ended, False while it runs, None when it cannot say -- no
+    such transcript, a CLI whose transcript marks no turn's end (agy, grok),
+    or nothing in it since SINCE (epoch seconds), when the agent's hooks
+    say the turn began: what came before is an earlier turn's."""
+    try:
+        real, cli = locate(path)
+        if cli != "claude":
+            return None
+        window = TURN_TAIL
+        while True:
+            lines, cut = _tail(real, window)
+            for rec in reversed(list(_records(lines))):
+                mark = _turn_mark(rec)
+                if mark is None:
+                    continue
+                ts = _epoch(rec.get("timestamp"))
+                if since is not None and ts is not None and ts <= since:
+                    return None  # an earlier turn's: nothing yet of this one
+                return mark
+            if not cut or window >= TAIL_MAX:
+                return None
+            window *= 4
+    except (ValueError, OSError):
+        return None
+
+
 def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
                 replied: set[str]) -> list[dict[str, Any]]:
     """NAME's ENTRIES as chat items.  An ask is shown as its taker received

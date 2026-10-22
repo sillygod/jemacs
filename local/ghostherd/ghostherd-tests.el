@@ -11998,5 +11998,179 @@ the lead it was for."
                      '(("ask-failed" "lead-p" "other's lead"))))
       (should (equal (mapcar #'ghostherd-log-entry-session ghostherd--log) '("lead-p"))))))
 
+;;; A view scrolled back is not the agent's state (ask b77cf6dd)
+
+(defconst ghostherd-tests--claude-scrolled-back
+  "❯ [Image #69]
+      3273 +    if (!box) return;
+      3274 +    const pend = (mem.proposals || []).filter((p)
+           +=> p.status === \"pending\");
+      3275 +    if (!pend.length) { box.innerHTML = \"\"; return
+           +; }
+      3276 +    box.innerHTML = '<div class=\"mprops\"><h3 class
+           +=\"mprops-h\">Proposals</h3>' +
+      3277 +      pend.map(renderMemProposal).join(\"\") + \"</di
+           +v>\";
+      3278 +  }
+      3279 +
+      3280 +  function renderMemProposal(p) {
+      3281 +    const facts = (p.facts || []).map((f) =>
+      3282 +      '<span class=\"mpfact' + (f.gone ? \" gone\" :
+           +\"\") + '\" title=\"' + esc(f.name) + '\">' +
+      3283 +      esc(f.title || f.name) + \"</span>\").join(\"\")
+           +;
+      3284 +    const rejecting = mem.rejecting === p.id;
+      3285 +    const acts = rejecting
+      3286 +      ? '<div class=\"mpreject\"><input id=\"mem-prej
+           +\" type=\"text\" placeholder=\"Why? (optional)\" value=
+           +\"\">' +
+      3287 +        '<button type=\"button\" class=\"ghost small
+           +danger\" data-act=\"prop-reject-send\" data-id=\"' + e
+           +sc(p.id) + '\">Reject</button>' +
+      3288 +        '<button type=\"button\" class=\"ghost small\"
+           + data-act=\"prop-reject-cancel\" data-id=\"' + esc(p.
+           +id) + '\">Keep</button></div>'
+      3289 +      : '<div class=\"mpacts\">' +
+      3290 +        '<button type=\"button\" class=\"primary smal
+           +l\" data-act=\"prop-approve\" data-id=\"' + esc(p.id)
+           ++ '\">Approve</button>' +
+      3291 +        '<button type=\"button\" class=\"ghost small\"
+           + data-act=\"prop-reject\" data-id=\"' + esc(p.id) + '
+           +\">Reject</button></div>';
+      3292 +    return Jump to bottom (click) ↓
+                             ✔ Update installed · Restart to update
+─────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ⧉ herd-gate · esc to inte…
+
+"
+  "The screen ask 18f57d20 was closed with (2026-10-22 04:43:28Z), from the
+lead's transcript: claude-.emacs.d 23 minutes into its turn, its view
+scrolled back -- \"Jump to bottom (click) ↓\" over the view's last line,
+the spinner out of it, the footer's `esc to interrupt' cut off.")
+
+(defconst ghostherd-tests--agy-usage-panel
+  (concat "  GEMINI 4 ARGON\n"
+          "    Gemini 4 Argon Weekly Limit\n"
+          "      [██████████████████████████████████████████████████] 100.00%\n"
+          "    (1–29 of 38 lines)\n\n"
+          "    ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close\n"
+          "                                                             Gemini 3.8 Flash · high\n")
+  "agy's `/usage' panel paged over its conversation, from the herd log
+(entry 2519): no input box, the panel's own footer.")
+
+(ert-deftest ghostherd-test-a-scrolled-back-claude-view-reads-as-it-was ()
+  "The real screen reads idle by the rules -- the bug -- and is known for a
+view scrolled back, which keeps the state the agent was in."
+  (ghostherd-tests--with-herd ()
+    (let* ((spec (alist-get 'claude ghostherd-agent-specs))
+           (screen ghostherd-tests--claude-scrolled-back)
+           (s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'working))
+           (ghostherd-tests--fake-screen screen))
+      ;; What closed the ask: the rules alone call it idle.
+      (should (eq (car (ghostherd--match-rules screen (plist-get spec :screen-rules) t
+                                               (plist-get spec :spinner)))
+                  'idle))
+      (should (ghostherd--scrolled-back-p screen (plist-get spec :scrolled)))
+      (pcase-let ((`(,state . ,reason) (ghostherd--detect-state s)))
+        (should (eq state 'working))
+        (should (string-match-p "scrolled back" reason)))
+      ;; Idle before, idle still: it tells nothing either way.
+      (setf (ghostherd-session-state s) 'idle)
+      (should (eq (car (ghostherd--detect-state s)) 'idle))
+      ;; What the agent says of itself, while believed, still wins.
+      (puthash "c" (list 'done "finished its turn" (current-time)) ghostherd--reports)
+      (should (equal (ghostherd--detect-state s) '(done . "finished its turn"))))))
+
+(ert-deftest ghostherd-test-a-watched-agent-scrolled-back-stays-working ()
+  "The case itself: the user watching an agent mid-turn scrolls its view
+back.  The poll keeps it working -- no `done, but you are watching', no
+idle -- however long, so an ask it holds is not settled."
+  (ghostherd-tests--with-herd ((ghostherd-idle-settle 0)
+                               (ghostherd-watched-functions (list (lambda (_) t))))
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'working))
+          (ghostherd-tests--fake-screen ghostherd-tests--claude-scrolled-back)
+          (settled nil))
+      (cl-letf (((symbol-function 'ghostherd--ask-settle) (lambda (&rest _) (setq settled t)))
+                ((symbol-function 'ghostherd--maybe-notify-state) #'ignore))
+        (dotimes (_ 3) (ghostherd-poll-session s))
+        (should (eq (ghostherd-session-state s) 'working))
+        (should-not settled)
+        ;; Back at the bottom with the turn over: idle, as ever.
+        (let ((ghostherd-tests--fake-screen
+               (concat "⏺ Done.\n\n✻ Cooked for 23m 41s\n\n"
+                       "────────────────────\n❯ \n────────────────────\n"
+                       "  ⏵⏵ auto mode on (shift+tab to cycle)\n")))
+          (ghostherd-poll-session s))
+        (should (eq (ghostherd-session-state s) 'idle))))))
+
+(ert-deftest ghostherd-test-the-scrolled-marker-every-way-claude-draws-it ()
+  "However claude words its way back -- new messages, the key it names, the
+scroll hint -- and only at the foot of the view: quoted higher up in the
+conversation it is not the marker."
+  (let* ((rx (plist-get (alist-get 'claude ghostherd-agent-specs) :scrolled))
+         (box "                       ✔ Update installed\n────────\n❯ \n────────\n  ⏵⏵ auto mode on\n")
+         (at-foot (lambda (line) (ghostherd--scrolled-back-p (concat "⏺ work\n  more\n" line "\n" box) rx))))
+    (dolist (marker '("      return Jump to bottom (click) ↓"
+                      "            3 new messages (click) ↓"
+                      "            1 new message (ctrl+End) ↓"
+                      "            Jump to bottom ↓"
+                      "            Jump to bottom: fn+↓ to scroll"))
+      (should (funcall at-foot marker)))
+    (should-not (funcall at-foot "  I added the Jump to bottom check"))
+    ;; Higher up than the view's foot: the conversation quoting it.
+    (should-not (ghostherd--scrolled-back-p
+                 (concat "⏺ it drew \"Jump to bottom (click) ↓\" over the view\n"
+                         "  line\n  line\n  line\n  line\n  line\n" box)
+                 rx))
+    ;; A view at the bottom.
+    (should-not (ghostherd--scrolled-back-p (concat "⏺ Done.\n" box) rx))))
+
+(ert-deftest ghostherd-test-a-turn-end-report-settles-a-taker-already-stopped ()
+  "Its screen read it stopped and the sidecar left its ask open; its
+hook's turn end, when it comes, settles the ask -- though the state it
+reports changes nothing.  A `working' report does not."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "rd" :kind 'claude :state 'done :backend 'fake))
+          (ghostherd--reports (make-hash-table :test 'equal)))
+      (setq ghostherd-tests--fake-screen "⏺ Done.\n")
+      (puthash "a1" "rd" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'run-with-timer) #'ignore))
+        (ghostherd--herd-take-reports '((:session "rd" :state "working")))
+        (should-not requests)
+        (ghostherd--herd-take-reports '((:session "rd" :state "done" :reason "finished its turn"))))
+      (should (equal (mapcar #'car requests) '("herd_settle")))
+      (should (equal (plist-get (cadr (car requests)) :id) "a1"))
+      (should-not (gethash "a1" ghostherd--asks-open))
+      (ignore taker))))
+
+(ert-deftest ghostherd-test-agys-panel-keeps-its-state ()
+  "agy's `/usage' panel, paged over its conversation with no input box:
+by the rules alone, idle; known for a panel, the state it was in."
+  (ghostherd-tests--with-herd ()
+    (let* ((spec (alist-get 'agy ghostherd-agent-specs))
+           (s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake :state 'working))
+           (ghostherd-tests--fake-screen ghostherd-tests--agy-usage-panel))
+      (should (ghostherd--scrolled-back-p ghostherd-tests--agy-usage-panel (plist-get spec :scrolled)))
+      (should (eq (car (ghostherd--detect-state s)) 'working)))))
+
+(ert-deftest ghostherd-test-an-ask-left-open-on-a-turn-still-on-says-so ()
+  "The sidecar leaves the ask open -- the taker's hook has not said its
+turn ended -- and Emacs watches it again, saying why."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "rd" :kind 'claude :state 'working :backend 'fake)))
+      (setq ghostherd-tests--fake-screen ghostherd-tests--claude-scrolled-back)
+      (puthash "a1" "rd" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method cb &optional params _err)
+                   (setq requests (append requests (list (list method params))))
+                   (funcall cb '(:id "a1" :status "delivered" :turn_on t)))))
+        (ghostherd--set-state taker 'idle))
+      (should (equal (mapcar #'car requests) '("herd_settle")))
+      (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
+      (should (string-match-p "a1 left open: rd's turn has not ended by its hook or transcript"
+                              (ghostherd-log-entry-text (car ghostherd--log)))))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

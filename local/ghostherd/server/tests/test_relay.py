@@ -336,6 +336,7 @@ def test_the_heir_does_not_inherit_what_the_old_ones_hooks_said(tmp_path):
     # Its inherited ask, settled once the heir has begun a turn but before it
     # has answered: the screen, not the first one's last answer.
     h.report("rd", state="working")
+    h.report("rd", state="done")
     h.settle(given["id"], screen="the heir's screen")
     assert h.get_ask(given["id"])["reply"] == "the heir's screen"
     with pytest.raises(ValueError):

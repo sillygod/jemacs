@@ -965,6 +965,24 @@ class HerdStore:
         ).fetchall()
         return list(dict.fromkeys(r[0] for r in rows))
 
+    def _turn_over(self, name: str, turn_at: str) -> bool:
+        """Whether NAME's turn, begun at TURN_AT by its hooks, has ended.
+        Its transcript says when it can -- claude's marks a turn's end, and
+        a turn its hooks never announced (one a background task woke) --
+        and beats the hooks; else a turn end its hook reported since.
+        Caller holds `_mu`."""
+        transcript = self._transcript(name)
+        if transcript:
+            import conversation
+            said = conversation.turn_ended(transcript, datetime.fromisoformat(turn_at).timestamp())
+            if said is not None:
+                return said
+        row = self._conn.execute(
+            "SELECT turn_end_at FROM links WHERE session = ?", (name,)
+        ).fetchone()
+        return bool(row and row[0]
+                    and datetime.fromisoformat(row[0]) >= datetime.fromisoformat(turn_at))
+
     def _transcript(self, name: str) -> str | None:
         "NAME's conversation, as its hooks last named it.  Caller holds `_mu`."
         row = self._conn.execute(
@@ -1240,6 +1258,13 @@ class HerdStore:
                     or (turn_at is None and self._deliver_grace_passed(ref, now))
                 ):
                     return {"id": row["id"], "status": "delivered", "too_soon": True}
+                # A taker whose hooks report has stopped only when its turn
+                # has ended, by its hook or its transcript -- never on its
+                # screen reading idle, which a view scrolled back does with
+                # the agent mid-turn (ask 18f57d20, closed 23 minutes into
+                # one).  The screen is the fallback for a taker with no hook.
+                if turn_at is not None and not self._turn_over(row["to_name"], turn_at):
+                    return {"id": row["id"], "status": "delivered", "turn_on": True}
             if dead or error:
                 self._close_ask(
                     row["id"], "failed", now,
@@ -1529,10 +1554,13 @@ class HerdStore:
                     "UPDATE links SET turn_at = ?, updated_at = ? WHERE session = ?",
                     (now, now, session),
                 )
-            if state in ("done", "idle"):
-                # A turn ends.  A queued ask waits for this -- the turn-end
+            if state in ("done", "idle", "auto"):
+                # A turn ends -- `auto' is one interrupted (grok's
+                # StopCancelled).  A queued ask waits for this -- the turn-end
                 # hook -- rather than the screen reading idle a beat sooner,
                 # so it is not delivered into the moment a turn is ending.
+                # And an open ask closes only on it, for an agent whose hooks
+                # report (`settle').
                 self._conn.execute(
                     "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
                     (session, now),
