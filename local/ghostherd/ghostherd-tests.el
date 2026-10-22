@@ -12978,16 +12978,100 @@ its terminal's shell.  0 when unknown."
                   :login :json-false :continueAt 0 :prompt :json-false
                   :said "Guard hardenings handed out; both agy agents respawned." :saidAt 2000)))
         (worker (ghostherd-inbox--agent-items
+                 ;; A worker whose turn an ask started is NOT an inbox item:
+                 ;; whoever asked reports.
                  (list :name "c-dp" :kind "claude" :state "idle" :role "" :project "~/dp/"
                        :login :json-false :continueAt 0 :prompt :json-false
+                       :saidFromAsk t
                        :said "Finished the migration check." :saidAt 2000))))
     (should (equal (ghostherd-tests--inbox-kinds q) '("question")))
     (should (equal (plist-get (car q) :replyVia) "lead"))
     (should (equal (plist-get (car q) :group) "need"))
     (should (equal (ghostherd-tests--inbox-kinds r) '("report")))
     (should (equal (plist-get (car r) :group) "fyi"))
-    ;; a plain worker's turn end is NOT an inbox item
     (should (null worker))))
+
+(ert-deftest ghostherd-test-inbox-worker-turn-end-by-origin ()
+  "A worker's turn the user started ends as an Inbox item; one an ask
+started does not.  A lead is surfaced either way."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((user-report
+         (ghostherd-inbox--agent-items
+          (list :name "claude-godzilla" :kind "claude" :state "idle" :role "" :project "~/gz/"
+                :login :json-false :continueAt 0 :prompt :json-false
+                :saidFromAsk :json-false
+                :said "Shipped the import; nothing left open." :saidAt 3000)))
+        (user-question
+         (ghostherd-inbox--agent-items
+          (list :name "claude-godzilla" :kind "claude" :state "idle" :role "" :project "~/gz/"
+                :login :json-false :continueAt 0 :prompt :json-false
+                :saidFromAsk :json-false
+                :said "Done.\nShall I open a PR?" :saidAt 3000)))
+        (ask-worker
+         (ghostherd-inbox--agent-items
+          (list :name "qa-gz" :kind "claude" :state "idle" :role "" :project "~/gz/"
+                :login :json-false :continueAt 0 :prompt :json-false
+                :saidFromAsk t
+                :said "Ran the suite: all green." :saidAt 3000)))
+        (ask-lead
+         (ghostherd-inbox--agent-items
+          (list :name "lead-gz" :kind "claude" :state "idle" :role "lead" :project "~/gz/"
+                :login :json-false :continueAt 0 :prompt :json-false
+                :saidFromAsk t
+                :said "Handed the fix to its author." :saidAt 3000))))
+    ;; user-started worker: a Report in Updates
+    (should (equal (ghostherd-tests--inbox-kinds user-report) '("report")))
+    (should (equal (plist-get (car user-report) :group) "fyi"))
+    ;; user-started worker ending by asking: a Question, answered to the agent
+    (should (equal (ghostherd-tests--inbox-kinds user-question) '("question")))
+    (should (equal (plist-get (car user-question) :group) "need"))
+    (should (equal (plist-get (car user-question) :replyVia) "agent"))
+    ;; ask-started worker: nothing (whoever asked reports)
+    (should (null ask-worker))
+    ;; a lead is surfaced even when its turn was ask-started (as before)
+    (should (equal (ghostherd-tests--inbox-kinds ask-lead) '("report")))))
+
+(ert-deftest ghostherd-test-inbox-lead-started-for-handoff ()
+  "A lead the herd started to take a handoff is an Update, kept until read."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((items (ghostherd-inbox--agent-items
+                (list :name "lead-jnotes" :kind "claude" :state "idle" :role "lead"
+                      :project "~/src/jnotes/" :since 5000
+                      :login :json-false :continueAt 0 :prompt :json-false
+                      :handoffStarted t :handoffFrom "lead-deploy-platform"))))
+    (should (member "lead-started" (ghostherd-tests--inbox-kinds items)))
+    (let ((it (seq-find (lambda (x) (equal (plist-get x :kind) "lead-started")) items)))
+      (should (equal (plist-get it :id) "lead-started:lead-jnotes"))
+      (should (equal (plist-get it :group) "fyi"))
+      (should (string-match-p "lead-deploy-platform" (plist-get it :body))))))
+
+(ert-deftest ghostherd-test-turn-origin-ask-vs-user ()
+  "An ask the herd delivers marks the turn it starts `ask'; any other
+turn start -- a user prompt, or one typed into the terminal -- is `user'.
+A mid-turn move into a busy state does not re-mark the turn, and the
+pending ask mark is one-shot."
+  (ghostherd-tests--with-herd ((ghostherd--turn-origin (make-hash-table :test 'equal))
+                               (ghostherd--turn-ask-pending (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "w" :kind 'claude :state 'idle)))
+      ;; No ask pending: a turn start is the user's.
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'user))
+      ;; The herd delivers an ask: the next turn start is `ask'.
+      (ghostherd--turn-from-ask s)
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'ask))
+      ;; A mid-turn block (OLD already busy) does not re-mark it.
+      (ghostherd--turn-origin-on-state s 'working 'blocked)
+      (should (eq (ghostherd--turn-origin-of s) 'ask))
+      ;; A fresh turn with no ask pending (typed into the terminal) is `user'.
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'user))
+      ;; The pending mark is one-shot: an ask turn, then a plain one.
+      (ghostherd--turn-from-ask s)
+      (ghostherd--turn-origin-on-state s 'done 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'ask))
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'user)))))
 
 (ert-deftest ghostherd-test-inbox-asks-p-heuristic ()
   (skip-unless (require 'ghostherd-memory-page nil t))

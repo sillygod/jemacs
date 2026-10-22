@@ -396,6 +396,15 @@ draws lanes from fields rather than parsing prose."
           :suggestion (or (ghostherd-session-suggestion s) "")
           :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
           :saidAt (plist-get (ghostherd--link s) :last_ms)
+          ;; How its last turn began: an ask from another agent (its end is
+          ;; not its report to the user -- whoever asked reports) or the
+          ;; user's own prompt.  Drives whether a worker's turn end is an
+          ;; Inbox item; leads and primary are surfaced by role regardless.
+          :saidFromAsk (if (eq (ghostherd--turn-origin-of s) 'ask) t :json-false)
+          ;; A lead the herd started to take a cross-project handoff: an
+          ;; Update, kept until read, says so.  `handoffFrom' is who for.
+          :handoffStarted (if (ghostherd--handoff-lead-for s) t :json-false)
+          :handoffFrom (or (ghostherd--handoff-lead-for s) "")
           :conversation (ghostherd-session-conversation s)
           ;; Its place in the line of its name, and the CLIs before it.
           :generation (ghostherd-session-generation s)
@@ -2782,6 +2791,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (ask-failed "need" "Ask failed" "red")
     (report     "fyi"  "Report"     "green")
     (handoff    "fyi"  "Handoff"    "purple")
+    (lead-started "fyi" "Lead"      "muted")
     (continue   "fyi"  "Continuing" "muted"))
   "Each Inbox item kind: (KIND GROUP TAG TONE).  GROUP is where it sits by
 default; the user may override it.")
@@ -2809,13 +2819,17 @@ full-width) in its last line or two."
         (t 0)))
 
 (defun ghostherd-inbox--item (id kind agent cli project title at &rest props)
-  (let ((spec (alist-get kind ghostherd-inbox--spec)))
-    (append (list :id id :kind (symbol-name kind)
-                  :group (nth 0 spec) :tag (nth 1 spec) :tone (nth 2 spec)
-                  :agent (or agent "") :cli (or cli "") :project (or project "")
-                  :title (or title "") :at (ghostherd-inbox--ms at)
-                  :whyLabel "" :body "" :preview "" :state "")
-            props)))
+  (let* ((spec (alist-get kind ghostherd-inbox--spec))
+         (item (list :id id :kind (symbol-name kind)
+                    :group (nth 0 spec) :tag (nth 1 spec) :tone (nth 2 spec)
+                    :agent (or agent "") :cli (or cli "") :project (or project "")
+                    :title (or title "") :at (ghostherd-inbox--ms at)
+                    :whyLabel "" :body "" :preview "" :state "")))
+    ;; props override the defaults in place, so the plist stays single-keyed
+    ;; -- plist-get and json-encode then read the same value, not a stale "".
+    (let ((p props))
+      (while p (setq item (plist-put item (car p) (cadr p)) p (cddr p))))
+    item))
 
 (defun ghostherd-inbox--agent-items (a)
   "Inbox items (0+) from one serialised agent plist A."
@@ -2828,6 +2842,8 @@ full-width) in its last line or two."
          (cont (plist-get a :continueAt))
          (cont-stop (eq (plist-get a :continueStopped) t))
          (said (plist-get a :said)) (said-ms (plist-get a :saidAt))
+         (said-from-ask (eq (plist-get a :saidFromAsk) t))
+         (handoff-started (eq (plist-get a :handoffStarted) t))
          (used-up (plist-get a :usedUp)) (relay-to (plist-get a :relayTo))
          items)
     (cond
@@ -2867,8 +2883,13 @@ full-width) in its last line or two."
              :preview (format "Relay to %s to carry its work on" relay-to)
              :body used-up)
             items))
-    (when (and (member role '("lead" "primary")) (member state '("idle" "done"))
-               (stringp said) (not (string-empty-p (string-trim said))))
+    ;; A turn end becomes a Question (ends by asking) or a Report.  A lead
+    ;; or primary is surfaced as before; any other agent is surfaced only
+    ;; when the user started the turn -- a turn an ask from another agent
+    ;; started stays out, since whoever asked reports.
+    (when (and (member state '("idle" "done"))
+               (stringp said) (not (string-empty-p (string-trim said)))
+               (or (member role '("lead" "primary")) (not said-from-ask)))
       (let* ((asks (ghostherd-inbox--asks-p said))
              (kind (if asks 'question 'report))
              (id (format "%s:%s:%s" (symbol-name kind) name (or said-ms 0))))
@@ -2878,7 +2899,30 @@ full-width) in its last line or two."
                :state state
                :whyLabel (if asks "It ended its turn with a question" "It reported")
                :body said :preview (ghostherd-inbox--clip (ghostherd-inbox--first-line said) 90)
-               :replyVia (if (equal role "primary") "primary" "lead"))
+               ;; A lead/primary question is answered through it; any other
+               ;; agent's is answered to the agent itself.
+               :replyVia (cond ((equal role "primary") "primary")
+                               ((equal role "lead") "lead")
+                               (t "agent")))
+              items)))
+    ;; A lead the herd started to take a cross-project handoff: an Update,
+    ;; kept until read, so the user knows the herd spun one up.
+    (when handoff-started
+      (let ((by (plist-get a :handoffFrom)))
+        (push (ghostherd-inbox--item
+               (concat "lead-started:" name) 'lead-started name cli project
+               (format "Lead started for %s"
+                       (if (string-empty-p (or project ""))
+                           "a handoff"
+                         (file-name-nondirectory (directory-file-name project))))
+               at
+               :state state :whyLabel "The herd started a lead for a handoff"
+               :body (format "The herd started %s to take a cross-project handoff%s."
+                             name (if (and (stringp by) (not (string-empty-p by)))
+                                      (concat " from " by) ""))
+               :preview (if (and (stringp by) (not (string-empty-p by)))
+                            (concat "Started to take a handoff from " by)
+                          "Started to take a cross-project handoff"))
               items)))
     (nreverse items)))
 

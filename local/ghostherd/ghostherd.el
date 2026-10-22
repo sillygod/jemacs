@@ -6727,6 +6727,62 @@ hand it to that project's lead (\"$GHOSTHERD_HERD\" handoff PROJECT)."
             "A change another project needs is not yours to make in its checkout:\n\
 say it in your answer -- what, where, why -- and whoever asked takes it on.")))
 
+;;; How a turn began: the user's own prompt, or another agent's ask.
+;;
+;; A worker's turn that the user started -- their prompt from the card,
+;; the room or chat composer, Telegram, or typed straight into the
+;; terminal -- ends as an Inbox item: its report to the user (a Question
+;; when it ends by asking, else a Report).  A turn that an ask from
+;; another agent started stays out: whoever asked reports.  The herd
+;; knows a turn is from an ask by its own delivery of it
+;; (`ghostherd--ask-deliver'); every other turn start is the user's.
+;; Leads and primary are unaffected -- their turn end is surfaced by
+;; role, as before.
+
+(defvar ghostherd--turn-origin (make-hash-table :test 'equal)
+  "Session id -> how its current or last turn began: `ask' (the herd
+delivered it another agent's ask) or `user' (the user's own prompt).
+Read to decide whether a worker's turn end is its report to the user.")
+
+(defvar ghostherd--turn-ask-pending (make-hash-table :test 'equal)
+  "Session id -> t after the herd delivers an ask, until the turn it
+starts is settled.  The next turn-start marks that turn `ask'.")
+
+(defun ghostherd--turn-from-ask (session)
+  "Mark that SESSION's next turn begins from an ask the herd delivered."
+  (when-let* ((s (ghostherd-get session)))
+    (puthash (ghostherd-session-id s) t ghostherd--turn-ask-pending)))
+
+(defun ghostherd--turn-origin-of (session)
+  "How SESSION's current or last turn began: `ask', `user', or nil."
+  (when-let* ((s (ghostherd-get session)))
+    (gethash (ghostherd-session-id s) ghostherd--turn-origin)))
+
+(defun ghostherd--turn-origin-on-state (session old new)
+  "Settle SESSION's turn origin as a turn starts (OLD resting, NEW busy).
+A turn the herd started by delivering an ask (`ghostherd--turn-ask-pending')
+is `ask'; any other turn start -- a user prompt through the herd, or one
+typed straight into the terminal -- is `user'.  A mid-turn move into a
+busy state (OLD already busy) is not a turn start and is left alone, so
+an ask turn that blocks to ask is not re-marked."
+  (when (and (memq new '(working blocked waiting))
+             (memq old '(idle done dead nil)))
+    (let ((id (ghostherd-session-id session)))
+      (if (gethash id ghostherd--turn-ask-pending)
+          (progn (remhash id ghostherd--turn-ask-pending)
+                 (puthash id 'ask ghostherd--turn-origin))
+        (puthash id 'user ghostherd--turn-origin)))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--turn-origin-on-state)
+
+(defun ghostherd--turn-origin-forget (session)
+  "Drop SESSION's turn-origin record when it is gone."
+  (let ((id (ghostherd-session-id session)))
+    (remhash id ghostherd--turn-origin)
+    (remhash id ghostherd--turn-ask-pending)))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--turn-origin-forget)
+
 (defun ghostherd--ask-deliver (id from to body &optional rounds guarded)
   "Paste ask ID from FROM into TO, and watch for TO to stop.
 ROUNDS is how many times TO may ask any one agent for it.  GUARDED: FROM
@@ -6745,6 +6801,9 @@ line."
 your first message as your CLI takes none as it starts:\n\n" role)))
                        :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
+    ;; The turn this ask starts is from an ask, not the user: its end is
+    ;; not the taker's report to the user (whoever asked reports).
+    (ghostherd--turn-from-ask session)
     (ghostherd--log-add session 'ask
                         (format "ask %s from %s%s: %s" id from
                                 (if guarded " (a guarded agent)" "")
@@ -7794,6 +7853,16 @@ over a restart: after one, they are leads like any other.")
                      (not (eq (ghostherd-session-state s) 'dead))
                      (ghostherd--session-live-p s)))
               (ghostherd-sessions)))
+
+(defun ghostherd--handoff-lead-for (session)
+  "The agent SESSION's lead was started for, when the herd started it for
+a handoff and it is still up; else nil.  The Inbox shows an Update for
+it, kept until read."
+  (when-let* ((s (ghostherd-get session))
+              (by (gethash (ghostherd-session-id s) ghostherd--handoff-leads)))
+    (and (not (eq (ghostherd-session-state s) 'dead))
+         (ghostherd--session-live-p s)
+         by)))
 
 (defun ghostherd-handoff-lead (by project &optional from-project head)
   "PROJECT's lead, for a handoff from BY, as the sidecar asks over the

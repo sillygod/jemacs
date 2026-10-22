@@ -3981,6 +3981,7 @@
       const text = ((ta && ta.value) || inbox.reply || "").trim();
       if (!text) { setStatus("Write the answer first"); return; }
       if (it.replyVia === "primary") emit("primary-say", { text: text });
+      else if (it.replyVia === "agent") emit("agent-prompt", { name: it.agent, text: text });
       else emit("lead-say", { project: it.project, text: text });
       inboxResolve(it, "Reply sent to " + it.agent, false);
       return;

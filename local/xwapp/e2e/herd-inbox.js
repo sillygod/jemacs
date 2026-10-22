@@ -126,6 +126,46 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       check(W("an item gone from the push leaves the list (auto-resolve)"), !(await page.$('[data-id="guard:g1"]')));
       check(W("the badge drops to 4"), (await page.$eval("#inbox-n", (e) => e.textContent)) === "4");
 
+      // ---- A worker's turn end, by how it began, and a lead started for a handoff ----
+      const WORKER = [
+        mk({ id: "report:claude-godzilla:7", group: "fyi", kind: "report", tag: "Report", tone: "green",
+          agent: "claude-godzilla", project: "~/src/godzilla/", at: now - 60000,
+          title: "Shipped the import", preview: "nothing left open", whyLabel: "It reported",
+          body: "Shipped the import; nothing left open." }),
+        mk({ id: "question:claude-godzilla:8", group: "need", kind: "question", tag: "Question", tone: "accent",
+          agent: "claude-godzilla", project: "~/src/godzilla/", at: now - 30000,
+          title: "Open a PR?", preview: "Shall I open a PR?", whyLabel: "It ended its turn with a question",
+          body: "Done.\nShall I open a PR?", replyVia: "agent" }),
+        mk({ id: "lead-started:lead-jnotes", group: "fyi", kind: "lead-started", tag: "Lead", tone: "muted",
+          agent: "lead-jnotes", project: "~/src/jnotes/", at: now - 90000,
+          title: "Lead started for ~/src/jnotes/", preview: "Started to take a handoff from lead-deploy-platform",
+          whyLabel: "The herd started a lead for a handoff",
+          body: "The herd started lead-jnotes to take a cross-project handoff from lead-deploy-platform." }),
+      ];
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: it.filter((x) => x.group === "need").length }), WORKER);
+      await sleep(100);
+      // a worker's user-started turn end shows (an ask-started one is simply not pushed)
+      check(W("a worker's user-started turn end shows as a Report"), !!(await page.$('[data-id="report:claude-godzilla:7"]')));
+      // a lead the herd started for a handoff shows as an Update, kept until read
+      check(W("a lead started for a handoff shows as an Update"), !!(await page.$('[data-id="lead-started:lead-jnotes"]')));
+      // replying to a worker's question goes to the agent itself, not a lead
+      if (where === "desk") await page.click('.ibrow[data-id="question:claude-godzilla:8"]');
+      await sleep(60);
+      await page.fill('.ibreplybox[data-id="question:claude-godzilla:8"]', "yes, open it");
+      await tap('[data-act="ib:reply"][data-id="question:claude-godzilla:8"]');
+      await sleep(80);
+      const aprompt = sent(intents, "agent-prompt").pop();
+      check(W("replying to a worker's question sends agent-prompt {name,text}"),
+        aprompt && aprompt.name === "claude-godzilla" && aprompt.text === "yes, open it", aprompt);
+      check(W("no leak to lead-say for a worker reply"), sent(intents, "lead-say").every((i) => i.project !== "~/src/godzilla/"));
+      // marking the lead-started Update read removes it, with inbox-set
+      if (where === "desk") await page.click('.ibrow[data-id="lead-started:lead-jnotes"]');
+      await sleep(60);
+      await tap('[data-act="ib:done"][data-id="lead-started:lead-jnotes"]');
+      await sleep(80);
+      check(W("marking the lead-started Update read sends inbox-set {done:true}"),
+        sent(intents, "inbox-set").some((i) => i.id === "lead-started:lead-jnotes" && i.done === true));
+
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }
