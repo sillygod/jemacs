@@ -83,6 +83,9 @@ class JsonRpcHandler:
             "herd_guard_approve": self._herd_guard_approve,
             "herd_guard_used": self._herd_guard_used,
             "herd_guard_requests": self._herd_guard_requests,
+            "herd_inbox_state": self._herd_inbox_state,
+            "herd_inbox_set": self._herd_inbox_set,
+            "herd_pending_proposals": self._herd_pending_proposals,
             "herd_reply": self._herd_reply,
             "herd_await": self._herd_await,
             "herd_cancel": self._herd_cancel,
@@ -297,6 +300,19 @@ class JsonRpcHandler:
 
     def _herd_guard_requests(self, _params: dict) -> dict:
         return get_herd().guard_requests()
+
+    def _herd_inbox_state(self, params: dict) -> dict:
+        "The user's read/done/override on the Inbox items; prunes the gone ones."
+        ids = params.get("ids")
+        live = [str(i) for i in ids] if isinstance(ids, list) else None
+        return get_herd().inbox_state(live)
+
+    def _herd_inbox_set(self, params: dict) -> dict:
+        "Mark an Inbox item read / done, or override its group."
+        return get_herd().inbox_set(
+            str(params.get("id") or ""),
+            read=params.get("read"), done=params.get("done"),
+            override=params.get("override"))
 
     @staticmethod
     def _claude_slugs() -> list[str]:
@@ -883,6 +899,19 @@ class JsonRpcHandler:
                                "gone": f is None, "promoted": bool(f and f.promoted)})
             p["facts"] = titled
         return {"key": key, "proposals": props}
+
+    def _herd_pending_proposals(self, _params: dict) -> dict:
+        "Every pending memory proposal across projects, for the Inbox."
+        props = get_herd().proposals(status="pending")
+        for p in props:
+            titled = []
+            store = shared_memory.project_store(p["project"])
+            for name in p["facts"]:
+                f = shared_memory.parse(store / f"{name}.md")
+                titled.append({"name": name, "title": f.title if f else shared_memory.title_of(name),
+                               "gone": f is None, "promoted": bool(f and f.promoted)})
+            p["facts"] = titled
+        return {"proposals": props}
 
     def _herd_memory_promote_approve(self, params: dict) -> dict:
         """The user approved a proposal: hand its diff to the project's lead

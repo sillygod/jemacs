@@ -2759,6 +2759,301 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
        (funcall done)
        (ghostherd-memory-page--js "showError" (format "Import: %s" err))))))
 
+;;; Inbox -- one list of what needs the user, then updates
+;;
+;; The items are derived (ghostherd-inbox--*) from the same serialised state
+;; the Agents tab gets -- an agent plist (`--agent'), the guard requests, the
+;; asks -- plus the pending memory proposals fetched from the sidecar.  Each
+;; has a STABLE id keyed by its cause, so the user's read/done/override on it
+;; (kept in the sidecar) survives a reload and resolves itself when the cause
+;; goes away.  The page renders and routes each action to the existing intent
+;; (agent-answer, guard-approve, memory-proposal-*, lead-say/primary-say,
+;; agent-login/relay), plus `inbox-set' for read/done/override.
+
+(defconst ghostherd-inbox--spec
+  '((blocked    "need" "Permission" "warn")
+    (guard      "need" "Guard"      "red")
+    (question   "need" "Question"   "accent")
+    (proposal   "need" "Proposal"   "purple")
+    (login      "need" "Login"      "warn")
+    (relay      "need" "Relay"      "warn")
+    (ask-failed "need" "Ask failed" "red")
+    (report     "fyi"  "Report"     "green")
+    (handoff    "fyi"  "Handoff"    "purple")
+    (continue   "fyi"  "Continuing" "muted"))
+  "Each Inbox item kind: (KIND GROUP TAG TONE).  GROUP is where it sits by
+default; the user may override it.")
+
+(defun ghostherd-inbox--clip (s n)
+  (let ((s (string-trim (or s ""))))
+    (if (> (length s) n) (concat (substring s 0 (1- n)) "…") s)))
+
+(defun ghostherd-inbox--first-line (s)
+  (or (car (split-string (string-trim (or s "")) "\n" t)) ""))
+
+(defun ghostherd-inbox--asks-p (text)
+  "Non-nil when TEXT ends by asking the user something: a `?' (ASCII or
+full-width) in its last line or two."
+  (when (and (stringp text) (not (string-empty-p (string-trim text))))
+    (let* ((lines (split-string (string-trim text) "\n" t "[ \t]+"))
+           (tail (last lines (min 2 (length lines)))))
+      (and tail (cl-some (lambda (l) (string-match-p "[?？]" l)) tail) t))))
+
+(defun ghostherd-inbox--ms (v)
+  "V as epoch-ms: a number is kept, an ISO string is parsed, else 0."
+  (cond ((numberp v) v)
+        ((and (stringp v) (not (string-empty-p v)))
+         (condition-case nil (* 1000.0 (float-time (date-to-time v))) (error 0)))
+        (t 0)))
+
+(defun ghostherd-inbox--item (id kind agent cli project title at &rest props)
+  (let ((spec (alist-get kind ghostherd-inbox--spec)))
+    (append (list :id id :kind (symbol-name kind)
+                  :group (nth 0 spec) :tag (nth 1 spec) :tone (nth 2 spec)
+                  :agent (or agent "") :cli (or cli "") :project (or project "")
+                  :title (or title "") :at (ghostherd-inbox--ms at)
+                  :whyLabel "" :body "" :preview "" :state "")
+            props)))
+
+(defun ghostherd-inbox--agent-items (a)
+  "Inbox items (0+) from one serialised agent plist A."
+  (let* ((name (plist-get a :name)) (cli (plist-get a :kind))
+         (project (plist-get a :project)) (role (plist-get a :role))
+         (state (plist-get a :state)) (at (plist-get a :since))
+         (prompt (plist-get a :prompt))
+         (opts (and (consp prompt) (plist-get prompt :options)))
+         (login (eq (plist-get a :login) t))
+         (cont (plist-get a :continueAt))
+         (cont-stop (eq (plist-get a :continueStopped) t))
+         (said (plist-get a :said)) (said-ms (plist-get a :saidAt))
+         (used-up (plist-get a :usedUp)) (relay-to (plist-get a :relayTo))
+         items)
+    (cond
+     (login
+      (push (ghostherd-inbox--item
+             (concat "login:" name) 'login name cli project "Login expired" at
+             :state state :whyLabel "Its CLI stopped"
+             :preview "Its turn stopped until someone runs /login"
+             :body "The session token expired mid-turn.  Its turn waits until /login runs; the ask it holds is not lost.")
+            items))
+     ((and (numberp cont) (> cont 0) (not cont-stop))
+      (push (ghostherd-inbox--item
+             (concat "continue:" name) 'continue name cli project "Continuing on its own" at
+             :state state :whyLabel "Auto-continue"
+             :preview "The herd is picking its turn back up"
+             :body (concat "A sleep or a dropped connection cut its turn short"
+                           (let ((w (plist-get a :continueAfter)))
+                             (if (and (stringp w) (not (string-empty-p w))) (concat " " w) ""))
+                           "; the herd continues it on its own."))
+            items))
+     ((and opts (> (length opts) 0))
+      (let ((q (plist-get prompt :question)))
+        (push (ghostherd-inbox--item
+               (concat "blocked:" name) 'blocked name cli project
+               (ghostherd-inbox--clip (or (ghostherd-inbox--first-line q) "Waiting on a choice") 60) at
+               :state state :whyLabel "It is waiting on a menu"
+               :body (or q "")
+               :preview (ghostherd-inbox--clip
+                         (or (and (> (length opts) 0) (plist-get (aref opts 0) :label)) q "") 80)
+               :options opts)
+              items))))
+    (when (and (stringp used-up) (not (string-empty-p used-up))
+               (stringp relay-to) (not (equal relay-to cli)))
+      (push (ghostherd-inbox--item
+             (concat "relay:" name) 'relay name cli project "Out of usage — relay its work" at
+             :state state :whyLabel "Its CLI is used up" :relayTo relay-to
+             :preview (format "Relay to %s to carry its work on" relay-to)
+             :body used-up)
+            items))
+    (when (and (member role '("lead" "primary")) (member state '("idle" "done"))
+               (stringp said) (not (string-empty-p (string-trim said))))
+      (let* ((asks (ghostherd-inbox--asks-p said))
+             (kind (if asks 'question 'report))
+             (id (format "%s:%s:%s" (symbol-name kind) name (or said-ms 0))))
+        (push (ghostherd-inbox--item
+               id kind name cli project (ghostherd-inbox--clip (ghostherd-inbox--first-line said) 60)
+               (or said-ms at)
+               :state state
+               :whyLabel (if asks "It ended its turn with a question" "It reported")
+               :body said :preview (ghostherd-inbox--clip (ghostherd-inbox--first-line said) 90)
+               :replyVia (if (equal role "primary") "primary" "lead"))
+              items)))
+    (nreverse items)))
+
+(defun ghostherd-inbox--guard-items (guard)
+  "Inbox items from the raw GUARD requests (pending and approvable)."
+  (delq nil
+        (mapcar
+         (lambda (r)
+           (when (and (equal (plist-get r :status) "pending") (plist-get r :approvable))
+             (let ((call (or (plist-get r :summary) (plist-get r :tool) ""))
+                   (rule (plist-get r :rule)))
+               (ghostherd-inbox--item
+                (concat "guard:" (plist-get r :id)) 'guard
+                (plist-get r :session) "" "" "Needs your approval" (plist-get r :created_ms)
+                :whyLabel "The guard denied this call"
+                :body (or (plist-get r :reason) "") :code call
+                :note (if (and (stringp rule) (not (string-empty-p rule))) (concat "Rule: " rule) "")
+                :preview (ghostherd-inbox--clip call 90)
+                :guardId (plist-get r :id)))))
+         guard)))
+
+(defun ghostherd-inbox--proposal-items (proposals)
+  "Inbox items from the pending PROPOSALS (list of plists)."
+  (delq nil
+        (mapcar
+         (lambda (p)
+           (when (equal (plist-get p :status) "pending")
+             (let* ((facts (append (plist-get p :facts) nil))
+                    (titles (mapcar (lambda (f) (or (plist-get f :title) (plist-get f :name))) facts))
+                    (file (plist-get p :file)) (n (length titles)))
+               (ghostherd-inbox--item
+                (concat "proposal:" (plist-get p :id)) 'proposal
+                (plist-get p :author) "claude" (plist-get p :project)
+                (format "Promote %d fact%s into %s" n (if (= n 1) "" "s") file)
+                (plist-get p :created_at)
+                :whyLabel "Memory promotion"
+                :body (format "%d stable fact%s from the shared memory become part of %s, versioned with the code."
+                              n (if (= n 1) "" "s") file)
+                :facts (ghostherd-memory-page--vec titles) :diff (or (plist-get p :diff) "")
+                :preview (ghostherd-inbox--clip (mapconcat #'identity titles " · ") 90)
+                :proposalId (plist-get p :id)))))
+         proposals)))
+
+(defun ghostherd-inbox--ask-items (asks)
+  "Inbox items from the serialised ASKS: a failed ask (need), an answered
+cross-project handoff (fyi)."
+  (delq nil
+        (mapcar
+         (lambda (k)
+           (let ((status (plist-get k :status)) (project (plist-get k :project)))
+             (cond
+              ((equal status "failed")
+               (ghostherd-inbox--item
+                (concat "ask-failed:" (plist-get k :id)) 'ask-failed
+                (plist-get k :to) "" (or project "") "An ask failed" (plist-get k :created)
+                :whyLabel "The ask could not be delivered or answered"
+                :body (or (plist-get k :error) (plist-get k :head) "")
+                :preview (ghostherd-inbox--clip (or (plist-get k :error) (plist-get k :head) "") 90)))
+              ((and (equal status "answered") (stringp project) (not (string-empty-p project)))
+               (ghostherd-inbox--item
+                (concat "handoff:" (plist-get k :id)) 'handoff
+                (plist-get k :from) "" (plist-get k :fromProject)
+                (ghostherd-inbox--clip (concat "Answered: " (or (plist-get k :head) "a handoff")) 60)
+                (plist-get k :answered)
+                :whyLabel "Cross-project handoff, answered"
+                :body (or (plist-get k :replyHead) (plist-get k :head) "")
+                :preview (ghostherd-inbox--clip (or (plist-get k :replyHead) (plist-get k :head) "") 90))))))
+         asks)))
+
+(defun ghostherd-inbox--all (proposals)
+  "Every live Inbox item, from the sessions, guard, PROPOSALS and asks."
+  (append
+   (mapcan #'ghostherd-inbox--agent-items
+           (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
+   (ghostherd-inbox--guard-items
+    (and (boundp 'ghostherd--guard-requests) ghostherd--guard-requests))
+   (ghostherd-inbox--proposal-items proposals)
+   (ghostherd-inbox--ask-items
+    (mapcar #'ghostherd-memory-page--ask ghostherd--herd-asks))))
+
+(defun ghostherd-inbox--need-p (it)
+  "Non-nil when IT belongs in Needs-you, honouring the user's override."
+  (pcase (plist-get it :override)
+    ("need" t) ("update" nil)
+    (_ (equal (plist-get it :group) "need"))))
+
+(defvar ghostherd-inbox--watching nil)
+(defvar ghostherd-inbox--timer nil)
+(defvar ghostherd-inbox--sig nil "Signature of the last Inbox push, to skip an unchanged one.")
+(defconst ghostherd-inbox--every 3 "Seconds between Inbox refreshes.")
+
+(defun ghostherd-inbox--push (items state-list)
+  "Merge STATE-LIST ({:id :read :done :override}...) into ITEMS, drop the
+done ones, and push the rest with the Needs-you count (the tab badge)."
+  (let ((by-id (make-hash-table :test #'equal)))
+    (dolist (e (append state-list nil)) (puthash (plist-get e :id) e by-id))
+    (let* ((merged
+            (mapcar (lambda (it)
+                      (let* ((st (gethash (plist-get it :id) by-id))
+                             (over (and st (plist-get st :override))))
+                        (append it (list :read (if (and st (eq (plist-get st :read) t)) t :json-false)
+                                         :done (and st (eq (plist-get st :done) t))
+                                         :override (and (stringp over) over)))))
+                    items))
+           (live (seq-remove (lambda (it) (plist-get it :done)) merged))
+           (count (length (seq-filter #'ghostherd-inbox--need-p live)))
+           (sig (sxhash-equal (list count (mapcar (lambda (it)
+                                                    (list (plist-get it :id) (plist-get it :read)
+                                                          (plist-get it :override) (plist-get it :preview)))
+                                                  live)))))
+      (unless (equal sig ghostherd-inbox--sig)
+        (setq ghostherd-inbox--sig sig)
+        (ghostherd-memory-page--js
+         "renderInbox"
+         (list :items (ghostherd-memory-page--vec
+                       (mapcar (lambda (it) (ghostherd-memory-page--plist-no-done it)) live))
+               :count count))))))
+
+(defun ghostherd-memory-page--plist-no-done (it)
+  "IT without the internal :done flag (the page only sees live items)."
+  (cl-loop for (k v) on it by #'cddr unless (eq k :done) append (list k v)))
+
+(defun ghostherd-inbox--tick ()
+  "Fetch the pending proposals, build every item, merge the user's state
+on them (and prune the gone ones), and push to the page.  Each sidecar
+call degrades to none on failure (a sidecar without the Inbox RPCs yet),
+so the session- and guard-derived items still show."
+  (if (not (and ghostherd-inbox--watching (xwapp-live-p ghostherd-memory-page--app)))
+      (ghostherd-inbox--unwatch)
+    (ghostherd-memory-request-async
+     "herd_pending_proposals"
+     (lambda (result) (ghostherd-inbox--tick-items (plist-get result :proposals)))
+     nil
+     (lambda (_e) (ghostherd-inbox--tick-items nil)))))
+
+(defun ghostherd-inbox--tick-items (proposals)
+  "Build every item from PROPOSALS and the live state, then fetch the
+user's state (or none) and push."
+  (when ghostherd-inbox--watching
+    (let* ((items (ghostherd-inbox--all (append proposals nil)))
+           (ids (mapcar (lambda (it) (plist-get it :id)) items)))
+      (ghostherd-memory-request-async
+       "herd_inbox_state"
+       (lambda (st)
+         (when ghostherd-inbox--watching
+           (ghostherd-inbox--push items (append (plist-get st :state) nil))))
+       (list :ids (ghostherd-memory-page--vec ids))
+       (lambda (_e)
+         (when ghostherd-inbox--watching (ghostherd-inbox--push items nil)))))))
+
+(defun ghostherd-inbox--watch ()
+  (setq ghostherd-inbox--watching t ghostherd-inbox--sig nil)
+  (unless (timerp ghostherd-inbox--timer)
+    (setq ghostherd-inbox--timer
+          (run-at-time 0 ghostherd-inbox--every #'ghostherd-inbox--tick)))
+  (ghostherd-inbox--tick))
+
+(defun ghostherd-inbox--unwatch ()
+  (when (timerp ghostherd-inbox--timer) (cancel-timer ghostherd-inbox--timer))
+  (setq ghostherd-inbox--timer nil ghostherd-inbox--watching nil ghostherd-inbox--sig nil))
+
+(defun ghostherd-memory-page--inbox-set (intent)
+  "Mark an Inbox item read / done, or override its group; then refresh."
+  (let ((params (list :id (ghostherd-memory-page--str (alist-get 'id intent)))))
+    (when (assq 'read intent)
+      (setq params (append params (list :read (ghostherd-memory-page--truthy (alist-get 'read intent))))))
+    (when (assq 'done intent)
+      (setq params (append params (list :done (ghostherd-memory-page--truthy (alist-get 'done intent))))))
+    (when (assq 'override intent)
+      (setq params (append params (list :override (or (ghostherd-memory-page--str (alist-get 'override intent)) "")))))
+    (ghostherd-memory-request-async
+     "herd_inbox_set"
+     (lambda (_r) (setq ghostherd-inbox--sig nil) (ghostherd-inbox--tick))
+     params
+     (ghostherd-memory-page--fail "Inbox"))))
+
+
 (defun ghostherd-memory-page--handle (intent)
   "Dispatch INTENT from the page.  Errors are shown there, not lost."
   (condition-case e
@@ -2782,6 +3077,9 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("herd-unwatch"
          (ghostherd-memory-page--room-close)
          (ghostherd-memory-page--herd-unwatch))
+        ("inbox-watch" (ghostherd-inbox--watch))
+        ("inbox-unwatch" (ghostherd-inbox--unwatch))
+        ("inbox-set" (ghostherd-memory-page--inbox-set intent))
         ("memory-watch" (ghostherd-memory-page--memory-watch intent))
         ("memory-unwatch" (ghostherd-memory-page--memory-unwatch))
         ("memory-edit" (ghostherd-memory-page--memory-edit intent))

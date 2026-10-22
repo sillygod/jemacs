@@ -7075,7 +7075,9 @@ hand it out to the other agents, and report to the user.
 The user talks to you in the project's chat.  What you say at the end of
 a turn is what they read there: say what you decided, who is doing what,
 what came back, and what you need from them -- briefly, and in the
-language they write to you in.
+language they write to you in.  When you need the user to decide
+something, end your turn with the question itself, so it reaches their
+Inbox as a question to answer.
 
 Your team: \"$GHOSTHERD_HERD\" list shows every agent with its kind,
 state, notes and project, and the directory and branch it works in;

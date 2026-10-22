@@ -349,6 +349,11 @@
       memWatching = false;
       emit("memory-unwatch");
     }
+    if (inboxWatching && view !== "inbox") {
+      inboxWatching = false;
+      emit("inbox-unwatch");
+    }
+    inboxBadge();
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
     });
@@ -393,6 +398,9 @@
     else if (where === "memory") showMemory();
     else if (where === "sessions") showSessions();
     else if (where === "search") showSearch();
+    else if (where === "inbox") showInbox();
+    // Home: the page opens on the Inbox when nothing else is asked for.
+    else showInbox();
   }
 
   function filtersHtml() {
@@ -2940,6 +2948,16 @@
     emit("paste");
   }, true);
 
+  // Inbox desk keys: j/k move, 1-4 answer a menu, a approve, e done.
+  document.addEventListener("keydown", (ev) => {
+    if (view !== "inbox" || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    inboxKey(ev);
+  });
+  // Keep the reply text across the Inbox's periodic re-renders.
+  app.addEventListener("input", (ev) => {
+    if (ev.target && ev.target.classList && ev.target.classList.contains("ibreplybox")) inbox.reply = ev.target.value;
+  });
+
   // A paste with no text in it holds the clipboard's image, or nothing a
   // textarea would take anyway; Emacs says which.
   app.addEventListener("paste", (ev) => {
@@ -2984,6 +3002,9 @@
     } else if (t.classList.contains("capture-text") && ev.key === "Enter") {
       ev.preventDefault();
       onAgentAction("capture-save", t);
+    } else if (t.classList.contains("ibreplybox") && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault();
+      onInboxAction("reply", t);
     }
   });
   // An edit in progress holds the 5s refresh back; let it through after
@@ -3550,6 +3571,8 @@
       if (src) copy(src.path);
     } else if (act.startsWith("a:")) {
       onAgentAction(act.slice(2), el);
+    } else if (act.startsWith("ib:")) {
+      onInboxAction(act.slice(3), el);
     } else if (act === "resume") {
       resume(false);
     } else if (act === "fork") {
@@ -3655,7 +3678,8 @@
       lastOpened = null;
       src = null;
       const which = b.getAttribute("data-tab");
-      if (which === "sessions") showSessions();
+      if (which === "inbox") showInbox();
+      else if (which === "sessions") showSessions();
       else if (which === "log") showLog();
       else if (which === "agents") showAgents();
       else if (which === "memory") showMemory();
@@ -3726,8 +3750,285 @@
 
   // ---- Calls from Emacs -------------------------------------------------
 
+  // ---- Inbox -----------------------------------------------------------
+  // One list of what needs the user, then updates.  Emacs pushes the items
+  // (inbox-watch / renderInbox), derived from the herd's own state; each
+  // action routes to the same intent the Agents / Memory tabs use, plus
+  // inbox-set for read / done / override.  Desk: a list and an in-place
+  // handler.  Phone: cards with their actions inline.
+
+  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", undo: null };
+  let inboxWatching = false;
+
+  const INBOX_FILTERS = [["all", "All"], ["stuck", "Stuck"], ["approve", "Approvals"], ["questions", "Questions"], ["updates", "Updates"]];
+
+  function inboxNarrow() { return window.innerWidth < 720; }
+
+  function inboxAge(at) {
+    const t = stamp(at);
+    if (!t) return "";
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return "now";
+    if (s < 3600) return Math.floor(s / 60) + "m";
+    if (s < 86400) return Math.floor(s / 3600) + "h";
+    return Math.floor(s / 86400) + "d";
+  }
+  function inboxNeed(it) {
+    const o = it.override;
+    return o === "need" ? true : o === "update" ? false : it.group === "need";
+  }
+  function inboxPass(it) {
+    const f = inbox.filter;
+    if (f === "all") return true;
+    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "ask-failed";
+    if (f === "approve") return it.kind === "guard" || it.kind === "proposal";
+    if (f === "questions") return it.kind === "question";
+    if (f === "updates") return !inboxNeed(it);
+    return true;
+  }
+  function inboxCur() { return inbox.items.find((x) => x.id === inbox.sel) || null; }
+
+  function showInbox() {
+    if (herdNow.room) closeRoomState();
+    view = tab = "inbox";
+    src = null;
+    chrome();
+    app.innerHTML = '<div class="page wide inboxpage"></div>';
+    inboxWatching = true;
+    emit("inbox-watch");
+    renderInbox();
+  }
+
+  // Room state torn down without a view change (showInbox leaves agents).
+  function closeRoomState() {
+    if (!herdNow.room) return;
+    herdNow.room = null;
+    if (herdNow.subView) { herdNow.subView = null; herdNow.subConv = null; emit("sub-unwatch"); }
+    emit("room-close");
+  }
+
+  function renderInbox() {
+    if (view !== "inbox") return;
+    const box = app.querySelector(".inboxpage");
+    if (!box) return;
+    const narrow = inboxNarrow();
+    box.classList.toggle("narrow", narrow);
+    box.innerHTML = narrow ? inboxPhoneHtml() : inboxDeskHtml();
+  }
+
+  function inboxTag(it) {
+    return '<span class="ibtag t-' + esc(it.tone) + '">' + esc(it.tag) + "</span>";
+  }
+  function inboxCli(it) {
+    return it.cli ? '<span class="ibcli c-' + esc(it.cli) + '">' + esc(it.cli) + "</span>" : "";
+  }
+
+  function inboxRow(it) {
+    const on = it.id === inbox.sel;
+    const need = inboxNeed(it);
+    return '<button type="button" class="ibrow' + (on ? " on" : "") + '" data-act="ib:pick" data-id="' + esc(it.id) + '"' +
+      ' aria-current="' + (on ? "true" : "false") + '">' +
+      '<span class="ibr1"><span class="ibdot' + (it.read ? " read" : "") + ' t-' + esc(it.tone) + '"></span>' +
+      inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+      '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></span>" +
+      (need
+        ? '<span class="ibr2">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
+          (it.project ? '<span class="ibproj">· ' + esc(leaf(it.project)) + "</span>" : "") + "</span>" +
+          '<span class="ibprev">' + esc(it.preview) + "</span>"
+        : '<span class="ibprev">' + esc(it.agent) + " · " + esc(it.preview) + "</span>") +
+      "</button>";
+  }
+
+  function inboxList() {
+    const live = inbox.items.filter(inboxPass);
+    const need = live.filter(inboxNeed);
+    const fyi = live.filter((it) => !inboxNeed(it));
+    const count = inbox.items.filter(inboxNeed).length;
+    const filters = INBOX_FILTERS.map(([f, label]) =>
+      '<button type="button" class="ibfilter' + (inbox.filter === f ? " on" : "") + '" data-act="ib:filter" data-f="' + f + '">' + label + "</button>").join("");
+    return '<div class="ibfilters">' + filters + "</div>" +
+      '<div class="ibsec"><h2 class="ibneed">Needs you</h2><span class="ibsub">' +
+      count + " waiting · most urgent first</span></div>" +
+      (need.length ? need.map(inboxRow).join("")
+        : '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>') +
+      '<div class="ibsec fyi"><h2>Updates</h2><span class="ibsub">reports and handoffs, nothing to decide</span></div>' +
+      fyi.map(inboxRow).join("") +
+      '<p class="ibhint">j / k move · 1–4 answer · a approve · e done</p>';
+  }
+
+  function inboxWhy(it) {
+    return '<div class="ibwhy"><span class="ibwhylab">' + esc(it.whyLabel || "") + "</span>" +
+      '<p class="ibbody">' + esc(it.body || "") + "</p>" +
+      (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
+      (it.note ? '<p class="ibnote">' + esc(it.note) + "</p>" : "") + "</div>";
+  }
+
+  // The actions for one item, shared by the desk detail and the phone card.
+  function inboxActions(it, phone) {
+    const d = esc(it.id);
+    if (it.kind === "blocked") {
+      return '<div class="ibopts">' + (it.options || []).map((o) =>
+        '<button type="button" class="iboptbtn" data-act="ib:answer" data-id="' + d + '" data-n="' + esc(String(o.n)) + '">' +
+        '<span class="ibn">' + esc(String(o.n)) + "</span>" + esc(o.label) + "</button>").join("") + "</div>";
+    }
+    if (it.kind === "guard") {
+      return '<div class="ibacts"><button type="button" class="ibbtn ok" data-act="ib:guard-approve" data-id="' + d + '">Approve this call once</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Keep it denied</button>' +
+        (phone ? "" : '<span class="ibmeta">The agent is told and runs exactly this call again. It lapses in 30 min.</span>') + "</div>";
+    }
+    if (it.kind === "question") {
+      return '<div class="ibreply">' +
+        '<textarea class="ibreplybox" data-id="' + d + '" rows="3" placeholder="Write the answer it is waiting for">' + esc(inbox.reply) + "</textarea>" +
+        '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:reply" data-id="' + d + '">Send</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Answer later</button></div></div>';
+    }
+    if (it.kind === "proposal") {
+      return '<div class="ibprop">' +
+        '<div class="ibfacts">' + (it.facts || []).map((f) => '<span class="ibfact">' + esc(f) + "</span>").join("") + "</div>" +
+        '<pre class="mpdiff ibdiff">' + diffHtml(it.diff || "") + "</pre>" +
+        '<div class="ibacts"><button type="button" class="ibbtn ok" data-act="ib:prop-approve" data-id="' + d + '">Approve — lead applies it on a branch</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:prop-reject" data-id="' + d + '">Reject</button></div></div>';
+    }
+    if (it.kind === "login") {
+      return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:login" data-id="' + d + '">Run /login</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
+    if (it.kind === "relay") {
+      return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:relay" data-id="' + d + '">Relay to ' + esc(it.relayTo || "") + "</button>" +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
+    return '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Mark read</button></div>';
+  }
+
+  function inboxDeskHtml() {
+    const cur = inboxCur();
+    const detail = inbox.toast
+      ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
+        (inbox.undo ? ' <button type="button" class=" iblink" data-act="ib:undo">Undo</button>' : "") + "</div>"
+      : "";
+    const body = cur
+      ? '<div class="ibhead">' + inboxTag(cur) + '<h1 class="ibh1">' + esc(cur.title) + "</h1></div>" +
+        '<div class="ibmeta">' + inboxCli(cur) + '<span class="ibagent">' + esc(cur.agent) + "</span>" +
+        (cur.project ? "<span>· " + esc(leaf(cur.project)) + "</span>" : "") +
+        (cur.state ? "<span>· " + esc(cur.state) + "</span>" : "") +
+        '<span>· ' + esc(inboxAge(cur.at)) + "</span></div>" +
+        inboxWhy(cur) + inboxActions(cur, false)
+      : '<div class="ibzero"><p class="ibzh">Inbox zero</p><p>Everything that needed you is answered. Updates keep arriving here.</p></div>';
+    return '<section class="iblistcol">' + inboxList() + "</section>" +
+      '<main class="ibdetail">' + detail + body + "</main>";
+  }
+
+  function inboxPhoneHtml() {
+    const live = inbox.items.filter(inboxPass);
+    const need = live.filter(inboxNeed);
+    const fyi = live.filter((it) => !inboxNeed(it));
+    const filters = INBOX_FILTERS.map(([f, label]) =>
+      '<button type="button" class="ibfilter' + (inbox.filter === f ? " on" : "") + '" data-act="ib:filter" data-f="' + f + '">' + label + "</button>").join("");
+    const card = (it) =>
+      '<div class="ibcard t-' + esc(it.tone) + (inboxNeed(it) ? " need" : "") + '">' +
+      '<div class="ibcardhead">' + inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+      '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></div>" +
+      '<span class="ibcardwho">' + esc(it.agent) + (it.cli ? " · " + esc(it.cli) : "") +
+      (it.project ? " · " + esc(leaf(it.project)) : "") + "</span>" +
+      (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
+      inboxActions(it, true) + "</div>";
+    return (inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
+            (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
+      '<div class="ibfilters">' + filters + "</div>" +
+      '<div class="ibsec"><h2 class="ibneed">Needs you</h2></div>' +
+      (need.length ? need.map(card).join("") : '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>') +
+      (fyi.length ? '<div class="ibsec fyi"><h2>Updates · ' + fyi.length + "</h2></div>" + fyi.map(card).join("") : "");
+  }
+
+  // Resolve an item: hide it at once (optimistic), toast, move to the next.
+  function inboxResolve(it, msg, undoable) {
+    const rest = inbox.items.filter((x) => x.id !== it.id);
+    const next = rest.filter(inboxNeed)[0] || rest[0] || null;
+    inbox.items = rest;
+    inbox.sel = next ? next.id : "";
+    inbox.reply = "";
+    inbox.toast = msg;
+    inbox.undo = undoable ? { id: it.id } : null;
+    if (undoable) {
+      const token = it.id;
+      setTimeout(() => { if (inbox.undo && inbox.undo.id === token) { inbox.undo = null; inbox.toast = ""; renderInbox(); } }, 6000);
+    }
+    renderInbox();
+  }
+
+  function inboxMarkRead(it) {
+    if (it && !it.read) { it.read = true; emit("inbox-set", { id: it.id, read: true }); }
+  }
+
+  function onInboxAction(act, el) {
+    const id = el.getAttribute("data-id") || inbox.sel;
+    const it = inbox.items.find((x) => x.id === id);
+    if (act === "filter") { inbox.filter = el.getAttribute("data-f"); renderInbox(); return; }
+    if (act === "undo") {
+      if (inbox.undo) { emit("inbox-set", { id: inbox.undo.id, done: false }); inbox.undo = null; inbox.toast = ""; renderInbox(); }
+      return;
+    }
+    if (!it) return;
+    if (act === "pick") { inbox.sel = id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(it); renderInbox(); return; }
+    if (act === "answer") { emit("agent-answer", { name: it.agent, n: +el.getAttribute("data-n") }); inboxResolve(it, "Sent " + el.getAttribute("data-n") + " to " + it.agent, false); return; }
+    if (act === "guard-approve") { emit("guard-approve", { id: it.guardId }); inboxResolve(it, "Approved once — the agent was told to run it again", false); return; }
+    if (act === "prop-approve") { emit("memory-proposal-approve", { id: it.proposalId }); inboxResolve(it, "Approved — handed to the lead to apply on a branch", false); return; }
+    if (act === "prop-reject") { emit("memory-proposal-reject", { id: it.proposalId, reason: "" }); inboxResolve(it, "Rejected — the facts stay in memory", false); return; }
+    if (act === "reply") {
+      const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
+      const text = ((ta && ta.value) || inbox.reply || "").trim();
+      if (!text) { setStatus("Write the answer first"); return; }
+      if (it.replyVia === "primary") emit("primary-say", { text: text });
+      else emit("lead-say", { project: it.project, text: text });
+      inboxResolve(it, "Reply sent to " + it.agent, false);
+      return;
+    }
+    if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
+    if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
+    if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
+  }
+
+  // Desk keys when the Inbox has focus and no text field does.
+  function inboxKey(e) {
+    if (view !== "inbox") return;
+    const el = document.activeElement;
+    if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) return;
+    const live = inbox.items.filter(inboxPass);
+    const i = live.findIndex((x) => x.id === inbox.sel);
+    const move = (d) => {
+      const n = live[Math.max(0, Math.min(live.length - 1, (i < 0 ? 0 : i) + d))];
+      if (n) { inbox.sel = n.id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(n); renderInbox(); }
+    };
+    const cur = inboxCur();
+    if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (cur && cur.kind === "blocked" && /^[1-9]$/.test(e.key)) {
+      const o = (cur.options || []).find((x) => String(x.n) === e.key);
+      if (o) { e.preventDefault(); emit("agent-answer", { name: cur.agent, n: +e.key }); inboxResolve(cur, "Sent " + e.key + " to " + cur.agent, false); }
+    } else if (cur && e.key === "a" && (cur.kind === "guard" || cur.kind === "proposal")) {
+      e.preventDefault();
+      onInboxAction(cur.kind === "guard" ? "guard-approve" : "prop-approve", { getAttribute: () => cur.id });
+    } else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
+  }
+
+  function inboxBadge() {
+    const b = $("inbox-n");
+    if (b) { b.textContent = inbox.count ? String(inbox.count) : ""; b.classList.toggle("hidden", !inbox.count); }
+  }
+
+
   window.GM = {
     flash: (msg) => setStatus(msg),
+
+    // The Inbox items and the Needs-you count, pushed by Emacs every few
+    // seconds (and after an action).  The badge updates whatever the view.
+    renderInbox: (p) => {
+      inbox.items = (p && p.items) || [];
+      inbox.count = (p && p.count) || 0;
+      if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel)) inbox.sel = "";
+      inboxBadge();
+      if (view === "inbox") renderInbox();
+    },
 
     // The room's chat: the poll's recent tail of its timeline, merged in.
     setChat: (p) => {

@@ -12883,5 +12883,110 @@ its terminal's shell.  0 when unknown."
         (should (= (plist-get (funcall row "f") :hostPid) 0))
         (should (= calls 2))))))
 
+;;; Inbox item sources (each kind produced from real-shaped state)
+
+(defun ghostherd-tests--inbox-kinds (items)
+  (mapcar (lambda (it) (plist-get it :kind)) items))
+
+(ert-deftest ghostherd-test-inbox-blocked-menu-item ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((a (list :name "qa-dp" :kind "agy" :state "blocked" :role "" :project "~/p/"
+                  :since 1000 :login :json-false :continueAt 0
+                  :prompt (list :question "Run this command in ~/p?"
+                                :options (vector (list :n 1 :label "Yes, run command")
+                                                 (list :n 2 :label "No, cancel")))))
+         (items (ghostherd-inbox--agent-items a))
+         (it (car items)))
+    (should (equal (ghostherd-tests--inbox-kinds items) '("blocked")))
+    (should (equal (plist-get it :id) "blocked:qa-dp"))
+    (should (equal (plist-get it :group) "need"))
+    (should (equal (plist-get it :tag) "Permission"))
+    (should (= 2 (length (plist-get it :options))))
+    (should (equal (plist-get (aref (plist-get it :options) 0) :label) "Yes, run command"))))
+
+(ert-deftest ghostherd-test-inbox-login-and-relay-and-continue ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((login (ghostherd-inbox--agent-items
+                (list :name "c-jn" :kind "claude" :state "blocked" :role "" :project "~/jn/"
+                      :login t :continueAt 0 :prompt :json-false)))
+        (cont (ghostherd-inbox--agent-items
+               (list :name "c-x" :kind "claude" :state "blocked" :role "" :project "~/x/"
+                     :login :json-false :continueAt 1699999999000.0 :continueStopped :json-false
+                     :continueAfter "after a dropped connection" :prompt :json-false)))
+        (relay (ghostherd-inbox--agent-items
+                (list :name "c-y" :kind "claude" :state "idle" :role "" :project "~/y/"
+                      :login :json-false :continueAt 0 :prompt :json-false
+                      :usedUp "Used up for the week" :relayTo "grok"))))
+    (should (equal (ghostherd-tests--inbox-kinds login) '("login")))
+    (should (equal (plist-get (car login) :id) "login:c-jn"))
+    (should (equal (ghostherd-tests--inbox-kinds cont) '("continue")))
+    (should (equal (plist-get (car cont) :group) "fyi"))
+    (should (equal (ghostherd-tests--inbox-kinds relay) '("relay")))
+    (should (equal (plist-get (car relay) :relayTo) "grok"))))
+
+(ert-deftest ghostherd-test-inbox-lead-question-vs-report ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((q (ghostherd-inbox--agent-items
+            (list :name "lead-dp" :kind "claude" :state "idle" :role "lead" :project "~/dp/"
+                  :login :json-false :continueAt 0 :prompt :json-false
+                  :said "#405 deployed.\nOpen a ClickUp card for it?" :saidAt 2000)))
+        (r (ghostherd-inbox--agent-items
+            (list :name "lead-dp" :kind "claude" :state "idle" :role "lead" :project "~/dp/"
+                  :login :json-false :continueAt 0 :prompt :json-false
+                  :said "Guard hardenings handed out; both agy agents respawned." :saidAt 2000)))
+        (worker (ghostherd-inbox--agent-items
+                 (list :name "c-dp" :kind "claude" :state "idle" :role "" :project "~/dp/"
+                       :login :json-false :continueAt 0 :prompt :json-false
+                       :said "Finished the migration check." :saidAt 2000))))
+    (should (equal (ghostherd-tests--inbox-kinds q) '("question")))
+    (should (equal (plist-get (car q) :replyVia) "lead"))
+    (should (equal (plist-get (car q) :group) "need"))
+    (should (equal (ghostherd-tests--inbox-kinds r) '("report")))
+    (should (equal (plist-get (car r) :group) "fyi"))
+    ;; a plain worker's turn end is NOT an inbox item
+    (should (null worker))))
+
+(ert-deftest ghostherd-test-inbox-asks-p-heuristic ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (should (ghostherd-inbox--asks-p "all done.\nShall I open a PR?"))
+  (should (ghostherd-inbox--asks-p "要開一張卡嗎？"))
+  (should-not (ghostherd-inbox--asks-p "done, nothing left open."))
+  (should-not (ghostherd-inbox--asks-p "")))
+
+(ert-deftest ghostherd-test-inbox-guard-and-proposal-items ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((guard (ghostherd-inbox--guard-items
+                (list (list :id "g1" :session "agy-tai" :summary "cat .env" :reason "secret file"
+                            :rule "secret-file" :kind "secret" :approvable t :status "pending" :created_ms 500)
+                      (list :id "g2" :session "x" :approvable nil :status "pending"))))   ; not approvable -> skipped
+        (props (ghostherd-inbox--proposal-items
+                (list (list :id "p1" :project "~/dp/" :author "lead-dp" :file "CLAUDE.md"
+                            :status "pending" :diff "--- a\n+++ b\n+x"
+                            :facts (vector (list :name "a" :title "Branch discipline")
+                                           (list :name "b" :title "Uv lock")))))))
+    (should (equal (ghostherd-tests--inbox-kinds guard) '("guard")))
+    (should (equal (plist-get (car guard) :id) "guard:g1"))
+    (should (equal (plist-get (car guard) :code) "cat .env"))
+    (should (equal (ghostherd-tests--inbox-kinds props) '("proposal")))
+    (should (equal (plist-get (car props) :title) "Promote 2 facts into CLAUDE.md"))
+    (should (= 2 (length (plist-get (car props) :facts))))
+    (should (string-match-p "\\+x" (plist-get (car props) :diff)))))
+
+(ert-deftest ghostherd-test-inbox-ask-items ()
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((items (ghostherd-inbox--ask-items
+                (list (list :id "k1" :from "lead-jn" :to "lead-dp" :status "failed"
+                            :error "no such agent" :head "do the thing" :created 100)
+                      (list :id "k2" :from "lead-jn" :to "lead-dp" :status "answered"
+                            :project "~/dp/" :fromProject "~/jn/" :head "fix it"
+                            :replyHead "fixed in 72f7736" :answered 200)
+                      (list :id "k3" :from "a" :to "b" :status "answered")))))   ; no project -> not a handoff
+    (should (member "ask-failed" (ghostherd-tests--inbox-kinds items)))
+    (should (member "handoff" (ghostherd-tests--inbox-kinds items)))
+    (should (= 2 (length items)))
+    (let ((h (seq-find (lambda (it) (equal (plist-get it :kind) "handoff")) items)))
+      (should (equal (plist-get h :id) "handoff:k2")))))
+
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

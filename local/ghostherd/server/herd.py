@@ -458,6 +458,23 @@ class HerdStore:
             )
             """
         )
+        # The user's own state on each Inbox item, keyed by the item's stable
+        # id (guard:<id>, proposal:<id>, blocked:<agent>, question:<agent>:<ts>,
+        # ...): `read' once looked at, `done' once dismissed, `override' to
+        # move it between Needs-you and Updates.  Desk and phone share it, and
+        # it survives a reload or restart.  A row whose item is gone (the cause
+        # resolved itself) is pruned, so a later item of the same id is fresh.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inbox_state (
+                item_id TEXT PRIMARY KEY,
+                read INTEGER NOT NULL DEFAULT 0,
+                done INTEGER NOT NULL DEFAULT 0,
+                override TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(snapshot)")
         }
@@ -1838,6 +1855,60 @@ class HerdStore:
             out = self._guard_recent()
             self._conn.commit()
         return {"requests": out}
+
+    # ---- Inbox item state (read / done / override), shared desk + phone -----
+
+    def inbox_state(self, live_ids: list[str] | None = None) -> dict[str, Any]:
+        """The user's state on each Inbox item: {id: {read, done, override}}.
+        When LIVE_IDS is given (the items Emacs sees right now), state for any
+        item not in it is pruned -- its cause resolved itself, so a later item
+        of the same id starts fresh."""
+        with self._mu:
+            if live_ids is not None:
+                keep = {str(i) for i in live_ids}
+                gone = [r[0] for r in
+                        self._conn.execute("SELECT item_id FROM inbox_state").fetchall()
+                        if r[0] not in keep]
+                for item_id in gone:
+                    self._conn.execute(
+                        "DELETE FROM inbox_state WHERE item_id = ?", (item_id,))
+                if gone:
+                    self._conn.commit()
+            rows = self._conn.execute(
+                "SELECT item_id, read, done, override FROM inbox_state").fetchall()
+        # A list (not a map): Emacs reads JSON objects as plists, and an item
+        # id makes an awkward keyword.
+        return {"state": [{"id": r[0], "read": bool(r[1]), "done": bool(r[2]),
+                           "override": r[3] or None} for r in rows]}
+
+    def inbox_set(self, item_id: str, read=None, done=None, override=None) -> dict[str, Any]:
+        """Set the user's state on one Inbox item.  A field left None is kept;
+        READ/DONE are booleans; OVERRIDE is "need"/"update" to force a group,
+        or "" to clear it back to the item's own group."""
+        item_id = (item_id or "").strip()
+        if not item_id:
+            raise ValueError("item_id is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT read, done, override FROM inbox_state WHERE item_id = ?",
+                (item_id,)).fetchone()
+            cur_read, cur_done, cur_over = (row[0], row[1], row[2]) if row else (0, 0, None)
+            new_read = cur_read if read is None else int(bool(read))
+            new_done = cur_done if done is None else int(bool(done))
+            new_over = cur_over if override is None else (override or None)
+            self._conn.execute(
+                """
+                INSERT INTO inbox_state (item_id, read, done, override, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    read = excluded.read, done = excluded.done,
+                    override = excluded.override, updated_at = excluded.updated_at
+                """,
+                (item_id, new_read, new_done, new_over, now))
+            self._conn.commit()
+        return {"item_id": item_id, "read": bool(new_read),
+                "done": bool(new_done), "override": new_over}
 
     # ---- What agents say about themselves ----------------------------------
 
