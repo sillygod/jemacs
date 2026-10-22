@@ -260,11 +260,13 @@ class JsonRpcHandler:
 
     def _herd_handoff(self, params: dict) -> dict:
         """`herd handoff PROJECT': an ask of another project's lead.  PROJECT
-        is a path (made absolute by the client), a leaf name or a store slug,
-        resolved among the projects the herd knows -- its agents' and its
-        shared-memory stores' -- to the project's main checkout."""
-        where = projects.resolve(str(params.get("project") or ""), get_herd().projects(),
-                                 shared_memory.project_keys())
+        is a path (made absolute by the client), a leaf name or a slug,
+        resolved among the projects the herd knows -- its agents', its
+        shared-memory stores', and those claude has run in (its projects
+        dir names them by slug): primary routes to projects nobody works in
+        now -- to the project's main checkout."""
+        slugs = list(dict.fromkeys(shared_memory.project_keys() + self._claude_slugs()))
+        where = projects.resolve(str(params.get("project") or ""), get_herd().projects(), slugs)
         return get_herd().handoff(
             projects.checkout(where),
             params.get("body"),
@@ -272,6 +274,16 @@ class JsonRpcHandler:
             wait=bool(params.get("wait")),
             rounds=params.get("rounds"),
         )
+
+    @staticmethod
+    def _claude_slugs() -> list[str]:
+        "The projects claude has run in, by the slugs its projects dir names."
+        from config import get_config
+        try:
+            return sorted(d.name for d in get_config().claude_root.iterdir()
+                          if d.is_dir() and d.name.startswith("-"))
+        except OSError:
+            return []
 
     def _herd_reply(self, params: dict) -> dict:
         ask_id = str(params.get("id") or "")
@@ -540,6 +552,22 @@ class JsonRpcHandler:
         key = shared_memory.slug_for_path(project)
         return shared_memory.project_store(key), key
 
+    def _write_store(self, params: dict):
+        """`_memory_store' for a write -- remember, forget, promote.  The
+        herd-wide lead writes its own store only: a project's memory is its
+        lead's, the user's preferences the user's, and the herd's promotion
+        of a fact is a project's -- it reads them all (recall --project), and
+        recommends."""
+        store, key = self._memory_store(params)
+        who = str(params.get("from") or "").strip()
+        me = get_herd().primary()
+        if me and who == me["name"] and key != shared_memory.slug_for_path(me["project"]):
+            whose = "the user's" if key == shared_memory.USER_KEY else "its project's lead's"
+            raise ValueError(
+                f"{who} writes only its own memory: that store is {whose} to change "
+                "-- recommend it instead")
+        return store, key
+
     def _project_key_arg(self, p: str) -> str:
         """A store key from a --project value: a path (has a `/' or `~'), an
         existing store slug, or a project's leaf name (e.g. deploy-platform)."""
@@ -577,7 +605,7 @@ class JsonRpcHandler:
         if typ not in shared_memory.TYPES:
             raise ValueError("type is one of: " + ", ".join(shared_memory.TYPES))
         name = str(params.get("name") or "").strip() or None
-        store, key = self._memory_store(params)
+        store, key = self._write_store(params)
         author = str(params.get("from") or "user").strip() or "user"
         return shared_memory.write_fact(store, key, text, type=typ, name=name, author=author)
 
@@ -675,7 +703,7 @@ class JsonRpcHandler:
         name = str(params.get("name") or "").strip()
         if not name:
             raise ValueError("which fact? give its name")
-        store, key = self._memory_store(params)
+        store, key = self._write_store(params)
         return shared_memory.forget(store, key, name)
 
     def _memory_link_claude(self, params: dict) -> dict:
@@ -799,7 +827,7 @@ class JsonRpcHandler:
         instruction file, with the exact diff.  The herd checks each fact is
         the project's (never a machine/user one) and stores it pending the
         user's approval on the page; it writes nothing to the repo."""
-        store, key = self._memory_store(params)
+        store, key = self._write_store(params)
         if key == shared_memory.USER_KEY:
             raise ValueError("user-store facts cannot be promoted")
         facts = params.get("facts") or []

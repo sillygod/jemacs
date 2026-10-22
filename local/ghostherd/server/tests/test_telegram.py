@@ -324,9 +324,10 @@ def test_pushes_go_to_every_chat_and_replies_find_their_lead(tmp_path):
     cmds = herd.tick(sessions=[])["commands"]
     assert [(c["op"], c["args"], c["chat_id"]) for c in cmds] == [
         ("lead-say", {"project": "/tmp/shop/", "body": "go on with round 3"}, 99)]
-    # Another chat's message id, or a message no push sent: as before.
-    assert bot.handle_message(77, "hello", reply_to=1002)["text"] == "unknown. /herd or /help"
-    assert bot.handle_message(99, "hello", reply_to=5)["text"] == "unknown. /herd or /help"
+    # Another chat's message id, or a message no push sent: free-form
+    # words, for primary, the herd-wide lead.
+    assert bot.handle_message(77, "hello", reply_to=1002)["text"].startswith("→ primary")
+    assert bot.handle_message(99, "hello", reply_to=5)["text"].startswith("→ primary")
     assert "Reply to one to tell" in HELP
     reset_herd()
 

@@ -6383,6 +6383,10 @@ none.  A lead hands off, or an agent in a project with no lead; one
 under a lead is refused and tells its lead.  Method: herd_handoff
 {project, body, from, wait, rounds}.
 
+`primary' is the herd-wide lead: the user's entry point for what crosses
+projects.  It hands work off as above; no agent asks it -- the herd
+refuses -- and it asks no project's agents.
+
 Hooks: `\"$GHOSTHERD_HERD\" hook [EVENT]' reads a CLI hook's JSON on
 stdin and posts herd_report {session, state, reason, cli,
 conversation, transcript, last}.  `herd hooks install' wires it in.
@@ -6588,7 +6592,7 @@ the room's chat (server/conversation.py), which stops at its answer
 line."
   (let* ((session (or (ghostherd-get to)
                       (user-error "Unknown target session")))
-         (role (ghostherd--lead-role-take session)))
+         (role (ghostherd--role-take session)))
     (ghostherd-message from session
                        (concat (ghostherd--ask-text id body rounds
                                                     (equal (ghostherd-session-role session) "lead"))
@@ -7090,16 +7094,17 @@ Whatever role ARGS gave it -- the text after the flag that takes one
                      (equal (ghostherd--project-name (ghostherd-session-project s)) key)))
               (ghostherd-sessions))))
 
-(defvar ghostherd--lead-role-owed (make-hash-table :test 'equal)
-  "Session id -> t for a lead started on a CLI that takes no role as it
-starts, until its first message: that carries the role, whether it is
-the user's (`ghostherd-tell') or an ask (`ghostherd--ask-deliver').")
+(defvar ghostherd--role-owed (make-hash-table :test 'equal)
+  "Session id -> the role text owed to an agent -- a lead, primary --
+started on a CLI that takes none as it starts, until its first message:
+that carries the role, whether it is the user's (`ghostherd-tell') or
+an ask (`ghostherd--ask-deliver').")
 
-(defun ghostherd--lead-role-take (session)
-  "The lead's role when SESSION is owed it, taken; or nil."
-  (when (gethash (ghostherd-session-id session) ghostherd--lead-role-owed)
-    (remhash (ghostherd-session-id session) ghostherd--lead-role-owed)
-    ghostherd--lead-role))
+(defun ghostherd--role-take (session)
+  "The role SESSION is owed, taken; or nil."
+  (let ((id (ghostherd-session-id session)))
+    (prog1 (gethash id ghostherd--role-owed)
+      (remhash id ghostherd--role-owed))))
 
 (defun ghostherd-start-lead (project &optional kind notes)
   "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
@@ -7119,7 +7124,7 @@ takes no role as it starts is owed it, with its first message."
                 :role "lead"
                 :display nil)))
     (unless (ghostherd--lead-args kind)
-      (puthash (ghostherd-session-id lead) t ghostherd--lead-role-owed))
+      (puthash (ghostherd-session-id lead) ghostherd--lead-role ghostherd--role-owed))
     lead))
 
 (defvar ghostherd--lead-unheard (make-hash-table :test 'equal)
@@ -7176,21 +7181,24 @@ unless I ask you to:\n"
 A project's lead hears first what the user said to its agents directly
 since it last heard from them, and what the project works on when that
 is news to it -- after ROLE, the role of a lead that took none as it
-started: the one it is owed (`ghostherd--lead-role-owed') when ROLE is
-nil.  Said to another agent of a project that has a lead, TEXT is kept
-for that."
+started: the one it is owed (`ghostherd--role-owed') when ROLE is nil.
+Any other agent owed its role -- primary, on such a CLI -- reads it
+first too.  Said to another agent of a project that has a lead, TEXT is
+kept for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
          (lead (and project (ghostherd-project-lead project))))
     (if (eq lead session)
         (progn
           (ghostherd-prompt session (concat (or role
-                                                (when-let* ((owed (ghostherd--lead-role-take session)))
+                                                (when-let* ((owed (ghostherd--role-take session)))
                                                   (concat owed "\n---\n\n")))
                                             (ghostherd--lead-unheard-note project)
                                             (ghostherd--lead-work-note session project)
                                             text))
           (remhash project ghostherd--lead-unheard))
-      (ghostherd-prompt session text)
+      (ghostherd-prompt session (concat (when-let* ((owed (ghostherd--role-take session)))
+                                          (concat owed "\n---\n\n"))
+                                        text))
       (when lead
         (push (cons (ghostherd-session-name session) text)
               (gethash project ghostherd--lead-unheard))))))
@@ -7214,15 +7222,22 @@ is called instead."
 (defun ghostherd-lead-say (project text)
   "Say TEXT to PROJECT's lead, starting one when it has none.
 A lead just started hears TEXT once it is ready -- after its role, on a
-CLI that took none as it started.  Return the lead."
-  (if-let* ((lead (ghostherd-project-lead project)))
-      (progn (ghostherd-tell lead text) lead)
+CLI that took none as it started.  Return the lead.  Primary's directory
+has no lead but primary, who is told instead (`ghostherd-primary-say'):
+a reply to its report on the phone, its room's chat."
+  (cond
+   ((ghostherd--primary-dir-p project) (ghostherd-primary-say text))
+   ((ghostherd-project-lead project)
+    (let ((lead (ghostherd-project-lead project)))
+      (ghostherd-tell lead text)
+      lead))
+   (t
     (let ((lead (ghostherd-start-lead project)))
       ;; Asked now, so that whatever looks has looked by the time the
       ;; lead is ready to be told.
       (ghostherd--project-work project)
       (ghostherd--when-ready lead (lambda () (ghostherd-tell lead text)))
-      lead)))
+      lead))))
 
 ;;; What agents say about themselves, through their CLI's hooks
 ;;
@@ -7260,7 +7275,8 @@ agent's environment carries.")
   (let ((table (make-hash-table :test 'equal)))
     (dolist (l links)
       (puthash (plist-get l :session) l table))
-    (setq ghostherd--herd-links table)))
+    (setq ghostherd--herd-links table))
+  (ignore-errors (ghostherd--primary-remember)))
 
 (defun ghostherd--link (session)
   "What SESSION's hooks last said, or nil.
@@ -7670,7 +7686,12 @@ handoffs (max %d): %s -- ask the user to start one there, or to stop one of thos
                             (mapconcat #'ghostherd-session-name up ", "))))))
      (t
       (let* ((kind (or (car (ghostherd-project-defaults root)) ghostherd-lead-kind))
-             (who (if (member by '(nil "" "user")) "the user" by))
+             ;; Primary hands off the user's requests, from a place of its own.
+             (who (cond ((member by '(nil "" "user")) "the user")
+                        ((and by-s (equal (ghostherd-session-role by-s) "primary"))
+                         (format "%s, for the user" by))
+                        (t by)))
+             (from (and from (not (ghostherd--primary-dir-p from)) from))
              (for (if from (format "%s in %s" who (funcall leaf from)) who)))
         (if (not (and (memq kind (ghostherd--agent-kinds))
                       (plist-get (ghostherd--spec kind) :command)))
@@ -7695,6 +7716,213 @@ handoffs (max %d): %s -- ask the user to start one there, or to stop one of thos
                               (ghostherd--abbreviate root) for)))
             (error (cons nil (format "could not start %s's lead: %s" (funcall leaf name)
                                      (error-message-string err)))))))))))
+
+;;; Primary: the herd-wide lead
+;;
+;; The user's one entry point for what crosses projects, or where they do
+;; not know which project it belongs to: one agent, `primary', in the
+;; herd's own directory outside every repo.  It routes work to the
+;; projects' leads by handoff and keeps track of it; it never writes code
+;; and decides nothing that is the user's.  Its directory is its project:
+;; so it has a memory store of its own (with the user's, as every project
+;; has), a room on the page, and the herd's rules hold for it as for any
+;; agent -- it may hand off, as a project with no lead's agent may, and
+;; may not ask another project's agents.  Started when first written to
+;; -- the page's Primary room, Telegram, M-x ghostherd-primary -- and,
+;; once stopped or gone with the host, resumed on its last conversation,
+;; so it keeps its context.  Nothing of its own runs on a timer: it wakes
+;; when spoken to, or when an answer comes back.
+
+(defcustom ghostherd-primary-kind 'claude
+  "The CLI primary, the herd-wide lead, runs on.
+Its conversation is resumed on restart only on the same CLI: changing
+this starts the next primary afresh."
+  :type 'symbol
+  :group 'ghostherd)
+
+(defcustom ghostherd-primary-directory "~/.ghostherd/primary/"
+  "Where primary works: the herd's own directory, outside every repo.
+It is primary's project -- its memory store, its room on the page --
+and holds no checkout: primary edits none."
+  :type 'directory
+  :group 'ghostherd)
+
+(defconst ghostherd--primary-name "primary"
+  "Primary's name in the herd, which agents and the herd's words use.")
+
+(defconst ghostherd--primary-role "\
+You are primary: the herd-wide lead.  The user brings you what crosses
+projects, or what they do not know where it belongs, and asks you what
+everyone is doing.  You route the work and keep track of it; you do not
+do it.  You never write code and never edit a checkout -- not a line --
+and you do not run any project's agents: each project has a lead, or
+gets one, and its work goes to it.
+
+What you see, across every project:
+
+  \"$GHOSTHERD_HERD\" list                 every agent: kind, state, notes,
+                                         project, branch, the ask it is on
+  \"$GHOSTHERD_HERD\" asks                 asks open and lately closed
+  \"$GHOSTHERD_HERD\" recall --project P [QUERY]
+                                         what project P's memory says
+
+What you do: hand the work to the project it belongs to.
+
+  \"$GHOSTHERD_HERD\" handoff PROJECT --wait <<'HERD'
+  the brief
+  HERD
+
+PROJECT is its path or its name -- the name of a project with agents, a
+memory store, or that claude has run in; one the herd does not know is
+refused, saying which it does: give the path then, or ask the user.  Run
+it in the background: you are told when the answer comes, and you tell
+the user.  A project with no lead gets one started for it.  Brief it for a lead who knows nothing of your
+conversation: what the user wants and why, what is known (files,
+tickets, links, commits), what done looks like, and that the user waits.
+Work that spans projects is a handoff to each, with its part, and says
+what each depends on.  Not sure where something belongs: look first
+(list, recall); still unsure, ask the user rather than guess.
+
+You do not ask any project's agents yourself -- the herd refuses it:
+their lead plans their work.  And agents do not ask you; the user does.
+
+What is the user's to decide, you recommend and leave to them: stopping
+or pausing agents, approving a memory promotion, merging, anything that
+spends quota for long.  Say what you would do and why.
+
+\"What is everyone doing?\", \"what is stuck?\": answer from herd list and
+herd asks, by project -- who is on what, what is blocked or waiting and
+on whom, what failed, what came back.  Briefly.
+
+At the end of each turn, report what went where, who is on it and what
+to wait for -- or what came back, and what it means for the user.
+Briefly, and in the language they write to you in.  When they are away
+it reaches them on their phone.
+
+Your memory is your own store: \"$GHOSTHERD_HERD\" remember what you learn
+about routing -- which project owns what, which lead handles what.  A
+project's memory is its lead's, the user's preferences the user's: read
+them with recall, change none.
+
+You wake only when the user writes to you or an answer comes back.  No
+polling, no loops, nothing on a timer.
+"
+  "Primary's role: given to it as it starts, or with its first message.")
+
+(defun ghostherd--primary-args (kind)
+  "Arguments that give a KIND primary its role as it starts; nil for a
+CLI that takes none, which is owed it with its first message."
+  (pcase kind
+    ('claude (list "--append-system-prompt" ghostherd--primary-role))
+    ('grok (list "--rules" ghostherd--primary-role))))
+
+(defun ghostherd--primary-dir ()
+  "Primary's directory, absolute, with a trailing slash."
+  (file-name-as-directory (expand-file-name ghostherd-primary-directory)))
+
+(defun ghostherd--primary-dir-p (dir)
+  "Non-nil when DIR is primary's directory, however written."
+  (and (stringp dir) (not (string-empty-p dir))
+       (equal (ghostherd--project-name dir) (ghostherd--project-name (ghostherd--primary-dir)))))
+
+(defun ghostherd--primary-session ()
+  "Primary, the herd-wide lead, as the herd has it -- up or not -- or nil."
+  (seq-find (lambda (s) (equal (ghostherd-session-role s) "primary")) (ghostherd-sessions)))
+
+(defun ghostherd--primary-up (&optional session)
+  "SESSION -- primary by default -- when it is up: its host there, not dead."
+  (let ((s (or session (ghostherd--primary-session))))
+    (and s (ghostherd--session-live-p s) (not (eq (ghostherd-session-state s) 'dead)) s)))
+
+(defun ghostherd--primary-state-file ()
+  "Where primary's last conversation is kept: beside its directory, not in
+it, so it is no file of primary's."
+  (concat (directory-file-name (ghostherd--primary-dir)) ".eld"))
+
+(defun ghostherd--primary-remembered ()
+  "Primary's last conversation as (:kind KIND :conversation ID), or nil."
+  (let ((file (ghostherd--primary-state-file)))
+    (when (file-readable-p file)
+      (ignore-errors
+        (with-temp-buffer
+          (insert-file-contents file)
+          (let ((v (read (current-buffer))))
+            (and (plistp v) (symbolp (plist-get v :kind))
+                 (stringp (plist-get v :conversation)) v)))))))
+
+(defun ghostherd--primary-remember ()
+  "Keep the conversation primary is on, as its hooks name it, for the
+next start to resume: a restart of Emacs, or of the host, loses the
+agent but not this."
+  (when-let* ((s (ghostherd--primary-session))
+              (id (ghostherd-session-conversation s)))
+    (let ((now (list :kind (ghostherd-session-kind s) :conversation id)))
+      (unless (equal now (ghostherd--primary-remembered))
+        (make-directory (file-name-directory (ghostherd--primary-state-file)) t)
+        (with-temp-file (ghostherd--primary-state-file)
+          (prin1 now (current-buffer)))))))
+
+(defun ghostherd-primary-start (&optional display)
+  "Primary, up: the one already up, or one started.  A primary stopped or
+gone with its host is resumed on its last conversation -- the one its
+hooks named, else the one kept for it (`ghostherd--primary-remember') --
+when that was on the same CLI as `ghostherd-primary-kind'; otherwise it
+starts afresh.  With DISPLAY, show it."
+  (if-let* ((up (ghostherd--primary-up)))
+      (progn (when display (ghostherd-visit up)) up)
+    (let* ((old (ghostherd--primary-session))
+           (kind ghostherd-primary-kind)
+           (kept (ghostherd--primary-remembered))
+           (id (or (and old (eq (ghostherd-session-kind old) kind)
+                        (ghostherd-session-conversation old))
+                   (and (eq (plist-get kept :kind) kind) (plist-get kept :conversation))))
+           (resume (and id (ghostherd--resume-args kind id)))
+           (dir (ghostherd--primary-dir)))
+      (when old (ghostherd-kill old t))
+      (when-let* ((other (ghostherd-get ghostherd--primary-name)))
+        (user-error "An agent named %s is not the herd's primary; rename it first"
+                    (ghostherd-session-name other)))
+      (unless (and (memq kind (ghostherd--agent-kinds)) (plist-get (ghostherd--spec kind) :command))
+        (user-error "No agent kind %s for primary (ghostherd-primary-kind)" kind))
+      (make-directory dir t)
+      (let ((new (ghostherd-spawn
+                  kind
+                  :name ghostherd--primary-name
+                  :project dir
+                  :directory dir
+                  :args (append (plist-get (ghostherd--spec kind) :args)
+                                (ghostherd--primary-args kind) resume)
+                  :notes "primary: the herd-wide lead -- routes work to projects, tracks it, reports"
+                  :role "primary"
+                  :display display)))
+        ;; Resumed, its conversation has the role; a fresh one on a CLI that
+        ;; takes none reads it with its first message.
+        (unless (or resume (ghostherd--primary-args kind))
+          (puthash (ghostherd-session-id new) ghostherd--primary-role ghostherd--role-owed))
+        (ghostherd--log-add new 'life (if resume
+                                          (format "resumed on its conversation %s" id)
+                                        "started, a fresh conversation"))
+        new))))
+
+(defun ghostherd-primary-say (text)
+  "Say TEXT to primary, starting or resuming it when it is not up -- then
+once it is ready.  Return primary."
+  (if-let* ((up (ghostherd--primary-up)))
+      (progn (ghostherd-tell up text) up)
+    (let ((new (ghostherd-primary-start)))
+      (ghostherd--when-ready new (lambda () (ghostherd-tell new text)))
+      new)))
+
+;;;###autoload
+(defun ghostherd-primary (&optional text)
+  "Show primary, the herd-wide lead, starting or resuming it if need be.
+With a prefix argument, write TEXT to it as well."
+  (interactive (list (and current-prefix-arg (read-string "To primary: "))))
+  (let ((s (if (and (stringp text) (not (string-empty-p (string-trim text))))
+               (ghostherd-primary-say text)
+             (ghostherd-primary-start))))
+    (ghostherd-visit s)
+    s))
 
 (defun ghostherd--herd-run-command (cmd)
   "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT), and
@@ -7758,6 +7986,15 @@ for a handoff the lead it went to as :lead."
           ("stop"
            ;; `herd stop': a lead stops an agent it started.
            (setq text (ghostherd-lead-stop (plist-get args :by) name)))
+          ("primary-say"
+           ;; Telegram, free-form: for primary, started or resumed if need be.
+           (let ((body (string-trim (or (plist-get args :body) "")))
+                 (up (ghostherd--primary-up)))
+             (when (string-empty-p body)
+               (error "Nothing to send"))
+             (ghostherd-primary-say body)
+             (setq text (if up "sent to primary"
+                          "started primary; it reads this once it is up"))))
           ("handoff"
            ;; `herd handoff' to a project the sidecar found no lead in.
            (pcase-let ((`(,name . ,said)
@@ -8164,7 +8401,7 @@ when it is worth one: see `ghostherd-push'."
   (pcase new
     ('working (puthash (ghostherd-session-id session) (float-time) ghostherd--working-since))
     ('blocked (ghostherd--push 'blocked session :reason (or (ghostherd-session-state-reason session) "")))
-    ('done (when (equal (ghostherd-session-role session) "lead")
+    ('done (when (member (ghostherd-session-role session) '("lead" "primary"))
              (ghostherd--push 'report session
                               :since (gethash (ghostherd-session-id session) ghostherd--working-since 0))))))
 

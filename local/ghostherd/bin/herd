@@ -36,7 +36,8 @@ asked by nobody, until you finish a turn with no ask open.
 
 `handoff' hands work to another project's lead, when what you found
 needs a change there: do not edit its checkout yourself.  PROJECT is a
-path, its leaf name (unnoiac) or its store slug.  Brief it as you would
+path, or the leaf name (unnoiac) or slug of a project the herd knows --
+one with agents, a memory store, or that claude has run in.  Brief it as you would
 an ask: what you found, the evidence (files, logs, tickets, commits),
 what is needed, when it is done, and who waits on it.  It is an ask --
 the answer, --wait, --rounds and the loop rules are an ask's -- and the

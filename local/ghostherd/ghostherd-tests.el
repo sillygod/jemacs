@@ -53,7 +53,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--screens (make-hash-table :test 'equal))
          ;; Keyed by session id: a lead one test starts on agy is not owed
          ;; its role in the next.
-         (ghostherd--lead-role-owed (make-hash-table :test 'equal))
+         (ghostherd--role-owed (make-hash-table :test 'equal))
          (ghostherd--handoff-leads (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
@@ -11863,7 +11863,7 @@ that is not one, the handoff tables its own, and pushes on as
      (let* ((other (concat base "other/"))
             (plain (concat base "plain/"))
             (ghostherd--handoff-leads (make-hash-table :test 'equal))
-            (ghostherd--lead-role-owed (make-hash-table :test 'equal))
+            (ghostherd--role-owed (make-hash-table :test 'equal))
             (ghostherd-handoff-may-start-lead t)
             (ghostherd-handoff-lead-max 3)
             (ghostherd-lead-kind 'claude)
@@ -11900,7 +11900,7 @@ the same rules as any push.  The next handoff finds it: no second lead."
         (should (string-match-p "started for a handoff from lead-p in repo" (ghostherd-session-notes lead)))
         (should (equal (last (plist-get ghostherd-tests--fake-spawned :args) 2)
                        (list "--append-system-prompt" ghostherd--lead-role)))
-        (should-not (gethash "lead-other" ghostherd--lead-role-owed))
+        (should-not (gethash "lead-other" ghostherd--role-owed))
         (should (equal (gethash "lead-other" ghostherd--handoff-leads) "lead-p"))
         ;; Not the sender's to stop: it did not start it through `herd start'.
         (should-not (ghostherd-session-started-by lead))
@@ -11946,7 +11946,7 @@ or the user's -- and only the first."
         (let ((lead (ghostherd-get "lead-other")))
           (should (eq (ghostherd-session-kind lead) 'agy))
           (should-not (member ghostherd--lead-role (plist-get ghostherd-tests--fake-spawned :args)))
-          (should (gethash "lead-other" ghostherd--lead-role-owed))
+          (should (gethash "lead-other" ghostherd--role-owed))
           ;; After the ask, so the room's chat still reads it as one.
           (ghostherd--ask-deliver "k1" "lead-p" "lead-other" "the brief")
           (should (string-prefix-p "[ask k1 " (car said)))
@@ -11957,7 +11957,7 @@ or the user's -- and only the first."
           ;; A lead taking an ask is told to hand on what another project needs.
           (should (string-suffix-p "(\"$GHOSTHERD_HERD\" handoff PROJECT)." (car said)))
           ;; Owed and not yet told: the user's first message carries it instead.
-          (puthash "lead-other" t ghostherd--lead-role-owed)
+          (puthash "lead-other" ghostherd--lead-role ghostherd--role-owed)
           (ghostherd-tell lead "hello")
           (should (string-prefix-p ghostherd--lead-role (car said)))
           (ghostherd-tell lead "again")
@@ -12226,6 +12226,177 @@ turn ended -- and Emacs watches it again, saying why."
       (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
       (should (string-match-p "a1 left open: rd's turn has not ended by its hook or transcript"
                               (ghostherd-log-entry-text (car ghostherd--log)))))))
+
+;;; Primary, the herd-wide lead (ask 9622f1e9)
+
+(defmacro ghostherd-tests--with-primary (&rest body)
+  "BODY as in `ghostherd-tests--with-lead-start' -- `lead-p' leads `repo'
+-- with primary's directory under the temp dir, its kind claude, the
+herd's links its own, and `said' what was prompted, newest first."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-lead-start
+     (let ((ghostherd-primary-directory (concat base "herd/primary/"))
+           (ghostherd-primary-kind 'claude)
+           (ghostherd--herd-links (make-hash-table :test 'equal))
+           (ghostherd--log nil)
+           (said nil))
+       (cl-letf (((symbol-function 'ghostherd-prompt)
+                  (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) said)))
+                 ((symbol-function 'message) #'ignore))
+         ,@body))))
+
+(ert-deftest ghostherd-test-primary-starts-in-the-herds-own-place ()
+  "Primary is one agent, `primary', role primary, in the herd's directory
+-- outside every repo, made if need be -- its project; claude takes its
+role as it starts.  Up, it is the one returned again."
+  (ghostherd-tests--with-primary
+    (let ((p (ghostherd-primary-start)))
+      (should (equal (ghostherd-session-name p) "primary"))
+      (should (equal (ghostherd-session-role p) "primary"))
+      (should (file-directory-p ghostherd-primary-directory))
+      (should (ghostherd--primary-dir-p (ghostherd-session-project p)))
+      (should (equal (last (plist-get ghostherd-tests--fake-spawned :args) 2)
+                     (list "--append-system-prompt" ghostherd--primary-role)))
+      (should-not (gethash "primary" ghostherd--role-owed))
+      (should (string-match-p "started, a fresh" (ghostherd-log-entry-text (car ghostherd--log))))
+      (should (eq (ghostherd-primary-start) p))
+      (should (= (length (seq-filter (lambda (s) (equal (ghostherd-session-role s) "primary"))
+                                     (ghostherd-sessions)))
+                 1)))))
+
+(ert-deftest ghostherd-test-primary-resumes-its-last-conversation ()
+  "Stopped, or gone with its host, primary comes back on its conversation:
+the one its hooks named, else the one kept for it beside its directory --
+only on the same CLI; another starts afresh."
+  (ghostherd-tests--with-primary
+    (let ((p (ghostherd-primary-start)))
+      ;; Its hooks name its conversation; the tick keeps it for later.
+      (ghostherd--herd-take-links '((:session "primary" :cli "claude" :conversation "c-777")))
+      (should (equal (ghostherd--primary-remembered) '(:kind claude :conversation "c-777")))
+      ;; What its hooks named comes before what was kept, which may be older.
+      (with-temp-file (ghostherd--primary-state-file)
+        (prin1 '(:kind claude :conversation "c-old") (current-buffer)))
+      ;; Its host gone: the next start resumes that conversation.
+      (setf (ghostherd-session-state p) 'dead)
+      (let ((again (ghostherd-primary-start)))
+        (should-not (eq again p))
+        (should (equal (last (plist-get ghostherd-tests--fake-spawned :args) 2) '("-r" "c-777")))
+        (should (string-match-p "resumed on its conversation c-777"
+                                (ghostherd-log-entry-text (car ghostherd--log))))
+        ;; Gone from the herd altogether -- Emacs and the host restarted:
+        ;; the kept one.
+        (ghostherd-kill again t)
+        (clrhash ghostherd--herd-links)
+        (ghostherd-primary-start)
+        (should (equal (last (plist-get ghostherd-tests--fake-spawned :args) 2) '("-r" "c-old")))
+        ;; Another CLI cannot resume claude's conversation: afresh.
+        (ghostherd-kill (ghostherd--primary-session) t)
+        (let ((ghostherd-primary-kind 'grok))
+          (ghostherd-primary-start)
+          (should-not (member "c-old" (plist-get ghostherd-tests--fake-spawned :args)))
+          ;; grok's rules: primary's role, then the shared-memory block.
+          (should (string-prefix-p ghostherd--primary-role
+                                   (cadr (member "--rules" (plist-get ghostherd-tests--fake-spawned :args))))))))))
+
+(ert-deftest ghostherd-test-primary-is-told-once-it-is-up ()
+  "Said to while up: told now.  Not up: started, and told once ready.  On
+a CLI that takes no role as it starts (agy), its first message carries
+primary's role."
+  (ghostherd-tests--with-primary
+    (let ((ready nil))
+      (cl-letf (((symbol-function 'ghostherd--when-ready) (lambda (s f &rest _) (push (cons s f) ready))))
+        (let ((ghostherd-primary-kind 'agy))
+          (let ((p (ghostherd-primary-say "what is everyone doing?")))
+            (should (eq (ghostherd-session-kind p) 'agy))
+            (should-not said)
+            (should (equal (gethash "primary" ghostherd--role-owed) ghostherd--primary-role))
+            (funcall (cdar ready))
+            (should (equal (caar said) "primary"))
+            (should (string-prefix-p ghostherd--primary-role (cdar said)))
+            (should (string-suffix-p "\n---\n\nwhat is everyone doing?" (cdar said)))
+            ;; Up now: told at once, the role not again.
+            (setf (ghostherd-session-state p) 'idle)
+            (ghostherd-primary-say "and the login?")
+            (should (equal (car said) '("primary" . "and the login?")))))))))
+
+(ert-deftest ghostherd-test-primary-is-reached-by-telegram-and-replies ()
+  "Telegram's free-form words (`primary-say') reach it, started if need
+be; a reply to its own report (`lead-say' for its directory) reaches it,
+not a lead started in its place."
+  (ghostherd-tests--with-primary
+    (cl-letf (((symbol-function 'ghostherd--when-ready) (lambda (_s f &rest _) (funcall f))))
+      (let ((r (ghostherd--herd-run-command
+                '(:id "c1" :op "primary-say" :session "primary" :args (:body "fix the login everywhere")))))
+        (should (equal (plist-get r :text) "started primary; it reads this once it is up"))
+        (should (equal (car said) '("primary" . "fix the login everywhere"))))
+      (setf (ghostherd-session-state (ghostherd--primary-session)) 'idle)
+      (let ((r (ghostherd--herd-run-command
+                `(:id "c2" :op "lead-say" :session "x"
+                      :args (:project ,ghostherd-primary-directory :body "and the other one?")))))
+        (should (string-match-p "sent to primary" (plist-get r :text)))
+        (should (equal (car said) '("primary" . "and the other one?")))
+        (should-not (ghostherd-project-lead ghostherd-primary-directory))))))
+
+(ert-deftest ghostherd-test-primarys-report-is-pushed-as-a-leads ()
+  "Its turn done while you are away: pushed as a report, as a lead's is."
+  (ghostherd-test--pushing
+    (let ((p (ghostherd-tests--session :name "primary" :kind 'claude :state 'working :project "~/.ghostherd/primary/")))
+      (puthash "primary" "primary" ghostherd--roles)
+      (ghostherd--set-state p 'done)
+      (should (equal (mapcar (lambda (x) (list (plist-get x :kind) (plist-get x :session))) ghostherd--herd-pushes)
+                     '(("report" "primary")))))))
+
+(ert-deftest ghostherd-test-primary-will-not-take-anothers-name ()
+  "An agent the user named `primary' is not the herd's primary: no clobber."
+  (ghostherd-tests--with-primary
+    (ghostherd-tests--session :name "primary" :kind 'claude :backend 'fake :project repo)
+    (should-error (ghostherd-primary-start) :type 'user-error)))
+
+(ert-deftest ghostherd-test-a-lead-started-for-primary-says-for-the-user ()
+  "A lead the herd starts for primary's handoff is for the user, from no
+project of primary's."
+  (ghostherd-tests--with-handoff
+    (let ((ghostherd-primary-directory (concat base "herd/primary/")))
+      (make-directory ghostherd-primary-directory t)
+      (ghostherd-tests--session :name "primary" :kind 'claude :backend 'fake :project ghostherd-primary-directory)
+      (puthash "primary" "primary" ghostherd--roles)
+      (let ((r (ghostherd-handoff-lead "primary" other ghostherd-primary-directory "x")))
+        (should (string-suffix-p "for a handoff from primary, for the user" (cdr r)))
+        (should (equal (plist-get (car ghostherd--herd-pushes) :from) ""))))))
+
+(ert-deftest ghostherd-test-primarys-role-says-what-it-is ()
+  "It routes and tracks, never does: the commands it has, the refusals it
+meets, what it leaves the user, how it reports, no timers."
+  (dolist (words '("You never write code and never edit a checkout"
+                   "\"$GHOSTHERD_HERD\" list" "\"$GHOSTHERD_HERD\" asks"
+                   "\"$GHOSTHERD_HERD\" recall --project P"
+                   "\"$GHOSTHERD_HERD\" handoff PROJECT --wait"
+                   "You do not ask any project's agents yourself -- the herd refuses it"
+                   "you recommend and leave to them"
+                   "report what went where, who is on it and what\nto wait for"
+                   "Your memory is your own store"
+                   "No\npolling, no loops, nothing on a timer"))
+    (should (string-search words ghostherd--primary-role))))
+
+(ert-deftest ghostherd-test-the-page-has-primary-and-its-room-writes-to-it ()
+  "The page knows where primary's room is, up or not; its chat's message
+starts it."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-primary
+    (let ((sent nil))
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (f &rest a) (push (cons f a) sent)))
+                ((symbol-function 'ghostherd--when-ready) (lambda (_s f &rest _) (funcall f)))
+                ((symbol-function 'ghostherd-memory-page--hooks-payload) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--projects-work) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--usage) #'ignore))
+        (ghostherd-memory-page--send-herd)
+        (let ((p (plist-get (cadr (assoc "renderHerd" sent)) :primary)))
+          (should (equal (plist-get p :directory) (ghostherd--project-name ghostherd-primary-directory)))
+          (should (equal (plist-get p :state) ""))
+          (should (json-encode p)))
+        (ghostherd-memory-page--primary-say '((text . "what is stuck?")))
+        (should (equal (car said) '("primary" . "what is stuck?")))
+        (should (equal (cadr (assoc "flash" sent)) "Starting primary; it gets your message once it is ready"))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

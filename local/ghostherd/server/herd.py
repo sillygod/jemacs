@@ -51,6 +51,11 @@ _herd: "HerdStore | None" = None
 ASK_MEMORY = None
 
 ASK_OPEN = ("queued", "delivered")
+
+# The role of the herd-wide lead (`primary'): the user's one entry point
+# for what crosses projects.  It routes work to projects' leads by handoff
+# and keeps track of it; it asks no project's agents, and none asks it.
+PRIMARY = "primary"
 ASK_CLOSED = ("answered", "failed", "cancelled")
 
 # Who takes an ask addressed to a kind, best first: free now, free soon,
@@ -165,16 +170,19 @@ def _rounds(rounds: Any) -> int | None:
     return int(rounds)
 
 
-def _handoff_text(sender: str, from_project: str | None, project: str, body: str) -> str:
+def _handoff_text(sender: str, from_project: str | None, project: str, body: str,
+                  primary: bool = False) -> str:
     """BODY as the lead of PROJECT reads a handoff from SENDER: the herd's
     frame -- where it comes from, that the sender waits on it, what to do
     with it -- then the brief as the sender wrote it.  How to answer
-    follows, from Emacs, as for any ask."""
+    follows, from Emacs, as for any ask.  From PRIMARY, the herd-wide lead,
+    it is the user's request, routed: no project of its own to name."""
     user = sender == "user"
     who = "the user" if user else sender
     Who = who[:1].upper() + who[1:]
-    there = projects.leaf(from_project) if from_project else ""
-    origin = f"{who}, in project {there} ({from_project})" if there else who
+    there = projects.leaf(from_project) if from_project and not primary else ""
+    origin = (f"{who}, the herd-wide lead, for the user" if primary
+              else f"{who}, in project {there} ({from_project})" if there else who)
     back = f" in {there}" if there else ""
     tail = "" if user else (
         f"  {Who} does not direct your agents, and cannot be asked while it waits: "
@@ -525,6 +533,14 @@ class HerdStore:
             ]
         }
 
+    def primary(self) -> dict[str, Any] | None:
+        "The herd-wide lead as the snapshot has it -- name, state, project -- or None."
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT name, state, project FROM snapshot WHERE role = ? LIMIT 1", (PRIMARY,)
+            ).fetchone()
+        return {"name": row[0], "state": row[1] or "", "project": row[2] or ""} if row else None
+
     def projects(self) -> list[str]:
         "The projects the herd's agents are in, as Emacs writes them."
         with self._mu:
@@ -733,7 +749,11 @@ class HerdStore:
             (ask_id,),
         ).fetchone()
         sender, body, project, from_project = row
-        text = _handoff_text(sender, from_project, project, body) if project else body
+        role = self._conn.execute(
+            "SELECT role FROM snapshot WHERE name = ?", (sender,)).fetchone()
+        text = (_handoff_text(sender, from_project, project, body,
+                              primary=bool(role and role[0] == PRIMARY))
+                if project else body)
         mail_id = str(uuid.uuid4())
         hold = None
         if self.ask_memory is not None:
@@ -788,6 +808,12 @@ class HerdStore:
             ).fetchall()
             mine = next((r for r in rows if r[0] == sender), None)
             from_project = (mine[2] if mine else "") or ""
+            primary = next((r for r in rows if r[3] == PRIMARY and projects.same(r[2], where)), None)
+            if primary:
+                raise ValueError(
+                    f"{shown} is where {primary[0]}, the herd-wide lead, works -- not a "
+                    "project to hand work to"
+                )
             if projects.same(from_project, where):
                 raise ValueError(
                     f"{projects.leaf(where)} is your own project: ask its agents "
@@ -1063,10 +1089,19 @@ class HerdStore:
         # The asker's own project, when it is an agent: the user (not in the
         # snapshot) and an agent in no project are free, as with a handoff.
         mine = next((r[3] for r in rows if r[0] == sender), None)
-        for name, _kind, state, project, _role in rows:
+        for name, _kind, state, project, role in rows:
             if name == want:
                 if state not in _TAKER_RANK:
                     raise ValueError(f"{want} is {state or 'not running'}")
+                # The herd-wide lead takes the user's requests, not agents'
+                # asks: its answers come back to it, its report goes to the
+                # user, and an agent with something for the user tells its own
+                # lead.  (The user, not an agent, may ask it.)
+                if role == PRIMARY and mine is not None and sender != want:
+                    raise ValueError(
+                        f"{want} is the herd-wide lead: it takes the user's requests, not "
+                        "agents' asks -- answer whoever asked you, or tell your lead"
+                    )
                 # Cross-project work goes lead to lead: an agent may not reach
                 # into another project by naming an agent in it.  Hand it to
                 # that project's lead instead, who plans it with its agents.
@@ -2356,7 +2391,7 @@ class HerdStore:
         with self._mu:
             row = self._conn.execute(
                 """
-                SELECT name, kind, state, notes, project, reason, screen, prompt, room
+                SELECT name, kind, state, notes, project, reason, screen, prompt, room, role
                 FROM snapshot WHERE name = ?
                 """,
                 (name,),
@@ -2373,6 +2408,7 @@ class HerdStore:
             "screen": row[6] or "",
             "prompt": json.loads(row[7]) if row[7] else None,
             "room": row[8] or "",
+            "role": row[9] or "",
             "short": self.short_for(row[0]),
         }
 
