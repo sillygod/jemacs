@@ -966,19 +966,47 @@
     });
   }
 
+  // Who takes ask K, in words: its taker -- for a handoff, with the
+  // project it went to, or that project's lead while the herd starts it.
+  function takerOf(k) {
+    if (!k.project) return k.to;
+    return k.to ? k.to + " (" + leaf(k.project) + ")" : leaf(k.project) + "'s lead, starting";
+  }
+
+  // A handoff: work one project's lead -- or an agent with none over it --
+  // handed to another project's lead.  Its cards name the projects: the
+  // sender waits on a project, and the taker's project is waited on by one.
+  function handoffWhat(k, name) {
+    const open = k.status === "queued" || k.status === "delivered";
+    const there = leaf(k.project);
+    if (open && k.to === name) {
+      const who = k.fromProject ? leaf(k.fromProject) : k.from === "user" ? "the user" : k.from;
+      return "⇠ " + who + " is waiting (handoff)" + (k.status === "queued" ? " · queued" : "");
+    }
+    if (open) return "⇢ waiting on " + there + " (handoff)" +
+      (!k.to ? " · starting its lead" : k.status === "queued" ? " · queued" : "");
+    if (k.status === "answered") return k.auto ? "⇠ " + there + "'s lead stopped without answering" : "⇠ " + there + " answered (handoff)";
+    return "⇢ handoff to " + there + " " + k.status + (k.error ? ": " + k.error : "");
+  }
+
   function askLine(k, name) {
     const open = k.status === "queued" || k.status === "delivered";
     const queued = k.status === "queued" ? " (queued)" : "";
     let what;
-    if (open && k.to === name) what = "⇠ ask from " + k.from + queued;
+    if (k.project) what = handoffWhat(k, name);
+    else if (open && k.to === name) what = "⇠ ask from " + k.from + queued;
     else if (open) what = "⇢ asked " + k.to + queued;
     else if (k.status === "answered") what = k.auto ? "⇠ " + k.to + " stopped without answering" : "⇠ " + k.to + " answered";
     else what = "⇢ ask to " + k.to + " " + k.status + (k.error ? ": " + k.error : "");
     if (k.round && (k.parent || k.round > 1)) what += " · round " + k.round + "/" + k.of;
     const text = k.status === "answered" ? k.replyHead : open ? k.head : "";
     const t = open ? k.created : k.answered;
-    return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + '" title="' +
-      esc("ask " + k.id + ": " + (k.head || "")) + '">' +
+    const title = k.project
+      ? "handoff " + k.id + " from " + k.from + (k.fromProject ? " in " + k.fromProject : "") +
+        " to " + (k.to || "the lead being started") + " in " + k.project + ": " + (k.head || "")
+      : "ask " + k.id + ": " + (k.head || "");
+    return '<div class="aask ask-' + esc(k.status) + (k.auto ? " ask-auto" : "") + (k.project ? " ask-handoff" : "") +
+      '" title="' + esc(title) + '">' +
       '<span class="awhat">' + esc(what) + "</span>" +
       (text ? '<span class="atext">' + esc(text) + "</span>" : "") +
       '<span class="when">' + esc(t ? when(t / 1000) : "") + "</span></div>";
@@ -1041,29 +1069,30 @@
       // Deepest first, then newest: the ask everything above waits on.
       const deepest = open.map((k) => chainTo(k, ks)).sort((a, b) => b.length - a.length)[0];
       const d = deepest[deepest.length - 1];
-      path = [deepest[0].from].concat(deepest.map((k) => k.to));
+      path = [deepest[0].from].concat(deepest.map(takerOf));
       const below = ks.find((k) => k.parent === d.id);  // its latest round with someone
       if (below) {
-        parts.push(below.status !== "answered" ? below.to + " " + below.status
-          : below.auto ? below.to + " stopped without answering"
-          : (below.to + " answered " + roundOf(below)).trim());
+        parts.push(below.status !== "answered" ? takerOf(below) + " " + below.status
+          : below.auto ? takerOf(below) + " stopped without answering"
+          : (takerOf(below) + " answered " + roundOf(below)).trim());
       } else if (d.round && (d.parent || d.round > 1)) parts.push(roundOf(d));
-      parts.push(d.status === "queued" ? d.to + " is busy; the ask waits" : "waiting on " + d.to);
+      parts.push(d.status === "queued" && d.to ? takerOf(d) + " is busy; the ask waits" : "waiting on " + takerOf(d));
       at = d.created;
     } else {
       const top = ks.find((k) => !k.parent) || ks[0];
       const asker = agents.find((a) => a.name === run.from);
-      path = [top.from, top.to];
+      path = [top.from, takerOf(top)];
       const used = roundsUsed(ks);
       at = top.answered;
       if (top.status === "failed" || top.status === "cancelled") {
         cls = "run-failed";
-        parts.push("stopped: ask to " + top.to + " " + top.status + (top.error ? " (" + top.error + ")" : ""));
+        parts.push("stopped: " + (top.project ? "handoff" : "ask") + " to " + takerOf(top) + " " + top.status +
+          (top.error ? " (" + top.error + ")" : ""));
       } else if (top.auto) {
         cls = "run-auto";
-        parts.push(top.to + " stopped without answering");
+        parts.push(takerOf(top) + " stopped without answering");
       } else if (asker && ["working", "starting", "waiting"].includes(asker.state)) {
-        parts.push(top.to + " answered; " + run.from + " at work");
+        parts.push(takerOf(top) + " answered; " + run.from + " at work");
       } else {
         cls = "run-done";
         // The asker's last word, when it came after the run: its report.
