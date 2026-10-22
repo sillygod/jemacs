@@ -455,6 +455,10 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .aask.ask-failed .awhat, .aask.ask-cancelled .awhat { color: var(--minus); }
 .aask .atext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .aask .when { margin-left: auto; flex-shrink: 0; }
+/* A handoff names projects, whose names run long: its label gives way
+   before it leaves the card. */
+.aask.ask-handoff .awhat { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.aask.ask-handoff .atext { flex: 1 1 0; }
 .aask.said { margin-top: 3px; }
 .aask.said .awhat { color: var(--muted); }
 .aacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }

@@ -654,7 +654,10 @@ many meters came back together."
         :parent (plist-get a :parent)
         :run (plist-get a :run)
         :round (plist-get a :round)
-        :of (plist-get a :of)))
+        :of (plist-get a :of)
+        ;; A handoff: the project it went to, and the one it came from.
+        :project (ghostherd-memory-page--str (plist-get a :project))
+        :fromProject (ghostherd-memory-page--str (plist-get a :from_project))))
 
 ;;; The hooks each CLI runs
 

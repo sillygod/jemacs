@@ -654,11 +654,16 @@ def test_the_room_reads_what_ghostherd_writes(tmp_path):
     body = "fetch the docs\nand more"
     ask = h.ask("agy-a2", body, from_name="claude-main")
     _deliver(h)
-    # With the rounds the taker has, which the room leaves out.
+    # With the rounds the taker has and what to do with work another
+    # project needs, which the room leaves out -- and the role a lead owed
+    # it reads after its first ask (`ghostherd--ask-deliver').
     pasted = message("claude-main", "agy-a2", ask_text % (ask["id"], body, "'/x/bin/herd'", ask["id"],
-                                                          ",\nand any one of them 4 times at most"))
+                                                          ",\nand any one of them 4 times at most",
+                                                          "A change another project needs ..."))
     e = conv.user_entry(pasted, None)
     assert (e["kind"], e["who"], e["ask"], e["text"]) == ("ask", "claude-main", ask["id"], body)
+    e = conv.user_entry(pasted.rstrip("\n") + "\n\n---\n\nYour role in this herd ...\n", None)
+    assert (e["kind"], e["ask"], e["text"]) == ("ask", ask["id"], body)
 
     h.reply(ask["id"], "X\n(with parens): yes")
     mail = _mail_to(h, "claude-main")[0]

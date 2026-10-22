@@ -3,6 +3,7 @@
 
 Usage:
   herd ask TO [TEXT|-] [--wait] [--timeout SECS] [--rounds N]
+  herd handoff PROJECT [TEXT|-] [--wait] [--timeout SECS] [--rounds N]
   herd reply ID [TEXT|-]
   herd status ID
   herd cancel ID
@@ -32,6 +33,19 @@ times at most -- --rounds N, 5 when not given; past that the herd
 refuses, and the taker answers you with where it stands.  You are held
 to the same with each agent you ask: for the ask you are answering, or,
 asked by nobody, until you finish a turn with no ask open.
+
+`handoff' hands work to another project's lead, when what you found
+needs a change there: do not edit its checkout yourself.  PROJECT is a
+path, its leaf name (unnoiac) or its store slug.  Brief it as you would
+an ask: what you found, the evidence (files, logs, tickets, commits),
+what is needed, when it is done, and who waits on it.  It is an ask --
+the answer, --wait, --rounds and the loop rules are an ask's -- and the
+herd frames it for that lead: from which project and agent, that you
+wait on it, what to do with it.  A project with no lead gets one started
+there, if the herd is set to and it is a git checkout.  A project's lead
+may hand off, and so may an agent in a project with no lead; an agent
+working under a lead is refused -- it puts what the other project needs
+in its answer to its lead, which hands it off.
 
 `start' and `stop' are for a lead: it runs agents in its own project
 through the herd rather than by hand.  `start KIND' reuses an idle agent
@@ -287,6 +301,66 @@ def cmd_ask(args):
         print(out["id"])
         return 0
     return wait_for(out["id"], out["to"], args.timeout)
+
+
+# How long `handoff' waits for the herd to start the lead of a project
+# that has none, before it leaves the handoff to wait for it.
+HANDOFF_START_WAIT = 60
+
+
+def _project_arg(arg):
+    """PROJECT as the sidecar takes it.  A path -- with a `/', or ~, `.' or
+    `..' -- is made absolute here, against this shell's cwd, which is not
+    the sidecar's; a name (unnoiac, .emacs.d, a slug) goes as given."""
+    arg = (arg or "").strip()
+    if "/" in arg or arg.startswith("~") or arg in (".", ".."):
+        return os.path.abspath(os.path.expanduser(arg))
+    return arg
+
+
+def _await_taker(ask_id, seconds):
+    """Wait up to SECONDS for the herd to start the lead a handoff goes to.
+    The ask once it has its taker, or once it closed (refused); None while
+    the lead is still starting."""
+    deadline = time.monotonic() + seconds
+    while True:
+        ask = rpc("herd_await", {"id": ask_id, "timeout": 0, "from": me()})
+        if ask["status"] in ("answered", "failed", "cancelled") or ask.get("to"):
+            return ask
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def cmd_handoff(args):
+    """Hand work to another project's lead: an ask of it, framed by the herd.
+    A project with no lead gets one started there; this waits for it, and
+    says so when it was refused."""
+    body = text_arg(args.text)
+    params = {"project": _project_arg(args.project), "body": body,
+              "from": me(), "wait": bool(args.wait)}
+    if args.rounds is not None:
+        params["rounds"] = args.rounds
+    out = rpc("herd_handoff", params)
+    where = os.path.basename(out["project"].rstrip("/")) or out["project"]
+    to = out["to"]
+    rounds = ", round %d of %d" % (out["round"], out["of"]) if out.get("round") else ""
+    if out.get("starting"):
+        say("%s has no lead: the herd starts one there (handoff %s)" % (where, out["id"]))
+        ask = _await_taker(out["id"], HANDOFF_START_WAIT)
+        if ask is None:
+            say("%s's lead is still starting; the handoff waits for it" % where)
+        elif ask["status"] in ("answered", "failed", "cancelled"):
+            return show_answer(ask)
+        else:
+            to = ask["to"]
+            say("started %s, %s's lead" % (to, where))
+    if to:
+        say("handed off to %s, %s's lead (ask %s)%s" % (to, where, out["id"], rounds))
+    if not args.wait:
+        print(out["id"])
+        return 0
+    return wait_for(out["id"], to or "%s's lead" % where, args.timeout)
 
 
 def cmd_reply(args):
@@ -1201,6 +1275,16 @@ def main(argv=None):
     p.add_argument("--rounds", type=int, metavar="N",
                    help="how many times the taker may ask any one agent for this")
     p.set_defaults(fn=cmd_ask)
+    p = sub.add_parser("handoff",
+                       help="hand work to another project's lead (a lead, or an agent "
+                            "in a project with none)")
+    p.add_argument("project", help="a path, its leaf name, or its store slug")
+    p.add_argument("text", nargs="?")
+    p.add_argument("--wait", action="store_true")
+    p.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    p.add_argument("--rounds", type=int, metavar="N",
+                   help="how many times that lead may ask any one agent for this")
+    p.set_defaults(fn=cmd_handoff)
     p = sub.add_parser("reply", help="answer an ask")
     p.add_argument("id")
     p.add_argument("text", nargs="?")

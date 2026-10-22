@@ -51,6 +51,10 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--turn-ends (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
          (ghostherd--screens (make-hash-table :test 'equal))
+         ;; Keyed by session id: a lead one test starts on agy is not owed
+         ;; its role in the next.
+         (ghostherd--lead-role-owed (make-hash-table :test 'equal))
+         (ghostherd--handoff-leads (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
          ;; with a temporary file, and nowhere else.
@@ -4675,7 +4679,9 @@ heredoc's closing line at column 0 so a copy of it works."
         (should (string-search "\nfetch the docs\nall of them\n" text))
         (should (string-search "\n/p/bin/herd reply a1b2c3d4 <<'HERD'\n<your answer>\nHERD\n" text))
         ;; How many rounds it has, after what the room shows of an ask.
-        (should (string-suffix-p ",\nand any one of them 4 times at most." text))
+        (should (string-search ",\nand any one of them 4 times at most.\n" text))
+        ;; Then, last, what to do with what another project needs.
+        (should (string-suffix-p "and whoever asked takes it on." text))
         (should (< (string-search "When you are done" text)
                    (string-search "any one of them" text))))
       (should-not (string-search "any one of them" (ghostherd--ask-text "a1" "x")))
@@ -11844,6 +11850,208 @@ goes to `ghostherd-switch-model', and the page hears how it went."
         (should (member '("flash" . "claude-api: its picker has no Fable") calls))
         (should-error (ghostherd-memory-page--agent-act "agent-model" '((name . "claude-api")))
                       :type 'user-error)))))
+
+;;; Handoffs: work for another project's lead (ask 2f40d99a)
+
+(defmacro ghostherd-tests--with-handoff (&rest body)
+  "BODY as in `ghostherd-tests--with-lead-start' -- `lead-p' leads `repo' --
+with `other' a second git checkout and no lead in it, `plain' a directory
+that is not one, the handoff tables its own, and pushes on as
+`ghostherd-test--pushing' has them: you away, the bot set up."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-lead-start
+     (let* ((other (concat base "other/"))
+            (plain (concat base "plain/"))
+            (ghostherd--handoff-leads (make-hash-table :test 'equal))
+            (ghostherd--lead-role-owed (make-hash-table :test 'equal))
+            (ghostherd-handoff-may-start-lead t)
+            (ghostherd-handoff-lead-max 3)
+            (ghostherd-lead-kind 'claude)
+            (ghostherd-project-work-functions nil)
+            (ghostherd--herd-pushes nil)
+            (ghostherd-push '(blocked report ask-failed used-up lead-started))
+            (ghostherd-push-away-after nil)
+            (ghostherd-present-functions nil)
+            (ghostherd-watched-functions nil)
+            (ghostherd-room-url-function nil)
+            (ghostherd--log nil)
+            (process-environment (append '("GHOSTHERD_TELEGRAM_TOKEN=t" "GHOSTHERD_TELEGRAM_CHAT_IDS=1")
+                                         process-environment)))
+       (make-directory other t)
+       (funcall git other "init" "-q" "-b" "main")
+       (funcall git other "commit" "-q" "--allow-empty" "-m" "start")
+       (make-directory plain t)
+       (cl-letf (((symbol-function 'ghostherd--when-ready) #'ignore)
+                 ((symbol-function 'message) #'ignore))
+         ,@body))))
+
+(ert-deftest ghostherd-test-handoff-starts-a-lead-in-a-checkout ()
+  "A project with no lead gets one, with the lead's role, its notes saying
+for whom; it counts against the cap, and is pushed while you are away --
+the same rules as any push.  The next handoff finds it: no second lead."
+  (ghostherd-tests--with-handoff
+    (let ((r (ghostherd-handoff-lead "lead-p" other repo "Rename token")))
+      (should (equal (car r) "lead-other"))
+      (should (string-match-p "\\`started lead-other (claude) in .*/other/ for a handoff from lead-p in repo\\'"
+                              (cdr r)))
+      (let ((lead (ghostherd-get "lead-other")))
+        (should (equal (ghostherd-session-role lead) "lead"))
+        (should (equal (ghostherd--session-project-name lead) (ghostherd--project-name other)))
+        (should (string-match-p "started for a handoff from lead-p in repo" (ghostherd-session-notes lead)))
+        (should (equal (last (plist-get ghostherd-tests--fake-spawned :args) 2)
+                       (list "--append-system-prompt" ghostherd--lead-role)))
+        (should-not (gethash "lead-other" ghostherd--lead-role-owed))
+        (should (equal (gethash "lead-other" ghostherd--handoff-leads) "lead-p"))
+        ;; Not the sender's to stop: it did not start it through `herd start'.
+        (should-not (ghostherd-session-started-by lead))
+        (should (string-match-p "did not start" (ghostherd-lead-stop "lead-p" "lead-other"))))
+      (should (equal (mapcar (lambda (p) (list (plist-get p :kind) (plist-get p :session) (plist-get p :by)
+                                               (plist-get p :from) (plist-get p :head)))
+                             ghostherd--herd-pushes)
+                     `(("lead-started" "lead-other" "lead-p" ,(ghostherd--project-name repo) "Rename token"))))
+      (should (equal (ghostherd-handoff-lead "lead-p" other repo "more")
+                     (cons "lead-other" "handed to lead-other, other's lead")))
+      ;; From a plain shell: the user's.
+      (let ((third (concat base "third/")))
+        (make-directory third t)
+        (funcall git third "init" "-q" "-b" "main")
+        (should (string-suffix-p "for a handoff from the user" (cdr (ghostherd-handoff-lead "user" third nil "x"))))
+        (should (string-suffix-p "for a handoff from the user"
+                                 (ghostherd-session-notes (ghostherd-get "lead-third")))))
+      ;; Named by a subdirectory, it is still that project's lead.
+      (make-directory (concat other "src") t)
+      (should (equal (car (ghostherd-handoff-lead "lead-p" (concat other "src") repo "x")) "lead-other"))
+      (should (= (length (ghostherd-sessions)) 3)))))
+
+(ert-deftest ghostherd-test-handoff-push-keeps-the-away-rules ()
+  "At the desk, looking at the herd page, the start is not pushed."
+  (ghostherd-tests--with-handoff
+    (let ((ghostherd-present-functions (list (lambda () t))))
+      (should (car (ghostherd-handoff-lead "lead-p" other repo "x")))
+      (should-not ghostherd--herd-pushes))))
+
+(ert-deftest ghostherd-test-handoff-takes-the-projects-kind-and-owes-the-role ()
+  "The project's own default kind (its .dir-locals.el) runs its lead.  An
+agy takes no role as it starts: its first message carries it -- an ask
+or the user's -- and only the first."
+  (ghostherd-tests--with-handoff
+    (with-temp-file (concat other ".dir-locals.el")
+      (insert "((nil . ((ghostherd-project-kind . agy))))\n"))
+    (let ((said nil))
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (_from _to text &rest _) (push text said)))
+                ((symbol-function 'ghostherd-prompt)
+                 (lambda (_s text &rest _) (push text said))))
+        (should (string-match-p "(agy)" (cdr (ghostherd-handoff-lead "lead-p" other repo "x"))))
+        (let ((lead (ghostherd-get "lead-other")))
+          (should (eq (ghostherd-session-kind lead) 'agy))
+          (should-not (member ghostherd--lead-role (plist-get ghostherd-tests--fake-spawned :args)))
+          (should (gethash "lead-other" ghostherd--lead-role-owed))
+          ;; After the ask, so the room's chat still reads it as one.
+          (ghostherd--ask-deliver "k1" "lead-p" "lead-other" "the brief")
+          (should (string-prefix-p "[ask k1 " (car said)))
+          (should (string-suffix-p (concat "as it starts:\n\n" ghostherd--lead-role) (car said)))
+          (ghostherd--ask-deliver "k2" "lead-p" "lead-other" "more")
+          (should (string-prefix-p "[ask k2 " (car said)))
+          (should-not (string-search ghostherd--lead-role (car said)))
+          ;; A lead taking an ask is told to hand on what another project needs.
+          (should (string-suffix-p "(\"$GHOSTHERD_HERD\" handoff PROJECT)." (car said)))
+          ;; Owed and not yet told: the user's first message carries it instead.
+          (puthash "lead-other" t ghostherd--lead-role-owed)
+          (ghostherd-tell lead "hello")
+          (should (string-prefix-p ghostherd--lead-role (car said)))
+          (ghostherd-tell lead "again")
+          (should (equal (car said) "again")))))))
+
+(ert-deftest ghostherd-test-handoff-in-the-words-agents-read ()
+  "A lead is told when and how to hand off, and how to take one in; every
+taker of an ask, what to do with work another project needs -- a lead
+hands it on, any other agent puts it in its answer; the protocol has it."
+  (dolist (words '("do not edit its checkout"
+                   "\"$GHOSTHERD_HERD\" handoff PROJECT --wait"
+                   "what you found; the evidence -- files and\nlines, logs, tickets, commits; what is needed of that project; how it\nwill know it is done; and who waits on it"
+                   "Your agents do not hand off"
+                   "Take it in as your own work -- plan it here"
+                   "answer with the result"))
+    (should (string-search words ghostherd--lead-role)))
+  (let ((lead (ghostherd--ask-text "a1" "x" nil t))
+        (other (ghostherd--ask-text "a1" "x")))
+    (should (string-suffix-p "hand it to that project's lead (\"$GHOSTHERD_HERD\" handoff PROJECT)." lead))
+    (should (string-suffix-p "say it in your answer -- what, where, why -- and whoever asked takes it on." other))
+    (dolist (text (list lead other))
+      (should (string-search "not yours to make in its checkout" text))))
+  (should (string-search "herd_handoff\n{project, body, from, wait, rounds}" ghostherd--herd-protocol)))
+
+(ert-deftest ghostherd-test-handoff-refusals ()
+  "No directory, not a git checkout, the herd set not to, the sender's own
+project, a dead lead, and past the cap -- each refused, saying why."
+  (ghostherd-tests--with-handoff
+    (let ((refused (lambda (project &optional from)
+                     (let ((r (ghostherd-handoff-lead "lead-p" project (or from repo) "x")))
+                       (should-not (car r))
+                       (cdr r)))))
+      (should (string-match-p "\\`no directory .*/nope/" (funcall refused (concat base "nope/"))))
+      (should (string-match-p "plain/ is not a git checkout, and has no lead" (funcall refused plain)))
+      (let ((ghostherd-handoff-may-start-lead nil))
+        (should (string-match-p "ghostherd-handoff-may-start-lead is off" (funcall refused other))))
+      (should (string-match-p "repo is lead-p's own project" (funcall refused repo)))
+      (should-not ghostherd--herd-pushes)
+      (should (= (length (ghostherd-sessions)) 1))
+      ;; The cap: leads the herd started for handoffs and are still up.
+      (let ((ghostherd-handoff-lead-max 1))
+        (should (car (ghostherd-handoff-lead "lead-p" other repo "x")))
+        (let ((third (concat base "third/")))
+          (make-directory third t)
+          (funcall git third "init" "-q" "-b" "main")
+          (should (string-match-p "the herd has 1 up that it started for handoffs (max 1): lead-other"
+                                  (funcall refused third)))
+          ;; Its lead gone, there is room again; a dead one is said plainly.
+          (setf (ghostherd-session-state (ghostherd-get "lead-other")) 'dead)
+          (should (string-match-p "lead-other, other's lead, is dead" (funcall refused other)))
+          (should (equal (car (ghostherd-handoff-lead "lead-p" third repo "x")) "lead-third")))))))
+
+(ert-deftest ghostherd-test-handoff-command-names-the-lead ()
+  "The sidecar's `handoff' command answers with the lead it went to, as
+:lead, or only why not."
+  (ghostherd-tests--with-handoff
+    (let ((run (lambda (project)
+                 (ghostherd--herd-run-command
+                  (list :id "c1" :op "handoff" :session "lead-p"
+                        :args (list :by "lead-p" :project project
+                                    :from_project (ghostherd--project-name repo) :head "x"))))))
+      (let ((r (funcall run (ghostherd--project-name other))))
+        (should (equal (plist-get r :id) "c1"))
+        (should (equal (plist-get r :lead) "lead-other"))
+        (should (string-prefix-p "started lead-other" (plist-get r :text))))
+      (let ((r (funcall run plain)))
+        (should-not (plist-member r :lead))
+        (should (string-match-p "not a git checkout" (plist-get r :text)))))))
+
+(ert-deftest ghostherd-test-handoff-on-the-page-and-in-the-log ()
+  "The page gets the projects a handoff went to and came from; one that
+failed before it had a taker is logged under its asker and pushed with
+the lead it was for."
+  ;; Loaded here, outside the bindings below: loading it adds to hooks.
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-handoff
+    (let ((ghostherd--asks-open (make-hash-table :test 'equal))
+          (ghostherd--asks-settled (make-hash-table :test 'equal))
+          (ghostherd--herd-asks nil)
+          (ghostherd--herd-asks-taken t)
+          (ask (lambda (status)
+                 (list :id "h1" :from "lead-p" :to "" :status status :head "Rename token"
+                       :error (if (equal status "failed") "not a git checkout" "")
+                       :project "~/src/other/" :from_project "~/src/repo/"))))
+      (let ((k (ghostherd-memory-page--ask (funcall ask "queued"))))
+        (should (equal (list (plist-get k :project) (plist-get k :fromProject))
+                       '("~/src/other/" "~/src/repo/")))
+        (should (json-encode k)))
+      (ghostherd--herd-take-asks (list (funcall ask "queued")))
+      (ghostherd--herd-take-asks (list (funcall ask "failed")))
+      (should (equal (mapcar (lambda (p) (list (plist-get p :kind) (plist-get p :session) (plist-get p :to)))
+                             ghostherd--herd-pushes)
+                     '(("ask-failed" "lead-p" "other's lead"))))
+      (should (equal (mapcar #'ghostherd-log-entry-session ghostherd--log) '("lead-p"))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here
