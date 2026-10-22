@@ -1003,15 +1003,30 @@ or the workspace's =.agents=, =.gemini=, =.claude= or =.grok= (agent CLIs'
 hooks) asks; git's hooks are off for the agent's own git (a hook is code
 it can change --- a tracked =.husky/=, a pre-commit config); =awk -f=,
 =awk= that writes (=print > file=), =sort --compress-program=, =rg
---hostname-bin=, =git grep -O=, =--output== are refused.  Two things it
+--hostname-bin=, =git grep -O=, =--output== are refused.  Three things it
 cannot cover, by their nature:
 
-- A project command from =ghostherd-guard-allow-commands= runs code the
-  agent can change --- tests, =package.json= scripts --- and so can do
-  anything you can, unguarded; only the scrubbed environment holds there.
-  Allow only what you would let it run unwatched
+- A project command from =ghostherd-guard-allow-commands= is *complete
+  trust* in the agent, not a guarded command.  It runs code the agent can
+  change --- tests, =package.json= scripts --- as you, so it can read any
+  file you can.  And the scrub keeps =GHOSTHERD_RPC= (the sidecar's
+  address and token, in =ghostherd-agent-env-keep=: the herd's own
+  commands need it), so that code reaches the sidecar as the herd does:
+  it can approve its own guard requests (=herd_guard_approve=) and call
+  any other RPC --- read any memory store, message any agent.  Allow only
+  what you would let the agent run unwatched with the herd's keys
 - What the agent writes, you may run later yourself (its tests, a hook
   config in the tree, a script): read its diff first
+- The guard is per agent.  It bounds what /this/ agent reads itself, not
+  what it asks a teammate to read: =herd ask= or =herd handoff= (and, for
+  a lead, =herd start= and =herd relay=) can send another agent --- one
+  not guarded, a claude say --- to read a secret and hand it back in its
+  answer.  Every such ask is in the open, on the page, the cards and the
+  log, and every agent is your own.  The guard does not scan what an ask
+  says: a refusal by its wording is reworded at once, and would only give
+  false assurance.  =read-only= does not stop it either --- the herd's
+  commands run in both modes.  If an agent must not reach what its
+  teammates can read, do not run it beside them, and watch its asks
 
 *Approve once.*  A denial the user may lift says so ("they can approve
 this exact call once on your card"), and shows on the agent's card and
