@@ -233,7 +233,8 @@ the project's own, then the global ones, then the tasks found in ROOT."
   (append (ghostel-cmd--scope-rows 'project (ghostel-cmd--get-commands root))
           (ghostel-cmd--scope-rows
            'global (ghostel-cmd--get-commands ghostel-cmd--global-key))
-          (ghostel-cmd--tasks root)))
+          (ghostel-cmd--tasks root)
+          (ghostel-cmd--url-entries root)))
 
 (defun ghostel-cmd--task-p (scope)
   "Non-nil when SCOPE is a discovered task's, not a bookmark's."
@@ -245,9 +246,37 @@ the project's own, then the global ones, then the tasks found in ROOT."
 (defconst ghostel-cmd--task-sources
   '((npm ghostel-cmd--npm-tasks "package.json")
     (make ghostel-cmd--make-tasks "GNUmakefile" "makefile" "Makefile")
-    (just ghostel-cmd--just-tasks "justfile" "Justfile" ".justfile"))
+    (just ghostel-cmd--just-tasks "justfile" "Justfile" ".justfile")
+    (compose ghostel-cmd--compose-tasks
+             "compose.yaml" "compose.yml"
+             "docker-compose.yaml" "docker-compose.yml"))
   "Per source: its parser and the files it reads, the first found wins,
-in the order make and just themselves look for them.")
+in the order make, just and docker compose themselves look for them.")
+
+(defconst ghostel-cmd--compose-files
+  '("compose.yaml" "compose.yml" "docker-compose.yaml" "docker-compose.yml")
+  "Compose base files, in docker's own precedence; the first found wins.")
+
+(defconst ghostel-cmd--compose-override-files
+  '("compose.override.yaml" "compose.override.yml"
+    "docker-compose.override.yaml" "docker-compose.override.yml")
+  "Compose override files, pulled into the task stamp so a change to one
+re-discovers even though it is not the base file the source found.")
+
+(defconst ghostel-cmd--vite-config-files
+  '("vite.config.ts" "vite.config.js" "vite.config.mjs"
+    "vite.config.cjs" "vite.config.mts" "vite.config.cts")
+  "Vite config files, any one of which gives a Vite dev-server URL.")
+
+(defconst ghostel-cmd--next-config-files
+  '("next.config.js" "next.config.mjs" "next.config.ts")
+  "Next.js config files: their presence marks a project as clearly Next.")
+
+(defun ghostel-cmd--source-file (root files)
+  "The first of FILES that is a regular file under ROOT, or nil."
+  (cl-loop for f in files
+           for path = (expand-file-name f root)
+           when (file-regular-p path) return path))
 
 (defconst ghostel-cmd--npm-lockfiles
   '(("pnpm-lock.yaml" . "pnpm")
@@ -427,6 +456,493 @@ A comment right above one, or its [doc(...)] attribute, is the desc;
         (forward-line 1))
       (nreverse tasks))))
 
+;;; docker compose — a parse-only task source and service URLs
+;;
+;; A careful subset parser, not a YAML library: it must keep the inline
+;; comments (a port's hint) that a YAML reader would drop, and it must
+;; never run docker or resolve a .env.  It reads service names and each
+;; port's published/target/proto, resolving ${VAR:-default} to its
+;; default and a range a-b to its start; a bare ${VAR} (no default, no
+;; .env) leaves that port out rather than inventing one.
+
+(defconst ghostel-cmd--compose-non-web-ports
+  '(5432 3306 6379 27017 5672 9092 2181 11211 1521 50051
+    25 110 143 465 587 993 995)
+  "Published or target ports that are clearly not HTTP (databases, gRPC,
+mail): their URL is marked, and `ghostel-cmd-open-url' never picks them.")
+
+(defun ghostel-cmd--compose-indent (line)
+  "Leading-space count of LINE, or nil when LINE is blank or a comment.
+YAML forbids tab indentation, so only spaces count."
+  (let ((i 0) (n (length line)))
+    (while (and (< i n) (eq (aref line i) ?\s)) (setq i (1+ i)))
+    (and (< i n) (not (eq (aref line i) ?#)) i)))
+
+(defun ghostel-cmd--compose-split-comment (s)
+  "Split S into (VALUE . COMMENT): COMMENT is the text after the first
+unquoted `#', trimmed, or nil.  VALUE keeps its indentation."
+  (let ((i 0) (n (length s)) (q nil) (cut nil))
+    (while (and (< i n) (not cut))
+      (let ((ch (aref s i)))
+        (cond (q (when (eq ch q) (setq q nil)))
+              ((memq ch '(?\" ?\')) (setq q ch))
+              ((eq ch ?#) (setq cut i))))
+      (setq i (1+ i)))
+    (if cut
+        (cons (string-trim-right (substring s 0 cut))
+              (let ((c (string-trim (substring s (1+ cut)))))
+                (and (not (string-empty-p c)) c)))
+      (cons (string-trim-right s) nil))))
+
+(defun ghostel-cmd--compose-keyval (c)
+  "For a mapping line C (`key' or `key: value'), (KEY . VALUE); else nil."
+  (when (string-match "\\`\\([A-Za-z0-9_.-]+\\):\\(?:[ \t]+\\(.*\\)\\)?\\'" c)
+    (cons (match-string 1 c) (string-trim (or (match-string 2 c) "")))))
+
+(defun ghostel-cmd--compose-split-colons (s)
+  "Split S on `:' not inside a ${...}."
+  (let ((parts nil) (start 0) (i 0) (n (length s)) (depth 0))
+    (while (< i n)
+      (let ((ch (aref s i)))
+        (cond ((and (eq ch ?$) (< (1+ i) n) (eq (aref s (1+ i)) ?{))
+               (setq depth (1+ depth) i (1+ i)))
+              ((and (eq ch ?}) (> depth 0)) (setq depth (1- depth)))
+              ((and (eq ch ?:) (= depth 0))
+               (push (substring s start i) parts) (setq start (1+ i)))))
+      (setq i (1+ i)))
+    (push (substring s start) parts)
+    (nreverse parts)))
+
+(defun ghostel-cmd--compose-resolve-port (tok)
+  "Integer port from TOK: ${VAR:-D}/${VAR-D} -> D, a range a-b -> a, a
+number -> itself; nil when it cannot be known (a bare ${VAR}: no .env)."
+  (setq tok (string-trim (or tok "")))
+  (cond
+   ((string-empty-p tok) nil)
+   ((string-match "\\`\\${[A-Za-z_][A-Za-z0-9_]*:?-\\(.*\\)}\\'" tok)
+    (ghostel-cmd--compose-resolve-port (match-string 1 tok)))
+   ((string-prefix-p "${" tok) nil)
+   ((string-match "\\`\\([0-9]+\\)-[0-9]+\\'" tok)
+    (string-to-number (match-string 1 tok)))
+   ((string-match-p "\\`[0-9]+\\'" tok) (string-to-number tok))
+   (t nil)))
+
+(defun ghostel-cmd--compose-port-short (spec)
+  "A (:published N :target M :proto S) from short-syntax SPEC, or nil
+when the published port cannot be known."
+  (setq spec (string-trim spec))
+  (when (and (>= (length spec) 2)
+             (memq (aref spec 0) '(?\" ?\'))
+             (eq (aref spec (1- (length spec))) (aref spec 0)))
+    (setq spec (substring spec 1 -1)))
+  (let ((proto "tcp"))
+    (when (string-match "/\\([a-zA-Z]+\\)\\'" spec)
+      (setq proto (downcase (match-string 1 spec))
+            spec (substring spec 0 (match-beginning 0))))
+    (let* ((parts (ghostel-cmd--compose-split-colons spec))
+           (n (length parts))
+           (pub (ghostel-cmd--compose-resolve-port
+                 (nth (if (= n 1) 0 (- n 2)) parts)))
+           (tgt (ghostel-cmd--compose-resolve-port (nth (1- n) parts))))
+      (and pub (list :published pub :target (or tgt pub) :proto proto)))))
+
+(defun ghostel-cmd--compose-port-long (alist)
+  "A port plist from long-syntax ALIST of (key . value), or nil with no
+fixed published port (docker would assign one)."
+  (let ((pub (ghostel-cmd--compose-resolve-port (cdr (assoc "published" alist))))
+        (tgt (ghostel-cmd--compose-resolve-port (cdr (assoc "target" alist))))
+        (proto (or (cdr (assoc "protocol" alist)) "tcp")))
+    (and pub (list :published pub :target (or tgt pub) :proto (downcase proto)))))
+
+(defun ghostel-cmd--compose-parse (text)
+  "Parse compose TEXT to an alist (SERVICE . PORTS), order kept.
+Each port is (:published N :target M :proto S :hint H)."
+  (let ((services nil) (in-services nil) (services-indent nil)
+        (service nil) (service-indent nil)
+        (in-ports nil) (ports-indent nil)
+        (long nil) (long-hint nil))
+    (cl-labels
+        ((add-port (port hint)
+           (when (and port service)
+             (let ((cell (assq-get service)))
+               (when hint (setq port (append port (list :hint hint))))
+               (setcdr cell (append (cdr cell) (list port))))))
+         (assq-get (name)
+           (or (assoc name services)
+               (car (push (cons name nil) (cdr (last services))))))
+         (flush-long ()
+           (when long
+             (add-port (ghostel-cmd--compose-port-long (nreverse long)) long-hint)
+             (setq long nil long-hint nil))))
+      ;; `services' needs a head cell so `last'/`setcdr' can append in order.
+      (setq services (list 'head))
+      (dolist (raw (split-string text "\n"))
+        (let ((indent (ghostel-cmd--compose-indent raw)))
+          (when indent
+            (let* ((sc (ghostel-cmd--compose-split-comment raw))
+                   (c (string-trim (car sc)))
+                   (cmt (cdr sc)))
+              (cond
+               ((not in-services)
+                (when (equal c "services:")
+                  (setq in-services t services-indent indent)))
+               ((<= indent services-indent)
+                (flush-long)
+                (setq in-services nil service nil service-indent nil
+                      in-ports nil))
+               (t
+                (when (null service-indent) (setq service-indent indent))
+                (cond
+                 ;; a service name
+                 ((and (= indent service-indent)
+                       (ghostel-cmd--compose-keyval c)
+                       (string-empty-p (cdr (ghostel-cmd--compose-keyval c))))
+                  (flush-long)
+                  (setq service (car (ghostel-cmd--compose-keyval c))
+                        in-ports nil ports-indent nil)
+                  (assq-get service))
+                 ;; a ports list item
+                 ((and in-ports (> indent ports-indent)
+                       (or (string-prefix-p "- " c) (string= c "-")))
+                  (flush-long)
+                  (let ((item (string-trim (substring c 1))))
+                    (if (ghostel-cmd--compose-keyval item)
+                        ;; long syntax starts on the dash line
+                        (let ((kv (ghostel-cmd--compose-keyval item)))
+                          (setq long (list kv) long-hint cmt))
+                      (add-port (ghostel-cmd--compose-port-short item) cmt))))
+                 ;; a continuation key of a long-syntax port
+                 ((and in-ports long (> indent ports-indent)
+                       (ghostel-cmd--compose-keyval c))
+                  (push (ghostel-cmd--compose-keyval c) long)
+                  (when cmt (setq long-hint (or long-hint cmt))))
+                 ;; a key under the service (opens or closes `ports')
+                 ((and (> indent service-indent)
+                       (ghostel-cmd--compose-keyval c))
+                  (flush-long)
+                  (if (equal (car (ghostel-cmd--compose-keyval c)) "ports")
+                      (setq in-ports t ports-indent indent)
+                    (setq in-ports nil)))
+                 (t (flush-long)))))))))
+      (flush-long)
+      (cdr services))))
+
+(defun ghostel-cmd--compose-override-file (file)
+  "FILE's override sibling (foo.yml -> foo.override.yml), or nil."
+  (let ((dir (file-name-directory file))
+        (base (file-name-base file))
+        (ext (file-name-extension file)))
+    (expand-file-name (format "%s.override.%s" base ext) dir)))
+
+(defun ghostel-cmd--compose-merge-ports (base over)
+  "BASE ports with OVER's layered on: a published port in both takes
+OVER's, the rest of OVER's are appended."
+  (let ((result (copy-sequence base)))
+    (dolist (p over result)
+      (let ((cell (cl-find (plist-get p :published) result
+                           :key (lambda (q) (plist-get q :published)))))
+        (if cell
+            (setq result (cl-substitute p cell result :test #'eq))
+          (setq result (append result (list p))))))))
+
+(defun ghostel-cmd--compose-services (file)
+  "Services of compose FILE merged with its override: (NAME . PORTS)."
+  (let* ((base (ghostel-cmd--compose-parse
+                (with-temp-buffer (insert-file-contents file) (buffer-string))))
+         (ov (ghostel-cmd--compose-override-file file))
+         (over (and ov (file-regular-p ov)
+                    (ghostel-cmd--compose-parse
+                     (with-temp-buffer (insert-file-contents ov) (buffer-string))))))
+    (if (null over)
+        base
+      (let ((result (mapcar (lambda (s) (cons (car s) (copy-sequence (cdr s)))) base)))
+        (dolist (svc over)
+          (let ((cell (assoc (car svc) result)))
+            (if cell
+                (setcdr cell (ghostel-cmd--compose-merge-ports (cdr cell) (cdr svc)))
+              (setq result (append result (list svc))))))
+        result))))
+
+(defun ghostel-cmd--compose-tasks (file)
+  "The docker compose tasks for FILE: up / up --build / down / ps always,
+and logs / restart / exec / build with the file's services as choices."
+  (let* ((services (ghostel-cmd--compose-services file))
+         (names (mapcar #'car services))
+         (choice (and names (concat "{{service:" (string-join names "|") "}}")))
+         (tasks (list
+                 (ghostel-cmd--task 'compose "up" "docker compose up -d"
+                                    "start in the background")
+                 (ghostel-cmd--task 'compose "up-build" "docker compose up -d --build"
+                                    "rebuild, then start")
+                 (ghostel-cmd--task 'compose "down" "docker compose down"
+                                    "stop and remove")
+                 (ghostel-cmd--task 'compose "ps" "docker compose ps"
+                                    "services and their state"))))
+    (if (null choice)
+        tasks
+      (append tasks
+              (list
+               (ghostel-cmd--task 'compose "logs"
+                                  (concat "docker compose logs -f " choice)
+                                  "follow a service's logs")
+               (ghostel-cmd--task 'compose "restart"
+                                  (concat "docker compose restart " choice)
+                                  "restart a service")
+               (ghostel-cmd--task 'compose "exec"
+                                  (concat "docker compose exec " choice " sh")
+                                  "a shell in a service")
+               (ghostel-cmd--task 'compose "build"
+                                  (concat "docker compose build " choice)
+                                  "build a service"))))))
+
+;;; Service URLs — an "open in a browser" entry, not a paste
+;;
+;; From the compose published ports and the Vite / dev-server ports: one
+;; URL entry per published port, http://localhost:<published>.  A quick,
+;; non-blocking TCP probe marks which are up.  RET opens it in the system
+;; browser, C-RET in an Emacs xwidget.
+
+(defvar ghostel-cmd--urls-cache nil
+  "Alist of (ROOT STAMP . ROWS): the URL entries found in ROOT while the
+files they come from had the mtimes in STAMP.")
+
+(defun ghostel-cmd--url-row (name url &rest props)
+  "A URL entry row (scope url): NAME opens URL.  PROPS adds :web etc."
+  (cons (cons 'url name)
+        (append (list :name name :cmd url :url url) props)))
+
+(defun ghostel-cmd--compose-hint-label (hint)
+  "A short label from an inline HINT: its text before any URL, trimmed of
+surrounding dashes, colons and space."
+  (when hint
+    (let ((h (string-trim (replace-regexp-in-string "https?://[^ \t]+" "" hint)
+                          "[-–—:[:space:]]+" "[-–—:[:space:]]+")))
+      (and (not (string-empty-p h)) h))))
+
+(defun ghostel-cmd--compose-web-p (port)
+  "Non-nil when PORT (a port plist) looks like a web (HTTP) port."
+  (let ((hint (plist-get port :hint))
+        (case-fold-search t))
+    (not (or (and hint (string-match-p "grpc" hint))
+             (memq (plist-get port :published) ghostel-cmd--compose-non-web-ports)
+             (memq (plist-get port :target) ghostel-cmd--compose-non-web-ports)
+             (equal (plist-get port :proto) "udp")))))
+
+(defun ghostel-cmd--compose-urls (root)
+  "URL entries from ROOT's compose file: one per published port."
+  (when-let* ((file (ghostel-cmd--source-file root ghostel-cmd--compose-files)))
+    (let (rows)
+      (dolist (svc (ghostel-cmd--compose-services file))
+        (let* ((service (car svc))
+               (ports (cdr svc))
+               (multi (> (length ports) 1)))
+          (dolist (port ports)
+            (let* ((pub (plist-get port :published))
+                   (web (ghostel-cmd--compose-web-p port))
+                   (hint (ghostel-cmd--compose-hint-label (plist-get port :hint)))
+                   (label (cond (hint (concat service " — " hint))
+                                (multi (format "%s:%d" service pub))
+                                (t service)))
+                   (url (format "http://localhost:%d" pub)))
+              (push (ghostel-cmd--url-row label url
+                                          :web web :source "compose"
+                                          :service service :published pub
+                                          :target (plist-get port :target))
+                    rows)))))
+      (nreverse rows))))
+
+(defun ghostel-cmd--vite-port (file)
+  "The server.port set in Vite config FILE, or nil."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward
+           "server[ \t\n]*:[ \t\n]*{[^}]*?\\_<port\\_>[ \t\n]*:[ \t\n]*\\([0-9]+\\)"
+           nil t)
+      (string-to-number (match-string 1)))))
+
+(defun ghostel-cmd--vite-urls (root)
+  "A URL entry for ROOT's Vite dev server, if it has a Vite config."
+  (when-let* ((file (ghostel-cmd--source-file root ghostel-cmd--vite-config-files)))
+    (let ((port (or (ghostel-cmd--vite-port file) 5173)))
+      (list (ghostel-cmd--url-row
+             (format "vite :%d" port) (format "http://localhost:%d" port)
+             :web t :source "vite" :published port :target port)))))
+
+(defun ghostel-cmd--script-port (s)
+  "The --port / -p value in a dev script S, or nil."
+  (when (string-match "\\(?:--port[= ]\\|-p[= ]\\)\\([0-9]+\\)" s)
+    (string-to-number (match-string 1 s))))
+
+(defun ghostel-cmd--dev-script-urls (root)
+  "A URL entry from ROOT's package.json dev script --port / -p, if any."
+  (let ((file (expand-file-name "package.json" root)))
+    (when (file-regular-p file)
+      (when-let* ((json (ignore-errors
+                          (with-temp-buffer
+                            (insert-file-contents file)
+                            (json-parse-buffer :object-type 'alist
+                                               :null-object nil :false-object nil))))
+                  (scripts (and (consp json) (alist-get 'scripts json)))
+                  (dev (and (consp scripts) (alist-get 'dev scripts)))
+                  (port (and (stringp dev) (ghostel-cmd--script-port dev))))
+        (list (ghostel-cmd--url-row
+               (format "dev :%d" port) (format "http://localhost:%d" port)
+               :web t :source "dev" :published port :target port))))))
+
+(defun ghostel-cmd--package-has-dep-p (root name)
+  "Non-nil when ROOT's package.json lists dependency NAME."
+  (let ((file (expand-file-name "package.json" root)))
+    (and (file-regular-p file)
+         (when-let* ((json (ignore-errors
+                             (with-temp-buffer
+                               (insert-file-contents file)
+                               (json-parse-buffer :object-type 'alist
+                                                  :null-object nil :false-object nil)))))
+           (and (consp json)
+                (cl-some (lambda (k) (assoc (intern name) (alist-get k json)))
+                         '(dependencies devDependencies)))))))
+
+(defun ghostel-cmd--next-urls (root)
+  "A URL entry for Next.js (port 3000) when ROOT clearly uses it."
+  (when (or (ghostel-cmd--source-file root ghostel-cmd--next-config-files)
+            (ghostel-cmd--package-has-dep-p root "next"))
+    (list (ghostel-cmd--url-row "next :3000" "http://localhost:3000"
+                                :web t :source "next" :published 3000 :target 3000))))
+
+(defun ghostel-cmd--dedup-urls (rows)
+  "ROWS with duplicate URLs dropped (first wins), web entries before the
+rest, and each id made unique by its port when two share a label."
+  (let ((seen-url (make-hash-table :test #'equal))
+        (kept nil))
+    (dolist (row rows)
+      (let ((url (plist-get (cdr row) :url)))
+        (unless (gethash url seen-url)
+          (puthash url t seen-url)
+          (push row kept))))
+    (setq kept (cl-stable-sort (nreverse kept)
+                               (lambda (a b)
+                                 (and (plist-get (cdr a) :web)
+                                      (not (plist-get (cdr b) :web))))))
+    (let ((seen-id (make-hash-table :test #'equal)))
+      (mapcar
+       (lambda (row)
+         (let ((id (car row)))
+           (if (not (gethash id seen-id))
+               (progn (puthash id t seen-id) row)
+             (let* ((rec (cdr row))
+                    (name (format "%s:%d" (plist-get rec :name)
+                                  (or (plist-get rec :published) 0))))
+               (puthash (cons 'url name) t seen-id)
+               (cons (cons 'url name) (plist-put (copy-sequence rec) :name name))))))
+       kept))))
+
+(defun ghostel-cmd--gather-urls (root)
+  "All URL entries for ROOT, deduped and ordered (web first)."
+  (ghostel-cmd--dedup-urls
+   (condition-case err
+       (append (ghostel-cmd--compose-urls root)
+               (ghostel-cmd--vite-urls root)
+               (ghostel-cmd--dev-script-urls root)
+               (ghostel-cmd--next-urls root))
+     (error (message "ghostel-cmd: could not read a URL source: %s"
+                     (error-message-string err))
+            nil))))
+
+;;; A quick, non-blocking TCP probe: which URLs are up
+
+(defcustom ghostel-cmd-probe-timeout 0.12
+  "Seconds a service-URL TCP probe waits before it counts as down.
+The probe never blocks the overlay: a result arrives and the list
+redraws, or the timeout marks it down."
+  :type 'number
+  :group 'ghostel-cmd)
+
+(defconst ghostel-cmd--probe-ttl 5
+  "Seconds a probe result stays fresh, so a redraw does not re-probe.")
+
+(defvar ghostel-cmd--probe-cache (make-hash-table :test #'equal)
+  "HOST:PORT -> (STATUS . TIME): `up', `down' or `probing', last set when.")
+
+(defun ghostel-cmd--url-host-port (url)
+  "(HOST . PORT) of URL http://HOST:PORT..., or nil."
+  (when (string-match "\\`https?://\\([^:/]+\\):\\([0-9]+\\)" url)
+    (cons (match-string 1 url) (string-to-number (match-string 2 url)))))
+
+(defun ghostel-cmd--probe-status (url)
+  "Fresh probe status of URL (`up'/`down'/`probing'), or nil when unknown."
+  (when-let* ((hp (ghostel-cmd--url-host-port url))
+              (hit (gethash (format "%s:%d" (car hp) (cdr hp))
+                            ghostel-cmd--probe-cache)))
+    (and (< (- (float-time) (cdr hit)) ghostel-cmd--probe-ttl)
+         (car hit))))
+
+(defun ghostel-cmd--probe (host port callback)
+  "Probe HOST:PORT with an async TCP connect; call CALLBACK with `up' or
+`down' once, within `ghostel-cmd-probe-timeout'."
+  (let* ((done nil)
+         (finish (lambda (status) (unless done (setq done t) (funcall callback status))))
+         (proc (condition-case nil
+                   (make-network-process
+                    :name "ghostel-cmd-probe" :host host :service port
+                    :nowait t :coding 'binary
+                    :sentinel
+                    ;; Finish BEFORE deleting: `delete-process' re-enters this
+                    ;; sentinel with `closed', which would otherwise mark a
+                    ;; connected port down before the `open' result lands.
+                    (lambda (p _event)
+                      (pcase (process-status p)
+                        ('open (funcall finish 'up)
+                               (ignore-errors (delete-process p)))
+                        ((or 'failed 'closed 'exit)
+                         (funcall finish 'down)
+                         (ignore-errors (delete-process p))))))
+                 (error nil))))
+    (if (null proc)
+        (funcall finish 'down)
+      (run-at-time ghostel-cmd-probe-timeout nil
+                   (lambda ()
+                     (unless done
+                       (ignore-errors (delete-process proc))
+                       (funcall finish 'down)))))))
+
+(defun ghostel-cmd--probe-urls (rows &optional on-result)
+  "Start a probe for each URL in ROWS whose status is not fresh.
+Non-blocking; ON-RESULT runs after each probe settles."
+  (dolist (row rows)
+    (when-let* ((url (plist-get (cdr row) :url))
+                (hp (ghostel-cmd--url-host-port url))
+                (key (format "%s:%d" (car hp) (cdr hp))))
+      (let ((hit (gethash key ghostel-cmd--probe-cache)))
+        (unless (and hit (< (- (float-time) (cdr hit)) ghostel-cmd--probe-ttl))
+          (puthash key (cons 'probing (float-time)) ghostel-cmd--probe-cache)
+          (ghostel-cmd--probe
+           (car hp) (cdr hp)
+           (lambda (status)
+             (puthash key (cons status (float-time)) ghostel-cmd--probe-cache)
+             (when on-result (funcall on-result)))))))))
+
+(defun ghostel-cmd--url-entries (root)
+  "URL entries discovered in ROOT, cached by the mtimes of their files."
+  (when ghostel-cmd-discover
+    (let* ((files (append ghostel-cmd--compose-files
+                          ghostel-cmd--compose-override-files
+                          ghostel-cmd--vite-config-files
+                          ghostel-cmd--next-config-files
+                          '("package.json")))
+           (stamp (cons ghostel-cmd-discover
+                        (mapcar (lambda (f)
+                                  (file-attribute-modification-time
+                                   (file-attributes (expand-file-name f root))))
+                                files)))
+           (cached (assoc root ghostel-cmd--urls-cache)))
+      (if (equal (cadr cached) stamp)
+          (cddr cached)
+        (let ((rows (ghostel-cmd--gather-urls root)))
+          (setf (alist-get root ghostel-cmd--urls-cache nil nil #'equal)
+                (cons stamp rows))
+          rows)))))
+
 (defun ghostel-cmd--discover (root)
   "Rows of the tasks in ROOT's files, source by source.
 A file that does not parse gives no tasks, and a message."
@@ -455,6 +971,7 @@ files, or `ghostel-cmd-discover', changed."
                                  (file-attribute-modification-time
                                   (file-attributes (expand-file-name f root))))
                                (append (mapcar #'car ghostel-cmd--npm-lockfiles)
+                                       ghostel-cmd--compose-override-files
                                        (mapcan (lambda (source)
                                                  (copy-sequence (cddr source)))
                                                ghostel-cmd--task-sources)))))
@@ -617,8 +1134,9 @@ picked as a whole, which typing replaces.")
 (defconst ghostel-cmd--buffer-name "*ghostel-cmd*")
 
 (defconst ghostel-cmd-sidebar-help-commands
-  '(("RET"      "Paste into Ghostel (fill {{vars}} first)")
-    ("C-RET"    "Paste and press Enter")
+  '(("RET"      "Paste into Ghostel (fill {{vars}}); a URL opens in the browser")
+    ("C-RET"    "Paste and press Enter; a URL opens in an Emacs xwidget")
+    ("u"        "Open the project's frontend in the browser")
     ("j, k"     "Move")
     ("a"        "Add template to the project")
     ("A"        "Add global template, shared by every project")
@@ -664,16 +1182,17 @@ picked as a whole, which typing replaces.")
         (window-body-width win))
       ghostel-cmd-sidebar-width))
 
-(defun ghostel-cmd--format (&optional tagged)
+(defun ghostel-cmd--format (&optional tag-width)
   "Tabulated-list format for the current width.
-TAGGED adds a first column telling where each command comes from.  No
-column sorts: the list keeps your order, its sections never mix."
+TAG-WIDTH, a number, adds a first `From' column that wide, telling where
+each command comes from.  No column sorts: the list keeps your order,
+its sections never mix."
   (let* ((budget (max 24 (1- (ghostel-cmd--available-width))))
-         (tag (if tagged 6 0))
-         (name 16)
+         (tag (or tag-width 0))
+         (name 18)
          (desc 14)
-         (cmd (max 12 (- budget (if tagged (1+ tag) 0) name desc 2))))
-    (vconcat (when tagged (list (list "From" tag nil)))
+         (cmd (max 12 (- budget (if tag-width (1+ tag) 0) name desc 2))))
+    (vconcat (when tag-width (list (list "From" tag nil)))
              (vector (list "Name" name nil)
                      (list "Command" cmd nil)
                      (list "Desc" desc nil)))))
@@ -684,7 +1203,28 @@ column sorts: the list keeps your order, its sections never mix."
               'face (pcase scope
                       ('project 'font-lock-type-face)
                       ('global 'font-lock-constant-face)
+                      ('url 'font-lock-string-face)
                       (_ 'font-lock-comment-face))))
+
+(defun ghostel-cmd--url-glyph (record)
+  "The up/down glyph for a URL RECORD, from its last probe."
+  (pcase (ghostel-cmd--probe-status (plist-get record :url))
+    ('up (propertize "●" 'face 'success))
+    ('down (propertize "○" 'face 'shadow))
+    (_ (propertize "·" 'face 'shadow))))
+
+(defun ghostel-cmd--url-desc (record)
+  "The Desc text for a URL RECORD: its source, and `not web' when marked."
+  (concat (or (plist-get record :source) "url")
+          (unless (plist-get record :web) "  not web")))
+
+(defun ghostel-cmd--name-cell (record)
+  "The Name-column string for RECORD: a URL gets its up/down glyph."
+  (if (plist-get record :url)
+      (concat (ghostel-cmd--url-glyph record) " "
+              (propertize (plist-get record :name)
+                          'face 'font-lock-function-name-face))
+    (propertize (plist-get record :name) 'face 'font-lock-keyword-face)))
 
 (defun ghostel-cmd--truncate (s width)
   (truncate-string-to-width (or s "") (max 1 width) nil nil t))
@@ -728,9 +1268,14 @@ the list holds more than the project's own commands."
   (let* ((root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
          (rows (ghostel-cmd--rows root))
          (tagged (cl-some (lambda (row) (not (eq (caar row) 'project))) rows))
+         (tagwidth (when tagged
+                     (min 8 (apply #'max 4
+                                   (mapcar (lambda (r)
+                                             (string-width (ghostel-cmd--tag (caar r))))
+                                           rows)))))
          (query ghostel-cmd--query)
-         (fmt (setq tabulated-list-format (ghostel-cmd--format tagged)))
-         (off (if tagged 1 0))
+         (fmt (setq tabulated-list-format (ghostel-cmd--format tagwidth)))
+         (off (if tagwidth 1 0))
          (nw (cadr (aref fmt off)))
          (cw (cadr (aref fmt (+ off 1))))
          (dw (cadr (aref fmt (+ off 2))))
@@ -743,17 +1288,21 @@ the list holds more than the project's own commands."
           tabulated-list-entries
           (mapcar
            (lambda (row)
-             (let ((c (cdr row)))
+             (let* ((c (cdr row))
+                    (desc (if (plist-get c :url)
+                              (ghostel-cmd--url-desc c)
+                            (or (plist-get c :desc) ""))))
                (list (car row)
                      (vconcat
-                      (when tagged (list (ghostel-cmd--tag (caar row))))
+                      (when tagwidth (list (ghostel-cmd--tag (caar row))))
                       (vector
-                       (propertize (ghostel-cmd--truncate (plist-get c :name) nw)
-                                   'face 'font-lock-keyword-face)
+                       (ghostel-cmd--truncate (ghostel-cmd--name-cell c) nw)
                        (ghostel-cmd--truncate (plist-get c :cmd) cw)
-                       (propertize (ghostel-cmd--truncate (or (plist-get c :desc) "") dw)
+                       (propertize (ghostel-cmd--truncate desc dw)
                                    'face 'font-lock-comment-face))))))
-           matched))))
+           matched))
+    ;; Probe the service URLs without blocking; redraw as each settles.
+    (ghostel-cmd--probe-urls rows #'ghostel-cmd--refresh-overlay)))
 
 (defun ghostel-cmd--row-at-point ()
   "(SCOPE . RECORD) for the row at point."
@@ -1355,8 +1904,20 @@ split if none is showing."
         (when submit
           (ghostel-send-key "return"))))))
 
+(defun ghostel-cmd--open-url (url &optional in-emacs)
+  "Open URL in the system browser, or an Emacs xwidget when IN-EMACS."
+  (ghostel-cmd--hide-overlay)
+  (if in-emacs
+      (if (fboundp 'xwidget-webkit-browse-url)
+          (xwidget-webkit-browse-url url)
+        (user-error "This Emacs has no xwidget-webkit support"))
+    (browse-url url))
+  (message "Opening %s%s" url (if in-emacs " (xwidget)" "")))
+
 (defun ghostel-cmd-paste (&optional submit)
-  "Paste the command at point, filling {{vars}} in the overlay first."
+  "Act on the entry at point: open a service URL, else paste a command.
+A URL entry opens in the system browser, or an Emacs xwidget with a
+prefix (C-RET).  A command fills its {{vars}} in the overlay first."
   (interactive)
   (when ghostel-cmd--filtering
     (ghostel-cmd--set-filtering nil))
@@ -1365,29 +1926,124 @@ split if none is showing."
          (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
     (unless record
       (user-error "No command at point"))
-    (let ((vars (ghostel-cmd--fill-vars record root (car row))))
-      (if (null vars)
-          (ghostel-cmd--deliver (plist-get record :cmd) submit)
-        (setq ghostel-cmd--fill
-              (list :record record
-                    :root root
-                    :scope (car row)
-                    :vars vars
-                    :choices (ghostel-cmd--extract-choices
-                              (plist-get record :cmd))
-                    :index 0
-                    :values nil
-                    :input ""
-                    :picked nil
-                    :submit submit))
-        (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
-        (ghostel-cmd--set-filling t)
-        (ghostel-cmd--draw-preview)
-        (force-mode-line-update t)))))
+    (if (plist-get record :url)
+        (ghostel-cmd--open-url (plist-get record :url) submit)
+      (let ((vars (ghostel-cmd--fill-vars record root (car row))))
+        (if (null vars)
+            (ghostel-cmd--deliver (plist-get record :cmd) submit)
+          (setq ghostel-cmd--fill
+                (list :record record
+                      :root root
+                      :scope (car row)
+                      :vars vars
+                      :choices (ghostel-cmd--extract-choices
+                                (plist-get record :cmd))
+                      :index 0
+                      :values nil
+                      :input ""
+                      :picked nil
+                      :submit submit))
+          (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
+          (ghostel-cmd--set-filling t)
+          (ghostel-cmd--draw-preview)
+          (force-mode-line-update t))))))
 
 (defun ghostel-cmd-paste-send ()
   (interactive)
   (ghostel-cmd-paste t))
+
+
+;;; Open the most likely frontend (SPC p o)
+
+(defconst ghostel-cmd--frontend-name-regexp
+  "\\(?:front\\(?:end\\)?\\|web\\|ui\\|app\\|client\\)"
+  "Service / source names that mark the frontend, picked first.")
+
+(defconst ghostel-cmd--web-port-order
+  '(8080 3000 5173 4200 80 8000)
+  "Preference among web (target) ports when no name says which is the
+frontend.")
+
+(defun ghostel-cmd--url-pick-key (root)
+  "Save-file key under which ROOT's remembered open-url pick is kept."
+  (cons :url-pick root))
+
+(defun ghostel-cmd--url-pick (root)
+  "The URL-entry name the user last chose for ROOT, or nil."
+  (ghostel-cmd--ensure-cache)
+  (alist-get (ghostel-cmd--url-pick-key root) ghostel-cmd--cache nil nil #'equal))
+
+(defun ghostel-cmd--remember-url-pick (root name)
+  "Keep NAME as ROOT's open-url pick; persist it."
+  (ghostel-cmd--update-many
+   (list (cons (ghostel-cmd--url-pick-key root) (lambda (_) name)))))
+
+(defun ghostel-cmd--web-urls (root)
+  "The web URL rows discovered for ROOT (non-web excluded)."
+  (cl-remove-if-not (lambda (row) (and (plist-get (cdr row) :url)
+                                       (plist-get (cdr row) :web)))
+                    (ghostel-cmd--url-entries root)))
+
+(defun ghostel-cmd--sole (list)
+  "The one element of LIST, or nil when it has none or more than one."
+  (and (= (length list) 1) (car list)))
+
+(defun ghostel-cmd--frontend-candidate (urls)
+  "The most likely frontend among URL rows URLS, or nil when unsure.
+By name (frontend/web/ui/app/client), then a known web port, then the
+dev server; nil when none decides it."
+  (or
+   (ghostel-cmd--sole
+    (cl-remove-if-not
+     (lambda (row)
+       (let ((rec (cdr row)) (case-fold-search t))
+         (string-match-p ghostel-cmd--frontend-name-regexp
+                         (format "%s %s" (or (plist-get rec :service) "")
+                                 (or (plist-get rec :source) "")))))
+     urls))
+   (cl-loop for p in ghostel-cmd--web-port-order
+            for hit = (cl-find p urls :key (lambda (row)
+                                             (plist-get (cdr row) :target)))
+            when hit return hit)
+   (ghostel-cmd--sole
+    (cl-remove-if-not
+     (lambda (row) (member (plist-get (cdr row) :source) '("vite" "dev" "next")))
+     urls))))
+
+(defun ghostel-cmd--ask-url (urls)
+  "Ask which URL row of URLS to open."
+  (let* ((alist (mapcar (lambda (row)
+                          (cons (format "%s  (%s)" (plist-get (cdr row) :name)
+                                        (plist-get (cdr row) :url))
+                                row))
+                        urls))
+         (choice (completing-read "Open which service URL? " alist nil t)))
+    (cdr (assoc choice alist))))
+
+(defun ghostel-cmd-open-url (&optional in-emacs)
+  "Open the project's most likely frontend in the browser.
+Pick it by service name (frontend/web/ui/app/client), then a known web
+port, then the dev server.  Ask only when it cannot tell, and remember
+that pick for next time.  With a prefix (\\[universal-argument]), open
+in an Emacs xwidget instead of the system browser."
+  (interactive "P")
+  (let* ((root (ghostel-cmd--current-project-root))
+         (urls (ghostel-cmd--web-urls root)))
+    (unless urls
+      (user-error "No web service URL here (compose, Vite or a dev script)"))
+    (let* ((remembered (ghostel-cmd--url-pick root))
+           (row (or (and remembered
+                         (cl-find remembered urls
+                                  :key (lambda (r) (plist-get (cdr r) :name))
+                                  :test #'equal))
+                    (ghostel-cmd--frontend-candidate urls)))
+           (asked (null row)))
+      (when asked
+        (setq row (ghostel-cmd--ask-url urls)))
+      (when row
+        (when asked
+          (ghostel-cmd--remember-url-pick root (plist-get (cdr row) :name)))
+        (ghostel-cmd--open-url (plist-get (cdr row) :url) in-emacs)))))
 
 (defun ghostel-cmd--with-parent-input (fn)
   "Run FN on the parent frame so minibuffer prompts work, then reopen."
@@ -1861,6 +2517,7 @@ presses Enter."
   "<return>"   #'ghostel-cmd-paste
   "C-RET"      #'ghostel-cmd-paste-send
   "C-<return>" #'ghostel-cmd-paste-send
+  "u"          #'ghostel-cmd-open-url
   "a"          #'ghostel-cmd-add
   "A"          #'ghostel-cmd-add-global
   "e"          #'ghostel-cmd-edit
@@ -1905,6 +2562,7 @@ presses Enter."
       (kbd "<return>") #'ghostel-cmd-paste
       (kbd "C-RET") #'ghostel-cmd-paste-send
       (kbd "C-<return>") #'ghostel-cmd-paste-send
+      (kbd "u") #'ghostel-cmd-open-url
       (kbd "a") #'ghostel-cmd-add
       (kbd "A") #'ghostel-cmd-add-global
       (kbd "e") #'ghostel-cmd-edit
@@ -1940,6 +2598,7 @@ presses Enter."
 ;;; Aliases (SPC p c / C-c c)
 
 (defalias 'ghostel-project-cmd-run 'ghostel-cmd-sidebar)
+(defalias 'ghostel-project-cmd-open-url 'ghostel-cmd-open-url)
 (defalias 'ghostel-project-cmd-add 'ghostel-cmd-add)
 (defalias 'ghostel-project-cmd-edit 'ghostel-cmd-edit)
 (defalias 'ghostel-project-cmd-delete 'ghostel-cmd-delete)

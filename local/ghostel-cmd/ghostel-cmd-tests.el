@@ -1163,5 +1163,182 @@ the minibuffer and the posframe's own window do not."
   (should (eq (indirect-function 'ghostel-project-cmd-run)
               (indirect-function 'ghostel-cmd-sidebar))))
 
+;;; docker compose, service URLs, open-url and the TCP probe
+
+(defconst ghostel-cmd-tests--compose "\
+version: \"3.9\"
+services:
+  rlws:
+    image: rlws:latest
+    ports:
+      - \"50051:50051\"  # gRPC
+      - \"50053:50053\"  # Dashboard — http://localhost:50053
+    environment:
+      SHIOAJI_SECRET_KEY: ${SHIOAJI_SECRET_KEY}
+  backend:
+    ports:
+      - \"8000:8000\"
+  worker:
+    command: python worker.py
+  frontend:
+    ports:
+      - \"8087:8080\"
+volumes:
+  data:
+"
+  "A taiex-shaped compose file: gRPC and a dashboard on rlws, a bare
+${VAR} env (never resolved), a port-less worker, frontend 8087:8080.")
+
+(ert-deftest ghostel-cmd-test-compose-tasks ()
+  "docker compose is a fourth task source: up / up-build / down / ps
+always, and logs / restart / exec / build with the services as choices."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "docker-compose.yml" ghostel-cmd-tests--compose)
+    (let ((rows (cl-remove-if-not (lambda (r) (eq (caar r) 'compose))
+                                  (ghostel-cmd--discover ghostel-cmd--root))))
+      (should (equal (mapcar (lambda (r) (cdar r)) rows)
+                     '("up" "up-build" "down" "ps" "logs" "restart" "exec" "build")))
+      (should (equal (plist-get (cdr (assoc '(compose . "up") rows)) :cmd)
+                     "docker compose up -d"))
+      (should (equal (plist-get (cdr (assoc '(compose . "logs") rows)) :cmd)
+                     "docker compose logs -f {{service:rlws|backend|worker|frontend}}"))
+      (should (equal (plist-get (cdr (assoc '(compose . "exec") rows)) :cmd)
+                     "docker compose exec {{service:rlws|backend|worker|frontend}} sh")))))
+
+(ert-deftest ghostel-cmd-test-compose-ports-and-interpolation ()
+  "Short, long, host:published:target, /proto, ranges and ${VAR:-D} are
+read; a bare ${VAR} (no default, no .env) leaves its port out."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "compose.yml" "\
+services:
+  web:
+    ports:
+      - \"${PORT:-8087}:8080\"
+      - \"127.0.0.1:9090:9090/tcp\"
+      - target: 3000
+        published: 13000
+        protocol: tcp
+      - \"8080-8085:8080\"
+      - \"${UNSET}:7000\"
+")
+    (let ((ports (cdr (assoc "web" (ghostel-cmd--compose-services
+                                    (expand-file-name "compose.yml"
+                                                      ghostel-cmd--root))))))
+      (should (equal (mapcar (lambda (p) (plist-get p :published)) ports)
+                     '(8087 9090 13000 8080)))
+      (should (equal (plist-get (nth 2 ports) :target) 3000)))))
+
+(ert-deftest ghostel-cmd-test-compose-override-merges ()
+  "An override layers onto the base: a shared published port takes the
+override (its hint), new ports and services are added."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "compose.yml" "\
+services:
+  web:
+    ports:
+      - \"8087:8080\"
+")
+    (ghostel-cmd-tests--write "compose.override.yml" "\
+services:
+  web:
+    ports:
+      - \"8087:8080\"  # Vite app
+  cache:
+    ports:
+      - \"6379:6379\"
+")
+    (let ((svcs (ghostel-cmd--compose-services
+                 (expand-file-name "compose.yml" ghostel-cmd--root))))
+      (should (assoc "cache" svcs))
+      (should (equal (plist-get (car (cdr (assoc "web" svcs))) :hint) "Vite app")))))
+
+(ert-deftest ghostel-cmd-test-compose-service-urls ()
+  "One URL entry per published port, web ones first, each labelled with
+its comment hint; a gRPC / non-web port is marked and sorts last."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "docker-compose.yml" ghostel-cmd-tests--compose)
+    (let ((urls (ghostel-cmd--url-entries ghostel-cmd--root)))
+      (should (equal (mapcar (lambda (r) (plist-get (cdr r) :name)) urls)
+                     '("rlws — Dashboard" "backend" "frontend" "rlws — gRPC")))
+      (should (equal (plist-get (cdr (assoc '(url . "frontend") urls)) :url)
+                     "http://localhost:8087"))
+      (should (plist-get (cdr (assoc '(url . "rlws — Dashboard") urls)) :web))
+      (should-not (plist-get (cdr (assoc '(url . "rlws — gRPC") urls)) :web)))))
+
+(ert-deftest ghostel-cmd-test-vite-and-dev-script-urls ()
+  "A Vite config's server.port and a package.json dev --port become URL
+entries, each labelled with its source."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "vite.config.ts"
+                              "export default { server: { host: true, port: 5180 } }\n")
+    (ghostel-cmd-tests--write "package.json"
+                              "{ \"scripts\": { \"dev\": \"vite --port 4321\" } }\n")
+    (let ((names (mapcar (lambda (r) (plist-get (cdr r) :name))
+                         (ghostel-cmd--url-entries ghostel-cmd--root))))
+      (should (member "vite :5180" names))
+      (should (member "dev :4321" names)))))
+
+(ert-deftest ghostel-cmd-test-open-url-picks-the-frontend-and-remembers ()
+  "open-url picks by name (frontend); a remembered pick wins and persists
+across a cache reload."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "docker-compose.yml" ghostel-cmd-tests--compose)
+    (let* ((root ghostel-cmd--root)
+           (pick (ghostel-cmd--frontend-candidate (ghostel-cmd--web-urls root))))
+      (should (equal (plist-get (cdr pick) :url) "http://localhost:8087"))
+      (ghostel-cmd--remember-url-pick root "backend")
+      (setq ghostel-cmd--cache nil ghostel-cmd--cache-stamp nil)
+      (should (equal (ghostel-cmd--url-pick root) "backend")))))
+
+(ert-deftest ghostel-cmd-test-ret-on-a-url-opens-the-browser ()
+  "RET on a URL entry opens it in the browser, C-RET in an xwidget;
+neither pastes into Ghostel."
+  (ghostel-cmd-tests--with-store
+    (ghostel-cmd-tests--write "docker-compose.yml" ghostel-cmd-tests--compose)
+    (let ((opened nil) (pasted nil))
+      (cl-letf (((symbol-function 'browse-url)
+                 (lambda (u &rest _) (push (cons 'browser u) opened)))
+                ((symbol-function 'xwidget-webkit-browse-url)
+                 (lambda (u &rest _) (push (cons 'xwidget u) opened)))
+                ((symbol-function 'ghostel-cmd--deliver)
+                 (lambda (&rest _) (setq pasted t)))
+                ((symbol-function 'ghostel-cmd--probe-urls) #'ignore)
+                ((symbol-function 'ghostel-cmd--hide-overlay) #'ignore))
+        (let ((buf (ghostel-cmd--prepare-buffer)))
+          (unwind-protect
+              (with-current-buffer buf
+                (set-window-buffer (selected-window) buf)
+                (goto-char (point-min))
+                (let ((found nil))
+                  (while (and (not found) (not (eobp)))
+                    (if (equal (tabulated-list-get-id) '(url . "frontend"))
+                        (setq found t)
+                      (forward-line 1)))
+                  (should found))
+                (ghostel-cmd-paste)
+                (should (equal (car opened) '(browser . "http://localhost:8087")))
+                (ghostel-cmd-paste t)
+                (should (equal (car opened) '(xwidget . "http://localhost:8087")))
+                (should-not pasted))
+            (kill-buffer buf)))))))
+
+(ert-deftest ghostel-cmd-test-probe-marks-up-and-down ()
+  "The TCP probe marks a live local port up and a closed one down."
+  (let* ((result (make-hash-table))
+         (server (make-network-process :name "gc-test-listen" :server t
+                                       :host "127.0.0.1" :service t :family 'ipv4))
+         (port (process-contact server :service)))
+    (unwind-protect
+        (progn
+          (ghostel-cmd--probe "127.0.0.1" port
+                              (lambda (s) (puthash :open s result)))
+          (ghostel-cmd--probe "127.0.0.1" 1
+                              (lambda (s) (puthash :closed s result)))
+          (dotimes (_ 14) (sit-for 0.05))
+          (should (eq (gethash :open result) 'up))
+          (should (eq (gethash :closed result) 'down)))
+      (delete-process server))))
+
+
 (provide 'ghostel-cmd-tests)
 ;;; ghostel-cmd-tests.el ends here

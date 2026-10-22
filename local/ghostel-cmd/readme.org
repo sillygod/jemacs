@@ -4,11 +4,11 @@ Per-project Ghostel command bookmarks with a GhostHerd-style overlay.
 
 * Status
 
-| Item     | Value                                          |
-|----------+------------------------------------------------|
-| Package  | =local/ghostel-cmd/= (straight =:local-repo=)  |
-| Files    | =ghostel-cmd.el= · =ghostel-cmd-tests.el=      |
-| Wired in | =jemacs-project= · =SPC p c= · Ghostel =C-c c= |
+| Item     | Value                                                    |
+|----------+----------------------------------------------------------|
+| Package  | =local/ghostel-cmd/= (straight =:local-repo=)            |
+| Files    | =ghostel-cmd.el= · =ghostel-cmd-tests.el=                |
+| Wired in | =jemacs-project= · =SPC p c= run · =SPC p o= open url · Ghostel =C-c c= |
 
 * Overlay
 
@@ -20,8 +20,10 @@ minibuffer does not count.  The list keeps the order you give it with
 | Key         | Action                                            |
 |-------------+---------------------------------------------------|
 | =j= / =k=   | Move                                              |
-| =RET=       | Paste (fill ={{vars}}= on the footer first)       |
-| =C-RET=     | Paste and press Enter                             |
+| =RET=       | Paste (fill ={{vars}}= first); a URL opens in the |
+|             | system browser                                    |
+| =C-RET=     | Paste and press Enter; a URL opens in an xwidget  |
+| =u=         | Open the project's frontend in the browser        |
 | =/=         | Live-narrow (flex, whitespace is AND); every      |
 |             | printable key types, =C-n= / =C-p= move           |
 | =a= =A=     | Add to the project / to the global commands       |
@@ -71,6 +73,10 @@ parsed, never run, and parsed again once one of them changes.
 | =makefile=, =Makefile=  |                 |                   |
 | =justfile=, =Justfile=, | public recipes  | =just RECIPE=     |
 | =.justfile=             |                 |                   |
+| =compose.yaml/.yml=,    | up · up-build · | =docker compose … |
+| =docker-compose.…=      | down · ps ·     | (a service by     |
+| (+ their =.override.=)  | logs/restart/   | ={{service:…}}=)= |
+|                         | exec/build      |                   |
 
 - The runner, and the tag, is the one the lockfile names:
   =pnpm-lock.yaml= → pnpm, =yarn.lock= → yarn, =bun.lock= or
@@ -86,12 +92,46 @@ parsed, never run, and parsed again once one of them changes.
 - Just recipes marked =[private]= or starting with =_= are left out,
   as =just --list= leaves them out; the comment right above a recipe,
   or its =[doc(...)]=, describes it.
+- Docker compose is read by a careful subset parser, never a YAML
+  library (it must keep a port's inline comment, which a reader drops)
+  and never docker: nothing runs, no =.env= is resolved.  It finds the
+  base file in docker's own precedence, layers its =.override.= sibling
+  on, and reads the service names.  =up= / =up-build= / =down= / =ps=
+  are plain; =logs= / =restart= / =exec= / =build= take a service by a
+  ={{service:…}}= choice of the file's services, editable with =C-\=.
 
 Tasks are read-only: =RET= / =C-RET= paste them like any command, and
 =m= copies the one at point into the project's list to edit there.  A
 =package.json= or Makefile that does not parse lists nothing, with a
 message.  =ghostel-cmd-discover= turns discovery off (=nil=) or keeps
 some sources (='(npm just)=).
+
+* Service URLs
+
+A compose published port, a Vite =server.port= or a =package.json=
+=dev= script's =--port= becomes an *open-in-a-browser* entry, not a
+paste: one per port, =http://localhost:<published>=, labelled with the
+service and its comment hint (=rlws — Dashboard=) or its source
+(=vite :5173=).  =RET= opens it in the system browser, =C-RET= in an
+Emacs xwidget.
+
+- A quick, non-blocking TCP probe (≈100 ms) marks each one =●= up or
+  =○= down; the list redraws as results land, and nothing blocks.
+- Ports that are clearly not web — a =gRPC= hint, a well-known
+  non-HTTP port (databases, mail, 50051…), =/udp= — are marked =not
+  web= and sorted after the web ones.
+- =${VAR:-8087}= resolves to its default, a range =8080-8085= to its
+  start; a bare =${VAR}= (no default, no =.env=) is left out.  Long
+  syntax (=published:= / =target:=) is read too.
+- Vite reads =vite.config.*= (default =5173=); the =dev= script reads
+  =--port= / =-p=; Next.js gives =3000= when a =next.config.*= or a
+  =next= dependency marks the project.
+
+=SPC p o= (=ghostel-cmd-open-url=, =u= in the overlay) opens the most
+likely frontend straight away: by service name (frontend/web/ui/app/
+client), then a known web port (8080, 3000, 5173, 4200, 80…), then the
+dev server.  It asks only when it cannot tell, and remembers that pick
+per project.  A prefix opens it in an xwidget instead.
 
 * Placeholders
 
