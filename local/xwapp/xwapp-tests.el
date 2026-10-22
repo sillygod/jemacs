@@ -991,5 +991,60 @@ loopback however the headers are dressed (the hole seen 2026-10-13)."
       (let ((xwapp-remote-scheme "http"))
         (should (string-match-p "--http=80 " (xwapp-remote-serve-command)))))))
 
+;;; Keeping a crashed WebKit from wedging Emacs
+
+(ert-deftest xwapp-test-scrub-keeps-clean-and-fixes-invalid ()
+  "A clean string is returned untouched; a raw byte / lone surrogate is
+made U+FFFD so the push is valid UTF-8 for the WebKit IPC channel."
+  (let ((clean "hello 世界 ✓"))
+    (should (eq clean (xwapp--scrub clean))))        ; no copy on the common path
+  (let ((fixed (xwapp--scrub (string-to-multibyte (concat "a" (unibyte-string 255) "b")))))
+    (should (= (length fixed) 3))
+    (should-not (seq-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) fixed))))
+
+(ert-deftest xwapp-test-script-safe-caps-size ()
+  "A script within the cap is sent (scrubbed); an oversized one is dropped."
+  (let ((xwapp-max-script-bytes 100))
+    (should (equal "ok" (xwapp--script-safe "ok")))
+    (should-not (xwapp--script-safe (make-string 101 ?x)))))
+
+(ert-deftest xwapp-test-js-drops-oversized ()
+  "An oversized page update never reaches execute-script."
+  (let ((app (xwapp-test--app)) (xwapp-max-script-bytes 50) called)
+    (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+              ((symbol-function 'xwidget-webkit-execute-script)
+               (lambda (&rest _) (setq called t))))
+      (xwapp-js app "render" (list :big (make-string 200 ?x))))
+    (should-not called)))
+
+(ert-deftest xwapp-test-poll-breaker-stops-a-crashed-page ()
+  "A title read that keeps erroring (a crashed WebKit process still looks
+live) stops the poll and marks the app wedged after the limit."
+  (let ((app (xwapp-test--app)) (xwapp-poll-fail-max 3) stopped)
+    (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+              ((symbol-function 'xwidget-webkit-title) (lambda (_) (error "ipc gone")))
+              ((symbol-function 'xwidget-webkit-execute-script) #'ignore)
+              ((symbol-function 'xwapp-stop-poll) (lambda (_) (setq stopped t))))
+      (xwapp--poll app) (xwapp--poll app)
+      (should (= (xwapp--get app :poll-fails) 2))
+      (should-not (xwapp--get app :wedged))
+      (xwapp--poll app)                              ; third failure trips it
+      (should (xwapp--get app :wedged))
+      (should stopped))))
+
+(ert-deftest xwapp-test-poll-breaker-resets-on-success ()
+  "A good read clears the failure count, so transient blips never wedge it."
+  (let ((app (xwapp-test--app)) (xwapp-poll-fail-max 3) (ok nil))
+    (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+              ((symbol-function 'xwidget-webkit-title)
+               (lambda (_) (if ok "Idle" (error "blip"))))
+              ((symbol-function 'xwidget-webkit-execute-script) #'ignore))
+      (xwapp--poll app) (xwapp--poll app)
+      (should (= (xwapp--get app :poll-fails) 2))
+      (setq ok t)
+      (xwapp--poll app)                              ; a good read resets
+      (should (= (or (xwapp--get app :poll-fails) 0) 0))
+      (should-not (xwapp--get app :wedged)))))
+
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

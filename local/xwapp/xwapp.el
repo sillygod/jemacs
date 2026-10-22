@@ -291,6 +291,88 @@ session\" may be the other app's page."
       (or (and xwapp--xw (xwidget-live-p xwapp--xw) xwapp--xw)
           (car (ignore-errors (get-buffer-xwidgets buf)))))))
 
+;; Keeping a crashed WebKit from wedging Emacs.
+;;
+;; The page runs in an xwidget-webkit view, driven over a WebKit IPC
+;; channel: Emacs reads its title each poll and pushes updates with
+;; `xwidget-webkit-execute-script'.  WebKit can abort that channel (the
+;; Networking helper faults with EXC_GUARD on `didReceiveInvalidMessage');
+;; it happened 13 times one evening, escalating into a 100%-CPU freeze.
+;; After the abort the web process is gone but still answers
+;; `xwidget-live-p', so a poll that keeps reading and scripting it is the
+;; inferred spin: Emacs on a broken channel every interval.
+;;
+;; Defensive, not a proven cure (the exact message WebKit rejected was not
+;; reproduced -- in a scratch GUI Emacs an external helper kill recovered
+;; cleanly and an 8MB script was tolerated): (1) a breaker stops the poll
+;; once title reads start failing, so a channel that does stop answering is
+;; not driven in a loop; (2) every script is scrubbed to clean UTF-8, the
+;; one invalid-message class we can rule out cheaply; (3) a generous size
+;; cap backstops a runaway payload.  None of the three changes the happy
+;; path -- scrub copies nothing for clean text, the cap never fires on a
+;; normal push, the breaker acts only after repeated failures.
+
+(defcustom xwapp-max-script-bytes (* 4 1024 1024)
+  "Largest script xwapp sends a page in one call, in bytes.
+A larger update is dropped.  A backstop against a runaway payload, set
+well above any normal push (8MB was tolerated in a scratch test, so this
+never fires on real updates); it is not the confirmed crash trigger."
+  :type 'integer
+  :group 'xwapp)
+
+(defcustom xwapp-poll-fail-max 5
+  "Consecutive failed title reads before xwapp stops driving a page.
+A crashed WebKit process still answers `xwidget-live-p', so without this
+the poll keeps calling into the broken IPC channel every interval.  A
+fresh `xwapp-open' clears it."
+  :type 'integer
+  :group 'xwapp)
+
+(defun xwapp--scrub (s)
+  "S with any char that is not a valid Unicode scalar made U+FFFD.
+A raw eight-bit byte (> #x10FFFF in Emacs) or a lone surrogate encodes to
+invalid UTF-8, which the WebKit IPC guard can abort on.  Returns S itself
+when it is already clean, so the common path copies nothing."
+  (if (and (multibyte-string-p s)
+           (seq-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) s))
+      (concat (mapcar (lambda (c) (if (or (> c #x10FFFF) (<= #xD800 c #xDFFF)) #xFFFD c)) s))
+    s))
+
+(defun xwapp--script-safe (script)
+  "SCRIPT fit to hand WebKit -- scrubbed to clean UTF-8 and within
+`xwapp-max-script-bytes' -- or nil, with a message, when too big to send."
+  (let* ((clean (xwapp--scrub script))
+         (bytes (string-bytes clean)))
+    (if (> bytes xwapp-max-script-bytes)
+        (progn
+          (message "xwapp: dropped a %d-byte page update over the %d-byte cap"
+                   bytes xwapp-max-script-bytes)
+          nil)
+      clean)))
+
+(defun xwapp--poll-failed (app)
+  "Count a failed drive of APP's page; past `xwapp-poll-fail-max', stop.
+A crashed WebKit web process looks live but cannot be read or scripted;
+polling it every interval is what spins Emacs on the broken IPC channel,
+so stop the timer and mark the app wedged, for a reopen to recover."
+  (let ((n (1+ (or (xwapp--get app :poll-fails) 0))))
+    (xwapp--put app :poll-fails n)
+    (when (>= n xwapp-poll-fail-max)
+      (xwapp--put app :wedged t)
+      (xwapp-stop-poll app)
+      (message "xwapp: stopped driving %s -- its page will not answer (crashed WebKit?); reopen to recover"
+               (xwapp-buffer-name app)))))
+
+(defun xwapp--exec (app xw script)
+  "Run SCRIPT in XW for APP, scrubbed and size-capped.
+Does nothing once APP is wedged.  A call that signals counts toward the
+breaker, so a page that starts rejecting scripts stops being driven."
+  (unless (xwapp--get app :wedged)
+    (when-let* ((safe (xwapp--script-safe script)))
+      (condition-case nil
+          (xwidget-webkit-execute-script xw safe)
+        (error (xwapp--poll-failed app))))))
+
 (defun xwapp-js (app fn obj)
   "Call NAMESPACE[FN] with JSON-encoded OBJ in APP's page."
   (let ((ns (xwapp-namespace app)))
@@ -298,8 +380,8 @@ session\" may be the other app's page."
         (xwapp--call app (format "{\"ns\":%s,\"fn\":%s,\"arg\":%s}"
                                  (json-encode ns) (json-encode fn) (json-encode obj)))
       (when-let* ((xw (xwapp-session app)))
-        (xwidget-webkit-execute-script
-         xw
+        (xwapp--exec
+         app xw
          (format "window.%s && %s[%s](%s);"
                  ns ns (json-encode fn) (json-encode obj)))))))
 
@@ -339,19 +421,28 @@ window system cannot report counts as focus."
               prefixes)))
 
 (defun xwapp--poll (app)
-  "Read one intent from APP's page title and dispatch it."
+  "Read one intent from APP's page title and dispatch it.
+A title that cannot be read -- a crashed WebKit process still looks live
+-- counts toward the breaker; a run of them stops the poll rather than
+spin Emacs reading and scripting a broken IPC channel every interval."
   (when-let* ((xw (xwapp-session app)))
-    (let* ((title (ignore-errors (xwidget-webkit-title xw)))
-           (intent (xwapp-parse-intent title (xwapp-prefixes app))))
-      (when (and intent (not (equal title (xwapp-last-title app))))
-        (setf (xwapp-last-title app) title)
-        (xwidget-webkit-execute-script
-         xw (format "document.title = %s;" (json-encode (xwapp-idle-title app))))
-        (xwapp--dispatch app intent)))))
+    (let ((title (condition-case nil
+                     (prog1 (xwidget-webkit-title xw)
+                       (xwapp--put app :poll-fails 0))
+                   (error (xwapp--poll-failed app) :failed))))
+      (unless (eq title :failed)
+        (let ((intent (xwapp-parse-intent title (xwapp-prefixes app))))
+          (when (and intent (not (equal title (xwapp-last-title app))))
+            (setf (xwapp-last-title app) title)
+            (xwapp--exec app xw (format "document.title = %s;"
+                                        (json-encode (xwapp-idle-title app))))
+            (xwapp--dispatch app intent)))))))
 
 (defun xwapp-start-poll (app)
   "Start polling APP's page title for intents."
   (xwapp-stop-poll app)
+  (xwapp--put app :poll-fails 0)
+  (xwapp--put app :wedged nil)
   (setf (xwapp-timer app)
         (run-at-time 0.4 (xwapp-poll-interval app) #'xwapp--poll app)))
 
@@ -1023,11 +1114,14 @@ APP is free."
       (xwapp--timer app :hold xwapp--hold #'xwapp--flush))))
 
 (defun xwapp--call (app json)
-  "Send JSON, one call, to APP's browser page."
-  (xwapp--put app :outbox (cons json (xwapp--get app :outbox)))
-  ;; On the next turn, so the calls of one command go out together.
-  (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush)))
-    (xwapp--timer app :flush 0 #'xwapp--flush)))
+  "Send JSON, one call, to APP's browser page.
+Scrubbed and size-capped like the xwidget path: an oversized or unclean
+payload is dropped rather than queued."
+  (when-let* ((safe (xwapp--script-safe json)))
+    (xwapp--put app :outbox (cons safe (xwapp--get app :outbox)))
+    ;; On the next turn, so the calls of one command go out together.
+    (when (and (xwapp--get app :waiting) (not (xwapp--get app :flush)))
+      (xwapp--timer app :flush 0 #'xwapp--flush))))
 
 (defun xwapp--flush (app)
   "Answer APP's held `next' with the calls gathered since the last."
