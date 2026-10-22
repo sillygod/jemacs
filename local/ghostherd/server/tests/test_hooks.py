@@ -442,6 +442,184 @@ def test_hook_fails_open(live, tmp_path):
     assert (out.returncode, out.stdout) == (0, "")
 
 
+# ---- A CLI the agent runs is not the agent (claude-jnotes, 2026-10-22) -------
+#
+# claude-jnotes ran `claude -p' and `agy -p' from a scratch dir to probe how
+# each CLI writes files.  They inherited its environment, its name in the herd
+# with it, and their hooks reported as claude-jnotes: their turns' `working'
+# and `done', and agy's conversation as its own.  Its card lost its
+# conversation (the link an agy one, which a claude card ignores: a screen
+# dump, no model) and read `done' while it worked.
+
+PROBE = {"session_id": "probe-c1", "transcript_path": "/scratch/probe.jsonl", "cwd": "/scratch/ws"}
+
+
+def _own(h, **kw):
+    "A report from claude-main's own CLI, process 100 under tmux (10)."
+    return h.report("claude-main", pid=100, ancestors=[10], **kw)
+
+
+def test_a_cli_of_another_kind_is_not_the_agent(tmp_path):
+    h = _store(tmp_path)
+    _own(h, state="working", cli="claude", conversation="own-1", transcript="/own.jsonl")
+    h.tick(sessions=SNAP)
+    ask = h.ask("claude-main", "check it", from_name="agy-a2")
+    _deliver(h)
+    # An agy the agent runs: no process named, its kind alone gives it away.
+    for state, last in (("working", None), ("done", "Created out.txt.")):
+        out = h.report("claude-main", state=state, cli="agy", conversation="agy-9",
+                       transcript="/brain/agy-9/transcript.jsonl", last=last)
+        assert "ignored" in out and "agy" in out["ignored"]
+    link = h.link("claude-main")
+    assert (link["cli"], link["conversation"], link["transcript"]) == ("claude", "own-1", "/own.jsonl")
+    assert h.tick(sessions=SNAP)["reports"] == []           # no `done' while it works
+    assert h.get_ask(ask["id"])["status"] == "delivered"     # not answered with agy's words
+
+
+def test_a_cli_started_under_the_agents_own_is_not_the_agent(tmp_path):
+    h = _store(tmp_path)
+    _own(h, state="working", cli="claude", conversation="own-1", transcript="/own.jsonl")
+    # `claude -p' run from the agent's Bash tool: the same kind, its own
+    # conversation, a process under the agent's (100).
+    out = h.report("claude-main", state="done", cli="claude", conversation="probe-c1",
+                   transcript="/scratch/probe.jsonl", last="Found it.",
+                   pid=200, ancestors=[150, 100, 10])
+    assert "started by claude-main's own CLI (100)" in out["ignored"]
+    assert h.link("claude-main")["conversation"] == "own-1"
+    # The agent's own CLI on a new conversation -- a /clear -- is followed.
+    _own(h, cli="claude", conversation="own-2", transcript="/own-2.jsonl")
+    assert h.link("claude-main")["conversation"] == "own-2"
+    # A new process not under the old one -- a restart -- is followed, and
+    # pinned: what it starts is told from it in turn.
+    h.report("claude-main", state="working", cli="claude", conversation="own-3",
+             transcript="/own-3.jsonl", pid=300, ancestors=[10])
+    assert h.link("claude-main")["conversation"] == "own-3"
+    assert "ignored" in h.report("claude-main", state="done", cli="claude", conversation="p2",
+                                 pid=400, ancestors=[390, 300, 10])
+    assert h.link("claude-main")["conversation"] == "own-3"
+
+
+def test_a_shell_takes_the_cli_run_in_it(tmp_path):
+    h = _store(tmp_path)
+    snap = SNAP + [{"name": "sh-1", "kind": "shell", "state": "idle", "project": "/src/a/"}]
+    h.tick(sessions=snap)
+    h.report("sh-1", state="working", cli="claude", conversation="c-1", pid=500, ancestors=[490, 10])
+    assert h.link("sh-1")["cli"] == "claude"
+    assert h.tick(sessions=snap)["reports"][0]["state"] == "working"
+
+
+def test_the_jnotes_morning_replayed(tmp_path):
+    """The herd log of 2026-10-22, 08:31-08:36: the agent's turn, and two
+    probes of each CLI inside it.  The agent stays working on its own
+    conversation; its turn's start and end are its own."""
+    h = _store(tmp_path)
+    _own(h, state="working", cli="claude", conversation="b5667d46", transcript="/jnotes/b5667d46.jsonl")
+    h.tick(sessions=SNAP)
+    turn_at = h._turn_at("claude-main")
+    probes = [("claude", "cb74ba04", 201), ("agy", "0af783be", 202),
+              ("claude", "10860dbe", 203), ("agy", "992aa41f", 204)]
+    for cli, conv, pid in probes:
+        for state, last in (("working", None), ("done", "probe answer")):
+            out = h.report("claude-main", state=state, cli=cli, conversation=conv,
+                           transcript=f"/probe/{conv}.jsonl", last=last,
+                           pid=pid, ancestors=[pid - 50, 100, 10])
+            assert "ignored" in out
+    assert h.tick(sessions=SNAP)["reports"] == []
+    link = h.link("claude-main")
+    assert (link["cli"], link["conversation"]) == ("claude", "b5667d46")
+    assert h._turn_at("claude-main") == turn_at
+    with h._mu:
+        assert h._conn.execute("SELECT turn_end_at FROM links WHERE session = 'claude-main'").fetchone()[0] is None
+    # Its own turn ends: that is taken.
+    _own(h, state="done", cli="claude", conversation="b5667d46", last="Committed.")
+    assert h.tick(sessions=SNAP)["reports"][0]["state"] == "done"
+
+
+def test_the_rpc_checks_the_process_ids(tmp_path):
+    from jsonrpc_handler import JsonRpcHandler
+    rpc = JsonRpcHandler()
+    for bad in ({"pid": "100"}, {"pid": True}, {"ancestors": "10"}, {"ancestors": [10, "x"]}):
+        with pytest.raises(ValueError):
+            rpc._herd_report(dict(session="claude-main", state="working", **bad))
+
+
+# The process table `ps -A -o pid=,ppid=,comm=' gives: a probe's hook, run
+# through sh by a claude under the agent's tool shell, under the agent's
+# claude, under tmux.
+PS = """\
+    1     0 /sbin/launchd
+   10     1 /opt/homebrew/bin/tmux
+  100    10 claude
+  150   100 /bin/bash
+  200   150 claude
+  210   200 /bin/sh
+  220   210 -zsh
+"""
+
+
+def _ps(monkeypatch, table, me_parent):
+    monkeypatch.setattr(hc.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=table, stderr=""))
+    monkeypatch.setattr(hc.os, "getppid", lambda: me_parent)
+
+
+def test_lineage_finds_the_cli_past_its_shells(monkeypatch):
+    _ps(monkeypatch, PS, 220)                 # the hook's parent: a login zsh
+    assert hc._lineage() == (200, [150, 100, 10])
+    _ps(monkeypatch, PS, 100)                 # run by the CLI itself, no shell
+    assert hc._lineage() == (100, [10])
+
+
+def test_lineage_says_nothing_when_ps_cannot(monkeypatch):
+    def fail(*a, **k):
+        raise OSError("no ps")
+    monkeypatch.setattr(hc.subprocess, "run", fail)
+    assert hc._lineage() == (None, [])
+    _ps(monkeypatch, "garbage\n", 5)
+    assert hc._lineage() == (None, [])
+
+
+FAKE_CLI = """\
+import json, os, subprocess, sys
+# A CLI, as far as the herd can see: it runs a hook's command through sh --
+# the command `herd hooks install' writes, so sh stays between the CLI and
+# the hook -- and the CLIs it starts (its probes) run theirs.  argv: steps.
+for step in json.loads(sys.argv[1]):
+    if step[0] == "hook":
+        subprocess.run(["sh", "-c", step[2]], input=json.dumps(step[1]),
+                       text=True, env=os.environ, check=True, stdout=subprocess.DEVNULL)
+    else:
+        subprocess.run([sys.executable, __file__, json.dumps(step[1])], env=os.environ, check=True)
+"""
+
+
+def test_a_probe_through_the_real_hook_reports_nothing(live, tmp_path):
+    """End to end, with real processes: the agent's own CLI reports through
+    `herd hook'; a claude and an agy it starts report too, under its name;
+    the herd follows the agent alone."""
+    h = herd_mod.get_herd()
+    cli = tmp_path / "fakecli.py"
+    cli.write_text(FAKE_CLI)
+    own = dict(CLAUDE, hook_event_name="UserPromptSubmit")
+    run = hc._claude_command()
+    claude_probe = [["hook", dict(PROBE, hook_event_name="UserPromptSubmit"), run],
+                    ["hook", dict(PROBE, hook_event_name="Stop", last_assistant_message="probe"), run]]
+    agy_probe = [["hook", {"conversationId": "agy-9", "transcriptPath": "/brain/agy-9.jsonl"},
+                  hc._agy_command("PreInvocation")],
+                 ["hook", {"conversationId": "agy-9", "transcriptPath": "/brain/agy-9.jsonl",
+                           "terminationReason": "model_stop"}, hc._agy_command("Stop")]]
+    steps = [["hook", own, run], ["cli", claude_probe], ["cli", agy_probe],
+             ["hook", dict(CLAUDE, hook_event_name="SessionStart", session_id="own-2"), run]]
+    env = dict(live["env"], TMPDIR=str(tmp_path), GHOSTHERD_HERD=str(HERD))
+    subprocess.run([sys.executable, str(cli), json.dumps(steps)], env=env, check=True, timeout=60)
+    tick = h.tick(sessions=SNAP)
+    assert [(r["session"], r["state"]) for r in tick["reports"]] == [("claude-main", "working")]
+    link = h.link("claude-main")
+    # Its own /clear (a new conversation from the same CLI) is followed;
+    # the probes' conversations never were.
+    assert (link["cli"], link["conversation"]) == ("claude", "own-2")
+
+
 # ---- Installing ----------------------------------------------------------
 
 

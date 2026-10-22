@@ -378,6 +378,11 @@ class HerdStore:
         for col in ("turn_at", "last_turn_at", "turn_end_at"):
             if col not in link_cols:
                 self._conn.execute(f"ALTER TABLE links ADD COLUMN {col} TEXT")
+        # `pid': the process of the agent's own CLI, as its hooks name it --
+        # so a CLI the agent itself runs, under its name, is told from it
+        # (`_not_its_own').
+        if "pid" not in link_cols:
+            self._conn.execute("ALTER TABLE links ADD COLUMN pid INTEGER")
         # The ask its asker was answering, the run it belongs to, its round
         # with its taker and how many it may have; and how many its own
         # taker may have with any one agent (NULL: ASK_ROUNDS).
@@ -1171,8 +1176,16 @@ class HerdStore:
         conversation: str | None = None,
         transcript: str | None = None,
         last: str | None = None,
+        pid: int | None = None,
+        ancestors: list[int] | None = None,
     ) -> dict[str, Any]:
         """An agent's hook: what it is doing, and on which conversation.
+
+        PID is the process of the CLI whose hook this is, ANCESTORS the
+        processes above it, as the hook found them.  A report from a CLI
+        the agent itself runs -- a probe, under the agent's name, since it
+        inherits the agent's environment -- is not the agent's: it is
+        ignored whole, and says why (`_not_its_own').
 
         STATE waits for Emacs's next tick, newest per session.  The rest
         is kept here.  A turn ending in `done' with LAST closes the
@@ -1188,6 +1201,16 @@ class HerdStore:
             raise ValueError(f"state must be one of {', '.join(self.REPORT_STATES)}")
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
+            why = self._not_its_own(session, cli, pid, ancestors)
+            if why:
+                return {"session": session, "state": None, "closed_ask": None, "ignored": why}
+            if pid:
+                # The agent's own CLI: what tells a CLI it runs from it.
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
+                    (session, now),
+                )
+                self._conn.execute("UPDATE links SET pid = ? WHERE session = ?", (pid, session))
             if cli or conversation or transcript or last:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO links (session, updated_at) VALUES (?, ?)",
@@ -1306,6 +1329,39 @@ class HerdStore:
                     closed = open_ask[0]
             self._conn.commit()
         return {"session": session, "state": state, "closed_ask": closed}
+
+    def _not_its_own(self, session: str, cli: str | None, pid: int | None,
+                     ancestors: list[int] | None) -> str | None:
+        """Why a hook report under SESSION's name is not SESSION's, or None.
+
+        An agent runs other CLIs as tools -- `claude -p', `agy -p' from a
+        scratch directory -- and they inherit its environment, its name in
+        the herd with it, so their hooks report as the agent: their turns'
+        `working' and `done', their conversation and transcript.  The herd
+        then followed the probe's conversation and lost the agent's
+        (claude-jnotes, 2026-10-22: its card showed a screen dump and read
+        `done' while it worked).  Two things tell them apart:
+
+        - a CLI of another kind than the agent's (a shell session takes
+          any: the CLI run in it is its agent);
+        - a CLI process started under the agent's own CLI process, which
+          its hooks name (PID, pinned on the link) -- the same kind of CLI
+          as the agent, on a conversation of its own.  The agent's own
+          CLI, on a new conversation (a /clear), is followed; so is a new
+          process not under the old one (a restart).
+        Caller holds `_mu`."""
+        row = self._conn.execute(
+            "SELECT kind FROM snapshot WHERE name = ?", (session,)).fetchone()
+        kind = (row[0] or "") if row else ""
+        if cli and kind and kind != "shell" and cli != kind:
+            return f"a {cli} CLI is not {session}, a {kind} agent: one it ran"
+        if pid:
+            row = self._conn.execute(
+                "SELECT pid FROM links WHERE session = ?", (session,)).fetchone()
+            own = row[0] if row and row[0] else None
+            if own and pid != own and own in set(ancestors or []):
+                return f"process {pid} was started by {session}'s own CLI ({own})"
+        return None
 
     def unlink(self, session: str) -> dict[str, Any]:
         """Forget what SESSION's hooks said: a new agent has its name now,

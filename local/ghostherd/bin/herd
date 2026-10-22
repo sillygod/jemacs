@@ -689,6 +689,42 @@ def hook_report(p, event=None):
     return out
 
 
+# What a CLI may run its hook through: shells and wrappers, not the CLI.
+_RUNNERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "tcsh", "csh",
+            "env", "timeout", "nice", "nohup"}
+
+
+def _lineage():
+    """(PID, ANCESTORS): the process of the CLI that ran this hook -- the
+    nearest one above it that is not a shell or a wrapper -- and the
+    processes above that, nearest first.  The herd tells the agent's own
+    CLI from one the agent runs (a probe, under the agent's name) by them.
+    (None, []) when `ps' cannot say: the herd then goes by the kind alone."""
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,comm="],
+                             capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, []
+    procs = {}
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            name = os.path.basename(parts[2].strip()).lstrip("-") if len(parts) > 2 else ""
+            procs[int(parts[0])] = (int(parts[1]), name)
+    pid, seen = os.getppid(), set()
+    while pid in procs and procs[pid][1] in _RUNNERS and pid not in seen:
+        seen.add(pid)
+        pid = procs[pid][0]
+    if pid not in procs or pid <= 1:
+        return None, []
+    ancestors, up = [], procs[pid][0]
+    while up in procs and up > 1 and up not in seen:
+        seen.add(up)
+        ancestors.append(up)
+        up = procs[up][0]
+    return pid, ancestors
+
+
 def _stamp_file(session):
     key = hashlib.sha1(session.encode("utf-8")).hexdigest()[:16]
     return os.path.join(tempfile.gettempdir(), "ghostherd-hook-%s.json" % key)
@@ -725,8 +761,13 @@ def cmd_hook(args):
         if session:
             news = {k: v for k, v in hook_report(p, args.event).items() if v}
             if (news.get("state") or news.get("conversation")) and not _repeat(session, news):
-                rpc("herd_report", dict(news, session=session), timeout=3)
-                _remember(session, news)
+                # Which CLI this is: a CLI the agent runs inherits its name,
+                # and the herd must not take it for the agent.
+                pid, ancestors = _lineage()
+                out = rpc("herd_report", dict(news, session=session, pid=pid,
+                                              ancestors=ancestors), timeout=3)
+                if not (out or {}).get("ignored"):
+                    _remember(session, news)
     except Exception as exc:  # noqa: BLE001 -- a hook must never fail its CLI
         say("hook: %s" % exc)
     if agy:
