@@ -25,6 +25,7 @@ readers and different lifetimes:
 | [[file:docs/testing.org][docs/testing.org]]     | the ERT approach and the manual plan, T1–T15        |
 | [[file:docs/development.org][docs/development.org]] | changing it while the herd runs on it: =bin/reload= |
 | [[file:docs/roadmap.org][docs/roadmap.org]]     | phase history, what shipped, what is left           |
+| [[file:docs/tokens.org][docs/tokens.org]]      | the two-token mechanism, for the user (繁中)        |
 
 * Features
 
@@ -397,6 +398,10 @@ environment, not in =rpc.url=, and a guarded agent may not read the file,
 even approved.  One token for all agents, not one each: what it guards
 against is an agent's code acting as the herd, not one agent posing as
 another --- all are yours, and their asks are in the open.
+
+Why it is shaped this way, what is extra for a guarded agy, how to rotate
+the tokens and check which one an agent holds, and what it does not try to
+close: [[file:docs/tokens.org][docs/tokens.org]] (繁體中文，寫給使用者).
 
 #+begin_src bash
   curl -sS "$GHOSTHERD_RPC" -H 'Content-Type: application/json' \

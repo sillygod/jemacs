@@ -1,0 +1,347 @@
+#+TITLE: 兩個 token：herd 怎麼分辨「你」和「agent 跑的程式碼」
+#+OPTIONS: toc:2 num:t
+
+這份文件寫給使用者，說明 herd 的 token 機制「為什麼」長這樣，而不只是
+「是什麼」。所有敘述都對照目前的程式碼（master）寫成；=rpc.token=、
+=AGENT_METHODS= 這類識別字、檔名與指令都照原樣保留。
+
+文件裡不會出現任何真正的 token 值；要查自己手上的 token，請看
+「[[*輪替，以及怎麼在不印出 token 的情況下確認][輪替]]」一節的指紋做法。
+
+* 為什麼要兩個 token
+
+sidecar 只綁在 =127.0.0.1=（loopback），這擋得住別台機器，擋不住「同一
+台機器上的其他東西」。瀏覽器裡任何一個網頁都能對 =127.0.0.1= 送
+POST；在有 token 之前，它就能讀走整份 transcript 索引，或排一則 prompt
+讓 Emacs 貼進某個 agent 並送出。所以要有 token。
+
+但光一個 token 不夠。在只有一個 token 的時代，那個 token 在「每一個
+agent 的環境變數」裡。於是：*任何 agent 跑的程式碼，都能拿這個 token 當
+herd 自己來用* —— 去核准它自己被 guard 擋下的呼叫、去改 Memory、去核准
+把記憶寫進 CLAUDE.md 的提案。這不是假設：一個受 guard 的 agy，程式碼只
+要讀得到環境變數，就能繞過 guard 核准自己。
+
+兩個 token 要關的，正是這個威脅：*「agent 跑的程式碼冒充 herd」*。
+
+它「不打算」關的威脅是：*「一個 agent 冒充另一個 agent」*。所有 agent
+都是你的，彼此的 ask 也都攤在明處（herd 頁、=herd asks=），所以 herd 沒
+有為「agent A 假裝成 agent B」設防 —— 它們共用同一個 agent token
+（見「[[*界限，講白一點][界限]]」）。這是刻意的取捨，不是疏漏。
+
+(對照：=server/auth.py= 檔頭說明；readme 的「Mail without the binary」一節。)
+
+* 兩個 token，各自到得了什麼
+
+兩個 token 都是 64 個十六進位字元，各自存成一個檔案，權限都是 =0600=，
+放在 sidecar 的 data 目錄裡：
+
+- =rpc.token= —— *herd 自己的*（admin）。Emacs 用它，網頁也是透過
+  Emacs 用它。它到得了「每一個」method。
+- =rpc.agent-token= —— *每一個 agent 的*（不分 claude / grok / agy）。
+  agent 的 =GHOSTHERD_RPC= 以及它退回去讀的 =rpc.url= 裡，URL 帶的就是
+  這個 token。它「只」到得了 agent 該做的事。
+
+token 不是放在 header，而是放在「URL 路徑」裡：
+=http://host:port/jsonrpc/<token>=。sidecar 用路徑最後一段分辨身分
+（=server/main.py= 的 =jsonrpc_endpoint=）：對上 =rpc.token= 就是
+=admin=，對上 =rpc.agent-token= 就是 =agent=，兩個都對不上就擋下。
+
+** agent token 到得了的 method（=AGENT_METHODS=）
+
+這些是 agent 透過 =bin/herd=、它的 hook、以及 Emacs 寫給它們的
+=PROTOCOL.md= 真正會呼叫的 method，定義在
+=server/jsonrpc_handler.py= 的 =AGENT_METHODS=。依用途分組：
+
+- 連線測試：=ping=
+- 名單與訊息：=herd_list=、=herd_message=、=herd_inbox=
+- 問與答、交接：=herd_ask=、=herd_handoff=、=herd_reply=、
+  =herd_await=、=herd_cancel=、=herd_detach=、=herd_asks=
+- 回報與 guard 的申報：=herd_report=、=herd_guard_denied=、
+  =herd_guard_used=
+- 記憶：=herd_remember=、=herd_recall=、=herd_forget=、
+  =herd_promote_propose=（只是「提案」，核准是 herd 的事）
+- lead 的操作：=herd_start=、=herd_stop=、=herd_relay=、
+  =herd_screens=、=herd_command_reply=
+
+這份名單不是憑印象列的。=server/tests/test_auth.py= 裡的
+=test_every_method_an_agent_calls_is_an_agents= 會「從程式碼反推」：用正
+規式掃 =bin/herd= 裡的 =rpc("…")= 呼叫，再掃 =ghostherd.el= 裡
+=ghostherd--herd-protocol= 那段（就是寫給 agent 的 =PROTOCOL.md=），把它
+們兜起來，斷言「agent 真正會叫的，扣掉 =AGENT_METHODS=，只剩
+=memory_migrate= 與 =memory_unmigrate=」—— 那兩個是「你」用 herd 的 URL
+手動跑的搬遷指令，本來就不是 agent 的。*所以：在 =bin/herd= 或
+=PROTOCOL.md= 裡加了一個新呼叫、卻忘了加進 =AGENT_METHODS=，這個測試會
+當掉，不會等到 agent 在線上壞掉才發現。*
+
+** admin token 才到得了的 method（herd 自己的）
+
+其餘都是 herd 自己的 —— Emacs 與網頁才叫得動：核准 guard 擋下的呼叫
+（=herd_guard_approve=）、Memory 分頁的編輯與核准（=herd_memory_edit=、
+=herd_memory_delete=、=herd_memory_promote_approve=、
+=herd_memory_promote_reject=）、每次輪詢的 =herd_tick=、
+=herd_guard_requests=、transcript 索引、搬遷 claude 的記憶目錄等等。
+=test_what_the_agents_token_cannot_do_is_what_matters= 特別把這幾個「使
+用者指名在意的」釘死在 admin-only，免得哪天重整名單時不小心漏掉一個。
+
+這就是為什麼 *agent 核准不了自己被 guard 擋下的呼叫，也核准不了自己的
+記憶提案* —— 那兩個 method 的 token 它根本沒有。
+
+** =-32003= 是什麼，為什麼不是 401
+
+當 agent token 去叫一個 admin-only 的 method，sidecar 回的是
+*HTTP 200，JSON-RPC error code =-32003=*（=FORBIDDEN=），訊息大意是
+「這是 herd 自己的，Emacs 和網頁才叫，去問使用者」。
+
+它刻意「不是」401。因為 =bin/herd= 把 401 當成「URL 被拒 / sidecar 換過
+了」，會去退回讀 =rpc.url= 重試（見下節）。要是把「你沒權限」也回成
+401，client 會一直重試，永遠問不到「這件事本來就不該你做」。所以：
+
+- =-32003= = 「這個 method 不是你的」（有答案了，別重試）。
+- 401 = 「你的 URL / token 被拒」（該退回 =rpc.url=）。
+
+批次（JSON-RPC batch）也擋得住：=server/main.py= 對陣列裡「每一筆」各自
+判一次角色（=test_a_batch_is_judged_call_by_call=），不會因為把一個
+admin method 夾在合法呼叫裡就放行。
+
+* agent 怎麼拿到自己的 token
+
+** 流程
+
+#+begin_example
+  Emacs（M-x ghostherd-memory-start）
+     │  啟動 sidecar；sidecar 的 load_tokens() 建立或讀取
+     │     rpc.token（admin）與 rpc.agent-token（agent），皆 0600
+     ▼
+  sidecar ──GET /health──► token_id = sha256(admin)[:12]（公開，不含 token）
+     │
+     │  Emacs 收到健康回應後：
+     │   • 自己用 admin URL： http://host:port/jsonrpc/<admin-token>
+     │   • 把 agent URL 寫進 ghostherd-mail/rpc.url（0600）
+     ▼
+  spawn agent：環境給
+        GHOSTHERD_RPC      = http://host:port/jsonrpc/<agent-token>
+        GHOSTHERD_RPC_FILE = …/ghostherd-mail/rpc.url
+     │
+     ▼
+  agent 跑 bin/herd → rpc()
+     先用 GHOSTHERD_RPC；若被拒(401)或連不到 → 退回讀 rpc.url（agent URL）
+#+end_example
+
+** 細節
+
+- spawn 時環境帶 =GHOSTHERD_RPC=，URL 裡是 *agent* token
+  （=ghostherd.el= 的 =ghostherd-agent-env-allow= 註解即寫明
+  「=GHOSTHERD_RPC= holds the agents' token, not the herd's」）。
+- 退路是 =GHOSTHERD_RPC_FILE=，指向 =rpc.url=。=bin/herd= 的 =rpc()=
+  先試 =GHOSTHERD_RPC=，再試 =rpc.url=；碰到 401 或連不上就換下一個。
+- =rpc.url= 由 Emacs 的 =ghostherd-memory--write-rpc-locator= 寫，內容
+  是 *agent* 的 URL（函式註解：「The agents' URL, never the herd's」），
+  權限 =0600=（連覆寫舊檔都會再 =set-file-modes= 一次，因為覆寫會沿用
+  舊權限）。它只在「sidecar 啟動」時寫（=ghostherd-memory.el= 兩條啟動
+  路徑都呼叫它），不是載入檔案時就寫 —— 所以單純 reload 程式碼不會改動
+  現有的 =rpc.url=，線上跑著的 agent 不會被動到。
+- Emacs 自己的 URL 走 =ghostherd-memory-rpc-url=（admin，註解：「never
+  goes to an agent」）；給 agent 的走 =ghostherd-memory-agent-rpc-url=
+  （agent，註解：「never the herd's」）。兩條路分得很清楚，Emacs 從不把
+  admin URL 交給 agent。
+- 兩個 token 檔都在 sidecar 的 data 目錄，=0600=
+  （=ghostherd-memory--token-file= → =rpc.token=；
+  =ghostherd-memory--agent-token-file= → =rpc.agent-token=）。
+
+* 受 guard 的 agy 額外多了什麼
+
+一個受 guard 的 agy（以 =--dangerously-skip-permissions= 加上 herd 的
+=--add-dir= guard 目錄啟動）除了只拿 agent token 外，還多幾層保護。注
+意：這些「只」套用在「受 guard 的 agy」身上；claude、grok、以及沒受
+guard 的 agy，環境照舊（才留得住它們自己的 API key）。
+
+** 環境變數白名單（allowlist）
+
+=ghostherd.el= 的 =ghostherd-agent-env-allow= 是一份「白名單」：受 guard
+的 agy 只帶這些名字進環境，其他一律留在門外 —— 所以 =DATABASE_URL=、
+=SENTRY_DSN=、某個 =*_PAT=、webhook URL，不管叫什麼名字都進不去。白名
+單依用途分組（名字可用萬用字元，如 =LC_*=）：
+
+- 它在哪、它是誰、終端與語系：=PATH= =HOME= =USER= =LOGNAME= =SHELL=
+  =PWD= =TMPDIR= =TZ= =TERM= =TERM_*= =TERMINFO= =TERMINFO_DIRS=
+  =COLORTERM= =CLICOLOR= =LANG= =LANGUAGE= =LC_*=
+  =__CF_USER_TEXT_ENCODING= =EDITOR= =VISUAL= =PAGER= =XDG_*=
+- git 記的作者：=GIT_AUTHOR_NAME= =GIT_AUTHOR_EMAIL=
+  =GIT_COMMITTER_NAME= =GIT_COMMITTER_EMAIL=
+- 對外的路：=HTTP_PROXY= =HTTPS_PROXY= =NO_PROXY= =ALL_PROXY=
+  （含小寫版）、=SSH_AUTH_SOCK=（ssh-agent 只簽章、不交出金鑰，而且每
+  次 =git push= / =ssh= 都會先問你）
+- herd 自己的：=GHOSTHERD_RPC= =GHOSTHERD_RPC_FILE= =GHOSTHERD_SESSION=
+  =GHOSTHERD_HERD= =GHOSTHERD_SOCKET= =GHOSTHERD_BACKEND=
+
+套用方式：=ghostherd--scrub-wrapper= 會在 agy 的 CLI 前面接一段
+=herd scrub-exec --allow <名字> --allow <名字> … --=，由 =bin/herd= 的
+=cmd_scrub_exec= 把環境砍到只剩這些名字。而且這整段 wrapper 只在
+=guard= 成立時才接上（=ghostherd.el=：
+=:wrapper (and guard (ghostherd--scrub-wrapper directory))=）。
+
+*URL 裡夾帶憑證會被丟掉*：就算名字在白名單上，只要值長得像
+=http://user:pass@proxy= 這種把帳密塞進 URL 的，=bin/herd= 的
+=allowed_env= 會用 =_URL_CREDENTIAL= （=://[^/\s@]+@=）把它整個丟掉。所
+以一個帶密碼的 proxy 變數，名字過了，值還是進不去。
+
+** 加名單的 =-extra= 為什麼「不是」safe-local
+
+要加白名單，用 =ghostherd-agent-env-allow-extra=。它可以是你全域設的，
+也可以是某個專案在它的 =.dir-locals.el= 裡設的 —— *但後者 Emacs 會先問
+過你*，因為「一個專案可能在這裡塞一個 secret 的名字」。
+
+這是刻意的：=ghostherd-agent-env-allow-extra= 「沒有」註冊
+=safe-local-variable=（=ghostherd.el= 裡只有 =ghostherd-agy-guard=、
+=ghostherd-guard-allow-commands= 這些有 =(put … 'safe-local-variable …)=，
+=-extra= 故意沒有）。所以一個惡意的 =.dir-locals.el= 沒辦法「悄悄」把
+一個 secret 變數的名字加進白名單 —— Emacs 會把它當不安全、先問你
+（批次 / 非互動時則根本不套用）。
+
+** guard 裡 =rpc.token= 是「never」class
+
+admin token 檔 =rpc.token=，受 guard 的 agy *連核准都讀不到*。
+=bin/herd_guard.py= 把它放進 =never_files=，在 =check_path= 裡比 secret /
+approvable 的判斷「更早」就擋下，回一個 =_never= 判決；而「可不可核准」
+（=approvable=）只對 =ask= 與 =secret= 兩類成立，=never= 不在其中。所以
+沒有任何一張卡片上的核准能把 =rpc.token= 交到 agy 手上。
+
+這份 =never_files= 由 Emacs 填入 admin token 檔：=ghostherd.el=
+=:never_files (vconcat … (ghostherd-memory--token-file))=。
+
+** guard 拒絕 =$= 展開與「倒環境變數」
+
+=bin/herd_guard.py= 把「任何可能洩漏 secret 的東西」歸為 =secret= 類
+（預設擋下，但使用者可在卡片上「核准一次」）：=env=、=printenv=、
+=set=、=export -p=、=declare -p/-x=、任何 =$VAR= 或反引號 =`…`= 展開、
+=ps e=、=launchctl getenv=、=security find-*-password=、=gh auth=、帶
+inline code 的直譯器（=python -c=、=node -e= …），以及工作區內外的
+secret 檔（=.env=、=*.pem=、=id_rsa*= …）。
+
+這一層的用意，就是不讓受 guard 的 agy 用「倒出整個環境」或「展開
+=$GHOSTHERD_RPC=」的方式去翻 token 或別的 secret。注意分寸：讀「環境」
+是 =secret= 類（擋下、可核准，因為環境裡現在也只有 agent token）；讀
+=rpc.token= 那個「檔案」才是 =never= 類（擋下、不可核准）。
+
+* 輪替，以及怎麼在不印出 token 的情況下確認
+
+** 第一次啟動時發生了什麼
+
+升級到有 agent token 的這版、第一次啟動時，sidecar 的 =load_tokens=
+（=server/auth.py=）發現還沒有 =rpc.agent-token=，於是：*連 admin token
+也一起換新*（=_write_new= 重寫 =rpc.token=），再寫一個全新的
+=rpc.agent-token=。
+
+為什麼要順手換掉 admin？因為在這之前啟動的 agent，環境裡握的是「舊的、
+單一的」token（也就是舊 admin）。把 admin 換掉後，那些 agent 手上的
+URL 就會被拒（401），於是它們 =bin/herd= 退回去讀 =rpc.url= —— 而
+=rpc.url= 已被 Emacs 改寫成 agent URL —— 日子照過。*舊 admin token 從此
+不在任何 agent 手上。* 這條遷移路徑有測試顧著：
+=test_a_running_agent_moves_over_without_losing_its_wait= 用真的行程重現
+「一個舊 agent 正等著一則 ask 時 sidecar 換新」，確認它的 wait 會接到
+agent URL 上、照樣拿到答案，不會卡死。
+
+** 手動再輪替一次（順序很重要）
+
+沒有專門的「rotate」指令；靠「刪檔 + 重啟」：
+
+1. 先確定「每一處都沒有開著的 ask」—— 輪替一旦跑起來會改 token、改
+   =rpc.url=，不能和線上的 ask 搶。
+2. 停 sidecar：=M-x ghostherd-memory-stop=。
+3. 刪 token 檔：
+   - 只換 agent token（會連 admin 一起換，因為缺 =rpc.agent-token= 會走
+     上面那條第一次啟動的路）：刪 =rpc.agent-token=。
+   - 兩個都換：=rpc.token= 和 =rpc.agent-token= 都刪。
+4. 起 sidecar：=M-x ghostherd-memory-start=。=load_tokens= 會重新建檔，
+   Emacs 也會把 =rpc.url= 改寫成新的 agent URL；線上的 agent 下一次
+   =bin/herd= 呼叫就自己退回 =rpc.url= 接上。
+
+（server/ 有變動時，重啟 sidecar 本來就該在「沒有 ask 開著」時做；同一
+個理由。）
+
+** 怎麼確認某個 agent 手上是哪個 token（不印出 token）
+
+/health 是「不帶 token、公開」的，回的 =token_id= 是 admin token 的指
+紋 =sha256(token)[:12]=（=server/auth.py= 的 =fingerprint=，Emacs 端是
+=ghostherd-memory--fingerprint=）。指紋是雜湊，算它不會洩漏 token。於是
+可以「比指紋」來確認某個 agent 是不是誤握了 admin token：
+
+#+begin_src bash
+  # sidecar 的 admin 指紋（公開，不會印出 token）：
+  curl -s "$(printf %s "$GHOSTHERD_RPC" | sed 's#/jsonrpc/.*#/health#')" \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["token_id"])'
+
+  # agent 手上 token 的指紋（只印指紋，不印 token）：
+  printf %s "${GHOSTHERD_RPC##*/jsonrpc/}" | shasum -a 256 | cut -c1-12
+#+end_src
+
+兩個指紋「相同」→ 這個 agent 握的是 *admin* token（不該如此，去輪替並
+重生那個 agent）；「不同」→ 握的是 agent token（正常）。全程只比指紋，
+不把 token 印到畫面或 log 上。
+
+* 界限，講白一點
+
+這套機制擋的是「agent 跑的程式碼冒充 herd」，不是萬能。幾件要清楚的事：
+
+- *任何以「你」的身分跑的東西，都讀得到 =rpc.token=。* 一個「沒受
+  guard」的 claude agent、或 guard 的 =allow_commands= 放行的指令，都能
+  從磁碟讀走 admin token 檔。guard 的 =never= 只擋「受 guard 的 agy」。
+  換句話說：兩個 token 把「受 guard 的 agy」關好了，其餘 agent 仍是以你
+  的身分在跑。
+- *所有 agent 共用「同一個」agent token*，不是一人一把。所以它分不出
+  「哪個 agent」在呼叫 —— 這呼應前面：herd 不為「agent 互相冒充」設防。
+- *=GHOSTHERD_SESSION= 仍是自己宣稱的。* =bin/herd= 的 =me()= 直接讀這
+  個環境變數當自己的名字，它也在白名單裡、由 agent 自己帶。身分的真話
+  靠的是「ask 都在明處、agent 都是你的」，不是靠這個變數。
+
+* 疑難排解
+
+當 agent 的 herd 指令出錯，訊息大致對應三種情況：
+
+- *401 /「refused the call (HTTP …)」/「the sidecar … refused」*：token
+  或 URL 被拒 —— 多半是 sidecar 換過、而這個 agent 還握著舊 URL。
+  =bin/herd= 會自己退回 =rpc.url= 重試；若連 =rpc.url= 也被拒，通常是
+  =rpc.url= 也過時或 agent 根本沒 =GHOSTHERD_RPC_FILE=。*處理*：重生
+  （respawn）那個 agent，把環境一次修好；或確認 sidecar 真的在跑、
+  =rpc.url= 是新的。
+- *=-32003= /「… is the herd's own, not an agent's … Ask the user」*：這
+  個 method 是 herd 自己的（核准 guard、改 Memory、tick…），agent token
+  到不了。*這不是壞掉，是設計*：該由你在 Emacs 或 herd 頁上做（例如在卡
+  片上核准那次 guard 呼叫），不是叫 agent 想辦法繞過。
+- *「no sidecar URL …」/「cannot reach the sidecar …」（lost the
+  sidecar）*：=GHOSTHERD_RPC= 和 =GHOSTHERD_RPC_FILE= 都沒有（這 agent
+  可能不是 herd 起的），或兩個 URL 都連不上（sidecar 沒跑）。*處理*：確
+  認 sidecar 在跑（=M-x ghostherd-memory-start=），需要時重生那個 agent。
+
+* 程式碼在哪裡（給下一個要改它的人）
+
+- =server/auth.py= —— =TOKEN_FILE= / =AGENT_TOKEN_FILE=、
+  =load_or_create_token=（=O_EXCL=，首次建立）、=_write_new=（原子覆
+  寫、=0600=）、=load_tokens=（首次啟動輪替 admin）、=fingerprint=、
+  =token_ok=、access log 裡的 =RedactToken=。
+- =server/main.py= —— =jsonrpc_endpoint=（依路徑 token 定角色 admin /
+  agent / 拒）、=_no_token=（401、=-32001=、訊息指向 =rpc.url= 不印
+  token）、批次逐筆判角色、=/health= 的 =token_id=。
+- =server/jsonrpc_handler.py= —— =AGENT_METHODS=、=FORBIDDEN= =-32003=、
+  =handle= 裡「先找 method，再判角色」的那道關卡。
+- =server/tests/test_auth.py= —— 尤其
+  =test_every_method_an_agent_calls_is_an_agents=（從 =bin/herd= 與
+  =PROTOCOL.md= 反推名單）、
+  =test_the_first_start_with_an_agent_token_replaces_the_herds=、
+  =test_a_running_agent_moves_over_without_losing_its_wait=、
+  =test_a_batch_is_judged_call_by_call=、=test_a_refusal_names_no_token_file=。
+- =bin/herd= —— =rpc()=（=_env_url= / =_file_url= 與退回邏輯）、
+  =allowed_env= 與 =_URL_CREDENTIAL=、=cmd_scrub_exec=。
+- =bin/herd_guard.py= —— =never_files= 與 =rpc.token= 的 =_never= 判決、
+  =approvable= 屬性、=secret= 類（env / =$= 展開 / secret 檔）的規則。
+- =ghostherd.el= —— =ghostherd-agent-env-allow= 與
+  =ghostherd-agent-env-allow-extra=（後者「沒有」=safe-local-variable=）、
+  =ghostherd--scrub-wrapper=、spawn 路徑的
+  =:wrapper (and guard …)= 與 =:never_files (… ghostherd-memory--token-file)=、
+  以及寫給 agent 的 =ghostherd--herd-protocol=（=PROTOCOL.md=）。
+- =ghostherd-memory.el= —— =ghostherd-memory--token-file= /
+  =ghostherd-memory--agent-token-file=、=ghostherd-memory-rpc-url=（admin）
+  與 =ghostherd-memory-agent-rpc-url=（agent）、
+  =ghostherd-memory--write-rpc-locator=（在啟動時寫 =rpc.url=，=0600=）、
+  =ghostherd-memory--fingerprint=、=ghostherd-memory-start= /
+  =ghostherd-memory-stop=。
