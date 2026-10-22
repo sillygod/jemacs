@@ -133,6 +133,11 @@ def _title(name: str) -> str:
     return words[:1].upper() + words[1:] if words else name
 
 
+def title_of(name: str) -> str:
+    "A human title for a fact NAME, as `Fact.title' gives it."
+    return _title(name)
+
+
 @dataclass
 class Fact:
     name: str
@@ -144,6 +149,7 @@ class Fact:
     body: str
     path: Path
     shared: bool = False  # a user fact, linked into a project store
+    promoted: str = ""     # "<file> <date>" once it lives in an instruction file
 
     @property
     def title(self) -> str:
@@ -153,7 +159,8 @@ class Fact:
         "The fact as the page sees it (its body included, for read and filter)."
         return {"name": self.name, "title": self.title, "description": self.description,
                 "type": self.type, "author": self.author, "created": self.created,
-                "updated": self.updated, "body": self.body, "shared": self.shared}
+                "updated": self.updated, "body": self.body, "shared": self.shared,
+                "promoted": self.promoted}
 
 
 def valid_name(name: str) -> str:
@@ -254,6 +261,7 @@ def parse(path: Path) -> Fact | None:
         body=body.strip(),
         path=path,
         shared=path.is_symlink(),
+        promoted=str(meta.get("promoted") or "").strip(),
     )
 
 
@@ -262,6 +270,22 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+# Metadata a rewrite keeps as it is: claude's own provenance, and the
+# `promoted' mark -- so editing a promoted fact does not quietly un-promote
+# it (only `unpromote' does).  render() passes these through `extra'.
+_KEEP_META = ("originSessionId", "modified", "promoted")
+
+
+def _kept_meta(path: Path) -> dict:
+    "The metadata of the file at PATH that a rewrite must carry over."
+    try:
+        front, _ = _split_front(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    return {k: meta.get(k) for k in _KEEP_META if meta.get(k)}
 
 
 def own_facts(store: Path) -> list[Fact]:
@@ -353,7 +377,10 @@ def regenerate(store: Path, key: str) -> None:
     shared = [] if key == USER_KEY else user_facts()
     if key != USER_KEY:
         _sync_shared_links(store, shared)
-    project = own_facts(store)
+    # A promoted fact lives in the instruction file now: keep it out of the
+    # index (and so out of the .el fallback opening, which reads MEMORY.md),
+    # but leave its file -- the page lists it under "Promoted".
+    project = [f for f in own_facts(store) if not f.promoted]
     _atomic_write(store / INDEX, _index_text(project, shared, key))
 
 
@@ -394,9 +421,7 @@ def write_fact(
         old = parse(path)
         if old:
             created = old.created or now
-            existing_front, _ = _split_front(path.read_text(encoding="utf-8"))
-            em = existing_front.get("metadata") if isinstance(existing_front.get("metadata"), dict) else {}
-            extra = {"originSessionId": em.get("originSessionId")}
+            extra = _kept_meta(path)
     description = _first_line(text)
     _atomic_write(path, render(name, description, text, type=typ, author=author,
                                created=created, updated=now, extra=extra))
@@ -416,9 +441,7 @@ def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
     if f is None or f.author or path.is_symlink() or not author:
         return False
     now = now or iso_now()
-    front, _ = _split_front(path.read_text(encoding="utf-8"))
-    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
-    extra = {"originSessionId": meta.get("originSessionId"), "modified": meta.get("modified")}
+    extra = _kept_meta(path)
     _atomic_write(path, render(f.name, f.description, f.body, type=f.type, author=author,
                                created=(f.created or now), updated=(f.updated or now), extra=extra))
     _changed(path.parent.name, [f.name])
@@ -441,9 +464,7 @@ def edit_fact(store: Path, key: str, name: str, *, description: str, body: str,
         raise ValueError(f"no fact named {name}")
     old = parse(path)
     created = (old.created if old else "") or now
-    front, _ = _split_front(path.read_text(encoding="utf-8"))
-    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
-    extra = {"originSessionId": meta.get("originSessionId")}
+    extra = _kept_meta(path)
     _atomic_write(path, render(name, (description or "").strip(), body or "", type=typ,
                                author=author, created=created, updated=now, extra=extra))
     regenerate(store, key)
@@ -451,6 +472,74 @@ def edit_fact(store: Path, key: str, name: str, *, description: str, body: str,
         regenerate_all_projects()
     _changed(key, [name])  # tell the fact index at once, not only on the next read
     return {"name": name, "type": typ, "store": key}
+
+
+def promotable(f: Fact) -> bool:
+    """Whether the herd may propose promoting F into an instruction file.
+    A user fact (shared across projects) or any `user' fact is tied to this
+    person, not the project -- paths, credentials, personal preferences --
+    so it is never proposable; those stay memories."""
+    return not f.shared and f.type != "user"
+
+
+def check_promotable(store: Path, key: str, name: str) -> Fact:
+    """Return project store KEY's fact NAME when the herd may promote it, else
+    raise ValueError saying why -- the guard a proposal passes through."""
+    name = valid_name(name)
+    if key == USER_KEY:
+        raise ValueError("user-store facts are tied to you; they cannot be promoted")
+    path = store / f"{name}.md"
+    if path.is_symlink():
+        raise ValueError(f"{name} is a shared user fact; it cannot be promoted")
+    f = parse(path)
+    if f is None or not path.exists():
+        raise ValueError(f"no fact named {name} in this project")
+    if not promotable(f):
+        raise ValueError(f"{name} is a {f.type} fact, tied to you; it cannot be promoted")
+    return f
+
+
+@_locked
+def set_promoted(store: Path, key: str, name: str, where: str, now: str | None = None) -> dict:
+    """Mark project store KEY's fact NAME promoted into file WHERE: it keeps
+    its file (so it is reversible) but gains `promoted: <file> <date>' and
+    leaves the index, the openings and retrieval.  Raises if it is not a
+    fact the herd may promote."""
+    f = check_promotable(store, key, name)
+    now = now or iso_now()
+    mark = f"{where} {now[:10]}"
+    extra = _kept_meta(f.path)
+    extra["promoted"] = mark
+    _atomic_write(f.path, render(f.name, f.description, f.body, type=f.type,
+                                 author=f.author or "user", created=f.created or now,
+                                 updated=f.updated or now, extra=extra))
+    regenerate(store, key)
+    _changed(key, [f.name])
+    return {"name": f.name, "promoted": mark, "store": key}
+
+
+@_locked
+def unpromote(store: Path, key: str, name: str, now: str | None = None) -> dict:
+    """Undo a promotion: drop the `promoted' mark so the fact returns to the
+    index, the openings and retrieval.  A no-op when it was not promoted."""
+    name = valid_name(name)
+    path = store / f"{name}.md"
+    if path.is_symlink():
+        raise ValueError(f"{name} is a shared user fact")
+    f = parse(path)
+    if f is None or not path.exists():
+        raise ValueError(f"no fact named {name}")
+    if not f.promoted:
+        return {"name": name, "promoted": "", "store": key, "changed": False}
+    now = now or iso_now()
+    extra = _kept_meta(path)
+    extra.pop("promoted", None)
+    _atomic_write(path, render(f.name, f.description, f.body, type=f.type,
+                               author=f.author or "user", created=f.created or now,
+                               updated=f.updated or now, extra=extra))
+    regenerate(store, key)
+    _changed(key, [name])
+    return {"name": name, "promoted": "", "store": key, "changed": True}
 
 
 def facts_for(key: str) -> list[dict]:
@@ -504,7 +593,7 @@ def pool(key: str) -> list[Fact]:
     """Every fact an agent of store KEY sees: the shared user facts, then
     the project's own -- a project fact of a user fact's name takes it, as
     in the store's links.  Read from the files, writing nothing."""
-    own = own_facts(project_store(key)) if project_store(key).is_dir() else []
+    own = [f for f in own_facts(project_store(key)) if not f.promoted] if project_store(key).is_dir() else []
     if key == USER_KEY:
         return own
     mine = {f.name for f in own}
@@ -644,7 +733,7 @@ def recall(store: Path, key: str, query: str | None = None, include_shared: bool
     """The index when QUERY is empty, else the matching facts in full.
     Searches the project's own facts and the shared user facts."""
     regenerate(store, key)
-    pool = own_facts(store)
+    pool = [f for f in own_facts(store) if not f.promoted]
     if include_shared and key != USER_KEY:
         pool = user_facts() + pool
     if not (query or "").strip():

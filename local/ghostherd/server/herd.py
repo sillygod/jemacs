@@ -313,6 +313,27 @@ class HerdStore:
             )
             """
         )
+        # A proposal to promote facts into a project's instruction file,
+        # pending the user's approval on the page.  On approve the herd hands
+        # the diff to the project's lead as an ask; when that ask is answered
+        # the facts are marked promoted.  The herd never edits the repo itself.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proposals (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL,
+                facts TEXT NOT NULL,
+                file TEXT NOT NULL,
+                diff TEXT NOT NULL,
+                author TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT,
+                ask_id TEXT,
+                created_at TEXT NOT NULL,
+                decided_at TEXT
+            )
+            """
+        )
         cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(snapshot)")
         }
@@ -1162,6 +1183,122 @@ class HerdStore:
                 break
         return out
 
+
+    # ---- Promote memory into instructions ---------------------------------
+
+    def _proposal_row(self, row) -> dict[str, Any]:
+        return {
+            "id": row[0], "project": row[1], "facts": json.loads(row[2] or "[]"),
+            "file": row[3], "diff": row[4], "author": row[5], "status": row[6],
+            "reason": row[7], "ask_id": row[8], "created_at": row[9],
+            "decided_at": row[10],
+        }
+
+    _PROPOSAL_COLS = ("id, project, facts, file, diff, author, status, reason, "
+                      "ask_id, created_at, decided_at")
+
+    def propose(self, project: str, facts: list[str], file: str, diff: str,
+                author: str) -> dict[str, Any]:
+        """Store a pending proposal to promote FACTS of PROJECT (a store key)
+        into instruction FILE, with the exact DIFF.  The herd holds it until
+        the user decides on the page; it writes nothing to the repo."""
+        project = (project or "").strip()
+        file = (file or "").strip()
+        names = [str(f).strip() for f in (facts or []) if str(f).strip()]
+        if not project:
+            raise ValueError("project is required")
+        if not names:
+            raise ValueError("name at least one fact to promote")
+        if not file:
+            raise ValueError("a target instruction file is required")
+        if not (diff or "").strip():
+            raise ValueError("the exact diff is required")
+        pid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "INSERT INTO proposals (id, project, facts, file, diff, author, "
+                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                (pid, project, json.dumps(names), file, diff,
+                 (author or "unknown").strip() or "unknown", now),
+            )
+            self._conn.commit()
+        return {"id": pid, "project": project, "facts": names, "file": file}
+
+    def proposals(self, project: str | None = None,
+                  status: str | None = None) -> list[dict[str, Any]]:
+        "Proposals, newest first; of one PROJECT and/or one STATUS when given."
+        where, args = [], []
+        if project:
+            where.append("project = ?")
+            args.append(project)
+        if status:
+            where.append("status = ?")
+            args.append(status)
+        sql = f"SELECT {self._PROPOSAL_COLS} FROM proposals"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at DESC"
+        with self._mu:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [self._proposal_row(r) for r in rows]
+
+    def proposal(self, proposal_id: str) -> dict[str, Any]:
+        with self._mu:
+            row = self._conn.execute(
+                f"SELECT {self._PROPOSAL_COLS} FROM proposals WHERE id = ?",
+                (proposal_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError(f"no such proposal: {proposal_id}")
+        return self._proposal_row(row)
+
+    def proposal_by_ask(self, ask_id: str) -> dict[str, Any] | None:
+        "The proposal whose apply-ask is ASK_ID, or None."
+        if not ask_id:
+            return None
+        with self._mu:
+            row = self._conn.execute(
+                f"SELECT {self._PROPOSAL_COLS} FROM proposals WHERE ask_id = ?",
+                (ask_id,),
+            ).fetchone()
+        return self._proposal_row(row) if row else None
+
+    def approve_proposal(self, proposal_id: str, ask_id: str) -> None:
+        "Record that PROPOSAL_ID was approved and handed to its lead as ASK_ID."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "UPDATE proposals SET status = 'approved', ask_id = ?, "
+                "decided_at = ? WHERE id = ? AND status = 'pending'",
+                (ask_id, now, proposal_id),
+            )
+            self._conn.commit()
+
+    def reject_proposal(self, proposal_id: str, reason: str | None = None) -> dict[str, Any]:
+        "Reject a pending proposal, recording WHY.  The facts stay memories."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            cur = self._conn.execute(
+                "UPDATE proposals SET status = 'rejected', reason = ?, "
+                "decided_at = ? WHERE id = ? AND status = 'pending'",
+                ((reason or "").strip() or None, now, proposal_id),
+            )
+            self._conn.commit()
+            if cur.rowcount == 0:
+                raise ValueError("no pending proposal with that id")
+        return {"id": proposal_id, "status": "rejected"}
+
+    def mark_proposal_applied(self, proposal_id: str) -> None:
+        "The lead applied an approved proposal: mark it done."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "UPDATE proposals SET status = 'applied', decided_at = ? "
+                "WHERE id = ? AND status = 'approved'",
+                (now, proposal_id),
+            )
+            self._conn.commit()
 
     # ---- What agents say about themselves ----------------------------------
 

@@ -329,7 +329,8 @@
   let lastOpened = null; // key of the card a source was opened from
   // The Memory tab's store, facts and view state (see showMemory).
   let mem = { key: "", projects: [], user: { key: "user", label: "User (shared)" },
-              facts: [], filter: "", open: new Set(), editing: "", confirmDel: "" };
+              facts: [], filter: "", open: new Set(), editing: "", confirmDel: "",
+              proposals: [], promotedOnly: false, rejecting: "" };
   let memWatching = false; // Emacs is pushing this store's facts
 
   function sourceMeta(path) {
@@ -3179,6 +3180,7 @@
     view = tab = "memory";
     src = null;
     mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+    mem.proposals = []; mem.promotedOnly = false; mem.rejecting = "";
     const target = (opts && opts.project) || herdNow.room || ctx.currentProject || "";
     chrome();
     app.innerHTML =
@@ -3186,7 +3188,11 @@
       '<div class="filters mem-tools">' +
       '<select id="mem-project" title="Project store"></select>' +
       '<input id="mem-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' +
-      SLASH + '" value="' + esc(mem.filter) + '"></div>' +
+      SLASH + '" value="' + esc(mem.filter) + '">' +
+      '<button type="button" class="ghost small" id="mem-promoted" data-act="mem-promoted-toggle" aria-pressed="false" title="Show facts promoted into an instruction file">Promoted</button>' +
+      '<button type="button" class="ghost small" data-act="mem-suggest" title="Ask the project\'s lead to review the memory and propose promotions">Suggest promotions</button>' +
+      '</div>' +
+      '<div id="mem-proposals"></div>' +
       '<div id="mem-list" class="results"><p class="empty">Reading memory…</p></div></div>';
     renderMemPicker();
     emit("memory-watch", target ? { project: target } : { key: "user" });
@@ -3213,15 +3219,20 @@
   function renderMemoryList() {
     const list = $("mem-list");
     if (!list) return;
+    const btn = $("mem-promoted");
+    if (btn) { btn.classList.toggle("on", mem.promotedOnly); btn.setAttribute("aria-pressed", mem.promotedOnly ? "true" : "false"); }
     if (!mem.facts.length) { list.innerHTML = '<p class="empty">No memory here yet.</p>'; return; }
     const needles = mem.filter.toLowerCase().split(/\s+/).filter(Boolean);
     const shown = mem.facts.filter((f) => {
+      // A promoted fact lives in an instruction file now: it waits behind the
+      // "Promoted" toggle, out of the everyday list.
+      if (mem.promotedOnly ? !f.promoted : f.promoted) return false;
       const hay = (f.name + "\n" + f.description + "\n" + f.body).toLowerCase();
       return needles.every((n) => hay.includes(n));
     });
     list.innerHTML = shown.length
       ? shown.map(renderMemRow).join("")
-      : '<p class="empty">Nothing matches.</p>';
+      : '<p class="empty">' + (mem.promotedOnly ? "Nothing promoted." : "Nothing matches.") + "</p>";
   }
 
   function renderMemRow(f) {
@@ -3230,24 +3241,59 @@
     const where = f.shared ? '<span class="mshared" title="Shared by every project">shared</span>' : "";
     const upd = when(f.updated); // the page's usual relative style: "1h ago", "yesterday", a date when older
     const meta = (f.author ? "by " + esc(f.author) : "") + (f.author && upd ? " · " : "") + (upd ? esc(upd) : "");
+    const prom = f.promoted
+      ? '<span class="mprom" title="In an instruction file now">promoted → ' + esc(f.promoted) + "</span>" : "";
     const head =
       '<div class="mhead" data-act="mem-open" data-name="' + esc(f.name) + '" tabindex="0" role="button">' +
-      '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where +
+      '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where + prom +
       '<span class="mmeta">' + meta + "</span></div>" +
       (f.description ? '<div class="mdesc">' + esc(f.description) + "</div>" : "") + "</div>";
-    if (!open) return '<div class="mfact">' + head + "</div>";
+    if (!open) return '<div class="mfact' + (f.promoted ? " promoted" : "") + '">' + head + "</div>";
     if (mem.editing === f.name) return '<div class="mfact open editing">' + head + memEditForm(f) + "</div>";
     const confirming = mem.confirmDel === f.name;
-    const actions =
-      '<div class="macts">' +
-      '<button type="button" class="ghost small" data-act="mem-edit" data-name="' + esc(f.name) + '">Edit</button>' +
-      (confirming
-        ? '<span class="mconfirm">Delete this fact?</span>' +
-          '<button type="button" class="ghost small danger" data-act="mem-delete" data-name="' + esc(f.name) + '">Delete</button>' +
-          '<button type="button" class="ghost small" data-act="mem-delcancel" data-name="' + esc(f.name) + '">Keep</button>'
-        : '<button type="button" class="ghost small" data-act="mem-delask" data-name="' + esc(f.name) + '">Delete</button>') +
-      "</div>";
-    return '<div class="mfact open">' + head + '<div class="mbody">' + markdown(f.body) + "</div>" + actions + "</div>";
+    // A promoted fact's one action is to put it back; otherwise edit/delete.
+    const actions = f.promoted
+      ? '<div class="macts"><button type="button" class="ghost small" data-act="mem-unpromote" data-name="' +
+        esc(f.name) + '">Put back in memory</button></div>'
+      : '<div class="macts">' +
+        '<button type="button" class="ghost small" data-act="mem-edit" data-name="' + esc(f.name) + '">Edit</button>' +
+        (confirming
+          ? '<span class="mconfirm">Delete this fact?</span>' +
+            '<button type="button" class="ghost small danger" data-act="mem-delete" data-name="' + esc(f.name) + '">Delete</button>' +
+            '<button type="button" class="ghost small" data-act="mem-delcancel" data-name="' + esc(f.name) + '">Keep</button>'
+          : '<button type="button" class="ghost small" data-act="mem-delask" data-name="' + esc(f.name) + '">Delete</button>') +
+        "</div>";
+    return '<div class="mfact open' + (f.promoted ? " promoted" : "") + '">' + head + '<div class="mbody">' + markdown(f.body) + "</div>" + actions + "</div>";
+  }
+
+  // The pending promotions the user decides on: the facts, the target file,
+  // the exact diff, Approve / Reject.  Only pending ones are shown.
+  function renderMemProposals() {
+    const box = $("mem-proposals");
+    if (!box) return;
+    const pend = (mem.proposals || []).filter((p) => p.status === "pending");
+    if (!pend.length) { box.innerHTML = ""; return; }
+    box.innerHTML = '<div class="mprops"><h3 class="mprops-h">Proposals</h3>' +
+      pend.map(renderMemProposal).join("") + "</div>";
+  }
+
+  function renderMemProposal(p) {
+    const facts = (p.facts || []).map((f) =>
+      '<span class="mpfact' + (f.gone ? " gone" : "") + '" title="' + esc(f.name) + '">' +
+      esc(f.title || f.name) + "</span>").join("");
+    const rejecting = mem.rejecting === p.id;
+    const acts = rejecting
+      ? '<div class="mpreject"><input id="mem-prej" type="text" placeholder="Why? (optional)" value="">' +
+        '<button type="button" class="ghost small danger" data-act="prop-reject-send" data-id="' + esc(p.id) + '">Reject</button>' +
+        '<button type="button" class="ghost small" data-act="prop-reject-cancel" data-id="' + esc(p.id) + '">Keep</button></div>'
+      : '<div class="mpacts">' +
+        '<button type="button" class="primary small" data-act="prop-approve" data-id="' + esc(p.id) + '">Approve</button>' +
+        '<button type="button" class="ghost small" data-act="prop-reject" data-id="' + esc(p.id) + '">Reject</button></div>';
+    return '<div class="mprop">' +
+      '<div class="mptop"><span class="mpfacts">' + facts + '</span>' +
+      '<span class="mpinto">→ ' + esc(p.file) + "</span>" +
+      '<span class="mpby">' + (p.author ? "by " + esc(p.author) : "") + "</span></div>" +
+      '<pre class="mpdiff">' + esc(p.diff || "") + "</pre>" + acts + "</div>";
   }
 
   function memEditForm(f) {
@@ -3398,6 +3444,30 @@
       const f = memFact(n);
       emit("memory-delete", { key: memKeyFor(f), name: n });
       mem.confirmDel = ""; mem.open.delete(n);
+    } else if (act === "mem-unpromote") {
+      const n = el.getAttribute("data-name");
+      const f = memFact(n);
+      emit("memory-unpromote", { key: memKeyFor(f), name: n });
+    } else if (act === "mem-promoted-toggle") {
+      mem.promotedOnly = !mem.promotedOnly;
+      mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+      renderMemoryList();
+    } else if (act === "mem-suggest") {
+      emit("memory-suggest", mem.key && mem.key.indexOf("/") >= 0
+        ? { project: mem.key } : { key: mem.key || "user" });
+    } else if (act === "prop-approve") {
+      emit("memory-proposal-approve", { id: el.getAttribute("data-id") });
+    } else if (act === "prop-reject") {
+      mem.rejecting = el.getAttribute("data-id");
+      renderMemProposals();
+      const r = $("mem-prej"); if (r) r.focus();
+    } else if (act === "prop-reject-cancel") {
+      mem.rejecting = "";
+      renderMemProposals();
+    } else if (act === "prop-reject-send") {
+      const r = $("mem-prej");
+      emit("memory-proposal-reject", { id: el.getAttribute("data-id"), reason: r ? r.value : "" });
+      mem.rejecting = "";
     }
   });
 
@@ -3605,6 +3675,14 @@
       renderMemPicker();
       // Not while an editor is open, so a live push does not wipe it.
       if (!mem.editing) renderMemoryList();
+    },
+
+    renderProposals: (p) => {
+      if (view !== "memory") return;
+      mem.proposals = (p && p.proposals) || [];
+      // A rejection box over a proposal that is gone has nothing to attach to.
+      if (mem.rejecting && !mem.proposals.some((x) => x.id === mem.rejecting)) mem.rejecting = "";
+      renderMemProposals();
     },
 
     renderHerd: (p) => {

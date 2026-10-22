@@ -11,9 +11,10 @@ Usage:
   herd stop NAME
   herd list
   herd asks
-  herd remember [--type T] [--name SLUG] [--user] [TEXT|-]
-  herd recall [--user] [QUERY...]
-  herd forget [--user] NAME
+  herd remember [--type T] [--name SLUG] [--user|--project P] [TEXT|-]
+  herd recall [--user|--project P] [QUERY...]
+  herd forget [--user|--project P] NAME
+  herd promote propose --fact NAME... --file PATH [--project P]   (diff on stdin)
   herd hook [EVENT]                (from a CLI's lifecycle hook)
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
@@ -51,9 +52,21 @@ reference or user, `--name' sets its slug.  `recall' prints the project's
 index, or `recall QUERY' the facts most relevant to QUERY in full, best
 first -- by meaning as well as words, so a query in one language can
 find a fact written in another.  `forget NAME' removes one.  `--user' is the store shared by every project (the user's
-own preferences).  Run them from a plain shell too -- authored `user',
-for the project you are in.  claude reads this memory through its own
-memory dir; agy and grok are told to use these commands.
+own preferences); `--project P' reaches another project's store from any
+shell -- P a path, its leaf name (e.g. deploy-platform), or its slug.  Run
+them from a plain shell too -- authored `user', for the project you are
+in.  claude reads this memory through its own memory dir; agy and grok are
+told to use these commands.
+
+`promote propose' proposes moving stable, general facts out of memory and
+into the project's instruction file (CLAUDE.md, or AGENTS.md where it links
+to it), so every agent and machine sees them, versioned with the code.
+Name the facts with `--fact' (repeatable), the file with `--file', and pipe
+the exact diff on stdin.  The herd refuses a machine- or user-specific fact
+(paths, credentials, personal preferences, the user store) and holds the
+rest pending the user's approval on the page; on approval it asks the
+project's lead to apply the diff by the project's branch/PR rules, and only
+then does the fact leave memory.  The herd never edits the repo itself.
 
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
@@ -321,6 +334,12 @@ def _mem_params(args):
     params = {"from": me(), "project": _cwd_project()}
     if getattr(args, "user", False):
         params["user"] = True
+    # An explicit --project (a path, leaf name, or slug) overrides the session
+    # and the cwd, so the user can reach any project's memory from any shell.
+    project = getattr(args, "project", None)
+    if project:
+        params["project"] = project
+        params["project_given"] = True
     return params
 
 
@@ -357,6 +376,25 @@ def cmd_forget(args):
     say(("forgot `%s'" % out["name"]) if out["removed"]
         else ("no fact named `%s'" % out["name"]))
     return 0 if out["removed"] else 1
+
+
+def cmd_promote(args):
+    """Propose promoting stable, general facts into the project's instruction
+    file.  The exact diff comes on stdin.  The herd holds it pending the user's
+    approval on the page; nothing is written to the repo here."""
+    if not args.file:
+        raise HerdError("--file is required (the instruction file, e.g. CLAUDE.md)")
+    if not args.fact:
+        raise HerdError("name at least one fact with --fact NAME (repeatable)")
+    diff = text_arg("-")
+    if not diff.strip():
+        raise HerdError("pipe the exact diff in on stdin")
+    params = _mem_params(args)
+    params.update(facts=args.fact, file=args.file, diff=diff)
+    out = rpc("herd_promote_propose", params)
+    say("proposed promoting %s into %s (pending the user's approval)"
+        % (", ".join(out["facts"]), out["file"]))
+    return 0
 
 
 def cmd_memory(args):
@@ -1182,15 +1220,30 @@ def main(argv=None):
                    help="the fact's kind (default project)")
     p.add_argument("--name", metavar="SLUG", help="its filename slug (default from the text)")
     p.add_argument("--user", action="store_true", help="the store shared by every project")
+    p.add_argument("--project", metavar="P",
+                   help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_remember)
     p = sub.add_parser("recall", help="print the memory index, or the facts most relevant to a query")
     p.add_argument("query", nargs="*")
     p.add_argument("--user", action="store_true", help="the user store, not the project's")
+    p.add_argument("--project", metavar="P",
+                   help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_recall)
     p = sub.add_parser("forget", help="remove a fact from shared memory")
     p.add_argument("name")
     p.add_argument("--user", action="store_true", help="from the user store")
+    p.add_argument("--project", metavar="P",
+                   help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_forget)
+    p = sub.add_parser("promote",
+                       help="propose promoting stable facts into the project's instruction file")
+    p.add_argument("action", choices=("propose",))
+    p.add_argument("--fact", action="append", metavar="NAME",
+                   help="a fact to promote (repeatable)")
+    p.add_argument("--file", metavar="PATH", help="the instruction file (e.g. CLAUDE.md)")
+    p.add_argument("--project", metavar="P",
+                   help="the project's store: a path, its leaf name, or its slug")
+    p.set_defaults(fn=cmd_promote)
     p = sub.add_parser("memory",
                        help="migrate the existing claude memories into the store (reversible)")
     p.add_argument("action", choices=("plan", "migrate", "unmigrate"))

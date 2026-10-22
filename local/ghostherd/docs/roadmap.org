@@ -1762,16 +1762,7 @@ phase two.)
 
 - A Memory tab on the page; indexing the facts into the transcript search;
   pruning / curation UI
-- Promote memory into instructions.  A memory lives only on this machine; a
-  stable, general fact belongs in the project's instruction file (=CLAUDE.md=,
-  or =AGENTS.md= where it links to it), versioned with the code so every agent
-  and machine sees it -- e.g. deploy-platform's "never commit to main".  The
-  lead (or, with no lead, any agent when asked) proposes promotions from time
-  to time: which facts, and the exact diff to the instruction file.  Nothing
-  is written to an instruction file without the user's approval; on approval
-  the diff is applied and the fact leaves memory, with a note saying where it
-  went, so it is not loaded twice.  Facts tied to this machine or user (paths,
-  credentials setup, personal preferences) stay memories.
+- Promote memory into instructions -- *now done, see "part three" below.*
 
 ** Phase two, part two: retrieval (ask 7bb69512)
 
@@ -1807,6 +1798,40 @@ never reached agy or grok unless they thought to recall.
   collection, the warm-up builds the first index); reload the =.el= (the
   bound =ghostherd-memory-opening-max= keeps its 4000, now the cap on the
   index lines only)
+
+** Phase two, part three: promote memory into instructions (ask 18f57d20)
+
+Goal: a stable, general fact belongs in the project's instruction file
+(=CLAUDE.md=, or =AGENTS.md= where it links to it), versioned with the code
+so every agent and machine sees it -- e.g. deploy-platform's "never commit to
+main".  Whether a fact is such a rule is an agent's judgment; the user decides
+each promotion; the herd never edits the repo.
+
+- [X] =herd promote propose --fact NAME... --file PATH= (the exact diff on
+  stdin): an agent -- a lead, or any agent asked -- proposes which facts go
+  into which instruction file.  The herd refuses a fact tied to the machine or
+  the user (a =user= fact, the user store) and stores the rest pending, with
+  its author.  =server/herd.py= (a =proposals= table), =shared_memory.check_promotable=
+- [X] The Memory tab's "Proposals" section: each pending one -- the facts, the
+  target file, the diff -- with Approve / Reject (a reason), desk and phone.
+  A "Promoted" filter shows promoted facts, with "Put back in memory"; a
+  "Suggest promotions" button asks the project's lead (or a chosen agent) to
+  review and propose.  =ghostherd-memory-page.el=, =ui/app.js=, =ui/style.css=
+- [X] On Approve the herd hands the approved diff to the project's lead (or, no
+  lead, the proposer) as an ask -- "apply this by the project's branch/PR
+  rules, reply when done"; it never commits itself.  When that ask is answered
+  the facts are marked =promoted: <file> <date>= in their frontmatter and leave
+  the index, the grok/agy openings and retrieval, so they are not loaded twice.
+  Reversible (unpromote); a reject keeps them and records why
+- [X] =herd recall|remember|forget --project P= (a path, a leaf name like
+  deploy-platform, or a slug): reach any project's store from any shell
+- [X] pytest (propose / refuse a machine fact / approve → the lead's ask →
+  answered → promoted and out of index, opening, retrieval / unpromote /
+  reject / --project resolution) + ERT (the page handlers and the proposals
+  tick) + e2e (the Proposals section, the Promoted filter, Suggest -- desk and
+  phone), broken on purpose
+- [ ] After the merge, by hand: restart the sidecar (the new RPCs and the
+  =proposals= table); the =.el=/=ui= are live
 
 * Phase 4 — Ecosystem (only if still useful)
 

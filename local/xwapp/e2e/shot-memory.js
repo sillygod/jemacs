@@ -24,6 +24,10 @@ const FACTS = [
     type: "reference", author: "grok-deploy-platform", updated: iso(now - 86400e3),
     body: "Bitbucket PR calls authenticate with the app password pr-view holds.", shared: false },
 ];
+const PROPOSALS = [
+  { id: "p1", project: "-src-dp", file: "CLAUDE.md", author: "claude-deploy-platform", status: "pending",
+    facts: [{ name: "never-commit-to-main", title: "Never commit to main", gone: false, promoted: false }],
+    diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ Working conventions @@\n+- Never commit straight to `main`: cut a branch and open a PR.\n" }];
 async function shot(browser, name, ctxOpts, opener) {
   const { ctx, page } = await phonePage(browser, { context: ctxOpts });
   await page.evaluate(() => GM.showView("memory"));
@@ -46,6 +50,10 @@ async function shot(browser, name, ctxOpts, opener) {
     await shot(browser, "memory-phone-open.png", PHONE, async (page) => {
       await page.click('.mhead[data-name="prefers-reasoned-design"]');
     });
+    // The Proposals section (a pending promotion), desk and phone.
+    const props = async (page) => page.evaluate((p) => GM.renderProposals({ key: "-src-dp", proposals: p }), PROPOSALS);
+    await shot(browser, "memory-proposals-desk.png", DESK, props);
+    await shot(browser, "memory-proposals-phone.png", PHONE, props);
   } finally { await browser.close(); }
-  console.log("shots: " + path.join(SHOTS, "memory-{desk,desk-open,phone,phone-open}.png"));
+  console.log("shots: " + path.join(SHOTS, "memory-{desk,desk-open,phone,phone-open,proposals-desk,proposals-phone}.png"));
 })().catch((e) => { console.error(e); process.exit(1); });

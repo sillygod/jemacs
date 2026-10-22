@@ -11675,6 +11675,61 @@ it, else it is refused with \"bad project key\" (live bug 5c17375e).  A slug and
           (ghostherd-memory-page--memory-tick)
           (should (equal (car sent) (cdr case))))))))
 
+(ert-deftest ghostherd-test-memory-tick-fetches-proposals-too ()
+  "A memory tick asks for the store's facts and its promotion proposals, each
+routed the same way (a path as `project', a slug or `user' as `key')."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (calls)
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (&rest _) nil))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method _cb params &rest _) (push (cons method params) calls))))
+      (let ((ghostherd-memory-page--memory-key "-src-dp"))
+        (ghostherd-memory-page--memory-tick))
+      (should (equal (assoc "herd_memory_list" calls) '("herd_memory_list" :key "-src-dp")))
+      (should (equal (assoc "herd_memory_proposals" calls)
+                     '("herd_memory_proposals" :key "-src-dp")))
+      ;; A project path routes both as `project'.
+      (setq calls nil)
+      (let ((ghostherd-memory-page--memory-key "~/src/dp/"))
+        (ghostherd-memory-page--memory-tick))
+      (should (equal (assoc "herd_memory_proposals" calls)
+                     '("herd_memory_proposals" :project "~/src/dp/"))))))
+
+(ert-deftest ghostherd-test-memory-promotion-handlers-send-the-right-rpc ()
+  "The page's Proposals controls reach the sidecar: approve and reject by the
+proposal id, unpromote by store and name, and Suggest routes the store key or
+path.  A refusal from the sidecar surfaces on the page, not silently."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (sent)
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (&rest _) nil))
+              ((symbol-function 'ghostherd-memory-page--memory-tick) (lambda () nil))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb params &rest _)
+                 (push (list method params) sent)
+                 (funcall cb '(:to "lead-dp")))))
+      (ghostherd-memory-page--memory-proposal-approve '((id . "p1")))
+      (should (equal (car sent) '("herd_memory_promote_approve" (:id "p1"))))
+      (ghostherd-memory-page--memory-proposal-reject '((id . "p1") (reason . "too specific")))
+      (should (equal (car sent) '("herd_memory_promote_reject" (:id "p1" :reason "too specific"))))
+      (ghostherd-memory-page--memory-unpromote '((key . "-src-dp") (name . "branch-rule")))
+      (should (equal (car sent) '("herd_memory_unpromote" (:key "-src-dp" :name "branch-rule"))))
+      ;; Suggest: a slug key goes as `key'; a path as `project'; an explicit
+      ;; agent rides along.
+      (ghostherd-memory-page--memory-suggest '((key . "-src-dp")))
+      (should (equal (car sent) '("herd_memory_suggest" (:key "-src-dp"))))
+      (ghostherd-memory-page--memory-suggest '((project . "~/src/dp/") (agent . "claude-dp")))
+      (should (equal (car sent) '("herd_memory_suggest" (:project "~/src/dp/" :agent "claude-dp")))))
+    ;; A sidecar error is shown on the page (via --fail), not swallowed.
+    (let (shown)
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js)
+                 (lambda (fn arg &rest _) (when (equal fn "showError") (setq shown arg))))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m _cb _p &optional err) (and err (funcall err '(:message "no lead"))))))
+        (ghostherd-memory-page--memory-suggest '((key . "-src-dp")))
+        (should (stringp shown))))))
+
 (ert-deftest ghostherd-test-page-reads-sub-agents-when-they-change ()
   "Each agent's sub-agents still running, read by the sidecar when its
 transcript changed or a file its last answer named -- not on every

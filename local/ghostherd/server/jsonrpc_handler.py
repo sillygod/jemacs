@@ -111,6 +111,12 @@ class JsonRpcHandler:
             "herd_memory_list": self._herd_memory_list,
             "herd_memory_edit": self._herd_memory_edit,
             "herd_memory_delete": self._herd_memory_delete,
+            "herd_promote_propose": self._herd_promote_propose,
+            "herd_memory_proposals": self._herd_memory_proposals,
+            "herd_memory_promote_approve": self._herd_memory_promote_approve,
+            "herd_memory_promote_reject": self._herd_memory_promote_reject,
+            "herd_memory_unpromote": self._herd_memory_unpromote,
+            "herd_memory_suggest": self._herd_memory_suggest,
         }
 
     async def handle(self, request: JsonRpcRequest) -> JsonRpcResponse:
@@ -251,11 +257,29 @@ class JsonRpcHandler:
         )
 
     def _herd_reply(self, params: dict) -> dict:
-        return get_herd().reply(
-            str(params.get("id") or ""),
-            params.get("body"),
-            from_name=params.get("from"),
-        )
+        ask_id = str(params.get("id") or "")
+        out = get_herd().reply(ask_id, params.get("body"), from_name=params.get("from"))
+        # A promotion the lead was asked to apply is done once that ask is
+        # answered: mark its facts promoted so they leave the index, the
+        # openings and retrieval.  Best effort -- never fails the reply.
+        try:
+            self._apply_promotion(ask_id)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def _apply_promotion(self, ask_id: str) -> None:
+        prop = get_herd().proposal_by_ask(ask_id)
+        if not prop or prop["status"] != "approved":
+            return
+        key = prop["project"]
+        store = shared_memory.project_store(key)
+        for name in prop["facts"]:
+            try:
+                shared_memory.set_promoted(store, key, name, prop["file"])
+            except ValueError:
+                pass  # a fact gone or already not promotable: skip it
+        get_herd().mark_proposal_applied(prop["id"])
 
     async def _herd_await(self, params: dict) -> dict:
         """The ask once it closes, or as it stands after TIMEOUT seconds.
@@ -480,6 +504,12 @@ class JsonRpcHandler:
         store), or the PROJECT hint a plain shell passes from its cwd."""
         if params.get("user"):
             return shared_memory.user_store(), shared_memory.USER_KEY
+        # An explicit --project (a path, a leaf name, or a slug) wins over the
+        # caller's own session, so the user can reach any project's memory from
+        # any shell.
+        if params.get("project_given"):
+            key = self._project_key_arg(str(params.get("project") or ""))
+            return shared_memory.project_store(key), key
         who = str(params.get("from") or "").strip()
         project = ""
         if who and who != "user":
@@ -489,9 +519,36 @@ class JsonRpcHandler:
             project = str(params.get("project") or "").strip()
         if not project:
             raise ValueError(
-                "no project for this memory: run inside one, or use --user")
+                "no project for this memory: run inside one, or use --project/--user")
         key = shared_memory.slug_for_path(project)
         return shared_memory.project_store(key), key
+
+    def _project_key_arg(self, p: str) -> str:
+        """A store key from a --project value: a path (has a `/' or `~'), an
+        existing store slug, or a project's leaf name (e.g. deploy-platform)."""
+        import os
+        import re
+        p = (p or "").strip()
+        if not p:
+            raise ValueError("--project needs a path or a project name")
+        if "/" in p or p.startswith("~") or os.path.isabs(os.path.expanduser(p)):
+            return shared_memory.slug_for_path(p)
+        keys = shared_memory.project_keys()
+        if p in keys:
+            return p
+        # A leaf name: match a known project path's basename, else a slug that
+        # ends with it (the slug is the path with `/' and `.' -> `-').
+        for k, path in self._project_paths().items():
+            if os.path.basename(os.path.normpath(os.path.expanduser(path))) == p:
+                return k
+        leaf = re.sub(r"[/.]", "-", p)
+        cand = [k for k in keys if k.endswith("-" + leaf)]
+        if len(cand) == 1:
+            return cand[0]
+        if len(cand) > 1:
+            raise ValueError(f"{p!r} matches more than one project: {', '.join(cand)}")
+        raise ValueError(
+            f"no project memory for {p!r}; known: {', '.join(keys) or 'none'}")
 
     def _herd_remember(self, params: dict) -> dict:
         """Write a fact to the caller's project store (or --user), authored by
@@ -709,6 +766,114 @@ class JsonRpcHandler:
         "Delete a fact by NAME from store KEY (the page's confirmed delete)."
         store, key = self._memory_store_by_key(params)
         return shared_memory.forget(store, key, str(params.get("name") or ""))
+
+    # ---- Promote memory into instructions ---------------------------------
+
+    def _lead_for(self, key: str) -> str | None:
+        "The name of project store KEY's lead agent, or None."
+        for s in get_herd().list_sessions().get("sessions", []):
+            if s.get("role") == "lead" and \
+               shared_memory.slug_for_path(s.get("project") or "") == key:
+                return s.get("name")
+        return None
+
+    def _herd_promote_propose(self, params: dict) -> dict:
+        """An agent proposes promoting stable facts into the project's
+        instruction file, with the exact diff.  The herd checks each fact is
+        the project's (never a machine/user one) and stores it pending the
+        user's approval on the page; it writes nothing to the repo."""
+        store, key = self._memory_store(params)
+        if key == shared_memory.USER_KEY:
+            raise ValueError("user-store facts cannot be promoted")
+        facts = params.get("facts") or []
+        if not isinstance(facts, list):
+            raise ValueError("facts must be a list of names")
+        names = [str(f).strip() for f in facts if str(f).strip()]
+        if not names:
+            raise ValueError("name at least one fact to promote")
+        # Refuse here, before storing: a fact tied to the machine or the user
+        # (a user fact, the user store) is never proposable.
+        for name in names:
+            shared_memory.check_promotable(store, key, name)
+        return get_herd().propose(
+            key, names, str(params.get("file") or "").strip(),
+            str(params.get("diff") or ""), str(params.get("from") or "unknown"))
+
+    def _herd_memory_proposals(self, params: dict) -> dict:
+        """The proposals for store KEY, newest first -- what the page's
+        Proposals section shows.  Pending ones by default; STATUS filters."""
+        _store, key = self._memory_store_by_key(params)
+        status = str(params.get("status") or "").strip() or None
+        props = get_herd().proposals(project=key, status=status)
+        # The page shows the facts' titles and whether each is still a memory.
+        for p in props:
+            titled = []
+            for name in p["facts"]:
+                f = shared_memory.parse(shared_memory.project_store(key) / f"{name}.md")
+                titled.append({"name": name, "title": f.title if f else shared_memory.title_of(name),
+                               "gone": f is None, "promoted": bool(f and f.promoted)})
+            p["facts"] = titled
+        return {"key": key, "proposals": props}
+
+    def _herd_memory_promote_approve(self, params: dict) -> dict:
+        """The user approved a proposal: hand its diff to the project's lead
+        (or, with no lead, its proposer) as an ask to apply it following the
+        project's branch and PR rules.  The facts are promoted when that ask
+        is answered.  The herd never edits the repo."""
+        pid = str(params.get("id") or "").strip()
+        prop = get_herd().proposal(pid)
+        if prop["status"] != "pending":
+            raise ValueError(f"proposal is already {prop['status']}")
+        key = prop["project"]
+        to = self._lead_for(key) or prop["author"]
+        if not to or to == "unknown":
+            raise ValueError("no lead or proposer to apply this; start the project's lead")
+        shown = ", ".join(f["name"] if isinstance(f, dict) else str(f) for f in prop["facts"])
+        body = (
+            f"The user approved promoting {shown} into {prop['file']}.\n\n"
+            "Apply this approved change, following this project's branch and PR "
+            "rules (e.g. a branch and a PR where that is the rule, never a direct "
+            f"commit to a protected branch), then reply when done.\n\n"
+            f"The approved diff for {prop['file']}:\n\n{prop['diff']}"
+        )
+        ask = get_herd().ask(to=to, body=body, from_name="user")
+        get_herd().approve_proposal(pid, ask["id"])
+        return {"id": pid, "status": "approved", "ask": ask["id"], "to": to}
+
+    def _herd_memory_promote_reject(self, params: dict) -> dict:
+        "Reject a proposal, recording why; the facts stay memories."
+        return get_herd().reject_proposal(
+            str(params.get("id") or "").strip(), str(params.get("reason") or ""))
+
+    def _herd_memory_unpromote(self, params: dict) -> dict:
+        "Put a promoted fact back: it returns to the index, openings, retrieval."
+        store, key = self._memory_store_by_key(params)
+        return shared_memory.unpromote(store, key, str(params.get("name") or ""))
+
+    def _herd_memory_suggest(self, params: dict) -> dict:
+        """The page's "Suggest promotions": ask the project's lead (or the agent
+        the user picked) to review the memory and propose promotions."""
+        _store, key = self._memory_store_by_key(params)
+        if key == shared_memory.USER_KEY:
+            raise ValueError("the user store has nothing to promote")
+        to = str(params.get("agent") or "").strip() or self._lead_for(key)
+        if not to:
+            raise ValueError("no lead for this project; start one or pick an agent")
+        body = (
+            "Please review this project's shared memory and propose any facts "
+            "that are stable, general rules belonging in the project's "
+            "instruction file (CLAUDE.md, or AGENTS.md where it links to it) -- "
+            "e.g. a branch/PR rule the whole team follows.\n\n"
+            "Read the memory (`$GHOSTHERD_HERD recall`) and the instruction file, "
+            "then for the ones worth promoting run:\n"
+            "  $GHOSTHERD_HERD promote propose --fact NAME [--fact NAME ...] "
+            "--file CLAUDE.md   (the exact diff on stdin)\n\n"
+            "Propose only stable, general rules. Never machine- or user-specific "
+            "facts (paths, credentials setup, personal preferences) -- those stay "
+            "memories; the herd refuses them. The user approves each on the page."
+        )
+        ask = get_herd().ask(to=to, body=body, from_name="user")
+        return {"key": key, "ask": ask["id"], "to": to}
 
     def _herd_relay_brief(self, params: dict) -> dict:
         """What agent NAME hands its heir, as the heir's first message: its

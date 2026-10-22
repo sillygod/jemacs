@@ -811,11 +811,40 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 }
 .medit textarea { resize: vertical; font-family: var(--mono); font-size: 12.5px; min-height: 8em; }
 
+/* A promoted fact: lives in an instruction file now, shown muted, behind the
+   "Promoted" toggle. */
+#mem-promoted.on { color: var(--accent); border-color: var(--accent); background: rgba(121, 192, 255, 0.12); }
+.mfact.promoted { opacity: 0.85; }
+.mprom {
+  font-size: 10px; padding: 1px 6px; border-radius: 10px;
+  background: rgba(63, 185, 80, 0.14); color: var(--plus); overflow-wrap: anywhere;
+}
+
+/* Promotion proposals the user decides on. */
+.mprops { border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); margin-bottom: 12px; padding: 4px 0 2px; }
+.mprops-h { margin: 8px 12px; font-size: 13px; color: var(--accent); }
+.mprop { border-top: 1px solid var(--line); padding: 8px 12px; }
+.mptop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mpfacts { display: flex; gap: 6px; flex-wrap: wrap; }
+.mpfact { font-size: 11.5px; font-weight: 600; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--text); }
+.mpfact.gone { text-decoration: line-through; color: var(--muted); }
+.mpinto { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.mpby { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+.mpdiff {
+  margin: 8px 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+  overflow-wrap: anywhere; max-height: 16em; overflow: auto;
+}
+.mpacts, .mpreject { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mpreject input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; }
+
 @media (max-width: 640px) {
   .mem-tools { flex-wrap: wrap; }
   .mem-tools select { max-width: none; width: 100%; }
   .mem-tools #mem-filter { width: 100%; }
   .mmeta { margin-left: 0; width: 100%; white-space: normal; }
+  .mpby { margin-left: 0; width: 100%; }
 }
 
 @media (max-width: 640px) {

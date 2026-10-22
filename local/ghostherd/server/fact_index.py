@@ -272,7 +272,11 @@ class FactIndex:
             stamps = _stamps(key)
             if self._seen.get(key) == stamps and key in self._vecs:
                 return {"store": key, "embedded": 0, "removed": 0, "unchanged": True}
-            facts = sm.own_facts(sm.project_store(key)) if stamps else []
+            # A promoted fact lives in the instruction file now: leave it out
+            # of retrieval.  Dropped from `facts', its point falls into `gone'
+            # below and is deleted, so promotion both stops re-indexing and
+            # removes any point already there.
+            facts = [f for f in sm.own_facts(sm.project_store(key)) if not f.promoted] if stamps else []
             stored = self._stored(key)
             fresh = [f for f in facts if stored.get(f.name, ("", []))[0] != digest(f)]
             names = {f.name for f in facts}

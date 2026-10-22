@@ -165,6 +165,73 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
         /bad project key/.test(await page.$eval("#status", (e) => e.textContent).catch(() => "")),
         bad);
 
+      // ---- Promote: the Proposals section, the Promoted filter, Suggest ----
+      await page.evaluate((f) => GM.renderMemory({ key: "-src-dp", facts: f }), facts());
+      await sleep(40);
+      // A pending proposal appears with its facts, the target file, the diff,
+      // and Approve / Reject.
+      await page.evaluate(() => GM.renderProposals({ key: "-src-dp", proposals: [
+        { id: "p1", project: "-src-dp", file: "CLAUDE.md", author: "claude-deploy-platform",
+          status: "pending",
+          facts: [{ name: "never-commit-to-main", title: "Never commit to main", gone: false, promoted: false }],
+          diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@\n+Never commit to main; use a branch.\n" }] }));
+      await sleep(60);
+      check(W("a pending proposal shows its fact, file and diff"),
+        (await page.$$eval(".mprop", (es) => es.length)) === 1 &&
+        /Never commit to main/.test(await page.$eval(".mpfacts", (e) => e.textContent)) &&
+        /CLAUDE\.md/.test(await page.$eval(".mpinto", (e) => e.textContent)) &&
+        /\+Never commit to main/.test(await page.$eval(".mpdiff", (e) => e.textContent)));
+      // Approve → emit memory-proposal-approve.
+      await page.click('[data-act="prop-approve"][data-id="p1"]');
+      await sleep(40);
+      const appr = intents.filter((i) => i.op === "memory-proposal-approve").pop();
+      check(W("Approve emits the proposal id"), appr && appr.id === "p1", appr);
+      // Reject → a reason box → send emits memory-proposal-reject with the reason.
+      await page.click('[data-act="prop-reject"][data-id="p1"]');
+      await sleep(40);
+      check(W("Reject opens a reason box"), (await page.$("#mem-prej")) !== null);
+      await page.fill("#mem-prej", "too specific");
+      await page.click('[data-act="prop-reject-send"][data-id="p1"]');
+      await sleep(40);
+      const rej = intents.filter((i) => i.op === "memory-proposal-reject").pop();
+      check(W("Reject emits the id and reason"),
+        rej && rej.id === "p1" && rej.reason === "too specific", rej);
+      // An empty proposals push clears the section.
+      await page.evaluate(() => GM.renderProposals({ key: "-src-dp", proposals: [] }));
+      await sleep(40);
+      check(W("no pending proposals, no section"), (await page.$(".mprop")) === null);
+
+      // The Promoted filter: a promoted fact is hidden by default, shown when
+      // toggled, and "Put back" emits memory-unpromote.
+      await page.evaluate((f) => GM.renderMemory({ key: "-src-dp", facts: f.concat([
+        { name: "branch-rule", title: "Branch rule", description: "now in CLAUDE.md", type: "feedback",
+          author: "claude-deploy-platform", updated: new Date().toISOString(),
+          body: "Use a branch.", shared: false, promoted: "CLAUDE.md 2026-10-22" }]) }), facts());
+      await sleep(60);
+      check(W("a promoted fact is hidden from the everyday list"),
+        !/Branch rule/.test(await page.$eval("#mem-list", (e) => e.textContent)));
+      await page.click("#mem-promoted");
+      await sleep(60);
+      check(W("the Promoted filter shows only promoted facts"),
+        /Branch rule/.test(await page.$eval("#mem-list", (e) => e.textContent)) &&
+        (await rows(page)) === 1, await rows(page));
+      check(W("a promoted fact shows where it went"),
+        /CLAUDE\.md/.test(await page.$eval(".mprom", (e) => e.textContent)));
+      await page.click('.mhead[data-name="branch-rule"]');
+      await sleep(40);
+      await page.click('[data-act="mem-unpromote"][data-name="branch-rule"]');
+      await sleep(40);
+      const unp = intents.filter((i) => i.op === "memory-unpromote").pop();
+      check(W("Put back emits memory-unpromote"), unp && unp.name === "branch-rule", unp);
+      await page.click("#mem-promoted"); // back to the everyday list
+      await sleep(40);
+
+      // Suggest promotions → emit memory-suggest for the watched store.
+      await page.click('[data-act="mem-suggest"]');
+      await sleep(40);
+      const sug = intents.filter((i) => i.op === "memory-suggest").pop();
+      check(W("Suggest promotions emits for the store"), sug && (sug.key === "-src-dp" || sug.project), sug);
+
       await ctx.close();
     }
   } finally {

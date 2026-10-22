@@ -1814,6 +1814,8 @@ forge or ClickUp instead, which want their own login."
 (defvar ghostherd-memory-page--memory-sig nil
   "A signature of the facts last pushed, so an unchanged store is not re-sent
 and the page is not re-rendered under an open editor every few seconds.")
+(defvar ghostherd-memory-page--proposals-sig nil
+  "A signature of the promotion proposals last pushed, like `--memory-sig'.")
 
 (defun ghostherd-memory-page--memory-send-projects ()
   "Push the picker -- the user store and each project store -- to the page."
@@ -1847,8 +1849,31 @@ and the page is not re-rendered under an open editor every few seconds.")
        ;; The watched store is a slug key (the picker, or `user') or a project
        ;; path (the default / a room link, which has a `/').  The sidecar's
        ;; `key' must be a slug; a path goes as `project' for it to slug.
-       (if (string-match-p "/" key) (list :project key) (list :key key))
-       (ghostherd-memory-page--fail "Memory")))))
+       (ghostherd-memory-page--memory-where key)
+       (ghostherd-memory-page--fail "Memory"))
+      (ghostherd-memory-page--memory-proposals-tick key))))
+
+(defun ghostherd-memory-page--memory-where (key)
+  "The RPC params for watched store KEY: `:project' for a path, else `:key'."
+  (if (string-match-p "/" key) (list :project key) (list :key key)))
+
+(defun ghostherd-memory-page--memory-proposals-tick (key)
+  "Fetch KEY's promotion proposals; push them when they changed."
+  (ghostherd-memory-request-async
+   "herd_memory_proposals"
+   (lambda (result)
+     (when (equal key ghostherd-memory-page--memory-key)
+       (let* ((props (ghostherd-memory-page--vec (plist-get result :proposals)))
+              (sig (sxhash-equal (list key (append props nil)))))
+         (unless (equal sig ghostherd-memory-page--proposals-sig)
+           (setq ghostherd-memory-page--proposals-sig sig)
+           (ghostherd-memory-page--js
+            "renderProposals"
+            (list :key (or (plist-get result :key) key) :proposals props))))))
+   (ghostherd-memory-page--memory-where key)
+   ;; Silent: proposals are a side panel, and the RPC may not be there yet
+   ;; (before a sidecar restart lands it).  A failed facts fetch still shows.
+   #'ignore))
 
 (defun ghostherd-memory-page--memory-watch (intent)
   "Watch the store INTENT names (its `key', or a `project' path), pushing its
@@ -1856,7 +1881,8 @@ facts live.  Re-emitting with another key switches the watched store."
   (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
         (project (ghostherd-memory-page--str (alist-get 'project intent))))
     (setq ghostherd-memory-page--memory-key (or key project "user")
-          ghostherd-memory-page--memory-sig nil)   ; force a push for the new key
+          ghostherd-memory-page--memory-sig nil     ; force a push for the new key
+          ghostherd-memory-page--proposals-sig nil)
     (ghostherd-memory-page--memory-send-projects)
     (unless (timerp ghostherd-memory-page--memory-timer)
       (setq ghostherd-memory-page--memory-timer
@@ -1869,7 +1895,8 @@ facts live.  Re-emitting with another key switches the watched store."
     (cancel-timer ghostherd-memory-page--memory-timer))
   (setq ghostherd-memory-page--memory-timer nil
         ghostherd-memory-page--memory-key nil
-        ghostherd-memory-page--memory-sig nil))
+        ghostherd-memory-page--memory-sig nil
+        ghostherd-memory-page--proposals-sig nil))
 
 (defun ghostherd-memory-page--memory-edit (intent)
   "Save a fact's edit (description, type, body) through the store, then refresh."
@@ -1902,6 +1929,63 @@ facts live.  Re-emitting with another key switches the watched store."
        (ghostherd-memory-page--js "flash" "Deleted"))
      (list :key key :name name)
      (ghostherd-memory-page--fail "Deleting fact"))))
+
+(defun ghostherd-memory-page--memory-proposal-approve (intent)
+  "Approve a promotion proposal: the herd asks the lead to apply its diff."
+  (let ((id (ghostherd-memory-page--str (alist-get 'id intent))))
+    (unless id (user-error "No proposal"))
+    (ghostherd-memory-request-async
+     "herd_memory_promote_approve"
+     (lambda (r)
+       (setq ghostherd-memory-page--proposals-sig nil
+             ghostherd-memory-page--memory-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js
+        "flash" (format "Approved — asked %s to apply it" (or (plist-get r :to) "the lead"))))
+     (list :id id)
+     (ghostherd-memory-page--fail "Approving proposal"))))
+
+(defun ghostherd-memory-page--memory-proposal-reject (intent)
+  "Reject a promotion proposal, recording why; the facts stay memories."
+  (let ((id (ghostherd-memory-page--str (alist-get 'id intent)))
+        (reason (or (ghostherd-memory-page--str (alist-get 'reason intent)) "")))
+    (unless id (user-error "No proposal"))
+    (ghostherd-memory-request-async
+     "herd_memory_promote_reject"
+     (lambda (_r)
+       (setq ghostherd-memory-page--proposals-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" "Rejected"))
+     (list :id id :reason reason)
+     (ghostherd-memory-page--fail "Rejecting proposal"))))
+
+(defun ghostherd-memory-page--memory-unpromote (intent)
+  "Put a promoted fact back into the memory."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (name (ghostherd-memory-page--str (alist-get 'name intent))))
+    (unless (and key name) (user-error "No fact"))
+    (ghostherd-memory-request-async
+     "herd_memory_unpromote"
+     (lambda (_r)
+       (setq ghostherd-memory-page--memory-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" "Back in memory"))
+     (list :key key :name name)
+     (ghostherd-memory-page--fail "Unpromoting fact"))))
+
+(defun ghostherd-memory-page--memory-suggest (intent)
+  "Ask the project's lead (or a chosen agent) to review memory and propose."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (project (ghostherd-memory-page--str (alist-get 'project intent)))
+        (agent (ghostherd-memory-page--str (alist-get 'agent intent))))
+    (ghostherd-memory-request-async
+     "herd_memory_suggest"
+     (lambda (r)
+       (ghostherd-memory-page--js
+        "flash" (format "Asked %s to suggest promotions" (or (plist-get r :to) "the lead"))))
+     (append (ghostherd-memory-page--memory-where (or key project "user"))
+             (and agent (list :agent agent)))
+     (ghostherd-memory-page--fail "Suggesting promotions"))))
 
 
 ;;; A project's room: its agents' conversations side by side
@@ -2629,6 +2713,10 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("memory-unwatch" (ghostherd-memory-page--memory-unwatch))
         ("memory-edit" (ghostherd-memory-page--memory-edit intent))
         ("memory-delete" (ghostherd-memory-page--memory-delete intent))
+        ("memory-proposal-approve" (ghostherd-memory-page--memory-proposal-approve intent))
+        ("memory-proposal-reject" (ghostherd-memory-page--memory-proposal-reject intent))
+        ("memory-unpromote" (ghostherd-memory-page--memory-unpromote intent))
+        ("memory-suggest" (ghostherd-memory-page--memory-suggest intent))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-earlier" (ghostherd-memory-page--room-earlier intent))
         ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))
