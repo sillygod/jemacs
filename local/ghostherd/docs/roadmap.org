@@ -2068,6 +2068,43 @@ or deny --- with what wants the user a denial they approve once.
   sidecar from Emacs (it replaces the herd's token and writes the agents'
   URL to =rpc.url=); respawn agents when convenient
 
+* Phase 3.37 — Threads: who is talking to whom, across the herd  *(this tree)*
+
+Goal: the second half of the page's redesign (the Inbox was the first):
+see the herd's conversations with each other -- who asked whom, about
+what, across projects -- and where each one waits now.
+
+** What shipped
+
+- [X] A thread is a root ask and every ask made while answering one in
+  it, handoffs included, with their answers.  The links were already
+  kept (=asks.parent=, for rounds), so no migration: an ask from before
+  rounds, or whose parent retention took, is a thread of its own.  Not
+  =asks.run=, which joins a lead's unrelated tasks while it has any out
+- [X] =herd_threads= (the list, newest activity first, forty at a time;
+  every open ask for the strip; how many threads are live) and
+  =herd_thread= (one, by its id, an ask in it, or an agent's latest),
+  page-only (=server/threads.py=)
+- [X] The user's prompt that set a thread going, from the herd log:
+  Emacs adds it, as the first message (its first line, as the log keeps
+  it), when it is the last one to the first asker within two hours
+- [X] The page: Talking now, the list, the sequence diagram (lanes,
+  arrows per kind and direction, rounds, the whole message on a click,
+  who waits on whom); the phone's conversation view; =Open thread= from
+  the Inbox
+- [X] pytest (chains, rounds, handoffs, a lead being started, an orphan,
+  an old DB migrated, statuses, the strip), ERT (the prompts, the
+  opener's window, the JSON, the intents), e2e on desk and phone
+  (arrows' heads on their lanes), each broken on purpose; screenshots;
+  a read-only look at the live herd's threads
+
+** Deliberately not done
+
+- Any action in the tab: it shows; the Inbox and the cards act
+- A link from a prompt to the asks it led to: the herd log keeps
+  neither the whole prompt nor that link, so the opener is a labelled
+  guess; recording it would mean logging every prompt in full
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

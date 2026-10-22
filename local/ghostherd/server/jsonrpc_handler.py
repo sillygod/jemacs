@@ -108,6 +108,8 @@ class JsonRpcHandler:
             "herd_detach": self._herd_detach,
             "herd_settle": self._herd_settle,
             "herd_asks": self._herd_asks,
+            "herd_threads": self._herd_threads,
+            "herd_thread": self._herd_thread,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
             "herd_conversation": self._herd_conversation,
@@ -422,6 +424,26 @@ class JsonRpcHandler:
 
     def _herd_asks(self, _params: dict) -> dict:
         return get_herd().recent_asks()
+
+    def _herd_threads(self, params: dict) -> dict:
+        "The page's Threads tab: the recent threads, and what is open now."
+        try:
+            limit = int(params.get("limit") or 40)
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        return get_herd().threads(limit)
+
+    def _herd_thread(self, params: dict) -> dict:
+        "One thread, whole: by its id, an ask in it, or an agent's latest."
+        def opt(key):
+            v = params.get(key)
+            if v is not None and not isinstance(v, str):
+                raise ValueError(f"{key} must be a string")
+            return (v or "").strip() or None
+        id_, ask, agent = opt("id"), opt("ask"), opt("agent")
+        if not (id_ or ask or agent):
+            raise ValueError("give the thread's id, an ask in it, or an agent")
+        return get_herd().thread(id=id_, ask=ask, agent=agent)
 
     def _herd_report(self, params: dict) -> dict:
         def text(key):

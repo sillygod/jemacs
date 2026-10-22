@@ -468,3 +468,30 @@ def test_a_handoff_from_a_guarded_agent_is_marked(world, h):
     body = [p for p in _pending(h, snap) if p.get("ask") == out["id"]][0]["body"]
     assert body.startswith(GUARDED_NOTE.format(sender="agy-solo") + "\n\n")
     assert "the login fix needs the token" in body
+
+
+def test_a_handoff_is_a_thread_across_projects(world, h):
+    """Handed to another project's lead, whose own asks for it -- made while
+    answering it -- join the thread: cross-project, its handoff dashed."""
+    out = h.handoff(world["p"]["unnoiac"], "The API renamed token; fix the sync", from_name="lead-ghost")
+    _pending(h, world["snap"])
+    sub = h.ask("qa-unnoiac", "Run the sync tests", from_name="lead-unnoiac")
+    _pending(h, world["snap"])
+    h.reply(sub["id"], "sync: green", from_name="qa-unnoiac")
+    h.reply(out["id"], "Fixed in unnoiac 1a2b3c.", from_name="lead-unnoiac")
+    d = h.thread(ask=sub["id"])
+    assert d["id"] == out["id"] and d["cross"]
+    assert [(m["kind"], m["from"], m["to"]) for m in d["msgs"]] == [
+        ("handoff", "lead-ghost", "lead-unnoiac"), ("ask", "lead-unnoiac", "qa-unnoiac"),
+        ("answer", "qa-unnoiac", "lead-unnoiac"), ("answer", "lead-unnoiac", "lead-ghost")]
+    assert d["projects"] == ["ghost", "unnoiac"]
+    assert [ln["role"] for ln in d["lanes"]] == ["lead", "lead", ""]
+
+
+def test_a_handoff_to_a_lead_being_started(world, h):
+    "No lead in that project yet: its taker is named by the project until one takes it."
+    out = h.handoff(world["p"]["new"], "Start the new project", from_name="lead-ghost")
+    d = h.thread(ask=out["id"])
+    assert [(m["from"], m["to"]) for m in d["msgs"]] == [("lead-ghost", "lead of new")]
+    talk = h.threads()["talking"]
+    assert [(t["to"], t["kind"], t["status"]) for t in talk if t["ask"] == out["id"]] == [("lead of new", "handoff", "queued")]
