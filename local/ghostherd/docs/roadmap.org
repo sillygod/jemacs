@@ -2185,6 +2185,12 @@ what costs it and cut the herd's share, behaviour unchanged.
   settings), two pairs: Emacs 2.0% -> 1.1% and 1.9% -> 1.2% of a core;
   the herd's own samples 124 -> 48 and 109 -> 57; a poll of 20 screens
   5.8 ms -> 2.1 ms
+- [X] =bin/reload= byte-compiles what it defines.  The live Emacs, reloaded
+  through the evening, ran nearly all of =ghostherd.el=,
+  =ghostherd-memory-page.el= and =xwapp.el= interpreted (its average rose
+  from 19% to 24% as the night's merges were reloaded); a poll of 20
+  screens interpreted costs 1.4-1.9x compiled.  A reload of the two
+  largest files takes 0.65 s instead of 0.3
 - [ ] xwapp's scrub by two regexps in C (a patch for master's
   =xwapp.el=, d39f1d3's): 12.9 ms -> 1.8 ms a push as it is loaded
   live (from source); one regexp over the range past Unicode was tried

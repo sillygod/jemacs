@@ -52,8 +52,12 @@ while an ask is open (=--force= does it anyway): the taker would answer
 into a sidecar that no longer holds the ask.  A sidecar this Emacs did
 not start is left alone and named.
 
-What it defines is interpreted, not compiled: slower, and not what to
-measure.  Measure after a restart.
+What it defines it byte-compiles as it goes -- a quarter of a second
+for the largest files -- since that code runs for hours after: left
+interpreted, as it once was, the herd's poll ran half again as slow and
+its page's updates several times (one that cannot be compiled is named,
+and runs interpreted).  Byte-code is not the native code a restart
+loads, though: measure after a restart.
 
 * The build
 

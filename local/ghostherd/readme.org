@@ -2392,6 +2392,12 @@ Emacs nothing.  Native-compiled functions show by name (as
   sample $(pgrep -x Emacs) 10 -file /tmp/emacs.sample
 #+end_src
 
+Code put in with =bin/reload= is byte-compiled as it is defined; until
+it compiled it, all that a reload defined ran interpreted -- for hours,
+in an Emacs reloaded through an evening, half again as slow in the poll
+and several times in the page's updates.  A restart loads it native.
+A function's =(type-of (symbol-function 'NAME))= says which it is.
+
 Not =profiler-start= in a live Emacs for long, nor a report expanded in
 it: on a busy Emacs that is itself a load, and one was running when an
 Emacs froze.  Redisplay of a terminal on screen that an agent is
