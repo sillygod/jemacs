@@ -942,7 +942,10 @@ def cmd_guard(args):
                     "approvable": verdict.approvable, "fp": guard.fingerprint(call),
                     "call": json.dumps(call, ensure_ascii=False)[:4000],
                 }, timeout=GUARD_REPORT_TIMEOUT)
-                if verdict.approvable and isinstance(out, dict) and out.get("id"):
+                if verdict.approvable and isinstance(out, dict) and out.get("status") == "declined":
+                    answer["reason"] = ("The user kept this exact call denied: don't retry it; say "
+                                        "what you needed instead. [request %s]" % out["id"])
+                elif verdict.approvable and isinstance(out, dict) and out.get("id"):
                     answer["reason"] = answer.get("reason", "") + " [request %s]" % out["id"]
         except (HerdError, OSError, ValueError):
             pass

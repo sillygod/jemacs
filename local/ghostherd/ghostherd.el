@@ -3738,6 +3738,9 @@ PLIST keys:
                         (if started-by
                             (format "started by %s (%s on %s)" started-by kind backend)
                           (format "spawned %s on %s" kind backend)))
+    ;; A new process under this name: the guard requests its old one left
+    ;; open mean nothing to it.
+    (ghostherd--guard-clear name)
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
     ;; agy has no --rules flag: tell it the shared-memory opening as its first
@@ -4891,6 +4894,12 @@ on a menu, ghostherd presses Return again, up to
   :type 'natnum
   :group 'ghostherd)
 
+(defvar ghostherd--input-said nil
+  "What the herd log records of the next input, when not its first line:
+the user's own words, though the herd put a note before them
+(`ghostherd-tell'), or the herd's words marked as its own.  The Threads
+tab reads the log to say who set a thread going.")
+
 (defun ghostherd-send (session text &optional submit)
   "Send TEXT to SESSION's terminal.
 When SUBMIT is non-nil, also send RET (Enter)."
@@ -4904,7 +4913,7 @@ When SUBMIT is non-nil, also send RET (Enter)."
   (ghostherd--log-add session 'input
                       (format "← %s%s"
                               (ghostherd--clean-screen-line
-                               (car (split-string text "\n" t)))
+                               (car (split-string (or ghostherd--input-said text) "\n" t)))
                               (if submit "" "  (not submitted)")))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
@@ -7425,8 +7434,9 @@ unless I ask you to:\n"
               (mapconcat (lambda (l) (concat "- " l)) lines "\n")
               "]\n\n"))))
 
-(defun ghostherd-tell (session text &optional role)
-  "Prompt SESSION with TEXT from the user.
+(defun ghostherd-tell (session text &optional role by-herd)
+  "Prompt SESSION with TEXT from the user -- or, BY-HERD, the herd's own.
+The herd log records TEXT, not the notes put before it.
 A project's lead hears first what the user said to its agents directly
 since it last heard from them, and what the project works on when that
 is news to it -- after ROLE, the role of a lead that took none as it
@@ -7435,7 +7445,8 @@ Any other agent owed its role -- primary, on such a CLI -- reads it
 first too.  Said to another agent of a project that has a lead, TEXT is
 kept for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
-         (lead (and project (ghostherd-project-lead project))))
+         (lead (and project (ghostherd-project-lead project)))
+         (ghostherd--input-said (if by-herd (concat "[from the herd] " text) text)))
     (if (eq lead session)
         (progn
           (ghostherd-prompt session (concat (or role
@@ -8020,6 +8031,13 @@ sees: allow only what you would let it run unwatched."
 (put 'ghostherd-guard-allow-commands 'safe-local-variable
      (lambda (v) (and (listp v) (seq-every-p #'stringp v))))
 
+(defcustom ghostherd-guard-request-ttl 3600
+  "Seconds a call a guarded agent was refused waits for the user before it
+expires: by then the turn that wanted it is long over.  An agent's open
+requests also clear when it is respawned or relaunched."
+  :type 'natnum
+  :group 'ghostherd)
+
 (defcustom ghostherd-guard-root "~/.ghostherd/guard/"
   "Where each guarded agent's guard directory goes: <root>/<agent>/.
 The sidecar writes the user's approvals there, and only there
@@ -8110,6 +8128,8 @@ the hooks.json agy loads from it.  Return the guard directory."
          (cmd (concat (shell-quote-argument (or herd "herd")) " guard " (shell-quote-argument dir)
                       " || echo '{\"decision\":\"deny\",\"reason\":\"The herd guard did not answer; tell the user.\"}'")))
     (make-directory (expand-file-name ".agents" dir) t)
+    ;; Rebuilt for a new process: the old one's allowances go with it.
+    (ignore-errors (delete-file (expand-file-name "approved.json" dir)))
     (set-file-modes dir #o700)
     (let ((coding-system-for-write 'utf-8)
           (json-encoding-pretty-print t))
@@ -8207,8 +8227,28 @@ use once."
                     id (plist-get r :summary) (plist-get r :rule)))
            ("approved" (format "guard %s approved once: %s" id (plist-get r :summary)))
            ("used" (format "guard %s ran, approved: %s" id (plist-get r :summary)))
+           ("declined" (format "guard %s kept denied by the user: %s" id (plist-get r :summary)))
+           ("expired" (format "guard %s expired, never answered: %s" id (plist-get r :summary)))
            (_ (format "guard %s %s: %s" id status (plist-get r :summary))))))))
   (setq ghostherd--guard-requests requests))
+
+(defun ghostherd--guard-clear (name)
+  "Tell the sidecar agent NAME is a new process: its open guard requests expire."
+  (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
+             (fboundp 'ghostherd-memory-request-async))
+    (ghostherd-memory-request-async "herd_guard_clear" #'ignore (list :session name) #'ignore)))
+
+(defun ghostherd-guard-reject (id)
+  "Keep the guard's request ID denied: it closes, and the agent is told not
+to try that call again."
+  (interactive (list (completing-read "Keep denied: "
+                                      (mapcar (lambda (r) (plist-get r :id))
+                                              (seq-filter (lambda (r) (equal (plist-get r :status) "pending"))
+                                                          ghostherd--guard-requests)))))
+  (ghostherd-memory-request-async
+   "herd_guard_reject" (lambda (_r) (message "ghostherd: kept %s denied" id))
+   (list :id id)
+   (lambda (err) (message "ghostherd: keeping %s denied: %s" id err))))
 
 (defun ghostherd-guard-approve (id)
   "Approve the guard's request ID once: the agent may run that exact call
@@ -8779,8 +8819,10 @@ herd while the brief was written."
 LEAD when it leads its project: it hears what a lead hears first."
   (if lead
       (ghostherd-tell heir text (unless (ghostherd--lead-args (ghostherd-session-kind heir))
-                                  (concat ghostherd--lead-role "\n---\n\n")))
-    (ghostherd-prompt heir text))
+                                  (concat ghostherd--lead-role "\n---\n\n"))
+                      t)
+    (let ((ghostherd--input-said (concat "[from the herd] " text)))
+      (ghostherd-prompt heir text)))
   (dolist (ask held)
     (remhash ask ghostherd--relay-held)
     (puthash ask (ghostherd-session-id heir) ghostherd--asks-open))
@@ -8971,7 +9013,9 @@ reaches you there."
              :restored (if ghostherd--restored t :json-false)
              :ack_ids (vconcat (append acks nil))
              :replies (vconcat (or replies []))
-             :pushes (vconcat (reverse pushes)))
+             :pushes (vconcat (reverse pushes))
+             ;; How long a guarded agent's refused call waits for the user.
+             :guard_ttl ghostherd-guard-request-ttl)
        (lambda (_err)
          (setq ghostherd--herd-tick-inflight nil
                ghostherd--herd-replies

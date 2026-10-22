@@ -97,6 +97,8 @@ class JsonRpcHandler:
             "herd_handoff": self._herd_handoff,
             "herd_guard_denied": self._herd_guard_denied,
             "herd_guard_approve": self._herd_guard_approve,
+            "herd_guard_reject": self._herd_guard_reject,
+            "herd_guard_clear": self._herd_guard_clear,
             "herd_guard_used": self._herd_guard_used,
             "herd_guard_requests": self._herd_guard_requests,
             "herd_inbox_state": self._herd_inbox_state,
@@ -284,6 +286,7 @@ class JsonRpcHandler:
             pushes=pushes,
             page_url=params.get("page_url"),
             restored=params.get("restored"),
+            guard_ttl=params.get("guard_ttl"),
         )
 
     def _herd_ask(self, params: dict) -> dict:
@@ -324,6 +327,14 @@ class JsonRpcHandler:
     def _herd_guard_approve(self, params: dict) -> dict:
         "The user approves a refused call once (the card, the phone)."
         return get_herd().guard_approve(str(params.get("id") or ""))
+
+    def _herd_guard_reject(self, params: dict) -> dict:
+        "The user keeps a refused call denied (the card, the Inbox, the phone)."
+        return get_herd().guard_reject(str(params.get("id") or ""))
+
+    def _herd_guard_clear(self, params: dict) -> dict:
+        "An agent respawned: its open guard requests expire."
+        return get_herd().guard_clear(str(params.get("session") or ""))
 
     def _herd_guard_used(self, params: dict) -> dict:
         return get_herd().guard_used(str(params.get("id") or ""))

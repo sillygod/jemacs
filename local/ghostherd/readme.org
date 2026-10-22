@@ -968,9 +968,12 @@ know, a call it cannot read, and the guard failing are all denials.
   read-only commands (=grep=, =rg=, =ls=, =cat=, =head=, =find= without
   =-exec= or =-delete=, ...); =git status/diff/log/show/branch/...= and
   the local writes (=add=, =commit=, =switch=, =stash=, =restore=, =mv=),
-  which run with git's hooks off; the herd's own commands; and the
-  project's own, from =ghostherd-guard-allow-commands= (=("npm test"
-  "pytest")=)
+  which run with git's hooks off --- also as =git -C DIR ...= into a
+  folder it may read (a write only into its workspace); a fallback
+  between commands each allowed alone, =A || B=, run grouped behind
+  its =cd= so =B= never runs where it was not checked; the herd's own
+  commands; and the project's own, from =ghostherd-guard-allow-commands=
+  (=("npm test" "pytest")=)
 - =read-only= --- jnotes' rules: reads and read-only commands only
 - =nil= --- no guard; agy prompts as it always has
 
@@ -1076,6 +1079,18 @@ which the agent cannot read; the herd tells the agent "approved: <call>,
 run it again"; the next identical call runs and spends it.  An allowance
 unused for 30 minutes lapses.  The herd log has each step: =guard needs
 approval=, =approved once=, =ran, approved=.
+
+*Keep denied*, beside it --- and the Inbox's /Keep it denied/, and =M-x
+ghostherd-guard-reject= --- closes the request: it leaves the card and the
+Inbox, an approval not yet used is taken back, and the agent is told once
+"The user kept this denied: <call>.  Don't retry it; say what you needed
+instead."  The same call tried again stays denied without asking you again
+(its answer says so).  A request nobody answers expires after
+=ghostherd-guard-request-ttl= (an hour): by then the turn that wanted it
+is over.  And an agent respawned or relaunched starts clean: its open
+requests expire and its guard directory keeps none of the old
+allowances --- an old call's fingerprint means nothing to a new process.
+The log says =kept denied by the user= and =expired, never answered=.
 
 *Where it runs.*  The guard lives in =~/.ghostherd/guard/<agent>/=
 (=ghostherd-guard-root=): its =policy.json=, its =approved.json=, and the
@@ -1998,16 +2013,29 @@ projects.  Read-only: it only shows, and leads where you click.
   waits now: =lead-jnotes waits on claude-jnotes · primary waits on
   lead-jnotes=, or who is working and for how long.
 - The user's own prompt that set a thread going opens it, =You → lead=:
-  the last thing you typed to its first asker in the two hours before
-  its first ask, from the herd log --- which keeps the first line of
-  each, so that is what shows, marked =as the herd log has it=.  The
-  log keeps no link from a prompt to the asks it led to, so this is a
-  best guess: the prompt before, not certainly the one.
+  the prompt the turn its first ask was made in began with, from the
+  herd log.  That is the last thing its first asker was told before the
+  ask, when you said it, within the two hours before, and with no turn
+  of its ended in between.  When the last thing was the herd's (an
+  answer come back, a message, a brief), or a turn ended since (an
+  answer the hook brought began the next, which the log does not see),
+  the thread has none --- never an older prompt.  The log keeps the
+  first line of what you typed, without the notes the herd put before
+  it (what the project works on, what you told the team), so that is
+  what shows, marked =as the herd log has it=.  It keeps no link from a
+  prompt to the asks it led to, so this is still a guess, one that
+  fails to nothing rather than to the wrong prompt.
 - From the Inbox, =Open thread= on an item opens the thread of its ask
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.
+- On the desk the tab is the window: the list and the open thread each
+  scroll by themselves, under the tabs and Talking now, which stay put.
+  A thread picked far down the list shows from its top, as does another
+  pushed in its place; the refresh every few seconds leaves both where
+  they were.  The Inbox's list and item do the same.
 - On the phone: the strip, the list; a thread opens as a conversation,
-  each message =A → B=, since lanes do not fit 390 px.
+  each message =A → B=, since lanes do not fit 390 px.  The page
+  scrolls as one, and a thread opens at its top.
 
 The page asks for the list while the tab is shown (every few seconds,
 forty threads) and for one thread at a time, never the whole history;

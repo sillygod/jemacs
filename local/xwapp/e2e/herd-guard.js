@@ -64,6 +64,23 @@ const herd = (guard) => {
       check(W("Approve once tells Emacs that request"), sent.length === 1 && sent[0].id === "g1", sent);
       check(W("and is not tapped twice"),
         await page.$eval(row + ' [data-act="a:guard-approve"][data-id="g1"]', (b) => b.disabled));
+      // Keep denied, beside it: the herd closes the request and tells the agent.
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd(GUARD));
+      await sleep(80);
+      const keep = await page.$$eval(row + ' [data-act="a:guard-reject"]', (bs) => bs.map((b) => b.getAttribute("data-id")));
+      check(W("a request waiting on the user has Keep denied beside Approve once"), keep.join() === "g1,g5", keep);
+      await tap(row + ' [data-act="a:guard-reject"][data-id="g5"]');
+      await sleep(120);
+      const kept = intents.filter((i) => i.op === "guard-reject");
+      check(W("Keep denied tells Emacs that request"), kept.length === 1 && kept[0].id === "g5", kept);
+      check(W("and is not tapped twice"), await page.$eval(row + ' [data-act="a:guard-reject"][data-id="g5"]', (b) => b.disabled));
+      // Kept denied, or expired: settled, off the card.
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); },
+        herd([req("d1", "declined", "run_command: cat .envrc"), req("e1", "expired", "run_command: git -C x grep holy"),
+              req("p1", "pending", "run_command: cat .env")]));
+      await sleep(80);
+      const left = (await lines(row)).map((l) => l.text);
+      check(W("kept denied and expired requests leave the card"), left.length === 1 && left[0].includes("cat .env") && !left[0].includes(".envrc"), left);
 
       // In its room's column too.
       await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd(GUARD));
@@ -104,6 +121,28 @@ const herd = (guard) => {
       check(W("its title says what the taker was told"), marks.taker && /not to read or pass back secrets/.test(marks.taker.title), marks.taker);
       check(W("an ask from an agent not guarded is not marked"), marks.plain && marks.plain.badge === "", marks.plain);
       check(W("the mark stays inside the card"), marks.taker && marks.taker.right <= marks.taker.box + 0.5, marks.taker);
+      // The Inbox's Keep it denied is the same reject, not only "done".
+      const GI = [{ id: "guard:g7", group: "need", kind: "guard", tag: "Guard", tone: "red", agent: QA, cli: "agy",
+        project: DP, title: "Needs your approval", at: now - 60e3, whyLabel: "The guard denied this call", body: "secret file",
+        preview: "cat .env", code: "cat .env", note: "", read: false, override: null, guardId: "g7" },
+        { id: "guard:g8", group: "need", kind: "guard", tag: "Guard", tone: "red", agent: QA, cli: "agy",
+        project: DP, title: "Needs your approval", at: now - 30e3, whyLabel: "The guard denied this call", body: "secret file",
+        preview: "cat .envrc", code: "cat .envrc", note: "", read: false, override: null, guardId: "g8" }];
+      await page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click());
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 2 }), GI);
+      await sleep(100);
+      if (where === "desk") await page.click('.ibrow[data-id="guard:g7"]');
+      const scope = where === "desk" ? ".ibdetail" : '.ibcard:has(code:text-is("cat .env"))';
+      await tap(scope + ' [data-act="ib:done"]');
+      await sleep(150);
+      const rej = intents.filter((i) => i.op === "guard-reject").map((i) => i.id);
+      check(W("the Inbox's Keep it denied keeps the request denied"), rej.includes("g7"), rej);
+      if (where === "desk") {
+        await page.click('.ibrow[data-id="guard:g8"]');
+        await page.keyboard.press("e");
+        await sleep(150);
+        check(W("and so does e on a guard item"), intents.filter((i) => i.op === "guard-reject").map((i) => i.id).includes("g8"));
+      }
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }

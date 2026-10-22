@@ -9,6 +9,7 @@ obfuscated; the recursive searches the guard rewrites are run for real on
 planted secrets."""
 
 import json
+import re
 import os
 import shlex
 import shutil
@@ -22,6 +23,7 @@ BIN = Path(__file__).resolve().parents[2] / "bin"
 HERD = BIN / "herd"
 sys.path.insert(0, str(BIN))
 import herd_guard as g  # noqa: E402
+from tests.test_ask import live  # noqa: E402,F401  (the live sidecar fixture)
 
 SECRET = "tok_SECRETVALUE_123"
 
@@ -151,7 +153,7 @@ def test_read_only_commands_inside_run(guard, line):
     ("echo hi > x.md", "ask", "chains, redirects"),
     ("grep a . ; rm -rf src", "ask", "chains, redirects"),
     ("grep a . && rm x", "ask", "chains, redirects"),
-    ("grep a || rm x", "ask", "||"),
+    ("grep a || rm x", "ask", "rm is not a command"),
     ('grep "$(rm x)" .', "secret", "expands a variable"),
     ("cat `ls`", "secret", "expands a variable"),
     ("find . -name '*.md' -delete", "ask", "could write files"),
@@ -299,6 +301,56 @@ def test_the_rewritten_search_never_prints_a_secret(guard, home, line):
     raw = subprocess.run(line, shell=True, cwd=home["ws"], capture_output=True, text=True).stdout
     if "-uu" in line or "--hidden" in line or prog != "rg":
         assert SECRET in raw or any(s in raw for s in swept)  # unguarded, it swept them
+
+
+# ---- Read-only searches the user found refused (agy-tai-commit, 2026-10-22) -----
+
+
+def test_git_dash_c_in_its_own_workspace_is_git_run_there(guard, home):
+    "git -C <its workspace> with a read-only subcommand: as git run in it."
+    ws = home["ws"]
+    for line in [f'git -C {ws} grep -i "holy"', f"git -C {ws} log --oneline -3", "git -C src status",
+                 f"git -C {ws} -C src diff"]:
+        assert allowed(cmd(guard, line)), line
+    answer = judge(guard, "run_command", CommandLine=f'git -C {ws} grep -i "holy"')[0]
+    assert ":(exclude,icase,glob)**/.env" in answer["overwrite"]["CommandLine"]   # still kept off secrets
+    for line, kind in [("git -C ~/.ssh log", "secret"), (f"git -C {home['home'] / 'other'} status", "ask"),
+                       (f"git -C {home['guard']} log", "never"), ("git -C ../.. commit -m x", "ask"),
+                       ("git -C . -c core.fsmonitor=x status", "ask"), ("git -C", "ask"),
+                       (f"git -C {ws} push", "ask"), (f"git -C {ws} show HEAD:.env", "secret")]:
+        v = cmd(guard, line)
+        assert (v.decision, v.kind) == ("deny", kind), (line, v.kind, v.reason)
+    # A checkout it may read but not change (its project's, beside a worktree):
+    # git -C there reads, and does not write.
+    other = home["home"] / "other"
+    gd = policy(home, read_roots=[str(other)])
+    assert allowed(cmd(gd, f"git -C {other} log --oneline"))
+    v = cmd(gd, f"git -C {other} commit -m x")
+    assert (v.decision, v.rule) == ("deny", "outside-workspace") and "changed" in v.reason, v.reason
+
+
+def test_a_fallback_between_read_only_searches(guard, home):
+    """`cd <ws> && A || B', A and B each allowed alone: allowed, each kept
+    off secrets, and grouped so B never runs where it was not checked."""
+    ws = home["ws"]
+    (ws / "notes.md").write_text("holy grail notes\n")
+    line = f'cd {ws} && git grep -i "holy" || grep -rnwi "holy" .'
+    answer, v, _ = judge(guard, "run_command", CommandLine=line)
+    new = answer["overwrite"]["CommandLine"]
+    assert v.decision == "allow" and new.startswith(f"cd {shlex.quote(str(ws))} && cd {ws} && (") and new.endswith(")")
+    assert " || " in new and "--exclude=.env" in new, new
+    out = subprocess.run(new, shell=True, cwd=home["guard"], capture_output=True, text=True).stdout
+    assert "holy grail" in out and SECRET not in out, (new, out)   # git grep fails outside a repo: grep -r
+    for ok in ["git status || git log -1", "grep -rn TOKEN src || true", 'grep "a||b" notes.md',
+               "cd src && cat main.py || cat ../notes.md"]:
+        assert allowed(cmd(guard, ok)), ok
+    for bad, kind in [("grep a . || grep b . ; rm x", "ask"), ("grep a . || grep b . & sleep 9", "ask"),
+                      ("grep a . || cat .env", "secret"), ("grep a . || rm x", "ask"),
+                      ("grep a . | sh || true", "ask"), ("grep a . || cd /tmp", "ask"),
+                      ("true || echo $GITHUB_TOKEN", "secret"), ("grep a . || python3 -c 1", "secret"),
+                      ("grep a . || ", "ask")]:
+        v = cmd(guard, bad)
+        assert (v.decision, v.kind) == ("deny", kind), (bad, v.kind, v.reason)
 
 
 def test_git_shows_no_secret_file_from_history(guard, home):
@@ -741,3 +793,111 @@ def test_the_herd_records_approves_once_and_tells_the_agent(guard, home, tmp_pat
     assert reqs[one["id"]]["status"] == "used" and reqs[never["id"]]["status"] == "denied"
     assert g.judge(str(guard), {"toolCall": call, "workspacePaths": agy_paths(guard)})[1].decision == "deny"
     h.close()
+
+
+# ---- Kept denied, expired, cleared (the user's real use, 2026-10-23) -----------
+
+
+def _herd_store(tmp_path, home):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from herd import HerdStore, reset_herd
+    reset_herd()
+    h = HerdStore(tmp_path / "herd.sqlite")
+    h.tick(sessions=[{"name": "agy-proj", "kind": "agy", "state": "idle", "project": str(home["ws"])},
+                     {"name": "agy-other", "kind": "agy", "state": "idle", "project": str(home["ws"])}])
+    return h
+
+
+def _deny(h, guard, line, session="agy-proj"):
+    call = {"name": "run_command", "args": {"CommandLine": line}}
+    return h.guard_denied(session, str(guard), "run_command", "run_command: " + line, "needs approval",
+                          "secret-file", "secret", True, g.fingerprint(call), json.dumps(call)), call
+
+
+def _mail(h, to):
+    with h._mu:
+        return [r[0] for r in h._conn.execute(
+            "SELECT body FROM mail WHERE to_name = ? AND from_name = 'herd' ORDER BY created_at", (to,))]
+
+
+def test_kept_denied_closes_the_request_and_tells_the_agent_once(guard, home, tmp_path):
+    h = _herd_store(tmp_path, home)
+    req, call = _deny(h, guard, "cat .env")
+    assert h.guard_reject(req["id"], root=str(guard.parent))["status"] == "declined"
+    assert h.guard_reject(req["id"], root=str(guard.parent))["status"] == "declined"   # a second tap
+    told = [b for b in _mail(h, "agy-proj") if "kept this denied" in b]
+    assert told == [f"[guard] The user kept this denied: run_command: cat .env.  Don't retry it; say "
+                    f"what you needed instead (request {req['id']})."]
+    got = {r["id"]: r for r in h.guard_requests()["requests"]}
+    assert got[req["id"]]["status"] == "declined"
+    # Tried again: it stays denied, and does not ask the user again.
+    again, _ = _deny(h, guard, "cat .env")
+    assert again == {"id": req["id"], "status": "declined"}
+    assert [r["status"] for r in h.guard_requests()["requests"]].count("pending") == 0
+    # Another call still asks.
+    assert _deny(h, guard, "cat .envrc")[0]["status"] == "pending"
+    with pytest.raises(ValueError, match="no guard request"):
+        h.guard_reject("nope")
+
+
+def test_kept_denied_takes_an_unused_approval_back(guard, home, tmp_path):
+    h = _herd_store(tmp_path, home)
+    req, call = _deny(h, guard, "cat .env")
+    h.guard_approve(req["id"], root=str(guard.parent))
+    h.guard_reject(req["id"], root=str(guard.parent))
+    v = g.judge(str(guard), {"toolCall": call, "workspacePaths": agy_paths(guard)})[1]
+    assert v.decision == "deny"                                   # the allowance is gone
+    used, _ = _deny(h, guard, "cat .envrc")
+    h.guard_approve(used["id"], root=str(guard.parent))
+    h.guard_used(used["id"])
+    with pytest.raises(ValueError, match="is used"):
+        h.guard_reject(used["id"], root=str(guard.parent))
+
+
+def test_a_request_expires_after_its_time(guard, home, tmp_path):
+    h = _herd_store(tmp_path, home)
+    req, _ = _deny(h, guard, "cat .env")
+    with h._mu:
+        h._conn.execute("UPDATE guard_requests SET created_at = '2026-10-22T12:00:00+00:00' WHERE id = ?",
+                        (req["id"],))
+        h._conn.commit()
+    fresh, _ = _deny(h, guard, "cat .envrc")
+    out = h.tick(sessions=[{"name": "agy-proj", "kind": "agy", "state": "idle", "project": str(home["ws"])}],
+                 guard_ttl=3600)
+    got = {r["id"]: r["status"] for r in out["guard"]}
+    assert (got[req["id"]], got[fresh["id"]]) == ("expired", "pending")
+    with pytest.raises(ValueError, match="is expired"):
+        h.guard_approve(req["id"], root=str(guard.parent))
+    # Emacs's own TTL: a shorter one expires a younger request.
+    h.tick(sessions=[], guard_ttl=0.001)
+    import time as _t
+    _t.sleep(0.01)
+    assert {r["id"]: r["status"] for r in h.guard_requests()["requests"]}[fresh["id"]] == "expired"
+
+
+def test_a_respawn_clears_its_open_requests(guard, home, tmp_path):
+    "Its guard is rebuilt: an old fingerprint means nothing to the new process."
+    h = _herd_store(tmp_path, home)
+    a, _ = _deny(h, guard, "cat .env")
+    b, _ = _deny(h, guard, "cat .envrc")
+    h.guard_approve(b["id"], root=str(guard.parent))
+    other, _ = _deny(h, guard, "cat .env", session="agy-other")
+    assert h.guard_clear("agy-proj") == {"session": "agy-proj", "cleared": 2}
+    got = {r["id"]: r["status"] for r in h.guard_requests()["requests"]}
+    assert (got[a["id"]], got[b["id"]], got[other["id"]]) == ("expired", "expired", "pending")
+    assert not [m for m in _mail(h, "agy-proj") if "kept this denied" in m]   # not told: it is a new process
+
+
+def test_the_hook_says_a_kept_denied_call_stays_denied(guard, home, live):
+    import herd as herd_mod
+    h = herd_mod.get_herd()
+    h.tick(sessions=[{"name": "agy-proj", "kind": "agy", "state": "idle", "project": str(home["ws"])}])
+    env = {"GHOSTHERD_RPC": live["url"], "GHOSTHERD_SESSION": "agy-proj"}
+    payload = {"toolCall": {"name": "run_command", "args": {"CommandLine": "cat .env"}},
+               "workspacePaths": agy_paths(guard)}
+    first = run_hook(guard, payload, env)
+    gid = re.search(r"\[request ([0-9a-f]+)\]", first["reason"]).group(1)
+    h.guard_reject(gid, root=str(guard.parent))
+    again = run_hook(guard, payload, env)
+    assert again["decision"] == "deny"
+    assert again["reason"].startswith("The user kept this exact call denied: don't retry it")

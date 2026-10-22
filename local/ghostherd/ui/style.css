@@ -1240,6 +1240,9 @@ html { -webkit-text-size-adjust: 100%; }
 .thst.s-failed { color: var(--th-failed); }
 
 .thmain { flex: 999 1 600px; min-width: 0; padding: 18px 24px 28px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+/* Its parts keep their height, so the pane scrolls as one -- the diagram,
+   which scrolls sideways, is not squeezed into a scroller of its own. */
+.thmain > * { flex-shrink: 0; }
 .thhead1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .thh1 { margin: 0; font-size: 19px; font-weight: 650; overflow-wrap: anywhere; }
 .thsummary { margin: 0; color: var(--muted); font-size: 13px; }
@@ -1317,3 +1320,12 @@ html { -webkit-text-size-adjust: 100%; }
   padding: 4px 10px; font-size: 12.5px; }
 .ibthread:hover { border-color: var(--accent); color: var(--accent); }
 .ibcard .ibthread { margin-left: 0; align-self: flex-start; min-height: 40px; }
+
+/* The desk's Threads and Inbox: the page is exactly the viewport under the
+   tabs, and each column scrolls by itself -- picking a thread far down the
+   list does not scroll its reading away.  The phone keeps one flow. */
+@media (min-width: 720px) {
+  .app[data-view="threads"], .app[data-view="inbox"] { overflow: hidden; display: flex; flex-direction: column; }
+  .app[data-view="threads"] > .threadspage, .app[data-view="inbox"] > .inboxpage {
+    flex: 1 1 auto; min-height: 0; height: 100%; box-sizing: border-box; padding-bottom: 0; }
+}

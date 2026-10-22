@@ -1102,9 +1102,12 @@
   // exact call: the herd lets it through that once and tells the agent to
   // run it again.  Waiting and approved ones stay; the rest for a while.
 
+  // Kept denied by the user, or expired (its time out, its agent
+  // respawned): settled, so off the card -- the log keeps them.
   function guardFor(name) {
     const recent = Date.now() - 30 * 60 * 1000;
     return ((herdNow.data && herdNow.data.guard) || []).filter((r) => r.session === name &&
+      r.status !== "declined" && r.status !== "expired" &&
       (r.status === "pending" || r.status === "approved" || (r.created || 0) > recent));
   }
 
@@ -1119,7 +1122,9 @@
       '<span class="gtext">' + esc(r.summary || "") + "</span>" +
       (r.status === "pending" && r.approvable
         ? '<button type="button" class="primary small" data-act="a:guard-approve" data-id="' + esc(r.id) +
-          '" title="Let exactly this call run, once">Approve once</button>' : "") +
+          '" title="Let exactly this call run, once">Approve once</button>' +
+          '<button type="button" class="ghost small" data-act="a:guard-reject" data-id="' + esc(r.id) +
+          '" title="Keep it denied; the agent is told not to try it again">Keep denied</button>' : "") +
       '<span class="when">' + esc(r.created ? when(r.created / 1000) : "") + "</span></div>";
   }
 
@@ -2571,9 +2576,9 @@
       return col ? colJump(col.getAttribute("data-name"), dir) : chatJump(dir);
     }
     if (act === "room") return openRoom(project);
-    if (act === "guard-approve") {
+    if (act === "guard-approve" || act === "guard-reject") {
       el.disabled = true;
-      return emit("guard-approve", { id: el.getAttribute("data-id") });
+      return emit(act, { id: el.getAttribute("data-id") });
     }
     if (act === "primary-room") {
       const p = primaryInfo();
@@ -3777,6 +3782,18 @@
 
   function inboxNarrow() { return window.innerWidth < 720; }
 
+  // Redraw BOX by DRAW, each pane in SELS kept where it was scrolled --
+  // Emacs pushes every few seconds -- but those in TOP, which start at
+  // their top (the reading pane, a new item picked).
+  function keepScroll(box, sels, draw, top) {
+    const at = sels.map((sel) => { const el = box.querySelector(sel); return el ? el.scrollTop : 0; });
+    draw();
+    sels.forEach((sel, i) => {
+      const el = box.querySelector(sel);
+      if (el) el.scrollTop = top.includes(sel) ? 0 : at[i];
+    });
+  }
+
   function inboxAge(at) {
     const t = stamp(at);
     if (!t) return "";
@@ -3820,13 +3837,19 @@
     emit("room-close");
   }
 
+  let inboxShown = null; // the item the detail pane shows, to start a new one at its top
+
   function renderInbox() {
     if (view !== "inbox") return;
     const box = app.querySelector(".inboxpage");
     if (!box) return;
     const narrow = inboxNarrow();
     box.classList.toggle("narrow", narrow);
-    box.innerHTML = narrow ? inboxPhoneHtml() : inboxDeskHtml();
+    const fresh = inbox.sel !== inboxShown;
+    inboxShown = inbox.sel;
+    keepScroll(box, [".iblistcol", ".ibdetail"], () => {
+      box.innerHTML = narrow ? inboxPhoneHtml() : inboxDeskHtml();
+    }, fresh ? [".ibdetail"] : []);
   }
 
   function inboxTag(it) {
@@ -3969,6 +3992,13 @@
     renderInbox();
   }
 
+  // A guard request kept denied: the herd closes it and tells the agent,
+  // so it leaves the card as well -- not only this list.
+  function guardKeepDenied(it) {
+    emit("guard-reject", { id: it.guardId });
+    inboxResolve(it, "Kept denied — the agent is told not to try it again", false);
+  }
+
   function inboxMarkRead(it) {
     if (it && !it.read) { it.read = true; emit("inbox-set", { id: it.id, read: true }); }
   }
@@ -3999,6 +4029,7 @@
     }
     if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
     if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
+    if (act === "done" && it.kind === "guard") { guardKeepDenied(it); return; }
     if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
   }
 
@@ -4022,7 +4053,8 @@
     } else if (cur && e.key === "a" && (cur.kind === "guard" || cur.kind === "proposal")) {
       e.preventDefault();
       onInboxAction(cur.kind === "guard" ? "guard-approve" : "prop-approve", { getAttribute: () => cur.id });
-    } else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
+    } else if (cur && e.key === "e" && cur.kind === "guard") { e.preventDefault(); guardKeepDenied(cur); }
+    else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
   }
 
   function inboxBadge() {
@@ -4086,6 +4118,7 @@
     threads.error = "";
     threads.open = {};
     threads.phone = true;
+    threads.toTop = true;
     emit("thread-open", req);
     renderThreads();
   }
@@ -4096,7 +4129,13 @@
     if (!box) return;
     const narrow = thNarrow();
     box.classList.toggle("narrow", narrow);
-    box.innerHTML = narrow ? threadsPhoneHtml() : threadsDeskHtml();
+    const top = threads.toTop;
+    threads.toTop = false;
+    keepScroll(box, [".thlist", ".thmain"], () => {
+      box.innerHTML = narrow ? threadsPhoneHtml() : threadsDeskHtml();
+    }, top ? [".thmain"] : []);
+    // The phone's one flow: a thread opened starts at its top.
+    if (narrow && top) app.scrollTop = 0;
   }
 
   function thTalk() {
@@ -4292,7 +4331,7 @@
       if (!threads.req || !p) return;
       if (p.error) { threads.error = String(p.error); threads.cur = null; }
       else {
-        if (threads.cur && threads.cur.id !== p.id) threads.open = {};
+        if (!threads.cur || threads.cur.id !== p.id) { threads.open = {}; threads.toTop = true; }
         threads.cur = p;
         threads.error = "";
       }

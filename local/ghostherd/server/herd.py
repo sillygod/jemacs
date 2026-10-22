@@ -122,6 +122,10 @@ RECENT_SECONDS = 1800
 # How long the user's one-time approval of a guarded call waits to be used
 # (bin/herd_guard.py, APPROVAL_SECONDS).
 GUARD_APPROVAL_SECONDS = 1800
+# How long a refused call waits for the user before it expires (Emacs's
+# `ghostherd-guard-request-ttl' says each tick): a request hours old is
+# about a turn long over, and a respawned agent's are cleared at once.
+GUARD_REQUEST_SECONDS = 3600
 
 
 # The line an ask's taker reads first when the asker runs behind the herd's
@@ -278,6 +282,8 @@ class HerdStore:
         # -> the text to deliver after the body, or None.  Set by the
         # sidecar (fact_index); None leaves asks as they are.
         self.ask_memory = ASK_MEMORY
+        # Seconds a guard request waits before it expires (`tick' sets it).
+        self.guard_ttl = GUARD_REQUEST_SECONDS
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -440,6 +446,10 @@ class HerdStore:
             )
             """
         )
+        # When a request was closed without running: kept denied by the
+        # user, or expired (its time out, its agent respawned).
+        if "closed_at" not in {r[1] for r in self._conn.execute("PRAGMA table_info(guard_requests)")}:
+            self._conn.execute("ALTER TABLE guard_requests ADD COLUMN closed_at TEXT")
         # The run of asks an agent nobody asked is on: the first ask's id.
         self._conn.execute(
             """
@@ -1876,6 +1886,15 @@ class HerdStore:
                     (session, fp)).fetchone()
                 if row:
                     return {"id": row[0], "status": "pending"}
+                # The user kept this very call denied: tried again, it stays
+                # denied, and no new request asks them again.
+                cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.guard_ttl)).isoformat()
+                row = self._conn.execute(
+                    "SELECT id FROM guard_requests WHERE session = ? AND fp = ? AND status = 'declined'"
+                    " AND closed_at > ? ORDER BY closed_at DESC LIMIT 1",
+                    (session, fp, cutoff)).fetchone()
+                if row:
+                    return {"id": row[0], "status": "declined"}
             gid = uuid.uuid4().hex[:8]
             self._conn.execute(
                 """
@@ -1926,6 +1945,58 @@ class HerdStore:
             self._conn.commit()
         return {"id": gid, "status": "approved"}
 
+    def guard_reject(self, gid: str, root: str | None = None) -> dict[str, Any]:
+        """The user keeps refused call GID denied: the request closes, an
+        approval not yet used is taken back, and the agent is told -- once --
+        not to try it again.  The same call tried again stays denied
+        without asking the user again (`guard_denied')."""
+        root = os.path.realpath(os.path.expanduser(root or guard_root()))
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            row = self._conn.execute(
+                "SELECT session, guard_dir, summary, approvable, fp, status FROM guard_requests WHERE id = ?",
+                ((gid or "").strip(),)).fetchone()
+            if not row:
+                raise ValueError(f"no guard request {gid}")
+            session, guard_dir, summary, approvable, fp, status = row
+            if status == "declined":   # a second tap
+                return {"id": gid, "status": "declined"}
+            if status not in ("pending", "approved"):
+                raise ValueError(f"guard request {gid} is {status}")
+            if status == "approved":
+                mine = os.path.join(root, session)
+                if guard_dir and os.path.realpath(guard_dir) == os.path.realpath(mine) and os.path.isdir(mine):
+                    _guard_lib().take_approval(mine, fp)
+            self._conn.execute(
+                "UPDATE guard_requests SET status = 'declined', closed_at = ? WHERE id = ?", (now, gid))
+            self._conn.execute(
+                """
+                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at)
+                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?)
+                """,
+                (str(uuid.uuid4()), session,
+                 f"[guard] The user kept this denied: {summary}.  Don't retry it; say what you "
+                 f"needed instead (request {gid}).", now),
+            )
+            self._conn.commit()
+        return {"id": gid, "status": "declined"}
+
+    def guard_clear(self, session: str) -> dict[str, Any]:
+        """SESSION was respawned or relaunched: its guard is rebuilt, and an
+        old call's fingerprint means nothing to the new process -- every
+        request still open (waiting, or approved and unused) expires."""
+        session = (session or "").strip()
+        if not session:
+            raise ValueError("session is required")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            n = self._conn.execute(
+                "UPDATE guard_requests SET status = 'expired', closed_at = ?"
+                " WHERE session = ? AND status IN ('pending', 'approved')",
+                (now, session)).rowcount
+            self._conn.commit()
+        return {"session": session, "cleared": n}
+
     def guard_used(self, gid: str) -> dict[str, Any]:
         "The approved call ran: its approval is spent."
         now = datetime.now(timezone.utc).isoformat()
@@ -1937,15 +2008,16 @@ class HerdStore:
         return {"id": gid, "status": "used"}
 
     def _guard_recent(self) -> list[dict[str, Any]]:
-        """Requests the card shows: waiting or approved, and the rest of the
-        last RECENT_SECONDS.  An approval unused past its time has lapsed.
+        """Requests the card and the log are told of: waiting or approved, and
+        the rest for RECENT_SECONDS after they closed.  An approval unused
+        past its time has lapsed; a request waiting past `guard_ttl' expires.
         Caller holds `_mu`."""
         now = datetime.now(timezone.utc).timestamp()
         out = []
         for r in self._conn.execute(
             """
             SELECT id, session, tool, summary, reason, rule, kind, approvable, status,
-                   created_at, approved_at, used_at
+                   created_at, approved_at, used_at, closed_at
             FROM guard_requests ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -1953,7 +2025,13 @@ class HerdStore:
             if status == "approved" and r[10] and now - datetime.fromisoformat(r[10]).timestamp() > GUARD_APPROVAL_SECONDS:
                 status = "lapsed"
                 self._conn.execute("UPDATE guard_requests SET status = 'lapsed' WHERE id = ?", (r[0],))
-            if status not in ("pending", "approved") and now - datetime.fromisoformat(r[9]).timestamp() > RECENT_SECONDS:
+            closed = r[12]
+            if status == "pending" and now - datetime.fromisoformat(r[9]).timestamp() > self.guard_ttl:
+                status, closed = "expired", datetime.now(timezone.utc).isoformat()
+                self._conn.execute(
+                    "UPDATE guard_requests SET status = 'expired', closed_at = ? WHERE id = ?", (closed, r[0]))
+            last = max(x for x in (r[9], r[10], r[11], closed) if x)
+            if status not in ("pending", "approved") and now - datetime.fromisoformat(last).timestamp() > RECENT_SECONDS:
                 continue
             out.append({"id": r[0], "session": r[1], "tool": r[2], "summary": r[3], "reason": r[4],
                         "rule": r[5], "kind": r[6], "approvable": bool(r[7]), "status": status,
@@ -2356,6 +2434,7 @@ class HerdStore:
         pushes: list[dict[str, Any]] | None = None,
         page_url: str | None = None,
         restored: bool | None = None,
+        guard_ttl: int | float | None = None,
     ) -> dict[str, Any]:
         """PAGE_URL is the herd page's address from your phone, without its
         secret, as Emacs says it each tick; none, it is not linked.
@@ -2364,8 +2443,11 @@ class HerdStore:
         Emacs, before it has, ticks an empty or partial snapshot that is a
         herd not yet picked up -- not agents that died -- so an open ask for
         a taker missing from it is held, not failed.  None (an Emacs too old
-        to say) is read as restored, keeping the old behaviour."""
+        to say) is read as restored, keeping the old behaviour.
+        GUARD_TTL is how long a guard request waits before it expires."""
         restored_flag = True if restored is None else bool(restored)
+        if isinstance(guard_ttl, (int, float)) and not isinstance(guard_ttl, bool) and guard_ttl > 0:
+            self.guard_ttl = guard_ttl
         sessions = sessions or []
         pushes = [p for p in (pushes or []) if isinstance(p, dict) and p.get("kind") and p.get("session")]
         ack_ids = [i for i in (ack_ids or []) if i]
