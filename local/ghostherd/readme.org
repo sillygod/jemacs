@@ -1212,6 +1212,22 @@ restart).  Without that, an agent's card followed a probe's conversation
 --- or, a probe of another kind, none: a screen dump and no model --- and
 read =done= while it worked.
 
+A CLI need not be under the agent to carry its name: a server the agent
+starts in the background (=nohup ... &= from its tool shell) leaves its
+tree for launchd, and a =claude -p= that server runs still has the agent's
+environment.  So the herd also ties an agent to where it lives: Emacs
+names each one's host process every tick --- its tmux pane's (read for
+the whole herd in one =list-panes=, and kept), its ghostel terminal's
+shell --- and a report from outside it is dropped.  A host whose process
+is gone is none, so a respawn, a relay or a resume is followed until the
+next tick names the new one.  And a headless claude is never an agent:
+=herd hook= says when claude runs one prompt and exits
+(=CLAUDE_CODE_ENTRYPOINT= =sdk-cli=, which claude sets in its hooks'
+environment over the one it inherited), and the herd drops that report
+for any agent but a shell session.  Either one alone would have kept
+claude-jnotes's asks open on 2026-10-22, when the jnotes backend it had
+left running closed three of them with test answers.
+
 What each event means:
 
 - =UserPromptSubmit=, =PreInvocation= → =working=

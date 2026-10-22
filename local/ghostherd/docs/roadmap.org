@@ -684,6 +684,22 @@ answer, for asks, respawn and the page.
   kind or from a process under the agent's own.  /clear (same process) and
   a restart (a new process not under the old) are still followed.  pytest
   with real processes through the real hook, broken on purpose
+- [X] ... not even through a server it left running (ask f686b607).  The
+  same evening claude-jnotes started the jnotes backend with =nohup ... &=;
+  its tool shell exited, launchd took the backend, and the =claude -p= the
+  backend ran had neither the agent's pane nor its CLI above it -- so the
+  rule above took each for a restart, re-pinned it, and its Stop closed
+  the agent's ask with a test answer (d99e5a8a, 612a8427, 846b57c0, each
+  matching a =claude -p= transcript to the second).  Emacs now names each
+  agent's host process per tick (tmux =pane_pid=, ghostel's shell) and the
+  sidecar drops a report from outside it; a host that is gone is none, so
+  respawn, relay and resume are followed.  And =herd hook= says when a
+  claude is headless (=CLAUDE_CODE_ENTRYPOINT= =sdk-cli=, measured), which
+  no agent but a shell session takes.  The hook's session_id is not used:
+  a /clear, a resume and the agent's first report all bring a new one.
+  pytest (the evening replayed, each signal alone; a detached server's CLI
+  through the real hook), ERT (pane and ghostel pids), a scratch run of
+  the real stack with a fake CLI -- each broken on purpose
 
 * Phase 3.18 — A project's room: its agents' conversations side by side  *(this tree)*
 

@@ -838,6 +838,14 @@ def _lineage():
     return pid, ancestors
 
 
+def _headless(cli):
+    """True when CLI runs one prompt and exits (`claude -p', the Agent SDK):
+    a herd agent never does.  claude says so in its children's environment
+    -- CLAUDE_CODE_ENTRYPOINT `sdk-cli', `sdk-ts', ... against `cli' --
+    setting it itself, over whatever it inherited (measured on 2.1.308)."""
+    return cli == "claude" and os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk")
+
+
 def _stamp_file(session):
     key = hashlib.sha1(session.encode("utf-8")).hexdigest()[:16]
     return os.path.join(tempfile.gettempdir(), "ghostherd-hook-%s.json" % key)
@@ -877,8 +885,9 @@ def cmd_hook(args):
                 # Which CLI this is: a CLI the agent runs inherits its name,
                 # and the herd must not take it for the agent.
                 pid, ancestors = _lineage()
+                extra = {"headless": True} if _headless(news.get("cli")) else {}
                 out = rpc("herd_report", dict(news, session=session, pid=pid,
-                                              ancestors=ancestors), timeout=3)
+                                              ancestors=ancestors, **extra), timeout=3)
                 if not (out or {}).get("ignored"):
                     _remember(session, news)
     except Exception as exc:  # noqa: BLE001 -- a hook must never fail its CLI

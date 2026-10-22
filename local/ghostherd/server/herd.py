@@ -123,6 +123,24 @@ RECENT_SECONDS = 1800
 GUARD_APPROVAL_SECONDS = 1800
 
 
+def _pid(value: Any) -> int | None:
+    "VALUE as a process id, or None: Emacs sends 0 for one it does not know."
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 1 else None
+
+
+def pid_alive(pid: int) -> bool:
+    "Whether process PID is there (a zombie counts; another user's too)."
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def guard_root() -> str:
     "Where guarded agents' guard directories live: GHOSTHERD_GUARD_ROOT, as Emacs says."
     return os.environ.get("GHOSTHERD_GUARD_ROOT") or os.path.expanduser("~/.ghostherd/guard")
@@ -474,6 +492,11 @@ class HerdStore:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN ahead INTEGER")
         if "merged" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN merged INTEGER")
+        # The process the agent lives under, as Emacs knows it: its tmux
+        # pane's, or its ghostel terminal's shell.  A hook's report is the
+        # agent's only from inside it (`_not_its_own').
+        if "host_pid" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN host_pid INTEGER")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -1831,14 +1854,17 @@ class HerdStore:
         last: str | None = None,
         pid: int | None = None,
         ancestors: list[int] | None = None,
+        headless: bool = False,
     ) -> dict[str, Any]:
         """An agent's hook: what it is doing, and on which conversation.
 
         PID is the process of the CLI whose hook this is, ANCESTORS the
-        processes above it, as the hook found them.  A report from a CLI
-        the agent itself runs -- a probe, under the agent's name, since it
-        inherits the agent's environment -- is not the agent's: it is
-        ignored whole, and says why (`_not_its_own').
+        processes above it, as the hook found them; HEADLESS, that the CLI
+        runs one prompt and exits (`claude -p').  A report from a CLI the
+        agent itself runs -- a probe, under the agent's name, since it
+        inherits the agent's environment, directly or through a server it
+        started -- is not the agent's: it is ignored whole, and says why
+        (`_not_its_own').
 
         STATE waits for Emacs's next tick, newest per session.  The rest
         is kept here.  A turn ending in `done' with LAST closes the
@@ -1854,7 +1880,7 @@ class HerdStore:
             raise ValueError(f"state must be one of {', '.join(self.REPORT_STATES)}")
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
-            why = self._not_its_own(session, cli, pid, ancestors)
+            why = self._not_its_own(session, cli, pid, ancestors, headless)
             if why:
                 return {"session": session, "state": None, "closed_ask": None, "ignored": why}
             if pid:
@@ -1987,7 +2013,7 @@ class HerdStore:
         return {"session": session, "state": state, "closed_ask": closed}
 
     def _not_its_own(self, session: str, cli: str | None, pid: int | None,
-                     ancestors: list[int] | None) -> str | None:
+                     ancestors: list[int] | None, headless: bool = False) -> str | None:
         """Why a hook report under SESSION's name is not SESSION's, or None.
 
         An agent runs other CLIs as tools -- `claude -p', `agy -p' from a
@@ -2000,17 +2026,34 @@ class HerdStore:
 
         - a CLI of another kind than the agent's (a shell session takes
           any: the CLI run in it is its agent);
+        - a headless CLI (`claude -p'): a herd agent is an interactive
+          one, in its terminal (a shell session takes it: it is the CLI
+          run in it);
+        - a CLI process outside the agent's host -- its tmux pane's
+          process, or its ghostel terminal's shell, as Emacs says each
+          tick (HOST_PID) -- where its own CLI always runs.  A server the
+          agent starts in the background leaves its tree for launchd,
+          and the CLIs it runs with them (claude-jnotes, 2026-10-22
+          evening: the jnotes backend's `claude -p' closed three of its
+          asks with test answers).  A host whose process is gone is not
+          one: a respawn's new host comes with the next tick;
         - a CLI process started under the agent's own CLI process, which
           its hooks name (PID, pinned on the link) -- the same kind of CLI
           as the agent, on a conversation of its own.  The agent's own
           CLI, on a new conversation (a /clear), is followed; so is a new
-          process not under the old one (a restart).
+          process in its host not under the old one (a restart).
         Caller holds `_mu`."""
         row = self._conn.execute(
-            "SELECT kind FROM snapshot WHERE name = ?", (session,)).fetchone()
+            "SELECT kind, host_pid FROM snapshot WHERE name = ?", (session,)).fetchone()
         kind = (row[0] or "") if row else ""
+        host = row[1] if row and row[1] else None
         if cli and kind and kind != "shell" and cli != kind:
             return f"a {cli} CLI is not {session}, a {kind} agent: one it ran"
+        if headless and kind != "shell":
+            return f"a headless {cli or 'CLI'} run (-p) is not {session}, an interactive agent: one it started"
+        if pid and host and host != pid and host not in set(ancestors or []) and pid_alive(host):
+            return (f"process {pid} is not in {session}'s terminal (process {host}): one started "
+                    f"outside it -- by a server it ran in the background, say")
         if pid:
             row = self._conn.execute(
                 "SELECT pid FROM links WHERE session = ?", (session,)).fetchone()
@@ -2216,8 +2259,8 @@ class HerdStore:
                     """
                     INSERT INTO snapshot
                       (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
-                       directory, branch, started_by, ahead, merged)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       directory, branch, started_by, ahead, merged, host_pid)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -2236,6 +2279,7 @@ class HerdStore:
                         str(row.get("startedBy") or ""),
                         int(row.get("ahead") or 0),
                         1 if row.get("merged") is True else 0,
+                        _pid(row.get("hostPid")),
                     ),
                 )
                 self._upsert_alias(name)
