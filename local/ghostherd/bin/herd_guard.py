@@ -175,7 +175,14 @@ HERD_SUBCOMMANDS = frozenset({"ask", "reply", "status", "cancel", "list", "asks"
 
 # `2>/dev/null' and `2>&1' (agents add them everywhere) are the redirections let through.
 _STDERR = re.compile(r"\s+2>\s*(?:/dev/null|&1)(?=\s|$)")
+# `cd TARGET &&': TARGET is one \S+ word (a path with a space never matches, so
+# the whole line is then read as a chain and refused).  The captured TARGET is
+# screened like any other word before it is trusted -- see `_cd_target'.
 _CD = re.compile(r"\A\s*cd\s+(\S+)\s*&&\s*")
+# A plain path: only characters the shell leaves alone, so nothing in a cd
+# target can run code or re-parse.  `~' is kept -- it names a directory, not
+# code, and `check_path' resolves it and refuses one that leaves the workspace.
+_PLAIN_PATH = re.compile(r"\A[A-Za-z0-9/._~@%+,:=-]+\Z")
 _HERD_WORD = re.compile(r"""\A("\$\{?GHOSTHERD_HERD\}?"|\$\{?GHOSTHERD_HERD\}?)(?=\s|$)""")
 _HEREDOC = re.compile(r"\s<<-?\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\n(?:.*\n)?\2[ \t]*\n?\Z", re.S)
 
@@ -562,6 +569,26 @@ class Guard:
 
     # -- One command line
 
+    def _cd_target(self, target, cwd):
+        """The verdict refusing a `cd TARGET', for its TARGET, or None.
+
+        TARGET rides into the shell at the front of the rewritten line, so it
+        is screened first -- by the same quoting-aware scanner as any word,
+        and a plain-path allowlist.  A $, backtick, ${...}, $(...), brace,
+        glob, or a ;, |, &, <, > in it would run code or re-parse the line, so
+        such a target is denied and cannot be approved: there is no safe
+        reading of it.  A plain path is then `check_path'-ed -- a `~' it
+        resolves, a path outside the workspace it refuses (approvably)."""
+        stages, _refusal = _split(target)
+        if (not _PLAIN_PATH.match(target) or stages is None
+                or len(stages) != 1 or len(stages[0]) != 1 or stages[0][0][1]):
+            return _never(
+                "This command cannot run as written: its `cd' target %r is not a plain path.  A $, "
+                "backtick, ${...}, $(...), brace, glob or other shell character in a cd target would "
+                "run code or leave your workspace, so it is refused -- and cannot be approved.  cd to a "
+                "plain directory inside your workspace." % target, "cd-target")
+        return self.p.check_path(target, cwd)
+
     def command(self, line, cwd=None):
         """The verdict on run_command LINE, run in CWD (the workspace by
         default) -- with the line rewritten when a search must skip secrets."""
@@ -577,11 +604,13 @@ class Guard:
         m = _CD.match(line)
         if m:
             target = m.group(1)
-            v = self.p.check_path(target, cwd)
+            v = self._cd_target(target, cwd)
             if v:
                 return v
             cwd = _real(os.path.join(cwd, os.path.expanduser(target)))
-            prefix, line = m.group(0), line[m.end():]
+            # Rebuilt from the screened target, shlex-quoted, never the raw
+            # match: what is prepended to the rewritten line cannot re-parse.
+            prefix, line = "cd " + shlex.quote(target) + " && ", line[m.end():]
         herd = self._herd(line)
         if herd:
             return herd
