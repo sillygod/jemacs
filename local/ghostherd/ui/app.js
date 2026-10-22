@@ -1116,7 +1116,9 @@
   }
 
   function prState(pr) {
-    if (!pr.state) return "";
+    // Unsure: the last look failed or never came back, so the state on hand
+    // may be stale -- show "?" (in prChip) rather than assert it.
+    if (pr.unsure || !pr.state) return "";
     return pr.draft && pr.state === "OPEN" ? "Draft" : pr.state.charAt(0) + pr.state.slice(1).toLowerCase();
   }
 
@@ -1253,8 +1255,11 @@
     const w = a.work || workFor(a.project);
     const onBranch = w && w.root === l.root && w.pr ? w.pr.id : null;
     const branchTasks = new Set(((w && w.tasks) || []).map((t) => t.id));
-    const prs = (l.prs || []).filter((p) => !(p.own !== false && p.id === onBranch) && !p.error).map((p) => {
-      const live = !p.state || p.state === "OPEN";
+    // Hide only a PR that could not be looked up and has no state at all --
+    // most often an id in a test or a file, not a real one.  One once known
+    // whose latest look failed keeps its chip, shown as "?" (unsure).
+    const prs = (l.prs || []).filter((p) => !(p.own !== false && p.id === onBranch) && (p.state || !p.error)).map((p) => {
+      const live = p.unsure || !p.state || p.state === "OPEN";
       return { live, html: prChip(l.root, p, !live) };
     });
     const tasks = (l.tasks || []).filter((t) => !branchTasks.has(t.id) && !t.error).map((t) => {

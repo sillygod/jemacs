@@ -818,6 +818,12 @@ Asked again before then, it is still done once."
   "Seconds a pull request or a task looked up is kept.")
 (defconst ghostherd-memory-page--work-tasks 6
   "Most of a pull request's tasks looked up; the rest show their id.")
+(defconst ghostherd-memory-page--pending-ttl 120
+  "Seconds a look may be in flight before it is taken as abandoned.
+A forge or ClickUp answer that never comes -- the Mac slept, the
+connection dropped -- must not wedge a chip: once a look has hung this
+long it no longer counts as in flight, so the next look asks again
+instead of waiting on it forever.")
 
 (defvar ghostherd-memory-page--work-at 0
   "When the herd's checkouts were last looked at.")
@@ -866,9 +872,18 @@ request a conversation named, as `herd_links' names it, and PR as
   "Non-nil when FN can be called: defined, or once FEATURE is loaded."
   (or (fboundp fn) (and (require feature nil t) (fboundp fn))))
 
+(defun ghostherd-memory-page--pending-p (entry)
+  "Non-nil when ENTRY has a look still in flight -- one begun lately, not
+one abandoned because its answer never came.  Pending is kept as the time
+the look began; an older boolean `t' from before this counts as abandoned,
+so it is asked afresh rather than waited on."
+  (let ((p (and entry (plist-get entry :pending))))
+    (and (numberp p) (< (- (float-time) p) ghostherd-memory-page--pending-ttl))))
+
 (defun ghostherd-memory-page--stale-p (entry)
-  (not (or (plist-get entry :pending)
-           (and entry (< (- (float-time) (plist-get entry :at)) ghostherd-memory-page--work-ttl)))))
+  (not (or (ghostherd-memory-page--pending-p entry)
+           (and entry (plist-get entry :at)
+                (< (- (float-time) (plist-get entry :at)) ghostherd-memory-page--work-ttl)))))
 
 (defun ghostherd-memory-page--work-changed ()
   (when (timerp ghostherd-memory-page--herd-timer)
@@ -879,7 +894,7 @@ request a conversation named, as `herd_links' names it, and PR as
   (let ((had (gethash id ghostherd-memory-page--task-briefs)))
     (when (and (ghostherd-memory-page--stale-p had)
                (ghostherd-memory-page--have 'clickup-view-task-brief 'clickup-view))
-      (puthash id (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--task-briefs)
+      (puthash id (plist-put (copy-sequence had) :pending (float-time)) ghostherd-memory-page--task-briefs)
       (clickup-view-task-brief
        id (lambda (brief)
             (puthash id (list :at (float-time) :brief brief) ghostherd-memory-page--task-briefs)
@@ -890,7 +905,7 @@ request a conversation named, as `herd_links' names it, and PR as
 is fresh; then the tasks it cites."
   (let ((had (gethash co ghostherd-memory-page--prs)))
     (when (ghostherd-memory-page--stale-p had)
-      (puthash co (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--prs)
+      (puthash co (plist-put (copy-sequence had) :pending (float-time)) ghostherd-memory-page--prs)
       (pr-view-branch-pr
        (car co)
        (lambda (pr)
@@ -918,22 +933,48 @@ forge, a repository's names, a number."
   "The repository of pull request REF, as `pr-view-remote' gives one."
   (list :kind (intern (plist-get ref :host)) :owner (plist-get ref :owner) :repo (plist-get ref :repo)))
 
+(defun ghostherd-memory-page--pr-unsure-p (entry)
+  "Non-nil when ENTRY's pull-request state cannot be trusted now: the last
+look failed (`:miss'), or one has hung past `--pending-ttl' without an
+answer.  Then the chip says it does not know rather than a state it can no
+longer confirm."
+  (and entry
+       (or (plist-get entry :miss)
+           (let ((p (plist-get entry :pending)))
+             (and (numberp p) (>= (- (float-time) p) ghostherd-memory-page--pending-ttl))))))
+
 (defun ghostherd-memory-page--pr-brief-ask (ref)
   "Look up pull request REF, as `herd_links' names one, unless what it
-said is fresh: of whichever repository, by its forge."
+said is fresh: of whichever repository, by its forge.  A merged or
+declined one is final and kept; an open one is re-checked.  A look that
+fails keeps the last state known but marks it unsure, and one that never
+answers (the Mac slept) is taken as abandoned and asked again -- so a chip
+is never wedged on a state the forge has since changed."
   (let* ((key (ghostherd-memory-page--pr-key ref))
          (had (gethash key ghostherd-memory-page--pr-briefs))
          (ttl (if (member (alist-get 'state (plist-get had :pr)) '("MERGED" "DECLINED"))
                   ghostherd-memory-page--closed-ttl
                 ghostherd-memory-page--work-ttl)))
-    (when (and (not (plist-get had :pending))
-               (or (null had) (> (- (float-time) (plist-get had :at)) ttl))
+    (when (and (not (ghostherd-memory-page--pending-p had))
+               (or (null (plist-get had :at))
+                   (> (- (float-time) (plist-get had :at)) ttl))
                (ghostherd-memory-page--have 'pr-view-repo-pr-brief 'pr-view))
-      (puthash key (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--pr-briefs)
-      (pr-view-repo-pr-brief (ghostherd-memory-page--pr-remote ref) (plist-get ref :id)
-                             (lambda (pr)
-                               (puthash key (list :at (float-time) :pr pr) ghostherd-memory-page--pr-briefs)
-                               (ghostherd-memory-page--work-changed))))))
+      (puthash key (plist-put (copy-sequence had) :pending (float-time)) ghostherd-memory-page--pr-briefs)
+      (pr-view-repo-pr-brief
+       (ghostherd-memory-page--pr-remote ref) (plist-get ref :id)
+       (lambda (pr)
+         (let ((err (alist-get 'error pr))
+               (prev (plist-get (gethash key ghostherd-memory-page--pr-briefs) :pr)))
+           (puthash key
+                    (if err
+                        ;; A failed look does not overwrite a known state with
+                        ;; nothing: it keeps the last one but notes the miss,
+                        ;; so the chip can say it is unsure rather than show a
+                        ;; state that may be stale.
+                        (list :at (float-time) :pr prev :miss err)
+                      (list :at (float-time) :pr pr))
+                    ghostherd-memory-page--pr-briefs))
+         (ghostherd-memory-page--work-changed))))))
 
 (defun ghostherd-memory-page--remote (root)
   "The forge repository of checkout ROOT, asked of git once a while.
@@ -976,8 +1017,9 @@ lately."
            (path (ghostherd-session-transcript s))
            (sig (ghostherd-memory-page--room-signature path))
            (had (gethash name ghostherd-memory-page--links)))
-      (when (and sig (not (equal sig (plist-get had :sig))) (not (plist-get had :pending)))
-        (puthash name (plist-put (copy-sequence had) :pending t) ghostherd-memory-page--links)
+      (when (and sig (not (equal sig (plist-get had :sig)))
+                 (not (ghostherd-memory-page--pending-p had)))
+        (puthash name (plist-put (copy-sequence had) :pending (float-time)) ghostherd-memory-page--links)
         (ghostherd-memory-request-async
          "herd_links"
          (lambda (r)
@@ -1025,9 +1067,14 @@ tasks, most recently named first."
                                     :repo (plist-get ref :repo)
                                     :title (ghostherd-memory-page--str (alist-get 'title pr))
                                     :state (ghostherd-memory-page--str (alist-get 'state pr))
+                                    ;; The last look failed or hung: keep the
+                                    ;; chip, but say it does not know the state
+                                    ;; rather than assert a stale one.
+                                    :unsure (if (ghostherd-memory-page--pr-unsure-p entry) t :json-false)
                                     :draft (if (eq (alist-get 'draft pr) t) t :json-false)
                                     :url (ghostherd-memory-page--str (alist-get 'url pr))
-                                    :error (ghostherd-memory-page--str (alist-get 'error pr))
+                                    :error (ghostherd-memory-page--str
+                                            (or (plist-get entry :miss) (alist-get 'error pr)))
                                     :last (plist-get ref :last))))
                           prs))
             :tasks (ghostherd-memory-page--vec

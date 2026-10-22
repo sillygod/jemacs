@@ -78,6 +78,38 @@ const chips = (page) => page.$$eval(".wchip", (cs) => cs.map((c) => ({ tag: c.ta
     check("whose it is, in full, on a hover", ns[0].title === "wingeatech/backend-interview#2: PR 2", ns[0].title);
     check("on the phone, it opens in pr-view there by its address",
       ns[0].tag === "a" && ns[0].href === "/open/pr-view#pr=" + encodeURIComponent(GH + "2"), ns[0]);
+
+    // ---- A chip whose state is not trusted says "?" ----
+    // One once open whose latest look failed keeps its chip but is shown
+    // unsure -- "?" not a stale Open; a merged one stays merged; a number
+    // that was never a real PR (no state, an error) is left out.
+    const namedUnsure = (h) => {
+      const lead = h.agents.find((a) => a.name === "lead-deploy-platform");
+      lead.links.tasks = [];
+      lead.links.prs = [
+        Object.assign(ref(395, true, "OPEN", BB.replace("378", "395")),
+          { unsure: true, error: "the forge refused the token" }),
+        ref(360, true, "MERGED", BB.replace("378", "360")),
+        { id: 999, own: false, host: "github", owner: "wingeatech", repo: "backend-interview",
+          title: "", state: "", draft: false, url: "", error: "no such pull request" },
+      ];
+    };
+    await show(herd({ pr: true, task: true }, namedUnsure));
+    const us = await namedChips();
+    // The unsure one is kept up front (treated as live, like an open one).
+    check("an unsure PR says '?', not a stale Open, and keeps its chip",
+      us.some((c) => /#395\s*\?/.test(c.text)) && !us.some((c) => /#395\s*Open/.test(c.text)), us.map((c) => c.text));
+    check("the unsure chip carries no state colour (no pr-<state> class)",
+      await page.$eval('.arow[data-name="lead-deploy-platform"] .links .wchip.pr[data-id="395"]',
+        (e) => !e.className.split(/\s+/).some((k) => /^pr-/.test(k))));
+    check("a number that was never a real PR is left out", !us.some((c) => /#999/.test(c.text)), us.map((c) => c.text));
+    // A merged one is final and sure -- it waits behind +N; opened, it reads merged.
+    await page.click('.arow[data-name="lead-deploy-platform"] .links .wmore');
+    await sleep(80);
+    const expanded = await namedChips();
+    check("a merged one, revealed, still reads merged (not unsure)",
+      expanded.some((c) => /#360\s*Merged/.test(c.text)), expanded.map((c) => c.text));
+
     // At the desk: Emacs is told which -- another's by its repository.
     const desk = await phonePage(browser, { host: "127.0.0.1", context: { viewport: { width: 1280, height: 900 }, isMobile: false, hasTouch: false } });
     await desk.page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, herd({ pr: true, task: true }, named));

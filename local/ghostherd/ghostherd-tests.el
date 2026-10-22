@@ -8688,6 +8688,99 @@ checkout, another's by its repository."
               (should (equal (reverse opened)
                              `((,root 360) ((:kind github :owner "team" :repo "deploy") 5)))))))))))
 
+(ert-deftest ghostherd-test-a-hung-pr-look-is-asked-again-not-wedged ()
+  "A pull-request look whose answer never comes -- the Mac slept mid-request
+-- does not wedge the chip: while the look is fresh it is not asked twice,
+but once it has hung past the bound it is taken as abandoned and asked
+afresh, and an open one the forge now calls merged turns merged.  (The bug:
+a `:pending' that never cleared blocked every later look, so #395 showed
+Open for days after it had merged.)"
+  (ghostherd-test--with-checkouts
+    (let ((ref '(:host "bitbucket" :owner "unnotech" :repo "deploy-platform" :id 395 :last "t"))
+          (key '("bitbucket" "unnotech" "deploy-platform" 395)))
+      (setq by-id '((395 (id . 395) (title . "x") (state . "MERGED") (url . "u"))))
+      ;; A look goes out and never answers: :pending is left set.
+      (cl-letf (((symbol-function 'pr-view-repo-pr-brief)
+                 (lambda (_r id _cb) (push (list 'brief id) asked))))
+        (ghostherd-memory-page--pr-brief-ask ref)
+        (should (equal (mapcar #'cadr asked) '(395)))
+        (should (ghostherd-memory-page--pending-p (gethash key ghostherd-memory-page--pr-briefs)))
+        ;; A fresh pending is left alone -- not asked twice.
+        (setq asked nil)
+        (ghostherd-memory-page--pr-brief-ask ref)
+        (should-not asked))
+      ;; Make the pending hang past the bound: now it is unsure, and no longer
+      ;; counts as in flight.
+      (let ((e (gethash key ghostherd-memory-page--pr-briefs)))
+        (puthash key (plist-put e :pending (- (float-time) (1+ ghostherd-memory-page--pending-ttl)))
+                 ghostherd-memory-page--pr-briefs))
+      (should (ghostherd-memory-page--pr-unsure-p (gethash key ghostherd-memory-page--pr-briefs)))
+      (should-not (ghostherd-memory-page--pending-p (gethash key ghostherd-memory-page--pr-briefs)))
+      ;; Asked again; this time the forge answers (the harness stub): merged.
+      (ghostherd-memory-page--pr-brief-ask ref)
+      (let ((e (gethash key ghostherd-memory-page--pr-briefs)))
+        (should (equal (alist-get 'state (plist-get e :pr)) "MERGED"))
+        (should-not (ghostherd-memory-page--pr-unsure-p e))
+        (should-not (ghostherd-memory-page--pending-p e))))))
+
+(ert-deftest ghostherd-test-a-failed-pr-look-says-it-does-not-know ()
+  "A look that fails neither blanks a state nor keeps asserting it: a pull
+request once seen open, whose next look errors, keeps its state but is
+marked unsure -- the chip says \"?\" rather than a stale Open; a merged one
+is final and is not even re-asked; a number that was never a real pull
+request stays hidden (no state, an error)."
+  (ghostherd-test--with-checkouts
+    (let ((path (concat base "rd.jsonl"))
+          (k395 '("bitbucket" "unnotech" "deploy-platform" 395))
+          (k360 '("bitbucket" "unnotech" "deploy-platform" 360))
+          (k999 '("bitbucket" "unnotech" "deploy-platform" 999)))
+      (with-temp-file path (insert "{}\n"))
+      (setq transcripts `(("rd" . ,path))
+            remote '(:kind bitbucket :owner "unnotech" :repo "deploy-platform")
+            said `((,path :prs ((:host "bitbucket" :owner "unnotech" :repo "deploy-platform" :id 395 :count 1 :last "t3")
+                                (:host "bitbucket" :owner "unnotech" :repo "deploy-platform" :id 360 :count 1 :last "t2")
+                                (:host "bitbucket" :owner "unnotech" :repo "deploy-platform" :id 999 :count 1 :last "t1"))
+                          :tasks nil)))
+      (clrhash ghostherd--sessions)
+      (ghostherd-tests--session :name "rd" :kind 'claude :project repo :state 'idle)
+      (cl-letf (((symbol-function 'ghostherd-session-directory) (lambda (_s) repo))
+                ((symbol-function 'ghostherd--project-name)
+                 (lambda (p) (and p (abbreviate-file-name (file-name-as-directory (expand-file-name p)))))))
+        ;; First look: 395 open, 360 merged, 999 never a real PR.
+        (setq by-id '((395 (id . 395) (title . "Retry") (state . "OPEN") (url . "b395"))
+                      (360 (id . 360) (title . "Sentry") (state . "MERGED") (url . "b360"))))
+        (ghostherd-test--look)
+        (should (equal (alist-get 'state (plist-get (gethash k395 ghostherd-memory-page--pr-briefs) :pr)) "OPEN"))
+        ;; Age every brief so an open one is due to be re-checked.
+        (maphash (lambda (k v) (puthash k (plist-put v :at (- (float-time) 400)) ghostherd-memory-page--pr-briefs))
+                 ghostherd-memory-page--pr-briefs)
+        ;; Now the forge is unreachable: every look errors.
+        (setq asked nil)
+        (cl-letf (((symbol-function 'pr-view-repo-pr-brief)
+                   (lambda (_r id cb) (push (list 'brief id) asked)
+                     (funcall cb '((error . "the forge refused the token"))))))
+          (ghostherd-test--look))
+        ;; The open one (and the never-real one) are re-asked; the merged one,
+        ;; being final, is not.
+        (should (equal (sort (mapcar #'cadr (seq-filter (lambda (a) (eq (car a) 'brief)) asked)) #'<) '(395 999)))
+        ;; 395 keeps its known OPEN but is unsure; 360 stays merged, sure.
+        (should (equal (alist-get 'state (plist-get (gethash k395 ghostherd-memory-page--pr-briefs) :pr)) "OPEN"))
+        (should (ghostherd-memory-page--pr-unsure-p (gethash k395 ghostherd-memory-page--pr-briefs)))
+        (should (equal (alist-get 'state (plist-get (gethash k360 ghostherd-memory-page--pr-briefs) :pr)) "MERGED"))
+        (should-not (ghostherd-memory-page--pr-unsure-p (gethash k360 ghostherd-memory-page--pr-briefs)))
+        (should-not (plist-get (gethash k999 ghostherd-memory-page--pr-briefs) :pr))
+        ;; As the page is told: 395 shows unsure, its id, its last state but
+        ;; not asserted; 360 sure; 999 has no state and an error, so the page
+        ;; (ui/app.js) leaves it out.
+        (let* ((prs (append (plist-get (ghostherd-memory-page--agent-links (ghostherd-get "rd")) :prs) nil))
+               (p (lambda (id) (seq-find (lambda (x) (equal (plist-get x :id) id)) prs))))
+          (should (eq (plist-get (funcall p 395) :unsure) t))
+          (should (equal (plist-get (funcall p 395) :state) "OPEN"))
+          (should (equal (plist-get (funcall p 395) :error) "the forge refused the token"))
+          (should (eq (plist-get (funcall p 360) :unsure) :json-false))
+          (should (null (plist-get (funcall p 999) :state)))
+          (should (plist-get (funcall p 999) :error)))))))
+
 (ert-deftest ghostherd-test-the-page-counts-what-a-checkout-has-not-committed ()
   "Each checkout the herd is in is counted once a look, an agent's
 worktree too; the work line says it -- nothing when it is clean -- and
