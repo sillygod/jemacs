@@ -308,6 +308,13 @@ class JsonRpcHandler:
         def text(key):
             v = params.get(key)
             return str(v) if v not in (None, "") else None
+        pid = params.get("pid")
+        ancestors = params.get("ancestors") or []
+        if pid is not None and (isinstance(pid, bool) or not isinstance(pid, int)):
+            raise ValueError("pid must be a process id")
+        if not isinstance(ancestors, list) or not all(
+                isinstance(a, int) and not isinstance(a, bool) for a in ancestors):
+            raise ValueError("ancestors must be a list of process ids")
         return get_herd().report(
             session=str(params.get("session") or ""),
             state=text("state"),
@@ -316,6 +323,8 @@ class JsonRpcHandler:
             conversation=text("conversation"),
             transcript=text("transcript"),
             last=text("last"),
+            pid=pid or None,
+            ancestors=ancestors,
         )
 
     def _herd_link(self, params: dict) -> dict:

@@ -662,6 +662,21 @@ answer, for asks, respawn and the page.
   the screen fallback
 - [ ] agy has no permission event; its =blocked= is still the screen's
 
+** Follow-up: a CLI the agent runs is not the agent (ask dfed1545)
+
+- [X] claude-jnotes (2026-10-22) ran =claude -p= and =agy -p= from a scratch
+  dir to probe how each CLI writes files.  They inherited its environment
+  and its herd name, and their hooks reported as claude-jnotes: four
+  probe turns' =working=/=done= (its card read =done= while it worked), and
+  each probe's conversation as its own -- the last an agy one, which a
+  claude card ignores: no transcript, a screen dump, no model chip.
+  =herd hook= now names the CLI that ran it (the nearest non-shell process
+  above it) and the processes above that; the sidecar keeps the agent's
+  own CLI on its link and drops, whole, a report from a CLI of another
+  kind or from a process under the agent's own.  /clear (same process) and
+  a restart (a new process not under the old) are still followed.  pytest
+  with real processes through the real hook, broken on purpose
+
 * Phase 3.18 — A project's room: its agents' conversations side by side  *(this tree)*
 
 Goal: follow two or more agents working one thing together --- one

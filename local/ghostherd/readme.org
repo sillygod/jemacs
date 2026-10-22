@@ -909,6 +909,21 @@ The command does nothing in a CLI the herd did not start, so every
 session of each CLI can carry it.  A CLI reads its hooks when it
 starts: respawn agents to pick them up.
 
+A CLI an agent itself runs --- =claude -p= or =agy -p= from its shell, to
+see how another CLI behaves --- inherits the agent's environment, its name
+in the herd with it, so its hooks report as the agent: its turns'
+=working= and =done=, its conversation, its answer.  The herd drops such a
+report whole.  It tells one by the CLI's kind (an =agy= reporting for a
+claude agent; a shell session takes any, the CLI run in it being its
+agent), and by its process: =herd hook= names the CLI that ran it --- the
+nearest process above it that is not a shell --- and the ones above that,
+and the herd keeps the agent's own CLI on its link, so a CLI started under
+it is not taken for it.  The agent's own CLI on a new conversation
+(=/clear=) is followed, and so is a new process not under the old one (a
+restart).  Without that, an agent's card followed a probe's conversation
+--- or, a probe of another kind, none: a screen dump and no model --- and
+read =done= while it worked.
+
 What each event means:
 
 - =UserPromptSubmit=, =PreInvocation= → =working=
