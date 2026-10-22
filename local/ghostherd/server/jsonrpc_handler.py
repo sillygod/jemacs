@@ -401,6 +401,7 @@ class JsonRpcHandler:
             last=text("last"),
             pid=pid or None,
             ancestors=ancestors,
+            headless=params.get("headless") is True,
         )
 
     def _herd_link(self, params: dict) -> dict:

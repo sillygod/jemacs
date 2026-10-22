@@ -6619,6 +6619,10 @@ address of each one's room from your phone, for the bot to link to."
            :startedBy (or (ghostherd-session-started-by s) "")
            :ahead (if wstat (plist-get wstat :ahead) 0)
            :merged (if (and wstat (plist-get wstat :merged)) t :json-false)
+           ;; The process it lives under -- its tmux pane's, its ghostel
+           ;; shell -- so the herd takes a hook's report as its own only
+           ;; from inside it, not from a CLI a server it started runs.
+           :hostPid (or (ghostherd--host-pid s) 0)
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        ""))))
    (hash-table-values ghostherd--sessions)))

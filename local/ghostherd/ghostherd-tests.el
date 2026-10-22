@@ -63,6 +63,10 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd-agy-guard nil)
          (ghostherd-guard-root ghostherd-tests--guard-root)
          (ghostherd--guard-requests nil)
+         ;; The panes' processes the snapshot names: none known, and none
+         ;; read (a real `list-panes') unless a test says so.
+         (ghostherd-tmux--pane-pids (make-hash-table :test 'equal))
+         (ghostherd-tmux--pane-pids-at 1.0e+INF)
          (ghostherd--guard-seen (make-hash-table :test 'equal))
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
@@ -12792,6 +12796,59 @@ its id; anything not an id is refused before it goes anywhere."
       (dolist (bad '("../x" "" nil "1a2b3c4d; rm" "ZZZZ"))
         (ghostherd-memory-page--handle `((op . "guard-approve") (id . ,bad))))
       (should (= (length asked) 1)))))
+
+(ert-deftest ghostherd-test-the-snapshot-names-each-agents-terminal ()
+  "Each agent's host process rides the snapshot (`hostPid'), so the herd
+takes a hook's report as its own only from inside it -- not from a CLI a
+server it started in the background runs (claude-jnotes, 2026-10-22).
+tmux: its pane's process, read for the whole herd in one `list-panes' and
+kept, asked again for a pane it lacks at most every few seconds.  ghostel:
+its terminal's shell.  0 when unknown."
+  (ghostherd-tests--with-herd ()
+    (let ((calls 0)
+          (ghostherd-tmux--pane-pids (make-hash-table :test #'equal))
+          (ghostherd-tmux--pane-pids-at 0)
+          (panes "gh-1-a\t24671\ngh-1-b\t41426\n")
+          (row (lambda (name) (seq-find (lambda (r) (equal (plist-get r :name) name))
+                                        (ghostherd--herd-snapshot)))))
+      (cl-letf (((symbol-function 'ghostherd-tmux--call)
+                 (lambda (args)
+                   (if (equal args '("list-panes" "-a" "-F" "#{session_name}\t#{pane_pid}"))
+                       (progn (cl-incf calls) (cons 0 panes))
+                     (cons 1 "")))))
+        (let ((a (ghostherd-tests--session :name "a" :kind 'claude :backend 'tmux :host-id "gh-1-a"))
+              (b (ghostherd-tests--session :name "b" :kind 'claude :backend 'tmux :host-id "gh-1-b"))
+              (c (ghostherd-tests--session :name "c" :kind 'claude :backend 'tmux :host-id "gh-1-c")))
+          (should (equal (list (ghostherd--host-pid a) (ghostherd--host-pid b)) '(24671 41426)))
+          (should (= calls 1))
+          ;; No pane for c yet: unknown, and not asked again at once.
+          (should-not (ghostherd--host-pid c))
+          (should (= calls 1))
+          ;; Later, its pane is there.
+          (setq panes (concat panes "gh-1-c\t50000\n")
+                ghostherd-tmux--pane-pids-at 0)
+          (should (= (ghostherd--host-pid c) 50000))
+          (should (= (ghostherd--host-pid a) 24671))
+          (should (= calls 2))
+          (should (equal (mapcar (lambda (n) (plist-get (funcall row n) :hostPid)) '("a" "b" "c"))
+                         '(24671 41426 50000))))
+        ;; ghostel: the shell ghostel keeps the pid of, while its process lives.
+        (let* ((proc (start-process "gh-host-test" nil "sleep" "30"))
+               (g (ghostherd-tests--session :name "g" :kind 'claude :backend 'ghostel)))
+          (unwind-protect
+              (progn
+                (with-current-buffer (ghostherd-session-buffer g)
+                  (setq-local ghostel--pid 4242)
+                  (setq-local ghostel--process proc))
+                (should (= (ghostherd--host-pid g) 4242))
+                (should (= (plist-get (funcall row "g") :hostPid) 4242))
+                (delete-process proc)
+                (should-not (ghostherd--host-pid g)))
+            (when (process-live-p proc) (delete-process proc))))
+        ;; A backend that cannot say: 0.
+        (ghostherd-tests--session :name "f" :kind 'claude :backend 'fake)
+        (should (= (plist-get (funcall row "f") :hostPid) 0))
+        (should (= calls 2))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

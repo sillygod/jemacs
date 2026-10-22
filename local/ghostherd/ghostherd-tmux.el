@@ -935,6 +935,37 @@ buffer name back."
       (ghostherd-tmux--meaningful-title
        (cdr (ghostherd-tmux--status session)))))
 
+(defvar ghostherd-tmux--pane-pids (make-hash-table :test #'equal)
+  "tmux session name → the process its pane runs, from `list-panes'.
+A pane's process is its own for the pane's life, and a respawned agent
+is a new session: read again only for a name not in it.")
+
+(defvar ghostherd-tmux--pane-pids-at 0
+  "When `ghostherd-tmux--pane-pids' was last read.")
+
+(defconst ghostherd-tmux-pane-pids-every 5
+  "Seconds at least between two reads of the panes' processes, so an
+agent tmux has no pane for does not cost a `list-panes' every tick.")
+
+(defun ghostherd-tmux--read-pane-pids ()
+  "Read every pane's process into `ghostherd-tmux--pane-pids', in one call."
+  (setq ghostherd-tmux--pane-pids-at (float-time))
+  (when-let* ((out (ghostherd-tmux--try "list-panes" "-a" "-F" "#{session_name}\t#{pane_pid}")))
+    (clrhash ghostherd-tmux--pane-pids)
+    (dolist (line (split-string out "\n" t))
+      (when (string-match "\\`\\(.*\\)\t\\([0-9]+\\)\\'" line)
+        (puthash (match-string 1 line) (string-to-number (match-string 2 line))
+                 ghostherd-tmux--pane-pids)))))
+
+(cl-defmethod ghostherd-backend-host-pid ((_backend (eql tmux)) session)
+  ;; The pane's own process: the CLI itself, exec'd there (or the shell of
+  ;; a shell session).
+  (when-let* ((id (ghostherd-session-host-id session)))
+    (or (gethash id ghostherd-tmux--pane-pids)
+        (when (> (- (float-time) ghostherd-tmux--pane-pids-at) ghostherd-tmux-pane-pids-every)
+          (ghostherd-tmux--read-pane-pids)
+          (gethash id ghostherd-tmux--pane-pids)))))
+
 (cl-defmethod ghostherd-backend-directory ((_backend (eql tmux)) session)
   ;; The agent's own working directory, which the pane follows.
   (when-let* ((out (ghostherd-tmux--try

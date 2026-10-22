@@ -446,6 +446,14 @@ Not its project: an agent in one of the project's worktrees is on that
 worktree's branch."
   nil)
 
+(cl-defgeneric ghostherd-backend-host-pid (_backend _session)
+  "Return the process SESSION's agent lives under, or nil when unknown.
+Its tmux pane's process, or its ghostel terminal's shell: the agent's
+own CLI runs there, so the herd takes a hook's report as the agent's
+only from inside it -- not from a CLI a server the agent started in the
+background runs, under its name (`herd_report')."
+  nil)
+
 (cl-defgeneric ghostherd-backend-spawn (backend plist)
   "Start an agent described by PLIST on BACKEND.
 
@@ -544,6 +552,10 @@ agent buffers are left alone -- or restart Emacs"
   "The directory SESSION's agent works in: its host's word, else its project."
   (or (ignore-errors (ghostherd-backend-directory (ghostherd--backend-of session) session))
       (ghostherd-session-project session)))
+
+(defun ghostherd--host-pid (session)
+  "Return the process SESSION's agent lives under, or nil."
+  (ignore-errors (ghostherd-backend-host-pid (ghostherd--backend-of session) session)))
 
 (defun ghostherd--host-kill (session)
   "Kill SESSION's host process."
@@ -656,6 +668,15 @@ _KIND is reserved for kind-specific quoting later."
 (cl-defmethod ghostherd-backend-directory ((_backend (eql ghostel)) session)
   (when-let* ((buf (ghostherd-session-buffer session)))
     (and (buffer-live-p buf) (buffer-local-value 'default-directory buf))))
+
+(cl-defmethod ghostherd-backend-host-pid ((_backend (eql ghostel)) session)
+  ;; The terminal's own child, the shell the CLI is typed into; ghostel
+  ;; keeps its pid for a native PTY too, whose Emacs process is a pipe.
+  (let ((buffer (ghostherd-session-buffer session)))
+    (when (buffer-live-p buffer)
+      (let ((pid (buffer-local-value 'ghostel--pid buffer))
+            (proc (buffer-local-value 'ghostel--process buffer)))
+        (and (integerp pid) (processp proc) (process-live-p proc) pid)))))
 
 (cl-defmethod ghostherd-backend-view ((_backend (eql ghostel)) session)
   (ghostherd--ghostel-buffer session))

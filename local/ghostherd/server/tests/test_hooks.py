@@ -367,7 +367,7 @@ def test_a_real_reply_reaches_an_asker_that_already_read_the_auto_answer(tmp_pat
 
 
 def hook(live, payload, *event, session="claude-main", env=None, tmp=None):
-    e = dict(live["env"], GHOSTHERD_SESSION=session, TMPDIR=str(tmp))
+    e = dict(live["env"], GHOSTHERD_SESSION=session, TMPDIR=str(tmp), CLAUDE_CODE_ENTRYPOINT="cli")
     if session is None:
         del e["GHOSTHERD_SESSION"]
     e.update(env or {})
@@ -614,7 +614,7 @@ def test_a_probe_through_the_real_hook_reports_nothing(live, tmp_path):
                            "terminationReason": "model_stop"}, hc._agy_command("Stop")]]
     steps = [["hook", own, run], ["cli", claude_probe], ["cli", agy_probe],
              ["hook", dict(CLAUDE, hook_event_name="SessionStart", session_id="own-2"), run]]
-    env = dict(live["env"], TMPDIR=str(tmp_path), GHOSTHERD_HERD=str(HERD))
+    env = dict(live["env"], TMPDIR=str(tmp_path), GHOSTHERD_HERD=str(HERD), CLAUDE_CODE_ENTRYPOINT="cli")
     subprocess.run([sys.executable, str(cli), json.dumps(steps)], env=env, check=True, timeout=60)
     tick = h.tick(sessions=SNAP)
     assert [(r["session"], r["state"]) for r in tick["reports"]] == [("claude-main", "working")]
@@ -622,6 +622,201 @@ def test_a_probe_through_the_real_hook_reports_nothing(live, tmp_path):
     # Its own /clear (a new conversation from the same CLI) is followed;
     # the probes' conversations never were.
     assert (link["cli"], link["conversation"]) == ("claude", "own-2")
+
+
+# ---- A CLI a server the agent started runs (claude-jnotes, 2026-10-22 evening)
+#
+# claude-jnotes started the jnotes backend from its Bash tool, `nohup uv run
+# python serve.py &'; the tool's shell exited, and the backend went to
+# launchd.  The `claude -p' the backend runs inherited claude-jnotes's name,
+# and was under neither its pane nor its CLI, so the herd took each for a
+# restart: each one's Stop closed the agent's open ask with a test answer
+# (d99e5a8a, 612a8427, 846b57c0) and its link followed the probe.
+
+JNOTES = SNAP + [
+    {"name": "claude-jnotes", "kind": "claude", "state": "idle", "project": "/src/jnotes/", "hostPid": 24671},
+    {"name": "lead-jnotes", "kind": "claude", "state": "waiting", "project": "/src/jnotes/", "hostPid": 41426},
+]
+
+
+def _jnotes(tmp_path, monkeypatch, host=24671):
+    monkeypatch.setattr(herd_mod, "pid_alive", lambda pid: True)
+    h = _store(tmp_path)
+    snap = [dict(r, hostPid=host) if r["name"] == "claude-jnotes" else r for r in JNOTES]
+    h.tick(sessions=snap)
+    return h, snap
+
+
+def _own_jnotes(h, **kw):
+    "claude-jnotes's own CLI: the pane's process (24671), under the tmux server."
+    return h.report("claude-jnotes", cli="claude", conversation="186d488a",
+                    transcript="/jnotes/186d488a.jsonl", pid=24671, ancestors=[71461], **kw)
+
+
+def test_a_cli_outside_the_agents_terminal_is_not_the_agent(tmp_path, monkeypatch):
+    h, snap = _jnotes(tmp_path, monkeypatch)
+    _own_jnotes(h, state="working")
+    # The backend's `claude -p': serve.py's child, under launchd -- not
+    # under the pane, nor the agent's CLI.  Even said to be interactive.
+    out = h.report("claude-jnotes", state="done", cli="claude", conversation="b30e2455",
+                   transcript="/e2e-ws/b30e2455.jsonl", last="I did not check.",
+                   pid=3935, ancestors=[96358, 96329])
+    assert "not in claude-jnotes's terminal (process 24671)" in out["ignored"]
+    link = h.link("claude-jnotes")
+    assert (link["conversation"], link["last"]) == ("186d488a", "")
+    with h._mu:
+        assert h._conn.execute("SELECT pid FROM links WHERE session = 'claude-jnotes'").fetchone()[0] == 24671
+    # A CLI the agent runs in its own terminal is told by the old rule.
+    assert "started by claude-jnotes's own CLI" in h.report(
+        "claude-jnotes", state="done", cli="claude", conversation="p1", pid=500, ancestors=[450, 24671, 71461])["ignored"]
+    # The pane's own process is the agent, on any conversation (a /clear).
+    h.report("claude-jnotes", cli="claude", conversation="own-2", pid=24671, ancestors=[71461])
+    assert h.link("claude-jnotes")["conversation"] == "own-2"
+
+
+def test_a_ghostel_agent_is_under_its_shell(tmp_path, monkeypatch):
+    "On ghostel the host is the terminal's shell, and the CLI typed into it is under it."
+    h, _ = _jnotes(tmp_path, monkeypatch, host=7000)
+    assert "ignored" not in h.report("claude-jnotes", state="working", cli="claude", conversation="g1",
+                                     pid=7010, ancestors=[7000, 600])
+    assert "ignored" in h.report("claude-jnotes", state="done", cli="claude", conversation="g2",
+                                 pid=8010, ancestors=[8000])
+
+
+def test_a_new_terminal_is_followed(tmp_path, monkeypatch):
+    """A respawn, a relay, a resume: a new host, which Emacs names on its
+    next tick.  Until then the old one is gone, and is no host."""
+    h, snap = _jnotes(tmp_path, monkeypatch)
+    _own_jnotes(h, state="working")
+    h.unlink("claude-jnotes")                                   # relay: the heir's own link
+    monkeypatch.setattr(herd_mod, "pid_alive", lambda pid: pid != 24671)
+    out = h.report("claude-jnotes", state="working", cli="claude", conversation="heir-1",
+                   pid=31000, ancestors=[71461])
+    assert "ignored" not in out and h.link("claude-jnotes")["conversation"] == "heir-1"
+    # The next tick names the new pane; what runs outside it is refused again.
+    h.tick(sessions=[dict(r, hostPid=31000) if r["name"] == "claude-jnotes" else r for r in snap])
+    assert "not in claude-jnotes's terminal (process 31000)" in h.report(
+        "claude-jnotes", state="done", cli="claude", conversation="x", pid=3935, ancestors=[96358])["ignored"]
+    # A restart in the same pane (a shell session's CLI run again) is followed.
+    h.tick(sessions=snap + [{"name": "sh-1", "kind": "shell", "state": "idle", "project": "/src/a/",
+                             "hostPid": 900}])
+    for pid in (910, 920):
+        assert "ignored" not in h.report("sh-1", state="working", cli="claude", conversation=f"c{pid}",
+                                         pid=pid, ancestors=[900, 10])
+    assert "ignored" in h.report("sh-1", state="working", cli="claude", conversation="c3",
+                                 pid=930, ancestors=[1])
+
+
+def test_a_headless_cli_is_not_the_agent(tmp_path, monkeypatch):
+    h, _ = _jnotes(tmp_path, monkeypatch, host=0)             # no host known: the headless signal alone
+    _own_jnotes(h, state="working")
+    out = h.report("claude-jnotes", state="done", cli="claude", conversation="b30e2455",
+                   last="I did not check.", pid=3935, ancestors=[96358, 96329], headless=True)
+    assert "headless claude run (-p) is not claude-jnotes" in out["ignored"]
+    assert h.link("claude-jnotes")["conversation"] == "186d488a"
+    # A shell session takes the CLI run in it, headless or not.
+    h.tick(sessions=JNOTES + [{"name": "sh-1", "kind": "shell", "state": "idle", "project": "/src/a/"}])
+    assert "ignored" not in h.report("sh-1", state="done", cli="claude", conversation="p", headless=True)
+
+
+@pytest.mark.parametrize("signals", ["both", "terminal", "headless"])
+def test_the_jnotes_evening_replayed(tmp_path, monkeypatch, signals):
+    """The herd log of 2026-10-22, 20:43-21:27, and the backend's `claude -p'
+    transcripts that match its `reports working' / `reports done' to the
+    second: three asks, each closed by a probe's Stop.  Either signal alone
+    keeps each open until claude-jnotes's own turn answers it."""
+    h, snap = _jnotes(tmp_path, monkeypatch, host=0 if signals == "headless" else 24671)
+    headless = signals != "terminal"
+    evening = [  # ask, then the backend's `claude -p' runs (conversation, pid) inside its turn
+        ("d99e5a8a", [("3eb73c2a", 3101)]),                     # 20:55:40-20:55:49
+        ("612a8427", [("40618af1", 3102)]),                     # 21:21:15-21:21:25
+        ("846b57c0", [("698f5640", 3103), ("b30e2455", 3935)]),  # 21:26:48-21:27:15, 21:27:23-21:27:30
+    ]
+    for task, probes in evening:
+        ask = h.ask("claude-jnotes", f"task {task}", from_name="lead-jnotes")
+        _deliver(h, snap)
+        _own_jnotes(h, state="working")                         # its turn, begun after the ask
+        for conv, pid in probes:
+            for state, last in (("working", None), ("done", "阿明 is a test answer")):
+                out = h.report("claude-jnotes", state=state, cli="claude", conversation=conv,
+                               transcript=f"/e2e-ws/{conv}.jsonl", last=last,
+                               pid=pid, ancestors=[96358, 96329], headless=headless)
+                assert "ignored" in out, (task, conv, state)
+            assert h.get_ask(ask["id"])["status"] == "delivered", task
+            assert h.link("claude-jnotes")["conversation"] == "186d488a"
+        assert [r["state"] for r in h.tick(sessions=snap)["reports"]] == ["working"]  # never `done' mid-turn
+        _own_jnotes(h, state="done", last=f"Done: {task}.")
+        got = h.get_ask(ask["id"])
+        assert (got["status"], got["reply"]) == ("answered", f"Done: {task}."), task
+    with h._mu:
+        assert h._conn.execute("SELECT pid FROM links WHERE session = 'claude-jnotes'").fetchone()[0] == 24671
+
+
+def test_the_hook_says_a_headless_claude(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+    assert hc._headless("claude") and not hc._headless("agy")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    assert not hc._headless("claude")
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT")
+    assert not hc._headless("claude")
+
+
+DETACHED = """import json, os, subprocess, sys, time
+# The agent's CLI, as far as the herd can see: it reports its own turn
+# through `herd hook', and starts a server in the background the way a
+# tool shell's `nohup ... &' does -- the server leaves its tree (a double
+# fork: its parent exits, launchd takes it).  The server runs a CLI that
+# reports too, under the agent's name.  argv: run, done-file, entrypoint.
+run, done, entry = sys.argv[1], sys.argv[2], sys.argv[3]
+own = {"session_id": "own-1", "transcript_path": "/own.jsonl", "cwd": "/src/a"}
+probe = {"session_id": "probe-9", "transcript_path": "/e2e-ws/probe-9.jsonl", "cwd": "/e2e-ws"}
+def hook(p, env=None):
+    subprocess.run(["sh", "-c", run], input=json.dumps(p), text=True, check=True,
+                   env=dict(os.environ, **(env or {})), stdout=subprocess.DEVNULL)
+hook(dict(own, hook_event_name="UserPromptSubmit"))
+if os.fork() == 0:                      # the tool shell
+    if os.fork() == 0:                  # the server, about to be orphaned
+        while os.getppid() != 1:
+            time.sleep(0.05)
+        # Its CLI, as `claude -p' would run it: not the agent.
+        subprocess.run([sys.executable, "-c", "import os, subprocess, sys; subprocess.run(['sh', '-c', sys.argv[1]], input=sys.argv[2], text=True, env=os.environ, stdout=subprocess.DEVNULL); subprocess.run(['sh', '-c', sys.argv[1]], input=sys.argv[3], text=True, env=os.environ, stdout=subprocess.DEVNULL)",
+                        run, json.dumps(dict(probe, hook_event_name="UserPromptSubmit")),
+                        json.dumps(dict(probe, hook_event_name="Stop", last_assistant_message="probe answer"))],
+                       env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entry), check=True)
+        open(done, "w").close()
+        os._exit(0)
+    os._exit(0)
+os.wait()
+while not os.path.exists(done):
+    time.sleep(0.05)
+hook(dict(own, hook_event_name="Stop", last_assistant_message="the real answer"))
+"""
+
+
+@pytest.mark.parametrize("entry,host", [("cli", True), ("sdk-cli", False)])
+def test_a_detached_servers_cli_through_the_real_hook(live, tmp_path, entry, host):
+    """Real processes: the agent's CLI, a server it leaves running in the
+    background (orphaned to launchd), and the CLI that server runs --
+    each reporting through `herd hook' under the agent's name.  The ask
+    is answered by the agent alone.  Once with the terminal as the only
+    signal (an interactive-looking probe), once with headless alone (no
+    terminal known)."""
+    h = herd_mod.get_herd()
+    agent = tmp_path / "agent.py"
+    agent.write_text(DETACHED)
+    done = tmp_path / "server-done"
+    env = dict(live["env"], TMPDIR=str(tmp_path), GHOSTHERD_HERD=str(HERD), GHOSTHERD_SESSION="claude-main",
+               CLAUDE_CODE_ENTRYPOINT="cli")
+    proc = subprocess.Popen([sys.executable, str(agent), hc._claude_command(), str(done), entry], env=env)
+    snap = [dict(r, hostPid=proc.pid if host else 0) for r in SNAP]
+    h.tick(sessions=snap)
+    ask = h.ask("claude-main", "check the web search", from_name="agy-a2")
+    _deliver(h, snap)
+    assert proc.wait(timeout=60) == 0
+    got = h.get_ask(ask["id"])
+    assert (got["status"], got["reply"]) == ("answered", "the real answer"), got
+    link = h.link("claude-main")
+    assert (link["conversation"], link["transcript"]) == ("own-1", "/own.jsonl")
 
 
 # ---- Installing ----------------------------------------------------------
