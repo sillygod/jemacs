@@ -1739,7 +1739,11 @@
   // tail (default limit); `load earlier' pages are fetched on their own.
   function watchRoom() {
     emit("room-watch", {
-      project: herdNow.room, screens: [...herdNow.roomScreen], view: herdNow.roomView,
+      project: herdNow.room, screens: [...herdNow.roomScreen],
+      // The primary room is always a chat (it has no columns view), so ask
+      // Emacs for the chat whatever roomView's default is on this device --
+      // otherwise the desktop default (columns) leaves it "Reading…" forever.
+      view: isPrimaryRoom() ? "chat" : herdNow.roomView,
     });
   }
 

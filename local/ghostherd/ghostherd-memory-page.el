@@ -2295,9 +2295,16 @@ the sidecar reads it with `read_sub', not the room reader."
   "Show the room INTENT names, its agents in the screens it lists by
 their screen, or as one chat when its view is \"chat\".  The same room
 again only changes which those are."
-  (let ((project (alist-get 'project intent))
-        (screens (seq-filter #'stringp (append (alist-get 'screens intent) nil)))
-        (chat (equal (alist-get 'view intent) "chat")))
+  (let* ((project (alist-get 'project intent))
+         (screens (seq-filter #'stringp (append (alist-get 'screens intent) nil)))
+         ;; The primary room is always a chat -- primary has no columns view
+         ;; -- so a page that (on the desktop default) asks for columns still
+         ;; gets its conversation, not an empty columns read it waits on
+         ;; forever behind "Reading the conversations…".
+         (chat (or (equal (alist-get 'view intent) "chat")
+                   (and (stringp project)
+                        (fboundp 'ghostherd--primary-dir-p)
+                        (ghostherd--primary-dir-p project)))))
     (unless (and (stringp project) (not (string-empty-p project)))
       (user-error "No project"))
     (unless (equal project ghostherd-memory-page--room)

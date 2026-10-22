@@ -7571,6 +7571,35 @@ page as [] -- json.el writes nil as null, and the page stopped drawing."
            (ghostherd-memory-page--room-close)
            (delete-file file))))))
 
+(ert-deftest ghostherd-test-the-primary-room-is-a-chat-whatever-the-view ()
+  "The primary room (primary's directory, not a git checkout, no columns view)
+is read as a chat even when the page asks for columns -- the desktop default
+-- so it is never stuck 'Reading the conversations…' behind an empty columns
+read.  A normal room follows the view it is given."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--room nil)
+        (ghostherd-memory-page--room-chat nil)
+        (ghostherd-memory-page--room-timer nil)
+        (ghostherd-memory-page--room-screens nil)
+        (ghostherd-memory-page--chat-sent nil)
+        (ghostherd-memory-page--chat-limit nil)
+        (ghostherd-memory-page--room-sent (make-hash-table :test 'equal))
+        (ghostherd-memory-page--room-limits (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'ghostherd-memory-page--room-tick) #'ignore)
+              ((symbol-function 'ghostherd--primary-dir-p)
+               (lambda (p) (equal p "~/.ghostherd/primary/"))))
+      ;; The primary room, asked for columns (the desktop default), is a chat.
+      (ghostherd-memory-page--room-open '((project . "~/.ghostherd/primary/") (view . "columns")))
+      (should ghostherd-memory-page--room-chat)
+      (ghostherd-memory-page--room-close)
+      ;; A normal room follows the view it is given.
+      (ghostherd-memory-page--room-open '((project . "~/src/x/") (view . "columns")))
+      (should-not ghostherd-memory-page--room-chat)
+      (ghostherd-memory-page--room-close)
+      (ghostherd-memory-page--room-open '((project . "~/src/x/") (view . "chat")))
+      (should ghostherd-memory-page--room-chat)
+      (ghostherd-memory-page--room-close))))
+
 (ert-deftest ghostherd-test-room-reads-a-conversation-once-per-change ()
   "The sidecar reads a transcript when it changed, not every 2s; the page
 gets each entry's known fields, lists as arrays."

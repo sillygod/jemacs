@@ -51,6 +51,12 @@ const herd = (running) => {
       check(W("its room is primary's, named so"), (await txt(".room .rhead .pname")) === "Primary");
       check(W("a chat, not columns: no view toggle"),
         !!(await page.$(".room .chat")) && !(await page.$('.room [data-act="a:room-view"]')));
+      // The room must ASK Emacs for the chat, not the device-default view: on
+      // the desktop that default is "columns", and the live bug was Emacs then
+      // reading columns and the chat staying "Reading the conversations…".
+      const rw = sent("room-watch").pop();
+      check(W("the room asks Emacs for the chat whatever the device default"),
+        rw && rw.project === PD && rw.view === "chat", rw);
       check(W("it says primary is not running, and how to start it"),
         /Primary is not running\.  Write to it below/.test(await txt(".chat .cbody")));
       const to = await page.$eval(".chat .chat-to", (s) => [...s.options].map((o) => [o.value, o.textContent]));
