@@ -390,6 +390,34 @@ def _split(command):
     return stages, None
 
 
+def _split_or(command):
+    """COMMAND's parts around a top-level `||', quotes respected as sh would
+    (a `||' quoted or escaped is a word); one part when it has none."""
+    parts, start, quote, i = [], 0, None, 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch == "\\":
+                i += 1
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        elif ch == "|" and command[i + 1:i + 2] == "|":
+            parts.append(command[start:i])
+            i += 2
+            start = i
+            continue
+        i += 1
+    parts.append(command[start:])
+    return parts
+
+
 def _option_value(program, word):
     "Whether WORD, an option of PROGRAM, takes the next word as its value."
     opts = VALUE_OPTIONS.get(program, ())
@@ -557,8 +585,34 @@ class Guard:
         herd = self._herd(line)
         if herd:
             return herd
+        parts = _split_or(line)
+        if len(parts) > 1:
+            # A fallback, A || B: each one judged as if run alone, in the same
+            # place.  Grouped, so a failed cd runs neither -- B is never run
+            # where it was not checked.
+            lines, changed = [], False
+            for part in parts:
+                v = self._line(part, cwd)
+                if v.decision != "allow":
+                    return v
+                new = (v.overwrite or {}).get("CommandLine")
+                changed = changed or bool(new)
+                lines.append(new or part.strip())
+            return _allow("search-excludes-secrets" if changed else "command",
+                          {"CommandLine": prefix + "(" + " || ".join(lines) + ")"})
+        v = self._line(line, cwd)
+        if v.overwrite and prefix:
+            v.overwrite = dict(v.overwrite, CommandLine=prefix + v.overwrite["CommandLine"])
+        return v
+
+    def _line(self, line, cwd):
+        """The verdict on LINE, one pipeline run in CWD -- rewritten, when a
+        search must skip secrets, without its cd."""
+        line = line.strip()
+        if not line:
+            return _ask("empty command.", "empty")
         stripped = _STDERR.sub("", " " + line).strip()
-        tail = " 2>/dev/null" if stripped != line.strip() and "2>/dev/null" in line else ""
+        tail = " 2>/dev/null" if stripped != line and "2>/dev/null" in line else ""
         stages, refusal = _split(stripped)
         if stages is None:
             kind, why = refusal
@@ -573,7 +627,7 @@ class Guard:
             rewritten.append(new)
             changed = changed or new != [w for w, _ in words]
         if changed:
-            return _allow("search-excludes-secrets", {"CommandLine": prefix + " | ".join(
+            return _allow("search-excludes-secrets", {"CommandLine": " | ".join(
                 " ".join(shlex.quote(w) for w in ws) for ws in rewritten) + tail})
         return _allow("command")
 
@@ -619,6 +673,22 @@ class Guard:
                 return _never("rm -rf is never run by an agent; delete with care, file by file, or ask "
                               "the user.", "rm-rf"), None
         if program == "git":
+            # git -C DIR ...: the rest as if run in DIR -- itself a path
+            # checked like any other, and a write's to be in the workspace.
+            dirs = []
+            while args and args[0][0] == "-C":
+                if len(args) < 2:
+                    return _ask("git -C needs a directory.", "git-other"), None
+                v = self.p.check_path(args[1][0], cwd)
+                if v is not None:
+                    return v, None
+                cwd = _real(os.path.join(cwd, os.path.expanduser(args[1][0])))
+                dirs.append(args[1][0])
+                args = args[2:]
+            if dirs and args and args[0][0] in GIT_WRITE:
+                v = self.p.check_path(cwd, write=True)
+                if v is not None:
+                    return v, None
             v = self._git(args, cwd)
             if v is not None:
                 return v, None

@@ -2607,6 +2607,18 @@ attach it.  It comes from the page on another device -- a phone's photo
      (list :id id)
      (lambda (err) (ghostherd-memory-page--js "showError" (format "Could not approve: %s" err))))))
 
+(defun ghostherd-memory-page--guard-reject (intent)
+  "Keep INTENT's guard request denied: it closes, and the agent is told."
+  (let ((id (alist-get 'id intent)))
+    (unless (and (stringp id) (string-match-p "\\`[0-9a-f]\\{4,32\\}\\'" id))
+      (user-error "No such request"))
+    (ghostherd-memory-request-async
+     "herd_guard_reject"
+     (lambda (_r)
+       (ghostherd-memory-page--js "flash" "Kept denied; the agent is told not to try it again"))
+     (list :id id)
+     (lambda (err) (ghostherd-memory-page--js "showError" (format "Could not keep it denied: %s" err))))))
+
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus.
 With a true `worktree', give it its own git worktree off the project's
@@ -3112,6 +3124,7 @@ user's state (or none) and push."
         ("lead-say" (ghostherd-memory-page--lead-say intent))
         ("primary-say" (ghostherd-memory-page--primary-say intent))
         ("guard-approve" (ghostherd-memory-page--guard-approve intent))
+        ("guard-reject" (ghostherd-memory-page--guard-reject intent))
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))

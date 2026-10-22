@@ -3738,6 +3738,9 @@ PLIST keys:
                         (if started-by
                             (format "started by %s (%s on %s)" started-by kind backend)
                           (format "spawned %s on %s" kind backend)))
+    ;; A new process under this name: the guard requests its old one left
+    ;; open mean nothing to it.
+    (ghostherd--guard-clear name)
     (ghostherd--ensure-poll-timer)
     (run-hook-with-args 'ghostherd-session-created-hook session)
     ;; agy has no --rules flag: tell it the shared-memory opening as its first
@@ -7912,6 +7915,13 @@ sees: allow only what you would let it run unwatched."
 (put 'ghostherd-guard-allow-commands 'safe-local-variable
      (lambda (v) (and (listp v) (seq-every-p #'stringp v))))
 
+(defcustom ghostherd-guard-request-ttl 3600
+  "Seconds a call a guarded agent was refused waits for the user before it
+expires: by then the turn that wanted it is long over.  An agent's open
+requests also clear when it is respawned or relaunched."
+  :type 'natnum
+  :group 'ghostherd)
+
 (defcustom ghostherd-guard-root "~/.ghostherd/guard/"
   "Where each guarded agent's guard directory goes: <root>/<agent>/.
 The sidecar writes the user's approvals there, and only there
@@ -8002,6 +8012,8 @@ the hooks.json agy loads from it.  Return the guard directory."
          (cmd (concat (shell-quote-argument (or herd "herd")) " guard " (shell-quote-argument dir)
                       " || echo '{\"decision\":\"deny\",\"reason\":\"The herd guard did not answer; tell the user.\"}'")))
     (make-directory (expand-file-name ".agents" dir) t)
+    ;; Rebuilt for a new process: the old one's allowances go with it.
+    (ignore-errors (delete-file (expand-file-name "approved.json" dir)))
     (set-file-modes dir #o700)
     (let ((coding-system-for-write 'utf-8)
           (json-encoding-pretty-print t))
@@ -8099,8 +8111,28 @@ use once."
                     id (plist-get r :summary) (plist-get r :rule)))
            ("approved" (format "guard %s approved once: %s" id (plist-get r :summary)))
            ("used" (format "guard %s ran, approved: %s" id (plist-get r :summary)))
+           ("declined" (format "guard %s kept denied by the user: %s" id (plist-get r :summary)))
+           ("expired" (format "guard %s expired, never answered: %s" id (plist-get r :summary)))
            (_ (format "guard %s %s: %s" id status (plist-get r :summary))))))))
   (setq ghostherd--guard-requests requests))
+
+(defun ghostherd--guard-clear (name)
+  "Tell the sidecar agent NAME is a new process: its open guard requests expire."
+  (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
+             (fboundp 'ghostherd-memory-request-async))
+    (ghostherd-memory-request-async "herd_guard_clear" #'ignore (list :session name) #'ignore)))
+
+(defun ghostherd-guard-reject (id)
+  "Keep the guard's request ID denied: it closes, and the agent is told not
+to try that call again."
+  (interactive (list (completing-read "Keep denied: "
+                                      (mapcar (lambda (r) (plist-get r :id))
+                                              (seq-filter (lambda (r) (equal (plist-get r :status) "pending"))
+                                                          ghostherd--guard-requests)))))
+  (ghostherd-memory-request-async
+   "herd_guard_reject" (lambda (_r) (message "ghostherd: kept %s denied" id))
+   (list :id id)
+   (lambda (err) (message "ghostherd: keeping %s denied: %s" id err))))
 
 (defun ghostherd-guard-approve (id)
   "Approve the guard's request ID once: the agent may run that exact call
@@ -8859,7 +8891,9 @@ reaches you there."
              :page_url (or (ghostherd--room-url) "")
              :ack_ids (vconcat (append acks nil))
              :replies (vconcat (or replies []))
-             :pushes (vconcat (reverse pushes)))
+             :pushes (vconcat (reverse pushes))
+             ;; How long a guarded agent's refused call waits for the user.
+             :guard_ttl ghostherd-guard-request-ttl)
        (lambda (_err)
          (setq ghostherd--herd-tick-inflight nil
                ghostherd--herd-replies

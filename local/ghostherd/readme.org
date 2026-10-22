@@ -963,9 +963,12 @@ know, a call it cannot read, and the guard failing are all denials.
   read-only commands (=grep=, =rg=, =ls=, =cat=, =head=, =find= without
   =-exec= or =-delete=, ...); =git status/diff/log/show/branch/...= and
   the local writes (=add=, =commit=, =switch=, =stash=, =restore=, =mv=),
-  which run with git's hooks off; the herd's own commands; and the
-  project's own, from =ghostherd-guard-allow-commands= (=("npm test"
-  "pytest")=)
+  which run with git's hooks off --- also as =git -C DIR ...= into a
+  folder it may read (a write only into its workspace); a fallback
+  between commands each allowed alone, =A || B=, run grouped behind
+  its =cd= so =B= never runs where it was not checked; the herd's own
+  commands; and the project's own, from =ghostherd-guard-allow-commands=
+  (=("npm test" "pytest")=)
 - =read-only= --- jnotes' rules: reads and read-only commands only
 - =nil= --- no guard; agy prompts as it always has
 
@@ -1071,6 +1074,18 @@ which the agent cannot read; the herd tells the agent "approved: <call>,
 run it again"; the next identical call runs and spends it.  An allowance
 unused for 30 minutes lapses.  The herd log has each step: =guard needs
 approval=, =approved once=, =ran, approved=.
+
+*Keep denied*, beside it --- and the Inbox's /Keep it denied/, and =M-x
+ghostherd-guard-reject= --- closes the request: it leaves the card and the
+Inbox, an approval not yet used is taken back, and the agent is told once
+"The user kept this denied: <call>.  Don't retry it; say what you needed
+instead."  The same call tried again stays denied without asking you again
+(its answer says so).  A request nobody answers expires after
+=ghostherd-guard-request-ttl= (an hour): by then the turn that wanted it
+is over.  And an agent respawned or relaunched starts clean: its open
+requests expire and its guard directory keeps none of the old
+allowances --- an old call's fingerprint means nothing to a new process.
+The log says =kept denied by the user= and =expired, never answered=.
 
 *Where it runs.*  The guard lives in =~/.ghostherd/guard/<agent>/=
 (=ghostherd-guard-root=): its =policy.json=, its =approved.json=, and the

@@ -2038,6 +2038,25 @@ or deny --- with what wants the user a denial they approve once.
   they run code the agent can change, so the readme says to allow only
   what may run unwatched
 
+** Follow-up: Keep denied, requests that expire, fewer false denials (ask 6c009f2f)
+
+- [X] A real reject: =herd_guard_reject= (the herd's own; agents are
+  refused), from the card's Keep denied, the Inbox's Keep it denied (and
+  its =e=) and =M-x ghostherd-guard-reject=.  The request closes
+  (declined), an unused approval is taken back, the agent is told once;
+  the same call tried again stays denied and asks nobody
+- [X] Stale requests: a waiting one expires after
+  =ghostherd-guard-request-ttl= (an hour, said each tick); a respawn or
+  relaunch expires all of an agent's open ones (=herd_guard_clear=) and
+  drops its old =approved.json=.  A closed request stays in the tick's
+  list for its recency after it closed, so the log sees it go.
+  =guard_requests.closed_at= added on start
+- [X] False denials from the user's day, allowed: =git -C <dir> ...= (the
+  directory checked like any path, a write's into the workspace), and
+  =A || B= between commands each allowed alone, grouped behind its =cd=.
+  Kept refused, after a look: =sqlite3 db "SELECT ..."= (=.shell=,
+  =readfile()=, =load_extension=), =python3 -c= (inline code)
+
 ** Follow-up: the agents' token, an allowlisted env, marked asks (ask 33c4af1d)
 
 - [X] Agents hold a token of their own (=rpc.agent-token=): their

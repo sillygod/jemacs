@@ -13180,5 +13180,57 @@ comes to the page whole -- or why it could not be read."
       (should-not ghostherd-threads--watching)
       (should (= ghostherd-threads--limit 40)))))
 
+;;; Kept denied, expired, cleared (ask 6c009f2f)
+
+(ert-deftest ghostherd-test-a-tick-says-how-long-a-guard-request-waits ()
+  (ghostherd-tests--with-herd ((ghostherd-guard-request-ttl 1234) (ghostherd--herd-tick-inflight nil))
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://127.0.0.1:1/jsonrpc/x"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method _ok params &rest _) (when (equal method "herd_tick") (setq sent params)))))
+        (ghostherd--herd-tick-async)
+        (should (eql (plist-get sent :guard_ttl) 1234))))))
+
+(ert-deftest ghostherd-test-a-respawn-clears-its-guard-requests ()
+  "A new process under a name: the sidecar is told its open guard requests
+expire, and its rebuilt guard keeps none of the old allowances."
+  (ghostherd-tests--with-guard
+    (let ((asked nil)
+          (dir (ghostherd--guard-dir "agy-p")))
+      (make-directory dir t)
+      (write-region "{\"approvals\": [{\"id\": \"old\"}]}" nil (concat dir "approved.json"))
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://127.0.0.1:1/jsonrpc/x"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method _ok params &rest _) (push (cons method params) asked))))
+        (ghostherd-spawn 'agy :name "agy-p" :project repo :directory repo :backend 'fake :display nil)
+        (ghostherd-spawn 'claude :name "claude-p" :project repo :directory repo :backend 'fake :display nil))
+      (should (member '("herd_guard_clear" :session "agy-p") asked))
+      (should (member '("herd_guard_clear" :session "claude-p") asked))
+      (should-not (file-exists-p (concat dir "approved.json")))
+      (should (file-exists-p (concat dir "policy.json"))))))
+
+(ert-deftest ghostherd-test-kept-denied-and-expired-are-logged ()
+  (ghostherd-tests--with-herd ((ghostherd--log nil))
+    (ghostherd--herd-take-guard (list (list :id "g1" :session "agy-p" :status "declined" :summary "run_command: cat .env")
+                                      (list :id "g2" :session "agy-p" :status "expired" :summary "run_command: git -C x grep holy")))
+    (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
+                   '("guard g1 kept denied by the user: run_command: cat .env"
+                     "guard g2 expired, never answered: run_command: git -C x grep holy")))))
+
+(ert-deftest ghostherd-test-the-cards-keep-denied-reaches-the-herd ()
+  "Keep denied on the card (or the Inbox) asks the sidecar to reject that
+request, by its id; anything not an id goes nowhere."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (asked shown)
+    (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &rest _) (push (list method params) asked) (funcall ok nil)))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (&rest args) (push args shown))))
+      (ghostherd-memory-page--handle '((op . "guard-reject") (id . "1a2b3c4d")))
+      (should (equal asked '(("herd_guard_reject" (:id "1a2b3c4d")))))
+      (should (equal (car shown) '("flash" "Kept denied; the agent is told not to try it again")))
+      (dolist (bad '("../x" "" nil "1a2b3c4d; rm"))
+        (ghostherd-memory-page--handle `((op . "guard-reject") (id . ,bad))))
+      (should (= (length asked) 1)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

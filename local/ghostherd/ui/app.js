@@ -1102,9 +1102,12 @@
   // exact call: the herd lets it through that once and tells the agent to
   // run it again.  Waiting and approved ones stay; the rest for a while.
 
+  // Kept denied by the user, or expired (its time out, its agent
+  // respawned): settled, so off the card -- the log keeps them.
   function guardFor(name) {
     const recent = Date.now() - 30 * 60 * 1000;
     return ((herdNow.data && herdNow.data.guard) || []).filter((r) => r.session === name &&
+      r.status !== "declined" && r.status !== "expired" &&
       (r.status === "pending" || r.status === "approved" || (r.created || 0) > recent));
   }
 
@@ -1119,7 +1122,9 @@
       '<span class="gtext">' + esc(r.summary || "") + "</span>" +
       (r.status === "pending" && r.approvable
         ? '<button type="button" class="primary small" data-act="a:guard-approve" data-id="' + esc(r.id) +
-          '" title="Let exactly this call run, once">Approve once</button>' : "") +
+          '" title="Let exactly this call run, once">Approve once</button>' +
+          '<button type="button" class="ghost small" data-act="a:guard-reject" data-id="' + esc(r.id) +
+          '" title="Keep it denied; the agent is told not to try it again">Keep denied</button>' : "") +
       '<span class="when">' + esc(r.created ? when(r.created / 1000) : "") + "</span></div>";
   }
 
@@ -2571,9 +2576,9 @@
       return col ? colJump(col.getAttribute("data-name"), dir) : chatJump(dir);
     }
     if (act === "room") return openRoom(project);
-    if (act === "guard-approve") {
+    if (act === "guard-approve" || act === "guard-reject") {
       el.disabled = true;
-      return emit("guard-approve", { id: el.getAttribute("data-id") });
+      return emit(act, { id: el.getAttribute("data-id") });
     }
     if (act === "primary-room") {
       const p = primaryInfo();
@@ -3969,6 +3974,13 @@
     renderInbox();
   }
 
+  // A guard request kept denied: the herd closes it and tells the agent,
+  // so it leaves the card as well -- not only this list.
+  function guardKeepDenied(it) {
+    emit("guard-reject", { id: it.guardId });
+    inboxResolve(it, "Kept denied — the agent is told not to try it again", false);
+  }
+
   function inboxMarkRead(it) {
     if (it && !it.read) { it.read = true; emit("inbox-set", { id: it.id, read: true }); }
   }
@@ -3998,6 +4010,7 @@
     }
     if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
     if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
+    if (act === "done" && it.kind === "guard") { guardKeepDenied(it); return; }
     if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
   }
 
@@ -4021,7 +4034,8 @@
     } else if (cur && e.key === "a" && (cur.kind === "guard" || cur.kind === "proposal")) {
       e.preventDefault();
       onInboxAction(cur.kind === "guard" ? "guard-approve" : "prop-approve", { getAttribute: () => cur.id });
-    } else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
+    } else if (cur && e.key === "e" && cur.kind === "guard") { e.preventDefault(); guardKeepDenied(cur); }
+    else if (cur && e.key === "e") { e.preventDefault(); emit("inbox-set", { id: cur.id, done: true }); inboxResolve(cur, "Marked read", true); }
   }
 
   function inboxBadge() {
