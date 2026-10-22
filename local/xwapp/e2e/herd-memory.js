@@ -217,6 +217,34 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
       await sleep(40);
       check(W("no pending proposals, no section"), (await page.$(".mprop")) === null);
 
+      // The real case (the live bug): more than one proposal, and a proposal
+      // with SEVERAL facts -- all of them show, each with its coloured diff.
+      // Live, the facts arrived collapsed into one object (the elisp encode)
+      // and the whole section rendered empty; the ERT round-trip test guards
+      // that encode, this guards that the page paints the real shape.
+      await page.evaluate(() => GM.renderProposals({ key: "-src-dp", proposals: [
+        { id: "pA", project: "-src-dp", file: ".skillshare/extras/rules/frontend.md",
+          author: "lead-deploy-platform", status: "pending",
+          facts: [{ name: "tooltip-provider-on-mounted-page", title: "Tooltip provider on mounted page", gone: false, promoted: false }],
+          diff: "--- a/frontend.md\n+++ b/frontend.md\n@@ -1 +1,2 @@\n ctx\n+- Every Tooltip needs a TooltipProvider\n" },
+        { id: "pB", project: "-src-dp", file: "CLAUDE.md", author: "lead-deploy-platform", status: "pending",
+          facts: [{ name: "branch-discipline", title: "Branch discipline", gone: false, promoted: false },
+                  { name: "uv-lock-must-follow-pyproject", title: "Uv lock must follow pyproject", gone: false, promoted: false },
+                  { name: "pod-env-grep-leaks-secrets", title: "Pod env grep leaks secrets", gone: false, promoted: false },
+                  { name: "prefer-resume-over-drain", title: "Prefer resume over drain", gone: false, promoted: false }],
+          diff: "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n ctx\n+## Branches and PRs\n" }] }));
+      await sleep(60);
+      check(W("both proposals show, the four-fact one with all four facts"),
+        (await page.$$eval(".mprop", (es) => es.length)) === 2 &&
+        (await page.$$eval(".mprop", (es) => {
+          const multi = es.find((e) => /CLAUDE\.md/.test(e.querySelector(".mpinto").textContent));
+          return multi ? multi.querySelectorAll(".mpfact").length : 0;
+        })) === 4);
+      check(W("each proposal paints its coloured diff"),
+        await page.$$eval(".mprop", (es) => es.every((e) => !!e.querySelector(".mpdiff .dadd"))));
+      await page.evaluate(() => GM.renderProposals({ key: "-src-dp", proposals: [] }));
+      await sleep(40);
+
       // The Promoted filter: a promoted fact is hidden by default, shown when
       // toggled, and "Put back" emits memory-unpromote.
       await page.evaluate((f) => GM.renderMemory({ key: "-src-dp", facts: f.concat([

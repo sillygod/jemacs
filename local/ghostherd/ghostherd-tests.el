@@ -12593,5 +12593,39 @@ starts it."
         (should (equal (car said) '("primary" . "what is stuck?")))
         (should (equal (cadr (assoc "flash" sent)) "Starting primary; it gets your message once it is ready"))))))
 
+(ert-deftest ghostherd-test-proposals-facts-reach-the-page-as-an-array ()
+  "A proposal's facts survive the page encode (json.el, as xwapp-js sends it) as
+a JSON array of fact objects -- never one collapsed {\"name\":[…]} object.  That
+collapse was the live bug: the page's `renderMemProposal' threw on
+`p.facts.map' and the Memory tab's whole Proposals section rendered empty.  See
+`ghostherd-memory-page--proposal-for-page'."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--memory-key "-k")
+        (ghostherd-memory-page--proposals-sig nil)
+        (captured nil)
+        ;; As json.el parses the sidecar's reply (the page code's own settings):
+        ;; each proposal a plist, its `:facts' a LIST of fact plists.
+        (result (list :key "-k" :proposals
+                      (list (list :id "p1" :status "pending" :file "CLAUDE.md"
+                                  :diff "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n ctx\n+add"
+                                  :author "lead"
+                                  :facts (list (list :name "a" :title "A" :gone nil :promoted nil)
+                                               (list :name "b" :title "B" :gone nil :promoted nil)))))))
+    (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+               (lambda (_method cb &rest _) (funcall cb result)))
+              ((symbol-function 'ghostherd-memory-page--js)
+               (lambda (_fn obj) (setq captured obj))))
+      (ghostherd-memory-page--memory-proposals-tick "-k"))
+    (should captured)
+    ;; Round-trip through json.el exactly as xwapp-js does.
+    (let ((json (json-encode captured)))
+      (should (string-match-p "\"facts\":\\[{" json))   ; an array of objects
+      (should-not (string-match-p "\"facts\":{" json))  ; not a collapsed object
+      (let* ((back (json-parse-string json :object-type 'plist :array-type 'list))
+             (facts (plist-get (car (plist-get back :proposals)) :facts)))
+        (should (= 2 (length facts)))                    ; both facts kept, not one
+        (should (equal "a" (plist-get (car facts) :name)))
+        (should (equal "b" (plist-get (cadr facts) :name)))))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

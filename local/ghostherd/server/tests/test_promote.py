@@ -224,3 +224,25 @@ def test_recall_project_resolves_path_leaf_and_slug(rpc):
         assert got == key
     with pytest.raises(ValueError):
         handler._memory_store({"project": "no-such-project", "project_given": True})
+
+
+def test_an_identical_pending_proposal_is_not_stacked(rpc):
+    handler, key, _store = rpc
+    args = {"from": "claude-proj", "project": "/work/proj",
+            "facts": ["never-commit-to-main"], "file": "CLAUDE.md",
+            "diff": "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@\n+Never commit to main.\n"}
+    # The user presses "Suggest" twice and the lead proposes the same thing
+    # twice: the second is the same row, not a duplicate.
+    first = handler._herd_promote_propose(dict(args))
+    second = handler._herd_promote_propose(dict(args))
+    assert second["id"] == first["id"]
+    assert second.get("duplicate") is True
+    props = handler._herd_memory_proposals({"key": key})["proposals"]
+    assert len(props) == 1
+
+    # A genuinely different diff (or different facts, or file) is its own
+    # proposal, never folded into the first.
+    other = handler._herd_promote_propose(
+        dict(args, diff="--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@\n+Branch, then PR.\n"))
+    assert other["id"] != first["id"]
+    assert len(handler._herd_memory_proposals({"key": key})["proposals"]) == 2

@@ -1559,11 +1559,25 @@ class HerdStore:
             raise ValueError("the exact diff is required")
         pid = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        facts_json = json.dumps(names)
         with self._mu:
+            # Don't stack identical pending proposals: the user may press
+            # "Suggest promotions" more than once (e.g. when the page showed
+            # nothing), and the lead may answer each.  An identical one still
+            # pending -- same project, file, facts and diff -- is returned as
+            # is, so the page shows one, not a pile of the same.
+            dup = self._conn.execute(
+                "SELECT id FROM proposals WHERE status = 'pending' AND project = ? "
+                "AND file = ? AND facts = ? AND diff = ? ORDER BY created_at DESC LIMIT 1",
+                (project, file, facts_json, diff),
+            ).fetchone()
+            if dup:
+                return {"id": dup[0], "project": project, "facts": names,
+                        "file": file, "duplicate": True}
             self._conn.execute(
                 "INSERT INTO proposals (id, project, facts, file, diff, author, "
                 "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-                (pid, project, json.dumps(names), file, diff,
+                (pid, project, facts_json, file, diff,
                  (author or "unknown").strip() or "unknown", now),
             )
             self._conn.commit()

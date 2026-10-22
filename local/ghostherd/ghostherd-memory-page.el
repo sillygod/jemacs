@@ -1870,13 +1870,25 @@ and the page is not re-rendered under an open editor every few seconds.")
   "The RPC params for watched store KEY: `:project' for a path, else `:key'."
   (if (string-match-p "/" key) (list :project key) (list :key key)))
 
+(defun ghostherd-memory-page--proposal-for-page (p)
+  "Proposal P with its `:facts' as a vector.  Each fact is a plist and the
+facts come back from json.el as a list of them; left a list, `json-encode'
+(xwapp-js) would re-read that as ONE alist -- collapsing every fact into a
+single bogus {\"name\":[…]} object -- so the page's `renderMemProposal' throws
+on `p.facts.map' and the whole Proposals section shows nothing.  A vector
+encodes as the JSON array the page maps over."
+  (let ((c (copy-sequence p)))
+    (plist-put c :facts (ghostherd-memory-page--vec (plist-get p :facts)))))
+
 (defun ghostherd-memory-page--memory-proposals-tick (key)
   "Fetch KEY's promotion proposals; push them when they changed."
   (ghostherd-memory-request-async
    "herd_memory_proposals"
    (lambda (result)
      (when (equal key ghostherd-memory-page--memory-key)
-       (let* ((props (ghostherd-memory-page--vec (plist-get result :proposals)))
+       (let* ((props (ghostherd-memory-page--vec
+                      (mapcar #'ghostherd-memory-page--proposal-for-page
+                              (plist-get result :proposals))))
               (sig (sxhash-equal (list key (append props nil)))))
          (unless (equal sig ghostherd-memory-page--proposals-sig)
            (setq ghostherd-memory-page--proposals-sig sig)
