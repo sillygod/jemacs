@@ -922,6 +922,32 @@
       "</button></div>";
   }
 
+  // Primary's card, pinned at the top of the Agents tab in place of the bar:
+  // once it is running, the same card every other agent has -- every button
+  // works -- under a header that opens its room/chat, which is what the bar
+  // offered.  Its project group is pulled from the list below (renderAgents),
+  // so primary shows exactly once.  When it is not running there is no card,
+  // so the pinned spot stays the bar: writing to it there is what starts it.
+  function primaryPinnedHtml(d) {
+    const p = d && d.primary;
+    if (!p) return "";
+    const mine = (d.agents || []).filter((a) => a.project === p.directory);
+    if (!mine.length) return primaryBarHtml(p);
+    const kinds = d.kinds || [];
+    const rank = (s) => (s in RANK ? RANK[s] : 9);
+    mine.sort((a, b) => rank(a.state) - rank(b.state) || (b.since || 0) - (a.since || 0));
+    const counts = {};
+    mine.forEach((a) => (counts[a.state] = (counts[a.state] || 0) + 1));
+    const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
+      .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
+    return '<section class="pgroup primary-pin" data-project="' + esc(p.directory) + '"><div class="phead">' +
+      '<button type="button" class="pname" data-act="a:primary-room" ' +
+      'title="Open the Primary room — its conversation as a chat">Primary</button>' +
+      '<span class="ppath">' + esc(p.directory) + "</span>" + summary +
+      '<button type="button" class="linkish" data-act="a:primary-room" title="Open the Primary room — its conversation as a chat">Open room</button>' +
+      "</div>" + mine.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
+  }
+
   function untilText(ms) {
     if (!ms) return "";
     const d = ms - Date.now();
@@ -1644,10 +1670,14 @@
     }
     u.innerHTML = usageHtml(d.usage, d.hooks);
     const pb = $("primarybar");
-    if (pb) pb.innerHTML = primaryBarHtml(d.primary);
+    if (pb) pb.innerHTML = primaryPinnedHtml(d);
     const kinds = d.kinds || [];
+    // Primary is pinned on top (primaryPinnedHtml), so keep its project out of
+    // the list below -- otherwise it shows twice.
+    const pd = d.primary && d.primary.directory;
     const by = new Map();
     (d.agents || []).forEach((a) => {
+      if (pd && a.project === pd) return;
       const k = a.project || "";
       if (!by.has(k)) by.set(k, []);
       by.get(k).push(a);

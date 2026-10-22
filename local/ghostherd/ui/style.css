@@ -381,8 +381,13 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .uerr { font-size: 11px; color: var(--warn); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pgroup { margin: 0 0 16px; }
-/* Primary, the herd-wide lead: the Agents tab's header opens its room. */
+/* Primary, the herd-wide lead: the Agents tab's header opens its room.  When
+   it runs, its own card is pinned there (.primary-pin); when it does not, the
+   bar (.primarybar) is -- both accented, so the pinned spot reads the same. */
 .primarybar { margin: 0 0 14px; }
+.primary-pin { border: 1px solid var(--accent); border-radius: 8px; padding: 2px 12px 8px; }
+.primary-pin .phead { border-bottom-color: var(--accent); }
+.primary-pin .pname { color: var(--accent); }
 .primary-open {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; width: 100%;
   text-align: left; padding: 8px 12px; border-radius: 8px; cursor: pointer;

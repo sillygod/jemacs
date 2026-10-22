@@ -46,6 +46,15 @@ const herd = (running) => {
         bar && bar.above && /^Primary/.test(bar.text) && /not running · writing to it starts it/.test(bar.text), bar);
       check(W("it fits the screen"), bar && bar.right <= bar.width, bar);
       if (where === "phone") check(W("big enough for a finger"), bar && bar.h >= 44, bar);
+      // Not running: primary shows once -- the bar is the pinned spot, there is
+      // no card and no primary project group in the list below.
+      const once = await page.evaluate((PD) => ({
+        bars: document.querySelectorAll("#primarybar .primarybar").length,
+        pins: document.querySelectorAll(".primary-pin").length,
+        groups: document.querySelectorAll('#herd .pgroup[data-project="' + PD + '"]').length,
+      }), PD);
+      check(W("not running: primary shows once -- just the bar, no card below"),
+        once.bars === 1 && once.pins === 0 && once.groups === 0, once);
       await tap('[data-act="a:primary-room"]');
       await sleep(200);
       check(W("its room is primary's, named so"), (await txt(".room .rhead .pname")) === "Primary");
@@ -95,13 +104,34 @@ const herd = (running) => {
       check(W("to the agent, as any prompt"), prompts.length === 1 && prompts[0].name === "primary" && prompts[0].text === "and the login?", prompts);
       await page.evaluate(() => GM.showView("agents"));
       await sleep(120);
-      const bar2 = await txt(".primarybar .primary-open");
-      check(W("the header shows its state and what it is doing"),
-        /working/.test(bar2) && /Handing the login fix/.test(bar2), bar2);
-      const group = '.pgroup[data-project="' + PD + '"]';
-      check(W("its own group offers no + New agent"),
-        !!(await page.$(group)) && !(await page.$(group + ' [data-act="a:new-agent"]')));
-      check(W("a project's group still does"), !!(await page.$('.pgroup[data-project="~/src/deploy-platform/"] [data-act="a:new-agent"]')));
+      // Running: primary is one card, pinned on top in place of the bar -- the
+      // same card every agent has (its buttons), its project group gone from
+      // the list below, and its header opens the room.
+      const pin = await page.evaluate((PD) => {
+        const pinned = document.querySelector("#primarybar .primary-pin");
+        const card = pinned && pinned.querySelector('.arow[data-name="primary"]');
+        const btn = (a) => !!(card && card.querySelector('[data-act="a:' + a + '"]'));
+        return {
+          pins: document.querySelectorAll(".primary-pin").length,
+          pinnedOnTop: !!pinned, hasCard: !!card,
+          allWithPD: document.querySelectorAll('.pgroup[data-project="' + PD + '"]').length,
+          groupsBelow: document.querySelectorAll('#herd .pgroup[data-project="' + PD + '"]').length,
+          bars: document.querySelectorAll(".primarybar").length,
+          opensRoom: !!(pinned && pinned.querySelector('.phead [data-act="a:primary-room"]')),
+          newAgent: !!(pinned && pinned.querySelector('[data-act="a:new-agent"]')),
+          working: !!(card && /\bs-working\b/.test(card.className)),
+          reason: ((card && card.querySelector(".areason")) || {}).textContent || "",
+          buttons: ["compose", "agent-interrupt", "screen", "capture", "more"].every(btn),
+        };
+      }, PD);
+      check(W("primary is one card, pinned on top, not twice"),
+        pin.pins === 1 && pin.pinnedOnTop && pin.allWithPD === 1 && pin.groupsBelow === 0 && pin.bars === 0, pin);
+      check(W("it is the same card every agent has — its buttons work"), pin.hasCard && pin.buttons, pin);
+      check(W("the pinned header opens its room, and offers no + New agent"), pin.opensRoom && !pin.newAgent, pin);
+      check(W("the card shows its state and what it is doing"),
+        pin.working && /Handing the login fix/.test(pin.reason), pin);
+      check(W("a project's group still offers + New agent"),
+        !!(await page.$('#herd .pgroup[data-project="~/src/deploy-platform/"] [data-act="a:new-agent"]')));
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }
