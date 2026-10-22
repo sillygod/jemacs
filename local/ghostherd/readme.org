@@ -451,10 +451,11 @@ task is not started; mail and memory keep working.
 The herd page shows everything, while you look at it.  The bot pushes
 what wants you while you do not (=ghostherd-push=):
 
-| =blocked=    | an agent waits on a menu: what it asks, a button per choice, its screen |
-| =report=     | a lead is done with its turn: its own last message, whole             |
-| =ask-failed= | an agent's ask failed: whom it asked, why, what it asked              |
-| =used-up=    | an agent stopped with its CLI's usage used up: a button relays it     |
+| =blocked=      | an agent waits on a menu: what it asks, a button per choice, its screen              |
+| =report=       | a lead is done with its turn: its own last message, whole                            |
+| =ask-failed=   | an agent's ask failed: whom it asked, why, what it asked                             |
+| =used-up=      | an agent stopped with its CLI's usage used up: a button relays it                    |
+| =lead-started= | the herd started a lead in a project for a handoff: for whom, the brief's first line |
 
 Each carries Open the room, to the project's room as its chat on the
 herd page (=xwapp-remote-hosts=, From your phone above).  Reply to one
@@ -669,6 +670,63 @@ it.
 behind a busy agent or start another: per agent, the open ask and how many
 wait behind it, the files its turn is editing, who started it, its worktree
 branch, how many commits ahead of its base, and whether it is merged.
+
+* Handoffs: work for another project's lead (=herd handoff=)
+
+An agent in project ghost finds, mid-investigation, that project unnoiac
+needs a matching change.  It should neither edit unnoiac's checkout ---
+it does not know its rules, and unnoiac's own agents may be at work
+there --- nor leave the user to relay it by hand.  It hands it to
+unnoiac's lead:
+
+#+begin_src sh
+herd handoff PROJECT [TEXT|-] [--wait] [--timeout S] [--rounds N]
+#+end_src
+
+=PROJECT= is a path (relative to the shell's own directory), its leaf
+name (=unnoiac=, =.emacs.d=) or its store slug, resolved among the
+projects the herd knows --- its agents' and its shared-memory stores' ---
+to the project's main checkout, so a worktree or a subdirectory names its
+project (=server/projects.py=).  It is an *ask* of that project's lead:
+=--wait=, =--rounds=, the answer coming back, and the loop rules are an
+ask's, across projects as within one --- nobody hands back to whoever
+waits on it, three deep at most, and handoffs to a project count as
+rounds by the project as well as by its lead.
+
+*Who may send.* Work crosses projects lead to lead, so each lead knows
+what happens in its project and nobody from outside directs its agents.
+An agent working under its project's lead is refused --- "tell your
+lead" --- and puts what the other project needs in its answer to its
+lead.  A lead may hand off, and so may an agent in a project with no
+lead, an agent in no project, and the user from a shell.  The rule is
+about the sender's project, not its role: a herd-wide lead to come,
+whose project is the herd itself, routes the user's cross-project
+requests through this same handoff unchanged.
+
+*The brief.* The herd frames it for the taker: from which project and
+agent, that the sender waits on it, and what to do --- plan it in that
+project, by its rules, with its agents, and answer with the result.  The
+lead's prompt asks the sender for what was found, the evidence (files,
+logs, tickets, commits), what is needed, when it is done, and who waits.
+Every ask now ends with what to do with work another project needs: a
+lead hands it off; any other agent says it in its answer.
+
+*No lead there.* The herd starts one --- the project's own default kind
+(=ghostherd-project-kind= in its =.dir-locals.el=) or
+=ghostherd-lead-kind= --- and hands it the work; one start however many
+handoffs wait on it.  Refused for a directory that does not exist or is
+not a git checkout, when =ghostherd-handoff-may-start-lead= is nil, and
+past =ghostherd-handoff-lead-max= (3) leads the herd started for
+handoffs and still up --- the user decides then.  The new lead's notes
+say for whom; the sender did not =herd start= it and cannot stop it.  It
+is pushed to your phone (=lead-started=) under the same rules as any
+push --- while you are away; at the desk the page shows it.  A lead on a
+CLI that takes no role as it starts (agy) reads it after its first ask.
+
+*On the page.* The sender's card: "⇢ waiting on unnoiac (handoff)" ---
+"· starting its lead" meanwhile; the taker's: "⇠ ghost is waiting
+(handoff)"; the room's run names the taker with its project.  Then the
+answer, "⇠ unnoiac answered (handoff)", or why it failed.
 
 * Shared memory: one memory a project's agents share
 
@@ -1790,6 +1848,11 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
         ;; Background import once the index exists: nil to stop it.
         ghostherd-memory-auto-import-interval 300
         ghostherd-memory-auto-import-idle 60)
+
+  ;; A handoff to a project with no lead starts one there; how many the
+  ;; herd may have up that it started so.
+  (setq ghostherd-handoff-may-start-lead t
+        ghostherd-handoff-lead-max 3)
 
   ;; Permanent default args example:
   (setf (alist-get 'claude ghostherd-agent-specs)

@@ -6325,6 +6325,14 @@ until it finishes a turn with no ask open.  Methods: herd_ask {to,
 body, from, wait, rounds}, herd_reply {id, body, from}, herd_await {id,
 timeout}, herd_cancel {id}, herd_asks.
 
+  \"$GHOSTHERD_HERD\" handoff unnoiac 'what unnoiac must change, and why' --wait
+
+A handoff is an ask of another project's lead, PROJECT by path, name or
+store slug; the herd frames it, and starts a lead there when it has
+none.  A lead hands off, or an agent in a project with no lead; one
+under a lead is refused and tells its lead.  Method: herd_handoff
+{project, body, from, wait, rounds}.
+
 Hooks: `\"$GHOSTHERD_HERD\" hook [EVENT]' reads a CLI hook's JSON on
 stdin and posts herd_report {session, state, reason, cli,
 conversation, transcript, last}.  `herd hooks install' wires it in.
@@ -6490,19 +6498,23 @@ ask new after that is new to the herd, not to this Emacs.")
                   "")))
     (truncate-string-to-width (string-trim line) 80 nil nil "…")))
 
-(defun ghostherd--ask-text (id body &optional rounds)
+(defun ghostherd--ask-text (id body &optional rounds lead)
   "BODY as the taker sees ask ID: the work, then how to answer it.
 The answer line is spelled out in full, the client by its absolute
 name, so a taker needs no skill installed and no PATH of ours.
 ROUNDS, when the sidecar says, is how many times the taker may ask
-any one agent for it."
+any one agent for it.  Last, what to do with work another project
+needs: a LEAD hands it to that project's lead; any other taker puts it
+in its answer, for whoever asked to take on -- neither edits that
+project's checkout."
   (format "[ask %s -- whoever asked is waiting for your answer]\n%s\n\n\
 When you are done, send your answer with:\n\
 %s reply %s <<'HERD'\n\
 <your answer>\n\
 HERD\n\
 Answer even if you could not do it, and say why.  You may ask other\n\
-agents for parts of it, but not whoever is waiting on you%s."
+agents for parts of it, but not whoever is waiting on you%s.\n\
+%s"
           id body
           (shell-quote-argument (or (and (fboundp 'ghostherd-herd-client)
                                          (ghostherd-herd-client))
@@ -6510,18 +6522,28 @@ agents for parts of it, but not whoever is waiting on you%s."
           id
           (if (natnump rounds)
               (format ",\nand any one of them %d time%s at most" rounds (if (= rounds 1) "" "s"))
-            "")))
+            "")
+          (if lead
+              "A change another project needs is not yours to make in its checkout:\n\
+hand it to that project's lead (\"$GHOSTHERD_HERD\" handoff PROJECT)."
+            "A change another project needs is not yours to make in its checkout:\n\
+say it in your answer -- what, where, why -- and whoever asked takes it on.")))
 
 (defun ghostherd--ask-deliver (id from to body &optional rounds)
   "Paste ask ID from FROM into TO, and watch for TO to stop.
 ROUNDS is how many times TO may ask any one agent for it.  A lead owed
 its role -- started for a handoff on a CLI that takes none as it starts
--- reads it first."
-  (let ((session (or (ghostherd-get to)
-                     (user-error "Unknown target session"))))
+-- reads it after the ask: before it, the ask would not read as one in
+the room's chat (server/conversation.py), which stops at its answer
+line."
+  (let* ((session (or (ghostherd-get to)
+                      (user-error "Unknown target session")))
+         (role (ghostherd--lead-role-take session)))
     (ghostherd-message from session
-                       (concat (ghostherd--lead-role-take session)
-                               (ghostherd--ask-text id body rounds))
+                       (concat (ghostherd--ask-text id body rounds
+                                                    (equal (ghostherd-session-role session) "lead"))
+                               (and role (concat "\n\n---\n\nYour role in this herd, given with \
+your first message as your CLI takes none as it starts:\n\n" role)))
                        :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
     (ghostherd--log-add session 'ask
@@ -6920,6 +6942,30 @@ When an ask fails, or comes back as the herd's answer rather than the
 agent's, say what happened and decide: ask again, ask someone else, or
 ask the user.
 
+When the work needs a change in another project -- an API it serves, a
+config it owns, a bug on its side -- do not edit its checkout, and do
+not have your agents do it: you do not know its rules, and its own
+agents may be at work there.  Hand it to that project's lead:
+
+  \"$GHOSTHERD_HERD\" handoff PROJECT --wait <<'HERD'
+  the brief
+  HERD
+
+PROJECT is its path or its name (unnoiac).  Brief it for a lead who
+knows nothing of your work: what you found; the evidence -- files and
+lines, logs, tickets, commits; what is needed of that project; how it
+will know it is done; and who waits on it.  It is an ask: run it in the
+background, and its answer comes back to you.  A project with no lead
+gets one, started for it.  Your agents do not hand off -- the herd
+refuses them -- they tell you in their answers, and you decide.
+
+A handoff may come to you from another project: the herd says so where
+it begins.  Take it in as your own work -- plan it here, by this
+project's rules, with your agents -- and answer with the result: what
+was done, where (branch, commit, pull request), and what is left for
+the sender.  It cannot be asked while it waits on you: put a question
+in your answer, and it can hand off again.
+
 When an agent is stuck for good -- its CLI out of credits or rate
 limited, or wedged with no way on -- hand its work to a fresh agent on
 another CLI:
@@ -6991,11 +7037,10 @@ starts, until its first message: that carries the role, whether it is
 the user's (`ghostherd-tell') or an ask (`ghostherd--ask-deliver').")
 
 (defun ghostherd--lead-role-take (session)
-  "The role SESSION is owed, as its first message opens with it, taken;
-or nil."
+  "The lead's role when SESSION is owed it, taken; or nil."
   (when (gethash (ghostherd-session-id session) ghostherd--lead-role-owed)
     (remhash (ghostherd-session-id session) ghostherd--lead-role-owed)
-    (concat ghostherd--lead-role "\n---\n\n")))
+    ghostherd--lead-role))
 
 (defun ghostherd-start-lead (project &optional kind notes)
   "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
@@ -7079,7 +7124,9 @@ for that."
          (lead (and project (ghostherd-project-lead project))))
     (if (eq lead session)
         (progn
-          (ghostherd-prompt session (concat (or role (ghostherd--lead-role-take session))
+          (ghostherd-prompt session (concat (or role
+                                                (when-let* ((owed (ghostherd--lead-role-take session)))
+                                                  (concat owed "\n---\n\n")))
                                             (ghostherd--lead-unheard-note project)
                                             (ghostherd--lead-work-note session project)
                                             text))

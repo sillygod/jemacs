@@ -309,6 +309,25 @@ def test_a_lead_emacs_finds_waiting_on_the_sender_is_not_handed_it(world, h):
     assert h.get_ask(first["id"])["status"] == "delivered"
 
 
+def test_a_handoff_reads_as_an_ask_in_the_rooms_chat(world, h):
+    # As Emacs pastes it (`ghostherd--ask-deliver'): the frame and the brief
+    # in the ask, and -- for a lead owed its role -- the role after it.
+    import conversation
+    out = h.handoff(str(world["unnoiac"]), "rename it", from_name="lead-ghost")
+    [mail] = _pending(h, world["snap"])
+    pasted = (
+        "[ghostherd message from lead-ghost → lead-unnoiac]\n"
+        f"[ask {out['id']} -- whoever asked is waiting for your answer]\n{mail['body']}\n\n"
+        f"When you are done, send your answer with:\n/p/bin/herd reply {out['id']} <<'HERD'\n"
+        "<your answer>\nHERD\nAnswer even if you could not do it, and say why.\n\n---\n\n"
+        "Your role in this herd, given with your first message as your CLI takes none as it "
+        "starts:\n\nYou are the lead of this project's herd of agents\n")
+    e = conversation.user_entry(pasted, 0)
+    assert (e["kind"], e["ask"], e["who"]) == ("ask", out["id"], "lead-ghost")
+    assert e["text"].startswith("[Handoff to unnoiac from lead-ghost") and e["text"].endswith("rename it")
+    assert "You are the lead" not in e["text"]
+
+
 # ---- Over the wire --------------------------------------------------------------------
 
 

@@ -1808,6 +1808,69 @@ never reached agy or grok unless they thought to recall.
   bound =ghostherd-memory-opening-max= keeps its 4000, now the cap on the
   index lines only)
 
+* Phase 3.34 — Handoffs between projects' leads  *(this tree)*
+
+Ask 2f40d99a.  An agent in one project finds another project needs a
+matching change: today it edits that checkout itself, not knowing its
+rules, or the user relays it by hand.  Now it goes to that project's
+lead, as an ask the herd frames.
+
+** What shipped
+
+- [X] =herd handoff PROJECT [TEXT|-] [--wait] [--timeout S] [--rounds N]=:
+  an ask of PROJECT's lead.  PROJECT a path, a leaf name or a store slug,
+  resolved among the herd's projects (its agents', its stores' -- a slug's
+  directory found again on disk) to the main checkout.  =server/projects.py=,
+  =herd_handoff=, =HerdStore.handoff=
+- [X] Who may send: anyone but an agent working under its project's lead,
+  refused with "tell your lead".  The rule is the sender's project, not its
+  role -- the seam for a herd-wide lead (below)
+- [X] The herd frames the brief: from which project and agent, that the
+  sender waits, what to do with it.  The answer, rounds (counted by project
+  as well) and the loop guard are an ask's, across projects
+- [X] No lead there: the sidecar queues a =handoff= command, Emacs starts
+  one (=ghostherd-handoff-lead=: the project's dir-local kind or
+  =ghostherd-lead-kind=) and names it in its reply, which binds every
+  handoff waiting on that project.  Refused for a missing directory or one
+  not a git checkout, when =ghostherd-handoff-may-start-lead= is nil, past
+  =ghostherd-handoff-lead-max= (3) leads the herd started for handoffs.  A
+  start Emacs never answers fails after three minutes.  Pushed
+  (=lead-started=) under the usual away rules.  A lead on a CLI that takes
+  no role as it starts is owed it, and reads it with its first message
+- [X] Cards: the sender's "⇢ waiting on unnoiac (handoff)", the taker's
+  "⇠ ghost is waiting (handoff)", the room's run naming the taker's
+  project -- herd and room views, desk and phone
+- [X] Prompts: the lead's -- when to hand off, how to brief, how to take
+  one in; every ask's last line -- what another project needs goes to its
+  lead (a lead taker) or into the answer (any other); PROTOCOL.md; =herd
+  --help=
+- [X] pytest (resolve / send / refuse a worker / no lead -> start, once /
+  refused start / never answered / missing dir, not a checkout / answer
+  back / loop across projects / rounds / the client) + ERT (start, kind,
+  role owed, refusals, cap, command, push, page, log, prompts) + e2e
+  (herd-handoff, desk and phone), broken on purpose
+- [ ] After the merge, by hand: restart the sidecar (the new RPC, module
+  and =asks= columns -- added on start); reload the =.el= (two new
+  defcustoms; =ghostherd-push= gains =lead-started= only where it is not
+  customized)
+
+** What is left
+
+- [ ] A herd-wide "primary" lead, its project the herd itself, routing the
+  user's cross-project requests through =herd handoff=.  The send rule and
+  the brief already take a sender in no project
+- [ ] =herd ask NAME= still crosses projects by name, around the lead.
+  Whether a cross-project ask of an agent that is not a lead should be
+  refused in favour of a handoff is the user's call
+
+** Deliberately not done
+
+- Starting a lead outside a git checkout: a lead plans in its checkout,
+  with branches and worktrees
+- Counting a handoff's lead against the sender's =ghostherd-lead-start-max=:
+  the sender does not own it -- it cannot stop it -- and what the cap
+  guards against, leads fanning out across projects, is herd-wide
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

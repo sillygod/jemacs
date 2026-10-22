@@ -4679,7 +4679,9 @@ heredoc's closing line at column 0 so a copy of it works."
         (should (string-search "\nfetch the docs\nall of them\n" text))
         (should (string-search "\n/p/bin/herd reply a1b2c3d4 <<'HERD'\n<your answer>\nHERD\n" text))
         ;; How many rounds it has, after what the room shows of an ask.
-        (should (string-suffix-p ",\nand any one of them 4 times at most." text))
+        (should (string-search ",\nand any one of them 4 times at most.\n" text))
+        ;; Then, last, what to do with what another project needs.
+        (should (string-suffix-p "and whoever asked takes it on." text))
         (should (< (string-search "When you are done" text)
                    (string-search "any one of them" text))))
       (should-not (string-search "any one of them" (ghostherd--ask-text "a1" "x")))
@@ -11883,16 +11885,40 @@ or the user's -- and only the first."
           (should (eq (ghostherd-session-kind lead) 'agy))
           (should-not (member ghostherd--lead-role (plist-get ghostherd-tests--fake-spawned :args)))
           (should (gethash "lead-other" ghostherd--lead-role-owed))
+          ;; After the ask, so the room's chat still reads it as one.
           (ghostherd--ask-deliver "k1" "lead-p" "lead-other" "the brief")
-          (should (string-prefix-p (concat ghostherd--lead-role "\n---\n\n[ask k1 ") (car said)))
+          (should (string-prefix-p "[ask k1 " (car said)))
+          (should (string-suffix-p (concat "as it starts:\n\n" ghostherd--lead-role) (car said)))
           (ghostherd--ask-deliver "k2" "lead-p" "lead-other" "more")
           (should (string-prefix-p "[ask k2 " (car said)))
+          (should-not (string-search ghostherd--lead-role (car said)))
+          ;; A lead taking an ask is told to hand on what another project needs.
+          (should (string-suffix-p "(\"$GHOSTHERD_HERD\" handoff PROJECT)." (car said)))
           ;; Owed and not yet told: the user's first message carries it instead.
           (puthash "lead-other" t ghostherd--lead-role-owed)
           (ghostherd-tell lead "hello")
           (should (string-prefix-p ghostherd--lead-role (car said)))
           (ghostherd-tell lead "again")
           (should (equal (car said) "again")))))))
+
+(ert-deftest ghostherd-test-handoff-in-the-words-agents-read ()
+  "A lead is told when and how to hand off, and how to take one in; every
+taker of an ask, what to do with work another project needs -- a lead
+hands it on, any other agent puts it in its answer; the protocol has it."
+  (dolist (words '("do not edit its checkout"
+                   "\"$GHOSTHERD_HERD\" handoff PROJECT --wait"
+                   "what you found; the evidence -- files and\nlines, logs, tickets, commits; what is needed of that project; how it\nwill know it is done; and who waits on it"
+                   "Your agents do not hand off"
+                   "Take it in as your own work -- plan it here"
+                   "answer with the result"))
+    (should (string-search words ghostherd--lead-role)))
+  (let ((lead (ghostherd--ask-text "a1" "x" nil t))
+        (other (ghostherd--ask-text "a1" "x")))
+    (should (string-suffix-p "hand it to that project's lead (\"$GHOSTHERD_HERD\" handoff PROJECT)." lead))
+    (should (string-suffix-p "say it in your answer -- what, where, why -- and whoever asked takes it on." other))
+    (dolist (text (list lead other))
+      (should (string-search "not yours to make in its checkout" text))))
+  (should (string-search "herd_handoff\n{project, body, from, wait, rounds}" ghostherd--herd-protocol)))
 
 (ert-deftest ghostherd-test-handoff-refusals ()
   "No directory, not a git checkout, the herd set not to, the sender's own
