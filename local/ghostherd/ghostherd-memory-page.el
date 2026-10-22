@@ -396,11 +396,12 @@ draws lanes from fields rather than parsing prose."
           :suggestion (or (ghostherd-session-suggestion s) "")
           :said (ghostherd-memory-page--str (plist-get (ghostherd--link s) :last_head))
           :saidAt (plist-get (ghostherd--link s) :last_ms)
-          ;; How its last turn began: an ask from another agent (its end is
-          ;; not its report to the user -- whoever asked reports) or the
-          ;; user's own prompt.  Drives whether a worker's turn end is an
-          ;; Inbox item; leads and primary are surfaced by role regardless.
-          :saidFromAsk (if (eq (ghostherd--turn-origin-of s) 'ask) t :json-false)
+          ;; Its last turn is an Inbox item for a non-lead only when the herd
+          ;; POSITIVELY knows the user started it -- not merely that it was
+          ;; not an ask.  An unknown origin (a turn from before the tracking
+          ;; loaded) is left out, so old backlog does not surface.  Leads and
+          ;; primary are surfaced by role regardless.
+          :saidFromUser (if (eq (ghostherd--turn-origin-of s) 'user) t :json-false)
           ;; A lead the herd started to take a cross-project handoff: an
           ;; Update, kept until read, says so.  `handoffFrom' is who for.
           :handoffStarted (if (ghostherd--handoff-lead-for s) t :json-false)
@@ -2842,7 +2843,7 @@ full-width) in its last line or two."
          (cont (plist-get a :continueAt))
          (cont-stop (eq (plist-get a :continueStopped) t))
          (said (plist-get a :said)) (said-ms (plist-get a :saidAt))
-         (said-from-ask (eq (plist-get a :saidFromAsk) t))
+         (said-from-user (eq (plist-get a :saidFromUser) t))
          (handoff-started (eq (plist-get a :handoffStarted) t))
          (used-up (plist-get a :usedUp)) (relay-to (plist-get a :relayTo))
          items)
@@ -2885,11 +2886,12 @@ full-width) in its last line or two."
             items))
     ;; A turn end becomes a Question (ends by asking) or a Report.  A lead
     ;; or primary is surfaced as before; any other agent is surfaced only
-    ;; when the user started the turn -- a turn an ask from another agent
-    ;; started stays out, since whoever asked reports.
+    ;; when the herd POSITIVELY knows the user started the turn.  A turn from
+    ;; an ask stays out (whoever asked reports), and so does one whose origin
+    ;; is unknown (e.g. from before the tracking loaded) -- no backlog.
     (when (and (member state '("idle" "done"))
                (stringp said) (not (string-empty-p (string-trim said)))
-               (or (member role '("lead" "primary")) (not said-from-ask)))
+               (or (member role '("lead" "primary")) said-from-user))
       (let* ((asks (ghostherd-inbox--asks-p said))
              (kind (if asks 'question 'report))
              (id (format "%s:%s:%s" (symbol-name kind) name (or said-ms 0))))

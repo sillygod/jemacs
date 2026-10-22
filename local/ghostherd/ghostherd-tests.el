@@ -12978,11 +12978,10 @@ its terminal's shell.  0 when unknown."
                   :login :json-false :continueAt 0 :prompt :json-false
                   :said "Guard hardenings handed out; both agy agents respawned." :saidAt 2000)))
         (worker (ghostherd-inbox--agent-items
-                 ;; A worker whose turn an ask started is NOT an inbox item:
-                 ;; whoever asked reports.
+                 ;; A worker whose turn was not positively user-started is NOT
+                 ;; an inbox item (here an unknown origin: no :saidFromUser).
                  (list :name "c-dp" :kind "claude" :state "idle" :role "" :project "~/dp/"
                        :login :json-false :continueAt 0 :prompt :json-false
-                       :saidFromAsk t
                        :said "Finished the migration check." :saidAt 2000))))
     (should (equal (ghostherd-tests--inbox-kinds q) '("question")))
     (should (equal (plist-get (car q) :replyVia) "lead"))
@@ -12992,43 +12991,53 @@ its terminal's shell.  0 when unknown."
     (should (null worker))))
 
 (ert-deftest ghostherd-test-inbox-worker-turn-end-by-origin ()
-  "A worker's turn the user started ends as an Inbox item; one an ask
-started does not.  A lead is surfaced either way."
+  "A worker's turn end is an Inbox item only when the herd POSITIVELY knows
+the user started it.  An ask-started one, and one of unknown origin (from
+before the tracking loaded), stay out.  A lead is surfaced either way."
   (skip-unless (require 'ghostherd-memory-page nil t))
   (let ((user-report
          (ghostherd-inbox--agent-items
           (list :name "claude-godzilla" :kind "claude" :state "idle" :role "" :project "~/gz/"
                 :login :json-false :continueAt 0 :prompt :json-false
-                :saidFromAsk :json-false
+                :saidFromUser t
                 :said "Shipped the import; nothing left open." :saidAt 3000)))
         (user-question
          (ghostherd-inbox--agent-items
           (list :name "claude-godzilla" :kind "claude" :state "idle" :role "" :project "~/gz/"
                 :login :json-false :continueAt 0 :prompt :json-false
-                :saidFromAsk :json-false
+                :saidFromUser t
                 :said "Done.\nShall I open a PR?" :saidAt 3000)))
         (ask-worker
          (ghostherd-inbox--agent-items
           (list :name "qa-gz" :kind "claude" :state "idle" :role "" :project "~/gz/"
                 :login :json-false :continueAt 0 :prompt :json-false
-                :saidFromAsk t
+                :saidFromUser :json-false
                 :said "Ran the suite: all green." :saidAt 3000)))
+        (unknown-worker
+         ;; No :saidFromUser -- a turn from before the tracking loaded.  It
+         ;; must NOT surface (the backlog the gate clears).
+         (ghostherd-inbox--agent-items
+          (list :name "claude-ghost" :kind "claude" :state "idle" :role "" :project "~/gh/"
+                :login :json-false :continueAt 0 :prompt :json-false
+                :said "Old answer from before tracking." :saidAt 3000)))
         (ask-lead
          (ghostherd-inbox--agent-items
           (list :name "lead-gz" :kind "claude" :state "idle" :role "lead" :project "~/gz/"
                 :login :json-false :continueAt 0 :prompt :json-false
-                :saidFromAsk t
+                :saidFromUser :json-false
                 :said "Handed the fix to its author." :saidAt 3000))))
-    ;; user-started worker: a Report in Updates
+    ;; positively user-started worker: a Report in Updates
     (should (equal (ghostherd-tests--inbox-kinds user-report) '("report")))
     (should (equal (plist-get (car user-report) :group) "fyi"))
-    ;; user-started worker ending by asking: a Question, answered to the agent
+    ;; positively user-started worker ending by asking: a Question, to the agent
     (should (equal (ghostherd-tests--inbox-kinds user-question) '("question")))
     (should (equal (plist-get (car user-question) :group) "need"))
     (should (equal (plist-get (car user-question) :replyVia) "agent"))
     ;; ask-started worker: nothing (whoever asked reports)
     (should (null ask-worker))
-    ;; a lead is surfaced even when its turn was ask-started (as before)
+    ;; unknown-origin worker: nothing (no backlog)
+    (should (null unknown-worker))
+    ;; a lead is surfaced even when its turn was not positively user-started
     (should (equal (ghostherd-tests--inbox-kinds ask-lead) '("report")))))
 
 (ert-deftest ghostherd-test-inbox-lead-started-for-handoff ()
