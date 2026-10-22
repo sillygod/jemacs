@@ -11856,10 +11856,17 @@ the same rules as any push.  The next handoff finds it: no second lead."
                      `(("lead-started" "lead-other" "lead-p" ,(ghostherd--project-name repo) "Rename token"))))
       (should (equal (ghostherd-handoff-lead "lead-p" other repo "more")
                      (cons "lead-other" "handed to lead-other, other's lead")))
+      ;; From a plain shell: the user's.
+      (let ((third (concat base "third/")))
+        (make-directory third t)
+        (funcall git third "init" "-q" "-b" "main")
+        (should (string-suffix-p "for a handoff from the user" (cdr (ghostherd-handoff-lead "user" third nil "x"))))
+        (should (string-suffix-p "for a handoff from the user"
+                                 (ghostherd-session-notes (ghostherd-get "lead-third")))))
       ;; Named by a subdirectory, it is still that project's lead.
       (make-directory (concat other "src") t)
       (should (equal (car (ghostherd-handoff-lead "lead-p" (concat other "src") repo "x")) "lead-other"))
-      (should (= (length (ghostherd-sessions)) 2)))))
+      (should (= (length (ghostherd-sessions)) 3)))))
 
 (ert-deftest ghostherd-test-handoff-push-keeps-the-away-rules ()
   "At the desk, looking at the herd page, the start is not pushed."

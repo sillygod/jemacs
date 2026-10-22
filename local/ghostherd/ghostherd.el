@@ -7605,7 +7605,8 @@ handoffs (max %d): %s -- ask the user to start one there, or to stop one of thos
                             (mapconcat #'ghostherd-session-name up ", "))))))
      (t
       (let* ((kind (or (car (ghostherd-project-defaults root)) ghostherd-lead-kind))
-             (for (if from (format "%s in %s" by (funcall leaf from)) (or by "the user"))))
+             (who (if (member by '(nil "" "user")) "the user" by))
+             (for (if from (format "%s in %s" who (funcall leaf from)) who)))
         (if (not (and (memq kind (ghostherd--agent-kinds))
                       (plist-get (ghostherd--spec kind) :command)))
             (cons nil (format "no agent kind %s to start %s's lead on" kind (funcall leaf name)))
