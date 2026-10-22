@@ -381,6 +381,18 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .uerr { font-size: 11px; color: var(--warn); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pgroup { margin: 0 0 16px; }
+/* Primary, the herd-wide lead: the Agents tab's header opens its room. */
+.primarybar { margin: 0 0 14px; }
+.primary-open {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; width: 100%;
+  text-align: left; padding: 8px 12px; border-radius: 8px; cursor: pointer;
+  background: var(--panel, rgba(127, 127, 127, .08)); color: inherit;
+  border: 1px solid var(--accent);
+}
+.primary-open:hover { background: rgba(88, 166, 255, .12); }
+.primary-open .pbname { font-weight: 600; color: var(--accent); }
+.primary-open .pbidle, .primary-open .pbsub { color: var(--muted); font-size: 12px; min-width: 0; }
+.primary-open .pbsub { flex: 1 1 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .phead {
   display: flex;
   align-items: baseline;

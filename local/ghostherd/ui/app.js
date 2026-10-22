@@ -28,6 +28,7 @@
   function chatHint(to) {
     const a = agentByName(to);
     if (a && a.suggestion) return suggestionHint(a);
+    if (to === "@primary") return "Message primary" + (TOUCH ? "" : "  (⌘↩ sends)");
     return "Message " + (to === "@lead" ? "the lead" : to) + "  (@name for another" + (TOUCH ? ")" : " · ⌘↩ sends)");
   }
 
@@ -880,8 +881,36 @@
       watching = true;
       emit("herd-watch");
     }
-    app.innerHTML = '<div class="page wide"><div id="usage" class="usage"></div><div id="herd"></div></div>';
+    app.innerHTML = '<div class="page wide"><div id="usage" class="usage"></div><div id="primarybar"></div><div id="herd"></div></div>';
     renderAgents();
+  }
+
+  // ---- Primary, the herd-wide lead ----------------------------------------
+  //
+  // The user's one entry point for what crosses projects: its room is a
+  // chat, reached from the Agents tab's header, and writing there starts
+  // it -- or resumes its last conversation -- when it is not up.
+
+  function primaryInfo() {
+    return (herdNow.data && herdNow.data.primary) || null;
+  }
+
+  function isPrimaryRoom() {
+    const p = primaryInfo();
+    return !!(p && herdNow.room && herdNow.room === p.directory);
+  }
+
+  function primaryBarHtml(p) {
+    if (!p) return "";
+    const a = agentByName(p.name);
+    const st = p.state || "";
+    return '<div class="primarybar"><button type="button" class="primary-open" data-act="a:primary-room" ' +
+      'title="Primary, the herd-wide lead: tell it anything that crosses projects, or ask what everyone is doing">' +
+      '<span class="pbname">Primary</span>' +
+      (st ? '<span class="st st-' + esc(st) + '">' + esc(st) + "</span>"
+        : '<span class="pbidle">not running · writing to it starts it</span>') +
+      '<span class="pbsub">' + esc(a && a.reason ? a.reason : "the herd-wide lead · routes work across projects") + "</span>" +
+      "</button></div>";
   }
 
   function untilText(ms) {
@@ -1605,6 +1634,8 @@
       return;
     }
     u.innerHTML = usageHtml(d.usage, d.hooks);
+    const pb = $("primarybar");
+    if (pb) pb.innerHTML = primaryBarHtml(d.primary);
     const kinds = d.kinds || [];
     const by = new Map();
     (d.agents || []).forEach((a) => {
@@ -1643,7 +1674,8 @@
                 '\nits agents\' conversations side by side">' + esc(leaf(g.project)) + "</button>"
               : '<span class="pname">No project</span>') +
             '<span class="ppath">' + esc(g.project) + "</span>" + summary +
-            (g.project ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
+            (g.project && !(d.primary && g.project === d.primary.directory)
+              ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
             "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
       : '<p class="empty">No agents in the herd.  SPC a h n starts one; so does + New agent once there is a project here.</p>';
@@ -2112,6 +2144,10 @@
   // Who the box can write to: the lead first -- or, with none yet, the
   // lead that writing to it starts -- then the others.
   function chatTargets(agents) {
+    if (isPrimaryRoom()) {
+      const p = agents.find((a) => a.role === "primary");
+      return [p ? [p.name, "primary"] : ["@primary", "primary (starts when you write)"]];
+    }
     const lead = agents.find((a) => a.role === "lead");
     return (lead ? [[lead.name, "lead · " + lead.name]] : [["@lead", "lead (starts when you write)"]])
       .concat(agents.filter((a) => a !== lead).map((a) => [a.name, a.name]));
@@ -2209,7 +2245,10 @@
     const oldHeight = body.scrollHeight, keep = body.scrollTop;
     const atBottom = oldHeight - keep - body.clientHeight < 40;
     const out = (c && [...(c.absent || []), ...(c.missing || [])]) || [];
-    body.innerHTML = !c ? '<p class="rnote">Reading the conversations…</p>'
+    body.innerHTML = isPrimaryRoom() && !roomAgents().length
+      ? '<p class="rnote">Primary is not running.  Write to it below: it starts -- or resumes its last ' +
+        "conversation -- and reads your message once it is up.</p>"
+      : !c ? '<p class="rnote">Reading the conversations…</p>'
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
       : earlierHtml(c, "a:chat-earlier") +
         (entries.length ? entries.map(chatItemHtml).join("") : '<p class="rnote">Nobody has said anything yet.</p>') +
@@ -2358,19 +2397,22 @@
     const rank = (s) => (s in RANK ? RANK[s] : 9);
     const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
       .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
-    const chat = herdNow.roomView === "chat";
-    const key = project + "\n" + herdNow.roomView + "\n" + agents.map((a) => a.name).join("\n");
+    const primary = isPrimaryRoom();
+    const chat = primary || herdNow.roomView === "chat";
+    const key = project + "\n" + (primary ? "primary" : herdNow.roomView) + "\n" + agents.map((a) => a.name).join("\n");
     let room = app.querySelector(".room");
     if (!room || room.getAttribute("data-key") !== key) {
       const views = [["columns", "Columns"], ["chat", "Chat"]].map(([v, label]) =>
         '<button type="button" class="ghost small' + (herdNow.roomView === v ? " on" : "") + '" data-act="a:room-view" data-view="' + v + '">' +
         label + "</button>").join("");
-      app.innerHTML = '<div class="room"><div class="rhead"><span class="pname" title="' + esc(project) + '">' + esc(leaf(project)) + "</span>" +
-        '<span class="ppath">' + esc(project) + '</span><span class="rsum"></span><span class="rview">' + views +
+      app.innerHTML = '<div class="room' + (primary ? " proom" : "") + '"><div class="rhead"><span class="pname" title="' + esc(project) + '">' +
+        (primary ? "Primary" : esc(leaf(project))) + "</span>" +
+        '<span class="ppath">' + (primary ? "the herd-wide lead · routes work across projects" : esc(project)) +
+        '</span><span class="rsum"></span><span class="rview">' + (primary ? "" : views) +
         '<button type="button" class="ghost small" data-act="room-memory" title="This project\'s shared memory">Memory</button>' +
         '</span><div class="rwork"></div>' +
         '<div class="rruns"></div></div>' +
-        (!agents.length ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
+        (!agents.length && !primary ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
           : chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rjump"></div><div class="rbody"></div><div class="rsubs"></div>' +
@@ -2428,6 +2470,10 @@
       return col ? colJump(col.getAttribute("data-name"), dir) : chatJump(dir);
     }
     if (act === "room") return openRoom(project);
+    if (act === "primary-room") {
+      const p = primaryInfo();
+      return p ? openRoom(p.directory) : undefined;
+    }
     // A chip still a button on another device has no address yet: Emacs
     // would open it on the desk's screen.
     if ((act === "work-pr" || act === "work-task" || act === "work-changes") && XW.elsewhere) return setStatus("Its address is not known yet");
@@ -2713,6 +2759,7 @@
     // The images go after what you wrote, a file name a line.
     const body = [text, files.join("\n")].filter(Boolean).join("\n\n");
     if (to === "@lead") emit("lead-say", { project: herdNow.room, text: body });
+    else if (to === "@primary") emit("primary-say", { text: body });
     else emit("agent-prompt", { name: to, text: body });
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);

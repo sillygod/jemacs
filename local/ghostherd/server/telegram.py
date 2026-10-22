@@ -58,7 +58,10 @@ HELP = (
     "phone's browser: over your tailnet, nothing to bookmark.\n"
     "While you are away from the desk, the herd tells you here: an agent "
     "blocked, a lead's report, an ask that failed.  Reply to one to tell "
-    "that project's lead."
+    "that project's lead.\n"
+    "Anything else you write goes to primary, the herd-wide lead -- started "
+    "or resumed if need be: what crosses projects, or where you do not know "
+    "it belongs, and \"what is everyone doing?\"."
 )
 
 # Seconds between looks for pushes to send.
@@ -395,8 +398,9 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
     if kind == "blocked":
         return f"⚠ {name} is blocked{head}\n\n{menu_text(session, push.get('reason') or '')}".rstrip()
     if kind == "report":
+        whom = "primary" if session and session.get("role") == "primary" else "the lead"
         return (f"✓ {name}{head}\n\n{words or '(its words have not come in)'}"
-                "\n\n↩ Reply to tell the lead.")
+                f"\n\n↩ Reply to tell {whom}.")
     if kind == "test":
         return ("The herd reaches you here.\n\nWhile you are away from the desk it "
                 "tells you here when an agent is blocked, a lead reports or an ask "
@@ -409,8 +413,9 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
         # A lead the herd started in a project for a handoff from another.
         src = _leaf(push.get("from"))
         lines = [f"▶ started {name}{head}",
-                 f"For a handoff from {push.get('by') or '?'}{' in ' + src if src else ''}: "
-                 "work found there that belongs in this project."]
+                 f"For a handoff from {push.get('by') or '?'}"
+                 + (f" in {src}: work found there that belongs in this project."
+                    if src else ": work that belongs in this project.")]
         if push.get("head"):
             lines.append("It asks: " + push["head"])
         lines.append("↩ Reply to tell the lead.")
@@ -482,6 +487,11 @@ class TelegramBot:
             return {"chat_id": chat_id, "text": "cancelled"}
         project = self.herd.pushed_project(chat_id, reply_to) if reply_to else None
         if project and text:
+            # A reply to primary's own report goes back to it; to any other
+            # push, to that project's lead.
+            primary = self.herd.primary()
+            if primary and primary.get("project") == project:
+                return self._to_primary(chat_id, text)
             self.herd.enqueue_command(
                 "lead-say", project, args={"project": project, "body": text}, chat_id=chat_id
             )
@@ -509,10 +519,22 @@ class TelegramBot:
             }
         if text in ("/herd", "Herd", "herd"):
             return self._herd_message(chat_id)
+        # Anything else, not a command: for primary, the herd-wide lead.
+        if text and not text.startswith("/"):
+            return self._to_primary(chat_id, text)
         return {
             "chat_id": chat_id,
             "text": "unknown. /herd or /help",
         }
+
+    def _to_primary(self, chat_id: int, text: str) -> dict[str, Any]:
+        """TEXT for primary: Emacs starts or resumes it when it is not up,
+        and tells it once it is ready."""
+        self.herd.enqueue_command("primary-say", "primary", args={"body": text}, chat_id=chat_id)
+        up = self.herd.primary()
+        return {"chat_id": chat_id,
+                "text": "→ primary" if up and up.get("state") != "dead"
+                else "→ primary (starting it; it reads this once it is up)"}
 
     def handle_callback(self, chat_id: int, data: str) -> dict[str, Any] | None:
         if not self.allowed(chat_id):

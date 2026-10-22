@@ -344,6 +344,20 @@ def test_rpc_resolves_a_leaf_name_to_the_main_checkout(world, h, tmp_path, monke
         rpc._herd_handoff({"project": "unnoiac", "body": "x", "from": "rd-ghost"})
 
 
+def test_rpc_knows_a_project_claude_ran_in_by_its_name(world, h, tmp_path, monkeypatch):
+    # Nobody works in `new' now and it has no store; claude once ran there.
+    # Primary routes to such projects by name.
+    monkeypatch.setattr(jsonrpc_handler, "get_herd", lambda: h)
+    claude_root = tmp_path / "claude-projects"
+    (claude_root / projects._slug(str(world["new"]))).mkdir(parents=True)
+    monkeypatch.setenv("GHOSTHERD_MEMORY_CLAUDE_ROOT", str(claude_root))
+    out = JsonRpcHandler()._herd_handoff({"project": "new", "body": "x", "from": "lead-ghost"})
+    assert (out["project"], out["starting"]) == (world["p"]["new"], True)
+    monkeypatch.setenv("GHOSTHERD_MEMORY_CLAUDE_ROOT", str(tmp_path / "none"))
+    with pytest.raises(ValueError, match="no project new that the herd knows"):
+        JsonRpcHandler()._herd_handoff({"project": "new", "body": "y", "from": "lead-ghost"})
+
+
 def test_client_hands_off_waits_for_a_lead_to_start_and_is_refused(live, world):  # noqa: F811
     h = herd_mod.get_herd()
     h.tick(sessions=world["snap"])

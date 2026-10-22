@@ -1755,6 +1755,16 @@ forge or ClickUp instead, which want their own login."
                          (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
                                      (ghostherd--agent-kinds))))
          :pickers (ghostherd-memory-page--pickers)
+         ;; Primary, the herd-wide lead: where its room is, up or not --
+         ;; the Agents tab opens it from its header, and the room's chat
+         ;; starts it with the first message.
+         :primary (let ((s (ghostherd--primary-session)))
+                    (list :directory (ghostherd--project-name (ghostherd--primary-dir))
+                          :name ghostherd--primary-name
+                          :kind (symbol-name ghostherd-primary-kind)
+                          :state (if (ghostherd--primary-up s)
+                                     (symbol-name (ghostherd-session-state s))
+                                   "")))
          ;; Where an agent's work can be relayed, the herd's choice first,
          ;; and which of them have no usage left.
          :relayKinds (ghostherd-memory-page--vec
@@ -2535,6 +2545,18 @@ attach it.  It comes from the page on another device -- a phone's photo
                          (ghostherd-session-name lead))))
       (ghostherd-memory-page--send-herd))))
 
+(defun ghostherd-memory-page--primary-say (intent)
+  "Say INTENT's text to primary, starting or resuming it if need be."
+  (let ((text (alist-get 'text intent))
+        (up (ghostherd--primary-up)))
+    (unless (and (stringp text) (not (string-empty-p (string-trim text))))
+      (user-error "Nothing to send"))
+    (ghostherd-primary-say text)
+    (ghostherd-memory-page--js
+     "flash" (if up "Sent to primary"
+               "Starting primary; it gets your message once it is ready"))
+    (ghostherd-memory-page--send-herd)))
+
 (defun ghostherd-memory-page--agent-new (intent)
   "Spawn a KIND agent in PROJECT, as INTENT asks; it does not take focus.
 With a true `worktree', give it its own git worktree off the project's
@@ -2734,6 +2756,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
         ("agent-image" (ghostherd-memory-page--agent-image intent))
         ("agent-image-upload" (ghostherd-memory-page--agent-image-upload intent))
         ("lead-say" (ghostherd-memory-page--lead-say intent))
+        ("primary-say" (ghostherd-memory-page--primary-say intent))
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))
