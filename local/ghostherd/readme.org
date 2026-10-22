@@ -2362,3 +2362,38 @@ A false =blocked= looks exactly like a real one until you can see
 Rules are matched case-sensitively; a pattern that is plainly on screen
 but absent from the match list is usually a casing difference. See
 "Rule matching case" in [[file:docs/design.org][docs/design.org]].
+
+** Emacs is busy while you are not typing
+
+What the herd does by itself, on timers -- and what it keeps from doing
+twice:
+
+- Every =ghostherd-poll-interval= (1.5 s), every agent's screen, in one
+  tmux call, read for its state: its rules, its spinner, a menu, a
+  login, a limit, its foot -- dozens of regexps a screen.  What is read
+  off a screen is kept with it, and an agent that is idle or waiting
+  draws the same screen poll after poll: it is read again only when it
+  changes.
+- While you are not typing, the sidecar tick (0.8 s): every agent's
+  state and screen.  A project's name is written once per path.
+- While the herd page's Agents tab is open -- in Emacs or a browser
+  tab -- the herd every 5 s, and on each log entry (once for the
+  entries that come together).  A herd that did not change is not
+  encoded and sent again: the page draws the one it has again.
+- The mode line's herd count, asked at every redisplay of every mode
+  line -- a terminal streaming an agent's work redraws its own many
+  times a second -- is made again only when a count changes.
+
+To see where Emacs spends its time, sample it from a shell: it costs
+Emacs nothing.  Native-compiled functions show by name (as
+=F<hex>_<name>_0=).
+
+#+begin_src bash
+  sample $(pgrep -x Emacs) 10 -file /tmp/emacs.sample
+#+end_src
+
+Not =profiler-start= in a live Emacs for long, nor a report expanded in
+it: on a busy Emacs that is itself a load, and one was running when an
+Emacs froze.  Redisplay of a terminal on screen that an agent is
+streaming into, and the mode lines with it, are the terminal's and the
+mode line's own costs, not the herd's.

@@ -4500,6 +4500,11 @@
       }
     },
 
+    // The same herd as last sent, which Emacs does not send again: drawn
+    // again from what the page has, so what it shows by the clock -- an
+    // answer of ten minutes ago, how long until a reset -- moves on.
+    renderHerdAgain: () => GM.renderHerd(herdNow.data),
+
     setScreen: (p) => {
       if (!p) return;
       herdNow.screens[p.name] = p.text || "(no screen yet)";

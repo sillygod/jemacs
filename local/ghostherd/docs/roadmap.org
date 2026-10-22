@@ -2150,6 +2150,55 @@ what, across projects -- and where each one waits now.
   prompt typed while the agent was still busy runs in a later turn, so
   its thread has no opener: it fails to nothing
 
+* Phase 3.38 — What the herd costs Emacs  *(this tree)*
+
+Goal: the user's Emacs averaged 19% CPU over 25 minutes with the herd
+page in a browser tab, spiking to 54% untouched (ask 8845416d).  Find
+what costs it and cut the herd's share, behaviour unchanged.
+
+** What the live Emacs spent (=sample=, 3 x 10 s, 20 agents, 2026-10-23)
+
+- 36% of the main thread on CPU: redisplay 12% (in C), doom-modeline
+  5%, ghostel 4% (its pixel anchoring at each redraw) -- the terminal
+  of an agent at work on screen, and its mode line -- and the herd 11%
+- The herd: reading 20 screens every 1.5 s, 5.8% (the same rules read
+  twice a poll, most screens unchanged); the page's pushes, 2.8% (the
+  whole herd encoded and scrubbed at every log entry as well as every
+  5 s -- the scrub, evaluated from source in that Emacs, tested each
+  char in Lisp); the sidecar tick, 1.2% (half of it writing project
+  names); the mode-line count, ~1% (made, keymap and all, at every
+  redisplay); git chores 0.7%
+
+** What shipped
+
+- [X] What is read off a screen is kept with it, by the settings it
+  depends on; an unchanged screen is handed on as the same string, so
+  its reads are found again (=ghostherd--screen-read=)
+- [X] The page is sent the herd only when it changed; otherwise it is
+  told to draw the one it has again (=renderHerdAgain=), so what it
+  shows by the clock still moves on.  Log entries that come together
+  send it once
+- [X] The mode-line segment made again only when a count changes;
+  project names kept per absolute path
+- [X] Measured in a scratch Emacs (=emacs -nw=, 20 fake claude agents on
+  their own tmux, the page open in a browser tab, the user's GC
+  settings), two pairs: Emacs 2.0% -> 1.1% and 1.9% -> 1.2% of a core;
+  the herd's own samples 124 -> 48 and 109 -> 57; a poll of 20 screens
+  5.8 ms -> 2.1 ms
+- [ ] xwapp's scrub by two regexps in C (a patch for master's
+  =xwapp.el=, d39f1d3's): 12.9 ms -> 1.8 ms a push as it is loaded
+  live (from source); one regexp over the range past Unicode was tried
+  first and cost 10 ms a compile, evicted from the cache by the
+  poll's regexps every time
+
+** Deliberately not done
+
+- ghostel's anchoring and doom-modeline: other packages' costs, at
+  every redraw of a terminal on screen
+- The git chores: what they count feeds the leads' notes, so they are
+  not put off while the page is unseen
+- A connection kept open per RPC: url.el's part of a tick is small
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
