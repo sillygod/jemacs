@@ -405,6 +405,16 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
         to = push.get("to") or "another CLI"
         return (f"⌛ {name} stopped{head}\n\n{_sentence(push.get('reason') or 'Its usage is used up')}"
                 f"\n\nRelay it to {to}: a {to} agent takes its name and its work.")
+    if kind == "lead-started":
+        # A lead the herd started in a project for a handoff from another.
+        src = _leaf(push.get("from"))
+        lines = [f"▶ started {name}{head}",
+                 f"For a handoff from {push.get('by') or '?'}{' in ' + src if src else ''}: "
+                 "work found there that belongs in this project."]
+        if push.get("head"):
+            lines.append("It asks: " + push["head"])
+        lines.append("↩ Reply to tell the lead.")
+        return "\n\n".join(lines)
     if kind == "ask-failed":
         lines = [f"✖ {name}'s ask to {push.get('to') or '?'} failed{head}"]
         for part in (push.get("error"), push.get("head") and "It asked: " + push["head"]):

@@ -20,12 +20,18 @@ answer rather than its screen.  A turn that ends with work it started
 still out -- asks of its own, sub-agents, shells or monitors running --
 ends to wait: `waiting', its ask left open, until a turn ends with
 nothing out.
+
+A handoff is an ask from one project to another's lead (herd_handoff):
+the sender says which project, the herd finds its lead -- or has Emacs
+start one there -- and frames the brief.  Work crosses projects lead to
+lead: an agent in a project that has a lead tells its lead instead.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -33,6 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import projects
 import subagents
 from config import get_config
 
@@ -106,6 +113,10 @@ MEMORY_HOLD = 5
 # Closed asks the page still shows, for this long.
 RECENT_SECONDS = 1800
 
+# A handoff to a project with no lead waits this long for Emacs to start
+# one; past it, it fails -- Emacs never took the request, or never said.
+HANDOFF_START_SECONDS = 180
+
 # Settled mail, asks, commands, replies, and pushes kept in herd.sqlite
 # before tick prunes them.
 HISTORY_SECONDS = 7 * 86400
@@ -132,6 +143,49 @@ def _head(text: str | None, width: int = 120) -> str:
 def _and(words: list[str]) -> str:
     "WORDS as a list in a sentence: a, b and c."
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+
+
+def _body(body: Any) -> str:
+    "An ask's text, which it must have."
+    if body is None or not str(body).strip():
+        raise ValueError("body is required")
+    return str(body)
+
+
+def _rounds(rounds: Any) -> int | None:
+    "ROUNDS as given to an ask: None, or a whole number in range."
+    if rounds is None:
+        return None
+    try:
+        ok = int(rounds) == rounds and 1 <= rounds <= ASK_ROUNDS_MAX
+    except (TypeError, ValueError):
+        ok = False
+    if not ok or isinstance(rounds, bool):
+        raise ValueError(f"rounds must be a whole number from 1 to {ASK_ROUNDS_MAX}")
+    return int(rounds)
+
+
+def _handoff_text(sender: str, from_project: str | None, project: str, body: str) -> str:
+    """BODY as the lead of PROJECT reads a handoff from SENDER: the herd's
+    frame -- where it comes from, that the sender waits on it, what to do
+    with it -- then the brief as the sender wrote it.  How to answer
+    follows, from Emacs, as for any ask."""
+    user = sender == "user"
+    who = "the user" if user else sender
+    Who = who[:1].upper() + who[1:]
+    there = projects.leaf(from_project) if from_project else ""
+    origin = f"{who}, in project {there} ({from_project})" if there else who
+    back = f" in {there}" if there else ""
+    tail = "" if user else (
+        f"  {Who} does not direct your agents, and cannot be asked while it waits: "
+        "put any question in your answer.")
+    return (
+        f"[Handoff to {projects.leaf(project)} from {origin}.  {Who} found work that "
+        "belongs in this project and waits on your answer.  Take it in as your own: plan "
+        "it here, by this project's rules and with its agents, and answer with the result "
+        f"-- what was done, where (branch, commit, pull request), and what is left for "
+        f"{who}{back}.{tail}]\n\n{body}"
+    )
 
 
 def _background(transcript: str | None) -> list[str]:
@@ -390,6 +444,12 @@ class HerdStore:
                          ("round_of", "INTEGER"), ("rounds", "INTEGER")):
             if col not in ask_cols:
                 self._conn.execute(f"ALTER TABLE asks ADD COLUMN {col} {typ}")
+        # A handoff (`herd handoff'): the project it went to, whose lead
+        # takes it, and the project of the agent that sent it.  NULL for an
+        # ordinary ask.  Its taker is '' while the herd starts that lead.
+        for col in ("project", "from_project"):
+            if col not in ask_cols:
+                self._conn.execute(f"ALTER TABLE asks ADD COLUMN {col} TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -443,6 +503,12 @@ class HerdStore:
                 for r in rows
             ]
         }
+
+    def projects(self) -> list[str]:
+        "The projects the herd's agents are in, as Emacs writes them."
+        with self._mu:
+            return [r[0] for r in self._conn.execute(
+                "SELECT DISTINCT project FROM snapshot WHERE project != '' ORDER BY project")]
 
     def _agent_work(self, name: str, state: str, root: str) -> dict[str, Any]:
         """For `herd list': NAME's open ask (id, from), how many asks wait
@@ -548,88 +614,279 @@ class HerdStore:
         many times the taker may ask any one agent while it answers this
         (ASK_ROUNDS when not given).
         """
-        if body is None or not str(body).strip():
-            raise ValueError("body is required")
-        if rounds is not None:
-            try:
-                ok = int(rounds) == rounds and 1 <= rounds <= ASK_ROUNDS_MAX
-            except (TypeError, ValueError):
-                ok = False
-            if not ok or isinstance(rounds, bool):
-                raise ValueError(f"rounds must be a whole number from 1 to {ASK_ROUNDS_MAX}")
-            rounds = int(rounds)
+        body = _body(body)
+        rounds = _rounds(rounds)
         sender = (from_name or "").strip() or "user"
-        now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             if not self._synced():
                 raise ValueError(
                     "Emacs has not shared the herd yet; is ghostherd-mode on?"
                 )
-            # An agent answering an ask may hand part of it on -- the lead
-            # asks rd, rd asks qa -- but never to one waiting on it, which
-            # is how two agents end up waiting on each other; and only so
-            # deep.
-            chain = self._chain(sender)
-            if len(chain) >= ASK_DEPTH:
-                raise ValueError(
-                    f"{sender} is answering for {' <- '.join(chain)}, {len(chain)} asks deep; "
-                    "answer rather than ask further"
-                )
+            chain = self._chain_checked(sender)
             target = self._resolve_taker(to, sender, exclude=chain)
-            if target in chain:
-                raise ValueError(
-                    f"{target} is waiting on {sender} ({sender} <- {' <- '.join(chain)}); "
-                    "answer its ask rather than ask it"
-                )
-            ask_id = self._new_ask_id()
-            parent, run, n, cap = self._round(sender, target, ask_id)
-            if cap is not None and n >= cap:
-                if parent:
-                    raise ValueError(
-                        f"{sender} has asked {target} {n} times for ask {parent['id']}, "
-                        f"{cap} at most; answer {parent['from_name']} with where it stands "
-                        "rather than ask again"
-                    )
-                raise ValueError(
-                    f"{sender} has asked {target} {n} times in this run of asks, {cap} at most "
-                    f"(it ends when {sender} finishes a turn with no ask open); "
-                    "say where it stands rather than ask again"
-                )
-            if run == ask_id:
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO runs (session, run) VALUES (?, ?)", (sender, run)
-                )
-            self._conn.execute(
-                """
-                INSERT INTO asks (id, from_name, to_name, body, wait,
-                                  status, created_at, parent, run, round,
-                                  round_of, rounds)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
-                """,
-                (ask_id, sender, target, str(body), 1 if wait else 0, now,
-                 parent["id"] if parent else None, run,
-                 n + 1 if cap is not None else None, cap, rounds),
-            )
-            mail_id = str(uuid.uuid4())
-            hold = None
-            if self.ask_memory is not None:
-                hold = (datetime.now(timezone.utc) + timedelta(seconds=MEMORY_HOLD)).isoformat()
-            self._conn.execute(
-                """
-                INSERT INTO mail (
-                    id, from_name, to_name, body, submit, handoff,
-                    status, created_at, ask_id, memory_until
-                ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?)
-                """,
-                (mail_id, sender, target, str(body), now, ask_id, hold),
-            )
+            self._not_in_chain(target, sender, chain)
+            out, mail_id = self._insert_ask(sender, target, body, wait, rounds)
             self._conn.commit()
-        if hold is not None:
-            self._attach_memory(mail_id, target, str(body))
-        out: dict[str, Any] = {"id": ask_id, "to": target, "queued": True}
+        if mail_id:
+            self._attach_memory(mail_id, target, body)
+        return out
+
+    def _chain_checked(self, sender: str) -> list[str]:
+        """Who SENDER is answering for (`_chain'), refusing when it is
+        already as deep as asks go.  Caller holds `_mu`."""
+        # An agent answering an ask may hand part of it on -- the lead
+        # asks rd, rd asks qa -- but never to one waiting on it, which
+        # is how two agents end up waiting on each other; and only so
+        # deep.
+        chain = self._chain(sender)
+        if len(chain) >= ASK_DEPTH:
+            raise ValueError(
+                f"{sender} is answering for {' <- '.join(chain)}, {len(chain)} asks deep; "
+                "answer rather than ask further"
+            )
+        return chain
+
+    @staticmethod
+    def _not_in_chain(target: str, sender: str, chain: list[str]) -> None:
+        if target in chain:
+            raise ValueError(
+                f"{target} is waiting on {sender} ({sender} <- {' <- '.join(chain)}); "
+                "answer its ask rather than ask it"
+            )
+
+    def _insert_ask(
+        self, sender: str, target: str, body: str, wait: bool, rounds: int | None,
+        project: str | None = None, from_project: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Record an ask of TARGET by SENDER, held to its rounds, and the
+        mail that delivers it.  A handoff names the PROJECT it went to (and
+        the one it came FROM_PROJECT); its TARGET is '' while the herd
+        starts that project's lead, and its mail waits for it.  Returns what
+        to tell the asker, and the mail to find memory for (None when there
+        is none to find).  Caller holds `_mu` and commits."""
+        now = datetime.now(timezone.utc).isoformat()
+        ask_id = self._new_ask_id()
+        parent, run, n, cap = self._round(sender, target or None, ask_id, project)
+        if cap is not None and n >= cap:
+            whom = f"handed {projects.leaf(project)} work" if project else f"asked {target}"
+            if parent:
+                raise ValueError(
+                    f"{sender} has {whom} {n} times for ask {parent['id']}, "
+                    f"{cap} at most; answer {parent['from_name']} with where it stands "
+                    "rather than ask again"
+                )
+            raise ValueError(
+                f"{sender} has {whom} {n} times in this run of asks, {cap} at most "
+                f"(it ends when {sender} finishes a turn with no ask open); "
+                "say where it stands rather than ask again"
+            )
+        if run == ask_id:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO runs (session, run) VALUES (?, ?)", (sender, run)
+            )
+        self._conn.execute(
+            """
+            INSERT INTO asks (id, from_name, to_name, body, wait,
+                              status, created_at, parent, run, round,
+                              round_of, rounds, project, from_project)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ask_id, sender, target or "", body, 1 if wait else 0, now,
+             parent["id"] if parent else None, run,
+             n + 1 if cap is not None else None, cap, rounds,
+             project, from_project if project else None),
+        )
+        mail_id = self._ask_mail(ask_id, target, now) if target else None
+        out: dict[str, Any] = {"id": ask_id, "to": target or "", "queued": True}
         if cap is not None:
             out.update(round=n + 1, of=cap)
+        return out, mail_id
+
+    def _ask_mail(self, ask_id: str, target: str, now: str) -> str | None:
+        """Queue the mail that delivers ask ASK_ID to TARGET: its body, framed
+        as a handoff for one.  Held for the shared memory it will carry when
+        there is a memory to ask; returns that mail's id, or None.  Caller
+        holds `_mu`."""
+        row = self._conn.execute(
+            "SELECT from_name, body, project, from_project FROM asks WHERE id = ?",
+            (ask_id,),
+        ).fetchone()
+        sender, body, project, from_project = row
+        text = _handoff_text(sender, from_project, project, body) if project else body
+        mail_id = str(uuid.uuid4())
+        hold = None
+        if self.ask_memory is not None:
+            hold = (datetime.now(timezone.utc) + timedelta(seconds=MEMORY_HOLD)).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO mail (
+                id, from_name, to_name, body, submit, handoff,
+                status, created_at, ask_id, memory_until
+            ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?)
+            """,
+            (mail_id, sender, target, text, now, ask_id, hold),
+        )
+        return mail_id if hold is not None else None
+
+    # ---- Handoffs: work from one project for another's lead -----------------
+
+    def handoff(
+        self,
+        project: str,
+        body: str,
+        from_name: str | None = None,
+        wait: bool = False,
+        rounds: int | None = None,
+    ) -> dict[str, Any]:
+        """Hand BODY to PROJECT's lead as an ask: the answer, rounds and loop
+        rules are an ask's.  PROJECT is the project's directory, resolved.
+
+        A project with no lead gets one: the herd asks Emacs to start it
+        (a `handoff' command, one per project however many handoffs wait on
+        it), and the ask waits with no taker until Emacs names the lead it
+        started -- or fails with why it did not.  `starting' says so.
+        """
+        body = _body(body)
+        rounds = _rounds(rounds)
+        sender = (from_name or "").strip() or "user"
+        where = projects.norm(project)
+        if not where or not os.path.isabs(where):
+            raise ValueError("project is the project's directory, absolute")
+        shown = projects.display(where)
+        # Looked at before the lock: they run git.  Used only when the
+        # project has no lead, which only the snapshot says.
+        exists = os.path.isdir(where)
+        git = exists and projects.is_git_checkout(where)
+        with self._mu:
+            if not self._synced():
+                raise ValueError(
+                    "Emacs has not shared the herd yet; is ghostherd-mode on?"
+                )
+            rows = self._conn.execute(
+                "SELECT name, state, project, role FROM snapshot"
+            ).fetchall()
+            mine = next((r for r in rows if r[0] == sender), None)
+            from_project = (mine[2] if mine else "") or ""
+            if projects.same(from_project, where):
+                raise ValueError(
+                    f"{projects.leaf(where)} is your own project: ask its agents "
+                    "(herd ask NAME) rather than hand it off"
+                )
+            refusal = self._handoff_refusal(sender, rows, where)
+            if refusal:
+                raise ValueError(refusal)
+            chain = self._chain_checked(sender)
+            lead = next((r for r in rows if r[3] == "lead" and projects.same(r[2], where)), None)
+            if lead:
+                if lead[1] not in _TAKER_RANK:
+                    raise ValueError(
+                        f"{lead[0]}, {projects.leaf(where)}'s lead, is {lead[1] or 'not running'}; "
+                        "ask the user to start it again"
+                    )
+                self._not_in_chain(lead[0], sender, chain)
+            elif not exists:
+                raise ValueError(f"no directory {shown}: no project to hand off to")
+            elif not git:
+                raise ValueError(
+                    f"{shown} is not a git checkout, and has no lead: the herd starts "
+                    "a lead only in a git checkout; ask the user"
+                )
+            target = lead[0] if lead else ""
+            out, mail_id = self._insert_ask(
+                sender, target, body, wait, rounds, project=shown, from_project=from_project)
+            if not lead:
+                # One start per project: a handoff that finds one under way
+                # waits on it with the others.
+                starting = self._conn.execute(
+                    """
+                    SELECT 1 FROM asks WHERE status = 'queued' AND to_name = ''
+                      AND project = ? AND id != ?
+                    """,
+                    (shown, out["id"]),
+                ).fetchone()
+                if not starting:
+                    self._command(
+                        "handoff", sender,
+                        {"project": shown, "by": sender, "from_project": from_project,
+                         "head": _head(body, 200)},
+                    )
+            self._conn.commit()
+        if mail_id:
+            self._attach_memory(mail_id, target, body)
+        out.update(project=shown, starting=not lead)
         return out
+
+    def _handoff_refusal(self, sender: str, rows, where: str) -> str | None:
+        """Why SENDER may not hand work to project WHERE, or None.  ROWS are
+        the snapshot's (name, state, project, role).  Caller holds `_mu`.
+
+        Work crosses projects lead to lead, so each lead knows what happens
+        in its project and nobody from outside directs its agents: an agent
+        in a project that has a lead -- other than that lead -- tells its
+        lead.  The rule is about the sender's project, not its role: a
+        project's lead may, an agent in a project with none may (nobody
+        directs it), and so may the user and an agent in no project --
+        which is where a herd-wide lead, whose project is the herd itself,
+        sends the user's cross-project requests from."""
+        mine = next((r for r in rows if r[0] == sender), None)
+        if not mine or not mine[2]:
+            return None
+        lead = next((r for r in rows if r[3] == "lead" and projects.same(r[2], mine[2])), None)
+        if not lead or lead[0] == sender:
+            return None
+        return (
+            f"{sender} works under {lead[0]}, {projects.leaf(mine[2])}'s lead: tell your lead "
+            f"-- put what {projects.leaf(where)} needs in your answer to it.  Work crosses "
+            "projects lead to lead, so each lead knows what happens in its project and "
+            "nobody from outside directs its agents."
+        )
+
+    def _bind_handoff(self, project: str, lead: str, said: str, now: str) -> list[tuple[str, str, str]]:
+        """Emacs answered the start of PROJECT's lead: give the handoffs that
+        wait on it their taker LEAD and their mail -- or, with no LEAD, fail
+        them with what it SAID.  Returns the mail to find memory for, as
+        (mail, taker, body).  Caller holds `_mu`."""
+        out = []
+        for ask_id, sender, body in self._conn.execute(
+            """
+            SELECT id, from_name, body FROM asks
+            WHERE status = 'queued' AND to_name = '' AND project = ?
+            ORDER BY created_at
+            """,
+            (project,),
+        ).fetchall():
+            error = None
+            if not lead:
+                error = said or f"no lead was started in {project}"
+            elif lead in self._chain(sender) or lead == sender:
+                # Emacs found a lead the snapshot did not: one waiting on
+                # the sender, a loop.
+                error = f"{lead} is waiting on {sender}; answer its ask rather than ask it"
+            if error:
+                self._close_ask(ask_id, "failed", now, error=error)
+                self._mail_back(ask_id)
+                continue
+            self._conn.execute("UPDATE asks SET to_name = ? WHERE id = ?", (lead, ask_id))
+            mail_id = self._ask_mail(ask_id, lead, now)
+            if mail_id:
+                out.append((mail_id, lead, body))
+        return out
+
+    def _sweep_handoff_starts(self, now: str) -> None:
+        """Handoffs that waited HANDOFF_START_SECONDS for a lead Emacs never
+        named fail: it never took the request, or never answered it.
+        Caller holds `_mu`."""
+        cutoff = datetime.fromisoformat(now).timestamp() - HANDOFF_START_SECONDS
+        for ask_id, project, created in self._conn.execute(
+            "SELECT id, project, created_at FROM asks WHERE status = 'queued' AND to_name = ''"
+        ).fetchall():
+            if datetime.fromisoformat(created).timestamp() < cutoff:
+                self._close_ask(
+                    ask_id, "failed", now,
+                    error=f"the herd did not start a lead in {project} "
+                          f"within {HANDOFF_START_SECONDS}s; is Emacs up?",
+                )
+                self._mail_back(ask_id)
 
     def _attach_memory(self, mail_id: str, target: str, body: str) -> None:
         """Find what the shared memory says about BODY for TARGET and put it
@@ -647,12 +904,15 @@ class HerdStore:
             )
             self._conn.commit()
 
-    def _round(self, sender: str, target: str, ask_id: str):
+    def _round(self, sender: str, target: str | None, ask_id: str,
+               project: str | None = None):
         """Where SENDER asking TARGET stands: (PARENT, RUN, N, CAP) --
         the ask it is answering (a dict, or None), the run the new ask
         ASK_ID joins, how many times it has asked TARGET in it already,
         and how many it may.  CAP is None for one outside the herd: the
-        user is not held to rounds.  Caller holds `_mu`."""
+        user is not held to rounds.  A handoff counts by the PROJECT it
+        goes to as well, its lead or not: a lead the herd is still
+        starting has no name yet.  Caller holds `_mu`."""
         row = self._conn.execute(
             """
             SELECT id, from_name, run, rounds FROM asks
@@ -664,8 +924,9 @@ class HerdStore:
         if row:
             parent = {"id": row[0], "from_name": row[1]}
             n = self._conn.execute(
-                "SELECT COUNT(*) FROM asks WHERE from_name = ? AND to_name = ? AND parent = ?",
-                (sender, target, row[0]),
+                "SELECT COUNT(*) FROM asks WHERE from_name = ? "
+                "AND (to_name = ? OR project = ?) AND parent = ?",
+                (sender, target, project, row[0]),
             ).fetchone()[0]
             return parent, row[2] or row[0], n, row[3] or ASK_ROUNDS
         if not self._conn.execute(
@@ -680,9 +941,10 @@ class HerdStore:
         n = self._conn.execute(
             """
             SELECT COUNT(*) FROM asks
-            WHERE from_name = ? AND to_name = ? AND parent IS NULL AND run = ?
+            WHERE from_name = ? AND (to_name = ? OR project = ?)
+              AND parent IS NULL AND run = ?
             """,
-            (sender, target, run[0]),
+            (sender, target, project, run[0]),
         ).fetchone()[0]
         return None, run[0], n, ASK_ROUNDS
 
@@ -692,7 +954,7 @@ class HerdStore:
         holds `_mu`."""
         rows = self._conn.execute(
             f"""
-            SELECT to_name FROM asks WHERE from_name = ? AND (
+            SELECT COALESCE(NULLIF(to_name, ''), project) FROM asks WHERE from_name = ? AND (
               status IN {ASK_OPEN}
               OR (wait = 1 AND collected = 0 AND status IN ('answered', 'failed')))
             UNION ALL
@@ -796,7 +1058,8 @@ class HerdStore:
 
     _ASK_COLS = (
         "id, from_name, to_name, body, wait, status, reply, auto, replied_by, "
-        "error, collected, created_at, delivered_at, answered_at, auto_source"
+        "error, collected, created_at, delivered_at, answered_at, auto_source, "
+        "project, from_project"
     )
 
     def _ask_row(self, ask_id: str) -> dict[str, Any]:
@@ -836,6 +1099,8 @@ class HerdStore:
             "answered_at": row["answered_at"],
             "taker_state": (taker[0] or "") if taker else "",
             "taker_reason": (taker[1] or "") if taker else "",
+            "project": row["project"] or "",
+            "from_project": row["from_project"] or "",
             # Its outcome went out as mail: nobody was waiting for it, or
             # the waiting asker was gone for longer than the herd holds it.
             "mailed": not row["wait"] and bool(row["collected"]),
@@ -1096,7 +1361,8 @@ class HerdStore:
             ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?)
             """,
             (
-                str(uuid.uuid4()), row["to_name"], row["from_name"], text,
+                # A handoff that failed before it had a taker: the herd says so.
+                str(uuid.uuid4()), row["to_name"] or "herd", row["from_name"], text,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -1128,7 +1394,7 @@ class HerdStore:
             """
             SELECT id, from_name, to_name, status, auto, error, body, reply,
                    created_at, delivered_at, answered_at, auto_source,
-                   parent, run, round, round_of
+                   parent, run, round, round_of, project, from_project
             FROM asks ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -1156,6 +1422,10 @@ class HerdStore:
                     "run": r[13],
                     "round": r[14],
                     "of": r[15],
+                    # A handoff: the project it went to and the one it came
+                    # from -- the cards name projects, not only agents.
+                    "project": r[16] or "",
+                    "from_project": r[17] or "",
                 }
             )
             if len(out) >= 50:
@@ -1510,14 +1780,20 @@ class HerdStore:
                     """,
                     ack_cmd_ids,
                 )
+            started = []
             for reply in replies:
                 rid = str(reply.get("id") or "").strip()
                 if not rid:
                     continue
                 chat = self._conn.execute(
-                    "SELECT chat_id FROM commands WHERE id = ?",
+                    "SELECT chat_id, op, args FROM commands WHERE id = ?",
                     (rid,),
                 ).fetchone()
+                if chat and chat[1] == "handoff":
+                    # Bound once the snapshot has the lead Emacs names.
+                    started.append((json.loads(chat[2] or "{}").get("project") or "",
+                                    str(reply.get("lead") or "").strip(),
+                                    str(reply.get("text") or "")))
                 self._conn.execute(
                     """
                     INSERT OR REPLACE INTO replies (id, chat_id, text, sent)
@@ -1580,6 +1856,9 @@ class HerdStore:
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (k, v) VALUES ('synced', '1')"
             )
+            to_attach = []
+            for project, lead, said in started:
+                to_attach += self._bind_handoff(project, lead, said, now)
             self._conn.execute(
                 "INSERT OR REPLACE INTO meta (k, v) VALUES ('page_url', ?)",
                 (page_url if isinstance(page_url, str) else "",),
@@ -1608,6 +1887,7 @@ class HerdStore:
                         )
             # Before collecting what to deliver, so a swept answer goes
             # out in this tick rather than the next.
+            self._sweep_handoff_starts(now)
             self._sweep_uncollected(now)
             self._end_runs(was, {
                 str(row.get("name") or "").strip(): str(row.get("state") or "")
@@ -1721,6 +2001,8 @@ class HerdStore:
                     }
                 )
             self._conn.commit()
+        for mail_id, target, body in to_attach:
+            self._attach_memory(mail_id, target, body)
         pending = []
         for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory in deliverable:
             text = body or ""
@@ -1936,26 +2218,25 @@ class HerdStore:
             raise ValueError("op is required")
         if not session:
             raise ValueError("session is required")
-        cid = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
         with self._mu:
-            self._conn.execute(
-                """
-                INSERT INTO commands
-                  (id, op, session, args, chat_id, status, created_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?)
-                """,
-                (
-                    cid,
-                    op,
-                    session,
-                    json.dumps(args or {}),
-                    chat_id,
-                    now,
-                ),
-            )
+            cid = self._command(op, session, args, chat_id)
             self._conn.commit()
         return {"id": cid, "queued": True}
+
+    def _command(self, op: str, session: str, args: dict[str, Any] | None = None,
+                 chat_id: int | None = None) -> str:
+        "Queue a command for Emacs; its id.  Caller holds `_mu` and commits."
+        cid = str(uuid.uuid4())
+        self._conn.execute(
+            """
+            INSERT INTO commands
+              (id, op, session, args, chat_id, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'queued', ?)
+            """,
+            (cid, op, session, json.dumps(args or {}), chat_id,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        return cid
 
     def command_reply(self, cmd_id: str) -> dict[str, Any]:
         """A queued command's status and reply text, by its id -- what `herd

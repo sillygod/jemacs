@@ -295,6 +295,18 @@ def test_a_failed_ask_says_what_and_why(tmp_path):
     reset_herd()
 
 
+def test_a_lead_started_for_a_handoff_says_for_whom(tmp_path):
+    bot, herd = _bot(tmp_path)
+    push = _push(herd, kind="lead-started", session="lead-tmp", project="/tmp/shop/", url=ROOM,
+                 by="lead-ghost", head="The login API renamed token", **{"from": "~/src/ghost/"})
+    text, markup = bot.prepare_push(push, 0)
+    assert text.splitlines()[0] == "▶ started lead-tmp · shop"
+    assert "For a handoff from lead-ghost in ghost: work found there" in text
+    assert "It asks: The login API renamed token" in text and "Reply to tell the lead" in text
+    assert markup == {"inline_keyboard": [[{"text": "Open the room", "url": ROOM}]]}
+    reset_herd()
+
+
 def test_pushes_go_to_every_chat_and_replies_find_their_lead(tmp_path):
     bot, herd = _bot(tmp_path, chats=(99, 77))
     herd.report(session="lead-tmp", state="done", last="Done.")

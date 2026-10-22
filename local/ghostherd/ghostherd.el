@@ -6514,10 +6514,15 @@ agents for parts of it, but not whoever is waiting on you%s."
 
 (defun ghostherd--ask-deliver (id from to body &optional rounds)
   "Paste ask ID from FROM into TO, and watch for TO to stop.
-ROUNDS is how many times TO may ask any one agent for it."
+ROUNDS is how many times TO may ask any one agent for it.  A lead owed
+its role -- started for a handoff on a CLI that takes none as it starts
+-- reads it first."
   (let ((session (or (ghostherd-get to)
                      (user-error "Unknown target session"))))
-    (ghostherd-message from session (ghostherd--ask-text id body rounds) :submit t)
+    (ghostherd-message from session
+                       (concat (ghostherd--lead-role-take session)
+                               (ghostherd--ask-text id body rounds))
+                       :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
     (ghostherd--log-add session 'ask
                         (format "ask %s from %s: %s" id from
@@ -6630,14 +6635,21 @@ from here on, and closed now if the taker is already sitting idle."
         (when (and was (not (equal was status))
                    (member status '("answered" "failed" "cancelled")))
           (remhash id ghostherd--asks-open)
-          (ghostherd--log-add (plist-get a :to) 'ask (ghostherd--ask-outcome a)))
+          ;; A handoff that failed before it had a taker: its asker's.
+          (ghostherd--log-add (if (equal (plist-get a :to) "") (plist-get a :from) (plist-get a :to))
+                              'ask (ghostherd--ask-outcome a)))
         ;; Failed since the last tick -- or before it, when the ask is new
         ;; to a herd that has seen asks already, not at Emacs's start.
         (when-let* (((equal status "failed"))
                     ((not (equal was "failed")))
                     ((or was ghostherd--herd-asks-taken))
                     (asker (ghostherd-get (plist-get a :from))))
-          (ghostherd--push 'ask-failed asker :ask id :to (or (plist-get a :to) "")
+          (ghostherd--push 'ask-failed asker :ask id
+                           :to (let ((to (or (plist-get a :to) "")))
+                                 (if (and (equal to "") (plist-get a :project))
+                                       (format "%s's lead" (file-name-nondirectory
+                                                            (directory-file-name (plist-get a :project))))
+                                     to))
                            :error (or (plist-get a :error) "") :head (or (plist-get a :head) "")))
         (when-let* (((equal status "delivered"))
                     ((not (gethash id ghostherd--asks-open)))
@@ -6973,20 +6985,38 @@ Whatever role ARGS gave it -- the text after the flag that takes one
                      (equal (ghostherd--project-name (ghostherd-session-project s)) key)))
               (ghostherd-sessions))))
 
-(defun ghostherd-start-lead (project &optional kind)
-  "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default)."
+(defvar ghostherd--lead-role-owed (make-hash-table :test 'equal)
+  "Session id -> t for a lead started on a CLI that takes no role as it
+starts, until its first message: that carries the role, whether it is
+the user's (`ghostherd-tell') or an ask (`ghostherd--ask-deliver').")
+
+(defun ghostherd--lead-role-take (session)
+  "The role SESSION is owed, as its first message opens with it, taken;
+or nil."
+  (when (gethash (ghostherd-session-id session) ghostherd--lead-role-owed)
+    (remhash (ghostherd-session-id session) ghostherd--lead-role-owed)
+    (concat ghostherd--lead-role "\n---\n\n")))
+
+(defun ghostherd-start-lead (project &optional kind notes)
+  "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
+NOTES, when given, say more than that it plans the work.  A CLI that
+takes no role as it starts is owed it, with its first message."
   (let* ((kind (or kind ghostherd-lead-kind))
-         (dir (file-name-as-directory (expand-file-name project))))
-    (ghostherd-spawn kind
-                     :name (ghostherd--unique-name
-                            (format "lead-%s" (file-name-nondirectory (directory-file-name dir))))
-                     :project project
-                     :directory dir
-                     :args (append (plist-get (ghostherd--spec kind) :args)
-                                   (ghostherd--lead-args kind))
-                     :notes "lead: plans the work, hands it out"
-                     :role "lead"
-                     :display nil)))
+         (dir (file-name-as-directory (expand-file-name project)))
+         (lead (ghostherd-spawn
+                kind
+                :name (ghostherd--unique-name
+                       (format "lead-%s" (file-name-nondirectory (directory-file-name dir))))
+                :project project
+                :directory dir
+                :args (append (plist-get (ghostherd--spec kind) :args)
+                              (ghostherd--lead-args kind))
+                :notes (or notes "lead: plans the work, hands it out")
+                :role "lead"
+                :display nil)))
+    (unless (ghostherd--lead-args kind)
+      (puthash (ghostherd-session-id lead) t ghostherd--lead-role-owed))
+    lead))
 
 (defvar ghostherd--lead-unheard (make-hash-table :test 'equal)
   "Project -> what the user said to its agents directly since its lead
@@ -7042,13 +7072,14 @@ unless I ask you to:\n"
 A project's lead hears first what the user said to its agents directly
 since it last heard from them, and what the project works on when that
 is news to it -- after ROLE, the role of a lead that took none as it
-started.  Said to another agent of a project that has a lead, TEXT is
-kept for that."
+started: the one it is owed (`ghostherd--lead-role-owed') when ROLE is
+nil.  Said to another agent of a project that has a lead, TEXT is kept
+for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
          (lead (and project (ghostherd-project-lead project))))
     (if (eq lead session)
         (progn
-          (ghostherd-prompt session (concat role
+          (ghostherd-prompt session (concat (or role (ghostherd--lead-role-take session))
                                             (ghostherd--lead-unheard-note project)
                                             (ghostherd--lead-work-note session project)
                                             text))
@@ -7080,13 +7111,11 @@ A lead just started hears TEXT once it is ready -- after its role, on a
 CLI that took none as it started.  Return the lead."
   (if-let* ((lead (ghostherd-project-lead project)))
       (progn (ghostherd-tell lead text) lead)
-    (let* ((lead (ghostherd-start-lead project))
-           (role (unless (ghostherd--lead-args (ghostherd-session-kind lead))
-                   (concat ghostherd--lead-role "\n---\n\n"))))
+    (let ((lead (ghostherd-start-lead project)))
       ;; Asked now, so that whatever looks has looked by the time the
       ;; lead is ready to be told.
       (ghostherd--project-work project)
-      (ghostherd--when-ready lead (lambda () (ghostherd-tell lead text role)))
+      (ghostherd--when-ready lead (lambda () (ghostherd-tell lead text)))
       lead)))
 
 ;;; What agents say about themselves, through their CLI's hooks
@@ -7444,13 +7473,125 @@ merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
          (t (format "stopped %s; its worktree was not merged or not clean, so it was kept (M-x ghostherd-worktree-forget)"
                     name))))))))
 
+
+;;; Handoffs: work for another project's lead
+;;
+;; `herd handoff PROJECT' is an ask of another project's lead: what an
+;; agent found needs a change there, and that project's own lead plans
+;; it, by that project's rules, rather than the finder editing a checkout
+;; it does not know.  The sidecar keeps the ask, judges who may send it
+;; and frames the brief; when PROJECT has no lead it asks Emacs to start
+;; one (a `handoff' command), and the ask waits for its name.  Starting a
+;; lead nobody asked for spends quota in a project the user may not be
+;; looking at, so it is a setting, capped, only in a git checkout, and
+;; pushed to the user's phone.
+
+(defcustom ghostherd-handoff-may-start-lead t
+  "Whether a handoff to a project with no lead starts one there.
+`herd handoff PROJECT' goes to PROJECT's lead; with none, the herd starts
+one -- a `ghostherd-lead-kind' agent, or the project's own default kind
+from its .dir-locals.el -- and hands it the work.  Nil refuses such a
+handoff, and the sender is told to ask the user."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-handoff-lead-max 3
+  "How many leads the herd may have up at once that it started for
+handoffs.  Past it a handoff to a project with no lead is refused, naming
+the ones up, so the user decides.  Leads the user started do not count,
+nor ones started before Emacs restarted."
+  :type 'integer
+  :group 'ghostherd)
+
+(defvar ghostherd--handoff-leads (make-hash-table :test 'equal)
+  "Session id -> the agent it was started for: the leads the herd started
+for a handoff, counted against `ghostherd-handoff-lead-max'.  Not kept
+over a restart: after one, they are leads like any other.")
+
+(defun ghostherd--handoff-leads-up ()
+  "The leads the herd started for handoffs that are still up: not dead."
+  (seq-filter (lambda (s)
+                (and (gethash (ghostherd-session-id s) ghostherd--handoff-leads)
+                     (not (eq (ghostherd-session-state s) 'dead))
+                     (ghostherd--session-live-p s)))
+              (ghostherd-sessions)))
+
+(defun ghostherd-handoff-lead (by project &optional from-project head)
+  "PROJECT's lead, for a handoff from BY, as the sidecar asks over the
+wire; one started when it has none.  FROM-PROJECT is BY's project and HEAD
+the brief's first line, for the push.  Returns (NAME . TEXT): the lead's
+name and what was done, or nil and why it was refused."
+  (let* ((dir (and (stringp project) (not (string-empty-p project))
+                   (file-name-as-directory (expand-file-name project))))
+         (root (and dir (file-directory-p dir)
+                    (or (ghostherd--project-root dir) dir)))
+         (name (and root (ghostherd--project-name root)))
+         (lead (and name (ghostherd-project-lead name)))
+         (from (and (stringp from-project) (not (string-empty-p from-project))
+                    (ghostherd--project-name from-project)))
+         (leaf (lambda (p) (file-name-nondirectory (directory-file-name p))))
+         (by-s (and (stringp by) (ghostherd-get by))))
+    (cond
+     ((not root) (cons nil (format "no directory %s: no project to hand off to"
+                                   (if dir (ghostherd--abbreviate dir) project))))
+     ((and from (equal from name))
+      (cons nil (format "%s is %s's own project" (funcall leaf name) by)))
+     ((and lead (eq (ghostherd-session-state lead) 'dead))
+      (cons nil (format "%s, %s's lead, is dead; ask the user to start it again"
+                        (ghostherd-session-name lead) (funcall leaf name))))
+     ((and lead by-s (eq lead by-s))
+      (cons nil (format "%s is %s's lead itself" by (funcall leaf name))))
+     (lead (cons (ghostherd-session-name lead)
+                 (format "handed to %s, %s's lead" (ghostherd-session-name lead)
+                         (funcall leaf name))))
+     ((not ghostherd-handoff-may-start-lead)
+      (cons nil (format "%s has no lead, and the herd is set not to start one for a \
+handoff (ghostherd-handoff-may-start-lead is off); ask the user" (funcall leaf name))))
+     ((not (ghostherd--git-lines root "rev-parse" "--show-toplevel"))
+      (cons nil (format "%s is not a git checkout, and has no lead: the herd starts a \
+lead only in a git checkout; ask the user" (ghostherd--abbreviate root))))
+     ((let ((up (ghostherd--handoff-leads-up)))
+        (when (>= (length up) (max 0 ghostherd-handoff-lead-max))
+          (cons nil (format "%s has no lead, and the herd has %d up that it started for \
+handoffs (max %d): %s -- ask the user to start one there, or to stop one of those"
+                            (funcall leaf name) (length up) ghostherd-handoff-lead-max
+                            (mapconcat #'ghostherd-session-name up ", "))))))
+     (t
+      (let* ((kind (or (car (ghostherd-project-defaults root)) ghostherd-lead-kind))
+             (for (if from (format "%s in %s" by (funcall leaf from)) (or by "the user"))))
+        (if (not (and (memq kind (ghostherd--agent-kinds))
+                      (plist-get (ghostherd--spec kind) :command)))
+            (cons nil (format "no agent kind %s to start %s's lead on" kind (funcall leaf name)))
+          (condition-case err
+              (let ((new (ghostherd-start-lead
+                          root kind
+                          (format "lead: plans the work, hands it out; started for a handoff from %s"
+                                  for))))
+                (puthash (ghostherd-session-id new) (or by "user") ghostherd--handoff-leads)
+                ;; Asked now, as `ghostherd-lead-say' does, so that what the
+                ;; project works on has been looked at by the time it is told.
+                (ghostherd--project-work name)
+                (ghostherd--log-add new 'life (format "started for a handoff from %s" for))
+                (message "ghostherd: started %s for a handoff from %s"
+                         (ghostherd-session-name new) for)
+                (ghostherd--push 'lead-started new :by (or by "user") :from (or from "")
+                                 :head (or head ""))
+                (cons (ghostherd-session-name new)
+                      (format "started %s (%s) in %s for a handoff from %s"
+                              (ghostherd-session-name new) kind
+                              (ghostherd--abbreviate root) for)))
+            (error (cons nil (format "could not start %s's lead: %s" (funcall leaf name)
+                                     (error-message-string err)))))))))))
+
 (defun ghostherd--herd-run-command (cmd)
-  "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT)."
+  "Run one sidecar Telegram CMD plist.  Return (:id ID :text TEXT), and
+for a handoff the lead it went to as :lead."
   (let* ((id (plist-get cmd :id))
          (op (format "%s" (or (plist-get cmd :op) "")))
          (name (plist-get cmd :session))
          (args (plist-get cmd :args))
-         (text "ok"))
+         (text "ok")
+         lead)
     (condition-case err
         (pcase op
           ("prompt"
@@ -7504,6 +7645,13 @@ merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
           ("stop"
            ;; `herd stop': a lead stops an agent it started.
            (setq text (ghostherd-lead-stop (plist-get args :by) name)))
+          ("handoff"
+           ;; `herd handoff' to a project the sidecar found no lead in.
+           (pcase-let ((`(,name . ,said)
+                        (ghostherd-handoff-lead (plist-get args :by) (plist-get args :project)
+                                                (plist-get args :from_project)
+                                                (plist-get args :head))))
+             (setq lead name text said)))
           ("explain"
            (setq text (ghostherd--explain-text name)))
           ("lead-say"
@@ -7516,7 +7664,7 @@ merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
              (setq text (format "sent to %s" (ghostherd-session-name (ghostherd-lead-say project body))))))
           (_ (setq text (format "unknown op %s" op))))
       (error (setq text (error-message-string err))))
-    (list :id id :text text)))
+    (append (list :id id :text text) (and lead (list :lead lead)))))
 
 (defun ghostherd--herd-run-commands (result)
   "Execute Telegram commands from RESULT and queue replies."
@@ -7812,14 +7960,16 @@ rather than being taken for the one already sent."
 ;; agent nor the herd page, and have left this machine -- and the bot
 ;; words it: it has the lead's last message, and the buttons to answer.
 
-(defcustom ghostherd-push '(blocked report ask-failed used-up)
+(defcustom ghostherd-push '(blocked report ask-failed used-up lead-started)
   "What the herd pushes to Telegram while you are away: an agent
 `blocked', a lead's `report' at the end of its turn, an `ask-failed',
 an agent stopped with its CLI's usage `used-up' -- with a button that
-relays it.  Nil pushes nothing.  The sidecar's bot sends them to the
-chats of GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one goes to that
-project's lead."
-  :type '(set (const blocked) (const report) (const ask-failed) (const used-up))
+relays it -- and a lead the herd started in a project for a handoff
+from another, `lead-started'.  Nil pushes nothing.  The sidecar's bot
+sends them to the chats of GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one
+goes to that project's lead."
+  :type '(set (const blocked) (const report) (const ask-failed) (const used-up)
+              (const lead-started))
   :group 'ghostherd)
 
 (defcustom ghostherd-push-away-after 120

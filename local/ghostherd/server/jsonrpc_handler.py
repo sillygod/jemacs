@@ -15,6 +15,7 @@ import herd as herd_module
 import links
 import memory_migrate
 import meter
+import projects
 import relay
 import shared_memory
 import subagents
@@ -77,6 +78,7 @@ class JsonRpcHandler:
             "herd_inbox": self._herd_inbox,
             "herd_tick": self._herd_tick,
             "herd_ask": self._herd_ask,
+            "herd_handoff": self._herd_handoff,
             "herd_reply": self._herd_reply,
             "herd_await": self._herd_await,
             "herd_cancel": self._herd_cancel,
@@ -245,6 +247,21 @@ class JsonRpcHandler:
         return get_herd().ask(
             to=str(params.get("to") or ""),
             body=params.get("body"),
+            from_name=params.get("from"),
+            wait=bool(params.get("wait")),
+            rounds=params.get("rounds"),
+        )
+
+    def _herd_handoff(self, params: dict) -> dict:
+        """`herd handoff PROJECT': an ask of another project's lead.  PROJECT
+        is a path (made absolute by the client), a leaf name or a store slug,
+        resolved among the projects the herd knows -- its agents' and its
+        shared-memory stores' -- to the project's main checkout."""
+        where = projects.resolve(str(params.get("project") or ""), get_herd().projects(),
+                                 shared_memory.project_keys())
+        return get_herd().handoff(
+            projects.checkout(where),
+            params.get("body"),
             from_name=params.get("from"),
             wait=bool(params.get("wait")),
             rounds=params.get("rounds"),
