@@ -1349,30 +1349,35 @@ A discovered task is read-only: it signals."
      ((null record)
       (propertize "(no commands — press a to add)" 'face 'shadow))
      (fill
-      (let* ((vars (plist-get fill :vars))
-             (idx (plist-get fill :index))
-             (pair (nth idx vars))
-             (name (car pair))
-             (input (plist-get fill :input))
-             (shown (ghostel-cmd--preview
-                     tmpl root (plist-get fill :values) name input))
-             (label (format "{{%s}}  " name)))
-        (concat
-         (string-join
-          (ghostel-cmd--wrap shown width ghostel-cmd-preview-max-lines) "\n")
-         "\n"
-         (propertize
-          (concat label
-                  (ghostel-cmd--tail
-                   (if (or (plist-get fill :picked)
-                           (and input (not (string-empty-p input))))
-                       (or input "")
-                     (or (cdr pair) ""))
-                   (max 8 (- width (string-width label)))))
-          'face 'highlight))))
+      (ghostel-cmd--fill-text fill tmpl root width))
      (t
       (string-join
        (ghostel-cmd--wrap tmpl width ghostel-cmd-preview-max-lines) "\n")))))
+
+(defun ghostel-cmd--fill-text (fill tmpl root width)
+  "TMPL as FILL has it so far, wrapped to WIDTH, then the input line.
+ROOT is where TMPL runs."
+  (let* ((vars (plist-get fill :vars))
+         (idx (plist-get fill :index))
+         (pair (nth idx vars))
+         (name (car pair))
+         (input (plist-get fill :input))
+         (shown (ghostel-cmd--preview
+                 tmpl root (plist-get fill :values) name input))
+         (label (format "{{%s}}  " name)))
+    (concat
+     (string-join
+      (ghostel-cmd--wrap shown width ghostel-cmd-preview-max-lines) "\n")
+     "\n"
+     (propertize
+      (concat label
+              (ghostel-cmd--tail
+               (if (or (plist-get fill :picked)
+                       (and input (not (string-empty-p input))))
+                   (or input "")
+                 (or (cdr pair) ""))
+               (max 8 (- width (string-width label)))))
+      'face 'highlight))))
 
 (defun ghostel-cmd--draw-preview ()
   (when (derived-mode-p 'ghostel-cmd-sidebar-mode)
@@ -1462,22 +1467,27 @@ A discovered task is read-only: it signals."
                 ghostel-cmd--total-count))
       (cond
        (fill
-        (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
-               (def (cdr pair))
-               (choices (ghostel-cmd--fill-choices fill)))
-          (if choices
-              (format "   {{%s}} %s  C-n/C-p pick  TAB next  RET paste  Esc cancel"
-                      (car pair)
-                      (ghostel-cmd--choices-text choices (plist-get fill :input)))
-            (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
-                    (car pair)
-                    (if def (format " [%s]" def) "")))))
+        (ghostel-cmd--fill-footer fill))
        (ghostel-cmd--filtering
         "   RET apply  C-n/C-p move  Esc clear")
        (ghostel-cmd--help-visible
         "   ? close help  Esc close")
        (t
         "   RET paste  C-RET send  a add  / filter  ? keys  Esc close"))))))
+
+(defun ghostel-cmd--fill-footer (fill)
+  "The footer's part while FILL asks for a variable: its name, its
+default or choices, and the keys."
+  (let* ((pair (nth (plist-get fill :index) (plist-get fill :vars)))
+         (def (cdr pair))
+         (choices (ghostel-cmd--fill-choices fill)))
+    (if choices
+        (format "   {{%s}} %s  C-n/C-p pick  TAB next  RET paste  Esc cancel"
+                (car pair)
+                (ghostel-cmd--choices-text choices (plist-get fill :input)))
+      (format "   {{%s}}%s  TAB next  RET paste  Esc cancel"
+              (car pair)
+              (if def (format " [%s]" def) "")))))
 
 
 ;;; Filter / fill maps
@@ -1627,12 +1637,18 @@ The list narrows as you type; C-g puts the old query back."
       (when ghostel-cmd--fill
         (ghostel-cmd--fill-insert (char-to-string ev)))))))
 
+(defun ghostel-cmd--fill-changed (redraw)
+  "Show the fill as it now is: the filling overlay's :redraw, else REDRAW.
+Another overlay fills on its own footer by giving :buffer, :redraw and
+:deliver to `ghostel-cmd--start-fill'."
+  (funcall (or (plist-get ghostel-cmd--fill :redraw) redraw))
+  (force-mode-line-update t))
+
 (defun ghostel-cmd--fill-set-input (input)
   "Make INPUT, typed rather than picked, the value being filled."
   (plist-put ghostel-cmd--fill :input input)
   (plist-put ghostel-cmd--fill :picked nil)
-  (ghostel-cmd--draw-preview)
-  (force-mode-line-update t))
+  (ghostel-cmd--fill-changed #'ghostel-cmd--draw-preview))
 
 (defun ghostel-cmd--fill-insert (text)
   "Append TEXT to the value being filled; it replaces a picked choice."
@@ -1691,8 +1707,7 @@ From free text, down picks the first choice and up the last."
                             (t (1- n)))
                       choices))
       (plist-put fill :picked t)
-      (ghostel-cmd--draw-preview)
-      (force-mode-line-update t))))
+      (ghostel-cmd--fill-changed #'ghostel-cmd--draw-preview))))
 
 (defun ghostel-cmd-fill-next-choice ()
   "Pick the next choice of a {{name:a|b|c}} variable."
@@ -1715,27 +1730,53 @@ The preview follows as you type; C-g puts the old value back."
            (set (lambda (input &optional picked)
                   (plist-put fill :input input)
                   (plist-put fill :picked picked)
-                  (ghostel-cmd--redraw)
-                  (force-mode-line-update t))))
+                  (ghostel-cmd--fill-changed #'ghostel-cmd--redraw))))
       (condition-case nil
           (funcall set (ghostel-cmd--read-line (format "{{%s}}: " name) old set))
         (quit (funcall set old old-picked))))))
 
-(defun ghostel-cmd--set-filling (on)
-  (when-let* ((buf (get-buffer ghostel-cmd--buffer-name)))
+(defun ghostel-cmd--set-filling (on &optional buffer)
+  "Turn the fill keys ON or off in BUFFER, the overlay's by default."
+  (when-let* ((buf (or buffer (get-buffer ghostel-cmd--buffer-name)))
+              ((buffer-live-p buf)))
     (with-current-buffer buf
       (ghostel-cmd-fill-mode (if on 1 -1))
       (when (fboundp 'evil-normalize-keymaps)
         (evil-normalize-keymaps))))
   (force-mode-line-update t))
 
+(defun ghostel-cmd--start-fill (record root scope submit &rest props)
+  "Start filling the {{vars}} of RECORD, of SCOPE, run under ROOT.
+Return nil, starting nothing, when its command has none.  SUBMIT
+non-nil presses Enter after the paste.  PROPS are :buffer, the overlay
+that fills, :redraw, which shows it, and :deliver, called with the
+filled command and SUBMIT; this overlay's own by default."
+  (when-let* ((vars (ghostel-cmd--fill-vars record root scope)))
+    (setq ghostel-cmd--fill
+          (append (list :record record
+                        :root root
+                        :scope scope
+                        :vars vars
+                        :choices (ghostel-cmd--extract-choices
+                                  (plist-get record :cmd))
+                        :index 0
+                        :values nil
+                        :input ""
+                        :picked nil
+                        :submit submit)
+                  props))
+    (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
+    (ghostel-cmd--set-filling t (plist-get props :buffer))
+    t))
+
 (defun ghostel-cmd-fill-cancel ()
   "Leave fill mode without pasting."
   (interactive)
-  (setq ghostel-cmd--fill nil)
-  (ghostel-cmd--set-filling nil)
-  (ghostel-cmd--draw-preview)
-  (force-mode-line-update t))
+  (let ((fill ghostel-cmd--fill))
+    (setq ghostel-cmd--fill nil)
+    (ghostel-cmd--set-filling nil (plist-get fill :buffer))
+    (funcall (or (plist-get fill :redraw) #'ghostel-cmd--draw-preview))
+    (force-mode-line-update t)))
 
 (defun ghostel-cmd--fill-commit-current ()
   "Store the current field's value.  Return non-nil when more vars remain."
@@ -1768,17 +1809,16 @@ SUBMIT non-nil also presses Enter in the terminal."
     (when submit
       (plist-put ghostel-cmd--fill :submit t))
     (if (ghostel-cmd--fill-commit-current)
-        (progn
-          (ghostel-cmd--draw-preview)
-          (force-mode-line-update t))
+        (ghostel-cmd--fill-changed #'ghostel-cmd--draw-preview)
       (let* ((fill ghostel-cmd--fill)
              (record (plist-get fill :record))
              (cmd (ghostel-cmd--apply (plist-get record :cmd)
                                       (plist-get fill :values)))
              (do-submit (plist-get fill :submit)))
         (setq ghostel-cmd--fill nil)
-        (ghostel-cmd--set-filling nil)
-        (ghostel-cmd--deliver cmd do-submit)))))
+        (ghostel-cmd--set-filling nil (plist-get fill :buffer))
+        (funcall (or (plist-get fill :deliver) #'ghostel-cmd--deliver)
+                 cmd do-submit)))))
 
 (defun ghostel-cmd-fill-accept-send ()
   (interactive)
@@ -1889,13 +1929,15 @@ Never replaces the selected window."
      (inhibit-same-window . t)
      (reusable-frames . visible))))
 
-(defun ghostel-cmd--deliver (cmd-string submit)
+(defun ghostel-cmd--deliver (cmd-string submit &optional terminal)
   "Paste CMD-STRING into Ghostel.  SUBMIT non-nil presses Enter.
+TERMINAL, a live Ghostel buffer, takes it; else the project's.
 Keeps the current file window: reuse a visible terminal window, or
 split if none is showing."
   (ghostel-cmd--hide-overlay)
   (require 'ghostel)
-  (let ((term-buf (or (ghostel-cmd--existing-terminal)
+  (let ((term-buf (or (and (buffer-live-p terminal) terminal)
+                      (ghostel-cmd--existing-terminal)
                       (ghostel-cmd--create-terminal))))
     (when (buffer-live-p term-buf)
       (ghostel-cmd--display-terminal term-buf)
@@ -1926,27 +1968,14 @@ prefix (C-RET).  A command fills its {{vars}} in the overlay first."
          (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
     (unless record
       (user-error "No command at point"))
-    (if (plist-get record :url)
-        (ghostel-cmd--open-url (plist-get record :url) submit)
-      (let ((vars (ghostel-cmd--fill-vars record root (car row))))
-        (if (null vars)
-            (ghostel-cmd--deliver (plist-get record :cmd) submit)
-          (setq ghostel-cmd--fill
-                (list :record record
-                      :root root
-                      :scope (car row)
-                      :vars vars
-                      :choices (ghostel-cmd--extract-choices
-                                (plist-get record :cmd))
-                      :index 0
-                      :values nil
-                      :input ""
-                      :picked nil
-                      :submit submit))
-          (ghostel-cmd--fill-enter ghostel-cmd--fill 0)
-          (ghostel-cmd--set-filling t)
-          (ghostel-cmd--draw-preview)
-          (force-mode-line-update t))))))
+    (cond
+     ((plist-get record :url)
+      (ghostel-cmd--open-url (plist-get record :url) submit))
+     ((ghostel-cmd--start-fill record root (car row) submit)
+      (ghostel-cmd--draw-preview)
+      (force-mode-line-update t))
+     (t
+      (ghostel-cmd--deliver (plist-get record :cmd) submit)))))
 
 (defun ghostel-cmd-paste-send ()
   (interactive)
