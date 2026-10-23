@@ -15,7 +15,8 @@ const ITEMS = [
     title: "A long question title that should wrap to two lines on a narrow phone rather than be cut to one",
     preview: "shall I open a PR?", whyLabel: "It ended its turn with a question", body: "Done.\nShall I open a PR?", replyVia: "agent" }),
   mk({ id: "r:1", group: "fyi", kind: "report", tag: "Report", tone: "green", agent: "lead-x",
-    title: "A report", preview: "it reported", whyLabel: "It reported", body: "The full report body, shown only when the card is open." }),
+    title: "Ask **806d7f96** is complete", preview: "cleaned **scratch** and `git`",
+    whyLabel: "It reported", body: "Ask **806d7f96** is done.\n\n- updated `inbox-tab`\n- cleaned scratch" }),
 ];
 
 (async () => {
@@ -39,6 +40,16 @@ const ITEMS = [
       const p = await geo();                                    // an item picked
       check("desk: picking an item does not move the layout",
         z.ipLeft === p.ipLeft && z.ipWidth === p.ipWidth && z.listLeft === p.listLeft, { z, p });
+      // Markdown: the body renders it (bold, inline code, list); the title and
+      // the list preview show plain text with the markup stripped.
+      const bodyHtml = await page.$eval(".ibdetail .ibbody", (e) => e.innerHTML);
+      check("desk: the body renders Markdown (bold, code, list)",
+        /<strong>806d7f96<\/strong>/.test(bodyHtml) && /<code>inbox-tab<\/code>/.test(bodyHtml) && /<li>/.test(bodyHtml), bodyHtml);
+      const h1 = await page.$eval(".ibdetail .ibh1", (e) => e.innerHTML);
+      check("desk: the detail title is plain (markup stripped)",
+        h1.includes("Ask 806d7f96 is complete") && !h1.includes("*") && !/<strong>/.test(h1), h1);
+      const rowTitle = await page.$eval('.ibrow[data-id="r:1"] .ibtitle', (e) => e.innerHTML);
+      check("desk: the list title is plain", !rowTitle.includes("*") && !/<strong>/.test(rowTitle), rowTitle);
       check("desk: no page errors", errors.length === 0, errors);
       await ctx.close();
     }
@@ -69,7 +80,12 @@ const ITEMS = [
       await sleep(120);
       check("phone: one card open at a time", (await page.$$eval(".ibcard.open", (es) => es.length)) === 1);
       check("phone: the newly tapped card is the open one",
-        (await page.$eval(".ibcard.open .ibtitle", (e) => e.textContent)).includes("A report"));
+        (await page.$eval(".ibcard.open .ibtitle", (e) => e.textContent)).includes("Ask 806d7f96 is complete"));
+      // Markdown: the open card's body renders it; its title is plain.
+      check("phone: the open card body renders Markdown",
+        /<strong>806d7f96<\/strong>/.test(await page.$eval(".ibcard.open .ibbody", (e) => e.innerHTML)));
+      check("phone: the card title is plain (markup stripped)",
+        !(await page.$eval(".ibcard.open .ibtitle", (e) => e.innerHTML)).includes("*"));
       const h = await page.$eval(".ibcard.open .ibbtn", (e) => e.getBoundingClientRect().height);
       check("phone: action buttons keep a 44px touch target", h >= 44, h);
       await page.tap(".ibcard.open .ibcardhead");

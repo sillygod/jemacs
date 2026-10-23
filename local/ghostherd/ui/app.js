@@ -212,6 +212,24 @@
     return '<div class="plain">' + esc(src) + "</div>";
   }
 
+  // Markdown markup removed, for a title or a one-line preview: the plain text
+  // of what `markdown' would render, so `**x**' reads as x, not literally.
+  function stripMd(src) {
+    return String(src || "")
+      .replace(/```[\s\S]*?```/g, " ")              // code fences
+      .replace(/`([^`]+)`/g, "$1")                  // inline code
+      .replace(/\*\*([^*]+)\*\*/g, "$1")            // bold
+      .replace(/__([^_]+)__/g, "$1")                // bold
+      .replace(/(^|[^\w*])\*([^*\n]+)\*/g, "$1$2")  // italic *x*
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")      // links -> their text
+      .replace(/^\s{0,3}#{1,6}\s+/gm, "")           // headings
+      .replace(/^\s*[-*+]\s+/gm, "")                // list bullets
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  // esc of the markup-stripped text, for a title / preview.
+  function ibPlain(src) { return esc(stripMd(src)); }
+
   // ---- Query terms -----------------------------------------------------
 
   function termRe(q) {
@@ -3865,13 +3883,13 @@
     return '<button type="button" class="ibrow' + (on ? " on" : "") + '" data-act="ib:pick" data-id="' + esc(it.id) + '"' +
       ' aria-current="' + (on ? "true" : "false") + '">' +
       '<span class="ibr1"><span class="ibdot' + (it.read ? " read" : "") + ' t-' + esc(it.tone) + '"></span>' +
-      inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+      inboxTag(it) + '<span class="ibtitle">' + ibPlain(it.title) + "</span>" +
       '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></span>" +
       (need
         ? '<span class="ibr2">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
           (it.project ? '<span class="ibproj">· ' + esc(leaf(it.project)) + "</span>" : "") + "</span>" +
-          '<span class="ibprev">' + esc(it.preview) + "</span>"
-        : '<span class="ibprev">' + esc(it.agent) + " · " + esc(it.preview) + "</span>") +
+          '<span class="ibprev">' + ibPlain(it.preview) + "</span>"
+        : '<span class="ibprev">' + esc(it.agent) + " · " + ibPlain(it.preview) + "</span>") +
       "</button>";
   }
 
@@ -3894,7 +3912,7 @@
 
   function inboxWhy(it) {
     return '<div class="ibwhy"><span class="ibwhylab">' + esc(it.whyLabel || "") + "</span>" +
-      '<p class="ibbody">' + esc(it.body || "") + "</p>" +
+      '<div class="ibbody msg-body">' + markdown(it.body || "") + "</div>" +
       (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
       (it.note ? '<p class="ibnote">' + esc(it.note) + "</p>" : "") + "</div>";
   }
@@ -3940,7 +3958,7 @@
   // it is opened.  One renderer, so the two never drift.  PHONE picks the
   // compact action layout in `inboxActions'.
   function inboxDetail(it, phone) {
-    return '<div class="ibhead">' + inboxTag(it) + '<h1 class="ibh1">' + esc(it.title) + "</h1></div>" +
+    return '<div class="ibhead">' + inboxTag(it) + '<h1 class="ibh1">' + ibPlain(it.title) + "</h1></div>" +
       '<div class="ibmeta">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
       (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") +
       (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
@@ -3976,13 +3994,13 @@
     const card = (it) => it.id === inbox.sel
       ? '<div class="ibcard open ' + tone(it) + '">' +
         '<button type="button" class="ibcardhead" data-act="ib:pick" data-id="' + esc(it.id) + '" aria-expanded="true">' +
-        inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+        inboxTag(it) + '<span class="ibtitle">' + ibPlain(it.title) + "</span>" +
         '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></button>" + who(it) +
         '<div class="ibcardbody">' + inboxDetail(it, true) + "</div></div>"
       : '<button type="button" class="ibcard ' + tone(it) + '" data-act="ib:pick" data-id="' + esc(it.id) + '" aria-expanded="false">' +
-        '<span class="ibcardhead">' + inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+        '<span class="ibcardhead">' + inboxTag(it) + '<span class="ibtitle">' + ibPlain(it.title) + "</span>" +
         '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></span>" + who(it) +
-        (it.preview ? '<span class="ibcardprev">' + esc(it.preview) + "</span>" : "") + "</button>";
+        (it.preview ? '<span class="ibcardprev">' + ibPlain(it.preview) + "</span>" : "") + "</button>";
     return (inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
             (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
       '<div class="ibfilters">' + filters + "</div>" +

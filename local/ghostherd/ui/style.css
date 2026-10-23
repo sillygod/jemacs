@@ -1143,7 +1143,9 @@ html { -webkit-text-size-adjust: 100%; }
 .ibwhy { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 10px; }
 .ibwhylab { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-.ibbody { margin: 0; line-height: 1.6; color: var(--text); white-space: pre-line; }
+.ibbody { margin: 0; line-height: 1.6; color: var(--text); }
+.ibbody.msg-body > :first-child { margin-top: 0; }
+.ibbody.msg-body > :last-child { margin-bottom: 0; }
 .ibcode { display: block; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px;
   font-family: var(--mono); font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-x: auto; }
 .ibnote { margin: 0; color: var(--muted); font-size: 13px; }

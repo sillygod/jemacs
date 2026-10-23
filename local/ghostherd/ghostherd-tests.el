@@ -13212,6 +13212,43 @@ pending ask mark is one-shot."
       (ghostherd--turn-origin-on-state s 'idle 'working)
       (should (eq (ghostherd--turn-origin-of s) 'user)))))
 
+(ert-deftest ghostherd-test-ask-delivery-marks-the-turn-ask-not-user ()
+  "Delivering an ask marks the turn `ask' even though the send moves the
+taker to `working' synchronously (running the origin hook).  The pending
+flag must be set BEFORE the message; set after, the hook saw no pending
+and marked the ask turn the user's, so the taker's turn end -- after it
+answered and kept working -- leaked into the Inbox as a report."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd--turn-origin (make-hash-table :test 'equal))
+                               (ghostherd--turn-ask-pending (make-hash-table :test 'equal))
+                               (ghostherd--asks-open (make-hash-table :test 'equal))
+                               (ghostherd--role-owed (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "qa" :kind 'claude :state 'idle)))
+      ;; ghostherd-message stands in for the real send, which moves the taker
+      ;; to `working' synchronously and runs the origin hook right then.
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (_from to &rest _)
+                   (ghostherd--turn-origin-on-state (ghostherd-get to) 'idle 'working))))
+        (ghostherd--ask-deliver "a1b2c3d4" "lead-x" "qa" "do the thing" 5))
+      (should (eq (ghostherd--turn-origin-of s) 'ask))
+      ;; It stays `ask' through a mid-turn waiting flap and past its answer...
+      (ghostherd--turn-origin-on-state s 'working 'waiting)
+      (ghostherd--turn-origin-on-state s 'waiting 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'ask))
+      ;; ...so the taker's turn end is NOT an Inbox item.
+      (should (null (ghostherd-inbox--agent-items
+                     (list :name "qa" :kind "claude" :state "idle" :role ""
+                           :login :json-false :continueAt 0 :prompt :json-false
+                           :saidFromUser (if (eq (ghostherd--turn-origin-of s) 'user) t :json-false)
+                           :said "Both fixed." :saidAt 2000))))
+      ;; A turn the USER started still shows.
+      (should (equal '("report")
+                     (ghostherd-tests--inbox-kinds
+                      (ghostherd-inbox--agent-items
+                       (list :name "claude-gz" :kind "claude" :state "idle" :role ""
+                             :login :json-false :continueAt 0 :prompt :json-false
+                             :saidFromUser t :said "Shipped it." :saidAt 2000))))))))
+
 (ert-deftest ghostherd-test-inbox-asks-p-heuristic ()
   (skip-unless (require 'ghostherd-memory-page nil t))
   (should (ghostherd-inbox--asks-p "all done.\nShall I open a PR?"))

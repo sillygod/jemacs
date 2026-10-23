@@ -6918,6 +6918,12 @@ line."
   (let* ((session (or (ghostherd-get to)
                       (user-error "Unknown target session")))
          (role (ghostherd--role-take session)))
+    ;; BEFORE the message: sending it moves the taker to `working'
+    ;; synchronously (`ghostherd-send'), which runs the turn-origin hook --
+    ;; set after, the hook would see no pending ask and mark the turn the
+    ;; user's.  The turn this ask starts is from an ask, not the user: its
+    ;; end is not the taker's report to the user (whoever asked reports).
+    (ghostherd--turn-from-ask session)
     (ghostherd-message from session
                        (concat (ghostherd--ask-text id body rounds
                                                     (equal (ghostherd-session-role session) "lead"))
@@ -6925,9 +6931,6 @@ line."
 your first message as your CLI takes none as it starts:\n\n" role)))
                        :submit t)
     (puthash id (ghostherd-session-id session) ghostherd--asks-open)
-    ;; The turn this ask starts is from an ask, not the user: its end is
-    ;; not the taker's report to the user (whoever asked reports).
-    (ghostherd--turn-from-ask session)
     (ghostherd--log-add session 'ask
                         (format "ask %s from %s%s: %s" id from
                                 (if guarded " (a guarded agent)" "")
@@ -7523,6 +7526,12 @@ kept for that."
   (let* ((project (ghostherd--project-name (ghostherd-session-project session)))
          (lead (and project (ghostherd-project-lead project)))
          (ghostherd--input-said (if by-herd (concat "[from the herd] " text) text)))
+    ;; A herd-made prompt (a relay, say) starts a turn that is not the user's,
+    ;; so its end is not an Inbox item.  Marked BEFORE the prompt, which moves
+    ;; the session to `working' synchronously and runs the origin hook.  The
+    ;; user's own prompt (BY-HERD nil) is left to the hook, which marks it
+    ;; `user'.
+    (when by-herd (ghostherd--turn-from-ask session))
     (if (eq lead session)
         (progn
           (ghostherd-prompt session (concat (or role
