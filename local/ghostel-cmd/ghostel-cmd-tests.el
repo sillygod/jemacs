@@ -1159,18 +1159,36 @@ the minibuffer and the posframe's own window do not."
         (ghostel-cmd--show-side-window (current-buffer))
         (should-not (cl-some #'identity (funcall hooked)))))))
 
+(defvar ghostel-cmd-tests--max-height 20
+  "Lines the parent frame leaves the overlay, in these tests.")
+
 (defun ghostel-cmd-tests--posframe-height ()
   "The height `ghostel-cmd--show-posframe' asks posframe for, the parent
-frame leaving the overlay 20 lines at most."
-  (let ((height nil))
+frame leaving the overlay `ghostel-cmd-tests--max-height' lines at most.
+Showing prints the rows that height holds; nothing else is left changed."
+  (let ((height nil)
+        (display ghostel-cmd--display))
     (cl-letf (((symbol-function 'posframe-show)
                (lambda (_buffer &rest args) (setq height (plist-get args :height))))
-              ((symbol-function 'posframe-hide) #'ignore)
               ((symbol-function 'ghostel-cmd--posframe-max-height)
-               (lambda (&optional _frame) 20)))
+               (lambda (&optional _frame) ghostel-cmd-tests--max-height)))
       (ghostel-cmd--show-posframe (current-buffer))
-      (ghostel-cmd--hide-posframe t))
+      (ghostel-cmd--posframe-hooks nil)
+      (setq ghostel-cmd--posframe-parent nil
+            ghostel-cmd--display display))
     height))
+
+(defmacro ghostel-cmd-tests--in-posframe (max-height &rest body)
+  "Run BODY with the overlay in a posframe the parent frame leaves
+MAX-HEIGHT lines, printed for it."
+  (declare (indent 1))
+  `(let ((ghostel-cmd-tests--max-height ,max-height))
+     (cl-letf (((symbol-function 'ghostel-cmd--posframe-max-height)
+                (lambda (&optional _frame) ghostel-cmd-tests--max-height)))
+       (setq ghostel-cmd--display 'posframe)
+       (unwind-protect
+           (progn (ghostel-cmd-tests--posframe-height) ,@body)
+         (setq ghostel-cmd--display nil)))))
 
 (defun ghostel-cmd-tests--all-shown-p ()
   "Non-nil when the overlay shows every line of its buffer.
@@ -1214,6 +1232,139 @@ lines of posframe's height; budgeting one cut the input line off."
       (execute-kbd-macro "c")
       (should (string-search "/c  13/13" (ghostel-cmd--footer)))
       (should (ghostel-cmd-tests--all-shown-p)))))
+
+(defun ghostel-cmd-tests--rule ()
+  "The rule under the list."
+  (save-excursion
+    (goto-char ghostel-cmd--preview-start)
+    (buffer-substring-no-properties (point) (line-end-position))))
+
+(defun ghostel-cmd-tests--fill-line-last-p ()
+  "Non-nil when the buffer's last line is the {{var}} input line."
+  (save-excursion
+    (goto-char (point-max))
+    (forward-line -1)
+    (looking-at-p "{{namespace}}  ")))
+
+(defun ghostel-cmd-tests--many (n format &optional cmd)
+  "N commands named by FORMAT from 0, running CMD (the long one)."
+  (cl-loop for i below n
+           collect (list :name (format format i)
+                         :cmd (or cmd ghostel-cmd-tests--long-cmd))))
+
+(ert-deftest ghostel-cmd-test-long-list-keeps-the-lines-under-it ()
+  "40 rows in the user's overlay (a 44-line frame leaves it 26 lines):
+only the rows that fit are printed, so the preview, the fill input line
+and all of the key legend stay on screen, at the top and scrolled to the
+end, and the rule under the rows counts the ones hidden."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--many 40 "c%02d")
+    (ghostel-cmd-tests--delivering
+      (ghostel-cmd-tests--in-posframe 26
+        (should (= (length ghostel-cmd--matched) 40))
+        (should (= (length tabulated-list-entries) 19))
+        (should (ghostel-cmd-tests--all-shown-p))
+        (should (string-search "↓ 21 below" (ghostel-cmd-tests--rule)))
+        (ghostel-cmd-paste)
+        (should (ghostel-cmd-tests--fill-line-last-p))
+        (should (ghostel-cmd-tests--all-shown-p))
+        (ghostel-cmd-fill-cancel)
+        (ghostel-cmd-last)
+        (should (equal (tabulated-list-get-id) '(project . "c39")))
+        (should (string-search "↑ 21 above" (ghostel-cmd-tests--rule)))
+        (should-not (string-search "below" (ghostel-cmd-tests--rule)))
+        (ghostel-cmd-paste)
+        (should (ghostel-cmd-tests--fill-line-last-p))
+        (should (ghostel-cmd-tests--all-shown-p))
+        (ghostel-cmd-fill-cancel)
+        ;; The legend takes the room of rows, the selected one kept.
+        (ghostel-cmd-help)
+        (should (ghostel-cmd-tests--all-shown-p))
+        (should (string-search "Quit / cancel fill" (buffer-string)))
+        (should (equal (tabulated-list-get-id) '(project . "c39")))
+        (ghostel-cmd-quit)
+        (should-not ghostel-cmd--help-visible)
+        (should (= (length tabulated-list-entries) 19))))))
+
+(ert-deftest ghostel-cmd-test-long-list-scrolls-keeping-the-selection ()
+  "Moving past the rows shown scrolls them a row at a time, the ends
+are a key away, the sections keep their order and tags, and a reorder
+or a filter keeps the selected row on screen."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--many 30 "p%02d" "true")
+    (ghostel-cmd-tests--globals (ghostel-cmd-tests--many 10 "g%02d" "true"))
+    (ghostel-cmd-tests--in-posframe 26
+      (should (= (length tabulated-list-entries) 19))
+      ;; Within the rows shown, moving does not scroll them.
+      (execute-kbd-macro (kbd "n n n"))
+      (should (equal (tabulated-list-get-id) '(project . "p03")))
+      (should (= ghostel-cmd--top 0))
+      ;; Past the last one shown, one row comes in.
+      (ghostel-cmd--select 18)
+      (execute-kbd-macro (kbd "<down>"))
+      (should (equal (tabulated-list-get-id) '(project . "p19")))
+      (should (= ghostel-cmd--top 1))
+      (should (= (line-number-at-pos) 19))
+      (should (string-search "↑ 1 above · ↓ 20 below" (ghostel-cmd-tests--rule)))
+      ;; Past the first one shown, back up.
+      (ghostel-cmd--select 1)
+      (execute-kbd-macro (kbd "<up>"))
+      (should (equal (tabulated-list-get-id) '(project . "p00")))
+      (should (= ghostel-cmd--top 0))
+      ;; The ends; the global section last, tagged.
+      (execute-kbd-macro (kbd "<end>"))
+      (should (equal (tabulated-list-get-id) '(global . "g09")))
+      (should (string-match-p "\\`global +g09" (ghostel-cmd-tests--line)))
+      (execute-kbd-macro (kbd "<home>"))
+      (should (equal (tabulated-list-get-id) '(project . "p00")))
+      (execute-kbd-macro (kbd "<next>"))
+      (should (equal (tabulated-list-get-id) '(project . "p09")))
+      ;; M-j on the last row shown: the moved row follows into view.
+      (ghostel-cmd--select 18)
+      (execute-kbd-macro (kbd "M-j"))
+      (should (equal (tabulated-list-get-id) '(project . "p18")))
+      (should (= ghostel-cmd--index 19))
+      (should (= (line-number-at-pos) 19))
+      (should (equal (nth 19 (ghostel-cmd-tests--names ghostel-cmd--root)) "p18"))
+      ;; A filter keeps the selected row while it matches, on screen.
+      (ghostel-cmd-filter)
+      (execute-kbd-macro "p1")
+      (should (string-search "/p1  12/40" (ghostel-cmd--footer)))
+      (should (equal (tabulated-list-get-id) '(project . "p18")))
+      ;; One that drops it selects the first match.
+      (execute-kbd-macro (kbd "DEL DEL p 0"))
+      (should (equal (tabulated-list-get-id) '(project . "p00"))))))
+
+(defun ghostel-cmd-tests--in-view-p (id)
+  "Non-nil when point is on the row ID, printed."
+  (and (equal (tabulated-list-get-id) id)
+       (< (point) ghostel-cmd--preview-start)))
+
+(ert-deftest ghostel-cmd-test-long-list-edits-keep-the-row-in-view ()
+  "On a list longer than the overlay, add, edit and m leave point on
+their row, scrolled into view; delete selects the first row, as ever."
+  (ghostel-cmd-tests--with-overlay (ghostel-cmd-tests--many 30 "p%02d" "true")
+    (ghostel-cmd-tests--globals (ghostel-cmd-tests--many 10 "g%02d" "true"))
+    (ghostel-cmd-tests--in-posframe 26
+      ;; Added last in the project's list: row 30, below the rows shown.
+      (ghostel-cmd-tests--answering '("echo new" "new" "") t
+        (ghostel-cmd-add))
+      (should (ghostel-cmd-tests--in-view-p '(project . "new")))
+      (should (= ghostel-cmd--index 30))
+      (ghostel-cmd-first)
+      (ghostel-cmd--select 25)
+      (ghostel-cmd-tests--answering '("p25b" "true" "") t
+        (ghostel-cmd-edit))
+      (should (ghostel-cmd-tests--in-view-p '(project . "p25b")))
+      (should (= ghostel-cmd--index 25))
+      ;; m on a row near the top: it goes to the end of the global list.
+      (ghostel-cmd-first)
+      (ghostel-cmd--select 2)
+      (execute-kbd-macro "m")
+      (should (ghostel-cmd-tests--in-view-p '(global . "p02")))
+      (should (= ghostel-cmd--index 40))
+      (ghostel-cmd--select 20)
+      (ghostel-cmd-tests--answering nil t
+        (ghostel-cmd-delete))
+      (should (ghostel-cmd-tests--in-view-p '(project . "p00"))))))
 
 (ert-deftest ghostel-cmd-test-help-shows-whole ()
   "The key legend's separator line is counted too: under four rows, the

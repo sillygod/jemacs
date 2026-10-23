@@ -1130,14 +1130,32 @@ picked as a whole, which typing replaces.")
 (defvar ghostel-cmd--total-count 0)
 (defvar ghostel-cmd--goto-id nil
   "Name the next redraw puts point on, instead of the row at point.")
+(defvar ghostel-cmd--matched nil
+  "Every row the list holds, ((SCOPE . NAME) . RECORD), the filter applied.
+Only the rows that fit are printed, around the selected one, so the
+preview, the fill input line and the help under them stay in view.")
+(defvar ghostel-cmd--index 0
+  "Index in `ghostel-cmd--matched' of the selected row.")
+(defvar ghostel-cmd--top 0
+  "Index in `ghostel-cmd--matched' of the first row printed.")
+(defvar ghostel-cmd--display nil
+  "Where the overlay shows, posframe or side: it sets how many rows fit.")
+(defvar ghostel-cmd--cell-widths nil
+  "(TAGWIDTH NAME COMMAND DESC) widths the rows were last laid out with.")
 
 (defconst ghostel-cmd--buffer-name "*ghostel-cmd*")
+
+(defconst ghostel-cmd--posframe-chrome-lines 2
+  "Lines of a posframe's height that show no buffer text.
+posframe sets the frame's height in lines, and the header line (the
+column titles) and the mode line (the footer) each take one of them.")
 
 (defconst ghostel-cmd-sidebar-help-commands
   '(("RET"      "Paste into Ghostel (fill {{vars}}); a URL opens in the browser")
     ("C-RET"    "Paste and press Enter; a URL opens in an Emacs xwidget")
     ("u"        "Open the project's frontend in the browser")
-    ("j, k"     "Move")
+    ("j, k"     "Move; past the rows shown the list scrolls")
+    ("gg, G"    "First / last row (C-d, C-u: half a page)")
     ("a"        "Add template to the project")
     ("A"        "Add global template, shared by every project")
     ("e"        "Edit at point")
@@ -1261,10 +1279,86 @@ does not fit, the last line ends in an ellipsis."
         s
       (concat "…" (truncate-string-to-width s w (- w (1- width)))))))
 
+(defun ghostel-cmd--window-top (index top height count)
+  "The first of COUNT rows to show so the row at INDEX is among HEIGHT.
+TOP, the first one shown so far, stays while INDEX is still in view,
+so moving among the rows shown never scrolls them; past an edge they
+scroll just enough.  artifacthub's overlay windows its rows with it."
+  (max 0 (min (cond ((< index top) index)
+                    ((>= index (+ top height)) (1+ (- index height)))
+                    (t top))
+              (- count height))))
+
+(defun ghostel-cmd--rule (width above below)
+  "The rule under a list, WIDTH wide, counting the rows hidden ABOVE and
+BELOW the ones shown, so a list that scrolls says so."
+  (let ((note (string-join
+               (delq nil (list (and (> above 0) (format "↑ %d above" above))
+                               (and (> below 0) (format "↓ %d below" below))))
+               " · ")))
+    (if (string-empty-p note)
+        (propertize (make-string width ?─) 'face 'shadow)
+      (let* ((label (concat " " note " "))
+             (left (max 1 (- width (string-width label) 2))))
+        (concat (propertize (make-string left ?─) 'face 'shadow)
+                (propertize label 'face 'font-lock-comment-face)
+                (propertize (make-string (max 0 (- width left (string-width label))) ?─)
+                            'face 'shadow))))))
+
+(defun ghostel-cmd--room ()
+  "How many rows the overlay shows, the lines under them kept clear;
+nil while it is not on screen, so that every row is printed."
+  (let ((preview (ghostel-cmd--preview-reserved-lines)))
+    (cond
+     ((eq ghostel-cmd--display 'posframe)
+      (max 4 (- (ghostel-cmd--posframe-max-height (ghostel-cmd--posframe-parent-frame))
+                preview ghostel-cmd--posframe-chrome-lines)))
+     ((when-let* ((win (get-buffer-window (current-buffer) t)))
+        (max 4 (- (window-body-height win) preview)))))))
+
+(defun ghostel-cmd--selected-id ()
+  "Id of the row a rebuild keeps selected: the one asked for, else the
+one at point, else the one selected before."
+  (and (derived-mode-p 'ghostel-cmd-sidebar-mode)
+       (or ghostel-cmd--goto-id
+           (tabulated-list-get-id)
+           ;; Only a list this buffer printed: a new one starts at the top.
+           (and tabulated-list-entries
+                (car (nth ghostel-cmd--index ghostel-cmd--matched))))))
+
+(defun ghostel-cmd--entry (row)
+  "The tabulated-list entry of ROW, in `ghostel-cmd--cell-widths'."
+  (pcase-let* ((`(,tagwidth ,nw ,cw ,dw) ghostel-cmd--cell-widths)
+               (c (cdr row))
+               (desc (if (plist-get c :url)
+                         (ghostel-cmd--url-desc c)
+                       (or (plist-get c :desc) ""))))
+    (list (car row)
+          (vconcat
+           (when tagwidth (list (ghostel-cmd--tag (caar row))))
+           (vector
+            (ghostel-cmd--truncate (ghostel-cmd--name-cell c) nw)
+            (ghostel-cmd--truncate (plist-get c :cmd) cw)
+            (propertize (ghostel-cmd--truncate desc dw)
+                        'face 'font-lock-comment-face))))))
+
+(defun ghostel-cmd--slice ()
+  "List the rows that fit around the selected one."
+  (let* ((count (length ghostel-cmd--matched))
+         (room (or (ghostel-cmd--room) count)))
+    (setq ghostel-cmd--index (max 0 (min ghostel-cmd--index (1- count)))
+          ghostel-cmd--top (ghostel-cmd--window-top
+                            ghostel-cmd--index ghostel-cmd--top room count)
+          tabulated-list-entries
+          (mapcar #'ghostel-cmd--entry
+                  (seq-subseq ghostel-cmd--matched ghostel-cmd--top
+                              (min count (+ ghostel-cmd--top room)))))))
+
 (defun ghostel-cmd--build-entries ()
-  "Rebuild `tabulated-list-entries' from the current project.
+  "Rebuild the list from the current project.
 A row's id is (SCOPE . NAME); a From column tags each row as soon as
-the list holds more than the project's own commands."
+the list holds more than the project's own commands.  The selected row
+stays selected when the filter keeps it, else the first one is."
   (let* ((root (or ghostel-cmd--root (ghostel-cmd--current-project-root)))
          (rows (ghostel-cmd--rows root))
          (tagged (cl-some (lambda (row) (not (eq (caar row) 'project))) rows))
@@ -1281,26 +1375,18 @@ the list holds more than the project's own commands."
          (dw (cadr (aref fmt (+ off 2))))
          (matched (seq-filter (lambda (row)
                                 (ghostel-cmd--query-matches-p (cdr row) query))
-                              rows)))
+                              rows))
+         (keep (ghostel-cmd--selected-id)))
     (tabulated-list-init-header)
-    (setq ghostel-cmd--total-count (length rows)
+    (setq ghostel-cmd--goto-id nil
+          ghostel-cmd--total-count (length rows)
           ghostel-cmd--match-count (length matched)
-          tabulated-list-entries
-          (mapcar
-           (lambda (row)
-             (let* ((c (cdr row))
-                    (desc (if (plist-get c :url)
-                              (ghostel-cmd--url-desc c)
-                            (or (plist-get c :desc) ""))))
-               (list (car row)
-                     (vconcat
-                      (when tagwidth (list (ghostel-cmd--tag (caar row))))
-                      (vector
-                       (ghostel-cmd--truncate (ghostel-cmd--name-cell c) nw)
-                       (ghostel-cmd--truncate (plist-get c :cmd) cw)
-                       (propertize (ghostel-cmd--truncate desc dw)
-                                   'face 'font-lock-comment-face))))))
-           matched))
+          ghostel-cmd--matched matched
+          ghostel-cmd--cell-widths (list tagwidth nw cw dw)
+          ghostel-cmd--index (or (and keep (cl-position keep matched
+                                                        :key #'car :test #'equal))
+                                 0))
+    (ghostel-cmd--slice)
     ;; Probe the service URLs without blocking; redraw as each settles.
     (ghostel-cmd--probe-urls rows #'ghostel-cmd--refresh-overlay)))
 
@@ -1385,14 +1471,20 @@ ROOT is where TMPL runs."
           (inhibit-modification-hooks t)
           (record (and (not ghostel-cmd--help-visible)
                        (ghostel-cmd--record-at-point)))
-          (width (max 10 (or (ignore-errors (window-body-width))
-                             (ghostel-cmd--available-width)))))
+          ;; The overlay's own window, not the selected one: before the
+          ;; posframe shows, that is the caller's, as wide as the frame.
+          (width (max 10 (if-let* ((win (get-buffer-window (current-buffer) t)))
+                             (window-body-width win)
+                           (ghostel-cmd--available-width)))))
       (save-excursion
         (ghostel-cmd--erase-preview)
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
         (setq ghostel-cmd--preview-start (point-marker))
-        (insert (propertize (make-string width ?─) 'face 'shadow) "\n")
+        (insert (ghostel-cmd--rule width ghostel-cmd--top
+                                   (- (length ghostel-cmd--matched) ghostel-cmd--top
+                                      (length tabulated-list-entries)))
+                "\n")
         (insert (if ghostel-cmd--help-visible
                     (ghostel-cmd--help-text)
                   (ghostel-cmd--preview-text record)))
@@ -1400,18 +1492,68 @@ ROOT is where TMPL runs."
       (restore-buffer-modified-p nil))))
 
 (defun ghostel-cmd--print (&optional update)
-  (let ((id (or ghostel-cmd--goto-id (tabulated-list-get-id))))
-    (setq ghostel-cmd--goto-id nil)
-    (ghostel-cmd--erase-preview)
-    (tabulated-list-print update)
-    (when id
-      (goto-char (point-min))
-      (while (and (not (eobp))
-                  (not (equal (tabulated-list-get-id) id)))
-        (forward-line 1))
-      (when (eobp) (goto-char (point-min))))
-    (ghostel-cmd--draw-preview)
-    (setq ghostel-cmd--preview-id (tabulated-list-get-id))))
+  "Print the rows that fit, point on the selected one, the preview under."
+  (ghostel-cmd--erase-preview)
+  (tabulated-list-print update)
+  (goto-char (point-min))
+  (forward-line (- ghostel-cmd--index ghostel-cmd--top))
+  (ghostel-cmd--draw-preview)
+  (setq ghostel-cmd--preview-id (tabulated-list-get-id))
+  ;; Every row printed fits: show them from the first.
+  (when-let* ((win (get-buffer-window (current-buffer) t)))
+    (set-window-start win (point-min) t)
+    (set-window-point win (point))))
+
+(defun ghostel-cmd--select (index)
+  "Select the row at INDEX of the list; scroll it when not printed."
+  (let ((count (length ghostel-cmd--matched)))
+    (when (> count 0)
+      (setq ghostel-cmd--index (max 0 (min index (1- count))))
+      (if (and (>= ghostel-cmd--index ghostel-cmd--top)
+               (< ghostel-cmd--index (+ ghostel-cmd--top
+                                        (length tabulated-list-entries))))
+          (progn
+            (goto-char (point-min))
+            (forward-line (- ghostel-cmd--index ghostel-cmd--top)))
+        (ghostel-cmd--slice)
+        (ghostel-cmd--print t)))))
+
+(defun ghostel-cmd--sync-index ()
+  "Take the row at point, moved there some other way, as the selected one."
+  (when (tabulated-list-get-id)
+    (setq ghostel-cmd--index (+ ghostel-cmd--top (1- (line-number-at-pos))))))
+
+(defun ghostel-cmd-next (&optional n)
+  "Select the Nth next row, scrolling the list past its last one shown."
+  (interactive "p")
+  (ghostel-cmd--sync-index)
+  (ghostel-cmd--select (+ ghostel-cmd--index (or n 1))))
+
+(defun ghostel-cmd-previous (&optional n)
+  "Select the Nth previous row, scrolling the list past its first one shown."
+  (interactive "p")
+  (ghostel-cmd--sync-index)
+  (ghostel-cmd--select (- ghostel-cmd--index (or n 1))))
+
+(defun ghostel-cmd-first ()
+  "Select the first row."
+  (interactive)
+  (ghostel-cmd--select 0))
+
+(defun ghostel-cmd-last ()
+  "Select the last row."
+  (interactive)
+  (ghostel-cmd--select (1- (length ghostel-cmd--matched))))
+
+(defun ghostel-cmd-page-down ()
+  "Select the row half the rows shown further down."
+  (interactive)
+  (ghostel-cmd-next (max 1 (/ (length tabulated-list-entries) 2))))
+
+(defun ghostel-cmd-page-up ()
+  "Select the row half the rows shown further up."
+  (interactive)
+  (ghostel-cmd-previous (max 1 (/ (length tabulated-list-entries) 2))))
 
 (defun ghostel-cmd--confine-point ()
   (when (and ghostel-cmd--preview-start
@@ -1424,6 +1566,7 @@ ROOT is where TMPL runs."
 (defun ghostel-cmd--preview-on-command ()
   (when (derived-mode-p 'ghostel-cmd-sidebar-mode)
     (ghostel-cmd--confine-point)
+    (ghostel-cmd--sync-index)
     (unless (or ghostel-cmd--help-visible ghostel-cmd--fill)
       (let ((id (tabulated-list-get-id)))
         (unless (equal id ghostel-cmd--preview-id)
@@ -1594,10 +1737,6 @@ The list narrows as you type; C-g puts the old query back."
   "RET"         #'ghostel-cmd-filter-confirm
   "C-m"         #'ghostel-cmd-filter-confirm
   "<return>"    #'ghostel-cmd-filter-confirm
-  "C-n"         #'next-line
-  "C-p"         #'previous-line
-  "<down>"      #'next-line
-  "<up>"        #'previous-line
   "DEL"         #'ghostel-cmd-filter-backspace
   "<backspace>" #'ghostel-cmd-filter-backspace
   "<delete>"    #'ghostel-cmd-filter-backspace
@@ -1621,6 +1760,12 @@ The list narrows as you type; C-g puts the old query back."
 
 (ghostel-cmd--bind-printable-keys ghostel-cmd-filter-map
                                   #'ghostel-cmd-filter-self-insert)
+
+;; Motion is bound here, after the map, not in it: reloading the file
+;; then rebinds a map that already exists, which a defvar-keymap keeps.
+(dolist (binding '(("C-n" . ghostel-cmd-next) ("C-p" . ghostel-cmd-previous)
+                   ("<down>" . ghostel-cmd-next) ("<up>" . ghostel-cmd-previous)))
+  (keymap-set ghostel-cmd-filter-map (car binding) (cdr binding)))
 
 (define-minor-mode ghostel-cmd-filter-mode
   "Live-narrow the command overlay."
@@ -2256,11 +2401,13 @@ Under a filter that row is the next visible one, not a hidden one.  A
 command stays in its own list: the first row of the next list is no
 neighbor."
   (ghostel-cmd--bookmark-at-point)
-  (let ((id (tabulated-list-get-id))
-        (neighbor (save-excursion
-                    (forward-line step)
-                    (tabulated-list-get-id)))
-        (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
+  ;; The neighbor from the whole list: past the rows shown it is not printed.
+  (let* ((id (tabulated-list-get-id))
+         (at (cl-position id ghostel-cmd--matched :key #'car :test #'equal))
+         (there (and at (+ at step)))
+         (neighbor (and there (>= there 0)
+                        (car (nth there ghostel-cmd--matched))))
+         (root (or ghostel-cmd--root (ghostel-cmd--current-project-root))))
     (when (and neighbor
                (not (equal neighbor id))
                (eq (car neighbor) (car id)))
@@ -2325,6 +2472,7 @@ KEEP-FOCUS non-nil leaves focus where it is."
         (buf (get-buffer ghostel-cmd--buffer-name)))
     (setq ghostel-cmd--posframe-parent nil
           ghostel-cmd--posframe-fitted-width nil
+          ghostel-cmd--display nil
           ghostel-cmd--fill nil
           ghostel-cmd--help-visible nil)
     (ghostel-cmd--set-filtering nil)
@@ -2366,7 +2514,7 @@ editing for the overlay."
     (ghostel-cmd--refresh-overlay))
    (ghostel-cmd--help-visible
     (setq ghostel-cmd--help-visible nil)
-    (ghostel-cmd--redraw)
+    (ghostel-cmd--refresh-overlay)
     (force-mode-line-update t))
    (t
     (setq ghostel-cmd--query "")
@@ -2385,11 +2533,17 @@ editing for the overlay."
       (ghostel-cmd--show-posframe buf))))
 
 (defun ghostel-cmd-help ()
-  "Toggle the key legend in the overlay preview pane."
+  "Toggle the key legend in the overlay preview pane.
+The list shows fewer rows meanwhile, so all of the legend fits."
   (interactive)
   (setq ghostel-cmd--help-visible (not ghostel-cmd--help-visible))
-  (ghostel-cmd--redraw)
+  (ghostel-cmd--refresh-overlay)
   (force-mode-line-update t))
+
+(defun ghostel-cmd-revert ()
+  "Read the commands and tasks again and redraw."
+  (interactive)
+  (ghostel-cmd--refresh-overlay))
 
 (defun ghostel-cmd--close-side-windows (buf)
   (dolist (win (get-buffer-window-list buf nil t))
@@ -2424,11 +2578,6 @@ editing for the overlay."
          (avail (max 8 (frame-height frame))))
     (max 8 (min (- avail 4) (round (* 0.6 avail))))))
 
-(defconst ghostel-cmd--posframe-chrome-lines 2
-  "Lines of a posframe's height that show no buffer text.
-posframe sets the frame's height in lines, and the header line (the
-column titles) and the mode line (the footer) each take one of them.")
-
 (defun ghostel-cmd--preview-reserved-lines ()
   "Lines under the list: the separator, then the help or the preview."
   (if ghostel-cmd--help-visible
@@ -2443,13 +2592,20 @@ column titles) and the mode line (the footer) each take one of them.")
                     (ghostel-cmd--posframe-char-width parent)))
          (maxh (ghostel-cmd--posframe-max-height parent))
          (preview (ghostel-cmd--preview-reserved-lines))
-         (rows (with-current-buffer buf
-                 (max 1 (length tabulated-list-entries))))
+         (rows (max 1 (length ghostel-cmd--matched)))
          (table (max 4 (min rows (max 4 (- maxh preview
                                             ghostel-cmd--posframe-chrome-lines)))))
          (height (+ ghostel-cmd--posframe-chrome-lines table preview)))
     (setq ghostel-cmd--posframe-parent parent
-          ghostel-cmd--posframe-fitted-width width)
+          ghostel-cmd--posframe-fitted-width width
+          ghostel-cmd--display 'posframe)
+    ;; Print the rows this height holds, if the list was printed for
+    ;; another room: under a side window, or before the help showed.
+    (with-current-buffer buf
+      (unless (= (length tabulated-list-entries)
+                 (min (length ghostel-cmd--matched) (ghostel-cmd--room)))
+        (ghostel-cmd--slice)
+        (ghostel-cmd--print t)))
     (ghostel-cmd--posframe-hooks t)
     (with-selected-frame parent
       (posframe-show
@@ -2471,6 +2627,9 @@ column titles) and the mode line (the footer) each take one of them.")
        :cursor 'box
        :accept-focus t
        :window-point (with-current-buffer buf (point))))
+    ;; Drawn again in the posframe's window, as wide as it is.
+    (with-current-buffer buf
+      (ghostel-cmd--draw-preview))
     (when-let* (((not ghostel-cmd--keep-focus))
                 (frame (ghostel-cmd--posframe-frame))
                 (win (get-buffer-window buf frame)))
@@ -2494,14 +2653,18 @@ column titles) and the mode line (the footer) each take one of them.")
   (when (fboundp 'posframe-hide)
     (posframe-hide buf))
   (ghostel-cmd--posframe-hooks nil)
-  (setq ghostel-cmd--posframe-parent nil)
+  (setq ghostel-cmd--posframe-parent nil
+        ghostel-cmd--display 'side)
   (pop-to-buffer
    buf
    `((display-buffer-in-side-window)
      (side . ,ghostel-cmd-sidebar-side)
      (slot . 0)
      (window-width . ,ghostel-cmd-sidebar-width)
-     (preserve-size . (t . nil)))))
+     (preserve-size . (t . nil))))
+  (with-current-buffer buf
+    (ghostel-cmd--slice)
+    (ghostel-cmd--print t)))
 
 (defun ghostel-cmd--prepare-buffer ()
   (let ((buf (get-buffer-create ghostel-cmd--buffer-name)))
@@ -2532,7 +2695,8 @@ presses Enter."
         ghostel-cmd--fill nil
         ghostel-cmd--preview-id nil)
   (ghostel-cmd--set-filtering nil)
-  (let* ((overlay (ghostel-cmd--use-posframe-p))
+  (setq ghostel-cmd--display (and (ghostel-cmd--use-posframe-p) 'posframe))
+  (let* ((overlay (eq ghostel-cmd--display 'posframe))
          (ghostel-cmd--target-width
           (and overlay (ghostel-cmd--posframe-char-width)))
          (buf (ghostel-cmd--prepare-buffer)))
@@ -2547,8 +2711,6 @@ presses Enter."
 (defvar-keymap ghostel-cmd-sidebar-mode-map
   :doc "Keymap for the command overlay."
   "?"          #'ghostel-cmd-help
-  "n"          #'next-line
-  "p"          #'previous-line
   "RET"        #'ghostel-cmd-paste
   "<return>"   #'ghostel-cmd-paste
   "C-RET"      #'ghostel-cmd-paste-send
@@ -2565,10 +2727,22 @@ presses Enter."
   "M-<up>"     #'ghostel-cmd-move-up
   "/"          #'ghostel-cmd-filter
   "o"          #'ghostel-cmd-open-save-file
-  "g"          #'tabulated-list-revert
   "q"          #'ghostel-cmd-quit
   "C-g"        #'ghostel-cmd-quit
   "<escape>"   #'ghostel-cmd-quit)
+
+;; The list shows the rows that fit, so moving through it is the
+;; overlay's own: past the first or last row shown it scrolls.  Bound
+;; after the map, so a reload of the file rebinds it too.
+(dolist (binding '(("n" . ghostel-cmd-next) ("p" . ghostel-cmd-previous)
+                   ("C-n" . ghostel-cmd-next) ("C-p" . ghostel-cmd-previous)
+                   ("<down>" . ghostel-cmd-next) ("<up>" . ghostel-cmd-previous)
+                   ("<home>" . ghostel-cmd-first) ("<end>" . ghostel-cmd-last)
+                   ("M-<" . ghostel-cmd-first) ("M->" . ghostel-cmd-last)
+                   ("<next>" . ghostel-cmd-page-down) ("<prior>" . ghostel-cmd-page-up)
+                   ("C-v" . ghostel-cmd-page-down) ("M-v" . ghostel-cmd-page-up)
+                   ("g" . ghostel-cmd-revert)))
+  (keymap-set ghostel-cmd-sidebar-mode-map (car binding) (cdr binding)))
 
 (defun ghostel-cmd--maybe-setup-evil ()
   (when (fboundp 'evil-make-intercept-map)
@@ -2593,6 +2767,18 @@ presses Enter."
       (kbd "<up>") #'ghostel-cmd-fill-previous-choice
       (kbd "<escape>") #'ghostel-cmd-fill-cancel)
     (evil-define-key* 'normal ghostel-cmd-sidebar-mode-map
+      (kbd "j") #'ghostel-cmd-next
+      (kbd "k") #'ghostel-cmd-previous
+      (kbd "C-n") #'ghostel-cmd-next
+      (kbd "C-p") #'ghostel-cmd-previous
+      (kbd "<down>") #'ghostel-cmd-next
+      (kbd "<up>") #'ghostel-cmd-previous
+      (kbd "gg") #'ghostel-cmd-first
+      (kbd "G") #'ghostel-cmd-last
+      (kbd "C-d") #'ghostel-cmd-page-down
+      (kbd "C-u") #'ghostel-cmd-page-up
+      (kbd "C-f") #'ghostel-cmd-page-down
+      (kbd "C-b") #'ghostel-cmd-page-up
       (kbd "?") #'ghostel-cmd-help
       (kbd "RET") #'ghostel-cmd-paste
       (kbd "<return>") #'ghostel-cmd-paste
@@ -2610,7 +2796,7 @@ presses Enter."
       (kbd "M-<up>") #'ghostel-cmd-move-up
       (kbd "/") #'ghostel-cmd-filter
       (kbd "o") #'ghostel-cmd-open-save-file
-      (kbd "gr") #'tabulated-list-revert
+      (kbd "gr") #'ghostel-cmd-revert
       (kbd "q") #'ghostel-cmd-quit
       (kbd "<escape>") #'ghostel-cmd-quit)))
 

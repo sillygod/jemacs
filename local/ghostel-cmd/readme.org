@@ -19,7 +19,11 @@ minibuffer does not count.  The list keeps the order you give it with
 
 | Key         | Action                                            |
 |-------------+---------------------------------------------------|
-| =j= / =k=   | Move                                              |
+| =j= / =k=   | Move; past the first or last row shown, the list  |
+|             | scrolls (=n= / =p=, =C-n= / =C-p=, arrows too)    |
+| =gg= / =G=  | First / last row (=<home>= / =<end>=, =M-<= /     |
+|             | =M->=); =C-d= / =C-u=: half a page (=<next>= /    |
+|             | =<prior>=, =C-v= / =M-v=)                         |
 | =RET=       | Paste (fill ={{vars}}= first); a URL opens in the |
 |             | system browser                                    |
 | =C-RET=     | Paste and press Enter; a URL opens in an xwidget  |
@@ -50,6 +54,15 @@ it on; the list follows as you type and =C-g= keeps the old text.
 The preview under the list wraps a long command onto at most
 =ghostel-cmd-preview-max-lines= (3) lines and cuts the rest with =…=,
 so a huge command never pushes the list away.
+
+A list longer than the overlay prints only the rows that fit around
+the selected one, so the preview, the fill input line and the =?=
+legend stay on screen under it however long it is; the rule over them
+counts the rows hidden (=↑ 3 above · ↓ 17 below=).  Moving past the
+first or last row shown scrolls a row at a time; =M-j= / =M-k= and the
+filter keep the selected row in view, and the legend takes the room of
+rows while it shows.  The overlay's height counts its header line and
+footer (=ghostel-cmd--posframe-chrome-lines=).
 
 * Global commands
 

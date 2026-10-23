@@ -975,12 +975,8 @@ verified / official marks after it always show."
          (count (length artifacthub--packages))
          (height (artifacthub--table-height)))
     (setq artifacthub--index (max 0 (min artifacthub--index (1- count)))
-          artifacthub--top (max 0 (min (cond ((< artifacthub--index artifacthub--top)
-                                              artifacthub--index)
-                                             ((>= artifacthub--index (+ artifacthub--top height))
-                                              (1+ (- artifacthub--index height)))
-                                             (t artifacthub--top))
-                                       (- count height))))
+          artifacthub--top (ghostel-cmd--window-top
+                            artifacthub--index artifacthub--top height count))
     (tabulated-list-init-header)
     (setq tabulated-list-entries
           (mapcar (lambda (pkg) (artifacthub--entry pkg widths))
@@ -1110,7 +1106,10 @@ verified / official marks after it always show."
         (goto-char (point-max))
         (unless (bolp) (insert "\n"))
         (setq artifacthub--preview-start (point-marker))
-        (insert (propertize (make-string width ?─) 'face 'shadow) "\n"
+        (insert (ghostel-cmd--rule width artifacthub--top
+                                   (- (length artifacthub--packages) artifacthub--top
+                                      (length tabulated-list-entries)))
+                "\n"
                 (artifacthub--preview-text pkg (1- width)))
         (unless (bolp) (insert "\n")))
       (set-buffer-modified-p nil))))

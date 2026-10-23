@@ -756,6 +756,9 @@ No posframe: the side window, in the selected window's frame."
     (should (= (line-number-at-pos) 10))
     (should (string-match-p "nginx-logging-loki-demo"
                             (buffer-substring-no-properties artifacthub--preview-start (point-max))))
+    ;; The rule under the rows counts the ones hidden, as ghostel-cmd's does.
+    (should (string-search "↑ 30 above" (buffer-substring-no-properties
+                                         artifacthub--preview-start (point-max))))
     ;; Up past the top row scrolls a row at a time.
     (artifacthub--select 30)
     (execute-kbd-macro (kbd "<up>"))
