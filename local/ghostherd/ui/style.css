@@ -1,6 +1,9 @@
 /* Shared colours and resets: ../../xwapp/ui/base.css.  The herd's own: */
 :root {
   --mark: rgba(210, 153, 34, 0.35);
+  /* The dropdown chevron drawn for every <select> (appearance:none removes the
+     native one); muted, so it reads as the theme's, not the system's. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 html, body {
@@ -118,7 +121,7 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 .chip:hover { color: var(--text); }
 .chip.on { color: var(--text); border-color: var(--accent); background: rgba(121, 192, 255, 0.08); }
 #project {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -495,7 +498,7 @@ button.danger { color: var(--minus); border-color: rgba(248, 81, 73, 0.5); }
 button.primary.danger { background: #da3633; border-color: #f85149; color: #fff; }
 .agent-compose, .notes-edit, .newform { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; flex-wrap: wrap; }
 .agent-compose textarea, .notes-edit input, .newform input, .newform select {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -646,7 +649,7 @@ button.small { padding: 2px 10px; font-size: 12px; }
 }
 .log-tools { justify-content: flex-start; }
 #log-filter, #log-session {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -801,7 +804,7 @@ pre.screen {
 /* The filter shares the picker's height and border, so it does not read as a
    thinner, lower-contrast box beside it. */
 .mem-tools select, .mem-tools input {
-  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 8px 10px; font: inherit;
 }
 .mem-tools select { max-width: 60%; }
@@ -838,7 +841,7 @@ button.ghost.small.danger { color: var(--minus); border-color: var(--minus); }
 button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0.12); }
 .medit { padding: 8px 12px 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .medit input, .medit select, .medit textarea {
-  background: var(--bg); color: var(--text); border: 1px solid var(--line);
+  background-color: var(--bg); color: var(--text); border: 1px solid var(--line);
   border-radius: 6px; padding: 7px 10px; font: inherit; width: 100%;
 }
 .medit textarea { resize: vertical; font-family: var(--mono); font-size: 12.5px; min-height: 8em; }
@@ -909,7 +912,27 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 .cfoot { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; padding: 8px 16px; border-top: 1px solid var(--line); flex-shrink: 0; }
 .cfoot textarea { flex: 1; min-width: 0; resize: vertical; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
-.cfoot select { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font: inherit; align-self: stretch; }
+.cfoot select { background-color: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; font: inherit; align-self: stretch; }
+
+/* Every <select> matches the page's own dark controls, not the native light
+   one WebKit draws: appearance:none with a themed chevron, the opened popup
+   kept dark by color-scheme.  The per-control rules above still set each box
+   (so a select keeps its neighbours' height); this adds the chevron and the
+   room for it -- padding-right alone, so height is untouched -- and a visible
+   focus ring.  Placed after those rules so its padding-right wins. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+  cursor: pointer;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+#project, .newform select, #log-session, .mem-tools select, .medit select, .cfoot select {
+  padding-right: 28px;
+}
+select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Timeline and composer share one centred column on a wide window, so the
    two line up and the right half is not left empty.  Scoped to the chat, so
    the Columns view is untouched; on a narrow screen the max-width is moot and
@@ -917,6 +940,9 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 .chat { --chatcol: 1040px; }
 .chat .cmsg { max-width: var(--chatcol); margin-inline: auto; }
 .chat .cfoot { max-width: var(--chatcol); margin-inline: auto; width: 100%; box-sizing: border-box; }
+/* The meter rides in the same centred column as the composer, so it lines up
+   with it instead of hanging at the page's left edge. */
+.chat .cmeter { max-width: var(--chatcol); margin-inline: auto; width: 100%; box-sizing: border-box; }
 .cmsg.folded .ebody { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 75%, transparent); }
 
 /* Jump to what you asked: a slim sticky line above the timeline / each
@@ -1019,7 +1045,7 @@ html { -webkit-text-size-adjust: 100%; }
   .rcols { padding: 8px 10px; gap: 8px; scroll-padding: 0 10px; }
   .rcol { flex: 0 0 calc(100% - 18px); }
   .cbody { padding: 8px 12px; }
-  .cmeter { padding: 0 12px; }
+  .cmeter { padding: 0 10px; }   /* match .cfoot's phone padding, so the meter still lines up */
 
   /* A box to write in: one line that grows as you type (app.js, up to a
      cap), with Image and Use as icon buttons beside Send -- not a stack --

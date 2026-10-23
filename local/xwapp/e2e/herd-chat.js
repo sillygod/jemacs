@@ -12,6 +12,10 @@ const DP = "~/src/deploy-platform/";
 const LEAD = "lead-deploy-platform";
 const you = (ts, text) => ({ who: "user", to: LEAD, kind: "turn", ts, text });
 const lead = (ts, text) => ({ who: LEAD, kind: "turn", ts, text });
+// The lead carries a full model/context meter, so the room's meter shows (and
+// we can check it lines up with the composer).
+const HERD_M = Object.assign({}, HERD, { agents: HERD.agents.map((a) =>
+  a.name === LEAD ? Object.assign({}, a, { meter: { model: "Opus 5.5", effort: "xhigh", tokens: 239000, window: 1000000 } }) : a) });
 
 (async () => {
   const browser = await webkit.launch();
@@ -24,7 +28,7 @@ const lead = (ts, text) => ({ who: LEAD, kind: "turn", ts, text });
       const txt = (sel) => page.$eval(sel, (e) => e.textContent).catch(() => "");
       const rect = (sel) => page.$eval(sel, (el) => { const r = el.getBoundingClientRect(); return { w: Math.round(r.width), left: Math.round(r.left) }; }).catch(() => null);
       const setChat = (es, earlier) => page.evaluate((a) => GM.setChat({ project: "~/src/deploy-platform/", earlier: a.earlier, missing: [], absent: [], entries: a.es }), { es, earlier: !!earlier });
-      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, HERD);
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, HERD_M);
       await sleep(100);
       await tap('.pgroup[data-project="' + DP + '"] [data-act="a:room"]');
       await sleep(150);
@@ -42,6 +46,24 @@ const lead = (ts, text) => ({ who: LEAD, kind: "turn", ts, text });
       } else {
         check(W("on the phone the chat fills the width"), cmsg.left < 20, cmsg);
       }
+
+      // ---- The meter rides in the composer's column, not at the page edge ----
+      const cmeter = await rect(".chat .cmeter");
+      const meter = await rect(".chat .cmeter .meter");          // the meter's content
+      const chatTo = await rect(".chat .cfoot .chat-to");        // the composer's first control
+      check(W("the meter sits in the same column as the composer"),
+        cmeter && Math.abs(cmeter.left - cfoot.left) <= 1 && Math.abs(cmeter.w - cfoot.w) <= 1, { cmeter, cfoot });
+      check(W("the meter's left edge lines up with the composer's"),
+        meter && chatTo && Math.abs(meter.left - chatTo.left) <= 1, { meter, chatTo });
+
+      // ---- The recipient <select> is themed, not the native control ----
+      const sel = ".chat .cfoot .chat-to";
+      const look = await page.$eval(sel, (e) => {
+        const s = getComputedStyle(e);
+        return { appearance: s.appearance || s.webkitAppearance, bg: s.backgroundColor, img: s.backgroundImage };
+      });
+      check(W("the recipient select is not in the default look"),
+        look.appearance === "none" && look.bg === "rgb(14, 17, 22)" && /url\(|svg/.test(look.img), look);
 
       // ---- Jump through your questions (chat) ----
       await setChat([you("t1", "first question"), lead("t2", "ok"), you("t3", "second question"),

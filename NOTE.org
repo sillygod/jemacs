@@ -28,7 +28,6 @@
 
    - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
-   - [ ] asciinema (write utils for this)
 
 
 ** program relavant config
