@@ -2424,9 +2424,15 @@ editing for the overlay."
          (avail (max 8 (frame-height frame))))
     (max 8 (min (- avail 4) (round (* 0.6 avail))))))
 
+(defconst ghostel-cmd--posframe-chrome-lines 2
+  "Lines of a posframe's height that show no buffer text.
+posframe sets the frame's height in lines, and the header line (the
+column titles) and the mode line (the footer) each take one of them.")
+
 (defun ghostel-cmd--preview-reserved-lines ()
+  "Lines under the list: the separator, then the help or the preview."
   (if ghostel-cmd--help-visible
-      (max 8 (length (split-string (ghostel-cmd--help-text) "\n")))
+      (max 8 (1+ (length (split-string (ghostel-cmd--help-text) "\n"))))
     ;; Separator, the wrapped command, and the fill input line.
     (+ 2 ghostel-cmd-preview-max-lines)))
 
@@ -2439,8 +2445,9 @@ editing for the overlay."
          (preview (ghostel-cmd--preview-reserved-lines))
          (rows (with-current-buffer buf
                  (max 1 (length tabulated-list-entries))))
-         (table (max 4 (min rows (max 4 (- maxh preview 1)))))
-         (height (+ 1 table preview)))
+         (table (max 4 (min rows (max 4 (- maxh preview
+                                            ghostel-cmd--posframe-chrome-lines)))))
+         (height (+ ghostel-cmd--posframe-chrome-lines table preview)))
     (setq ghostel-cmd--posframe-parent parent
           ghostel-cmd--posframe-fitted-width width)
     (ghostel-cmd--posframe-hooks t)

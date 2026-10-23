@@ -1734,9 +1734,9 @@ With a prefix (\\[universal-argument]), in an Emacs xwidget."
          (width (or artifacthub--width (ghostel-cmd--posframe-char-width parent)))
          (maxh (ghostel-cmd--posframe-max-height parent))
          (preview (1+ artifacthub--preview-lines))
-         ;; The height holds the header line and the footer too.
-         (table (max 4 (min artifacthub-page-size (- maxh preview 2))))
-         (height (+ 2 table preview)))
+         (chrome ghostel-cmd--posframe-chrome-lines)
+         (table (max 4 (min artifacthub-page-size (- maxh preview chrome))))
+         (height (+ chrome table preview)))
     (setq artifacthub--posframe-parent parent
           artifacthub--rows table)
     (artifacthub--posframe-hooks t)

@@ -1159,6 +1159,71 @@ the minibuffer and the posframe's own window do not."
         (ghostel-cmd--show-side-window (current-buffer))
         (should-not (cl-some #'identity (funcall hooked)))))))
 
+(defun ghostel-cmd-tests--posframe-height ()
+  "The height `ghostel-cmd--show-posframe' asks posframe for, the parent
+frame leaving the overlay 20 lines at most."
+  (let ((height nil))
+    (cl-letf (((symbol-function 'posframe-show)
+               (lambda (_buffer &rest args) (setq height (plist-get args :height))))
+              ((symbol-function 'posframe-hide) #'ignore)
+              ((symbol-function 'ghostel-cmd--posframe-max-height)
+               (lambda (&optional _frame) 20)))
+      (ghostel-cmd--show-posframe (current-buffer))
+      (ghostel-cmd--hide-posframe t))
+    height))
+
+(defun ghostel-cmd-tests--all-shown-p ()
+  "Non-nil when the overlay shows every line of its buffer.
+posframe gives the frame the height in lines, and the header line and
+the mode line each take one of them; the buffer gets the rest."
+  (<= (count-lines (point-min) (point-max))
+      (- (ghostel-cmd-tests--posframe-height)
+         (if header-line-format 1 0)
+         (if mode-line-format 1 0))))
+
+(defconst ghostel-cmd-tests--long-cmd
+  (concat "kubectl --context staging-cluster -n {{namespace:default}} logs"
+          " deployment/web --since=1h --tail=200 --timestamps --prefix"
+          " --max-log-requests=20 --all-containers=true --ignore-errors"
+          " | grep -v healthz | grep -v readiness | tee /tmp/web.log")
+  "A command whose preview wraps onto all its lines.")
+
+(ert-deftest ghostel-cmd-test-full-list-keeps-the-fill-input-line ()
+  "A list that fills the overlay leaves every line under it on screen:
+the wrapped command and the {{var}} input line while filling, the
+command while filtering.  The header line and the footer take two
+lines of posframe's height; budgeting one cut the input line off."
+  (ghostel-cmd-tests--with-overlay
+      ;; 13 rows: all a 20-line overlay holds with the preview under them.
+      (cl-loop for i below 13
+               collect (list :name (format "c%02d" i) :cmd ghostel-cmd-tests--long-cmd))
+    (ghostel-cmd-tests--delivering
+      (should (and header-line-format mode-line-format))
+      (should (= (length tabulated-list-entries) 13))
+      (ghostel-cmd-paste)
+      (should ghostel-cmd--fill)
+      ;; Separator, the command on three lines, the input line last.
+      (should (= (count-lines ghostel-cmd--preview-start (point-max)) 5))
+      (save-excursion
+        (goto-char (point-max))
+        (forward-line -1)
+        (should (looking-at-p "{{namespace}}  default")))
+      (should (ghostel-cmd-tests--all-shown-p))
+      (ghostel-cmd-fill-cancel)
+      (ghostel-cmd-filter)
+      (execute-kbd-macro "c")
+      (should (string-search "/c  13/13" (ghostel-cmd--footer)))
+      (should (ghostel-cmd-tests--all-shown-p)))))
+
+(ert-deftest ghostel-cmd-test-help-shows-whole ()
+  "The key legend's separator line is counted too: under four rows, the
+fewest a list is given, all of it shows."
+  (ghostel-cmd-tests--with-overlay
+      (append (ghostel-cmd-tests--abc) (list (list :name "d" :cmd "echo d")))
+    (ghostel-cmd-help)
+    (should ghostel-cmd--help-visible)
+    (should (ghostel-cmd-tests--all-shown-p))))
+
 (ert-deftest ghostel-cmd-test-alias-run-is-sidebar ()
   (should (eq (indirect-function 'ghostel-project-cmd-run)
               (indirect-function 'ghostel-cmd-sidebar))))
