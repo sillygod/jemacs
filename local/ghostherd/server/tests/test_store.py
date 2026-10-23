@@ -315,13 +315,14 @@ def test_reimport_embeds_only_new_words(tmp_path, monkeypatch):
 
 
 def test_embedding_takes_a_few_cores(monkeypatch):
-    """Four threads at most unless configured, on the CPU unless CoreML
-    is asked for: ten threads and CoreML were slower and dearer."""
+    """Two threads at most unless configured, on the CPU unless CoreML is
+    asked for: past two bge-small-zh barely speeds up for twice the burst
+    (ask 2b76d37d), and ten threads and CoreML were slower and dearer."""
     import os
 
     from embedder import _onnx_providers, _thread_count
 
-    for cores, want in ((11, 4), (4, 3), (1, 1)):
+    for cores, want in ((11, 2), (4, 2), (2, 1), (1, 1)):
         monkeypatch.setattr(os, "cpu_count", lambda cores=cores: cores)
         assert _thread_count(0) == want
     assert _thread_count(8) == 8

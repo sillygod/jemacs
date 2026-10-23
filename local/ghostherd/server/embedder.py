@@ -102,14 +102,19 @@ class Embedder:
 
 
 def _thread_count(configured: int) -> int:
-    """Four at most, unless configured.  Past four, bge-small-zh is no
-    faster on an M-series Mac, only dearer: 200 chunks took 9.0 s and
-    34 s of CPU on four threads, 10.7 s and 61 s on ten -- the whole
-    machine, every import, for nothing."""
+    """Two at most, unless configured (GHOSTHERD_MEMORY_THREADS).  FastEmbed
+    sets ONNX Runtime's intra_op_num_threads to this, so an import's batch
+    embedding burns this many cores -- a visible burst while the rest of the
+    machine idles.  Past two, bge-small-zh barely speeds up for twice the
+    burst: measured on this M-series Mac, a 128-chunk batch ran 13 chunk/s
+    at four threads (3.3 cores, ~335%) and 11 chunk/s at two (1.9 cores,
+    ~190%) -- 15% slower for half the peak -- while a recall query stayed
+    ~2-6 ms either way (one short query, thread count hardly matters).  So
+    two keeps the import off most of the machine without slowing search."""
     if configured and configured > 0:
         return configured
     n = os.cpu_count() or 4
-    return max(1, min(4, n - 1))
+    return max(1, min(2, n - 1))
 
 
 def _onnx_providers(choice: str) -> list[str] | None:
