@@ -998,7 +998,15 @@ loopback however the headers are dressed (the hole seen 2026-10-13)."
 made U+FFFD so the push is valid UTF-8 for the WebKit IPC channel."
   (let ((clean "hello 世界 ✓"))
     (should (eq clean (xwapp--scrub clean))))        ; no copy on the common path
+  ;; An astral char (> BMP but <= #x10FFFF) is valid and left untouched -- the
+  ;; regexp detection must not mistake it for a raw byte.
+  (let ((astral "𐍈 😀 𝄞"))
+    (should (eq astral (xwapp--scrub astral))))
   (let ((fixed (xwapp--scrub (string-to-multibyte (concat "a" (unibyte-string 255) "b")))))
+    (should (= (length fixed) 3))
+    (should-not (seq-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) fixed)))
+  ;; A lone surrogate is caught and replaced too.
+  (let ((fixed (xwapp--scrub (concat "x" (string #xD83D) "y"))))
     (should (= (length fixed) 3))
     (should-not (seq-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) fixed))))
 

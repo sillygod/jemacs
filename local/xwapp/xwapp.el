@@ -328,13 +328,23 @@ fresh `xwapp-open' clears it."
   :type 'integer
   :group 'xwapp)
 
+(defconst xwapp--surrogate-re (format "[%c-%c]" #xD800 #xDFFF)
+  "A lone surrogate.")
+(defconst xwapp--past-unicode-re (format "[^%c-%c]" 0 #x10FFFF)
+  "A char past Unicode: a raw byte, or one of Emacs's own beyond it.")
+
 (defun xwapp--scrub (s)
   "S with any char that is not a valid Unicode scalar made U+FFFD.
 A raw eight-bit byte (> #x10FFFF in Emacs) or a lone surrogate encodes to
 invalid UTF-8, which the WebKit IPC guard can abort on.  Returns S itself
-when it is already clean, so the common path copies nothing."
+when it is already clean, so the common path copies nothing.  Whether it
+is, two regexps ask, in C: every page update is scrubbed, and a Lisp
+test of each char of a herd's cost milliseconds an update -- over ten
+when not compiled."
   (if (and (multibyte-string-p s)
-           (seq-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) s))
+           (let ((case-fold-search nil))
+             (or (string-match-p xwapp--surrogate-re s)
+                 (string-match-p xwapp--past-unicode-re s))))
       (concat (mapcar (lambda (c) (if (or (> c #x10FFFF) (<= #xD800 c #xDFFF)) #xFFFD c)) s))
     s))
 
