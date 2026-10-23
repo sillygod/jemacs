@@ -155,6 +155,20 @@
 
   #+end_src
 
+* artifacthub
+
+  Search [[https://artifacthub.io][Artifact Hub]] in a ghostel-cmd style overlay, =SPC a l h=
+  (=local/artifacthub/=).  RET adds the chart to the Chart.yaml or
+  helmfile.yaml it was opened from, or pastes the helm commands into the
+  Ghostel terminal; anywhere else it copies =repo/chart --version V=.
+
+  #+begin_src emacs-lisp
+    (eval `(use-package artifacthub
+             :straight (:local-repo ,(concat home-dir "local/artifacthub")
+                                    :files ("artifacthub.el"))
+             :commands (artifacthub-search)))
+  #+end_src
+
 * jlight
   #+begin_src emacs-lisp
     (eval `(use-package jlight
@@ -1492,6 +1506,7 @@
        "al" '(:ignore t :which-key "lookup/dictionary")
        "ald" '(define-word :which-key "lookup definition")
        "alg" '(google-search :which-key "google search")
+       "alh" '(artifacthub-search :which-key "artifacthub search")
        "alx" '(open-with-xwidget :which-key "open with xwidget")
 
        "ao" '(:ignore t :which-key "org")
@@ -1548,7 +1563,8 @@
        "p" '(:ignore t :which-key "project")
        "pp" '(consult-switch-project :which-key "switch project")
        "pf" '(project-find-file :which-key "find-file")
-       "pc" '(ghostel-project-cmd-run :which-key "command overlay"))
+       "pc" '(ghostel-project-cmd-run :which-key "command overlay")
+       "po" '(ghostel-project-cmd-open-url :which-key "open url"))
 
       (define-leader-key-global
        "s" '(:ignore t :which-key "search")

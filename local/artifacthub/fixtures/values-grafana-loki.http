@@ -1,0 +1,31 @@
+HTTP/2 200 
+content-type: application/yaml
+date: Fri, 23 Oct 2026 11:46:07 GMT
+x-content-type-options: nosniff
+accept-ranges: bytes
+cache-control: max-age=86400
+
+# -- Overrides the version used to determine compatibility of resources with the target Kubernetes cluster.
+# This is useful when using `helm template`, because then helm will use the client version of kubectl as the Kubernetes version,
+# which may or may not match your cluster's server version. Example: 'v1.24.4'. Set to null to use the version that helm
+# devises.
+kubeVersionOverride: null
+
+global:
+  # -- Overrides the Docker registry globally for all images (standard format)
+  imageRegistry: null
+  image:
+    # -- Overrides the Docker registry globally for all images (deprecated, use global.imageRegistry)
+    registry: null
+  # -- Overrides the priorityClassName for all pods
+  priorityClassName: null
+  # -- configures cluster domain ("cluster.local" by default)
+  clusterDomain: "cluster.local"
+  # -- configures DNS service name
+  dnsService: "kube-dns"
+  # -- configures DNS service namespace
+  dnsNamespace: "kube-system"
+  # -- Common additional CLI arguments for all jobs (that is, -log.level debug, -config.expand-env=true or -log-config-reverse-order)
+  # scope: admin-api, backend, bloom-builder, bloom-gateway, bloom-planner, compactor, distributor, index-gateway, ingester, overrides-exporter, pattern-ingester, querier, query-frontend, query-scheduler, read, ruler, write.
+  extraArgs: []
+  # -- Common environment variables to add to all pods directly managed by this chart.

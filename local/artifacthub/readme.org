@@ -1,0 +1,147 @@
+#+TITLE: artifacthub
+
+Search [[https://artifacthub.io][Artifact Hub]] in a ghostel-cmd style overlay, and put the chart
+where you are: a Chart.yaml dependency, a helmfile.yaml release, the
+helm commands in a Ghostel terminal.
+
+* Status
+
+| Item     | Value                                                     |
+|----------+-----------------------------------------------------------|
+| Package  | =local/artifacthub/= (straight =:local-repo=)             |
+| Files    | =artifacthub.el= · =artifacthub-tests.el= · =fixtures/=   |
+| Needs    | =ghostel-cmd= (its fill, paste and overlay pieces)        |
+| Wired in | =jemacs-unarrange= · =SPC a l h= (next to =SPC a l g=)    |
+
+* Overlay
+
+Posframe when available (a terminal frame too, on Emacs 31), side
+window otherwise; selecting another window closes it.  It opens with
+the query on the footer: type, and the list follows.  =RET= leaves the
+query for the list, =/= goes back to it.
+
+| Key            | Action                                                |
+|----------------+-------------------------------------------------------|
+| type           | The query (the region, when one is active, starts it) |
+| =TAB= =S-TAB=  | Next / previous kind; the footer counts each one      |
+| =j= =k=        | Move (=C-n= / =C-p= while typing; =gg= / =G=)         |
+| =RET=          | Use the chart where you came from (below)             |
+| =C-RET=        | In a terminal: paste and press Enter                  |
+| =V=            | Pick the version the actions use                      |
+| =v=            | That version's default values.yaml                    |
+| =o= / =C-u o=  | Open the package page in the browser / an xwidget     |
+| =y= / =Y=      | Copy =repo/chart --version V= (another kind: its      |
+|                | URL) / the page URL                                   |
+| =n=            | Load the next page                                    |
+| =g= (=gr=)     | Search again, past the cache                          |
+| =C-y=          | Yank into the query or a fill, as one line            |
+| =C-\=          | Type them in the minibuffer, input method on          |
+| =?=            | The key legend                                        |
+| =q= / Esc      | Quit; while filling, cancel the fill                  |
+
+Columns: name, repository (=✓= verified publisher, =◆= official),
+version (app version), stars, description.  A deprecated package's row
+is dimmed.  The list shows the rows that fit around the one selected,
+so the preview under it (repository URL, what =RET= does) stays in
+view however many =n= loaded.
+
+* Search
+
+- Asynchronous: =url-retrieve=, never a request in the keystroke.
+  After a 0.3 s pause (=artifacthub-debounce=), two characters at
+  least (=artifacthub-min-input=).
+- An answer to an older query is dropped: only the query, kind and
+  page the list is waiting for is shown.  It is still kept.
+- Every answer is kept 5 minutes per URL (=artifacthub-cache-ttl=; the
+  API sends =max-age=300=), so going back to a query, or a kind, shows
+  it at once.  =g= asks again.  A values.yaml is kept for the session.
+- A request has 15 s (=artifacthub-timeout=); url.el has no timeout of
+  its own, so a dropped connection never leaves the list waiting.  An
+  HTTP 429 (the API rate-limits bursts) shows on the footer, and the
+  list keeps what it had.
+- =n= asks for the next =artifacthub-page-size= (20); the footer counts
+  them against the =pagination-total-count= header.
+- =TAB= cycles Helm, then the query's other kinds by count.  The
+  counts are the API's kind facet, which counts every kind whatever
+  kind is shown.
+
+* RET
+
+Decided by the buffer the overlay was opened from.
+
+| From                      | RET                                          |
+|---------------------------+----------------------------------------------|
+| =Chart.yaml=,             | A dependency (name, version, repository) in  |
+| =requirements.yaml=       | =dependencies:=; the key is made if missing  |
+| =helmfile*.yaml(.gotmpl)=,| A release (name, chart, version) in          |
+| =helmfile.d/*=            | =releases:=; the repository is added under   |
+|                           | =repositories:= unless one has its URL       |
+| A Ghostel terminal        | =helm repo add R URL && helm repo update &&  |
+|                           | helm install {{release}} R/C --version V -n  |
+|                           | {{namespace}}=, filled on the footer         |
+| Anywhere else             | Copies =R/C --version V=                     |
+
+- The YAML is edited as text, never through a YAML library, so every
+  other line, comment and blank line stays.  A new entry follows the
+  ones there: their dash and key columns, field order, quoting and the
+  blank lines between them.  A missing key takes the indentation of
+  another list in the file, else Helm's (=  - name=) or helmfile's
+  (=- name=) documented one.  A value YAML would misread (=1.10=, =on=)
+  is quoted.
+- A dependency already there with the same name and repository is not
+  added again: point goes to it.
+- A helmfile's repository is matched by URL (scheme, case and trailing
+  slash aside), so =chart:= uses the name the file already gives it.  A
+  taken name gets =-2=; an OCI one is written =oci: true= without the
+  scheme.  The document holding =releases:= is the one edited.
+- The terminal fill is ghostel-cmd's own: =TAB= / =RET= next, =C-y=,
+  =C-\=, Esc cancels.  It remembers =release= and =namespace= per
+  project and chart.  =RET= only pastes; =C-RET= runs.  It pastes into
+  the terminal you came from.  An OCI chart has no =helm repo add=:
+  =helm install … oci://…=.
+
+* Versions
+
+=V= lists the chart's versions, the newest first, with app version,
+date and pre-release marks.  The default, and what every action uses
+until =V= picks another, is the latest version that is not a
+pre-release.  That is decided by the version itself (a =-suffix=) as
+well as the API's flag, which a chart can leave unset
+(kubeblocks/loki-cluster's =1.2.0-alpha.0= is marked stable), and by
+semver order, not the API's list order.  When the listed version is a
+pre-release, the versions are fetched first.
+
+=v= shows =chart@version='s values.yaml read-only in yaml-mode (=q=
+quits), without the yaml-mode hooks: an LSP client would start for a
+buffer that has no file.
+
+* Kinds
+
+=o= opens =/packages/SEGMENT/REPO/NAME=, with the package's normalized
+name.  SEGMENT is the site's own map (its frontend, read 2026-10-23),
+not the kind's name: =helm-plugin=, =container= (container images),
+=meshery= (Meshery designs), =radius= (Radius recipes), =tbaction=,
+=keda-scaler=…  The API accepts any segment, so it cannot check them.
+A kind not in the map opens a search for the package.  Kinds other
+than Helm have =o= and =y= only.
+
+* Reused from ghostel-cmd
+
+The {{var}} footer fill (=ghostel-cmd--start-fill=, its keymap, its
+footer and preview text, its per-project memory), the terminal paste
+(=ghostel-cmd--deliver=, into a given terminal), the posframe sizing
+and border, yanking as one line, the minibuffer input with an input
+method, truncation and wrapping, shell quoting, and its YAML comment
+splitter.
+
+* Tests
+
+ERT, no network: the API replies are recorded in =fixtures/= (READMEs
+and long version lists trimmed).
+
+#+begin_src sh
+  emacs --batch --init-directory=~/.emacs.d/emacs-home/ \
+        -L ~/.emacs.d/local/ghostel-cmd -L ~/.emacs.d/local/artifacthub \
+        -l artifacthub.el -l artifacthub-tests.el \
+        -f ert-run-tests-batch-and-exit
+#+end_src
