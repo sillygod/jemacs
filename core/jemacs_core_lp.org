@@ -814,43 +814,42 @@
          "https://www.google.com/search?q="
          (url-hexify-string x)) t))
 
-     (defun search-request-data-google (data)
-       (mapcar #'identity (aref data 1)))
+     (defun google-suggest-command (input)
+       "The curl command that fetches Google's suggestions for INPUT.
+     consult runs it as a process, so typing never waits on the network;
+     a newer input kills the older one's curl."
+       (list "curl" "--silent" "--max-time" "5" "--get"
+             "https://suggestqueries.google.com/complete/search"
+             "--data-urlencode" "client=firefox"
+             "--data-urlencode" "oe=utf-8"
+             "--data-urlencode" (concat "q=" input)))
 
-     (defun search-function (input)
-       "Create a request to a search engine with INPUT."
-       (search-request-data-google
-        (request-response-data
-         (request
-           "http://suggestqueries.google.com/complete/search"
-           :type "GET"
-           :params (list
-                    (cons "client" "firefox")
-                    (cons "q" input))
-           :parser 'json-read
-           :sync t))))
-
-     (defun wrap-to-consult-read (prog fn input)
-       (append (if (listp prog) prog (list prog)) (funcall fn input)))
-
-     (defun search-format (lines)
-       (split-string lines " "))
+     (defun google-suggest-parse (lines)
+       "The suggestions in curl's output LINES, one [QUERY, [SUGGESTION...]] each."
+       (mapcan (lambda (line)
+                 (ignore-errors
+                   (copy-sequence (cadr (json-parse-string line :array-type 'list)))))
+               lines))
 
      (defun google-search ()
-       "Counsel-search with xwidget open url."
+       "Search Google in an xwidget, completing from its suggestions as you type."
        (interactive)
-       (require 'request)
-       (require 'json)
+       (require 'consult)
        (let ((initial-input (cond
                              ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
                              (t nil))))
          (google-search-action
           (consult--read
-           (consult--process-collection #'(lambda (input) (wrap-to-consult-read '("printf" "%s\n") #'search-function input)))
+           (consult--process-collection #'google-suggest-command
+             :transform (consult--async-transform #'google-suggest-parse)
+             :coding 'utf-8)
            :prompt "search: "
            :initial initial-input
            :preview-key nil
            :sort nil))))
+
+     (defun wrap-to-consult-read (prog fn input)
+       (append (if (listp prog) prog (list prog)) (funcall fn input)))
 
      (defun url-join (&rest parts)
        (cl-reduce (lambda (a b)
