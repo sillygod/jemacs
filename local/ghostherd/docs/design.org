@@ -983,7 +983,7 @@ purpose now that nothing does.
 | View vs state         | =buffer= nil means detached, not dead       | Closing a window is not a crash          |
 | Shared memory         | Python sidecar, JSON-RPC over HTTP          | Same contract as ecloud; FastEmbed is slow |
 | Memory store          | Qdrant local path, not Docker               | One process, no extra daemon             |
-| Memory embed          | FastEmbed multilingual MiniLM               | Queries here are 中文 mixed with English |
+| Memory embed          | Facts: multilingual MiniLM; transcripts: bge-small-zh | A Chinese ask must find an English fact; transcripts are large and usually one language |
 | Memory import         | Turns from chat, skip grok recap/updates    | Those files are history dumps, not chat  |
 | Memory lifetime       | Started on first search/import, not mode    | A model load does not belong on enable   |
 | Memory freshness      | Idle import every 5 min once an index exists | Claude Code deletes transcripts after 30 days; a manual-only index lost a month |

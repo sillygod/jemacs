@@ -2205,6 +2205,49 @@ what costs it and cut the herd's share, behaviour unchanged.
   not put off while the page is unseen
 - A connection kept open per RPC: url.el's part of a tick is small
 
+* Phase 3.39 — A Chinese ask finds its memory  *(this tree)*
+
+Goal: an ask written only in Chinese got no memory attached (the user
+and leads often write Chinese; most facts are English).  Ask 0e635d4f.
+
+** What the measurement found (15 Chinese asks + English/mixed/negative
+controls, real embedder, over the user's real -Users-jing--emacs-d store)
+
+- Two causes.  (1) The gate: an ask needed meaning AND a shared word to
+  agree, but the word score counts only ASCII identifiers, so a Chinese
+  ask scored lex≈0 and was dropped even when the dense model ranked the
+  right fact #1.  (2) The model: facts embedded with bge-small-zh, which
+  does not align a Chinese query to an English fact -- and most facts
+  are English.
+- With bge-small-zh the right fact was in the dense top-3 for 11/15
+  Chinese asks (the gate dropped 9); the multilingual model lifted that
+  to 14/15 with much cleaner separation (hits z≥1.96, unrelated ≤1.16).
+
+** What shipped
+
+- [X] Facts embed with =paraphrase-multilingual-MiniLM-L12-v2= (0.22 GB),
+  their own embedder; transcripts stay on bge-small-zh (large, usually
+  one language, dear to re-embed -- and their search is within-language).
+  The facts collection re-embeds itself on the dim change, on the next read
+- [X] The strict ask gate passes on strong meaning alone (=Z_ALONE=), since
+  a Chinese ask and an English fact share no word to confirm with; the
+  bar sits above where any unrelated query reaches.  English keeps its
+  meaning+words tier unchanged
+- [X] The word fallback (embedder not up) counts CJK character bigrams, so
+  a Chinese query is not reduced to one whitespace-run token
+- [X] Eval: Chinese asks 2/15 → 12/15, English 4/5 → 5/5 (not worse),
+  recall (Chinese) 8/15 → 12/15, no false positive on 8 unrelated asks.
+  pytest 879 + the new gate/fallback/Chinese-ask regression tests
+
+** Deliberately not done
+
+- Swapping the transcript model too: it would wipe and re-embed a large
+  collection (minutes, 4× slower imports) and its search is usually
+  within one language.  Facts-only is the surgical fix
+- The last 3 Chinese misses (two very vague colloquial asks, one fact
+  0.04 under the bar): meaning is genuinely weak there; not worth
+  loosening the gate and risking a false positive in the always-shown block
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
