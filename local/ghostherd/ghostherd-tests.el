@@ -13597,5 +13597,100 @@ prompt in the middle of a turn ends nothing."
                         (concat "← " (car (split-string ghostherd--lead-role "\n")))))
       (should (eq (ghostherd-threads--said herd) 'herd)))))
 
+(ert-deftest ghostherd-test-inbox-detail-id-ms ()
+  "The trailing :MS of a report/question item id, as a number, or nil."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (should (= (ghostherd-inbox--id-ms "report:lead-x:1700000000000") 1700000000000))
+  (should (= (ghostherd-inbox--id-ms "question:claude-gz:42") 42))
+  (should-not (ghostherd-inbox--id-ms "guard:abc"))
+  (should-not (ghostherd-inbox--id-ms "ask-failed:1a2b3c4d"))
+  (should-not (ghostherd-inbox--id-ms nil)))
+
+(ert-deftest ghostherd-test-inbox-turn-start-and-thread-in-turn ()
+  "The turn-start is the most recent prompt before the turn end, unless a
+turn ended since (a hook-brought turn with no logged prompt); a fetched
+thread counts as this turn's when its latest activity is after the turn
+began, not a stale earlier one."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (end (- now 1000))
+         (state (lambda (text secs) (ghostherd-log-entry--create
+                                     :session "lead-x" :kind 'state :text text
+                                     :time (time-subtract (current-time) secs)))))
+    (let* ((ghostherd--log (list (ghostherd-tests--input "lead-x" "← do the thing" 60)))
+           (prompts (ghostherd-threads--prompts))
+           (ts (ghostherd-inbox--turn-start prompts "lead-x" end)))
+      (should (equal (cdr ts) "do the thing"))
+      (should (ghostherd-inbox--thread-in-turn (list :at (- now 2000)) prompts "lead-x" end))
+      (should-not (ghostherd-inbox--thread-in-turn (list :at (- (car ts) 10)) prompts "lead-x" end)))
+    ;; A turn ended between the prompt and the end: no start (hook-brought).
+    (let* ((ghostherd--log (list (funcall state "working → idle  done" 50)
+                                 (ghostherd-tests--input "lead-x" "← older" 600)))
+           (prompts (ghostherd-threads--prompts)))
+      (should-not (ghostherd-inbox--turn-start prompts "lead-x" end)))))
+
+(ert-deftest ghostherd-test-inbox-opener-thread ()
+  "A turn that made no asks shows one message -- the user's opener to the
+agent -- shaped for the thread renderer; with no user opener, nothing."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (th (ghostherd-inbox--opener-thread "claude-gz" (cons (- now 5000) "please do X") now)))
+    (should (equal (plist-get th :participants) '("user" "claude-gz")))
+    (should (equal (mapcar (lambda (l) (plist-get l :name)) (plist-get th :lanes)) '("user" "claude-gz")))
+    (should (= (plist-get th :count) 1))
+    (let ((m (car (plist-get th :msgs))))
+      (should (equal (list (plist-get m :kind) (plist-get m :from) (plist-get m :to)
+                           (plist-get m :text) (plist-get m :logged))
+                     '("message" "user" "claude-gz" "please do X" t)))))
+  (should-not (ghostherd-inbox--opener-thread "claude-gz" (cons 1 'herd) 2))
+  (should-not (ghostherd-inbox--opener-thread "claude-gz" nil 2)))
+
+(ert-deftest ghostherd-test-inbox-detail-fetches-thread-and-full-report ()
+  "Picking an Inbox item asks the sidecar for its thread (by the agent, or by
+the ask it is about) and -- for a report or question -- its full last
+message, and pushes each to the page tagged with the item; an ask-failed
+item is fetched by its ask with no report fetch."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (asked pushes
+        (ghostherd--log nil)
+        (ghostherd-inbox--detail-req nil)
+        (now (* 1000 (float-time))))
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &optional _err)
+                 (push (cons method params) asked)
+                 (funcall ok (pcase method
+                               ("herd_thread" (list :id "t1" :rootFrom "lead-x" :started (- now 5000)
+                                                    :at (- now 2000)
+                                                    :lanes (list (list :name "lead-x" :kind "claude"))
+                                                    :msgs (list (list :kind "ask" :from "lead-x" :to "rd"
+                                                                      :at (- now 3000) :head "h" :text "full body"))
+                                                    :waiting nil))
+                               ("herd_link" (list :link (list :session "lead-x" :last "the whole report\n\nwith more"))))))))
+      (ghostherd-memory-page--handle
+       (list (cons 'op "inbox-detail") (cons 'id (format "report:lead-x:%d" (truncate now)))
+             (cons 'kind "report") (cons 'agent "lead-x") (cons 'ask "")))
+      (should (member '("herd_thread" :agent "lead-x") asked))
+      (should (member '("herd_link" :session "lead-x") asked))
+      (let ((rep (seq-find (lambda (p) (and (equal (car p) "inboxDetailData")
+                                            (plist-get (cdr p) :report))) pushes))
+            (thr (seq-find (lambda (p) (and (equal (car p) "inboxDetailData")
+                                            (plist-get (cdr p) :thread))) pushes)))
+        (should (equal (plist-get (cdr rep) :report) "the whole report\n\nwith more"))
+        (should (string-prefix-p "report:lead-x:" (plist-get (cdr rep) :for)))
+        (should (vectorp (plist-get (plist-get (cdr thr) :thread) :msgs)))))
+    (setq asked nil pushes nil ghostherd-inbox--detail-req nil)
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &optional _err)
+                 (push (cons method params) asked)
+                 (when (equal method "herd_thread")
+                   (funcall ok (list :id "t2" :rootFrom "rd" :started 1 :at 2 :lanes nil :msgs nil :waiting nil))))))
+      (ghostherd-memory-page--handle
+       (list (cons 'op "inbox-detail") (cons 'id "ask-failed:1a2b3c4d")
+             (cons 'kind "ask-failed") (cons 'agent "rd") (cons 'ask "1a2b3c4d")))
+      (should (member '("herd_thread" :ask "1a2b3c4d") asked))
+      (should-not (seq-find (lambda (a) (equal (car a) "herd_link")) asked)))))
+
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

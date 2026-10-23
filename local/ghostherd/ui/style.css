@@ -1330,11 +1330,16 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .thpwho { font-weight: 650; overflow-wrap: anywhere; }
 .thpkind { margin-left: auto; font-size: 11px; color: var(--muted); }
 
-/* The Inbox's way to its item's thread. */
-.ibthread { margin-left: auto; background: transparent; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
-  padding: 4px 10px; font-size: 12.5px; }
-.ibthread:hover { border-color: var(--accent); color: var(--accent); }
-.ibcard .ibthread { margin-left: 0; align-self: flex-start; min-height: 40px; }
+/* The Inbox item's thread, drawn inline below its content (the desk swimlane
+   or the phone conversation), with a quiet link to the full Threads tab. */
+.ibthwrap { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 14px;
+  display: flex; flex-direction: column; gap: 10px; }
+.ibthhead { display: flex; align-items: center; gap: 10px; }
+.ibthlab { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+.ibthlink { margin-left: auto; background: transparent; color: var(--accent); border: 0; cursor: pointer;
+  font-size: 13px; padding: 4px 2px; }
+.ibthlink:hover { text-decoration: underline; }
+.ibcard .ibthlink { min-height: 44px; display: inline-flex; align-items: center; }
 
 /* The desk's Threads and Inbox: the page is exactly the viewport under the
    tabs, and each column scrolls by itself -- picking a thread far down the

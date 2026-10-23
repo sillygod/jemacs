@@ -101,23 +101,38 @@ const ITEMS = [
       await sleep(200);
       check("desk: a thread being worked on says who is working", (await page.textContent(".thwait")) === "claude-.emacs.d-2 is working · 6m");
 
-      // The Inbox's way in.
+      // The Inbox's way in: the thread is drawn inline below the item, with a
+      // quiet "Open in Threads" link in its header (shown once Emacs pushes the
+      // thread for the picked item -- no always-on button any more).
+      const STUB = {
+        id: "stub", title: "t", status: "answered", participants: ["user", "lead-jnotes"], projects: ["jnotes"],
+        cross: false, count: 1, open: 0, started: now - 60e3, at: now - 10e3, rootFrom: "lead-jnotes", rootTo: "claude-jnotes",
+        lanes: [{ name: "user", kind: "you", project: "", role: "", worktree: false },
+                { name: "lead-jnotes", kind: "claude", project: "jnotes", role: "lead", worktree: false },
+                { name: "claude-jnotes", kind: "claude", project: "jnotes", role: "", worktree: false }],
+        msgs: [{ kind: "ask", from: "lead-jnotes", to: "claude-jnotes", at: now - 40e3, head: "h", text: "full" }], waiting: [],
+      };
       await page.click('.tab[data-tab="inbox"]');
       check("desk: leaving the tab stops watching it", intents.some((i) => i.op === "threads-unwatch"));
       await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
       await sleep(100);
       await page.click('.ibrow[data-id="handoff:h1"]');
       await sleep(80);
-      await page.click('.ibdetail [data-act="th:from-inbox"]');
+      check("desk: picking an Inbox item asks for its detail", intents.some((i) => i.op === "inbox-detail" && i.id === "handoff:h1" && i.ask === "h1"));
+      await page.evaluate((th) => GM.inboxDetailData({ for: "handoff:h1", thread: th }), STUB);
+      await sleep(60);
+      await page.click('.ibthwrap [data-act="th:from-inbox"]');
       await sleep(250);
-      check("desk: Open thread on an Inbox item opens the thread of its ask",
+      check("desk: Open in Threads on an Inbox item opens the thread of its ask",
         opens(intents).slice(-1)[0] === "h1" && (await page.textContent(".thh1")) === "claude -p children closed asks" &&
         (await page.getAttribute('.tab[data-tab="threads"]', "class")).includes("on"));
       await page.click('.tab[data-tab="inbox"]');
       await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), ITEMS);
       await page.click('.ibrow[data-id="question:lead-jnotes:3"]');
       await sleep(80);
-      await page.click('.ibdetail [data-act="th:from-inbox"]');
+      await page.evaluate((th) => GM.inboxDetailData({ for: "question:lead-jnotes:3", thread: th }), STUB);
+      await sleep(60);
+      await page.click('.ibthwrap [data-act="th:from-inbox"]');
       await sleep(250);
       check("desk: and of an agent's item, that agent's latest thread", opens(intents).slice(-1)[0] === "agent:lead-jnotes");
       await page.evaluate(() => document.querySelector('.tab[data-tab="threads"]').click());

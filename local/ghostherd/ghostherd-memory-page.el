@@ -3162,6 +3162,7 @@ user's state (or none) and push."
         ("inbox-watch" (ghostherd-inbox--watch))
         ("inbox-unwatch" (ghostherd-inbox--unwatch))
         ("inbox-set" (ghostherd-memory-page--inbox-set intent))
+        ("inbox-detail" (ghostherd-inbox--detail intent))
         ("memory-watch" (ghostherd-memory-page--memory-watch intent))
         ("memory-unwatch" (ghostherd-memory-page--memory-unwatch))
         ("memory-edit" (ghostherd-memory-page--memory-edit intent))
@@ -3483,6 +3484,107 @@ that has not opened the tab."
                     ((funcall str 'agent) (list :agent (funcall str 'agent))))))
     (setq ghostherd-threads--req req ghostherd-threads--thread-sig nil)
     (ghostherd-threads--fetch-thread)))
+
+;;; Inbox -- the selected item's thread and full report ------------------
+;; The Inbox shows a one-line head per item on every tick; when the user
+;; picks one, the page asks (`inbox-detail') for the whole thread it belongs
+;; to and -- for a report or a question -- its full last words, so neither
+;; bloats the steady push.  The thread is drawn with the Threads tab's own
+;; renderer; the full report fills the body in place of the truncated head.
+
+(defvar ghostherd-inbox--detail-req nil
+  "The Inbox item id whose detail (thread, full report) is being fetched.")
+
+(defun ghostherd-inbox--id-ms (id)
+  "The trailing :MS of a report/question item ID, as a number, or nil."
+  (when (and (stringp id) (string-match ":\\([0-9]+\\)\\'" id))
+    (string-to-number (match-string 1 id))))
+
+(defun ghostherd-inbox--turn-start (prompts name end-ms)
+  "When NAME's turn that ended at END-MS (ms) began: (MS . WHAT) from
+PROMPTS (`ghostherd-threads--prompts'), WHAT the user's words (a string) or
+`herd'; or nil.  The most recent turn-start before END-MS -- unless the
+first thing before it is a turn-end (the turn began on a hook-brought answer
+the log could not see), when there is none."
+  (let ((p (seq-find (lambda (x) (< (car x) end-ms)) (gethash name prompts))))
+    (and p (not (eq (cdr p) 'end)) p)))
+
+(defun ghostherd-inbox--thread-in-turn (th prompts name said-ms)
+  "Non-nil when thread TH's asks were made in NAME's turn ending at SAID-MS
+\(ms): its latest activity is after the turn began (or, with no turn-start
+in the log, within the opener window), so it is not a stale earlier thread."
+  (let* ((at (plist-get th :at))
+         (start (car (ghostherd-inbox--turn-start prompts name said-ms)))
+         (floor (if (numberp start) start
+                  (- said-ms (* 1000 ghostherd-threads--opener-window)))))
+    (or (not (numberp at)) (not (numberp said-ms)) (> at floor))))
+
+(defun ghostherd-inbox--opener-thread (name opener said-ms)
+  "A one-message thread for a turn that made no asks: the user's OPENER
+\((MS . TEXT)) to NAME, shaped like a `herd_thread' reply so the Threads
+renderer draws it.  Nil when there is no user opener to show."
+  (when (and (consp opener) (stringp (cdr opener)))
+    (list :id (concat "turn:" name)
+          :title (cdr opener) :status "answered"
+          :participants (list "user" name) :projects nil
+          :cross nil :count 1 :open 0
+          :started (car opener) :at (or said-ms (car opener))
+          :rootFrom name :rootTo name
+          :lanes (list (list :name "user" :kind "you" :project "" :role "" :worktree nil)
+                       (list :name name :kind "" :project "" :role "" :worktree nil))
+          :msgs (list (list :kind "message" :from "user" :to name
+                            :at (car opener) :head (cdr opener) :text (cdr opener) :logged t))
+          :waiting nil)))
+
+(defun ghostherd-inbox--detail-push (id key val)
+  "Push one part (KEY VAL) of Inbox item ID's detail, if it is still selected."
+  (when (and (equal id ghostherd-inbox--detail-req) val)
+    (ghostherd-memory-page--js "inboxDetailData" (list :for id key val))))
+
+(defun ghostherd-inbox--detail-thread (id kind name result)
+  "Shape RESULT (a `herd_thread' reply) for Inbox item ID named NAME and
+push it.  For a report/question (KIND), keep the fetched thread only when its
+asks are from this turn; otherwise show just the user's opening message, or
+nothing when there is none."
+  (when (equal id ghostherd-inbox--detail-req)
+    (let* ((prompts (ghostherd-threads--prompts))
+           (report (member kind '("report" "question")))
+           (said-ms (and report (ghostherd-inbox--id-ms id)))
+           (th (if (or (not report) (null said-ms)
+                       (ghostherd-inbox--thread-in-turn result prompts name said-ms))
+                   (ghostherd-threads--with-opener result prompts)
+                 (ghostherd-inbox--opener-thread
+                  name (ghostherd-inbox--turn-start prompts name said-ms) said-ms))))
+      (when th
+        (ghostherd-inbox--detail-push id :thread (ghostherd-threads--js th))))))
+
+(defun ghostherd-inbox--detail (intent)
+  "Fetch the thread the selected Inbox item belongs to -- and, for a report
+or a question, its full last message -- and push them for the detail pane.
+Only for the selected item, never on the steady tick.  Each call degrades to
+nothing on failure, so an item simply shows without its thread."
+  (let* ((str (lambda (k) (let ((v (alist-get k intent)))
+                            (and (stringp v) (not (string-empty-p v)) v))))
+         (id (funcall str 'id))
+         (kind (funcall str 'kind))
+         (name (funcall str 'agent))
+         (ask (funcall str 'ask)))
+    (setq ghostherd-inbox--detail-req id)
+    (when id
+      (let ((req (cond (ask (list :ask ask))
+                       (name (list :agent name)))))
+        (when req
+          (ghostherd-memory-request-async
+           "herd_thread"
+           (lambda (r) (ghostherd-inbox--detail-thread id kind name r))
+           req #'ignore)))
+      (when (and name (member kind '("report" "question")))
+        (ghostherd-memory-request-async
+         "herd_link"
+         (lambda (r)
+           (ghostherd-inbox--detail-push
+            id :report (ghostherd-memory-page--str (plist-get (plist-get r :link) :last))))
+         (list :session name) #'ignore)))))
 
 (provide 'ghostherd-memory-page)
 ;;; ghostherd-memory-page.el ends here

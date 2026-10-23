@@ -3793,7 +3793,7 @@
   // inbox-set for read / done / override.  Desk: a list and an in-place
   // handler.  Phone: cards with their actions inline.
 
-  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", undo: null };
+  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", undo: null, detail: null, thOpen: {} };
   let inboxWatching = false;
 
   const INBOX_FILTERS = [["all", "All"], ["stuck", "Stuck"], ["approve", "Approvals"], ["questions", "Questions"], ["updates", "Updates"]];
@@ -3910,9 +3910,12 @@
       '<p class="ibhint">j / k move · 1–4 answer · a approve · e done</p>';
   }
 
-  function inboxWhy(it) {
+  // BODY defaults to the item's own (truncated) body; the detail pane passes
+  // the full report when Emacs has fetched it for the selected item.
+  function inboxWhy(it, body) {
+    if (body == null) body = it.body;
     return '<div class="ibwhy"><span class="ibwhylab">' + esc(it.whyLabel || "") + "</span>" +
-      '<div class="ibbody msg-body">' + markdown(it.body || "") + "</div>" +
+      '<div class="ibbody msg-body">' + markdown(body || "") + "</div>" +
       (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
       (it.note ? '<p class="ibnote">' + esc(it.note) + "</p>" : "") + "</div>";
   }
@@ -3958,12 +3961,14 @@
   // it is opened.  One renderer, so the two never drift.  PHONE picks the
   // compact action layout in `inboxActions'.
   function inboxDetail(it, phone) {
+    const d = inbox.detail && inbox.detail.for === it.id ? inbox.detail : null;
+    const body = d && d.report ? d.report : it.body;
     return '<div class="ibhead">' + inboxTag(it) + '<h1 class="ibh1">' + ibPlain(it.title) + "</h1></div>" +
       '<div class="ibmeta">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
       (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") +
       (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
-      '<span>· ' + esc(inboxAge(it.at)) + "</span>" + inboxThreadBtn(it) + "</div>" +
-      inboxWhy(it) + inboxActions(it, phone);
+      '<span>· ' + esc(inboxAge(it.at)) + "</span></div>" +
+      inboxWhy(it, body) + inboxActions(it, phone) + inboxThreadInline(it, phone, d);
   }
 
   function inboxDeskHtml() {
@@ -4009,6 +4014,26 @@
       (fyi.length ? '<div class="ibsec fyi"><h2>Updates · ' + fyi.length + "</h2></div>" + fyi.map(card).join("") : "");
   }
 
+  // Ask Emacs for the selected item's thread (and, for a report/question,
+  // its full last message) -- only on a pick, never on the steady tick.
+  function inboxFetchThread(it) {
+    if (!it) return;
+    const m = /^(?:ask-failed|handoff):(.+)$/.exec(it.id || "");
+    if (!m && it.kind !== "report" && it.kind !== "question") return;
+    emit("inbox-detail", { id: it.id, kind: it.kind, agent: it.agent, ask: m ? m[1] : "" });
+  }
+
+  // Pick an item: clear any thread/report fetched for the last one, mark it
+  // read, and fetch this one's.
+  function inboxSelect(it) {
+    inbox.sel = it ? it.id : "";
+    inbox.reply = "";
+    inbox.toast = "";
+    inbox.detail = null;
+    inbox.thOpen = {};
+    if (it) { inboxMarkRead(it); inboxFetchThread(it); }
+  }
+
   // Resolve an item: hide it at once (optimistic), toast, move to the next.
   function inboxResolve(it, msg, undoable) {
     const rest = inbox.items.filter((x) => x.id !== it.id);
@@ -4018,6 +4043,9 @@
     inbox.reply = "";
     inbox.toast = msg;
     inbox.undo = undoable ? { id: it.id } : null;
+    inbox.detail = null;
+    inbox.thOpen = {};
+    if (next) inboxFetchThread(next);
     if (undoable) {
       const token = it.id;
       setTimeout(() => { if (inbox.undo && inbox.undo.id === token) { inbox.undo = null; inbox.toast = ""; renderInbox(); } }, 6000);
@@ -4044,11 +4072,17 @@
       if (inbox.undo) { emit("inbox-set", { id: inbox.undo.id, done: false }); inbox.undo = null; inbox.toast = ""; renderInbox(); }
       return;
     }
+    if (act === "thread-msg") {
+      const i = el.getAttribute("data-i");
+      inbox.thOpen[i] = !inbox.thOpen[i];
+      renderInbox();
+      return;
+    }
     if (!it) return;
     if (act === "pick") {
       // On a phone a card expands in place; tapping the open one closes it.
-      if (inboxNarrow() && id === inbox.sel) { inbox.sel = ""; renderInbox(); return; }
-      inbox.sel = id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(it); renderInbox(); return;
+      if (inboxNarrow() && id === inbox.sel) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; renderInbox(); return; }
+      inboxSelect(it); renderInbox(); return;
     }
     if (act === "answer") { emit("agent-answer", { name: it.agent, n: +el.getAttribute("data-n") }); inboxResolve(it, "Sent " + el.getAttribute("data-n") + " to " + it.agent, false); return; }
     if (act === "guard-approve") { emit("guard-approve", { id: it.guardId }); inboxResolve(it, "Approved once — the agent was told to run it again", false); return; }
@@ -4079,7 +4113,7 @@
     const i = live.findIndex((x) => x.id === inbox.sel);
     const move = (d) => {
       const n = live[Math.max(0, Math.min(live.length - 1, (i < 0 ? 0 : i) + d))];
-      if (n) { inbox.sel = n.id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(n); renderInbox(); }
+      if (n) { inboxSelect(n); renderInbox(); }
     };
     const cur = inboxCur();
     if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); move(1); }
@@ -4232,7 +4266,12 @@
       (who > 2 ? " · " + who + " in it" : "") + (t.cross ? " · across projects" : "");
   }
 
-  function thDiagram(t) {
+  // OPENMAP / MSGACT let the Inbox reuse this exact renderer with its own
+  // expand state and its own toggle action (so clicks re-render the Inbox,
+  // not the Threads tab); the Threads tab keeps the defaults.
+  function thDiagram(t, openMap, msgAct) {
+    openMap = openMap || threads.open;
+    msgAct = msgAct || "th:msg";
     const lanes = t.lanes || [];
     const n = Math.max(1, lanes.length);
     const at = {};
@@ -4248,7 +4287,7 @@
       const inset = (50 / (hi - lo + 1)).toFixed(3) + "%";
       const gc = "grid-column:" + (lo + 1) + " / " + (hi + 2) + ";";
       const right = b >= a;
-      const open = !!threads.open[i];
+      const open = !!openMap[i];
       const round = thRound(m);
       const life = lanes.map((_, j) => '<div class="thlife" style="grid-column:' + (j + 1) + '"></div>').join("");
       return '<div class="thmsg k-' + esc(m.kind) + '" style="' + cols + '" data-i="' + i + '" data-dir="' + (right ? "right" : "left") + '">' + life +
@@ -4257,7 +4296,7 @@
         '<svg class="thhead" style="' + (right ? "right:calc(" + inset + " - 2px)" : "left:calc(" + inset + " - 2px)") + '" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">' +
         '<path d="' + (right ? "M1 1 L9 5 L1 9" : "M9 1 L1 5 L9 9") + '"></path></svg>' +
         '<span class="thlabel">' + esc(thLabel(m)) + "</span></div>" +
-        '<button type="button" class="thcard" style="' + gc + '" data-act="th:msg" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
+        '<button type="button" class="thcard" style="' + gc + '" data-act="' + msgAct + '" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
         '<span class="thmeta"><span>' + esc(thWho(m.from)) + " → " + esc(thWho(m.to)) + "</span><span>· " + esc(thTime(m.at)) + "</span>" +
         (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") + "</span>" +
         '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button></div>";
@@ -4288,13 +4327,16 @@
     return thTalk() + '<div class="thbody">' + thList() + '<main class="thmain" aria-label="Thread">' + thMain() + "</main></div>";
   }
 
-  // The phone: the thread as a conversation, each message "A → B".
-  function thConv(t) {
+  // The phone: the thread as a conversation, each message "A → B".  The
+  // Inbox reuses it inline (OPENMAP / MSGACT, as in `thDiagram').
+  function thConv(t, openMap, msgAct) {
+    openMap = openMap || threads.open;
+    msgAct = msgAct || "th:msg";
     const wait = thWaiting(t);
     return (t.msgs || []).map((m, i) => {
-      const open = !!threads.open[i];
+      const open = !!openMap[i];
       const round = thRound(m);
-      return '<button type="button" class="thpmsg k-' + esc(m.kind) + '" data-act="th:msg" data-i="' + i + '" aria-expanded="' + open + '">' +
+      return '<button type="button" class="thpmsg k-' + esc(m.kind) + '" data-act="' + msgAct + '" data-i="' + i + '" aria-expanded="' + open + '">' +
         '<span class="thphead"><span class="thpwho">' + esc(thWho(m.from)) + "</span>" +
         '<span class="tharrow k-' + esc(m.kind) + '">' + (m.kind === "handoff" ? "⇢" : "→") + "</span>" +
         '<span class="thpwho">' + esc(thWho(m.to)) + "</span>" +
@@ -4313,12 +4355,23 @@
     return thTalk() + thList();
   }
 
-  // The Inbox's way here: the thread of the ask an item is about, or of
-  // the agent it names.
-  function inboxThreadBtn(it) {
-    const ask = /^(?:ask-failed|handoff):(.+)$/.exec(it.id || "");
-    if (!ask && !it.agent) return "";
-    return '<button type="button" class="ibthread" data-act="th:from-inbox" data-id="' + esc(it.id) + '">Open thread</button>';
+  // A small text link to the full Threads tab, in the inline thread's header.
+  function inboxThreadLink(it) {
+    return '<button type="button" class="ibthlink" data-act="th:from-inbox" data-id="' + esc(it.id) + '">Open in Threads →</button>';
+  }
+
+  // The thread an item belongs to, drawn inline below its own content: the
+  // desk swimlane or (phone) the compact "A → B" list -- the SAME renderers
+  // the Threads tab uses, with the Inbox's own expand state.  Only for the
+  // selected item, whose thread Emacs fetched (D is `inbox.detail' for it).
+  function inboxThreadInline(it, phone, d) {
+    if (!d || !d.thread || !(d.thread.msgs || []).length) return "";
+    const t = d.thread;
+    const body = phone
+      ? '<div class="thconv">' + thConv(t, inbox.thOpen, "ib:thread-msg") + "</div>"
+      : thDiagram(t, inbox.thOpen, "ib:thread-msg");
+    return '<section class="ibthwrap"><div class="ibthhead"><span class="ibthlab">Thread</span>' +
+      inboxThreadLink(it) + "</div>" + body + "</section>";
   }
 
   function onThreadsAction(act, el) {
@@ -4383,9 +4436,21 @@
     renderInbox: (p) => {
       inbox.items = (p && p.items) || [];
       inbox.count = (p && p.count) || 0;
-      if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel)) inbox.sel = "";
+      if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel)) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; }
       inboxBadge();
       if (view === "inbox") renderInbox();
+    },
+
+    // The selected item's thread and/or full report, fetched by Emacs on the
+    // pick (not every tick).  The two arrive as separate pushes, both tagged
+    // with the item id, and are merged; a stale push for another item is kept
+    // but shown only when that item is the one selected.
+    inboxDetailData: (p) => {
+      if (!p || !p.for) return;
+      if (!inbox.detail || inbox.detail.for !== p.for) { inbox.detail = { for: p.for }; inbox.thOpen = {}; }
+      if (p.thread) inbox.detail.thread = p.thread;
+      if (typeof p.report === "string" && p.report) inbox.detail.report = p.report;
+      if (view === "inbox" && p.for === inbox.sel) renderInbox();
     },
 
     // The room's chat: the poll's recent tail of its timeline, merged in.
