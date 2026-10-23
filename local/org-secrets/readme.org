@@ -85,10 +85,19 @@ Leader keys (jemacs):
 | =N=   | New secret                                |
 | =s=   | Switch vault (one file, or all)           |
 | =/=   | Live-narrow (flex, whitespace is AND)     |
+| =C-\=  | Type the filter with an input method      |
+| =C-y=  | Yank into the filter                      |
 | =v=   | Toggle preview                            |
 | =?=   | Key legend in the preview pane            |
 | =g= / =gr= | Re-read the vault                    |
 | =q= / =Esc= | Clear query, then dismiss             |
+
+Any character types into the filter, and so does text a system input
+method (Squirrel) commits.  An Emacs input method (rime, quail) cannot
+compose in the read-only overlay, and evil turns it off in normal
+state, so =C-\= edits the query in the minibuffer with
+=default-input-method= on; the list narrows as you type and =C-g= keeps
+the old text.  =C-y= yanks the latest kill into the filter.
 
 The secret value is never drawn in the overlay buffer.  Preview shows
 =secret   set= or =missing=.  The preview is a split window pinned to

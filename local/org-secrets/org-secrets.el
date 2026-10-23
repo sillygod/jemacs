@@ -736,6 +736,8 @@ Duplicate display strings are disambiguated so `assoc' is unique.
     ("N"      "New secret")
     ("s"      "Switch vault (one file, or all)")
     ("/"      "Live-narrow (flex)")
+    ("C-\\"    "Type the filter with an input method")
+    ("C-y"    "Yank into the filter")
     ("v"      "Toggle preview")
     ("gr"     "Refresh")
     ("?"      "This help")
@@ -1073,6 +1075,11 @@ off-screen."
       (setq-local mode-line-format
                   '(" " (:eval (org-secrets--sidebar-footer)))))))
 
+(defvar org-secrets--sidebar-keep-focus nil
+  "Non-nil while the minibuffer edits the live query (`C-\\').
+A redraw then leaves input focus in the minibuffer instead of the
+overlay, so the input method keeps composing.")
+
 (defun org-secrets--sidebar-attach-preview (table-buf)
   "Split TABLE-BUF's window and show the preview below it.
 
@@ -1108,7 +1115,10 @@ so the preview stays pinned to the bottom while the table scrolls."
         (set-window-parameter preview-win 'no-other-window t)
         (set-window-start preview-win
                          (with-current-buffer preview-buf (point-min)))
-        (select-window table-win)))))
+        ;; While the minibuffer edits the query, do not pull focus back to
+        ;; the overlay -- the input method must keep composing there.
+        (unless org-secrets--sidebar-keep-focus
+          (select-window table-win))))))
 
 (defun org-secrets--sidebar-print (&optional update)
   "Print the table and refresh the preview buffer."
@@ -1271,6 +1281,51 @@ do nothing."
   (interactive)
   (org-secrets--sidebar-set-query ""))
 
+(defun org-secrets--sidebar-yank-text ()
+  "The latest kill as one line: outer newlines dropped, inner ones spaces.
+A query lives on one line, so a one-per-line list yanks as words."
+  (replace-regexp-in-string
+   "[\r\n]+" " "
+   (string-trim (substring-no-properties (current-kill 0))
+                "[\r\n]+" "[\r\n]+")))
+
+(defun org-secrets-sidebar-filter-yank ()
+  "Append the latest kill to the live query."
+  (interactive)
+  (org-secrets--sidebar-set-query
+   (concat org-secrets--sidebar-query (org-secrets--sidebar-yank-text))))
+
+(defun org-secrets--sidebar-read-line (prompt initial on-change)
+  "Read PROMPT in the minibuffer from INITIAL, `default-input-method' on.
+ON-CHANGE gets the text after each command, so the list narrows live.
+An Emacs input method (rime, quail) composes only in a writable buffer,
+and evil turns it off in normal state; the overlay is neither, so the
+query is edited here instead."
+  (minibuffer-with-setup-hook
+      (lambda ()
+        (when default-input-method
+          (activate-input-method default-input-method))
+        (let ((last initial))
+          (add-hook 'post-command-hook
+                    (lambda ()
+                      (let ((text (minibuffer-contents-no-properties)))
+                        (unless (equal text last)
+                          (setq last text)
+                          (let ((org-secrets--sidebar-keep-focus t))
+                            (funcall on-change text)))))
+                    nil t)))
+    (read-string prompt initial)))
+
+(defun org-secrets-sidebar-filter-read ()
+  "Edit the live query in the minibuffer, where an input method works.
+The list narrows as you type; C-g puts the old query back."
+  (interactive)
+  (let ((old org-secrets--sidebar-query)
+        (set #'org-secrets--sidebar-set-query))
+    (condition-case nil
+        (funcall set (org-secrets--sidebar-read-line "Filter: " old set))
+      (quit (funcall set old)))))
+
 (defun org-secrets--set-filtering (on)
   "Turn live-narrow on or off, including `org-secrets-filter-mode'.
 Refresh Evil's map alist so the filter intercept map actually
@@ -1305,6 +1360,8 @@ Returns j/k and RET to the overlay: move, then copy."
   "<delete>"    #'org-secrets-sidebar-filter-backspace
   "C-h"         #'org-secrets-sidebar-filter-backspace
   "C-u"         #'org-secrets-sidebar-filter-clear
+  "C-y"         #'org-secrets-sidebar-filter-yank
+  "C-\\"        #'org-secrets-sidebar-filter-read
   "C-g"         #'org-secrets-sidebar-quit
   "<escape>"    #'org-secrets-sidebar-quit)
 
