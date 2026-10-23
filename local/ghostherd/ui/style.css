@@ -1181,6 +1181,19 @@ html { -webkit-text-size-adjust: 100%; }
 .ibcardhead { display: flex; align-items: center; gap: 8px; }
 .ibcardhead .ibtitle { font-weight: 600; }
 .ibcardwho { color: var(--muted); font-size: 12.5px; }
+/* A phone card is a tap target that expands in place.  Collapsed it is a
+   button; open it is a container (it holds buttons) whose head taps to close. */
+button.ibcard { width: 100%; text-align: left; font: inherit; cursor: pointer; }
+button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
+  color: inherit; cursor: pointer; padding: 0; min-height: 44px; }
+.ibcard .ibtitle { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.ibcardprev { color: var(--muted); font-size: 13px; white-space: normal; display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.ibcard.open { cursor: default; gap: 10px; }
+.ibcard.open .ibcardbody { display: flex; flex-direction: column; gap: 10px; }
+.ibcard.open .ibh1 { font-size: 17px; }
+.ibcard.open .ibhead { align-items: flex-start; }
 .inboxpage.narrow .ibopts { gap: 8px; }
 .inboxpage.narrow .ibbtn, .inboxpage.narrow .iboptbtn { flex: 1 1 44%; }
 
@@ -1327,5 +1340,10 @@ html { -webkit-text-size-adjust: 100%; }
 @media (min-width: 720px) {
   .app[data-view="threads"], .app[data-view="inbox"] { overflow: hidden; display: flex; flex-direction: column; }
   .app[data-view="threads"] > .threadspage, .app[data-view="inbox"] > .inboxpage {
-    flex: 1 1 auto; min-height: 0; height: 100%; box-sizing: border-box; padding-bottom: 0; }
+    flex: 1 1 auto; min-height: 0; height: 100%; box-sizing: border-box; padding-bottom: 0;
+    /* Full-bleed and stable: `.page' centres with `margin: 0 auto' and caps at
+       `.page.wide''s max-width, but in this flex column auto cross-axis margins
+       make the pane shrink to its content and centre -- so its width (and the
+       list's left edge) jumped with the detail pane's content.  Stretch it. */
+    max-width: none; margin: 0; }
 }

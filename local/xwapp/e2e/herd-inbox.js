@@ -47,6 +47,12 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       const { ctx, page, errors, intents } = await load(browser, where);
       const W = (n) => where + ": " + n;
       const tap = (sel) => (where === "phone" ? page.tap(sel) : page.click(sel));
+      // Pick an item to act on: desk clicks its list row; phone taps the card
+      // to expand it (only if collapsed -- a resolve may have auto-opened it).
+      const open = async (id) => {
+        if (where === "desk") return page.click('.ibrow[data-id="' + id + '"]');
+        if (await page.$('.ibcard[data-id="' + id + '"]')) await page.tap('.ibcard[data-id="' + id + '"]');
+      };
 
       // ---- Home: the page lands on Inbox, and asks Emacs to watch it ----
       await sleep(150);
@@ -61,8 +67,10 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       if (where === "desk") {
         check(W("Needs-you lists the 5 need items"), (await page.$$eval(".iblistcol .ibrow", (es) => es.length)) >= 5);
       } else {
-        check(W("phone shows cards with inline actions"),
-          !!(await page.$(".ibcard.need .iboptbtn")) && !!(await page.$(".ibcard.need .ibbtn.ok")));
+        // Collapsed cards are scannable: a title and who-line, no actions until
+        // tapped open.
+        check(W("phone shows collapsed cards (no actions until opened)"),
+          !!(await page.$(".ibcard.need")) && !(await page.$(".ibcard .ibbtn, .ibcard .iboptbtn")));
       }
 
       // ---- Filters: Approvals shows only guard + proposal ----
@@ -75,7 +83,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       await sleep(80);
 
       // ---- Each kind's action routes to the right intent ----
-      if (where === "desk") await page.click('.ibrow[data-id="blocked:qa"]');
+      await open("blocked:qa");
       await sleep(60);
       // blocked: answer option 1
       await tap('[data-act="ib:answer"][data-id="blocked:qa"][data-n="1"]');
@@ -85,21 +93,21 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       check(W("the answered item leaves the list"), !(await page.$('[data-id="blocked:qa"]')));
 
       // guard approve
-      if (where === "desk") await page.click('.ibrow[data-id="guard:g1"]');
+      await open("guard:g1");
       await sleep(60);
       await tap('[data-act="ib:guard-approve"][data-id="guard:g1"]');
       await sleep(80);
       check(W("Approve once sends guard-approve {id}"), (sent(intents, "guard-approve").pop() || {}).id === "g1");
 
       // proposal approve
-      if (where === "desk") await page.click('.ibrow[data-id="proposal:p1"]');
+      await open("proposal:p1");
       await sleep(60);
       await tap('[data-act="ib:prop-approve"][data-id="proposal:p1"]');
       await sleep(80);
       check(W("Approve proposal sends memory-proposal-approve {id}"), (sent(intents, "memory-proposal-approve").pop() || {}).id === "p1");
 
       // question reply
-      if (where === "desk") await page.click('.ibrow[data-id="question:lead:5"]');
+      await open("question:lead:5");
       await sleep(60);
       await page.fill('.ibreplybox[data-id="question:lead:5"]', "好，開一張");
       await tap('[data-act="ib:reply"][data-id="question:lead:5"]');
@@ -109,7 +117,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
         say && say.project === "~/src/deploy-platform/" && say.text === "好，開一張", say);
 
       // ---- Mark read / done and Undo ----
-      if (where === "desk") await page.click('.ibrow[data-id="report:lead:9"]');
+      await open("report:lead:9");
       await sleep(60);
       await tap('[data-act="ib:done"][data-id="report:lead:9"]');
       await sleep(80);
@@ -149,7 +157,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       // a lead the herd started for a handoff shows as an Update, kept until read
       check(W("a lead started for a handoff shows as an Update"), !!(await page.$('[data-id="lead-started:lead-jnotes"]')));
       // replying to a worker's question goes to the agent itself, not a lead
-      if (where === "desk") await page.click('.ibrow[data-id="question:claude-godzilla:8"]');
+      await open("question:claude-godzilla:8");
       await sleep(60);
       await page.fill('.ibreplybox[data-id="question:claude-godzilla:8"]', "yes, open it");
       await tap('[data-act="ib:reply"][data-id="question:claude-godzilla:8"]');
@@ -159,7 +167,7 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
         aprompt && aprompt.name === "claude-godzilla" && aprompt.text === "yes, open it", aprompt);
       check(W("no leak to lead-say for a worker reply"), sent(intents, "lead-say").every((i) => i.project !== "~/src/godzilla/"));
       // marking the lead-started Update read removes it, with inbox-set
-      if (where === "desk") await page.click('.ibrow[data-id="lead-started:lead-jnotes"]');
+      await open("lead-started:lead-jnotes");
       await sleep(60);
       await tap('[data-act="ib:done"][data-id="lead-started:lead-jnotes"]');
       await sleep(80);

@@ -3936,6 +3936,18 @@
     return '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Mark read</button></div>';
   }
 
+  // The full detail of one item: the desk's right pane, and a phone card once
+  // it is opened.  One renderer, so the two never drift.  PHONE picks the
+  // compact action layout in `inboxActions'.
+  function inboxDetail(it, phone) {
+    return '<div class="ibhead">' + inboxTag(it) + '<h1 class="ibh1">' + esc(it.title) + "</h1></div>" +
+      '<div class="ibmeta">' + inboxCli(it) + '<span class="ibagent">' + esc(it.agent) + "</span>" +
+      (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") +
+      (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
+      '<span>· ' + esc(inboxAge(it.at)) + "</span>" + inboxThreadBtn(it) + "</div>" +
+      inboxWhy(it) + inboxActions(it, phone);
+  }
+
   function inboxDeskHtml() {
     const cur = inboxCur();
     const detail = inbox.toast
@@ -3943,12 +3955,7 @@
         (inbox.undo ? ' <button type="button" class=" iblink" data-act="ib:undo">Undo</button>' : "") + "</div>"
       : "";
     const body = cur
-      ? '<div class="ibhead">' + inboxTag(cur) + '<h1 class="ibh1">' + esc(cur.title) + "</h1></div>" +
-        '<div class="ibmeta">' + inboxCli(cur) + '<span class="ibagent">' + esc(cur.agent) + "</span>" +
-        (cur.project ? "<span>· " + esc(leaf(cur.project)) + "</span>" : "") +
-        (cur.state ? "<span>· " + esc(cur.state) + "</span>" : "") +
-        '<span>· ' + esc(inboxAge(cur.at)) + "</span>" + inboxThreadBtn(cur) + "</div>" +
-        inboxWhy(cur) + inboxActions(cur, false)
+      ? inboxDetail(cur, false)
       : '<div class="ibzero"><p class="ibzh">Inbox zero</p><p>Everything that needed you is answered. Updates keep arriving here.</p></div>';
     return '<section class="iblistcol">' + inboxList() + "</section>" +
       '<main class="ibdetail">' + detail + body + "</main>";
@@ -3960,14 +3967,22 @@
     const fyi = live.filter((it) => !inboxNeed(it));
     const filters = INBOX_FILTERS.map(([f, label]) =>
       '<button type="button" class="ibfilter' + (inbox.filter === f ? " on" : "") + '" data-act="ib:filter" data-f="' + f + '">' + label + "</button>").join("");
-    const card = (it) =>
-      '<div class="ibcard t-' + esc(it.tone) + (inboxNeed(it) ? " need" : "") + '">' +
-      '<div class="ibcardhead">' + inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
-      '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></div>" +
-      '<span class="ibcardwho">' + esc(it.agent) + (it.cli ? " · " + esc(it.cli) : "") +
-      (it.project ? " · " + esc(leaf(it.project)) : "") + "</span>" +
-      (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
-      inboxActions(it, true) + inboxThreadBtn(it) + "</div>";
+    const who = (it) => '<span class="ibcardwho">' + esc(it.agent) + (it.cli ? " · " + esc(it.cli) : "") +
+      (it.project ? " · " + esc(leaf(it.project)) : "") + "</span>";
+    const tone = (it) => "t-" + esc(it.tone) + (inboxNeed(it) ? " need" : "");
+    // Collapsed: the whole card is one tap target that opens it.  Open: a
+    // container (it holds buttons, so not a button itself) whose head taps to
+    // collapse, and the full desk detail below -- one open at a time.
+    const card = (it) => it.id === inbox.sel
+      ? '<div class="ibcard open ' + tone(it) + '">' +
+        '<button type="button" class="ibcardhead" data-act="ib:pick" data-id="' + esc(it.id) + '" aria-expanded="true">' +
+        inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+        '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></button>" + who(it) +
+        '<div class="ibcardbody">' + inboxDetail(it, true) + "</div></div>"
+      : '<button type="button" class="ibcard ' + tone(it) + '" data-act="ib:pick" data-id="' + esc(it.id) + '" aria-expanded="false">' +
+        '<span class="ibcardhead">' + inboxTag(it) + '<span class="ibtitle">' + esc(it.title) + "</span>" +
+        '<span class="ibage">' + esc(inboxAge(it.at)) + "</span></span>" + who(it) +
+        (it.preview ? '<span class="ibcardprev">' + esc(it.preview) + "</span>" : "") + "</button>";
     return (inbox.toast ? '<div class="ibtoast" role="status">' + esc(inbox.toast) +
             (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
       '<div class="ibfilters">' + filters + "</div>" +
@@ -4012,7 +4027,11 @@
       return;
     }
     if (!it) return;
-    if (act === "pick") { inbox.sel = id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(it); renderInbox(); return; }
+    if (act === "pick") {
+      // On a phone a card expands in place; tapping the open one closes it.
+      if (inboxNarrow() && id === inbox.sel) { inbox.sel = ""; renderInbox(); return; }
+      inbox.sel = id; inbox.reply = ""; inbox.toast = ""; inboxMarkRead(it); renderInbox(); return;
+    }
     if (act === "answer") { emit("agent-answer", { name: it.agent, n: +el.getAttribute("data-n") }); inboxResolve(it, "Sent " + el.getAttribute("data-n") + " to " + it.agent, false); return; }
     if (act === "guard-approve") { emit("guard-approve", { id: it.guardId }); inboxResolve(it, "Approved once — the agent was told to run it again", false); return; }
     if (act === "prop-approve") { emit("memory-proposal-approve", { id: it.proposalId }); inboxResolve(it, "Approved — handed to the lead to apply on a branch", false); return; }

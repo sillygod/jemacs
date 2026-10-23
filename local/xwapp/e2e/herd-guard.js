@@ -131,8 +131,11 @@ const herd = (guard) => {
       await page.evaluate(() => document.querySelector('.tab[data-tab="inbox"]').click());
       await page.evaluate((it) => GM.renderInbox({ items: it, count: 2 }), GI);
       await sleep(100);
+      // Desk picks the list row; phone expands the card in place.
       if (where === "desk") await page.click('.ibrow[data-id="guard:g7"]');
-      const scope = where === "desk" ? ".ibdetail" : '.ibcard:has(code:text-is("cat .env"))';
+      else await page.tap('.ibcard[data-id="guard:g7"]');
+      await sleep(100);
+      const scope = where === "desk" ? ".ibdetail" : ".ibcard.open";
       await tap(scope + ' [data-act="ib:done"]');
       await sleep(150);
       const rej = intents.filter((i) => i.op === "guard-reject").map((i) => i.id);
