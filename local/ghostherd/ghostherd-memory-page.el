@@ -1749,52 +1749,64 @@ forge or ClickUp instead, which want their own login."
       t
     :json-false))
 
+(defvar ghostherd-memory-page--herd-sent nil
+  "The herd as last sent to the page, while the Agents tab is watched.")
+
 (defun ghostherd-memory-page--send-herd ()
-  "Send the herd, its asks and the usage to the page."
-  (ghostherd-memory-page--js
-   "renderHerd"
-   (list :agents (ghostherd-memory-page--vec
-                  (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
-         :asks (ghostherd-memory-page--vec
-                (mapcar #'ghostherd-memory-page--ask ghostherd--herd-asks))
-         :hooks (ghostherd-memory-page--hooks-payload)
-         :work (ghostherd-memory-page--projects-work)
-         :usage (ghostherd-memory-page--usage)
-         :open (list :pr (ghostherd-memory-page--opens-elsewhere 'pr-view--app)
-                     :task (ghostherd-memory-page--opens-elsewhere 'clickup-view--app))
-         :kinds (ghostherd-memory-page--vec
-                 (mapcar #'symbol-name
-                         (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
-                                     (ghostherd--agent-kinds))))
-         :pickers (ghostherd-memory-page--pickers)
-         ;; What guarded agents' guards refused, and what was approved once.
-         :guard (ghostherd-memory-page--vec
-                 (mapcar (lambda (r)
-                           (list :id (plist-get r :id) :session (plist-get r :session)
-                                 :tool (or (plist-get r :tool) "") :summary (or (plist-get r :summary) "")
-                                 :reason (or (plist-get r :reason) "") :rule (or (plist-get r :rule) "")
-                                 :kind (or (plist-get r :kind) "")
-                                 :approvable (if (eq (plist-get r :approvable) t) t :json-false)
-                                 :status (or (plist-get r :status) "")
-                                 :created (plist-get r :created_ms)))
-                         (and (boundp 'ghostherd--guard-requests) ghostherd--guard-requests)))
-         ;; Primary, the herd-wide lead: where its room is, up or not --
-         ;; the Agents tab opens it from its header, and the room's chat
-         ;; starts it with the first message.
-         :primary (let ((s (ghostherd--primary-session)))
-                    (list :directory (ghostherd--project-name (ghostherd--primary-dir))
-                          :name ghostherd--primary-name
-                          :kind (symbol-name ghostherd-primary-kind)
-                          :state (if (ghostherd--primary-up s)
-                                     (symbol-name (ghostherd-session-state s))
-                                   "")))
-         ;; Where an agent's work can be relayed, the herd's choice first,
-         ;; and which of them have no usage left.
-         :relayKinds (ghostherd-memory-page--vec
-                      (mapcar (lambda (k)
-                                (list :kind (symbol-name k)
-                                      :usedUp (or (ghostherd-usage-used-up-text k) "")))
-                              (ghostherd--relay-kinds))))))
+  "Send the herd, its asks and the usage to the page.
+The same herd as last sent is not encoded and sent again: the page draws
+the one it has again, so what it shows by the clock -- an answer of ten
+minutes ago, how long until a reset -- still moves on."
+  (let ((herd (ghostherd-memory-page--herd)))
+    (if (and ghostherd-memory-page--herd-sent (equal herd ghostherd-memory-page--herd-sent))
+        (ghostherd-memory-page--js "renderHerdAgain" nil)
+      (setq ghostherd-memory-page--herd-sent herd)
+      (ghostherd-memory-page--js "renderHerd" herd))))
+
+(defun ghostherd-memory-page--herd ()
+  "The herd, its asks and the usage, as the page is sent them."
+  (list :agents (ghostherd-memory-page--vec
+                 (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
+        :asks (ghostherd-memory-page--vec
+               (mapcar #'ghostherd-memory-page--ask ghostherd--herd-asks))
+        :hooks (ghostherd-memory-page--hooks-payload)
+        :work (ghostherd-memory-page--projects-work)
+        :usage (ghostherd-memory-page--usage)
+        :open (list :pr (ghostherd-memory-page--opens-elsewhere 'pr-view--app)
+                    :task (ghostherd-memory-page--opens-elsewhere 'clickup-view--app))
+        :kinds (ghostherd-memory-page--vec
+                (mapcar #'symbol-name
+                        (seq-filter (lambda (k) (plist-get (ghostherd--spec k) :command))
+                                    (ghostherd--agent-kinds))))
+        :pickers (ghostherd-memory-page--pickers)
+        ;; What guarded agents' guards refused, and what was approved once.
+        :guard (ghostherd-memory-page--vec
+                (mapcar (lambda (r)
+                          (list :id (plist-get r :id) :session (plist-get r :session)
+                                :tool (or (plist-get r :tool) "") :summary (or (plist-get r :summary) "")
+                                :reason (or (plist-get r :reason) "") :rule (or (plist-get r :rule) "")
+                                :kind (or (plist-get r :kind) "")
+                                :approvable (if (eq (plist-get r :approvable) t) t :json-false)
+                                :status (or (plist-get r :status) "")
+                                :created (plist-get r :created_ms)))
+                        (and (boundp 'ghostherd--guard-requests) ghostherd--guard-requests)))
+        ;; Primary, the herd-wide lead: where its room is, up or not --
+        ;; the Agents tab opens it from its header, and the room's chat
+        ;; starts it with the first message.
+        :primary (let ((s (ghostherd--primary-session)))
+                   (list :directory (ghostherd--project-name (ghostherd--primary-dir))
+                         :name ghostherd--primary-name
+                         :kind (symbol-name ghostherd-primary-kind)
+                         :state (if (ghostherd--primary-up s)
+                                    (symbol-name (ghostherd-session-state s))
+                                  "")))
+        ;; Where an agent's work can be relayed, the herd's choice first,
+        ;; and which of them have no usage left.
+        :relayKinds (ghostherd-memory-page--vec
+                     (mapcar (lambda (k)
+                               (list :kind (symbol-name k)
+                                     :usedUp (or (ghostherd-usage-used-up-text k) "")))
+                             (ghostherd--relay-kinds)))))
 
 (defun ghostherd-memory-page--herd-tick ()
   "One snapshot; usage too when it is due and the page can be seen."
@@ -1823,12 +1835,16 @@ forge or ClickUp instead, which want their own login."
 (defun ghostherd-memory-page--herd-unwatch ()
   (when (timerp ghostherd-memory-page--herd-timer)
     (cancel-timer ghostherd-memory-page--herd-timer))
-  (setq ghostherd-memory-page--herd-timer nil))
+  ;; A page that watches again may have none: it is sent the whole herd.
+  (setq ghostherd-memory-page--herd-timer nil
+        ghostherd-memory-page--herd-sent nil))
 
 (defun ghostherd-memory-page--on-herd-change (_entry)
-  "A log entry is a change the Agents tab should show now, not in 5s."
+  "A log entry is a change the Agents tab should show now, not in 5s --
+once for the entries that come together: one poll can change the states
+of several agents."
   (when (timerp ghostherd-memory-page--herd-timer)
-    (ghostherd-memory-page--send-herd)))
+    (ghostherd-memory-page--send-herd-soon)))
 
 (add-hook 'ghostherd-log-functions #'ghostherd-memory-page--on-herd-change)
 

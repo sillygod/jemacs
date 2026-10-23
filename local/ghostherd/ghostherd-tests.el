@@ -350,6 +350,83 @@ separate call site and was missed once already."
         (should-not (equal reason "Working"))
         (should (string-match-p "compiling the parser" reason))))))
 
+(ert-deftest ghostherd-test-an-unchanged-screen-is-read-once ()
+  "A screen the same as the last poll's is not read for its state again:
+its rules, its reason, whether to keep it -- found with the screen, the
+answer as read the first time.  Another screen is read; so is the same
+one under other settings."
+  (ghostherd-tests--with-herd ((ghostherd--log nil) (ghostherd--screens (make-hash-table :test 'equal)))
+    (let* ((s (ghostherd-tests--session :name "a" :kind 'agy :backend 'fake))
+           (reads 0)
+           (match (symbol-function 'ghostherd--match-rules))
+           (reason (symbol-function 'ghostherd--rule-reason))
+           (fresh (lambda () (concat "  compiling the parser\n" "  Working…\n"))))
+      (cl-letf (((symbol-function 'ghostherd--match-rules) (lambda (&rest a) (cl-incf reads) (apply match a)))
+                ((symbol-function 'ghostherd--rule-reason) (lambda (&rest a) (cl-incf reads) (apply reason a))))
+        (let ((first (ghostherd--detect-state s (funcall fresh))))
+          (should (eq (car first) 'working))
+          (should (string-match-p "compiling the parser" (cdr first)))
+          (should (= reads 2))
+          (ghostherd--auto-capture s)                ; reads the rules of the same screen
+          (should (= reads 2))
+          ;; The next poll's screen, the same text as another string.
+          (should (equal (ghostherd--detect-state s (funcall fresh)) first))
+          (should (= reads 2))
+          (let ((ghostherd-reason-context 0))         ; another setting: read again
+            (ghostherd--detect-state s (funcall fresh))
+            (should (= reads 3)))
+          (should (eq (car (ghostherd--detect-state s ghostherd-tests--permission-screen)) 'blocked))
+          (should (= reads 5)))))
+    ;; What claude's foot says besides the state: read once too.
+    (let* ((c (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+           (feet 0)
+           (foot (symbol-function 'ghostherd--foot))
+           (screen (lambda () (concat "⏺ Done.\n\n" (make-string 40 ?─) "\n❯ run the tests\n"
+                                      (make-string 40 ?─) "\n  1 shell · ? for shortcuts\n"))))
+      (cl-letf (((symbol-function 'ghostherd--foot) (lambda (&rest a) (cl-incf feet) (apply foot a)))
+                ((symbol-function 'ghostherd-backend-styled-screen) #'ignore))
+        (ghostherd--detect-state c (funcall screen))
+        (ghostherd--detect-state c (funcall screen))
+        (should (= feet 1))
+        (should (equal (gethash "c" ghostherd--feet) '(:background ("1 shell") :input "run the tests" :suggestion nil)))))))
+
+(ert-deftest ghostherd-test-the-mode-line-is-made-again-when-a-count-changes ()
+  "The segment is made once for the herd's counts, and a fresh copy is
+given each time, as it always was."
+  (ghostherd-tests--with-herd ((ghostherd--mode-line-kept nil))
+    (let ((a (ghostherd-tests--session :name "a" :kind 'claude :state 'working))
+          (made 0))
+      (ghostherd-tests--session :name "b" :kind 'claude :state 'blocked)
+      (cl-letf* ((make (symbol-function 'ghostherd--mode-line-make))
+                 ((symbol-function 'ghostherd--mode-line-make) (lambda (&rest a) (cl-incf made) (apply make a))))
+        (let ((one (ghostherd--mode-line-segment))
+              (two (ghostherd--mode-line-segment)))
+          (should (equal (substring-no-properties one) " 🐄2 ⚠1 ⟳1"))
+          (should (eq (get-text-property 1 'face one) 'error))
+          (should (equal-including-properties one two))
+          (should-not (eq one two))
+          (should (= made 1))
+          (setf (ghostherd-session-state a) 'done)
+          (should (equal (substring-no-properties (ghostherd--mode-line-segment)) " 🐄2 ⚠1 ✓1"))
+          (should (= made 2)))))))
+
+(ert-deftest ghostherd-test-a-project-name-is-kept-for-an-absolute-path ()
+  "Written once per absolute path; a relative one, from where it is asked;
+another `directory-abbrev-alist', written again."
+  (let ((ghostherd--project-names (make-hash-table :test 'equal))
+        (ghostherd--project-names-by nil)
+        (directory-abbrev-alist nil))
+    (should (equal (ghostherd--project-name (expand-file-name "~/src/x")) "~/src/x/"))
+    (should (equal (ghostherd--project-name "/opt/p") "/opt/p/"))
+    (should (= (hash-table-count ghostherd--project-names) 2))
+    (let ((default-directory "/opt/"))
+      (should (equal (ghostherd--project-name "q") "/opt/q/")))
+    (let ((default-directory "/srv/"))
+      (should (equal (ghostherd--project-name "q") "/srv/q/")))
+    (should (= (hash-table-count ghostherd--project-names) 2))
+    (let ((directory-abbrev-alist '(("\\`/opt/" . "/o/"))))
+      (should (equal (ghostherd--project-name "/opt/p") "/o/p/")))))
+
 (ert-deftest ghostherd-test-reason-cannot-change-state ()
   "It is a display heuristic and is allowed to be one, on the condition
 that it never reaches the state machine."
@@ -7945,7 +8022,8 @@ herd is sent again; bad input is refused before anything is done."
                          (answer "claude-api" 2) (respawn "claude-api" t) (notes "claude-api" "reviewer")
                          (visit "claude-api") (kill "claude-api" t))))
         (should (equal (ghostherd-test--call calls "flash") "Killed claude-api"))
-        (should (>= (length (seq-filter (lambda (c) (equal (car c) "renderHerd")) calls)) 8))
+        ;; Each sends the herd after it -- again, when it did not change.
+        (should (>= (length (seq-filter (lambda (c) (member (car c) '("renderHerd" "renderHerdAgain"))) calls)) 8))
         (ghostherd-memory-page--handle '((op . "agent-screen") (name . "claude-api")))
         (should (equal (ghostherd-test--call calls "setScreen") '(:name "claude-api" :text "SCREEN")))
         ;; Refused, and nothing done.
@@ -7988,7 +8066,8 @@ herd is sent again; bad input is refused before anything is done."
         (delete-directory dir t)))))
 
 (ert-deftest ghostherd-test-herd-page-watch ()
-  "The herd is sent while the tab is on screen, at once on a change."
+  "The herd is sent while the tab is on screen, at once on a change --
+once for the changes that come together."
   (ghostherd-test--with-herd
     (unwind-protect
         (progn
@@ -7996,7 +8075,10 @@ herd is sent again; bad input is refused before anything is done."
           (should (timerp ghostherd-memory-page--herd-timer))
           (setq calls nil)
           (ghostherd-memory-page--on-herd-change nil)
-          (should (assoc "renderHerd" calls))
+          (ghostherd-memory-page--on-herd-change nil)
+          (should (timerp ghostherd-memory-page--herd-soon))
+          (timer-event-handler ghostherd-memory-page--herd-soon)
+          (should (equal (mapcar #'car calls) '("renderHerd")))
           (ghostherd-memory-page--handle '((op . "herd-unwatch")))
           (should-not ghostherd-memory-page--herd-timer)
           (setq calls nil)
@@ -8007,6 +8089,33 @@ herd is sent again; bad input is refused before anything is done."
           (cl-letf (((symbol-function 'xwapp-session) (lambda (_) nil)))
             (ghostherd-memory-page--herd-tick))
           (should-not ghostherd-memory-page--herd-timer))
+      (when (timerp ghostherd-memory-page--herd-soon)
+        (cancel-timer ghostherd-memory-page--herd-soon)
+        (setq ghostherd-memory-page--herd-soon nil))
+      (ghostherd-memory-page--herd-unwatch))))
+
+(ert-deftest ghostherd-test-herd-page-is-sent-what-changed ()
+  "The same herd is not sent twice: the page is told to draw again the
+one it has.  A changed one is sent; and the whole of it to a page that
+starts watching, which has none."
+  (ghostherd-test--with-herd
+    (unwind-protect
+        (progn
+          (ghostherd-memory-page--handle '((op . "herd-watch")))
+          (setq calls nil)
+          (ghostherd-memory-page--send-herd)
+          (ghostherd-memory-page--send-herd)
+          (should (equal (mapcar #'car calls) '("renderHerd" "renderHerdAgain")))
+          (should-not (cdr (assoc "renderHerdAgain" calls)))
+          (setf (ghostherd-session-state (gethash "claude-api" ghostherd--sessions)) 'working)
+          (setq calls nil)
+          (ghostherd-memory-page--send-herd)
+          (should (equal (plist-get (aref (plist-get (ghostherd-test--call calls "renderHerd") :agents) 0) :state)
+                         "working"))
+          (ghostherd-memory-page--handle '((op . "herd-watch")))
+          (setq calls nil)
+          (ghostherd-memory-page--send-herd)
+          (should (equal (mapcar #'car calls) '("renderHerd"))))
       (ghostherd-memory-page--herd-unwatch))))
 
 (ert-deftest ghostherd-test-herd-page-opens-without-the-sidecar ()

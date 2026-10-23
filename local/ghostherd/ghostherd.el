@@ -674,12 +674,25 @@ directory and branch while sharing the project's room and lead."
   "Abbreviate PATH for display."
   (if path (abbreviate-file-name path) "~"))
 
+(defvar ghostherd--project-names (make-hash-table :test 'equal)
+  "Absolute path -> `ghostherd--project-name' of it.")
+(defvar ghostherd--project-names-by nil
+  "The `directory-abbrev-alist' the kept names were written by.")
+
 (defun ghostherd--project-name (path)
   "PATH as a project is always written: a directory, under ~ when it is.
 An agent spawned here carries the absolute name and a restored one the
-abbreviated name; the page and the sidecar compare them as strings."
+abbreviated name; the page and the sidecar compare them as strings.
+Asked of a few paths, for every agent, several times a second: kept,
+for an absolute PATH, while `directory-abbrev-alist' is the same."
   (and path (not (string-empty-p path))
-       (abbreviate-file-name (file-name-as-directory (expand-file-name path)))))
+       (if (not (file-name-absolute-p path))
+           (abbreviate-file-name (file-name-as-directory (expand-file-name path)))
+         (unless (eq ghostherd--project-names-by directory-abbrev-alist)
+           (clrhash ghostherd--project-names)
+           (setq ghostherd--project-names-by directory-abbrev-alist))
+         (with-memoization (gethash path ghostherd--project-names)
+           (abbreviate-file-name (file-name-as-directory (expand-file-name path)))))))
 
 (defvar ghostherd--roles (make-hash-table :test 'equal)
   "Session id -> its role in the herd: \"lead\" for a project's lead.
@@ -1791,6 +1804,51 @@ throttle and the identical-screen dedupe.")
 (defvar ghostherd--mismatch-since (make-hash-table :test 'equal)
   "Session id → when its screen/hook mismatch began, while one holds.")
 
+(defvar ghostherd--screen-reads nil
+  "Screen -> what has been read off it, as ((KEY . ANSWER) ...); see
+`ghostherd--screen-read'.  Weak on the screen: one no session shows any
+more goes with its reads.")
+;; Made anew on each load: a reload may change what a read means.
+(setq ghostherd--screen-reads (make-hash-table :test 'eq :weakness 'key))
+
+(defun ghostherd--screen-read (screen key fn &rest args)
+  "FN applied to SCREEN and ARGS, read once per SCREEN and KEY.
+
+Most screens do not change between two polls -- an agent idle, or
+waiting on the team, draws the same thing for minutes -- yet each was
+read for its state by dozens of regexps every poll, and twice: for the
+state, then for whether to keep it.  So what is read off a screen is
+kept with it, and the poll hands an unchanged screen on as the very
+string it had before (`ghostherd--same-screen'), for its reads to be
+found again.  KEY names the read and the settings it depends on; with
+ARGS, compared by `equal'."
+  (if (not (stringp screen))
+      (apply fn screen args)
+    (let* ((key (cons key args))
+           (reads (gethash screen ghostherd--screen-reads))
+           (kept (assoc key reads)))
+      (if kept
+          (cdr kept)
+        (let ((answer (apply fn screen args)))
+          (puthash screen (cons (cons key answer) reads) ghostherd--screen-reads)
+          answer)))))
+
+(defvar ghostherd-status-lines)
+
+(defun ghostherd--read-rules (screen rules &optional replaces-input spinner)
+  "`ghostherd--match-rules' of SCREEN, read once per screen."
+  (ghostherd--screen-read screen (list 'rules ghostherd-status-lines)
+                          #'ghostherd--match-rules rules replaces-input spinner))
+
+(defvar ghostherd-reason-context)
+(defvar ghostherd-reason-width)
+
+(defun ghostherd--read-reason (screen hit)
+  "`ghostherd--rule-reason' of SCREEN and HIT, read once per screen."
+  (ghostherd--screen-read screen (list 'reason ghostherd-status-lines ghostherd-reason-context
+                                       ghostherd-reason-width)
+                          #'ghostherd--rule-reason hit))
+
 (defun ghostherd--screen-foot (screen n)
   "The last N non-blank lines of SCREEN."
   (let ((lines (seq-remove #'string-blank-p
@@ -1827,9 +1885,11 @@ throttle and the identical-screen dedupe.")
   "The trigger SCREEN fires for an auto-capture, or nil.
 Checked in order, most actionable first, so one screen keeps one entry."
   (cond
-   ((ghostherd--screen-limit-p screen) 'limit)
+   ((ghostherd--screen-read screen (list 'limit ghostherd-auto-capture-limit-re ghostherd-auto-capture-foot)
+                            #'ghostherd--screen-limit-p)
+    'limit)
    ((ghostherd--screen-compacting-p screen) 'compaction)
-   ((ghostherd--screen-menu-p screen hit) 'menu)
+   ((ghostherd--screen-read screen 'menu #'ghostherd--screen-menu-p hit) 'menu)
    ((ghostherd--screen-hook-mismatch-p hit report) 'mismatch)))
 
 (defun ghostherd--auto-capture-ok (id why screen)
@@ -1857,7 +1917,7 @@ Reads the screen the poll just stored, so it adds no capture of its own."
       (when (and screen (not (string-blank-p screen)))
         (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
                (rules (plist-get spec :screen-rules))
-               (hit (and rules (ghostherd--match-rules
+               (hit (and rules (ghostherd--read-rules
                                 screen rules
                                 (plist-get spec :prompt-replaces-input)
                                 (plist-get spec :spinner))))
@@ -2167,7 +2227,7 @@ New text in its input box: the host is asked whether it is faint."
   (let ((id (ghostherd-session-id session)))
     (if (not (memq (ghostherd-session-kind session) ghostherd-foot-kinds))
         (remhash id ghostherd--feet)
-      (let* ((foot (ghostherd--foot text))
+      (let* ((foot (ghostherd--screen-read text 'foot #'ghostherd--foot))
              (input (plist-get foot :input))
              (had (gethash id ghostherd--feet)))
         (puthash id (list :background (plist-get foot :background)
@@ -3135,13 +3195,17 @@ once a real one is in the Log tab (the auto-capture will keep it)."
 -- a URL above a field for the code -- or nil.  See `ghostherd-login-code-re'
 for what is confirmed and what is not."
   (when (eq (ghostherd-session-kind session) 'claude)
-    (let* ((screen (or screen (gethash (ghostherd-session-id session) ghostherd--screens)))
-           (foot (and screen (string-join (ghostherd--screen-foot screen 14) "\n")))
-           (case-fold-search t))
-      (when (and foot
-                 (string-match-p ghostherd-login-code-re foot)
-                 (string-match ghostherd-login-url-re foot))
-        (match-string 0 foot)))))
+    (when-let* ((screen (or screen (gethash (ghostherd-session-id session) ghostherd--screens))))
+      (ghostherd--screen-read screen (list 'login ghostherd-login-code-re ghostherd-login-url-re)
+                              #'ghostherd--login-url-on))))
+
+(defun ghostherd--login-url-on (screen)
+  "The URL of claude's /login code-entry SCREEN, or nil."
+  (let ((foot (string-join (ghostherd--screen-foot screen 14) "\n"))
+        (case-fold-search t))
+    (when (and (string-match-p ghostherd-login-code-re foot)
+               (string-match ghostherd-login-url-re foot))
+      (match-string 0 foot))))
 
 (defun ghostherd--prompt-json (prompt)
   "PROMPT for JSON: its options as (:n N :label LABEL); false for none."
@@ -3150,6 +3214,14 @@ for what is confirmed and what is not."
             :options (vconcat (mapcar (lambda (o) (list :n (car o) :label (cdr o)))
                                       (plist-get prompt :options))))
     :json-false))
+
+(defun ghostherd--same-screen (id screen)
+  "SCREEN -- or session ID's last screen, the very string, when SCREEN is
+the same text: what was read off it is found again (`ghostherd--screen-read')."
+  (let ((last (gethash id ghostherd--screens)))
+    (if (and (stringp screen) (stringp last) (not (eq last screen)) (string= last screen))
+        last
+      screen)))
 
 (defun ghostherd--detect-state (session &optional screen)
   "Return (STATE . REASON) for SESSION from screen rules / buffer liveness.
@@ -3173,14 +3245,17 @@ does."
        (exited
         (cons 'dead exited))
        (t
-        (let* ((tail (and rules (or screen (ghostherd--host-capture session))))
+        (let* ((tail (and rules (ghostherd--same-screen
+                                 (ghostherd-session-id session)
+                                 (or screen (ghostherd--host-capture session)))))
                ;; Scrolled back, the screen is history: none of it is read
                ;; for a state -- not a spinner gone from view, nor an old
                ;; prompt or error the view happens to show.
-               (scrolled (and tail (ghostherd--scrolled-back-p tail (plist-get spec :scrolled))))
+               (scrolled (and tail (ghostherd--screen-read tail 'scrolled #'ghostherd--scrolled-back-p
+                                                           (plist-get spec :scrolled))))
                (hit (and tail (not scrolled)
-                         (ghostherd--match-rules tail rules (plist-get spec :prompt-replaces-input)
-                                                 (plist-get spec :spinner))))
+                         (ghostherd--read-rules tail rules (plist-get spec :prompt-replaces-input)
+                                                (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
                (err (and tail (not scrolled) (ghostherd--cli-error session tail)))
                (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail))))
@@ -3201,7 +3276,7 @@ does."
            ((eq (car-safe hit) 'blocked)
             (cons 'blocked (or (and (member (cdr hit) ghostherd--prompt-foot-patterns)
                                     (ghostherd--prompt-reason tail))
-                               (ghostherd--rule-reason tail hit))))
+                               (ghostherd--read-reason tail hit))))
            ;; A menu that has replaced the input box, caught in general
            ;; rather than by a rule per menu: AskUserQuestion, the trust
            ;; prompt, the /login method picker, whatever the next release
@@ -3211,7 +3286,8 @@ does."
            ;; `ghostherd--prompt' then reads its options for the card.
            ((and (plist-get spec :prompt-replaces-input)
                  tail
-                 (not (ghostherd--input-at-foot-p tail))
+                 (not (ghostherd--screen-read tail (list 'box ghostherd-status-lines)
+                                              #'ghostherd--input-at-foot-p))
                  ;; The model picker also replaces the input and is a numbered
                  ;; list, but the herd drives it, not the user -- it is not a
                  ;; block to answer from the card.
@@ -3249,7 +3325,7 @@ does."
            ;; tell a working agent from a quiet one.
            ((ghostherd--progress-fresh-p session)
             (cons 'working (ghostherd--progress-reason session)))
-           (hit (cons (car hit) (ghostherd--rule-reason tail hit)))
+           (hit (cons (car hit) (ghostherd--read-reason tail hit)))
            ((null rules)
             (cons 'working "no rules"))
            ;; Known agent, no match → idle fallback (herdr-style)
@@ -9764,6 +9840,10 @@ either way; Esc or `q' dismisses."
 
 ;;; Global minor mode / modeline
 
+(defvar ghostherd--mode-line-kept nil
+  "(COUNTS . SEGMENT): the mode-line segment last made, and the counts it
+was made of.")
+
 (defun ghostherd--mode-line-segment ()
   "Mode-line segment summarizing herd attention.
 
@@ -9771,33 +9851,45 @@ Reads the registry and nothing else.  It used to sweep it first, which
 was free while a host check was `buffer-live-p' and is not once a host
 check can run a subprocess -- redisplay is no place for I/O, and no
 place to discover that the I/O failed either.  The poll timer already
-sweeps every `ghostherd-poll-interval'."
-  (let* ((sessions (hash-table-values ghostherd--sessions))
-         (blocked (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'blocked))
-                               sessions))
-         (working (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'working))
-                               sessions))
-         (waiting (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'waiting))
-                               sessions))
-         (done (cl-count-if (lambda (s) (eq (ghostherd-session-state s) 'done))
-                            sessions))
-         (total (length sessions)))
-    (when (> total 0)
-      (propertize
-       (format " 🐄%d%s%s%s%s"
-               total
-               (if (> blocked 0) (format " ⚠%d" blocked) "")
-               (if (> working 0) (format " ⟳%d" working) "")
-               (if (> waiting 0) (format " ◷%d" waiting) "")
-               (if (> done 0) (format " ✓%d" done) ""))
-       'face (cond ((> blocked 0) 'error)
-                   ((> done 0) 'success)
-                   ((> working 0) 'warning)
-                   (t 'shadow))
-       'help-echo "ghostherd sessions (click for sidebar)"
-       'mouse-face 'mode-line-highlight
-       'local-map (define-keymap
-                    "<mode-line> <mouse-1>" #'ghostherd-sidebar)))))
+sweeps every `ghostherd-poll-interval'.
+
+Asked at every redisplay of every mode line -- a terminal streaming an
+agent's work redraws its own many times a second -- so it counts in one
+pass and makes the segment again only when a count changed."
+  (let ((blocked 0) (working 0) (waiting 0) (done 0) (total 0))
+    (maphash (lambda (_id s)
+               (cl-incf total)
+               (pcase (ghostherd-session-state s)
+                 ('blocked (cl-incf blocked))
+                 ('working (cl-incf working))
+                 ('waiting (cl-incf waiting))
+                 ('done (cl-incf done))))
+             ghostherd--sessions)
+    (let ((counts (list total blocked working waiting done)))
+      (unless (equal counts (car ghostherd--mode-line-kept))
+        (setq ghostherd--mode-line-kept
+              (cons counts (ghostherd--mode-line-make total blocked working waiting done))))
+      ;; A copy, as it always was a fresh string: a mode line may add to it.
+      (copy-sequence (cdr ghostherd--mode-line-kept)))))
+
+(defun ghostherd--mode-line-make (total blocked working waiting done)
+  "The mode-line segment for these counts of the herd's agents, or nil."
+  (when (> total 0)
+    (propertize
+     (format " 🐄%d%s%s%s%s"
+             total
+             (if (> blocked 0) (format " ⚠%d" blocked) "")
+             (if (> working 0) (format " ⟳%d" working) "")
+             (if (> waiting 0) (format " ◷%d" waiting) "")
+             (if (> done 0) (format " ✓%d" done) ""))
+     'face (cond ((> blocked 0) 'error)
+                 ((> done 0) 'success)
+                 ((> working 0) 'warning)
+                 (t 'shadow))
+     'help-echo "ghostherd sessions (click for sidebar)"
+     'mouse-face 'mode-line-highlight
+     'local-map (define-keymap
+                  "<mode-line> <mouse-1>" #'ghostherd-sidebar))))
 
 ;;;###autoload
 (defun ghostherd--herd-page-for-phone ()

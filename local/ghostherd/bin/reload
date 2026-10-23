@@ -4,8 +4,8 @@
 #
 # Usage: bin/reload [--force] FILE...
 #
-#   *.el      every function and macro defined again, every constant set
-#             again; a variable keeps its value -- the sessions, timers
+#   *.el      every function and macro defined again -- byte-compiled --
+#             every constant set again; a variable keeps its value -- the sessions, timers
 #             and caches are the running herd, not code.  A new add-hook
 #             or advice-add on a named function is run too (idempotent);
 #             one on a lambda, and any other top-level form, is not run
@@ -87,13 +87,23 @@ lisp_string() { local s=${1//\\/\\\\}; printf '"%s"' "${s//\"/\\\"}"; }
 
 for file in ${el[@]+"${el[@]}"}; do
   emacsclient --eval "
-(let* ((file $(lisp_string "$file"))
+(progn
+ (require 'bytecomp)
+ (let* ((file $(lisp_string "$file"))
        ;; As \`load' would: a constant may be made from where its file is.
        (load-file-name file) (load-true-file-name file)
-       (done 0) (kept 0) (skipped nil) (failed nil)
+       (done 0) (kept 0) (skipped nil) (failed nil) (slow nil)
+       (byte-compile-warnings nil)
        (run (lambda (form)
               (condition-case err
-                  (progn (eval form t) (setq done (1+ done)))
+                  (progn (eval form t) (setq done (1+ done))
+                         ;; Compiled as it is defined: what a reload defines
+                         ;; runs for hours after it, and interpreted the herd's
+                         ;; code ran up to several times slower.
+                         (when (and (memq (car-safe form) '(defun defmacro defsubst cl-defun cl-defmacro))
+                                    (symbolp (cadr form)))
+                           (condition-case nil (byte-compile (cadr form))
+                             (error (push (cadr form) slow)))))
                 (error (push (format \"%s (%s)\" (cadr form) (error-message-string err))
                              failed))))))
   (with-temp-buffer
@@ -126,15 +136,18 @@ for file in ${el[@]+"${el[@]}"}; do
              ((memq head '(require provide declare-function eval-when-compile defgroup)))
              (head (push head skipped)))))
       (end-of-file nil)))
-  (format \"%s: %d defined, %d kept%s%s\"
+  (format \"%s: %d defined, %d kept%s%s%s\"
           (file-name-nondirectory file) done kept
           (if skipped
               (concat \", not run: \"
                       (mapconcat #'symbol-name (delete-dups (nreverse skipped)) \" \"))
             \"\")
+          (if slow
+              (concat \", left uncompiled: \" (mapconcat #'symbol-name (nreverse slow) \" \"))
+            \"\")
           (if failed
               (concat \", FAILED: \" (string-join (nreverse failed) \"; \"))
-            \"\")))" | say
+            \"\"))))" | say
 done
 
 if [ -n "$ui" ]; then
