@@ -71,6 +71,41 @@ def test_a_restart_embeds_nothing_it_already_has(store):
     assert idx.sync(KEY)["embedded"] == 0
 
 
+def test_the_fact_embedder_is_built_once_under_a_race(store, monkeypatch):
+    """The lazy fact embedder is built once, though the startup warm thread
+    and a first query race for it -- without the lock each would build one
+    and load the model twice."""
+    import embedder as emb_mod
+
+    built: list = []
+
+    class Counting:
+        def __init__(self, cfg, model=None):
+            time.sleep(0.05)                 # widen the window so an unlocked build races
+            built.append(model)
+
+    monkeypatch.setattr(emb_mod, "Embedder", Counting)
+    idx = fact_index.get_index()
+    idx._embedder = None                     # force the lazy path
+    try:
+        got: list = []
+        start = threading.Barrier(8)
+
+        def go():
+            start.wait()
+            got.append(idx.embedder)
+
+        threads = [threading.Thread(target=go) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(built) == 1                       # one Embedder, not eight
+        assert got and all(g is got[0] for g in got)  # everyone got the same one
+    finally:
+        idx._embedder = None                 # don't leave the fake on the singleton
+
+
 # ---- Recall, the ranking function, and the fallback ------------------------------
 
 

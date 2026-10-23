@@ -103,6 +103,10 @@ class FactIndex:
     def __init__(self, engine):
         self.engine = engine
         self._embedder = None
+        # Built once, though the startup warm thread and a first query race
+        # for it; a plain Lock (not self._mu, which `sync' holds while it
+        # calls `.embedder').
+        self._embedder_lock = threading.Lock()
         self._mu = threading.RLock()
         self._seen: dict[str, dict[str, tuple[int, int]]] = {}
         self._vecs: dict[str, dict[str, list[float]]] = {}
@@ -119,10 +123,16 @@ class FactIndex:
     def embedder(self):
         """The facts' own embedder -- a multilingual model, so a Chinese ask
         finds an English fact -- not the engine's (the transcripts').  Shares
-        the engine's config, so a test's fake embedder stays fake."""
+        the engine's config, so a test's fake embedder stays fake.  Built once
+        under a lock: the warm thread and a first query would otherwise both
+        build it and load the model twice (double-checked, so the common path
+        takes no lock)."""
         if self._embedder is None:
-            from embedder import Embedder
-            self._embedder = Embedder(self.engine.cfg, model=self.engine.cfg.fact_embed_model)
+            with self._embedder_lock:
+                if self._embedder is None:
+                    from embedder import Embedder
+                    self._embedder = Embedder(
+                        self.engine.cfg, model=self.engine.cfg.fact_embed_model)
         return self._embedder
 
     def ready(self) -> bool:
