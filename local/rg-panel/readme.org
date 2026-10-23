@@ -1,0 +1,139 @@
+#+TITLE: rg-panel
+
+Project search over consult-ripgrep, with its filters in view and at
+hand.  The same minibuffer, live results, preview and embark; the
+directory and the filters in the prompt, a panel on =M-o= to change
+them while the results follow, and =C-c C-e= to edit the results in
+place.
+
+* Status
+
+| Item     | Value                                                          |
+|----------+----------------------------------------------------------------|
+| Package  | =local/rg-panel/= (straight =:local-repo=)                     |
+| Files    | =rg-panel.el= · =rg-panel-tests.el=                            |
+| Needs    | consult, transient; embark-consult and wgrep for =C-c C-e=;    |
+|          | rga for documents                                              |
+| Wired in | =jemacs-project= · =my-project-rg= · =SPC /= (=SPC u SPC /=)   |
+
+* The search
+
+#+begin_example
+  rg deploy-platform/ [py · !tests/** · word]: #deploy
+  …results…
+  M-o 篩選   C-c C-e 匯出成可編輯清單   SPC u 先選範圍
+#+end_example
+
+The prompt names the engine (=rg= or =rga=), where it looks (the
+project, a directory under it, =±N= uncommitted files) and the filters
+on.  consult's running mark stays where it was, before the input.  The
+line under the results is =rg-panel-hint=.
+
+| Key        | Action                                                       |
+|------------+--------------------------------------------------------------|
+| =M-o=      | The filter panel, over the search                            |
+| =C-c C-e=  | Export the results to a grep buffer with wgrep on: edit the  |
+|            | lines, =, ,= (=C-x C-s=) writes them, =, k= drops them       |
+| =C-l=      | Preview (the user's consult-ripgrep preview key; the search  |
+|            | is consult-ripgrep's for =consult-customize=)                |
+| =#…#…=     | consult's split: the second part filters the results;        |
+|            | =-- ARGS= after the input still goes to rg                   |
+
+The input to start with is the region, else the thing at point
+(=my-project-rg=).  A prefix argument (=SPC u SPC /=; =C-u= scrolls in
+evil's normal state) picks the scope first.
+
+* The panel
+
+A transient.  Every key but close keeps it open and runs the search
+again at once, with the input as it is; the input is never touched.
+=q= or =M-o= closes it.
+
+| Group  | Key | Does                                                         |
+|--------+-----+--------------------------------------------------------------|
+| Files  | =i= | Include globs, completing from the project's extensions and  |
+|        |     | top directories (=*.py=, =src/**=); any glob can be typed    |
+|        | =e= | Exclude globs (shown and passed as =!glob=)                  |
+|        | =t= | rg types, from =rg --type-list=, with their globs            |
+| Match  | =w= | Whole words, =-w=                         [開]/[關]          |
+|        | =c= | Case-sensitive, =-s=; smart case when off                    |
+|        | =f= | Fixed string, =-F=                                           |
+|        | =h= | Hidden and ignored files, =--hidden --no-ignore=             |
+|        | =m= | Multiline, =-U=                                              |
+|        | =p= | PCRE2, =-P=: the input is one pattern, as typed (consult's   |
+|        |     | word splitting off)                                          |
+| Scope  | =r= | The project's root                    (● marks the current)  |
+|        | =.= | The directory of the file you came from                      |
+|        | =g= | Uncommitted files: modified, staged and new (not ignored);   |
+|        |     | none, and the scope stays                                    |
+|        | =D= | A directory, asked for                                       |
+| Engine | =a= | rg ⇄ rga                                                     |
+| Sets   | =x= | Everything off                                               |
+|        | =s= | Keep the filters as a named preset of this project           |
+|        | =l= | Apply a preset; =上次= (the last search's set) always offered  |
+
+- Each filter is one argument to rg (=--glob=G=, =--glob=!G=,
+  =--type=T=); no shell is in between, so a glob with a space needs no
+  quoting.
+- rg searches a file named on its command line whatever its globs or
+  types say.  So the uncommitted files are narrowed first, by rg
+  itself (=rg --files= with the same filters), and asked again only
+  when those filters change.  If none is left, rg is given the null
+  device.
+- A preset is the filters and the engine, not the scope.  The last set
+  is kept as =上次= however the search ends, =C-g= too, unless it had
+  none.  Presets live in =rg-panel-save-file=
+  (=emacs-home/rg-panel-presets.eld=), keyed by project root, read
+  again when another Emacs changed it.
+
+* rga
+
+ripgrep-all searches PDF, docx, epub, odt, ipynb, html, archives and
+compressed files through its adapters (=rga --rga-list-adapters=); it
+needs pandoc for documents and =pdftotext= (=brew install poppler=) for
+PDFs.
+
+- rg's =--search-zip= is left out: rga reads archives itself, and with
+  it rga finds nothing in them.
+- Its first pass over a folder is slow while it extracts and caches.
+  When it runs 0.8 s (=rg-panel-rga-notice-after=) with no result yet,
+  the prompt says =· 讀取文件中，首次較慢…= until the first one.
+- A hit in an extracted file has no preview: its line number is the
+  extracted text's.  =RET= opens a PDF at its page (rga's =Page N:=)
+  with pdf-tools, else in its own application; an HTML or notebook
+  file in Emacs at the text; anything else in its own application.
+- =C-c C-e= exports rga's results read-only.
+
+* How it reruns
+
+The collection is consult-ripgrep's pipeline with two stages of its
+own: after the throttle, one that remembers the input it passed on
+and passes it again when the panel changes something; under the
+process, one that watches rga.  consult's throttle drops an input it
+has seen, so without it the panel could not make the search run again;
+the process stage restarts rg because its arguments changed.  The
+builder is consult-ripgrep's (regexp translation, highlighting, =-F=,
+case), reading the filters and scope as they are when it runs.
+
+=C-c C-e= binds embark's after-export hook for this one export:
+embark keeps the hook as it was for the buffer it makes once the
+minibuffer has closed, so no other export turns wgrep on.
+
+* Keys checked
+
+=M-o= and =C-c C-e= are unbound in vertico-map, minibuffer-local-map,
+minibuffer-local-must-match-map, consult-async-map and
+embark-general-map (a test checks), and in the user's live Emacs.  The
+minibuffer is in emacs state (=evil-want-minibuffer= nil), so evil
+does not see them; the panel's own keys are transient's, which
+overrides every other map while it is open.
+
+* Tests
+
+ERT, no network: rg and git run over temporary directories.  The
+packages are taken from straight's build directory.
+
+#+begin_src sh
+  emacs --batch -Q -L ~/.emacs.d/local/rg-panel \
+        -l rg-panel-tests.el -f ert-run-tests-batch-and-exit
+#+end_src

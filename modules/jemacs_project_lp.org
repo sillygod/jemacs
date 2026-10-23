@@ -389,34 +389,36 @@ value is the terminal lagging behind the window while you drag.")
 
 * search relevant functions
 
-  My customize search function
-  org-fold-show-context-detail
+  Project search lives in =local/rg-panel/=: consult-ripgrep's
+  minibuffer with the directory and filters in the prompt.  =M-o= opens
+  the filter panel (globs, types, word/case/fixed/hidden, scope, rga,
+  presets), =C-c C-e= edits the results in wgrep.  =SPC /=, or
+  =SPC u SPC /= to pick the scope first (=C-u= scrolls in normal state).
 
   #+begin_src emacs-lisp
-    (defun my-project-rg (&optional options)
-      "Search the current project with rg and search under certarn directory
-         if it's not in a project.
+    (eval `(use-package rg-panel
+             :straight (:local-repo ,(concat home-dir "local/rg-panel")
+                                    :files ("rg-panel.el"))
+             :commands (rg-panel-search)
+             :custom
+             (rg-panel-hint "M-o 篩選   C-c C-e 匯出成可編輯清單   SPC u 先選範圍")))
 
-         OPTIONS, if non-nil, is a string containing additional options to
-         be passed to rg. It is read from the minibuffer if the function
-         is called with a prefix argument."
-      (interactive)
-      (let* ((search-directory (if (project-current nil)
-                                   (project-root (project-current nil))
-                                 (read-directory-name "Start from directory: ")))
-
-             (default-directory search-directory)
-
-             (initial-input (cond
-                             ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
-                             ((not (has-jlight-matches-p))
-                              (buffer-substring-no-properties (car (get-pointer)) (cdr (get-pointer))))
-                             (t nil))))
-
+    (defun my-project-rg (&optional pick-scope)
+      "Search the project with rg, the region, else the thing at point, to
+    start with; outside a project, a directory asked for.  With a prefix
+    argument PICK-SCOPE (SPC u), pick the scope first: the project, this
+    file's directory, the uncommitted files or a directory.  In the
+    search, M-o opens the filter panel and C-c C-e edits the results in
+    place.  See `rg-panel-search'."
+      (interactive "P")
+      (let ((initial-input (cond
+                            ((use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)))
+                            ((not (has-jlight-matches-p))
+                             (buffer-substring-no-properties (car (get-pointer)) (cdr (get-pointer))))
+                            (t nil))))
         (when (region-active-p)
           (deactivate-mark))
-
-        (consult-ripgrep search-directory initial-input)))
+        (rg-panel-search initial-input pick-scope)))
 
   #+end_src
 
