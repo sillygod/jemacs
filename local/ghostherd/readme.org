@@ -76,12 +76,33 @@ one.
 Text goes in as one bracketed paste, then Return.  A CLI takes a big
 paste in for a moment --- claude folds it into =[Pasted text #2 +20
 lines]= --- and a Return inside that moment is lost, so a multi-line or
-long paste waits =ghostherd-submit-delay= (0.3s) first.  Then, after
-=ghostherd-submit-check-after= (1.5s), ghostherd looks: text still in
-the input box of an agent neither working nor on a menu gets Return
-again, =ghostherd-submit-retries= (2) times at most, each one in the
-herd log with the screen; still there after that, the log says so.
-Only the text it sent counts, so it never submits what you were typing.
+long paste waits =ghostherd-submit-delay= (0.3s) first.  A picture's
+path in the text takes longer: claude reads the file in as =[Image #1]=
+(its footer says =Pasting…= meanwhile, the box empty), and a 600 KB
+screenshot outlasted the wait --- ask 2b76d37d sat seven minutes as
+=[Image #80][Pasted text #81 +62 lines]=, never submitted.
+
+So a delivery is confirmed, not assumed.  Each submit is recorded until
+it is known taken: its CLI's prompt-submit hook (claude's and grok's
+=UserPromptSubmit=, agy's =PreInvocation=) saying a turn began, for an
+agent that was not already at work; or, from
+=ghostherd-submit-check-after= (1.5s) on, the screen --- the turn under
+way, or the box clear on two looks running.  The paste still in the box
+--- its first words, or any CLI's fold of it (claude's and agy's text
+folds, agy's counted in chars, claude's and grok's =[Image #N]=, the
+last only when the text names a picture) --- of an agent neither
+working nor on a menu gets Return again, =ghostherd-submit-retries=
+(2) times at most, each one in the herd log with the screen.  While its
+CLI still pastes, or works with the paste in its box, it is looked at
+again, =ghostherd-submit-looks= (8) times at most.  Still there after
+that, it is =unsent=: the log, the agent's card ("message not submitted",
+with a /Press Return/ that presses it only while it is still there) and
+the Inbox (Needs you, /Not sent/) say so, and an ask in it fails at
+once.  Only the text it sent counts, so it never submits what you were
+typing.  The turn an ask starts is the ask's even when it starts late
+--- after a Return pressed again, by the herd or by hand: the herd moves
+a taker to =working= the moment it sends, but the ask's mark waits for
+its prompt to reach the CLI.
 
 Why tmux, why one session per agent, and what the nesting costs are in
 [[file:docs/design.org][docs/design.org]].

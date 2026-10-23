@@ -54,6 +54,11 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--turn-ends (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
          (ghostherd--screens (make-hash-table :test 'equal))
+         ;; Keyed by session id: one test's text left unsent, or ask turn
+         ;; pending, is not the next test's.
+         (ghostherd--submits (make-hash-table :test 'equal))
+         (ghostherd--turn-origin (make-hash-table :test 'equal))
+         (ghostherd--turn-ask-pending (make-hash-table :test 'equal))
          ;; Keyed by session id: a lead one test starts on agy is not owed
          ;; its role in the next.
          (ghostherd--role-owed (make-hash-table :test 'equal))
@@ -8386,6 +8391,217 @@ the look turned off, it is not."
           (let ((ghostherd-submit-check-after nil))
             (ghostherd-send s "go" t))))
       (should (equal later (list (list ghostherd-submit-check-after s "go" ghostherd-submit-retries)))))))
+
+;;; A delivery confirmed, not assumed (ask 0d5895f1): ask 2b76d37d sat
+;;; unsent for 7 minutes as "[Image #80][Pasted text #81 +62 lines]".
+
+(defconst ghostherd-test--incident-text
+  (concat "[ghostherd message from lead-x → qa]\n"
+          "[ask 2b76d37d -- whoever asked is waiting for your answer]\n"
+          "Investigate the CPU bursts.  The screenshot:\n"
+          "/Users/u/.emacs.d/emacs-home/ghostherd-images/lead-x-20261023-222543-108.png\n"
+          (mapconcat (lambda (i) (format "detail %d" i)) (number-sequence 1 60) "\n"))
+  "An ask shaped like the incident's: a screenshot path, then 60 lines.")
+
+(defun ghostherd-test--claude-footer-screen (box footer)
+  "A claude screen whose input box holds BOX, FOOTER under it -- as
+claude draws them while it takes a paste in, and after."
+  (concat "  The tests pass.\n\n" ghostherd-test--rule "\n"
+          (replace-regexp-in-string "\\`❯ " "❯ " box) "\n"
+          ghostherd-test--rule "\n  " footer))
+
+(defmacro ghostherd-test--sending (screen &rest body)
+  "BODY in `ghostherd-test--confirming', SCREEN shown, `send' sending as
+the herd does (nothing pasted for real) and no poll timer started."
+  (declare (indent 1))
+  `(ghostherd-test--confirming ,screen
+     (cl-letf (((symbol-function 'ghostherd--host-send-text) #'ignore)
+               ((symbol-function 'run-with-timer) #'ignore))
+       (cl-flet ((send (text) (ghostherd-send s text t) (setq later nil keys nil)))
+         ,@body))))
+
+(ert-deftest ghostherd-test-a-folded-paste-is-seen-unsent ()
+  "Each CLI's fold of a paste is the herd's text still in the box: the
+incident's picture-and-text fold, claude's truncated fold, agy's counted
+in chars, grok's named picture.  A picture's fold is the herd's only
+when its text names a picture -- one you pasted yourself is not."
+  (let ((msg ghostherd-test--incident-text)
+        (plain "[ghostherd message from lead-x → qa]\nNo picture here.\nAnd more."))
+    (should (ghostherd--unsent-p
+             (ghostherd-test--claude-screen "❯ [Image #80][Pasted text #81 +62 lines]") msg))
+    (should (ghostherd--unsent-p
+             (ghostherd-test--claude-screen "❯ [...Truncated text #2 +900 lines...]") plain))
+    ;; agy: two rules and a >; its fold counts chars.
+    (should (ghostherd--unsent-p
+             (concat ghostherd-test--rule "\n> [Pasted text #3 1234 chars]\n"
+                     ghostherd-test--rule "\n? for shortcuts")
+             plain))
+    ;; grok: a box, its picture's fold named.
+    (should (ghostherd--unsent-p
+             (concat "╭" (make-string 40 ?─) "╮\n│ › [Image #1: lead-x.png] see │\n╰"
+                     (make-string 40 ?─) "╯")
+             msg))
+    (should-not (ghostherd--unsent-p (ghostherd-test--claude-screen "❯ [Image #1]") plain))
+    (should-not (ghostherd--unsent-p
+                 (ghostherd-test--claude-screen "❯ [Image #1][Pasted text #2 +5 lines]") plain))
+    ;; "Pasting…" is the footer's only, not words up in the conversation.
+    (should (ghostherd--pasting-p (ghostherd-test--claude-footer-screen "❯ " "Pasting…")))
+    (should-not (ghostherd--pasting-p
+                 (ghostherd-test--claude-screen "❯ " "Pasting… the diff below.\n\n")))))
+
+(ert-deftest ghostherd-test-a-paste-taken-in-late-gets-return-again-bounded ()
+  "The incident, as claude drew it: its box empty while it takes the
+picture in (\"Pasting…\"), the Return pressed then lost, then the fold
+left in the box.  Not concluded while it pastes; Return again once the
+fold shows, `ghostherd-submit-retries' times; then given up on -- on its
+card and in the Inbox -- with no Return more."
+  (let ((msg ghostherd-test--incident-text)
+        (stuck (ghostherd-test--claude-footer-screen
+                "❯ [Image #80][Pasted text #81 +62 lines]" "paste again to expand")))
+    (ghostherd-test--sending (ghostherd-test--claude-footer-screen "❯ " "Pasting…")
+      (send msg)
+      ;; A big picture takes a while: two looks, each only a look again.
+      (dotimes (_ 2)
+        (ghostherd--confirm-submit s msg 2)
+        (should-not keys)
+        (should (equal later (list (list #'ghostherd--confirm-submit s msg 2))))
+        (setq later nil))
+      (setq ghostherd-tests--fake-screen stuck)
+      (ghostherd--confirm-submit s msg 2)
+      (should (equal keys '(("return"))))
+      (should (equal later (list (list #'ghostherd--confirm-submit s msg 1))))
+      (setq keys nil later nil)
+      (ghostherd--confirm-submit s msg 1)
+      (should (equal keys '(("return"))))
+      (setq keys nil later nil)
+      (ghostherd--confirm-submit s msg 0)
+      (should-not (or keys later))
+      (should (string-match-p "not submitted" (ghostherd-log-entry-text (car ghostherd--log))))
+      (should (equal (ghostherd--unsent-head s) "[ghostherd message from lead-x → qa]"))
+      ;; Given up on, it is not looked at again.
+      (ghostherd--confirm-submit s msg 2)
+      (should-not (or keys later)))))
+
+(ert-deftest ghostherd-test-an-unsent-message-is-on-the-inbox ()
+  "A message left unsent is a Needs-you item that offers Return; one that
+held an ask is its failed ask's item already."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((a (list :name "qa" :kind "claude" :state "idle" :role ""
+                  :unsent "[ghostherd message from lead-x → qa]" :unsentAsk :json-false))
+         (it (seq-find (lambda (x) (equal (plist-get x :kind) "unsent"))
+                       (ghostherd-inbox--agent-items a))))
+    (should it)
+    (should (equal (plist-get it :id) "unsent:qa"))
+    (should (equal (plist-get it :group) "need"))
+    (should (string-match-p "still there, unsent" (plist-get it :body)))
+    (should-not (seq-find (lambda (x) (equal (plist-get x :kind) "unsent"))
+                          (ghostherd-inbox--agent-items (plist-put a :unsentAsk t))))))
+
+(ert-deftest ghostherd-test-a-submit-its-hook-confirms-is-not-looked-at ()
+  "Its CLI's prompt-submit hook says a turn began: the text sent to the
+resting agent was taken, and no screen is read or key pressed for it.
+Sent to an agent at work, the hook's word is about the turn under way
+-- agy reports each step -- so the screen decides."
+  (ghostherd-test--sending (ghostherd-test--claude-screen "❯ please review the diff")
+    (send "please review the diff")
+    (ghostherd-report s 'working)
+    (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+    (ghostherd--confirm-submit s "please review the diff" 2)
+    (should-not (or keys later))
+    (setf (ghostherd-session-state s) 'working)
+    (send "and this too")
+    (ghostherd-report s 'working)
+    (should (eq (plist-get (ghostherd--submit-of s) :state) 'pending))))
+
+(ert-deftest ghostherd-test-a-clear-box-counts-once-it-stays-clear ()
+  "No hook word, and the box clear: one more look before it counts as
+taken -- a CLI may clear its box a moment before the fold shows -- then
+taken, without a Return."
+  (ghostherd-test--sending (ghostherd-test--claude-screen "❯ ")
+    (send "please review the diff")
+    (ghostherd--confirm-submit s "please review the diff" 2)
+    (should-not keys)
+    (should (equal later (list (list #'ghostherd--confirm-submit s "please review the diff" 2))))
+    (setq later nil)
+    (ghostherd--confirm-submit s "please review the diff" 2)
+    (should-not (or keys later))
+    (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))))
+
+(ert-deftest ghostherd-test-return-again-on-request-only-while-unsent ()
+  "The card's and the Inbox's Press Return: pressed only while the text
+is verifiably still in the box, then watched as a fresh submit.  Gone
+from the box, nothing is pressed and it is no longer shown unsent."
+  (let ((stuck (ghostherd-test--claude-screen "❯ [Pasted text #2 +20 lines]"))
+        (msg "[ghostherd message from rd → qa]\nRound 2.\nMore."))
+    (ghostherd-test--sending stuck
+      (send msg)
+      (ghostherd--confirm-submit s msg 0)
+      (should (ghostherd--unsent-head s))
+      (setq keys nil)
+      (ghostherd-submit-again s)
+      (should (equal keys '(("return"))))
+      (should (eq (plist-get (ghostherd--submit-of s) :state) 'pending))
+      (should (equal later (list (list #'ghostherd--confirm-submit s msg ghostherd-submit-retries))))
+      (ghostherd--confirm-submit s msg 0)
+      (setq keys nil ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ "))
+      (should-error (ghostherd-submit-again s) :type 'user-error)
+      (should-not keys)
+      (should-not (ghostherd--unsent-head s)))))
+
+(ert-deftest ghostherd-test-an-unsent-text-cleared-by-hand-is-no-longer-shown ()
+  "You pressed Return yourself: the next poll's screen no longer holds
+it, and the card and the Inbox no longer say it is unsent."
+  (ghostherd-test--sending (ghostherd-test--claude-screen "❯ [Pasted text #2 +20 lines]")
+    (send "[ghostherd message from rd → qa]\nRound 2.\nMore.")
+    (ghostherd--confirm-submit s "[ghostherd message from rd → qa]\nRound 2.\nMore." 0)
+    (should (ghostherd--unsent-head s))
+    ;; The screen called it idle meanwhile, the text still in its box.
+    (puthash (ghostherd-session-id s) ghostherd-tests--fake-screen ghostherd--screens)
+    (ghostherd--set-state s 'idle "no rule matched")
+    (should (ghostherd--unsent-head s))
+    (puthash (ghostherd-session-id s) (ghostherd-test--claude-screen "❯ ") ghostherd--screens)
+    (ghostherd--set-state s 'working "reported working")
+    (should-not (ghostherd--unsent-head s))))
+
+(ert-deftest ghostherd-test-an-ask-turn-that-starts-late-is-still-the-asks ()
+  "The incident's turn origin: the herd moves the taker to `working' as
+it sends, the Return is lost, so that \"turn\" ends at once -- and the
+real one starts minutes later, when Return is pressed again.  That turn
+is the ask's (its end no report to the user): the ask's flag waits for
+its prompt to reach the CLI.  When the hook confirms at once, the turn
+under way is the ask's and the flag is spent.  Either way the next turn,
+the user's own prompt, is the user's."
+  (ghostherd-tests--with-asks
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "qa" :kind 'claude :state 'idle :backend 'fake))
+            (ghostherd-tests--fake-live t))
+        (cl-letf (((symbol-function 'ghostherd--host-send-text) #'ignore)
+                  ((symbol-function 'run-at-time) #'ignore)
+                  ((symbol-function 'run-with-timer) #'ignore))
+          ;; Late: delivered, the Return lost, the screen calls it done.
+          (ghostherd--ask-deliver "2b76d37d" "lead-x" "qa" "Investigate the CPU bursts." 5)
+          (should (eq (ghostherd--turn-origin-of s) 'ask))
+          (ghostherd--set-state s 'done "no rule matched")
+          (ghostherd--set-state s 'idle "seen")
+          ;; Minutes later Return is pressed: its hook, then the poll.
+          (ghostherd-report s 'working)
+          (ghostherd--set-state s 'working "reported working")
+          (should (eq (ghostherd--turn-origin-of s) 'ask))
+          (should-not (gethash "qa" ghostherd--turn-ask-pending))
+          (ghostherd--set-state s 'done "finished its turn")
+          (ghostherd--set-state s 'idle "seen")
+          (ghostherd-send s "thanks -- now the next thing" t)
+          (ghostherd-report s 'working)
+          (should (eq (ghostherd--turn-origin-of s) 'user))
+          ;; At once: the hook confirms while the herd has it working.
+          (ghostherd--set-state s 'done "finished its turn")
+          (ghostherd--ask-deliver "3c87e48e" "lead-x" "qa" "And another." 5)
+          (ghostherd-report s 'working)
+          (should (eq (ghostherd--turn-origin-of s) 'ask))
+          (should-not (gethash "qa" ghostherd--turn-ask-pending))
+          (ghostherd--set-state s 'done "finished its turn")
+          (ghostherd-send s "one of mine" t)
+          (should (eq (ghostherd--turn-origin-of s) 'user)))))))
 
 (ert-deftest ghostherd-test-a-pair-is-not-labelled-against-its-names ()
   "The pair's names say their roles; notes that said otherwise once told

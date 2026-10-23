@@ -2034,7 +2034,10 @@ capture is a subprocess in the middle of drawing a terminal."
       (puthash id (list state reason (current-time)) ghostherd--reports)
       (ghostherd--log-add session 'report
                           (format "reports %s%s" state
-                                  (if reason (format "  %s" reason) ""))))
+                                  (if reason (format "  %s" reason) "")))
+      ;; Its prompt-submit hook: the text the herd sent it was taken.
+      (when (eq state 'working)
+        (ghostherd--submit-reported session)))
     (run-with-timer 0 nil #'ghostherd-poll-session id)
     state))
 
@@ -4970,6 +4973,95 @@ on a menu, ghostherd presses Return again, up to
   :type 'natnum
   :group 'ghostherd)
 
+(defcustom ghostherd-submit-looks 8
+  "How many more looks a submit gets while it is settled neither way:
+its CLI still taking the paste in, or at work with the paste still in
+its box.  `ghostherd-submit-check-after' apart, about 12 seconds."
+  :type 'natnum
+  :group 'ghostherd)
+
+(defvar ghostherd--submits (make-hash-table :test 'equal)
+  "Session id -> the last text the herd submitted to it, until it is known
+to have left the input box: (:text TEXT :at TIME :state STATE :resting
+R :looks N :clear N :retried R).  STATE is `pending'; `confirmed' once its
+CLI's hook says a turn began, or the screen shows the box let it go;
+`unsent' once Return was pressed on it again and again, or its looks
+ran out with it still there -- that one shows on the agent's card and
+in the Inbox.  RESTING: the agent was not at work when it was sent, so
+a hook's word that a turn began is about this text.
+
+A delivery is confirmed, not assumed: an image path in a paste makes
+claude take it in as \"[Image #N]\" for a moment, and the Return the
+herd pressed in that moment was lost (ask 2b76d37d sat unsent for 7
+minutes).")
+
+(defun ghostherd--submit-of (session)
+  "The text the herd last submitted to SESSION, as `ghostherd--submits' has it."
+  (gethash (ghostherd-session-id session) ghostherd--submits))
+
+(defun ghostherd--submit-pending-p (session)
+  "Non-nil while the text the herd submitted to SESSION is not known taken."
+  (memq (plist-get (ghostherd--submit-of session) :state) '(pending unsent)))
+
+(defun ghostherd--submit-confirmed (session why)
+  "SESSION took the text the herd submitted; WHY says how that is known.
+The ask it may hold now starts its turn (`ghostherd--turn-submitted').
+Logged only when it had needed a Return again, or was given up on."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((ghostherd--submit-pending-p session)))
+    (let ((late (or (plist-get sub :retried) (eq (plist-get sub :state) 'unsent))))
+      (plist-put sub :state 'confirmed)
+      (ghostherd--turn-submitted session)
+      (when late
+        (ghostherd--log-add session 'input (format "↵ submitted: %s" why))))))
+
+(defun ghostherd--submit-unsent (session text screen)
+  "Give up on TEXT, still in SESSION's input box on SCREEN: say so on its
+card and in the Inbox, and fail the ask it holds."
+  (ghostherd--log-add session 'input "← still in its input box: not submitted" screen)
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((equal (plist-get sub :text) text)))
+    (plist-put sub :state 'unsent))
+  ;; An ask it was: fail it, so the asker hears now rather than waiting
+  ;; on an agent that never read it.
+  (when-let* ((id (ghostherd--ask-in session text)))
+    (ghostherd--ask-settle
+     id session nil
+     (format "not submitted: it sat in %s's input box"
+             (ghostherd-session-name session)))))
+
+(defun ghostherd--submit-reported (session)
+  "SESSION's CLI says a turn began (its prompt-submit hook): the text the
+herd submitted while it rested reached it.  One sent to an agent at
+work is left to the screen -- agy reports each step of a turn."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((plist-get sub :resting)))
+    (ghostherd--submit-confirmed session "its CLI says its turn began")))
+
+(defun ghostherd--submit-on-state (session _old _new)
+  "An `unsent' text no longer in SESSION's input box -- you pressed Return,
+or cleared it -- is no longer shown as unsent.  Read off the screen the
+poll just took, so nothing is captured for it."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((eq (plist-get sub :state) 'unsent))
+              (screen (gethash (ghostherd-session-id session) ghostherd--screens)))
+    (unless (ghostherd--unsent-p screen (plist-get sub :text))
+      (ghostherd--submit-confirmed session "its input box let it go"))))
+
+(add-hook 'ghostherd-state-change-hook #'ghostherd--submit-on-state)
+
+(defun ghostherd--submit-forget (session)
+  "Drop SESSION's submit record when it is gone."
+  (remhash (ghostherd-session-id session) ghostherd--submits))
+
+(add-hook 'ghostherd-session-removed-hook #'ghostherd--submit-forget)
+
+(defun ghostherd--unsent-head (session)
+  "The first line of the text left unsent in SESSION's input box, or nil."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((eq (plist-get sub :state) 'unsent)))
+    (car (split-string (plist-get sub :text) "\n" t "[ \t]+"))))
+
 (defvar ghostherd--input-said nil
   "What the herd log records of the next input, when not its first line:
 the user's own words, though the herd put a note before them
@@ -4991,6 +5083,15 @@ When SUBMIT is non-nil, also send RET (Enter)."
                               (ghostherd--clean-screen-line
                                (car (split-string (or ghostherd--input-said text) "\n" t)))
                               (if submit "" "  (not submitted)")))
+  ;; Recorded before the state change, which settles an ask's turn
+  ;; origin: until its CLI takes it, an ask's flag waits for the real
+  ;; start (`ghostherd--turn-origin-on-state').
+  (when (and submit ghostherd-submit-check-after)
+    (puthash (ghostherd-session-id session)
+             (list :text text :at (float-time) :state 'pending
+                   :resting (not (memq (ghostherd-session-state session) '(working blocked)))
+                   :looks ghostherd-submit-looks :clear 0 :retried nil)
+             ghostherd--submits))
   (unless (ghostherd-session-manual-state session)
     (ghostherd--set-state session 'working "input sent"))
   (when (and submit ghostherd-submit-check-after)
@@ -5006,49 +5107,152 @@ When SUBMIT is non-nil, also send RET (Enter)."
     (when (cdr rules)
       (cl-subseq lines (1+ (car (last rules 2))) (car (last rules))))))
 
+(defconst ghostherd--paste-fold-re
+  (concat "\\[\\(?:Pasted text #[0-9]+\\(?: \\+[0-9]+ lines\\| [0-9]+ chars\\)?"
+          "\\|Image #[0-9]+\\(?::[^]\n]*\\)?"
+          "\\|\\.\\.\\.Truncated text #[0-9]+ \\+[0-9]+ lines\\.\\.\\."
+          "\\|✦ Team setup guide #[0-9]+\\(?: \\+[0-9]+ lines\\)?\\)\\]")
+  "What a CLI shows in its input box in place of a paste it took in.
+claude and agy fold a big paste (\"[Pasted text #2 +20 lines]\", agy's
+\"[Pasted text #2 1234 chars]\"); claude and grok turn a picture's path
+into \"[Image #1]\" (grok's \"[Image #1: name]\").  claude matches its own
+the same way.  An image path in a paste comes first: the incident text
+\"[Image #80][Pasted text #81 +62 lines]\" was a screenshot path, then
+the rest of the message.")
+
+(defconst ghostherd--image-path-re
+  "\\.\\(?:png\\|jpe?g\\|gif\\|webp\\|bmp\\|heic\\)\\_>"
+  "A picture's file name in pasted text, which claude and grok attach.")
+
+(defconst ghostherd--pasting-re "^[[:blank:]]*Pasting…"
+  "claude's footer while it takes a paste in.  The box is empty then, and
+a Return pressed meanwhile is lost; what the box shows next is the
+paste's fold.")
+
+(defun ghostherd--folded-paste-p (in text)
+  "Non-nil when IN, an input-box line, starts with the fold of a paste of
+TEXT.  A picture's fold only when TEXT names a picture, so one you
+pasted yourself is not taken for the herd's."
+  (and (string-match-p (concat "\\`" ghostherd--paste-fold-re) in)
+       (or (not (string-prefix-p "[Image #" in))
+           (let ((case-fold-search t))
+             (string-match-p ghostherd--image-path-re text)))))
+
 (defun ghostherd--unsent-p (screen text)
   "Non-nil when SCREEN's input box still holds TEXT, pasted but not submitted.
-Only TEXT counts -- claude's fold of a big paste, or its first words --
-so a Return pressed for it never submits something you were typing."
+Only TEXT counts -- a CLI's fold of it (`ghostherd--paste-fold-re'), or
+its first words -- so a Return pressed for it never submits something
+you were typing."
   (let* ((first (car (split-string text "\n" t "[ \t]+")))
          (head (and first (substring first 0 (min 20 (length first))))))
     (seq-some (lambda (line)
                 ;; claude follows its ❯ with a no-break space.
                 (and (string-match "^[[:blank:]│|]*[❯›>][[:blank:]]+\\(.*\\)" line)
                      (let ((in (match-string 1 line)))
-                       (or (string-prefix-p "[Pasted text #" in)
+                       (or (ghostherd--folded-paste-p in text)
                            (and head (string-search head in))))))
               (ghostherd--input-box screen))))
 
+(defun ghostherd--pasting-p (screen)
+  "Non-nil when SCREEN's footer, under its input box, shows its CLI still
+taking a paste in.  Not the words up in the conversation."
+  (let* ((lines (split-string screen "\n"))
+         (rule (cl-loop for l in lines for i from 0
+                        when (string-match-p ghostherd--input-rule-re l) maximize i))
+         (case-fold-search nil))
+    (and rule
+         (seq-some (lambda (l) (string-match-p ghostherd--pasting-re l))
+                   (nthcdr (1+ rule) lines)))))
+
 (defun ghostherd--confirm-submit (session text tries)
-  "Press Return again while SESSION's input box still holds TEXT, TRIES more times.
-Not on an agent that is working or on a menu: Return there is an answer."
+  "Make sure TEXT, pasted into SESSION with Return, left its input box.
+Its CLI's hook saying a turn began settles it (`ghostherd-report'), and
+so does the screen: the turn at work, or the box clear on two looks
+running.  Still in the box of an agent neither working nor on a menu --
+Return there is an answer -- it gets Return again, TRIES more times;
+then it is `unsent', on the card and in the Inbox, and an ask in it
+fails.  Still being taken in (claude's \"Pasting…\"), or in the box of
+an agent at work, it is looked at again, `ghostherd-submit-looks' times
+at most."
   (condition-case err
-      (when (and (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)
-                 (ghostherd--session-live-p session))
-        (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
-               (rules (plist-get spec :screen-rules))
-               (screen (and rules (ghostherd--host-capture session 20)))
-               (hit (and screen (ghostherd--match-rules screen rules (plist-get spec :prompt-replaces-input)
-                                                        (plist-get spec :spinner)))))
-          (when (and screen
-                     (not (memq (car-safe hit) '(working blocked)))
-                     (ghostherd--unsent-p screen text))
-            (if (<= tries 0)
-                (progn
-                  (ghostherd--log-add session 'input "← still in its input box: not submitted" screen)
-                  ;; An ask it was: fail it, so the asker hears now rather
-                  ;; than waiting on an agent that never read it.
-                  (when-let* ((id (ghostherd--ask-in session text)))
-                    (ghostherd--ask-settle
-                     id session nil
-                     (format "not submitted: it sat in %s's input box"
-                             (ghostherd-session-name session)))))
-              (ghostherd--host-send-keys session '("return"))
-              (ghostherd--log-add session 'input "↵ again: it was still in the input box" screen)
-              (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
-                           session text (1- tries))))))
+      (let ((sub (ghostherd--submit-of session)))
+        (when (and (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session)
+                   (ghostherd--session-live-p session)
+                   ;; Settled already, or a newer text took its place.
+                   (or (null sub)
+                       (and (eq (plist-get sub :state) 'pending)
+                            (equal (plist-get sub :text) text))))
+          (let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+                 (rules (plist-get spec :screen-rules))
+                 (screen (and rules (ghostherd--host-capture session 20)))
+                 (hit (and screen (ghostherd--match-rules screen rules (plist-get spec :prompt-replaces-input)
+                                                          (plist-get spec :spinner))))
+                 (busy (memq (car-safe hit) '(working blocked)))
+                 (unsent (and screen (ghostherd--unsent-p screen text)))
+                 (again (lambda (n)
+                          (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
+                                       session text n))))
+            (cond
+             ((null screen) nil)
+             ((and unsent (not busy))
+              (if (<= tries 0)
+                  (ghostherd--submit-unsent session text screen)
+                (ghostherd--host-send-keys session '("return"))
+                (ghostherd--log-add session 'input "↵ again: it was still in the input box" screen)
+                (when sub (plist-put sub :retried t))
+                (funcall again (1- tries))))
+             ;; Settled neither way: at work with it still in the box, or
+             ;; its CLI still taking the paste in -- the box is empty then.
+             ((or unsent (ghostherd--pasting-p screen))
+              (cond ((and sub (> (plist-get sub :looks) 0))
+                     (plist-put sub :looks (1- (plist-get sub :looks)))
+                     (funcall again tries))
+                    ((and sub unsent) (ghostherd--submit-unsent session text screen))))
+             (busy (ghostherd--submit-confirmed session "its turn is under way"))
+             ;; Clear: once more before it counts as taken, as a CLI may
+             ;; clear its box a moment before it shows the paste's fold.
+             ((and sub (< (plist-get sub :clear) 1))
+              (plist-put sub :clear 1)
+              (funcall again tries))
+             (t (ghostherd--submit-confirmed session "its input box let it go"))))))
     (error (message "ghostherd: checking a submit: %s" (error-message-string err)))))
+
+;;;###autoload
+(defun ghostherd-submit-again (session)
+  "Press Return for the message the herd left unsent in SESSION's input box.
+Only while it is verifiably still there and SESSION is neither working
+nor on a menu, so it never submits anything else; then it is watched
+as a fresh submit."
+  (interactive (list (ghostherd--read-session "Submit again: ")))
+  (setq session (ghostherd-get session))
+  (let* ((name (ghostherd-session-name session))
+         (sub (or (and (eq (plist-get (ghostherd--submit-of session) :state) 'unsent)
+                       (ghostherd--submit-of session))
+                  (user-error "Nothing the herd sent sits unsent in %s's input box" name)))
+         (text (plist-get sub :text))
+         (spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+         (screen (ghostherd--host-capture session 20))
+         (hit (and screen (plist-get spec :screen-rules)
+                   (ghostherd--match-rules screen (plist-get spec :screen-rules)
+                                           (plist-get spec :prompt-replaces-input)
+                                           (plist-get spec :spinner)))))
+    (cond
+     ((not (ghostherd--unsent-p screen text))
+      (ghostherd--submit-confirmed session "its input box let it go")
+      (user-error "It is no longer in %s's input box" name))
+     ((memq (car-safe hit) '(working blocked))
+      (user-error "%s is at work or on a menu: Return there is an answer" name))
+     (t
+      (ghostherd--host-send-keys session '("return"))
+      (ghostherd--log-add session 'input "↵ again, as asked: it was still in the input box" screen)
+      (plist-put sub :state 'pending)
+      (plist-put sub :looks ghostherd-submit-looks)
+      (plist-put sub :clear 0)
+      (plist-put sub :retried t)
+      (when ghostherd-submit-check-after
+        (run-at-time ghostherd-submit-check-after nil #'ghostherd--confirm-submit
+                     session text ghostherd-submit-retries))
+      name))))
 
 ;;;###autoload
 (defun ghostherd-send-keys (session &rest keys)
@@ -6888,14 +7092,33 @@ A turn the herd started by delivering an ask (`ghostherd--turn-ask-pending')
 is `ask'; any other turn start -- a user prompt through the herd, or one
 typed straight into the terminal -- is `user'.  A mid-turn move into a
 busy state (OLD already busy) is not a turn start and is left alone, so
-an ask turn that blocks to ask is not re-marked."
+an ask turn that blocks to ask is not re-marked.
+
+The ask's flag is spent only once its prompt is known to have reached
+the CLI (`ghostherd--turn-submitted').  The herd moves a taker to
+`working' the moment it sends; when the Return was lost, that was no
+turn, and the real one starts later -- once Return is pressed again,
+by the herd or by hand -- and is still the ask's."
   (when (and (memq new '(working blocked waiting))
              (memq old '(idle done dead nil)))
-    (let ((id (ghostherd-session-id session)))
-      (if (gethash id ghostherd--turn-ask-pending)
+    (let* ((id (ghostherd-session-id session))
+           (pending (gethash id ghostherd--turn-ask-pending)))
+      (if pending
+          (progn (puthash id 'ask ghostherd--turn-origin)
+                 (when (or (eq pending 'submitted)
+                           (not (ghostherd--submit-pending-p session)))
+                   (remhash id ghostherd--turn-ask-pending)))
+        (puthash id 'user ghostherd--turn-origin)))))
+
+(defun ghostherd--turn-submitted (session)
+  "SESSION's CLI took the prompt the herd sent it: an ask's flag is spent
+on the turn it starts -- the one under way, else the next to start."
+  (let ((id (ghostherd-session-id session)))
+    (when (gethash id ghostherd--turn-ask-pending)
+      (if (memq (ghostherd-session-state session) '(working blocked waiting))
           (progn (remhash id ghostherd--turn-ask-pending)
                  (puthash id 'ask ghostherd--turn-origin))
-        (puthash id 'user ghostherd--turn-origin)))))
+        (puthash id 'submitted ghostherd--turn-ask-pending)))))
 
 (add-hook 'ghostherd-state-change-hook #'ghostherd--turn-origin-on-state)
 

@@ -414,6 +414,15 @@ draws lanes from fields rather than parsing prose."
                          (ghostherd-session-lineage s)))
           :relayTo (format "%s" (ghostherd-relay-default-kind s))
           :usedUp (or (ghostherd-usage-session-used-up-text s) "")
+          ;; A message the herd pasted that its CLI never took -- Return
+          ;; pressed again and it is still in the input box: its first line,
+          ;; for the card's "message not submitted" and the Inbox.
+          ;; `unsentAsk': it held an ask, which has failed and is in the
+          ;; Inbox on its own.
+          :unsent (or (ghostherd--unsent-head s) "")
+          :unsentAsk (if (and (ghostherd--unsent-head s)
+                              (ghostherd--ask-in s (plist-get (ghostherd--submit-of s) :text)))
+                         t :json-false)
           :meter (ghostherd-memory-page--meter s)
           :subs (ghostherd-memory-page--subs-of s)
           :switching (if (gethash (ghostherd-session-id s) ghostherd--switching) t :json-false))))
@@ -2489,6 +2498,11 @@ from the newest -- and send it to the page to prepend."
              (ghostherd-sleep-continue-cancel s)
              (format "%s stays blocked; the herd will not continue it" name))
             ("agent-abort" (ghostherd-abort s) (format "C-c to %s" name))
+            ("agent-submit"
+             ;; The card's and the Inbox's Return for a message left unsent:
+             ;; pressed only while it is verifiably still in the box.
+             (ghostherd-submit-again s)
+             (format "Pressed Return for %s" name))
             ("agent-answer"
              (let ((n (alist-get 'n intent)))
                (unless (and (integerp n) (<= 1 n 9)) (user-error "Choice is 1 to 9"))
@@ -2818,6 +2832,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (login      "need" "Login"      "warn")
     (relay      "need" "Relay"      "warn")
     (ask-failed "need" "Ask failed" "red")
+    (unsent     "need" "Not sent"   "warn")
     (report     "fyi"  "Report"     "green")
     (handoff    "fyi"  "Handoff"    "purple")
     (lead-started "fyi" "Lead"      "muted")
@@ -2874,6 +2889,7 @@ full-width) in its last line or two."
          (said-from-user (eq (plist-get a :saidFromUser) t))
          (handoff-started (eq (plist-get a :handoffStarted) t))
          (used-up (plist-get a :usedUp)) (relay-to (plist-get a :relayTo))
+         (unsent (plist-get a :unsent))
          items)
     (cond
      (login
@@ -2904,6 +2920,18 @@ full-width) in its last line or two."
                          (or (and (> (length opts) 0) (plist-get (aref opts 0) :label)) q "") 80)
                :options opts)
               items))))
+    ;; A message the herd sent it that never left its input box.  One that
+    ;; held an ask is its failed ask's item already.
+    (when (and (stringp unsent) (not (string-empty-p unsent))
+               (not (eq (plist-get a :unsentAsk) t)))
+      (push (ghostherd-inbox--item
+             (concat "unsent:" name) 'unsent name cli project "Message not submitted" at
+             :state state :whyLabel "It is still in its input box"
+             :preview (ghostherd-inbox--clip unsent 90)
+             :body (concat "The herd pasted a message into its input box and pressed Return "
+                           "again, but its CLI never took it: it is still there, unsent.\n\n> "
+                           unsent))
+            items))
     (when (and (stringp used-up) (not (string-empty-p used-up))
                (stringp relay-to) (not (equal relay-to cli)))
       (push (ghostherd-inbox--item

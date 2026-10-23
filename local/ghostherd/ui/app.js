@@ -1483,6 +1483,16 @@
     return "";
   }
 
+  // A message the herd pasted that its CLI never took: Return was pressed
+  // again and it is still in the input box.  The card says so, with the one
+  // key that sends it -- pressed only while it is verifiably still there.
+  function unsentHtml(a) {
+    if (!a.unsent) return "";
+    return '<div class="contline"><span class="cont stopped" title="' + esc(a.unsent) + '">' +
+      "message not submitted — it sits in its input box</span>" +
+      '<button type="button" class="ghost small" data-act="a:agent-submit" title="Press Return for it">Press Return</button></div>';
+  }
+
   function contText(secs, after) {
     after = after || "after sleep";
     return secs > 0 ? "continuing " + after + " in " + secs + "s" : "continuing " + after + " now…";
@@ -1721,7 +1731,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) +
       (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
@@ -1946,7 +1956,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       guardHtml(name) +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
@@ -2755,7 +2765,7 @@
       return renderAgents();
     }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
-    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login" || act === "agent-sleep-cancel") return emit(act, { name });
+    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login" || act === "agent-sleep-cancel" || act === "agent-submit") return emit(act, { name });
     if (act === "login-open") return emit("open-browser", { url: el.getAttribute("data-url") });
     if (act === "login-copy") return emit("copy", { text: el.getAttribute("data-url") });
     if (act === "screen") {
@@ -3828,7 +3838,7 @@
   function inboxPass(it) {
     const f = inbox.filter;
     if (f === "all") return true;
-    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "ask-failed";
+    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "ask-failed" || it.kind === "unsent";
     if (f === "approve") return it.kind === "guard" || it.kind === "proposal";
     if (f === "questions") return it.kind === "question";
     if (f === "updates") return !inboxNeed(it);
@@ -3948,6 +3958,10 @@
     }
     if (it.kind === "login") {
       return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:login" data-id="' + d + '">Run /login</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
+    if (it.kind === "unsent") {
+      return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:submit" data-id="' + d + '">Press Return</button>' +
         '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
     }
     if (it.kind === "relay") {
@@ -4100,6 +4114,7 @@
     }
     if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
     if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
+    if (act === "submit") { emit("agent-submit", { name: it.agent }); inboxResolve(it, "Return pressed for " + it.agent, false); return; }
     if (act === "done" && it.kind === "guard") { guardKeepDenied(it); return; }
     if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
   }
