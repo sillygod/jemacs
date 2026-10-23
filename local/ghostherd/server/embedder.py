@@ -29,10 +29,11 @@ def tokenize(text: str) -> list[str]:
 
 
 class Embedder:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, model: str | None = None):
+        "MODEL overrides cfg.embed_model -- the facts use their own."
         self.cfg = cfg
         self.fake = cfg.fake_embed
-        self.model = cfg.embed_model
+        self.model = model or cfg.embed_model
         self.sparse_model = cfg.sparse_model
         self.dim = FAKE_DIM if self.fake else 0
         self._dense = None

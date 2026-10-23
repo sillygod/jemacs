@@ -102,6 +102,7 @@ def _doc(key: str, f: sm.Fact) -> mr.Doc:
 class FactIndex:
     def __init__(self, engine):
         self.engine = engine
+        self._embedder = None
         self._mu = threading.RLock()
         self._seen: dict[str, dict[str, tuple[int, int]]] = {}
         self._vecs: dict[str, dict[str, list[float]]] = {}
@@ -116,7 +117,13 @@ class FactIndex:
 
     @property
     def embedder(self):
-        return self.engine.embedder
+        """The facts' own embedder -- a multilingual model, so a Chinese ask
+        finds an English fact -- not the engine's (the transcripts').  Shares
+        the engine's config, so a test's fake embedder stays fake."""
+        if self._embedder is None:
+            from embedder import Embedder
+            self._embedder = Embedder(self.engine.cfg, model=self.engine.cfg.fact_embed_model)
+        return self._embedder
 
     def ready(self) -> bool:
         return bool(self.embedder.loaded)

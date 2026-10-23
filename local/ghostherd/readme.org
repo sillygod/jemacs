@@ -858,15 +858,26 @@ opening falls back to MEMORY.md's lines under the same cap, with how many
 were left out.
 
 =herd recall QUERY= ranks by meaning as well as words, so a query in one
-language finds a fact written in another.  The facts are embedded (the same
-=bge-small-zh= as the transcripts) into a Qdrant collection of their own,
-=ghostherd_facts= --- never mixed with the transcripts --- and kept in sync
-with the files however they change: a write, edit or forget through the
-herd is indexed at once, and a write that bypasses it (claude writing its
-own memory file, a hand edit) is found the next time the store is read, by
-the files' stamps, re-embedding only a fact whose text changed.  Until the
-embedder is up the ranking falls back to words, and says so.  The page can
-call the same ranking (=memory_rank=).
+language finds a fact written in another --- a Chinese ask finds an
+English fact, which is the usual case, most facts being in English.  The
+facts are embedded with a *multilingual* model (=paraphrase-multilingual-
+MiniLM-L12-v2=), not the transcripts' Chinese-first =bge-small-zh=, because
+that one does not align across languages; they are small and few, so this
+model's cost is nothing here.  They go into a Qdrant collection of their
+own, =ghostherd_facts= --- never mixed with the transcripts --- and are
+kept in sync with the files however they change: a write, edit or forget
+through the herd is indexed at once, and a write that bypasses it (claude
+writing its own memory file, a hand edit) is found the next time the store
+is read, by the files' stamps, re-embedding only a fact whose text
+changed; a change of model (its vectors a new size) re-embeds them all by
+itself on the next read.  Until the embedder is up the ranking falls back
+to words --- ASCII identifiers and CJK character bigrams both --- and says
+so.  The page calls the same ranking (=memory_rank=).
+
+An ask attaches a fact on meaning and a shared word agreeing, or on
+meaning alone when it stands out far enough --- a Chinese ask and an
+English fact share no word to confirm with --- never on words alone (a
+long fact shares words with any long ask).  A recall is looser.
 
 An *ask* carries what memory says about it.  When the herd delivers one,
 it appends, under *Relevant memory*, the few facts of the taker's project
@@ -2111,11 +2122,14 @@ An agent can ask the same index:
 
 Data lives in =~/.emacs.d/ghostherd-memory/= (Qdrant path + a sqlite
 watermark so a second import only re-embeds what changed).  Prefix
-=I= with =C-u= to force a full re-embed.  The default embedding model is
-=bge-small-zh-v1.5= (~70 chunk/s on this Mac).  Multilingual MiniLM is
-slower and still available via =GHOSTHERD_MEMORY_EMBED_MODEL=.  Not
-English-only bge-small-en.  Tests set =GHOSTHERD_MEMORY_FAKE_EMBED=1=
-so they never download a model.  Grok tool dumps are skipped (they are
+=I= with =C-u= to force a full re-embed.  Transcripts embed with
+=bge-small-zh-v1.5= (~70 chunk/s on this Mac; multilingual MiniLM is
+slower, available via =GHOSTHERD_MEMORY_EMBED_MODEL=; not English-only
+bge-small-en).  The shared-memory *facts* embed separately, with
+=paraphrase-multilingual-MiniLM-L12-v2= (0.22 GB), so a Chinese ask finds
+an English fact --- the facts are few, so the slower model costs nothing;
+=GHOSTHERD_MEMORY_FACT_EMBED_MODEL= overrides it.  Tests set
+=GHOSTHERD_MEMORY_FAKE_EMBED=1= so they never download a model.  Grok tool dumps are skipped (they are
 most of grok's bytes and rarely what you search).
 
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into

@@ -26,12 +26,16 @@ grep', cn-stg -- which is how asks name what they are about.
   is the same in a store of 5 facts or 50.
 
 Tuned on 16 labelled queries from deploy-platform (11 of 12 wanted facts
-found, no fact for any unrelated query).  A query in Chinese alone, with
-no identifier in it, finds nothing under the strict gate an ask takes.  A
-recall is asked for, and short -- two words make little BM25 -- so its
-gate is looser: standing out by meaning with any word in common, or by
-meaning alone when far enough, or by words alone; `recall 部署' finds an
-English deploy fact by meaning, `recall commit to main' the branch rule.
+found, no fact for any unrelated query).  A Chinese ask finds an English
+fact -- the common case, most facts being written in English -- by meaning
+alone: facts embed with a multilingual model (fact_index), so a Chinese
+query lands near the English fact, and the two languages share no word to
+confirm with, so a strong-enough meaning (Z_ALONE, above where any
+unrelated query reaches on the real store) stands on its own.  A recall is
+asked for, and short -- two words make little BM25 -- so its gate is looser
+still: standing out by meaning with any word in common, or by meaning alone
+when far enough, or by words alone; `recall 部署' finds an English deploy
+fact by meaning, `recall commit to main' the branch rule.
 """
 
 from __future__ import annotations
@@ -215,13 +219,16 @@ def rank(
         for i, (z, l) in enumerate(zip(zs, ls)):
             if z >= Z_MIN and l >= LEX_MIN:
                 why = "meaning+words"
-            elif strict:
-                continue
-            elif z >= Z_MIN and l > 0:
+            elif not strict and z >= Z_MIN and l > 0:
                 why = "meaning+words"
             elif z >= Z_ALONE:
+                # Meaning alone, when it stands out far.  An ask (strict) rests
+                # on it too: a query and a fact in different languages -- a
+                # Chinese ask, an English fact, the common case here -- share
+                # no word to confirm meaning with, and Z_ALONE is above where
+                # any unrelated query reaches (measured on the real store).
                 why = "meaning"
-            elif l >= LEX_MIN:
+            elif not strict and l >= LEX_MIN:
                 why = "words"
             else:
                 continue
@@ -235,16 +242,16 @@ def rank(
 def rank_words(docs: Sequence[Doc], query: str, *, strict: bool = True,
                k: int | None = None) -> list[Hit]:
     """The keyword fallback, for when the embedder is not up: words alone.
-    An ask (STRICT) needs twice the bar, with nothing to confirm it, and
-    only ASCII identifiers count; a recall counts CJK pairs too, and any
-    match, best first."""
+    ASCII identifiers and CJK character bigrams both count, in BM25's units
+    of the store's rarest word -- so a Chinese query is not reduced to one
+    whitespace-run token with nothing to match.  An ask (STRICT) needs twice
+    the bar, with no meaning to confirm it; a recall takes any match."""
     if not docs or not (query or "").strip():
         return []
+    ls = Lexicon(docs, cjk=True).scores(query)
     if strict:
-        ls = Lexicon(docs).scores(query)
         hits = [Hit(d, l, 0.0, l, "words") for d, l in zip(docs, ls) if l >= 2 * LEX_MIN]
     else:
-        ls = Lexicon(docs, cjk=True).scores(query)
         hits = [Hit(d, l, 0.0, l, "words") for d, l in zip(docs, ls) if l > 0]
     hits.sort(key=lambda h: h.score, reverse=True)
     return hits[: (k if k is not None else (ASK_K if strict else RECALL_K))]

@@ -23,7 +23,10 @@ def _rank(monkeypatch, zs, ls, strict, k=None):
 CASES = [
     (1.9, 1.7, False, True),    # a short recall: meaning, a word in common
     (1.3, 0.0, False, False),   # close in meaning, no word shared, not far
-    (2.3, 0.0, False, True),    # far in meaning alone: a recall only
+    (2.3, 0.0, True, True),     # far in meaning alone: an ask too (a cross-
+                                # language hit shares no word to confirm with)
+    (2.0, 0.0, True, True),     # right at the meaning-alone bar
+    (1.9, 0.0, False, False),   # just under it, no word: neither
     (0.4, 3.0, False, True),    # words alone: a recall only
     (1.3, 2.6, True, True),     # both agree: an ask too
     (1.0, 2.0, False, False),   # neither enough
@@ -47,6 +50,35 @@ def test_words_are_ascii_identifiers():
     assert set(mr.words("Run `pr_review` on cn-stg, then 部署")) >= {"pr_review", "pr", "review", "cn-stg", "cn", "stg"}
     assert not [w for w in mr.words("部署 the to of") ]
     assert mr.bigrams("憑證續簽") == ["zh:憑證", "zh:證續", "zh:續簽"]
+
+
+def test_a_chinese_ask_hits_an_english_fact_by_meaning_alone():
+    """The fix (ask 0e635d4f): a Chinese ask and an English fact share no
+    word, so the ask gate passes on meaning alone when the fact stands out
+    far.  A near-but-not-far fact, with no word either, does not."""
+    docs = [mr.Doc("k", "webkit-freeze", "WebKit crash freezes Emacs", "the web process aborts", ""),
+            mr.Doc("k", "unrelated", "Something else", "nothing alike", "")]
+    q = "那個網頁視窗當掉讓整個編輯器卡住"          # pure CJK: no ASCII identifier
+    assert mr.words(q) == []                        # so the lexical signal is zero
+    # Fact 0 is semantically on-topic (its vector aligns with the query part),
+    # fact 1 is off; the background sits away from both.
+    doc_vecs = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    part_vecs = [[1.0, 0.0, 0.0]]
+    bg = [[0.0, 1.0, 0.0]] * 4
+    hits = mr.rank(docs, doc_vecs, [q], part_vecs, bg, strict=True)
+    assert [h.doc.name for h in hits] == ["webkit-freeze"]
+    assert hits[0].why == "meaning" and hits[0].lex == 0.0
+    # Pull fact 0 only partway out (z below the bar): no hit for an ask.
+    bg_near = [[0.7, 0.0, 0.0]] * 4
+    assert mr.rank(docs, doc_vecs, [q], part_vecs, bg_near, strict=True) == []
+
+
+def test_the_fallback_recalls_a_cjk_fact_by_bigrams():
+    "With the embedder down, a Chinese recall still finds a Chinese fact."
+    docs = [mr.Doc("k", "certs", "憑證續簽 playbook", "deploy_nginx 憑證續簽 via dagger", "憑證續簽"),
+            mr.Doc("k", "other", "Branch discipline", "never push to main", "feature branch")]
+    hits = mr.rank_words(docs, "憑證續簽 要怎麼處理", strict=False)
+    assert hits and hits[0].doc.name == "certs"
 
 
 def test_an_ask_is_read_in_parts():

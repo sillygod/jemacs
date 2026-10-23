@@ -96,7 +96,13 @@ def test_memory_rank_is_one_call_with_scores(rpc):
     top = out["hits"][0]
     assert top["name"] == "branch-discipline"
     assert {"score", "z", "lex", "why", "store", "type"} <= set(top)
-    strict = rpc._memory_rank({"from": "claude-dp", "query": UNRELATED_ASKS[0], "strict": True})
+    # An unrelated ask attaches no fact.  Checked with the Chinese "poem"
+    # ask: the fake embedder is a hashed bag of tokens, and a short ASCII
+    # text can collide into a spurious high cosine with a fact (a real model
+    # does not -- the strict meaning-alone gate is a real-model property,
+    # pinned deterministically in test_memory_rank.py); a CJK text does not
+    # collide, so this stays a true unrelated-ask guard here.
+    strict = rpc._memory_rank({"from": "claude-dp", "query": UNRELATED_ASKS[1], "strict": True})
     assert strict["hits"] == []
 
 

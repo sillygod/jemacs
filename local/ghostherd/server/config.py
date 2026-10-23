@@ -20,11 +20,17 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 49152
     data_dir: Path = Path.home() / ".emacs.d" / "ghostherd-memory"
-    # Chinese-first, still embeds English identifiers.  MiniLM-L12
+    # Transcripts: Chinese-first, still embeds English identifiers.  MiniLM-L12
     # multilingual is ~4× slower on this machine (~19 vs ~73 chunk/s)
     # and is available as GHOSTHERD_MEMORY_EMBED_MODEL.
     # Do not default to bge-small-en — it will quietly fail on 中文.
     embed_model: str = "BAAI/bge-small-zh-v1.5"
+    # Shared-memory facts embed separately, with a multilingual model, so a
+    # Chinese ask finds an English fact (bge-small-zh does not align across
+    # languages).  It is small (0.22 GB) and the facts are few, so this
+    # re-embeds in a blink; transcripts stay on embed_model — large, usually
+    # one language, dear to re-embed.  GHOSTHERD_MEMORY_FACT_EMBED_MODEL.
+    fact_embed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     sparse_model: str = "Qdrant/bm25"
     fake_embed: bool = False
     claude_root: Path = Path.home() / ".claude" / "projects"
@@ -74,6 +80,10 @@ class Config:
             embed_model=os.getenv(
                 "GHOSTHERD_MEMORY_EMBED_MODEL",
                 "BAAI/bge-small-zh-v1.5",
+            ),
+            fact_embed_model=os.getenv(
+                "GHOSTHERD_MEMORY_FACT_EMBED_MODEL",
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
             ),
             sparse_model=os.getenv("GHOSTHERD_MEMORY_SPARSE_MODEL", "Qdrant/bm25"),
             fake_embed=fake,
