@@ -194,6 +194,86 @@ then `a' (or `s', `o', `u') has to be an explicit filter binding."
           (should (equal org-secrets--sidebar-query "bi")))
       (setq org-secrets--sidebar-query ""))))
 
+(ert-deftest org-secrets-test-filter-takes-a-committed-cjk-char ()
+  "A committed non-ASCII char -- as a system input method (Squirrel)
+sends it -- reaches the query through the catch-all, no toggle needed."
+  (let ((org-secrets--sidebar-query ""))
+    (unwind-protect
+        (dolist (ch '(?說 ?話 ?é))
+          (let ((last-command-event ch))
+            (org-secrets-sidebar-filter-self-insert)))
+      (prog1 (should (equal org-secrets--sidebar-query "說話é"))
+        (setq org-secrets--sidebar-query "")))))
+
+(ert-deftest org-secrets-test-filter-map-has-input-method-and-yank ()
+  "C-\\ edits with an input method, C-y yanks; motion keys stay motion."
+  (should (eq (lookup-key org-secrets-sidebar-filter-map (kbd "C-\\"))
+              #'org-secrets-sidebar-filter-read))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map (kbd "C-y"))
+              #'org-secrets-sidebar-filter-yank))
+  (should (eq (lookup-key org-secrets-sidebar-filter-map "n") #'next-line)))
+
+(ert-deftest org-secrets-test-filter-yank-joins-lines ()
+  "C-y appends the latest kill as one line: newlines become spaces."
+  (let ((org-secrets--sidebar-query "git")
+        (kill-ring '("one\ntwo\n")))
+    (unwind-protect
+        (progn
+          (org-secrets-sidebar-filter-yank)
+          (should (equal org-secrets--sidebar-query "gitone two")))
+      (setq org-secrets--sidebar-query ""))))
+
+(defun org-secrets-tests--type (keys)
+  "Type KEYS (`kbd' syntax), with the minibuffer reading them too.
+Batch Emacs reads the minibuffer from stdin unless `noninteractive' is
+nil; with it nil, the minibuffer reads the macro like a terminal."
+  (let ((noninteractive nil))
+    (execute-kbd-macro (kbd keys))))
+
+(defmacro org-secrets-tests--in-filter (&rest body)
+  "Run BODY in a buffer shown in the selected window, the filter map its
+local map -- the window the minibuffer read in `filter-read' needs."
+  (declare (indent 0))
+  `(let ((buf (get-buffer-create " *org-secrets-filter-test*")))
+     (unwind-protect
+         (progn
+           (set-window-buffer (selected-window) buf)
+           (with-current-buffer buf
+             (use-local-map org-secrets-sidebar-filter-map)
+             ,@body))
+       (kill-buffer buf))))
+
+(ert-deftest org-secrets-test-filter-read-with-input-method ()
+  "An Emacs input method passes keys through raw in the read-only overlay;
+C-\\ edits the query in the minibuffer with the input method on, so
+Chinese composes, the query narrows live, and C-g restores the old one."
+  (skip-unless (ignore-errors (require 'quail) (assoc "chinese-py" input-method-alist)))
+  (let ((org-secrets--sidebar-query "")
+        (default-input-method "chinese-py")
+        (im nil) (live nil))
+    (unwind-protect
+        (org-secrets-tests--in-filter
+          ;; C-\ reads the minibuffer; "zhong SPC" composes to 中; RET applies.
+          (org-secrets-tests--type "C-\\ zhong SPC RET")
+          (should (string-prefix-p "中" org-secrets--sidebar-query))
+          ;; A <f12> hook in the minibuffer: the input method is on (so
+          ;; Chinese composes), and the query narrows as it is edited, not
+          ;; only at RET.
+          (setq org-secrets--sidebar-query "")
+          (let ((minibuffer-local-map (copy-keymap minibuffer-local-map)))
+            (define-key minibuffer-local-map (kbd "<f12>")
+                        (lambda () (interactive)
+                          (setq im current-input-method)
+                          (push org-secrets--sidebar-query live)))
+            (org-secrets-tests--type "C-\\ zhong SPC <f12> RET"))
+          (should (equal im "chinese-py"))
+          (should (and live (string-prefix-p "中" (car live))))
+          ;; C-g puts the old query back.
+          (setq org-secrets--sidebar-query "keep")
+          (org-secrets-tests--type "C-\\ zhong SPC C-g")
+          (should (equal org-secrets--sidebar-query "keep")))
+      (setq org-secrets--sidebar-query ""))))
+
 (ert-deftest org-secrets-test-help-text-lists-bindings ()
   (let ((text (org-secrets--sidebar-help-text)))
     (should (string-match-p "Copy password" text))
