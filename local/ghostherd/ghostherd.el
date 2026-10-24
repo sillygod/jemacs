@@ -8215,7 +8215,10 @@ it knows where to work; and read another agent's work by its branch
 rather than its files -- \"git diff BASE...BRANCH\", where BASE is the
 branch it came off (usually the project's main) and BRANCH is the one
 \"$GHOSTHERD_HERD\" list shows for it.  Do not edit in another agent's
-worktree.
+worktree.  A worktree's dependencies are already there -- node_modules
+a copy-on-write clone of the main checkout's, a uv project's venv its
+own -- so tell its agent to use \"npm install\", not \"npm ci\", which
+deletes the clone and installs a full copy.
 
 Hand work out as an ask, run in the background so you can go on:
 

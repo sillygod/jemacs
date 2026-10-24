@@ -1143,7 +1143,8 @@ over the default).  Each is found by name at any depth (=.venv= finds
   absolute paths, so a copy breaks);
 - =node_modules= is *cloned* copy-on-write (APFS =cp -c=, so the worktree
   may diverge it cheaply).  An =npm ci= in the worktree deletes the clone
-  and installs a full copy; =npm install= changes only what differs;
+  and installs a full copy; =npm install= changes only what differs (the
+  lead's role says to tell a worktree agent so);
 - build caches are left off the list.
 A dependency that cannot be cloned is skipped and said so on the card ---
 never copied in full.
