@@ -350,8 +350,27 @@
   // The Memory tab's store, facts and view state (see showMemory).
   let mem = { key: "", projects: [], user: { key: "user", label: "User (shared)" },
               facts: [], filter: "", open: new Set(), editing: "", confirmDel: "",
-              proposals: [], promotedOnly: false, rejecting: "" };
+              proposals: [], promotedOnly: false, rejecting: "", sort: memSortKept() };
   let memWatching = false; // Emacs is pushing this store's facts
+
+  // How the Memory tab orders its facts -- "recent" or "name" -- kept for
+  // this viewer in this browser.  Storage can be missing or refused (a
+  // private window, the desk's file page): it then starts on "recent".
+  function memSortKept() {
+    try {
+      return localStorage.getItem("ghostherd.memory.sort") === "name" ? "name" : "recent";
+    } catch (e) {
+      return "recent";
+    }
+  }
+
+  function memSortKeep(sort) {
+    try {
+      localStorage.setItem("ghostherd.memory.sort", sort);
+    } catch (e) {
+      // Not kept: this page keeps it until it is loaded again.
+    }
+  }
 
   function sourceMeta(path) {
     return ctx.byPath[path] || { source_path: path, agent: "", project: "", kind: "", chunks: 0 };
@@ -3609,8 +3628,13 @@
       '<div class="page wide memory">' +
       '<div class="filters mem-tools">' +
       '<select id="mem-project" title="Project store"></select>' +
+      '<div class="mem-find">' +
       '<input id="mem-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' +
       SLASH + '" value="' + esc(mem.filter) + '">' +
+      '<span class="msort" role="group" aria-label="Order">' +
+      '<button type="button" class="ghost small" data-act="mem-sort" data-sort="recent" aria-pressed="false" title="Newest change first">Recent</button>' +
+      '<button type="button" class="ghost small" data-act="mem-sort" data-sort="name" aria-pressed="false" title="By name">A–Z</button>' +
+      '</span></div>' +
       '<button type="button" class="ghost small" id="mem-promoted" data-act="mem-promoted-toggle" aria-pressed="false" title="Show facts promoted into an instruction file">Promoted</button>' +
       '<button type="button" class="ghost small" data-act="mem-suggest" title="Ask the project\'s lead to review the memory and propose promotions">Suggest promotions</button>' +
       '</div>' +
@@ -3643,9 +3667,14 @@
     if (!list) return;
     const btn = $("mem-promoted");
     if (btn) { btn.classList.toggle("on", mem.promotedOnly); btn.setAttribute("aria-pressed", mem.promotedOnly ? "true" : "false"); }
+    document.querySelectorAll('[data-act="mem-sort"]').forEach((b) => {
+      const on = b.getAttribute("data-sort") === mem.sort;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
     if (!mem.facts.length) { list.innerHTML = '<p class="empty">No memory here yet.</p>'; return; }
     const needles = mem.filter.toLowerCase().split(/\s+/).filter(Boolean);
-    const shown = mem.facts.filter((f) => {
+    const shown = memSorted(mem.facts).filter((f) => {
       // A promoted fact lives in an instruction file now: it waits behind the
       // "Promoted" toggle, out of the everyday list.
       if (mem.promotedOnly ? !f.promoted : f.promoted) return false;
@@ -3657,11 +3686,28 @@
       : '<p class="empty">' + (mem.promotedOnly ? "Nothing promoted." : "Nothing matches.") + "</p>";
   }
 
+  // The facts in the order the viewer chose: newest change first (updated,
+  // else created), so what the team just learned is on top, a fact with
+  // neither date last; or by the name the list shows.  Shared facts sort in
+  // with the rest.  Only the view: the server's order is by file name, and
+  // MEMORY.md is made from it.
+  function memSorted(facts) {
+    const title = (f) => f.title || f.name || "";
+    const byName = (a, b) =>
+      title(a).localeCompare(title(b), undefined, { sensitivity: "base" }) ||
+      (a.name || "").localeCompare(b.name || "");
+    if (mem.sort === "name") return facts.slice().sort(byName);
+    const at = (f) => stamp(f.updated) || stamp(f.created) || 0;
+    return facts.slice().sort((a, b) => at(b) - at(a) || byName(a, b));
+  }
+
   function renderMemRow(f) {
     const open = mem.open.has(f.name);
     const badge = '<span class="mtype t-' + esc(f.type) + '">' + esc(f.type) + "</span>";
     const where = f.shared ? '<span class="mshared" title="Shared by every project">shared</span>' : "";
-    const upd = when(f.updated); // the page's usual relative style: "1h ago", "yesterday", a date when older
+    // Its last change -- created, when never updated: the date the list sorts
+    // by.  The page's usual relative style: "1h ago", a date when older.
+    const upd = when(f.updated || f.created);
     const meta = (f.author ? "by " + esc(f.author) : "") + (f.author && upd ? " · " : "") + (upd ? esc(upd) : "");
     const prom = f.promoted
       ? '<span class="mprom" title="In an instruction file now">promoted → ' + esc(f.promoted) + "</span>" : "";
@@ -3893,6 +3939,10 @@
     } else if (act === "mem-promoted-toggle") {
       mem.promotedOnly = !mem.promotedOnly;
       mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+      renderMemoryList();
+    } else if (act === "mem-sort") {
+      mem.sort = el.getAttribute("data-sort") === "name" ? "name" : "recent";
+      memSortKeep(mem.sort);
       renderMemoryList();
     } else if (act === "mem-suggest") {
       emit("memory-suggest", mem.key && mem.key.indexOf("/") >= 0

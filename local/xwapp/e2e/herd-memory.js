@@ -66,13 +66,14 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
 
       // ---- list ----
       check(W("the three facts list"), (await rows(page)) === 3, await rows(page));
-      const firstName = await page.$eval(".mfact .mname", (e) => e.textContent.trim());
+      // By name, not by place: the list is in the viewer's order (herd-memory-sort).
+      const firstName = await page.$eval('.mhead[data-name="prefers-reasoned-design"] .mname', (e) => e.textContent.trim());
       check(W("a fact shows its title"), firstName === "Prefers reasoned design", firstName);
       check(W("the shared fact is marked shared"),
-        await page.$eval('.mfact', (e) => !!e.querySelector(".mshared")));
+        await page.$eval('.mhead[data-name="prefers-reasoned-design"]', (e) => !!e.querySelector(".mshared")));
       check(W("a type badge shows"), await page.$eval(".mtype", (e) => e.textContent.trim().length > 0));
       check(W("the author shows"),
-        /claude-deploy-platform/.test(await page.$eval(".mfact:nth-child(2) .mmeta", (e) => e.textContent)));
+        /claude-deploy-platform/.test(await page.$eval('.mhead[data-name="never-commit-to-main"] .mmeta', (e) => e.textContent)));
 
       // ---- filter ----
       await page.fill("#mem-filter", "retry");
