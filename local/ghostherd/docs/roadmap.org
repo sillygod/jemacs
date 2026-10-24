@@ -1526,6 +1526,9 @@ Refined after the first pass:
   fiftieth before Emacs reads it), dependencies whole, a dir broken only
   when it splits or holds a big dependency; clones said made so, never
   "shared"; linked dependencies said to take no space
+- [X] The lead's role says a worktree's dependencies are already there
+  and to tell its agent =npm install=, not =npm ci= (which deletes the
+  cloned node_modules for a full copy) (ask c8ad86af)
 - [ ] node_modules shared copy-on-write at a finer grain than the whole
   tree
 - [ ] Worktree attribution for a bare-repo or submodule checkout

@@ -9581,6 +9581,10 @@ agy takes none, and gets it with its first message."
       (should-not (ghostherd--lead-args 'agy))
       ;; The first run's lead reported in English to a user writing Chinese.
       (should (string-match-p "in the\nlanguage they write to you in" ghostherd--lead-role))
+      ;; rd-tabs ran npm ci in its worktree, trading the cloned
+      ;; node_modules for a full copy: the lead briefs against it.
+      (should (string-search "use \"npm install\", not \"npm ci\", which\ndeletes the clone"
+                             ghostherd--lead-role))
       ;; A second lead elsewhere does not take the first one's name.
       (ghostherd-start-lead "/other/room-trial/")
       (should (equal (plist-get (cdar spawned) :name) "lead-room-trial-2")))))
