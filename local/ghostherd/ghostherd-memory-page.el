@@ -2695,7 +2695,7 @@ nothing rather than a plain agent pretending to be in a worktree."
           (funcall started (ghostherd-spawn kind :name final :project project
                                             :directory dir :args args :display nil))
         (condition-case err
-            (let ((wt (ghostherd--worktree-create project final)))
+            (let ((wt (ghostherd--worktree-create project final nil kind)))
               (ghostherd--worktree-deps-setup project (plist-get wt :path) final)
               (funcall started (ghostherd-spawn kind :name final :project project
                                                 :directory (plist-get wt :path) :args args

@@ -36,6 +36,9 @@
 (defvar ghostherd-tests--guard-root (file-name-as-directory (make-temp-file "gh-guard-" t))
   "Where a test's guarded agents' guards go: never the user's ~/.ghostherd/guard.")
 
+(defvar ghostherd-tests--trust-home (file-name-as-directory (make-temp-file "gh-trust-" t))
+  "Where a test's CLI trust stores go: never the user's ~/.grok or agy's.")
+
 (defmacro ghostherd-tests--with-herd (bindings &rest body)
   "Run BODY with an empty session registry.
 BINDINGS are extra `let' bindings evaluated inside the clean registry."
@@ -68,6 +71,12 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; and a guard it writes goes under a temp root -- never the user's.
          (ghostherd-agy-guard nil)
          (ghostherd-guard-root ghostherd-tests--guard-root)
+         ;; A worktree's trust is recorded in stores under a temp home --
+         ;; never the user's ~/.grok or agy's settings.
+         (ghostherd-trust-stores
+          `((grok . ,(concat ghostherd-tests--trust-home "grok/trusted_folders.toml"))
+            (agy . ,(concat ghostherd-tests--trust-home "agy/settings.json"))))
+         (ghostherd-pretrust-file (concat ghostherd-tests--trust-home "pretrust.eld"))
          (ghostherd--guard-requests nil)
          ;; The panes' processes the snapshot names: none known, and none
          ;; read (a real `list-panes') unless a test says so.
@@ -12478,6 +12487,145 @@ checkout's HEAD; a second at the same path refuses; a non-git dir refuses."
                        "alice"))
         (should-error (ghostherd--worktree-create repo "alice") :type 'user-error))
       (should-error (ghostherd--worktree-create base "bob") :type 'user-error))))
+
+;;; Trust for the worktrees the herd creates (ask 2befbbd6)
+
+(defmacro ghostherd-tests--with-trust (&rest body)
+  "BODY in a clean herd over `with-repo''s temp `repo', worktrees under
+`base', and CLI trust stores of its own under `base' -- `grok-store',
+`agy-store' -- with the herd's record of what it trusted, and its log."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-repo
+     (let* ((grok-store (concat base "home/.grok/trusted_folders.toml"))
+            (agy-store (concat base "home/.gemini/antigravity-cli/settings.json"))
+            (client (expand-file-name "bin/herd" (file-name-directory (locate-library "ghostherd")))))
+       (ghostherd-tests--with-herd
+           ((ghostherd-worktree-root (concat base "trees/"))
+            (ghostherd-trust-stores `((grok . ,grok-store) (agy . ,agy-store)))
+            (ghostherd-pretrust-file (concat base "pretrust.eld")))
+         (ghostherd-tests--with-log
+           (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () client)))
+             (make-directory (file-name-directory grok-store) t)
+             (make-directory (file-name-directory agy-store) t)
+             ,@body))))))
+
+(defun ghostherd-tests--file (file)
+  "FILE's text, or nil when there is none."
+  (and (file-exists-p file)
+       (with-temp-buffer (insert-file-contents file) (buffer-string))))
+
+(ert-deftest ghostherd-test-a-new-worktree-is-trusted-where-its-cli-trusts-the-project ()
+  "A worktree the herd creates for a grok or agy agent, off a project that
+CLI trusts by its own store, is recorded trusted there -- logged, and
+remembered -- so the agent does not start on the trust prompt.  Its
+removal drops the entry, the store as it was."
+  (ghostherd-tests--with-trust
+    (let ((main (directory-file-name repo)))
+      (dolist (case `((grok ,grok-store
+                            ,(format "[folders.%S]\ntrusted = true\ndecided_at = 1792824400\n" main))
+                      (agy ,agy-store
+                           ,(format "{\n  \"model\": \"Gemini 4 Argon (High)\",\n  \"trustedWorkspaces\": [\n    %S\n  ]\n}\n"
+                                    (concat main "/")))))
+        (pcase-let ((`(,kind ,store ,before) case))
+          (with-temp-file store (insert before))
+          (let* ((name (format "%s-rd" kind))
+                 (wt (ghostherd--worktree-create repo name nil kind))
+                 (path (directory-file-name (file-truename (plist-get wt :path)))))
+            (should (string-search path (ghostherd-tests--file store)))
+            (should (equal (mapcar (lambda (e) (plist-get e :path)) (ghostherd--pretrusted))
+                           (list path)))
+            (should (string-match-p (format "trusted .*%s for %s, as it trusts" name kind)
+                                    (ghostherd-log-entry-text (car ghostherd--log))))
+            (should (equal (ghostherd-log-entry-session (car ghostherd--log)) name))
+            (should (ghostherd--worktree-remove repo path nil name))
+            (should (equal (ghostherd-tests--file store) before))
+            (should-not (ghostherd--pretrusted))
+            (should (string-match-p (format "dropped the trust it gave %s" kind)
+                                    (ghostherd-log-entry-text (car ghostherd--log))))))))))
+
+(ert-deftest ghostherd-test-only-what-the-herd-made-of-a-trusted-project-is-trusted ()
+  "Anything else still asks the user: a project the CLI does not trust, a
+CLI with no store (claude needs none), the feature off, a path the herd
+did not create under its worktree root.  And an entry already there is
+not the herd's to drop."
+  (ghostherd-tests--with-trust
+    (let ((main (directory-file-name repo))
+          (untouched (lambda () (should-not (ghostherd-tests--file grok-store)))))
+      ;; Not trusted: nothing written, nothing logged.
+      (ghostherd--worktree-create repo "g1" nil 'grok)
+      (funcall untouched)
+      (should-not (or (ghostherd--pretrusted) ghostherd--log))
+      (with-temp-file grok-store
+        (insert (format "[folders.%S]\ntrusted = false\ndecided_at = 1\n" main)))
+      (ghostherd--worktree-create repo "g2" nil 'grok)
+      (should-not (ghostherd--pretrusted))
+      (with-temp-file grok-store
+        (insert (format "[folders.%S]\ntrusted = true\ndecided_at = 1\n" main)))
+      (let ((before (ghostherd-tests--file grok-store)))
+        ;; claude keeps no store of the herd's to write.
+        (ghostherd--worktree-create repo "c1" nil 'claude)
+        ;; The feature off.
+        (let ((ghostherd-pretrust nil))
+          (ghostherd--worktree-create repo "g3" nil 'grok))
+        ;; A path not under the worktree root: the main checkout, or any
+        ;; other directory.
+        (should-not (ghostherd--worktree-pretrust 'grok repo repo "g4"))
+        (make-directory (concat base "elsewhere/") t)
+        (should-not (ghostherd--worktree-pretrust 'grok repo (concat base "elsewhere/") "g4"))
+        (should (equal (ghostherd-tests--file grok-store) before))
+        (should-not (ghostherd--pretrusted)))
+      ;; Trusted already: not recorded as the herd's, so not dropped.
+      (let* ((path (directory-file-name (file-truename (ghostherd--worktree-path repo "g5"))))
+             (store (concat (ghostherd-tests--file grok-store)
+                            (format "\n[folders.%S]\ntrusted = true\ndecided_at = 2\n" path))))
+        (with-temp-file grok-store (insert store))
+        (ghostherd--worktree-create repo "g5" nil 'grok)
+        (should-not (ghostherd--pretrusted))
+        (ghostherd--worktree-remove repo path nil "g5")
+        (should (equal (ghostherd-tests--file grok-store) store))))))
+
+(ert-deftest ghostherd-test-trust-the-herd-cannot-record-is-taken-back ()
+  "What the herd adds it must drop with the worktree, so it must remember
+it: when its record cannot be written, the entry is taken back out, and
+the agent asks as it would have.  A record not there yet is made."
+  (ghostherd-tests--with-trust
+    (let ((before (format "[folders.%S]\ntrusted = true\ndecided_at = 1\n" (directory-file-name repo))))
+      (with-temp-file grok-store (insert before))
+      (with-temp-file (concat base "afile") (insert "not a directory"))
+      (let ((ghostherd-pretrust-file (concat base "afile/pretrust.eld")))
+        (should-not (plist-get (ghostherd--worktree-create repo "g1" nil 'grok) :trusted))
+        (should (equal (ghostherd-tests--file grok-store) before))
+        (should (string-match-p "not trusted for grok"
+                                (ghostherd-log-entry-text (car ghostherd--log)))))
+      (let ((ghostherd-pretrust-file (concat base "new/dir/pretrust.eld")))
+        (ghostherd--worktree-create repo "g2" nil 'grok)
+        (should (= (length (ghostherd--pretrusted)) 1))))))
+
+(ert-deftest ghostherd-test-every-worktree-the-herd-creates-says-its-kind ()
+  "`ghostherd-new', the page's New agent and `herd start --worktree' each
+create the worktree for its agent's kind, which decides the trust."
+  (let ((made nil))
+    (cl-letf (((symbol-function 'ghostherd--worktree-create)
+               (lambda (project name &optional branch kind)
+                 (push (cons name kind) made)
+                 (list :path (file-name-as-directory (ghostherd--worktree-path project name))
+                       :branch (or branch name) :base "main")))
+              ((symbol-function 'ghostherd--worktree-deps-setup) #'ignore))
+      (ghostherd-tests--with-lead-start
+        (ghostherd-lead-start "lead-p" "agy" :worktree "yes" :name "ls")
+        (cl-letf (((symbol-function 'ghostherd-spawn) (lambda (&rest _) nil))
+                  ((symbol-function 'read-string) (lambda (_p &optional initial &rest _) (or initial "")))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+          (ghostherd--new-fresh 'grok repo repo nil)
+          (when (require 'ghostherd-memory-page nil t)
+            (cl-letf (((symbol-function 'ghostherd-memory-page--js) #'ignore)
+                      ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore))
+              (ghostherd-memory-page--handle `((op . "agent-new") (project . ,repo) (kind . "claude")
+                                               (name . "pg") (worktree . t))))))))
+    (should (equal (alist-get "ls" made nil nil #'equal) 'agy))
+    (should (equal (alist-get "grok" made nil nil #'equal) 'grok))
+    (when (featurep 'ghostherd-memory-page)
+      (should (equal (alist-get "pg" made nil nil #'equal) 'claude)))))
 
 (ert-deftest ghostherd-test-worktree-spawn-keeps-and-restores-it ()
   "A spawned worktree agent carries its worktree in the hash and the

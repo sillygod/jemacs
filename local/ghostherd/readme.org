@@ -145,6 +145,42 @@ first message and =--when-ready= use).  A dialog no rule knows is held
 so too, and a panel the herd opens itself --- agy's =/usage=, the model
 picker --- for as long as it is open.
 
+*A worktree the herd creates is not asked about*, when its project is
+already trusted (=ghostherd-pretrust=, on).  When the herd creates a
+worktree for an agent --- =SPC a h n=, the page's New agent, =herd start
+--worktree= --- off a project the agent's CLI already trusts by its own
+record, it records the worktree trusted in that CLI's store before the
+CLI starts.  A worktree is the same repository, so this grants no new
+trust.  It logs "trusted PATH for KIND, as it trusts PROJECT", keeps
+what it added in =ghostherd-pretrust-file=, and drops it when it removes
+the worktree.  Everything else still asks the user: a project the CLI
+does not trust, a directory typed in, a resume in a conversation's own
+directory, the main checkout --- and the herd trusts no path it did not
+just create under =ghostherd-worktree-root=.
+
+Each CLI's store, as =bin/herd_trust.py= reads and writes it (one entry,
+written to a temporary file and renamed over the store, mode kept;
+=ghostherd-trust-stores= says where):
+
+- grok: =~/.grok/trusted_folders.toml= (=$GROK_HOME=), a
+  =[folders."PATH"]= table of =trusted = true= and =decided_at= (epoch
+  seconds) per folder, matched exactly.  grok saves it under
+  =trusted_folders.toml.lock=, re-reading it first; the herd takes the
+  same lock, so neither save loses the other's.
+- agy: =~/.gemini/antigravity-cli/settings.json=, its
+  ="trustedWorkspaces"= list (a project counts written with or without a
+  final slash).  agy keeps no lock: the file is read again just before
+  it is replaced, and replaced only if it has not changed since.
+- claude: nothing is written.  claude counts a linked worktree trusted
+  when its main checkout is (=~/.claude.json=, =projects[PATH]
+  .hasTrustDialogAccepted=, matched exactly, measured on 2.1.310), so its
+  agents never ask in a herd worktree of a trusted project.  claude saves
+  that file under =~/.claude.json.lock=, re-reading it first and merging
+  =projects= key by key.
+
+A store that does not read as its CLI writes it is left as it is, and
+the agent asks as before.
+
 All three CLIs' menus take the input box's place (=:prompt-replaces-input=):
 grok's question card was drawn with none under it, and its docs say its
 blocking cards --- question, MCP form, permission prompt, cancel-turn

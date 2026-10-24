@@ -803,12 +803,132 @@ checkout with a commit."
              (let ((h (string-trim (buffer-string))))
                (and (not (string-empty-p h)) h)))))))
 
-(defun ghostherd--worktree-create (project name &optional branch)
+;;; Trust for the worktrees the herd creates (ask 2befbbd6)
+;;
+;; Each CLI asks, the first time it starts in a folder, whether to trust
+;; it, and an agent parked on that prompt takes no work until the user
+;; answers.  A worktree the herd has just created off a project its CLI
+;; already trusts, by the CLI's own record, is the same repository: the
+;; herd records it trusted in that CLI's store, so the agent starts at its
+;; prompt.  Nothing else is trusted for the user -- a project the CLI does
+;; not trust, a directory typed in, a conversation's own, the main
+;; checkout.  bin/herd_trust.py reads and writes each store as its CLI
+;; does, one entry at a time; what it added is dropped with the worktree.
+
+(defcustom ghostherd-pretrust t
+  "Non-nil: a worktree the herd creates is recorded trusted in its agent's
+CLI's store when that CLI trusts the project's main checkout, so the
+agent does not start on a trust prompt.  See `ghostherd-trust-stores'."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-trust-stores
+  `((grok . ,(expand-file-name "trusted_folders.toml" (or (getenv "GROK_HOME") "~/.grok")))
+    (agy . "~/.gemini/antigravity-cli/settings.json"))
+  "Where each CLI keeps the folders it trusts, as (KIND . FILE).
+grok: a [folders.\"PATH\"] table of `trusted' and `decided_at'.  agy: its
+settings' \"trustedWorkspaces\" list.  claude needs no entry: it counts
+a linked worktree trusted when its main checkout is."
+  :type '(alist :key-type symbol :value-type file)
+  :group 'ghostherd)
+
+(defcustom ghostherd-pretrust-file (locate-user-emacs-file "ghostherd-pretrust.eld")
+  "Where the herd keeps the trust it recorded -- (:path :kind :store
+:name) each -- to drop it when it removes the worktree."
+  :type 'file
+  :group 'ghostherd)
+
+(defun ghostherd--trust-run (op kind store path)
+  "Run bin/herd_trust.py OP for KIND's STORE and PATH: (STATUS . OUTPUT)."
+  (let ((script (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client)
+                     (expand-file-name "herd_trust.py"
+                                       (file-name-directory (ghostherd-herd-client))))))
+    (if (not (and script (file-executable-p script)))
+        (cons -1 "bin/herd_trust.py not found")
+      (with-temp-buffer
+        (let ((status (ignore-errors
+                        (call-process script nil '(t t) nil op (symbol-name kind)
+                                      (expand-file-name store) path))))
+          (cons (or status -1) (string-trim (buffer-string))))))))
+
+(defun ghostherd--pretrusted ()
+  "The trust the herd recorded, read from `ghostherd-pretrust-file'."
+  (and ghostherd-pretrust-file (file-exists-p ghostherd-pretrust-file)
+       (ignore-errors
+         (with-temp-buffer
+           (insert-file-contents ghostherd-pretrust-file)
+           (read (current-buffer))))))
+
+(defun ghostherd--pretrusted-save (entries)
+  "Keep ENTRIES as the trust the herd recorded."
+  (when ghostherd-pretrust-file
+    (make-directory (file-name-directory (expand-file-name ghostherd-pretrust-file)) t)
+    (with-temp-file ghostherd-pretrust-file
+      (let ((print-length nil) (print-level nil))
+        (prin1 entries (current-buffer))))))
+
+(defun ghostherd--worktree-pretrust (kind project path name)
+  "Record worktree PATH, just created off PROJECT for agent NAME, trusted
+in KIND's store when KIND trusts PROJECT's main checkout by that store.
+Logged under NAME; non-nil when recorded."
+  (when-let* ((ghostherd-pretrust)
+              (store (alist-get kind ghostherd-trust-stores))
+              (root (file-name-as-directory (expand-file-name ghostherd-worktree-root)))
+              (path (directory-file-name (file-truename path)))
+              ((string-prefix-p (file-name-as-directory (file-truename root))
+                                (file-name-as-directory path)))
+              (main (directory-file-name (file-truename project)))
+              ((eq 0 (car (ghostherd--trust-run "trusts" kind store main)))))
+    (let ((r (ghostherd--trust-run "add" kind store path)))
+      (cond
+       ((not (eq 0 (car r)))
+        (ghostherd--log-add name 'life (format "not trusted for %s: %s" kind (cdr r)))
+        nil)
+       ((not (equal (cdr r) "added")) nil)
+       ;; Unrecorded, it would never be dropped: take it back.
+       ((not (ignore-errors
+               (ghostherd--pretrusted-save
+                (cons (list :path path :kind kind :store store :name name)
+                      (ghostherd--pretrusted)))
+               t))
+        (ghostherd--trust-run "remove" kind store path)
+        (ghostherd--log-add name 'life (format "not trusted for %s: %s cannot be written"
+                                               kind ghostherd-pretrust-file))
+        nil)
+       (t
+        (ghostherd--log-add name 'life
+                            (format "trusted %s for %s, as it trusts %s"
+                                    (abbreviate-file-name path) kind
+                                    (abbreviate-file-name main)))
+        t)))))
+
+(defun ghostherd--worktree-untrust (path)
+  "Drop the trust the herd recorded for worktree PATH, now removed."
+  (let* ((path (directory-file-name (expand-file-name path)))
+         (all (ghostherd--pretrusted))
+         (mine (seq-filter (lambda (e) (member (plist-get e :path)
+                                               (list path (ignore-errors
+                                                            (directory-file-name (file-truename path))))))
+                           all)))
+    (dolist (e mine)
+      (let ((r (ghostherd--trust-run "remove" (plist-get e :kind) (plist-get e :store)
+                                     (plist-get e :path))))
+        (ghostherd--log-add (or (plist-get e :name) path) 'life
+                            (if (eq 0 (car r))
+                                (format "dropped the trust it gave %s in %s"
+                                        (plist-get e :kind) (abbreviate-file-name path))
+                              (format "could not drop the trust it gave %s in %s: %s"
+                                      (plist-get e :kind) (abbreviate-file-name path) (cdr r))))))
+    (when mine
+      (ghostherd--pretrusted-save (seq-difference all mine)))))
+
+(defun ghostherd--worktree-create (project name &optional branch kind)
   "Create a git worktree of PROJECT for agent NAME; return its plist.
 The worktree goes under `ghostherd-worktree-root' on a new BRANCH (NAME by
 default) off PROJECT's current HEAD.  Returns (:path :branch :base).
-Signals a `user-error' when git cannot, so the caller may fall back to a
-plain directory."
+For an agent of KIND, it is recorded trusted where KIND trusts PROJECT
+(`ghostherd--worktree-pretrust').  Signals a `user-error' when git
+cannot, so the caller may fall back to a plain directory."
   (let* ((project (file-name-as-directory (expand-file-name project)))
          (branch (or branch name))
          (path (directory-file-name (ghostherd--worktree-path project name)))
@@ -823,6 +943,8 @@ plain directory."
       (unless (eq 0 (call-process "git" nil '(t t) nil
                                   "worktree" "add" "-b" branch path base))
         (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
+    (when kind
+      (ghostherd--worktree-pretrust kind project path name))
     (list :path (file-name-as-directory path) :branch branch :base base)))
 
 (defun ghostherd--worktree-clean-p (path)
@@ -887,7 +1009,8 @@ base contains them -- the work is in, the worktree removable."
   "Remove git worktree PATH of the MAIN checkout; return t on success.
 With FORCE, discard the worktree's uncommitted changes.  With BRANCH, also
 delete it with `git branch -d', which refuses an unmerged branch -- so a
-branch's committed work is never lost here."
+branch's committed work is never lost here.  The trust the herd recorded
+for it goes with it (`ghostherd--worktree-untrust')."
   (let ((default-directory (file-name-as-directory (expand-file-name main))))
     (with-temp-buffer
       (when (eq 0 (apply #'call-process "git" nil '(t t) nil
@@ -895,6 +1018,7 @@ branch's committed work is never lost here."
                            ,(directory-file-name (expand-file-name path)))))
         (when branch
           (call-process "git" nil nil nil "branch" "-d" branch))
+        (ghostherd--worktree-untrust path)
         t))))
 
 (defun ghostherd--worktree-cleanup (session)
@@ -4560,7 +4684,7 @@ and whether it gets its own worktree."
                   (y-or-n-p (format "Own git worktree off %s? "
                                     (ghostherd--abbreviate project)))
                   (ghostherd--worktree-create
-                   project final-name (read-string "Branch: " final-name)))))
+                   project final-name (read-string "Branch: " final-name) kind))))
     (when wt
       (ghostherd--worktree-deps-setup project (plist-get wt :path) final-name))
     (ghostherd-spawn
@@ -8715,7 +8839,7 @@ reused (with its name and worktree), or, plainly, why it was refused."
                     (progn
                       (funcall spawn dir nil)
                       (format "started %s (%s, in the main checkout)" final kind))
-                  (let ((wt (ghostherd--worktree-create dir final branch)))
+                  (let ((wt (ghostherd--worktree-create dir final branch kind)))
                     (ghostherd--worktree-deps-setup dir (plist-get wt :path) final)
                     (funcall spawn (plist-get wt :path) wt)
                     (format "started %s (%s, worktree %s on %s off %s)"
