@@ -27,11 +27,16 @@
       </nav>
     </div>
     <div class="actions">
-      <button type="button" class="ghost" data-xw-phone title="Open this page on your phone: its address as a QR code">Phone</button>
       <button type="button" id="btn-back" class="ghost" hidden title="Back (Esc)">←<span class="lbl"> Back</span></button>
       <button type="button" id="btn-new" class="ghost" title="Start an agent in any project, or on a past conversation">+ New<span class="lbl"> agent</span></button>
-      <button type="button" id="btn-import" class="ghost" title="Import transcripts that changed since the last import">Import</button>
-      <button type="button" id="btn-refresh" class="ghost" title="List the sessions again">Refresh</button>
+      <!-- Wanted now and then: in the bar while it has the room, else
+           behind ⋯ (style.css). -->
+      <button type="button" id="btn-more" class="ghost" title="More: Phone, Import, Refresh" aria-label="More" aria-haspopup="true" aria-expanded="false">⋯</button>
+      <div id="more" class="more">
+        <button type="button" class="ghost" data-xw-phone title="Open this page on your phone: its address as a QR code">Phone</button>
+        <button type="button" id="btn-import" class="ghost" title="Import transcripts that changed since the last import">Import</button>
+        <button type="button" id="btn-refresh" class="ghost" title="List the sessions again">Refresh</button>
+      </div>
     </div>
   </header>
   <div id="status" class="status" hidden></div>
