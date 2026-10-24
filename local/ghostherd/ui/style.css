@@ -861,6 +861,9 @@ pre.screen {
 }
 .mem-tools select { max-width: 60%; }
 .mem-tools #mem-filter { flex: 1; min-width: 0; }
+/* The filter and the list's order: in the toolbar's row when it is wide, a
+   row of their own when narrow (below). */
+.mem-find { display: contents; }
 
 .mfact { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 8px; }
 .mfact.open { border-color: var(--row-hover); }
@@ -900,7 +903,16 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 
 /* A promoted fact: lives in an instruction file now, shown muted, behind the
    "Promoted" toggle. */
-#mem-promoted.on { color: var(--accent); border-color: var(--accent); background: rgba(121, 192, 255, 0.12); }
+#mem-promoted.on, .msort button.on { color: var(--accent); border-color: var(--accent); background: rgba(121, 192, 255, 0.12); }
+/* The list's order, Recent or A–Z: two halves of one control, the chosen
+   one lit like Promoted.  The halves share a border; the lit or hovered
+   one draws it. */
+.msort { display: inline-flex; flex: 0 0 auto; }
+.msort button { border-radius: 0; position: relative; }
+.msort button:first-child { border-radius: 5px 0 0 5px; }
+.msort button:last-child { border-radius: 0 5px 5px 0; margin-left: -1px; }
+.msort button.on, .msort button:hover { z-index: 1; }
+.mem-tools button { white-space: nowrap; flex: 0 0 auto; }
 .mfact.promoted { opacity: 0.85; }
 .mprom {
   font-size: 10px; padding: 1px 6px; border-radius: 10px;
@@ -930,10 +942,17 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 .mpreject input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; }
 
-@media (max-width: 640px) {
-  .mem-tools { flex-wrap: wrap; }
+/* Narrow: the picker a row, the filter and the order the next, Promoted and
+   Suggest promotions the last, from its start -- one row left the filter
+   too little room. */
+@media (max-width: 760px) {
+  .mem-tools { flex-wrap: wrap; justify-content: flex-start; }
   .mem-tools select { max-width: none; width: 100%; }
   .mem-tools #mem-filter { width: 100%; }
+  .mem-find { display: flex; gap: 10px; align-items: center; flex: 1 1 100%; min-width: 0; }
+}
+
+@media (max-width: 640px) {
   .mmeta { margin-left: 0; width: 100%; white-space: normal; }
   .mpby { margin-left: 0; width: 100%; }
 }
