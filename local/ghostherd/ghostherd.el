@@ -645,8 +645,13 @@ depends on the repository: a bare repo's worktrees group under the bare
 repo itself (it has no main checkout); a submodule is its own project, at
 its own working tree, not folded into the superproject's .git/modules; an
 ordinary repo's worktrees belong to its main checkout, the common dir's
-parent (`ghostherd--worktree-project')."
-  (when (and (stringp dir) (file-directory-p (expand-file-name dir)))
+parent (`ghostherd--worktree-project').
+Git is not asked when it need not be: of a directory in no checkout, or
+the top of an ordinary one -- whose .git is a directory, where a linked
+worktree's or a submodule's is a file."
+  (when (and (stringp dir) (file-directory-p (expand-file-name dir))
+             (locate-dominating-file (expand-file-name dir) ".git")
+             (not (file-directory-p (expand-file-name ".git" dir))))
     (let ((default-directory (file-name-as-directory (expand-file-name dir))))
       (with-temp-buffer
         (when (eq 0 (ignore-errors
@@ -4081,16 +4086,337 @@ one, and otherwise prompts."
                                (lambda () (ghostherd-prompt heir ghostherd--lead-role))))
       heir)))
 
+;;; Where a new agent goes: any project, maybe on a past conversation
+;;
+;; `ghostherd-new' and the page's + New agent offer the same places
+;; (`ghostherd-new-projects'): the project you are in, the projects the
+;; herd has agents in, the ones project.el knows, and where past
+;; conversations ran -- the sidecar's index of them, the Sessions tab's.
+;; Each is resolved to its project (a worktree to its main checkout) and
+;; named once.  A project's past conversations, its worktrees' included,
+;; can be picked up again instead of starting fresh
+;; (`ghostherd-new-conversations').  All of it is read when a picker
+;; opens and kept a minute: never on the herd's tick, which is where a
+;; git look per directory would cost.
+
+(defcustom ghostherd-new-keep-seconds 60
+  "How long the places a new agent can go are kept once read.
+They are read when `ghostherd-new' or the page's + New agent opens: the
+sidecar's past conversations, and each one's directory resolved to its
+project, which can take a git look."
+  :type 'integer
+  :group 'ghostherd)
+
+(defconst ghostherd--new-wait 4
+  "Seconds `ghostherd-new' waits for the sidecar's past conversations.
+Without them it offers the other places.")
+
+(defvar ghostherd--new-sources nil
+  "(TIME . SOURCES): the past conversations as the sidecar listed them
+at TIME, transcripts only, each a plist of its index row.")
+
+(defvar ghostherd--new-roots (make-hash-table :test 'equal)
+  "Directory -> the project it belongs to (`ghostherd--new-root'), or
+`none' for one that is gone.  Read again with the past conversations.")
+
+(defvar ghostherd-new-project-history nil
+  "Minibuffer history of `ghostherd-new''s project prompt.")
+
+(defun ghostherd--new-fresh-p ()
+  "Non-nil while the kept past conversations are new enough to offer."
+  (and ghostherd--new-sources
+       (< (- (float-time) (car ghostherd--new-sources)) ghostherd-new-keep-seconds)))
+
+(defun ghostherd--new-keep (result)
+  "Keep the past conversations in RESULT, a `memory_list' answer or nil;
+the directories are resolved afresh from now on."
+  (clrhash ghostherd--new-roots)
+  (setq ghostherd--new-sources
+        (cons (float-time)
+              (seq-filter (lambda (s) (equal (plist-get s :kind) "transcript"))
+                          (plist-get result :sources)))))
+
+(defconst ghostherd--new-list '(:limit 5000 :titles t)
+  "What the past conversations are asked of the sidecar with: every one,
+with its title (`memory_list').")
+
+(defun ghostherd--new-sidecar-p ()
+  "Non-nil when there is a sidecar to ask for past conversations."
+  (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url) t))
+
+(defun ghostherd--new-read-sources ()
+  "The past conversations: the kept ones, or read now and kept.
+Read synchronously, for `ghostherd-new', which waits for its prompt
+anyway; none when the sidecar is not there or does not answer in
+`ghostherd--new-wait' -- then none until they are read again."
+  (unless (ghostherd--new-fresh-p)
+    (ghostherd--new-keep
+     (and (ghostherd--new-sidecar-p)
+          (condition-case nil
+              (ghostherd-memory-request "memory_list" ghostherd--new-list ghostherd--new-wait)
+            (error nil)))))
+  (cdr ghostherd--new-sources))
+
+(defun ghostherd--new-read-sources-async (then)
+  "Call THEN once the past conversations are kept: at once when they are,
+else when the sidecar answers -- or fails, with none kept."
+  (cond
+   ((ghostherd--new-fresh-p) (funcall then))
+   ((not (ghostherd--new-sidecar-p)) (ghostherd--new-keep nil) (funcall then))
+   (t (ghostherd-memory-request-async
+       "memory_list"
+       (lambda (result) (ghostherd--new-keep result) (funcall then))
+       ghostherd--new-list
+       (lambda (_err) (ghostherd--new-keep nil) (funcall then))))))
+
+(defun ghostherd--new-root (dir)
+  "The project DIR belongs to, absolute, as a directory: its root by
+`ghostherd--project-root' (a worktree's main checkout), or DIR itself
+when it is in none.  Nil when DIR is gone.  Kept with the past
+conversations, so a directory is looked at once while they are."
+  (when (and (stringp dir) (not (string-empty-p dir)))
+    (let* ((dir (file-name-as-directory (expand-file-name dir)))
+           (root (or (gethash dir ghostherd--new-roots)
+                     (puthash dir
+                              (if (file-directory-p dir)
+                                  (file-name-as-directory
+                                   (expand-file-name (or (ghostherd--project-root dir) dir)))
+                                'none)
+                              ghostherd--new-roots))))
+      (and (stringp root) root))))
+
+(defun ghostherd--ago (time)
+  "How long ago TIME, a float time, was: 40s, 5m, 3h, 2d."
+  (let ((s (max 0 (floor (- (float-time) time)))))
+    (cond ((< s 60) (format "%ds" s))
+          ((< s 3600) (format "%dm" (/ s 60)))
+          ((< s 86400) (format "%dh" (/ s 3600)))
+          (t (format "%dd" (/ s 86400))))))
+
+(defun ghostherd--source-time (source)
+  "When SOURCE, an index row, was last written, as a float time, or nil."
+  (let ((m (plist-get source :mtime)))
+    (and (numberp m) (float m))))
+
+(defun ghostherd-new-projects (&optional here)
+  "Where a new agent can go, best first, each once (by
+`ghostherd--project-name'): HERE, a directory -- the current project --
+then the projects the herd has agents in, the newest at work first;
+those `project-known-project-roots' knows, in its order; and where past
+conversations ran, the newest first.  A project in more than one of
+these is ranked by the first.  Each is a plist: :root (absolute) and
+:name, :here, :agents and :lead (the herd's, now), :known, :last (its
+newest past conversation, a float time) and :conversations (how many).
+Primary's directory is not offered unless it is HERE: primary works
+there alone.  Reads the past conversations if they are not kept."
+  (let ((by (make-hash-table :test 'equal))
+        (primary (and (fboundp 'ghostherd--primary-dir)
+                      (ghostherd--project-name (ghostherd--primary-dir))))
+        (n 0))
+    (cl-flet ((place (root rank order)
+                (let* ((name (ghostherd--project-name root))
+                       (p (gethash name by)))
+                  (when (or (= rank 0) (not (equal name primary)))
+                    (unless p
+                      (setq p (puthash name (list :root root :name name :rank rank :order order
+                                                  :here nil :agents 0 :lead nil :known nil
+                                                  :last nil :conversations 0)
+                                       by)))
+                    (when (< rank (plist-get p :rank))
+                      (plist-put p :rank rank)
+                      (plist-put p :order order))
+                    p))))
+      (when-let* ((root (and here (ghostherd--new-root here))))
+        (plist-put (place root 0 0) :here t))
+      (dolist (s (ghostherd-sessions))
+        (when-let* (((not (eq (ghostherd-session-state s) 'dead)))
+                    (project (ghostherd-session-project s))
+                    (p (place (file-name-as-directory (expand-file-name project)) 1
+                              (- (float-time (or (ghostherd-session-last-active s) 0))))))
+          (plist-put p :agents (1+ (plist-get p :agents)))
+          (when (equal (ghostherd-session-role s) "lead")
+            (plist-put p :lead t))))
+      (dolist (dir (and (fboundp 'project-known-project-roots) (project-known-project-roots)))
+        (when-let* ((root (ghostherd--new-root dir))
+                    (p (place root 2 (cl-incf n))))
+          (plist-put p :known t)))
+      (dolist (s (ghostherd--new-read-sources))
+        (when-let* ((root (ghostherd--new-root (plist-get s :project)))
+                    (time (or (ghostherd--source-time s) 0))
+                    (p (place root 3 (- time))))
+          (plist-put p :conversations (1+ (plist-get p :conversations)))
+          (when (> time (or (plist-get p :last) 0))
+            (plist-put p :last time)))))
+    (sort (hash-table-values by)
+          (lambda (a b)
+            (or (< (plist-get a :rank) (plist-get b :rank))
+                (and (= (plist-get a :rank) (plist-get b :rank))
+                     (< (plist-get a :order) (plist-get b :order))))))))
+
+(defun ghostherd-new-project-note (place)
+  "What is said of PLACE, a `ghostherd-new-projects' entry, beside it:
+\"this project · 2 agents · lead · last conversation 3d ago\"."
+  (let ((n (plist-get place :agents)))
+    (string-join
+     (delq nil (list (and (plist-get place :here) "this project")
+                     (and (> n 0) (format "%d agent%s" n (if (= n 1) "" "s")))
+                     (and (plist-get place :lead) "lead")
+                     (and (plist-get place :last)
+                          (format "last conversation %s ago" (ghostherd--ago (plist-get place :last))))))
+     " · ")))
+
+(defun ghostherd--conversation-id (agent path session-id)
+  "The id AGENT's CLI resumes the conversation at PATH by."
+  (if (equal agent "claude")
+      ;; `claude -r ID' opens ID.jsonl, and a transcript that was itself
+      ;; resumed can carry another sessionId inside it.
+      (file-name-base path)
+    session-id))
+
+(defun ghostherd-new-conversations (root)
+  "ROOT's past conversations that can be picked up again, newest first:
+those in it and in its worktrees -- whatever directory resolves to ROOT
+-- whose CLI resumes by id and still has them (`ghostherd--resume-args',
+which leaves out a gone one).  Each is a plist: :kind, :id, :directory
+\(its own: a resume runs there), :title, :time, :path (its transcript),
+:fork (whether its CLI can branch off it) and :running (the agent on it
+now, `ghostherd--resumed-by', or nil).  Reads the past conversations if
+they are not kept."
+  (let* ((name (ghostherd--project-name root))
+         (out nil))
+    (dolist (s (ghostherd--new-read-sources))
+      (let* ((agent (plist-get s :agent))
+             (kind (and (stringp agent) (intern-soft agent)))
+             (path (plist-get s :source_path))
+             (dir (plist-get s :project))
+             (id (and kind (stringp path)
+                      (ghostherd--conversation-id agent path (plist-get s :session_id))))
+             (at (ghostherd--new-root dir)))
+        (when (and at (equal (ghostherd--project-name at) name)
+                   (assq kind ghostherd-agent-specs)
+                   (ghostherd--resume-args kind id))
+          (push (list :kind kind :id id
+                      :directory (file-name-as-directory (expand-file-name dir))
+                      :title (let ((title (plist-get s :title)))
+                               (if (stringp title) (string-trim title) ""))
+                      :time (ghostherd--source-time s)
+                      :path path
+                      :fork (and (plist-get (ghostherd--spec kind) :fork-args) t)
+                      :running (ghostherd--resumed-by id))
+                out))))
+    (sort out (lambda (a b) (> (or (plist-get a :time) 0) (or (plist-get b :time) 0))))))
+
+(defun ghostherd--completion-table (candidates annotate)
+  "A completion table of CANDIDATES in their order, ANNOTATE (a function
+of one) saying what each is beside it."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        `(metadata (display-sort-function . identity)
+                   (cycle-sort-function . identity)
+                   (annotation-function . ,annotate))
+      (complete-with-action action candidates string pred))))
+
+(defun ghostherd--read-new-directory (here)
+  "Ask where a new agent goes: a project offered by
+`ghostherd-new-projects', or a directory typed in -- a subdirectory is
+taken as it is, its project being its root's.  HERE, the current
+project, is the default; with none, the first offered.  Return the
+directory, absolute."
+  (let* ((places (ghostherd-new-projects here))
+         (names (mapcar (lambda (p) (plist-get p :name)) places))
+         (notes (mapcar (lambda (p) (cons (plist-get p :name) (ghostherd-new-project-note p)))
+                        places))
+         (choice (completing-read
+                  "Project (or type a directory): "
+                  (ghostherd--completion-table
+                   names (lambda (c)
+                           (let ((note (cdr (assoc c notes))))
+                             (and note (not (string-empty-p note)) (concat "  " note)))))
+                  nil nil nil 'ghostherd-new-project-history
+                  (and here (ghostherd--project-name here))))
+         (place (seq-find (lambda (p) (equal (plist-get p :name) choice)) places)))
+    (cond
+     (place (plist-get place :root))
+     ((string-empty-p choice)
+      (or (plist-get (car places) :root) (user-error "No project to start an agent in")))
+     (t (let ((dir (expand-file-name (substitute-in-file-name choice))))
+          (unless (file-directory-p dir)
+            (user-error "No directory %s" choice))
+          (file-name-as-directory dir))))))
+
+(defun ghostherd-new-conversation-label (conv)
+  "CONV, a `ghostherd-new-conversations' entry, as a candidate: its title
+and its id's start, which tells two of one title apart."
+  (let ((id (plist-get conv :id)))
+    (concat (if (string-empty-p (plist-get conv :title)) "(untitled)" (plist-get conv :title))
+            " " (propertize (substring id 0 (min 8 (length id))) 'face 'shadow))))
+
+(defun ghostherd-new-conversation-note (conv root)
+  "What is said of CONV beside it: its kind, its age, the agent on it,
+and its directory when that is not ROOT's -- a worktree's, say."
+  (let ((running (plist-get conv :running))
+        (dir (plist-get conv :directory)))
+    (string-join
+     (delq nil (list (symbol-name (plist-get conv :kind))
+                     (and (plist-get conv :time) (concat (ghostherd--ago (plist-get conv :time)) " ago"))
+                     (and running (format "running in %s" (ghostherd-session-name running)))
+                     (and (not (equal (ghostherd--project-name dir) (ghostherd--project-name root)))
+                          (ghostherd--abbreviate dir))))
+     " · ")))
+
+(defun ghostherd--read-new-conversation (root)
+  "Ask whether the new agent starts fresh or picks up one of ROOT's past
+conversations (`ghostherd-new-conversations').  New is the default, so
+RET goes on as before; nil for it, and at once when there is none."
+  (when-let* ((convs (ghostherd-new-conversations root)))
+    (let* ((new "New")
+           (table (cons (cons new nil)
+                        (mapcar (lambda (c) (cons (ghostherd-new-conversation-label c) c)) convs)))
+           (choice (completing-read
+                    "Conversation (New, or one to pick up again): "
+                    (ghostherd--completion-table
+                     (mapcar #'car table)
+                     (lambda (c)
+                       (let ((conv (cdr (assoc c table))))
+                         (concat "  " (if conv (ghostherd-new-conversation-note conv root)
+                                        "a fresh conversation")))))
+                    nil t nil nil new)))
+      (cdr (assoc choice table)))))
+
+(defun ghostherd-new-resume (conv &optional fork display)
+  "Pick CONV, a `ghostherd-new-conversations' entry, up again in a new
+agent -- or with FORK, branch a new conversation off it.  It runs in the
+conversation's own directory: a CLI's resume by id is scoped to where it
+ran.  An agent already on it is shown instead, never a second writer on
+one conversation (`ghostherd--resumed-by').  DISPLAY nil starts it
+without showing it.  Return the agent."
+  (let ((running (and (not fork) (ghostherd--resumed-by (plist-get conv :id)))))
+    (if running
+        (progn (ghostherd-visit running)
+               (message "%s is on that conversation already" (ghostherd-session-name running))
+               running)
+      (ghostherd-resume (plist-get conv :kind) (plist-get conv :id) (plist-get conv :directory)
+                        :fork fork :title (plist-get conv :title) :display display))))
+
 ;;;###autoload
 (defun ghostherd-new (&optional kind)
-  "Interactively create a new ghostherd agent session.
-With prefix or KIND, skip the kind prompt."
+  "Start a new agent in any project, or on one of its past conversations.
+Asks the project first: the current one by default, so in a project RET
+goes on as it always did; any other the herd, project.el or a past
+conversation knows is offered with what it has (`ghostherd-new-projects'),
+or type a directory.  Then the kind, preselected by that project's
+`ghostherd-project-defaults'.  Then, when the project has past
+conversations, New -- the default -- or one of them, any CLI's, newest
+first, to pick up again in its own directory (`ghostherd-new-resume'),
+or fork where its CLI can.  A new agent asks its name, args and notes,
+and whether it gets its own git worktree.
+With KIND, skip the kind prompt."
   (interactive)
-  (let* ((project (ghostherd--project-root))
-         ;; Resolved before the kind prompt so a project can preselect it.
-         ;; A later change of directory does not re-read: re-prompting for
-         ;; kind after you already answered would be worse than stale.
-         (defaults (ghostherd-project-defaults (or project default-directory)))
+  (let* ((directory (ghostherd--read-new-directory (ghostherd--project-root)))
+         (project (ghostherd--project-root directory))
+         ;; From the chosen project, not the buffer's: an agent started
+         ;; for B from a buffer in A takes B's kind and args.
+         (defaults (ghostherd-project-defaults directory))
          (kind (or kind
                    (intern
                     (completing-read
@@ -4098,12 +4424,26 @@ With prefix or KIND, skip the kind prompt."
                      (mapcar #'symbol-name (ghostherd--agent-kinds))
                      nil t nil nil
                      (symbol-name (or (car defaults) ghostherd-default-kind))))))
-         (spec (ghostherd--spec kind))
+         (conv (ghostherd--read-new-conversation (or project directory))))
+    (if conv
+        (let ((running (ghostherd--resumed-by (plist-get conv :id))))
+          (ghostherd-new-resume
+           conv
+           (and (plist-get conv :fork)
+                (y-or-n-p (if running
+                              (format "%s is on it already.  Fork a new conversation off it (no: show %s)? "
+                                      (ghostherd-session-name running) (ghostherd-session-name running))
+                            "Fork a new conversation off it (no: resume it)? ")))
+           t))
+      (ghostherd--new-fresh kind directory project defaults))))
+
+(defun ghostherd--new-fresh (kind directory project defaults)
+  "The rest of `ghostherd-new' for a fresh KIND agent in DIRECTORY, of
+PROJECT (nil outside any), DEFAULTS its project's: its name, args, notes
+and whether it gets its own worktree."
+  (let* ((spec (ghostherd--spec kind))
          (default-name (ghostherd--unique-name (symbol-name kind)))
          (name (read-string "Session name: " default-name))
-         (directory (if project
-                        (read-directory-name "Directory: " project nil t)
-                      (read-directory-name "Directory: " default-directory nil t)))
          (final-name (if (string-empty-p name) default-name name))
          (arg-string (read-string
                       (format "Extra args for %s (optional): "
@@ -4117,18 +4457,19 @@ With prefix or KIND, skip the kind prompt."
          ;; Opt in to the agent's own git worktree, off the project's HEAD,
          ;; on a branch named for the agent.  Done last, after the prompts,
          ;; so aborting one leaves no orphan worktree behind.
-         (wt-project (ghostherd--project-root directory))
-         (wt (and wt-project
+         (wt (and project
                   (y-or-n-p (format "Own git worktree off %s? "
-                                    (ghostherd--abbreviate wt-project)))
+                                    (ghostherd--abbreviate project)))
                   (ghostherd--worktree-create
-                   wt-project final-name (read-string "Branch: " final-name)))))
+                   project final-name (read-string "Branch: " final-name)))))
     (when wt
-      (ghostherd--worktree-deps-setup wt-project (plist-get wt :path) final-name))
+      (ghostherd--worktree-deps-setup project (plist-get wt :path) final-name))
     (ghostherd-spawn
      kind
      :name final-name
-     :project wt-project
+     ;; A directory in no project is its own, as a resume's is -- not
+     ;; the project of the buffer this was started from.
+     :project (or project directory)
      :directory (or (plist-get wt :path) directory)
      :args args
      :notes (and (not (string-empty-p notes)) notes)
@@ -4254,11 +4595,12 @@ count.  One that reached ID some other way is not found:
                            (not (ghostherd-session-conversation s)))))
                   live))))
 
-(cl-defun ghostherd-resume (kind id directory &key fork title)
-  "Spawn a KIND agent in DIRECTORY on conversation ID, and show it.
-With FORK, branch a new conversation off it.  TITLE goes in the
-notes.  The agent is named KIND-<project>, made unique, and takes the
-project's own default args before the resume ones."
+(cl-defun ghostherd-resume (kind id directory &key fork title (display t))
+  "Spawn a KIND agent in DIRECTORY on conversation ID, and show it --
+unless DISPLAY is nil.  With FORK, branch a new conversation off it.
+TITLE goes in the notes.  The agent is named KIND-<project>, made
+unique, and takes the project's own default args before the resume
+ones."
   (when (ghostherd--conversation-gone-p kind id)
     (user-error "%s's conversation %s no longer exists" kind id))
   (let* ((args (or (ghostherd--resume-args kind id fork)
@@ -4279,7 +4621,8 @@ project's own default args before the resume ones."
      :directory directory
      :args (append base args)
      :notes (format "%s %s%s" (if fork "forked from" "resumed") short
-                    (if (and title (not (string-empty-p title))) (concat ": " title) "")))))
+                    (if (and title (not (string-empty-p title))) (concat ": " title) ""))
+     :display display)))
 
 ;;;###autoload
 (defun ghostherd-new-pair ()

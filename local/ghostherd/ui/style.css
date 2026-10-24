@@ -507,7 +507,15 @@ button.primary.danger { background: #da3633; border-color: #f85149; color: #fff;
 }
 .agent-compose textarea { flex: 1; min-width: 14em; resize: vertical; }
 .notes-edit input { flex: 1; min-width: 12em; }
-.newform { padding: 6px 0; }
+.newform { padding: 6px 0; align-items: center; }
+/* The top bar's New agent: above the herd, a project box first. */
+.newform.newglobal { padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.newform .new-project { flex: 1 1 18em; min-width: 12em; font-family: var(--mono); font-size: 12px; }
+/* A select is as wide as its longest option: kept inside the form. */
+.newform .new-conv { max-width: min(28em, 100%); min-width: 0; }
+.newform select:disabled { opacity: .6; cursor: default; }
+.newform .new-note { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+.newform .new-note:empty { display: none; }
 .arow pre.screen { margin-left: 0; max-height: 26em; overflow: auto; }
 
 /* A project's room: one column per agent, each scrolling on its own;
@@ -1015,7 +1023,7 @@ html { -webkit-text-size-adjust: 100%; }
   /* The bar: the tabs, swiped sideways if they must be; Back an arrow
      before them.  Refresh lists the sessions again, as Emacs does. */
   .top { padding: 0 8px; gap: 4px; }
-  .mark, #btn-refresh, #btn-back .lbl { display: none; }
+  .mark, #btn-refresh, #btn-back .lbl, #btn-new .lbl { display: none; }
   .brand { flex: 1; min-width: 0; }
   .tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
   .tab { flex-shrink: 0; white-space: nowrap; padding: 11px 9px; }

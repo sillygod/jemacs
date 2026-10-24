@@ -138,11 +138,7 @@ never from the page.")
 
 (defun ghostherd-memory-page--conversation-id (agent path chunk)
   "The id AGENT's CLI resumes the session at PATH by."
-  (if (equal agent "claude")
-      ;; `claude -r ID' opens ID.jsonl, and a transcript that was itself
-      ;; resumed can carry another sessionId inside it.
-      (file-name-base path)
-    (plist-get chunk :session_id)))
+  (ghostherd--conversation-id agent path (plist-get chunk :session_id)))
 
 (defun ghostherd-memory-page--resume-info (path chunks)
   "Whether the session at PATH can be resumed, as a plist for the page.
@@ -186,22 +182,31 @@ AGE is how many seconds ago its transcript was written."
           :running (and running (ghostherd-session-name running))
           :recent (and age (< age ghostherd-memory-page--recent) (round age)))))
 
-(defun ghostherd-memory-page--resume (path fork)
-  "Resume (or with FORK, fork) the session at PATH in a new agent."
+(defun ghostherd-memory-page--resume (path fork &optional quiet)
+  "Resume (or with FORK, fork) the session at PATH in a new agent.
+QUIET, from the New agent form, starts it without showing it, as the
+form's New does, and sends the herd for it to show there."
   (pcase-let ((`(,kind ,id ,dir ,title)
                (or (gethash path ghostherd-memory-page--resumable)
                    (user-error "That session cannot be resumed from here"))))
     (let ((running (and (not fork) (ghostherd--resumed-by id))))
       (if running
           ;; Already an agent on it: a second would be two writers.
-          (ghostherd-visit running)
-        (let ((session (ghostherd-resume kind id dir :fork fork :title title)))
+          (progn
+            (ghostherd-visit running)
+            (when quiet
+              (ghostherd-memory-page--js
+               "flash" (format "%s is on it already" (ghostherd-session-name running)))))
+        (let ((session (ghostherd-resume kind id dir :fork fork :title title
+                                         :display (not quiet))))
           (ghostherd-memory-page--js
            "flash" (format "%s as %s" (if fork "Forked" "Resumed")
                            (ghostherd-session-name session)))
           (ghostherd-memory-page--js
            "setResume" (list :source_path path
-                             :resume (ghostherd-memory-page--resume-state path))))))))
+                             :resume (ghostherd-memory-page--resume-state path)))
+          (when quiet
+            (ghostherd-memory-page--send-herd)))))))
 
 (defun ghostherd-memory-page--visit-agent (path)
   "Show the agent already running the session at PATH."
@@ -2701,6 +2706,73 @@ nothing rather than a plain agent pretending to be in a worktree."
                   "flash" (format "No worktree: %s" (error-message-string err)))))))))
 
 
+;;; The New agent form: any project, maybe on a past conversation
+;;
+;; What it offers is `ghostherd-new''s (`ghostherd-new-projects',
+;; `ghostherd-new-conversations'), sent when the form asks -- as it opens,
+;; as its project changes -- and never with the herd, which goes several
+;; times a second.  Emacs keeps it a minute.
+
+(defun ghostherd-memory-page--new-place (place)
+  "PLACE, a `ghostherd-new-projects' entry, as the form offers it."
+  (list :project (plist-get place :name)
+        :note (ghostherd-new-project-note place)
+        :here (if (plist-get place :here) t :json-false)))
+
+(defun ghostherd-memory-page--new-places ()
+  "Send the places a new agent can go, best first, once the sidecar has
+said its past conversations -- or failed to."
+  (ghostherd--new-read-sources-async
+   (lambda ()
+     (ghostherd-memory-page--js
+      "setNewPlaces"
+      (list :places (ghostherd-memory-page--vec
+                     (mapcar #'ghostherd-memory-page--new-place
+                             (ghostherd-new-projects ghostherd-memory-page--project))))))))
+
+(defun ghostherd-memory-page--new-conversation (conv root)
+  "CONV, a `ghostherd-new-conversations' entry of ROOT, as the form
+offers it.  Remembered as the Sessions tab remembers a session it
+shows: a resume from the form names its transcript, and runs what Emacs
+worked out (`ghostherd-memory-page--resume'), never what the page says."
+  (let ((id (plist-get conv :id))
+        (running (plist-get conv :running)))
+    (puthash (plist-get conv :path)
+             (list (plist-get conv :kind) id (plist-get conv :directory) (plist-get conv :title))
+             ghostherd-memory-page--resumable)
+    (list :path (plist-get conv :path)
+          :kind (symbol-name (plist-get conv :kind))
+          :title (plist-get conv :title)
+          :session (substring id 0 (min 8 (length id)))
+          :note (ghostherd-new-conversation-note conv root)
+          :fork (if (plist-get conv :fork) t :json-false)
+          :running (if running (ghostherd-session-name running) ""))))
+
+(defun ghostherd-memory-page--new-conversations (intent)
+  "Send the past conversations of the project INTENT names -- as typed,
+so any directory, its project found -- and that project's name, which
+is its room's."
+  (let ((asked (alist-get 'project intent)))
+    (unless (and (stringp asked) (not (string-empty-p (string-trim asked))))
+      (user-error "No project"))
+    (ghostherd--new-read-sources-async
+     (lambda ()
+       (let ((root (and (file-directory-p (expand-file-name asked))
+                        (ghostherd--new-root asked))))
+         (ghostherd-memory-page--js
+          "setNewConversations"
+          (if (not root)
+              (list :project asked :root "" :conversations [] :why (format "No directory %s" asked))
+            (list :project asked
+                  :root (ghostherd--project-name root)
+                  ;; Its own kind, as `ghostherd-new' preselects it.
+                  :kind (symbol-name (or (car (ghostherd-project-defaults asked))
+                                         ghostherd-default-kind))
+                  :conversations (ghostherd-memory-page--vec
+                                  (mapcar (lambda (c) (ghostherd-memory-page--new-conversation c root))
+                                          (ghostherd-new-conversations root)))))))))))
+
+
 ;;; Intents
 
 (defun ghostherd-memory-page--ready ()
@@ -3172,7 +3244,8 @@ user's state (or none) and push."
         ("import" (ghostherd-memory-page--import))
         ("resume" (ghostherd-memory-page--resume
                    (alist-get 'source_path intent)
-                   (ghostherd-memory-page--truthy (alist-get 'fork intent))))
+                   (ghostherd-memory-page--truthy (alist-get 'fork intent))
+                   (ghostherd-memory-page--truthy (alist-get 'quiet intent))))
         ("visit-agent" (ghostherd-memory-page--visit-agent (alist-get 'source_path intent)))
         ("herd-watch"
          (setq ghostherd-memory-page--hooks-at 0)
@@ -3210,6 +3283,8 @@ user's state (or none) and push."
          (ghostherd-usage-refresh t)
          (ghostherd-memory-page--send-herd))
         ("agent-new" (ghostherd-memory-page--agent-new intent))
+        ("new-places" (ghostherd-memory-page--new-places))
+        ("new-conversations" (ghostherd-memory-page--new-conversations intent))
         ("agent-image" (ghostherd-memory-page--agent-image intent))
         ("agent-image-upload" (ghostherd-memory-page--agent-image-upload intent))
         ("lead-say" (ghostherd-memory-page--lead-say intent))
