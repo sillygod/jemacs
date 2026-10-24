@@ -113,13 +113,18 @@ def project_from_grok_dirname(name: str) -> str:
 
 
 def project_from_file_uris(text: str) -> str:
+    """The path of the first file:// URI in TEXT, decoded: a URI writes a
+    space as %20 (agy's "Application%20Support/Open%20Design"), a "%" as
+    %25.  Once -- a path is never decoded twice."""
     match = FILE_URI.search(text or "")
     if not match:
         return ""
-    return match.group(1)
+    return unquote(match.group(1))
 
 
 def project_from_workspace_uris(raw: str | None) -> str:
+    """The first workspace agy names, as a path.  A file:// URI is
+    decoded; a bare path is taken as it is, "%" and all."""
     if not raw:
         return ""
     try:
@@ -129,7 +134,7 @@ def project_from_workspace_uris(raw: str | None) -> str:
     if isinstance(data, list) and data:
         uri = data[0]
         if isinstance(uri, str) and uri.startswith("file://"):
-            return urlparse(uri).path or uri[7:]
+            return unquote(urlparse(uri).path or uri[7:])
         if isinstance(uri, str):
             return uri
     if isinstance(data, str):

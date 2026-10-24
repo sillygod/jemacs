@@ -172,6 +172,48 @@ def test_agy_salvage_and_summaries(tmp_path: Path):
     assert "/tmp/demo-project" in projects
 
 
+def test_agy_decodes_a_workspace_given_as_a_uri(tmp_path: Path):
+    """agy names a workspace as a file:// URI, a space %20 in it: 17
+    sessions read as ".../Application%20Support/Open%20Design", a
+    directory that is not there, and dropped out of the new-agent picker
+    and Resume.  A URI is decoded, once; a bare path is not decoded at
+    all, its "%" kept."""
+    from importers.textutil import project_from_file_uris, project_from_workspace_uris
+
+    enc = "file:///Users/u/Library/Application%20Support/Open%20Design/p1"
+    real = "/Users/u/Library/Application Support/Open Design/p1"
+    assert project_from_workspace_uris(json.dumps([enc])) == real
+    assert project_from_workspace_uris(json.dumps(enc)) == real
+    assert project_from_workspace_uris(enc) == real
+    assert project_from_file_uris(f"see {enc}/a.py there") == real + "/a.py"
+    # A real "%" in a name is %25 in a URI: decoded once, to "%".
+    assert project_from_workspace_uris(json.dumps(["file:///tmp/100%2520done"])) == "/tmp/100%20done"
+    # A bare path is the path.
+    assert project_from_workspace_uris(json.dumps(["/tmp/100%20done"])) == "/tmp/100%20done"
+
+    conn = sqlite3.connect(tmp_path / "conversation_summaries.db")
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT,"
+                 " preview TEXT, workspace_uris TEXT, last_modified_time TEXT)")
+    conn.execute("INSERT INTO conversation_summaries VALUES (?,?,?,?,?)",
+                 ("conv-od", "a design", "draw it", json.dumps([enc]), "2026-10-20"))
+    conn.commit()
+    conn.close()
+    logs = tmp_path / "brain" / "conv-od" / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "transcript.jsonl").write_text(json.dumps({
+        "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": "2026-10-20T10:00:00Z",
+        "content": "<USER_REQUEST>draw it</USER_REQUEST>"}) + "\n")
+    meta, turns = next((m, t) for m, t in iter_agy(tmp_path) if m.session_id == "conv-od")
+    assert meta.project == real and {t.project for t in turns} == {real}
+    # A working directory agy states as a path stays as it is.
+    (logs / "transcript.jsonl").write_text(json.dumps({
+        "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": "2026-10-20T10:00:00Z",
+        "content": "Command Working Directory: /tmp/100%20done\n<USER_REQUEST>go</USER_REQUEST>"}) + "\n")
+    (tmp_path / "conversation_summaries.db").unlink()
+    meta, _ = next((m, t) for m, t in iter_agy(tmp_path) if m.session_id == "conv-od")
+    assert meta.project == "/tmp/100%20done"
+
+
 def test_agy_prefers_transcript_jsonl_and_falls_back_to_db(tmp_path: Path):
     from importers.agy import VERSION
 
@@ -242,7 +284,7 @@ def test_agy_prefers_transcript_jsonl_and_falls_back_to_db(tmp_path: Path):
 
     assert tx_path in by_path
     tx_meta, tx_turns = by_path[tx_path]
-    assert tx_meta.parser == VERSION == 2
+    assert tx_meta.parser == VERSION == 3
     assert tx_meta.project == "/tmp/tx-proj"
     assert [(t.role, t.text, t.ts, t.project) for t in tx_turns] == [
         ("user", "fix the agy importer", "2026-10-16T10:01:00Z", "/tmp/tx-proj"),

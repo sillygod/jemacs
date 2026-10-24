@@ -1149,6 +1149,17 @@ class HerdStore:
         return bool(row and row[0]
                     and datetime.fromisoformat(row[0]) >= datetime.fromisoformat(turn_at))
 
+    def _hooked(self, name: str) -> bool:
+        """Whether NAME's own CLI's hooks report to the herd: they named
+        that CLI, the kind NAME runs (another's, run under its name, is
+        turned away -- `_not_its_own').  Caller holds `_mu`."""
+        row = self._conn.execute(
+            "SELECT l.cli, s.kind FROM links l JOIN snapshot s ON s.name = l.session"
+            " WHERE l.session = ?",
+            (name,),
+        ).fetchone()
+        return bool(row and row[0] and row[0] == row[1])
+
     def _transcript(self, name: str) -> str | None:
         "NAME's conversation, as its hooks last named it.  Caller holds `_mu`."
         row = self._conn.execute(
@@ -1447,6 +1458,15 @@ class HerdStore:
                     or (turn_at is None and self._deliver_grace_passed(ref, now))
                 ):
                     return {"id": row["id"], "status": "delivered", "too_soon": True}
+                # No turn at all, of a taker whose hooks report -- they say
+                # each turn it begins: it never took the ask.  A dialog let
+                # the paste go by (c644aebc: grok's folder-trust prompt, the
+                # Return after the paste its "Yes, proceed").  Its screen
+                # answers nothing: fail the ask, saying so, for the asker to
+                # send again.  The grace's screen is for a taker with none.
+                if turn_at is None and self._hooked(row["to_name"]):
+                    error = (f"{row['to_name']} began no turn on it: its CLI "
+                             "never took the ask -- send it again")
                 # A taker whose hooks report has stopped only when its turn
                 # has ended, by its hook or its transcript -- never on its
                 # screen reading idle, which a view scrolled back does with
@@ -2404,7 +2424,7 @@ class HerdStore:
             row = self._conn.execute(
                 """
                 SELECT session, cli, conversation, transcript, last_message,
-                       last_at, updated_at
+                       last_at, updated_at, turn_at
                 FROM links WHERE session = ?
                 """,
                 ((session or "").strip(),),
@@ -2421,6 +2441,11 @@ class HerdStore:
             "last_head": _head(r[4]),
             "last_ms": _ms(r[5]),
         }
+        # When its hooks last said a turn began: a `working' and the `done'
+        # after it can both land between two ticks, and a tick carries each
+        # agent's newest report only -- Emacs then tells a turn its prompt
+        # began from this (ask cf9873be).
+        out["turn_ms"] = _ms(r[7])
         if full:
             out["last"] = r[4] or ""
         return out
@@ -2608,7 +2633,13 @@ class HerdStore:
                 for row in sessions
             })
             self._prune(now)
-            hold = {"working", "starting"}
+            # Not into a taker at work, nor one still starting, nor one on a
+            # menu: a trust prompt or a permission prompt takes no paste,
+            # and reads the Return pressed after it as its answer -- grok's
+            # folder-trust prompt took it as "Yes, proceed" and the ask was
+            # lost (c644aebc); claude's, its cursor on "No, exit", quits.
+            # It waits for the user to answer the menu.
+            hold = {"working", "starting", "blocked"}
             # One ask at a time per agent: a second one pasted on top of
             # the first would leave it unsure which it is answering.
             answering = {
@@ -2676,7 +2707,7 @@ class HerdStore:
                 for r in self._conn.execute(
                     """
                     SELECT session, cli, conversation, transcript, last_message,
-                           last_at, updated_at
+                           last_at, updated_at, turn_at
                     FROM links ORDER BY session
                     """
                 ).fetchall()

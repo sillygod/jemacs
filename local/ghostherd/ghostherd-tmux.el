@@ -700,7 +700,11 @@ screen is trimmed to N lines so it matches what `capture' would return."
                (delq nil
                      (mapcar (lambda (cell)
                                (when-let* ((id (cdr (assoc (car cell) by-host))))
-                                 (cons id (ghostherd--string-tail (cdr cell) n))))
+                                 (let ((tail (ghostherd--string-tail (cdr cell) n)))
+                                   ;; The whole pane is in hand: kept with
+                                   ;; its tail, it is not captured again.
+                                   (puthash id (cons tail (cdr cell)) ghostherd--panes)
+                                   (cons id tail))))
                              screens))))))
 
 (cl-defmethod ghostherd-backend-screens

@@ -175,6 +175,13 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
      :transcript "~/.grok/sessions/*/%s/chat_history.jsonl"
+     ;; grok's menus take its input box's place too: its question card
+     ;; ("Tab:next answer  │  Esc:scrollback") was drawn with no box under
+     ;; it, and its docs say the four blocking cards -- question, MCP form,
+     ;; permission prompt, cancel-turn panel -- share one contract and take
+     ;; the keyboard.  With the box at the foot, then, its `blocked' words
+     ;; are the conversation's: a review that says "Approve" (ask cf9873be).
+     :prompt-replaces-input t
      ;; "⠴ Sleep 30s then print probe-done… 0.3s   24s ⇣27.3k [stop]":
      ;; braille, then its [stop] button.  What it said ends at the
      ;; scrollbar instead.
@@ -194,7 +201,16 @@ made an unanchored `> \=' match the transcript.")
                   "Approve"
                   ,ghostherd--rule-permission-prompt
                   "\\[y/N\\]"
-                  "\\(y/n\\)"))
+                  "\\(y/n\\)"
+                  ;; The folder-trust prompt grok draws on its first start
+                  ;; in a directory not yet trusted -- each new worktree:
+                  ;; the question over "Yes, proceed  y" / "No, quit  n",
+                  ;; and no input box.  Read as idle, it was handed an ask:
+                  ;; the paste went nowhere and the Return after it said
+                  ;; "Yes, proceed" (ask c644aebc).  The question, its last
+                  ;; choice under it, and no input box from there to the
+                  ;; foot: an agent quoting it has its box under the quote.
+                  "^[[:blank:]]*Do you trust the contents of this directory\\?[[:blank:]]*\\(?:\n.*\\)\\{1,12\\}\n[[:blank:]]*No, quit[[:blank:]]+n[[:blank:]]*\\(?:\n[^│╭╰❯›\n]*\\)*\\'"))
       (working . ("Working"
                   "Thinking"
                   "Running"
@@ -284,7 +300,7 @@ Each entry is (KIND . PLIST) with keys:
                 input box's place: with the box at the foot, a `blocked'
                 pattern matched the conversation, not a prompt -- an
                 agent that wrote \"permission\" is not asking for it.
-                Seen of claude and agy; grok's prompts not yet.
+                Seen of claude and agy, and of grok's question card.
 :scrolled       a regexp for what the CLI draws over its view while you
                 have it scrolled back -- asked of the few lines just above
                 its input box (`ghostherd--scrolled-back-p').  The screen
@@ -787,12 +803,132 @@ checkout with a commit."
              (let ((h (string-trim (buffer-string))))
                (and (not (string-empty-p h)) h)))))))
 
-(defun ghostherd--worktree-create (project name &optional branch)
+;;; Trust for the worktrees the herd creates (ask 2befbbd6)
+;;
+;; Each CLI asks, the first time it starts in a folder, whether to trust
+;; it, and an agent parked on that prompt takes no work until the user
+;; answers.  A worktree the herd has just created off a project its CLI
+;; already trusts, by the CLI's own record, is the same repository: the
+;; herd records it trusted in that CLI's store, so the agent starts at its
+;; prompt.  Nothing else is trusted for the user -- a project the CLI does
+;; not trust, a directory typed in, a conversation's own, the main
+;; checkout.  bin/herd_trust.py reads and writes each store as its CLI
+;; does, one entry at a time; what it added is dropped with the worktree.
+
+(defcustom ghostherd-pretrust t
+  "Non-nil: a worktree the herd creates is recorded trusted in its agent's
+CLI's store when that CLI trusts the project's main checkout, so the
+agent does not start on a trust prompt.  See `ghostherd-trust-stores'."
+  :type 'boolean
+  :group 'ghostherd)
+
+(defcustom ghostherd-trust-stores
+  `((grok . ,(expand-file-name "trusted_folders.toml" (or (getenv "GROK_HOME") "~/.grok")))
+    (agy . "~/.gemini/antigravity-cli/settings.json"))
+  "Where each CLI keeps the folders it trusts, as (KIND . FILE).
+grok: a [folders.\"PATH\"] table of `trusted' and `decided_at'.  agy: its
+settings' \"trustedWorkspaces\" list.  claude needs no entry: it counts
+a linked worktree trusted when its main checkout is."
+  :type '(alist :key-type symbol :value-type file)
+  :group 'ghostherd)
+
+(defcustom ghostherd-pretrust-file (locate-user-emacs-file "ghostherd-pretrust.eld")
+  "Where the herd keeps the trust it recorded -- (:path :kind :store
+:name) each -- to drop it when it removes the worktree."
+  :type 'file
+  :group 'ghostherd)
+
+(defun ghostherd--trust-run (op kind store path)
+  "Run bin/herd_trust.py OP for KIND's STORE and PATH: (STATUS . OUTPUT)."
+  (let ((script (and (fboundp 'ghostherd-herd-client) (ghostherd-herd-client)
+                     (expand-file-name "herd_trust.py"
+                                       (file-name-directory (ghostherd-herd-client))))))
+    (if (not (and script (file-executable-p script)))
+        (cons -1 "bin/herd_trust.py not found")
+      (with-temp-buffer
+        (let ((status (ignore-errors
+                        (call-process script nil '(t t) nil op (symbol-name kind)
+                                      (expand-file-name store) path))))
+          (cons (or status -1) (string-trim (buffer-string))))))))
+
+(defun ghostherd--pretrusted ()
+  "The trust the herd recorded, read from `ghostherd-pretrust-file'."
+  (and ghostherd-pretrust-file (file-exists-p ghostherd-pretrust-file)
+       (ignore-errors
+         (with-temp-buffer
+           (insert-file-contents ghostherd-pretrust-file)
+           (read (current-buffer))))))
+
+(defun ghostherd--pretrusted-save (entries)
+  "Keep ENTRIES as the trust the herd recorded."
+  (when ghostherd-pretrust-file
+    (make-directory (file-name-directory (expand-file-name ghostherd-pretrust-file)) t)
+    (with-temp-file ghostherd-pretrust-file
+      (let ((print-length nil) (print-level nil))
+        (prin1 entries (current-buffer))))))
+
+(defun ghostherd--worktree-pretrust (kind project path name)
+  "Record worktree PATH, just created off PROJECT for agent NAME, trusted
+in KIND's store when KIND trusts PROJECT's main checkout by that store.
+Logged under NAME; non-nil when recorded."
+  (when-let* ((ghostherd-pretrust)
+              (store (alist-get kind ghostherd-trust-stores))
+              (root (file-name-as-directory (expand-file-name ghostherd-worktree-root)))
+              (path (directory-file-name (file-truename path)))
+              ((string-prefix-p (file-name-as-directory (file-truename root))
+                                (file-name-as-directory path)))
+              (main (directory-file-name (file-truename project)))
+              ((eq 0 (car (ghostherd--trust-run "trusts" kind store main)))))
+    (let ((r (ghostherd--trust-run "add" kind store path)))
+      (cond
+       ((not (eq 0 (car r)))
+        (ghostherd--log-add name 'life (format "not trusted for %s: %s" kind (cdr r)))
+        nil)
+       ((not (equal (cdr r) "added")) nil)
+       ;; Unrecorded, it would never be dropped: take it back.
+       ((not (ignore-errors
+               (ghostherd--pretrusted-save
+                (cons (list :path path :kind kind :store store :name name)
+                      (ghostherd--pretrusted)))
+               t))
+        (ghostherd--trust-run "remove" kind store path)
+        (ghostherd--log-add name 'life (format "not trusted for %s: %s cannot be written"
+                                               kind ghostherd-pretrust-file))
+        nil)
+       (t
+        (ghostherd--log-add name 'life
+                            (format "trusted %s for %s, as it trusts %s"
+                                    (abbreviate-file-name path) kind
+                                    (abbreviate-file-name main)))
+        t)))))
+
+(defun ghostherd--worktree-untrust (path)
+  "Drop the trust the herd recorded for worktree PATH, now removed."
+  (let* ((path (directory-file-name (expand-file-name path)))
+         (all (ghostherd--pretrusted))
+         (mine (seq-filter (lambda (e) (member (plist-get e :path)
+                                               (list path (ignore-errors
+                                                            (directory-file-name (file-truename path))))))
+                           all)))
+    (dolist (e mine)
+      (let ((r (ghostherd--trust-run "remove" (plist-get e :kind) (plist-get e :store)
+                                     (plist-get e :path))))
+        (ghostherd--log-add (or (plist-get e :name) path) 'life
+                            (if (eq 0 (car r))
+                                (format "dropped the trust it gave %s in %s"
+                                        (plist-get e :kind) (abbreviate-file-name path))
+                              (format "could not drop the trust it gave %s in %s: %s"
+                                      (plist-get e :kind) (abbreviate-file-name path) (cdr r))))))
+    (when mine
+      (ghostherd--pretrusted-save (seq-difference all mine)))))
+
+(defun ghostherd--worktree-create (project name &optional branch kind)
   "Create a git worktree of PROJECT for agent NAME; return its plist.
 The worktree goes under `ghostherd-worktree-root' on a new BRANCH (NAME by
 default) off PROJECT's current HEAD.  Returns (:path :branch :base).
-Signals a `user-error' when git cannot, so the caller may fall back to a
-plain directory."
+For an agent of KIND, it is recorded trusted where KIND trusts PROJECT
+(`ghostherd--worktree-pretrust').  Signals a `user-error' when git
+cannot, so the caller may fall back to a plain directory."
   (let* ((project (file-name-as-directory (expand-file-name project)))
          (branch (or branch name))
          (path (directory-file-name (ghostherd--worktree-path project name)))
@@ -807,6 +943,8 @@ plain directory."
       (unless (eq 0 (call-process "git" nil '(t t) nil
                                   "worktree" "add" "-b" branch path base))
         (user-error "git worktree add failed: %s" (string-trim (buffer-string)))))
+    (when kind
+      (ghostherd--worktree-pretrust kind project path name))
     (list :path (file-name-as-directory path) :branch branch :base base)))
 
 (defun ghostherd--worktree-clean-p (path)
@@ -871,7 +1009,8 @@ base contains them -- the work is in, the worktree removable."
   "Remove git worktree PATH of the MAIN checkout; return t on success.
 With FORCE, discard the worktree's uncommitted changes.  With BRANCH, also
 delete it with `git branch -d', which refuses an unmerged branch -- so a
-branch's committed work is never lost here."
+branch's committed work is never lost here.  The trust the herd recorded
+for it goes with it (`ghostherd--worktree-untrust')."
   (let ((default-directory (file-name-as-directory (expand-file-name main))))
     (with-temp-buffer
       (when (eq 0 (apply #'call-process "git" nil '(t t) nil
@@ -879,6 +1018,7 @@ branch's committed work is never lost here."
                            ,(directory-file-name (expand-file-name path)))))
         (when branch
           (call-process "git" nil nil nil "branch" "-d" branch))
+        (ghostherd--worktree-untrust path)
         t))))
 
 (defun ghostherd--worktree-cleanup (session)
@@ -2142,17 +2282,26 @@ pane height, and the padding would otherwise be the whole region."
 (defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
   "A horizontal rule of the kind the CLIs draw around their input box.")
 
+(defconst ghostherd--menu-choice-re
+  "\\`\\(?:[[:blank:]]*[│┃][[:blank:]]*\\)?[❯›>][[:blank:]]*[1-9]\\."
+  "A menu's first choice: the prompt sign, maybe just inside a frame, then
+its number -- not the input box, though it opens with the same sign.
+Only at the sign: text in the box may hold \"> 1.\" (ask 50461410).")
+
+(defvar ghostherd--box-prompt-re)
+
 (defun ghostherd--input-at-foot-p (text)
   "Non-nil when TEXT's status area holds the input box: a rule, then a
-line opening with the prompt sign -- not a menu's first choice, which
-carries the sign before its number.  Only there: higher up, a rule and
-a sign are an old prompt in the conversation."
+line opening with the prompt sign, or with it just inside a frame as
+grok draws it -- not a menu's first choice, which carries the sign
+before its number.  Only there: higher up, a rule and a sign are an old
+prompt in the conversation."
   (let ((lines (split-string (ghostherd--status-region text) "\n")))
     (cl-loop for (above line) on lines
              thereis (and line
                           (string-match-p ghostherd--input-rule-re above)
-                          (string-match-p "\\`[❯›>]\\(?:[[:blank:]]\\|\\'\\)" line)
-                          (not (string-match-p "\\`[❯›>][[:blank:]]*[1-9]\\." line))))))
+                          (string-match-p ghostherd--box-prompt-re line)
+                          (not (string-match-p ghostherd--menu-choice-re line))))))
 
 ;;; What a screen says besides the state
 ;;
@@ -2314,9 +2463,43 @@ that are not padding, room for a box of several lines and a footer."
     (cl-loop for i downfrom end to (max 1 (- end 14))
              for line = (aref lines i)
              when (and (string-match-p ghostherd--box-prompt-re line)
-                       (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))
+                       (not (string-match-p ghostherd--menu-choice-re line))
                        (string-match-p ghostherd--input-rule-re (aref lines (1- i))))
              return (1- i))))
+
+(defun ghostherd--off-prompt-p (session)
+  "Non-nil when SESSION's CLI draws no input box at the foot of the
+screen the poll last took: a dialog, a menu, a panel, a screen not yet
+drawn.  A paste goes into none of them, and the Return after it answers
+whatever is there -- each CLI's trust prompt, drawn from the top of a
+tall pane, reads idle in the tail the rules see (ask cf9873be).  Only
+of a CLI the herd reads by rules, and a screen it has.  A tail with no
+box is asked again of the whole pane: one drawn from its top has blank
+rows under its box."
+  (when-let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+              ((plist-get spec :screen-rules))
+              (screen (gethash (ghostherd-session-id session) ghostherd--screens))
+              ((not (ghostherd--box-top (vconcat (split-string screen "\n"))))))
+    (let ((pane (ghostherd--pane session screen)))
+      (not (and pane (ghostherd--box-top (vconcat (split-string pane "\n"))))))))
+
+(defun ghostherd--pane (session tail)
+  "SESSION's whole visible screen, TAIL its foot: the pane the batched
+fetch kept with TAIL (`ghostherd--panes'), else read now -- on ghostel,
+its terminal's rows, not the scrollback over them."
+  (let ((kept (gethash (ghostherd-session-id session) ghostherd--panes)))
+    (if (and kept (equal (car kept) tail))
+        (cdr kept)
+      (ignore-errors (ghostherd-backend-pane (ghostherd--backend-of session) session)))))
+
+(defun ghostherd--whole-pane (session tail)
+  "SESSION's whole visible pane, its blank rows dropped, when it shows
+more than TAIL does; else nil.  For a dialog drawn from the top of a
+pane taller than the tail: the rows under it are padding."
+  (let* ((rows (lambda (s) (seq-remove #'string-blank-p (split-string (or s "") "\n"))))
+         (all (funcall rows (ghostherd--pane session tail))))
+    (when (> (length all) (length (funcall rows tail)))
+      (string-join all "\n"))))
 
 (defun ghostherd--spinner-line (text spinner)
   "The line above TEXT's input box that SPINNER, a kind's `:spinner',
@@ -3273,7 +3456,21 @@ does."
                                                 (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
                (err (and tail (not scrolled) (ghostherd--cli-error session tail)))
-               (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail))))
+               (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail)))
+               ;; A dialog drawn from the top of a pane taller than the tail
+               ;; -- each CLI's trust prompt, in a window over 40 rows --
+               ;; leaves the tail blank and no box in it: it read idle, and
+               ;; took a paste's Return as its answer (ask cf9873be).  With
+               ;; nothing read and no box at the foot, the whole pane is
+               ;; read, its blank rows dropped.
+               (pane (and tail (not scrolled) (not err) (not login-url)
+                          (memq (car-safe hit) '(nil idle))
+                          (plist-get spec :prompt-replaces-input)
+                          (not (ghostherd--input-at-foot-p tail))
+                          (ghostherd--whole-pane session tail)))
+               (hit (or (and pane (ghostherd--read-rules pane rules t (plist-get spec :spinner)))
+                        hit))
+               (seen (or pane tail)))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
             (ghostherd--read-foot session tail))
@@ -3290,8 +3487,8 @@ does."
            ;; neither may a stale report from the agent itself.
            ((eq (car-safe hit) 'blocked)
             (cons 'blocked (or (and (member (cdr hit) ghostherd--prompt-foot-patterns)
-                                    (ghostherd--prompt-reason tail))
-                               (ghostherd--read-reason tail hit))))
+                                    (ghostherd--prompt-reason seen))
+                               (ghostherd--read-reason seen hit))))
            ;; A menu that has replaced the input box, caught in general
            ;; rather than by a rule per menu: AskUserQuestion, the trust
            ;; prompt, the /login method picker, whatever the next release
@@ -3300,15 +3497,15 @@ does."
            ;; numbered list quoted in the conversation never trips it;
            ;; `ghostherd--prompt' then reads its options for the card.
            ((and (plist-get spec :prompt-replaces-input)
-                 tail
-                 (not (ghostherd--screen-read tail (list 'box ghostherd-status-lines)
+                 seen
+                 (not (ghostherd--screen-read seen (list 'box ghostherd-status-lines)
                                               #'ghostherd--input-at-foot-p))
                  ;; The model picker also replaces the input and is a numbered
                  ;; list, but the herd drives it, not the user -- it is not a
                  ;; block to answer from the card.
-                 (not (ghostherd--model-picker tail))
-                 (ghostherd--prompt tail))
-            (cons 'blocked (or (ghostherd--prompt-reason tail) "waiting for a choice")))
+                 (not (ghostherd--model-picker seen))
+                 (ghostherd--prompt seen))
+            (cons 'blocked (or (ghostherd--prompt-reason seen) "waiting for a choice")))
            ;; A turn that ended on a CLI error -- login expired, the computer
            ;; slept mid-response -- has not answered and is not idle: read it
            ;; as blocked, so an ask it was answering is held rather than
@@ -4501,7 +4698,7 @@ and whether it gets its own worktree."
                   (y-or-n-p (format "Own git worktree off %s? "
                                     (ghostherd--abbreviate project)))
                   (ghostherd--worktree-create
-                   project final-name (read-string "Branch: " final-name)))))
+                   project final-name (read-string "Branch: " final-name) kind))))
     (when wt
       (ghostherd--worktree-deps-setup project (plist-get wt :path) final-name))
     (ghostherd-spawn
@@ -4873,6 +5070,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--idle-since)
     (remhash id ghostherd--reports)
     (remhash id ghostherd--screens)
+    (remhash id ghostherd--panes)
     (remhash id ghostherd--feet)
     (remhash id ghostherd--started-by)
     (ghostherd--log-add session 'life
@@ -5370,13 +5568,18 @@ R :looks N :clear N :retried R).  STATE is `pending'; `confirmed' once its
 CLI's hook says a turn began, or the screen shows the box let it go;
 `unsent' once Return was pressed on it again and again, or its looks
 ran out with it still there -- that one shows on the agent's card and
-in the Inbox.  RESTING: the agent was not at work when it was sent, so
-a hook's word that a turn began is about this text.
+in the Inbox; `lost' once its looks ran out with the box clear and no
+turn begun: the CLI never had it.  RESTING: the agent was not at work
+when it was sent, so a hook's word that a turn began is about this
+text -- and for a prompt to a resting agent only that, or its screen at
+work, confirms it: a box clear is no proof the text was ever in it.
 
 A delivery is confirmed, not assumed: an image path in a paste makes
 claude take it in as \"[Image #N]\" for a moment, and the Return the
 herd pressed in that moment was lost (ask 2b76d37d sat unsent for 7
-minutes).")
+minutes).  And a dialog takes no paste: grok's folder-trust prompt let
+an ask's text go by and took the Return after it as \"Yes, proceed\";
+the input box grok drew next was clear (ask c644aebc).")
 
 (defun ghostherd--submit-of (session)
   "The text the herd last submitted to SESSION, as `ghostherd--submits' has it."
@@ -5412,6 +5615,34 @@ card and in the Inbox, and fail the ask it holds."
      id session nil
      (format "not submitted: it sat in %s's input box"
              (ghostherd-session-name session)))))
+
+(defvar ghostherd--turn-ask-pending)
+
+(defun ghostherd--submit-lost (session text screen)
+  "Give up on TEXT, which SESSION's CLI never had: its box clear on SCREEN,
+and no turn begun -- by its hook or its screen -- in all the looks it
+got.  Fail the ask it held, saying so, rather than leave it to be
+answered by a screen that never read it; the asker sends it again.
+Nothing is left to press Return on, so the card shows nothing."
+  (ghostherd--log-add session 'input "← never taken: no turn began on it" screen)
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((equal (plist-get sub :text) text)))
+    (plist-put sub :state 'lost))
+  ;; A lead owed its role read none of it: the next message carries it.
+  (ghostherd--role-give-back session text)
+  (when-let* ((id (ghostherd--ask-in session text)))
+    ;; Its turn will not come: the next one is not the ask's.
+    (remhash (ghostherd-session-id session) ghostherd--turn-ask-pending)
+    (ghostherd--ask-settle
+     id session nil
+     (format "not taken: %s's CLI started no turn on it -- send it again"
+             (ghostherd-session-name session)))))
+
+(defun ghostherd--submit-starts-turn-p (text)
+  "Non-nil when TEXT, submitted, begins a turn: a prompt, not a CLI's own
+slash command (`/model', `/usage'), which leaves its box clear and no
+turn after it."
+  (not (string-match-p "\\`[[:blank:]\n]*/" text)))
 
 (defun ghostherd--submit-reported (session)
   "SESSION's CLI says a turn began (its prompt-submit hook): the text the
@@ -5551,7 +5782,9 @@ taking a paste in.  Not the words up in the conversation."
   "Make sure TEXT, pasted into SESSION with Return, left its input box.
 Its CLI's hook saying a turn began settles it (`ghostherd-report'), and
 so does the screen: the turn at work, or the box clear on two looks
-running.  Still in the box of an agent neither working nor on a menu --
+running -- but not for a prompt to a resting agent whose hooks report:
+that waits for its turn to begin, and is `lost' when none does in all
+its looks.  Still in the box of an agent neither working nor on a menu --
 Return there is an answer -- it gets Return again, TRIES more times;
 then it is `unsent', on the card and in the Inbox, and an ask in it
 fails.  Still being taken in (claude's \"Pasting…\"), or in the box of
@@ -5592,6 +5825,31 @@ at most."
                      (funcall again tries))
                     ((and sub unsent) (ghostherd--submit-unsent session text screen))))
              (busy (ghostherd--submit-confirmed session "its turn is under way"))
+             ;; A turn its hooks said began after the send -- one so quick
+             ;; its `working' and `done' reached the herd in one tick, which
+             ;; carries the newest report only, so `working' never came
+             ;; here.  Already over, its stop left the ask open while the
+             ;; text was not known taken: that stop is read now.
+             ((and sub (plist-get sub :resting)
+                   (ghostherd--turn-began-since session (plist-get sub :at)))
+              (ghostherd--submit-confirmed session "its hooks say its turn began")
+              (when (memq (ghostherd-session-state session) '(idle done))
+                (ghostherd--ask-on-state session nil (ghostherd-session-state session))))
+             ;; Clear, and no turn begun.  For a prompt to an agent at rest
+             ;; whose hooks report, that is no proof it was ever in the box:
+             ;; a dialog takes no paste, and the box drawn after it is clear
+             ;; (ask c644aebc).  Only the turn beginning confirms it -- its
+             ;; hook, its screen at work; none in all its looks, the CLI
+             ;; never had it.  An agent with no hook to say so keeps the
+             ;; box's word, and a view scrolled back tells nothing.
+             ((and sub (plist-get sub :resting)
+                   (ghostherd--submit-starts-turn-p text)
+                   (ghostherd--hooked-p session)
+                   (not (ghostherd--scrolled-back-p screen (plist-get spec :scrolled))))
+              (if (> (plist-get sub :looks) 0)
+                  (progn (plist-put sub :looks (1- (plist-get sub :looks)))
+                         (funcall again tries))
+                (ghostherd--submit-lost session text screen)))
              ;; Clear: once more before it counts as taken, as a CLI may
              ;; clear its box a moment before it shows the paste's fold.
              ((and sub (< (plist-get sub :clear) 1))
@@ -7356,17 +7614,32 @@ address of each one's room from your phone, for the bot to link to."
      (handoff (ghostherd-handoff to body from))
      (t (ghostherd-message from to body :submit submit)))))
 
+(defun ghostherd--herd-held-p (msg)
+  "Non-nil when MSG's taker cannot take a paste now: starting, on a menu,
+or with no input box at its foot.  A menu -- a trust prompt, a
+permission prompt -- takes no paste, and reads the Return pressed after
+it as its answer.  The sidecar holds mail by the state Emacs last
+ticked; this is for a state that changed since, and for a dialog no
+rule reads: the box missing is enough (`ghostherd--off-prompt-p')."
+  (when-let* (((not (plist-get msg :handoff)))
+              (to (ghostherd-get (plist-get msg :to))))
+    (or (memq (ghostherd-session-state to) '(starting blocked))
+        (ghostherd--off-prompt-p to))))
+
 (defun ghostherd--herd-deliver (result)
-  "Deliver pending mail from a `herd_tick' RESULT plist."
+  "Deliver pending mail from a `herd_tick' RESULT plist.
+Mail `ghostherd--herd-held-p' holds is not acknowledged: it comes again
+on a later tick."
   (dolist (msg (plist-get result :pending))
     (let ((id (plist-get msg :id)))
-      (condition-case err
-          (ghostherd--herd-deliver-one msg)
-        (error
-         (message "ghostherd herd mail %s: %s"
-                  id (error-message-string err))))
-      (when id
-        (push id ghostherd--herd-ack-ids)))))
+      (unless (ghostherd--herd-held-p msg)
+        (condition-case err
+            (ghostherd--herd-deliver-one msg)
+          (error
+           (message "ghostherd herd mail %s: %s"
+                    id (error-message-string err))))
+        (when id
+          (push id ghostherd--herd-ack-ids))))))
 
 
 ;;; Asks: mail that wants an answer
@@ -7578,6 +7851,10 @@ Such an ask is watched again, for the next time it stops."
                                 ((plist-get r :turn_on)
                                  (format "ask %s left open: %s's turn has not ended by its hook or transcript"
                                          id (ghostherd-session-name session)))
+                                ;; The sidecar holds a failure until this Emacs
+                                ;; has picked its herd up, then is asked again.
+                                ((plist-get r :unrestored)
+                                 (format "ask %s left open: the herd is not restored yet" id))
                                 (t
                                  (format "ask %s left open: %s waits on %s"
                                          id (ghostherd-session-name session)
@@ -7607,13 +7884,32 @@ Such an ask is watched again, for the next time it stops."
     (ghostherd--unsent-p screen (substring ghostherd-message-template 0
                                           (string-search "%s" ghostherd-message-template)))))
 
+(defun ghostherd--ask-not-taken (session)
+  "The open ask in the text the herd last sent SESSION, while that text
+is not known taken: no turn begun on it yet, of an agent whose hooks
+say when one does -- the submit check waits for it, and ends by
+confirming the text or failing the ask (`ghostherd--confirm-submit')."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((eq (plist-get sub :state) 'pending))
+              ((ghostherd--hooked-p session)))
+    (ghostherd--ask-in session (plist-get sub :text))))
+
 (defun ghostherd--ask-on-state (session _old new)
   "A taker that stopped closes its open ask -- unless it never started.
 Delivery marks the taker `working' itself; when the Return was lost the
 ask is still in its input box, and the taker goes idle without having
-read it.  Its screen then answers nothing, so the ask stays open."
+read it.  Its screen then answers nothing, so the ask stays open.  So
+too while the text that carried it is not known taken: the submit check
+settles that, failing the ask if no turn ever began on it."
   (when (memq new '(idle done dead))
     (let ((ids (ghostherd--asks-of session)))
+      (when-let* (((not (eq new 'dead)))
+                  (id (ghostherd--ask-not-taken session))
+                  ((member id ids)))
+        (ghostherd--log-add session 'ask
+                            (format "ask %s left open: %s has begun no turn on it yet"
+                                    id (ghostherd-session-name session)))
+        (setq ids (delete id ids)))
       (when (and ids (not (eq new 'dead)) (ghostherd--ask-unsent-p session))
         (ghostherd--log-add session 'ask
                             (format "ask %s is still in its input box: left open"
@@ -8043,11 +8339,26 @@ started on a CLI that takes none as it starts, until its first message:
 that carries the role, whether it is the user's (`ghostherd-tell') or
 an ask (`ghostherd--ask-deliver').")
 
+(defvar ghostherd--role-spent (make-hash-table :test 'equal)
+  "Session id -> the owed role its last message took, given back if its
+CLI never had that message (`ghostherd--role-give-back').")
+
 (defun ghostherd--role-take (session)
   "The role SESSION is owed, taken; or nil."
   (let ((id (ghostherd-session-id session)))
-    (prog1 (gethash id ghostherd--role-owed)
+    (prog1 (when-let* ((role (gethash id ghostherd--role-owed)))
+             (puthash id role ghostherd--role-spent))
       (remhash id ghostherd--role-owed))))
+
+(defun ghostherd--role-give-back (session text)
+  "SESSION is owed again the role TEXT carried: its CLI never had TEXT
+(`ghostherd--submit-lost'), so the message sent instead still owes it."
+  (let ((id (ghostherd-session-id session)))
+    (when-let* ((role (gethash id ghostherd--role-spent))
+                ((string-search role text))
+                ((not (gethash id ghostherd--role-owed))))
+      (puthash id role ghostherd--role-owed)
+      (remhash id ghostherd--role-spent))))
 
 (defun ghostherd-start-lead (project &optional kind notes)
   "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
@@ -8156,14 +8467,16 @@ kept for that."
 
 (defun ghostherd--when-ready (session fn &optional tries fail)
   "Call FN once SESSION is at its prompt, looking every second.
-Two minutes at most, TRIES counting down; a session that never gets
-there is logged, and one gone is let be.  Either way FAIL, when given,
-is called instead."
+At its prompt: at rest, its input box drawn at its foot -- not a trust
+prompt reading idle (`ghostherd--off-prompt-p').  Two minutes at most,
+TRIES counting down; a session that never gets there is logged, and one
+gone is let be.  Either way FAIL, when given, is called instead."
   (let ((tries (or tries 120)))
     (cond
      ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session))
       (when fail (funcall fail)))
-     ((memq (ghostherd-session-state session) '(idle done waiting))
+     ((and (memq (ghostherd-session-state session) '(idle done waiting))
+           (not (ghostherd--off-prompt-p session)))
       (funcall fn))
      ((<= tries 0)
       (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent")
@@ -8251,6 +8564,19 @@ from (`ghostherd-relay'), whose conversation is not its own."
       (and (or (not (stringp cli)) (string-empty-p cli)
                (equal cli (symbol-name (or (ghostherd-session-kind s) 'shell))))
            link))))
+
+(defun ghostherd--turn-began-since (session at)
+  "Non-nil when SESSION's hooks said a turn began after AT, a float time:
+the sidecar keeps when the last one did (its link's `:turn_ms'), which
+no later report folds away."
+  (let ((ms (plist-get (ghostherd--link session) :turn_ms)))
+    (and (numberp ms) (numberp at) (> ms (* 1000 at)))))
+
+(defun ghostherd--hooked-p (session)
+  "Non-nil when SESSION's own CLI's hooks report to the herd: they named
+it.  A turn it begins is then said, not only drawn."
+  (let ((cli (plist-get (ghostherd--link session) :cli)))
+    (and (stringp cli) (not (string-empty-p cli)))))
 
 (defun ghostherd-session-conversation (session)
   "The conversation SESSION is on, as its own hooks named it, or nil."
@@ -8528,7 +8854,7 @@ reused (with its name and worktree), or, plainly, why it was refused."
                     (progn
                       (funcall spawn dir nil)
                       (format "started %s (%s, in the main checkout)" final kind))
-                  (let ((wt (ghostherd--worktree-create dir final branch)))
+                  (let ((wt (ghostherd--worktree-create dir final branch kind)))
                     (ghostherd--worktree-deps-setup dir (plist-get wt :path) final)
                     (funcall spawn (plist-get wt :path) wt)
                     (format "started %s (%s, worktree %s on %s off %s)"

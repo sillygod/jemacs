@@ -44,6 +44,7 @@
 (defvar ghostel--title)
 (defvar ghostel-progress-function)
 (defvar ghostel-kill-buffer-on-exit)
+(defvar ghostel--term-rows)
 (defvar ghostel-query-before-killing)
 (defvar ghostel-buffer-name)
 (defvar ghostel-eval-cmds)
@@ -364,6 +365,18 @@ full vocabulary stays reachable.")
 This is what the screen rules, `ghostherd-read', `ghostherd-explain'
 and `ghostherd-wait-output' all read.")
 
+(defvar ghostherd--panes (make-hash-table :test 'equal)
+  "Session id → (TAIL . PANE): the whole visible pane a batched fetch
+read, and TAIL, the foot of it the rules were given.  A screen they read
+nothing on, with no input box at its foot, is read whole from PANE
+rather than captured again -- every poll, and every tick its mail is
+held (ask 50461410).")
+
+(cl-defgeneric ghostherd-backend-pane (backend session)
+  "Return SESSION's whole visible screen: all it shows, but not the
+history above it."
+  (ghostherd-backend-capture backend session most-positive-fixnum))
+
 (cl-defgeneric ghostherd-backend-screens (_backend _sessions _n _callback)
   "Fetch the last N lines of every session in SESSIONS at once, if you can.
 
@@ -615,6 +628,16 @@ _KIND is reserved for kind-specific quoting later."
 (cl-defmethod ghostherd-backend-capture
   ((_backend (eql ghostel)) session &optional n)
   (ghostherd--buffer-tail (ghostherd--ghostel-buffer session) n))
+
+(cl-defmethod ghostherd-backend-pane ((_backend (eql ghostel)) session)
+  ;; The buffer holds the scrollback too: the screen is its last rows, as
+  ;; many as the terminal has.  Not known, no more than the tail.
+  (let ((buffer (ghostherd--ghostel-buffer session)))
+    (ghostherd--buffer-tail
+     buffer (or (with-current-buffer buffer
+                  (and (boundp 'ghostel--term-rows) (natnump ghostel--term-rows)
+                       ghostel--term-rows))
+                ghostherd-screen-tail-lines))))
 
 (cl-defmethod ghostherd-backend-send-text
   ((_backend (eql ghostel)) session text submit)

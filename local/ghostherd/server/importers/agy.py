@@ -31,8 +31,12 @@ from index import SourceMeta
 # Bumped when a transcript is read differently; files read before are
 # read again.  2: read brain/<id>/.system_generated/logs/transcript.jsonl
 # before falling back to conversations/<id>.db, and retire any .db whose
-# session now comes from transcript.jsonl.
-VERSION = 2
+# session now comes from transcript.jsonl.  3: a workspace agy gives as a
+# file:// URI is decoded -- ".../Open%20Design" read as a directory that
+# is not there -- so each source is read once more and its rows say the
+# real path; its chunks' words are the same, so they are restated, not
+# embedded again.
+VERSION = 3
 
 USER_REQUEST = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S)
 WORKSPACE_CWD = re.compile(
