@@ -95,7 +95,11 @@ for all its looks, and is /lost/ when none does: logged ("never taken")
 with the screen, and an ask in it fails --- "not taken: NAME's CLI
 started no turn on it -- send it again" --- rather than wait to be
 answered by a screen that never read it.  Till then a stop of the taker
-leaves the ask open.  A slash command begins no turn, and an agent with
+leaves the ask open.  A turn so quick its =working= and =done= reach
+Emacs in one tick --- which carries each agent's newest report only ---
+still counts: each tick's links say when its hooks last said a turn
+began.  And a lead owed its role, whose first message was lost, is owed
+it again.  A slash command begins no turn, and an agent with
 no hook keeps the box's word.  The paste still in the box
 --- its first words, or any CLI's fold of it (claude's and agy's text
 folds, agy's counted in chars, claude's and grok's =[Image #N]=, the
@@ -129,6 +133,24 @@ holds mail for an agent that is =blocked= as for one =working= or
 moment: the user answers the menu, and the mail goes after.  And the
 sidecar answers no ask from the screen of a taker whose hooks report
 but that began no turn after it: it fails it, saying it never took it.
+
+The dialogs are drawn from the top of the pane.  In a window over 40
+rows high --- an attached view takes its window's size --- the 40 lines
+the poll reads are blank rows under it, so a screen with nothing read
+and no input box at its foot is read whole, its blank rows dropped, for
+the menu it shows.  And whatever it reads as, an agent of the three
+CLIs with no input box at its foot gets nothing pasted: not mail, nor a
+message waiting for its prompt (=ghostherd--when-ready=, which an agy's
+first message and =--when-ready= use).  A dialog no rule knows is held
+so too, and a panel the herd opens itself --- agy's =/usage=, the model
+picker --- for as long as it is open.
+
+All three CLIs' menus take the input box's place (=:prompt-replaces-input=):
+grok's question card was drawn with none under it, and its docs say its
+blocking cards --- question, MCP form, permission prompt, cancel-turn
+panel --- share one contract.  So with the box at the foot, the words
+its =blocked= rules know are the conversation's: a grok review that
+says "Approve" is idle, and gets its mail.
 
 Why tmux, why one session per agent, and what the nesting costs are in
 [[file:docs/design.org][docs/design.org]].
@@ -531,7 +553,9 @@ open or uncollected rows, active runs, or recent asks still shown by
 next one asks again: url.el now and then drops a request, and the mail
 used to stop there.  A target that is =working=, =starting= or
 =blocked= (on a menu: a trust or permission prompt) is not deliverable;
-the sidecar holds the row until it is idle.  Overlay
+the sidecar holds the row until it is idle.  Emacs leaves unpasted, and
+unacknowledged, mail for one whose screen has no input box at its foot:
+the sidecar sends it again on the next tick.  Overlay
 =m= still pastes immediately and does not use the queue.
 
 A skill lives in =skills/ghostherd-mail/SKILL.md=; copy or symlink it

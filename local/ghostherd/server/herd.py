@@ -2424,7 +2424,7 @@ class HerdStore:
             row = self._conn.execute(
                 """
                 SELECT session, cli, conversation, transcript, last_message,
-                       last_at, updated_at
+                       last_at, updated_at, turn_at
                 FROM links WHERE session = ?
                 """,
                 ((session or "").strip(),),
@@ -2441,6 +2441,11 @@ class HerdStore:
             "last_head": _head(r[4]),
             "last_ms": _ms(r[5]),
         }
+        # When its hooks last said a turn began: a `working' and the `done'
+        # after it can both land between two ticks, and a tick carries each
+        # agent's newest report only -- Emacs then tells a turn its prompt
+        # began from this (ask cf9873be).
+        out["turn_ms"] = _ms(r[7])
         if full:
             out["last"] = r[4] or ""
         return out
@@ -2702,7 +2707,7 @@ class HerdStore:
                 for r in self._conn.execute(
                     """
                     SELECT session, cli, conversation, transcript, last_message,
-                           last_at, updated_at
+                           last_at, updated_at, turn_at
                     FROM links ORDER BY session
                     """
                 ).fetchall()

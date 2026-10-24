@@ -62,6 +62,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          ;; Keyed by session id: a lead one test starts on agy is not owed
          ;; its role in the next.
          (ghostherd--role-owed (make-hash-table :test 'equal))
+         (ghostherd--role-spent (make-hash-table :test 'equal))
          (ghostherd--handoff-leads (make-hash-table :test 'equal))
          ;; An agy spawned by a test is not guarded unless the test says so,
          ;; and a guard it writes goes under a temp root -- never the user's.
@@ -9070,6 +9071,158 @@ input box is no prompt."
               ghostherd-test--grok-welcome-screen)))
         (should (eq (car (ghostherd--detect-state s)) 'idle))))))
 
+;;; Review round 1 (ask cf9873be).
+
+(defun ghostherd-test--grok-at-rest (said)
+  "grok at its prompt, its last answer SAID over its input box."
+  (replace-regexp-in-string "  Update: .*" (concat "     " said) ghostherd-test--grok-welcome-screen
+                            t t))
+
+(defun ghostherd-test--pane (rows dialog)
+  "A pane ROWS high with DIALOG drawn from its top, as each CLI draws its
+trust prompt: blank rows under it, to the foot."
+  (let ((lines (split-string dialog "\n")))
+    (string-join (append lines (make-list (max 0 (- rows (length lines))) "")) "\n")))
+
+(defconst ghostherd-test--claude-trust
+  (concat "\n" (make-string 120 ?─) "\n Accessing workspace:\n\n /Users/u/.ghostherd/worktrees/app/qa\n\n"
+          " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n"
+          " project, or work from your team). If not, take a moment to review what's in this folder first.\n\n"
+          " Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n"
+          " ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel")
+  "claude's trust prompt as it draws it, from the top of the pane.")
+
+(defconst ghostherd-test--agy-trust
+  (concat "Accessing workspace:\n\n/Users/u/.ghostherd/worktrees/app/agy-a\n\n"
+          "Do you trust the contents of this project?\n\n"
+          "Antigravity CLI requires permission to read, edit, and execute files here.\n\n"
+          "> Yes, I trust this folder\n  No, exit\n\n  ↑/↓ Navigate · enter Confirm\n"
+          (make-string 78 ?\s) "Gemini 4 Argon · high · AI: Out of credits")
+  "agy's trust prompt as it draws it, from the top of the pane.")
+
+(ert-deftest ghostherd-test-grok-words-over-its-box-are-no-menu ()
+  "grok at rest, its input box at its foot, wrote words its `blocked'
+rules know: a review's \"Approve\", a \"(y/n)\" question.  That is its
+conversation, not a menu -- it is idle, and gets its mail.  Its menus
+take the box's place: one drawn so is blocked."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "grok-review" :kind 'grok :backend 'fake :state 'idle)))
+      (dolist (said '("Verdict: Approve -- safe to merge."
+                      "Shall I commit it? (y/n)"
+                      "Allow this to run once the lead agrees."
+                      "Do you want to proceed with the merge, or wait?"))
+        (let ((screen (ghostherd-test--grok-at-rest said)))
+          (should (eq (car (ghostherd--detect-state s screen)) 'idle))
+          (should-not (ghostherd--herd-held-p '(:to "grok-review")))))
+      ;; A card in the box's place, its shortcuts bar under it.
+      (let ((card (concat "     ◆ Thought for 0.9s\n\n"
+                          "  ┃  Allow this command?  rm -rf build/\n  ┃\n"
+                          "  ┃  1 (○) Allow once\n  ┃  2 (○) Always allow\n  ┃  3 (○) Reject\n  ┃\n"
+                          "  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss")))
+        (should (eq (car (ghostherd--detect-state s card)) 'blocked))
+        (should (ghostherd--herd-held-p '(:to "grok-review")))))))
+
+(ert-deftest ghostherd-test-a-dialog-above-the-tail-is-read-and-held ()
+  "Each CLI's trust prompt is drawn from the top of its pane.  In a tall
+one the 40 lines the poll reads are blank rows, no box in them: it read
+idle and was handed mail, whose Return answered it.  With nothing read
+and no box at the foot, the whole pane is read: blocked, saying what it
+asks.  And mail and a message waiting for its prompt are held while no
+box is drawn, read or not -- until the box is back."
+  (ghostherd-tests--with-herd ()
+    (dolist (case `((grok . ,ghostherd-test--grok-trust-screen)
+                    (claude . ,ghostherd-test--claude-trust)
+                    (agy . ,ghostherd-test--agy-trust)))
+      (let* ((pane (ghostherd-test--pane 70 (cdr case)))
+             (tail (ghostherd--string-tail pane ghostherd-screen-tail-lines))
+             (name (symbol-name (car case)))
+             (s (ghostherd-tests--session :name name :kind (car case) :backend 'fake :state 'starting)))
+        (let ((ghostherd-tests--fake-screen pane))
+          (let ((state (ghostherd--detect-state s tail)))
+            (should (eq (car state) 'blocked))
+            (should (string-match-p "trust\\|Quick safety check" (cdr state))))
+          (should (ghostherd--herd-held-p (list :to name)))
+          ;; Read idle, as on master: held all the same, by the box.
+          (setf (ghostherd-session-state s) 'idle)
+          (should (ghostherd--herd-held-p (list :to name)))
+          (let ((ran nil))
+            (cl-letf (((symbol-function 'run-at-time) #'ignore))
+              (ghostherd--when-ready s (lambda () (setq ran t))))
+            (should-not ran)))))
+    ;; Its box back at the foot: mail goes, the message is sent.
+    (let ((s (ghostherd-get "grok")))
+      (puthash "grok" ghostherd-test--grok-welcome-screen ghostherd--screens)
+      (should-not (ghostherd--herd-held-p '(:to "grok")))
+      (let ((ran nil))
+        (ghostherd--when-ready s (lambda () (setq ran t)))
+        (should ran)))
+    ;; A CLI that draws from the top of a tall pane, its box there and
+    ;; blank rows under it: the tail is blank, the pane has the box.
+    (let ((s (ghostherd-get "agy"))
+          (pane (ghostherd-test--pane 70 (ghostherd-test--claude-screen "❯ "))))
+      (puthash "agy" (ghostherd--string-tail pane ghostherd-screen-tail-lines) ghostherd--screens)
+      (let ((ghostherd-tests--fake-screen pane))
+        (should-not (ghostherd--herd-held-p '(:to "agy")))
+        (let ((ran nil))
+          (ghostherd--when-ready s (lambda () (setq ran t)))
+          (should ran))))
+    ;; A 40-row pane needs no second read.
+    (let ((s (ghostherd-get "claude"))
+          (captures 0))
+      (cl-letf (((symbol-function 'ghostherd--host-capture)
+                 (lambda (&rest _) (cl-incf captures) (ghostherd-test--claude-screen "❯ "))))
+        (ghostherd--detect-state s (ghostherd-test--claude-screen "❯ ")))
+      (should (= captures 0)))))
+
+(ert-deftest ghostherd-test-a-quick-turn-its-hooks-saw-is-taken ()
+  "A turn so quick its `working' and `done' reached the herd in one
+tick -- which carries each agent's newest report only -- never said
+`working' here.  The sidecar keeps when the turn began (the link's
+`:turn_ms'): after the send, the text was taken, and the stop that left
+its ask open is read then.  A turn from before the send is not this
+one."
+  (let ((msg (format ghostherd-message-template "lead-x" "qa"
+                     "[ask a1 -- whoever asked is waiting for your answer]\nReview it."))
+        (ghostherd--herd-links (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-asks
+     (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "qa" :kind 'claude :state 'idle :backend 'fake))
+            (ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ ")))
+        (puthash "a1" "qa" ghostherd--asks-open)
+        (cl-letf (((symbol-function 'ghostherd--host-send-text) #'ignore)
+                  ((symbol-function 'run-at-time) #'ignore)
+                  ((symbol-function 'run-with-timer) #'ignore))
+          (puthash "qa" (list :session "qa" :cli "claude" :turn_ms (* 1000 (- (float-time) 60)))
+                   ghostherd--herd-links)
+          (ghostherd-send s msg t)
+          (ghostherd--confirm-submit s msg 2)
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'pending))
+          ;; It answered in prose and stopped; only its `done' came.
+          (ghostherd--set-state s 'done)
+          (should-not requests)
+          (puthash "qa" (list :session "qa" :cli "claude"
+                              :turn_ms (* 1000 (+ (plist-get (ghostherd--submit-of s) :at) 0.4)))
+                   ghostherd--herd-links)
+          (ghostherd--confirm-submit s msg 2)
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+          (should (equal (mapcar #'car requests) '("herd_settle")))))))))
+
+(ert-deftest ghostherd-test-a-lost-text-gives-a-lead-its-role-back ()
+  "A lead started on a CLI that takes no role is owed it with its first
+message.  That message never reached it: the role is owed again, for
+the asker's re-send to carry.  A text that did not carry it gives none."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "lead-app" :kind 'grok :state 'idle)))
+        (cl-letf (((symbol-function 'ghostherd--ask-settle) #'ignore))
+          (puthash "lead-app" "You are the lead of this project's herd." ghostherd--role-owed)
+          (let ((owed (ghostherd--role-take s)))
+            (should-not (gethash "lead-app" ghostherd--role-owed))
+            (ghostherd--submit-lost s "Plan the release." "")
+            (should-not (gethash "lead-app" ghostherd--role-owed))
+            (ghostherd--submit-lost s (concat "Plan the release.\n\n---\n\n" owed) "")
+            (should (equal (gethash "lead-app" ghostherd--role-owed) owed))))))))
+
 (ert-deftest ghostherd-test-mail-waits-while-its-taker-cannot-take-it ()
   "Mail for an agent on a menu, or still starting, is not pasted -- the
 menu would read the Return after it as its answer -- nor acknowledged:
@@ -11252,8 +11405,8 @@ on screen, its input box at the foot.")
 (ert-deftest ghostherd-test-blocked-not-the-conversations-words ()
   "For a kind whose menus take its input box's place, a `blocked'
 pattern with the box drawn at the foot is the conversation's: working
-or idle as the rest says.  The menu itself, the box gone, is blocked --
-and a kind not known to do so keeps reading blocked as before."
+or idle as the rest says.  The menu itself, the box gone, is blocked.
+grok's question card is drawn so too, its box framed (ask cf9873be)."
   (pcase-let ((`(,claude ,replaces) (ghostherd-test--rules-of 'claude)))
     (should replaces)
     (should (ghostherd--input-at-foot-p ghostherd-test--claude-wrote-permission))
@@ -11276,8 +11429,11 @@ and a kind not known to do so keeps reading blocked as before."
                          "? for shortcuts                       Gemini 3.8 Flash · high\n")))
       (should (eq (car (ghostherd--match-rules wrote agy t)) 'idle))))
   (pcase-let ((`(,grok ,replaces) (ghostherd-test--rules-of 'grok)))
-    (should-not replaces)
-    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-wrote-permission grok replaces)) 'blocked))))
+    (should replaces)
+    (should (ghostherd--input-at-foot-p ghostherd-test--grok-welcome-screen))
+    ;; Nothing matched: idle, by the fallback.
+    (should-not (ghostherd--match-rules (ghostherd-test--grok-at-rest "Approve it, then.") grok t))
+    (should (eq (car (ghostherd--match-rules ghostherd-test--claude-wrote-permission grok t)) 'working))))
 
 (ert-deftest ghostherd-test-input-box-not-a-menus-first-choice ()
   "A menu's first choice carries the prompt sign too, even under a rule:

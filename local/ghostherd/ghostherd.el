@@ -175,6 +175,13 @@ made an unanchored `> \=' match the transcript.")
      :resume-args ("-r" "%s")
      :fork-args ("--fork-session")
      :transcript "~/.grok/sessions/*/%s/chat_history.jsonl"
+     ;; grok's menus take its input box's place too: its question card
+     ;; ("Tab:next answer  │  Esc:scrollback") was drawn with no box under
+     ;; it, and its docs say the four blocking cards -- question, MCP form,
+     ;; permission prompt, cancel-turn panel -- share one contract and take
+     ;; the keyboard.  With the box at the foot, then, its `blocked' words
+     ;; are the conversation's: a review that says "Approve" (ask cf9873be).
+     :prompt-replaces-input t
      ;; "⠴ Sleep 30s then print probe-done… 0.3s   24s ⇣27.3k [stop]":
      ;; braille, then its [stop] button.  What it said ends at the
      ;; scrollbar instead.
@@ -293,7 +300,7 @@ Each entry is (KIND . PLIST) with keys:
                 input box's place: with the box at the foot, a `blocked'
                 pattern matched the conversation, not a prompt -- an
                 agent that wrote \"permission\" is not asking for it.
-                Seen of claude and agy; grok's prompts not yet.
+                Seen of claude and agy, and of grok's question card.
 :scrolled       a regexp for what the CLI draws over its view while you
                 have it scrolled back -- asked of the few lines just above
                 its input box (`ghostherd--scrolled-back-p').  The screen
@@ -2151,17 +2158,20 @@ pane height, and the padding would otherwise be the whole region."
 (defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
   "A horizontal rule of the kind the CLIs draw around their input box.")
 
+(defvar ghostherd--box-prompt-re)
+
 (defun ghostherd--input-at-foot-p (text)
   "Non-nil when TEXT's status area holds the input box: a rule, then a
-line opening with the prompt sign -- not a menu's first choice, which
-carries the sign before its number.  Only there: higher up, a rule and
-a sign are an old prompt in the conversation."
+line opening with the prompt sign, or with it just inside a frame as
+grok draws it -- not a menu's first choice, which carries the sign
+before its number.  Only there: higher up, a rule and a sign are an old
+prompt in the conversation."
   (let ((lines (split-string (ghostherd--status-region text) "\n")))
     (cl-loop for (above line) on lines
              thereis (and line
                           (string-match-p ghostherd--input-rule-re above)
-                          (string-match-p "\\`[❯›>]\\(?:[[:blank:]]\\|\\'\\)" line)
-                          (not (string-match-p "\\`[❯›>][[:blank:]]*[1-9]\\." line))))))
+                          (string-match-p ghostherd--box-prompt-re line)
+                          (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))))))
 
 ;;; What a screen says besides the state
 ;;
@@ -2326,6 +2336,32 @@ that are not padding, room for a box of several lines and a footer."
                        (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))
                        (string-match-p ghostherd--input-rule-re (aref lines (1- i))))
              return (1- i))))
+
+(defun ghostherd--off-prompt-p (session)
+  "Non-nil when SESSION's CLI draws no input box at the foot of the
+screen the poll last took: a dialog, a menu, a panel, a screen not yet
+drawn.  A paste goes into none of them, and the Return after it answers
+whatever is there -- each CLI's trust prompt, drawn from the top of a
+tall pane, reads idle in the tail the rules see (ask cf9873be).  Only
+of a CLI the herd reads by rules, and a screen it has.  A tail with no
+box is asked again of the whole pane: one drawn from its top has blank
+rows under its box."
+  (when-let* ((spec (ignore-errors (ghostherd--spec (ghostherd-session-kind session))))
+              ((plist-get spec :screen-rules))
+              (screen (gethash (ghostherd-session-id session) ghostherd--screens))
+              ((not (ghostherd--box-top (vconcat (split-string screen "\n"))))))
+    (let ((pane (ignore-errors (ghostherd--host-capture session most-positive-fixnum))))
+      (not (and pane (ghostherd--box-top (vconcat (split-string pane "\n"))))))))
+
+(defun ghostherd--whole-pane (session tail)
+  "SESSION's whole visible pane, its blank rows dropped, when it shows
+more than TAIL does; else nil.  For a dialog drawn from the top of a
+pane taller than the tail: the rows under it are padding."
+  (let* ((rows (lambda (s) (seq-remove #'string-blank-p (split-string (or s "") "\n"))))
+         (all (funcall rows (ignore-errors
+                              (ghostherd--host-capture session most-positive-fixnum)))))
+    (when (> (length all) (length (funcall rows tail)))
+      (string-join all "\n"))))
 
 (defun ghostherd--spinner-line (text spinner)
   "The line above TEXT's input box that SPINNER, a kind's `:spinner',
@@ -3282,7 +3318,21 @@ does."
                                                 (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
                (err (and tail (not scrolled) (ghostherd--cli-error session tail)))
-               (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail))))
+               (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail)))
+               ;; A dialog drawn from the top of a pane taller than the tail
+               ;; -- each CLI's trust prompt, in a window over 40 rows --
+               ;; leaves the tail blank and no box in it: it read idle, and
+               ;; took a paste's Return as its answer (ask cf9873be).  With
+               ;; nothing read and no box at the foot, the whole pane is
+               ;; read, its blank rows dropped.
+               (pane (and tail (not scrolled) (not err) (not login-url)
+                          (memq (car-safe hit) '(nil idle))
+                          (plist-get spec :prompt-replaces-input)
+                          (not (ghostherd--input-at-foot-p tail))
+                          (ghostherd--whole-pane session tail)))
+               (hit (or (and pane (ghostherd--read-rules pane rules t (plist-get spec :spinner)))
+                        hit))
+               (seen (or pane tail)))
           (when tail
             (puthash (ghostherd-session-id session) tail ghostherd--screens)
             (ghostherd--read-foot session tail))
@@ -3299,8 +3349,8 @@ does."
            ;; neither may a stale report from the agent itself.
            ((eq (car-safe hit) 'blocked)
             (cons 'blocked (or (and (member (cdr hit) ghostherd--prompt-foot-patterns)
-                                    (ghostherd--prompt-reason tail))
-                               (ghostherd--read-reason tail hit))))
+                                    (ghostherd--prompt-reason seen))
+                               (ghostherd--read-reason seen hit))))
            ;; A menu that has replaced the input box, caught in general
            ;; rather than by a rule per menu: AskUserQuestion, the trust
            ;; prompt, the /login method picker, whatever the next release
@@ -3309,15 +3359,15 @@ does."
            ;; numbered list quoted in the conversation never trips it;
            ;; `ghostherd--prompt' then reads its options for the card.
            ((and (plist-get spec :prompt-replaces-input)
-                 tail
-                 (not (ghostherd--screen-read tail (list 'box ghostherd-status-lines)
+                 seen
+                 (not (ghostherd--screen-read seen (list 'box ghostherd-status-lines)
                                               #'ghostherd--input-at-foot-p))
                  ;; The model picker also replaces the input and is a numbered
                  ;; list, but the herd drives it, not the user -- it is not a
                  ;; block to answer from the card.
-                 (not (ghostherd--model-picker tail))
-                 (ghostherd--prompt tail))
-            (cons 'blocked (or (ghostherd--prompt-reason tail) "waiting for a choice")))
+                 (not (ghostherd--model-picker seen))
+                 (ghostherd--prompt seen))
+            (cons 'blocked (or (ghostherd--prompt-reason seen) "waiting for a choice")))
            ;; A turn that ended on a CLI error -- login expired, the computer
            ;; slept mid-response -- has not answered and is not idle: read it
            ;; as blocked, so an ask it was answering is held rather than
@@ -5439,6 +5489,8 @@ Nothing is left to press Return on, so the card shows nothing."
   (when-let* ((sub (ghostherd--submit-of session))
               ((equal (plist-get sub :text) text)))
     (plist-put sub :state 'lost))
+  ;; A lead owed its role read none of it: the next message carries it.
+  (ghostherd--role-give-back session text)
   (when-let* ((id (ghostherd--ask-in session text)))
     ;; Its turn will not come: the next one is not the ask's.
     (remhash (ghostherd-session-id session) ghostherd--turn-ask-pending)
@@ -5634,6 +5686,16 @@ at most."
                      (funcall again tries))
                     ((and sub unsent) (ghostherd--submit-unsent session text screen))))
              (busy (ghostherd--submit-confirmed session "its turn is under way"))
+             ;; A turn its hooks said began after the send -- one so quick
+             ;; its `working' and `done' reached the herd in one tick, which
+             ;; carries the newest report only, so `working' never came
+             ;; here.  Already over, its stop left the ask open while the
+             ;; text was not known taken: that stop is read now.
+             ((and sub (plist-get sub :resting)
+                   (ghostherd--turn-began-since session (plist-get sub :at)))
+              (ghostherd--submit-confirmed session "its hooks say its turn began")
+              (when (memq (ghostherd-session-state session) '(idle done))
+                (ghostherd--ask-on-state session nil (ghostherd-session-state session))))
              ;; Clear, and no turn begun.  For a prompt to an agent at rest
              ;; whose hooks report, that is no proof it was ever in the box:
              ;; a dialog takes no paste, and the box drawn after it is clear
@@ -7414,14 +7476,16 @@ address of each one's room from your phone, for the bot to link to."
      (t (ghostherd-message from to body :submit submit)))))
 
 (defun ghostherd--herd-held-p (msg)
-  "Non-nil when MSG's taker cannot take a paste now: starting, or on a
-menu.  A menu -- a trust prompt, a permission prompt -- takes no paste,
-and reads the Return pressed after it as its answer.  The sidecar holds
-such mail by the state Emacs last ticked; this is for a state that
-changed since."
+  "Non-nil when MSG's taker cannot take a paste now: starting, on a menu,
+or with no input box at its foot.  A menu -- a trust prompt, a
+permission prompt -- takes no paste, and reads the Return pressed after
+it as its answer.  The sidecar holds mail by the state Emacs last
+ticked; this is for a state that changed since, and for a dialog no
+rule reads: the box missing is enough (`ghostherd--off-prompt-p')."
   (when-let* (((not (plist-get msg :handoff)))
               (to (ghostherd-get (plist-get msg :to))))
-    (memq (ghostherd-session-state to) '(starting blocked))))
+    (or (memq (ghostherd-session-state to) '(starting blocked))
+        (ghostherd--off-prompt-p to))))
 
 (defun ghostherd--herd-deliver (result)
   "Deliver pending mail from a `herd_tick' RESULT plist.
@@ -8136,11 +8200,26 @@ started on a CLI that takes none as it starts, until its first message:
 that carries the role, whether it is the user's (`ghostherd-tell') or
 an ask (`ghostherd--ask-deliver').")
 
+(defvar ghostherd--role-spent (make-hash-table :test 'equal)
+  "Session id -> the owed role its last message took, given back if its
+CLI never had that message (`ghostherd--role-give-back').")
+
 (defun ghostherd--role-take (session)
   "The role SESSION is owed, taken; or nil."
   (let ((id (ghostherd-session-id session)))
-    (prog1 (gethash id ghostherd--role-owed)
+    (prog1 (when-let* ((role (gethash id ghostherd--role-owed)))
+             (puthash id role ghostherd--role-spent))
       (remhash id ghostherd--role-owed))))
+
+(defun ghostherd--role-give-back (session text)
+  "SESSION is owed again the role TEXT carried: its CLI never had TEXT
+(`ghostherd--submit-lost'), so the message sent instead still owes it."
+  (let ((id (ghostherd-session-id session)))
+    (when-let* ((role (gethash id ghostherd--role-spent))
+                ((string-search role text))
+                ((not (gethash id ghostherd--role-owed))))
+      (puthash id role ghostherd--role-owed)
+      (remhash id ghostherd--role-spent))))
 
 (defun ghostherd-start-lead (project &optional kind notes)
   "Start PROJECT's lead, a KIND agent (`ghostherd-lead-kind' by default).
@@ -8249,14 +8328,16 @@ kept for that."
 
 (defun ghostherd--when-ready (session fn &optional tries fail)
   "Call FN once SESSION is at its prompt, looking every second.
-Two minutes at most, TRIES counting down; a session that never gets
-there is logged, and one gone is let be.  Either way FAIL, when given,
-is called instead."
+At its prompt: at rest, its input box drawn at its foot -- not a trust
+prompt reading idle (`ghostherd--off-prompt-p').  Two minutes at most,
+TRIES counting down; a session that never gets there is logged, and one
+gone is let be.  Either way FAIL, when given, is called instead."
   (let ((tries (or tries 120)))
     (cond
      ((not (eq (gethash (ghostherd-session-id session) ghostherd--sessions) session))
       (when fail (funcall fail)))
-     ((memq (ghostherd-session-state session) '(idle done waiting))
+     ((and (memq (ghostherd-session-state session) '(idle done waiting))
+           (not (ghostherd--off-prompt-p session)))
       (funcall fn))
      ((<= tries 0)
       (ghostherd--log-add session 'life "never came to its prompt: the message for it was not sent")
@@ -8344,6 +8425,13 @@ from (`ghostherd-relay'), whose conversation is not its own."
       (and (or (not (stringp cli)) (string-empty-p cli)
                (equal cli (symbol-name (or (ghostherd-session-kind s) 'shell))))
            link))))
+
+(defun ghostherd--turn-began-since (session at)
+  "Non-nil when SESSION's hooks said a turn began after AT, a float time:
+the sidecar keeps when the last one did (its link's `:turn_ms'), which
+no later report folds away."
+  (let ((ms (plist-get (ghostherd--link session) :turn_ms)))
+    (and (numberp ms) (numberp at) (> ms (* 1000 at)))))
 
 (defun ghostherd--hooked-p (session)
   "Non-nil when SESSION's own CLI's hooks report to the herd: they named

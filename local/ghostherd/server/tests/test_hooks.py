@@ -230,6 +230,23 @@ def test_links_ride_each_tick_for_the_herd(tmp_path):
     assert (link["conversation"], link["transcript"], link["last"]) == ("a-2", "", "")
 
 
+def test_a_quick_turn_still_says_when_it_began(tmp_path):
+    """A turn whose `working' and `done' land between two ticks reaches
+    Emacs as `done' alone: a tick carries each agent's newest report.
+    Its link still says when it began, for Emacs to tell that the text it
+    sent was taken (ask cf9873be)."""
+    h = _store(tmp_path)
+    h.report("agy-a2", cli="agy", conversation="a-1")
+    assert h.tick(sessions=SNAP)["links"][0]["turn_ms"] is None
+    before = time.time() * 1000
+    h.report("agy-a2", state="working")
+    h.report("agy-a2", state="done", last="Done.")
+    out = h.tick(sessions=SNAP)
+    assert [(r["session"], r["state"]) for r in out["reports"]] == [("agy-a2", "done")]
+    assert out["links"][0]["turn_ms"] >= before
+    assert h.link("agy-a2")["turn_ms"] == out["links"][0]["turn_ms"]
+
+
 def test_done_with_an_answer_closes_the_takers_ask(tmp_path):
     h = _store(tmp_path)
     ask = h.ask("agy-a2", "commit it", from_name="claude-main")
