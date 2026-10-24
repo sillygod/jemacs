@@ -197,6 +197,40 @@ class Store:
                 return out
 
     @_locked
+    def titles_of(self, paths: list[str], depth: int = 64) -> dict[str, str]:
+        """The title each of PATHS says of itself: the first its chunks
+        carry among the first DEPTH, "" for one with none.  Read by point
+        id -- a (path, index) names its chunk -- not by a filter, which
+        would scan the whole collection once a path.  A claude transcript
+        names its title some turns in, so its first chunks have none: the
+        first sixteen are asked of every path, the rest only of those
+        still without."""
+        out = {p: "" for p in paths}
+        if not paths or not self.collection_exists():
+            return out
+        todo, start = list(paths), 0
+        for stop in (min(16, depth), depth):
+            if not todo or start >= stop:
+                break
+            ids = {point_id(p, i): (p, i) for p in todo for i in range(start, stop)}
+            found: dict[str, tuple[int, str]] = {}
+            for rec in self.client.retrieve(
+                collection_name=COLLECTION,
+                ids=list(ids),
+                with_payload=["title"],
+                with_vectors=False,
+            ):
+                p, i = ids[str(rec.id)]
+                title = (rec.payload or {}).get("title") or ""
+                if title and (p not in found or i < found[p][0]):
+                    found[p] = (i, title)
+            for p, (_, title) in found.items():
+                out[p] = title
+            todo = [p for p in todo if not out[p]]
+            start = stop
+        return out
+
+    @_locked
     def delete_chunks(self, source_path: str, indexes: list[int]) -> None:
         if indexes and self.collection_exists():
             self.client.delete(

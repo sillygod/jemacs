@@ -463,3 +463,55 @@ def test_agy_switching_to_transcript_prunes_old_db_without_reembed_loop(tmp_path
         eng.close()
         reset_engine()
 
+
+
+def test_a_session_title_is_kept_and_an_older_row_learns_it(tmp_path):
+    """The index keeps the title an importer read -- claude's ai-title, which
+    comes some turns in -- so a picker of past conversations can name them.
+    A row recorded before titles were kept has none (NULL): listing with
+    `titles' finds it in the store by point id and keeps it, once."""
+    import json
+
+    from config import Config
+    from engine import MemoryEngine, reset_engine
+
+    claude = tmp_path / "claude" / "proj"
+    claude.mkdir(parents=True)
+    lines = [
+        {"type": "user", "sessionId": "s1", "cwd": "/tmp/p",
+         "message": {"role": "user", "content": f"turn {i} with enough words to make a chunk"}}
+        for i in range(20)
+    ]
+    # The title, after twenty turns: none of the first sixteen chunks has it.
+    lines.append({"type": "ai-title", "title": "Fix the login bug"})
+    lines.append({"type": "user", "sessionId": "s1", "cwd": "/tmp/p",
+                  "message": {"role": "user", "content": "the turn after the title, long enough"}})
+    (claude / "s1.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n", encoding="utf-8")
+
+    reset_engine()
+    cfg = Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "claude",
+                 grok_root=tmp_path / "g", agy_root=tmp_path / "a")
+    eng = MemoryEngine(cfg)
+    try:
+        eng.import_transcripts(agents=["claude"])
+        (src,) = eng.list_sources()["sources"]
+        assert src["title"] == "Fix the login bug"
+
+        # As an index from before titles has it.
+        with eng.index._mu:
+            eng.index._conn.execute("UPDATE sources SET title = NULL")
+            eng.index._conn.commit()
+        assert eng.list_sources()["sources"][0]["title"] == ""
+        looked = []
+        real = eng.store.titles_of
+        eng.store.titles_of = lambda paths, *a: looked.append(list(paths)) or real(paths, *a)
+        assert eng.list_sources(titles=True)["sources"][0]["title"] == "Fix the login bug"
+        # Kept: not looked up again, and there without `titles'.
+        assert eng.list_sources(titles=True)["sources"][0]["title"] == "Fix the login bug"
+        assert eng.list_sources()["sources"][0]["title"] == "Fix the login bug"
+        assert looked == [[src["source_path"]]]
+        # A path with no chunks reads "", and is kept as having none.
+        assert real(["/nowhere.jsonl"]) == {"/nowhere.jsonl": ""}
+    finally:
+        eng.close()
+        reset_engine()

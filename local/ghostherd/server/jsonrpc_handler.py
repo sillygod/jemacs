@@ -228,6 +228,7 @@ class JsonRpcHandler:
             project=params.get("project") or None,
             limit=int(params.get("limit") or 200),
             offset=int(params.get("offset") or 0),
+            titles=params.get("titles") is True,
         )
 
     def _chunks(self, params: dict) -> dict:

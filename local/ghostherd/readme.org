@@ -137,7 +137,7 @@ report. Notes do, because they were written onto the host.
 
 | Command                             | What                                 |
 |-------------------------------------+--------------------------------------|
-| =M-x ghostherd-new=                 | Spawn an agent                       |
+| =M-x ghostherd-new=                 | Spawn an agent in any project, or on a past conversation |
 | =M-x ghostherd-new-pair=            | Spawn two agents, split windows      |
 | =M-x ghostherd-switch=              | Completing-read jump                 |
 | =M-x ghostherd-sidebar=             | Session list (posframe, else side window) |
@@ -173,7 +173,7 @@ report. Notes do, because they were written onto the host.
 
 | Key   | Command        |
 |-------+----------------|
-| =ahn= | new agent      |
+| =ahn= | new agent (any project) |
 | =ah2= | new pair       |
 | =ahs= | switch         |
 | =ahb= | sidebar        |
@@ -236,6 +236,67 @@ personal rebinding. Under =evil-collection= the sidebar inherits
 are shadowed; a typical remap moves kill to =x= (so =k= still moves point)
 and refresh to =gr= (so the =g= prefix survives). Press =?= to see what is
 actually bound.
+
+* Starting an agent: any project, maybe on a past conversation
+
+=SPC a h n= (=ghostherd-new=) asks the project first.  The default is the
+project you are in, so there RET goes on as it always did; but any other
+is offered, each with what it has:
+
+- the project you are in (/this project/);
+- the projects the herd has agents in, the newest at work first
+  (/2 agents · lead/);
+- the projects project.el knows, in its order;
+- where past conversations ran --- the sidecar's index of them, the
+  Sessions tab's --- the newest first (/last conversation 3d ago/).
+
+Each is resolved to its project, a worktree to its main checkout
+(=ghostherd--project-root=), and offered once.  Type a directory instead
+and it is taken as it is: a subdirectory is where the agent runs, its
+project being its root's --- the old =Directory:= prompt, folded in.  Out
+of any project there is no default; the first offered is the best guess.
+
+Then the kind, preselected by /that/ project's =ghostherd-project-kind=
+(not the project of the buffer you started from).  Then, when the project
+has past conversations, *New* --- the default, so RET-through is as short
+as before --- or one of them, any CLI's, its worktrees' included, newest
+first, each with its title, kind and age.  A picked one is picked up
+again (=ghostherd-resume=) in the conversation's /own/ directory: a CLI's
+resume by id is scoped to where it ran, so there is no worktree question.
+Where the CLI can (claude, grok) you are asked whether to fork a new
+conversation off it instead.  One an agent already runs is never resumed
+a second time --- two writers on one conversation --- that agent is shown
+(fork it, and you get a new agent on a conversation of its own).  One in
+another agent's own worktree says so (/X works in that directory/): picked
+up again, it is a second agent in that checkout.  One its CLI no longer
+has (=ghostherd--conversation-gone-p=), or whose transcript is gone (as the
+Sessions tab tests it: grok's id is not checked), is not offered.  A
+new agent goes on to ask its name, args, notes and whether it gets its
+own worktree, as before.
+
+The herd page has the same: *+ New agent* in its top bar opens the form
+above the herd, a project box first that offers the same places as you
+type (or takes a directory), then the kind --- the project's own --- and
+New or a past conversation, with /fork/ where it can; Start, Resume,
+Fork, or /Show NAME/ for one already running.  *Open room* goes to the
+project's room instead: writing there starts its lead
+(=ghostherd-lead-say=), which for a project with nothing in it yet is
+often the point.  The room is the project's, which Emacs says of what was
+typed --- a subdirectory, a worktree --- so pressed before it has, it
+waits for that; and =ghostherd-lead-say= itself takes a subdirectory or
+worktree as the project it is in, so a lead is never started on part of
+one.  A project's dir-locals are read for their safe values only, asking
+nothing (a risky =eval= would hold the page until answered in Emacs), and
+a remote directory typed there is not looked at.  Each project's own /+ New agent/ is the same form, its
+project given.
+
+What is offered is read when a picker opens --- never on the herd's tick,
+and never in what the page is sent several times a second --- and kept
+=ghostherd-new-keep-seconds= (60): the past conversations, asked of the
+sidecar with their titles, and each directory's project, which can take
+a git look (only for a worktree or a submodule; an ordinary checkout's
+=.git= says enough).  Without the sidecar the past conversations are
+simply not offered.
 
 * Agent CLI args (looked up from local binaries)
 
@@ -947,7 +1008,8 @@ above --- desk and phone.
 An agent can work in its own git worktree, so two agents write code in one
 project without stepping on each other.  Opt in when you start one: answer
 yes to "Own git worktree" in =M-x ghostherd-new=, or tick *worktree* in the
-page's *+ New agent* form.  The herd runs =git worktree add= itself, on a
+page's *+ New agent* form --- not for a past conversation picked up
+again, which runs in its own directory.  The herd runs =git worktree add= itself, on a
 branch named for the agent off the project's current HEAD, under
 =ghostherd-worktree-root= (default =~/.ghostherd/worktrees/<project>/<name>=)
 --- outside the project tree, so grep, find and project search in the main
@@ -1693,9 +1755,10 @@ kind and prefills the args:
 Both are marked =safe-local-variable= for their expected shapes, so no
 prompt. They are read *by directory* rather than from the current buffer,
 since =ghostherd-new= is usually invoked from the sidebar, which never
-picked up the project's dir-locals at all --- and read *before* the kind
-prompt, so changing the directory later in the same prompt sequence does
-not re-read.
+picked up the project's dir-locals at all --- and from the project
+=ghostherd-new= asks first, so an agent started for B from a buffer in A
+gets B's kind and args.  The page's New agent form preselects the same
+kind.
 
 * Shared memory (past sessions)
 
@@ -1992,7 +2055,13 @@ are the other tabs (below, and "What happened while you were away").
   screen: =ghostherd-session-prompt=); under /more/ C-c,
   notes, respawn (fresh or continuing) and kill, the last two asked
   first.  /+ New agent/ starts one in that project, kind and name
-  given, without leaving the page.
+  given --- or picks up one of its past conversations --- without
+  leaving the page, and not taking Emacs's focus; *+ New agent* in the
+  top bar does it for any project, or opens its room
+  ("Starting an agent").
+- A room with no agent in it --- one opened from New agent, or whose
+  agents all went --- is a chat whose box writes to its lead, which
+  starts when you send, as primary's does.
 - Sent every five seconds while the tab is on screen and at once when a
   state changes; a prompt being typed holds the refresh back.
 - The page renders text from transcripts and screens and can drive

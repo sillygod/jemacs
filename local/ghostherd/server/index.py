@@ -52,8 +52,14 @@ class SourceIndex:
             )
             """
         )
-        if "parser" not in {r[1] for r in self._conn.execute("PRAGMA table_info(sources)")}:
+        columns = {r[1] for r in self._conn.execute("PRAGMA table_info(sources)")}
+        if "parser" not in columns:
             self._conn.execute("ALTER TABLE sources ADD COLUMN parser INTEGER NOT NULL DEFAULT 1")
+        # The session's title, as its importer read it: "" for one that has
+        # none, NULL for a row recorded before titles were kept (see
+        # `set_titles').
+        if "title" not in columns:
+            self._conn.execute("ALTER TABLE sources ADD COLUMN title TEXT")
         self._conn.commit()
 
     def unchanged(self, meta: SourceMeta) -> bool:
@@ -77,8 +83,8 @@ class SourceIndex:
             """
             INSERT INTO sources (
                 source_path, mtime, size, agent, session_id, project,
-                kind, chunks, imported_at, parser
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                kind, chunks, imported_at, parser, title
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_path) DO UPDATE SET
                 mtime=excluded.mtime,
                 size=excluded.size,
@@ -88,7 +94,8 @@ class SourceIndex:
                 kind=excluded.kind,
                 chunks=excluded.chunks,
                 imported_at=excluded.imported_at,
-                parser=excluded.parser
+                parser=excluded.parser,
+                title=excluded.title
             """,
             (
                 meta.path,
@@ -101,6 +108,7 @@ class SourceIndex:
                 chunks,
                 now,
                 meta.parser,
+                meta.title or "",
             ),
         )
         self._conn.commit()
@@ -141,10 +149,24 @@ class SourceIndex:
                 "kind": r[6] or "",
                 "chunks": r[7] or 0,
                 "imported_at": r[8] or "",
+                # None: not known yet -- recorded before titles were kept.
+                "title": r[9],
             }
             for r in rows
         ]
         return sources, int(total)
+
+    def set_titles(self, titles: dict[str, str]) -> None:
+        """Keep TITLES (source path -> title, "" for none) for rows that
+        have none yet.  An import writes its own, so this never overwrites."""
+        if not titles:
+            return
+        with self._mu:
+            self._conn.executemany(
+                "UPDATE sources SET title = ? WHERE source_path = ? AND title IS NULL",
+                [(t or "", p) for p, t in titles.items()],
+            )
+            self._conn.commit()
 
     def _list(self, clause: str, args: list, limit: int, offset: int) -> tuple[int, list]:
         "Caller holds `_mu`."
@@ -154,7 +176,7 @@ class SourceIndex:
         rows = self._conn.execute(
             f"""
             SELECT source_path, mtime, size, agent, session_id, project,
-                   kind, chunks, imported_at
+                   kind, chunks, imported_at, title
             FROM sources
             WHERE {clause}
             ORDER BY imported_at DESC

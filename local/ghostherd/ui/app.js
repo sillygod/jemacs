@@ -854,6 +854,18 @@
     // would come back empty, its first CLI picked.  Set afresh as each
     // form opens.
     notesText: "", newKind: "", newName: "",
+    // The New agent form: under a project's head (newFor its project) or
+    // above the herd (newFor "*", the project typed in newProject); the
+    // past conversation picked (its transcript's path, "" for New), and
+    // fork; whether the kind was picked by hand, not the project's own.
+    newProject: "", newConv: "", newFork: false, newKindPicked: false,
+    // What the form offers, as Emacs sends it when asked -- never with the
+    // herd: the places a new agent can go, and each asked project's past
+    // conversations ({root, kind, list, why}).
+    places: null, convs: {},
+    // The projects asked for and not yet answered, and the one whose room
+    // Open room waits to open until Emacs says which project it is in.
+    convsAsked: new Set(), newRoomWant: null,
     // The model form: whose it is, and the model and effort picked.
     modelFor: null, modelPick: {},
     // Images attached to each agent's next prompt: [{path, thumb}].
@@ -940,7 +952,14 @@
   // must use this, not roomView alone, or a desktop/after-reload primary room
   // takes the chat data but never paints it ("Reading the conversations…").
   function roomIsChat() {
-    return isPrimaryRoom() || herdNow.roomView === "chat";
+    return isPrimaryRoom() || herdNow.roomView === "chat" || roomEmpty();
+  }
+
+  // A project's room with no agent in it -- one opened from New agent, or
+  // whose agents all went -- is a chat too: its box writes to the lead,
+  // which starts when you write (lead-say), as primary's does.
+  function roomEmpty() {
+    return !!herdNow.data && !isPrimaryRoom() && !roomAgents().length;
   }
 
   function primaryBarHtml(p) {
@@ -1778,20 +1797,13 @@
     }));
     groups.sort((a, b) => rank(a.list[0].state) - rank(b.list[0].state) || b.since - a.since);
     const keep = app.scrollTop;
-    box.innerHTML = groups.length
+    box.innerHTML = (herdNow.newFor === "*" ? newFormHtml(kinds) : "") + (groups.length
       ? groups.map((g) => {
           const counts = {};
           g.list.forEach((a) => (counts[a.state] = (counts[a.state] || 0) + 1));
           const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
             .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
-          const form = herdNow.newFor === g.project
-            ? '<div class="newform"><select class="new-kind">' + kinds.map((k) => '<option value="' + esc(k) + '"' +
-              (k === herdNow.newKind ? " selected" : "") + ">" + esc(k) + "</option>").join("") +
-              '</select><input class="new-name" value="' + esc(herdNow.newName) + '" placeholder="name (default: kind-' + esc(leaf(g.project)) + ')">' +
-              '<label class="new-worktree-l" title="Its own git worktree and branch, off the project\'s HEAD"><input type="checkbox" class="new-worktree"' + (herdNow.newWorktree ? " checked" : "") + "> worktree</label>" +
-              '<button type="button" class="primary small" data-act="a:new-go">Start</button>' +
-              '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button></div>'
-            : "";
+          const form = herdNow.newFor === g.project ? newFormHtml(kinds) : "";
           return '<section class="pgroup" data-project="' + esc(g.project) + '"><div class="phead">' +
             (g.project
               ? '<button type="button" class="pname" data-act="a:room" title="Open the room: ' + esc(g.project) +
@@ -1802,8 +1814,149 @@
               ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
             "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
-      : '<p class="empty">No agents in the herd.  SPC a h n starts one; so does + New agent once there is a project here.</p>';
+      : herdNow.newFor === "*" ? ""
+      : '<p class="empty">No agents in the herd.  + New agent (above) or SPC a h n starts one, in any project.</p>');
+    syncNewForm();
     app.scrollTop = keep;
+  }
+
+  // ---- The New agent form -------------------------------------------------
+  //
+  // One form, under a project's head or above the herd with a project
+  // field first: any project the herd, project.el or a past conversation
+  // knows, offered as you type, or a directory.  Then its kind, and New or
+  // one of the project's past conversations -- its worktrees' too, newest
+  // first -- to pick up again, in its own directory; fork where its CLI
+  // can.  Open room goes to the project's room instead, where writing
+  // starts its lead.  What it offers Emacs sends when it is asked, as the
+  // form opens and its project changes; the form is filled in here, not
+  // drawn again, so a box being typed in keeps its place.
+
+  function newProjectNow() {
+    return herdNow.newFor === "*" ? herdNow.newProject.trim() : herdNow.newFor || "";
+  }
+
+  function newConvNow() {
+    const c = herdNow.convs[newProjectNow()];
+    return (c && c.list.find((x) => x.path === herdNow.newConv)) || null;
+  }
+
+  function placeOptions() {
+    return (herdNow.places || []).map((p) =>
+      '<option value="' + esc(p.project) + '">' + esc(p.note || "") + "</option>").join("");
+  }
+
+  function convOptions() {
+    const c = herdNow.convs[newProjectNow()];
+    return '<option value="">New</option>' + ((c && c.list) || []).map((x) =>
+      '<option value="' + esc(x.path) + '">' + esc((x.title || "(untitled) " + x.session) + " · " + x.note) +
+      "</option>").join("");
+  }
+
+  function newFormHtml(kinds) {
+    const global = herdNow.newFor === "*";
+    const project = newProjectNow();
+    return '<div class="newform' + (global ? " newglobal" : "") + '">' +
+      (global ? '<input class="new-project" list="new-places" autocomplete="off" spellcheck="false" ' +
+        'placeholder="project, or a directory" title="Any project the herd, project.el or a past conversation knows -- or type a directory" value="' +
+        esc(herdNow.newProject) + '"><datalist id="new-places">' + placeOptions() + "</datalist>" : "") +
+      '<select class="new-kind" title="Its CLI">' + kinds.map((k) => '<option value="' + esc(k) + '"' +
+        (k === herdNow.newKind ? " selected" : "") + ">" + esc(k) + "</option>").join("") + "</select>" +
+      '<select class="new-conv" title="Start fresh, or pick up one of the project\'s past conversations">' + convOptions() + "</select>" +
+      '<input class="new-name" value="' + esc(herdNow.newName) + '" placeholder="name (default: kind-' + esc(leaf(project) || "project") + ')">' +
+      '<label class="new-worktree-l" title="Its own git worktree and branch, off the project\'s HEAD"><input type="checkbox" class="new-worktree"' +
+        (herdNow.newWorktree ? " checked" : "") + "> worktree</label>" +
+      '<label class="new-fork-l" title="Branch a new conversation off it, rather than go on in it" hidden><input type="checkbox" class="new-fork"> fork</label>' +
+      '<button type="button" class="primary small new-go" data-act="a:new-go">Start</button>' +
+      '<button type="button" class="ghost small" data-act="a:new-room" title="Its room instead: writing there starts its lead">Open room</button>' +
+      '<button type="button" class="ghost small" data-act="a:new-cancel">Cancel</button>' +
+      '<div class="new-note"></div></div>';
+  }
+
+  // Fill the form in from what is chosen and what Emacs sent: the
+  // conversations offered, and for one picked, its kind (fixed: only its
+  // own CLI resumes it), fork, and what Start does.
+  function syncNewForm() {
+    const form = app.querySelector(".newform");
+    if (!form) return;
+    const project = newProjectNow();
+    const c = herdNow.convs[project];
+    const conv = newConvNow();
+    if (!conv) herdNow.newConv = "";
+    const fork = !!(conv && conv.fork && herdNow.newFork);
+    const sel = form.querySelector(".new-conv");
+    sel.innerHTML = convOptions();
+    sel.value = herdNow.newConv;
+    sel.disabled = !(c && c.list.length);
+    const kind = form.querySelector(".new-kind");
+    // A conversation's own CLI; else the one picked by hand, else the
+    // project's (its ghostherd-project-kind), else the first.
+    const want = conv ? conv.kind : (herdNow.newKindPicked && herdNow.newKind) || (c && c.kind) || herdNow.newKind;
+    if (want && [...kind.options].some((o) => o.value === want)) kind.value = want;
+    kind.disabled = !!conv;
+    const name = form.querySelector(".new-name");
+    name.hidden = !!conv;
+    name.placeholder = "name (default: kind-" + (project ? leaf(project) : "project") + ")";
+    form.querySelector(".new-worktree-l").hidden = !!conv;
+    form.querySelector(".new-fork-l").hidden = !(conv && conv.fork);
+    form.querySelector(".new-fork").checked = fork;
+    form.querySelector(".new-go").textContent =
+      !conv ? "Start" : fork ? "Fork" : conv.running ? "Show " + conv.running : "Resume";
+    const n = c ? c.list.length : 0;
+    form.querySelector(".new-note").textContent =
+      !project ? (herdNow.places ? "" : "Reading where it can go…")
+      : !c ? "Reading its past conversations…"
+      : c.why ? c.why
+      : conv && conv.running && !fork ? conv.running + " is on it already: it is shown, not started twice"
+      : conv ? "Runs in the conversation's own directory, so no worktree"
+      : n ? n + " past conversation" + (n === 1 ? "" : "s") + " to pick up again, or New" : "";
+  }
+
+  // Ask Emacs for the project's past conversations, once it is typed --
+  // NOW, or after a pause in the typing.
+  let newConvTimer = null;
+  function askNewConversations(now) {
+    clearTimeout(newConvTimer);
+    const project = newProjectNow();
+    syncNewForm();
+    if (!project || herdNow.convs[project]) return;
+    const go = () => {
+      if (newProjectNow() !== project || herdNow.convs[project] || herdNow.convsAsked.has(project)) return;
+      herdNow.convsAsked.add(project);
+      emit("new-conversations", { project });
+    };
+    if (now) go();
+    else newConvTimer = setTimeout(go, 300);
+  }
+
+  function openNewForm(project) {
+    herdNow.newFor = project || "*";
+    herdNow.newKind = herdNow.newName = herdNow.newConv = "";
+    herdNow.newWorktree = herdNow.newFork = herdNow.newKindPicked = false;
+    herdNow.convs = {};
+    herdNow.convsAsked = new Set();
+    herdNow.newRoomWant = null;
+    if (!project) {
+      const here = (herdNow.places || []).find((p) => p.here);
+      herdNow.newProject = here ? here.project : "";
+      emit("new-places");
+    }
+    renderAgents();
+    askNewConversations(true);
+    const first = app.querySelector(project ? ".newform select" : ".newform .new-project");
+    if (first) first.focus();
+  }
+
+  function openNewRoom(root) {
+    herdNow.newFor = herdNow.newRoomWant = null;
+    setStatus("");
+    openRoom(root);
+  }
+
+  // The top bar's + New agent: the form above the herd, from any tab.
+  function newAgentAnywhere() {
+    if (herdNow.room || view !== "agents") showAgents();
+    openNewForm(null);
   }
 
   // ---- A project's room ---------------------------------------------------
@@ -1871,9 +2024,10 @@
       // The primary room is always a chat (it has no columns view), so ask
       // Emacs for the chat whatever roomView's default is on this device --
       // otherwise the desktop default (columns) leaves it "Reading…" forever.
-      view: isPrimaryRoom() ? "chat" : herdNow.roomView,
+      view: roomIsChat() ? "chat" : herdNow.roomView,
       reopen: !!reopen,
     });
+    herdNow.watchedChat = roomIsChat();
   }
 
   function closeRoom() {
@@ -2382,6 +2536,9 @@
     body.innerHTML = isPrimaryRoom() && !roomAgents().length
       ? '<p class="rnote">Primary is not running.  Write to it below: it starts -- or resumes its last ' +
         "conversation -- and reads your message once it is up.</p>"
+      : roomEmpty()
+      ? '<p class="rnote">No agents here yet.  Write to its lead below: it starts, and reads your ' +
+        "message once it is up.</p>"
       : !c ? '<p class="rnote">Reading the conversations…</p>'
       : c.error ? '<p class="rnote error">Could not read the conversations: ' + esc(c.error) + "</p>"
       : earlierHtml(c, "a:chat-earlier") +
@@ -2532,8 +2689,11 @@
     const summary = Object.keys(counts).sort((a, b) => rank(a) - rank(b))
       .map((s) => '<span class="st st-' + esc(s) + '">' + counts[s] + " " + esc(s) + "</span>").join("");
     const primary = isPrimaryRoom();
-    const chat = primary || herdNow.roomView === "chat";
-    const key = project + "\n" + (primary ? "primary" : herdNow.roomView) + "\n" + agents.map((a) => a.name).join("\n");
+    const chat = roomIsChat();
+    // An empty room's chat turns to columns as its lead comes: Emacs is
+    // told, so it reads what the view shows.
+    if (chat !== herdNow.watchedChat) watchRoom(false);
+    const key = project + "\n" + (primary ? "primary" : chat ? "chat" : "columns") + "\n" + agents.map((a) => a.name).join("\n");
     let room = app.querySelector(".room");
     if (!room || room.getAttribute("data-key") !== key) {
       const views = [["columns", "Columns"], ["chat", "Chat"]].map(([v, label]) =>
@@ -2546,8 +2706,7 @@
         '<button type="button" class="ghost small" data-act="room-memory" title="This project\'s shared memory">Memory</button>' +
         '</span><div class="rwork"></div>' +
         '<div class="rruns"></div></div>' +
-        (!agents.length && !primary ? '<p class="empty">No agents here now.  Back (Esc) to the herd.</p>'
-          : chat ? chatHtml(agents)
+        (chat ? chatHtml(agents)
           : '<div class="rcols">' + agents.map((a) =>
               '<section class="rcol" data-name="' + esc(a.name) + '"><div class="rtop"></div><div class="rjump"></div><div class="rbody"></div><div class="rsubs"></div>' +
               '<div class="rfoot"><div class="attach">' + attachHtml(a.name) + '</div>' +
@@ -2848,29 +3007,47 @@
       return ask("Kill " + name + "?", "The agent stops and leaves the herd. Its transcript stays.",
         [["Cancel", "ghost", null], ["Kill", "primary danger", () => emit("agent-kill", { name })]]);
     }
-    if (act === "new-agent") {
-      herdNow.newFor = project;
-      herdNow.newKind = herdNow.newName = "";
-      herdNow.newWorktree = false;
-      renderAgents();
-      const sel = app.querySelector(".newform select");
-      if (sel) sel.focus();
-      return;
-    }
+    if (act === "new-agent") return openNewForm(project);
     if (act === "new-go") {
       const form = el.closest(".newform");
-      const wt = form.querySelector(".new-worktree");
+      const where = newProjectNow();
+      const conv = newConvNow();
+      if (!where) {
+        setStatus("Which project?", "error");
+        const box = form.querySelector(".new-project");
+        return box ? box.focus() : undefined;
+      }
       herdNow.newFor = null;
-      emit("agent-new", {
-        project,
-        kind: form.querySelector(".new-kind").value,
-        name: form.querySelector(".new-name").value.trim(),
-        worktree: !!(wt && wt.checked),
-      });
+      if (conv) emit("resume", { source_path: conv.path, fork: !!(conv.fork && herdNow.newFork), quiet: true });
+      else {
+        const wt = form.querySelector(".new-worktree");
+        emit("agent-new", {
+          project: where,
+          kind: form.querySelector(".new-kind").value,
+          name: form.querySelector(".new-name").value.trim(),
+          worktree: !!(wt && wt.checked),
+        });
+      }
       return renderAgents();
     }
+    if (act === "new-room") {
+      const where = newProjectNow();
+      const c = herdNow.convs[where];
+      if (!where) return setStatus("Which project?", "error");
+      if (c && c.why) return setStatus(c.why, "error");
+      // The room is the project's, by its name as the herd writes it, which
+      // only Emacs can say of what was typed -- a subdirectory, a worktree,
+      // no slash: until it has, wait for it rather than open a room of the
+      // text, whose lead would be a second one, on part of a project.
+      if (!c) {
+        herdNow.newRoomWant = where;
+        setStatus("Finding its project…");
+        return askNewConversations(true);
+      }
+      return openNewRoom(c.root);
+    }
     if (act === "new-cancel") {
-      herdNow.newFor = null;
+      herdNow.newFor = herdNow.newRoomWant = null;
       return renderAgents();
     }
   }
@@ -3013,8 +3190,20 @@
 
   app.addEventListener("change", (ev) => {
     if (ev.target.classList && ev.target.classList.contains("chat-to")) setChatTo(ev.target.value);
-    if (ev.target.classList && ev.target.classList.contains("new-kind")) herdNow.newKind = ev.target.value;
+    if (ev.target.classList && ev.target.classList.contains("new-kind")) {
+      herdNow.newKind = ev.target.value;
+      herdNow.newKindPicked = true;
+    }
     if (ev.target.classList && ev.target.classList.contains("new-worktree")) herdNow.newWorktree = ev.target.checked;
+    if (ev.target.classList && ev.target.classList.contains("new-conv")) {
+      herdNow.newConv = ev.target.value;
+      herdNow.newFork = false;
+      syncNewForm();
+    }
+    if (ev.target.classList && ev.target.classList.contains("new-fork")) {
+      herdNow.newFork = ev.target.checked;
+      syncNewForm();
+    }
   });
 
   app.addEventListener("input", (ev) => {
@@ -3026,6 +3215,10 @@
       autoGrow(ev.target);
     } else if (c.contains("new-name")) {
       herdNow.newName = ev.target.value;
+    } else if (c.contains("new-project")) {
+      herdNow.newProject = ev.target.value;
+      herdNow.newConv = "";
+      askNewConversations(false);
     } else if (c.contains("notes-text")) {
       herdNow.notesText = ev.target.value;
     }
@@ -3737,6 +3930,7 @@
     else if (view === "agents") emit("usage-refresh");
     else emit("refresh");
   });
+  $("btn-new").addEventListener("click", newAgentAnywhere);
   $("btn-import").addEventListener("click", () => {
     $("btn-import").disabled = true;
     emit("import");
@@ -4622,6 +4816,38 @@
     // again from what the page has, so what it shows by the clock -- an
     // answer of ten minutes ago, how long until a reset -- moves on.
     renderHerdAgain: () => GM.renderHerd(herdNow.data),
+
+    // Where a new agent can go, for the form's project box; the current
+    // project goes in it when nothing is typed yet.
+    setNewPlaces: (p) => {
+      herdNow.places = (p && p.places) || [];
+      const list = $("new-places");
+      if (list) list.innerHTML = placeOptions();
+      const here = herdNow.places.find((x) => x.here);
+      const box = app.querySelector(".newform .new-project");
+      if (herdNow.newFor === "*" && !herdNow.newProject && here) {
+        herdNow.newProject = here.project;
+        if (box) box.value = here.project;
+        askNewConversations(true);
+      } else syncNewForm();
+    },
+
+    // A project's past conversations, as asked; and which project a typed
+    // directory is in, and the kind it starts by default.
+    setNewConversations: (p) => {
+      if (!p || !p.project) return;
+      const c = { root: p.root || "", kind: p.kind || "", list: p.conversations || [], why: p.why || "" };
+      herdNow.convs[p.project] = c;
+      herdNow.convsAsked.delete(p.project);
+      if (p.project !== newProjectNow()) return;
+      // Open room was pressed before this came: now it can open, or say why not.
+      if (herdNow.newRoomWant === p.project && herdNow.newFor) {
+        herdNow.newRoomWant = null;
+        if (c.why || !c.root) setStatus(c.why || "No project there", "error");
+        else return openNewRoom(c.root);
+      }
+      syncNewForm();
+    },
 
     setScreen: (p) => {
       if (!p) return;

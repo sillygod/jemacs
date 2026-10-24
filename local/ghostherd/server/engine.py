@@ -91,13 +91,28 @@ class MemoryEngine:
         project: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        titles: bool = False,
     ) -> dict[str, Any]:
+        """The sources, newest import first.  With TITLES, a transcript
+        recorded before the index kept titles has its title looked up in
+        the store and kept, so that is done once; without, it reads "" until
+        then."""
         sources, total = self.index.list_sources(
             agent=agent or None,
             project=project or None,
             limit=max(1, int(limit)),
             offset=max(0, int(offset)),
         )
+        unknown = [s["source_path"] for s in sources
+                   if s["title"] is None and s["kind"] == "transcript"]
+        if titles and unknown:
+            found = self.store.titles_of(unknown)
+            self.index.set_titles(found)
+            for s in sources:
+                if s["source_path"] in found:
+                    s["title"] = found[s["source_path"]]
+        for s in sources:
+            s["title"] = s["title"] or ""
         return {"sources": sources, "total": total}
 
     def list_chunks(
