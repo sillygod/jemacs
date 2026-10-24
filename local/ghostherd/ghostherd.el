@@ -570,7 +570,13 @@ buffer, which never picked up the project's dir-locals at all.
 A malformed .dir-locals.el costs you the defaults, not the ability to
 start an agent: `hack-dir-local-variables' warns and yields nothing
 rather than signalling.  The `ignore-errors' is for the filesystem
-around it, not for that case."
+around it, not for that case.
+
+Only safe values are read, and nothing is asked: the page asks this of
+each directory typed in its New agent form, from a request, where a
+prompt about a project's risky local variables -- an `eval' -- would
+hold the page until answered in Emacs, out of sight.  Both variables
+read here are safe for their own shapes."
   (let ((directory (file-name-as-directory
                     (expand-file-name (or directory default-directory)))))
     (or (ignore-errors
@@ -582,7 +588,8 @@ around it, not for that case."
             ;; `file-local-variables-alist' without applying anything.
             (setq-local buffer-file-name
                         (expand-file-name ".ghostherd" directory))
-            (hack-dir-local-variables)
+            (let ((enable-local-variables :safe))
+              (hack-dir-local-variables))
             (cons (alist-get 'ghostherd-project-kind file-local-variables-alist)
                   (alist-get 'ghostherd-project-args file-local-variables-alist))))
         (cons nil nil))))
@@ -4157,24 +4164,38 @@ anyway; none when the sidecar is not there or does not answer in
             (error nil)))))
   (cdr ghostherd--new-sources))
 
+(defvar ghostherd--new-waiting nil
+  "What waits for the past conversations being read, newest first: nil
+when no read is in flight.")
+
 (defun ghostherd--new-read-sources-async (then)
   "Call THEN once the past conversations are kept: at once when they are,
-else when the sidecar answers -- or fails, with none kept."
+else when the sidecar answers -- or fails, with none kept.  One read at
+a time: a call while one is in flight waits for it, so the form's places
+and its project's conversations, asked together, cost one read and one
+resolving of the directories.  The request gives up in
+`ghostherd-memory-request-timeout', so the waiting never wedges."
   (cond
    ((ghostherd--new-fresh-p) (funcall then))
    ((not (ghostherd--new-sidecar-p)) (ghostherd--new-keep nil) (funcall then))
-   (t (ghostherd-memory-request-async
-       "memory_list"
-       (lambda (result) (ghostherd--new-keep result) (funcall then))
-       ghostherd--new-list
-       (lambda (_err) (ghostherd--new-keep nil) (funcall then))))))
+   (ghostherd--new-waiting (push then ghostherd--new-waiting))
+   (t (setq ghostherd--new-waiting (list then))
+      (let ((done (lambda (result)
+                    (ghostherd--new-keep result)
+                    (let ((waiting (reverse ghostherd--new-waiting)))
+                      (setq ghostherd--new-waiting nil)
+                      (mapc #'funcall waiting)))))
+        (ghostherd-memory-request-async
+         "memory_list" done ghostherd--new-list
+         (lambda (_err) (funcall done nil)))))))
 
 (defun ghostherd--new-root (dir)
   "The project DIR belongs to, absolute, as a directory: its root by
 `ghostherd--project-root' (a worktree's main checkout), or DIR itself
-when it is in none.  Nil when DIR is gone.  Kept with the past
-conversations, so a directory is looked at once while they are."
-  (when (and (stringp dir) (not (string-empty-p dir)))
+when it is in none.  Nil when DIR is gone, and for a remote one: looking
+would open a connection for a picker.  Kept with the past conversations,
+so a directory is looked at once while they are."
+  (when (and (stringp dir) (not (string-empty-p dir)) (not (file-remote-p dir)))
     (let* ((dir (file-name-as-directory (expand-file-name dir)))
            (root (or (gethash dir ghostherd--new-roots)
                      (puthash dir
@@ -4277,11 +4298,15 @@ there alone.  Reads the past conversations if they are not kept."
   "ROOT's past conversations that can be picked up again, newest first:
 those in it and in its worktrees -- whatever directory resolves to ROOT
 -- whose CLI resumes by id and still has them (`ghostherd--resume-args',
-which leaves out a gone one).  Each is a plist: :kind, :id, :directory
-\(its own: a resume runs there), :title, :time, :path (its transcript),
-:fork (whether its CLI can branch off it) and :running (the agent on it
-now, `ghostherd--resumed-by', or nil).  Reads the past conversations if
-they are not kept."
+which leaves out one claude or agy pruned) and whose transcript is still
+there (the Sessions tab's test: grok's chat history goes with its
+session, and grok's id is not checked).  Each is a plist: :kind, :id,
+:directory (its own: a resume runs there), :title, :time, :path (its
+transcript), :fork (whether its CLI can branch off it), :running (the
+agent on it now, `ghostherd--resumed-by', or nil) and :occupied (an
+agent whose own worktree its directory is, or nil: a resume there puts
+a second agent in that agent's checkout).  Reads the past conversations
+if they are not kept."
   (let* ((name (ghostherd--project-name root))
          (out nil))
     (dolist (s (ghostherd--new-read-sources))
@@ -4294,6 +4319,7 @@ they are not kept."
              (at (ghostherd--new-root dir)))
         (when (and at (equal (ghostherd--project-name at) name)
                    (assq kind ghostherd-agent-specs)
+                   (stringp path) (file-exists-p path)
                    (ghostherd--resume-args kind id))
           (push (list :kind kind :id id
                       :directory (file-name-as-directory (expand-file-name dir))
@@ -4302,9 +4328,19 @@ they are not kept."
                       :time (ghostherd--source-time s)
                       :path path
                       :fork (and (plist-get (ghostherd--spec kind) :fork-args) t)
-                      :running (ghostherd--resumed-by id))
+                      :running (ghostherd--resumed-by id)
+                      :occupied (ghostherd--worktree-owner dir))
                 out))))
     (sort out (lambda (a b) (> (or (plist-get a :time) 0) (or (plist-get b :time) 0))))))
+
+(defun ghostherd--worktree-owner (dir)
+  "The live agent whose own git worktree DIR is, or nil."
+  (let ((name (ghostherd--project-name dir)))
+    (seq-find (lambda (s)
+                (and (not (eq (ghostherd-session-state s) 'dead))
+                     (when-let* ((path (plist-get (ghostherd-session-worktree s) :path)))
+                       (equal (ghostherd--project-name path) name))))
+              (ghostherd-sessions))))
 
 (defun ghostherd--completion-table (candidates annotate)
   "A completion table of CANDIDATES in their order, ANNOTATE (a function
@@ -4353,13 +4389,17 @@ and its id's start, which tells two of one title apart."
 
 (defun ghostherd-new-conversation-note (conv root)
   "What is said of CONV beside it: its kind, its age, the agent on it,
-and its directory when that is not ROOT's -- a worktree's, say."
+the agent whose worktree it is in, and its directory when that is not
+ROOT's -- a worktree's, say."
   (let ((running (plist-get conv :running))
+        (occupied (plist-get conv :occupied))
         (dir (plist-get conv :directory)))
     (string-join
      (delq nil (list (symbol-name (plist-get conv :kind))
                      (and (plist-get conv :time) (concat (ghostherd--ago (plist-get conv :time)) " ago"))
                      (and running (format "running in %s" (ghostherd-session-name running)))
+                     (and occupied (not (eq occupied running))
+                          (format "%s works in that directory" (ghostherd-session-name occupied)))
                      (and (not (equal (ghostherd--project-name dir) (ghostherd--project-name root)))
                           (ghostherd--abbreviate dir))))
      " · ")))
@@ -8130,12 +8170,24 @@ is called instead."
       (when fail (funcall fail)))
      (t (run-at-time 1 nil #'ghostherd--when-ready session fn (1- tries) fail)))))
 
+(defun ghostherd--lead-project (project)
+  "The project whose lead PROJECT reaches: the one it is in, by
+`ghostherd--project-root' -- a subdirectory's or a worktree's -- or
+PROJECT itself, in none or primary's."
+  (if (ghostherd--primary-dir-p project)
+      project
+    (or (ghostherd--project-root (expand-file-name project)) project)))
+
 (defun ghostherd-lead-say (project text)
   "Say TEXT to PROJECT's lead, starting one when it has none.
 A lead just started hears TEXT once it is ready -- after its role, on a
 CLI that took none as it started.  Return the lead.  Primary's directory
 has no lead but primary, who is told instead (`ghostherd-primary-say'):
-a reply to its report on the phone, its room's chat."
+a reply to its report on the phone, its room's chat.
+PROJECT is taken as the project it is in (`ghostherd--project-root'): a
+subdirectory or a worktree of one reaches that project's lead, and never
+starts a second lead on part of it."
+  (setq project (ghostherd--lead-project project))
   (cond
    ((ghostherd--primary-dir-p project) (ghostherd-primary-say text))
    ((ghostherd-project-lead project)

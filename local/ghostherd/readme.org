@@ -266,8 +266,11 @@ resume by id is scoped to where it ran, so there is no worktree question.
 Where the CLI can (claude, grok) you are asked whether to fork a new
 conversation off it instead.  One an agent already runs is never resumed
 a second time --- two writers on one conversation --- that agent is shown
-(fork it, and you get a new agent on a conversation of its own).  One its
-CLI no longer has (=ghostherd--conversation-gone-p=) is not offered.  A
+(fork it, and you get a new agent on a conversation of its own).  One in
+another agent's own worktree says so (/X works in that directory/): picked
+up again, it is a second agent in that checkout.  One its CLI no longer
+has (=ghostherd--conversation-gone-p=), or whose transcript is gone (as the
+Sessions tab tests it: grok's id is not checked), is not offered.  A
 new agent goes on to ask its name, args, notes and whether it gets its
 own worktree, as before.
 
@@ -278,7 +281,13 @@ New or a past conversation, with /fork/ where it can; Start, Resume,
 Fork, or /Show NAME/ for one already running.  *Open room* goes to the
 project's room instead: writing there starts its lead
 (=ghostherd-lead-say=), which for a project with nothing in it yet is
-often the point.  Each project's own /+ New agent/ is the same form, its
+often the point.  The room is the project's, which Emacs says of what was
+typed --- a subdirectory, a worktree --- so pressed before it has, it
+waits for that; and =ghostherd-lead-say= itself takes a subdirectory or
+worktree as the project it is in, so a lead is never started on part of
+one.  A project's dir-locals are read for their safe values only, asking
+nothing (a risky =eval= would hold the page until answered in Emacs), and
+a remote directory typed there is not looked at.  Each project's own /+ New agent/ is the same form, its
 project given.
 
 What is offered is read when a picker opens --- never on the herd's tick,

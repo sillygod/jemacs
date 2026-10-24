@@ -8072,6 +8072,17 @@ herd is sent again; bad input is refused before anything is done."
 
 ;;; A new agent in any project, maybe on a past conversation (ask 28f170ff)
 
+(defvar ghostherd-tests--tx nil
+  "Where a `ghostherd-tests--with-places' test's transcripts are.")
+
+(defun ghostherd-tests--tx (name)
+  "Transcript NAME's path in the test's `ghostherd-tests--tx', there."
+  (let ((f (expand-file-name name ghostherd-tests--tx)))
+    (unless (file-exists-p f)
+      (make-directory (file-name-directory f) t)
+      (write-region "" nil f nil 'silent))
+    f))
+
 (defmacro ghostherd-tests--with-places (&rest body)
   "BODY with `base' a temp dir of projects a/ (with a/sub/), b/ to f/, wt/
 -- a worktree of a/, as `ghostherd--project-root' (stubbed) resolves
@@ -8083,6 +8094,8 @@ what the sidecar would list."
           (dir (lambda (n) (file-name-as-directory (expand-file-name n base))))
           (ghostherd--new-sources nil)
           (ghostherd--new-roots (make-hash-table :test 'equal))
+          (ghostherd--new-waiting nil)
+          (ghostherd-tests--tx (expand-file-name "tx/" base))
           (ghostherd-primary-directory (expand-file-name "primary/" base)))
      (dolist (d '("a/sub/" "b/" "c/" "d/" "e/" "f/" "wt/" "primary/"))
        (make-directory (funcall dir d) t))
@@ -8099,8 +8112,11 @@ what the sidecar would list."
        (delete-directory base t))))
 
 (defun ghostherd-tests--source (path agent id project ago &optional title)
-  "An index row as the sidecar lists it: a transcript written AGO seconds ago."
-  (list :source_path path :agent agent :session_id id :project project :kind "transcript"
+  "An index row as the sidecar lists it: a transcript written AGO seconds
+ago, at PATH -- a relative one made there (`ghostherd-tests--tx'), an
+absolute one as it is: gone, unless it is there."
+  (list :source_path (if (file-name-absolute-p path) path (ghostherd-tests--tx path))
+        :agent agent :session_id id :project project :kind "transcript"
         :mtime (- (float-time) ago) :title (or title "")))
 
 (ert-deftest ghostherd-test-new-projects-ranked-and-named-once ()
@@ -8242,11 +8258,13 @@ in its OWN directory, or forked where its CLI can."
     (ghostherd-tests--with-places
       (let ((ghostherd--new-sources
              (cons (float-time)
-                   (list (ghostherd-tests--source "/x/c1.jsonl" "claude" "in-c1" (funcall dir "wt/") 3600 "In the worktree")
-                         (ghostherd-tests--source "/x/c2.jsonl" "claude" "in-c2" (funcall dir "a/") 60)
-                         (ghostherd-tests--source "/x/g1" "grok" "g1" (funcall dir "a/sub/") 7200 "grok one")
-                         (ghostherd-tests--source "/x/gone.jsonl" "claude" "gone" (funcall dir "a/") 1 "gone")
-                         (ghostherd-tests--source "/x/b1.jsonl" "claude" "b1" (funcall dir "b/") 1 "B's"))))
+                   (list (ghostherd-tests--source "c1.jsonl" "claude" "in-c1" (funcall dir "wt/") 3600 "In the worktree")
+                         (ghostherd-tests--source "c2.jsonl" "claude" "in-c2" (funcall dir "a/") 60)
+                         (ghostherd-tests--source "g1/chat_history.jsonl" "grok" "g1" (funcall dir "a/sub/") 7200 "grok one")
+                         (ghostherd-tests--source "gone.jsonl" "claude" "gone" (funcall dir "a/") 1 "gone")
+                         ;; grok's id is not checked: its chat history gone, it is.
+                         (ghostherd-tests--source "/x/g2/chat_history.jsonl" "grok" "g2" (funcall dir "a/") 2 "grok gone")
+                         (ghostherd-tests--source "b1.jsonl" "claude" "b1" (funcall dir "b/") 1 "B's"))))
             (default-directory (funcall dir "a/"))
             (pick nil) (fork nil) prompts spawned)
         (cl-letf (((symbol-function 'ghostherd--conversation-gone-p)
@@ -8260,7 +8278,8 @@ in its OWN directory, or forked where its CLI can."
                   ((symbol-function 'ghostherd-spawn)
                    (lambda (kind &rest plist) (setq spawned (cons kind plist)) nil)))
           (let ((convs (ghostherd-new-conversations (funcall dir "a/"))))
-            ;; claude resumes by its transcript's name; a gone one and B's are not here.
+            ;; claude resumes by its transcript's name; gone ones -- pruned
+            ;; by claude, or whose transcript went -- and B's are not here.
             (should (equal (mapcar (lambda (c) (plist-get c :id)) convs) '("c2" "c1" "g1")))
             (should (equal (plist-get (nth 1 convs) :directory) (funcall dir "wt/")))
             (should (equal (mapcar (lambda (c) (plist-get c :fork)) convs) '(t t t)))
@@ -8298,7 +8317,7 @@ new agent, on a conversation of its own.  The same from the page's form."
     (ghostherd-tests--with-places
       (let ((ghostherd--new-sources
              (cons (float-time)
-                   (list (ghostherd-tests--source "/x/c1.jsonl" "claude" "c1" (funcall dir "a/") 60 "Busy"))))
+                   (list (ghostherd-tests--source "c1.jsonl" "claude" "c1" (funcall dir "a/") 60 "Busy"))))
             (default-directory (funcall dir "a/"))
             (fork nil) visited spawned)
         (ghostherd-tests--session :name "claude-a" :kind 'claude :project (funcall dir "a/")
@@ -8336,7 +8355,7 @@ new agent, on a conversation of its own.  The same from the page's form."
                                                 0)
                                           :running)
                                "claude-a"))
-                (ghostherd-memory-page--handle '((op . "resume") (source_path . "/x/c1.jsonl") (quiet . t)))
+                (ghostherd-memory-page--handle `((op . "resume") (source_path . ,(ghostherd-tests--tx "c1.jsonl")) (quiet . t)))
                 (should (equal (ghostherd-session-name visited) "claude-a"))
                 (should-not spawned)
                 (should (equal (ghostherd-test--call calls "flash") "claude-a is on it already"))))))))))
@@ -8355,7 +8374,7 @@ form, not shown either, in its own directory."
             (ghostherd-memory-page--resumable (make-hash-table :test #'equal))
             (ghostherd--new-sources
              (cons (float-time)
-                   (list (ghostherd-tests--source "/x/c1.jsonl" "claude" "c1" (funcall dir "wt/") 60 "Here"))))
+                   (list (ghostherd-tests--source "c1.jsonl" "claude" "c1" (funcall dir "wt/") 60 "Here"))))
             spawned)
         (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) #'ignore)
                   ((symbol-function 'project-known-project-roots) (lambda () (list (funcall dir "b/"))))
@@ -8382,11 +8401,11 @@ form, not shown either, in its own directory."
             (should (equal (plist-get r :root) (ghostherd--project-name (funcall dir "a/"))))
             (should (equal (plist-get r :kind) "grok"))
             (let ((c (aref (plist-get r :conversations) 0)))
-              (should (equal (plist-get c :path) "/x/c1.jsonl"))
+              (should (equal (plist-get c :path) (ghostherd-tests--tx "c1.jsonl")))
               (should (equal (plist-get c :title) "Here"))
               (should (equal (plist-get c :running) ""))
               (should (eq (plist-get c :fork) t))))
-          (should (gethash "/x/c1.jsonl" ghostherd-memory-page--resumable))
+          (should (gethash (ghostherd-tests--tx "c1.jsonl") ghostherd-memory-page--resumable))
           (ghostherd-memory-page--handle '((op . "new-conversations") (project . "/nowhere/at/all/")))
           (should (equal (plist-get (ghostherd-test--call calls "setNewConversations") :why)
                          "No directory /nowhere/at/all/"))
@@ -8399,7 +8418,7 @@ form, not shown either, in its own directory."
           (should (and (plist-member (cdr spawned) :display) (null (plist-get (cdr spawned) :display))))
           ;; Resumed from the form: in the worktree, of project a, not shown.
           (setq spawned nil calls nil)
-          (ghostherd-memory-page--handle '((op . "resume") (source_path . "/x/c1.jsonl") (quiet . t)))
+          (ghostherd-memory-page--handle `((op . "resume") (source_path . ,(ghostherd-tests--tx "c1.jsonl")) (quiet . t)))
           (should (equal (plist-get (cdr spawned) :directory) (funcall dir "wt/")))
           (should (equal (plist-get (cdr spawned) :project) (funcall dir "a/")))
           (should (and (plist-member (cdr spawned) :display) (null (plist-get (cdr spawned) :display))))
@@ -8427,6 +8446,114 @@ dozens of them."
         (should (equal (directory-file-name (file-truename (ghostherd--worktree-main-checkout wt)))
                        (directory-file-name (file-truename repo))))
         (should (> asked 0))))))
+
+;;; Review round 1 of the above (ask 8638958c)
+
+(ert-deftest ghostherd-test-project-defaults-ask-nothing ()
+  "The page reads a typed directory's defaults from a request: a project
+whose dir-locals hold a risky value -- an `eval' -- must not raise the
+prompt about it, which would hold the page out of sight; its safe kind
+and args are read all the same."
+  (ghostherd-tests--with-dir-locals
+      "((nil . ((eval . (message \"risky\"))
+                (ghostherd-project-kind . grok)
+                (ghostherd-project-args . (\"--effort\" \"high\")))))"
+    (let ((enable-local-variables t))
+      (cl-letf (((symbol-function 'hack-local-variables-confirm)
+                 (lambda (&rest _) (error "Asked about local variables"))))
+        (should (equal (ghostherd-project-defaults dir) '(grok "--effort" "high")))))))
+
+(ert-deftest ghostherd-test-new-looks-at-no-remote-directory ()
+  "A remote directory -- a known root, or one typed in the page's box,
+asked again at each pause -- is never looked at: no connection for a
+picker."
+  (ghostherd-test--with-page
+    (let ((ghostherd--new-roots (make-hash-table :test 'equal))
+          (ghostherd--new-sources (cons (float-time) nil)))
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (f) (if (file-remote-p f) (error "Connected to %s" f) t)))
+                ((symbol-function 'ghostherd--project-root) #'ignore))
+        (should-not (ghostherd--new-root "/ssh:box:/srv/app/"))
+        (ghostherd-memory-page--handle '((op . "new-conversations") (project . "/ssh:box:/srv/app/")))
+        (let ((r (ghostherd-test--call calls "setNewConversations")))
+          (should (equal (plist-get r :project) "/ssh:box:/srv/app/"))
+          (should (string-match-p "remote" (plist-get r :why))))
+        (should-not (ghostherd-test--call calls "showError"))
+        (should-not requests)))))
+
+(ert-deftest ghostherd-test-new-reads-once-for-callers-together ()
+  "The page's form asks for its places and its project's conversations
+together: while one read of the past conversations is in flight, the
+other waits for it -- one read, one resolving of the directories -- and
+both are answered by it, or by its failing."
+  (let ((ghostherd--new-sources nil)
+        (ghostherd--new-roots (make-hash-table :test 'equal))
+        (ghostherd--new-waiting nil)
+        (pending nil) (answered nil))
+    (cl-letf (((symbol-function 'ghostherd--new-sidecar-p) (lambda () t))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb &optional _params err-cb)
+                 (should (equal method "memory_list"))
+                 (push (cons cb err-cb) pending))))
+      (ghostherd--new-read-sources-async (lambda () (push 'places answered)))
+      (ghostherd--new-read-sources-async (lambda () (push 'conversations answered)))
+      (should (= (length pending) 1))
+      (should-not answered)
+      (funcall (car (car pending)) (list :sources (list (list :kind "transcript" :source_path "t"))))
+      (should (equal (reverse answered) '(places conversations)))
+      (should (equal (mapcar (lambda (s) (plist-get s :source_path)) (cdr ghostherd--new-sources)) '("t")))
+      (should-not ghostherd--new-waiting)
+      ;; Kept: asked again, answered at once.
+      (ghostherd--new-read-sources-async (lambda () (push 'again answered)))
+      (should (= (length pending) 1))
+      (should (eq (car answered) 'again))
+      ;; A read that fails answers its waiters too, with none.
+      (setq ghostherd--new-sources nil pending nil answered nil)
+      (ghostherd--new-read-sources-async (lambda () (push 'a answered)))
+      (ghostherd--new-read-sources-async (lambda () (push 'b answered)))
+      (funcall (cdr (car pending)) "no answer")
+      (should (equal (reverse answered) '(a b)))
+      (should-not ghostherd--new-waiting)
+      (should (ghostherd--new-fresh-p)))))
+
+(ert-deftest ghostherd-test-a-lead-is-a-whole-projects ()
+  "Writing to a project's lead from a subdirectory or a worktree of it --
+a room opened on what was typed -- reaches that project's lead, and
+never starts a second lead on part of the project."
+  (ghostherd-tests--with-leads
+    (let ((told nil))
+      (cl-letf (((symbol-function 'ghostherd--project-root)
+                 (lambda (&optional d)
+                   (and d (string-prefix-p (expand-file-name "~/p/") (file-name-as-directory (expand-file-name d)))
+                        (expand-file-name "~/p/"))))
+                ((symbol-function 'ghostherd-tell) (lambda (s text &rest _) (push (cons (ghostherd-session-name s) text) told))))
+        (let ((lead (ghostherd-lead-say "~/p/web" "plan the login page")))
+          (should (equal (ghostherd-session-name lead) "lead-p"))
+          (should (equal (ghostherd--project-name (ghostherd-session-project lead)) "~/p/")))
+        (puthash "lead-p" "lead" ghostherd--roles)
+        (setq spawned nil)
+        (should (equal (ghostherd-session-name (ghostherd-lead-say "~/p/web/src" "status?")) "lead-p"))
+        (should-not spawned)
+        (should (equal (car told) '("lead-p" . "status?")))))))
+
+(ert-deftest ghostherd-test-new-says-whose-worktree-a-conversation-is-in ()
+  "A past conversation in an agent's own worktree says so: resumed, it
+would be a second agent in that agent's checkout."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-places
+      (let ((ghostherd--worktrees (make-hash-table :test 'equal))
+            (ghostherd--new-sources
+             (cons (float-time)
+                   (list (ghostherd-tests--source "w.jsonl" "claude" "w1" (funcall dir "wt/") 60 "Its worktree")
+                         (ghostherd-tests--source "m.jsonl" "claude" "m1" (funcall dir "a/") 90 "Main")))))
+        (ghostherd-tests--session :name "claude-wt" :kind 'claude :project (funcall dir "a/") :state 'working)
+        (puthash "claude-wt" (list :path (funcall dir "wt/") :branch "wt" :base "main") ghostherd--worktrees)
+        (cl-letf (((symbol-function 'ghostherd--conversation-gone-p) #'ignore))
+          (let ((convs (ghostherd-new-conversations (funcall dir "a/"))))
+            (should (equal (ghostherd-session-name (plist-get (car convs) :occupied)) "claude-wt"))
+            (should (string-match-p "claude-wt works in that directory"
+                                    (ghostherd-new-conversation-note (car convs) (funcall dir "a/"))))
+            (should-not (plist-get (cadr convs) :occupied))))))))
 
 (ert-deftest ghostherd-test-herd-page-watch ()
   "The herd is sent while the tab is on screen, at once on a change --

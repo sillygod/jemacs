@@ -2619,7 +2619,7 @@ attach it.  It comes from the page on another device -- a phone's photo
       (user-error "No project %s" project))
     (unless (and (stringp text) (not (string-empty-p (string-trim text))))
       (user-error "Nothing to send"))
-    (let* ((had (ghostherd-project-lead project))
+    (let* ((had (ghostherd-project-lead (ghostherd--lead-project project)))
            (lead (ghostherd-lead-say project text)))
       (ghostherd-memory-page--js
        "flash" (if had
@@ -2755,7 +2755,14 @@ is its room's."
   (let ((asked (alist-get 'project intent)))
     (unless (and (stringp asked) (not (string-empty-p (string-trim asked))))
       (user-error "No project"))
-    (ghostherd--new-read-sources-async
+    (if (file-remote-p asked)
+        ;; Typed, and asked again at each pause in the typing: a remote
+        ;; path would open a connection each time.
+        (ghostherd-memory-page--js
+         "setNewConversations"
+         (list :project asked :root "" :conversations []
+               :why "A remote directory: start that agent with SPC a h n"))
+      (ghostherd--new-read-sources-async
      (lambda ()
        (let ((root (and (file-directory-p (expand-file-name asked))
                         (ghostherd--new-root asked))))
@@ -2770,7 +2777,7 @@ is its room's."
                                          ghostherd-default-kind))
                   :conversations (ghostherd-memory-page--vec
                                   (mapcar (lambda (c) (ghostherd-memory-page--new-conversation c root))
-                                          (ghostherd-new-conversations root)))))))))))
+                                          (ghostherd-new-conversations root))))))))))))
 
 
 ;;; Intents

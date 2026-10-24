@@ -157,6 +157,23 @@ const CONVS = [
       await sleep(80);
       check(W("no project: nothing sent, the form stays"), sent("agent-new").length === 1 && !!(await page.$(".newform")));
 
+      // Open room before Emacs has said which project the text is in: no
+      // room of the text (its lead would be a second, on part of a
+      // project) -- it waits, asked once, and opens the project's.
+      await page.fill(".newform .new-project", "~/src/fresh");
+      await tap('.newform [data-act="a:new-room"]');
+      await sleep(400);
+      const early = sent("new-conversations").filter((i) => i.project === "~/src/fresh");
+      const status = await page.$eval("#status", (e) => (e.hidden ? "" : e.textContent));
+      check(W("Open room before the answer: no room yet, asked once, said so"),
+        !(await page.$(".room")) && early.length === 1 && /Finding its project/.test(status), { early, status });
+      await page.evaluate(() => GM.setNewConversations({ project: "~/src/fresh", root: "~/src/fresh/", kind: "claude", conversations: [] }));
+      await sleep(150);
+      check(W("and once Emacs says, the project's room opens"),
+        (await page.$eval(".room .rhead .ppath", (e) => e.textContent).catch(() => null)) === FRESH);
+      await tap("#btn-new");
+      await sleep(80);
+
       // Open room: the project's room, by the name Emacs gave it.
       await page.fill(".newform .new-project", FRESH + "web");
       await sleep(450);

@@ -863,6 +863,9 @@
     // herd: the places a new agent can go, and each asked project's past
     // conversations ({root, kind, list, why}).
     places: null, convs: {},
+    // The projects asked for and not yet answered, and the one whose room
+    // Open room waits to open until Emacs says which project it is in.
+    convsAsked: new Set(), newRoomWant: null,
     // The model form: whose it is, and the model and effort picked.
     modelFor: null, modelPick: {},
     // Images attached to each agent's next prompt: [{path, thumb}].
@@ -1918,7 +1921,9 @@
     syncNewForm();
     if (!project || herdNow.convs[project]) return;
     const go = () => {
-      if (newProjectNow() === project && !herdNow.convs[project]) emit("new-conversations", { project });
+      if (newProjectNow() !== project || herdNow.convs[project] || herdNow.convsAsked.has(project)) return;
+      herdNow.convsAsked.add(project);
+      emit("new-conversations", { project });
     };
     if (now) go();
     else newConvTimer = setTimeout(go, 300);
@@ -1929,6 +1934,8 @@
     herdNow.newKind = herdNow.newName = herdNow.newConv = "";
     herdNow.newWorktree = herdNow.newFork = herdNow.newKindPicked = false;
     herdNow.convs = {};
+    herdNow.convsAsked = new Set();
+    herdNow.newRoomWant = null;
     if (!project) {
       const here = (herdNow.places || []).find((p) => p.here);
       herdNow.newProject = here ? here.project : "";
@@ -1938,6 +1945,12 @@
     askNewConversations(true);
     const first = app.querySelector(project ? ".newform select" : ".newform .new-project");
     if (first) first.focus();
+  }
+
+  function openNewRoom(root) {
+    herdNow.newFor = herdNow.newRoomWant = null;
+    setStatus("");
+    openRoom(root);
   }
 
   // The top bar's + New agent: the form above the herd, from any tab.
@@ -3022,13 +3035,19 @@
       const c = herdNow.convs[where];
       if (!where) return setStatus("Which project?", "error");
       if (c && c.why) return setStatus(c.why, "error");
-      herdNow.newFor = null;
-      // The room is the project's, by its name as the herd writes it: Emacs
-      // said which project a typed directory is in.
-      return openRoom((c && c.root) || where);
+      // The room is the project's, by its name as the herd writes it, which
+      // only Emacs can say of what was typed -- a subdirectory, a worktree,
+      // no slash: until it has, wait for it rather than open a room of the
+      // text, whose lead would be a second one, on part of a project.
+      if (!c) {
+        herdNow.newRoomWant = where;
+        setStatus("Finding its project…");
+        return askNewConversations(true);
+      }
+      return openNewRoom(c.root);
     }
     if (act === "new-cancel") {
-      herdNow.newFor = null;
+      herdNow.newFor = herdNow.newRoomWant = null;
       return renderAgents();
     }
   }
@@ -4817,8 +4836,17 @@
     // directory is in, and the kind it starts by default.
     setNewConversations: (p) => {
       if (!p || !p.project) return;
-      herdNow.convs[p.project] = { root: p.root || "", kind: p.kind || "", list: p.conversations || [], why: p.why || "" };
-      if (p.project === newProjectNow()) syncNewForm();
+      const c = { root: p.root || "", kind: p.kind || "", list: p.conversations || [], why: p.why || "" };
+      herdNow.convs[p.project] = c;
+      herdNow.convsAsked.delete(p.project);
+      if (p.project !== newProjectNow()) return;
+      // Open room was pressed before this came: now it can open, or say why not.
+      if (herdNow.newRoomWant === p.project && herdNow.newFor) {
+        herdNow.newRoomWant = null;
+        if (c.why || !c.root) setStatus(c.why || "No project there", "error");
+        else return openNewRoom(c.root);
+      }
+      syncNewForm();
     },
 
     setScreen: (p) => {
