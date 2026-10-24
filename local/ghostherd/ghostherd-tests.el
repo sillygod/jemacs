@@ -13000,6 +13000,137 @@ never a full copy, never a lock-less install."
         (should (eq (funcall status) 'done))
         (should (file-exists-p (expand-file-name ".venv/pyvenv.cfg" path)))))))
 
+(defmacro ghostherd-tests--with-uv-repo (&rest body)
+  "BODY in `with-repo' whose `repo' is a uv project in server/: a tracked
+server/uv.lock and an ignored server/.venv, the main checkout's venv.
+`wt' is a worktree of it, `path' its directory, `bin' a dir with a fake
+`uv' (that writes UV_PROJECT_ENVIRONMENT/pyvenv.cfg and logs its cwd and
+args to `log', failing when UV_FAKE_FAIL is set) on a PATH of its own,
+and `run' a lambda (&optional SPECS) setting the deps up and waiting.
+The real uv and the user's cache are never run."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-herd ((ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
+     (ghostherd-tests--with-repo
+       (with-temp-file (expand-file-name ".gitignore" repo) (insert ".venv/\n"))
+       (make-directory (expand-file-name "server" repo) t)
+       (with-temp-file (expand-file-name "server/uv.lock" repo) (insert "version = 1\n"))
+       (funcall git repo "add" ".gitignore" "server/uv.lock")
+       (funcall git repo "commit" "-q" "-m" "uv")
+       (make-directory (expand-file-name "server/.venv/bin" repo) t)
+       (with-temp-file (expand-file-name "server/.venv/pyvenv.cfg" repo) (insert "main\n"))
+       (let* ((ghostherd-worktree-root (concat base "trees/"))
+              (wt (ghostherd--worktree-create repo "dev"))
+              (path (plist-get wt :path))
+              (bin (concat base "bin/"))
+              (log (concat base "uv.log"))
+              (process-environment (copy-sequence process-environment))
+              (run (lambda (&optional specs)
+                     (clrhash ghostherd--worktree-deps-status)
+                     (ghostherd--worktree-deps-setup repo path "dev" specs)
+                     (let ((n 0))
+                       (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< n 100))
+                         (accept-process-output nil 0.1) (setq n (1+ n)))))))
+         (ignore wt run)
+         (make-directory bin t)
+         (with-temp-file (expand-file-name "uv" bin)
+           (insert "#!/bin/sh\n"
+                   "echo \"$PWD $* $UV_PROJECT_ENVIRONMENT\" >> " (shell-quote-argument log) "\n"
+                   "[ -n \"$UV_FAKE_FAIL\" ] && { mkdir -p \"$UV_PROJECT_ENVIRONMENT/lib\"; exit 1; }\n"
+                   "mkdir -p \"$UV_PROJECT_ENVIRONMENT\" && echo own > \"$UV_PROJECT_ENVIRONMENT/pyvenv.cfg\"\n"))
+         (set-file-modes (expand-file-name "uv" bin) #o755)
+         (setenv "PATH" (concat (directory-file-name bin) ":/usr/bin:/bin"))
+         (setenv "UV_FAKE_FAIL" nil)
+         ,@body))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-by-default ()
+  "By default a uv project's venv, found at any depth (server/.venv), is
+the worktree's own -- `uv sync --frozen' in its directory, from the
+worktree's own lock, into the worktree's path -- not a symlink to the main
+checkout's, whose venv is left alone.  The outcome says how it was made."
+  (ghostherd-tests--with-uv-repo
+    (should (equal (alist-get ".venv" ghostherd-worktree-deps nil nil #'equal) 'uv))
+    (funcall run)
+    (let ((venv (expand-file-name "server/.venv" path))
+          (st (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                         nil nil #'equal)))
+      (should (eq (plist-get st :status) 'done))
+      (should (equal (plist-get st :how) "uv"))
+      (should-not (file-symlink-p venv))
+      (should (equal (with-temp-buffer (insert-file-contents (expand-file-name "pyvenv.cfg" venv))
+                                       (buffer-string))
+                     "own\n"))
+      ;; Synced in the worktree's server/, frozen, into the worktree's venv.
+      (let ((line (with-temp-buffer (insert-file-contents log) (string-trim (buffer-string)))))
+        (should (equal line (format "%s sync --frozen %s"
+                                    (directory-file-name (expand-file-name "server" path))
+                                    venv))))
+      ;; The main checkout's venv is untouched.
+      (should (equal (with-temp-buffer
+                       (insert-file-contents (expand-file-name "server/.venv/pyvenv.cfg" repo))
+                       (buffer-string))
+                     "main\n"))
+      ;; Ignored at the source, so the worktree still reads clean.
+      (should (ghostherd--worktree-clean-p path)))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-falls-back-to-symlink ()
+  "With no uv.lock beside the venv, or no uv on PATH, the venv is
+symlinked to the main checkout's as before; uv is never run then."
+  (ghostherd-tests--with-uv-repo
+    ;; No uv on PATH, the system's tools still there.
+    (setenv "PATH" "/usr/bin:/bin")
+    (funcall run)
+    (let ((venv (directory-file-name (expand-file-name "server/.venv" path))))
+      (should (file-symlink-p venv))
+      (should (equal (plist-get (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                                           nil nil #'equal)
+                                :how)
+                     "symlink"))
+      (should-not (file-exists-p log))
+      ;; uv there, but no uv.lock in the worktree's server/: a symlink too.
+      (delete-file venv)
+      (delete-file (expand-file-name "server/uv.lock" path))
+      (setenv "PATH" (concat (directory-file-name bin) ":/usr/bin:/bin"))
+      (funcall run)
+      (should (file-symlink-p venv))
+      (should-not (file-exists-p log)))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-sync-failure-said ()
+  "A uv sync that fails is skipped and said so on the card, its partial
+venv removed -- never a symlink to the main checkout's in its place."
+  (ghostherd-tests--with-uv-repo
+    (setenv "UV_FAKE_FAIL" "1")
+    (funcall run)
+    (let ((venv (directory-file-name (expand-file-name "server/.venv" path)))
+          (st (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                         nil nil #'equal)))
+      (should (eq (plist-get st :status) 'skipped))
+      (should (equal (plist-get st :reason) "uv-sync-failed"))
+      (should-not (file-exists-p venv))
+      (should-not (file-symlink-p venv))
+      (when (require 'ghostherd-memory-page nil t)
+        (let ((card (ghostherd-memory-page--worktree-deps
+                     (ghostherd-tests--session :name "dev" :kind 'claude :project repo))))
+          (should (vectorp card))
+          (should (equal (plist-get (aref card 0) :reason) "uv-sync-failed")))))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-user-choice-wins ()
+  "The user's own `ghostherd-worktree-deps', and a project's
+`ghostherd-project-worktree-deps' dir-local, win over the uv default: a
+symlink stays a symlink.  The dir-local may name the uv method."
+  (ghostherd-tests--with-uv-repo
+    (let ((ghostherd-worktree-deps '((".venv" . symlink))))
+      (funcall run))
+    (should (file-symlink-p (directory-file-name (expand-file-name "server/.venv" path))))
+    (should-not (file-exists-p log))
+    (with-temp-file (expand-file-name ".dir-locals.el" repo)
+      (prin1 '((nil . ((ghostherd-project-worktree-deps . ((".venv" . symlink))))))
+             (current-buffer)))
+    (should (equal (ghostherd--worktree-deps-for repo) '((".venv" . symlink))))
+    (should (funcall (get 'ghostherd-project-worktree-deps 'safe-local-variable)
+                     '((".venv" . uv))))
+    (should-not (funcall (get 'ghostherd-project-worktree-deps 'safe-local-variable)
+                         '((".venv" . rm))))))
+
 (ert-deftest ghostherd-test-worktree-deps-resolve-finds-nested ()
   "Bare-name deps are found by directory name among the main checkout's
 ignored directories at any depth; build caches and dirs inside an ignored

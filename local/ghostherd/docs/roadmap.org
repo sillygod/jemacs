@@ -1514,8 +1514,15 @@ Refined after the first pass:
 - [X] Worktree attribution for a bare repo or a submodule (G): a bare repo's
   worktrees group under the bare repo; a submodule is its own project, at its
   own working tree, not folded into the superproject's .git/modules
+- [X] A venv per worktree by default for a uv project (ask b5169665): a
+  venv found at any depth whose directory has a =uv.lock= (in the worktree)
+  is synced there (=uv sync --frozen=, the =uv= method), not symlinked --
+  a symlink let a worktree's =uv sync= rewrite the main checkout's venv
+  (rd-tabs).  No lock or no uv -> the symlink as before; a failed sync is
+  said on the card.  uv clones from its cache: measured 0.13--0.19 s and
+  ~2 MB real disk warm for a 202 MB venv
 - [ ] node_modules shared copy-on-write at a finer grain than the whole
-  tree; a venv per worktree when a project wants divergent Python deps
+  tree
 - [ ] Worktree attribution for a bare-repo or submodule checkout
 
 ** Deliberately not done

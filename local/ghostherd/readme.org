@@ -1114,12 +1114,27 @@ measured in the background and cached, not run on every poll.
 
 Dependencies are carried in when the worktree is made, in the background,
 by =ghostherd-worktree-deps= (per project, overridable with a
-=ghostherd-project-worktree-deps= dir-local): a Python venv is *symlinked*
-to the main checkout's (a venv holds absolute paths, so a copy breaks),
-=node_modules= is *cloned* copy-on-write (APFS =cp -c=, so the worktree may
-diverge it cheaply), and build caches are left off the list.  A dependency
-that cannot be cloned is skipped and said so on the card --- never copied in
-full.
+=ghostherd-project-worktree-deps= dir-local; your own value of either wins
+over the default).  Each is found by name at any depth (=.venv= finds
+=server/.venv=):
+- a *uv project's venv* (its directory has a =uv.lock= in the worktree,
+  and =uv= is on PATH) is the worktree's *own*: =uv sync --frozen= there,
+  from the branch's lock.  A symlink to the main checkout's venv would let
+  a =uv sync= or =uv run= in the worktree rewrite the /main/ checkout's
+  venv to the branch's lock.  uv clones from its cache (copy-on-write, its
+  default on macOS), so it is cheap: on jnotes' lock (58 packages, a 202 MB
+  venv by =du=) a sync took 0.13--0.19 s and 2 MB of real disk with uv's
+  cache warm, ~70 s with it cold (downloads).  A failed sync is skipped and
+  said so on the card, its partial venv removed --- not a symlink in its
+  place, so the worktree's own =uv sync= makes one;
+- any *other venv* is *symlinked* to the main checkout's (a venv holds
+  absolute paths, so a copy breaks);
+- =node_modules= is *cloned* copy-on-write (APFS =cp -c=, so the worktree
+  may diverge it cheaply).  An =npm ci= in the worktree deletes the clone
+  and installs a full copy; =npm install= changes only what differs;
+- build caches are left off the list.
+A dependency that cannot be cloned is skipped and said so on the card ---
+never copied in full.
 
 =herd list= shows each agent's directory and branch, so a lead can find a
 worktree agent's work and read it by its branch (=git diff BASE...BRANCH=).
