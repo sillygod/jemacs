@@ -2282,6 +2282,12 @@ pane height, and the padding would otherwise be the whole region."
 (defconst ghostherd--input-rule-re "^[ \t]*[╭╰┌└├]?[─━═]\\{8,\\}"
   "A horizontal rule of the kind the CLIs draw around their input box.")
 
+(defconst ghostherd--menu-choice-re
+  "\\`\\(?:[[:blank:]]*[│┃][[:blank:]]*\\)?[❯›>][[:blank:]]*[1-9]\\."
+  "A menu's first choice: the prompt sign, maybe just inside a frame, then
+its number -- not the input box, though it opens with the same sign.
+Only at the sign: text in the box may hold \"> 1.\" (ask 50461410).")
+
 (defvar ghostherd--box-prompt-re)
 
 (defun ghostherd--input-at-foot-p (text)
@@ -2295,7 +2301,7 @@ prompt in the conversation."
              thereis (and line
                           (string-match-p ghostherd--input-rule-re above)
                           (string-match-p ghostherd--box-prompt-re line)
-                          (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))))))
+                          (not (string-match-p ghostherd--menu-choice-re line))))))
 
 ;;; What a screen says besides the state
 ;;
@@ -2457,7 +2463,7 @@ that are not padding, room for a box of several lines and a footer."
     (cl-loop for i downfrom end to (max 1 (- end 14))
              for line = (aref lines i)
              when (and (string-match-p ghostherd--box-prompt-re line)
-                       (not (string-match-p "[❯›>][[:blank:]]*[1-9]\\." line))
+                       (not (string-match-p ghostherd--menu-choice-re line))
                        (string-match-p ghostherd--input-rule-re (aref lines (1- i))))
              return (1- i))))
 
@@ -2474,16 +2480,24 @@ rows under its box."
               ((plist-get spec :screen-rules))
               (screen (gethash (ghostherd-session-id session) ghostherd--screens))
               ((not (ghostherd--box-top (vconcat (split-string screen "\n"))))))
-    (let ((pane (ignore-errors (ghostherd--host-capture session most-positive-fixnum))))
+    (let ((pane (ghostherd--pane session screen)))
       (not (and pane (ghostherd--box-top (vconcat (split-string pane "\n"))))))))
+
+(defun ghostherd--pane (session tail)
+  "SESSION's whole visible screen, TAIL its foot: the pane the batched
+fetch kept with TAIL (`ghostherd--panes'), else read now -- on ghostel,
+its terminal's rows, not the scrollback over them."
+  (let ((kept (gethash (ghostherd-session-id session) ghostherd--panes)))
+    (if (and kept (equal (car kept) tail))
+        (cdr kept)
+      (ignore-errors (ghostherd-backend-pane (ghostherd--backend-of session) session)))))
 
 (defun ghostherd--whole-pane (session tail)
   "SESSION's whole visible pane, its blank rows dropped, when it shows
 more than TAIL does; else nil.  For a dialog drawn from the top of a
 pane taller than the tail: the rows under it are padding."
   (let* ((rows (lambda (s) (seq-remove #'string-blank-p (split-string (or s "") "\n"))))
-         (all (funcall rows (ignore-errors
-                              (ghostherd--host-capture session most-positive-fixnum)))))
+         (all (funcall rows (ghostherd--pane session tail))))
     (when (> (length all) (length (funcall rows tail)))
       (string-join all "\n"))))
 
@@ -5056,6 +5070,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--idle-since)
     (remhash id ghostherd--reports)
     (remhash id ghostherd--screens)
+    (remhash id ghostherd--panes)
     (remhash id ghostherd--feet)
     (remhash id ghostherd--started-by)
     (ghostherd--log-add session 'life

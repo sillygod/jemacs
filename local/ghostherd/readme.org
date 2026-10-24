@@ -138,7 +138,10 @@ The dialogs are drawn from the top of the pane.  In a window over 40
 rows high --- an attached view takes its window's size --- the 40 lines
 the poll reads are blank rows under it, so a screen with nothing read
 and no input box at its foot is read whole, its blank rows dropped, for
-the menu it shows.  And whatever it reads as, an agent of the three
+the menu it shows.  Not captured again: the poll's batched tmux fetch
+reads each whole pane anyway and keeps it beside the tail it cuts
+(=ghostherd--panes=); on ghostel, whose buffer holds the scrollback, the
+screen is the terminal's last rows.  And whatever it reads as, an agent of the three
 CLIs with no input box at its foot gets nothing pasted: not mail, nor a
 message waiting for its prompt (=ghostherd--when-ready=, which an agy's
 first message and =--when-ready= use).  A dialog no rule knows is held

@@ -57,6 +57,7 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd--turn-ends (make-hash-table :test 'equal))
          (ghostherd--reports (make-hash-table :test 'equal))
          (ghostherd--screens (make-hash-table :test 'equal))
+         (ghostherd--panes (make-hash-table :test 'equal))
          ;; Keyed by session id: one test's text left unsent, or ask turn
          ;; pending, is not the next test's.
          (ghostherd--submits (make-hash-table :test 'equal))
@@ -6193,6 +6194,12 @@ pane that is not there kept out of them."
                                     (alist-get "batch-a" screens nil nil #'equal)))
             (should (string-match-p "screen-of-batch-b"
                                     (alist-get "batch-b" screens nil nil #'equal)))
+            ;; Each pane is kept whole beside the tail the rules got, not
+            ;; captured again for a screen they read nothing on.
+            (dolist (name '("batch-a" "batch-b"))
+              (let ((kept (gethash name ghostherd--panes)))
+                (should (equal (car kept) (alist-get name screens nil nil #'equal)))
+                (should (string-match-p (concat "screen-of-" name) (cdr kept)))))
             ;; And the same round trip answered liveness.
             (should (assoc (ghostherd-session-host-id (car sessions))
                            (cdr ghostherd-tmux--status-cache))))
@@ -9182,6 +9189,71 @@ box is drawn, read or not -- until the box is back."
                  (lambda (&rest _) (cl-incf captures) (ghostherd-test--claude-screen "❯ "))))
         (ghostherd--detect-state s (ghostherd-test--claude-screen "❯ ")))
       (should (= captures 0)))))
+
+;;; Review round 2 (ask 50461410).
+
+(ert-deftest ghostherd-test-a-box-whose-text-says-1-is-still-a-box ()
+  "Text in the input box may hold \"> 1.\" -- a draft \"x > 1.5\" -- and the
+box is still the box: the words above it are the conversation's, the
+agent is idle and gets its mail.  A menu's first choice, its number at
+the sign, framed or not, is no box."
+  (ghostherd-tests--with-herd ()
+    (let* ((draft "check that x > 1.5 still holds")
+           (c (ghostherd-tests--session :name "qa" :kind 'claude :backend 'fake :state 'idle))
+           (g (ghostherd-tests--session :name "grok-review" :kind 'grok :backend 'fake :state 'idle))
+           (cases `((,c . ,(ghostherd-test--claude-screen
+                             (concat "❯ " draft) "  It asked: Do you want to proceed?\n\n"))
+                    (,g . ,(replace-regexp-in-string
+                             "│ ❯ " (concat "│ ❯ " draft)
+                             (ghostherd-test--grok-at-rest "Do you want to proceed?") t t)))))
+      (pcase-dolist (`(,s . ,screen) cases)
+        (should (ghostherd--input-at-foot-p screen))
+        (should (ghostherd--box-top (vconcat (split-string screen "\n"))))
+        (should (eq (car (ghostherd--detect-state s screen)) 'idle))
+        (should-not (ghostherd--herd-held-p (list :to (ghostherd-session-name s)))))
+      (dolist (menu (list (concat ghostherd-test--rule "\n❯ 1. Yes\n  2. No\n")
+                          (concat "  ╭" (make-string 40 ?─) "╮\n  │ ❯ 1. Allow once │\n"
+                                  "  │   2. Reject │\n  ╰" (make-string 40 ?─) "╯\n")))
+        (should-not (ghostherd--input-at-foot-p menu))
+        (should-not (ghostherd--box-top (vconcat (split-string menu "\n"))))))))
+
+(ert-deftest ghostherd-test-a-ghostel-screen-is-its-rows-not-its-scrollback ()
+  "On ghostel the buffer holds the scrollback: the whole screen is its
+last rows, as many as its terminal has, so an old prompt up in the
+history is not read as the screen.  Rows not known: no more than the
+tail."
+  (with-temp-buffer
+    (insert "  Do you want to proceed?\n  ❯ 1. Yes\n  2. No\n")
+    (dotimes (i 50) (insert (format "line %d\n" i)))
+    (setq-local ghostel--term-rows 5)
+    (let ((buf (current-buffer)))
+      (cl-letf (((symbol-function 'ghostherd--ghostel-buffer) (lambda (_) buf)))
+        (let ((pane (ghostherd-backend-pane 'ghostel nil)))
+          (should (string-match-p "line 49" pane))
+          (should-not (string-match-p "proceed\\|line 44" pane)))
+        (setq-local ghostel--term-rows nil)
+        (should (= (length (split-string (ghostherd-backend-pane 'ghostel nil) "\n" t))
+                   ghostherd-screen-tail-lines))))))
+
+(ert-deftest ghostherd-test-a-held-screen-is-not-captured-again ()
+  "A screen no rule reads and with no box: read whole from the pane the
+batched fetch kept beside its tail -- for its state every poll, for its
+mail every tick -- not captured again.  A tail it was not kept with is."
+  (ghostherd-tests--with-herd ()
+    (let* ((s (ghostherd-tests--session :name "grok" :kind 'grok :backend 'fake :state 'idle))
+           (pane (ghostherd-test--pane 70 ghostherd-test--grok-trust-screen))
+           (tail (ghostherd--string-tail pane ghostherd-screen-tail-lines))
+           (captures 0))
+      (cl-letf (((symbol-function 'ghostherd-backend-pane)
+                 (lambda (&rest _) (cl-incf captures) pane)))
+        (puthash "grok" (cons tail pane) ghostherd--panes)
+        (should (eq (car (ghostherd--detect-state s tail)) 'blocked))
+        (setf (ghostherd-session-state s) 'idle)
+        (dotimes (_ 3) (should (ghostherd--herd-held-p '(:to "grok"))))
+        (should (= captures 0))
+        (puthash "grok" (cons "another screen" pane) ghostherd--panes)
+        (should (ghostherd--herd-held-p '(:to "grok")))
+        (should (= captures 1))))))
 
 (ert-deftest ghostherd-test-a-quick-turn-its-hooks-saw-is-taken ()
   "A turn so quick its `working' and `done' reached the herd in one
