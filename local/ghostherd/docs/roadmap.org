@@ -1521,6 +1521,11 @@ Refined after the first pass:
   (rd-tabs).  No lock or no uv -> the symlink as before; a failed sync is
   said on the card.  uv clones from its cache: measured 0.13--0.19 s and
   ~2 MB real disk warm for a 202 MB venv
+- [X] The size chip's tooltip names where the space is (ask b5169665): the
+  biggest parts from the same one =du= (=-d 4=, =awk=-filtered to a
+  fiftieth before Emacs reads it), dependencies whole, a dir broken only
+  when it splits or holds a big dependency; clones said made so, never
+  "shared"; linked dependencies said to take no space
 - [ ] node_modules shared copy-on-write at a finer grain than the whole
   tree
 - [ ] Worktree attribution for a bare-repo or submodule checkout

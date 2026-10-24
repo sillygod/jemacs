@@ -1110,7 +1110,19 @@ its lead, and =ghostherd--project-root= resolves a worktree to its main
 checkout (by git's common dir), so an agent started by hand in a worktree
 directory is attributed the same way.  Its card shows its branch, how far
 it is ahead of its base (=↑N=) and the worktree's size on disk; the size is
-measured in the background and cached, not run on every poll.
+measured in the background and cached, not run on every poll.  Hover the
+size for where the space is --- the biggest parts, down to a nested
+dependency, then the rest:
+
+: worktree on disk: node_modules 481 MB · server/.venv 220 MB · server/data 90 MB · rest 7.0 MB
+
+It comes from the same one =du= (to four levels deep, filtered by =awk= to
+the few big lines before Emacs reads them).  A dependency is named whole;
+any other directory is broken into its big parts only when it splits or
+holds a big dependency.  =du= counts a copy-on-write clone in full and
+cannot see what it still shares, so the tooltip says which parts the herd
+made as clones --- never that they /are/ shared --- and which carried-in
+dependencies are symlinks, which take no space there.
 
 Dependencies are carried in when the worktree is made, in the background,
 by =ghostherd-worktree-deps= (per project, overridable with a

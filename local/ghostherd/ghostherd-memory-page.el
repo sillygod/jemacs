@@ -1200,7 +1200,10 @@ the page is open."
 ;; base, and the worktree's size on disk.  Ahead is a cheap `git rev-list
 ;; --count', done as a chore at each look.  Size is `du', which can be
 ;; slow, so it runs in the background and is kept for a few minutes rather
-;; than measured on every poll.
+;; than measured on every poll.  The same `du' says where the space is --
+;; its biggest parts, down to a nested dependency like server/.venv --
+;; filtered to those few lines before Emacs reads it, so a node_modules of
+;; thousands of directories costs Emacs nothing to parse.
 
 (defconst ghostherd-memory-page--size-ttl 300
   "Seconds a worktree's measured size is kept before `du' runs again.")
@@ -1208,6 +1211,16 @@ the page is open."
   "Session id -> commits its worktree branch is ahead of its base.")
 (defvar ghostherd-memory-page--size (make-hash-table :test 'equal)
   "Session id -> its worktree's size on disk in bytes, as `du' measured it.")
+(defvar ghostherd-memory-page--size-parts (make-hash-table :test 'equal)
+  "Session id -> where its worktree's space is, as `du' measured it:
+(:parts ((REL . BYTES) ...) :rest BYTES :linked (REL ...)), from
+`ghostherd-memory-page--size-where'.")
+(defconst ghostherd-memory-page--size-depth 4
+  "How deep `du' names a worktree's parts: deep enough for a dependency
+nested in the tree, like server/.venv or apps/web/node_modules.")
+(defconst ghostherd-memory-page--size-parts-most 4
+  "Most parts a worktree's size chip names; what else there is is summed
+as the rest.")
 (defvar ghostherd-memory-page--size-at (make-hash-table :test 'equal)
   "Session id -> when its worktree size was last measured.")
 (defvar ghostherd-memory-page--size-running (make-hash-table :test 'equal)
@@ -1231,36 +1244,124 @@ page is told when that changed."
               (puthash id n ghostherd-memory-page--ahead)
               (ghostherd-memory-page--work-changed))))))))
 
+(defun ghostherd-memory-page--size-deps (s)
+  "The directory names that are dependencies in S's worktree -- each
+named whole on its size chip, never broken into its own parts: those of
+`ghostherd-worktree-deps', and those the herd carried into S's worktree."
+  (seq-uniq
+   (mapcar (lambda (e) (file-name-nondirectory (directory-file-name (car e))))
+           (append ghostherd-worktree-deps
+                   (and (fboundp 'ghostherd-session-worktree-deps)
+                        (ghostherd-session-worktree-deps s))))))
+
+(defun ghostherd-memory-page--size-where (sizes deps)
+  "Where a worktree's space is, from SIZES -- `du''s (REL . KB) for its
+directories, \"\" the whole worktree -- as (PARTS . REST): PARTS the
+biggest few, ((REL . BYTES) ...) biggest first, and REST the bytes of all
+else.  A part is a directory of at least a twentieth of the whole that is
+a dependency (its name in DEPS), or that does not split: from the top, a
+directory is broken into its big subdirectories when two or more are big,
+or a big dependency lies within it -- so server/ becomes server/.venv and
+server/data, and server/data, all of it one models dir, stays itself."
+  (let* ((total (or (cdr (assoc "" sizes)) 0))
+         (big (lambda (e) (and (> total 0) (>= (* 20 (cdr e)) total))))
+         (bigs (seq-filter (lambda (e) (and (not (equal (car e) "")) (funcall big e))) sizes))
+         (dep-p (lambda (rel) (member (file-name-nondirectory rel) deps)))
+         parts)
+    (cl-labels ((kids (dir)
+                  (seq-filter (lambda (e)
+                                (equal (or (file-name-directory (car e)) "")
+                                       (if (equal dir "") "" (concat dir "/"))))
+                              bigs))
+                (walk (e)
+                  (let* ((rel (car e)) (ks (kids rel)))
+                    (if (or (funcall dep-p rel) (null ks)
+                            (and (null (cdr ks))
+                                 (not (seq-find (lambda (b) (and (string-prefix-p (concat rel "/") (car b))
+                                                                 (funcall dep-p (car b))))
+                                                bigs))))
+                        (push e parts)
+                      (mapc #'walk ks)))))
+      (mapc #'walk (kids "")))
+    (let* ((top (seq-take (sort parts (lambda (a b) (> (cdr a) (cdr b))))
+                          ghostherd-memory-page--size-parts-most))
+           (named (apply #'+ (mapcar #'cdr top))))
+      (cons (mapcar (lambda (e) (cons (car e) (* 1024 (cdr e)))) top)
+            (* 1024 (max 0 (- total named)))))))
+
+(defun ghostherd-memory-page--size-read (root output)
+  "Read OUTPUT of the size command for the worktree at ROOT: its total in
+bytes, its directories' sizes and its symlinked dependencies, as (BYTES
+:sizes ((REL . KB) ...) :linked (REL ...)), REL \"\" for ROOT itself; nil
+when `du' gave no total.  Lines are `KB<TAB>PATH' from `du' and
+`link<TAB>REL' for a dependency that is a symlink."
+  (let* ((root (directory-file-name root))
+         (prefix (concat root "/"))
+         sizes linked)
+    (dolist (line (split-string output "\n" t))
+      (pcase (split-string line "\t")
+        (`("link" ,rel) (push rel linked))
+        (`(,kb ,p)
+         (when-let* (((string-match-p "\\`[0-9]+\\'" kb))
+                     (rel (cond ((equal p root) "")
+                                ((string-prefix-p prefix p) (substring p (length prefix))))))
+           (push (cons rel (string-to-number kb)) sizes)))))
+    (when-let* ((total (cdr (assoc "" sizes))))
+      (list (* 1024 total) :sizes sizes :linked (nreverse linked)))))
+
 (defun ghostherd-memory-page--worktree-size (id)
   "Measure session ID's worktree size with `du' in the background, kept for
-`ghostherd-memory-page--size-ttl'; the page is told when it changed.  Never
-blocks Emacs, and never two `du's at once for one worktree."
+`ghostherd-memory-page--size-ttl'; the page is told when it changed.  The
+one `du' also says where the space is (`ghostherd-memory-page--size-where'):
+its directories down to `ghostherd-memory-page--size-depth', filtered by
+`awk' to those of at least a fiftieth of the whole before Emacs reads
+them, and which carried-in dependencies are symlinks.  Never blocks Emacs,
+and never two `du's at once for one worktree."
   (when-let* ((s (ghostherd-get id))
               (wt (ghostherd-session-worktree s))
               (path (plist-get wt :path))
-              ((file-directory-p (expand-file-name path)))
+              (root (directory-file-name (expand-file-name path)))
+              ((file-directory-p root))
               ((not (gethash id ghostherd-memory-page--size-running)))
               ((let ((at (gethash id ghostherd-memory-page--size-at)))
                  (or (null at) (> (- (float-time) at) ghostherd-memory-page--size-ttl)))))
-    (let ((buf (generate-new-buffer " *ghostherd-du*")))
+    (let* ((buf (generate-new-buffer " *ghostherd-du*"))
+           (deps (ghostherd-memory-page--size-deps s))
+           (carried (mapcar #'car (and (fboundp 'ghostherd-session-worktree-deps)
+                                       (ghostherd-session-worktree-deps s))))
+           (q (shell-quote-argument root))
+           (script
+            (concat
+             (format "du -k -d %d %s 2>/dev/null | awk -F '\t' '{ n[NR] = $1; l[NR] = $0; if ($1 + 0 > t) t = $1 + 0 } END { for (i = 1; i <= NR; i++) if (n[i] * 50 >= t) print l[i] }'"
+                     ghostherd-memory-page--size-depth q)
+             (mapconcat (lambda (rel)
+                          (format "; [ -L %s ] && printf 'link\\t%%s\\n' %s"
+                                  (shell-quote-argument (concat root "/" rel))
+                                  (shell-quote-argument rel)))
+                        carried ""))))
       (condition-case err
           (progn
             (puthash id t ghostherd-memory-page--size-running)
             (make-process
              :name "ghostherd-du" :buffer buf :noquery t
-             :command (list "du" "-sk" (expand-file-name path))
+             :command (list "sh" "-c" script)
              :sentinel
              (lambda (proc _event)
                (unless (process-live-p proc)
                  (remhash id ghostherd-memory-page--size-running)
                  (puthash id (float-time) ghostherd-memory-page--size-at)
                  (when (buffer-live-p (process-buffer proc))
-                   (when (eq (process-exit-status proc) 0)
-                     (with-current-buffer (process-buffer proc)
-                       (let ((kb (string-to-number (car (split-string (buffer-string))))))
-                         (unless (equal (* kb 1024) (gethash id ghostherd-memory-page--size))
-                           (puthash id (* kb 1024) ghostherd-memory-page--size)
-                           (ghostherd-memory-page--work-changed)))))
+                   (when-let* ((got (with-current-buffer (process-buffer proc)
+                                      (ghostherd-memory-page--size-read root (buffer-string))))
+                               (where (ghostherd-memory-page--size-where
+                                       (plist-get (cdr got) :sizes) deps))
+                               (parts (list :parts (car where) :rest (cdr where)
+                                            :linked (plist-get (cdr got) :linked))))
+                     (unless (and (equal (car got) (gethash id ghostherd-memory-page--size))
+                                  (equal parts (gethash id ghostherd-memory-page--size-parts)))
+                       (puthash id (car got) ghostherd-memory-page--size)
+                       (puthash id parts ghostherd-memory-page--size-parts)
+                       (ghostherd-memory-page--work-changed)))
                    (kill-buffer (process-buffer proc)))))))
         (error (remhash id ghostherd-memory-page--size-running)
                (when (buffer-live-p buf) (kill-buffer buf))
@@ -1597,6 +1698,27 @@ vector of {name, reason}; :json-false when all were fine or absent."
                  skipped))
       :json-false)))
 
+(defun ghostherd-memory-page--size-parts-of (s)
+  "Where S's worktree's space is, for its size chip: {parts, rest, linked}
+-- parts a vector of {path, bytes, how}, HOW what the herd made that
+dependency as (\"clone\", \"uv\") or \"\"; linked the carried-in
+dependencies that are symlinks, which take no space here.  :json-false
+until measured."
+  (if-let* ((where (gethash (ghostherd-session-id s) ghostherd-memory-page--size-parts)))
+      (let ((made (and (fboundp 'ghostherd-session-worktree-deps)
+                       (ghostherd-session-worktree-deps s))))
+        (list :parts (ghostherd-memory-page--vec
+                      (mapcar (lambda (e)
+                                (let ((how (plist-get (cdr (assoc (car e) made)) :how)))
+                                  ;; A symlink takes no space, so a part
+                                  ;; the herd linked has been replaced.
+                                  (list :path (car e) :bytes (cdr e)
+                                        :how (if (member how '("clone" "uv")) how ""))))
+                              (plist-get where :parts)))
+              :rest (plist-get where :rest)
+              :linked (ghostherd-memory-page--vec (plist-get where :linked))))
+    :json-false))
+
 (defun ghostherd-memory-page--agent-work (s)
   "S's checkout as the page shows it, when it is not its project's.
 A herd-made worktree also carries how far it is ahead of its base, its
@@ -1613,6 +1735,7 @@ that could not be carried in."
               (append w (list :base (or (plist-get wt :base) "")
                               :ahead (or (gethash id ghostherd-memory-page--ahead) :json-false)
                               :size (or (gethash id ghostherd-memory-page--size) :json-false)
+                              :sizeParts (ghostherd-memory-page--size-parts-of s)
                               :deps (ghostherd-memory-page--worktree-deps s)))
             w))
       :json-false)))
