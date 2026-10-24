@@ -314,6 +314,76 @@ def test_reimport_embeds_only_new_words(tmp_path, monkeypatch):
         reset_engine()
 
 
+def test_agy_rows_indexed_with_an_encoded_path_are_fixed_once(tmp_path, monkeypatch):
+    """An index made before agy's workspace URIs were decoded says
+    ".../Open%20Design" for those sessions, in its rows and in its chunks.
+    The next import reads each agy source again (its parser version is
+    newer) and writes the real path, embedding nothing -- the words are
+    the same; the one after that skips them all."""
+    import json
+    import sqlite3
+    from urllib.parse import urlparse
+
+    import importers.agy as agy_mod
+    from config import Config
+    from engine import MemoryEngine, reset_engine
+
+    enc = "file:///Users/u/Library/Application%20Support/Open%20Design/p1"
+    real = "/Users/u/Library/Application Support/Open Design/p1"
+    agy = tmp_path / "agy"
+    logs = agy / "brain" / "conv-od" / ".system_generated" / "logs"
+    logs.mkdir(parents=True)
+    tx = logs / "transcript.jsonl"
+    tx.write_text("".join(json.dumps({
+        "type": "USER_INPUT", "source": "USER_EXPLICIT", "created_at": f"2026-10-20T10:0{i}:00Z",
+        "content": f"<USER_REQUEST>draw the {i}th screen of the design</USER_REQUEST>"}) + "\n"
+        for i in range(3)))
+    conn = sqlite3.connect(agy / "conversation_summaries.db")
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id TEXT, title TEXT,"
+                 " preview TEXT, workspace_uris TEXT, last_modified_time TEXT)")
+    conn.execute("INSERT INTO conversation_summaries VALUES (?,?,?,?,?)",
+                 ("conv-od", "a design", "draw the first screens of the open design, its colours and layout",
+                  json.dumps([enc]), "2026-10-20"))
+    conn.commit()
+    conn.close()
+
+    reset_engine()
+    cfg = Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "c",
+                 grok_root=tmp_path / "g", agy_root=agy)
+    eng = MemoryEngine(cfg)
+    try:
+        # As the importer before: version 2, the URI's path not decoded.
+        with monkeypatch.context() as m:
+            m.setattr(agy_mod, "VERSION", 2)
+            m.setattr(agy_mod, "project_from_workspace_uris",
+                      lambda raw: urlparse(json.loads(raw)[0]).path)
+            eng.import_transcripts(agents=["agy"])
+        old = {s["source_path"]: s["project"] for s in eng.list_sources(agent="agy")["sources"]}
+        assert old[str(tx)] == urlparse(enc).path
+        assert {p["project"] for p in eng.store.payloads_of(str(tx)).values()} == {urlparse(enc).path}
+
+        embedded = []
+        for name in ("dense", "sparse"):
+            real_fn = getattr(eng.embedder, name)
+            monkeypatch.setattr(eng.embedder, name, lambda texts, real_fn=real_fn, name=name:
+                                embedded.append(name) or real_fn(texts))
+        assert eng.import_transcripts(agents=["agy"])["imported"] == 0
+        assert embedded == []
+        rows = {s["source_path"]: s for s in eng.list_sources(agent="agy")["sources"]}
+        assert rows[str(tx)]["project"] == real
+        assert {p["project"] for p in eng.store.payloads_of(str(tx)).values()} == {real}
+        assert {p["project"] for p in eng.store.payloads_of(str(agy / "conversation_summaries.db")).values()} == {real}
+        assert eng.search("draw the screen of the design", project=real)["hits"]
+        embedded.clear()  # the search's own query
+        # Once is enough.
+        again = eng.import_transcripts(agents=["agy"])
+        assert (again["imported"], again["skipped"]) == (0, again["files"])
+        assert embedded == []
+    finally:
+        eng.close()
+        reset_engine()
+
+
 def test_embedding_takes_a_few_cores(monkeypatch):
     """Two threads at most unless configured, on the CPU unless CoreML is
     asked for: past two bge-small-zh barely speeds up for twice the burst

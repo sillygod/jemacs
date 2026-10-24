@@ -98,6 +98,12 @@ Three things about that build bite:
   =VERSION=: the index keeps, per file, the version that read it, and
   reads again a file an older one read.  Without it, nothing already
   imported changes.
+- A path an agent's log gives as a =file://= URI is decoded, once; one it
+  gives as a path is taken as it is, =%= and all.  agy names its
+  workspaces as URIs, and 17 sessions were indexed under
+  =.../Application%20Support/Open%20Design=, a directory that is not
+  there, so the new-agent picker and Resume dropped them (agy's
+  importer =VERSION= 3 reads them again).
 - The RPC URL carries the token.  A message names the sidecar with
   =ghostherd-memory--where=, never with the URL; nothing prints
   =rpc.token=.
