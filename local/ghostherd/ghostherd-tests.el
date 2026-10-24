@@ -12837,14 +12837,20 @@ base, and the worktree's size on disk -- :json-false until measured."
        (ghostherd-memory-page--prs (make-hash-table :test 'equal))
        (ghostherd-memory-page--changes (make-hash-table :test 'equal))
        (ghostherd-memory-page--ahead (make-hash-table :test 'equal))
-       (ghostherd-memory-page--size (make-hash-table :test 'equal)))
+       (ghostherd-memory-page--size (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size-parts (make-hash-table :test 'equal)))
     (let ((s (ghostherd-tests--session :name "wk" :kind 'claude :project "/p/")))
       (puthash "wk" '(:path "/w/wk/" :branch "wk" :base "master") ghostherd--worktrees)
       (puthash (cons 'agent "wk") '("/w/wk/" . "wk") ghostherd-memory-page--checkouts)
       (puthash (ghostherd--project-name "/p/") '("/p/" . "main") ghostherd-memory-page--checkouts)
       (puthash "wk" 3 ghostherd-memory-page--ahead)
       (puthash "wk" 5242880 ghostherd-memory-page--size)
+      (puthash "wk" '(:parts (("node_modules" . 4194304)) :rest 1048576 :linked nil)
+               ghostherd-memory-page--size-parts)
       (let ((w (ghostherd-memory-page--agent-work s)))
+        (should (equal (plist-get w :sizeParts)
+                       '(:parts [(:path "node_modules" :bytes 4194304 :how "")]
+                         :rest 1048576 :linked [])))
         (should (equal (plist-get w :root) "/w/wk/"))
         (should (equal (plist-get w :branch) "wk"))
         (should (equal (plist-get w :base) "master"))
@@ -12852,9 +12858,131 @@ base, and the worktree's size on disk -- :json-false until measured."
         (should (equal (plist-get w :size) 5242880)))
       (remhash "wk" ghostherd-memory-page--ahead)
       (remhash "wk" ghostherd-memory-page--size)
+      (remhash "wk" ghostherd-memory-page--size-parts)
       (let ((w (ghostherd-memory-page--agent-work s)))
+        (should (eq (plist-get w :sizeParts) :json-false))
         (should (eq (plist-get w :ahead) :json-false))
         (should (eq (plist-get w :size) :json-false))))))
+
+(ert-deftest ghostherd-test-worktree-size-says-where ()
+  "A worktree's size chip names where its space is, from `du''s listing:
+a dependency whole (node_modules is never broken into its packages), a
+directory broken into its big parts when it splits or holds a big
+dependency (server/ into server/.venv and server/data), one that does not
+split kept itself (server/data, all of it one models dir), and the rest
+summed.  Parts under a twentieth of the whole are the rest."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((mb (lambda (n) (* n 1024)))
+         ;; rd-tabs as `du -k -d 4' measured it: 800 MB.
+         (sizes `(("" . ,(funcall mb 800))
+                  ("node_modules" . ,(funcall mb 480))
+                  ("node_modules/next" . ,(funcall mb 120))
+                  ("node_modules/@swc" . ,(funcall mb 90))
+                  ("server" . ,(funcall mb 316))
+                  ("server/.venv" . ,(funcall mb 220))
+                  ("server/.venv/lib" . ,(funcall mb 219))
+                  ("server/data" . ,(funcall mb 91))
+                  ("server/data/models" . ,(funcall mb 91))
+                  ("src" . ,(funcall mb 3))))
+         (deps '(".venv" "venv" "node_modules"))
+         (got (ghostherd-memory-page--size-where sizes deps)))
+    (should (equal (mapcar #'car (car got)) '("node_modules" "server/.venv" "server/data")))
+    (should (equal (cdr (car (car got))) (* 480 1024 1024)))
+    (should (equal (cdr got) (* (- 800 480 220 91) 1024 1024)))
+    ;; A server/ whose only big part is its venv still names the venv.
+    (let ((got (ghostherd-memory-page--size-where
+                `(("" . ,(funcall mb 300)) ("server" . ,(funcall mb 240))
+                  ("server/.venv" . ,(funcall mb 230)) ("docs" . ,(funcall mb 60)))
+                deps)))
+      (should (equal (mapcar #'car (car got)) '("server/.venv" "docs"))))
+    ;; With no dependency named, a dir of one big part is itself.
+    (let ((got (ghostherd-memory-page--size-where
+                `(("" . ,(funcall mb 300)) ("server" . ,(funcall mb 240))
+                  ("server/.venv" . ,(funcall mb 230)) ("docs" . ,(funcall mb 60)))
+                nil)))
+      (should (equal (mapcar #'car (car got)) '("server" "docs"))))
+    ;; At most `ghostherd-memory-page--size-parts-most' named; the rest summed.
+    (let* ((many (cons `("" . ,(funcall mb 100))
+                       (mapcar (lambda (i) (cons (format "d%d" i) (funcall mb 10))) (number-sequence 1 9))))
+           (got (ghostherd-memory-page--size-where many nil)))
+      (should (= (length (car got)) ghostherd-memory-page--size-parts-most))
+      (should (equal (cdr got) (* (- 100 (* 10 ghostherd-memory-page--size-parts-most)) 1024 1024))))
+    ;; Nothing measured: no parts.
+    (should-not (car (ghostherd-memory-page--size-where nil deps)))))
+
+(ert-deftest ghostherd-test-worktree-size-one-du-filtered ()
+  "The size and where it is come from one `du' in the background,
+filtered before Emacs reads it -- a node_modules of hundreds of packages
+is a few lines -- with a carried-in dependency that is a symlink said to
+take no space; the card carries the parts, and what the herd made a part
+as."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd
+      ((ghostherd--worktrees (make-hash-table :test 'equal))
+       (ghostherd--worktree-deps-status (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size-parts (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size-at (make-hash-table :test 'equal))
+       (ghostherd-memory-page--size-running (make-hash-table :test 'equal)))
+    (ghostherd-tests--with-repo
+      (let* ((wt (concat base "wt/"))
+             (blob (lambda (rel kb)
+                     (make-directory (file-name-directory (expand-file-name rel wt)) t)
+                     (with-temp-file (expand-file-name rel wt)
+                       (insert (make-string (* kb 1024) ?x)))))
+             (s (ghostherd-tests--session :name "wk" :kind 'claude :project repo))
+             (procs 0) (read-lines nil))
+        (funcall blob "node_modules/big/index.js" 2048)
+        (dotimes (i 300) (funcall blob (format "node_modules/p%d/i.js" i) 1))
+        (funcall blob "server/data/models/m.onnx" 1024)
+        (funcall blob "src/a.el" 4)
+        (make-directory (expand-file-name "server" wt) t)
+        (make-symbolic-link (directory-file-name repo) (expand-file-name "server/.venv" wt))
+        (puthash "wk" (list :path wt :branch "wk" :base "main") ghostherd--worktrees)
+        (puthash "wk" '(("node_modules" :status done :how "clone")
+                        ("server/.venv" :status done :how "symlink"))
+                 ghostherd--worktree-deps-status)
+        (cl-letf* ((make-process-orig (symbol-function 'make-process))
+                   ((symbol-function 'make-process)
+                    (lambda (&rest args)
+                      (when (equal (plist-get args :name) "ghostherd-du") (setq procs (1+ procs)))
+                      (apply make-process-orig args)))
+                   (read-orig (symbol-function 'ghostherd-memory-page--size-read))
+                   ((symbol-function 'ghostherd-memory-page--size-read)
+                    (lambda (root out)
+                      (setq read-lines (length (split-string out "\n" t)))
+                      (funcall read-orig root out)))
+                   ((symbol-function 'ghostherd-memory-page--work-changed) #'ignore))
+          (ghostherd-memory-page--worktree-size "wk")
+          ;; In flight: a second look starts no second du.
+          (ghostherd-memory-page--worktree-size "wk")
+          (let ((n 0))
+            (while (and (not (gethash "wk" ghostherd-memory-page--size-at)) (< n 100))
+              (accept-process-output nil 0.1) (setq n (1+ n)))))
+        (should (= procs 1))
+        (should (< read-lines 20))
+        (should (> (gethash "wk" ghostherd-memory-page--size) (* 3 1024 1024)))
+        (let ((where (gethash "wk" ghostherd-memory-page--size-parts)))
+          ;; server/ does not split -- its venv is a link, no space -- so
+          ;; it is itself.
+          (should (equal (mapcar #'car (plist-get where :parts)) '("node_modules" "server")))
+          (should (equal (plist-get where :linked) '("server/.venv"))))
+        (let ((sp (ghostherd-memory-page--size-parts-of s)))
+          (should (equal (append (plist-get sp :parts) nil)
+                         (list (list :path "node_modules"
+                                     :bytes (cdr (assoc "node_modules" (plist-get (gethash "wk" ghostherd-memory-page--size-parts) :parts)))
+                                     :how "clone")
+                               (list :path "server"
+                                     :bytes (cdr (assoc "server" (plist-get (gethash "wk" ghostherd-memory-page--size-parts) :parts)))
+                                     :how ""))))
+          (should (equal (plist-get sp :linked) ["server/.venv"])))
+        ;; Within the TTL, no du again.
+        (setq procs 0)
+        (ghostherd-memory-page--worktree-size "wk")
+        (should (= procs 0))
+        ;; Unmeasured: :json-false.
+        (clrhash ghostherd-memory-page--size-parts)
+        (should (eq (ghostherd-memory-page--size-parts-of s) :json-false))))))
 
 (ert-deftest ghostherd-test-worktree-new-agent-opts-in ()
   "The page's +New with worktree on creates the worktree and spawns in it;
@@ -12999,6 +13127,137 @@ never a full copy, never a lock-less install."
         (funcall run)
         (should (eq (funcall status) 'done))
         (should (file-exists-p (expand-file-name ".venv/pyvenv.cfg" path)))))))
+
+(defmacro ghostherd-tests--with-uv-repo (&rest body)
+  "BODY in `with-repo' whose `repo' is a uv project in server/: a tracked
+server/uv.lock and an ignored server/.venv, the main checkout's venv.
+`wt' is a worktree of it, `path' its directory, `bin' a dir with a fake
+`uv' (that writes UV_PROJECT_ENVIRONMENT/pyvenv.cfg and logs its cwd and
+args to `log', failing when UV_FAKE_FAIL is set) on a PATH of its own,
+and `run' a lambda (&optional SPECS) setting the deps up and waiting.
+The real uv and the user's cache are never run."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-herd ((ghostherd--worktree-deps-status (make-hash-table :test 'equal)))
+     (ghostherd-tests--with-repo
+       (with-temp-file (expand-file-name ".gitignore" repo) (insert ".venv/\n"))
+       (make-directory (expand-file-name "server" repo) t)
+       (with-temp-file (expand-file-name "server/uv.lock" repo) (insert "version = 1\n"))
+       (funcall git repo "add" ".gitignore" "server/uv.lock")
+       (funcall git repo "commit" "-q" "-m" "uv")
+       (make-directory (expand-file-name "server/.venv/bin" repo) t)
+       (with-temp-file (expand-file-name "server/.venv/pyvenv.cfg" repo) (insert "main\n"))
+       (let* ((ghostherd-worktree-root (concat base "trees/"))
+              (wt (ghostherd--worktree-create repo "dev"))
+              (path (plist-get wt :path))
+              (bin (concat base "bin/"))
+              (log (concat base "uv.log"))
+              (process-environment (copy-sequence process-environment))
+              (run (lambda (&optional specs)
+                     (clrhash ghostherd--worktree-deps-status)
+                     (ghostherd--worktree-deps-setup repo path "dev" specs)
+                     (let ((n 0))
+                       (while (and (not (gethash "dev" ghostherd--worktree-deps-status)) (< n 100))
+                         (accept-process-output nil 0.1) (setq n (1+ n)))))))
+         (ignore wt run)
+         (make-directory bin t)
+         (with-temp-file (expand-file-name "uv" bin)
+           (insert "#!/bin/sh\n"
+                   "echo \"$PWD $* $UV_PROJECT_ENVIRONMENT\" >> " (shell-quote-argument log) "\n"
+                   "[ -n \"$UV_FAKE_FAIL\" ] && { mkdir -p \"$UV_PROJECT_ENVIRONMENT/lib\"; exit 1; }\n"
+                   "mkdir -p \"$UV_PROJECT_ENVIRONMENT\" && echo own > \"$UV_PROJECT_ENVIRONMENT/pyvenv.cfg\"\n"))
+         (set-file-modes (expand-file-name "uv" bin) #o755)
+         (setenv "PATH" (concat (directory-file-name bin) ":/usr/bin:/bin"))
+         (setenv "UV_FAKE_FAIL" nil)
+         ,@body))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-by-default ()
+  "By default a uv project's venv, found at any depth (server/.venv), is
+the worktree's own -- `uv sync --frozen' in its directory, from the
+worktree's own lock, into the worktree's path -- not a symlink to the main
+checkout's, whose venv is left alone.  The outcome says how it was made."
+  (ghostherd-tests--with-uv-repo
+    (should (equal (alist-get ".venv" ghostherd-worktree-deps nil nil #'equal) 'uv))
+    (funcall run)
+    (let ((venv (expand-file-name "server/.venv" path))
+          (st (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                         nil nil #'equal)))
+      (should (eq (plist-get st :status) 'done))
+      (should (equal (plist-get st :how) "uv"))
+      (should-not (file-symlink-p venv))
+      (should (equal (with-temp-buffer (insert-file-contents (expand-file-name "pyvenv.cfg" venv))
+                                       (buffer-string))
+                     "own\n"))
+      ;; Synced in the worktree's server/, frozen, into the worktree's venv.
+      (let ((line (with-temp-buffer (insert-file-contents log) (string-trim (buffer-string)))))
+        (should (equal line (format "%s sync --frozen %s"
+                                    (directory-file-name (expand-file-name "server" path))
+                                    venv))))
+      ;; The main checkout's venv is untouched.
+      (should (equal (with-temp-buffer
+                       (insert-file-contents (expand-file-name "server/.venv/pyvenv.cfg" repo))
+                       (buffer-string))
+                     "main\n"))
+      ;; Ignored at the source, so the worktree still reads clean.
+      (should (ghostherd--worktree-clean-p path)))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-falls-back-to-symlink ()
+  "With no uv.lock beside the venv, or no uv on PATH, the venv is
+symlinked to the main checkout's as before; uv is never run then."
+  (ghostherd-tests--with-uv-repo
+    ;; No uv on PATH, the system's tools still there.
+    (setenv "PATH" "/usr/bin:/bin")
+    (funcall run)
+    (let ((venv (directory-file-name (expand-file-name "server/.venv" path))))
+      (should (file-symlink-p venv))
+      (should (equal (plist-get (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                                           nil nil #'equal)
+                                :how)
+                     "symlink"))
+      (should-not (file-exists-p log))
+      ;; uv there, but no uv.lock in the worktree's server/: a symlink too.
+      (delete-file venv)
+      (delete-file (expand-file-name "server/uv.lock" path))
+      (setenv "PATH" (concat (directory-file-name bin) ":/usr/bin:/bin"))
+      (funcall run)
+      (should (file-symlink-p venv))
+      (should-not (file-exists-p log)))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-sync-failure-said ()
+  "A uv sync that fails is skipped and said so on the card, its partial
+venv removed -- never a symlink to the main checkout's in its place."
+  (ghostherd-tests--with-uv-repo
+    (setenv "UV_FAKE_FAIL" "1")
+    (funcall run)
+    (let ((venv (directory-file-name (expand-file-name "server/.venv" path)))
+          (st (alist-get "server/.venv" (gethash "dev" ghostherd--worktree-deps-status)
+                         nil nil #'equal)))
+      (should (eq (plist-get st :status) 'skipped))
+      (should (equal (plist-get st :reason) "uv-sync-failed"))
+      (should-not (file-exists-p venv))
+      (should-not (file-symlink-p venv))
+      (when (require 'ghostherd-memory-page nil t)
+        (let ((card (ghostherd-memory-page--worktree-deps
+                     (ghostherd-tests--session :name "dev" :kind 'claude :project repo))))
+          (should (vectorp card))
+          (should (equal (plist-get (aref card 0) :reason) "uv-sync-failed")))))))
+
+(ert-deftest ghostherd-test-worktree-uv-venv-user-choice-wins ()
+  "The user's own `ghostherd-worktree-deps', and a project's
+`ghostherd-project-worktree-deps' dir-local, win over the uv default: a
+symlink stays a symlink.  The dir-local may name the uv method."
+  (ghostherd-tests--with-uv-repo
+    (let ((ghostherd-worktree-deps '((".venv" . symlink))))
+      (funcall run))
+    (should (file-symlink-p (directory-file-name (expand-file-name "server/.venv" path))))
+    (should-not (file-exists-p log))
+    (with-temp-file (expand-file-name ".dir-locals.el" repo)
+      (prin1 '((nil . ((ghostherd-project-worktree-deps . ((".venv" . symlink))))))
+             (current-buffer)))
+    (should (equal (ghostherd--worktree-deps-for repo) '((".venv" . symlink))))
+    (should (funcall (get 'ghostherd-project-worktree-deps 'safe-local-variable)
+                     '((".venv" . uv))))
+    (should-not (funcall (get 'ghostherd-project-worktree-deps 'safe-local-variable)
+                         '((".venv" . rm))))))
 
 (ert-deftest ghostherd-test-worktree-deps-resolve-finds-nested ()
   "Bare-name deps are found by directory name among the main checkout's

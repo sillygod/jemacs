@@ -1112,33 +1112,48 @@ second confirmation."
 
 ;; A worktree is a fresh checkout: its code is there, but a project's
 ;; uninstalled dependencies -- a Python venv, node_modules -- are not.
-;; Carrying them in makes a worktree usable at once.  A venv holds absolute
-;; paths, so it is symlinked to the main checkout's rather than copied; a
-;; node_modules is cloned copy-on-write (APFS `cp -c'), so the worktree may
-;; diverge it cheaply.  Build caches are simply left off the list.  A clone
-;; that cannot be made is skipped and said so on the card -- never a full
-;; copy, since the disk is not big.  All of it runs in the background.
+;; Carrying them in makes a worktree usable at once.  A uv project's venv
+;; is the worktree's own, synced from its own lock: a symlink to the main
+;; checkout's would let a `uv sync' or `uv run' in the worktree rewrite the
+;; main checkout's venv to the branch's lock.  uv clones from its cache
+;; (copy-on-write on APFS), so that costs little disk and, warm, well under
+;; a second.  Any other venv holds absolute paths, so it is symlinked to the
+;; main checkout's rather than copied; a node_modules is cloned
+;; copy-on-write (APFS `cp -c'), so the worktree may diverge it cheaply.
+;; Build caches are simply left off the list.  A clone that cannot be made
+;; is skipped and said so on the card -- never a full copy, since the disk
+;; is not big.  All of it runs in the background.
 
 (defcustom ghostherd-worktree-deps
-  '((".venv" . symlink) ("venv" . symlink) ("node_modules" . clone))
+  '((".venv" . uv) ("venv" . uv) ("node_modules" . clone))
   "Dependencies carried into a new worktree, each (PATH . METHOD).
-PATH is relative to the checkout root.  METHOD is one of:
+PATH is relative to the checkout root; a bare name (no slash) is found by
+name among the main checkout's ignored directories at any depth, so
+`.venv' also finds server/.venv.  METHOD is one of:
+ - `uv' -- the worktree's own venv when the venv's directory in the
+   worktree has a `uv.lock' and `uv' is on PATH: `uv sync --frozen' there,
+   from the worktree's own lock.  uv clones from its cache (copy-on-write
+   on APFS, its default link mode on macOS), so it is cheap, and a `uv
+   sync' in the worktree then never touches the main checkout's venv, as
+   it would through a symlink.  With no `uv.lock' there or no `uv', a
+   symlink, as `symlink'.  A sync that fails is skipped and said so on the
+   card, its partial venv removed -- never a symlink in its place;
  - `symlink' -- a link to the main checkout's, for a thing that holds
-   absolute paths and breaks when copied, like a Python venv;
+   absolute paths and breaks when copied, like a venv uv does not manage;
  - `clone' -- an APFS copy-on-write copy (cp -c) the worktree may then
    diverge, like node_modules;
- - `venv' -- a fresh per-worktree virtualenv built from the project's own
-   lock (`uv sync --frozen' when PATH's directory has a `uv.lock'; uv
-   hardlinks from its cache, so it is cheap), the worktree then free to
-   diverge its deps.  Opt in by naming a venv PATH with this method; the
-   default stays `symlink'.  Skipped, and said so on the card, when there
-   is no `uv.lock' there or no `uv' on PATH -- never a lock-less install.
-A symlink/clone PATH with no source in the main checkout is skipped; a
+ - `venv' -- a per-worktree virtualenv made at PATH as named (never
+   found), by `uv sync --frozen' when PATH's directory has a `uv.lock' --
+   for a venv the main checkout does not have.  Skipped, and said so on the
+   card, when there is no `uv.lock' there or no `uv' on PATH -- never a
+   lock-less install.
+A uv/symlink/clone PATH with no source in the main checkout is skipped; a
 clone that cannot be made is skipped and said so, never copied in full.
 Build caches are left off this list.  Override per project with a
-`ghostherd-project-worktree-deps' dir-local."
+`ghostherd-project-worktree-deps' dir-local; your own value of this, or
+that dir-local, wins over the default."
   :type '(alist :key-type string
-                :value-type (choice (const symlink) (const clone) (const venv)))
+                :value-type (choice (const uv) (const symlink) (const clone) (const venv)))
   :group 'ghostherd)
 
 (defvar ghostherd-project-worktree-deps 'unset
@@ -1148,12 +1163,14 @@ Build caches are left off this list.  Override per project with a
 (put 'ghostherd-project-worktree-deps 'safe-local-variable
      (lambda (v) (and (listp v)
                       (seq-every-p (lambda (e) (and (consp e) (stringp (car e))
-                                                    (memq (cdr e) '(symlink clone venv))))
+                                                    (memq (cdr e) '(uv symlink clone venv))))
                                    v))))
 
 (defvar ghostherd--worktree-deps-status (make-hash-table :test 'equal)
   "Session id -> alist of its worktree dependencies' outcome: PATH ->
-(:status STATUS :reason REASON), STATUS `done' or `skipped'.")
+(:status STATUS :how HOW :reason REASON), STATUS `done' or `skipped', HOW
+for a done one what it is: \"uv\" (its own venv), \"symlink\" or
+\"clone\".")
 
 (defun ghostherd-session-worktree-deps (session)
   "The outcome of SESSION's worktree dependencies (PATH -> plist), or nil."
@@ -1239,7 +1256,7 @@ carried-in dependency.  Idempotent; `extensions.worktreeConfig' untouched."
 
 (defun ghostherd--worktree-deps-script (specs main worktree)
   "A /bin/sh script setting SPECS up into WORKTREE from MAIN, printing one
-status line per spec -- `done PATH' or `skip PATH REASON' -- and never
+status line per spec -- `done PATH HOW' or `skip PATH REASON' -- and never
 copying a dependency in full."
   (mapconcat
    (lambda (spec)
@@ -1248,20 +1265,30 @@ copying a dependency in full."
             (dstf (directory-file-name (expand-file-name name worktree)))
             (dst (shell-quote-argument dstf))
             (par (shell-quote-argument (directory-file-name (file-name-directory dstf))))
-            (tag (shell-quote-argument name)))
+            (tag (shell-quote-argument name))
+            (link (format "elif mkdir -p %s 2>/dev/null && ln -s %s %s 2>/dev/null; then echo done %s symlink; else echo skip %s link-failed; fi"
+                          par src dst tag tag)))
        (pcase (cdr spec)
          ('symlink
-          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && ln -s %s %s 2>/dev/null; then echo done %s; else echo skip %s link-failed; fi"
-                  src tag dst tag par src dst tag tag))
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; %s"
+                  src tag dst tag link))
          ('clone
-          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && cp -c -R %s %s 2>/dev/null; then echo done %s; else echo skip %s no-copy-on-write; fi"
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ]; then echo skip %s exists; elif mkdir -p %s 2>/dev/null && cp -c -R %s %s 2>/dev/null; then echo done %s clone; else echo skip %s no-copy-on-write; fi"
                   src tag dst tag par src dst tag tag))
+         ;; The worktree's own venv, from its own lock, when its directory
+         ;; has one and there is a uv: `uv sync --frozen' there, uv cloning
+         ;; from its cache.  Else the symlink, as before.  A failed sync
+         ;; is said so, its partial venv gone -- not a symlink, which would
+         ;; bring back a worktree's `uv sync' writing the main checkout's.
+         ('uv
+          (format "if [ ! -e %s ]; then echo skip %s no-source; elif [ -e %s ] || [ -L %s ]; then echo skip %s exists; elif [ -f %s/uv.lock ] && command -v uv >/dev/null 2>&1; then if ( cd %s && UV_PROJECT_ENVIRONMENT=%s uv sync --frozen >/dev/null 2>&1 ); then echo done %s uv; else rm -rf %s; echo skip %s uv-sync-failed; fi; %s"
+                  src tag dst dst tag par par dst tag dst tag link))
          ;; A fresh virtualenv from the worktree's own lock: `uv sync
          ;; --frozen' in the venv's directory (where uv.lock sits), uv
-         ;; hardlinking from its cache.  Skipped, not faked, when there is
+         ;; cloning from its cache.  Skipped, not faked, when there is
          ;; no uv.lock there or no uv -- never a lock-less install.
          ('venv
-          (format "if [ -e %s ]; then echo skip %s exists; elif ! command -v uv >/dev/null 2>&1; then echo skip %s no-uv; elif [ ! -f %s/uv.lock ]; then echo skip %s no-uv.lock; elif ( cd %s && UV_PROJECT_ENVIRONMENT=%s uv sync --frozen >/dev/null 2>&1 ); then echo done %s; else echo skip %s uv-sync-failed; fi"
+          (format "if [ -e %s ]; then echo skip %s exists; elif ! command -v uv >/dev/null 2>&1; then echo skip %s no-uv; elif [ ! -f %s/uv.lock ]; then echo skip %s no-uv.lock; elif ( cd %s && UV_PROJECT_ENVIRONMENT=%s uv sync --frozen >/dev/null 2>&1 ); then echo done %s uv; else echo skip %s uv-sync-failed; fi"
                   dst tag tag par tag par dst tag tag))
          (_ (format "echo skip %s unknown-method" tag)))))
    specs
@@ -1272,7 +1299,8 @@ copying a dependency in full."
   (let (alist)
     (dolist (line (split-string (or output "") "\n" t))
       (pcase (split-string (string-trim line) " ")
-        (`("done" ,name . ,_) (push (cons name (list :status 'done)) alist))
+        (`("done" ,name . ,how)
+         (push (cons name (list :status 'done :how (car how))) alist))
         (`("skip" ,name . ,reason)
          (push (cons name (list :status 'skipped :reason (string-join reason " "))) alist))))
     (when alist

@@ -1413,6 +1413,29 @@
       opens("pr") ? { href: "/open/pr-view#local=" + encodeURIComponent(w.root), tab: "pr-view" } : null);
   }
 
+  // Where a worktree's space is, from its one du: the biggest parts, then
+  // the rest.  du counts a copy-on-write clone in full and cannot see
+  // what it still shares, so a part the herd made as a clone is said to
+  // have been made so -- never said to be shared.  A dependency the herd
+  // linked takes no space here, and is said so.
+  function sizeTitle(w) {
+    const sp = w.sizeParts;
+    if (!sp || !Array.isArray(sp.parts) || !sp.parts.length) return "worktree on disk";
+    const parts = sp.parts.map((p) => p.path + " " + fmtBytes(p.bytes));
+    const rest = fmtBytes(sp.rest);
+    if (rest) parts.push("rest " + rest);
+    const lines = ["worktree on disk: " + parts.join(" · ")];
+    const made = (how) => sp.parts.filter((p) => p.how === how).map((p) => p.path);
+    const was = (xs) => xs.join(", ") + (xs.length === 1 ? " was " : " were ");
+    const said = [];
+    if (made("clone").length) said.push(was(made("clone")) + "cloned from the main checkout's");
+    if (made("uv").length) said.push(was(made("uv")) + "made by uv, cloned from its cache");
+    if (said.length) lines.push(said.join("; ") + ". du counts a copy-on-write clone in full, though what is unchanged since may still share that disk.");
+    const linked = Array.isArray(sp.linked) ? sp.linked : [];
+    if (linked.length) lines.push(linked.join(", ") + (linked.length === 1 ? " is a link" : " are links") + " to the main checkout's: no space here.");
+    return lines.join("\n");
+  }
+
   function workHtml(w) {
     if (!w || !w.branch) return "";
     const pr = w.pr || null;
@@ -1424,7 +1447,7 @@
       ? '<span class="wchip ahead" title="' + esc(w.ahead + " commit" + (w.ahead === 1 ? "" : "s") + " ahead of " + (w.base || "its base")) + '">↑' + w.ahead + "</span>"
       : "";
     const sized = fmtBytes(w.size);
-    const size = sized ? '<span class="wchip size" title="worktree on disk">' + esc(sized) + "</span>" : "";
+    const size = sized ? '<span class="wchip size" title="' + esc(sizeTitle(w)) + '">' + esc(sized) + "</span>" : "";
     const deps = Array.isArray(w.deps) && w.deps.length
       ? '<span class="wchip dep-skip" title="' + esc(w.deps.map((d) => d.name + " skipped: " + d.reason).join("; ")) + '">deps: ' + esc(w.deps.map((d) => d.name).join(", ")) + " skipped</span>"
       : "";
