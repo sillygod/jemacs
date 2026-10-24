@@ -6,6 +6,7 @@
   const app = $("app");
   const statusEl = $("status");
   const btnBack = $("btn-back");
+  const tabsEl = document.querySelector(".tabs");
 
   // ---- Intents ---------------------------------------------------------
   //
@@ -382,6 +383,7 @@
     document.querySelectorAll(".tab").forEach((b) => {
       b.classList.toggle("on", view !== "source" && b.getAttribute("data-tab") === view);
     });
+    tabInView();
     btnBack.hidden = !(view === "source" || (view === "agents" && herdNow.room));
     $("sessions-n").textContent = ctx.sources.length ? String(ctx.sources.length) : "";
     app.setAttribute("data-view", view);
@@ -3936,10 +3938,46 @@
     emit("import");
   });
 
+  // ---- The top bar, narrow ---------------------------------------------
+  // style.css folds Phone, Import and Refresh behind ⋯ when the bar is
+  // short of room, and lets the tabs scroll sideways if they still do
+  // not fit.  ⋯ opens them below it; anything pressed, or Esc, shuts it.
+  const moreEl = $("more");
+  const btnMore = $("btn-more");
+  function moreOpen(open) {
+    moreEl.classList.toggle("open", open);
+    btnMore.setAttribute("aria-expanded", String(open));
+  }
+  btnMore.addEventListener("click", () => moreOpen(!moreEl.classList.contains("open")));
+  document.addEventListener("click", (ev) => {
+    if (moreEl.classList.contains("open") && !btnMore.contains(ev.target)) moreOpen(false);
+  });
+  // The open tab, scrolled into the bar's view.
+  function tabInView() {
+    const on = tabsEl.querySelector(".tab.on");
+    if (!on || tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+    const t = on.getBoundingClientRect();
+    const b = tabsEl.getBoundingClientRect();
+    if (t.left < b.left) tabsEl.scrollLeft -= b.left - t.left;
+    else if (t.right > b.right) tabsEl.scrollLeft += t.right - b.right;
+  }
+  window.addEventListener("resize", tabInView);
+  // A mouse's wheel turns tabs that scroll, as a trackpad swipes them.
+  tabsEl.addEventListener("wheel", (ev) => {
+    if (tabsEl.scrollWidth <= tabsEl.clientWidth || Math.abs(ev.deltaX) >= Math.abs(ev.deltaY)) return;
+    tabsEl.scrollLeft += ev.deltaY;
+    ev.preventDefault();
+  }, { passive: false });
+
   document.addEventListener("keydown", (ev) => {
     const t = ev.target;
     const inInput = t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName);
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (ev.key === "Escape" && moreEl.classList.contains("open")) {
+      moreOpen(false);
+      ev.preventDefault();
+      return;
+    }
     if (inInput) {
       if (ev.key === "Escape") {
         if (t.value && t.tagName === "INPUT") {

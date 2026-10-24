@@ -50,7 +50,7 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
   background: var(--panel);
   flex-shrink: 0;
 }
-.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 0; }
 .mark {
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -60,17 +60,61 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
   padding: 2px 6px;
   border-radius: 3px;
 }
-.tabs { display: flex; gap: 2px; }
+/* A tab's label is never wrapped and never run under the buttons: tabs
+   that do not fit scroll sideways (app.js keeps the open one in view,
+   and turns a wheel into a sideways scroll).  The folds below keep that
+   for a narrow window. */
+.tabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   background: none;
   border: 0;
   border-bottom: 2px solid transparent;
   color: var(--muted);
   padding: 4px 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .tab.on { color: var(--text); border-bottom-color: #a371f7; }
 .tab .count, .chip .count { color: var(--muted); font-size: 11px; }
-.actions { display: flex; gap: 8px; flex-shrink: 0; }
+.actions { display: flex; gap: 8px; flex-shrink: 0; position: relative; }
+.actions button { white-space: nowrap; }
+/* Phone, Import and Refresh: in the bar while it has the room. */
+.more { display: contents; }
+#btn-more { display: none; }
+
+/* The bar folds as the window narrows, what is used least first: Phone,
+   Import and Refresh go behind ⋯; then Back and New agent take their
+   short forms; then the mark goes and the tabs close up.  A phone's bar
+   (640px and below) is further down. */
+@media (max-width: 1080px) {
+  #btn-more { display: inline-block; }
+  .more {
+    display: none;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 30;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 8em;
+    padding: 6px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+  .more.open { display: flex; }
+  #btn-more[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .more button { text-align: left; }
+}
+@media (max-width: 900px) {
+  #btn-back .lbl, #btn-new .lbl { display: none; }
+}
+@media (max-width: 820px) {
+  .mark { display: none; }
+  .tab { padding: 4px 6px; }
+}
 
 .status {
   padding: 6px 14px;
@@ -900,7 +944,6 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
   .ls { min-width: 0; }
   pre.screen { margin-left: 0; }
   .card-head .proj { display: none; }
-  .actions #btn-import { display: none; }
 }
 
 /* Images attached to the next prompt, above its box. */
@@ -1020,14 +1063,12 @@ select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 html { -webkit-text-size-adjust: 100%; }
 
 @media (max-width: 640px) {
-  /* The bar: the tabs, swiped sideways if they must be; Back an arrow
-     before them.  Refresh lists the sessions again, as Emacs does. */
+  /* The bar: the tabs, swiped sideways if they must be; Back an arrow,
+     + New and ⋯ before them, ⋯'s menu dropping from there. */
   .top { padding: 0 8px; gap: 4px; }
-  .mark, #btn-refresh, #btn-back .lbl, #btn-new .lbl { display: none; }
-  .brand { flex: 1; min-width: 0; }
-  .tabs { min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  .tab { flex-shrink: 0; white-space: nowrap; padding: 11px 9px; }
+  .tab { padding: 11px 9px; }
   .actions { order: -1; }
+  .more { right: auto; left: 0; }
   .page { padding: 10px 12px 32px; }
   .phead .ppath { display: none; }
 
@@ -1036,9 +1077,11 @@ html { -webkit-text-size-adjust: 100%; }
      height here -- they are a tap away in each card (▾) and in the Agents
      tab -- so the conversation below gets the room. */
   .rhead { flex-wrap: nowrap; align-items: center; padding: 7px 12px; gap: 8px; row-gap: 0; min-width: 0; }
-  .rhead .pname { order: 1; font-size: 15px; min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Short of room, the name gives way (ellipsis) and how the agents are
+     stacks, rather than either running off the screen. */
+  .rhead .pname { order: 1; font-size: 15px; min-width: 2.5em; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rhead .ppath { display: none; }
-  .rhead .rsum { order: 2; flex: 0 0 auto; }
+  .rhead .rsum { order: 2; flex: 0 1 auto; flex-wrap: wrap; row-gap: 2px; }
   .rhead .rview { order: 3; margin-left: auto; flex: 0 0 auto; }
   .rhead::after { display: none; }
   .rhead .rwork, .rhead .rruns { display: none; }
@@ -1047,7 +1090,7 @@ html { -webkit-text-size-adjust: 100%; }
   .work > * { flex-shrink: 0; }
   .wbranch { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .wchip { max-width: 16em; }
-  .tabs::-webkit-scrollbar, .rwork::-webkit-scrollbar, .work::-webkit-scrollbar { display: none; }
+  .rwork::-webkit-scrollbar, .work::-webkit-scrollbar { display: none; }
 
   /* The columns: one to the screen, the next one's edge showing. */
   .rcols { padding: 8px 10px; gap: 8px; scroll-padding: 0 10px; }
@@ -1111,6 +1154,15 @@ html { -webkit-text-size-adjust: 100%; }
   .lrow { flex-wrap: wrap; row-gap: 0; }
   .lrow .linkish { order: 1; margin-left: auto; }
   .lx { order: 2; flex-basis: 100%; padding-left: 4px; }
+}
+
+@media (max-width: 520px) {
+  /* The room's views an icon each, as Image and Use are: their words
+     and how the agents are do not share a line this narrow. */
+  .rhead .rview button { font-size: 0; padding: 0; width: 38px; }
+  .rhead .rview [data-view="columns"]::before { content: "▥"; font-size: 17px; }
+  .rhead .rview [data-view="chat"]::before { content: "💬"; font-size: 15px; }
+  .rhead .rview [data-act="room-memory"]::before { content: "🧠"; font-size: 15px; }
 }
 
 @media (pointer: coarse) {
