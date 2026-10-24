@@ -583,6 +583,34 @@ def test_a_taker_with_no_turn_hook_settles_after_the_grace(tmp_path, monkeypatch
     assert h.get_ask(ask["id"])["auto_source"] == "screen"
 
 
+def test_a_hooked_taker_that_began_no_turn_is_not_answered_by_its_screen(tmp_path, monkeypatch):
+    """Ask c644aebc: grok-review's hooks report, but it began no turn on the
+    ask -- its folder-trust prompt let the paste go by and took the Return
+    after it as "Yes, proceed".  Past the grace its screen, grok's welcome,
+    answers nothing: the ask fails, saying it was never taken."""
+    snap = SNAP + [{"name": "grok-review", "kind": "grok", "state": "idle", "project": "/src/a/"}]
+    h = _store(tmp_path)
+    h.tick(sessions=snap)
+    # Its SessionStart named its CLI and conversation; no turn since.
+    h.report("grok-review", cli="grok", conversation="01a16ca9")
+    ask = h.ask("grok-review", "review it", from_name="claude-main", wait=True)
+    _deliver(h, snap)
+    assert h.settle(ask["id"], screen="x").get("too_soon")
+    monkeypatch.setattr(herd_mod, "DELIVER_GRACE", -1)
+    r = h.settle(ask["id"], screen="New worktree   ctrl+w\nResume session   ctrl+r\n│ ❯")
+    got = h.get_ask(ask["id"])
+    assert (r["status"], got["status"], got["auto"]) == ("failed", "failed", False)
+    assert "began no turn on it" in got["error"]
+    assert "New worktree" not in (got["reply"] or "")
+    # A turn begun on it is answered by its screen as before: hooks or none.
+    again = h.ask("grok-review", "review it", from_name="claude-main", wait=True)
+    _deliver(h, snap)
+    h.report("grok-review", state="working")
+    h.report("grok-review", state="done")
+    assert h.settle(again["id"], screen="the review")["status"] == "answered"
+    assert h.get_ask(again["id"])["auto_source"] == "screen"
+
+
 def test_a_done_with_no_turn_hook_closes_after_the_grace(tmp_path, monkeypatch):
     "The same fallback on the message path: a hookless `done' with last."
     h = _store(tmp_path)

@@ -87,7 +87,16 @@ it is known taken: its CLI's prompt-submit hook (claude's and grok's
 =UserPromptSubmit=, agy's =PreInvocation=) saying a turn began, for an
 agent that was not already at work; or, from
 =ghostherd-submit-check-after= (1.5s) on, the screen --- the turn under
-way, or the box clear on two looks running.  The paste still in the box
+way, or the box clear on two looks running.  Not the box alone, though,
+for a prompt to a resting agent whose hooks report (they have named its
+CLI): a dialog takes no paste, and the box drawn after it is clear.
+That waits for the turn to begin --- its hook, its screen at work ---
+for all its looks, and is /lost/ when none does: logged ("never taken")
+with the screen, and an ask in it fails --- "not taken: NAME's CLI
+started no turn on it -- send it again" --- rather than wait to be
+answered by a screen that never read it.  Till then a stop of the taker
+leaves the ask open.  A slash command begins no turn, and an agent with
+no hook keeps the box's word.  The paste still in the box
 --- its first words, or any CLI's fold of it (claude's and agy's text
 folds, agy's counted in chars, claude's and grok's =[Image #N]=, the
 last only when the text names a picture) --- of an agent neither
@@ -103,6 +112,23 @@ typing.  The turn an ask starts is the ask's even when it starts late
 --- after a Return pressed again, by the herd or by hand: the herd moves
 a taker to =working= the moment it sends, but the ask's mark waits for
 its prompt to reach the CLI.
+
+Nor is mail pasted into an agent that cannot take it.  Each CLI starts
+in a directory it does not know yet --- every new worktree --- on a
+folder-trust prompt: claude's "Quick safety check", its cursor on /No,
+exit/; agy's "Do you trust the contents of this project?"; grok's "Do
+you trust the contents of this directory?" with /Yes, proceed/ and /No,
+quit/.  None takes a paste, and each reads the Return after it as its
+answer.  grok's read as idle, so ask c644aebc was pasted into it: the
+paste went by, the Return said /Yes, proceed/ for the user, and eleven
+seconds on the ask was closed with grok's welcome screen as its answer.
+Now all three are =blocked= (grok's by its own rule: the question, its
+last choice under it, and no input box down to the foot), the sidecar
+holds mail for an agent that is =blocked= as for one =working= or
+=starting=, and Emacs pastes nothing into one it sees so at that
+moment: the user answers the menu, and the mail goes after.  And the
+sidecar answers no ask from the screen of a taker whose hooks report
+but that began no turn after it: it fails it, saying it never took it.
 
 Why tmux, why one session per agent, and what the nesting costs are in
 [[file:docs/design.org][docs/design.org]].
@@ -503,8 +529,9 @@ open or uncollected rows, active runs, or recent asks still shown by
 =herd asks=).  A tick with no answer in
 =ghostherd-memory-request-timeout= seconds (60) is given up, and the
 next one asks again: url.el now and then drops a request, and the mail
-used to stop there.  A target that is =working= is
-not deliverable; the sidecar holds the row until it is idle.  Overlay
+used to stop there.  A target that is =working=, =starting= or
+=blocked= (on a menu: a trust or permission prompt) is not deliverable;
+the sidecar holds the row until it is idle.  Overlay
 =m= still pastes immediately and does not use the queue.
 
 A skill lives in =skills/ghostherd-mail/SKILL.md=; copy or symlink it

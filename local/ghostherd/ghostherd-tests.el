@@ -9012,6 +9012,169 @@ taken, without a Return."
     (should-not (or keys later))
     (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))))
 
+;;; Not into a CLI that cannot take a paste, and no answer from a turn
+;;; that never began (ask 6a8f023a).  Ask c644aebc: grok-review started
+;;; on grok's folder-trust prompt, which read as idle; the ask's paste
+;;; went by it, the Return after it said "Yes, proceed", and the ask was
+;;; closed 11 seconds later with grok's welcome screen as its answer.
+
+(defconst ghostherd-test--grok-trust-screen
+  (concat "\n  /U/u/.g/w/app/grok-review\n\n\n\n\n"
+          (mapconcat (lambda (l) (concat (make-string 48 ?\s) l "\n"))
+                     '("⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄" "⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀" "⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀"
+                       "⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀" "⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀" "⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀"
+                       "⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀")
+                     "")
+          "\n\n"
+          "                                 Do you trust the contents of this directory?\n"
+          "/Users/u/.ghostherd/worktrees/app/grok-review\n\n"
+          "                           Grok Build may run or modify contents in this directory,\n"
+          "                                            posing security risks.\n\n"
+          "                                        Yes, proceed                 y\n"
+          "                                        No, quit                     n\n"
+          (make-string 14 ?\n)
+          "                                                                                          Grok Build  1.0.70\n")
+  "grok 1.0.70's folder-trust prompt, captured in a directory new to it.")
+
+(defconst ghostherd-test--grok-welcome-screen
+  (concat "  master ~/.emacs.d\n\n\n"
+          "                New worktree                                 ctrl+w\n"
+          "                Resume session                               ctrl+r\n"
+          "                Changelog\n"
+          "                Quit                                         ctrl+q\n\n"
+          "  Update: v1.0.70 available, press ctrl+u to restart\n\n"
+          "  ╭" (make-string 76 ?─) "╮\n"
+          "  │ ❯" (make-string 74 ?\s) "│\n"
+          "  ╰" (make-string 40 ?─) " Grok 4.7 (xhigh) · always-approve ─╯\n\n"
+          "                                                     Grok Build  1.0.67 [stable]")
+  "The screen ask c644aebc was closed with: grok's welcome, its box empty.")
+
+(ert-deftest ghostherd-test-grok-trust-prompt-is-a-menu ()
+  "grok's folder-trust prompt parks it on a menu, which says what it
+asks -- not idle, as it read when ask c644aebc was handed it.  Its
+welcome screen, the box empty, is idle; the question quoted over its
+input box is no prompt."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "grok-review" :kind 'grok :backend 'fake
+                                       :state 'starting)))
+      (let* ((ghostherd-tests--fake-screen ghostherd-test--grok-trust-screen)
+             (state (ghostherd--detect-state s)))
+        (should (eq (car state) 'blocked))
+        (should (string-match-p "Do you trust the contents of this directory" (cdr state))))
+      (let ((ghostherd-tests--fake-screen ghostherd-test--grok-welcome-screen))
+        (should (eq (car (ghostherd--detect-state s)) 'idle)))
+      (let ((ghostherd-tests--fake-screen
+             (replace-regexp-in-string
+              "Update: .*" (concat "It drew:\n    Do you trust the contents of this directory?\n"
+                                   "    Yes, proceed   y\n    No, quit   n")
+              ghostherd-test--grok-welcome-screen)))
+        (should (eq (car (ghostherd--detect-state s)) 'idle))))))
+
+(ert-deftest ghostherd-test-mail-waits-while-its-taker-cannot-take-it ()
+  "Mail for an agent on a menu, or still starting, is not pasted -- the
+menu would read the Return after it as its answer -- nor acknowledged:
+the sidecar sends it again on a later tick, and once the agent is at
+its prompt it goes."
+  (ghostherd-tests--with-asks
+    (let ((taker (ghostherd-tests--session :name "grok-review" :kind 'grok :state 'blocked))
+          (pasted nil)
+          (ghostherd--herd-ack-ids nil))
+      (cl-letf (((symbol-function 'ghostherd--herd-deliver-one) (lambda (m) (push (plist-get m :id) pasted))))
+        (dolist (state '(blocked starting))
+          (setf (ghostherd-session-state taker) state)
+          (ghostherd--herd-deliver '(:pending ((:id "m1" :from "lead" :to "grok-review" :body "hi"))))
+          (should-not (or pasted ghostherd--herd-ack-ids)))
+        (setf (ghostherd-session-state taker) 'idle)
+        (ghostherd--herd-deliver '(:pending ((:id "m1" :from "lead" :to "grok-review" :body "hi"))))
+        (should (equal pasted '("m1")))
+        (should (equal ghostherd--herd-ack-ids '("m1")))))))
+
+(ert-deftest ghostherd-test-a-paste-no-turn-took-is-lost-and-its-ask-fails ()
+  "Of an agent whose hooks report, a prompt sent at rest is taken only
+when a turn begins on it -- its hook says so, or its screen is at work.
+A box clear is no proof: c644aebc's was clear, the paste gone by a
+dialog.  Looked at until its looks run out, then `lost' -- no Return
+pressed, nothing on the card -- and the ask in it fails, saying so.  An
+agent with no hook to say, or a slash command, keeps the box's word."
+  (let ((msg (format ghostherd-message-template "lead-x" "qa"
+                     "[ask c644aebc -- whoever asked is waiting for your answer]\nReview it."))
+        (settled nil)
+        (ghostherd--herd-links (make-hash-table :test 'equal))
+        (ghostherd--asks-open (make-hash-table :test 'equal)))
+    (ghostherd-test--sending (ghostherd-test--claude-screen "❯ ")
+      (cl-letf (((symbol-function 'ghostherd--ask-settle)
+                 (lambda (id _s _dead &optional error) (push (list id error) settled))))
+        (cl-flet ((resend (text)
+                    (setf (ghostherd-session-state s) 'idle)
+                    (send text)))
+          (puthash "qa" '(:session "qa" :cli "claude") ghostherd--herd-links)
+          (puthash "c644aebc" (ghostherd-session-id s) ghostherd--asks-open)
+          (resend msg)
+          (dotimes (_ ghostherd-submit-looks)
+            (ghostherd--confirm-submit s msg 2)
+            (should (equal later (list (list #'ghostherd--confirm-submit s msg 2))))
+            (setq later nil))
+          (should-not (or keys settled))
+          (ghostherd--confirm-submit s msg 2)
+          (should-not (or keys later))
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'lost))
+          (should (string-match-p "never taken" (ghostherd-log-entry-text (car ghostherd--log))))
+          (should (equal (caar settled) "c644aebc"))
+          (should (string-match-p "not taken: qa's CLI started no turn on it" (cadar settled)))
+          (should-not (ghostherd--unsent-head s))
+          (setq settled nil)
+          ;; Its hook says a turn began: taken.
+          (resend msg)
+          (ghostherd--confirm-submit s msg 2)
+          (ghostherd-report s 'working)
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+          ;; Its screen at work: taken.
+          (resend msg)
+          (let ((ghostherd-tests--fake-screen
+                 (ghostherd-test--claude-screen "❯ " "✽ Bloviating… (3s · ↓ 1.2k tokens)\n")))
+            (ghostherd--confirm-submit s msg 2))
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+          ;; A slash command begins no turn: the box's word.
+          (resend "/model opus")
+          (ghostherd--confirm-submit s "/model opus" 2)
+          (ghostherd--confirm-submit s "/model opus" 2)
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+          ;; No hook to say: the box's word.
+          (clrhash ghostherd--herd-links)
+          (resend msg)
+          (ghostherd--confirm-submit s msg 2)
+          (ghostherd--confirm-submit s msg 2)
+          (should (eq (plist-get (ghostherd--submit-of s) :state) 'confirmed))
+          (should-not settled))))))
+
+(ert-deftest ghostherd-test-an-ask-no-turn-took-is-not-answered-by-a-stop ()
+  "The taker reads idle again before its submit check has ended: the ask
+in text not yet known taken is left open -- not settled with a screen
+that never read it -- and settled at its turn's end once taken."
+  (ghostherd-tests--with-asks
+   (ghostherd-tests--with-log
+    (let* ((taker (ghostherd-tests--session :name "qa" :kind 'claude :state 'idle :backend 'fake))
+           (msg (format ghostherd-message-template "lead-x" "qa"
+                        "[ask a1 -- whoever asked is waiting for your answer]\nReview it."))
+           (ghostherd--herd-links (make-hash-table :test 'equal))
+           (ghostherd-tests--fake-screen (ghostherd-test--claude-screen "❯ ")))
+      (puthash "qa" '(:session "qa" :cli "claude") ghostherd--herd-links)
+      (puthash "a1" "qa" ghostherd--asks-open)
+      (cl-letf (((symbol-function 'ghostherd--host-send-text) #'ignore)
+                ((symbol-function 'run-at-time) #'ignore)
+                ((symbol-function 'run-with-timer) #'ignore))
+        (ghostherd-send taker msg t)
+        (ghostherd--set-state taker 'done)
+        (should-not requests)
+        (should (gethash "a1" ghostherd--asks-open))
+        (should (string-match-p "a1 left open: qa has begun no turn on it"
+                                (ghostherd-log-entry-text (car ghostherd--log))))
+        ;; Its hook: the turn began on it; its end settles the ask.
+        (ghostherd-report taker 'working)
+        (ghostherd--set-state taker 'working)
+        (ghostherd--set-state taker 'done)
+        (should (equal (mapcar #'car requests) '("herd_settle"))))))))
+
 (ert-deftest ghostherd-test-return-again-on-request-only-while-unsent ()
   "The card's and the Inbox's Press Return: pressed only while the text
 is verifiably still in the box, then watched as a fresh submit.  Gone

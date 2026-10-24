@@ -194,7 +194,16 @@ made an unanchored `> \=' match the transcript.")
                   "Approve"
                   ,ghostherd--rule-permission-prompt
                   "\\[y/N\\]"
-                  "\\(y/n\\)"))
+                  "\\(y/n\\)"
+                  ;; The folder-trust prompt grok draws on its first start
+                  ;; in a directory not yet trusted -- each new worktree:
+                  ;; the question over "Yes, proceed  y" / "No, quit  n",
+                  ;; and no input box.  Read as idle, it was handed an ask:
+                  ;; the paste went nowhere and the Return after it said
+                  ;; "Yes, proceed" (ask c644aebc).  The question, its last
+                  ;; choice under it, and no input box from there to the
+                  ;; foot: an agent quoting it has its box under the quote.
+                  "^[[:blank:]]*Do you trust the contents of this directory\\?[[:blank:]]*\\(?:\n.*\\)\\{1,12\\}\n[[:blank:]]*No, quit[[:blank:]]+n[[:blank:]]*\\(?:\n[^│╭╰❯›\n]*\\)*\\'"))
       (working . ("Working"
                   "Thinking"
                   "Running"
@@ -5370,13 +5379,18 @@ R :looks N :clear N :retried R).  STATE is `pending'; `confirmed' once its
 CLI's hook says a turn began, or the screen shows the box let it go;
 `unsent' once Return was pressed on it again and again, or its looks
 ran out with it still there -- that one shows on the agent's card and
-in the Inbox.  RESTING: the agent was not at work when it was sent, so
-a hook's word that a turn began is about this text.
+in the Inbox; `lost' once its looks ran out with the box clear and no
+turn begun: the CLI never had it.  RESTING: the agent was not at work
+when it was sent, so a hook's word that a turn began is about this
+text -- and for a prompt to a resting agent only that, or its screen at
+work, confirms it: a box clear is no proof the text was ever in it.
 
 A delivery is confirmed, not assumed: an image path in a paste makes
 claude take it in as \"[Image #N]\" for a moment, and the Return the
 herd pressed in that moment was lost (ask 2b76d37d sat unsent for 7
-minutes).")
+minutes).  And a dialog takes no paste: grok's folder-trust prompt let
+an ask's text go by and took the Return after it as \"Yes, proceed\";
+the input box grok drew next was clear (ask c644aebc).")
 
 (defun ghostherd--submit-of (session)
   "The text the herd last submitted to SESSION, as `ghostherd--submits' has it."
@@ -5412,6 +5426,32 @@ card and in the Inbox, and fail the ask it holds."
      id session nil
      (format "not submitted: it sat in %s's input box"
              (ghostherd-session-name session)))))
+
+(defvar ghostherd--turn-ask-pending)
+
+(defun ghostherd--submit-lost (session text screen)
+  "Give up on TEXT, which SESSION's CLI never had: its box clear on SCREEN,
+and no turn begun -- by its hook or its screen -- in all the looks it
+got.  Fail the ask it held, saying so, rather than leave it to be
+answered by a screen that never read it; the asker sends it again.
+Nothing is left to press Return on, so the card shows nothing."
+  (ghostherd--log-add session 'input "← never taken: no turn began on it" screen)
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((equal (plist-get sub :text) text)))
+    (plist-put sub :state 'lost))
+  (when-let* ((id (ghostherd--ask-in session text)))
+    ;; Its turn will not come: the next one is not the ask's.
+    (remhash (ghostherd-session-id session) ghostherd--turn-ask-pending)
+    (ghostherd--ask-settle
+     id session nil
+     (format "not taken: %s's CLI started no turn on it -- send it again"
+             (ghostherd-session-name session)))))
+
+(defun ghostherd--submit-starts-turn-p (text)
+  "Non-nil when TEXT, submitted, begins a turn: a prompt, not a CLI's own
+slash command (`/model', `/usage'), which leaves its box clear and no
+turn after it."
+  (not (string-match-p "\\`[[:blank:]\n]*/" text)))
 
 (defun ghostherd--submit-reported (session)
   "SESSION's CLI says a turn began (its prompt-submit hook): the text the
@@ -5551,7 +5591,9 @@ taking a paste in.  Not the words up in the conversation."
   "Make sure TEXT, pasted into SESSION with Return, left its input box.
 Its CLI's hook saying a turn began settles it (`ghostherd-report'), and
 so does the screen: the turn at work, or the box clear on two looks
-running.  Still in the box of an agent neither working nor on a menu --
+running -- but not for a prompt to a resting agent whose hooks report:
+that waits for its turn to begin, and is `lost' when none does in all
+its looks.  Still in the box of an agent neither working nor on a menu --
 Return there is an answer -- it gets Return again, TRIES more times;
 then it is `unsent', on the card and in the Inbox, and an ask in it
 fails.  Still being taken in (claude's \"Pasting…\"), or in the box of
@@ -5592,6 +5634,21 @@ at most."
                      (funcall again tries))
                     ((and sub unsent) (ghostherd--submit-unsent session text screen))))
              (busy (ghostherd--submit-confirmed session "its turn is under way"))
+             ;; Clear, and no turn begun.  For a prompt to an agent at rest
+             ;; whose hooks report, that is no proof it was ever in the box:
+             ;; a dialog takes no paste, and the box drawn after it is clear
+             ;; (ask c644aebc).  Only the turn beginning confirms it -- its
+             ;; hook, its screen at work; none in all its looks, the CLI
+             ;; never had it.  An agent with no hook to say so keeps the
+             ;; box's word, and a view scrolled back tells nothing.
+             ((and sub (plist-get sub :resting)
+                   (ghostherd--submit-starts-turn-p text)
+                   (ghostherd--hooked-p session)
+                   (not (ghostherd--scrolled-back-p screen (plist-get spec :scrolled))))
+              (if (> (plist-get sub :looks) 0)
+                  (progn (plist-put sub :looks (1- (plist-get sub :looks)))
+                         (funcall again tries))
+                (ghostherd--submit-lost session text screen)))
              ;; Clear: once more before it counts as taken, as a CLI may
              ;; clear its box a moment before it shows the paste's fold.
              ((and sub (< (plist-get sub :clear) 1))
@@ -7356,17 +7413,30 @@ address of each one's room from your phone, for the bot to link to."
      (handoff (ghostherd-handoff to body from))
      (t (ghostherd-message from to body :submit submit)))))
 
+(defun ghostherd--herd-held-p (msg)
+  "Non-nil when MSG's taker cannot take a paste now: starting, or on a
+menu.  A menu -- a trust prompt, a permission prompt -- takes no paste,
+and reads the Return pressed after it as its answer.  The sidecar holds
+such mail by the state Emacs last ticked; this is for a state that
+changed since."
+  (when-let* (((not (plist-get msg :handoff)))
+              (to (ghostherd-get (plist-get msg :to))))
+    (memq (ghostherd-session-state to) '(starting blocked))))
+
 (defun ghostherd--herd-deliver (result)
-  "Deliver pending mail from a `herd_tick' RESULT plist."
+  "Deliver pending mail from a `herd_tick' RESULT plist.
+Mail `ghostherd--herd-held-p' holds is not acknowledged: it comes again
+on a later tick."
   (dolist (msg (plist-get result :pending))
     (let ((id (plist-get msg :id)))
-      (condition-case err
-          (ghostherd--herd-deliver-one msg)
-        (error
-         (message "ghostherd herd mail %s: %s"
-                  id (error-message-string err))))
-      (when id
-        (push id ghostherd--herd-ack-ids)))))
+      (unless (ghostherd--herd-held-p msg)
+        (condition-case err
+            (ghostherd--herd-deliver-one msg)
+          (error
+           (message "ghostherd herd mail %s: %s"
+                    id (error-message-string err))))
+        (when id
+          (push id ghostherd--herd-ack-ids))))))
 
 
 ;;; Asks: mail that wants an answer
@@ -7578,6 +7648,10 @@ Such an ask is watched again, for the next time it stops."
                                 ((plist-get r :turn_on)
                                  (format "ask %s left open: %s's turn has not ended by its hook or transcript"
                                          id (ghostherd-session-name session)))
+                                ;; The sidecar holds a failure until this Emacs
+                                ;; has picked its herd up, then is asked again.
+                                ((plist-get r :unrestored)
+                                 (format "ask %s left open: the herd is not restored yet" id))
                                 (t
                                  (format "ask %s left open: %s waits on %s"
                                          id (ghostherd-session-name session)
@@ -7607,13 +7681,32 @@ Such an ask is watched again, for the next time it stops."
     (ghostherd--unsent-p screen (substring ghostherd-message-template 0
                                           (string-search "%s" ghostherd-message-template)))))
 
+(defun ghostherd--ask-not-taken (session)
+  "The open ask in the text the herd last sent SESSION, while that text
+is not known taken: no turn begun on it yet, of an agent whose hooks
+say when one does -- the submit check waits for it, and ends by
+confirming the text or failing the ask (`ghostherd--confirm-submit')."
+  (when-let* ((sub (ghostherd--submit-of session))
+              ((eq (plist-get sub :state) 'pending))
+              ((ghostherd--hooked-p session)))
+    (ghostherd--ask-in session (plist-get sub :text))))
+
 (defun ghostherd--ask-on-state (session _old new)
   "A taker that stopped closes its open ask -- unless it never started.
 Delivery marks the taker `working' itself; when the Return was lost the
 ask is still in its input box, and the taker goes idle without having
-read it.  Its screen then answers nothing, so the ask stays open."
+read it.  Its screen then answers nothing, so the ask stays open.  So
+too while the text that carried it is not known taken: the submit check
+settles that, failing the ask if no turn ever began on it."
   (when (memq new '(idle done dead))
     (let ((ids (ghostherd--asks-of session)))
+      (when-let* (((not (eq new 'dead)))
+                  (id (ghostherd--ask-not-taken session))
+                  ((member id ids)))
+        (ghostherd--log-add session 'ask
+                            (format "ask %s left open: %s has begun no turn on it yet"
+                                    id (ghostherd-session-name session)))
+        (setq ids (delete id ids)))
       (when (and ids (not (eq new 'dead)) (ghostherd--ask-unsent-p session))
         (ghostherd--log-add session 'ask
                             (format "ask %s is still in its input box: left open"
@@ -8251,6 +8344,12 @@ from (`ghostherd-relay'), whose conversation is not its own."
       (and (or (not (stringp cli)) (string-empty-p cli)
                (equal cli (symbol-name (or (ghostherd-session-kind s) 'shell))))
            link))))
+
+(defun ghostherd--hooked-p (session)
+  "Non-nil when SESSION's own CLI's hooks report to the herd: they named
+it.  A turn it begins is then said, not only drawn."
+  (let ((cli (plist-get (ghostherd--link session) :cli)))
+    (and (stringp cli) (not (string-empty-p cli)))))
 
 (defun ghostherd-session-conversation (session)
   "The conversation SESSION is on, as its own hooks named it, or nil."

@@ -49,6 +49,24 @@ def test_working_holds_then_idle_releases(tmp_path: Path):
     reset_herd()
 
 
+def test_a_taker_on_a_menu_gets_no_mail_until_it_is_answered(tmp_path: Path):
+    """A trust prompt or a permission prompt takes no paste, and reads the
+    Return after it as its answer -- grok's folder-trust prompt said "Yes,
+    proceed" for the herd (ask c644aebc), claude's, on "No, exit", quits.
+    Mail and asks wait for the user to answer it."""
+    h = _store(tmp_path)
+    h.tick(sessions=[{"name": "grok-dev", "kind": "grok", "state": "starting"}])
+    h.enqueue(to="grok-dev", body="later", from_name="claude-research")
+    ask = h.ask("grok-dev", "review it", from_name="claude-research")
+    for state in ("starting", "blocked"):
+        held = h.tick(sessions=[{"name": "grok-dev", "kind": "grok", "state": state}])
+        assert held["pending"] == [], state
+    ready = h.tick(sessions=[{"name": "grok-dev", "kind": "grok", "state": "idle"}])
+    assert [p["body"] for p in ready["pending"]][0] == "later"
+    assert ask["id"] in [p["ask"] for p in ready["pending"]]
+    reset_herd()
+
+
 def test_unknown_target_fails(tmp_path: Path):
     h = _store(tmp_path)
     h.enqueue(to="nope", body="x", from_name="claude-research")
