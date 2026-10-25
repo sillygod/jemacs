@@ -625,13 +625,14 @@ def test_a_project_search_asks_wide_first_and_finds_the_same(tmp_path, monkeypat
     """A search in a project asks for the best of every project first and
     keeps the project's (store.WIDE) -- the filter is slow in embedded
     Qdrant -- and runs the filtered query when too few were its own: the
-    same hits either way."""
+    same hits either way.  (Qdrant's own BM25 half: the word index off, as
+    before it is built.)"""
     import store as store_mod
     from index import SourceMeta
 
     reset_engine()
     eng = MemoryEngine(Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "c",
-                              grok_root=tmp_path / "g", agy_root=tmp_path / "a"))
+                              grok_root=tmp_path / "g", agy_root=tmp_path / "a", words_index=False))
     try:
         eng._ensure_ready()
         words = ["overlay", "sizing", "posframe", "deploy", "branch", "commit", "sidecar", "embed"]

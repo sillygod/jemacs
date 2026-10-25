@@ -15,10 +15,15 @@ directory `snapshot' made, and check the lock first anyway:
   uv run python eval/session_eval.py run /tmp/snap --legacy   # the old query side
   uv run python eval/session_eval.py migrate /tmp/snap        # sparse_migrate, timed
   uv run python eval/session_eval.py run /tmp/snap
+  uv run python eval/session_eval.py words /tmp/snap          # the word index, built, timed
+  uv run python eval/session_eval.py bench /tmp/snap --project ~/.emacs.d
 
 `snapshot' copies with SQLite's backup API, in one step: a consistent copy
 while the sidecar runs (it waits on the copy's read lock, ~1 s for 800 MB).
 `label' resolves the regexes again, on a snapshot of a store that changed.
+`words' builds the BM25 half's own index (wordindex) -- `run' and `bench'
+then ask it, as the sidecar does; GHOSTHERD_MEMORY_WORDS=0 asks Qdrant.
+`bench' times the searches the page and `herd search' make.
 GHOSTHERD_MEMORY_CJK (lexical) picks the CJK segmenter for `migrate' and
 `run'; `run --legacy' asks as the code before it did (unsegmented, a
 document's weights) -- on a snapshot not migrated, that is the old search.
@@ -216,6 +221,63 @@ def migrate(data: Path) -> None:
         eng.close()
 
 
+def words(data: Path) -> None:
+    eng = open_engine(data)
+    try:
+        t, cpu = time.monotonic(), _cpu()
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        report = eng.index_words(rebuild=True)
+        wall, used = time.monotonic() - t, _cpu() - cpu
+        size = sum(p.stat().st_size for p in data.glob("words.sqlite*"))
+        print(json.dumps({
+            "report": report, "wall_s": round(wall, 1), "cpu_s": round(used, 1),
+            "cores": round(used / wall, 2) if wall else 0,
+            "disk_mb": round(size / 2**20, 1),
+            "max_rss_mb_before": round(rss / 2**20), "max_rss_mb_after":
+                round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20),
+        }, indent=1))
+    finally:
+        eng.close()
+
+
+def bench(data: Path, path: Path, project: str) -> None:
+    """Each query's search as the page makes it (every project, and one)
+    and as `herd search' does (agent_search), and the BM25 half alone:
+    p50 / p90 in milliseconds."""
+    import statistics
+
+    import agent_search
+
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    eng = open_engine(data)
+    try:
+        eng._ensure_ready()
+        scope = agent_search.scope(eng, project, Path("~/.ghostherd/worktrees").expanduser(), [])
+        times: dict[str, list[float]] = {k: [] for k in
+                                         ("bm25", "bm25 project", "page", "page project", "herd search")}
+        for q in spec["queries"]:
+            text = q["query"]
+            sparse = eng.embedder.sparse_query(text)
+            eng.search(text, limit=8)  # warm
+            for name, fn in (
+                ("bm25", lambda: eng.store.channel("sparse", sparse, 90)),
+                ("bm25 project", lambda: eng.store.channel("sparse", sparse, 90, projects=scope)),
+                ("page", lambda: eng.search(text, limit=30)),
+                ("page project", lambda: eng.search(text, limit=30, project=project)),
+                ("herd search", lambda: agent_search.search(eng, scope, text)),
+            ):
+                t = time.perf_counter()
+                fn()
+                times[name].append((time.perf_counter() - t) * 1000)
+        live = eng.store.words_live()
+    finally:
+        eng.close()
+    print(f"BM25 half from {'the word index' if live else 'Qdrant'}; {len(spec['queries'])} queries")
+    for name, xs in times.items():
+        xs.sort()
+        print(f"  {name:13} p50 {statistics.median(xs):7.1f} ms   p90 {xs[int(len(xs) * .9)]:7.1f} ms")
+
+
 def _cpu() -> float:
     r = resource.getrusage(resource.RUSAGE_SELF)
     return r.ru_utime + r.ru_stime
@@ -238,6 +300,12 @@ def main() -> None:
     p.add_argument("--json", type=Path, help="also write the numbers here")
     p = sub.add_parser("migrate")
     p.add_argument("data", type=Path)
+    p = sub.add_parser("words")
+    p.add_argument("data", type=Path)
+    p = sub.add_parser("bench")
+    p.add_argument("data", type=Path)
+    p.add_argument("--queries", type=Path, default=QUERIES)
+    p.add_argument("--project", default=str(Path.home() / ".emacs.d"))
     a = ap.parse_args()
     if a.cmd == "snapshot":
         snapshot(a.src.expanduser(), a.dst.expanduser())
@@ -248,6 +316,10 @@ def main() -> None:
         print(table(result))
         if a.json:
             a.json.write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
+    elif a.cmd == "words":
+        words(a.data.expanduser())
+    elif a.cmd == "bench":
+        bench(a.data.expanduser(), a.queries, a.project)
     else:
         migrate(a.data.expanduser())
 

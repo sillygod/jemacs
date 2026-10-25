@@ -2506,6 +2506,32 @@ To undo it, stop the sidecar, copy the backup's three files back over
 =qdrant/collection/ghostherd_turns/storage.sqlite=, =qdrant/meta.json=
 and =sources.sqlite=, and run the code from before.
 
+The BM25 half has an index of its own (=server/wordindex.py=, the file
+=ghostherd-memory/words.sqlite=): each word's postings in SQLite, so a
+search reads the chunks that hold the query's words instead of scoring
+every chunk in Python, as embedded Qdrant does.  It scores as Qdrant
+did --- the same term weights, the same IDF over the whole index ---
+and a project's scope is a join there, for the dense half's wide ask
+too.  On the real store (85k chunks) the BM25 half went from 0.49 s to
+5.5 ms at the median; a page search from 0.6 s to 75 ms (a project's,
+115 ms); =herd search= from 0.66--0.9 s to 0.21--0.25 s end to end.  The
+eval is unchanged (the same BM25 numbers; fused MRR 0.681 → 0.680, which
+of 47 chunks tied at the cut-off made it).  It is derived from the
+chunks' stored text, never re-imported: built the first time the sidecar
+starts, in the background (47 s on 85k chunks, about two thirds of one
+core; an import meanwhile says busy and the page shows the progress;
+search asks Qdrant until it is whole), then kept in step by every write,
+and checked against the collection at each start (5 s) --- a chunk
+missing or changed is indexed again from its text, one gone dropped.  It
+takes 132 MB on disk and a 2 MB page cache in memory.  To build it again,
+delete =words.sqlite= and restart the sidecar, or ask the sidecar's
+=memory_words= with =rebuild=; =GHOSTHERD_MEMORY_WORDS=0= in Emacs's
+environment, before the sidecar starts, asks Qdrant as before.
+
+The sidecar also freezes what it loaded (=gc.freeze=): embedded Qdrant
+holds every chunk as Python objects, 550k for 85k chunks, and each full
+collection walked them all --- 186 ms, a request's whole time, at random.
+
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
 its cache; watch =*ghostherd-memory*= if that seems stuck.
 

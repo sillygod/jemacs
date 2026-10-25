@@ -81,7 +81,11 @@ def _migrate_index() -> None:
     from store import StoreClosed
 
     try:
-        get_engine().migrate()
+        engine = get_engine()
+        engine.migrate()
+        # Then the BM25 half's own index: built the first time (search asks
+        # Qdrant until it is), checked and repaired after.
+        engine.index_words()
     except StoreClosed:
         pass  # shut down mid-way: the next start takes up from there
     except Exception as exc:  # noqa: BLE001 -- search works on the index as it is
