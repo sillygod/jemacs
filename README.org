@@ -12,7 +12,6 @@
 
 *** some util tools
     #+begin_src sh
-      curl -Ls https://raw.githubusercontent.com/daipeihust/im-select/master/install_mac.sh | sh # install im-select
       brew install ispell pngpaste ripgrep
     #+end_src
 
@@ -95,5 +94,4 @@
    - https://www.youtube.com/@SystemCrafters/streams (systemCrafter)
    - https://github.com/p3r7/awesome-elisp
    - [[https://github.com/lujun9972/emacs-document/blob/master/elisp-common/Emacs%E4%B8%AD%E7%9A%84%E9%82%A3%E4%BA%9B%E5%8A%A8%E7%94%BB%E6%95%88%E6%9E%9C.org][a collection of emacs notes]]
-   - https://endlessparentheses.com/
    - https://github.com/storvik/gomacro-mode (there are usages about emacs on ci)

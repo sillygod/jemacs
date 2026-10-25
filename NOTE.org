@@ -1,9 +1,7 @@
 * Some plugins can be referenced
 
-  - https://github.com/tecosaur/emacs-everywhere
   - https://github.com/xiongtx/eros (interesting plugins)
   - https://github.com/minad/tempel (another choice for snippet completion)
-  - https://github.com/ksqsf/org-xlatex/blob/main/org-xlatex.el
 
   a nice show case of transient
   https://github.com/positron-solutions/transient-showcase
@@ -12,7 +10,6 @@
   https://github.com/bbatsov/crux
 
   start to leverage the gptel
-  https://github.com/jwiegley/gptel-prompts
   https://github.com/rajp152k/fabric-gpt.el
 
   global-text-scale-adjust <- why does this sometimes not work
@@ -26,7 +23,6 @@
 
 ** things needed to be done or enahnced
 
-   - [ ] https://github.com/wbolster/emacs-python-coverage
    - [ ] add continuous integration for this emacs literate programming setup (but how to test?)
 
 

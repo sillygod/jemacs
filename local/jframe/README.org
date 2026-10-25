@@ -1,4 +1,3 @@
 * Some frame's utils
 
 https://gitlab.com/andreyorst/infinite.el
-https://github.com/kchanqvq/xwwp
