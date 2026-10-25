@@ -1011,7 +1011,7 @@ from =~/.emacs.d/ghostherd-memory= (the raw Qdrant transcripts): that is
 
 #+begin_src sh
 herd remember [--type project|feedback|reference] [--name SLUG] [--user|--project P] [TEXT|-]
-herd recall [--user|--project P] [QUERY...]   # no query prints the index; a query, the most relevant facts
+herd recall [--user|--project P] [QUERY...]   # no query prints the index; a fact's name, that fact; else the most relevant facts
 herd forget [--user|--project P] NAME
 herd promote propose --fact NAME... --file PATH [--project P]   # the exact diff on stdin
 #+end_src
@@ -1054,7 +1054,10 @@ is read, by the files' stamps, re-embedding only a fact whose text
 changed; a change of model (its vectors a new size) re-embeds them all by
 itself on the next read.  Until the embedder is up the ranking falls back
 to words --- ASCII identifiers and CJK character bigrams both --- and says
-so.  The page calls the same ranking (=memory_rank=).
+so.  A query that is a fact's name reads that fact whole instead: an ask's
+memory shows a long fact's start and says to recall its name for the rest.
+(The page's Memory tab filters its list by the words typed, in the page;
+it does not rank.)
 
 An ask attaches a fact on meaning and a shared word agreeing, or on
 meaning alone when it stands out far enough --- a Chinese ask and an
@@ -1070,8 +1073,11 @@ again.  The bar is strict: a fact must stand out from the store by meaning
 *and* share words with the same part of the ask (an ask's paragraphs are
 weighed apart, since an ask names several things).  Tuned on
 deploy-platform's real asks, that found 11 of the 12 facts that clearly
-helped and nothing for an unrelated ask.  An ask in Chinese alone, with no
-identifier in it, carries nothing.  The ask as stored is what was asked;
+helped and nothing for an unrelated ask.  An ask in Chinese alone shares
+no word with an English fact, so it passes on meaning alone, when that
+stands out further (=Z_ALONE=, above where any unrelated ask reached on
+the real store; =docs/roadmap.org= has the eval); otherwise it carries
+nothing.  The ask as stored is what was asked;
 only the delivered text grows, and it never waits more than a moment for
 it.  Prompts you type yourself are left as they are.
 
@@ -2403,6 +2409,37 @@ an English fact --- the facts are few, so the slower model costs nothing;
 =GHOSTHERD_MEMORY_FACT_EMBED_MODEL= overrides it.  Tests set
 =GHOSTHERD_MEMORY_FAKE_EMBED=1= so they never download a model.  Grok tool dumps are skipped (they are
 most of grok's bytes and rarely what you search).
+
+A search asks two halves and fuses their rankings (reciprocal rank
+fusion): the dense vectors, for meaning, and BM25 over the words, for
+names --- a function, a file, an error string --- and for Chinese.
+Chinese is written without spaces, so before BM25 counts a text each run
+of CJK characters is cut into overlapping character pairs (=記憶升級= →
+=記憶 憶升 升級=), on the chunk and on the query alike, and a word counts
+by its rarity (IDF): one in every chunk barely counts, a name in a few
+decides.  A search in a project takes its subdirectories and its
+trailing-slash spelling too, as the Sessions list does.  A claude memory
+file is indexed once, under its real path, however many project dirs
+link to it (ghostherd links each project's memory dir to its shared
+store, which links the user's facts into every project).
+=server/eval/= holds a labelled eval of the search --- 47 queries, from
+identifiers to Chinese, each with the chunks it should find --- run on a
+snapshot of the store, never on the live one.
+
+An index built before this is brought up to it once, by the sidecar, in
+the background after it starts (=server/sparse_migrate.py=): the
+duplicated memory files are folded into one, and every chunk's BM25
+weights are computed again from its stored text.  Nothing is re-imported
+--- for a session Claude Code has deleted, the index is the only copy ---
+and the text, the dense vectors and the payloads stay as they are.  It
+backs up the collection and =sources.sqlite= first (to
+=ghostherd-memory/backups/=, ~800 MB for 84k chunks), takes up where it
+was if the sidecar stops half-way, and checks the counts at the end
+before it marks the index done; the page's import status shows its
+progress, and an import meanwhile says busy.  Search answers throughout.
+To undo it, stop the sidecar, copy the backup's three files back over
+=qdrant/collection/ghostherd_turns/storage.sqlite=, =qdrant/meta.json=
+and =sources.sqlite=, and run the code from before.
 
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
 its cache; watch =*ghostherd-memory*= if that seems stuck.

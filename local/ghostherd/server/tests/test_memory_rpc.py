@@ -30,6 +30,20 @@ def test_a_session_writes_to_its_project_store(mem):
     assert got["count"] == 1 and "Never push to main." in got["text"]
 
 
+def test_recall_of_a_name_reads_that_fact_whole(mem):
+    """An ask's memory shows a fact's start and says to recall its name
+    for the rest: the name is a read, not a search the fact might lose."""
+    long_body = "Never push to main. " + "Open a PR from a branch instead. " * 20
+    mem._herd_remember({"from": "claude-proj", "text": long_body, "name": "push-rules"})
+    mem._herd_remember({"from": "claude-proj", "text": "push rules for the rules page, see push-rules",
+                        "name": "rules-page"})
+    got = mem._herd_recall({"from": "agy-proj", "query": "push-rules"})
+    assert got["mode"] == "name" and got["names"] == ["push-rules"]
+    assert got["text"].endswith(long_body.strip()) and "rules-page" not in got["text"]
+    # Words that are no fact's name are still a search.
+    assert mem._herd_recall({"from": "agy-proj", "query": "push"})["mode"] != "name"
+
+
 def test_recall_without_query_is_the_index(mem):
     mem._herd_remember({"from": "claude-proj", "text": "A fact", "name": "a"})
     out = mem._herd_recall({"from": "claude-proj"})

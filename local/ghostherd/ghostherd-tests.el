@@ -7229,6 +7229,25 @@ is announced and lists the sessions again."
       (ghostherd-memory-page--progress-tick)
       (should-not calls))))
 
+(ert-deftest ghostherd-test-memory-page-index-update-progress ()
+  "The sidecar updating an older index shows as that, not as an import,
+and its end is announced as such."
+  (ghostherd-test--with-page
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (_) t)))
+      (setq reply (lambda (m _p)
+                    (if (equal m "memory_status")
+                        '(:import (:running t :migrating t :done 1280 :total 84040
+                                   :current "re-indexing words: 1280 of 84040"))
+                      '(:sources nil :total 0))))
+      (ghostherd-memory-page--progress-tick)
+      (should (equal (ghostherd-test--call calls "importProgress")
+                     '(:migrating t :done 1280 :total 84040)))
+      (setq reply (lambda (m _p) (if (equal m "memory_status") '(:import nil) '(:sources nil))))
+      (setq calls nil)
+      (ghostherd-memory-page--progress-tick)
+      (should (equal (ghostherd-test--call calls "flash") "Search index updated"))
+      (should-not ghostherd-memory-page--progress-shown))))
+
 (ert-deftest ghostherd-test-memory-page-import-waits-for-the-sidecar ()
   "An import just asked for may not have begun at the first read; the
 watch must not end before the answer comes."

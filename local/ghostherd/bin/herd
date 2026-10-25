@@ -64,9 +64,10 @@ facts every agent of a project sees, whatever its CLI.  `remember TEXT'
 writes one fact to your project's store (a worktree shares its main
 checkout's), authored by you; `--type' is project (default), feedback,
 reference or user, `--name' sets its slug.  `recall' prints the project's
-index, or `recall QUERY' the facts most relevant to QUERY in full, best
-first -- by meaning as well as words, so a query in one language can
-find a fact written in another.  `forget NAME' removes one.  `--user' is the store shared by every project (the user's
+index, `recall NAME' that fact whole, or `recall QUERY' the facts most
+relevant to QUERY in full, best first -- by meaning as well as words, so
+a query in one language can find a fact written in another.  `forget
+NAME' removes one.  `--user' is the store shared by every project (the user's
 own preferences); `--project P' reaches another project's store from any
 shell -- P a path, its leaf name (e.g. deploy-platform), or its slug.  Run
 them from a plain shell too -- authored `user', for the project you are
@@ -1404,7 +1405,7 @@ def main(argv=None):
     p.add_argument("--project", metavar="P",
                    help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_remember)
-    p = sub.add_parser("recall", help="print the memory index, or the facts most relevant to a query")
+    p = sub.add_parser("recall", help="print the memory index, a fact by its name, or the facts most relevant to a query")
     p.add_argument("query", nargs="*")
     p.add_argument("--user", action="store_true", help="the user store, not the project's")
     p.add_argument("--project", metavar="P",

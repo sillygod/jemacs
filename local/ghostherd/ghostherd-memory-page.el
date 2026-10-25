@@ -73,7 +73,8 @@
 (defvar ghostherd-memory-page--progress-timer nil)
 (defvar ghostherd-memory-page--progress-inflight nil)
 (defvar ghostherd-memory-page--progress-shown nil
-  "Non-nil while the page shows progress it read from the sidecar.")
+  "Non-nil while the page shows progress it read from the sidecar:
+`index' for the sidecar updating an older index, t for an import.")
 (defvar ghostherd-memory-page--importing nil
   "Non-nil while an import the page asked for has not answered.")
 
@@ -250,12 +251,18 @@ Also how a background import already running shows up on the page."
         ghostherd-memory-page--progress-inflight nil))
 
 (defun ghostherd-memory-page--progress (p)
-  "The page's view of the sidecar's import progress P."
-  (list :files (or (plist-get p :files) 0)
-        :imported (or (plist-get p :imported) 0)
-        :agent (or (plist-get p :agent) "")
-        :current (let ((c (plist-get p :current)))
-                   (if (stringp c) (file-name-nondirectory c) ""))))
+  "The page's view of the sidecar's import progress P.
+While the sidecar brings an index of an older build up to date
+\=(sparse_migrate) the import waits, and P is that work's progress."
+  (if (plist-get p :migrating)
+      (list :migrating t
+            :done (or (plist-get p :done) 0)
+            :total (or (plist-get p :total) 0))
+    (list :files (or (plist-get p :files) 0)
+          :imported (or (plist-get p :imported) 0)
+          :agent (or (plist-get p :agent) "")
+          :current (let ((c (plist-get p :current)))
+                     (if (stringp c) (file-name-nondirectory c) "")))))
 
 (defun ghostherd-memory-page--progress-tick ()
   "Read the import progress once and pass it on."
@@ -272,7 +279,8 @@ Also how a background import already running shows up on the page."
        (let ((p (plist-get status :import)))
          (cond
           ((and p (plist-get p :running))
-           (setq ghostherd-memory-page--progress-shown t)
+           (setq ghostherd-memory-page--progress-shown
+                 (if (plist-get p :migrating) 'index t))
            (ghostherd-memory-page--js "importProgress" (ghostherd-memory-page--progress p)))
           ;; Asked, not yet begun: the sidecar has not picked it up.
           (ghostherd-memory-page--importing nil)
@@ -280,9 +288,11 @@ Also how a background import already running shows up on the page."
            (ghostherd-memory-page--unwatch)
            (when ghostherd-memory-page--progress-shown
              ;; A background import ended; ours report their own result.
-             (setq ghostherd-memory-page--progress-shown nil)
              (ghostherd-memory-page--js "importProgress" nil)
-             (ghostherd-memory-page--js "flash" "Import finished")
+             (ghostherd-memory-page--js "flash" (if (eq ghostherd-memory-page--progress-shown 'index)
+                                                    "Search index updated"
+                                                  "Import finished"))
+             (setq ghostherd-memory-page--progress-shown nil)
              (ghostherd-memory-page--send-context))))))
      nil
      (lambda (_err) (setq ghostherd-memory-page--progress-inflight nil))))))

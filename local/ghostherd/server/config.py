@@ -43,7 +43,7 @@ class Config:
     # json.loads of a 1MB tool-result line is CPU with nothing to search.
     max_line_bytes: int = 262144
     embed_batch: int = 256
-    embed_threads: int = 0  # 0 = four at most, one core left
+    embed_threads: int = 0  # 0 = two at most, one core left (embedder._thread_count)
     # auto: CPU.  coreml: CoreML on macOS where the session accepts it --
     # it takes 6 of bge-small-zh's 40 nodes, and is the slower for it.
     onnx_provider: str = "auto"

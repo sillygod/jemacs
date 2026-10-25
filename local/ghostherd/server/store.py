@@ -14,10 +14,13 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    MatchAny,
     MatchValue,
+    Modifier,
     OverwritePayloadOperation,
     PointIdsList,
     PointStruct,
+    PointVectors,
     SetPayload,
     SparseVector,
     SparseVectorParams,
@@ -28,6 +31,10 @@ from chunk import Turn
 
 COLLECTION = "ghostherd_turns"
 NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+# The sparse half is BM25: the chunks carry their words' term weights
+# (embedder.sparse) and Qdrant multiplies in each word's rarity at query
+# time.  Without IDF a word in every chunk counted as much as a name in one.
+SPARSE = SparseVectorParams(modifier=Modifier.IDF)
 
 
 def point_id(source_path: str, chunk_index: int) -> str:
@@ -125,7 +132,9 @@ class Store:
         return int(self.client.count(COLLECTION, exact=True).count)
 
     @_locked
-    def ensure(self, dim: int, recreate: bool = False) -> None:
+    def ensure(self, dim: int, recreate: bool = False, build: str = "") -> None:
+        """The collection, made if missing (or of another DIM, with RECREATE)
+        and then marked as BUILD: a new collection is of this code's build."""
         exists = self.collection_exists()
         if exists:
             info = self.client.get_collection(COLLECTION)
@@ -148,8 +157,10 @@ class Store:
                 vectors_config={
                     "dense": VectorParams(size=dim, distance=Distance.COSINE),
                 },
-                sparse_vectors_config={"sparse": SparseVectorParams()},
+                sparse_vectors_config={"sparse": SPARSE},
             )
+            if build:
+                self.mark(build)
             # Payload indexes are a no-op on embedded Qdrant (path=); they
             # warn and do not make Filter faster.  Server Qdrant would.
         self._ready_dim = dim
@@ -249,16 +260,10 @@ class Store:
             return 0
         points = []
         for turn, dvec, svec in zip(turns, dense, sparse, strict=True):
-            indices, values = svec
-            if not indices:
-                indices, values = [0], [1.0]
             points.append(
                 PointStruct(
                     id=point_id(turn.source_path, turn.chunk_index),
-                    vector={
-                        "dense": dvec,
-                        "sparse": SparseVector(indices=indices, values=values),
-                    },
+                    vector={"dense": dvec, "sparse": sparse_vector(svec)},
                     payload=payload_for(turn),
                 )
             )
@@ -292,34 +297,146 @@ class Store:
         sparse: tuple[list[int], list[float]],
         limit: int = 8,
         agent: str | None = None,
-        project: str | None = None,
+        projects: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Dense and sparse hits fused (RRF).  PROJECTS: the project values
+        a chunk may have -- None for any, [] for none."""
+        if projects is not None and not projects:
+            return []
         if not self.collection_exists() or self.point_count() == 0:
             return []
-        qfilter = _filter(agent, project)
+        qfilter = _filter(agent, projects)
         fetch = max(limit * 3, 16)
-        dense_hits = self.client.query_points(
-            collection_name=COLLECTION,
-            query=dense,
-            using="dense",
-            query_filter=qfilter,
-            limit=fetch,
-            with_payload=True,
-        ).points
+        dense_hits = self._query("dense", dense, fetch, qfilter)
         indices, values = sparse
         if not indices:
             merged = dense_hits[:limit]
         else:
-            sparse_hits = self.client.query_points(
-                collection_name=COLLECTION,
-                query=SparseVector(indices=indices, values=values),
-                using="sparse",
-                query_filter=qfilter,
-                limit=fetch,
-                with_payload=True,
-            ).points
+            sparse_hits = self._query(
+                "sparse", SparseVector(indices=indices, values=values), fetch, qfilter)
             merged = rrf_merge(dense_hits, sparse_hits, limit)
         return [_hit_to_dict(h) for h in merged]
+
+    @_locked
+    def channel(
+        self,
+        using: str,
+        vector: Any,
+        limit: int,
+        agent: str | None = None,
+        projects: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        "One half alone (USING: dense or sparse) -- for eval/, which weighs each."
+        if using == "sparse":
+            indices, values = vector
+            if not indices:
+                return []
+            vector = SparseVector(indices=indices, values=values)
+        return [_hit_to_dict(h) for h in self._query(using, vector, limit, _filter(agent, projects))]
+
+    def _query(self, using: str, vector: Any, limit: int, qfilter: Filter | None) -> list[Any]:
+        "Caller holds `client_lock'."
+        return self.client.query_points(
+            collection_name=COLLECTION,
+            query=vector,
+            using=using,
+            query_filter=qfilter,
+            limit=limit,
+            with_payload=True,
+        ).points
+
+    # -- what sparse_migrate works with ------------------------------------
+
+    def storage_files(self) -> list[Path]:
+        """The files that hold the collection in embedded Qdrant: its
+        points (sqlite) and the store's collection list (meta.json)."""
+        return [self.path / "collection" / COLLECTION / "storage.sqlite",
+                self.path / "meta.json"]
+
+    @_locked
+    def backup(self, dest: Path) -> list[Path]:
+        """Copy the collection's files into DEST, consistently: holding the
+        lock no write comes in between, and the points go by SQLite's
+        backup API, not a file copy."""
+        import shutil
+        import sqlite3
+
+        dest.mkdir(parents=True, exist_ok=True)
+        points, meta = self.storage_files()
+        out = [dest / f"{COLLECTION}.storage.sqlite", dest / "meta.json"]
+        src = sqlite3.connect(f"file:{points}?mode=ro", uri=True)
+        dst = sqlite3.connect(out[0])
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        shutil.copy2(meta, out[1])
+        return out
+
+    @_locked
+    def sparse_state(self) -> tuple[Any, str]:
+        "(the sparse vectors' modifier, the build the index records) -- see `mark'."
+        info = self.client.get_collection(COLLECTION)
+        params = (info.config.params.sparse_vectors or {}).get("sparse")
+        meta = info.config.metadata or {}
+        return (params.modifier if params else None), str(meta.get("ghostherd_sparse") or "")
+
+    @_locked
+    def weigh_by_idf(self) -> None:
+        self.client.update_collection(COLLECTION, sparse_vectors_config={"sparse": SPARSE})
+
+    @_locked
+    def mark(self, build: str) -> None:
+        """Record in the collection itself which build of the sparse half it
+        holds: restoring a backup restores the mark with the points."""
+        self.client.update_collection(COLLECTION, metadata={"ghostherd_sparse": build})
+
+    @_locked
+    def page(self, offset: Any, limit: int, fields: list[str]) -> tuple[list[Any], Any]:
+        "LIMIT points from OFFSET in id order, payload FIELDS only; and the next offset."
+        return self.client.scroll(
+            collection_name=COLLECTION,
+            limit=limit,
+            offset=offset,
+            with_payload=fields,
+            with_vectors=False,
+        )
+
+    @_locked
+    def set_sparse(self, vectors: dict[str, tuple[list[int], list[float]]]) -> None:
+        "Replace the sparse vector of each point id in VECTORS; nothing else."
+        self.client.update_vectors(
+            collection_name=COLLECTION,
+            points=[
+                PointVectors(id=pid, vector={"sparse": sparse_vector(vec)})
+                for pid, vec in vectors.items()
+            ],
+        )
+
+    @_locked
+    def points_of(self, source_path: str) -> list[Any]:
+        "Every point of SOURCE_PATH with its payload and vectors."
+        out: list[Any] = []
+        offset = None
+        while True:
+            batch, offset = self.client.scroll(
+                collection_name=COLLECTION,
+                scroll_filter=Filter(must=[
+                    FieldCondition(key="source_path", match=MatchValue(value=source_path))]),
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            out.extend(batch)
+            if offset is None:
+                return out
+
+    @_locked
+    def put(self, points: list[PointStruct]) -> None:
+        if points:
+            self.client.upsert(collection_name=COLLECTION, points=points)
 
     @_locked
     def list_chunks(
@@ -374,15 +491,24 @@ class Store:
         return chunks, total
 
 
-def _filter(agent: str | None, project: str | None) -> Filter | None:
+def _filter(agent: str | None, projects: list[str] | None) -> Filter | None:
     must = []
     if agent:
         must.append(FieldCondition(key="agent", match=MatchValue(value=agent)))
-    if project:
-        must.append(FieldCondition(key="project", match=MatchValue(value=project)))
+    if projects:
+        must.append(FieldCondition(key="project", match=MatchAny(any=list(projects))))
     if not must:
         return None
     return Filter(must=must)
+
+
+def sparse_vector(vec: tuple[list[int], list[float]]) -> SparseVector:
+    """A chunk with no word BM25 counts (all punctuation) still needs a
+    sparse vector: one placeholder entry, as before."""
+    indices, values = vec
+    if not indices:
+        indices, values = [0], [1.0]
+    return SparseVector(indices=indices, values=values)
 
 
 def _hit_to_dict(hit: Any) -> dict[str, Any]:

@@ -57,6 +57,12 @@ AGENT_METHODS = frozenset({
     "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
 })
 
+
+def _recall_block(fact: dict, key: str) -> str:
+    return (f"# {fact['title']}  ({fact['type']}, by {fact['author'] or 'unknown'}, "
+            f"{'user' if fact['shared'] else key})\n{fact['body']}")
+
+
 AWAIT_MAX = 55.0
 AWAIT_POLL = 0.5
 
@@ -784,13 +790,16 @@ class JsonRpcHandler:
         query = str(params.get("query") or "").strip()
         if not query:
             return shared_memory.recall(store, key, query="")
+        # A fact's name reads that fact, whole -- what an ask's memory says
+        # to do with a fact it shows only the start of.
+        if shared_memory.NAME_RE.match(query.lower()):
+            named = [f.as_dict() for f in shared_memory.pool(key) if f.name == query.lower()]
+            if named:
+                return {"query": query, "count": 1, "mode": "name",
+                        "text": _recall_block(named[0], key), "names": [query.lower()]}
         found = fact_index.get_index().rank(key, query, strict=False, wait=RECALL_WAIT)
         hits = found["hits"]
-        blocks = [
-            f"# {h['title']}  ({h['type']}, by {h['author'] or 'unknown'}, "
-            f"{'user' if h['shared'] else key})\n{h['body']}"
-            for h in hits
-        ]
+        blocks = [_recall_block(h, key) for h in hits]
         note = "" if found["mode"] != "words" else (
             "(ranked by words alone: the embedder is not up yet)\n\n")
         return {"query": query, "count": len(hits), "mode": found["mode"],

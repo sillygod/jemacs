@@ -14,6 +14,7 @@ from chunk import chunk_turns
 from config import Config, get_config
 from embedder import Embedder
 from importers import IMPORTERS, ROOT_ATTR
+import sparse_migrate
 from index import SourceIndex, SourceMeta
 from store import Store, payload_for
 
@@ -42,8 +43,23 @@ class MemoryEngine:
 
     def _ensure_ready(self, recreate: bool = False) -> None:
         self.embedder.load()
-        self.store.ensure(self.embedder.dim, recreate=recreate)
+        self.store.ensure(self.embedder.dim, recreate=recreate, build=sparse_migrate.build())
         self._ready = True
+
+    def migrate(self) -> dict[str, Any] | None:
+        """Bring an index of an older build up to this one (sparse_migrate),
+        holding the import lock: an import meanwhile answers busy, with the
+        migration's progress.  None when there was nothing to do."""
+        if not sparse_migrate.needed(self):
+            return None
+        with self._import_lock:
+            if not sparse_migrate.needed(self):
+                return None
+            try:
+                return sparse_migrate.run(
+                    self, progress=lambda p: setattr(self, "_import_progress", {"running": True, **p}))
+            finally:
+                self._import_progress = None
 
     def status(self) -> dict[str, Any]:
         points = 0
@@ -61,6 +77,7 @@ class MemoryEngine:
             "points": points,
             "sources": self.index.counts_by_agent(),
             "import": dict(self._import_progress) if self._import_progress else None,
+            "migration": _migration_summary(self),
         }
 
     def search(
@@ -74,14 +91,17 @@ class MemoryEngine:
         if not query:
             return {"hits": [], "query": query}
         self._ensure_ready()
+        # A project is its directory and those under it, as in the Sessions
+        # list: the chunks are asked for the project values recorded there.
+        projects = self.index.projects_under(project) if project else None
         dense = self.embedder.dense([query])[0]
-        sparse = self.embedder.sparse([query])[0]
+        sparse = self.embedder.sparse_query(query)
         hits = self.store.search(
             dense,
             sparse,
             limit=max(1, int(limit)),
             agent=agent or None,
-            project=project or None,
+            projects=projects,
         )
         return {"hits": hits, "query": query}
 
@@ -169,10 +189,10 @@ class MemoryEngine:
         self.embedder.load()
         rebuilt = False
         try:
-            self.store.ensure(self.embedder.dim, recreate=False)
+            self.store.ensure(self.embedder.dim, recreate=False, build=sparse_migrate.build())
         except ValueError:
             _log("embedding size changed; rebuilding the collection")
-            self.store.ensure(self.embedder.dim, recreate=True)
+            self.store.ensure(self.embedder.dim, recreate=True, build=sparse_migrate.build())
             rebuilt = True
         force = force or rebuilt
         self._ready = True
@@ -276,6 +296,15 @@ class MemoryEngine:
             self.store.upsert(fresh, self.embedder.dense(texts), self.embedder.sparse(texts))
         self.index.record(meta, len(chunks))
         return len(fresh), False
+
+
+def _migration_summary(engine: "MemoryEngine") -> dict[str, Any] | None:
+    state = sparse_migrate.progress(engine)
+    if not state:
+        return None
+    keys = ("build", "step", "done", "total", "started", "finished", "seconds", "backup",
+            "reason", "removed_points")
+    return {k: state[k] for k in keys if k in state}
 
 
 def _project_matches(have: str, wanted: str) -> bool:
