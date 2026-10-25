@@ -349,6 +349,7 @@ def _index_text(project: list[Fact], shared: list[Fact], key: str) -> str:
         return "\n".join(out).rstrip() + "\n"
     out.append("The herd's shared memory for this project.  One fact per file;")
     out.append("this index is generated from them, so edit the files, not this.")
+    out.append('What its past sessions said: "$GHOSTHERD_HERD" search WORDS.')
     out.append("")
     if shared:
         out.append("## Shared (every project)")

@@ -15286,6 +15286,7 @@ them and how much room they may take."
   (let ((ghostherd-reply-images-directory "/tmp/gh-images/")
         (ghostherd-reply-images-keep-days 10)
         (ghostherd-reply-images-budget 64)
+        (ghostherd-worktree-root "/tmp/gh-worktrees")
         env)
     (cl-letf (((symbol-function 'start-process)
                (lambda (&rest _) (setq env process-environment) nil))
@@ -15296,6 +15297,8 @@ them and how much room they may take."
     (should (member "GHOSTHERD_IMAGES_DIR=/tmp/gh-images/" env))
     (should (member "GHOSTHERD_IMAGES_KEEP_DAYS=10" env))
     (should (member "GHOSTHERD_IMAGES_BUDGET_MB=64" env))
+    ;; And where agents' worktrees are, which `herd search' counts as theirs.
+    (should (member "GHOSTHERD_WORKTREE_ROOT=/tmp/gh-worktrees" env))
     (when (get-buffer "*ghostherd-memory*") (kill-buffer "*ghostherd-memory*"))))
 
 (ert-deftest ghostherd-test-images-of-a-report-in-the-inbox ()

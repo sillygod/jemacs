@@ -8038,7 +8038,8 @@ prints the index; a query prints the matching facts in full).  Add a
 fact with \"$GHOSTHERD_HERD\" remember [--type project|feedback|reference],
 update one with remember --name NAME (when remember says your text
 restates a fact, it tells you what to add), and drop one with
-\"$GHOSTHERD_HERD\" forget NAME."
+\"$GHOSTHERD_HERD\" forget NAME.  What this project's past sessions
+said: \"$GHOSTHERD_HERD\" search WORDS."
   "Shared-memory rules, given to a grok or agy agent as it starts.")
 
 (defun ghostherd--memory-link-claude (session)

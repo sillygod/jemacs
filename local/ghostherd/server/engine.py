@@ -86,14 +86,19 @@ class MemoryEngine:
         limit: int = 8,
         agent: str | None = None,
         project: str | None = None,
+        projects: list[str] | None = None,
     ) -> dict[str, Any]:
+        """The chunks best matching QUERY.  PROJECT: a project's directory and
+        those under it; PROJECTS: these project values exactly (agent_search's
+        scope) -- [] finds nothing."""
         query = (query or "").strip()
         if not query:
             return {"hits": [], "query": query}
         self._ensure_ready()
         # A project is its directory and those under it, as in the Sessions
         # list: the chunks are asked for the project values recorded there.
-        projects = self.index.projects_under(project) if project else None
+        if projects is None and project:
+            projects = self.index.projects_under(project)
         dense = self.embedder.dense([query])[0]
         sparse = self.embedder.sparse_query(query)
         hits = self.store.search(

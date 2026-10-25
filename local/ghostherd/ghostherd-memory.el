@@ -538,6 +538,9 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
            ;; writes the user's approvals into.
            (when (boundp 'ghostherd-guard-root)
              (list (format "GHOSTHERD_GUARD_ROOT=%s" (expand-file-name ghostherd-guard-root))))
+           ;; Where agents' worktrees are: `herd search' counts a project's.
+           (when (boundp 'ghostherd-worktree-root)
+             (list (format "GHOSTHERD_WORKTREE_ROOT=%s" (expand-file-name ghostherd-worktree-root))))
            (when (getenv "GHOSTHERD_TELEGRAM_TOKEN")
              (list (format "GHOSTHERD_TELEGRAM_TOKEN=%s"
                            (getenv "GHOSTHERD_TELEGRAM_TOKEN"))))

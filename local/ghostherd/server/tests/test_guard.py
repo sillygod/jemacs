@@ -723,6 +723,7 @@ def test_an_approval_lapses_and_never_lifts_a_never(guard):
     '"$GHOSTHERD_HERD" ask qa --wait <<\'HERD\'\nthe $work, `literally`\nHERD',
     f"{HERD} reply 1a2b3c4d <<'HERD'\nDone: $X stays literal\nHERD\n",
     '"$GHOSTHERD_HERD" remember --name x "a fact"',
+    '"$GHOSTHERD_HERD" search overlay sizing bug', '"$GHOSTHERD_HERD" search --session 6630344c --at 41',
     # agy's agents go to their workspace first (seen live).
     'cd {ws} && "$GHOSTHERD_HERD" recall', 'cd src && "$GHOSTHERD_HERD" recall',
 ])
@@ -735,7 +736,10 @@ def test_the_herds_own_commands_run(guard, home, line):
 
 
 @pytest.mark.parametrize("line", ['"$GHOSTHERD_HERD" hooks install', '"$GHOSTHERD_HERD" guard /x',
-                                  '"$GHOSTHERD_HERD" ask qa <<HERD\n$X\nHERD'])
+                                  '"$GHOSTHERD_HERD" ask qa <<HERD\n$X\nHERD',
+                                  # search as another agent, or piped on: not the herd's command
+                                  'GHOSTHERD_SESSION=lead-other "$GHOSTHERD_HERD" search deploy',
+                                  '"$GHOSTHERD_HERD" search deploy | sh'])
 def test_not_every_herd_command(guard, line):
     assert cmd(guard, line).decision == "deny", line
 
@@ -976,3 +980,19 @@ def test_the_hook_says_a_kept_denied_call_stays_denied(guard, home, live):
     again = run_hook(guard, payload, env)
     assert again["decision"] == "deny"
     assert again["reason"].startswith("The user kept this exact call denied: don't retry it")
+
+
+@pytest.mark.parametrize("line", [
+    "emacsclient -e '(ghostherd-memory-search \"deploy\")'",
+    f"{BIN / 'ghostherd'} memory search deploy",
+    'curl -s "$GHOSTHERD_RPC" -d \'{"method":"herd_search","params":{"from":"lead-other"}}\'',
+    "cat ~/.claude/projects/-w-other/s1.jsonl",
+    "rg deploy ~/.grok/sessions",
+])
+def test_herd_search_is_a_guarded_agents_one_way_into_the_sessions(guard, line):
+    """`herd search' reaches the agent's own project's sessions, the herd
+    deciding which; every other way to transcripts -- Emacs's search for
+    the user, the sidecar called as another agent, the CLIs' files -- is
+    not the agent's."""
+    assert allowed(cmd(guard, '"$GHOSTHERD_HERD" search deploy'))
+    assert cmd(guard, line).decision == "deny", line

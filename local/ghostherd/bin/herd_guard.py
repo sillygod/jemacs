@@ -171,7 +171,7 @@ _AWK_JQ_REVEAL = re.compile(r"ENVIRON|system|getline|\$ENV|\benv\b|\|")
 # The herd's own commands an agent may run: not its hooks or this guard.
 HERD_SUBCOMMANDS = frozenset({"ask", "reply", "status", "cancel", "list", "asks", "recall",
                               "remember", "forget", "handoff", "start", "stop", "relay",
-                              "promote", "screens", "--help", "-h"})
+                              "promote", "screens", "search", "--help", "-h"})
 
 # `2>/dev/null' and `2>&1' (agents add them everywhere) are the redirections let through.
 _STDERR = re.compile(r"\s+2>\s*(?:/dev/null|&1)(?=\s|$)")

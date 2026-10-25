@@ -53,7 +53,7 @@ AGENT_METHODS = frozenset({
     "herd_list", "herd_message", "herd_inbox",
     "herd_ask", "herd_handoff", "herd_reply", "herd_await", "herd_cancel", "herd_detach", "herd_asks",
     "herd_report", "herd_guard_denied", "herd_guard_used",
-    "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose",
+    "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose", "herd_search",
     "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
 })
 
@@ -163,6 +163,7 @@ class JsonRpcHandler:
             "herd_unlink": self._herd_unlink,
             "herd_remember": self._herd_remember,
             "herd_recall": self._herd_recall,
+            "herd_search": self._herd_search,
             "herd_forget": self._herd_forget,
             "memory_opening": self._memory_opening,
             "memory_rank": self._memory_rank,
@@ -851,6 +852,39 @@ class JsonRpcHandler:
                 "text": (note + "\n\n---\n\n".join(blocks)) if blocks
                 else f"no fact matches {query!r}",
                 "names": [h["name"] for h in hits]}
+
+    def _herd_search(self, params: dict) -> dict:
+        """What the calling agent's own project's past sessions said
+        (agent_search): QUERY's best chunks, or SESSION read from turn AT.
+        The project is the one the herd knows the caller in -- a project
+        named in the call is not taken -- and a caller the herd does not
+        know (a plain shell) is refused: the user has the page's Search."""
+        import agent_search
+        from config import get_config
+        from engine import get_engine
+
+        who = str(params.get("from") or "").strip()
+        me = get_herd().session(who) if who and who != "user" else None
+        if not me:
+            raise ValueError(
+                "herd search is for the herd's agents, of their own project; "
+                "search every project from the herd page's Search (or Emacs)")
+        project = me.get("project") or ""
+        if not project:
+            raise ValueError(f"{who} has no project to search")
+        cfg = get_config()
+        engine = get_engine()
+        known = list(get_herd().projects()) + [
+            p for p in engine.index.projects_under("/") if p]
+        projects = agent_search.scope(engine, project, cfg.worktree_root, known)
+        tokens = agent_search.herd_tokens(cfg.data_dir)
+        if str(params.get("session") or "").strip():
+            return agent_search.read(engine, projects, str(params["session"]),
+                                     int(params.get("at") or 0), tokens)
+        query = str(params.get("query") or "").strip()
+        if not query:
+            raise ValueError("search for what?  herd search WORDS, or --session ID")
+        return agent_search.search(engine, projects, query, tokens)
 
     def _memory_opening(self, params: dict) -> dict:
         """What a grok or agy agent of the caller's project is told of the

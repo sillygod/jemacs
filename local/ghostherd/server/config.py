@@ -59,6 +59,9 @@ class Config:
     images_dir: Path | None = None
     images_keep_days: float = 30
     images_budget_mb: float = 512
+    # Where the herd makes agents' worktrees (Emacs's `ghostherd-worktree-root'):
+    # a project's are <root>/<its leaf>/<agent>, and `herd search' counts them.
+    worktree_root: Path = Path.home() / ".ghostherd" / "worktrees"
 
     def __post_init__(self) -> None:
         if self.images_dir is None:
@@ -125,6 +128,7 @@ class Config:
             if os.getenv("GHOSTHERD_IMAGES_DIR") else None,
             images_keep_days=_number(os.getenv("GHOSTHERD_IMAGES_KEEP_DAYS"), 30),
             images_budget_mb=_number(os.getenv("GHOSTHERD_IMAGES_BUDGET_MB"), 512),
+            worktree_root=_expand(os.getenv("GHOSTHERD_WORKTREE_ROOT", "~/.ghostherd/worktrees")),
         )
 
 
