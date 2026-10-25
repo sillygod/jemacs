@@ -619,3 +619,51 @@ def test_search_by_project_takes_its_subdirectories_like_the_list(tmp_path):
     finally:
         eng.close()
         reset_engine()
+
+
+def test_a_project_search_asks_wide_first_and_finds_the_same(tmp_path, monkeypatch):
+    """A search in a project asks for the best of every project first and
+    keeps the project's (store.WIDE) -- the filter is slow in embedded
+    Qdrant -- and runs the filtered query when too few were its own: the
+    same hits either way."""
+    import store as store_mod
+    from index import SourceMeta
+
+    reset_engine()
+    eng = MemoryEngine(Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "c",
+                              grok_root=tmp_path / "g", agy_root=tmp_path / "a"))
+    try:
+        eng._ensure_ready()
+        words = ["overlay", "sizing", "posframe", "deploy", "branch", "commit", "sidecar", "embed"]
+        for p, project, n in (("big", "/w/big", 60), ("small", "/w/small", 3)):
+            turns = [Turn(agent="claude", role="user", project=project, session_id=f"{p}{i}",
+                          source_path=f"/s/{p}{i}.jsonl",
+                          text=f"{words[i % 8]} {words[(i * 3) % 8]} note {i} of {p}")
+                     for i in range(n)]
+            for t in turns:
+                eng._import_source(SourceMeta(t.source_path, 1.0, 1, "claude", t.session_id, project,
+                                              "transcript"), [t], force=True)
+        calls = []
+        real = eng.store._query
+        monkeypatch.setattr(eng.store, "_query", lambda *a: calls.append(a[3] is None) or real(*a))
+
+        def both(query, project, wide):
+            monkeypatch.setattr(store_mod, "WIDE", wide)
+            calls.clear()
+            got = [h["id"] for h in eng.search(query, limit=4, project=project)["hits"]]
+            return got, list(calls)
+
+        for query in ("overlay sizing", "deploy branch commit", "sidecar"):
+            for project in ("/w/big", "/w/small"):
+                exact, _ = both(query, project, 1)          # wide never enough: filtered
+                fast, asked = both(query, project, 1000)    # wide: the whole store
+                assert fast == exact, (query, project)
+                assert asked == [True, True]                # two unfiltered asks, no filter
+        # The small project, with a wide ask that cannot hold enough of it:
+        # filtered after all, and the sparse half goes straight to it.
+        got, asked = both("overlay sizing", "/w/small", 20)
+        assert got == both("overlay sizing", "/w/small", 1)[0]
+        assert asked == [True, False, False]
+    finally:
+        eng.close()
+        reset_engine()

@@ -229,8 +229,11 @@ def test_what_the_agents_token_cannot_do_is_what_matters(tmp_path: Path, monkeyp
     for method in ("herd_guard_approve", "herd_memory_edit", "herd_memory_delete",
                    "herd_memory_promote_approve", "herd_memory_promote_reject", "herd_tick",
                    "herd_settle", "herd_unlink", "herd_guard_requests", "memory_search",
-                   "memory_migrate", "herd_relay_brief"):
+                   "memory_migrate", "herd_relay_brief",
+                   # every project's sessions: the user's; an agent has herd_search
+                   "memory_list", "memory_chunks"):
         assert method in ADMIN_ONLY, method
+    assert "herd_search" in AGENT_METHODS
 
 
 def test_the_agents_token_does_what_an_agent_does(tmp_path: Path, monkeypatch):

@@ -14,6 +14,7 @@ Usage:
   herd asks
   herd remember [--type T] [--name SLUG] [--new] [--user|--project P] [TEXT|-]
   herd recall [--user|--project P] [QUERY...]
+  herd search WORDS... | --session ID [--at TURN]
   herd forget [--user|--project P] NAME
   herd promote propose --fact NAME... --file PATH [--project P]   (diff on stdin)
   herd hook [EVENT]                (from a CLI's lifecycle hook)
@@ -67,7 +68,12 @@ reference or user, `--name' sets its slug.  Text that says again a fact
 the store has is refused, naming it: run the same command again with
 `--name NAME' to update that fact, or `--new' to keep both.  A `--name'
 that exists is updated; the text it replaces, or that `forget' removes,
-is kept in the store's .history/ (`recall' says what a fact was).  `recall' prints the project's
+is kept in the store's .history/ (`recall' says what a fact was).
+
+`search WORDS' finds what your project's past sessions said -- its
+agents', yours, its worktrees' -- as a few short excerpts, each with its
+session and turn; `search --session ID --at TURN' reads one on from
+there.  Your own project only.  `recall' prints the project's
 index, `recall NAME' that fact whole, or `recall QUERY' the facts most
 relevant to QUERY in full, best first -- by meaning as well as words, so
 a query in one language can find a fact written in another.  `forget
@@ -461,6 +467,21 @@ def cmd_recall(args):
         params["query"] = query
     out = rpc("herd_recall", params)
     sys.stdout.write((out.get("text") or out.get("index") or "").rstrip() + "\n")
+    return 0
+
+
+def cmd_search(args):
+    params = {"from": me()}
+    query = " ".join(args.query or []).strip()
+    if args.session:
+        params["session"] = args.session
+        params["at"] = args.at
+    elif query:
+        params["query"] = query
+    else:
+        raise HerdError("search for what?  herd search WORDS, or --session ID")
+    out = rpc("herd_search", params, timeout=30)
+    sys.stdout.write((out.get("text") or "").rstrip() + "\n")
     return 0
 
 
@@ -1432,6 +1453,11 @@ def main(argv=None):
     p.add_argument("--project", metavar="P",
                    help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_recall)
+    p = sub.add_parser("search", help="search what your project's past sessions said")
+    p.add_argument("query", nargs="*")
+    p.add_argument("--session", metavar="ID", help="read one session (its id, or the start of it)")
+    p.add_argument("--at", metavar="TURN", type=int, default=0, help="from this turn (with --session)")
+    p.set_defaults(fn=cmd_search)
     p = sub.add_parser("forget", help="remove a fact from shared memory")
     p.add_argument("name")
     p.add_argument("--user", action="store_true", help="from the user store")

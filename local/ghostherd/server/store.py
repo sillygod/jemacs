@@ -35,6 +35,12 @@ NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 # (embedder.sparse) and Qdrant multiplies in each word's rarity at query
 # time.  Without IDF a word in every chunk counted as much as a name in one.
 SPARSE = SparseVectorParams(modifier=Modifier.IDF)
+# A search in a project asks first for this many hits of every project and
+# keeps the project's: embedded Qdrant checks a filter against every point
+# in Python, 0.37 s a query on 84k chunks, while the best 2000 unfiltered
+# cost what the best 24 do.  Too few of the project's among them, and the
+# filtered query runs after all -- the same hits either way.
+WIDE = 2000
 
 
 def point_id(source_path: str, chunk_index: int) -> str:
@@ -242,6 +248,16 @@ class Store:
         return out
 
     @_locked
+    def chunks_at(self, source_path: str, indexes: list[int]) -> dict[int, dict[str, Any]]:
+        "Chunks INDEXES of SOURCE_PATH, read by id: chunk index -> its payload."
+        if not indexes or not self.collection_exists():
+            return {}
+        ids = {point_id(source_path, i): i for i in indexes}
+        return {ids[str(rec.id)]: _hit_to_dict(rec)
+                for rec in self.client.retrieve(collection_name=COLLECTION, ids=list(ids),
+                                                with_payload=True, with_vectors=False)}
+
+    @_locked
     def delete_chunks(self, source_path: str, indexes: list[int]) -> None:
         if indexes and self.collection_exists():
             self.client.delete(
@@ -307,15 +323,31 @@ class Store:
             return []
         qfilter = _filter(agent, projects)
         fetch = max(limit * 3, 16)
-        dense_hits = self._query("dense", dense, fetch, qfilter)
+        keep = _keeper(agent, projects)
+        dense_hits, wide = self._scoped("dense", dense, fetch, qfilter, keep, True)
         indices, values = sparse
         if not indices:
             merged = dense_hits[:limit]
         else:
-            sparse_hits = self._query(
-                "sparse", SparseVector(indices=indices, values=values), fetch, qfilter)
+            # The dense half says how much of the store the project is: when
+            # its wide ask fell short, so would the sparse half's (0.5 s).
+            sparse_hits, _ = self._scoped(
+                "sparse", SparseVector(indices=indices, values=values), fetch, qfilter, keep, wide)
             merged = rrf_merge(dense_hits, sparse_hits, limit)
         return [_hit_to_dict(h) for h in merged]
+
+    def _scoped(self, using: str, vector: Any, fetch: int, qfilter: Filter | None,
+                keep, wide: bool) -> tuple[list[Any], bool]:
+        """FETCH hits of QFILTER's, and whether the unfiltered WIDE ask gave
+        them (see WIDE).  Caller holds `client_lock'."""
+        if keep is None:
+            return self._query(using, vector, fetch, qfilter), False
+        if wide:
+            hits = self._query(using, vector, WIDE, None)
+            mine = [h for h in hits if keep(h.payload or {})]
+            if len(mine) >= fetch or len(hits) < WIDE:
+                return mine[:fetch], True
+        return self._query(using, vector, fetch, qfilter), False
 
     @_locked
     def channel(
@@ -489,6 +521,15 @@ class Store:
             item["score"] = 0.0
             chunks.append(item)
         return chunks, total
+
+
+def _keeper(agent: str | None, projects: list[str] | None):
+    "`_filter' as a test of a payload, or None when there is none."
+    if not agent and not projects:
+        return None
+    wanted = set(projects or ())
+    return lambda p: ((not agent or p.get("agent") == agent)
+                      and (not wanted or p.get("project") in wanted))
 
 
 def _filter(agent: str | None, projects: list[str] | None) -> Filter | None:

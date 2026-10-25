@@ -186,6 +186,38 @@ class SourceIndex:
             finally:
                 out.close()
 
+    def session_sources(self, session_id: str, projects: list[str]) -> list[dict]:
+        """SESSION_ID's sources whose project is one of PROJECTS, in reading
+        order: its transcripts, then what its CLI kept of it (summaries),
+        each by path."""
+        if not projects:
+            return []
+        marks = ",".join("?" * len(projects))
+        with self._mu:
+            rows = self._conn.execute(
+                f"""SELECT source_path, agent, project, kind, chunks, title, imported_at
+                    FROM sources WHERE session_id = ? AND project IN ({marks})
+                    AND COALESCE(chunks, 0) > 0
+                    ORDER BY kind != 'transcript', source_path""",
+                [session_id, *projects]).fetchall()
+        return [{"source_path": r[0], "agent": r[1] or "", "project": r[2] or "",
+                 "kind": r[3] or "", "chunks": int(r[4] or 0), "title": r[5] or "",
+                 "imported_at": r[6] or ""} for r in rows]
+
+    def sessions_like(self, prefix: str, projects: list[str], most: int = 5) -> list[str]:
+        "The session ids, of a source in one of PROJECTS, that start with PREFIX."
+        if not projects or not prefix:
+            return []
+        marks = ",".join("?" * len(projects))
+        esc = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._mu:
+            rows = self._conn.execute(
+                f"""SELECT DISTINCT session_id FROM sources
+                    WHERE (session_id = ? OR session_id LIKE ? ESCAPE '\\')
+                    AND project IN ({marks}) LIMIT ?""",
+                [prefix, esc + "%", *projects, most]).fetchall()
+        return [r[0] for r in rows]
+
     def projects_under(self, project: str) -> list[str]:
         """The project values recorded at or under PROJECT -- what a search
         in PROJECT filters chunks by, so that it holds the sessions the
