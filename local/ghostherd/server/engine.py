@@ -7,6 +7,7 @@ Emacs waits on that health check the way ecloud does.
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +16,15 @@ from config import Config, get_config
 from embedder import Embedder
 from importers import IMPORTERS, ROOT_ATTR
 import sparse_migrate
+import wordindex
 from index import SourceIndex, SourceMeta
 from store import Store, payload_for
 
 _lock = threading.Lock()
 _engine: "MemoryEngine | None" = None
+# A word index's build rests after each page for this share of its time:
+# one core at ~2/3, the GIL left to the sidecar's requests.
+WORDS_REST = 0.5
 
 
 def _log(msg: str) -> None:
@@ -31,11 +36,15 @@ class MemoryEngine:
         self.cfg = cfg
         self.cfg.data_dir.mkdir(parents=True, exist_ok=True)
         self.embedder = Embedder(cfg)
-        self.store = Store(cfg.qdrant_path)
+        self.store = Store(cfg.qdrant_path,
+                           words=wordindex.WordIndex(cfg.words_path) if cfg.words_index else None,
+                           words_build=sparse_migrate.build())
         self.index = SourceIndex(cfg.index_path)
         self._ready = False
         self._import_lock = threading.Lock()
         self._import_progress: dict[str, Any] | None = None
+        self._words_report: dict[str, Any] | None = None
+        _settle_heap()
 
     def close(self) -> None:
         self.index.close()
@@ -61,6 +70,38 @@ class MemoryEngine:
             finally:
                 self._import_progress = None
 
+    def index_words(self, rebuild: bool = False) -> dict[str, Any] | None:
+        """Bring the word index (wordindex) in line with the collection:
+        built from the chunks' stored text when it holds no build or another
+        (or REBUILD), else checked chunk by chunk and repaired.  Holds the
+        import lock -- an import meanwhile answers busy, with the progress
+        -- and runs after any migration (main.py).  None without one."""
+        words = self.store.words
+        if words is None or not self.store.collection_exists():
+            return None
+        build = self.store.words_build
+        with self._import_lock:
+            try:
+                if rebuild or words.built() != build:
+                    t = time.monotonic()
+                    _log(f"word index: building from {self.store.point_count()} chunks' text")
+                    n = wordindex.build(
+                        words, self.store, self.embedder, build, rest=WORDS_REST,
+                        progress=lambda done, total: setattr(self, "_import_progress", {
+                            "running": True, "migrating": True, "done": done, "total": total,
+                            "current": f"indexing words: {done} of {total}"}))
+                    report = {"built": n, "seconds": round(time.monotonic() - t, 1)}
+                else:
+                    t = time.monotonic()
+                    report = wordindex.check(words, self.store, self.embedder)
+                    report["seconds"] = round(time.monotonic() - t, 1)
+                report["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                _log(f"word index: {report}")
+                self._words_report = report
+                return report
+            finally:
+                self._import_progress = None
+
     def status(self) -> dict[str, Any]:
         points = 0
         try:
@@ -78,7 +119,15 @@ class MemoryEngine:
             "sources": self.index.counts_by_agent(),
             "import": dict(self._import_progress) if self._import_progress else None,
             "migration": _migration_summary(self),
+            "words": self._words_status(),
         }
+
+    def _words_status(self) -> dict[str, Any] | None:
+        words = self.store.words
+        if words is None:
+            return None
+        return {"live": self.store.words_live(), "docs": words.count(),
+                "build": words.built(), "last": self._words_report}
 
     def search(
         self,
@@ -301,6 +350,18 @@ class MemoryEngine:
             self.store.upsert(fresh, self.embedder.dense(texts), self.embedder.sparse(texts))
         self.index.record(meta, len(chunks))
         return len(fresh), False
+
+
+def _settle_heap() -> None:
+    """Take what was just loaded out of the collector's sight.  Embedded
+    Qdrant holds every chunk as Python objects -- 550k on 85k chunks -- and
+    each full collection walked them all: 186 ms, a request's whole time,
+    twice in 47 searches.  Frozen, they are still freed when nothing refers
+    to them (reference counting does that); only the collector skips them."""
+    import gc
+
+    gc.collect()
+    gc.freeze()
 
 
 def _migration_summary(engine: "MemoryEngine") -> dict[str, Any] | None:

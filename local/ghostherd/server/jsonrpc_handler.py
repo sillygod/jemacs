@@ -118,6 +118,7 @@ class JsonRpcHandler:
         self._methods: dict[str, Callable] = {
             "ping": self._ping,
             "memory_status": self._status,
+            "memory_words": self._words,
             "memory_import": self._import,
             "memory_search": self._search,
             "memory_list": self._list,
@@ -229,6 +230,25 @@ class JsonRpcHandler:
 
     def _status(self, _params: dict) -> dict:
         return get_engine().status()
+
+    def _words(self, params: dict) -> dict:
+        """The BM25 half's own index (wordindex): checked against the
+        collection and repaired, or with REBUILD made anew from the chunks'
+        stored text -- in the background; memory_status's `words' says how
+        it went.  The herd's own: it holds the import for a while."""
+        import threading
+
+        engine = get_engine()
+        rebuild = bool(params.get("rebuild"))
+
+        def go():
+            try:
+                engine.index_words(rebuild=rebuild)
+            except Exception as exc:  # noqa: BLE001 -- the status says so
+                engine._words_report = {"error": str(exc)}
+
+        threading.Thread(target=go, daemon=True, name="ghostherd-words").start()
+        return {"started": "rebuild" if rebuild else "check"}
 
     def _import(self, params: dict) -> dict:
         agents = params.get("agents")

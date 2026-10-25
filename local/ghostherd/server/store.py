@@ -6,6 +6,7 @@ import functools
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from qdrant_client import QdrantClient
@@ -37,10 +38,12 @@ NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 SPARSE = SparseVectorParams(modifier=Modifier.IDF)
 # A search in a project asks first for this many hits of every project and
 # keeps the project's: embedded Qdrant checks a filter against every point
-# in Python, 0.37 s a query on 84k chunks, while the best 2000 unfiltered
-# cost what the best 24 do.  Too few of the project's among them, and the
-# filtered query runs after all -- the same hits either way.
-WIDE = 2000
+# in Python, 0.4 s a query on 85k chunks, while the best 5000 unfiltered
+# cost 0.11 s.  Too few of the project's among them, and the filtered query
+# runs after all -- the same hits either way.  5000, not 2000: at 2000, 3
+# of the eval's 47 queries in ~/.emacs.d (a quarter of the store) fell
+# short of the page's 90, at 5000 none, for 11 ms more.
+WIDE = 5000
 
 
 def point_id(source_path: str, chunk_index: int) -> str:
@@ -109,7 +112,10 @@ def rrf_merge(
 
 
 class Store:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, words=None, words_build: str = ""):
+        """WORDS: the BM25 half's own index (wordindex.WordIndex), asked in
+        place of Qdrant's sparse vectors once it holds WORDS_BUILD, and kept
+        in step by every write here."""
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
         self.client = QdrantClient(path=str(self.path))
@@ -119,6 +125,8 @@ class Store:
         # it can call another that takes it.
         self.client_lock = threading.RLock()
         self.closed = False
+        self.words = words
+        self.words_build = words_build
 
     def close(self) -> None:
         "Close the client once no call is in it; later calls get StoreClosed."
@@ -126,6 +134,13 @@ class Store:
             if not self.closed:
                 self.closed = True
                 self.client.close()
+                if self.words is not None:
+                    self.words.close()
+
+    def words_live(self) -> bool:
+        "Whether the word index holds this build, whole: search asks it then."
+        return (self.words is not None and bool(self.words_build)
+                and self.words.built() == self.words_build)
 
     @_locked
     def collection_exists(self) -> bool:
@@ -167,6 +182,10 @@ class Store:
             )
             if build:
                 self.mark(build)
+            # A new collection is empty, and so is its word index: whole.
+            if self.words is not None:
+                self.words.clear()
+                self.words.mark(self.words_build)
             # Payload indexes are a no-op on embedded Qdrant (path=); they
             # warn and do not make Filter faster.  Server Qdrant would.
         self._ready_dim = dim
@@ -175,6 +194,8 @@ class Store:
     def delete_source(self, source_path: str) -> None:
         if not self.collection_exists():
             return
+        if self.words_live():
+            self.words.remove_source(source_path)
         self.client.delete(
             collection_name=COLLECTION,
             points_selector=FilterSelector(
@@ -260,6 +281,8 @@ class Store:
     @_locked
     def delete_chunks(self, source_path: str, indexes: list[int]) -> None:
         if indexes and self.collection_exists():
+            if self.words_live():
+                self.words.remove([point_id(source_path, i) for i in indexes])
             self.client.delete(
                 collection_name=COLLECTION,
                 points_selector=PointIdsList(points=[point_id(source_path, i) for i in indexes]),
@@ -284,6 +307,10 @@ class Store:
                 )
             )
         self.client.upsert(collection_name=COLLECTION, points=points)
+        if self.words_live():
+            self.words.add((str(pt.id), turn.source_path, turn.project or "", turn.agent or "",
+                            turn.text, svec)
+                           for pt, turn, svec in zip(points, turns, sparse))
         return len(points)
 
     @_locked
@@ -304,6 +331,9 @@ class Store:
                 for turn in turns
             ],
         )
+        if self.words_live():
+            self.words.retag((point_id(t.source_path, t.chunk_index), t.project or "",
+                              t.agent or "", t.text) for t in turns)
         return len(turns)
 
     @_locked
@@ -324,10 +354,12 @@ class Store:
         qfilter = _filter(agent, projects)
         fetch = max(limit * 3, 16)
         keep = _keeper(agent, projects)
-        dense_hits, wide = self._scoped("dense", dense, fetch, qfilter, keep, True)
+        dense_hits, wide = self._scoped("dense", dense, fetch, qfilter, keep, True, agent, projects)
         indices, values = sparse
         if not indices:
             merged = dense_hits[:limit]
+        elif self.words_live():
+            merged = rrf_merge(dense_hits, self._words(indices, fetch, agent, projects), limit)
         else:
             # The dense half says how much of the store the project is: when
             # its wide ask fell short, so would the sparse half's (0.5 s).
@@ -336,18 +368,53 @@ class Store:
             merged = rrf_merge(dense_hits, sparse_hits, limit)
         return [_hit_to_dict(h) for h in merged]
 
+    def _words(self, indices: list[int], fetch: int, agent: str | None,
+               projects: list[str] | None) -> list[Any]:
+        """The word index's FETCH best, as Qdrant's hits are: id, score and
+        payload, read by id.  Caller holds `client_lock'."""
+        found = self.words.search(indices, fetch, agent=agent, projects=projects)
+        if not found:
+            return []
+        records = {str(r.id): r for r in self.client.retrieve(
+            collection_name=COLLECTION, ids=[pid for pid, _ in found],
+            with_payload=True, with_vectors=False)}
+        return [SimpleNamespace(id=pid, score=score, payload=records[pid].payload)
+                for pid, score in found if pid in records]
+
     def _scoped(self, using: str, vector: Any, fetch: int, qfilter: Filter | None,
-                keep, wide: bool) -> tuple[list[Any], bool]:
+                keep, wide: bool, agent: str | None = None,
+                projects: list[str] | None = None) -> tuple[list[Any], bool]:
         """FETCH hits of QFILTER's, and whether the unfiltered WIDE ask gave
         them (see WIDE).  Caller holds `client_lock'."""
         if keep is None:
             return self._query(using, vector, fetch, qfilter), False
-        if wide:
+        if wide and self.words_live():
+            # No payload with them: embedded Qdrant copies each hit's -- a
+            # chunk's text, 5000 times -- and that was most of the time
+            # (110 ms, 244 at p90, against 80 and 96).  The word index
+            # knows every chunk's project and agent.
+            hits = self._query(using, vector, WIDE, None, [])
+            mine = self.words.in_scope([str(h.id) for h in hits], agent, projects)
+            kept = [h for h in hits if str(h.id) in mine][:fetch]
+            if len(kept) >= fetch or len(hits) < WIDE:
+                return self._payloads(kept), True
+        elif wide:
             hits = self._query(using, vector, WIDE, None)
-            mine = [h for h in hits if keep(h.payload or {})]
-            if len(mine) >= fetch or len(hits) < WIDE:
-                return mine[:fetch], True
+            kept = [h for h in hits if keep(h.payload or {})]
+            if len(kept) >= fetch or len(hits) < WIDE:
+                return kept[:fetch], True
         return self._query(using, vector, fetch, qfilter), False
+
+    def _payloads(self, hits: list[Any]) -> list[Any]:
+        "HITS with their whole payloads, read by id.  Caller holds `client_lock'."
+        if not hits:
+            return []
+        records = {str(r.id): r.payload for r in self.client.retrieve(
+            collection_name=COLLECTION, ids=[str(h.id) for h in hits],
+            with_payload=True, with_vectors=False)}
+        for h in hits:
+            h.payload = records.get(str(h.id), h.payload)
+        return hits
 
     @_locked
     def channel(
@@ -363,18 +430,21 @@ class Store:
             indices, values = vector
             if not indices:
                 return []
+            if self.words_live():
+                return [_hit_to_dict(h) for h in self._words(indices, limit, agent, projects)]
             vector = SparseVector(indices=indices, values=values)
         return [_hit_to_dict(h) for h in self._query(using, vector, limit, _filter(agent, projects))]
 
-    def _query(self, using: str, vector: Any, limit: int, qfilter: Filter | None) -> list[Any]:
-        "Caller holds `client_lock'."
+    def _query(self, using: str, vector: Any, limit: int, qfilter: Filter | None,
+               fields: list[str] | None = None) -> list[Any]:
+        "Caller holds `client_lock'.  FIELDS: of the payload, only these."
         return self.client.query_points(
             collection_name=COLLECTION,
             query=vector,
             using=using,
             query_filter=qfilter,
             limit=limit,
-            with_payload=True,
+            with_payload=(fields or False) if fields is not None else True,
         ).points
 
     # -- what sparse_migrate works with ------------------------------------
@@ -437,7 +507,11 @@ class Store:
 
     @_locked
     def set_sparse(self, vectors: dict[str, tuple[list[int], list[float]]]) -> None:
-        "Replace the sparse vector of each point id in VECTORS; nothing else."
+        """Replace the sparse vector of each point id in VECTORS; nothing
+        else.  The word index then holds the words of before: no longer of
+        this build, it is built again once the migration is done."""
+        if self.words_live():
+            self.words.mark("")
         self.client.update_vectors(
             collection_name=COLLECTION,
             points=[
@@ -467,6 +541,8 @@ class Store:
 
     @_locked
     def put(self, points: list[PointStruct]) -> None:
+        if points and self.words_live():
+            self.words.mark("")  # as set_sparse: built again after
         if points:
             self.client.upsert(collection_name=COLLECTION, points=points)
 

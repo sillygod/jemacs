@@ -62,6 +62,13 @@ class Config:
     # Where the herd makes agents' worktrees (Emacs's `ghostherd-worktree-root'):
     # a project's are <root>/<its leaf>/<agent>, and `herd search' counts them.
     worktree_root: Path = Path.home() / ".ghostherd" / "worktrees"
+    # The BM25 half from its own index (wordindex) rather than Qdrant's
+    # sparse vectors: GHOSTHERD_MEMORY_WORDS=0 asks Qdrant, as before.
+    words_index: bool = True
+
+    @property
+    def words_path(self) -> Path:
+        return self.data_dir / "words.sqlite"
 
     def __post_init__(self) -> None:
         if self.images_dir is None:
@@ -129,6 +136,8 @@ class Config:
             images_keep_days=_number(os.getenv("GHOSTHERD_IMAGES_KEEP_DAYS"), 30),
             images_budget_mb=_number(os.getenv("GHOSTHERD_IMAGES_BUDGET_MB"), 512),
             worktree_root=_expand(os.getenv("GHOSTHERD_WORKTREE_ROOT", "~/.ghostherd/worktrees")),
+            words_index=os.getenv("GHOSTHERD_MEMORY_WORDS", "1").strip().lower()
+            not in ("0", "false", "off", "no"),
         )
 
 
