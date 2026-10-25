@@ -350,6 +350,10 @@ it would on the phone.
 | Suite          | Checks                                                          |
 |----------------+-----------------------------------------------------------------|
 | =kit=          | the sanitizer, the bridge's queue, =XW.open=                    |
+| =herd-images=  | the images an agent's reply names: a thumbnail under the        |
+|                | message in a room's columns and chat, the Inbox and its thread; |
+|                | the image whole, put away; none drawn for a name not a copy's,  |
+|                | none fetched; under the CSP in a browser and as files (xwidget) |
 | =herd-chips=   | the herd page's PR and task chips: pr-view's and                |
 |                | clickup-view's pages on the phone, one tab per app, else the    |
 |                | forge's; a PR of another repository named with it, and opened   |

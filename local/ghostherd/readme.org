@@ -660,6 +660,16 @@ untouched for =ghostherd-push-away-after= seconds (120; it asks
 pushes whenever you are not looking.  =M-x ghostherd-push-test= sends
 one now, to see that it reaches you.
 
+A report whose words name images (/Images a reply names/, under the
+herd page) brings them after its text, in reply to it: one as a photo,
+two to four as an album, one too big for a photo --- over 10 MB, its
+sides over 10000 together, or a GIF or WebP --- as a file, and a photo
+Telegram refuses goes again as a file.  Four at most; the rest are on
+the page.  Reply to one and it goes to the lead, as a reply to the text
+does.  They go to Telegram's servers, as the text does:
+=ghostherd-push-images= nil keeps them to the page.  An image that
+fails to send never sends the push again.
+
 The room's address in a push holds no secret: Telegram's servers keep
 what passes through them.  It asks the page's =/open/ghostherd=, which
 Emacs answers only for your Tailscale login, sending the browser on to
@@ -2261,6 +2271,60 @@ forty threads) and for one thread at a time, never the whole history;
 the herd's own retention applies --- a closed ask goes after a week, and
 an ask whose parent went before it is a thread of its own.
 
+*** Images a reply names
+
+An agent says where its screenshots are --- "the screenshots are in
+/private/tmp/…/shots/after-light-5-tldr-viewer.png" --- and the page
+shows them: a thumbnail under the message, a press for the image whole
+over the page (a press on it for its own size, scrolled; Esc, ✕ or a
+press beside it puts it away; in a browser, /Open/ gives it a tab of
+its own, where a phone zooms it).  Wherever you read the message:
+
+- a room, its columns and its chat: what an agent wrote, a sub-agent's
+  report, an answer to an ask --- the taker's, and what came back to the
+  asker;
+- the Inbox: a report's or a question's words, and the answers in the
+  thread under it;
+- the Threads tab: an answer;
+- Telegram: a lead's report (above).
+
+Never what you wrote, what a tool printed, or an ask: only an agent's
+reply.
+
+*Copied when the reply is recorded.*  Agents put screenshots in
+scratch directories that go away, so the sidecar copies each image a
+reply names as the herd records it --- a turn's last words (its hook),
+an answer (=herd reply=) --- into =ghostherd-reply-images-directory=
+(=replies/= beside the images you paste, =ghostherd-image-directory=),
+under an id no one can guess.  An old message still shows it.  A
+room's other messages are read from the transcript later: an image one
+names is copied then, if it has not changed since the message was
+written --- one changed after is not the image it meant.  The same
+picture twice is one copy.  Copies go =ghostherd-reply-images-keep-days=
+(30) after a message last named one, and the oldest go first past
+=ghostherd-reply-images-budget= (512 MB); a message whose image went
+shows none, rather than what is at its path now.
+
+*What is copied, and nothing else:* a path in the reply's own text ---
+absolute, =~/= or =file://=, bare, in backticks or in a Markdown link
+or image --- ending in an image's extension, with no =..= in it; to a
+regular file of yours (not a symlink, not another user's), 16 MB at
+most; PNG, JPEG, GIF or WebP by its first bytes, and one that decodes
+as one, of at most 50 million pixels.  Eight a message at most.
+
+*Served by the id alone.*  Nothing takes a path: the page and the bot
+get ids, and Emacs serves the page a copy by its name --- the id and
+its extension, or its thumbnail's --- and nothing else in the
+directory (=xwapp-serve-files=).  In a browser that is
+=/SECRET/.files/<id>.png=, under the page's secret and its checks, so
+your phone over Tailscale gets it as it gets the page and nobody else
+does; with the page reachable from a phone, a route that served any
+path would serve the disk.  In Emacs's xwidget the page, a file
+itself, reads the copies as files.  A copy over 256 KB goes from a
+thread of its own: a phone reading it slowly does not hold
+Emacs (an 8 MB image to a reader of 2 MB/s held a key pressed meanwhile
+for 4.3 seconds; sent so, it was taken in 4 ms).
+
 ** The memory page
 
 =SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=
@@ -2422,6 +2486,14 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
         ;; Background import once the index exists: nil to stop it.
         ghostherd-memory-auto-import-interval 300
         ghostherd-memory-auto-import-idle 60)
+
+  ;; Images an agent's reply names, copied for the page and Telegram
+  ;; (the sidecar reads these when it starts), and whether a report
+  ;; pushed to Telegram brings them.
+  (setq ghostherd-reply-images-directory nil  ; replies/ in ghostherd-image-directory
+        ghostherd-reply-images-keep-days 30
+        ghostherd-reply-images-budget 512     ; MB
+        ghostherd-push-images t)
 
   ;; A handoff to a project with no lead starts one there; how many the
   ;; herd may have up that it started so.

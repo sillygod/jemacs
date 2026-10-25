@@ -93,6 +93,23 @@
                 :reopen #'ghostherd-memory-page-reopen)
   "The page, buffer and intent channel; see `xwapp'.")
 
+(defconst ghostherd-memory-page--image-name
+  "[0-9a-f]\\{32\\}\\(?:\\.t\\.jpg\\|\\.png\\|\\.jpg\\|\\.gif\\|\\.webp\\)"
+  "The name of an image the sidecar copied from a reply (server/images.py):
+its id, and the copy's extension or `.t.jpg' for its thumbnail.  Nothing
+else in `ghostherd-reply-images-directory' is served -- not its index.")
+
+(defun ghostherd-memory-page--serve-images ()
+  "Serve the page the images agents' replies name: by their names alone,
+with the page's own checks -- to the browser under its secret, to the
+xwidget as files.  Said on load, and again on each of the page's
+intents, so a reload of this file (which runs no top-level call) still
+serves them; saying it again costs nothing."
+  (xwapp-serve-files ghostherd-memory-page--app #'ghostherd-memory--reply-images-directory
+                     ghostherd-memory-page--image-name))
+
+(ghostherd-memory-page--serve-images)
+
 
 ;;; Helpers
 
@@ -2274,6 +2291,27 @@ seen, as it is when its buffer is in front of you."
     (list path (file-attribute-size a)
           (float-time (file-attribute-modification-time a)))))
 
+(defun ghostherd-memory-page--images (v)
+  "The images V, a sidecar reply's list, as the page takes them: only
+those whose id and extension are a copy's, field by field; nil for none."
+  (when-let* ((ok (seq-filter
+                   (lambda (im)
+                     (and (consp im)
+                          (stringp (plist-get im :id))
+                          (let ((case-fold-search nil))
+                            (string-match-p "\\`[0-9a-f]\\{32\\}\\'" (plist-get im :id)))
+                          (member (plist-get im :ext) '("png" "jpg" "gif" "webp"))))
+                   (and (listp v) v))))
+    (vconcat
+     (mapcar (lambda (im)
+               (list :id (plist-get im :id)
+                     :ext (plist-get im :ext)
+                     :name (or (ghostherd-memory-page--str (plist-get im :name)) "image")
+                     :w (and (natnump (plist-get im :w)) (plist-get im :w))
+                     :h (and (natnump (plist-get im :h)) (plist-get im :h))
+                     :thumb (if (plist-get im :thumb) t :json-false)))
+             ok))))
+
 (defun ghostherd-memory-page--room-entry (e)
   "Conversation entry E, from the sidecar, as the page takes it.
 Field by field: what reaches the page is what is named here."
@@ -2297,6 +2335,9 @@ Field by field: what reaches the page is what is named here."
           :tokens (and (natnump (plist-get e :tokens)) (plist-get e :tokens))
           :uses (and (natnump (plist-get e :uses)) (plist-get e :uses))
           :ms (and (natnump (plist-get e :ms)) (plist-get e :ms))
+          ;; The images what it wrote names, and the answer it got.
+          :images (ghostherd-memory-page--images (plist-get e :images))
+          :answerImages (ghostherd-memory-page--images (plist-get e :answer_images))
           :tools (ghostherd-memory-page--vec
                   (mapcar (lambda (tl) (list :name (funcall str (plist-get tl :name))
                                              :hint (funcall str (plist-get tl :hint))
@@ -2324,7 +2365,9 @@ Field by field: what reaches the page is what is named here."
           :agent (funcall str (plist-get e :agent))
           :auto (if (plist-get e :auto) t :json-false)
           :failed (if (plist-get e :failed) t :json-false)
-          :waiting (if (plist-get e :waiting) t :json-false))))
+          :waiting (if (plist-get e :waiting) t :json-false)
+          :images (ghostherd-memory-page--images (plist-get e :images))
+          :answerImages (ghostherd-memory-page--images (plist-get e :answer_images)))))
 
 (defun ghostherd-memory-page--chat-read ()
   "Send the room's chat if any of its agents' transcripts changed.
@@ -3362,6 +3405,7 @@ user's state (or none) and push."
 
 (defun ghostherd-memory-page--handle (intent)
   "Dispatch INTENT from the page.  Errors are shown there, not lost."
+  (ghostherd-memory-page--serve-images)
   (condition-case e
       (pcase (alist-get 'op intent)
         ("ready" (ghostherd-memory-page--ready))
@@ -3603,7 +3647,7 @@ user asked from a shell (FROM \"user\") has none."
          (> (car last) (- started (* 1000 ghostherd-threads--opener-window)))
          last)))
 
-(defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged)
+(defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged :thumb)
   "Keys that are true or false: the reply reads JSON false as nil.")
 (defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking)
   "Keys that are arrays: the reply reads [] as nil.")
@@ -3815,8 +3859,14 @@ nothing on failure, so an item simply shows without its thread."
         (ghostherd-memory-request-async
          "herd_link"
          (lambda (r)
-           (ghostherd-inbox--detail-push
-            id :report (ghostherd-memory-page--str (plist-get (plist-get r :link) :last))))
+           (let* ((link (plist-get r :link))
+                  (report (ghostherd-memory-page--str (plist-get link :last))))
+             ;; With the images its words name, in the same push.
+             (when (and report (equal id ghostherd-inbox--detail-req))
+               (ghostherd-memory-page--js
+                "inboxDetailData"
+                (list :for id :report report
+                      :images (or (ghostherd-memory-page--images (plist-get link :last_images)) []))))))
          (list :session name) #'ignore)))))
 
 (provide 'ghostherd-memory-page)
