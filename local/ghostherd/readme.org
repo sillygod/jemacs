@@ -2546,7 +2546,9 @@ store the sidecar now starts at 1.45 GB and stays near 1.8 GB through
 imports, where it started at 3.0 GB and grew to 9 GB in the same run.
 What it holds: Qdrant's chunks (~10 MB per 1k chunks, and room for as
 many again after the first import), the facts' multilingual model
-0.5 GB, the sessions' models 0.1 GB.
+0.5 GB, the sessions' models 0.1 GB.  How it was found, the numbers, what
+to watch and what was not done are written up in
+[[file:docs/sidecar-memory.html][docs/sidecar-memory.html]].
 
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
 its cache; watch =*ghostherd-memory*= if that seems stuck.
