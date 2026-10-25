@@ -2426,7 +2426,36 @@ without xwidgets.
 - Keys: =/= search, =↑= / =↓= between results, =RET= open, =Esc= back,
   =n= / =N= matches.
 
-An agent can ask the same index:
+An agent searches its own project's sessions with =herd search=:
+
+#+begin_src bash
+  "$GHOSTHERD_HERD" search sidecar cpu burst          # the best few, as excerpts
+  "$GHOSTHERD_HERD" search --session 6630344c --at 41 # read one on from a turn
+#+end_src
+
+Its own project only: the herd works the project out from the agent's
+session --- the main checkout, the directories under it, and its
+worktrees (=<ghostherd-worktree-root>/<leaf>/<agent>=, a removed one
+counted only while no other project the herd knows has that leaf) ---
+and takes no project from the call.  Primary, the herd-wide lead,
+reaches its own sessions only; another project's history is its lead's
+(=herd handoff=).  A call from outside the herd's agents is refused.
+What comes back is plain text: the best 8 chunks, each an excerpt of at
+most 640 characters around the words asked for, with its date, CLI,
+session, turn and title, 4000 characters in all; =--session ID --at
+TURN= reads on by the same budget.  Strings shaped like secrets --- the
+herd's tokens, API keys, =KEY=value= with a secret's name, credentials
+in a URL --- are blanked first.  It is the one way a guarded agy reaches
+transcripts (its guard refuses Emacs's search, the sidecar called as
+another agent, and the CLIs' files); a claude or grok agent, which runs
+as you, could read those files anyway --- for them the scope is what
+the herd offers, not a wall.  A call costs about 0.7 s (the first after
+a sidecar start ~2 s more, loading the model); a project's search asks
+for the best 2000 of every project first and keeps its own, since the
+filter alone costs 0.7 s in embedded Qdrant.  Agents learn of it from
+=MEMORY.md='s header (claude) and the memory rules (grok, agy).
+
+You, from a shell, reach every project's (through Emacs):
 
 #+begin_src bash
   bin/ghostherd memory search "agy-ghost-commit blocked"

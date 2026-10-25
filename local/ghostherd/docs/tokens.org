@@ -60,6 +60,9 @@ token 不是放在 header，而是放在「URL 路徑」裡：
   =herd_guard_used=
 - 記憶：=herd_remember=、=herd_recall=、=herd_forget=、
   =herd_promote_propose=（只是「提案」，核准是 herd 的事）
+- 過去的 session：=herd_search=（=herd search=），只搜得到呼叫者自己專案
+  的 session——專案由 herd 依它的 session 決定，不看它傳了什麼；所有專案
+  的 =memory_search= / =memory_list= / =memory_chunks= 仍是 herd 自己的
 - lead 的操作：=herd_start=、=herd_stop=、=herd_relay=、
   =herd_screens=、=herd_command_reply=
 

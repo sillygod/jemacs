@@ -2401,6 +2401,49 @@ stores, the facts' multilingual embedder, 2026-10-25)
 - Catching every restatement: a missed one is a duplicate, a wrong
   refusal is an agent's turn
 
+* Phase 3.42 — An agent searches its project's past sessions  *(this tree)*
+
+Goal: the session index was the user's alone (the page, Emacs); an agent
+that wanted what its project's earlier sessions said had no way to ask.
+Ask 11f62784, the third of the Hy-Memory batches (ask 4a471c59).
+
+** What shipped
+
+- [X] =herd search WORDS= and =--session ID --at TURN=, the agent method
+  =herd_search= (=AGENT_METHODS=; the guard's =HERD_SUBCOMMANDS=): the
+  best 8 chunks as excerpts (640 characters each, 4000 in all) with
+  date, CLI, session, turn and title; reading on by the same budget
+  (=server/agent_search.py=)
+- [X] The scope is the caller's project as the herd knows it: the main
+  checkout and under it (=index._under=), and its worktrees, by their
+  =.git=; a removed one while its leaf is the project's alone.  Primary:
+  its own sessions only.  No project taken from the call; a caller the
+  herd does not know is refused
+- [X] Secrets blanked in what comes back: the herd's tokens, API keys,
+  JWTs, bearer tokens, URL credentials, =KEY=value= with a secret's name
+- [X] A project's search, the page's too, asks the best 2000 unfiltered
+  first (=store.WIDE=): 1.3 s -> 0.7 s an agent call on the real store
+  (84k chunks), the filtered query run only when the project is too
+  small a share
+- [X] One line where agents start: =MEMORY.md='s header (every claude
+  agent), the memory rules (grok, agy).  Not the ask block: paid on
+  every ask
+
+** Measured (a snapshot of the real store, a scratch sidecar)
+
+- An agent call end to end (bin/herd, HTTP, search, excerpts): 0.66-0.9 s
+  for a project with many sessions, 1.3 s for one with few (the filtered
+  query); reading on 0.10 s; the first search after a start loads the
+  dense model (~2 s more)
+
+** Deliberately not done
+
+- Primary across projects: the agent token is shared, so "I am primary"
+  is a name anyone holding it can give; transcripts can hold secrets
+- Prompt-time injection (auto-recall on the user's prompt): not asked
+- A hard wall for claude and grok: they run as the user and can read the
+  CLIs' transcript files; per-agent tokens would bind a call to its agent
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it
