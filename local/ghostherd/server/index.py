@@ -133,8 +133,9 @@ class SourceIndex:
             where.append("agent = ?")
             args.append(agent)
         if project:
-            where.append("(project = ? OR project LIKE ?)")
-            args.extend([project, project.rstrip("/") + "/%"])
+            clause, more = _under(project)
+            where.append(clause)
+            args.extend(more)
         clause = " AND ".join(where)
         with self._mu:
             total, rows = self._list(clause, args, limit, offset)
@@ -155,6 +156,46 @@ class SourceIndex:
             for r in rows
         ]
         return sources, int(total)
+
+    def rows(self) -> list[SourceMeta]:
+        "Every source recorded, as its meta (sparse_migrate reads them all)."
+        with self._mu:
+            found = self._conn.execute(
+                "SELECT source_path, mtime, size, agent, session_id, project,"
+                " kind, parser, title FROM sources ORDER BY source_path"
+            ).fetchall()
+        return [SourceMeta(path=r[0], mtime=r[1], size=r[2], agent=r[3] or "",
+                           session_id=r[4] or "", project=r[5] or "", kind=r[6] or "",
+                           parser=r[7], title=r[8])
+                for r in found]
+
+    def forget(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        with self._mu:
+            self._conn.executemany("DELETE FROM sources WHERE source_path = ?",
+                                   [(p,) for p in paths])
+            self._conn.commit()
+
+    def backup(self, dest: Path) -> None:
+        "A consistent copy of the index at DEST (SQLite's backup API)."
+        with self._mu:
+            out = sqlite3.connect(dest)
+            try:
+                self._conn.backup(out)
+            finally:
+                out.close()
+
+    def projects_under(self, project: str) -> list[str]:
+        """The project values recorded at or under PROJECT -- what a search
+        in PROJECT filters chunks by, so that it holds the sessions the
+        Sessions list shows for it (`list_sources')."""
+        clause, args = _under(project)
+        with self._mu:
+            rows = self._conn.execute(
+                f"SELECT DISTINCT project FROM sources WHERE {clause}", args
+            ).fetchall()
+        return sorted(r[0] for r in rows if r[0])
 
     def set_titles(self, titles: dict[str, str]) -> None:
         """Keep TITLES (source path -> title, "" for none) for rows that
@@ -189,3 +230,14 @@ class SourceIndex:
     def close(self) -> None:
         with self._mu:
             self._conn.close()
+
+
+def _under(project: str) -> tuple[str, list[str]]:
+    """A WHERE clause for PROJECT and the directories under it: a session
+    started in a subdirectory is the project's, and so is one recorded with
+    a trailing slash (grok's git root).  LIKE's wildcards in a path are
+    taken literally."""
+    root = project.rstrip("/") or "/"
+    escaped = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    prefix = escaped if escaped.endswith("/") else escaped + "/"
+    return "(project = ? OR project LIKE ? ESCAPE '\\')", [root, prefix + "%"]

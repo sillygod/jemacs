@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
     # restart is matched by meaning, not by words alone.  Health answers
     # meanwhile; nothing here waits for it.
     threading.Thread(target=_warm_facts, daemon=True, name="ghostherd-facts-warm").start()
+    # An index of an older build is brought up to this one (sparse_migrate):
+    # minutes, in the background; search answers meanwhile.
+    threading.Thread(target=_migrate_index, daemon=True, name="ghostherd-index-migrate").start()
     task = None
     if cfg.telegram_token and cfg.telegram_chat_ids:
         from telegram import run_bot
@@ -71,6 +74,18 @@ def _warm_facts() -> None:
         fact_index.get_index().warm()
     except Exception as exc:  # noqa: BLE001 -- recall and asks fall back to words
         print(f"[ghostherd-memory] fact index warm-up failed: {exc}", flush=True)
+
+
+def _migrate_index() -> None:
+    from engine import get_engine
+    from store import StoreClosed
+
+    try:
+        get_engine().migrate()
+    except StoreClosed:
+        pass  # shut down mid-way: the next start takes up from there
+    except Exception as exc:  # noqa: BLE001 -- search works on the index as it is
+        print(f"[ghostherd-memory] index migration stopped: {exc}", flush=True)
 
 
 app = FastAPI(

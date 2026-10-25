@@ -17,6 +17,7 @@ import threading
 from typing import Iterable
 
 from config import Config
+from lexical import segment
 
 TOKEN = re.compile(r"[\w\u4e00-\u9fff]+", re.UNICODE)
 
@@ -46,17 +47,31 @@ class Embedder:
     def load(self) -> None:
         if self.loaded:
             return
+        self.load_sparse()
         with self._load_lock:
             if not self.loaded:
                 self._load()
+
+    def load_sparse(self) -> None:
+        """The sparse model alone: BM25 is a word count, no ONNX -- what
+        sparse_migrate needs, without the dense model's load and memory."""
+        if self.fake or self._sparse is not None:
+            return
+        with self._load_lock:
+            if self._sparse is None:
+                from fastembed import SparseTextEmbedding
+
+                print(f"[ghostherd-memory] loading sparse model {self.sparse_model}…", flush=True)
+                self._sparse = SparseTextEmbedding(
+                    model_name=self.sparse_model,
+                    threads=_thread_count(self.cfg.embed_threads),
+                )
 
     def _load(self) -> None:
         if self.fake:
             self.dim = FAKE_DIM
             self.loaded = True
             return
-        from fastembed import SparseTextEmbedding, TextEmbedding
-
         threads = _thread_count(self.cfg.embed_threads)
         providers = _onnx_providers(self.cfg.onnx_provider)
         print(
@@ -65,10 +80,6 @@ class Embedder:
             flush=True,
         )
         self._dense = _make_text_embedding(self.model, threads, providers)
-        print(f"[ghostherd-memory] loading sparse model {self.sparse_model}…", flush=True)
-        self._sparse = SparseTextEmbedding(
-            model_name=self.sparse_model, threads=threads
-        )
         probe = next(self._dense.embed(["ping"]))
         self.dim = int(len(probe))
         self.loaded = True
@@ -87,8 +98,11 @@ class Embedder:
         return out
 
     def sparse(self, texts: Iterable[str]) -> list[tuple[list[int], list[float]]]:
-        self.load()
-        items = list(texts)
+        """BM25 term weights of indexed TEXTS, their CJK cut into words
+        (lexical).  The words' rarity is Qdrant's to add: the collection
+        weighs them by IDF (store.SPARSE)."""
+        self.load_sparse()
+        items = [segment(t) for t in texts]
         if not items:
             return []
         if self.fake:
@@ -99,6 +113,19 @@ class Embedder:
             values = [float(v) for v in vec.values]
             out.append((indices, values))
         return out
+
+    def sparse_query(self, text: str) -> tuple[list[int], list[float]]:
+        """A query's words, each once at weight 1 -- BM25's query side, not
+        a document's term frequencies, which `sparse' gives."""
+        self.load_sparse()
+        text = segment(text)
+        if self.fake:
+            if not tokenize(text):
+                return [], []
+            indices, _ = _fake_sparse(text)
+            return indices, [1.0] * len(indices)
+        vec = next(iter(self._sparse.query_embed(text)))
+        return [int(i) for i in vec.indices], [float(v) for v in vec.values]
 
 
 def _thread_count(configured: int) -> int:

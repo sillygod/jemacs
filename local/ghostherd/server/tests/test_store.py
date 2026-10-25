@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from chunk import Turn
@@ -582,6 +583,39 @@ def test_a_session_title_is_kept_and_an_older_row_learns_it(tmp_path):
         assert looked == [[src["source_path"]]]
         # A path with no chunks reads "", and is kept as having none.
         assert real(["/nowhere.jsonl"]) == {"/nowhere.jsonl": ""}
+    finally:
+        eng.close()
+        reset_engine()
+
+
+def test_search_by_project_takes_its_subdirectories_like_the_list(tmp_path):
+    """A session started in a project's subdirectory -- or recorded with a
+    trailing slash, as grok writes its git root -- is that project's in
+    the Sessions list (a path prefix) and must be in its search too."""
+    claude = tmp_path / "claude" / "proj"
+    claude.mkdir(parents=True)
+    for sid, cwd in (("top", "/w/proj"), ("sub", "/w/proj/server"),
+                     ("slash", "/w/proj/"), ("other", "/w/project-two")):
+        line = {"type": "user", "sessionId": sid, "cwd": cwd,
+                "message": {"role": "user",
+                            "content": f"the posframe overlay sizing bug, session {sid}"}}
+        (claude / f"{sid}.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    reset_engine()
+    cfg = Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "claude",
+                 grok_root=tmp_path / "g", agy_root=tmp_path / "a")
+    eng = MemoryEngine(cfg)
+    try:
+        eng.import_transcripts(agents=["claude"])
+        listed = {s["session_id"] for s in eng.list_sources(project="/w/proj")["sources"]}
+        assert listed == {"top", "sub", "slash"}
+        found = {h["session_id"] for h in
+                 eng.search("posframe overlay sizing", limit=10, project="/w/proj")["hits"]}
+        assert found == listed
+        # A trailing slash on the asking side means the same project.
+        assert {h["session_id"] for h in eng.search(
+            "posframe overlay sizing", limit=10, project="/w/proj/")["hits"]} == listed
+        # Nothing for a project with no sessions -- not every project's.
+        assert eng.search("posframe overlay sizing", project="/w/none")["hits"] == []
     finally:
         eng.close()
         reset_engine()

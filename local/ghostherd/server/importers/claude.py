@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -36,10 +37,41 @@ def iter_claude(
     root = Path(root)
     if not root.is_dir():
         return
+    # A claude project dir's name -> the directory its sessions ran in: a
+    # memory file's project, which the name alone gives only lossily.
+    projects: dict[str, str] = {}
     for jsonl in sorted(root.glob("**/*.jsonl")):
-        yield _from_jsonl(jsonl, tool_truncate, max_line)
+        meta, turns = _from_jsonl(jsonl, tool_truncate, max_line)
+        if meta.project:
+            projects.setdefault(jsonl.relative_to(root).parts[0], meta.project)
+        yield meta, turns
+    seen: set[str] = set()
     for md in sorted(root.glob("**/memory/*.md")):
-        yield _from_memory(md)
+        real, project = memory_source(str(md), projects)
+        if real in seen or not Path(real).is_file():
+            continue
+        seen.add(real)
+        yield _from_memory(Path(real), project)
+
+
+def memory_source(path: str, projects: dict[str, str]) -> tuple[str, str]:
+    """Where the memory file at PATH really is, and its project.
+
+    ghostherd links a project's claude memory dir to its shared-memory
+    store -- a worktree's to its main checkout's -- and the store links the
+    user's facts into every project's: one file under many paths.  It is
+    indexed once, under its real path.  A user fact is every project's
+    (project "").  PROJECTS: as in `iter_claude'."""
+    real = Path(os.path.realpath(path))
+    owner = real.parent
+    if owner.name == "memory":
+        # claude's own memory dir, <project dir>/memory/
+        owner = owner.parent
+    elif owner.name == "user":
+        # the shared store's user facts
+        return str(real), ""
+    # A project store is named as claude names the project's dir.
+    return str(real), projects.get(owner.name) or project_from_claude_cwd(None, owner)
 
 
 def _from_jsonl(
@@ -96,9 +128,8 @@ def _from_jsonl(
     return meta, turns
 
 
-def _from_memory(path: Path) -> tuple[SourceMeta, list[Turn]]:
+def _from_memory(path: Path, project: str) -> tuple[SourceMeta, list[Turn]]:
     text = path.read_text(encoding="utf-8", errors="ignore").strip()
-    project = project_from_claude_cwd(None, path.parent.parent)
     session_id = path.stem
     turns = []
     if text:
