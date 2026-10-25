@@ -3,8 +3,11 @@
 Pure scoring -- vectors in, ranked facts out -- so it is tested without a
 model or Qdrant; fact_index.py feeds it.
 
-Why two signals that must agree.  The embedder (bge-small-zh) is good at
-meaning and poor at telling relevant from merely similar: tuned on
+Why two signals that must agree.  The embedder -- bge-small-zh when this
+was tuned; the facts now embed with a multilingual model (fact_index), and
+the bars below were checked again for Chinese asks, not re-tuned for
+English ones -- is good at meaning and poor at telling relevant from merely
+similar: tuned on
 deploy-platform's real store and asks, an unrelated English ask about a
 React form scored 0.74 against the facts, as high as a real hit, and the
 facts written in Chinese stood close to every Chinese ask whatever its
