@@ -277,6 +277,21 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
       const sug = intents.filter((i) => i.op === "memory-suggest").pop();
       check(W("Suggest promotions emits for the store"), sug && (sug.key === "-src-dp" || sug.project), sug);
 
+      // The sidecar's import as Emacs pushes it, then the one-time update
+      // of an older index (sparse_migrate): each says what it is, Import
+      // waits meanwhile, and the end clears the line.
+      const status = () => page.$eval("#status", (e) => e.textContent);
+      await page.evaluate(() => GM.importProgress({ files: 3, imported: 223, agent: "claude", current: "a0c6b62b.jsonl" }));
+      check(W("an import shows its files and chunks"),
+        /^Importing · claude · 3 files · 223 new chunks/.test(await status()), await status());
+      await page.evaluate(() => GM.importProgress({ migrating: true, done: 1280, total: 84040 }));
+      check(W("the index update says so, not Importing"),
+        (await status()) === "Updating the search index · 1280 of 84040 chunks", await status());
+      check(W("Import waits meanwhile"), await page.$eval("#btn-import", (b) => b.disabled));
+      await page.evaluate(() => GM.importProgress(null));
+      check(W("its end hides the line and frees Import"),
+        (await page.$eval("#status", (e) => e.hidden)) && !(await page.$eval("#btn-import", (b) => b.disabled)));
+
       await ctx.close();
     }
   } finally {

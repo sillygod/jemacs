@@ -4915,6 +4915,12 @@
         if (statusEl.classList.contains("busy")) setStatus("");
         return;
       }
+      if (p.migrating) {
+        // Once, after an update: the sidecar brings the index's word
+        // weights up to date (sparse_migrate); an import waits for it.
+        setStatus("Updating the search index" + (p.total ? ` · ${p.done} of ${p.total} chunks` : ""), "busy");
+        return;
+      }
       const parts = ["Importing"];
       if (p.agent) parts.push(p.agent);
       parts.push(p.files + (p.files === 1 ? " file" : " files"));
