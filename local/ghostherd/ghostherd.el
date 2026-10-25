@@ -8035,8 +8035,10 @@ agent of the project sees, whatever its CLI, and the user's own
 preferences across projects.  It is the source of truth: use it, not
 your own memory.  Read it with \"$GHOSTHERD_HERD\" recall (no argument
 prints the index; a query prints the matching facts in full).  Add a
-fact with \"$GHOSTHERD_HERD\" remember [--type project|feedback|reference]
-and drop one with \"$GHOSTHERD_HERD\" forget NAME."
+fact with \"$GHOSTHERD_HERD\" remember [--type project|feedback|reference],
+update one with remember --name NAME (when remember says your text
+restates a fact, it tells you what to add), and drop one with
+\"$GHOSTHERD_HERD\" forget NAME."
   "Shared-memory rules, given to a grok or agy agent as it starts.")
 
 (defun ghostherd--memory-link-claude (session)

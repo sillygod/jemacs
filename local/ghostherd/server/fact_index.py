@@ -59,6 +59,9 @@ WORKER_IDLE = 2.0
 ASK_BLOCK_MAX = 1800
 BODY_MAX = 300
 ASK_HEADING = "Relevant memory"
+# How long `herd remember' waits for the embedder to check its text against
+# the store; past it, the fact is written unchecked rather than held up.
+REMEMBER_WAIT = 5.0
 
 
 def point_id(key: str, name: str) -> str:
@@ -283,7 +286,18 @@ class FactIndex:
     def sync(self, key: str) -> dict[str, Any]:
         """Bring store KEY's points in line with its files: embed a fact that
         is new or whose text changed, drop one whose file is gone.  Nothing
-        is read past the stamps when no file moved since the last sync."""
+        is read past the stamps when no file moved since the last sync.
+
+        A fact claude (or a hand) changed or removed in the files keeps its
+        earlier text first (shared_memory.notice) -- outside this index's
+        lock: notice takes the store's, which a write holds while it tells
+        this index."""
+        sm.notice(sm.project_store(key), key)
+        with self._mu:
+            return self._sync(key)
+
+    def _sync(self, key: str) -> dict[str, Any]:
+        "`sync', the caller holding `_mu' and having noticed."
         with self._mu:
             self._ensure()
             stamps = _stamps(key)
@@ -351,9 +365,12 @@ class FactIndex:
             hits = mr.rank_words(docs, query, strict=strict, k=len(docs))
             hits = [h for h in hits if h.doc.name not in drop][:want]
             return {"mode": "words", "hits": [_hit_json(h) for h in hits]}
+        stores = {k_ for k_, _ in keyed}
+        for store in stores:
+            sm.notice(sm.project_store(store), store)
         with self._mu:
-            for store in {k_ for k_, _ in keyed}:
-                self.sync(store)
+            for store in stores:
+                self._sync(store)
             vecs = [self._vecs.get(k_, {}).get(f.name) for k_, f in keyed]
             # A fact whose file appeared after the sync started: embed it now.
             missing = [i for i, v in enumerate(vecs) if not v]
@@ -367,6 +384,43 @@ class FactIndex:
         hits = mr.rank(docs, vecs, parts, pvecs, bg, strict=strict, k=len(docs))
         hits = [h for h in hits if h.doc.name not in drop][:want]
         return {"mode": "meaning", "hits": [_hit_json(h) for h in hits]}
+
+    def near_duplicate(self, key: str, text: str, name: str | None = None,
+                       wait: float = REMEMBER_WAIT) -> dict[str, Any]:
+        """The fact of store KEY's pool that TEXT -- to be remembered, as
+        NAME if given -- says again (memory_rank.duplicate): {mode, hit}.
+        MODE is `meaning' when checked, `unchecked' when the embedder was not
+        up within WAIT -- words alone would refuse wrongly, so it lets the
+        write through."""
+        facts = sm.pool(key)
+        if not facts or not (text or "").strip():
+            return {"mode": "meaning", "hit": None}
+        if not self.wait_ready(wait):
+            return {"mode": "unchecked", "hit": None}
+        keyed = [(sm.USER_KEY if f.shared else key, f) for f in facts]
+        stores = {k_ for k_, _ in keyed}
+        for store in stores:
+            sm.notice(sm.project_store(store), store)
+        title = sm.title_of(name or sm._auto_name(text))
+        with self._mu:
+            for store in stores:
+                self._sync(store)
+            vecs = [self._vecs.get(k_, {}).get(f.name) for k_, f in keyed]
+            missing = [i for i, v in enumerate(vecs) if not v]
+            if missing:
+                fill = self.embedder.dense([fact_text(keyed[i][1]) for i in missing])
+                for i, v in zip(missing, fill):
+                    vecs[i] = v
+            vec = self.embedder.dense([f"{title}\n{sm._first_line(text)}\n{text}"[:4000]])[0]
+        found = mr.duplicate([_doc(k_, f) for k_, f in keyed], vecs, vec, text)
+        if not found:
+            return {"mode": "meaning", "hit": None}
+        d = found["doc"]
+        f = next(f for k_, f in keyed if f.name == d.name and k_ == d.key)
+        return {"mode": "meaning", "hit": {
+            "name": d.name, "store": d.key, "shared": d.shared, "type": d.type,
+            "description": d.description, "author": f.author, "updated": f.updated,
+            "cos": found["cos"], "gap": found["gap"], "cover": found["cover"]}}
 
     # -- what an ask carries ------------------------------------------------
 
