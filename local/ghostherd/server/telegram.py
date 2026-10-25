@@ -16,11 +16,18 @@ Links: the herd page, and each project's room, under the address Emacs
 gives in herd_tick -- without the page's secret, so Telegram keeping it
 gives nothing away -- for /herd and a session's card to open on the
 phone, nothing bookmarked.
+
+Images: a lead's report that names images (images.py) brings them after
+its text, in reply to it: one as a photo, more as an album, one too big
+for a photo as a file -- PUSH_IMAGES at most.  They go to Telegram's
+servers as the text does; Emacs's `ghostherd-push-images' turns them off
+(the push's `images': false).
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -30,6 +37,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+import images as images_mod
 from config import Config, get_config
 from herd import HerdStore, get_herd
 from relay import KIND as RELAY_KIND
@@ -69,6 +77,13 @@ PUSH_EVERY = 2.0
 # Seconds a lead's report waits for the lead's own words: its hook may
 # bring them a moment after its state.
 REPORT_WAIT = 30.0
+# The images a push brings, at most: the rest are on the herd page.
+PUSH_IMAGES = 4
+# What Telegram takes as a photo: its size, its sides together, how much
+# longer one is than the other.  A bigger one goes as a file.
+PHOTO_BYTES = 10 * 1024 * 1024
+PHOTO_SIDES = 10000
+PHOTO_RATIO = 20
 
 
 def _btn(text: str, data: str) -> dict:
@@ -450,6 +465,55 @@ def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -
     return {"inline_keyboard": rows} if rows else None
 
 
+def _push_images(words: str, at: float | None) -> list[dict[str, Any]]:
+    """The images a report's WORDS name, PUSH_IMAGES at most, each with
+    the bytes of its copy: as recorded when the words came."""
+    try:
+        store = images_mod.get_store()
+        out = []
+        for rec in store.lookup(words, at)[:PUSH_IMAGES]:
+            out.append(dict(rec, data=store.path(rec).read_bytes()))
+        return out
+    except Exception:  # noqa: BLE001 -- a push is never failed by its images
+        log.exception("telegram push images")
+        return []
+
+
+def _photo_ok(pic: dict[str, Any]) -> bool:
+    "Whether Telegram takes PIC as a photo; a GIF or WebP goes as a file, kept as it is."
+    w, h = pic.get("w") or 0, pic.get("h") or 0
+    return (pic.get("ext") in ("png", "jpg") and len(pic.get("data") or b"") <= PHOTO_BYTES
+            and 0 < w and 0 < h and w + h <= PHOTO_SIDES and max(w, h) <= PHOTO_RATIO * min(w, h))
+
+
+async def _upload(client: Any, url: str, method: str, chat_id: int, reply_to: int | None,
+                  uploads: dict[str, dict[str, Any]], **fields: str) -> Any:
+    "METHOD with UPLOADS as files, in reply to REPLY_TO when there is one."
+    data = {"chat_id": str(chat_id), **fields}
+    if reply_to:
+        data["reply_parameters"] = json.dumps({"message_id": reply_to, "allow_sending_without_reply": True})
+    files = {k: (p["name"], p["data"], images_mod.TYPES.get(p["ext"], "application/octet-stream"))
+             for k, p in uploads.items()}
+    resp = await client.post(url.format(method=method), data=data, files=files)
+    if not _bad_request(resp):
+        resp.raise_for_status()
+    return resp
+
+
+def _bad_request(resp: Any) -> bool:
+    "Telegram would not take it as sent (a photo it will not have): 400."
+    return getattr(resp, "status_code", 200) == 400
+
+
+def _message_ids(resp: Any) -> list[int]:
+    try:
+        result = (resp.json() or {}).get("result")
+    except Exception:  # noqa: BLE001
+        return []
+    msgs = result if isinstance(result, list) else [result]
+    return [m["message_id"] for m in msgs if isinstance(m, dict) and m.get("message_id")]
+
+
 def _epoch(iso: str | None) -> float:
     try:
         return datetime.fromisoformat(iso or "").timestamp()
@@ -678,23 +742,32 @@ class TelegramBot:
         """PUSH as (text, keyboard); None while a lead's report waits for
         its words.  An empty text drops it: a blocked agent answered at
         the desk meanwhile, or a kind this does not know."""
+        ready = self._prepare(push, now)
+        return ready and ready[:2]
+
+    def _prepare(
+        self, push: dict[str, Any], now: float
+    ) -> tuple[str, dict | None, list[dict[str, Any]]] | None:
+        "`prepare_push', and the images the report's words name."
         kind = push.get("kind")
         session = self.herd.session(push.get("session") or "")
         if kind == "blocked" and not (session and session.get("state") == "blocked"):
-            return "", None
+            return "", None, []
         # Relayed meanwhile, or gone: nothing to offer.
         if kind == "used-up" and not (session and session.get("kind") == push.get("from")):
-            return "", None
-        words = ""
+            return "", None, []
+        words, pics = "", []
         if kind == "report":
             link = self.herd.link(push.get("session") or "") or {}
             fresh = link.get("last") and (link.get("last_ms") or 0) / 1000 >= float(push.get("since") or 0)
             if fresh:
                 words = link["last"]
+                if push.get("images", True) is not False:
+                    pics = _push_images(words, (link.get("last_ms") or 0) / 1000 or None)
             elif now - _epoch(push.get("created_at")) < REPORT_WAIT:
                 return None
         text = format_push(push, words, session)
-        return text, (push_keyboard(push, session) if text else None)
+        return text, (push_keyboard(push, session) if text else None), (pics if text else [])
 
     async def _send(self, client: httpx.AsyncClient, url: str, payload: dict) -> Any:
         """sendMessage PAYLOAD.  When it carries HTML that Telegram will not
@@ -712,10 +785,10 @@ class TelegramBot:
         now = now if now is not None else datetime.now().timestamp()
         done = []
         for push in self.herd.unsent_pushes():
-            ready = self.prepare_push(push, now)
+            ready = self._prepare(push, now)
             if ready is None:
                 continue
-            text, markup = ready
+            text, markup, pics = ready
             html = to_html(text) if text else ""
             for chat_id in sorted(self.chat_ids) if text else []:
                 payload = {"chat_id": chat_id, "text": html, "parse_mode": "HTML"}
@@ -725,8 +798,47 @@ class TelegramBot:
                 mid = ((resp.json() or {}).get("result") or {}).get("message_id")
                 if mid and push.get("project"):
                     self.herd.remember_pushed(chat_id, mid, push["project"])
+                if pics:
+                    for m in await self._send_images(client, url, chat_id, pics, mid):
+                        if push.get("project"):
+                            self.herd.remember_pushed(chat_id, m, push["project"])
             done.append(push["id"])
         self.herd.mark_pushes_sent(done)
+
+    async def _send_images(self, client: Any, url: str, chat_id: int,
+                           pics: list[dict[str, Any]], reply_to: int | None) -> list[int]:
+        """PICS to CHAT_ID, in reply to message REPLY_TO: the photos as one
+        photo or an album, each too big for one as a file.  The ids of the
+        messages they made.  Never raises: the push's text is out, and a
+        push whose images failed is not sent again."""
+        mids: list[int] = []
+        photos = [p for p in pics if _photo_ok(p)]
+        files = [p for p in pics if not _photo_ok(p)]
+        try:
+            if len(photos) == 1:
+                resp = await _upload(client, url, "sendPhoto", chat_id, reply_to,
+                                     {"photo": photos[0]}, caption=photos[0]["name"])
+                if _bad_request(resp):
+                    files, photos = photos + files, []
+                else:
+                    mids += _message_ids(resp)
+            elif photos:
+                media = [{"type": "photo", "media": f"attach://p{n}", "caption": p["name"]}
+                         for n, p in enumerate(photos)]
+                resp = await _upload(client, url, "sendMediaGroup", chat_id, reply_to,
+                                     {f"p{n}": p for n, p in enumerate(photos)},
+                                     media=json.dumps(media))
+                if _bad_request(resp):
+                    files, photos = photos + files, []
+                else:
+                    mids += _message_ids(resp)
+            for p in files:
+                resp = await _upload(client, url, "sendDocument", chat_id, reply_to,
+                                     {"document": p}, caption=p["name"])
+                mids += _message_ids(resp)
+        except Exception:  # noqa: BLE001 -- the text went; the images are a bonus
+            log.exception("telegram push images")
+        return mids
 
     async def _push_loop(self, client: httpx.AsyncClient, url: str, stop: asyncio.Event) -> None:
         while not stop.is_set():
