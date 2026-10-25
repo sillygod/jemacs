@@ -2499,6 +2499,72 @@ The milliseconds numpy saves are nothing beside the dense half (60 ms).
 - Our own scoring in FTS5: its bm25() cannot take Qdrant's IDF; a
   Python rank function would be slower than the postings
 
+* Phase 3.44 — The sidecar's memory  *(this tree)*
+
+Goal: the sidecar's footprint read 10 GB after 3h22m.  Find why, and
+what to do (ask 18e8b5dd).  Light looks only at the live one (ps,
+=footprint=, =vmmap --summary=); everything else on a snapshot.
+
+** Where it went (a snapshot of the real store, 85,220 chunks; footprint)
+
+| stage                                          | before   | after    |
+|------------------------------------------------+----------+----------|
+| modules imported                               | 12 MB    | 12 MB    |
+| store open (embedded Qdrant), frozen           | 2,422 MB | 876 MB   |
+| + the facts' multilingual model, facts synced  | 2,909    | 1,358    |
+| + the sessions' dense and BM25 models          | 2,979    | 1,450    |
+| + word index checked, 47 searches              | 3,020    | 1,457    |
+| + one dense batch of 256 long chunks           | 6,173    | 1,459    |
+| + the same batch again                         | 8,235    | 1,459    |
+| + 10 imports of 100 chunks                     | 9,035    | 1,800    |
+
+- ONNX Runtime's CPU arena: it keeps what the largest run asked for and
+  takes more as batch shapes change.  The dense model alone, two batches
+  of 256 long chunks: +3.1 GB, then +5.2 GB; batch 32 +355 MB; batch 8
+  +80 MB; the arena off, any batch, 7-23 MB, at the same speed (11.2-12.1
+  s).  Off, the peak of a batch of 256 is still 2 GB (64: 742 MB, 16: 215
+  MB, 11.4 s against 12.0) -- hence 16.
+- Embedded Qdrant's loader: 678 MB of live structures (dense float64 333
+  MB, the sparse vectors' Python ints and floats 218, payloads 109) but
+  2.4 GB of footprint: it fetches every row at once and keeps each dense
+  vector as a list of Python floats until all are read, 1.4 GB in pymalloc
+  arenas interleaved with what lives on, never given back.  Streaming
+  alone kept it (2.3 GB), nor did =PYTHONMALLOC=malloc= or the malloc
+  zones' pressure relief (0 freed).  Streaming with each vector float32 as
+  it comes: 783 MB, peak RSS 955 MB (was 3,072), open 6.1 s (6.9).  The
+  same dense top-30 for 47/47 eval queries, scores within 7.2e-8.
+- After the first import Qdrant doubles the dense matrix (=np.resize=,
+  =_add_point=): +340 MB once, until the store has doubled.
+- The live one, 25 min idle: 4.3 GB footprint flat; resident 2.4 GB, the
+  rest compressed or in swap (vm.swapusage 2.5 of 4 GB used) -- macOS
+  pays it back on the next search, in page-ins.
+
+** What shipped
+
+- [X] =embedder.ARENA= False: every model made with
+  =enable_cpu_mem_arena= off
+- [X] =embed_batch= 256 -> 16
+- [X] =store._lean_load=: Qdrant's =CollectionPersistence.load= replaced
+  for qdrant-client 1.19.x (another version loads as it does, and says
+  so); what is on disk is unchanged
+- [X] =words.sqlite= keeps its log to 8 MB (=journal_size_limit=; a build
+  left 40 MB)
+- [X] =session_eval.py snapshot= copies =words.sqlite= too
+
+** Deliberately not done (proposed)
+
+- The sessions out of embedded Qdrant: the dense vectors as a float32
+  =.npy= mmap'd (174 MB of clean, file-backed pages the OS can drop), the
+  payloads and text in SQLite beside the word index, which already does
+  the BM25 half.  Footprint ~1.45 GB -> ~0.6-0.7 GB (the facts' model the
+  most of it), no 6 s load, the dense half in ~20 ms (estimated) with
+  the scope as a mask.  It moves the only copy of deleted sessions: a
+  migration with backup, resume and verify -- for the user to decide.
+- The facts' model unloaded when idle (0.5 GB): recall at every prompt
+  would pay ~2 s to load it again
+- A smaller or quantized facts model: re-embeds the facts and needs the
+  CJK recall eval again (cjk-memory-recall)
+
 * Phase 4 — Ecosystem (only if still useful)
 
 - [ ] Extract =ghostherd= to its own repo / MELPA if others want it

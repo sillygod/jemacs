@@ -2532,6 +2532,22 @@ The sidecar also freezes what it loaded (=gc.freeze=): embedded Qdrant
 holds every chunk as Python objects, 550k for 85k chunks, and each full
 collection walked them all --- 186 ms, a request's whole time, at random.
 
+Its memory.  The sidecar read 10 GB after a few hours: ONNX Runtime's CPU
+arena kept the most any embedding batch had asked for, and an import's
+batch of 256 long chunks asked for 2 GB at once, more each time the
+batch's shape changed.  The models now run without the arena and embed
+16 chunks a call (=GHOSTHERD_MEMORY_EMBED_BATCH=), at the same speed: a
+batch of long chunks leaves 2 MB behind, not 3--5 GB.  Embedded Qdrant
+holds every chunk in memory, and its loader left 2.4 GB behind for 85k
+chunks; the sidecar reads the store as a stream instead, each dense
+vector as float32 (=store._lean_load=, for qdrant-client 1.19 only;
+nothing on disk changes): 0.9 GB, and the same search.  On the real
+store the sidecar now starts at 1.45 GB and stays near 1.8 GB through
+imports, where it started at 3.0 GB and grew to 9 GB in the same run.
+What it holds: Qdrant's chunks (~10 MB per 1k chunks, and room for as
+many again after the first import), the facts' multilingual model
+0.5 GB, the sessions' models 0.1 GB.
+
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
 its cache; watch =*ghostherd-memory*= if that seems stuck.
 

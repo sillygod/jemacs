@@ -68,6 +68,8 @@ def snapshot(src: Path, dst: Path) -> None:
         sys.exit(f"{dst} exists")
     files = [p.relative_to(src) for p in sorted((src / "qdrant").glob("collection/*/storage.sqlite"))]
     files.append(Path("sources.sqlite"))
+    if (src / "words.sqlite").exists():
+        files.append(Path("words.sqlite"))
     for rel in files:
         out = dst / rel
         out.parent.mkdir(parents=True, exist_ok=True)

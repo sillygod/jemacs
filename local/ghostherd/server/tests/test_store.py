@@ -6,6 +6,12 @@ from config import Config
 from engine import MemoryEngine, reset_engine
 from store import rrf_merge
 
+# qdrant-client's own loader, before store._lean_load replaces it.
+from qdrant_client.local import persistence as _persistence
+_ORIGINAL_LOAD = _persistence.CollectionPersistence.__dict__["load"]
+if getattr(_ORIGINAL_LOAD, "lean", False):
+    _ORIGINAL_LOAD = None
+
 
 class _Hit:
     def __init__(self, pid, score=0.0):
@@ -668,3 +674,68 @@ def test_a_project_search_asks_wide_first_and_finds_the_same(tmp_path, monkeypat
     finally:
         eng.close()
         reset_engine()
+
+
+def test_the_store_loads_lean_and_searches_the_same(tmp_path, monkeypatch):
+    """Embedded Qdrant reads the stored points as a stream, each dense
+    vector as float32 (store._lean_load): a float32 matrix, and the same
+    hits as its own loader gives -- before and after the store is written."""
+    import numpy as np
+    from qdrant_client.local import persistence
+
+    import store as store_mod
+    from index import SourceMeta
+
+    def engine():
+        reset_engine()
+        return MemoryEngine(Config(data_dir=tmp_path / "mem", fake_embed=True, claude_root=tmp_path / "c",
+                                   grok_root=tmp_path / "g", agy_root=tmp_path / "a"))
+
+    def hits(e, q):
+        "The dense half's hits and scores; equal scores in any order."
+        found = e.store.channel("dense", e.embedder.dense([q])[0], 100)  # all: no cut among ties
+        return sorted((round(h["score"], 5), h["id"]) for h in found)
+
+    words = ["overlay", "sizing", "posframe", "deploy", "branch", "sidecar", "embed", "memory"]
+    e = engine()
+    e._ensure_ready()
+    for i in range(30):
+        t = Turn(agent="claude", role="user", project="/w/p", session_id=f"s{i}",
+                 source_path=f"/s/{i}.jsonl", text=f"{words[i % 8]} {words[i * 3 % 8]} note {i} here")
+        e._import_source(SourceMeta(t.source_path, 1.0, 1, "claude", t.session_id, "/w/p", "transcript"),
+                         [t], force=True)
+    e.close()
+    queries = ["overlay sizing", "deploy branch", "sidecar memory"]
+
+    lean = persistence.CollectionPersistence.load
+    assert getattr(lean, "lean", False)
+    e = engine()
+    col = e.store.client._client.collections[store_mod.COLLECTION]
+    assert col.vectors["dense"].dtype == np.float32
+    got = {q: hits(e, q) for q in queries}
+    # A write, then a load again: still the same.
+    e.store.restate([Turn(agent="claude", role="user", project="/w/q", session_id="s1",
+                          source_path="/s/1.jsonl", text=f"{words[1]} {words[3]} note 1 here")])
+    e.close()
+    monkeypatch.setattr(persistence.CollectionPersistence, "load", _ORIGINAL_LOAD)
+    monkeypatch.setattr(store_mod, "_lean_load", lambda: False)
+    e = engine()
+    try:
+        assert e.store.client._client.collections[store_mod.COLLECTION].vectors["dense"].dtype == np.float64
+        assert {q: hits(e, q) for q in queries} == got
+    finally:
+        e.close()
+        reset_engine()
+
+
+def test_another_qdrant_client_keeps_its_own_loader(monkeypatch):
+    import importlib.metadata
+
+    from qdrant_client.local import persistence
+
+    import store as store_mod
+
+    monkeypatch.setattr(persistence.CollectionPersistence, "load", _ORIGINAL_LOAD)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "2.0.0")
+    assert store_mod._lean_load() is False
+    assert persistence.CollectionPersistence.load is _ORIGINAL_LOAD
