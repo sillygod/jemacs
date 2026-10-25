@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import images
 from importers.textutil import content_to_text, grok_user_text
 
 TAIL_BYTES = 768 * 1024
@@ -669,6 +670,9 @@ def _read(real: Path, cli: str, limit: int, reader, key: str,
             break
         window *= 4
     entries, more = thread.done(limit, before)
+    # The images what an agent wrote names: as recorded, or copied now when
+    # still as they were then.  Cached with the rest, so once a change.
+    images.attach(entries, at_of=lambda e: _epoch(e.get("ts")))
     out = {
         "path": key,
         "cli": cli,
@@ -845,7 +849,7 @@ def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
     def turn() -> None:
         nonlocal said
         if said:
-            add(who=name, kind="turn", text=said["text"], ts=said.get("ts"))
+            add(who=name, kind="turn", text=said["text"], ts=said.get("ts"), images=said.get("images"))
         said = None
 
     for e in entries:
@@ -861,17 +865,19 @@ def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
                 add(who=e.get("who"), to=name, kind=kind, ask=ask, text=e.get("text"), ts=e.get("ts"))
             elif kind == "answer" and ask not in replied:
                 add(who=e.get("who"), to=name, kind="answer", ask=ask, text=e.get("text"),
-                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("ts"))
+                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("ts"), images=e.get("images"))
         elif role == "herd" and kind == "reply":
-            add(who=name, to=taken.get(ask, ""), kind="reply", ask=ask, text=e.get("text"), ts=e.get("ts"))
+            add(who=name, to=taken.get(ask, ""), kind="reply", ask=ask, text=e.get("text"), ts=e.get("ts"),
+                images=e.get("images"))
         elif role == "herd" and kind == "ask":
             if ask not in taken:
                 add(who=name, to=e.get("to"), kind="ask", ask=ask, text=e.get("text"), ts=e.get("ts"),
                     answer=e.get("answer"), auto=e.get("auto"), failed=e.get("failed"),
-                    waiting=e.get("waiting"))
+                    waiting=e.get("waiting"), answer_images=e.get("answer_images"))
             elif ask not in replied and (e.get("answer") or e.get("failed")):
                 add(who=e.get("to"), to=name, kind="answer", ask=ask, text=e.get("answer"),
-                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("answered_ts") or e.get("ts"))
+                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("answered_ts") or e.get("ts"),
+                    images=e.get("answer_images"))
     turn()
     return out
 

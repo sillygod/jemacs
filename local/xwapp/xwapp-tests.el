@@ -1054,5 +1054,155 @@ live) stops the poll and marks the app wedged after the limit."
       (should (= (or (xwapp--get app :poll-fails) 0) 0))
       (should-not (xwapp--get app :wedged)))))
 
+;;; Files an app serves besides its page
+
+(defconst xwapp-test--id "0123456789abcdef0123456789abcdef")
+
+(defun xwapp-test--raw (path &optional headers transport)
+  "The whole response to GET PATH, as bytes: its head and its body."
+  (let ((cell (xwapp-test--ask "GET" path nil headers transport))
+        (out ""))
+    (set-process-filter (cdr cell) (lambda (_p s) (setq out (concat out s))))
+    (with-timeout (10 (error "No answer"))
+      (while (process-live-p (cdr cell))
+        (accept-process-output nil 0.02)))
+    out))
+
+(defmacro xwapp-test--serving (&rest body)
+  "BODY in `xwapp-test--with-browser', its app serving the files of
+`dir' named an id and .png (`xwapp-serve-files'); `file' is the one
+there, and beside it what must not be served."
+  (declare (indent 0))
+  `(xwapp-test--with-browser
+     (let* ((dir (file-name-as-directory (expand-file-name "files" root)))
+            (file (concat xwapp-test--id ".png")))
+       (make-directory dir t)
+       (with-temp-file (expand-file-name file dir) (insert "PNGDATA"))
+       (with-temp-file (expand-file-name "index.sqlite" dir) (insert "db"))
+       (with-temp-file (expand-file-name (concat xwapp-test--id ".txt") dir) (insert "text"))
+       ;; A symlink to elsewhere, and a directory, under a name that fits.
+       (make-symbolic-link (expand-file-name "app/notes.txt" root)
+                           (expand-file-name (concat (make-string 32 ?a) ".png") dir))
+       (make-directory (expand-file-name (concat (make-string 32 ?b) ".png") dir))
+       (xwapp-serve-files app (lambda () dir) "[0-9a-f]\\{32\\}\\.png")
+       ,@body)))
+
+(ert-deftest xwapp-test-browser-serves-an-apps-files-by-name ()
+  "An app's files (`xwapp-serve-files'): by a name its regexp takes whole,
+from its directory, under the page's secret -- kept by the browser, as
+a name's file never changes.  Nothing else: a name no file has (a
+guessed one), another name, one that climbs or holds a slash, a symlink,
+a directory; not without the secret, nor to another host."
+  (xwapp-test--serving
+    (let ((raw (xwapp-test--raw (xwapp-test--at app (concat ".files/" file)))))
+      (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+      (should (string-match-p "\r\nContent-Type: image/png\r\n" raw))
+      (should (string-match-p "\r\nCache-Control: private, max-age=604800, immutable\r\n" raw))
+      (should-not (string-match-p "no-store" raw))
+      (should (string-match-p "\r\nX-Content-Type-Options: nosniff\r\n" raw))
+      (should (string-suffix-p "\r\n\r\nPNGDATA" raw)))
+    (dolist (name (list "ffffffffffffffffffffffffffffffff.png"     ; guessed: not there
+                        (upcase file) (concat xwapp-test--id ".PNG")
+                        "index.sqlite" (concat xwapp-test--id ".txt")
+                        (concat (make-string 32 ?a) ".png")          ; a symlink
+                        (concat (make-string 32 ?b) ".png")          ; a directory
+                        (concat "..%2F" file) (concat "%2E%2E/" file)
+                        (concat "../files/" file) (concat file "/x")
+                        "../app/notes.txt" ".." ""))
+      (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" name)))) 404)))
+    (dolist (path (list (concat "/" (make-string 32 ?0) "/.files/" file)
+                        (concat "/.files/" file)
+                        (xwapp-test--at app (concat "app/.files/" file))))
+      (should (equal (car (xwapp-test--do "GET" path)) 404)))
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" file)) nil
+                                        '(("Host" . "evil.example"))))
+                   404))
+    ;; Only GET.
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app (concat ".files/" file)) "x")) 404))
+    ;; An app that serves none.
+    (xwapp--put app :files nil)
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" file)))) 404))))
+
+(ert-deftest xwapp-test-browser-an-apps-files-on-other-devices ()
+  "Through the proxy an app's files go where its page does: to one of
+`xwapp-remote-users', and to no one else."
+  (xwapp-test--serving
+    (let ((xwapp-remote-hosts (list xwapp-test--box))
+          (xwapp-remote-users (list "me@example.com"))
+          (path (xwapp-test--at app (concat ".files/" file))))
+      (xwapp-test--proxy-up)
+      (should (equal (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com") 'proxy)
+                     '(200 . "PNGDATA")))
+      (dolist (h (list (xwapp-test--from-box nil) (xwapp-test--from-box "someone@else.com")))
+        (should (equal (car (xwapp-test--do "GET" path nil h 'proxy)) 404)))
+      ;; The proxy's headers on loopback are no proof.
+      (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com"))) 404)))))
+
+(ert-deftest xwapp-test-browser-a-big-file-goes-from-a-thread ()
+  "A file an app serves past `xwapp--send-aside' is sent from a thread
+of its own, whole, so a slow reader cannot hold Emacs; a small one as
+before, and the page's own files as before, whatever their size."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--serving
+    (let* ((big (concat (make-string (* 3 1024 1024) ?x) "end"))
+           (name (concat (make-string 32 ?c) ".png"))
+           (made nil)
+           (make (symbol-function 'make-thread)))
+      (with-temp-file (expand-file-name name dir) (insert big))
+      (cl-letf (((symbol-function 'make-thread)
+                 (lambda (fn &optional tname &rest more)
+                   (push tname made)
+                   (apply make fn tname more))))
+        (should (equal (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" file)))
+                       '(200 . "PNGDATA")))
+        (should-not made)
+        (let ((answer (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" name)))))
+          (should (equal (car answer) 200))
+          (should (= (length (cdr answer)) (length big)))
+          (should (string-suffix-p "end" (cdr answer))))
+        (should (equal made '("xwapp-send")))
+        (with-temp-file (expand-file-name "app/ui/big.js" root) (insert big))
+        (should (= (length (cdr (xwapp-test--do "GET" (xwapp-test--at app "app/ui/big.js")))) (length big)))
+        (should (equal made '("xwapp-send")))))))
+
+(ert-deftest xwapp-test-files-in-the-xwidget ()
+  "In the xwidget, a page of file:, the page is told where its files are
+on its hello: their directory as a file: URL.  In a browser, which
+reaches them by name under its secret, it is told nothing."
+  (xwapp-test--serving
+    (let* ((title nil) (scripts nil)
+           (poll (lambda (intent)
+                   (setq title (concat "t:" intent) scripts nil)
+                   (xwapp--poll app)
+                   (seq-keep (lambda (s) (and (string-match "\\`window\\.XW && XW\\.kit(\\(.*\\));\\'" s)
+                                              (xwapp-test--json (match-string 1 s))))
+                             scripts))))
+      (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+                ((symbol-function 'xwidget-webkit-title) (lambda (_) title))
+                ((symbol-function 'xwidget-webkit-execute-script)
+                 (lambda (_xw s) (push s scripts))))
+        (should (equal (funcall poll "{\"op\":\"xwapp-hello\",\"n\":1}")
+                       `(((xwapp . "files") (base . ,(concat "file://" dir))))))
+        ;; Served anew while the page is open: it is told at once (a
+        ;; reload of the app's code); the same again tells it nothing.
+        (let ((other (file-name-as-directory (expand-file-name "my files" root)))
+              (told (lambda () (seq-keep (lambda (s) (and (string-match "XW\\.kit(\\(.*\\));" s)
+                                                         (xwapp-test--json (match-string 1 s))))
+                                         scripts))))
+          (setq scripts nil)
+          (let ((where (lambda () other)))
+            (xwapp-serve-files app where "x")
+            (should (equal (alist-get 'base (car (funcall told)))
+                           (concat "file://" (string-replace " " "%20" other))))
+            (setq scripts nil)
+            (xwapp-serve-files app where "x")
+            (should-not (funcall told)))
+          ;; A directory asked each time: a setting changed later counts.
+          (should (equal (alist-get 'base (car (funcall poll "{\"op\":\"xwapp-hello\",\"n\":2}")))
+                         (concat "file://" (string-replace " " "%20" other)))))
+        (should-not intents)))
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (should-not (xwapp--get app :outbox))))
+
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

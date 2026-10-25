@@ -521,6 +521,7 @@ a page open in a browser tab is let go: an app has one page at a time."
 ;;                 until there are some, so one is always waiting.
 ;;   POST intent   one intent; the page sends them one at a time, so
 ;;                 they arrive in order.
+;;   GET .files/N  a file the app serves by name (`xwapp-serve-files').
 ;;
 ;; Emacs writes only into a request the page has made.  A stream it
 ;; pushed into would block Emacs the moment a tab stopped reading it;
@@ -787,9 +788,12 @@ and a page open in a tab says to open it again."
 
 (defun xwapp--greet (app)
   "Tell APP's page, which has just loaded, that your other devices can
-reach it -- when they can.  Its button is hidden until then."
+reach it -- when they can.  Its button is hidden until then.  And, in
+the xwidget, where the files it is served are (`xwapp-serve-files'):
+a page of file: reaches them as files."
   (when (and xwapp-remote-hosts (xwapp-reopen app))
-    (xwapp--kit app '((xwapp . "phone")))))
+    (xwapp--kit app '((xwapp . "phone"))))
+  (xwapp--tell-files app))
 
 (defun xwapp--show-qr (app)
   "Show APP's address from your other devices in its page, as a QR code."
@@ -1020,29 +1024,65 @@ this machine, where any page in the browser could ask."
       (xwapp--next app proc page))
      ((and (equal method "POST") (equal rest '("intent")))
       (xwapp--intent app proc page body))
+     ((and (equal method "GET") (equal (car rest) ".files"))
+      (xwapp--served-file app proc (cdr rest)))
      ((equal method "GET") (xwapp--file app proc rest))
      (t (xwapp--respond proc 404)))))
 
-(defun xwapp--respond (proc code &optional type body headers)
+(defconst xwapp--send-aside (* 256 1024)
+  "Bytes past which a file an app serves is sent from a thread of its own.
+`process-send-string' returns only once the last byte is in the
+socket, and a phone on a slow link reads slowly: an 8 MB image to a
+reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
+waiting it out.  Sent from a thread, the key was taken in 4 ms.")
+
+(defun xwapp--respond (proc code &optional type body headers aside)
   "Answer PROC with CODE, and BODY (bytes) of TYPE, then close it.
-HEADERS, an alist, go along.  An error with nothing to say says its
-name: answered empty, a browser takes it for a file to download."
+HEADERS, an alist, go along; a Cache-Control among them replaces
+no-store.  An error with nothing to say says its name: answered empty,
+a browser takes it for a file to download.  ASIDE: a response past
+`xwapp--send-aside' goes from a thread of its own."
   (when (and (>= code 400) (null type))
     (setq type "text/plain; charset=utf-8"
           body (alist-get code xwapp--reasons "")))
-  (ignore-errors
-    (process-send-string
-     proc
-     (concat (format "HTTP/1.1 %d %s\r\n" code (alist-get code xwapp--reasons ""))
-             (if type (format "Content-Type: %s\r\n" type) "")
-             (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
-             (format "Content-Length: %d\r\n" (length body))
-             "Cache-Control: no-store\r\n"
-             "Referrer-Policy: no-referrer\r\n"
-             "X-Content-Type-Options: nosniff\r\n"
-             "Connection: close\r\n\r\n"
-             body)))
+  (let ((response
+         (concat (format "HTTP/1.1 %d %s\r\n" code (alist-get code xwapp--reasons ""))
+                 (if type (format "Content-Type: %s\r\n" type) "")
+                 (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
+                 (format "Content-Length: %d\r\n" (length body))
+                 (if (assoc "Cache-Control" headers) "" "Cache-Control: no-store\r\n")
+                 "Referrer-Policy: no-referrer\r\n"
+                 "X-Content-Type-Options: nosniff\r\n"
+                 "Connection: close\r\n\r\n"
+                 body)))
+    (if (and aside (> (length response) xwapp--send-aside) (fboundp 'make-thread))
+        (make-thread (lambda () (xwapp--send proc response)) "xwapp-send")
+      (xwapp--send proc response))))
+
+(defun xwapp--send (proc response)
+  "Send PROC RESPONSE whole, then close it."
+  (ignore-errors (process-send-string proc response))
   (ignore-errors (delete-process proc)))
+
+(defun xwapp--type (file)
+  "The Content-Type to serve FILE as, by its extension."
+  (pcase (downcase (or (file-name-extension file) ""))
+    ("html" "text/html; charset=utf-8")
+    ("js" "text/javascript; charset=utf-8")
+    ("css" "text/css; charset=utf-8")
+    ("svg" "image/svg+xml")
+    ("png" "image/png")
+    ((or "jpg" "jpeg") "image/jpeg")
+    ("gif" "image/gif")
+    ("webp" "image/webp")
+    (_ "application/octet-stream")))
+
+(defun xwapp--bytes (file)
+  "FILE's contents, as bytes."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (buffer-string)))
 
 (defun xwapp--file (app proc parts)
   "Answer PROC with the file PARTS name: of APP's page, or of xwapp's kit."
@@ -1054,19 +1094,63 @@ name: answered empty, a browser takes it for a file to download."
                        (list (file-name-directory (xwapp-index app))
                              (expand-file-name "xwapp/ui/" root)))
              (file-regular-p file))
-        (xwapp--respond proc 200
-                        (pcase (file-name-extension file)
-                          ("html" "text/html; charset=utf-8")
-                          ("js" "text/javascript; charset=utf-8")
-                          ("css" "text/css; charset=utf-8")
-                          ("svg" "image/svg+xml")
-                          ("png" "image/png")
-                          (_ "application/octet-stream"))
-                        (with-temp-buffer
-                          (set-buffer-multibyte nil)
-                          (insert-file-contents-literally file)
-                          (buffer-string)))
+        (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file))
       (xwapp--respond proc 404))))
+
+;; Files an app serves besides its page: images an agent named, say.
+
+(defun xwapp-serve-files (app dir regexp)
+  "Serve APP's page the files in DIR whose names match REGEXP whole.
+DIR is a directory, or a function of no arguments giving one, asked
+each time.  A name is one segment, and only a regular file there --
+not a symlink -- is served.  In a browser at .files/NAME under the
+page's secret, as the page itself is, to whoever the page is served
+to; in the xwidget as a file: URL, its directory told to the page on
+its hello.  The page has both as XW.file(NAME).  Anyone the page is
+served to can ask for any name: make the names ones nobody guesses.
+Said again the same, it does nothing; anew, a page already open in the
+xwidget is told at once."
+  (unless (equal (xwapp--get app :files) (cons dir regexp))
+    (xwapp--put app :files (cons dir regexp))
+    (xwapp--tell-files app)))
+
+(defun xwapp--tell-files (app)
+  "Tell APP's page in the xwidget, a page of file:, where the files it is
+served are (`xwapp-serve-files'): it reaches them as files.  A page in
+a browser asks for them by name, and is told nothing."
+  (when-let* (((not (xwapp--get app :page)))
+              (dir (xwapp--files-dir app)))
+    (xwapp--kit app `((xwapp . "files")
+                      (base . ,(concat "file://" (mapconcat #'url-hexify-string
+                                                            (split-string dir "/") "/")))))))
+
+(defun xwapp--files-dir (app)
+  "The directory APP serves files from (`xwapp-serve-files'), or nil."
+  (when-let* ((files (xwapp--get app :files))
+              (dir (if (functionp (car files)) (funcall (car files)) (car files))))
+    (file-name-as-directory (expand-file-name dir))))
+
+(defun xwapp--file-of (app name)
+  "The file APP serves as NAME (`xwapp-serve-files'), or nil."
+  (when-let* ((dir (xwapp--files-dir app))
+              ((stringp name))
+              ((let ((case-fold-search nil))
+                 (string-match-p (concat "\\`\\(?:" (cdr (xwapp--get app :files)) "\\)\\'") name)))
+              ((not (or (string-search "/" name) (member name '("." ".."))))))
+    (let ((file (expand-file-name name dir)))
+      (and (equal (file-name-directory file) dir)
+           (not (file-symlink-p file))
+           (file-regular-p file)
+           file))))
+
+(defun xwapp--served-file (app proc parts)
+  "Answer PROC with the file PARTS name among those APP serves.
+Its name never changes what it holds, so the browser keeps it."
+  (if-let* (((= (length parts) 1))
+            (file (xwapp--file-of app (car parts))))
+      (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file)
+                      '(("Cache-Control" . "private, max-age=604800, immutable")) t)
+    (xwapp--respond proc 404)))
 
 ;; The page's life
 

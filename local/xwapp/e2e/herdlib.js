@@ -30,6 +30,16 @@ async function phonePage(browser, opts) {
     if (rest[0] === "hello") return route.fulfill({ status: 204 });
     if (rest[0] === "intent") { intents.push(JSON.parse(req.postData())); return route.fulfill({ status: 204 }); }
     if (rest[0] === "next") { await sleep(1500); return route.fulfill({ status: 200, contentType: "application/json", body: "[]" }).catch(() => {}); }
+    // The files Emacs serves the page by name (xwapp-serve-files): from
+    // OPTS.files, a name each, as xwapp checks it; each asked for logged.
+    if (rest[0] === ".files") {
+      if (opts.fileLog) opts.fileLog.push(rest.slice(1).join("/"));
+      const name = rest.length === 2 ? decodeURIComponent(rest[1]) : "";
+      const f = opts.files && opts.files[name];
+      if (!f) return route.fulfill({ status: 404, body: "Not Found" });
+      const ftype = { png: "image/png", jpg: "image/jpeg" }[name.split(".").pop()] || "application/octet-stream";
+      return route.fulfill({ status: 200, contentType: ftype, headers: { "Cache-Control": "private, max-age=604800, immutable" }, body: fs.readFileSync(f) });
+    }
     const base = rest[0] === "xwapp" ? path.join(XWAPP, "ui") : rest[0] === "ghostherd" ? UIDIR : null;
     const file = base && path.join(base, ...rest.slice(2));
     if (!file || !fs.existsSync(file)) return route.fulfill({ status: 404, body: "Not Found" });

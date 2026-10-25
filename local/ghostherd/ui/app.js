@@ -231,6 +231,92 @@
   // esc of the markup-stripped text, for a title / preview.
   function ibPlain(src) { return esc(stripMd(src)); }
 
+  // ---- Images a reply names ----------------------------------------------
+  //
+  // The sidecar copies each image an agent's reply names, under an id no
+  // one can guess, and the message carries them: {id, ext, name, w, h,
+  // thumb}.  Emacs serves the copies by name (XW.file) -- to a browser
+  // under the page's secret, to the xwidget as files -- and nothing else:
+  // the names are checked here too, so a message cannot point the page
+  // anywhere.  A thumbnail under the message; pressed, the image whole.
+
+  const IMG_ID = /^[0-9a-f]{32}$/;
+  const IMG_EXTS = ["png", "jpg", "gif", "webp"];
+
+  function imgFile(im, thumb) {
+    return im.id + (thumb && im.thumb ? ".t.jpg" : "." + im.ext);
+  }
+
+  function imagesHtml(list) {
+    const ok = (Array.isArray(list) ? list : []).filter((im) =>
+      im && IMG_ID.test(String(im.id)) && IMG_EXTS.includes(im.ext));
+    if (!ok.length) return "";
+    return '<div class="eimgs">' + ok.map((im) => {
+      const name = String(im.name || "image");
+      const src = XW.file(imgFile(im, true));
+      const w = +im.w || 0, h = +im.h || 0;
+      const shape = w > 0 && h > 0 ? ' style="aspect-ratio:' + w + " / " + h + '"' : "";
+      return '<button type="button" class="eimg" data-act="img:open" data-img="' + esc(imgFile(im, false)) +
+        '" data-name="' + esc(name) + '" title="' + esc(name + (w ? " · " + w + "×" + h : "") + " — see it whole") + '"' + shape + ">" +
+        (src ? '<img src="' + esc(src) + '" alt="' + esc(name) + '" loading="lazy" decoding="async">'
+          : '<span class="eimgname">' + esc(name) + "</span>") + "</button>";
+    }).join("") + "</div>";
+  }
+
+  // The image whole, over the page: fitted to it, at its own size at a
+  // press, scrolled.  Esc, ✕ or a press beside it puts it away.  In a
+  // browser, Open gives it a tab of its own -- a phone zooms it there.
+  function openImage(el) {
+    const file = el.getAttribute("data-img") || "";
+    const url = IMG_ID.test(file.split(".")[0]) ? XW.file(file) : "";
+    if (!url) return;
+    closeImage();
+    const wrap = document.createElement("div");
+    wrap.className = "imgview";
+    wrap.setAttribute("role", "dialog");
+    wrap.setAttribute("aria-label", el.getAttribute("data-name") || "Image");
+    wrap.tabIndex = -1;
+    wrap.innerHTML = '<div class="imgbar"><span class="imgname"></span>' +
+      (XW.browser ? '<a class="imgopen" target="_blank" rel="noopener noreferrer">Open</a>' : "") +
+      '<button type="button" class="ghost imgclose" title="Close (Esc)">✕</button></div>' +
+      '<div class="imgscroll"><img alt=""></div>';
+    wrap.querySelector(".imgname").textContent = el.getAttribute("data-name") || "";
+    const img = wrap.querySelector("img");
+    img.src = url;
+    img.alt = el.getAttribute("data-name") || "";
+    const open = wrap.querySelector(".imgopen");
+    if (open) open.href = url;
+    wrap.addEventListener("click", (ev) => {
+      if (ev.target === img) wrap.classList.toggle("actual");
+      else if (ev.target.closest(".imgclose") || ev.target === wrap || ev.target.classList.contains("imgscroll")) closeImage();
+    });
+    // Over the page: its keys (j, k, 1-4 ...) are not the page's meanwhile.
+    wrap.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Escape") { closeImage(); ev.preventDefault(); }
+    });
+    imgBack = document.activeElement;
+    document.body.appendChild(wrap);
+    wrap.focus();
+  }
+
+  // In the xwidget the images are files, and where they are comes with
+  // Emacs's answer to the page's hello: drawn before it, drawn again.
+  document.addEventListener("xw-files", () => {
+    if (view === "inbox") renderInbox();
+    else if (view === "threads") renderThreads();
+    else if (herdNow.data) GM.renderHerdAgain();
+  });
+
+  let imgBack = null;
+  function closeImage() {
+    const v = document.querySelector(".imgview");
+    if (!v) return;
+    v.remove();
+    if (imgBack && imgBack.focus && document.contains(imgBack)) imgBack.focus({ preventScroll: true });
+    imgBack = null;
+  }
+
   // ---- Query terms -----------------------------------------------------
 
   function termRe(q) {
@@ -2204,7 +2290,7 @@
     const own = sessionColor(name);
     if (e.role === "assistant") {
       return '<div class="ent me" style="border-left-color:' + own + '">' + entHead(name, "", e.ts, own, copyButton(i, e.text)) +
-        '<div class="ebody msg-body">' + markdown(e.text) + "</div></div>";
+        '<div class="ebody msg-body">' + markdown(e.text) + "</div>" + imagesHtml(e.images) + "</div>";
     }
     if (e.role === "tools") {
       const tools = e.tools || [];
@@ -2239,7 +2325,7 @@
         '" style="border-left-color:' + own + '">' +
         entHead("↩ " + (e.who || "sub-agent") + (e.title ? " · " + e.title : ""), "", e.ts, own, copyButton(i, text)) +
         '<div class="smeta">' + esc(stats) + "</div>" +
-        (text ? '<div class="ebody msg-body">' + markdown(text) + "</div>" : "") +
+        (text ? '<div class="ebody msg-body">' + markdown(text) + "</div>" : "") + imagesHtml(e.images) +
         (long ? '<button type="button" class="linkish cmore" data-act="a:sub-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
         "</div>";
     }
@@ -2250,11 +2336,12 @@
       const outcome = e.kind !== "ask" ? ""
         : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
         : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered" + (e.auto ? " — stopped without answering" : ""), "", null, tcolor,
-          copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
+          copyButton(i, e.answer, "answer")) + plainBody(e.answer) + imagesHtml(e.answerImages) + "</div>"
         : e.waiting ? '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>"
         : "";
       return '<div class="ent herd" style="border-left-color:' + own + '">' +
-        entHead(name + " " + what, "", e.ts, own, copyButton(i, e.text)) + plainBody(e.text) + outcome + "</div>";
+        entHead(name + " " + what, "", e.ts, own, copyButton(i, e.text)) + plainBody(e.text) +
+        (e.kind === "reply" ? imagesHtml(e.images) : "") + outcome + "</div>";
     }
     // Said to it: by you, or through the herd.
     if (e.kind === "command") return '<div class="ent small">› ' + esc(e.text) + "</div>";
@@ -2262,7 +2349,8 @@
     if (e.kind === "ask") return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " asks", "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     if (e.kind === "answer") {
       const how = e.failed ? " — ask failed" : e.auto ? " — stopped without answering" : "";
-      return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
+      return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) +
+        imagesHtml(e.images) + "</div>";
     }
     if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     return '<div class="ent you" data-i="' + i + '">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
@@ -2554,11 +2642,11 @@
     const outcome = e.kind !== "ask" || !(e.failed || e.answer || e.waiting) ? ""
       : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
       : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || ""), copyButton(i, e.answer, "answer")) +
-        plainBody(e.answer) + "</div>"
+        plainBody(e.answer) + imagesHtml(e.answerImages) + "</div>"
       : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
     return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '" data-i="' + i + '"' +
       (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
-      entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + outcome +
+      entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + imagesHtml(e.images) + outcome +
       (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
       "</div>";
   }
@@ -3849,7 +3937,9 @@
     const el = t.closest("[data-act]");
     if (!el || el.disabled) return;
     const act = el.getAttribute("data-act");
-    if (act === "agent") {
+    if (act === "img:open") {
+      openImage(el);
+    } else if (act === "agent") {
       filters.agent = el.getAttribute("data-agent") || "";
       onFilters();
     } else if (act === "open-hit") {
@@ -4227,10 +4317,10 @@
 
   // BODY defaults to the item's own (truncated) body; the detail pane passes
   // the full report when Emacs has fetched it for the selected item.
-  function inboxWhy(it, body) {
+  function inboxWhy(it, body, imgs) {
     if (body == null) body = it.body;
     return '<div class="ibwhy"><span class="ibwhylab">' + esc(it.whyLabel || "") + "</span>" +
-      '<div class="ibbody msg-body">' + markdown(body || "") + "</div>" +
+      '<div class="ibbody msg-body">' + markdown(body || "") + "</div>" + imagesHtml(imgs) +
       (it.code ? '<code class="ibcode">' + esc(it.code) + "</code>" : "") +
       (it.note ? '<p class="ibnote">' + esc(it.note) + "</p>" : "") + "</div>";
   }
@@ -4287,7 +4377,7 @@
       (it.project ? "<span>· " + esc(leaf(it.project)) + "</span>" : "") +
       (it.state ? "<span>· " + esc(it.state) + "</span>" : "") +
       '<span>· ' + esc(inboxAge(it.at)) + "</span></div>" +
-      inboxWhy(it, body) + inboxActions(it, phone) + inboxThreadInline(it, phone, d);
+      inboxWhy(it, body, d && d.report ? d.images : null) + inboxActions(it, phone) + inboxThreadInline(it, phone, d);
   }
 
   function inboxDeskHtml() {
@@ -4619,7 +4709,8 @@
         '<button type="button" class="thcard" style="' + gc + '" data-act="' + msgAct + '" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
         '<span class="thmeta"><span>' + esc(thWho(m.from)) + " → " + esc(thWho(m.to)) + "</span><span>· " + esc(thTime(m.at)) + "</span>" +
         (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") + "</span>" +
-        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button></div>";
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>" +
+        (m.images ? '<div class="thimgs" style="' + gc + '">' + imagesHtml(m.images) + "</div>" : "") + "</div>";
     }).join("");
     const wait = thWaiting(t);
     return '<div class="thdiagwrap"><div class="thdiag">' +
@@ -4662,7 +4753,7 @@
         '<span class="thpwho">' + esc(thWho(m.to)) + "</span>" +
         '<span class="thpkind">' + esc(thLabel(m)) + "</span></span>" +
         '<span class="thmeta"><span>' + esc(thTime(m.at)) + "</span>" + (round ? "<span>· " + esc(round) + "</span>" : "") + "</span>" +
-        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>";
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>" + imagesHtml(m.images);
     }).join("") + (wait ? '<p class="thwait">' + esc(wait) + "</p>" : "");
   }
 
@@ -4770,6 +4861,7 @@
       if (!inbox.detail || inbox.detail.for !== p.for) { inbox.detail = { for: p.for }; inbox.thOpen = {}; }
       if (p.thread) inbox.detail.thread = p.thread;
       if (typeof p.report === "string" && p.report) inbox.detail.report = p.report;
+      if (Array.isArray(p.images)) inbox.detail.images = p.images;
       if (view === "inbox" && p.for === inbox.sel) renderInbox();
     },
 
