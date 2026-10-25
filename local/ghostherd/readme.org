@@ -670,6 +670,15 @@ does.  They go to Telegram's servers, as the text does:
 =ghostherd-push-images= nil keeps them to the page.  An image that
 fails to send never sends the push again.
 
+An HTML report the words name (/HTML reports a reply names/, under the
+herd page) comes after them as the file itself --- two at most, each
+captioned with its title --- and never as a link: the page's address
+holds its secret, which must not sit on Telegram's servers, and a link
+of its own would open only on the tailnet, where the push's room button
+already leads to it.  The file opens anywhere, and tells Telegram no
+more than the report's words already do.  =ghostherd-push-reports= nil
+keeps them to the page; it is apart from the images'.
+
 The room's address in a push holds no secret: Telegram's servers keep
 what passes through them.  It asks the page's =/open/ghostherd=, which
 Emacs answers only for your Tailscale login, sending the browser on to
@@ -2367,6 +2376,55 @@ thread of its own: a phone reading it slowly does not hold
 Emacs (an 8 MB image to a reader of 2 MB/s held a key pressed meanwhile
 for 4.3 seconds; sent so, it was taken in 4 ms).
 
+*** HTML reports a reply names
+
+An agent that writes its report as an HTML page --- "the write-up is in
+/private/tmp/…/viewer-report.html" --- gets an /Open/ under the message,
+with the page's title, wherever the message is read (as for images,
+above; and Telegram gets the file, above).  Opened, it has a tab of its
+own; in Emacs's xwidget, a view of its own (=*xwidget-webkit: TITLE*=,
+the same one again for the same report).
+
+*Copied as an image is,* when the reply is recorded, under an id, in
+the same directory and kept as long: a path ending =.html= or =.htm=,
+to a regular file of yours (not a symlink, opened =O_NOFOLLOW=), 8 MB
+at most, that is HTML --- UTF-8, no NUL, opening (past blank space and
+comments) with a doctype or =<html>=.  A file named =.html= that is not
+is not copied; nor is one named =.png= that is HTML.
+
+*Read, never run.*  The copy is served by its id alone, as
+=/SECRET/.reports/<id>.html=, under its own policy
+(=xwapp-sandbox-policy=): =sandbox= --- no script of it runs, and its
+origin is none --- with nothing loaded but its own inline styles,
+Google's fonts and =data:= images.  It comes from the herd page's own
+origin, and the page can prompt and kill agents: a report that carried
+a =<script>= at the page's endpoints (fetch, XHR, a form, an image, a
+frame) reaches nothing.  So *only a page that stands alone shows
+whole*: a stylesheet, a script or a picture beside it on disk does not
+load --- embed them (=<style>=, =data:= images).  In the xwidget it is
+shown over loopback, as a browser gets it, so under the same policy:
+never as a =file:= URL, which would run its scripts with the run of
+your files.
+
+*** Docs
+
+The tab lists HTML documents to read here and on the phone without
+publishing them anywhere: ghostherd's own =docs/= (the checkout's ---
+straight's build has none), then each directory of
+=ghostherd-docs-directories=, newest first, by =<title>=, with the
+file, where it is, its size and age.  A name in two is the first's.
+Only a file right in one of them, named in letters, digits, =.=, =_=
+and =-= and ending =.html= to the letter --- not a symlink, 8 MB at
+most --- is listed or served, by that name alone:
+=/SECRET/.docs/NAME.html=, asked fresh each time (a doc you edit shows
+as edited), under the reports' policy above.  To the phone, through
+the tailnet for your login, as the page is.  A relative link to a
+sibling document works; one to anything else does not.
+
+#+begin_src emacs-lisp
+  (setq ghostherd-docs-directories '("~/notes/html/"))
+#+end_src
+
 ** The memory page
 
 =SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=
@@ -2639,7 +2697,12 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
   (setq ghostherd-reply-images-directory nil  ; replies/ in ghostherd-image-directory
         ghostherd-reply-images-keep-days 30
         ghostherd-reply-images-budget 512     ; MB
-        ghostherd-push-images t)
+        ghostherd-push-images t
+        ;; HTML reports, copied beside them: as files to Telegram too.
+        ghostherd-push-reports t)
+
+  ;; The herd page's Docs tab: your own HTML documents, after ghostherd's.
+  (setq ghostherd-docs-directories nil)
 
   ;; A handoff to a project with no lead starts one there; how many the
   ;; herd may have up that it started so.

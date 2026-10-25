@@ -2,7 +2,7 @@
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const SUITES = ["kit", "herd-inbox", "herd-inbox-layout", "herd-inbox-thread", "herd-threads", "herd-images", "herd-scroll", "herd-chips", "herd-forms", "herd-new", "herd-topbar", "herd-relay", "herd-handoff", "herd-primary", "herd-guard", "herd-changes", "herd-worktree-size", "herd-foot", "herd-copy", "herd-meter", "herd-order", "herd-subs", "herd-subview", "herd-earlier", "herd-log", "herd-chat", "herd-login", "herd-unsent", "herd-sleep", "herd-phone", "herd-scrollbar", "herd-memory", "herd-memory-sort", "herd-source", "apps-phone", "pr-local", "pr-review", "pr-range", "pr-pr-review", "pr-editors", "pr-reuse", "narrow", "cu-edit"];
+const SUITES = ["kit", "herd-inbox", "herd-inbox-layout", "herd-inbox-thread", "herd-threads", "herd-images", "herd-docs", "herd-docs-sandbox", "herd-scroll", "herd-chips", "herd-forms", "herd-new", "herd-topbar", "herd-relay", "herd-handoff", "herd-primary", "herd-guard", "herd-changes", "herd-worktree-size", "herd-foot", "herd-copy", "herd-meter", "herd-order", "herd-subs", "herd-subview", "herd-earlier", "herd-log", "herd-chat", "herd-login", "herd-unsent", "herd-sleep", "herd-phone", "herd-scrollbar", "herd-memory", "herd-memory-sort", "herd-source", "apps-phone", "pr-local", "pr-review", "pr-range", "pr-pr-review", "pr-editors", "pr-reuse", "narrow", "cu-edit"];
 const names = process.argv.length > 2 ? process.argv.slice(2) : SUITES;
 const failed = [];
 for (const name of names) {

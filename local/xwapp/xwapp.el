@@ -521,7 +521,8 @@ a page open in a browser tab is let go: an app has one page at a time."
 ;;                 until there are some, so one is always waiting.
 ;;   POST intent   one intent; the page sends them one at a time, so
 ;;                 they arrive in order.
-;;   GET .files/N  a file the app serves by name (`xwapp-serve-files').
+;;   GET .files/N  a file the app serves by name (`xwapp-serve-files');
+;;                 .SET/N one of another set it serves.
 ;;
 ;; Emacs writes only into a request the page has made.  A stream it
 ;; pushed into would block Emacs the moment a tab stopped reading it;
@@ -590,6 +591,8 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :asked    non-nil from `xwapp-browse' until a tab says hello: that tab
           is the one Emacs opened, and the app is ready for it
 :restored non-nil from a restart until its tab comes back, or does not
+:sets     the files it serves besides its page: (SET . HOW) each, as
+          `xwapp-serve-files' was told
 :hold :flush :gone :forget   its timers.")
 
 (defun xwapp--get (app key)
@@ -1024,8 +1027,8 @@ this machine, where any page in the browser could ask."
       (xwapp--next app proc page))
      ((and (equal method "POST") (equal rest '("intent")))
       (xwapp--intent app proc page body))
-     ((and (equal method "GET") (equal (car rest) ".files"))
-      (xwapp--served-file app proc (cdr rest)))
+     ((and (equal method "GET") (string-prefix-p "." (or (car rest) "")))
+      (xwapp--served-file app proc (cdr rest) (substring (car rest) 1)))
      ((equal method "GET") (xwapp--file app proc rest))
      (t (xwapp--respond proc 404)))))
 
@@ -1097,22 +1100,70 @@ a browser takes it for a file to download.  ASIDE: a response past
         (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file))
       (xwapp--respond proc 404))))
 
-;; Files an app serves besides its page: images an agent named, say.
+;; Files an app serves besides its page: images an agent named, say, or
+;; documents to read.
 
-(defun xwapp-serve-files (app dir regexp)
+(defconst xwapp-sandbox-policy
+  (concat "sandbox; default-src 'none'; "
+          "style-src 'unsafe-inline' https://fonts.googleapis.com; "
+          "font-src https://fonts.gstatic.com; img-src data:; "
+          "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+  "The Content-Security-Policy a document served :sandbox goes with.
+It comes from the page's own origin, under its secret, and the page can
+act for Emacs -- so a document must never run, nor reach the page.  No
+script of its runs (`sandbox' without allow-scripts), and its origin is
+none (without allow-same-origin): it is not the page's, so even a
+script that did run could ask the page's endpoints nothing as it.  It
+loads only what a document made to stand alone needs -- its own inline
+styles, Google's fonts, data: images -- and nothing from Emacs.  No
+form posts, no frame holds it.")
+
+(defun xwapp-serve-files (app dir regexp &rest how)
   "Serve APP's page the files in DIR whose names match REGEXP whole.
-DIR is a directory, or a function of no arguments giving one, asked
-each time.  A name is one segment, and only a regular file there --
-not a symlink -- is served.  In a browser at .files/NAME under the
-page's secret, as the page itself is, to whoever the page is served
-to; in the xwidget as a file: URL, its directory told to the page on
-its hello.  The page has both as XW.file(NAME).  Anyone the page is
-served to can ask for any name: make the names ones nobody guesses.
+DIR is a directory, a list of them, or a function of no arguments giving
+either, asked each time; a name is looked for in each in turn, and the
+first that has it serves it.  A name is one segment, and only a regular
+file there -- not a symlink -- is served.  In a browser at .files/NAME
+under the page's secret, as the page itself is, to whoever the page is
+served to; in the xwidget as a file: URL, its directory told to the
+page on its hello.  The page has both as XW.file(NAME).  Anyone the
+page is served to can ask for any name: make the names ones nobody
+guesses, or serve only what they may all read.
+
+HOW, keywords, makes a set of files served apart from those:
+  :as SET       its name.  The page asks for NAME at .SET/NAME, and has
+                it as XW.file(NAME, SET) -- in a browser alone: in the
+                xwidget it is not a file: URL, and `xwapp-show-file'
+                shows it.
+  :sandbox t    its files are documents, to be read and never run: each
+                goes with `xwapp-sandbox-policy'.
+  :max-bytes N  a file past N bytes is not served.
+  :exact t      NAME must be the file's own, to the letter: a file
+                system that ignores case (macOS's) would find it under
+                another.  Each request lists the directory -- not for a
+                big one, nor for names of one case, which need it not.
+  :fresh t      its files change under the same name (documents you
+                edit): the browser asks each time rather than keep one.
+
 Said again the same, it does nothing; anew, a page already open in the
-xwidget is told at once."
-  (unless (equal (xwapp--get app :files) (cons dir regexp))
-    (xwapp--put app :files (cons dir regexp))
-    (xwapp--tell-files app)))
+xwidget is told at once where the files of .files are."
+  (let ((set (or (plist-get how :as) "files"))
+        (spec (list :dir dir :regexp regexp
+                    :sandbox (and (plist-get how :sandbox) t)
+                    :max-bytes (plist-get how :max-bytes)
+                    :exact (and (plist-get how :exact) t)
+                    :fresh (and (plist-get how :fresh) t)))
+        (sets (xwapp--get app :sets)))
+    (unless (let ((case-fold-search nil)) (string-match-p "\\`[a-z][a-z0-9-]*\\'" set))
+      (error "xwapp: a set's name is a word in lower case, not %S" set))
+    (unless (equal (cdr (assoc set sets)) spec)
+      (xwapp--put app :sets (cons (cons set spec) (assoc-delete-all set (copy-sequence sets))))
+      (when (equal set "files")
+        (xwapp--tell-files app)))))
+
+(defun xwapp--set (app &optional set)
+  "How APP serves the files of SET, of .files by default, or nil."
+  (cdr (assoc (or set "files") (xwapp--get app :sets))))
 
 (defun xwapp--tell-files (app)
   "Tell APP's page in the xwidget, a page of file:, where the files it is
@@ -1124,33 +1175,97 @@ a browser asks for them by name, and is told nothing."
                       (base . ,(concat "file://" (mapconcat #'url-hexify-string
                                                             (split-string dir "/") "/")))))))
 
-(defun xwapp--files-dir (app)
-  "The directory APP serves files from (`xwapp-serve-files'), or nil."
-  (when-let* ((files (xwapp--get app :files))
-              (dir (if (functionp (car files)) (funcall (car files)) (car files))))
-    (file-name-as-directory (expand-file-name dir))))
+(defun xwapp--files-dirs (app &optional set)
+  "The directories APP serves the files of SET from (`xwapp-serve-files')."
+  (when-let* ((spec (xwapp--set app set))
+              (dir (plist-get spec :dir))
+              (dirs (if (functionp dir) (funcall dir) dir)))
+    (mapcar (lambda (d) (file-name-as-directory (expand-file-name d)))
+            (seq-filter #'stringp (ensure-list dirs)))))
 
-(defun xwapp--file-of (app name)
-  "The file APP serves as NAME (`xwapp-serve-files'), or nil."
-  (when-let* ((dir (xwapp--files-dir app))
+(defun xwapp--files-dir (app &optional set)
+  "The first directory APP serves the files of SET from, or nil:
+its one, for .files (`xwapp--tell-files')."
+  (car (xwapp--files-dirs app set)))
+
+(defun xwapp--file-of (app name &optional set)
+  "The file APP serves as NAME in SET, .files by default
+\(`xwapp-serve-files'), or nil."
+  (when-let* ((spec (xwapp--set app set))
               ((stringp name))
               ((let ((case-fold-search nil))
-                 (string-match-p (concat "\\`\\(?:" (cdr (xwapp--get app :files)) "\\)\\'") name)))
-              ((not (or (string-search "/" name) (member name '("." ".."))))))
-    (let ((file (expand-file-name name dir)))
-      (and (equal (file-name-directory file) dir)
-           (not (file-symlink-p file))
-           (file-regular-p file)
-           file))))
+                 (string-match-p (concat "\\`\\(?:" (plist-get spec :regexp) "\\)\\'") name)))
+              ((not (or (string-search "/" name) (string-search "\0" name)
+                        (member name '("." ".."))))))
+    (seq-some
+     (lambda (dir)
+       (let ((file (expand-file-name name dir))
+             (max (plist-get spec :max-bytes)))
+         (and (equal (file-name-directory file) dir)
+              (not (file-symlink-p file))
+              (file-regular-p file)
+              (or (not max)
+                  (<= (or (file-attribute-size (file-attributes file)) (1+ max)) max))
+              ;; By its own name, not one the file system takes for it.
+              (or (not (plist-get spec :exact))
+                  (directory-files dir nil (concat "\\`" (regexp-quote name) "\\'") t 1))
+              file)))
+     (xwapp--files-dirs app set))))
 
-(defun xwapp--served-file (app proc parts)
-  "Answer PROC with the file PARTS name among those APP serves.
-Its name never changes what it holds, so the browser keeps it."
+(defun xwapp--served-file (app proc parts &optional set)
+  "Answer PROC with the file PARTS name among those APP serves in SET.
+Its name never changes what it holds, so the browser keeps it -- unless
+the set is :fresh."
   (if-let* (((= (length parts) 1))
-            (file (xwapp--file-of app (car parts))))
+            (spec (xwapp--set app set))
+            (file (xwapp--file-of app (car parts) set)))
       (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file)
-                      '(("Cache-Control" . "private, max-age=604800, immutable")) t)
+                      (append
+                       (unless (plist-get spec :fresh)
+                         '(("Cache-Control" . "private, max-age=604800, immutable")))
+                       (when (plist-get spec :sandbox)
+                         `(("Content-Security-Policy" . ,xwapp-sandbox-policy))))
+                      t)
     (xwapp--respond proc 404)))
+
+(defun xwapp-file-url (app name &optional set)
+  "The address of the file APP serves as NAME in SET, for this machine's
+browser (`xwapp-serve-files').  It holds APP's secret."
+  (format "http://127.0.0.1:%d/%s/.%s/%s" (xwapp--port) (xwapp--secret app)
+          (or set "files") (url-hexify-string name)))
+
+(defvar xwapp--shown (make-hash-table :test 'equal)
+  "Address -> the buffer `xwapp-show-file' shows it in.")
+
+(defun xwapp-show-file (app name &optional set)
+  "Show the file APP serves as NAME in SET (`xwapp-serve-files') in a view
+of its own, from Emacs as a browser gets it: over loopback, under the
+page's secret, so with its set's headers -- a :sandbox document runs
+nothing here either.  Not as a file: URL, which would run a document's
+scripts with the run of your files.  In the web browser when
+`xwapp-browser', or when a page there asked; else in an xwidget of its
+own, the one it is in already if there is one."
+  (unless (xwapp--file-of app name set)
+    (user-error "xwapp: %s is not served" name))
+  (let ((url (xwapp-file-url app name set)))
+    (if (or xwapp-browser xwapp--from-browser)
+        (funcall xwapp-browse-function url)
+      (unless (featurep 'xwidget-internal)
+        (user-error "xwidget-webkit required. Rebuild Emacs with xwidgets"))
+      (require 'xwidget)
+      (let* ((buf (gethash url xwapp--shown))
+             (xw (and (buffer-live-p buf)
+                      (car (ignore-errors (get-buffer-xwidgets buf))))))
+        (if (and xw (xwidget-live-p xw))
+            (progn (pop-to-buffer buf)
+                   ;; Afresh, and at it: a link in it may have led elsewhere.
+                   (xwidget-webkit-goto-uri xw url))
+          (setq buf (xwidget-webkit--create-new-session-buffer url))
+          (pop-to-buffer buf)
+          ;; Named for the file until its title comes.
+          (rename-buffer (format "*%s*" name) t)
+          (xwidget-webkit-goto-uri (xwidget-webkit-last-session) url)
+          (puthash url buf xwapp--shown))))))
 
 ;; The page's life
 

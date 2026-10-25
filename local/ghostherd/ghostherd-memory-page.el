@@ -100,16 +100,63 @@
 its id, and the copy's extension or `.t.jpg' for its thumbnail.  Nothing
 else in `ghostherd-reply-images-directory' is served -- not its index.")
 
-(defun ghostherd-memory-page--serve-images ()
-  "Serve the page the images agents' replies name: by their names alone,
-with the page's own checks -- to the browser under its secret, to the
-xwidget as files.  Said on load, and again on each of the page's
-intents, so a reload of this file (which runs no top-level call) still
-serves them; saying it again costs nothing."
-  (xwapp-serve-files ghostherd-memory-page--app #'ghostherd-memory--reply-images-directory
-                     ghostherd-memory-page--image-name))
+(defcustom ghostherd-docs-directories nil
+  "Directories of your own HTML documents for the herd page's Docs tab,
+after ghostherd's own docs/.  Each .html file right in one -- its name
+of letters, digits, `.', `_' and `-' -- is listed by its <title>, and
+opens in a tab of its own (in Emacs, a view of its own) to be read,
+never run: no script of it runs, and it loads nothing but its own
+styles, Google's fonts and data: images (`xwapp-sandbox-policy') -- so a
+page made to stand alone reads best, and a stylesheet or picture beside
+it on disk does not show.  It is served as the page is: to this
+machine's browser under the page's secret, to your phone through the
+tailnet for `xwapp-remote-users'.  A name in two is the first's."
+  :type '(repeat directory)
+  :group 'ghostherd-memory-page)
 
-(ghostherd-memory-page--serve-images)
+(defconst ghostherd-memory-page--doc-name "[A-Za-z0-9][A-Za-z0-9._-]*\\.html"
+  "The name of a document the Docs tab lists: one segment, .html to the letter.")
+
+(defconst ghostherd-memory-page--report-name "[0-9a-f]\\{32\\}\\.html"
+  "The name of an HTML report the sidecar copied from a reply: its id and .html.")
+
+(defconst ghostherd-memory-page--doc-max-bytes (* 8 1024 1024)
+  "Bytes past which a document or a report is not served: the sidecar's
+cap on a report it copies (server/images.py MAX_HTML_BYTES).")
+
+(defun ghostherd-memory-page--own-docs ()
+  "ghostherd's own docs/: beside the checkout's ghostherd-memory-page.el,
+which straight's build links to -- the build has no docs/ of its own."
+  (let ((el (expand-file-name "ghostherd-memory-page.el" ghostherd-memory-page--dir)))
+    (expand-file-name "docs/" (file-name-directory (if (file-exists-p el) (file-truename el) el)))))
+
+(defun ghostherd-memory-page--docs-dirs ()
+  "Where the Docs tab's documents are: ghostherd's, then yours."
+  (cons (ghostherd-memory-page--own-docs)
+        (mapcar (lambda (d) (file-name-as-directory (expand-file-name d)))
+                (seq-filter #'stringp ghostherd-docs-directories))))
+
+(defun ghostherd-memory-page--serve-files ()
+  "Serve the page what it shows besides itself, by name alone, with the
+page's own checks -- to the browser under its secret, to the phone for
+your tailnet login alone: the images agents' replies name (to the
+xwidget as files); the Docs tab's documents; the HTML reports replies
+name.  Those two are documents to read, never to run: sandboxed
+\(`xwapp-sandbox-policy'), and in the xwidget shown over loopback
+\(`xwapp-show-file'), never as files.  Said on load, and again on each
+of the page's intents, so a reload of this file (which runs no
+top-level call) still serves them; saying it again costs nothing."
+  (let ((app ghostherd-memory-page--app))
+    (xwapp-serve-files app #'ghostherd-memory--reply-images-directory
+                       ghostherd-memory-page--image-name)
+    (xwapp-serve-files app #'ghostherd-memory-page--docs-dirs ghostherd-memory-page--doc-name
+                       :as "docs" :sandbox t :exact t :fresh t
+                       :max-bytes ghostherd-memory-page--doc-max-bytes)
+    (xwapp-serve-files app #'ghostherd-memory--reply-images-directory
+                       ghostherd-memory-page--report-name
+                       :as "reports" :sandbox t :max-bytes ghostherd-memory-page--doc-max-bytes)))
+
+(ghostherd-memory-page--serve-files)
 
 
 ;;; Helpers
@@ -2303,24 +2350,104 @@ seen, as it is when its buffer is in front of you."
 
 (defun ghostherd-memory-page--images (v)
   "The images V, a sidecar reply's list, as the page takes them: only
-those whose id and extension are a copy's, field by field; nil for none."
+those whose id and extension are a copy's, field by field; nil for none.
+An HTML report a reply named comes among them, with its title."
   (when-let* ((ok (seq-filter
                    (lambda (im)
                      (and (consp im)
                           (stringp (plist-get im :id))
                           (let ((case-fold-search nil))
                             (string-match-p "\\`[0-9a-f]\\{32\\}\\'" (plist-get im :id)))
-                          (member (plist-get im :ext) '("png" "jpg" "gif" "webp"))))
+                          (member (plist-get im :ext) '("png" "jpg" "gif" "webp" "html"))))
                    (and (listp v) v))))
     (vconcat
      (mapcar (lambda (im)
-               (list :id (plist-get im :id)
-                     :ext (plist-get im :ext)
-                     :name (or (ghostherd-memory-page--str (plist-get im :name)) "image")
-                     :w (and (natnump (plist-get im :w)) (plist-get im :w))
-                     :h (and (natnump (plist-get im :h)) (plist-get im :h))
-                     :thumb (if (plist-get im :thumb) t :json-false)))
+               (if (equal (plist-get im :ext) "html")
+                   (list :id (plist-get im :id)
+                         :ext "html"
+                         :name (or (ghostherd-memory-page--str (plist-get im :name)) "report.html")
+                         :title (or (ghostherd-memory-page--str (plist-get im :title)) ""))
+                 (list :id (plist-get im :id)
+                       :ext (plist-get im :ext)
+                       :name (or (ghostherd-memory-page--str (plist-get im :name)) "image")
+                       :w (and (natnump (plist-get im :w)) (plist-get im :w))
+                       :h (and (natnump (plist-get im :h)) (plist-get im :h))
+                       :thumb (if (plist-get im :thumb) t :json-false))))
              ok))))
+
+;;; The Docs tab
+;;
+;; HTML documents to read on the phone without publishing them anywhere:
+;; ghostherd's docs/ and `ghostherd-docs-directories', listed by title,
+;; each served by its name alone (`ghostherd-memory-page--serve-files').
+;; The list is read when the tab asks -- a few small files' heads.
+
+(defun ghostherd-memory-page--unescape (s)
+  "S with the character references a <title> may hold read."
+  (replace-regexp-in-string
+   "&\\(#x[0-9a-fA-F]+\\|#[0-9]+\\|amp\\|lt\\|gt\\|quot\\|apos\\|nbsp\\);"
+   (lambda (m)
+     (let ((ref (match-string 1 m)))
+       (pcase ref
+         ("amp" "&") ("lt" "<") ("gt" ">") ("quot" "\"") ("apos" "'") ("nbsp" " ")
+         (_ (let ((c (if (string-prefix-p "#x" ref)
+                         (string-to-number (substring ref 2) 16)
+                       (string-to-number (substring ref 1)))))
+              (if (and (< 0 c #x110000) (not (<= #xD800 c #xDFFF))) (string c) m))))))
+   s t t))
+
+(defun ghostherd-memory-page--doc-title (file)
+  "The <title> of FILE, an HTML document, on one line; nil for none.
+Only its head is read."
+  (with-temp-buffer
+    (let ((coding-system-for-read 'utf-8))
+      (insert-file-contents file nil 0 16384))
+    (goto-char (point-min))
+    (let ((case-fold-search t))
+      (when (re-search-forward "<title\\(?:[ \t\n][^>]*\\)?>\\([^<]*\\)</title" nil t)
+        (let ((title (string-trim (replace-regexp-in-string
+                                   "[ \t\n\r]+" " "
+                                   (ghostherd-memory-page--unescape (match-string 1))))))
+          (unless (string-empty-p title)
+            (substring title 0 (min 200 (length title)))))))))
+
+(defun ghostherd-memory-page--docs ()
+  "The documents the Docs tab lists, newest first: each name the page is
+served (`ghostherd-memory-page--serve-files'), as the file that serves
+it -- the first directory's -- with its title, where it is, its size and
+when it changed."
+  (let ((own (ghostherd-memory-page--own-docs))
+        seen out)
+    (dolist (dir (ghostherd-memory-page--docs-dirs))
+      (when (file-directory-p dir)
+        (dolist (name (directory-files dir nil (concat "\\`" ghostherd-memory-page--doc-name "\\'") t))
+          (unless (member name seen)
+            (push name seen)
+            (when-let* ((file (xwapp--file-of ghostherd-memory-page--app name "docs"))
+                        (a (file-attributes file)))
+              (push (list :name name
+                          :title (or (ignore-errors (ghostherd-memory-page--doc-title file))
+                                     (file-name-sans-extension name))
+                          :where (let ((d (file-name-directory file)))
+                                   (if (equal d own) "ghostherd" (abbreviate-file-name d)))
+                          :bytes (file-attribute-size a)
+                          :mtime (float-time (file-attribute-modification-time a)))
+                    out))))))
+    (sort out (lambda (a b) (> (plist-get a :mtime) (plist-get b :mtime))))))
+
+(defun ghostherd-memory-page--send-docs ()
+  "Give the page the Docs tab's list."
+  (ghostherd-memory-page--js "renderDocs" (list :docs (vconcat (ghostherd-memory-page--docs)))))
+
+(defun ghostherd-memory-page--doc-open (intent)
+  "Show the document INTENT names -- one of the Docs (set \"docs\") or a
+report a reply named (\"reports\") -- in a view of its own, sandboxed as
+in a browser (`xwapp-show-file').  The xwidget's page asks: in a browser
+the page opens it itself, a link under its secret."
+  (let ((set (alist-get 'set intent))
+        (name (alist-get 'name intent)))
+    (when (and (member set '("docs" "reports")) (stringp name))
+      (xwapp-show-file ghostherd-memory-page--app name set))))
 
 (defun ghostherd-memory-page--room-entry (e)
   "Conversation entry E, from the sidecar, as the page takes it.
@@ -3415,7 +3542,7 @@ user's state (or none) and push."
 
 (defun ghostherd-memory-page--handle (intent)
   "Dispatch INTENT from the page.  Errors are shown there, not lost."
-  (ghostherd-memory-page--serve-images)
+  (ghostherd-memory-page--serve-files)
   (condition-case e
       (pcase (alist-get 'op intent)
         ("ready" (ghostherd-memory-page--ready))
@@ -3479,6 +3606,8 @@ user's state (or none) and push."
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))
         ("paste" (ghostherd-memory-page-paste))
+        ("docs" (ghostherd-memory-page--send-docs))
+        ("doc-open" (ghostherd-memory-page--doc-open intent))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))
         ("copy"

@@ -1120,7 +1120,7 @@ a directory; not without the secret, nor to another host."
     ;; Only GET.
     (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app (concat ".files/" file)) "x")) 404))
     ;; An app that serves none.
-    (xwapp--put app :files nil)
+    (xwapp--put app :sets nil)
     (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" file)))) 404))))
 
 (ert-deftest xwapp-test-browser-an-apps-files-on-other-devices ()
@@ -1203,6 +1203,162 @@ reaches them by name under its secret, it is told nothing."
         (should-not intents)))
     (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
     (should-not (xwapp--get app :outbox))))
+
+;;; Documents: a set served apart, to be read and never run
+
+(defmacro xwapp-test--documents (&rest body)
+  "BODY in `xwapp-test--with-browser', its app serving as `docs' the
+.html files of two directories, `one' and `two' (`xwapp-serve-files'),
+sandboxed, by their exact names, `cap' bytes at most; and beside them
+what must not be served."
+  (declare (indent 0))
+  `(xwapp-test--with-browser
+     (let* ((one (file-name-as-directory (expand-file-name "docs" root)))
+            (two (file-name-as-directory (expand-file-name "more docs" root)))
+            (cap 4096)
+            (doc (lambda (dir name text)
+                   (make-directory dir t)
+                   (with-temp-file (expand-file-name name dir) (insert text)))))
+       (funcall doc one "guide.html" "<!doctype html><title>One</title>")
+       (funcall doc one "notes.txt" "notes")
+       (funcall doc one "big.html" (make-string (1+ cap) ?x))
+       (funcall doc two "guide.html" "<title>Two's, shadowed</title>")
+       (funcall doc two "other.html" "<title>Two</title><script>evil()</script>")
+       ;; Outside both, and a symlink to it in one of them.
+       (funcall doc root "secret.html" "<title>Not listed</title>")
+       (make-symbolic-link (expand-file-name "secret.html" root) (expand-file-name "link.html" one))
+       (make-directory (expand-file-name "dir.html" one))
+       (xwapp-serve-files app (lambda () (list one two)) "[A-Za-z0-9][A-Za-z0-9._-]*\\.html"
+                          :as "docs" :sandbox t :exact t :max-bytes cap :fresh t)
+       ,@body)))
+
+(defun xwapp-test--header (raw name)
+  "The value of header NAME in RAW, a whole response, or nil."
+  (let ((head (substring raw 0 (or (string-search "\r\n\r\n" raw) (length raw)))))
+    (when (string-match (concat "\r\n" (regexp-quote name) ": \\([^\r]*\\)") head)
+      (match-string 1 head))))
+
+(ert-deftest xwapp-test-documents-served-sandboxed ()
+  "A document of a :sandbox set goes with `xwapp-sandbox-policy' -- no
+script, an origin of none, nothing loaded but inline styles, Google's
+fonts and data: images -- under the page's secret, fresh each time; the
+first directory that has a name serves it.  The policy says exactly that."
+  (xwapp-test--documents
+    (let ((raw (xwapp-test--raw (xwapp-test--at app ".docs/guide.html"))))
+      (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+      (should (string-suffix-p "\r\n\r\n<!doctype html><title>One</title>" raw))
+      (should (equal (xwapp-test--header raw "Content-Type") "text/html; charset=utf-8"))
+      (should (equal (xwapp-test--header raw "Content-Security-Policy") xwapp-sandbox-policy))
+      (should (equal (xwapp-test--header raw "Cache-Control") "no-store"))
+      (should (equal (xwapp-test--header raw "X-Content-Type-Options") "nosniff"))
+      (should (equal (xwapp-test--header raw "Referrer-Policy") "no-referrer")))
+    (let ((raw (xwapp-test--raw (xwapp-test--at app ".docs/other.html"))))
+      (should (string-suffix-p "<script>evil()</script>" raw))
+      (should (equal (xwapp-test--header raw "Content-Security-Policy") xwapp-sandbox-policy)))
+    (let ((policy (mapcar #'string-trim (split-string xwapp-sandbox-policy ";"))))
+      ;; sandbox alone: no allow-scripts, no allow-same-origin, nothing allowed.
+      (should (member "sandbox" policy))
+      (should-not (string-match-p "allow-" xwapp-sandbox-policy))
+      (should (member "default-src 'none'" policy))
+      (should (member "img-src data:" policy))
+      (should (member "form-action 'none'" policy))
+      (should-not (string-match-p "'self'\\|script-src\\|connect-src\\|\\*" xwapp-sandbox-policy)))
+    ;; The page's own files and its first set go as before: no policy.
+    (should-not (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "app/ui/index.html"))
+                                    "Content-Security-Policy"))))
+
+(ert-deftest xwapp-test-documents-refused ()
+  "Nothing but a listed directory's own document, by its own name: not
+another case of it, a name the set does not take (not .html), one past
+the cap, a symlink, a directory, a name that climbs out or holds a slash
+-- to a file in no listed directory -- a name no file has; not in a set
+the app does not serve; not without the secret, under another's, or to
+another host; only GET."
+  (xwapp-test--documents
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app ".docs/other.html"))) 200))
+    (dolist (name (list "Guide.html" "GUIDE.HTML" "guide.HTML" "guide.htm"     ; another case, another name
+                        "notes.txt" "big.html" "link.html" "dir.html"
+                        "secret.html" "..%2Fsecret.html" "%2E%2E/secret.html" "../secret.html"
+                        "..%2F..%2Fsecret.html" "guide.html/x" "a%00.html" "~/secret.html"
+                        "missing.html" ".html" "-x.html" ".." "."))
+      (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app (concat ".docs/" name)))) 404)))
+    ;; The same file system's other case, asked for straight.
+    (should-not (xwapp--file-of app "Guide.html" "docs"))
+    (should (equal (xwapp--file-of app "guide.html" "docs") (expand-file-name "guide.html" one)))
+    (should (equal (xwapp--file-of app "other.html" "docs") (expand-file-name "other.html" two)))
+    ;; Not a set the app serves, nor its first set by another's name.
+    (dolist (path (list ".nope/guide.html" ".files/guide.html" ".DOCS/guide.html" ".docs" ".docs/"))
+      (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app path))) 404)))
+    (dolist (path (list "/.docs/guide.html"
+                        (concat "/" (make-string 32 ?0) "/.docs/guide.html")
+                        (xwapp-test--at app "app/.docs/guide.html")))
+      (should (equal (car (xwapp-test--do "GET" path)) 404)))
+    (should (equal (car (xwapp-test--do "GET" (xwapp-test--at app ".docs/guide.html") nil
+                                        '(("Host" . "evil.example"))))
+                   404))
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app ".docs/guide.html") "x")) 404))
+    ;; A set's name is a word: one that could climb is refused outright.
+    (should-error (xwapp-serve-files app one "x" :as "../x"))
+    (should-error (xwapp-serve-files app one "x" :as "Docs"))))
+
+(ert-deftest xwapp-test-documents-on-other-devices ()
+  "Through the proxy a document goes where the page does -- sandboxed
+there too -- to one of `xwapp-remote-users', and to no one else: not
+without the login, not for another's, and the proxy's headers on
+loopback are no proof."
+  (xwapp-test--documents
+    (let ((xwapp-remote-hosts (list xwapp-test--box))
+          (xwapp-remote-users (list "me@example.com"))
+          (path (xwapp-test--at app ".docs/guide.html")))
+      (xwapp-test--proxy-up)
+      (let ((raw (xwapp-test--raw path (xwapp-test--from-box "me@example.com") 'proxy)))
+        (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+        (should (equal (xwapp-test--header raw "Content-Security-Policy") xwapp-sandbox-policy)))
+      (dolist (h (list (xwapp-test--from-box nil) (xwapp-test--from-box "someone@else.com")
+                       (xwapp-test--from-box "me@example.com" "https://evil.example")))
+        (should (equal (car (xwapp-test--do "GET" path nil h 'proxy)) 404)))
+      (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com"))) 404)))))
+
+(ert-deftest xwapp-test-documents-in-the-xwidget ()
+  "In the xwidget a document is never a file: URL.  The page is told
+where its first set's files are, never another's; the kit gives none for
+one; and Emacs shows one over loopback, under the secret, so with its
+policy -- in the browser when that is where pages go."
+  (xwapp-test--documents
+    (let ((dir (file-name-as-directory (expand-file-name "files" root)))
+          scripts title browsed)
+      (make-directory dir t)
+      (xwapp-serve-files app dir "x")
+      (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+                ((symbol-function 'xwidget-webkit-title) (lambda (_) title))
+                ((symbol-function 'xwidget-webkit-execute-script)
+                 (lambda (_xw s) (push s scripts))))
+        (setq title "t:{\"op\":\"xwapp-hello\",\"n\":1}" scripts nil)
+        (xwapp--poll app)
+        (let ((told (seq-filter (lambda (s) (string-match-p "XW\\.kit" s)) scripts)))
+          (should (= (length told) 1))
+          (should (string-match-p (regexp-quote (concat "file://" dir)) (car told)))
+          (should-not (string-match-p "docs" (car told)))))
+      (let ((xwapp-browser t)
+            (xwapp-browse-function (lambda (url) (push url browsed))))
+        (xwapp-show-file app "guide.html" "docs")
+        (should (equal browsed (list (format "http://127.0.0.1:%d/%s/.docs/guide.html"
+                                             (process-contact xwapp--server :service)
+                                             (xwapp--secret app)))))
+        (should (equal (xwapp-file-url app "guide.html" "docs") (car browsed)))
+        ;; What the set does not serve is shown nowhere.
+        (dolist (name '("link.html" "secret.html" "../secret.html" "Guide.html"))
+          (should-error (xwapp-show-file app name "docs") :type 'user-error))
+        (should (= (length browsed) 1)))
+      ;; And it is that address that serves it, sandboxed.
+      (let ((raw (xwapp-test--raw (substring (xwapp-file-url app "guide.html" "docs")
+                                             (length (format "http://127.0.0.1:%d"
+                                                             (process-contact xwapp--server :service)))))))
+        (should (equal (xwapp-test--header raw "Content-Security-Policy") xwapp-sandbox-policy)))
+      ;; Without xwidgets, an error -- never a file: URL in some browser.
+      (unless (featurep 'xwidget-internal)
+        (let ((xwapp-browser nil))
+          (should-error (xwapp-show-file app "guide.html" "docs") :type 'user-error))))))
 
 (provide 'xwapp-tests)
 ;;; xwapp-tests.el ends here

@@ -25,10 +25,14 @@ async function until(pred, ms = 8000) {
 }
 const log = () => { try { return fs.readFileSync(path.join(E, "log.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse).map((e) => e.what); } catch (_) { return []; } };
 
-async function start() {
+// OPTS.el: the Emacs to start, apps.el by default; OPTS.desk: this
+// machine's browser reaches Emacs's loopback port straight, as it does.
+async function start(opts) {
+  opts = opts || {};
   const run = E = fs.mkdtempSync(path.join(os.tmpdir(), "xwapp-e2e-"));
+  if (opts.setup) opts.setup(run);
   const port = await freePort();
-  const emacs = spawn(EMACS, ["-Q", "--batch", "-l", path.join(__dirname, "apps.el")],
+  const emacs = spawn(EMACS, ["-Q", "--batch", "-l", path.join(__dirname, opts.el || "apps.el")],
     { env: Object.assign({}, process.env, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL }), stdio: ["ignore", "ignore", "pipe"] });
   let err = "";
   emacs.stderr.on("data", (d) => { err += d; });
@@ -60,7 +64,8 @@ async function start() {
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
   // No browser -- not installed, say -- and nothing is left running.
-  const browser = await webkit.launch({ proxy: { server: "http://127.0.0.1:" + proxy.address().port } }).catch((e) => {
+  const browser = await webkit.launch({ proxy: Object.assign({ server: "http://127.0.0.1:" + proxy.address().port },
+                                                           opts.desk ? { bypass: "127.0.0.1" } : {}) }).catch((e) => {
     proxy.close();
     emacs.kill();
     throw e;
@@ -73,7 +78,7 @@ async function start() {
     if (process.env.KEEP) console.log("kept " + run);
     else fs.rmSync(run, { recursive: true, force: true });
   };
-  return { browser, urls, away, stop, secretOf: (app) => urls[app].split("/")[3] };
+  return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3] };
 }
 
 function watch(page, errors) {
