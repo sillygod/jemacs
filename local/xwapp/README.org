@@ -48,12 +48,14 @@ same =emit=.
 Emacs serves the page on 127.0.0.1, at a port of its choosing, under a
 secret per app that only the tab knows: =/SECRET/<pkg>/ui/index.html=,
 and the kit as =/SECRET/xwapp/ui/…=, as the page reaches it from the
-xwidget.  Nothing else is served, and a request naming another host,
-or from another site's page, gets nothing.
+xwidget --- and the files the app serves by name, if any (below).
+Nothing else is served, and a request naming another host, or from
+another site's page, gets nothing.
 
 | =POST hello=  | the page has loaded: it is the app's page now            |
 | =GET next=    | Emacs's calls as a JSON array, held until there are some |
 | =POST intent= | one intent; the page sends them one at a time, in order  |
+| =GET .files/NAME= | a file the app serves by name (below), if it serves any |
 
 - *Emacs never writes to a tab that has not asked.*  A stream pushed
   to the page would block Emacs in =process-send-string= the moment a
@@ -75,6 +77,36 @@ or from another site's page, gets nothing.
 - The tab tells Emacs whether it is visible and focused, for
   =xwapp-seen-p=.  An intent arrives on the next turn, from a timer, as
   the title's does.
+
+
+** Files an app serves by name
+
+A page shows what Emacs keeps outside it --- ghostherd's, the images an
+agent's reply named.  =(xwapp-serve-files app DIR REGEXP)= serves the
+page the files in DIR (or a function giving it, asked each time) whose
+names REGEXP matches whole, case and all: one segment, a regular file,
+not a symlink.  The page has each as =XW.file(NAME)=:
+
+- in a browser, =/SECRET/.files/NAME=: under the page's secret, to whom
+  the page is served (here, or one of =xwapp-remote-users= through the
+  proxy), and nobody else; GET only.  A name's file never changes, so
+  it goes =private, max-age=604800, immutable=.  A dot segment is never
+  one of the page's files, so the route takes no name from them.
+- in the xwidget, a page of =file:=, as a =file:= URL: Emacs says the
+  directory in answer to the page's hello, and the page draws again on
+  the =xw-files= event (=XW.file= is "" until then).  Its CSP must have
+  =img-src file:= --- and ='self'= for the browser.
+
+Anyone the page is served to can ask for any name: make the names ones
+nobody guesses.  Nothing here takes a path.
+
+A file of more than 256 KB (=xwapp--send-aside=) goes from a Lisp
+thread of its own.  =process-send-string= returns once the last byte is
+in the socket, and a phone on a slow link reads slowly: an 8 MB file to
+a reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
+waiting 4.3 of them; from a thread, which waits on the socket with
+Emacs free, the key was taken in 4 ms.  The page itself and its calls
+are still sent as before.
 
 ** A tab that comes back
 
@@ -213,7 +245,8 @@ What the pages share on the browser side, so it is fixed once:
 |------------------------+------------------------------------------------------|
 | =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
 |                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=,       |
-|                        | =XW.open(url, name)=; the QR code for your phone     |
+|                        | =XW.open(url, name)=, =XW.file(name)=; the QR code   |
+|                        | for your phone                                       |
 | =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
 | =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
 | =vendor/qrcode.js=     | qrcode-generator 1.4.4 (identical to npm's), loaded |
