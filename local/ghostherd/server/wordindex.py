@@ -79,6 +79,8 @@ class WordIndex:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # The log back to 8 MB after each checkpoint: a build grew it to 40.
+        self._conn.execute("PRAGMA journal_size_limit=8388608")
         self._conn.executescript(SCHEMA)
         self._conn.commit()
 

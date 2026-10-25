@@ -37,3 +37,22 @@ def test_load_passes_the_capped_count_to_both_models(monkeypatch):
     assert captured["dense"] == emb._thread_count(0) <= 2
     assert captured["sparse"] == captured["dense"]
     assert e.dim == 3                                 # from the probe vector
+
+
+def test_the_models_run_without_onnx_runtimes_arena(monkeypatch):
+    """ONNX Runtime's arena kept what the biggest batch asked for, and grew:
+    the sidecar's 10 GB (ask 18e8b5dd).  Every dense model is made without
+    it, and a batch is 16 chunks."""
+    import fastembed
+
+    made = []
+
+    class _Model:
+        def __init__(self, model_name, threads, **kw):
+            made.append(kw)
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", _Model)
+    emb._make_text_embedding("m", 2, None)
+    emb._make_text_embedding("m", 2, ["CPUExecutionProvider"])
+    assert made and all(kw.get("enable_cpu_mem_arena") is False for kw in made)
+    assert Config().embed_batch == 16

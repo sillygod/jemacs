@@ -152,21 +152,30 @@ def _onnx_providers(choice: str) -> list[str] | None:
     return None
 
 
+# ONNX Runtime's CPU memory arena keeps the most any run asked for, and
+# asks for more as batches change shape: one import's batch of 256 long
+# chunks left the sidecar 3.1 GB bigger, a second 5.2 GB -- the 10 GB it
+# reached in a day.  Without it a run's memory is given back when it ends:
+# 7-23 MB kept, at the same speed (measured on bge-small-zh, ask 18e8b5dd).
+ARENA = False
+
+
 def _make_text_embedding(model: str, threads: int, providers: list[str] | None):
     from fastembed import TextEmbedding
 
     if not providers:
-        return TextEmbedding(model_name=model, threads=threads)
+        return TextEmbedding(model_name=model, threads=threads, enable_cpu_mem_arena=ARENA)
     try:
         return TextEmbedding(
-            model_name=model, threads=threads, providers=providers
+            model_name=model, threads=threads, providers=providers,
+            enable_cpu_mem_arena=ARENA,
         )
     except Exception as exc:  # noqa: BLE001 — CoreML rejects some graphs
         print(
             f"[ghostherd-memory] {providers[0]} failed ({exc}); CPU only",
             flush=True,
         )
-        return TextEmbedding(model_name=model, threads=threads)
+        return TextEmbedding(model_name=model, threads=threads, enable_cpu_mem_arena=ARENA)
 
 
 def _fake_dense(text: str) -> list[float]:

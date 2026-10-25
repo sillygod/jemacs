@@ -42,7 +42,10 @@ class Config:
     tool_truncate: int = 1500
     # json.loads of a 1MB tool-result line is CPU with nothing to search.
     max_line_bytes: int = 262144
-    embed_batch: int = 256
+    # Chunks per model call.  A batch's working memory grows with its size
+    # and length squared: 256 chunks of 512 tokens took 2 GB at once (3-5 GB
+    # kept, with ONNX Runtime's arena; embedder.ARENA), 16 take 215 MB, as fast.
+    embed_batch: int = 16
     embed_threads: int = 0  # 0 = two at most, one core left (embedder._thread_count)
     # auto: CPU.  coreml: CoreML on macOS where the session accepts it --
     # it takes 6 of bge-small-zh's 40 nodes, and is the slower for it.
@@ -122,7 +125,7 @@ class Config:
             overlap=int(os.getenv("GHOSTHERD_MEMORY_OVERLAP", "120")),
             tool_truncate=int(os.getenv("GHOSTHERD_MEMORY_TOOL_TRUNCATE", "1500")),
             max_line_bytes=int(os.getenv("GHOSTHERD_MEMORY_MAX_LINE", "262144")),
-            embed_batch=int(os.getenv("GHOSTHERD_MEMORY_EMBED_BATCH", "256")),
+            embed_batch=int(os.getenv("GHOSTHERD_MEMORY_EMBED_BATCH", "16")),
             embed_threads=int(os.getenv("GHOSTHERD_MEMORY_THREADS", "0")),
             onnx_provider=os.getenv("GHOSTHERD_MEMORY_ONNX", "auto"),
             index_tools=os.getenv("GHOSTHERD_MEMORY_INDEX_TOOLS", "").lower()

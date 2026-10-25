@@ -46,6 +46,54 @@ SPARSE = SparseVectorParams(modifier=Modifier.IDF)
 WIDE = 5000
 
 
+# The qdrant-client releases whose loader `_lean_load' was measured on and
+# replaces; another keeps its own (and the memory it costs).
+LEAN_LOAD_FOR = ("1.19.",)
+
+
+def _lean_load() -> bool:
+    """Have embedded Qdrant read the stored points as a stream, each chunk's
+    dense vector as float32 as it comes.  Its own loader reads every row at
+    once (800 MB of pickles for 85k chunks) and keeps each vector as a list
+    of Python floats until all are read -- 1.4 GB of them -- then one
+    float64 matrix: 2.4 GB of footprint the process never gave back.  This
+    way 0.8 GB, a float32 matrix (half the float64 one), and the same
+    search to 1e-7 (ask 18e8b5dd).  Only how points are held in memory
+    changes, never what is on disk.  Whether it is in place."""
+    import pickle
+    from importlib.metadata import version
+
+    import numpy as np
+    from qdrant_client.local import persistence
+
+    cls = persistence.CollectionPersistence
+    if getattr(cls.load, "lean", False):
+        return True
+    if not version("qdrant-client").startswith(LEAN_LOAD_FOR):
+        print("[ghostherd-memory] qdrant-client is not one the lean load was made for; "
+              "loading as it does", flush=True)
+        return False
+
+    def load(self):
+        cursor = self.storage.cursor()
+        cursor.execute("SELECT point FROM points")
+        while True:
+            rows = cursor.fetchmany(512)
+            if not rows:
+                return
+            for (blob,) in rows:
+                point = pickle.loads(blob)
+                if isinstance(point.vector, dict):
+                    for name, vec in point.vector.items():
+                        if isinstance(vec, list):
+                            point.vector[name] = np.asarray(vec, dtype=np.float32)
+                yield point
+
+    load.lean = True
+    cls.load = load
+    return True
+
+
 def point_id(source_path: str, chunk_index: int) -> str:
     return str(uuid.uuid5(NAMESPACE, f"{source_path}:{chunk_index}"))
 
@@ -118,6 +166,7 @@ class Store:
         in step by every write here."""
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
+        _lean_load()
         self.client = QdrantClient(path=str(self.path))
         self._ready_dim: int | None = None
         # Every call into `client' holds this -- here, and in fact_index,
