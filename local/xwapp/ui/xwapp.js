@@ -20,6 +20,8 @@
  *   XW.file(name)        the URL of a file Emacs serves the page by name
  *                        (xwapp-serve-files); "" in the xwidget until Emacs
  *                        has said where, when "xw-files" fires on document
+ *   XW.file(name, set)   one of another set Emacs serves; "" in the xwidget,
+ *                        where Emacs shows it (xwapp-show-file)
  *
  * An element with data-xw-phone is the page's button for "open it on
  * your phone": shown once Emacs says the page can be reached there,
@@ -405,10 +407,15 @@
   //
   // In a browser under the page's secret, as the page itself is; in the
   // xwidget, a page of file:, from their directory, which Emacs says in
-  // answer to the hello.
+  // answer to the hello.  Another set's are reached in a browser alone:
+  // a document served to be read, not run, would run as a file:.
 
   let filesBase = BROWSER ? ROOT + ".files/" : "";
-  function file(name) {
+  function file(name, set) {
+    if (set !== undefined && set !== "files") {
+      return BROWSER && /^[a-z][a-z0-9-]*$/.test(String(set))
+        ? ROOT + "." + set + "/" + encodeURIComponent(String(name)) : "";
+    }
     return filesBase ? filesBase + encodeURIComponent(String(name)) : "";
   }
 
