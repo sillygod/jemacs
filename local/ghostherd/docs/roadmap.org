@@ -2321,12 +2321,11 @@ the CPU (see =lexical.py=).
 
 ** What is left
 
-- [ ] Search is slower: 0.42 s -> 0.61 s (median, fused).  Embedded
+- [X] Search is slower: 0.42 s -> 0.61 s (median, fused).  Embedded
   Qdrant scores a sparse query against every chunk in a Python loop, so
   it costs what the chunks hold, and the pairs hold more: 22.8 -> 32.9
-  words a chunk, the BM25 half 0.35 -> 0.54 s (dense: 0.06 s).  An
-  inverted index of our own for the BM25 half would make it
-  milliseconds
+  words a chunk, the BM25 half 0.35 -> 0.54 s (dense: 0.06 s) --- done
+  in 3.43: an index of our own, 5.5 ms
 - [ ] The fusion.  On this eval BM25 alone beats the fused ranking (MRR
   0.861 against 0.681): the dense half (bge-small-zh) is weak, on
   English worst (0.231).  But the labels were found by words, which
@@ -2443,6 +2442,62 @@ Ask 11f62784, the third of the Hy-Memory batches (ask 4a471c59).
 - Prompt-time injection (auto-recall on the user's prompt): not asked
 - A hard wall for claude and grok: they run as the user and can read the
   CLIs' transcript files; per-agent tokens would bind a call to its agent
+
+* Phase 3.43 — The BM25 half in milliseconds  *(this tree)*
+
+Goal: embedded Qdrant scored a sparse query against every chunk in a
+Python loop -- 0.49 s of a 0.6 s search, 0.88 s in a project.  Ask
+880bc57f (3.40's "what is left").
+
+** What the measurement chose (a snapshot of the real store, 85,074 chunks)
+
+| design                  | BM25 p50 / p90 | in a project | eval (fused MRR) | cost                           |
+|-------------------------+----------------+--------------+------------------+--------------------------------|
+| Qdrant (before)         | 494 / 551 ms   | 875 / 962 ms | 0.681            | --                             |
+| in memory, numpy        | 0.3 / 0.7 ms   | 0.2 / 0.5 ms | 0.681 (the same) | 40-80 MB RAM, rebuilt each start |
+| SQLite postings (chosen)| 5.5 / 11 ms    | 8 / 20 ms    | 0.680 (a tie)    | 132 MB disk, 2 MB RAM          |
+| SQLite FTS5             | 7 / 19 ms      | 8 / 17 ms    | 0.574            | 43 MB disk; its own bm25()     |
+
+The postings, because they score as Qdrant did and cost the sidecar no
+memory (its footprint read 10 GB), persist, and change a row at a time.
+The milliseconds numpy saves are nothing beside the dense half (60 ms).
+
+** What shipped
+
+- [X] =wordindex.py=: docs and postings in =words.sqlite=, Qdrant's IDF
+  at query time, a scope as a join; built from the stored text in the
+  background at the first start, then kept in step by the store's
+  writes (upsert, restate, delete_source, delete_chunks; a migration
+  sets it aside and it is built again after), checked against the
+  collection at each start and repaired; =memory_words= checks or
+  rebuilds by hand; =GHOSTHERD_MEMORY_WORDS=0= turns it off
+- [X] The dense half's wide ask in a project reads no payloads and takes
+  its scope from the word index: 110 ms -> 80 ms, and no 244 ms p90;
+  =store.WIDE= 2000 -> 5000 (3 of 47 queries in ~/.emacs.d fell short at
+  2000, none at 5000, for 11 ms)
+- [X] =gc.freeze()= after the store loads: a full collection walked
+  Qdrant's 550k objects, 186 ms a time; now 1 ms
+- [X] =session_eval.py words= (build, timed) and =bench= (the page's and
+  =herd search='s latencies)
+
+** Measured, after (p50 / p90)
+
+- BM25 5.5 / 11 ms; in a project 8 / 20 ms
+- page search 73 / 85 ms (was 604 / 663); in a project 110 / 128 (637 / 737)
+- =herd search= in-process 111 / 135 ms (624 / 716); end to end through
+  bin/herd 0.21-0.25 s (0.66-0.9 s)
+- build 47 s, 32 s CPU (0.68 of a core, one at most), max RSS unchanged;
+  check at start 5.4 s; 132 MB on disk
+- eval: BM25 0.839 / 0.957 / 0.782 (MRR / hit@10 / recall@10), the same;
+  fused 0.681 -> 0.680, hit@10 0.872 and recall@10 0.515 the same: one
+  miss (rank ~30 -> 31+) among 47 chunks tied at the BM25 cut-off
+
+** Deliberately not done
+
+- The dense half out of Qdrant too: it is 60-80 ms, and a copy of the
+  vectors (172 MB) would double what the sidecar holds
+- Our own scoring in FTS5: its bm25() cannot take Qdrant's IDF; a
+  Python rank function would be slower than the postings
 
 * Phase 4 — Ecosystem (only if still useful)
 
