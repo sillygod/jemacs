@@ -1,4 +1,5 @@
-"""Images an agent's reply names, kept for the herd page and Telegram.
+"""Images -- and HTML reports -- an agent's reply names, kept for the herd
+page and Telegram.
 
 An agent says where its screenshots are -- "the screenshots are in
 /private/tmp/.../shots/after.png" -- and you want to see them, at the
@@ -21,6 +22,14 @@ What is copied, and nothing else:
   room's, from its transcript): a file changed after is not the one it
   meant.
 
+A report an agent wrote as an HTML page -- a path ending .html or .htm
+-- is copied the same way, as <id>.html: the same checks, at most
+MAX_HTML_BYTES, and text that is HTML (UTF-8, no NUL, opening with a
+doctype or <html>) instead of an image.  Its <title> names it.  Emacs
+serves the copy as a document to read, never to run (a sandbox: no
+script, no request but fonts), so only what the page holds itself is
+shown -- a stylesheet or image beside it on disk is not.
+
 Nothing takes a path but a reply's text: the page and the bot get ids,
 and Emacs serves a copy by its id alone (`ghostherd-reply-images-directory').
 The copies are yours alone (0700 / 0600), and go KEEP_DAYS after a
@@ -33,6 +42,7 @@ thread, a room or a push find the same images, wherever they are read.
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import os
 import re
@@ -48,6 +58,11 @@ from urllib.parse import unquote
 
 MAX_BYTES = 16 * 1024 * 1024
 MAX_PIXELS = 50_000_000
+# An HTML report: its data: images make it big, but it is read whole.
+MAX_HTML_BYTES = 8 * 1024 * 1024
+# How long a report's title may be, and how far into it it is looked for.
+TITLE_CHARS = 200
+TITLE_WITHIN = 64 * 1024
 # How many images one message brings, at most.
 MAX_PER_MESSAGE = 8
 # A thumbnail's longest side: sharp at three pixels a point.
@@ -68,12 +83,16 @@ KINDS = (
     (b"GIF89a", "gif", "GIF"),
 )
 EXTS = ("png", "jpg", "gif", "webp")
-TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
+         "html": "text/html"}
 ID = re.compile(r"\A[0-9a-f]{32}\Z")
 
 # Where a path is named.  An extension it must end in, not glued to more
 # of a name (x.png.bak is not one).
-_EXT = r"\.(?:png|jpe?g|gif|webp)(?![\w/-]|\.\w)"
+_EXT = r"\.(?:png|jpe?g|gif|webp|html?)(?![\w/-]|\.\w)"
+_HTML_PATH = re.compile(r"\.html?\Z", re.I)
+_DOCTYPE = re.compile(r"(?:<!doctype\s+html|<html)[\s>]", re.I)
+_TITLE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.I | re.S)
 _START = r"(?:file://|~/|/)"
 # The target of a Markdown link or image, which may hold spaces: ](path),
 # ](<path>), ](path "title").
@@ -91,8 +110,8 @@ def key(text: str) -> str:
 
 
 def named(text: str) -> list[str]:
-    """The image paths TEXT names, as written, in order, once each.
-    Only a path that reads as one: whether it is an image is for `load'."""
+    """The image and HTML paths TEXT names, as written, in order, once
+    each.  Only a path that reads as one: whether it is one is for `load'."""
     found: list[tuple[int, str]] = []
     for rx in (_MD, _TICK, _BARE):
         for m in rx.finditer(text or ""):
@@ -127,13 +146,41 @@ def _kind(head: bytes) -> tuple[str, str] | None:
     return None
 
 
+def html_text(data: bytes) -> str | None:
+    """DATA as text when it is an HTML page -- UTF-8 (a BOM aside), no NUL,
+    opening, past blank space and comments, with a doctype or <html> --
+    or None."""
+    if b"\0" in data:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    head = text.lstrip("\ufeff").lstrip()
+    while head.startswith("<!--"):
+        end = head.find("-->")
+        if end < 0:
+            return None
+        head = head[end + 3:].lstrip()
+    return text if _DOCTYPE.match(head[:64] + " ") else None
+
+
+def html_title(text: str) -> str:
+    "The title of the HTML page TEXT, on one line, or \"\"."
+    m = _TITLE.search(text[:TITLE_WITHIN])
+    return " ".join(html.unescape(m.group(1)).split())[:TITLE_CHARS] if m else ""
+
+
 def load(p: str, at: float | None = None) -> tuple[bytes, str] | None:
-    """The bytes of the image at P and its extension, or None when it is
-    not one to copy (see the module's doc): AT is when the message naming
-    it was written, which the file may not be newer than."""
+    """The bytes of the image or HTML page at P and its extension, or None
+    when it is not one to copy (see the module's doc): AT is when the
+    message naming it was written, which the file may not be newer than.
+    What P ends in says which it must be."""
     path = _local(p)
     if not path:
         return None
+    page = bool(_HTML_PATH.search(path))
+    cap = MAX_HTML_BYTES if page else MAX_BYTES
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
     except OSError:
@@ -141,20 +188,22 @@ def load(p: str, at: float | None = None) -> tuple[bytes, str] | None:
     try:
         st = os.fstat(fd)
         if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
-                or not 0 < st.st_size <= MAX_BYTES):
+                or not 0 < st.st_size <= cap):
             return None
         if at is not None and st.st_mtime > at + SLACK:
             return None
         with os.fdopen(fd, "rb", closefd=False) as f:
-            data = f.read(MAX_BYTES + 1)
+            data = f.read(cap + 1)
     except OSError:
         return None
     finally:
         os.close(fd)
-    kind = _kind(data[:16])
-    if not kind or len(data) > MAX_BYTES:
+    if len(data) > cap:
         return None
-    return data, kind[0]
+    if page:
+        return (data, "html") if html_text(data) is not None else None
+    kind = _kind(data[:16])
+    return (data, kind[0]) if kind else None
 
 
 def _pillow():
@@ -255,6 +304,10 @@ class ImageStore:
                 CREATE INDEX IF NOT EXISTS refs_id ON refs (id);
                 """
             )
+            # A report's title: a column an index from before reports lacks.
+            if "title" not in {r[1] for r in conn.execute("PRAGMA table_info(images)")}:
+                conn.execute("ALTER TABLE images ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+                conn.commit()
             self._conn = conn
         return self._conn
 
@@ -265,11 +318,12 @@ class ImageStore:
     def _recs(self, k: str) -> list[dict[str, Any]]:
         "The images message K named, those still kept.  Caller holds `_mu'."
         rows = self._db().execute(
-            """SELECT i.id, i.ext, r.name, i.w, i.h, i.thumb, i.bytes FROM refs r
+            """SELECT i.id, i.ext, r.name, i.w, i.h, i.thumb, i.bytes, i.title FROM refs r
                JOIN images i ON i.id = r.id WHERE r.key = ? ORDER BY r.ord""", (k,)).fetchall()
         out = []
-        for id_, ext, name, w, h, thumb, size in rows:
-            rec = {"id": id_, "ext": ext, "name": name, "w": w, "h": h, "thumb": bool(thumb), "bytes": size}
+        for id_, ext, name, w, h, thumb, size, title in rows:
+            rec = {"id": id_, "ext": ext, "name": name, "w": w, "h": h, "thumb": bool(thumb), "bytes": size,
+                   "title": title}
             if self.path(rec).exists():
                 out.append(rec)
         return out
@@ -316,34 +370,36 @@ class ImageStore:
         return self.capture(text, at) if at is not None else []
 
     def _copy(self, p: str, at: float | None, now: float) -> dict[str, Any] | None:
-        "Copy the image at P, once by its content.  Caller holds `_mu'."
+        "Copy the image or page at P, once by its content.  Caller holds `_mu'."
         got = load(p, at)
         if not got:
             return None
         data, ext = got
-        size = _inspect(data, ext)
+        page = ext == "html"
+        size = (0, 0) if page else _inspect(data, ext)
         if not size:
             return None
         sha = hashlib.sha256(data).hexdigest()
         db = self._db()
         name = os.path.basename(_local(p) or p)
-        row = db.execute("SELECT id, ext, w, h, thumb, bytes FROM images WHERE sha = ?", (sha,)).fetchone()
+        row = db.execute("SELECT id, ext, w, h, thumb, bytes, title FROM images WHERE sha = ?", (sha,)).fetchone()
         if row and self.path({"id": row[0], "ext": row[1]}).exists():
             db.execute("UPDATE images SET used = ? WHERE id = ?", (now, row[0]))
             return {"id": row[0], "ext": row[1], "name": name, "w": row[2], "h": row[3],
-                    "thumb": bool(row[4]), "bytes": row[5]}
+                    "thumb": bool(row[4]), "bytes": row[5], "title": row[6]}
         if row:  # its file gone from under it: copy afresh
             db.execute("DELETE FROM images WHERE id = ?", (row[0],))
         rec = {"id": secrets.token_hex(16), "ext": ext, "name": name, "w": size[0], "h": size[1],
-               "bytes": len(data)}
+               "bytes": len(data), "title": html_title(data.decode("utf-8")) if page else ""}
         _write(self.path(rec), data)
-        small = _thumbnail(data)
+        small = None if page else _thumbnail(data)
         if small:
             _write(self.path(rec, thumb=True), small)
         rec["thumb"] = bool(small)
-        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used)"
-                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (rec["id"], sha, ext, len(data), rec["w"], rec["h"], int(rec["thumb"]), now, now))
+        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used, title)"
+                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                   (rec["id"], sha, ext, len(data), rec["w"], rec["h"], int(rec["thumb"]), now, now,
+                    rec["title"]))
         return rec
 
     def _maybe_prune(self) -> None:
@@ -393,9 +449,10 @@ class ImageStore:
 
 
 def public(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    "RECS as the page gets them: ids, never where they came from."
-    return [{"id": r["id"], "ext": r["ext"], "name": r["name"], "w": r["w"], "h": r["h"],
-             "thumb": r["thumb"]} for r in recs]
+    "RECS as the page gets them: ids, never where they came from; a report's title."
+    return [dict({"id": r["id"], "ext": r["ext"], "name": r["name"], "w": r["w"], "h": r["h"],
+                  "thumb": r["thumb"]}, **({"title": r.get("title") or ""} if r["ext"] == "html" else {}))
+            for r in recs]
 
 
 _store: ImageStore | None = None

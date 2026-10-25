@@ -56,6 +56,7 @@ another site's page, gets nothing.
 | =GET next=    | Emacs's calls as a JSON array, held until there are some |
 | =POST intent= | one intent; the page sends them one at a time, in order  |
 | =GET .files/NAME= | a file the app serves by name (below), if it serves any |
+| =GET .SET/NAME= | one of another set it serves (below)                     |
 
 - *Emacs never writes to a tab that has not asked.*  A stream pushed
   to the page would block Emacs in =process-send-string= the moment a
@@ -107,6 +108,45 @@ a reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
 waiting 4.3 of them; from a thread, which waits on the socket with
 Emacs free, the key was taken in 4 ms.  The page itself and its calls
 are still sent as before.
+
+*** Sets of their own: documents, read and never run
+
+=(xwapp-serve-files app DIR REGEXP :as SET ...)= serves another set
+apart from those, at =.SET/NAME= under the secret, by its own rules ---
+the herd page's Docs and the HTML reports a reply named are two.  DIR
+may be a list of directories, the first that has a name serving it.
+
+- =:sandbox t= --- the files are documents, to read and never to run.
+  Each goes with =xwapp-sandbox-policy=: =sandbox= (no =allow-scripts=,
+  no =allow-same-origin=), =default-src 'none'=, and only what a page
+  made to stand alone needs --- inline styles, Google's fonts, =data:=
+  images --- with =form-action 'none'= and =frame-ancestors 'none'=.  A
+  document comes from the page's own origin, under its secret, and the
+  page can act for Emacs: under the sandbox no script of it runs, and
+  its origin is none, so even a script that ran could ask the page's
+  endpoints nothing as it.  Checked in WebKit against a real Emacs
+  (=herd-docs-sandbox=): a document whose script tries =fetch=, XHR, a
+  beacon, a form, an image, a stylesheet, a frame and a navigation at
+  =hello= and =intent= reaches nothing, and the page stays the app's
+  --- while the same document without the policy took the page and
+  sent an intent.
+- =:exact t= --- NAME must be the file's own, to the letter: macOS's
+  file system ignores case, so =Guide.html= would find =guide.html=.
+  Each request lists the directory (in C), so not for a big one; names
+  of one case (lower-case hex ids) need it not.
+- =:max-bytes N= --- a file past it is not served.
+- =:fresh t= --- the browser asks each time (=no-store=): a document you
+  edit changes under the same name.
+
+The kit's =XW.file(NAME, SET)= gives such a file's address in a browser,
+and "" in the xwidget: a document there is never a =file:= URL, which
+would run its scripts with the run of your files.  =(xwapp-show-file
+app NAME SET)= shows it from Emacs instead: in an xwidget view of its
+own (the same one again for the same file), loaded over loopback under
+the secret, as a browser gets it --- so under the same policy (checked
+in a GUI =emacs -Q=: a document's script did not run there, and did
+with the policy taken off); in the browser when =xwapp-browser=, or
+when a page there asked.
 
 ** A tab that comes back
 
@@ -245,7 +285,8 @@ What the pages share on the browser side, so it is fixed once:
 |------------------------+------------------------------------------------------|
 | =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
 |                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=,       |
-|                        | =XW.open(url, name)=, =XW.file(name)=; the QR code   |
+|                        | =XW.open(url, name)=, =XW.file(name[, set])=; the QR |
+|                        | code                                                 |
 |                        | for your phone                                       |
 | =base.css=             | the shared colours, =box-sizing=, =[hidden]=         |
 | =vendor/marked.min.js= | marked 11.2.0 (identical to jsdelivr's)              |
@@ -354,6 +395,15 @@ it would on the phone.
 |                | message in a room's columns and chat, the Inbox and its thread; |
 |                | the image whole, put away; none drawn for a name not a copy's,  |
 |                | none fetched; under the CSP in a browser and as files (xwidget) |
+| =herd-docs=    | an agent's HTML report: Open under the message wherever it is   |
+|                | read, by its id under the secret, a tab of its own with no      |
+|                | opener; the Docs tab; none for a record or name not one; in the |
+|                | xwidget a button that asks Emacs, never a =file:= link          |
+| =herd-docs-sandbox= | against a real Emacs (=e2e/docs.el=) on the phone (through |
+|                | serve) and the desk: a document runs no script and reaches      |
+|                | nothing of the page's --- fetch, XHR, beacon, form, image,      |
+|                | style, frame, navigation --- the page stays the app's; refused  |
+|                | by case, traversal, another set, a guessed id, another login   |
 | =herd-chips=   | the herd page's PR and task chips: pr-view's and                |
 |                | clickup-view's pages on the phone, one tab per app, else the    |
 |                | forge's; a PR of another repository named with it, and opened   |

@@ -40,6 +40,17 @@ async function phonePage(browser, opts) {
       const ftype = { png: "image/png", jpg: "image/jpeg" }[name.split(".").pop()] || "application/octet-stream";
       return route.fulfill({ status: 200, contentType: ftype, headers: { "Cache-Control": "private, max-age=604800, immutable" }, body: fs.readFileSync(f) });
     }
+    // Another set (xwapp-serve-files :as): documents, from OPTS.sets[SET],
+    // as xwapp serves a :sandbox set -- see herd-docs-sandbox.js for the real one.
+    if (/^\.[a-z][a-z0-9-]*$/.test(rest[0] || "") && rest[0] !== ".files") {
+      const set = rest[0].slice(1);
+      const name = rest.length === 2 ? decodeURIComponent(rest[1]) : "";
+      if (opts.fileLog) opts.fileLog.push(set + "/" + name);
+      const body = opts.sets && opts.sets[set] && opts.sets[set][name];
+      if (body === undefined) return route.fulfill({ status: 404, body: "Not Found" });
+      return route.fulfill({ status: 200, contentType: "text/html; charset=utf-8",
+        headers: { "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" }, body });
+    }
     const base = rest[0] === "xwapp" ? path.join(XWAPP, "ui") : rest[0] === "ghostherd" ? UIDIR : null;
     const file = base && path.join(base, ...rest.slice(2));
     if (!file || !fs.existsSync(file)) return route.fulfill({ status: 404, body: "Not Found" });

@@ -22,6 +22,15 @@ its text, in reply to it: one as a photo, more as an album, one too big
 for a photo as a file -- PUSH_IMAGES at most.  They go to Telegram's
 servers as the text does; Emacs's `ghostherd-push-images' turns them off
 (the push's `images': false).
+
+Reports: an HTML page the report names (images.py copies it) goes the
+same way, as the file itself (sendDocument) -- PUSH_REPORTS at most --
+and never as a link.  The page's address holds its secret, which must
+not sit on Telegram's servers; a link of its own, to that one file,
+would open only on the tailnet, as the room's button already does, and
+the room shows the report with it.  The file opens anywhere, and tells
+Telegram what the report's words already do.  `ghostherd-push-reports'
+turns them off (the push's `reports': false).
 """
 
 from __future__ import annotations
@@ -77,8 +86,10 @@ PUSH_EVERY = 2.0
 # Seconds a lead's report waits for the lead's own words: its hook may
 # bring them a moment after its state.
 REPORT_WAIT = 30.0
-# The images a push brings, at most: the rest are on the herd page.
+# The images a push brings, at most, and the HTML reports: the rest are
+# on the herd page.
 PUSH_IMAGES = 4
+PUSH_REPORTS = 2
 # What Telegram takes as a photo: its size, its sides together, how much
 # longer one is than the other.  A bigger one goes as a file.
 PHOTO_BYTES = 10 * 1024 * 1024
@@ -465,15 +476,17 @@ def push_keyboard(push: dict[str, Any], session: dict[str, Any] | None = None) -
     return {"inline_keyboard": rows} if rows else None
 
 
-def _push_images(words: str, at: float | None) -> list[dict[str, Any]]:
-    """The images a report's WORDS name, PUSH_IMAGES at most, each with
-    the bytes of its copy: as recorded when the words came."""
+def _push_images(words: str, at: float | None, images: bool = True,
+                 reports: bool = True) -> list[dict[str, Any]]:
+    """The images a report's WORDS name, PUSH_IMAGES at most, and the HTML
+    reports, PUSH_REPORTS at most -- IMAGES and REPORTS say whether --
+    each with the bytes of its copy: as recorded when the words came."""
     try:
         store = images_mod.get_store()
-        out = []
-        for rec in store.lookup(words, at)[:PUSH_IMAGES]:
-            out.append(dict(rec, data=store.path(rec).read_bytes()))
-        return out
+        recs = store.lookup(words, at) if images or reports else []
+        pics = [r for r in recs if r["ext"] != "html"][:PUSH_IMAGES] if images else []
+        pages = [r for r in recs if r["ext"] == "html"][:PUSH_REPORTS] if reports else []
+        return [dict(rec, data=store.path(rec).read_bytes()) for rec in pics + pages]
     except Exception:  # noqa: BLE001 -- a push is never failed by its images
         log.exception("telegram push images")
         return []
@@ -762,8 +775,9 @@ class TelegramBot:
             fresh = link.get("last") and (link.get("last_ms") or 0) / 1000 >= float(push.get("since") or 0)
             if fresh:
                 words = link["last"]
-                if push.get("images", True) is not False:
-                    pics = _push_images(words, (link.get("last_ms") or 0) / 1000 or None)
+                pics = _push_images(words, (link.get("last_ms") or 0) / 1000 or None,
+                                    images=push.get("images", True) is not False,
+                                    reports=push.get("reports", True) is not False)
             elif now - _epoch(push.get("created_at")) < REPORT_WAIT:
                 return None
         text = format_push(push, words, session)
@@ -833,8 +847,10 @@ class TelegramBot:
                 else:
                     mids += _message_ids(resp)
             for p in files:
+                # A report by its title too.
+                caption = f"{p['title']} ({p['name']})" if p.get("title") else p["name"]
                 resp = await _upload(client, url, "sendDocument", chat_id, reply_to,
-                                     {"document": p}, caption=p["name"])
+                                     {"document": p}, caption=caption)
                 mids += _message_ids(resp)
         except Exception:  # noqa: BLE001 -- the text went; the images are a bonus
             log.exception("telegram push images")

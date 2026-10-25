@@ -248,6 +248,10 @@
   }
 
   function imagesHtml(list) {
+    return thumbsHtml(list) + reportsHtml(list);
+  }
+
+  function thumbsHtml(list) {
     const ok = (Array.isArray(list) ? list : []).filter((im) =>
       im && IMG_ID.test(String(im.id)) && IMG_EXTS.includes(im.ext));
     if (!ok.length) return "";
@@ -261,6 +265,76 @@
         (src ? '<img src="' + esc(src) + '" alt="' + esc(name) + '" loading="lazy" decoding="async">'
           : '<span class="eimgname">' + esc(name) + "</span>") + "</button>";
     }).join("") + "</div>";
+  }
+
+  // ---- Documents: HTML reports a reply names, and the Docs tab ----------
+  //
+  // A report an agent wrote as an HTML page comes among a message's
+  // images, {id, ext: "html", name, title}: the sidecar's copy.  It opens
+  // in a tab of its own -- a link under the page's secret (XW.file) -- or,
+  // in the xwidget, in a view of Emacs's (doc-open).  Emacs serves it as a
+  // document to read, never to run: no script of it runs and it reaches
+  // nothing of the page's, so only what it holds itself shows.
+
+  const DOC_SAYS = "Opens in a tab of its own, to read: no script runs in it, and only what the page holds " +
+    "itself shows -- a stylesheet or picture beside it on disk does not.";
+  const DOC_NAME = { docs: /^[A-Za-z0-9][A-Za-z0-9._-]*\.html$/, reports: /^[0-9a-f]{32}\.html$/ };
+
+  // A document's name as the page opens it: SET's NAME, LABEL its text.
+  function docLink(set, name, label, cls, title) {
+    if (!DOC_NAME[set] || !DOC_NAME[set].test(String(name))) return "";
+    const tip = esc((title ? title + " -- " : "") + DOC_SAYS);
+    if (XW.browser) {
+      const href = XW.file(name, set);
+      return '<a class="' + cls + '" data-doc href="' + esc(href) + '" target="_blank" rel="noopener noreferrer" title="' +
+        tip + '">' + label + "</a>";
+    }
+    return '<button type="button" class="' + cls + '" data-act="doc:open" data-set="' + set + '" data-name="' +
+      esc(name) + '" title="' + tip + '">' + label + "</button>";
+  }
+
+  function reportsHtml(list) {
+    const ok = (Array.isArray(list) ? list : []).filter((r) => r && IMG_ID.test(String(r.id)) && r.ext === "html");
+    if (!ok.length) return "";
+    return '<div class="ereports">' + ok.map((r) => {
+      const name = String(r.name || "report.html");
+      const title = String(r.title || "").trim();
+      return docLink("reports", r.id + ".html",
+        '<span class="eropen">Open</span><span class="ertitle">' + esc(title || name) + "</span>" +
+        (title ? '<span class="ername">' + esc(name) + "</span>" : ""), "ereport", name);
+    }).join("") + "</div>";
+  }
+
+  // The Docs tab: what Emacs lists (renderDocs), newest first.
+  let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
+
+  function showDocs() {
+    view = "docs";
+    src = null;
+    chrome();
+    renderDocs();
+    emit("docs");
+  }
+
+  function sizeText(n) {
+    n = +n || 0;
+    return n < 1024 ? n + " B" : n < 1024 * 1024 ? Math.round(n / 1024) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+
+  function renderDocs() {
+    if (view !== "docs") return;
+    const rows = (docs || []).filter((d) => d && DOC_NAME.docs.test(String(d.name))).map((d) =>
+      '<div class="doc">' +
+      docLink("docs", d.name, esc(d.title || d.name), "dtitle", d.name) +
+      '<div class="dmeta"><span class="dname">' + esc(d.name) + "</span>" +
+      '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(d.where || "") + "</span>" +
+      "<span>" + esc(sizeText(d.bytes)) + "</span>" +
+      '<span title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div></div>").join("");
+    app.innerHTML = '<div class="page docs">' +
+      '<div class="sum">' + (docs ? docs.length + (docs.length === 1 ? " document" : " documents") : "Asking Emacs…") +
+      "</div>" + (docs && !docs.length ? '<p class="empty">No HTML document in the folders listed.</p>' : rows) +
+      '<p class="docsays muted">' + esc(DOC_SAYS) + " ghostherd's docs/ and the folders of " +
+      "<code>ghostherd-docs-directories</code> are listed.</p></div>";
   }
 
   // The image whole, over the page: fitted to it, at its own size at a
@@ -420,7 +494,7 @@
 
   let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [] };
   let filters = { agent: "", project: "" };
-  let view = "boot"; // agents | search | sessions | source | log
+  let view = "boot"; // agents | search | sessions | source | log | docs | ...
   let watching = false; // Emacs is sending the herd every few seconds
   let tab = "search"; // the list view a source returns to
   let query = "";
@@ -532,6 +606,7 @@
     else if (where === "search") showSearch();
     else if (where === "inbox") showInbox();
     else if (where === "threads") showThreads();
+    else if (where === "docs") showDocs();
     // Home: the page opens on the Inbox when nothing else is asked for.
     else showInbox();
   }
@@ -3918,6 +3993,8 @@
     // own: the page stays.
     const a = t.closest("a[href]");
     if (a) {
+      // A document Emacs serves: its own tab, opened by the link itself.
+      if (a.hasAttribute("data-doc")) return;
       const href = a.getAttribute("href") || "";
       if (XW.elsewhere && /^https?:/i.test(href)) {
         a.target = "_blank";
@@ -3945,6 +4022,8 @@
     const act = el.getAttribute("data-act");
     if (act === "img:open") {
       openImage(el);
+    } else if (act === "doc:open") {
+      emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
     } else if (act === "agent") {
       filters.agent = el.getAttribute("data-agent") || "";
       onFilters();
@@ -4093,6 +4172,7 @@
       else if (which === "log") showLog();
       else if (which === "agents") showAgents();
       else if (which === "memory") showMemory();
+      else if (which === "docs") showDocs();
       else showSearch();
     }));
   btnBack.addEventListener("click", back);
@@ -4978,8 +5058,15 @@
       renderSourceChrome();
     },
 
+    // The Docs tab's list.
+    renderDocs: (p) => {
+      docs = Array.isArray(p && p.docs) ? p.docs : [];
+      renderDocs();
+    },
+
     showView: (v) => {
       if (v === "agents") showAgents();
+      else if (v === "docs") showDocs();
       else if (v === "log") showLog();
       else if (v === "memory") showMemory();
       else if (v === "sessions") showSessions();

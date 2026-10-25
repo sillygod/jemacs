@@ -15,7 +15,7 @@ import conversation as conv
 import images
 from herd import HerdStore, get_herd, reset_herd
 from jsonrpc_handler import JsonRpcRequest, handler
-from telegram import PUSH_IMAGES, TelegramBot
+from telegram import PUSH_IMAGES, PUSH_REPORTS, TelegramBot
 
 
 @pytest.fixture
@@ -369,3 +369,161 @@ def test_only_a_report_brings_images(herd, tmp_path):
     tg = FakeTelegram()
     asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
     assert [m for m, _, _ in tg.sent] == ["sendMessage"]
+
+
+# ---- HTML reports ----------------------------------------------------------
+
+PAGE = ("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<title>The viewer &amp; its\n   theme</title></head><body><h1>Report</h1></body></html>\n")
+
+
+def page(path: Path, text: str = PAGE) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_a_reply_names_its_html_reports():
+    text = ("The report: /tmp/x/report.html, also `/tmp/my dir/b.htm` and [c](</tmp/c d.html>), "
+            "~/r/e.HTML and file:///tmp/f%20g.html.  Not https://example.com/h.html, /tmp/i.html.bak, "
+            "/tmp/j.htmlx, docs/k.html")
+    assert images.named(text) == ["/tmp/x/report.html", "/tmp/my dir/b.htm", "/tmp/c d.html",
+                                  "~/r/e.HTML", "file:///tmp/f%20g.html"]
+
+
+def test_an_html_report_is_copied_under_an_id(store, tmp_path):
+    src = page(tmp_path / "scratch" / "report.html")
+    recs = store.capture(f"Done.  The report is in {src}")
+    assert len(recs) == 1
+    rec = recs[0]
+    assert images.ID.match(rec["id"]) and rec["ext"] == "html" and rec["name"] == "report.html"
+    assert rec["title"] == "The viewer & its theme" and not rec["thumb"]
+    copy = store.path(rec)
+    assert copy.name == rec["id"] + ".html" and copy.read_bytes() == Path(src).read_bytes()
+    assert stat.S_IMODE(copy.stat().st_mode) == 0o600
+    assert not store.path(rec, thumb=True).exists()
+    # The page gets the id and the title, never where it came from.
+    assert images.public(recs) == [{"id": rec["id"], "ext": "html", "name": "report.html",
+                                    "w": 0, "h": 0, "thumb": False, "title": "The viewer & its theme"}]
+    assert str(tmp_path) not in json.dumps(images.public(recs))
+    # Its scratch dir gone, the same words still find it; .htm, a BOM and
+    # a comment before the doctype are HTML too.
+    os.unlink(src)
+    assert [r["id"] for r in store.lookup(f"Done.  The report is in {src}")] == [rec["id"]]
+    other = page(tmp_path / "s" / "b.htm", "﻿  <!-- made by hand -->\n<html><body>x</body></html>")
+    got = store.capture(f"And {other}")
+    assert [(r["ext"], r["title"]) for r in got] == [("html", "")]
+
+
+def test_what_html_is_refused(store, tmp_path, monkeypatch):
+    real = page(tmp_path / "elsewhere" / "private.html")
+    s = tmp_path / "scratch"
+    s.mkdir()
+    (s / "notes.html").write_text("password=hunter2\n")                       # not HTML
+    (s / "nul.html").write_bytes(b"<!doctype html><title>x</title>\0")        # a NUL: not text
+    (s / "latin.html").write_bytes(b"<!doctype html><title>caf\xe9</title>")   # not UTF-8
+    (s / "shot.html").write_bytes(Path(png(s / "a.png")).read_bytes())        # an image by another name
+    (s / "late.html").write_text("<p>no doctype</p><html></html>")           # not one that opens as a page
+    (s / "link.html").symlink_to(real)                                        # a symlink
+    (s / "dir.html").mkdir()                                                   # a directory
+    (s / "page.png").write_text(PAGE)                                          # a page by an image's name
+    big = page(s / "big.html", PAGE + "x" * 100)
+    monkeypatch.setattr(images, "MAX_HTML_BYTES", os.path.getsize(big) - 1)
+    for p in (f"{s}/notes.html", f"{s}/nul.html", f"{s}/latin.html", f"{s}/shot.html", f"{s}/late.html",
+              f"{s}/link.html", f"{s}/dir.html", f"{s}/page.png", big, f"{s}/../elsewhere/private.html",
+              f"{s}/missing.html", "relative/x.html"):
+        assert store.capture(f"Here: {p} ") == [], p
+    assert not list(store.root.glob("*.html"))
+    # The same directory's own page is copied: the refusals are each their own.
+    assert len(store.capture(f"Fine {page(s / 'fine.html')}")) == 1
+    # Not this user's: planted in a shared /tmp by another.
+    theirs = page(s / "theirs.html", PAGE.replace("Report", "Theirs"))
+    monkeypatch.setattr(images.os, "getuid", lambda: os.stat(theirs).st_uid + 1)
+    assert store.capture(f"Theirs {theirs}") == []
+
+
+def test_a_report_read_later_is_the_one_it_meant(store, tmp_path):
+    src = page(tmp_path / "s" / "r.html")
+    os.utime(src, (1_700_000_000, 1_700_000_000))
+    said = f"See {src}"
+    assert store.lookup(said, at=1_699_000_000) == []          # written well after the message
+    assert len(store.lookup(f"Again {src}", at=1_700_000_000)) == 1
+
+
+def test_an_index_from_before_reports_gains_their_titles(tmp_path, monkeypatch):
+    import sqlite3
+    root = tmp_path / "kept"
+    root.mkdir()
+    old = sqlite3.connect(root / "index.sqlite")
+    old.executescript("""
+        CREATE TABLE images (id TEXT PRIMARY KEY, sha TEXT UNIQUE NOT NULL, ext TEXT NOT NULL,
+            bytes INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
+            thumb INTEGER NOT NULL, created REAL NOT NULL, used REAL NOT NULL);
+    """)
+    # A copy from before, used just now: kept.
+    old.execute("INSERT INTO images VALUES ('0123456789abcdef0123456789abcdef', 's', 'png', 3, 1, 1, 0, ?, ?)",
+                (time.time(), time.time()))
+    (root / "0123456789abcdef0123456789abcdef.png").write_bytes(b"png")
+    old.commit()
+    old.close()
+    monkeypatch.setenv("GHOSTHERD_IMAGES_DIR", str(root))
+    images.reset_store()
+    try:
+        st = images.get_store()
+        src = page(tmp_path / "r.html")
+        assert [r["title"] for r in st.capture(f"See {src}")] == ["The viewer & its theme"]
+        db = sqlite3.connect(root / "index.sqlite")
+        assert db.execute("SELECT title FROM images WHERE ext = 'png'").fetchone() == ("",)
+        db.close()
+    finally:
+        images.reset_store()
+
+
+def test_old_reports_go(store, tmp_path):
+    rec = store.capture(f"See {page(tmp_path / 'r.html')}")[0]
+    assert store.prune(now=time.time() + store.keep + 10) == 1
+    assert not store.path(rec).exists()
+    assert store.lookup(f"See {tmp_path / 'r.html'}") == []
+
+
+def test_a_turns_report_reaches_the_inbox(herd, tmp_path):
+    src = page(tmp_path / "out" / "report.html")
+    shot = png(tmp_path / "out" / "after.png")
+    rpc("herd_report", {"session": "lead-x", "state": "done", "cli": "claude",
+                        "last": f"Shipped.  {shot} and the write-up {src}"}, role="agent")
+    images.drain()
+    link = rpc("herd_link", {"session": "lead-x"})["link"]
+    assert [(i["ext"], i["name"]) for i in link["last_images"]] == [("png", "after.png"), ("html", "report.html")]
+    assert link["last_images"][1]["title"] == "The viewer & its theme"
+    assert "title" not in link["last_images"][0]
+
+
+def test_a_report_brings_its_html_as_a_file_and_no_link(herd, tmp_path):
+    src = page(tmp_path / "report.html")
+    shot = png(tmp_path / "after.png", size=(800, 600))
+    bot = _report(herd, tmp_path, f"Shipped.  {shot} and {src}", url="https://box.tail0.ts.net/open/ghostherd")
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert [m for m, _, _ in tg.sent] == ["sendMessage", "sendPhoto", "sendDocument"]
+    _, data, files = tg.sent[2]
+    assert files["document"] == ("report.html", Path(src).read_bytes(), "text/html")
+    assert data["caption"] == "The viewer & its theme (report.html)"
+    assert json.loads(data["reply_parameters"])["message_id"] == 1001
+    # Nothing sent carries an address but the room's own button, which
+    # holds no secret: the report itself goes, not a link to it.
+    for _, payload, _ in tg.sent:
+        flat = json.dumps(payload)
+        assert "/.reports/" not in flat and "/.files/" not in flat and "127.0.0.1" not in flat
+    assert herd.unsent_pushes() == []
+
+
+def test_reports_turned_off_and_a_few_at_most(herd, tmp_path):
+    pages = [page(tmp_path / f"r{n}.html", PAGE.replace("Report", f"Report {n}")) for n in range(4)]
+    shot = png(tmp_path / "x.png")
+    words = "Done: " + " ".join(pages) + " " + shot
+    tg = FakeTelegram()
+    asyncio.run(_report(herd, tmp_path, words, reports=False)._flush_pushes(tg, "https://t/{method}"))
+    assert [m for m, _, _ in tg.sent] == ["sendMessage", "sendPhoto"]
+    tg = FakeTelegram()
+    asyncio.run(_report(herd, tmp_path, words + " ", images=False)._flush_pushes(tg, "https://t/{method}"))
+    assert [m for m, _, _ in tg.sent] == ["sendMessage"] + ["sendDocument"] * PUSH_REPORTS

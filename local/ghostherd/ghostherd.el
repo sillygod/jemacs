@@ -9957,6 +9957,17 @@ Telegram's servers as the text does: nil keeps them to the herd page."
   :type 'boolean
   :group 'ghostherd)
 
+(defcustom ghostherd-push-reports t
+  "Non-nil: a lead's report pushed to Telegram brings the HTML pages its
+words name -- a report an agent wrote as one -- as files after its text,
+two at most.  They are the copies the herd keeps (beside the images, in
+`ghostherd-reply-images-directory'), and go to Telegram's servers as the
+text does -- the file itself, never a link: the herd page's address
+holds its secret.  Nil keeps them to the herd page, where a message that
+names one has Open under it."
+  :type 'boolean
+  :group 'ghostherd)
+
 (defcustom ghostherd-push-away-after 120
   "Seconds without a key or the mouse on this Mac after which you count
 as away from it, which is when a push goes out.  Nil: whenever you look
@@ -10028,7 +10039,8 @@ when it is worth one: see `ghostherd-push'."
                           :session (ghostherd-session-name session)
                           :project (or project "")
                           :url (or (and project (ghostherd--room-url project)) "")
-                          :images (if ghostherd-push-images t :json-false))
+                          :images (if ghostherd-push-images t :json-false)
+                          :reports (if ghostherd-push-reports t :json-false))
                     fields)
             ghostherd--herd-pushes))))
 

@@ -8,7 +8,10 @@
        and nothing leaves: no inline script or handler, no fetch but to
        the Emacs that served the page to a browser, no remote image: an
        image only from that Emacs, or a file in the xwidget -- the copies
-       of what an agent's reply named (xwapp-serve-files). -->
+       of what an agent's reply named (xwapp-serve-files).  A document
+       (the Docs tab, an HTML report a reply named) opens in a tab of its
+       own under a policy of its own: no script, no origin, nothing from
+       Emacs (xwapp-sandbox-policy). -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file: 'unsafe-inline'; img-src data: 'self' file:; connect-src 'self'; font-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Herd</title>
   <link rel="stylesheet" href="../../xwapp/ui/base.css">
@@ -26,6 +29,7 @@
         <button type="button" class="tab" data-tab="sessions">Sessions <span id="sessions-n" class="count"></span></button>
         <button type="button" class="tab" data-tab="memory">Memory</button>
         <button type="button" class="tab" data-tab="log">Log</button>
+        <button type="button" class="tab" data-tab="docs" title="HTML documents to read here: ghostherd's docs and your own">Docs</button>
       </nav>
     </div>
     <div class="actions">

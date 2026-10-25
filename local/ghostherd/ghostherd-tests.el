@@ -10838,10 +10838,15 @@ the last out, and an idle time that cannot be read counts as away."
                     ghostherd--herd-pushes)))
       (should (equal (funcall block)
                      `((:kind "blocked" :session "rd" :project ,project :url ,(concat "room:" project)
-                              :images t :reason "Allow npm test?"))))
+                              :images t :reports t :reason "Allow npm test?"))))
       ;; Images off: the bot sends a report's text alone.
       (let ((ghostherd-push-images nil))
         (should (eq (plist-get (car (funcall block)) :images) :json-false)))
+      ;; HTML reports off, apart.
+      (let ((ghostherd-push-reports nil))
+        (let ((push (car (funcall block))))
+          (should (eq (plist-get push :reports) :json-false))
+          (should (eq (plist-get push :images) t))))
       (setq idle 30)
       (should-not (funcall block))
       (setq idle 600)
@@ -15235,9 +15240,14 @@ answer an ask of it got."
                      (list :id id :ext "svg")
                      (list :id (concat id "0") :ext "png")
                      "not an image"
-                     (list :id id :ext "jpg" :w -1 :h "9" :thumb nil)))
+                     (list :id id :ext "jpg" :w -1 :h "9" :thumb nil)
+                     ;; An HTML report: its title, none of the rest.
+                     (list :id id :ext "html" :name "report.html" :title "The viewer" :w 0 :h 0
+                           :src "/tmp/report.html")
+                     (list :id id :ext "htm" :name "x")))
          (want (vector (list :id id :ext "png" :name "after.png" :w 1200 :h 800 :thumb t)
-                       (list :id id :ext "jpg" :name "image" :w nil :h nil :thumb :json-false))))
+                       (list :id id :ext "jpg" :name "image" :w nil :h nil :thumb :json-false)
+                       (list :id id :ext "html" :name "report.html" :title "The viewer"))))
     (should (equal (ghostherd-memory-page--images sent) want))
     (should-not (ghostherd-memory-page--images nil))
     (should-not (ghostherd-memory-page--images "x"))
@@ -15279,6 +15289,143 @@ nothing else there: not the index, not another name, not a symlink."
             (should (equal (ghostherd-memory--reply-images-directory)
                            "/home/me/.emacs.d/emacs-home/ghostherd-images/replies/"))))
       (delete-directory dir t))))
+
+(defmacro ghostherd-test--docs (&rest body)
+  "BODY with ghostherd's docs/ in `own', yours in `mine', the copies
+replies name in `kept': each with what is and is not to be served."
+  (declare (indent 0))
+  `(let* ((root (file-name-as-directory (make-temp-file "ghostherd-docs" t)))
+          (own (file-name-as-directory (expand-file-name "ghostherd/docs" root)))
+          (mine (file-name-as-directory (expand-file-name "my notes" root)))
+          (kept (file-name-as-directory (expand-file-name "replies" root)))
+          (ghostherd-docs-directories (list mine (expand-file-name "missing" root)))
+          (ghostherd-reply-images-directory kept)
+          (id ghostherd-test--image-id)
+          (put (lambda (dir name text &optional age)
+                 (make-directory dir t)
+                 (let ((file (expand-file-name name dir)))
+                   (with-temp-file file (insert text))
+                   (when age (set-file-times file (time-subtract nil age)))
+                   file))))
+     (unwind-protect
+         (cl-letf (((symbol-function 'ghostherd-memory-page--own-docs) (lambda () own)))
+           (funcall put own "phone-access.html" "<!DOCTYPE html><html><head><title>Herd 頁面門禁</title>" 3000)
+           (funcall put own "sidecar.html" "<html><title lang=en>\n  Sidecar &amp; its\n memory &#x1F4BE; </title>" 2000)
+           (funcall put own "notes.txt" "not a doc")
+           (funcall put own "no-title.html" "<p>hi</p>" 4000)
+           (funcall put mine "sidecar.html" "<title>Mine, under ghostherd's name</title>")
+           (funcall put mine "mine.html" "<title>Mine</title><script>alert(1)</script>" 10)
+           (funcall put mine "Upper.HTML" "<title>Not .html to the letter</title>")
+           (funcall put root "outside.html" "<title>Outside</title>")
+           (make-symbolic-link (expand-file-name "outside.html" root) (expand-file-name "link.html" mine))
+           (funcall put kept (concat id ".html") "<!doctype html><title>A report</title>")
+           (funcall put kept (concat id ".png") "PNG")
+           (ghostherd-memory-page--serve-files)
+           ,@body)
+       (delete-directory root t))))
+
+(ert-deftest ghostherd-test-docs-listed-by-title ()
+  "The Docs tab lists ghostherd's docs and yours, newest first, each by
+its <title> -- its references read, on one line -- or its name; a name
+in both is ghostherd's; nothing that is not served: not .html to the
+letter, a symlink, another file."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-test--docs
+    (let ((docs (ghostherd-memory-page--docs)))
+      (should (equal (mapcar (lambda (d) (plist-get d :name)) docs)
+                     '("mine.html" "sidecar.html" "phone-access.html" "no-title.html")))
+      (should (equal (mapcar (lambda (d) (plist-get d :title)) docs)
+                     '("Mine" "Sidecar & its memory 💾" "Herd 頁面門禁" "no-title")))
+      (should (equal (mapcar (lambda (d) (plist-get d :where)) docs)
+                     (list (abbreviate-file-name mine) "ghostherd" "ghostherd" "ghostherd")))
+      (should (equal (plist-get (car docs) :bytes) (length "<title>Mine</title><script>alert(1)</script>")))
+      (should (numberp (plist-get (car docs) :mtime))))
+    ;; What the page gets.
+    (let (sent)
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) sent))))
+        (ghostherd-memory-page--handle '((op . "docs"))))
+      (should (equal (caar sent) "renderDocs"))
+      (should (= (length (plist-get (cdar sent) :docs)) 4)))))
+
+(ert-deftest ghostherd-test-docs-and-reports-served-sandboxed ()
+  "Each set the herd page is served: the Docs by their exact names from
+the folders listed, the reports a reply named by their ids -- both
+sandboxed, never cached for a doc -- and a report never through the
+images' set, which has no sandbox; the images as before.  Nothing past
+the cap, nor anything outside."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-test--docs
+    (let ((app ghostherd-memory-page--app))
+      (should (plist-get (xwapp--set app "docs") :sandbox))
+      (should (plist-get (xwapp--set app "docs") :exact))
+      (should (plist-get (xwapp--set app "docs") :fresh))
+      (should (plist-get (xwapp--set app "reports") :sandbox))
+      (should-not (plist-get (xwapp--set app) :sandbox))
+      (should (equal (xwapp--files-dirs app "docs") (list own mine (expand-file-name "missing/" root))))
+      (should (equal (xwapp--file-of app "sidecar.html" "docs") (expand-file-name "sidecar.html" own)))
+      (should (equal (xwapp--file-of app "mine.html" "docs") (expand-file-name "mine.html" mine)))
+      (dolist (name '("notes.txt" "Upper.HTML" "upper.html" "link.html" "outside.html" "../outside.html"
+                      "Mine.html" "MINE.HTML" "mine.htm" ".html"))
+        (should-not (xwapp--file-of app name "docs")))
+      ;; A report: by its id, in the reports' set alone.
+      (let ((report (concat id ".html")))
+        (should (equal (xwapp--file-of app report "reports") (expand-file-name report kept)))
+        (should-not (xwapp--file-of app report))                       ; not the images' set
+        (should-not (xwapp--file-of app report "docs"))                ; nor a doc
+        (dolist (name (list (upcase report) (concat id ".HTML") (concat id ".png")
+                            (concat (make-string 32 ?f) ".html") "index.sqlite"))
+          (should-not (xwapp--file-of app name "reports"))))
+      (should (equal (xwapp--file-of app (concat id ".png")) (expand-file-name (concat id ".png") kept)))
+      ;; Past the cap.
+      (let ((ghostherd-memory-page--doc-max-bytes 10))
+        (ghostherd-memory-page--serve-files)
+        (should-not (xwapp--file-of app "mine.html" "docs"))
+        (should-not (xwapp--file-of app (concat id ".html") "reports")))
+      (ghostherd-memory-page--serve-files))))
+
+(ert-deftest ghostherd-test-docs-open-in-a-view-of-their-own ()
+  "From the xwidget's page, a doc or a report opens in a view of Emacs's
+own (`xwapp-show-file'), named by its set and its name; another set is
+not asked for, and a name not served says so on the page."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-test--docs
+    (let (shown errors)
+      (cl-letf (((symbol-function 'xwapp-show-file)
+                 (lambda (_app name set) (push (list set name) shown)))
+                ((symbol-function 'ghostherd-memory-page--js)
+                 (lambda (fn obj) (when (equal fn "showError") (push obj errors)))))
+        (ghostherd-memory-page--handle '((op . "doc-open") (set . "docs") (name . "mine.html")))
+        (ghostherd-memory-page--handle `((op . "doc-open") (set . "reports") (name . ,(concat id ".html"))))
+        (ghostherd-memory-page--handle '((op . "doc-open") (set . "files") (name . "x.png")))
+        (ghostherd-memory-page--handle '((op . "doc-open") (set . "docs") (name . 3))))
+      (should (equal (reverse shown) `(("docs" "mine.html") ("reports" ,(concat id ".html")))))
+      (should-not errors)
+      ;; The real one refuses what is not served, on the page.
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js)
+                 (lambda (fn obj) (when (equal fn "showError") (push obj errors)))))
+        (ghostherd-memory-page--handle '((op . "doc-open") (set . "docs") (name . "link.html"))))
+      (should (string-match-p "not served" (car errors))))))
+
+(ert-deftest ghostherd-test-own-docs-from-the-checkout ()
+  "ghostherd's docs/ is the checkout's, beside the .el straight's build
+links to -- the build has none."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((root (file-name-as-directory (make-temp-file "ghostherd-build" t)))
+         (checkout (expand-file-name "local/ghostherd/" root))
+         (build (expand-file-name "straight/build/ghostherd/" root)))
+    (unwind-protect
+        (progn
+          (make-directory checkout t)
+          (make-directory build t)
+          (with-temp-file (expand-file-name "ghostherd-memory-page.el" checkout) (insert ";;"))
+          (make-symbolic-link (expand-file-name "ghostherd-memory-page.el" checkout)
+                              (expand-file-name "ghostherd-memory-page.el" build))
+          (let ((ghostherd-memory-page--dir build))
+            (should (equal (ghostherd-memory-page--own-docs)
+                           (expand-file-name "docs/" (file-truename checkout)))))
+          (let ((ghostherd-memory-page--dir checkout))
+            (should (equal (ghostherd-memory-page--own-docs) (expand-file-name "docs/" (file-truename checkout))))))
+      (delete-directory root t))))
 
 (ert-deftest ghostherd-test-images-the-sidecar-is-told-where ()
   "The sidecar starts knowing where to copy images, how long to keep
