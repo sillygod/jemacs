@@ -9945,6 +9945,15 @@ goes to that project's lead."
               (const lead-started))
   :group 'ghostherd)
 
+(defcustom ghostherd-push-images t
+  "Non-nil: a lead's report pushed to Telegram brings the images its words
+name, after its text -- one as a photo, more as an album, one too big for
+a photo as a file; four at most.  They are the copies the herd keeps of
+what an agent's reply names (`ghostherd-reply-images-directory'), and go to
+Telegram's servers as the text does: nil keeps them to the herd page."
+  :type 'boolean
+  :group 'ghostherd)
+
 (defcustom ghostherd-push-away-after 120
   "Seconds without a key or the mouse on this Mac after which you count
 as away from it, which is when a push goes out.  Nil: whenever you look
@@ -10015,7 +10024,8 @@ when it is worth one: see `ghostherd-push'."
       (push (append (list :kind (symbol-name kind)
                           :session (ghostherd-session-name session)
                           :project (or project "")
-                          :url (or (and project (ghostherd--room-url project)) ""))
+                          :url (or (and project (ghostherd--room-url project)) "")
+                          :images (if ghostherd-push-images t :json-false))
                     fields)
             ghostherd--herd-pushes))))
 

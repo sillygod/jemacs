@@ -12,6 +12,7 @@ from pydantic import BaseModel
 import conversation
 import fact_index
 import herd as herd_module
+import images
 import links
 import memory_migrate
 import meter
@@ -369,6 +370,8 @@ class JsonRpcHandler:
     def _herd_reply(self, params: dict) -> dict:
         ask_id = str(params.get("id") or "")
         out = get_herd().reply(ask_id, params.get("body"), from_name=params.get("from"))
+        # The images the answer names, copied before their scratch dir goes.
+        images.capture_soon(str(params.get("body")))
         # A promotion the lead was asked to apply is done once that ask is
         # answered: mark its facts promoted so they leave the index, the
         # openings and retrieval.  Best effort -- never fails the reply.
@@ -456,7 +459,17 @@ class JsonRpcHandler:
         id_, ask, agent = opt("id"), opt("ask"), opt("agent")
         if not (id_ or ask or agent):
             raise ValueError("give the thread's id, an ask in it, or an agent")
-        return get_herd().thread(id=id_, ask=ask, agent=agent)
+        out = get_herd().thread(id=id_, ask=ask, agent=agent)
+        # An answer's images: what it named, as recorded when it came.
+        store = None
+        for m in out.get("msgs") or []:
+            if m.get("kind") == "answer" and images.named(m.get("text") or ""):
+                store = store or images.get_store()
+                at = m["at"] / 1000 if m.get("at") else None
+                recs = images.public(store.lookup(m["text"], at))
+                if recs:
+                    m["images"] = recs
+        return out
 
     def _herd_report(self, params: dict) -> dict:
         def text(key):
@@ -469,7 +482,7 @@ class JsonRpcHandler:
         if not isinstance(ancestors, list) or not all(
                 isinstance(a, int) and not isinstance(a, bool) for a in ancestors):
             raise ValueError("ancestors must be a list of process ids")
-        return get_herd().report(
+        out = get_herd().report(
             session=str(params.get("session") or ""),
             state=text("state"),
             reason=text("reason"),
@@ -481,9 +494,18 @@ class JsonRpcHandler:
             ancestors=ancestors,
             headless=params.get("headless") is True,
         )
+        # The turn's last words: the images they name, copied now -- not a
+        # probe's words under the agent's name, which were not recorded.
+        if not out.get("ignored"):
+            images.capture_soon(text("last"))
+        return out
 
     def _herd_link(self, params: dict) -> dict:
-        return {"link": get_herd().link(str(params.get("session") or ""))}
+        link = get_herd().link(str(params.get("session") or ""))
+        if link and link.get("last"):
+            at = link["last_ms"] / 1000 if link.get("last_ms") else None
+            link["last_images"] = images.public(images.get_store().lookup(link["last"], at))
+        return {"link": link}
 
     def _herd_conversation(self, params: dict) -> dict:
         try:

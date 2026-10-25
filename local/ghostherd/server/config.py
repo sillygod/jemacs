@@ -52,6 +52,17 @@ class Config:
     mail_inline_limit: int = 4000
     telegram_token: str = ""
     telegram_chat_ids: tuple[int, ...] = ()
+    # The images agents' replies name, copied (images.py): Emacs says where,
+    # `ghostherd-reply-images-directory'; data_dir/images otherwise.  Kept this
+    # many days after a message last named them, the oldest going first
+    # past the budget.
+    images_dir: Path | None = None
+    images_keep_days: float = 30
+    images_budget_mb: float = 512
+
+    def __post_init__(self) -> None:
+        if self.images_dir is None:
+            self.images_dir = self.data_dir / "images"
 
     @property
     def qdrant_path(self) -> Path:
@@ -110,7 +121,18 @@ class Config:
             telegram_chat_ids=_parse_chat_ids(
                 os.getenv("GHOSTHERD_TELEGRAM_CHAT_IDS", "")
             ),
+            images_dir=_expand(os.environ["GHOSTHERD_IMAGES_DIR"])
+            if os.getenv("GHOSTHERD_IMAGES_DIR") else None,
+            images_keep_days=_number(os.getenv("GHOSTHERD_IMAGES_KEEP_DAYS"), 30),
+            images_budget_mb=_number(os.getenv("GHOSTHERD_IMAGES_BUDGET_MB"), 512),
         )
+
+
+def _number(raw: str | None, default: float) -> float:
+    try:
+        return float(raw) if raw not in (None, "") else default
+    except ValueError:
+        return default
 
 
 def _parse_chat_ids(raw: str) -> tuple[int, ...]:

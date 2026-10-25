@@ -10819,7 +10819,10 @@ the last out, and an idle time that cannot be read counts as away."
                     ghostherd--herd-pushes)))
       (should (equal (funcall block)
                      `((:kind "blocked" :session "rd" :project ,project :url ,(concat "room:" project)
-                              :reason "Allow npm test?"))))
+                              :images t :reason "Allow npm test?"))))
+      ;; Images off: the bot sends a report's text alone.
+      (let ((ghostherd-push-images nil))
+        (should (eq (plist-get (car (funcall block)) :images) :json-false)))
       (setq idle 30)
       (should-not (funcall block))
       (setq idle 600)
@@ -15194,6 +15197,121 @@ item is fetched by its ask with no report fetch."
              (cons 'kind "ask-failed") (cons 'agent "rd") (cons 'ask "1a2b3c4d")))
       (should (member '("herd_thread" :ask "1a2b3c4d") asked))
       (should-not (seq-find (lambda (a) (equal (car a) "herd_link")) asked)))))
+
+;;; Images a reply names
+
+(defconst ghostherd-test--image-id "0123456789abcdef0123456789abcdef")
+
+(ert-deftest ghostherd-test-images-reach-the-page-checked ()
+  "The images the sidecar says a message names reach the page field by
+field: only a copy's id and extension, none of what the reply said
+besides -- in a room's columns and its chat, an entry's own and the
+answer an ask of it got."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((id ghostherd-test--image-id)
+         (good (list :id id :ext "png" :name "after.png" :w 1200 :h 800 :thumb t :src "/tmp/after.png"))
+         (sent (list good
+                     (list :id "../../etc/passwd" :ext "png" :name "x")
+                     (list :id (upcase id) :ext "png")
+                     (list :id id :ext "svg")
+                     (list :id (concat id "0") :ext "png")
+                     "not an image"
+                     (list :id id :ext "jpg" :w -1 :h "9" :thumb nil)))
+         (want (vector (list :id id :ext "png" :name "after.png" :w 1200 :h 800 :thumb t)
+                       (list :id id :ext "jpg" :name "image" :w nil :h nil :thumb :json-false))))
+    (should (equal (ghostherd-memory-page--images sent) want))
+    (should-not (ghostherd-memory-page--images nil))
+    (should-not (ghostherd-memory-page--images "x"))
+    (should-not (ghostherd-memory-page--images (list (list :id "x" :ext "png"))))
+    (let ((e (ghostherd-memory-page--room-entry
+              (list :role "herd" :kind "ask" :text "Take one" :answer "Here" :images sent :answer_images sent))))
+      (should (equal (plist-get e :images) want))
+      (should (equal (plist-get e :answerImages) want)))
+    (let ((e (ghostherd-memory-page--chat-entry (list :who "rd" :kind "turn" :text "Done" :images sent))))
+      (should (equal (plist-get e :images) want))
+      (should-not (plist-get e :answerImages)))))
+
+(ert-deftest ghostherd-test-images-served-by-their-names-alone ()
+  "The herd page is served the copies in `ghostherd-reply-images-directory' by
+their names -- an id, and the copy's extension or its thumbnail's -- and
+nothing else there: not the index, not another name, not a symlink."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((dir (file-name-as-directory (make-temp-file "ghostherd-images" t)))
+         (ghostherd-reply-images-directory dir)
+         (id ghostherd-test--image-id))
+    (unwind-protect
+        (progn
+          (dolist (f (list (concat id ".png") (concat id ".t.jpg") (concat id ".webp")
+                           "index.sqlite" (concat id ".txt") (concat id ".t.png") "0123.png"))
+            (with-temp-file (expand-file-name f dir) (insert f)))
+          (make-symbolic-link (expand-file-name "index.sqlite" dir)
+                              (expand-file-name (concat (make-string 32 ?a) ".png") dir))
+          (should (equal (xwapp--files-dir ghostherd-memory-page--app) dir))
+          (dolist (f (list (concat id ".png") (concat id ".t.jpg") (concat id ".webp")))
+            (should (equal (xwapp--file-of ghostherd-memory-page--app f) (expand-file-name f dir))))
+          (dolist (f (list "index.sqlite" (concat id ".txt") (concat id ".t.png") "0123.png"
+                           (concat (make-string 32 ?a) ".png") (concat id ".PNG")
+                           (concat "../" id ".png") (concat (make-string 32 ?f) ".png")))
+            (should-not (xwapp--file-of ghostherd-memory-page--app f)))
+          ;; Not set: a directory of their own beside the images you paste,
+          ;; out of the way of their pruning (top-level files only).
+          (let ((ghostherd-reply-images-directory nil)
+                (ghostherd-image-directory "/home/me/.emacs.d/emacs-home/ghostherd-images/"))
+            (should (equal (ghostherd-memory--reply-images-directory)
+                           "/home/me/.emacs.d/emacs-home/ghostherd-images/replies/"))))
+      (delete-directory dir t))))
+
+(ert-deftest ghostherd-test-images-the-sidecar-is-told-where ()
+  "The sidecar starts knowing where to copy images, how long to keep
+them and how much room they may take."
+  (let ((ghostherd-reply-images-directory "/tmp/gh-images/")
+        (ghostherd-reply-images-keep-days 10)
+        (ghostherd-reply-images-budget 64)
+        env)
+    (cl-letf (((symbol-function 'start-process)
+               (lambda (&rest _) (setq env process-environment) nil))
+              ((symbol-function 'set-process-query-on-exit-flag) #'ignore))
+      (let ((ghostherd-memory--process nil)
+            (ghostherd-memory--port nil))
+        (ghostherd-memory--spawn temporary-file-directory 49999)))
+    (should (member "GHOSTHERD_IMAGES_DIR=/tmp/gh-images/" env))
+    (should (member "GHOSTHERD_IMAGES_KEEP_DAYS=10" env))
+    (should (member "GHOSTHERD_IMAGES_BUDGET_MB=64" env))
+    (when (get-buffer "*ghostherd-memory*") (kill-buffer "*ghostherd-memory*"))))
+
+(ert-deftest ghostherd-test-images-of-a-report-in-the-inbox ()
+  "A report picked in the Inbox brings the images its words name with
+them, in the same push -- checked; and a thread's answer its own."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* (pushes
+         (ghostherd--log nil)
+         (ghostherd-inbox--detail-req nil)
+         (id ghostherd-test--image-id)
+         (img (list :id id :ext "png" :name "a.png" :w 2 :h 1 :thumb t))
+         (now (* 1000 (float-time))))
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok _params &optional _err)
+                 (funcall ok (pcase method
+                               ("herd_thread" (list :id "t1" :rootFrom "lead-x" :started (- now 5000) :at now
+                                                    :lanes nil :waiting nil
+                                                    :msgs (list (list :kind "answer" :from "rd" :to "lead-x"
+                                                                      :at (- now 1000) :text "see a.png"
+                                                                      :images (list img)))))
+                               ("herd_link" (list :link (list :session "lead-x" :last "Shipped: /tmp/a.png"
+                                                              :last_images (list img (list :id "x" :ext "png"))))))))))
+      (ghostherd-memory-page--handle
+       (list (cons 'op "inbox-detail") (cons 'id (format "report:lead-x:%d" (truncate now)))
+             (cons 'kind "report") (cons 'agent "lead-x") (cons 'ask "")))
+      (let ((rep (seq-find (lambda (p) (plist-get (cdr p) :report)) pushes)))
+        (should (equal (plist-get (cdr rep) :report) "Shipped: /tmp/a.png"))
+        (should (equal (plist-get (cdr rep) :images)
+                       (vector (list :id id :ext "png" :name "a.png" :w 2 :h 1 :thumb t)))))
+      (let* ((thr (seq-find (lambda (p) (plist-get (cdr p) :thread)) pushes))
+             (msg (seq-find (lambda (m) (plist-get m :images))
+                            (plist-get (plist-get (cdr thr) :thread) :msgs))))
+        (should (vectorp (plist-get msg :images)))
+        (should (eq (plist-get (aref (plist-get msg :images) 0) :thumb) t))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here

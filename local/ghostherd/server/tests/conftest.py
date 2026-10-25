@@ -15,3 +15,7 @@ os.environ.setdefault("GHOSTHERD_MEMORY_DIR",
 # the memory it carries.  A test that wants a store of its own sets it.
 os.environ.setdefault("GHOSTHERD_SHARED_MEMORY_DIR",
                       tempfile.mkdtemp(prefix="ghostherd-test-memory-"))
+# The images replies name are copied under GHOSTHERD_IMAGES_DIR: never the
+# user's ~/.emacs.d/ghostherd-images.
+os.environ.setdefault("GHOSTHERD_IMAGES_DIR",
+                      tempfile.mkdtemp(prefix="ghostherd-test-images-"))

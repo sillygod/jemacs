@@ -681,6 +681,43 @@ button.small { padding: 2px 10px; font-size: 12px; }
   max-width: 30em;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
+/* Images a reply names: thumbnails under the message, a press for the
+   image whole over the page (app.js, imagesHtml / openImage). */
+.eimgs { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.eimg {
+  display: block;
+  padding: 0;
+  height: 120px;
+  max-width: min(100%, 260px);
+  min-width: 48px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--code);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.eimg:hover, .eimg:focus-visible { border-color: var(--accent); }
+.eimg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+.eimgname { display: block; padding: 6px 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.thimgs { grid-row: 3; margin: 6px 8px 0; min-width: 0; }
+.thimgs .eimgs { margin: 0; }
+.thconv .eimgs { margin: -2px 0 0 12px; }
+.imgview {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: rgba(1, 4, 9, 0.96);
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+.imgbar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; flex: none; color: var(--text); }
+.imgname { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imgopen { color: var(--accent); font-size: 13px; }
+.imgclose { min-width: 44px; min-height: 36px; }
+.imgscroll { flex: 1; min-height: 0; overflow: auto; display: flex; padding: 0 12px 12px; }
+.imgscroll img { margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; background: var(--code); }
+.imgview.actual .imgscroll img { max-width: none; max-height: none; cursor: zoom-out; }
 .ask-msg { margin: 0 0 6px; font-weight: 600; }
 .ask-detail { margin: 0 0 14px; color: var(--muted); }
 .ask-detail:empty { display: none; }

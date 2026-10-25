@@ -17,6 +17,9 @@
  *   XW.copy(text)        a promise: whether TEXT is on this device's clipboard
  *   XW.open(url, name)   URL in a tab of this device's browser, from a tap
  *   XW.kit(call)         Emacs's calls to the kit itself, in the xwidget
+ *   XW.file(name)        the URL of a file Emacs serves the page by name
+ *                        (xwapp-serve-files); "" in the xwidget until Emacs
+ *                        has said where, when "xw-files" fires on document
  *
  * An element with data-xw-phone is the page's button for "open it on
  * your phone": shown once Emacs says the page can be reached there,
@@ -398,6 +401,17 @@
   // be reached so in answer to its hello, and gives the address only
   // when asked: it holds the page's secret.
 
+  // ---- Files Emacs serves the page by name ------------------------------
+  //
+  // In a browser under the page's secret, as the page itself is; in the
+  // xwidget, a page of file:, from their directory, which Emacs says in
+  // answer to the hello.
+
+  let filesBase = BROWSER ? ROOT + ".files/" : "";
+  function file(name) {
+    return filesBase ? filesBase + encodeURIComponent(String(name)) : "";
+  }
+
   // Emacs's calls to the kit itself: in a browser through next, in the
   // xwidget as XW.kit(call).
   function kit(call) {
@@ -405,6 +419,9 @@
       document.documentElement.classList.toggle("xw-phone", !ELSEWHERE);
     } else if (call.xwapp === "qr") {
       showQr(call);
+    } else if (call.xwapp === "files" && !BROWSER && /^file:\/\/\//.test(String(call.base || ""))) {
+      filesBase = String(call.base).replace(/\/?$/, "/");
+      document.dispatchEvent(new CustomEvent("xw-files"));
     }
   }
 
@@ -641,5 +658,6 @@
     open: open,
     openApp: openApp,
     kit: kit,
+    file: file,
   });
 })();

@@ -69,6 +69,35 @@ Nil means `ghostherd-memory/' under `user-emacs-directory'."
   :type '(choice (const nil) directory)
   :group 'ghostherd-memory)
 
+(defvar ghostherd-image-directory)
+
+(defcustom ghostherd-reply-images-directory nil
+  "Where the images agents' replies name are copied, for the herd page
+and Telegram.  Nil means `replies/' in `ghostherd-image-directory', where
+the images you paste into a prompt are kept -- a directory of its own,
+apart from those.
+
+When the herd records a reply -- an agent's last words at the end of a
+turn, its answer to an ask, what it says in its room -- the sidecar
+copies each image it names here, under an id no one can guess: the
+scratch directory it was in goes away, and the message still shows it.
+Only images: a path in the reply's own text, to a regular file of
+yours (not a symlink), PNG, JPEG, GIF or WebP by its first bytes.  The
+page is served the copies by their ids alone, and nothing else from
+here.  The sidecar reads this when it starts."
+  :type '(choice (const nil) directory)
+  :group 'ghostherd-memory)
+
+(defcustom ghostherd-reply-images-keep-days 30
+  "Days a copied reply image is kept after a message last named it."
+  :type 'number
+  :group 'ghostherd-memory)
+
+(defcustom ghostherd-reply-images-budget 512
+  "Megabytes the copied reply images may take; past it the oldest go first."
+  :type 'number
+  :group 'ghostherd-memory)
+
 (defcustom ghostherd-memory-request-timeout 60
   "Timeout in seconds for search / status RPCs.
 The first call after a cold start may load FastEmbed."
@@ -180,6 +209,15 @@ because an agent's shell profile may rebuild PATH."
   (expand-file-name
    (or ghostherd-memory-data-directory
        (expand-file-name "ghostherd-memory" user-emacs-directory))))
+
+(defun ghostherd-memory--reply-images-directory ()
+  "Where images replies name are copied: see `ghostherd-reply-images-directory'."
+  (file-name-as-directory
+   (expand-file-name
+    (or ghostherd-reply-images-directory
+        (expand-file-name "replies"
+                          (or (bound-and-true-p ghostherd-image-directory)
+                              (expand-file-name "ghostherd-images" user-emacs-directory)))))))
 
 (defun ghostherd-memory--current-port ()
   "Port RPC should use: the bound one, else the preferred start."
@@ -492,7 +530,10 @@ TIMEOUT defaults to `ghostherd-memory-request-timeout'."
           (append
            (list (format "GHOSTHERD_MEMORY_HOST=%s" ghostherd-memory-host)
                  (format "GHOSTHERD_MEMORY_PORT=%d" port)
-                 (format "GHOSTHERD_MEMORY_DIR=%s" data))
+                 (format "GHOSTHERD_MEMORY_DIR=%s" data)
+                 (format "GHOSTHERD_IMAGES_DIR=%s" (ghostherd-memory--reply-images-directory))
+                 (format "GHOSTHERD_IMAGES_KEEP_DAYS=%s" ghostherd-reply-images-keep-days)
+                 (format "GHOSTHERD_IMAGES_BUDGET_MB=%s" ghostherd-reply-images-budget))
            ;; Where guarded agents' guards live: the one place the sidecar
            ;; writes the user's approvals into.
            (when (boundp 'ghostherd-guard-root)
