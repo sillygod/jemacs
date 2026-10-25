@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sidecar 記憶體瘦身</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  /* Layout: one reading column; the result first, then how it was found,
+     the two causes with their numbers, what changed, and what to watch. */
+  :root {
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --fg: #18212c;
+    --muted: #5a6573;
+    --line: #d8dee7;
+    --accent: #2f58cd;
+    --accent-soft: #e6ecfb;
+    --pass: #1d7547;
+    --pass-soft: #e2f3ea;
+    --block: #b3362c;
+    --block-soft: #f9e4e1;
+    --warn: #96600a;
+    --warn-soft: #fbefd9;
+    --code-bg: #eef1f5;
+    /* What the sidecar holds, one colour each */
+    --seg-qdrant: #2f58cd;
+    --seg-facts: #7a4fc4;
+    --seg-models: #b39ae0;
+    --seg-arena: #b3362c;
+    --seg-import: #c58a1c;
+    --seg-other: #9aa5b3;
+    --sans: "IBM Plex Sans", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f141b; --panel: #161d26; --fg: #e2e8f0; --muted: #97a3b4; --line: #2a3442;
+      --accent: #86a6ff; --accent-soft: #1d2a4a; --pass: #63c690; --pass-soft: #14301f;
+      --block: #f08177; --block-soft: #3a1a17; --warn: #e3ac55; --warn-soft: #382a12;
+      --code-bg: #1d2530; color-scheme: dark;
+      --seg-qdrant: #86a6ff; --seg-facts: #b896f0; --seg-models: #6f58a0;
+      --seg-arena: #f08177; --seg-import: #e3ac55; --seg-other: #5f6b7b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f141b; --panel: #161d26; --fg: #e2e8f0; --muted: #97a3b4; --line: #2a3442;
+    --accent: #86a6ff; --accent-soft: #1d2a4a; --pass: #63c690; --pass-soft: #14301f;
+    --block: #f08177; --block-soft: #3a1a17; --warn: #e3ac55; --warn-soft: #382a12;
+    --code-bg: #1d2530; color-scheme: dark;
+    --seg-qdrant: #86a6ff; --seg-facts: #b896f0; --seg-models: #6f58a0;
+    --seg-arena: #f08177; --seg-import: #e3ac55; --seg-other: #5f6b7b;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  :root { color-scheme: light; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.7 var(--sans); }
+  .page { max-width: 46rem; margin: 0 auto; padding-inline: 16px; padding-block: 36px 64px; display: grid; gap: 40px; }
+  h1, h2, h3 { text-wrap: balance; line-height: 1.3; margin: 0; }
+  h1 { font-size: 1.75rem; font-weight: 700; }
+  h2 { font-size: 1.2rem; font-weight: 650; }
+  h3 { font-size: 1rem; font-weight: 600; }
+  p { margin: 0; }
+  section { display: grid; gap: 14px; min-width: 0; }
+  .eyebrow { font: 500 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  .lede { color: var(--muted); max-width: 40rem; }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+
+  /* The answer, first */
+  .verdict { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; padding: 14px 16px; border-radius: 8px; }
+  .verdict.ok { background: var(--pass-soft); }
+  .verdict.warn { background: var(--warn-soft); }
+  .verdict b { font-weight: 650; }
+  .tag { font: 600 0.72rem/1.6 var(--mono); letter-spacing: 0.04em; padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+  .tag.ok { color: var(--pass); border: 1px solid var(--pass); }
+  .tag.no { color: var(--block); border: 1px solid var(--block); }
+  .tag.warn { color: var(--warn); border: 1px solid var(--warn); }
+
+  /* Three numbers: seen, before the restart, after */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 10px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 2px; align-content: start; min-width: 0; }
+  .stat .k { font: 500 0.7rem/1.4 var(--mono); color: var(--muted); letter-spacing: 0.04em; }
+  .stat .v { font: 600 1.5rem/1.2 var(--mono); font-variant-numeric: tabular-nums; }
+  .stat .n { font-size: 0.82rem; color: var(--muted); line-height: 1.45; }
+  .stat.after { border-color: var(--pass); }
+  .stat.after .v { color: var(--pass); }
+
+  /* Bars: one shared scale per chart, the numbers always written beside */
+  .chart { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 12px; min-width: 0; }
+  .chart .cap { font-size: 0.82rem; color: var(--muted); line-height: 1.5; }
+  .bar { display: grid; gap: 4px; }
+  .bar-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 0.88rem; }
+  .bar-head .num { font-weight: 600; white-space: nowrap; }
+  .track { height: 20px; background: var(--code-bg); border-radius: 4px; overflow: hidden; display: flex; }
+  .seg { height: 100%; flex: none; }
+  .seg + .seg { box-shadow: inset 1px 0 var(--panel); }
+  .s-qdrant { background: var(--seg-qdrant); }
+  .s-facts { background: var(--seg-facts); }
+  .s-models { background: var(--seg-models); }
+  .s-arena { background: var(--seg-arena); }
+  .s-import { background: var(--seg-import); }
+  .s-other { background: var(--seg-other); }
+  .s-good { background: var(--pass); }
+  .s-bad { background: var(--block); }
+  .s-plain { background: var(--muted); }
+  .legend { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 6px 16px; font-size: 0.84rem; }
+  .legend li { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: baseline; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; align-self: center; }
+  .legend .num { white-space: nowrap; color: var(--muted); }
+
+  /* Tables: narrow enough for a phone, no sideways scroll */
+  .table-wrap { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+  th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+  th { font: 600 0.7rem/1.3 var(--mono); letter-spacing: 0.04em; color: var(--muted); }
+  td.r, th.r { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  tr.hot td { background: var(--block-soft); }
+  tr.good td { background: var(--pass-soft); }
+
+  /* Cards: causes, changes, options */
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+  .card.red { border-color: var(--block); }
+  .card .label { font: 600 0.75rem/1 var(--mono); color: var(--accent); }
+  .card.red .label { color: var(--block); }
+  .note { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 12px 14px; border-radius: 0 8px 8px 0; display: grid; gap: 6px; }
+  .options { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+  .options li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; min-width: 0; }
+  .options li.big { border-color: var(--accent); }
+  .options .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.82rem; color: var(--muted); }
+  .options .meta b { color: var(--fg); font-weight: 600; }
+  pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 10px 12px; font: 0.82rem/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre .c { color: var(--muted); }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+
+<main class="page">
+  <header style="display:grid; gap:10px">
+    <div class="eyebrow">ghostherd · sidecar · 2026-10-25</div>
+    <h1>Sidecar 的記憶體：從 10 GB 到 1.4 GB</h1>
+    <p class="lede">ghostherd 的 sidecar（<code>server/</code>，Emacs 啟動的 Python 服務，負責搜尋 sessions 和 facts）跑幾個小時後，記憶體讀到約 10 GB。這頁記下怎麼量、找到的兩個原因、改了什麼、還要留意什麼，以及沒做的選項。Ask 18e8b5dd，commit <code>d04d3b7</code>。</p>
+  </header>
+
+  <section aria-labelledby="ans">
+    <h2 id="ans">先說結論</h2>
+    <div class="stats">
+      <div class="stat">
+        <span class="k">之前看到</span>
+        <span class="v">~10 GB</span>
+        <span class="n">跑了 3 小時 22 分的那個 sidecar</span>
+      </div>
+      <div class="stat">
+        <span class="k">部署前（舊版）</span>
+        <span class="v">4,331 MB</span>
+        <span class="n">重啟前那一刻；它每次匯入還會再長</span>
+      </div>
+      <div class="stat after">
+        <span class="k">部署後（重啟）</span>
+        <span class="v">1,428 MB</span>
+        <span class="n">RSS 1.9 GB；<code>herd search</code> 0.22 s</span>
+      </div>
+    </div>
+    <div class="verdict ok">
+      <span class="tag ok">修好了</span>
+      <p>兩個原因，都不是 ghostherd 自己的程式漏記憶體。<b>會長的那部分</b>是 ONNX Runtime 的記憶體池（arena）：它留住最大那一批嵌入要過的記憶體，不還。<b>起跳就很高的那部分</b>是 embedded Qdrant 的載入方式：一次讀進所有資料，每個向量先變成 512 個 Python float，用完的記憶體還不回系統。關掉 arena、一批改成 16 個 chunk、換一個邊讀邊轉 float32 的載入器之後，sidecar 啟動約 1.45 GB，匯入時穩在 1.8 GB 左右，不再隨匯入變大。硬碟上的資料一個位元組都沒動。</p>
+    </div>
+    <div class="verdict warn">
+      <span class="tag warn">要留意</span>
+      <p>新的載入器只在 <code>qdrant-client</code> 1.19.x 上啟用。升級後它會自動退回原本的載入方式（記憶體回到多 1.6 GB），要重新量過才放寬。見「取捨與要留意的」。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="symptom">
+    <div class="eyebrow">症狀</div>
+    <h2 id="symptom">10 GB、swap，以及安靜一陣子後的第一次搜尋</h2>
+    <p>活動監視器的「記憶體」欄（也就是 <code>footprint</code> 量的 phys_footprint）讀到約 10 GB。但這 10 GB 大多不在 RAM 裡：部署前那個 sidecar 才跑了 9 分鐘，footprint 就有 4,317 MB，其中只有 2.5 GB 在 RAM，2.0 GB 已經被換到 swap（<code>vmmap --summary</code>）。整台 Mac 的 swap 用了 4 GB 裡的 2.5 GB（<code>sysctl vm.swapusage</code>）。</p>
+    <p>記憶體一緊，macOS 就把閒著的 sidecar 壓縮或換出去：量的時候它的 RSS 一度掉到約 80 MB，footprint 卻還是 4.3 GB；下次被用到時，RSS 又回到 2.2 GB。所以代價主要不是「RAM 被佔滿」，而是 swap 和壓縮器的空間，以及<b>安靜一陣子後的第一次搜尋</b>：要先把好幾 GB 從 swap 讀回來。這次沒有單獨量第一次搜尋慢了多少，上面這個機制是從 RSS 的起落看出來的。</p>
+    <p class="muted">RSS 和 footprint 不一樣：RSS 是此刻在 RAM 裡的頁，包括映射進來、系統隨時能收回的程式庫；footprint 是這個 process 自己弄髒的記憶體，連被壓縮、被換出去的都算。只有 process 自己釋放，footprint 才會下降，所以要看的是它。</p>
+  </section>
+
+  <section aria-labelledby="how">
+    <div class="eyebrow">怎麼量的</div>
+    <h2 id="how">只輕看線上那個，重的都在副本上做</h2>
+    <div class="card">
+      <div class="label">線上的 sidecar：只做唯讀、很快的觀察</div>
+      <ul class="plain">
+        <li><code>ps</code> 每 30 秒記 RSS，<code>footprint</code> 每 5 分鐘一次，記了 26 分鐘：閒置時 footprint 停在 4,315–4,330 MB，不隨時間長</li>
+        <li><code>vmmap --summary</code> 一次：各類記憶體在 RAM、被壓縮、被換出各多少</li>
+        <li><code>sysctl vm.swapusage</code>、<code>memory_pressure</code>：整台 Mac 的狀況</li>
+        <li>不掛 debugger、不跑 profiler，也不打開它正在用的 store：embedded Qdrant 打開就會寫入</li>
+      </ul>
+    </div>
+    <p><code>footprint</code> 依類別拆開，已經指向兩個嫌疑：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>類別（9 分鐘時）</th><th class="r">footprint</th><th>代表什麼</th></tr></thead>
+        <tbody>
+          <tr><td>VM_ALLOCATE（未標記）<br><span class="muted">1,789 塊，每塊約 1 MB</span></td><td class="r">1,775 MB</td><td>Python 小物件的 arena（pymalloc）：大量 Python 物件</td></tr>
+          <tr><td>MALLOC_LARGE<br><span class="muted">20 塊</span></td><td class="r">1,617 MB</td><td>大塊配置：numpy 矩陣、模型權重、ONNX Runtime 的緩衝區</td></tr>
+          <tr><td>MALLOC_SMALL / TINY / MEDIUM</td><td class="r">763 MB</td><td>一般的 malloc</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <div class="label">副本上的 sidecar：真正的拆解</div>
+      <ul class="plain">
+        <li><code>session_eval.py snapshot</code> 把 store 複製一份（85,220 個 chunk），再用 <code>cp -c</code> 複製出工作用的副本；線上的 store 從頭到尾沒碰</li>
+        <li>一支腳本照 sidecar 啟動的順序一步步載入同樣的模組，每一步之後讀一次 <code>footprint</code>：下一節的表</li>
+        <li>分開的實驗：只載 dense 模型，換 batch 大小、開關 arena；Qdrant 的資料結構依型別量大小；幾種載入方式各量開啟後的 footprint 和峰值 RSS</li>
+        <li>結果對照：47 個帶標記的查詢（session index 的 eval），新舊載入方式的 dense 前 30 名逐一比對</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="breakdown">
+    <div class="eyebrow">逐步拆解</div>
+    <h2 id="breakdown">每一步多了多少（85,220 個 chunk 的副本）</h2>
+    <div class="chart" role="img" aria-label="同一組步驟跑完後的 footprint：之前 9,035 MB，其中 ONNX Runtime arena 5,215 MB、Qdrant 2,410 MB；之後 1,800 MB，其中 Qdrant 864 MB、facts 模型 482 MB。">
+      <div class="bar">
+        <div class="bar-head"><span>之前</span><span class="num">9,035 MB</span></div>
+        <div class="track">
+          <span class="seg s-other" style="width:0.59%"></span>
+          <span class="seg s-qdrant" style="width:26.67%"></span>
+          <span class="seg s-facts" style="width:5.39%"></span>
+          <span class="seg s-models" style="width:0.77%"></span>
+          <span class="seg s-arena" style="width:57.72%"></span>
+          <span class="seg s-import" style="width:8.85%"></span>
+        </div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>之後</span><span class="num">1,800 MB</span></div>
+        <div class="track">
+          <span class="seg s-other" style="width:0.21%"></span>
+          <span class="seg s-qdrant" style="width:9.56%"></span>
+          <span class="seg s-facts" style="width:5.33%"></span>
+          <span class="seg s-models" style="width:1.02%"></span>
+          <span class="seg s-import" style="width:3.77%"></span>
+        </div>
+      </div>
+      <ul class="legend">
+        <li><span class="sw s-arena"></span><span>ONNX Runtime 的 arena（兩批長 chunk）</span><span class="num">5,215 → 2</span></li>
+        <li><span class="sw s-qdrant"></span><span>開啟 Qdrant store</span><span class="num">2,410 → 864</span></li>
+        <li><span class="sw s-import"></span><span>10 次匯入</span><span class="num">800 → 341</span></li>
+        <li><span class="sw s-facts"></span><span>facts 的多語模型</span><span class="num">487 → 482</span></li>
+        <li><span class="sw s-models"></span><span>sessions 的 dense + BM25 模型</span><span class="num">70 → 92</span></li>
+        <li><span class="sw s-other"></span><span>模組、詞索引、47 次搜尋</span><span class="num">53 → 19</span></li>
+      </ul>
+      <p class="cap">兩條用同一個比例尺，單位 MB。「之後」的 arena 那 2 MB 小到畫不出來。</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>步驟（footprint 累計）</th><th class="r">之前</th><th class="r">之後</th></tr></thead>
+        <tbody>
+          <tr><td>載入模組</td><td class="r">12</td><td class="r">12</td></tr>
+          <tr class="hot"><td>開啟 store（embedded Qdrant），<code>gc.freeze</code></td><td class="r">2,422</td><td class="r">876</td></tr>
+          <tr><td>+ facts 的多語模型，同步每個 facts store</td><td class="r">2,909</td><td class="r">1,358</td></tr>
+          <tr><td>+ sessions 的 dense 與 BM25 模型</td><td class="r">2,979</td><td class="r">1,450</td></tr>
+          <tr><td>+ 檢查詞索引，47 次搜尋</td><td class="r">3,020</td><td class="r">1,457</td></tr>
+          <tr class="hot"><td>+ 一批 256 個長 chunk 的 dense 嵌入</td><td class="r">6,173</td><td class="r">1,459</td></tr>
+          <tr class="hot"><td>+ 同一批再一次</td><td class="r">8,235</td><td class="r">1,459</td></tr>
+          <tr><td>+ 10 次匯入，每次 100 個 chunk</td><td class="r">9,035</td><td class="r">1,800</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">搜尋本身幾乎不花記憶體（47 次搜尋 +0 MB）。長的是匯入：嵌入新的 chunk 時。所以舊版長大的速度看的是匯入了多少，不是開了多久；閒置的那 26 分鐘一直是平的。</p>
+  </section>
+
+  <section aria-labelledby="cause1">
+    <div class="eyebrow">原因一 · 會長的那部分</div>
+    <h2 id="cause1">ONNX Runtime 的 arena 留住最大那一批的記憶體</h2>
+    <p>嵌入模型（sessions 用 bge-small-zh-v1.5，facts 用 paraphrase-multilingual-MiniLM-L12-v2）由 fastembed 透過 ONNX Runtime 在 CPU 上跑。ONNX Runtime 預設開著 CPU memory arena：一個記憶體池，一次推論要多少就向系統要多少，用完不還，留給下一次。一批的工作記憶體隨筆數增加，也隨長度的平方增加。匯入時一批送 256 個 chunk，長的到 512 token，一次就要 2 GB；批次的形狀一變，arena 又要一塊新的。</p>
+    <div class="chart" role="img" aria-label="只載 dense 模型、跑兩批 256 個長 chunk 後 footprint 多了多少：arena 開 batch 256 為 5,172 MB，batch 32 為 356 MB，batch 8 為 82 MB；arena 關則 8 到 23 MB。">
+      <div class="cap">只載 dense 模型，同一批 256 個長 chunk 跑兩次，footprint 共多了多少（MB）</div>
+      <div class="bar">
+        <div class="bar-head"><span>arena 開，batch 256</span><span class="num">+5,172</span></div>
+        <div class="track"><span class="seg s-bad" style="width:100%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>arena 開，batch 32</span><span class="num">+356</span></div>
+        <div class="track"><span class="seg s-bad" style="width:6.88%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>arena 開，batch 8</span><span class="num">+82</span></div>
+        <div class="track"><span class="seg s-bad" style="width:1.59%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>arena 關，batch 256 / 32 / 8</span><span class="num">+23 / +8 / +22</span></div>
+        <div class="track"><span class="seg s-good" style="width:0.45%"></span></div>
+      </div>
+      <p class="cap">arena 開、batch 256：第一批後 +3,107 MB，第二批後累計 +5,172 MB。每一種設定下，256 個長 chunk 都花 11.2–12.1 s，一次查詢都是 2 ms。</p>
+    </div>
+    <p>arena 關掉後不會再「留住」，但一批進行中的峰值還在，所以 batch 也要小：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>arena 關，batch</th><th class="r">一批進行中的峰值 RSS</th><th class="r">256 個長 chunk</th></tr></thead>
+        <tbody>
+          <tr><td>256（原本）</td><td class="r">+2,024 MB</td><td class="r">12.0 s</td></tr>
+          <tr><td>64</td><td class="r">+742 MB</td><td class="r">11.7 s</td></tr>
+          <tr><td>32</td><td class="r">+547 MB</td><td class="r">11.6 s</td></tr>
+          <tr class="good"><td>16（現在）</td><td class="r">+215 MB</td><td class="r">11.4 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">小批次沒有變慢：CPU 上每個 chunk 的計算量一樣，大批次只是多佔記憶體。</p>
+  </section>
+
+  <section aria-labelledby="cause2">
+    <div class="eyebrow">原因二 · 起跳就高的那部分</div>
+    <h2 id="cause2">embedded Qdrant 一次讀進所有資料，每個向量先變成 Python float</h2>
+    <p>Sidecar 用的是 <code>qdrant-client</code> 1.19 的 local 模式（embedded Qdrant）：沒有獨立的 Qdrant 服務，所有 point 都以 Python 物件放在記憶體，存檔時是 <code>storage.sqlite</code> 裡一列一個 pickle。真正留在記憶體裡的資料結構只有 678 MB：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Qdrant 在記憶體裡的東西（85,220 個 chunk）</th><th class="r">大小</th></tr></thead>
+        <tbody>
+          <tr><td>dense 向量：一個 float64 的 numpy 矩陣（85,220 × 512）</td><td class="r">333 MB</td></tr>
+          <tr><td>sparse（BM25）向量：每個權重都是 Python 的 int / float 物件，加上 list 和 SparseVector</td><td class="r">218 MB</td></tr>
+          <tr><td>payload：文字 38、dict 22、其他值 49</td><td class="r">109 MB</td></tr>
+          <tr><td>id 對照、IDF</td><td class="r">19 MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>但是打開 store 讓 footprint 多了 2.4 GB。差的那 1.7 GB 是載入過程留下的：</p>
+    <ul class="plain">
+      <li>它用 <code>fetchall()</code> 一次讀進所有列：約 800 MB 的 pickle 同時在記憶體裡</li>
+      <li>每個 point 的 dense 向量解開後是 512 個 Python float 的 list：一個 float 物件 24 bytes，加上 list 裡指向它的 8 bytes，一個向量約 16 KB；同樣的向量用 float32 只要 2 KB。全部讀完前它們都留著：tracemalloc 量到 <b>1.4 GB</b>。pymalloc 實際以 32 bytes 一格放一個 float，照這樣算約 1.7 GB，正好對得上差的那部分</li>
+      <li>最後才把這些 list 疊成一個 float64 矩陣。那些 float 這時才釋放，但它們跟要長留的物件（payload、sparse 向量）交錯放在同一批 1 MB 的 pymalloc arena 裡。一個 arena 只要還有一個活物件就還不回系統，所以這些空間從此留在 process 裡</li>
+    </ul>
+    <div class="chart" role="img" aria-label="幾種載入方式打開 store 後 footprint 多了多少：原本 2,381 MB；改用 PYTHONMALLOC=malloc 仍是 2,381 MB；只改成分批讀 2,307 MB；分批讀並每筆轉 float32 為 783 MB。">
+      <div class="cap">打開同一個 store，footprint 多了多少（MB）；括號裡是過程中的峰值 RSS</div>
+      <div class="bar">
+        <div class="bar-head"><span>原本的載入器（峰值 3,072）</span><span class="num">+2,381</span></div>
+        <div class="track"><span class="seg s-bad" style="width:100%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>同上，<code>PYTHONMALLOC=malloc</code>（峰值 3,131）</span><span class="num">+2,381</span></div>
+        <div class="track"><span class="seg s-plain" style="width:100%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>只改成分批讀（峰值 2,623）</span><span class="num">+2,307</span></div>
+        <div class="track"><span class="seg s-plain" style="width:96.89%"></span></div>
+      </div>
+      <div class="bar">
+        <div class="bar-head"><span>分批讀，每筆向量立刻轉 float32（峰值 955）</span><span class="num">+783</span></div>
+        <div class="track"><span class="seg s-good" style="width:32.89%"></span></div>
+      </div>
+      <p class="cap">每一種之後都再叫 macOS 的 <code>malloc_zone_pressure_relief</code> 把空的記憶體還給系統：一個位元組都沒還（0 MB）。換 allocator、光是分批讀都沒用；要讓那些 Python float 根本不堆起來才有用。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="changes">
+    <div class="eyebrow">改了什麼</div>
+    <h2 id="changes">三個改動，資料不搬</h2>
+    <div class="card">
+      <div class="label">1 · arena 關掉，一批 16 個</div>
+      <p><code>embedder.ARENA = False</code>：每個模型建立時都帶 <code>enable_cpu_mem_arena=False</code>（fastembed 的 <code>TextEmbedding</code> 收這個參數）。<code>embed_batch</code> 從 256 改成 16，<code>GHOSTHERD_MEMORY_EMBED_BATCH</code> 仍可覆蓋。ONNX Runtime 的執行緒照舊限制在兩個（見 sidecar-cpu-embed-burst）。</p>
+      <p class="muted">一批長 chunk 跑完只留下 2 MB，不再是 GB。速度一樣。</p>
+    </div>
+    <div class="card">
+      <div class="label">2 · 邊讀邊轉 float32 的載入器</div>
+      <p><code>store._lean_load()</code> 在 <code>Store</code> 打開 Qdrant 之前，換掉 <code>qdrant_client.local.persistence.CollectionPersistence.load</code>：一次從 SQLite 讀 512 列，每列解開就把 dense 向量轉成 float32 的 numpy 陣列。那 512 個 Python float 立刻就丟了，不會跟長留的物件疊在一起；Qdrant 接著把這些陣列疊成矩陣，矩陣也就是 float32（166 MB，原本 float64 是 333 MB）。</p>
+      <ul class="plain">
+        <li>打開 store：+2,381 → +783 MB；峰值 RSS 3,072 → 955 MB；6.9 → 6.1 s</li>
+        <li>結果一樣：47 個 eval 查詢的 dense 前 30 名，47/47 順序完全相同，分數最多差 7.2e-8；dense 查詢中位數都是 63 ms</li>
+        <li>只改記憶體裡怎麼放，硬碟上的 pickle 不變。Qdrant 之後寫回一個 point 時，向量照樣是 Python float 的 list</li>
+        <li>版本護欄：<code>LEAN_LOAD_FOR = ("1.19.",)</code>。其他版本不換，照原本的方式載入，並在 <code>*ghostherd-memory*</code> 留一行：<code>qdrant-client is not one the lean load was made for; loading as it does</code></li>
+        <li>測試：<code>tests/test_store.py</code> 用原本的載入器重開同一個 store，比對全部 point 的分數；也測了版本護欄。<code>tests/test_embedder.py</code> 確認每個模型都關了 arena</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="label">3 · 小的</div>
+      <ul class="plain">
+        <li><code>words.sqlite</code> 加了 <code>PRAGMA journal_size_limit</code>：每次 checkpoint 後 WAL 縮回 8 MB（線上的曾長到 40 MB）。只省硬碟</li>
+        <li><code>session_eval.py snapshot</code> 也複製 <code>words.sqlite</code>，副本上的 sidecar 不必重建詞索引</li>
+      </ul>
+    </div>
+    <div class="verdict ok">
+      <span class="tag ok">線上結果</span>
+      <p>合併、部署、重啟後：phys_footprint <b>1,428 MB</b>（重啟前 4,331 MB，更早看過約 10 GB），RSS 1.9 GB，<code>herd search</code> 0.22 s。副本上同一組步驟從 9,035 MB 變成 1,800 MB。</p>
+    </div>
+  </section>
+
+  <section aria-labelledby="watch">
+    <div class="eyebrow">取捨與要留意的</div>
+    <h2 id="watch">現在的 1.4–1.8 GB 是什麼，什麼會讓它回來</h2>
+    <div class="note">
+      <h3>升級 <code>qdrant-client</code> 時</h3>
+      <p>新載入器替換的是 <code>qdrant-client</code> 內部的一個方法，別的版本裡它可能改了樣子，所以護欄只認 1.19.x。升級後 sidecar 照樣能用，只是退回原本的載入方式：啟動時多 1.6 GB，峰值多 2.1 GB。要在副本上照這頁的方法重新量過、跑過測試，確認新版的 <code>load</code> 還是同一回事，再把版本加進 <code>LEAN_LOAD_FOR</code>。</p>
+    </div>
+    <ul class="plain">
+      <li><b>facts 的多語模型 0.5 GB</b>：paraphrase-multilingual-MiniLM-L12-v2 的權重，大半是它 25 萬個 token 的詞表嵌入（約 384 MB）。arena 關掉也省不到它；中文 facts 召回靠它（見 cjk-memory-recall）</li>
+      <li><b>Qdrant 每 1,000 個 chunk 約 10 MB</b>：現在 85k 個約 0.9 GB，store 長大它就跟著長</li>
+      <li><b>啟動後第一次匯入 +340 MB，一次</b>：Qdrant 新增 point 時容量不夠，就用 <code>np.resize</code> 把 dense 矩陣放大一倍（<code>_add_point</code>）。之後要等 store 再長一倍才會再發生；之前是 float64，同樣這一步要多一倍</li>
+      <li><b>別把 batch 調回去</b>：<code>GHOSTHERD_MEMORY_EMBED_BATCH=256</code> 就算 arena 關著，一批進行中仍會衝到 +2 GB</li>
+      <li><b>別把 arena 打開</b>：要改 <code>embedder.ARENA</code> 前，先在副本上跑兩批不同形狀的 batch，看 footprint 會不會一直長</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="options">
+    <div class="eyebrow">沒做的選項</div>
+    <h2 id="options">還能再省多少，為什麼現在不做</h2>
+    <ul class="options">
+      <li class="big">
+        <h3>把 sessions 搬出 embedded Qdrant</h3>
+        <p>dense 向量存成 float32 的 <code>.npy</code> 檔、用 mmap 讀（174 MB 乾淨、有檔案在背後的頁，系統要記憶體時直接丟掉就好）；payload 和文字放進 SQLite，跟已經負責 BM25 那一半的 <code>words.sqlite</code> 放在一起。</p>
+        <div class="meta"><span><b>再省</b> 約 0.8 GB：1.45 → 0.6–0.7 GB（剩下的大半是 facts 模型）</span><span><b>另外</b> 啟動不用再載 6 秒；dense 搜尋估計約 20 ms（沒量過），專案範圍變成一個 mask</span></div>
+        <p><b>為什麼不做：</b>它要搬資料。Claude Code 已經刪掉的 session，index 裡的就是唯一的一份；搬動就是一次遷移，要有備份、能中斷後接著做、做完逐筆核對，並留著 Qdrant 的檔案以便退回。工作量中到大。這要你決定，不是順手做的事。</p>
+        <p class="muted"><b>何時再考慮：</b>store 接近約 20 萬個 chunk（現在 85k；照每 1,000 個 10 MB 算，Qdrant 那部分會到 2 GB 左右），或 1.4–1.8 GB 還是嫌大的時候。</p>
+      </li>
+      <li>
+        <h3>閒置時卸下 facts 模型</h3>
+        <div class="meta"><span><b>省</b> 0.5 GB</span><span><b>代價</b> 每個 prompt 都會做 facts 召回，卸下後下一次要多等約 2 秒（估計）載回來</span></div>
+      </li>
+      <li>
+        <h3>換小一點或量化過的 facts 模型</h3>
+        <div class="meta"><span><b>省</b> 約 0.35 GB</span><span><b>代價</b> 所有 facts 要重新嵌入（便宜，它們都是檔案），中文召回的 eval 要重跑</span></div>
+        <p class="muted">可以之後再做。</p>
+      </li>
+      <li>
+        <h3>事先把 dense 矩陣開大，避開第一次匯入的放大</h3>
+        <div class="meta"><span><b>省</b> 340 MB，只一次</span><span><b>代價</b> 再 patch 一處 Qdrant 的內部；不值得</span></div>
+      </li>
+      <li>
+        <h3>Qdrant 服務或 on-disk 模式</h3>
+        <div class="meta"><span><b>不可行</b> local 模式不理 <code>on_disk</code>；服務模式要多跑一個服務（沒有 Docker）</span></div>
+      </li>
+      <li>
+        <h3>換 allocator、叫 malloc 還記憶體</h3>
+        <div class="meta"><span><b>試過，沒用</b> <code>PYTHONMALLOC=malloc</code> 一樣 +2,381 MB；<code>malloc_zone_pressure_relief</code> 還了 0 MB</span></div>
+      </li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="check">
+    <div class="eyebrow">自己檢查</div>
+    <h2 id="check">看線上的 sidecar 現在多大</h2>
+    <pre><span class="c"># sidecar 是 Emacs 用 uv run uvicorn main:app 啟動的 Python</span>
+pid=$(pgrep -f 'python.*uvicorn main:app')
+<span class="c"># 看 Footprint: 那個數字；活動監視器的「記憶體」欄也是它</span>
+footprint $pid | head -3
+<span class="c"># 各類別在 RAM、被換出各多少</span>
+vmmap --summary $pid
+<span class="c"># 整台 Mac 的 swap</span>
+sysctl vm.swapusage</pre>
+    <ul class="plain">
+      <li><b>正常：</b>剛啟動約 1.4–1.5 GB，匯入後約 1.8 GB，閒置時不動</li>
+      <li><b>每次匯入都長一截：</b>arena 回來了，或 batch 被調大了</li>
+      <li><b>剛啟動就約 3 GB：</b>新載入器退回了；看 <code>*ghostherd-memory*</code> 有沒有上面那行 <code>qdrant-client is not one…</code></li>
+      <li>這些都是唯讀、很快的觀察。要拆得更細，先在 <code>server/</code> 裡用 <code>uv run python eval/session_eval.py snapshot ~/.emacs.d/emacs-home/ghostherd-memory DST</code> 做副本，在副本上跑；別在線上的 sidecar 掛 profiler，也別在它開著時另外打開它的 store</li>
+    </ul>
+    <p class="muted">這頁的數字來自 2026-10-25 在 85,220 個 chunk 的副本上量的結果，記在 <code>docs/roadmap.org</code> 的 Phase 3.44；readme 的 sidecar 一節有摘要。</p>
+  </section>
+
+  <section aria-labelledby="related">
+    <div class="eyebrow">同一天的相關改動</div>
+    <h2 id="related">這次是建在它們上面的</h2>
+    <ul class="plain">
+      <li><b>BM25 那一半有了自己的索引</b>（<code>words.sqlite</code>，<code>server/wordindex.py</code>，ask 880bc57f）：詞的 postings 放在 SQLite，不再在 Python 裡對每個 chunk 計分。BM25 從 0.49 s 到 5.5 ms，<code>herd search</code> 從 0.66–0.9 s 到 0.21–0.25 s；佔 132 MB 硬碟、2 MB 記憶體。當時沒選放在記憶體的 numpy 版本（多 40–80 MB），原因之一就是 sidecar 已經讀到 10 GB</li>
+      <li><b><code>gc.freeze()</code></b>（同一個 ask）：store 載入後把 Qdrant 的 55 萬個物件移出垃圾回收的掃描範圍。原本每次完整回收都要走過它們，186 ms，隨機打在某個請求上；現在 1 ms。新載入器讀進來的物件一樣被凍結</li>
+    </ul>
+  </section>
+</main>
+</body>
+</html>
