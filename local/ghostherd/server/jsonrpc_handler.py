@@ -59,8 +59,34 @@ AGENT_METHODS = frozenset({
 
 
 def _recall_block(fact: dict, key: str) -> str:
+    """A fact in full, as `herd recall' prints it -- and, for one that was
+    changed, a line on what it said before (shared_memory.was_line)."""
+    store = shared_memory.user_store() if fact["shared"] else shared_memory.project_store(key)
+    f = shared_memory.parse(store / f"{fact['name']}.md")
+    was = shared_memory.was_line(f, store) if f else ""
     return (f"# {fact['title']}  ({fact['type']}, by {fact['author'] or 'unknown'}, "
-            f"{'user' if fact['shared'] else key})\n{fact['body']}")
+            f"{'user' if fact['shared'] else key})\n{fact['body']}"
+            + (f"\n\n({was})" if was else ""))
+
+
+def _restated(hit: dict, key: str) -> str:
+    """Why `herd remember' refused, and the two ways on -- for an agent,
+    which runs it again without asking anyone."""
+    name = hit["name"]
+    if hit["shared"] and key != shared_memory.USER_KEY:
+        where, update = "the user store (every project)", f"--user --name {name}"
+    else:
+        where = "the user store" if key == shared_memory.USER_KEY else "this project"
+        update = f"--name {name}"
+    when = (hit.get("updated") or "")[:10]
+    said = hit.get("description") or ""
+    width = max(len(update), len("--new"))
+    return (f"not remembered: this says again the fact `{name}' in {where}"
+            f"{' (' + when + ')' if when else ''}: \"{said}\"\n"
+            f"Run the same command again, adding one of:\n"
+            f"  {update.ljust(width)}   to update `{name}' with this text "
+            f"(its current text is kept in its history)\n"
+            f"  {'--new'.ljust(width)}   to keep both, as separate facts")
 
 
 AWAIT_MAX = 55.0
@@ -727,7 +753,12 @@ class JsonRpcHandler:
 
     def _herd_remember(self, params: dict) -> dict:
         """Write a fact to the caller's project store (or --user), authored by
-        the caller (GHOSTHERD_SESSION, or `user')."""
+        the caller (GHOSTHERD_SESSION, or `user').
+
+        Text that says again a fact the store has is refused, naming that
+        fact and what to run next (`_restated'): --name updates it (its
+        text kept in its history), --new keeps both.  A NAME that exists is
+        an update, unchecked."""
         text = str(params.get("text") or "")
         if not text.strip():
             raise ValueError("nothing to remember")
@@ -735,9 +766,23 @@ class JsonRpcHandler:
         if typ not in shared_memory.TYPES:
             raise ValueError("type is one of: " + ", ".join(shared_memory.TYPES))
         name = str(params.get("name") or "").strip() or None
+        if name:
+            name = shared_memory.valid_name(name)
+        new = bool(params.get("new"))
         store, key = self._write_store(params)
         author = str(params.get("from") or "user").strip() or "user"
-        return shared_memory.write_fact(store, key, text, type=typ, name=name, author=author)
+        checked = "skipped"
+        if not name and shared_memory.holding(store, key, text, typ):
+            pass  # said word for word already: write_fact answers `unchanged'
+        elif not new and not (name and (store / f"{name}.md").exists()):
+            found = fact_index.get_index().near_duplicate(key, text, name=name)
+            checked = found["mode"]
+            if found["hit"]:
+                raise ValueError(_restated(found["hit"], key))
+        out = shared_memory.write_fact(store, key, text, type=typ, name=name,
+                                       author=author, new=new)
+        out["checked"] = checked
+        return out
 
     def _attribute_project(self, key: str) -> list:
         """Stamp the agent's name onto store files a claude agent of this
@@ -837,7 +882,8 @@ class JsonRpcHandler:
         if not name:
             raise ValueError("which fact? give its name")
         store, key = self._write_store(params)
-        return shared_memory.forget(store, key, name)
+        return shared_memory.forget(store, key, name,
+                                    by=str(params.get("from") or "user").strip() or "user")
 
     def _memory_link_claude(self, params: dict) -> dict:
         """Point a claude agent's memory dir at its project's store.  Emacs

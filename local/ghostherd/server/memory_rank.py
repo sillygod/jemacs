@@ -258,3 +258,70 @@ def rank_words(docs: Sequence[Doc], query: str, *, strict: bool = True,
         hits = [Hit(d, l, 0.0, l, "words") for d, l in zip(docs, ls) if l > 0]
     hits.sort(key=lambda h: h.score, reverse=True)
     return hits[: (k if k is not None else (ASK_K if strict else RECALL_K))]
+
+
+# -- a fact written again ----------------------------------------------------
+#
+# `herd remember' refuses text that restates a fact the store has, naming
+# it -- the agent then updates that fact (--name) or keeps both (--new).
+# A wrong refusal costs the agent a turn, a missed one leaves a duplicate,
+# so the bar is set for no wrong refusal.  Measured on a copy of the real
+# stores (108 facts, 11 stores, 2026-10-25, ask db4f2aee):
+# - every fact checked against the rest of its store (107), and 15 new
+#   facts on the topic of one already there: none refused;
+# - 30 restatements of real facts, as an agent would write one again
+#   (some in Chinese): 16 refused, each naming the right fact.
+# Cosine alone cannot do it: distinct facts of one store reach 0.77, a
+# restatement can fall to 0.49.  What a restatement has besides is a fact
+# that stands out from the rest (the gap) and whose words it mostly uses
+# (cover).  The nearest miss among the distinct facts was 0.697 / 0.309 /
+# 0.405 -- short on cosine by 0.053.  A restatement worded further off, in
+# another language, or of a fact with a close neighbour goes through: two
+# facts then, nothing lost.
+DUP_COS = 0.75
+DUP_GAP = 0.15
+DUP_COVER = 0.40
+
+_DUP_STOP = set("""
+the and for with that this from not are was were has have but you its into when what
+how why all any can use only one two new old now then than they them their there here
+our out off per via also just very about after before over under more most less same
+each every
+""".split())
+_DUP_WORD = re.compile(r"[a-z0-9][a-z0-9_.\-/]*[a-z0-9]")
+_DUP_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+
+
+def dup_words(text: str) -> set[str]:
+    "TEXT's words for `duplicate': identifiers of 3+ characters, CJK pairs."
+    t = (text or "").lower()
+    out = {w for w in _DUP_WORD.findall(t) if len(w) >= 3 and w not in _DUP_STOP}
+    for run in _DUP_CJK.findall(t):
+        out |= {run[i:i + 2] for i in range(len(run) - 1)}
+    return out
+
+
+def duplicate(docs: Sequence[Doc], doc_vecs: Sequence[Sequence[float]],
+              vec: Sequence[float], text: str) -> dict[str, Any] | None:
+    """The fact of DOCS that TEXT -- embedded as VEC, as a fact is -- says
+    again, or None.  It must be near (cosine DUP_COS), stand out from the
+    runner-up by DUP_GAP, and hold DUP_COVER of TEXT's words."""
+    if not docs:
+        return None
+    sims = sorted(((_cos(v, vec), d) for d, v in zip(docs, doc_vecs) if v),
+                  key=lambda x: -x[0])
+    if not sims:
+        return None
+    top, doc = sims[0]
+    gap = top - (sims[1][0] if len(sims) > 1 else 0.0)
+    mine = dup_words(text)
+    cover = len(mine & dup_words(f"{doc.description}\n{doc.body}")) / max(1, len(mine))
+    if top >= DUP_COS and gap >= DUP_GAP and cover >= DUP_COVER:
+        return {"doc": doc, "cos": round(top, 3), "gap": round(gap, 3), "cover": round(cover, 3)}
+    return None
+
+
+def _cos(a: Sequence[float], b: Sequence[float]) -> float:
+    na = math.sqrt(_dot(a, a)) or 1.0
+    nb = math.sqrt(_dot(b, b)) or 1.0
+    return _dot(a, b) / (na * nb)

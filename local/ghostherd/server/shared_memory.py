@@ -13,6 +13,12 @@ regenerate reproduces the index whole.  claude's own harness also appends
 pointer lines to MEMORY.md; a regenerate replaces them, losing no fact,
 because every file becomes a line.
 
+A fact's earlier texts are kept in the store's .history/: what a
+remember or an edit wrote over, what a forget removed, and what claude's
+own writes (or a hand edit, an rm) changed -- noticed by comparing the
+files with the text last seen (`notice').  A history file is never a fact:
+every reader of facts takes a store's top-level *.md only.
+
 This module is the store, with no knowledge of the sidecar or Emacs: paths
 in, files out.  ~/.ghostherd stays apart from ~/.emacs.d/ghostherd-memory
 (the Qdrant transcripts and herd.sqlite), which is raw, not curated.
@@ -23,9 +29,11 @@ from __future__ import annotations
 import datetime
 import functools
 import hashlib
+import json
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +59,18 @@ INDEX = "MEMORY.md"
 TYPES = ("user", "feedback", "project", "reference")
 DEFAULT_TYPE = "project"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,78}$")
+
+# A fact's earlier texts, in the store: .history/<name>.<when>.md.  At most
+# HISTORY_KEEP of a fact, none older than HISTORY_DAYS -- but a fact's
+# newest earlier text stays whatever its age, so a forgotten fact can
+# always be got back.  The text last seen of each fact, for `notice', is
+# .history/.seen.json.
+HISTORY = ".history"
+HISTORY_KEEP = 10
+HISTORY_DAYS = 365
+SEEN = ".seen.json"
+# A file changed this recently may be half written: `notice' takes it next time.
+SETTLE = 2.0
 
 # Facts an agent must follow, not just know: given in full in an opening.
 RULE_TYPES = ("user", "feedback")
@@ -373,7 +393,11 @@ def _sync_shared_links(store: Path, shared: list[Fact]) -> None:
 def regenerate(store: Path, key: str) -> None:
     """Rebuild STORE's MEMORY.md from its files (the truth).  For a project
     store, sync the shared user facts in first.  Atomic, so a concurrent
-    append is at worst replaced, never a fact lost."""
+    append is at worst replaced, never a fact lost.  A fact changed or
+    removed without the herd since it last looked has its earlier text
+    kept first (`notice')."""
+    if store.is_dir():
+        notice(store, key)
     shared = [] if key == USER_KEY else user_facts()
     if key != USER_KEY:
         _sync_shared_links(store, shared)
@@ -405,31 +429,86 @@ def write_fact(
     name: str | None = None,
     author: str = "user",
     now: str | None = None,
+    new: bool = False,
 ) -> dict:
-    """Write TEXT as a fact in STORE and regenerate the index.  Returns the
-    fact's name and path.  A second write to the same name keeps its
-    created, updates updated."""
+    """Write TEXT as a fact in STORE and regenerate the index.
+
+    With NAME: that fact, made or updated -- an update keeps its created and
+    keeps the text it replaces in its history.  NEW (keep both) with the
+    NAME of a fact that exists is an error: the new one needs another name.
+    Without NAME the name comes from the text's first words, and a
+    different fact already there under it keeps it: this one takes the
+    next free name (NAME-2, ...), never its file.  Text a fact of the store
+    already holds word for word is not written again.
+
+    Returns the fact's name, path, type, store and STATUS: new, updated,
+    unchanged, or renamed (an auto-name taken by another fact)."""
     now = now or iso_now()
     typ = type if type in TYPES else DEFAULT_TYPE
-    name = (name or _auto_name(text)).strip().lower()
-    if not NAME_RE.match(name):
-        raise ValueError("name is lowercase letters, digits and dashes (1–79)")
     store.mkdir(parents=True, exist_ok=True)
+    notice(store, key)
+    status = "new"
+    if name:
+        name = valid_name(name)
+    else:
+        same = holding(store, key, text, typ)
+        if same:
+            return {"name": same.name, "path": str(same.path), "type": typ,
+                    "store": USER_KEY if same.shared else key, "status": "unchanged"}
+        name = _auto_name(text)
+        if _taken(store, key, name):
+            name, status = _free_name(store, key, name), "renamed"
     path = store / f"{name}.md"
+    real = path.exists() and not path.is_symlink()
+    if real and new:
+        raise ValueError(
+            f"`{name}' exists, and --new keeps both: give the new fact another "
+            f"--name (or none); without --new, --name {name} updates `{name}'")
+    description = _first_line(text)
     created, extra = now, {}
-    if path.exists() and not path.is_symlink():
+    if real:
+        old_text = path.read_text(encoding="utf-8")
         old = parse(path)
         if old:
             created = old.created or now
             extra = _kept_meta(path)
-    description = _first_line(text)
-    _atomic_write(path, render(name, description, text, type=typ, author=author,
-                               created=created, updated=now, extra=extra))
+        if _content(old_text) == _digest(description, typ, text):
+            return {"name": name, "path": str(path), "type": typ, "store": key,
+                    "status": "unchanged"}
+        keep_history(store, name, old_text, how="remember", by=author, now=now)
+        status = "updated"
+    _put(store, path, render(name, description, text, type=typ, author=author,
+                             created=created, updated=now, extra=extra))
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
     _changed(key, [name])
-    return {"name": name, "path": str(path), "type": typ, "store": key}
+    return {"name": name, "path": str(path), "type": typ, "store": key, "status": status}
+
+
+def holding(store: Path, key: str, text: str, typ: str) -> Fact | None:
+    "The fact KEY's agents see whose body and type are TEXT's and TYP, if any."
+    body = text.strip()
+    facts = own_facts(store) + ([] if key == USER_KEY else user_facts())
+    return next((f for f in facts if f.body == body and f.type == typ), None)
+
+
+def _taken(store: Path, key: str, name: str) -> bool:
+    """Whether NAME is a fact's in STORE -- or, for a project, a user fact's,
+    whose link a project fact of its name would replace."""
+    if (store / f"{name}.md").exists() or (store / f"{name}.md").is_symlink():
+        return True
+    return key != USER_KEY and (user_store() / f"{name}.md").exists()
+
+
+def _free_name(store: Path, key: str, name: str) -> str:
+    "NAME-2, NAME-3, ...: the first that no fact has."
+    for i in range(2, 1000):
+        suffix = f"-{i}"
+        cand = name[: 79 - len(suffix)].rstrip("-") + suffix
+        if not _taken(store, key, cand):
+            return cand
+    raise ValueError(f"no free name like {name}")
 
 
 @_locked
@@ -441,9 +520,12 @@ def stamp_author(path: Path, author: str, now: str | None = None) -> bool:
     if f is None or f.author or path.is_symlink() or not author:
         return False
     now = now or iso_now()
+    # claude's write itself: kept as an edit, its earlier text in the history.
+    notice(path.parent, path.parent.name)
     extra = _kept_meta(path)
-    _atomic_write(path, render(f.name, f.description, f.body, type=f.type, author=author,
-                               created=(f.created or now), updated=(f.updated or now), extra=extra))
+    _put(path.parent, path, render(f.name, f.description, f.body, type=f.type, author=author,
+                                   created=(f.created or now), updated=(f.updated or now),
+                                   extra=extra))
     _changed(path.parent.name, [f.name])
     return True
 
@@ -462,11 +544,16 @@ def edit_fact(store: Path, key: str, name: str, *, description: str, body: str,
         raise ValueError(f"{name} is a shared user fact; edit it in the user store")
     if not path.exists():
         raise ValueError(f"no fact named {name}")
+    notice(store, key)
+    old_text = path.read_text(encoding="utf-8")
     old = parse(path)
     created = (old.created if old else "") or now
     extra = _kept_meta(path)
-    _atomic_write(path, render(name, (description or "").strip(), body or "", type=typ,
-                               author=author, created=created, updated=now, extra=extra))
+    description = (description or "").strip()
+    if _content(old_text) != _digest(description, typ, body or ""):
+        keep_history(store, name, old_text, how="edit", by=author, now=now)
+    _put(store, path, render(name, description, body or "", type=typ,
+                             author=author, created=created, updated=now, extra=extra))
     regenerate(store, key)
     if key == USER_KEY:
         regenerate_all_projects()
@@ -510,9 +597,9 @@ def set_promoted(store: Path, key: str, name: str, where: str, now: str | None =
     mark = f"{where} {now[:10]}"
     extra = _kept_meta(f.path)
     extra["promoted"] = mark
-    _atomic_write(f.path, render(f.name, f.description, f.body, type=f.type,
-                                 author=f.author or "user", created=f.created or now,
-                                 updated=f.updated or now, extra=extra))
+    _put(store, f.path, render(f.name, f.description, f.body, type=f.type,
+                               author=f.author or "user", created=f.created or now,
+                               updated=f.updated or now, extra=extra))
     regenerate(store, key)
     _changed(key, [f.name])
     return {"name": f.name, "promoted": mark, "store": key}
@@ -534,20 +621,31 @@ def unpromote(store: Path, key: str, name: str, now: str | None = None) -> dict:
     now = now or iso_now()
     extra = _kept_meta(path)
     extra.pop("promoted", None)
-    _atomic_write(path, render(f.name, f.description, f.body, type=f.type,
-                               author=f.author or "user", created=f.created or now,
-                               updated=f.updated or now, extra=extra))
+    _put(store, path, render(f.name, f.description, f.body, type=f.type,
+                             author=f.author or "user", created=f.created or now,
+                             updated=f.updated or now, extra=extra))
     regenerate(store, key)
     _changed(key, [name])
     return {"name": name, "promoted": "", "store": key, "changed": True}
 
 
 def facts_for(key: str) -> list[dict]:
-    "The facts to show for store KEY: the user facts, and a project's own too."
-    rows = [f.as_dict() for f in user_facts()]
+    """The facts to show for store KEY: the user facts, and a project's own
+    too -- each with its last few earlier versions, one line each, for the
+    page's detail (strings: they cross Emacs as they are)."""
+    rows = [dict(f.as_dict(), history=_history_lines(user_store(), f.name)) for f in user_facts()]
     if key != USER_KEY:
-        rows += [f.as_dict() for f in own_facts(project_store(key))]
+        store = project_store(key)
+        rows += [dict(f.as_dict(), history=_history_lines(store, f.name)) for f in own_facts(store)]
     return rows
+
+
+def _history_lines(store: Path, name: str, most: int = 5) -> list[str]:
+    out = []
+    for h in history(store, name)[:most]:
+        who = f" by {h['by']}" if h["by"] and h["by"] != "unknown" else ""
+        out.append(f"{h['when'][:10]} · {h['how']}{who} · {h['description'] or _first_line(h['body'])}")
+    return out
 
 
 def project_keys() -> list[str]:
@@ -559,8 +657,9 @@ def project_keys() -> list[str]:
 
 
 @_locked
-def forget(store: Path, key: str, name: str) -> dict:
-    "Remove fact NAME from STORE.  Returns whether it was there."
+def forget(store: Path, key: str, name: str, by: str = "user") -> dict:
+    """Remove fact NAME from STORE, its text kept in its history.  Returns
+    whether it was there."""
     name = valid_name(name)
     path = store / f"{name}.md"
     removed = False
@@ -569,7 +668,10 @@ def forget(store: Path, key: str, name: str) -> dict:
     if path.is_symlink():
         raise ValueError(f"{name} is a shared user fact; forget it with --user")
     if path.exists():
+        notice(store, key)
+        keep_history(store, name, path.read_text(encoding="utf-8"), how="forget", by=by)
         path.unlink()
+        _seen_drop(store, name)
         removed = True
     regenerate(store, key)
     if key == USER_KEY:
@@ -577,6 +679,213 @@ def forget(store: Path, key: str, name: str) -> dict:
     if removed:
         _changed(key, [name])
     return {"name": name, "removed": removed, "store": key}
+
+
+# -- History ---------------------------------------------------------------
+
+
+def _digest(description: str, typ: str, body: str) -> str:
+    "What a fact says -- not its stamps, author or marks."
+    return hashlib.sha1(f"{description.strip()}\n{typ}\n{body.strip()}".encode("utf-8")).hexdigest()
+
+
+def _content(text: str) -> str:
+    "`_digest' of a fact file's TEXT."
+    front, body = _split_front(text)
+    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    typ = str(meta.get("type") or "").strip() or DEFAULT_TYPE
+    return _digest(str(front.get("description") or ""), typ if typ in TYPES else DEFAULT_TYPE, body)
+
+
+def _stamp(when: str) -> str:
+    "An ISO time as a file name's sortable part: 20261025T103000Z."
+    return re.sub(r"[-:]", "", when)
+
+
+def _iso(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def keep_history(store: Path, name: str, old_text: str, *, how: str, by: str = "",
+                 now: str | None = None) -> Path:
+    """Keep OLD_TEXT, fact NAME's text before a change, in STORE's history:
+    what it said, and when, how (remember, edit, forget, edited directly,
+    removed directly) and by whom it was superseded."""
+    now = now or iso_now()
+    front, body = _split_front(old_text)
+    meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+    extra = {k: str(v) for k, v in meta.items() if isinstance(v, str)}
+    extra.update(superseded=now, superseded_how=how, superseded_by=by or "unknown")
+    typ = str(meta.get("type") or "").strip()
+    text = render(name, str(front.get("description") or _first_line(body)), body,
+                  type=typ if typ in TYPES else DEFAULT_TYPE, author=str(meta.get("author") or ""),
+                  created=str(meta.get("created") or meta.get("modified") or ""),
+                  updated=str(meta.get("updated") or meta.get("modified") or ""), extra=extra)
+    where = store / HISTORY
+    where.mkdir(parents=True, exist_ok=True)
+    path, i = where / f"{name}.{_stamp(now)}.md", 2
+    while path.exists():
+        path, i = where / f"{name}.{_stamp(now)}-{i}.md", i + 1
+    _atomic_write(path, text)
+    _prune(store)
+    return path
+
+
+def history(store: Path, name: str) -> list[dict]:
+    """Fact NAME's earlier texts in STORE, newest first: when it was
+    superseded, how, by whom, and its description and body then."""
+    out = []
+    for p in _newest_first_paths(list((store / HISTORY).glob(f"{name}.*.md"))):
+        front, body = _split_front(p.read_text(encoding="utf-8"))
+        meta = front.get("metadata") if isinstance(front.get("metadata"), dict) else {}
+        out.append({"when": str(meta.get("superseded") or ""), "how": str(meta.get("superseded_how") or ""),
+                    "by": str(meta.get("superseded_by") or ""),
+                    "description": str(front.get("description") or ""), "body": body.strip(),
+                    "path": str(p)})
+    return out
+
+
+def _newest_first_paths(paths: list[Path]) -> list[Path]:
+    """History files newest first: by the time in their name, then -- two
+    in one second -- by when they were written."""
+    def key(p: Path):
+        try:
+            ns = p.stat().st_mtime_ns
+        except OSError:
+            ns = 0
+        return (p.name.split(".", 1)[1][:16], ns)
+    return sorted(paths, key=key, reverse=True)
+
+
+def was_line(f: Fact, store: Path) -> str:
+    """One line on what fact F said before, for `recall': its earlier
+    description -- or, when that is the same, the first earlier line now
+    gone -- and when.  "" for a fact with no history."""
+    past = history(store, f.name)
+    if not past:
+        return ""
+    last = past[0]
+    said = last["description"]
+    if said.strip() == f.description.strip():
+        now_lines = set(f.body.splitlines())
+        said = next((ln.strip() for ln in last["body"].splitlines()
+                     if ln.strip() and ln not in now_lines), said)
+    said = said if len(said) <= 120 else said[:119] + "…"
+    more = f"; {len(past) - 1} older" if len(past) > 1 else ""
+    who = f" by {last['by']}" if last["by"] and last["by"] != "unknown" else ""
+    return f"was: {said} (until {last['when'][:10]}, {last['how']}{who}{more})"
+
+
+def _prune(store: Path) -> None:
+    """At most HISTORY_KEEP earlier texts a fact, none older than
+    HISTORY_DAYS but its newest."""
+    cut = _stamp((datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(days=HISTORY_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    by_name: dict[str, list[Path]] = {}
+    for p in (store / HISTORY).glob("*.md"):
+        by_name.setdefault(p.name.split(".", 1)[0], []).append(p)
+    for paths in by_name.values():
+        for i, p in enumerate(_newest_first_paths(paths)):
+            if i >= HISTORY_KEEP or (i > 0 and p.name.split(".", 1)[1] < cut):
+                p.unlink(missing_ok=True)
+
+
+# The text last seen of each fact, by store: {name: {stamp, digest, text}}.
+_SEEN_CACHE: dict[str, tuple[int, dict]] = {}
+
+
+def _seen_load(store: Path) -> dict | None:
+    path = store / HISTORY / SEEN
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    cached = _SEEN_CACHE.get(str(store))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        seen = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    _SEEN_CACHE[str(store)] = (stamp, seen)
+    return seen
+
+
+def _seen_save(store: Path, seen: dict) -> None:
+    path = store / HISTORY / SEEN
+    _atomic_write(path, json.dumps(seen, ensure_ascii=False))
+    _SEEN_CACHE[str(store)] = (path.stat().st_mtime_ns, seen)
+
+
+def _seen_entry(path: Path, text: str) -> dict:
+    st = path.stat()
+    return {"stamp": [st.st_mtime_ns, st.st_size], "digest": _content(text), "text": text}
+
+
+def _put(store: Path, path: Path, text: str) -> None:
+    "Write a fact file the herd's way, and see it as written."
+    _atomic_write(path, text)
+    seen = _seen_load(store)
+    if seen is not None:
+        seen[path.stem] = _seen_entry(path, text)
+        _seen_save(store, seen)
+
+
+def _seen_drop(store: Path, name: str) -> None:
+    seen = _seen_load(store)
+    if seen is not None and seen.pop(name, None) is not None:
+        _seen_save(store, seen)
+
+
+@_locked
+def notice(store: Path, key: str) -> list[str]:
+    """Keep the earlier text of the facts in STORE changed or removed
+    without the herd -- claude writing its own memory file (its memory dir
+    is a link to the store), a hand edit, an rm -- by comparing the files
+    with the text last seen of each.  The first time it only takes note of
+    what is there.  Returns the names it kept history for.
+
+    Cheap when nothing moved: a stat of each file.  A file written in the
+    last SETTLE seconds is left for next time, so a half-written one is not
+    taken for a version."""
+    if not store.is_dir():
+        return []
+    seen = _seen_load(store)
+    first = seen is None
+    seen = dict(seen or {})
+    files = {p.stem: p for p in store.glob("*.md") if p.name != INDEX and not p.is_symlink()}
+    kept: list[str] = []
+    changed = first
+    now = time.time()
+    for name, p in files.items():
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        old = seen.get(name)
+        if old and old.get("stamp") == [st.st_mtime_ns, st.st_size]:
+            continue
+        if not first and now - st.st_mtime < SETTLE:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        entry = _seen_entry(p, text)
+        if old and old.get("digest") != entry["digest"]:
+            f = parse(p)
+            keep_history(store, name, old["text"], how="edited directly",
+                         by=(f.author if f else ""), now=_iso(st.st_mtime))
+            kept.append(name)
+        seen[name] = entry
+        changed = True
+    for name in [n for n in seen if n not in files]:
+        keep_history(store, name, seen.pop(name)["text"], how="removed directly")
+        kept.append(name)
+        changed = True
+    if changed:
+        _seen_save(store, seen)
+    return kept
 
 
 @_locked

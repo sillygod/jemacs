@@ -2336,10 +2336,8 @@ the CPU (see =lexical.py=).
   paraphrase-multilingual-MiniLM at its tokenizer's =max_length= 128, so
   a long fact's body past ~100 words is not in its vector (its title and
   description come first).  Left as it is
-- [ ] Auto-named facts overwrite each other: a fact's name is the first
-  six ASCII words of its first line (=shared_memory._auto_name=), and a
-  write to a name overwrites it, so two facts that open alike collide
-  silently.  For supersede-with-history (batch 2)
+- [X] Auto-named facts overwrite each other --- done in 3.41: a different
+  fact takes the next free name
 - [ ] Embedded Qdrant holds every point in memory: opening these 84k
   chunks took 3.2 GB in a fresh process, and the live sidecar's
   footprint read 10 GB (=footprint=, 2026-10-25)
@@ -2352,6 +2350,56 @@ the CPU (see =lexical.py=).
   index is the only copy
 - A second collection and a swap: in place keeps every point id, and
   needs one backup's disk, not two collections'
+
+* Phase 3.41 — Shared memory keeps what it replaces  *(this tree)*
+
+Goal: a remember of a fact's name overwrote it, a forget unlinked it, an
+auto-name (the first six ASCII words) could land a different fact on
+another's file, and a duplicate went in unseen.  Nothing was kept.  Ask
+db4f2aee, from the comparison with Hy-Memory (ask 4a471c59): its
+SUPERSEDE chains, without the LLM.
+
+** What the measurement found (a copy of the real stores, 108 facts in 11
+stores, the facts' multilingual embedder, 2026-10-25)
+
+- Cosine alone cannot tell a fact said again: distinct facts of one store
+  reach 0.765 (two venom rollout facts), a restatement falls to 0.486 (a
+  Chinese one of a mostly English fact).  At the cosine that refuses no
+  distinct fact, half the restatements pass.
+- What a restatement also has: one fact that stands out from the rest
+  (gap to the runner-up) and holds most of its words (cover).  Cosine >=
+  0.75, gap >= 0.15, cover >= 0.40: none of the 107 facts refused
+  against the rest of their store, none of 15 new facts on a topic there,
+  16 of 30 restatements refused, each naming the right fact.  The nearest
+  miss among the distinct ones: 0.697 / 0.309 / 0.405
+  (restart-scratch-vite-after-edits ~ jnotes-browser-check-recipe), short
+  on cosine by 0.053.  The 14 let through: 10 below cosine 0.75 (three
+  of them Chinese), 3 whose fact has a close neighbour (gap), one short
+  on shared words (cover, a Chinese one)
+
+** What shipped
+
+- [X] =herd remember= refuses text that says again a fact of the store or
+  the user's, naming it and the command to run next (=--name NAME= to
+  update, =--new= to keep both; =--user --name= for a user fact); not
+  checked (and said) until the embedder is up; the same words again are
+  =unchanged=
+- [X] An auto-name taken by another fact, or a user fact, gives =NAME-2=
+- [X] =.history/<name>.<when>.md= on an update, a page edit, a forget,
+  and a change made outside the herd (claude's Write, a hand edit, an
+  rm), found by comparing the files with the text last seen
+  (=.history/.seen.json=) whenever the herd reads a store; recall's
+  "(was: ...)" line; the Memory tab's "Earlier versions"; ten versions a
+  fact, a year, the newest always
+
+** Deliberately not done
+
+- An LLM to judge a duplicate or merge two facts: the agent decides, told
+  which fact it is
+- History in recall's ranking or an ask's memory: an earlier text is what
+  was true, not what is
+- Catching every restatement: a missed one is a duplicate, a wrong
+  refusal is an agent's turn
 
 * Phase 4 — Ecosystem (only if still useful)
 
