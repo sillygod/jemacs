@@ -29,11 +29,13 @@ const facts = () => [
   { name: "never-commit-to-main", title: "Never commit to main",
     description: "always use a branch", type: "feedback", author: "claude-deploy-platform",
     created: iso(now - 8e8), updated: iso(now - 7200e3),
-    body: "Never commit straight to `main`.\n\n- cut a branch\n- open a PR", shared: false },
+    body: "Never commit straight to `main`.\n\n- cut a branch\n- open a PR", shared: false,
+    history: null },
   { name: "retry-scheduler", title: "Retry scheduler",
     description: "lives in worker.py", type: "project", author: "claude-deploy-platform",
     created: iso(now - 6e8), updated: iso(now - 600e3),
-    body: "The retry scheduler lives in `worker.py`, under `schedule_retry`.", shared: false },
+    body: "The retry scheduler lives in `worker.py`, under `schedule_retry`.", shared: false,
+    history: ["2026-10-20 · remember by claude-deploy-platform · lived in jobs.py"] },
 ];
 
 async function openMemory(page, key) {
@@ -85,11 +87,20 @@ const rows = (page) => page.$$eval(".mfact", (es) => es.length);
       await sleep(60);
 
       // ---- open: body as Markdown ----
+      check(W("a fact's history is not in the list"),
+        !/jobs\.py/.test(await page.$eval("#mem-list", (e) => e.textContent)));
+      await page.click('.mhead[data-name="never-commit-to-main"]');
+      await sleep(60);
+      check(W("a fact with no history shows none"), await page.$(".mfact.open .mhist") === null);
+      await page.click('.mhead[data-name="never-commit-to-main"]');
       await page.click('.mhead[data-name="retry-scheduler"]');
       await sleep(60);
       check(W("opening a fact shows its body"), await page.$(".mfact.open .mbody") !== null);
       check(W("the body renders Markdown (code)"),
         await page.$eval(".mfact.open .mbody", (e) => !!e.querySelector("code")));
+      const hist = await page.$eval(".mfact.open .mhist", (e) => e.textContent).catch(() => "");
+      check(W("an opened fact shows its earlier versions"),
+        /Earlier versions/.test(hist) && /lived in jobs\.py/.test(hist), hist);
 
       // ---- edit ----
       await page.click('[data-act="mem-edit"][data-name="retry-scheduler"]');

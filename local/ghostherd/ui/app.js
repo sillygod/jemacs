@@ -3842,7 +3842,13 @@
             '<button type="button" class="ghost small" data-act="mem-delcancel" data-name="' + esc(f.name) + '">Keep</button>'
           : '<button type="button" class="ghost small" data-act="mem-delask" data-name="' + esc(f.name) + '">Delete</button>') +
         "</div>";
-    return '<div class="mfact open' + (f.promoted ? " promoted" : "") + '">' + head + '<div class="mbody">' + markdown(f.body) + "</div>" + actions + "</div>";
+    // What it said before, one line each, newest first (the sidecar's
+    // .history/): when, how, by whom, its first line then.
+    const hist = f.history && f.history.length
+      ? '<div class="mhist"><div class="mhist-h">Earlier versions</div>' +
+        f.history.map((h) => '<div class="mhist-i">' + esc(h) + "</div>").join("") + "</div>"
+      : "";
+    return '<div class="mfact open' + (f.promoted ? " promoted" : "") + '">' + head + '<div class="mbody">' + markdown(f.body) + "</div>" + hist + actions + "</div>";
   }
 
   // The pending promotions the user decides on: the facts, the target file,
