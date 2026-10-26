@@ -20,6 +20,8 @@ const min = 60e3;
 const NUDGE = "rough going: if it found a non-obvious gotcha, `herd remember` it";
 const SMOOTH = "How it went: 4 min · 12 tool calls, none failed · asked others 1× (qa-dp)";
 const ROUGH = "How it went: 38 min · 108 tool calls, 5 failed (5 shell exits) · 1 check denial · " + NUDGE;
+const UNTOLD = "How it went: 2 min · 9 tool calls, 2 not told how they ended";
+const AGY = "How it went: 1 min · 4 tool calls, 2 failed (1 permission denial, 1 shell exit) · 1 guard denial";
 const DETAIL = { seconds: 2280, seen: true, why: "", cli: "claude", tools: { Bash: 70, Read: 25, Edit: 13 },
   failed: { shell: 5 }, failures_known: true, subs: 0, subs_read: 0, sub_tools: 0, sub_failed: {},
   guard: 0, lint: 1, asks: {}, relays: 0 };
@@ -29,10 +31,16 @@ const THREAD = { id: "t9", title: "Fix the build", status: "answered",
   lanes: [L(LEAD, "claude", "deploy-platform", "lead"), L("claude-dp", "claude", "deploy-platform"), L("qa-dp", "agy", "deploy-platform")],
   msgs: [M("ask", LEAD, "claude-dp", 50, "Fix the build", { ask: "k1" }),
          M("ask", "claude-dp", "qa-dp", 30, "Check it", { ask: "k2" }),
-         M("answer", "qa-dp", "claude-dp", 26, "Looks fine.", { ask: "k2", trace: SMOOTH, rough: false, traceDetail: Object.assign({}, DETAIL, { tools: { run_command: 12 }, failed: {}, failures_known: false, cli: "agy", lint: 0 }) }),
+         M("answer", "qa-dp", "claude-dp", 26, "Looks fine.", { ask: "k2", trace: SMOOTH, rough: false, traceDetail: Object.assign({}, DETAIL, { tools: { run_command: 12 }, failed: {}, failures_known: false, cli: "grok", lint: 0 }) }),
          M("answer", "claude-dp", LEAD, 12, "Fixed in 72f7736.", { ask: "k1", trace: ROUGH, rough: true, traceDetail: DETAIL }),
          M("ask", LEAD, "qa-dp", 10, "And the docs?", { ask: "k3" }),
-         M("answer", "qa-dp", LEAD, 9, "Done.", { ask: "k3" })],
+         M("answer", "qa-dp", LEAD, 9, "Done.", { ask: "k3" }),
+         M("ask", LEAD, "qa-dp", 8, "And the tests?", { ask: "k4" }),
+         M("answer", "qa-dp", LEAD, 7, "Ran them.", { ask: "k4", trace: UNTOLD, rough: false, traceDetail: Object.assign({}, DETAIL, {
+           tools: { run_command: 6, read_file: 3 }, failed: {}, unread: 2, cli: "grok", lint: 0 }) }),
+         M("ask", LEAD, "qa-dp", 6, "And lint?", { ask: "k5" }),
+         M("answer", "qa-dp", LEAD, 5, "Clean.", { ask: "k5", trace: AGY, rough: false, traceDetail: Object.assign({}, DETAIL, {
+           tools: { run_command: 4 }, failed: { shell: 1, denied: 1 }, cli: "agy", lint: 0, guard: 1 }) })],
   waiting: [], rootFrom: LEAD, rootTo: "claude-dp", projects: ["deploy-platform"], cross: false, started: now - 50 * min, at: now - 9 * min };
 const LIST = { threads: [{ id: "t9", title: THREAD.title, status: "answered", participants: THREAD.lanes.map((l) => l.name),
   projects: ["deploy-platform"], cross: false, count: THREAD.msgs.length, open: 0, started: THREAD.started, at: THREAD.at,
@@ -64,7 +72,7 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       const card = where === "desk" ? ".thcard" : ".thpmsg";
       const traces = await page.$$eval(card + " .thtrace", (es) => es.map((e) => ({ t: e.textContent, rough: e.classList.contains("rough") })));
       check(W("each answer with a line shows it on its card"),
-        traces.length === 2 && traces[0].t === SMOOTH && traces[1].t === ROUGH, traces);
+        traces.length === 4 && traces[0].t === SMOOTH && traces[1].t === ROUGH && traces[2].t === UNTOLD && traces[3].t === AGY, traces);
       check(W("a rough one is marked, a smooth one is not"), traces[1].rough && !traces[0].rough, traces);
       check(W("an answer without a line shows none"),
         await page.$$eval(card, (cs) => !cs[5].querySelector(".thtrace")));
@@ -78,7 +86,17 @@ const overflow = (page) => page.evaluate(() => document.documentElement.scrollWi
       await sleep(120);
       const agyDetail = await page.$eval(card + '[data-i="2"] .thtracedetail', (e) => e.textContent).catch(() => "");
       check(W("for a CLI whose failures are not readable, it says so"),
-        agyDetail === "tools: run_command 12 · failures not readable for agy", agyDetail);
+        agyDetail === "tools: run_command 12 · failures not readable for grok", agyDetail);
+      await tap(card + '[data-i="7"]');
+      await sleep(120);
+      const untold = await page.$eval(card + '[data-i="7"] .thtracedetail', (e) => e.textContent).catch(() => "");
+      check(W("calls not told how they ended: none is said to have failed, and how many"),
+        untold === "tools: run_command 6, read_file 3 · failed: none seen · not told how they ended: 2", untold);
+      await tap(card + '[data-i="9"]');
+      await sleep(120);
+      const agy = await page.$eval(card + '[data-i="9"] .thtracedetail', (e) => e.textContent).catch(() => "");
+      check(W("an agy answer's failures, by kind, and its guard's denial apart"),
+        agy === "tools: run_command 4 · failed: permission denial 1, shell exit 1 · guard denials: 1", agy);
       await page.screenshot({ path: path.join(SHOTS, where + "-threads.png"), fullPage: true });
       check(W("Threads: nothing off the page's edge"), (await overflow(page)) <= 0, await overflow(page));
 
