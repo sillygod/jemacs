@@ -554,15 +554,18 @@
   let mem = { key: "", projects: [], user: { key: "user", label: "User (shared)" },
               facts: [], filter: "", open: new Set(), editing: "", confirmDel: "",
               proposals: [], promotedOnly: false, rejecting: "", sort: memSortKept(),
-              checks: [], checkOpen: "", confirmRm: "" };
+              checks: [], checkOpen: "", confirmRm: "",
+              unusedOnly: false, usesSince: null, usesDays: 30 };
   let memWatching = false; // Emacs is pushing this store's facts
 
-  // How the Memory tab orders its facts -- "recent" or "name" -- kept for
-  // this viewer in this browser.  Storage can be missing or refused (a
-  // private window, the desk's file page): it then starts on "recent".
+  // How the Memory tab orders its facts -- "recent", "name" or "used" --
+  // kept for this viewer in this browser.  Storage can be missing or
+  // refused (a private window, the desk's file page): it then starts on
+  // "recent".
   function memSortKept() {
     try {
-      return localStorage.getItem("ghostherd.memory.sort") === "name" ? "name" : "recent";
+      const v = localStorage.getItem("ghostherd.memory.sort");
+      return v === "name" || v === "used" ? v : "recent";
     } catch (e) {
       return "recent";
     }
@@ -3853,6 +3856,7 @@
     mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
     mem.proposals = []; mem.promotedOnly = false; mem.rejecting = "";
     mem.checks = []; mem.checkOpen = ""; mem.confirmRm = "";
+    mem.unusedOnly = false;
     const target = (opts && opts.project) || herdNow.room || ctx.currentProject || "";
     chrome();
     app.innerHTML =
@@ -3865,7 +3869,9 @@
       '<span class="msort" role="group" aria-label="Order">' +
       '<button type="button" class="ghost small" data-act="mem-sort" data-sort="recent" aria-pressed="false" title="Newest change first">Recent</button>' +
       '<button type="button" class="ghost small" data-act="mem-sort" data-sort="name" aria-pressed="false" title="By name">A–Z</button>' +
+      '<button type="button" class="ghost small" data-act="mem-sort" data-sort="used" aria-pressed="false" title="Most used first: asks and recalls in the last 30 days">Used</button>' +
       '</span></div>' +
+      '<button type="button" class="ghost small" id="mem-unused" data-act="mem-unused-toggle" aria-pressed="false" hidden title="Show the facts no ask or recall has used in 30 days">Unused</button>' +
       '<button type="button" class="ghost small" id="mem-promoted" data-act="mem-promoted-toggle" aria-pressed="false" title="Show facts promoted into an instruction file">Promoted</button>' +
       '<button type="button" class="ghost small" data-act="mem-suggest" title="Ask the project\'s lead to review the memory and propose promotions">Suggest promotions</button>' +
       '</div>' +
@@ -3899,6 +3905,16 @@
     if (!list) return;
     const btn = $("mem-promoted");
     if (btn) { btn.classList.toggle("on", mem.promotedOnly); btn.setAttribute("aria-pressed", mem.promotedOnly ? "true" : "false"); }
+    // Counts come with a sidecar that keeps them; without, no Unused.
+    const counted = !!mem.usesSince;
+    if (!counted) mem.unusedOnly = false;
+    const ub = $("mem-unused");
+    if (ub) {
+      ub.hidden = !counted;
+      ub.classList.toggle("on", mem.unusedOnly);
+      ub.setAttribute("aria-pressed", mem.unusedOnly ? "true" : "false");
+      ub.title = "Show the facts no ask or recall has used " + memWindow();
+    }
     document.querySelectorAll('[data-act="mem-sort"]').forEach((b) => {
       const on = b.getAttribute("data-sort") === mem.sort;
       b.classList.toggle("on", on);
@@ -3910,12 +3926,67 @@
       // A promoted fact lives in an instruction file now: it waits behind the
       // "Promoted" toggle, out of the everyday list.
       if (mem.promotedOnly ? !f.promoted : f.promoted) return false;
+      if (mem.unusedOnly && !(f.uses && f.uses.used === 0)) return false;
       const hay = (f.name + "\n" + f.description + "\n" + f.body).toLowerCase();
       return needles.every((n) => hay.includes(n));
     });
-    list.innerHTML = shown.length
+    // Since when uses are counted: a fact used before has no history here.
+    const head = counted
+      ? '<p class="musehead">Uses: asks and recalls ' + esc(memWindow()) +
+        (memYoung() ? " — counting began then, so earlier uses are not known" : "") +
+        "; a rule given in full as an agent starts is shown apart.</p>"
+      : "";
+    list.innerHTML = head + (shown.length
       ? shown.map(renderMemRow).join("")
-      : '<p class="empty">' + (mem.promotedOnly ? "Nothing promoted." : "Nothing matches.") + "</p>";
+      : '<p class="empty">' + (mem.promotedOnly ? "Nothing promoted." :
+          mem.unusedOnly && !needles.length ? "Every fact here was used " + esc(memWindow()) + "." : "Nothing matches.") + "</p>");
+  }
+
+  // The window a fact's uses are counted in: the last 30 days, or -- while
+  // the herd has counted for less -- since it began.
+  function memYoung() {
+    const since = stamp(mem.usesSince);
+    return !!since && Date.now() - since < (mem.usesDays || 30) * 86400e3;
+  }
+
+  function memDay(v) {
+    const t = stamp(v);
+    if (!t) return "";
+    const d = new Date(t);
+    const opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  function memWindow() {
+    return memYoung() ? "since " + memDay(mem.usesSince) : "in " + (mem.usesDays || 30) + " days";
+  }
+
+  // A fact's uses, honestly: how many asks and recalls in the window and
+  // when the last was; none -- since counting began, or since the fact was
+  // written, when that is later -- never a bare zero that would claim a
+  // history the herd does not have.  A rule's openings apart.
+  function memUses(f) {
+    const u = f.uses;
+    if (!u || !mem.usesSince) return "";
+    const parts = [];
+    if (u.used) {
+      const kinds = [u.ask ? u.ask + (u.ask === 1 ? " ask" : " asks") : "",
+                     u.recall ? u.recall + (u.recall === 1 ? " recall" : " recalls") : ""].filter(Boolean);
+      parts.push("used " + u.used + "× " + memWindow() + " (" + kinds.join(", ") + ")" +
+                 (u.last ? " · last " + when(u.last) : ""));
+    } else if (u.last) {
+      parts.push("no use " + memWindow() + " · last used " + memDay(u.last));
+    } else {
+      // Written inside the window: its zero covers only its own days.
+      const from = Math.max(stamp(mem.usesSince) || 0, Date.now() - (mem.usesDays || 30) * 86400e3);
+      const born = stamp(f.created) && stamp(f.created) > from ? f.created : null;
+      parts.push(born ? "no use since it was written, " + memDay(born)
+                      : memYoung() ? "no use since " + memDay(mem.usesSince) + ", when counting began"
+                      : "no use " + memWindow());
+    }
+    if (u.opening) parts.push("given in full at " + u.opening + (u.opening === 1 ? " start" : " starts"));
+    return '<div class="muse' + (u.used ? "" : " none") + '">' + esc(parts.join(" · ")) + "</div>";
   }
 
   // The facts in the order the viewer chose: newest change first (updated,
@@ -3929,6 +4000,11 @@
       title(a).localeCompare(title(b), undefined, { sensitivity: "base" }) ||
       (a.name || "").localeCompare(b.name || "");
     if (mem.sort === "name") return facts.slice().sort(byName);
+    if (mem.sort === "used") {
+      const used = (f) => (f.uses && f.uses.used) || 0;
+      const last = (f) => (f.uses && stamp(f.uses.last)) || 0;
+      return facts.slice().sort((a, b) => used(b) - used(a) || last(b) - last(a) || byName(a, b));
+    }
     const at = (f) => stamp(f.updated) || stamp(f.created) || 0;
     return facts.slice().sort((a, b) => at(b) - at(a) || byName(a, b));
   }
@@ -3952,7 +4028,7 @@
       '<div class="mhead" data-act="mem-open" data-name="' + esc(f.name) + '" tabindex="0" role="button">' +
       '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where + prom + check +
       '<span class="mmeta">' + meta + "</span></div>" +
-      (f.description ? '<div class="mdesc">' + esc(f.description) + "</div>" : "") + "</div>";
+      (f.description ? '<div class="mdesc">' + esc(f.description) + "</div>" : "") + memUses(f) + "</div>";
     if (!open) return '<div class="mfact' + (f.promoted ? " promoted" : "") + '">' + head + "</div>";
     if (mem.editing === f.name) return '<div class="mfact open editing">' + head + memEditForm(f) + "</div>";
     const confirming = mem.confirmDel === f.name;
@@ -4279,12 +4355,17 @@
       const n = el.getAttribute("data-name");
       const f = memFact(n);
       emit("memory-unpromote", { key: memKeyFor(f), name: n });
+    } else if (act === "mem-unused-toggle") {
+      mem.unusedOnly = !mem.unusedOnly;
+      mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
+      renderMemoryList();
     } else if (act === "mem-promoted-toggle") {
       mem.promotedOnly = !mem.promotedOnly;
       mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
       renderMemoryList();
     } else if (act === "mem-sort") {
-      mem.sort = el.getAttribute("data-sort") === "name" ? "name" : "recent";
+      const want = el.getAttribute("data-sort");
+      mem.sort = want === "name" || want === "used" ? want : "recent";
       memSortKeep(mem.sort);
       renderMemoryList();
     } else if (act === "mem-suggest") {
@@ -5274,6 +5355,8 @@
       if (view !== "memory") return;
       mem.key = (p && p.key) || mem.key;
       mem.facts = (p && p.facts) || [];
+      mem.usesSince = (p && p.usesSince) || null;
+      mem.usesDays = (p && p.usesDays) || 30;
       // The facts loaded: drop a stale memory error (e.g. a resolved
       // "bad project key") so the banner does not linger over a live list.
       if (statusEl.classList.contains("error")) setStatus("");

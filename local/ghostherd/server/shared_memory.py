@@ -996,6 +996,7 @@ def opening(key: str, cap: int = 4000) -> dict:
     return {
         "text": "\n".join(out).strip() + "\n" if out else "",
         "full": [f.name for f in rules],
+        "full_shared": [f.name for f in rules if f.shared],
         "listed": [f.name for f in rest[: len(listed)]],
         "more": [f.name for f in more],
     }

@@ -429,15 +429,21 @@ class FactIndex:
         most relevant to its BODY, from the taker's project, or None when
         none passes the bar.  A grok or agy taker was given the rules in
         full as it started, so they are not given again."""
+        return self.ask_memory(taker, body)[0]
+
+    def ask_memory(self, taker: dict[str, Any] | None,
+                   body: str) -> tuple[str | None, list[tuple[str, str]]]:
+        "`ask_block', and the facts it holds as (store, name): what the herd counts."
         project = (taker or {}).get("project") or ""
         if not project or not (body or "").strip():
-            return None
+            return None, []
         key = sm.slug_for_path(project)
         exclude: list[str] = []
         if (taker or {}).get("kind") in ("grok", "agy"):
             exclude = sm.opening(key)["full"]
         found = self.rank(key, body, strict=True, exclude=exclude, wait=0.0)
-        return compose_block(found["hits"])
+        text, given = compose(found["hits"])
+        return text, [(h["store"], h["name"]) for h in given]
 
 
 def _hit_json(h: mr.Hit) -> dict[str, Any]:
@@ -463,11 +469,17 @@ def compose_block(hits: list[dict[str, Any]]) -> str | None:
     """HITS as the section an ask ends with, or None for no hits.  Whole
     facts only, within ASK_BLOCK_MAX; a long one gives its start and how to
     read the rest."""
+    return compose(hits)[0]
+
+
+def compose(hits: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
+    "`compose_block', and the hits that made it in: one past ASK_BLOCK_MAX did not."
     if not hits:
-        return None
+        return None, []
     head = (f"{ASK_HEADING} (from the herd's shared memory, by this ask's "
             f"subject; {sm.RECALL} NAME for the whole of one):")
     out = [head]
+    given = []
     used = len(head)
     for h in hits:
         where = "every project" if h.get("shared") else h.get("type") or "project"
@@ -480,8 +492,9 @@ def compose_block(hits: list[dict[str, Any]]) -> str | None:
         if used + len(entry) > ASK_BLOCK_MAX and len(out) > 1:
             break
         out.append(entry)
+        given.append(h)
         used += len(entry)
-    return "\n".join(out) if len(out) > 1 else None
+    return ("\n".join(out), given) if len(out) > 1 else (None, [])
 
 
 _lock = threading.Lock()
