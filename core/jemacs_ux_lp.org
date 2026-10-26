@@ -142,11 +142,6 @@
   #+end_src
 
   #+begin_src emacs-lisp
-
-    (defun my-company-transform (candidates)
-      (print (string last-command-event))
-      candidates)
-
     (setq company-transformers nil)
 
     (use-package orderless

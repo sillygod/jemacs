@@ -182,6 +182,15 @@ def _trace_line(trace: str | None) -> str | None:
     return line if isinstance(line, str) and line else None
 
 
+def _taker_note(trace: str | None, ask_id: str) -> str | None:
+    "What a stored trace tells the ask's taker on its `herd reply' (ask_trace), or None."
+    try:
+        import ask_trace
+        return ask_trace.taker_note(json.loads(trace), ask_id) if trace else None
+    except Exception:  # noqa: BLE001 -- no note, never a failed look at the ask
+        return None
+
+
 def trace_note(line: str) -> str:
     "LINE as it ends an answer's message: bracketed, alone on its line."
     return f"[{line}]"
@@ -1485,6 +1494,8 @@ class HerdStore:
             # How the work went, one line (ask_trace), once it is made.
             "trace": _trace_line(row["trace"]),
             "traced": bool(row["trace"]),
+            # And, when it was rough, what its taker is told (bin/herd reply).
+            "taker_note": _taker_note(row["trace"], row["id"]),
         }
 
     def relay_asks(self, name: str) -> dict[str, list[dict[str, Any]]]:

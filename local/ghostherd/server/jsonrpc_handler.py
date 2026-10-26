@@ -96,6 +96,10 @@ def _restated(hit: dict, key: str) -> str:
 
 AWAIT_MAX = 55.0
 AWAIT_POLL = 0.5
+# An answered ask's line is made in milliseconds, after the reply: looked
+# for this often, so neither its asker nor its taker (`herd reply') waits
+# a whole AWAIT_POLL for it.
+TRACE_POLL = 0.05
 
 
 class JsonRpcRequest(BaseModel):
@@ -500,7 +504,7 @@ class JsonRpcHandler:
                 # reply, waited for a moment here -- never the reply itself.
                 held = loop.time() + herd_module.TRACE_HOLD
                 while ask["status"] == "answered" and not ask.get("traced") and loop.time() < held:
-                    await asyncio.sleep(AWAIT_POLL)
+                    await asyncio.sleep(TRACE_POLL)
                     ask = await asyncio.to_thread(herd.get_ask, ask_id)
                 # Collected by the asker, or by a client that does not say
                 # who it is; one looking on at another's ask is not it.

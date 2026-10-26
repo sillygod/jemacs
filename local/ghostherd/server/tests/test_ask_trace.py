@@ -599,3 +599,183 @@ def test_herd_ask_wait_prints_the_line_apart_from_the_answer(live, home, tmp_pat
     assert "herd: How it went: " in stderr and "1 tool call, none failed" in stderr
     said = conversation.ask_outcome(stderr + stdout)
     assert said["answer"] == "it is fixed" and said["trace"].startswith("How it went: ")
+
+
+# ---- The taker hears it too, on its own `herd reply' (ask e6c80d6d) ------------------
+
+
+def _note(ask_id, why):
+    return T.TAKER_NOTE.format(ask=ask_id, why=why)
+
+
+def test_the_taker_note_says_the_counts_that_made_it_rough():
+    out = T.compose(_work(30, shell=4, edit=1), 600, guard=1, lint=1, asks={"qa-dp": 3, "agy-a": 1})
+    assert T.taker_note(out, ASK) == _note(
+        ASK, "5 tool calls failed (4 shell exits, 1 edit not applied); 2 denials (1 guard, 1 check); asked qa-dp 3×")
+    assert T.taker_note(out, ASK).splitlines()[1:] == [
+        "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:",
+        "\"$GHOSTHERD_HERD\" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do."]
+    # Only what made it rough: two edits that did not apply, alone, are.
+    assert T.taker_note(T.compose(_work(9, edit=2), 60), ASK) == _note(ASK, "2 tool calls failed (2 edits not applied)")
+    assert T.taker_note(T.compose(_work(9, denied=1), 60, guard=1, relays=1), ASK) == _note(
+        ASK, "2 denials (1 permission, 1 guard); relayed 1×")
+
+
+@pytest.mark.parametrize("kw,rough", [
+    ({"failed": {"shell": 3}}, False), ({"failed": {"shell": 4}}, True),
+    ({"failed": {"edit": 1}}, False), ({"failed": {"edit": 2}}, True),
+    ({"failed": {"denied": 1}}, False), ({"failed": {"denied": 1}, "guard": 1}, True), ({"lint": 2}, True),
+    ({"asks": {"qa-dp": 2}}, False), ({"asks": {"qa-dp": 3}}, True), ({"asks": {"a": 2, "b": 2}}, False),
+    ({"relays": 1}, True),
+])
+def test_the_taker_note_comes_exactly_when_the_nudge_does(kw, rough):
+    out = T.compose(_work(20, **kw.pop("failed", {})), 600, **kw)
+    assert (T.taker_note(out, ASK) is not None) is rough is out["rough"]
+
+
+def test_no_taker_note_on_a_smooth_or_unreadable_trace():
+    assert T.taker_note(T.compose(_work(12, shell=1), 240), ASK) is None
+    assert T.taker_note(None, ASK) is None and T.taker_note({"rough": True}, ASK) is None
+    assert herd_mod._taker_note("not json", ASK) is None and herd_mod._taker_note(None, ASK) is None
+
+
+def test_no_command_text_or_path_in_the_taker_note(home):
+    w = T.read_work(claude_transcript(home), ASK)
+    note = T.taker_note(T.compose(w, 600, lint=1), ASK)
+    assert note.startswith(f"Your work on ask {ASK} went rough: 2 denials (1 permission, 1 check).")
+    for secret in (SECRET, CMD, "test_secret_thing", ".env", "cat ", "grep", "FAILED", "classifier"):
+        assert secret not in note.splitlines()[0], secret
+
+
+ROUGH_WORK = [x for i in range(4) for x in (
+    c_use(f"b{i}", "Bash", 2 + i / 10, command=f"{CMD} {SECRET}"),
+    c_result(f"b{i}", f"Exit code 1\nFAILED test_secret_thing in {SECRET}", 2.05 + i / 10, error=True))]
+
+
+def _reply_cli(live, home, ask_id, *work, env=None, session="claude-t"):
+    """The taker's `herd reply ID', its work before it as WORK: (stderr, exit
+    code, seconds it took, and seconds from saying `answered' to exiting)."""
+    h = herd_mod.get_herd()
+    _taken(h, home, ask_id, *work)
+    e = dict(live["env"], HOME=str(home), **(env or {}))
+    if session:
+        e["GHOSTHERD_SESSION"] = session
+    else:
+        e.pop("GHOSTHERD_SESSION", None)
+    t = time.monotonic()
+    proc = subprocess.Popen([str(HERD), "reply", ask_id, "fixed it"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=e)
+    first = proc.stderr.readline()
+    said = time.monotonic()
+    rest, _ = proc.stderr.read(), proc.wait(timeout=30)
+    end = time.monotonic()
+    proc.stdout.close()
+    proc.stderr.close()
+    return first + rest, proc.returncode, end - t, end - said
+
+
+def _open_ask(live):
+    h = herd_mod.get_herd()
+    h.tick(sessions=TSNAP)
+    ask = h.ask("claude-t", "fix the build", from_name="claude-main")
+    _deliver_t(h)
+    return h, ask["id"]
+
+
+def test_herd_reply_tells_the_taker_when_its_work_went_rough(live, home):
+    h, k = _open_ask(live)
+    stderr, code, _, _ = _reply_cli(live, home, k, *ROUGH_WORK)
+    assert code == 0, stderr
+    assert stderr == "".join("herd: " + l + "\n" for l in [f"answered ask {k}"] + _note(
+        k, "4 tool calls failed (4 shell exits)").splitlines())
+    for secret in (SECRET, CMD, "test_secret_thing", "FAILED"):
+        assert secret not in stderr, secret
+    # The asker's line, and its nudge, are as they were.
+    got = h.get_ask(k)
+    assert got["trace"].endswith("4 tool calls, 4 failed (4 shell exits) · " + T.NUDGE)
+    assert got["taker_note"] == _note(k, "4 tool calls failed (4 shell exits)")
+
+
+def test_herd_reply_says_nothing_more_on_a_smooth_ask(live, home):
+    h, k = _open_ask(live)
+    stderr, code, _, after = _reply_cli(live, home, k, c_use("a", "Bash", 2, command="make"),
+                                        c_result("a", "Exit code 1", 2.1, error=True))
+    assert (code, stderr) == (0, f"herd: answered ask {k}\n")
+    assert after < 1.5, after                       # it looked, found the line, and left
+    assert "1 failed" in h.get_ask(k)["trace"] and h.get_ask(k)["taker_note"] is None
+
+
+def test_herd_reply_from_a_plain_shell_does_not_look(live, home):
+    "Not an agent (no GHOSTHERD_SESSION): nothing to remember for, no wait."
+    _, k = _open_ask(live)
+    stderr, code, _, after = _reply_cli(live, home, k, *ROUGH_WORK, session=None)
+    assert (code, stderr) == (0, f"herd: answered ask {k}\n") and after < 1.0
+
+
+def test_the_answer_is_in_before_the_reply_looks(live, home, monkeypatch):
+    """The trace held up: `herd reply' has stored the answer, said so, and
+    queued it for the asker while it still looks; then exits, with nothing
+    more, within its bound."""
+    h, k = _open_ask(live)
+    gate = __import__("threading").Event()
+    real = T.read_work
+    monkeypatch.setattr(T, "read_work", lambda *a, **kw: (gate.wait(10), real(*a, **kw))[1])
+    _taken(h, home, k, *ROUGH_WORK)
+    e = dict(live["env"], HOME=str(home), GHOSTHERD_SESSION="claude-t")
+    proc = subprocess.Popen([str(HERD), "reply", k, "fixed it"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=e)
+    try:
+        assert proc.stderr.readline() == f"herd: answered ask {k}\n"
+        assert proc.poll() is None                  # still looking
+        got = h.get_ask(k)
+        assert (got["status"], got["reply"], got["traced"]) == ("answered", "fixed it", False)
+        with h._mu:
+            mail = h._conn.execute("SELECT to_name, status FROM mail WHERE trace_of = ?", (k,)).fetchall()
+        assert mail == [("claude-main", "queued")]  # on its way to the asker
+        t = time.monotonic()
+        rest = proc.stderr.read()
+        proc.wait(timeout=10)
+        assert (proc.returncode, rest) == (0, "")
+        assert time.monotonic() - t < ask_trace_bound(), time.monotonic() - t
+    finally:
+        gate.set()
+        proc.stdout.close()
+        proc.stderr.close()
+        h.wait_traces()
+
+
+def ask_trace_bound():
+    "What the reply may wait, at most, and the time to exit: 3 s and a margin."
+    return 3.0 + 0.7
+
+
+def test_herd_reply_keeps_its_bound_when_the_sidecar_holds_longer(live, home, monkeypatch):
+    "Its own bound, not the sidecar's: a sidecar that holds the look 10 s is left after 3."
+    h, k = _open_ask(live)
+    gate = __import__("threading").Event()
+    real = T.read_work
+    monkeypatch.setattr(T, "read_work", lambda *a, **kw: (gate.wait(15), real(*a, **kw))[1])
+    monkeypatch.setattr(herd_mod, "TRACE_HOLD", 10.0)
+    try:
+        stderr, code, _, after = _reply_cli(live, home, k, *ROUGH_WORK)
+        assert (code, stderr) == (0, f"herd: answered ask {k}\n")
+        assert 2.5 < after < ask_trace_bound(), after
+    finally:
+        gate.set()
+        h.wait_traces()
+
+
+def test_herd_reply_says_nothing_more_when_the_trace_or_the_look_fails(live, home, monkeypatch):
+    h, k = _open_ask(live)
+    # The trace fails: no line, so none comes in time.
+    monkeypatch.setattr(T, "read_work", lambda *a, **kw: 1 / 0)
+    stderr, code, _, after = _reply_cli(live, home, k, *ROUGH_WORK)
+    assert (code, stderr) == (0, f"herd: answered ask {k}\n") and after < ask_trace_bound()
+    assert h.get_ask(k)["status"] == "answered"
+    # The look itself fails: the answer stands, and the exit is at once.
+    _, k2 = _open_ask(live)
+    monkeypatch.setattr(HerdStore, "get_ask", lambda *a, **kw: 1 / 0)
+    stderr, code, _, after = _reply_cli(live, home, k2, *ROUGH_WORK)
+    assert (code, stderr) == (0, f"herd: answered ask {k2}\n") and after < 1.0
+    monkeypatch.undo()
+    assert h.get_ask(k2)["reply"] == "fixed it"
