@@ -1597,3 +1597,9 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
        list's left edge) jumped with the detail pane's content.  Stretch it. */
     max-width: none; margin: 0; }
 }
+
+/* How an answer's work went (ask_trace): the herd's counts, one muted line
+   under the answer; a rough one in the warning tone. */
+.trace, .thtrace { display: block; margin-top: 6px; color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.trace.rough, .thtrace.rough { color: var(--warn, #d29922); }
+.tracedetail, .thtracedetail { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }

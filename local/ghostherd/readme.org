@@ -787,6 +787,43 @@ The taker works under its own approvals; an ask grants nothing.  It can
 route /around/ one, though --- an agent kept from pushing can ask one
 allowed to --- so the approvals on each agent are the real boundary.
 
+*How it went.*  An answer comes with one line of how the work behind it
+went --- the herd's counts, never a verdict on the answer:
+
+#+begin_example
+How it went: 38 min · 108 tool calls, 5 failed (5 shell exits) · 1 check denial · rough going: if it found a non-obvious gotcha, `herd remember` it
+How it went: 4 min · 12 tool calls, none failed · asked others 1× (qa-dp)
+#+end_example
+
+It is read from the taker's own transcript, from the message that
+delivered the ask to its =herd reply= (or, for an ask the herd closed when
+the taker stopped, to the end): its tool calls, which failed and how ---
+a shell's exit code, an edit that did not apply, a permission denied, a
+timeout --- and its sub-agents' own work, which claude keeps beside its
+conversation.  Then the herd's own records: the guard's and the checks'
+denials while it worked, the asks it sent answering it, a relay asked
+through the herd.  claude marks a failed tool result; grok's and agy's
+transcripts, as the herd reads them, do not, so for them the line says
+their failures are not readable rather than guess.  When the transcript
+cannot be read, or does not show the ask (a =/clear=, a relay's heir),
+the line says what it could not see --- or is left out, when the herd has
+nothing else to say.  Counts and tool kinds only: never a command, a path
+or what a tool printed.
+
+/Rough going/ --- four failed calls (grep finding nothing exits 1, and
+claude counts that), two edits that did not apply, two denials, three
+asks to one agent, or a relay --- adds the nudge to =herd remember= a
+gotcha it found.  Never on a smooth ask.
+
+=herd ask --wait= prints the answer on stdout and the line on stderr, as
+=herd: How it went: …=; the answer's message ends with it in brackets;
+Threads shows it under the answer, and the counts behind it when the
+message is opened; the room and the chat show it under the answer.  It is
+made after the reply, never in its way: the reply returns at once, the
+line follows in milliseconds (a long transcript is read back no further
+than the ask, within two seconds), and an answer's message waits for it
+three seconds at most, then goes without.
+
 * Relay: an heir takes an agent's name and its work
 
 An agent stops --- its CLI's usage used up, wedged, or you would
