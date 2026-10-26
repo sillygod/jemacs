@@ -28,10 +28,14 @@ from herd import ASK_CLOSED, get_herd
 # words alone.  The CLI's own timeout is 15s.
 RECALL_WAIT = 8.0
 
+# The window the Memory tab counts a fact's uses in.
+USAGE_DAYS = 30
+
 
 def _ask_memory(taker, body):
-    "What an ask carries from the shared memory (herd.py's hook)."
-    return fact_index.get_index().ask_block(taker, body)
+    """What an ask carries from the shared memory (herd.py's hook): the text,
+    and the facts in it, each counted as a use when the ask is delivered."""
+    return fact_index.get_index().ask_memory(taker, body)
 
 
 herd_module.ASK_MEMORY = _ask_memory
@@ -175,6 +179,7 @@ class JsonRpcHandler:
             "memory_unmigrate": self._memory_unmigrate,
             "herd_memory_projects": self._herd_memory_projects,
             "herd_memory_list": self._herd_memory_list,
+            "herd_memory_uses": self._herd_memory_uses,
             "herd_memory_edit": self._herd_memory_edit,
             "herd_memory_delete": self._herd_memory_delete,
             "herd_promote_propose": self._herd_promote_propose,
@@ -908,10 +913,12 @@ class JsonRpcHandler:
         if shared_memory.NAME_RE.match(query.lower()):
             named = [f.as_dict() for f in shared_memory.pool(key) if f.name == query.lower()]
             if named:
+                self._used(key, [named[0]], "recall", params, how="name")
                 return {"query": query, "count": 1, "mode": "name",
                         "text": _recall_block(named[0], key), "names": [query.lower()]}
         found = fact_index.get_index().rank(key, query, strict=False, wait=RECALL_WAIT)
         hits = found["hits"]
+        self._used(key, hits, "recall", params, how="query")
         blocks = [_recall_block(h, key) for h in hits]
         note = "" if found["mode"] != "words" else (
             "(ranked by words alone: the embedder is not up yet)\n\n")
@@ -919,6 +926,21 @@ class JsonRpcHandler:
                 "text": (note + "\n\n---\n\n".join(blocks)) if blocks
                 else f"no fact matches {query!r}",
                 "names": [h["name"] for h in hits]}
+
+    @staticmethod
+    def _used(key: str, facts: list[dict], kind: str, params: dict, how: str | None = None) -> None:
+        """FACTS (dicts, `shared' marking a user fact) of store KEY reached the
+        caller, by KIND: counted (herd.use).  Never fails what it counts."""
+        try:
+            by: dict[str, list[str]] = {}
+            for f in facts:
+                store = shared_memory.USER_KEY if f.get("shared") else key
+                by.setdefault(store, []).append(str(f.get("name") or ""))
+            agent = str(params.get("from") or params.get("agent") or "").strip()
+            for store, names in by.items():
+                get_herd().use(store, names, kind, agent=agent, how=how)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _herd_search(self, params: dict) -> dict:
         """What the calling agent's own project's past sessions said
@@ -960,7 +982,13 @@ class JsonRpcHandler:
         not fit.  Emacs asks for it at spawn."""
         _store, key = self._memory_store(params)
         cap = int(params.get("max") or 4000)
-        return shared_memory.opening(key, max(0, cap))
+        out = shared_memory.opening(key, max(0, cap))
+        # The rules it gives in full reach the agent starting; the facts it
+        # lists, one line each, are every fact of the store at every start --
+        # counting those would say nothing.
+        shared = set(out.get("full_shared") or [])
+        self._used(key, [{"name": n, "shared": n in shared} for n in out["full"]], "opening", params)
+        return out
 
     def _memory_rank(self, params: dict) -> dict:
         """The facts of the caller's project (or --user) relevant to QUERY,
@@ -1074,7 +1102,27 @@ class JsonRpcHandler:
                 self._attribute_project(key)
             except Exception:  # noqa: BLE001 — attribution must never fail a read
                 pass
-        return {"key": key, "facts": shared_memory.facts_for(key)}
+        facts = shared_memory.facts_for(key)
+        out = {"key": key, "facts": facts}
+        # How often each reached an agent (herd.fact_usage): the page's
+        # counts.  Without them the list still shows.
+        try:
+            usage = get_herd().fact_usage(key, USAGE_DAYS)
+            for f in facts:
+                where = shared_memory.USER_KEY if f.get("shared") else key
+                f["uses"] = usage["facts"].get(f"{where}/{f['name']}") or {
+                    "ask": 0, "recall": 0, "opening": 0, "used": 0, "last": None,
+                    "last_opening": None, "total": 0}
+            out.update(uses_since=usage["since"], uses_days=usage["days"])
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def _herd_memory_uses(self, params: dict) -> dict:
+        "One fact's last uses -- when, how, by whom, in which ask -- newest first."
+        _store, key = self._memory_store_by_key(params)
+        name = shared_memory.valid_name(str(params.get("name") or ""))
+        return {"key": key, "name": name, "uses": get_herd().fact_uses(key, name)}
 
     def _herd_memory_edit(self, params: dict) -> dict:
         "Rewrite a fact (description, type, body) from the page, authored `user'."

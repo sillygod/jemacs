@@ -29,6 +29,7 @@ lead: an agent in a project that has a lead tells its lead instead.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import os
@@ -184,6 +185,22 @@ def _lint_lib():
     return mod
 
 
+# How often each shared-memory fact reaches an agent (`use'): in an ask's
+# memory block as it is delivered, in a grok's or agy's opening as a rule
+# given in full, or returned by `herd recall'.  One row per use, kept whole
+# USE_DETAIL_DAYS -- the page's 30 days and room for a later page to show
+# who and which ask -- and one lifetime total per fact and kind, added to
+# as the rows are written; older rows are then dropped, and past
+# USE_ROWS_MAX rows the oldest too, the totals keeping their count.  A use
+# waits in a queue of USE_QUEUE_MAX until the tick (or the page) writes it,
+# USE_FLUSH_MAX at a time: nothing that hands out memory ever waits on this
+# database, and no tick writes more than a moment's worth.
+USE_KINDS = ("ask", "opening", "recall")
+USE_DETAIL_DAYS = 90
+USE_ROWS_MAX = 200_000
+USE_QUEUE_MAX = 10_000
+USE_FLUSH_MAX = 2_000
+
 # A handoff to a project with no lead waits this long for Emacs to start
 # one; past it, it fails -- Emacs never took the request, or never said.
 HANDOFF_START_SECONDS = 180
@@ -294,6 +311,13 @@ class HerdStore:
         # -> the text to deliver after the body, or None.  Set by the
         # sidecar (fact_index); None leaves asks as they are.
         self.ask_memory = ASK_MEMORY
+        # Uses of shared-memory facts not yet written (see `use'), and the
+        # connection the page reads them through -- its own, read-only: a WAL
+        # reader that never takes `_mu', so counting a store's uses never
+        # holds up an ask.
+        self._uses: collections.deque = collections.deque(maxlen=USE_QUEUE_MAX)
+        self._reader: sqlite3.Connection | None = None
+        self._read_mu = threading.Lock()
         # Seconds a guard request waits before it expires (`tick' sets it).
         self.guard_ttl = GUARD_REQUEST_SECONDS
         self._mu = threading.Lock()
@@ -586,6 +610,48 @@ class HerdStore:
         for col in ("memory", "memory_until"):
             if col not in mail_cols:
                 self._conn.execute(f"ALTER TABLE mail ADD COLUMN {col} TEXT")
+        # Which facts that memory gave, as [[store, name]...]: each counts
+        # as a use when the mail is delivered (`use').
+        if "memory_facts" not in mail_cols:
+            self._conn.execute("ALTER TABLE mail ADD COLUMN memory_facts TEXT")
+        # Each time a shared-memory fact reached an agent, and the totals of
+        # the rows rolled up (`use', `_roll_up_uses').  Since when they are
+        # counted is in `meta' (uses_since): a fact used before has no
+        # history, which the page says rather than show it unused.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fact_uses (
+                key TEXT NOT NULL,
+                fact TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                how TEXT,
+                at TEXT NOT NULL,
+                agent TEXT,
+                ask TEXT
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_fact ON fact_uses (key, fact, at)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_at ON fact_uses (at)")
+        # The page's window, read from the index alone.
+        self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_window ON fact_uses (key, at, fact, kind)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fact_use_totals (
+                key TEXT NOT NULL,
+                fact TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                n INTEGER NOT NULL,
+                first_at TEXT,
+                last_at TEXT,
+                PRIMARY KEY (key, fact, kind)
+            )
+            """
+        )
+        self._conn.execute(
+            "INSERT OR IGNORE INTO meta (k, v) VALUES ('uses_since', ?)",
+            (datetime.now(timezone.utc).isoformat(),),
+        )
         ask_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(asks)")
         }
@@ -632,7 +698,16 @@ class HerdStore:
 
     def close(self) -> None:
         with self._mu:
+            self._flush_uses()
+            try:
+                self._conn.commit()
+            except sqlite3.Error:
+                pass
             self._conn.close()
+        with self._read_mu:
+            if self._reader is not None:
+                self._reader.close()
+                self._reader = None
 
     def _synced(self) -> bool:
         row = self._conn.execute(
@@ -1092,16 +1167,21 @@ class HerdStore:
     def _attach_memory(self, mail_id: str, target: str, body: str) -> None:
         """Find what the shared memory says about BODY for TARGET and put it
         on the ask's mail, then release it for delivery -- outside the lock,
-        since ranking embeds.  A failure releases it without memory."""
-        memory = None
+        since ranking embeds.  A failure releases it without memory.  The
+        hook gives the text, or (text, [[store, name]...]) -- the facts it
+        holds, each a use once the mail is delivered."""
+        memory, facts = None, None
         try:
             memory = self.ask_memory(self.session(target), body)
+            if isinstance(memory, tuple):
+                memory, facts = memory
+                facts = json.dumps([[str(k), str(n)] for k, n in facts or []]) if memory else None
         except Exception:  # noqa: BLE001 -- memory never holds up an ask
-            memory = None
+            memory, facts = None, None
         with self._mu:
             self._conn.execute(
-                "UPDATE mail SET memory = ?, memory_until = NULL WHERE id = ?",
-                (memory or None, mail_id),
+                "UPDATE mail SET memory = ?, memory_until = NULL, memory_facts = ? WHERE id = ?",
+                (memory or None, facts, mail_id),
             )
             self._conn.commit()
 
@@ -1976,6 +2056,148 @@ class HerdStore:
                     "SELECT id, key, fact, session, cli, command, created_at FROM lint_denials"
                     " WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50", (cutoff,)).fetchall()]
 
+    # ---- How often each fact reaches an agent ---------------------------------
+    #
+    # Counted where the herd hands a fact to an agent, and nowhere else: an
+    # ask's memory block as the ask is delivered, a rule given in full in a
+    # grok's or agy's opening, and `herd recall' by name or by query.  The
+    # page reading a fact, an index listing, and what claude reads from its
+    # own memory dir are not seen, so not counted.  Nothing is said of what
+    # a use did: there is no ground truth for that.
+
+    def use(self, key: str, facts, kind: str, agent: str = "", ask: str | None = None,
+            how: str | None = None, at: str | None = None) -> None:
+        """Note that FACTS (names) of store KEY reached AGENT, by KIND
+        (USE_KINDS) -- HOW it was asked for, the ASK it rode in; AT now
+        unless given.  An append to a bounded queue the tick writes: it never
+        waits, and never fails what called it."""
+        try:
+            at = at or datetime.now(timezone.utc).isoformat()
+            for name in facts or []:
+                self._uses.append((str(key), str(name), kind, how, at, agent or "", ask))
+        except Exception:  # noqa: BLE001 -- a count never costs a use
+            pass
+
+    def _used_by_delivery(self, mail_ids: list[str]) -> None:
+        """The facts the memory blocks of MAIL_IDS hold, each a use as that
+        mail is delivered -- once: only mail still queued.  Caller holds `_mu`."""
+        try:
+            marks = ",".join("?" * len(mail_ids))
+            for to_name, ask_id, facts in self._conn.execute(
+                f"SELECT to_name, ask_id, memory_facts FROM mail WHERE id IN ({marks})"
+                " AND status = 'queued' AND memory IS NOT NULL AND memory_facts IS NOT NULL",
+                mail_ids,
+            ).fetchall():
+                for key, name in json.loads(facts):
+                    self.use(key, [name], "ask", agent=to_name, ask=ask_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _flush_uses(self) -> None:
+        """Write up to USE_FLUSH_MAX of the uses waiting in the queue, and add
+        them to their facts' totals.  Caller holds `_mu`; never raises."""
+        rows = []
+        try:
+            while self._uses and len(rows) < USE_FLUSH_MAX:
+                rows.append(self._uses.popleft())
+        except IndexError:
+            pass
+        if not rows:
+            return
+        sums: dict[tuple[str, str, str], list] = {}
+        for key, fact, kind, _how, at, _agent, _ask in rows:
+            t = sums.setdefault((key, fact, kind), [0, at, at])
+            t[0] += 1
+            t[1], t[2] = min(t[1], at), max(t[2], at)
+        try:
+            self._conn.executemany(
+                "INSERT INTO fact_uses (key, fact, kind, how, at, agent, ask) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows)
+            self._conn.executemany(
+                """
+                INSERT INTO fact_use_totals (key, fact, kind, n, first_at, last_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (key, fact, kind) DO UPDATE SET
+                  n = n + excluded.n,
+                  first_at = MIN(first_at, excluded.first_at),
+                  last_at = MAX(last_at, excluded.last_at)
+                """, [(*k, *v) for k, v in sums.items()])
+        except Exception:  # noqa: BLE001 -- lost counts, never a lost tick
+            pass
+
+    def _roll_up_uses(self, now_ts: float) -> None:
+        """Bound the uses: drop the rows older than USE_DETAIL_DAYS, and the
+        oldest past USE_ROWS_MAX -- their facts' totals keep them counted.
+        Caller holds `_mu`; never raises."""
+        try:
+            cut = datetime.fromtimestamp(now_ts - USE_DETAIL_DAYS * 86400, tz=timezone.utc).isoformat()
+            over = self._conn.execute(
+                "SELECT at FROM fact_uses ORDER BY at DESC LIMIT 1 OFFSET ?", (USE_ROWS_MAX,)).fetchone()
+            if over and over[0] >= cut:
+                cut = over[0] + "~"      # every row at or before that one
+            self._conn.execute("DELETE FROM fact_uses WHERE at < ?", (cut,))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def fact_usage(self, key: str, days: int = 30) -> dict[str, Any]:
+        """The uses of store KEY's facts and the user store's, for the Memory
+        tab: {since, days, facts: {"store/name": {ask, recall, opening,
+        used, last, last_opening, total}}} -- ask, recall and opening the
+        uses of each kind in the last DAYS days; USED the asks and recalls
+        among them (an opening gives every rule at every start, so it shows
+        apart); LAST the last ask or recall, rolled-up ones too; TOTAL every
+        ask and recall since SINCE."""
+        stores = [key, "user"]
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        out: dict[str, dict[str, Any]] = {}
+
+        def slot(k, n):
+            return out.setdefault(f"{k}/{n}", {"ask": 0, "recall": 0, "opening": 0, "used": 0,
+                                                "last": None, "last_opening": None, "total": 0})
+        with self._mu:
+            self._flush_uses()
+            self._conn.commit()
+        with self._read_mu:
+            db = self._read_conn()
+            since = db.execute("SELECT v FROM meta WHERE k = 'uses_since'").fetchone()
+            for k, n, kind, count in db.execute(
+                "SELECT key, fact, kind, COUNT(*) FROM fact_uses WHERE key IN (?, ?) AND at >= ?"
+                " GROUP BY key, fact, kind", (*stores, cutoff)).fetchall():
+                if kind in USE_KINDS:
+                    slot(k, n)[kind] = count
+            for k, n, kind, count, last in db.execute(
+                "SELECT key, fact, kind, n, last_at FROM fact_use_totals WHERE key IN (?, ?)", stores).fetchall():
+                self._add_use(slot(k, n), kind, count, last)
+        for v in out.values():
+            v["used"] = v["ask"] + v["recall"]
+        return {"since": since[0] if since else None, "days": days, "facts": out}
+
+    def _read_conn(self) -> sqlite3.Connection:
+        "The read-only connection the uses are read through.  Caller holds `_read_mu`."
+        if self._reader is None:
+            self._reader = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True, check_same_thread=False)
+            self._reader.execute("PRAGMA busy_timeout = 2000")
+        return self._reader
+
+    @staticmethod
+    def _add_use(v: dict[str, Any], kind: str, count: int, last: str | None) -> None:
+        if kind == "opening":
+            v["last_opening"] = max(filter(None, [v["last_opening"], last]), default=None)
+        elif kind in ("ask", "recall"):
+            v["total"] += count
+            v["last"] = max(filter(None, [v["last"], last]), default=None)
+
+    def fact_uses(self, key: str, name: str, limit: int = 50) -> list[dict[str, Any]]:
+        "Store KEY's fact NAME's last LIMIT uses, newest first: when, how, by whom, which ask."
+        with self._mu:
+            self._flush_uses()
+            self._conn.commit()
+        with self._read_mu:
+            rows = self._read_conn().execute(
+                "SELECT kind, how, at, agent, ask FROM fact_uses WHERE key = ? AND fact = ?"
+                " ORDER BY at DESC LIMIT ?", (key, name, limit)).fetchall()
+        return [{"kind": r[0], "how": r[1], "at": r[2], "agent": r[3], "ask": r[4]} for r in rows]
+
     def mark_proposal_applied(self, proposal_id: str) -> None:
         "The lead applied an approved proposal: mark it done."
         now = datetime.now(timezone.utc).isoformat()
@@ -2604,6 +2826,7 @@ class HerdStore:
         with self._mu:
             if ack_ids:
                 placeholders = ",".join("?" * len(ack_ids))
+                self._used_by_delivery(ack_ids)
                 self._conn.execute(
                     f"""
                     UPDATE mail SET status = 'delivered', delivered_at = ?
@@ -2817,6 +3040,7 @@ class HerdStore:
             asks = self._recent_asks()
             guard = self._guard_recent()
             lint = self._lint_recent()
+            self._flush_uses()
             self._unwait(names, now)
             reports = [
                 {"session": r[0], "state": r[1], "reason": r[2] or ""}
@@ -2954,6 +3178,7 @@ class HerdStore:
             except (TypeError, ValueError):
                 pass
         cutoff = datetime.fromtimestamp(now_ts - HISTORY_SECONDS, tz=timezone.utc).isoformat()
+        self._roll_up_uses(now_ts)
         self._conn.execute(
             """
             DELETE FROM mail
