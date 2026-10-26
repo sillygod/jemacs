@@ -865,6 +865,11 @@ def test_install_adds_ours_and_keeps_theirs(home):
     assert settings["hooks"]["Stop"][0]["hooks"][0]["command"] == "say done"
     for ev in ("SessionStart", "UserPromptSubmit", "Notification", "Stop"):
         assert any(hc.MARK in h["command"] for g in settings["hooks"][ev] for h in g["hooks"]), ev
+    # The checks: a shell call's PreToolUse, after theirs -- claude's Bash,
+    # and grok's run_terminal_command, which grok reads `Bash' as.
+    assert settings["hooks"]["PreToolUse"][1] == {
+        "matcher": "Bash", "hooks": [{"type": "command", "timeout": 5,
+                                      "command": '[ -z "$GHOSTHERD_HERD" ] || "$GHOSTHERD_HERD" lint'}]}
     agy = json.loads((home / ".gemini" / "config" / "hooks.json").read_text())
     assert set(agy["ghostherd"]) == {"PreInvocation", "Stop"}
     assert list(home.glob(".claude/settings.json.ghostherd-*.bak"))
@@ -974,7 +979,7 @@ def test_list_finds_every_place(world):
     # The disabled plugin, and the env's secret, are nowhere.
     assert "never" not in got
     assert "secret-value" not in json.dumps(inv)
-    assert inv["ghostherd"]["claude"] == {"have": [], "want": list(hc.CLAUDE_EVENTS)}
+    assert inv["ghostherd"]["claude"] == {"have": [], "want": list(hc.CLAUDE_HOOKS)}
 
 
 def test_list_points_at_the_line(world):
@@ -1003,10 +1008,10 @@ def test_list_counts_ghostherds_once_installed(world):
     home, _ = world
     hooks(home, "install")
     inv = listing(home)
-    assert inv["ghostherd"]["claude"]["have"] == list(hc.CLAUDE_EVENTS)
-    assert inv["ghostherd"]["grok"]["have"] == list(hc.CLAUDE_EVENTS)
+    assert inv["ghostherd"]["claude"]["have"] == list(hc.CLAUDE_HOOKS)
+    assert inv["ghostherd"]["grok"]["have"] == list(hc.CLAUDE_HOOKS)
     assert inv["ghostherd"]["agy"]["have"] == list(hc.AGY_HOOKS)
-    assert sum(h["ours"] for h in inv["hooks"]) == 6
+    assert sum(h["ours"] for h in inv["hooks"]) == 7
 
 
 def test_list_survives_a_broken_file(world):

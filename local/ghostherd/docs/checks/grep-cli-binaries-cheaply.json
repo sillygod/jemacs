@@ -1,0 +1,34 @@
+{
+  "fact": "grep-cli-binaries-cheaply",
+  "hint": "A grep whose pattern begins with .{0,N}, over a CLI binary (claude, grok, agy: 150-270 MB), tries a match at every byte and pegs a CPU for minutes.  Run `timeout 30 strings FILE | grep -F -i -m 20 'literal'`, or find the literal with Python's mmap.find and read the bytes around it.",
+  "check": {
+    "command": {
+      "all": [
+        "^[efg]?grep\\b",
+        "\\s(?:-[A-Za-z]*e\\s*)?['\"]?\\.(?:\\{|\\\\\\{)0?,\\s*\\d+"
+      ]
+    },
+    "line": {
+      "all": [
+        "/bin/(?:claude|grok|agy)(?![\\w.-])|\\.local/share/claude/versions/\\d|\\.grok/downloads/grok-\\d|\\b(?:which|command\\s+-v|type\\s+-p)\\s+(?:claude|grok|agy)\\b"
+      ],
+      "none": [
+        "\\bstrings\\b"
+      ]
+    }
+  },
+  "catches": [
+    "grep -a -o '.{0,60}PreToolUse' ~/.local/bin/claude",
+    "C=~/.local/share/claude/versions/2.1.308; LC_ALL=C grep -a -o \".\\{0,160\\}Jump to bottom.\\{0,160\\}\" $C | head -5",
+    "grep -aoE '.{0,80}permissionDecision' \"$(which grok)\"",
+    "for f in ~/.grok/downloads/grok-1.0.70-macos-aarch64 ~/.local/bin/agy; do timeout 60 grep -a -o -i '.{0,60}(jump to bottom|hooks).{0,60}' $f | head; done"
+  ],
+  "passes": [
+    "timeout 30 strings ~/.local/bin/claude | grep -F -i -m 20 'PreToolUse'",
+    "strings -n 8 ~/.local/bin/agy | grep -E -o '.{0,120}permissions\\.deny'",
+    "grep -o '.{0,60}error' ~/.emacs.d/emacs-home/ghostherd-memory/sidecar.log",
+    "grep -a -F -c 'PreToolUse' ~/.local/bin/claude",
+    "grep -ao 'PreToolUse.{0,60}' ~/.local/bin/claude",
+    "\"$GHOSTHERD_HERD\" remember --name grep-cli-binaries-cheaply <<'EOF'\nNever grep -a -o '.{0,60}x' ~/.local/bin/claude.\nEOF"
+  ]
+}

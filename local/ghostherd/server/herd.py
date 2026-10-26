@@ -172,6 +172,18 @@ def _guard_lib():
     return mod
 
 
+LINT_PATH = Path(__file__).resolve().parents[1] / "bin" / "herd_lint.py"
+
+
+def _lint_lib():
+    "bin/herd_lint.py: the checks the hook runs, whose rules files this writes."
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("herd_lint", LINT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 # A handoff to a project with no lead waits this long for Emacs to start
 # one; past it, it fails -- Emacs never took the request, or never said.
 HANDOFF_START_SECONDS = 180
@@ -477,6 +489,29 @@ class HerdStore:
                 ask_id TEXT,
                 created_at TEXT NOT NULL,
                 decided_at TEXT
+            )
+            """
+        )
+        # A proposal is a promotion into an instruction file (`promote'), or
+        # a fact made into a check (`lint', bin/herd_lint.py): its rule, as
+        # JSON, which the herd writes to the checks' store on approval.
+        prop_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(proposals)")}
+        if "kind" not in prop_cols:
+            self._conn.execute("ALTER TABLE proposals ADD COLUMN kind TEXT")
+        if "rule" not in prop_cols:
+            self._conn.execute("ALTER TABLE proposals ADD COLUMN rule TEXT")
+        # Each call a check denied (`herd lint', `herd guard'): for the log,
+        # and each rule's count on the page, so a false positive shows.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lint_denials (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                fact TEXT NOT NULL,
+                session TEXT,
+                cli TEXT,
+                command TEXT,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -1761,20 +1796,28 @@ class HerdStore:
             "id": row[0], "project": row[1], "facts": json.loads(row[2] or "[]"),
             "file": row[3], "diff": row[4], "author": row[5], "status": row[6],
             "reason": row[7], "ask_id": row[8], "created_at": row[9],
-            "decided_at": row[10],
+            "decided_at": row[10], "kind": row[11] or "promote",
+            "rule": json.loads(row[12]) if row[12] else None,
         }
 
     _PROPOSAL_COLS = ("id, project, facts, file, diff, author, status, reason, "
-                      "ask_id, created_at, decided_at")
+                      "ask_id, created_at, decided_at, kind, rule")
 
     def propose(self, project: str, facts: list[str], file: str, diff: str,
-                author: str) -> dict[str, Any]:
+                author: str, rule: dict[str, Any] | None = None) -> dict[str, Any]:
         """Store a pending proposal to promote FACTS of PROJECT (a store key)
         into instruction FILE, with the exact DIFF.  The herd holds it until
-        the user decides on the page; it writes nothing to the repo."""
+        the user decides on the page; it writes nothing to the repo.  With
+        RULE, a check made of the one fact instead (`lint': FILE and DIFF
+        are the herd's own, `lint' and the rule as JSON)."""
         project = (project or "").strip()
-        file = (file or "").strip()
         names = [str(f).strip() for f in (facts or []) if str(f).strip()]
+        kind = "lint" if rule is not None else "promote"
+        if rule is not None:
+            if len(names) != 1:
+                raise ValueError("a check is one fact's")
+            file, diff = "lint", json.dumps(rule, sort_keys=True, ensure_ascii=False)
+        file = (file or "").strip()
         if not project:
             raise ValueError("project is required")
         if not names:
@@ -1799,15 +1842,16 @@ class HerdStore:
             ).fetchone()
             if dup:
                 return {"id": dup[0], "project": project, "facts": names,
-                        "file": file, "duplicate": True}
+                        "file": file, "kind": kind, "duplicate": True}
             self._conn.execute(
                 "INSERT INTO proposals (id, project, facts, file, diff, author, "
-                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                "status, created_at, kind, rule) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                 (pid, project, facts_json, file, diff,
-                 (author or "unknown").strip() or "unknown", now),
+                 (author or "unknown").strip() or "unknown", now, kind,
+                 diff if rule is not None else None),
             )
             self._conn.commit()
-        return {"id": pid, "project": project, "facts": names, "file": file}
+        return {"id": pid, "project": project, "facts": names, "file": file, "kind": kind}
 
     def proposals(self, project: str | None = None,
                   status: str | None = None) -> list[dict[str, Any]]:
@@ -1872,6 +1916,65 @@ class HerdStore:
             if cur.rowcount == 0:
                 raise ValueError("no pending proposal with that id")
         return {"id": proposal_id, "status": "rejected"}
+
+    def apply_lint_proposal(self, proposal_id: str) -> None:
+        "The user approved a check: it is on, nothing left for anyone to do."
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            cur = self._conn.execute(
+                "UPDATE proposals SET status = 'applied', decided_at = ? "
+                "WHERE id = ? AND status = 'pending' AND kind = 'lint'",
+                (now, proposal_id),
+            )
+            self._conn.commit()
+            if cur.rowcount == 0:
+                raise ValueError("no pending check with that id")
+
+    # ---- The checks' denials ------------------------------------------------
+    #
+    # A check denies alone (bin/herd_lint.py), before the call; what it
+    # denied comes here, after, for the log and each rule's count.
+
+    def lint_denied(self, key: str, fact: str, session: str = "", cli: str = "",
+                    command: str = "") -> dict[str, Any]:
+        "Record that store KEY's check for FACT denied COMMAND (SESSION's, on CLI)."
+        key, fact = (key or "").strip(), (fact or "").strip()
+        if not key or not fact:
+            raise ValueError("key and fact are required")
+        did = uuid.uuid4().hex[:12]
+        now = datetime.now(timezone.utc).isoformat()
+        with self._mu:
+            self._conn.execute(
+                "INSERT INTO lint_denials (id, key, fact, session, cli, command, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (did, key, fact, (session or "").strip(), (cli or "").strip(),
+                 (command or "")[:2000], now))
+            self._conn.commit()
+        return {"id": did}
+
+    def lint_counts(self, key: str) -> dict[str, dict[str, Any]]:
+        "Per fact of store KEY: how many calls its check denied, and the last."
+        with self._mu:
+            rows = self._conn.execute(
+                "SELECT fact, COUNT(*), MAX(created_at) FROM lint_denials WHERE key = ? GROUP BY fact",
+                (key,)).fetchall()
+            out = {}
+            for fact, n, at in rows:
+                last = self._conn.execute(
+                    "SELECT session, cli, command FROM lint_denials WHERE key = ? AND fact = ?"
+                    " ORDER BY created_at DESC LIMIT 1", (key, fact)).fetchone()
+                out[fact] = {"count": n, "last_ms": _ms(at), "last_session": last[0],
+                             "last_cli": last[1], "last_command": (last[2] or "")[:400]}
+        return out
+
+    def _lint_recent(self) -> list[dict[str, Any]]:
+        "The denials of the last RECENT_SECONDS, newest first: the log tells each once."
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=RECENT_SECONDS)).isoformat()
+        return [{"id": r[0], "key": r[1], "fact": r[2], "session": r[3], "cli": r[4],
+                 "command": (r[5] or "")[:300], "created_ms": _ms(r[6])}
+                for r in self._conn.execute(
+                    "SELECT id, key, fact, session, cli, command, created_at FROM lint_denials"
+                    " WHERE created_at >= ? ORDER BY created_at DESC LIMIT 50", (cutoff,)).fetchall()]
 
     def mark_proposal_applied(self, proposal_id: str) -> None:
         "The lead applied an approved proposal: mark it done."
@@ -2713,6 +2816,7 @@ class HerdStore:
                 deliverable.append(row[:7] + row[8:])
             asks = self._recent_asks()
             guard = self._guard_recent()
+            lint = self._lint_recent()
             self._unwait(names, now)
             reports = [
                 {"session": r[0], "state": r[1], "reason": r[2] or ""}
@@ -2809,6 +2913,7 @@ class HerdStore:
             "reports": reports,
             "links": links,
             "guard": guard,
+            "lint": lint,
         }
 
     def _unwait(self, names: set[str], now: str) -> None:

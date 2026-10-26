@@ -19,3 +19,6 @@ os.environ.setdefault("GHOSTHERD_SHARED_MEMORY_DIR",
 # user's ~/.emacs.d/ghostherd-images.
 os.environ.setdefault("GHOSTHERD_IMAGES_DIR",
                       tempfile.mkdtemp(prefix="ghostherd-test-images-"))
+# The checks' rules (bin/herd_lint.py): never the user's ~/.ghostherd/lint.
+os.environ.setdefault("GHOSTHERD_LINT_DIR",
+                      tempfile.mkdtemp(prefix="ghostherd-test-lint-"))
