@@ -12,8 +12,11 @@ ID' -- or, for an ask the herd closed when the taker stopped, to the end.
 The rest is the herd's own records.  When the transcript cannot be read,
 its CLI's format is not known, or the ask is not in it, the line says what
 it could not see, and counts nothing from it -- never a guess.  Failures
-are told only where the transcript says so: claude marks a failed tool
-result; grok's and agy's transcripts, as the herd reads them, do not.
+are told only where the CLI marks them: claude a failed tool result,
+grok each call's outcome in the events beside its conversation, agy a
+step's status and error and a command's exit code (ask 299bc678).  A
+denial the herd recorded itself -- the guard's, a check's -- is counted
+from that record, not again from the transcript.
 
 Counts and tool kinds only: never a command, a path or what a tool said.
 
@@ -60,6 +63,22 @@ DENIED = re.compile(r"\A(?:Permission for this \w+ was denied|This (?:Bash )?com
                     r" operations)|Claude requested permissions|The user doesn't want to proceed|<tool_use_error>Blocked)")
 TIMEOUT = re.compile(r"\bCommand timed out\b|\btimed out\b", re.I)
 
+# grok's: events.jsonl, beside its conversation, ends each call with a
+# `tool_completed' event whose outcome is `success' or `error' -- for a shell
+# call, exactly when its result's `exit: N' is not 0 (740 read).  No hook's
+# denial is in any grok transcript here, so none is told apart: one would be
+# an `other error'.
+GROK_EVENTS = "events.jsonl"
+# agy's: a tool's step has status ERROR (INVALID for bad arguments) and an
+# `error'; a command's step its exit code, as a field (older agy) or in the
+# line `conversation.AGY_EXIT' near its top (as many lines as AGY_HEAD), on
+# a step that is DONE.  A hook's denial is its error: this, then the hook's
+# reason; agy's own permission check says `permission check failed'.
+AGY_HOOK = "tool call denied by pre-tool hook: "
+AGY_DENIED = re.compile(r"\Apermission check failed\b")
+AGY_EDIT = re.compile(r"\ACould not successfully apply\b")
+AGY_HEAD = 12
+
 LABELS = {  # kind: (one, many)
     "shell": ("shell exit", "shell exits"),
     "edit": ("edit not applied", "edits not applied"),
@@ -77,7 +96,7 @@ def classify(tool: str, text: str) -> str | None:
         return None
     if DENIED.match(t):
         return "denied"
-    if tool in SHELL_TOOLS and EXIT.match(t):
+    if tool in SHELL_TOOLS and (EXIT.match(t) or conversation.GROK_EXIT.match(t)):
         return "shell"
     if tool in EDIT_TOOLS:
         return "edit"
@@ -96,6 +115,8 @@ class Work:
         self.failures_known = False
         self.tools: collections.Counter = collections.Counter()
         self.failed: collections.Counter = collections.Counter()
+        # Calls whose result came but whose outcome the CLI did not mark.
+        self.unread = 0
         self.subs = 0
         self.sub_tools = 0
         self.sub_failed: collections.Counter = collections.Counter()
@@ -226,8 +247,18 @@ def _claude(records, ask_id: str, w: Work, sub: bool = False) -> None:
             w.end_ts = ts
 
 
-def _grok(records, ask_id: str, w: Work) -> None:
+def _grok(records, ask_id: str, w: Work) -> dict[str, tuple[str, str | None]]:
+    """The calls of the work, each by its id: its tool, and the head of its
+    result when one came (None when not).  Their outcomes are elsewhere
+    (`_grok_outcomes')."""
+    calls: dict[str, tuple[str, str | None]] = {}
     for o in records:
+        if o.get("type") == "tool_result":
+            cid = str(o.get("tool_call_id") or "")
+            if cid in calls:
+                content = o.get("content")
+                calls[cid] = (calls[cid][0], content[:2000] if isinstance(content, str) else "")
+            continue
         if o.get("type") != "assistant":
             continue
         for call in o.get("tool_calls") or []:
@@ -240,13 +271,105 @@ def _grok(records, ask_id: str, w: Work) -> None:
             except ValueError:
                 parsed = {}
             if name == "run_terminal_command" and isinstance(parsed, dict) and _reply_to(parsed.get("command"), ask_id):
-                return
+                return calls
             w.tools[name] += 1
+            calls[str(call.get("id") or "")] = (name, None)
+    return calls
 
 
-def _agy(records, ask_id: str, w: Work) -> None:
+def _grok_outcomes(events: Path, calls: dict[str, tuple[str, str | None]], w: Work, deadline: float) -> bool:
+    """CALLS' failures, by the outcome EVENTS gives each: from its end,
+    back until each call that has a result is found, or READ_MAX.  False
+    when EVENTS cannot be read: then no failure is known."""
+    want = {cid for cid, (_, said) in calls.items() if cid and said is not None}
+    outcomes: dict[str, str] = {}
+    try:
+        size = events.stat().st_size
+        window = FIRST_WINDOW
+        while want - outcomes.keys():
+            _check(deadline)
+            start = max(0, size - window)
+            with events.open("rb") as f:
+                f.seek(start)
+                data = f.read(size - start)
+            for line in data.split(b"\n")[1 if start else 0:]:
+                if b'"tool_completed"' not in line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(o, dict) and o.get("tool_call_id") in want:
+                    outcomes[o["tool_call_id"]] = str(o.get("outcome") or "")
+            if start == 0 or window >= READ_MAX:
+                break
+            window *= 4
+    except OSError:
+        return False
+    for cid in want:
+        name, said = calls[cid]
+        outcome = outcomes.get(cid)
+        if outcome is None:
+            # No event for it: a shell's result still says how it exited.
+            m = conversation.GROK_EXIT.match(said) if name in SHELL_TOOLS else None
+            if m is None:
+                w.unread += 1
+            elif m.group(1) != "0":
+                w.failed["shell"] += 1
+        elif outcome == "error":
+            kind = classify(name, said)
+            if kind:
+                w.failed[kind] += 1
+    return True
+
+
+def _said_by_herd(why: str, said: list[str] | None) -> bool:
+    """Whether hook denial WHY is one the herd recorded itself: a check's, or
+    one of SAID, the guard's recorded reasons -- each matched once, taken
+    off SAID (its answer can add ` [request ID]' to what it recorded)."""
+    if CHECK.search(why):
+        return True
+    for i, r in enumerate(said or ()):
+        if r and why.startswith(r):
+            del said[i]
+            return True
+    return False
+
+
+def _agy_failure(o: dict, said: list[str] | None) -> str | None:
+    "What kind of failure agy's step O is, if one."
+    error = o.get("error")
+    error = error.strip() if isinstance(error, str) else ""
+    if error or o.get("status") in ("ERROR", "INVALID"):
+        if error.startswith(AGY_HOOK):
+            return None if _said_by_herd(error[len(AGY_HOOK):], said) else "denied"
+        if AGY_DENIED.match(error):
+            return "denied"
+        if AGY_EDIT.match(error):
+            return "edit"
+        if TIMEOUT.search(error[:300]):
+            return "timeout"
+        return "other"
+    code = o.get("exit_code")
+    if isinstance(code, int) and not isinstance(code, bool):
+        return "shell" if code else None
+    content = o.get("content")
+    if o.get("type") in ("GENERIC", "RUN_COMMAND") and isinstance(content, str):
+        m = conversation.AGY_EXIT.search("\n".join(content.split("\n", AGY_HEAD)[:AGY_HEAD]))
+        if m and m.group(1) != "0":
+            return "shell"
+    return None
+
+
+def _agy(records, ask_id: str, w: Work, said: list[str] | None = None) -> None:
     for o in records:
-        if not (o.get("type") == "PLANNER_RESPONSE" and o.get("source") == "MODEL"):
+        if o.get("source") != "MODEL":
+            continue
+        if o.get("type") != "PLANNER_RESPONSE":
+            # A tool's step, after the response that called it.
+            kind = _agy_failure(o, said)
+            if kind:
+                w.failed[kind] += 1
             continue
         for call in o.get("tool_calls") or []:
             if not isinstance(call, dict):
@@ -285,8 +408,11 @@ def _subs(real: Path, w: Work, deadline: float) -> None:
         _claude(recs, "", w, sub=True)
 
 
-def read_work(transcript: str | None, ask_id: str, seconds: float = READ_SECONDS) -> Work:
-    "What TRANSCRIPT shows of the work on ASK_ID, within SECONDS."
+def read_work(transcript: str | None, ask_id: str, seconds: float = READ_SECONDS,
+              said: list[str] | None = None) -> Work:
+    """What TRANSCRIPT shows of the work on ASK_ID, within SECONDS.  SAID
+    is the reasons the herd's guard recorded denying the taker meanwhile:
+    those denials are counted from the herd's record, not again here."""
     w = Work()
     if not transcript:
         w.why = "no conversation known for it"
@@ -303,11 +429,22 @@ def read_work(transcript: str | None, ask_id: str, seconds: float = READ_SECONDS
         if lines is None:
             w.why = "its conversation does not show this ask"
             return w
-        {"claude": _claude, "grok": _grok, "agy": _agy}[cli](_timed(lines, deadline), ask_id, w)
-        w.failures_known = cli == "claude"
-        w.seen = True
+        records = _timed(lines, deadline)
         if cli == "claude":
+            _claude(records, ask_id, w)
+            w.failures_known = True
             _subs(real, w, deadline)
+        elif cli == "grok":
+            calls = _grok(records, ask_id, w)
+            events = real.with_name(GROK_EVENTS)
+            w.failures_known = (events.is_file() and events.resolve().parent == real.parent
+                                and _grok_outcomes(events, calls, w, deadline))
+        elif cli == "agy":
+            _agy(records, ask_id, w, list(said or ()))
+            w.failures_known = True
+        else:
+            raise KeyError(cli)
+        w.seen = True
     except _Late:
         w.seen = False
         w.why = "it took too long to read"
@@ -351,10 +488,13 @@ def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
         calls = _n(sum(work.tools.values()), "tool call")
         if not work.failures_known:
             calls += f" (failures not readable for {work.cli})"
-        elif failed:
-            calls += f", {failed} failed ({_kinds(work.failed)})"
-        elif work.tools:
-            calls += ", none failed"
+        else:
+            if failed:
+                calls += f", {failed} failed ({_kinds(work.failed)})"
+            elif work.tools and not work.unread:
+                calls += ", none failed"
+            if work.unread:
+                calls += f", {work.unread} not told how they ended" if work.unread > 1 else ", 1 not told how it ended"
         parts.append(calls)
         if work.subs:
             sub = _n(work.subs, "sub-agent")
@@ -388,7 +528,8 @@ def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
         "detail": {
             "seconds": seconds, "seen": work.seen, "why": work.why, "cli": work.cli,
             "tools": dict(work.tools), "failed": dict(work.failed),
-            "failures_known": work.failures_known, "subs": work.subs, "subs_read": work.subs_read,
+            "failures_known": work.failures_known, "unread": work.unread,
+            "subs": work.subs, "subs_read": work.subs_read,
             "sub_tools": work.sub_tools, "sub_failed": dict(work.sub_failed),
             "guard": guard, "lint": lint, "asks": asks, "relays": relays,
         },

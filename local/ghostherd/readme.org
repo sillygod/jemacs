@@ -802,9 +802,13 @@ a shell's exit code, an edit that did not apply, a permission denied, a
 timeout --- and its sub-agents' own work, which claude keeps beside its
 conversation.  Then the herd's own records: the guard's and the checks'
 denials while it worked, the asks it sent answering it, a relay asked
-through the herd.  claude marks a failed tool result; grok's and agy's
-transcripts, as the herd reads them, do not, so for them the line says
-their failures are not readable rather than guess.  When the transcript
+through the herd.  Each CLI marks a failure its own way: claude a failed
+tool result; grok each call's outcome in the =events.jsonl= beside its
+conversation (without that file, the line says grok's failures are not
+readable rather than guess, and a call with no outcome there is counted
+as not told how it ended, never as fine); agy a step's status and error,
+and a command's exit code.  A denial the herd recorded itself --- the
+guard's, a check's --- is counted once, from that record.  When the transcript
 cannot be read, or does not show the ask (a =/clear=, a relay's heir),
 the line says what it could not see --- or is left out, when the herd has
 nothing else to say.  Counts and tool kinds only: never a command, a path
