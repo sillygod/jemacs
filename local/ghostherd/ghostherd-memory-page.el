@@ -2110,7 +2110,12 @@ and the page is not re-rendered under an open editor every few seconds.")
                (setq ghostherd-memory-page--memory-sig sig)
                (ghostherd-memory-page--js
                 "renderMemory"
-                (list :key (or (plist-get result :key) key) :facts facts))))))
+                ;; Each fact's uses ride on it; since when they are counted,
+                ;; and in how many days, with the list (nil from a sidecar
+                ;; that does not count them).
+                (list :key (or (plist-get result :key) key) :facts facts
+                      :usesSince (plist-get result :uses_since)
+                      :usesDays (plist-get result :uses_days)))))))
        ;; The watched store is a slug key (the picker, or `user') or a project
        ;; path (the default / a room link, which has a `/').  The sidecar's
        ;; `key' must be a slug; a path goes as `project' for it to slug.

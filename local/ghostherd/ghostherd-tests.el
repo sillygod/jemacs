@@ -12360,9 +12360,59 @@ the cap this Emacs sets; and that is what grok's --rules carries."
           (should (equal method "memory_opening"))
           (should (equal (plist-get params :project) (expand-file-name "~/work/proj/")))
           (should (= (plist-get params :max) 1234))
+          (should-not (plist-member params :agent))
           (should (= timeout 2))))
       (let ((rules (cadr (member "--rules" (ghostherd--args-with-memory "/p/" nil)))))
-        (should (string-search "### Branch discipline" rules))))))
+        (should (string-search "### Branch discipline" rules)))
+      ;; Named, the agent starting is who the sidecar counts the rules as
+      ;; reaching (ask 17f83e5d).
+      (ghostherd--args-with-memory "/p/" nil "grok-p")
+      (should (equal (plist-get (cadr (car asked)) :agent) "grok-p"))
+      (ghostherd--memory-opening "/p/" "agy-p")
+      (should (equal (plist-get (cadr (car asked)) :agent) "agy-p")))))
+
+(ert-deftest ghostherd-test-a-spawned-grok-and-agy-name-themselves-to-the-opening ()
+  "A grok's --rules and an agy's first message ask for the opening as the
+agent starting, so its rules count as reaching that agent."
+  (let (asked)
+    (cl-letf (((symbol-function 'ghostherd--memory-opening)
+               (lambda (p &optional a) (push (list p a) asked) "MEMORY"))
+              ((symbol-function 'ghostherd--when-ready) (lambda (_s f &rest _) (funcall f)))
+              ((symbol-function 'ghostherd-prompt) #'ignore)
+              ((symbol-function 'ghostherd--agy-guard-mode) (lambda (_d) nil)))
+      (ghostherd-tests--with-herd ()
+        (ghostherd-spawn 'grok :name "grok-p" :project "/tmp/" :directory "/tmp/" :backend 'fake :display nil)
+        (should (equal (cadr (car asked)) "grok-p"))
+        (ghostherd-spawn 'agy :name "agy-p" :project "/tmp/" :directory "/tmp/" :backend 'fake :display nil)
+        (should (equal (cadr (car asked)) "agy-p"))))))
+
+(ert-deftest ghostherd-test-the-memory-tab-gets-each-facts-uses ()
+  "The facts go to the page with their uses, and since when the herd counts
+them -- nothing when the sidecar does not say."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let ((ghostherd-memory-page--memory-key "-k")
+        (ghostherd-memory-page--memory-sig nil)
+        (result (list :key "-k" :uses_since "2026-10-26T00:00:00+00:00" :uses_days 30
+                      :facts (list (list :name "a" :title "A" :uses (list :ask 2 :recall 1 :opening 0 :used 3
+                                                                          :last "2026-10-26T01:00:00+00:00"
+                                                                          :last_opening nil :total 3)))))
+        pushed)
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'ghostherd-memory-page--memory-proposals-tick) #'ignore)
+              ((symbol-function 'ghostherd-memory-page--memory-checks-tick) #'ignore)
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb &rest _) (when (equal method "herd_memory_list") (funcall cb result))))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushed))))
+      (ghostherd-memory-page--memory-tick)
+      (let ((json (json-encode (cdr (assoc "renderMemory" pushed)))))
+        (should (string-search "\"usesSince\":\"2026-10-26T00:00:00+00:00\"" json))
+        (should (string-search "\"usesDays\":30" json))
+        (should (string-search "\"uses\":{\"ask\":2,\"recall\":1,\"opening\":0,\"used\":3" json)))
+      ;; An older sidecar: no counts, and the page is told none.
+      (setq pushed nil ghostherd-memory-page--memory-sig nil
+            result (list :key "-k" :facts (list (list :name "a" :title "A"))))
+      (ghostherd-memory-page--memory-tick)
+      (should (string-search "\"usesSince\":null" (json-encode (cdr (assoc "renderMemory" pushed))))))))
 
 (ert-deftest ghostherd-test-memory-opening-of-an-empty-store-is-the-rule ()
   "The sidecar finds no fact: just the rule to recall, no empty block --
@@ -14374,7 +14424,7 @@ words say a guard decides."
     (let* ((said nil)
            (s (cl-letf (((symbol-function 'ghostherd--when-ready) (lambda (_s f &rest _) (funcall f)))
                         ((symbol-function 'ghostherd-prompt) (lambda (_s text &rest _) (setq said text)))
-                        ((symbol-function 'ghostherd--memory-opening) (lambda (_p) "MEMORY")))
+                        ((symbol-function 'ghostherd--memory-opening) (lambda (_p &optional _a) "MEMORY")))
                 (ghostherd-spawn 'agy :name "agy-p" :project repo :directory repo :backend 'fake :display nil)))
            (dir (ghostherd--guard-dir "agy-p"))
            (args (plist-get ghostherd-tests--fake-spawned :args)))

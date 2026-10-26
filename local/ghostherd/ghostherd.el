@@ -3988,7 +3988,7 @@ PLIST keys:
                  ;; as a first message below; claude reads memory through its
                  ;; linked dir.  Here for every grok/agy, whatever spawned it.
                  (if (eq kind 'grok)
-                     (ghostherd--args-with-memory project base)
+                     (ghostherd--args-with-memory project base name)
                    base)))
          ;; A guarded agy: its guard written, and agy started with the flag
          ;; and the guard's --add-dir -- or, the guard off, without them,
@@ -4066,7 +4066,7 @@ PLIST keys:
       (ghostherd--when-ready
        session (lambda () (ghostherd-prompt session (concat (and guard (format ghostherd--agy-guard-note
                                                                               directory (ghostherd--guard-dir name)))
-                                                            (ghostherd--memory-opening project))))))
+                                                            (ghostherd--memory-opening project name))))))
     (when display
       (ghostherd-visit session))
     (ghostherd--sidebar-refresh)
@@ -8114,19 +8114,21 @@ current -- so it needs no sidecar."
             (forward-line 1))
           (and lines (string-join (nreverse lines) "\n")))))))
 
-(defun ghostherd--memory-opening-composed (project)
+(defun ghostherd--memory-opening-composed (project &optional agent)
   "PROJECT's opening as the sidecar composes it (`memory_opening'): the
 rules in full, then the other facts within `ghostherd-memory-opening-max',
 then the names of what did not fit.  The text, \"\" for an empty store,
 or nil when the sidecar is not there to ask or does not answer in
-`ghostherd-memory-opening-timeout'."
+`ghostherd-memory-opening-timeout'.  AGENT, the one starting, is who the
+sidecar counts the rules as reaching."
   (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
              (fboundp 'ghostherd-memory-request))
     (condition-case nil
         (let ((r (ghostherd-memory-request
                   "memory_opening"
-                  (list :project (expand-file-name project)
-                        :max ghostherd-memory-opening-max)
+                  (append (list :project (expand-file-name project)
+                                :max ghostherd-memory-opening-max)
+                          (and agent (list :agent agent)))
                   ghostherd-memory-opening-timeout)))
           (and (stringp (plist-get r :text)) (plist-get r :text)))
       (error nil))))
@@ -8152,8 +8154,9 @@ rules out of the fact files."
                   (format "\n%d more, not listed — \"$GHOSTHERD_HERD\" recall <topic> for any" left)
                 "")))))
 
-(defun ghostherd--memory-opening (project)
-  "The shared-memory opening for a grok or agy agent in PROJECT.
+(defun ghostherd--memory-opening (project &optional agent)
+  "The shared-memory opening for a grok or agy agent in PROJECT -- AGENT,
+when it is named.
 The sidecar composes it (`ghostherd--memory-opening-composed'): the
 project's rules in full, then every other fact one line each within
 `ghostherd-memory-opening-max', then the names of what did not fit.
@@ -8161,7 +8164,7 @@ Without the sidecar, the index lines from MEMORY.md, whole, within the
 same cap, and how many were left out.  Before either, the rule to recall
 for the full text and anything newer; just that rule when the store is
 empty or absent."
-  (let ((composed (ghostherd--memory-opening-composed project))
+  (let ((composed (ghostherd--memory-opening-composed project agent))
         (head "\n\nThe project's memory as you start (\"$GHOSTHERD_HERD\" recall \
 <topic> gives the full text of any fact, and anything newer).  "))
     (cond
@@ -8175,12 +8178,13 @@ empty or absent."
           (concat ghostherd--memory-rules head "One line per fact:\n\n"
                   (ghostherd--memory-opening-lines index ghostherd-memory-opening-max))))))))
 
-(defun ghostherd--args-with-memory (project args)
-  "ARGS with the current memory opening folded into grok's --rules.
+(defun ghostherd--args-with-memory (project args &optional agent)
+  "ARGS with the current memory opening folded into grok's --rules --
+AGENT's, when it is named.
 A previous memory block (from a re-launch, marked by `ghostherd--memory-mark')
 is replaced, so there is always exactly one, with the current index; any role
 text already in --rules is kept before it."
-  (let ((opening (ghostherd--memory-opening project))
+  (let ((opening (ghostherd--memory-opening project agent))
         (rules nil) (out nil))
     (while args
       (let ((a (pop args)))

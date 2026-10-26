@@ -1201,6 +1201,32 @@ it follows the open room), with a filter, the body as Markdown, edit and
 delete through the store, the Proposals / Checks / Promoted / Suggest
 controls above --- desk and phone.
 
+*How often a fact is used.*  The herd counts each time it hands a fact to
+an agent, three ways kept apart: in an ask's /Relevant memory/ block ---
+counted when the ask is delivered, so a cancelled one counts nothing ---
+as a rule given in full in a grok's or agy's opening, and returned by
+=herd recall=, by name or by query.  Not counted: the page showing a fact,
+the index (=herd recall= with no query, an opening's one-line listing ---
+every fact, at every start, which would say nothing), and what claude
+reads from its own memory directory, which the herd does not see.  Nor is
+anything said of whether a use helped: there is no ground truth for that.
+The Memory tab shows each fact's asks and recalls in the last 30 days and
+the last of them --- a rule's openings apart --- with /Used/ to order by
+them and /Unused/ for the facts none used; it only shows them, and nothing
+changes a fact.  Uses are counted from the day the herd first ran with
+this, and the tab says so: "since <that day>", not a zero, until there are
+30 days of them.
+
+The counts live in the herd's =herd.sqlite=, never in a fact's file, its
+history or =MEMORY.md=: one row per use (the fact, its store, the kind,
+when, the agent, the ask) kept 90 days, and one lifetime total per fact
+and kind; older rows are dropped, and past 200,000 rows the oldest, the
+totals keeping their count.  A use is an append to a bounded in-memory
+queue that the tick writes, 2,000 at most at a time: an ask, an opening
+or a recall never waits on the database, and a count that fails is lost,
+never the use.  The page reads them through a read-only connection of its
+own, so it never holds up an ask.
+
 * Worktrees: two agents in one project at once
 
 An agent can work in its own git worktree, so two agents write code in one
