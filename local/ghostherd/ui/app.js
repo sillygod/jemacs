@@ -2762,8 +2762,10 @@
     const parts = [];
     if (d.seen) {
       parts.push("tools: " + (by(d.tools) || "none"));
-      if (d.failures_known) parts.push("failed: " + (by(d.failed, TRACE_FAIL) || "none"));
-      else parts.push("failures not readable for " + (d.cli || "this CLI"));
+      if (d.failures_known) {
+        parts.push("failed: " + (by(d.failed, TRACE_FAIL) || (d.unread ? "none seen" : "none")));
+        if (d.unread) parts.push("not told how they ended: " + d.unread);
+      } else parts.push("failures not readable for " + (d.cli || "this CLI"));
       if (d.subs) parts.push("sub-agents: " + d.subs + (d.subs_read ? " (" + d.sub_tools + " tool calls" +
         (by(d.sub_failed) ? "; failed: " + by(d.sub_failed, TRACE_FAIL) : "") + ")" : " (their own work not read)"));
     } else if (d.why) parts.push("its tool calls were not seen: " + d.why);

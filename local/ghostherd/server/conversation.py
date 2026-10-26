@@ -74,6 +74,12 @@ TARGET = re.compile(r"\A[A-Za-z0-9][\w.@-]*\Z")  # an agent, a kind or an ask id
 # background -- where the answer is in the output file, read later.
 ASKED = re.compile(r"^herd: asked \S+ \(ask ([0-9A-Za-z]{4,32})\)(?:, round \d+ of \d+)?$", re.M)
 FAILED_RUN = re.compile(r"\AExit code (\d+)\n")
+# grok opens every shell result with its exit code, 0 too -- `exit: N', or
+# `exit: N [truncated: ...]' over a long output; agy says it in a line of its
+# own after its result's header (`Created At:', `Completed At:'), older agy
+# without the `The'.  As this machine's transcripts have them (2026-10-26).
+GROK_EXIT = re.compile(r"\Aexit: (\d+)(?: \[truncated[^\n]*\])?(?:\n|\Z)")
+AGY_EXIT = re.compile(r"^(?:The c|C)ommand exited with code (\d+)\.$", re.M)
 BACKGROUND = re.compile(
     r"\ACommand running in background with ID: \S+? Output is being written to: (\S+?)\.?(?:\s|\Z)"
 )
@@ -374,7 +380,7 @@ def ask_outcome(text: str, error: bool = False, final: bool = True) -> dict[str,
     """
     out: dict[str, Any] = {}
     code = 0
-    if (m := FAILED_RUN.match(text)):
+    if (m := FAILED_RUN.match(text) or GROK_EXIT.match(text)):
         code, text = int(m.group(1)), text[m.end():]
     if (m := EXITED.search(text)):
         code, text, final = int(m.group(1)), text[: m.start()], True

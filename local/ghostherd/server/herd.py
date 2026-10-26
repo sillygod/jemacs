@@ -1914,7 +1914,10 @@ class HerdStore:
                     return
                 transcript = self._transcript(row["to_name"])
                 facts = self._trace_facts(row)
-            work = ask_trace.read_work(transcript, row["id"])
+                said = [r for (r,) in self._conn.execute(
+                    "SELECT reason FROM guard_requests WHERE session = ? AND created_at >= ? AND created_at <= ?"
+                    " ORDER BY created_at LIMIT 500", self._trace_window(row))]
+            work = ask_trace.read_work(transcript, row["id"], said=said)
             out = ask_trace.compose(work, _seconds(row), **facts)
             with self._mu:
                 self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
@@ -1933,13 +1936,17 @@ class HerdStore:
             except Exception:  # noqa: BLE001
                 pass
 
+    @staticmethod
+    def _trace_window(row: dict[str, Any]) -> tuple[str, str, str]:
+        "Whose work on ROW, and from when to when: (taker, begun, end)."
+        return (row["to_name"], row["delivered_at"] or row["created_at"],
+                row["answered_at"] or datetime.now(timezone.utc).isoformat())
+
     def _trace_facts(self, row: dict[str, Any]) -> dict[str, Any]:
         """What the herd itself saw of ROW's work: the guard's and the checks'
         denials of its taker while it worked, the asks it sent answering it,
         the relays it was asked for.  Caller holds `_mu`."""
-        taker, begun = row["to_name"], row["delivered_at"] or row["created_at"]
-        end = row["answered_at"] or datetime.now(timezone.utc).isoformat()
-        window = (taker, begun, end)
+        window = self._trace_window(row)
 
         def count(sql: str) -> int:
             return self._conn.execute(sql, window).fetchone()[0]

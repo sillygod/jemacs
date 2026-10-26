@@ -137,47 +137,214 @@ def test_no_command_text_or_path_in_the_line(home):
 
 
 # ---- grok and agy ------------------------------------------------------------------
+#
+# Hand-made, in the shapes this machine's transcripts have (ask 299bc678):
+# grok's outcome of each call is in events.jsonl beside its conversation,
+# its shell results open `exit: N'; agy's tool steps carry a status and an
+# error, its command results the exit code after their header.
 
-def test_grok_counts_tool_calls_and_says_failures_are_not_readable(home):
-    def call(i, name, **args):
-        return {"id": i, "name": name, "arguments": json.dumps(args)}
+
+def g_call(i, name, **args):
+    return {"id": i, "name": name, "arguments": json.dumps(args)}
+
+
+def g_calls(*calls):
+    return {"type": "assistant", "content": "", "model_id": "m", "tool_calls": list(calls)}
+
+
+def g_result(i, text):
+    return {"type": "tool_result", "tool_call_id": i, "content": text}
+
+
+def g_done(i, name, outcome):
+    return {"type": "tool_completed", "ts": "2026-10-26T09:00:00Z", "tool_call_id": i, "tool_name": name,
+            "outcome": outcome, "duration_ms": 5}
+
+
+def grok_session(home, recs, events=None):
+    path = _write(home / ".grok" / "sessions" / "%2Fsrc%2Fdp" / "g1" / "chat_history.jsonl", recs)
+    if events is not None:
+        _write(Path(path).with_name("events.jsonl"), events)
+    return path
+
+
+GROK_WORK = [
+    {"type": "user", "content": [{"type": "text", "text": "earlier"}], "prompt_index": 0},
+    g_calls(g_call("c0", "run_terminal_command", command="ls")),              # before the ask: not its work
+    g_result("c0", "exit: 2\nno such thing"),
+    {"type": "user", "content": [{"type": "text", "text": FRAME}], "prompt_index": 1},
+    g_calls(g_call("c1", "read_file", target_file=SECRET), g_call("c2", "run_terminal_command", command=CMD)),
+    g_result("c1", f"Error: {SECRET} does not exist"),
+    g_result("c2", "exit: 1\nFAILED test_secret_thing"),
+    g_calls(g_call("c3", "search_replace", file_path=SECRET)),
+    g_result("c3", "The string to replace was not found in the file."),
+    g_calls(g_call("c4", "run_terminal_command", command="make")),
+    g_result("c4", "exit: 0\nok"),
+    g_calls(g_call("c5", "run_terminal_command", command="grep -ao x ~/.local/bin/grok")),
+    g_result("c5", "Denied by the herd's check for the fact `grep-cli-binaries-cheaply': ..."),
+    g_calls(g_call("c6", "run_terminal_command", command=f"$GHOSTHERD_HERD reply {ASK} 'done'")),
+    g_result("c6", "exit: 0\nherd: answered"),
+    g_calls(g_call("c7", "run_terminal_command", command="rm -rf build")),   # after the reply: not its work
+    g_result("c7", "exit: 1"),
+]
+GROK_EVENTS = ([{"type": "phase_changed", "phase": "x", "ts": "t"}] * 50
+               + [g_done("c0", "run_terminal_command", "error"), g_done("c1", "read_file", "error"),
+                  g_done("c2", "run_terminal_command", "error"), g_done("c3", "search_replace", "error"),
+                  g_done("c4", "run_terminal_command", "success"), g_done("c5", "run_terminal_command", "error"),
+                  g_done("c6", "run_terminal_command", "success"), g_done("c7", "run_terminal_command", "error")])
+
+
+def test_grok_counts_failures_by_the_outcome_its_events_give(home):
+    w = T.read_work(grok_session(home, GROK_WORK, GROK_EVENTS), ASK)
+    assert w.seen and w.cli == "grok" and w.failures_known and w.unread == 0
+    assert dict(w.tools) == {"read_file": 1, "run_terminal_command": 3, "search_replace": 1}
+    # Each kind; the check's denial is the herd's to count (lint_denials).
+    assert dict(w.failed) == {"other": 1, "shell": 1, "edit": 1}
+    assert T.compose(w, 300, lint=1)["line"] == (
+        "How it went: 5 min · 5 tool calls, 3 failed (1 edit not applied, 1 other error, 1 shell exit) · 1 check denial")
+
+
+def test_grok_events_far_back_are_found(home, monkeypatch):
+    monkeypatch.setattr(T, "FIRST_WINDOW", 2048)
+    filler = [{"type": "phase_changed", "phase": "x" * 40, "ts": "t"}] * 400
+    events = GROK_EVENTS[50:] + filler                    # the outcomes, then much after them
+    w = T.read_work(grok_session(home, GROK_WORK, events), ASK)
+    assert dict(w.failed) == {"other": 1, "shell": 1, "edit": 1} and w.unread == 0
+
+
+def test_grok_without_its_events_says_failures_are_not_readable(home):
+    w = T.read_work(grok_session(home, GROK_WORK), ASK)
+    assert w.seen and not w.failures_known and not w.failed
+    assert T.compose(w, 300)["line"] == "How it went: 5 min · 5 tool calls (failures not readable for grok)"
+
+
+def test_grok_a_call_its_events_do_not_end(home):
+    """A shell's result still says how it exited; anything else is said to be
+    not known, never counted as fine."""
+    events = [e for e in GROK_EVENTS if e.get("tool_call_id") not in ("c1", "c2")]
+    w = T.read_work(grok_session(home, GROK_WORK, events), ASK)
+    assert dict(w.failed) == {"shell": 1, "edit": 1} and w.unread == 1
+    assert T.compose(w, 300)["line"] == (
+        "How it went: 5 min · 5 tool calls, 2 failed (1 edit not applied, 1 shell exit), 1 not told how it ended")
+    w.failed.clear()
+    assert "none failed" not in T.compose(w, 300)["line"]
+
+
+def a_plan(i, *calls):
+    return {"source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE", "created_at": f"t{i}", "step_index": i,
+            "tool_calls": [{"name": n, "args": {k: json.dumps(v) for k, v in a.items()}} for n, a in calls]}
+
+
+def a_step(i, kind="GENERIC", status="DONE", body="", **kw):
+    head = "Created At: 2026-10-26T09:00:00Z\nCompleted At: 2026-10-26T09:00:01Z\n"
+    return dict({"source": "MODEL", "type": kind, "status": status, "created_at": f"t{i}", "step_index": i,
+                 "content": head + body}, **kw)
+
+
+def a_ran(i, code, older=False):
+    said = f"Command exited with code {code}." if older else f"\nThe command exited with code {code}."
+    return a_step(i, body=said + "\nOutput:\nsomething")
+
+
+def a_failed(i, error, status="ERROR"):
+    return a_step(i, status=status, body="Encountered error in step execution: " + error, error=error)
+
+
+HOOK = "tool call denied by pre-tool hook: "
+GUARD_SAID = "rm -rf is never run by an agent; delete with care, file by file."
+
+
+def agy_session(home, work):
     recs = [
-        {"type": "user", "content": "earlier"},
-        {"type": "assistant", "content": "", "tool_calls": [call("c0", "run_terminal_command", command="ls")]},
-        {"type": "user", "content": FRAME},
-        {"type": "assistant", "content": "", "tool_calls": [call("c1", "read_file", target_file=SECRET),
-                                                             call("c2", "run_terminal_command", command=CMD)]},
-        {"type": "tool_result", "tool_call_id": "c2", "content": "error: exit 1"},
-        {"type": "assistant", "content": "", "tool_calls": [call("c3", "search_replace", file_path=SECRET)]},
-        {"type": "assistant", "content": "", "tool_calls": [
-            call("c4", "run_terminal_command", command=f"$GHOSTHERD_HERD reply {ASK} 'done'")]},
-        {"type": "assistant", "content": "", "tool_calls": [call("c5", "run_terminal_command", command="ls")]},
-    ]
-    path = _write(home / ".grok" / "sessions" / "-src-dp" / "g1" / "chat_history.jsonl", recs)
-    w = T.read_work(path, ASK)
-    assert w.seen and w.cli == "grok" and not w.failures_known
-    assert dict(w.tools) == {"read_file": 1, "run_terminal_command": 1, "search_replace": 1}
-    assert T.compose(w, 300)["line"] == "How it went: 5 min · 3 tool calls (failures not readable for grok)"
-
-
-def test_agy_counts_tool_calls_and_says_failures_are_not_readable(home):
-    def plan(i, *calls):
-        return {"source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": f"t{i}", "step_index": i,
-                "tool_calls": [{"name": n, "args": a} for n, a in calls]}
-    recs = [
-        {"source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "t0", "step_index": 0,
+        {"source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "t0", "step_index": 0,
+         "content": "<USER_REQUEST>earlier</USER_REQUEST>"},
+        a_plan(1, ("run_command", {"CommandLine": "ls"})), a_ran(2, 2),     # before the ask: not its work
+        {"source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "t3", "step_index": 3,
          "content": "<USER_REQUEST>" + FRAME + "</USER_REQUEST>"},
-        plan(1, ("view_file", {"AbsolutePath": json.dumps(SECRET)}), ("run_command", {"CommandLine": json.dumps(CMD)})),
-        {"source": "MODEL", "type": "GENERIC", "created_at": "t2", "step_index": 2, "content": "tool output"},
-        plan(3, ("replace_file_content", {"TargetFile": json.dumps(SECRET)})),
-        plan(4, ("run_command", {"CommandLine": json.dumps(f'"$GHOSTHERD_HERD" reply {ASK} "done"')})),
-        plan(5, ("run_command", {"CommandLine": json.dumps("ls")})),
+        *work,
+        a_plan(90, ("run_command", {"CommandLine": f'"$GHOSTHERD_HERD" reply {ASK} "done"'})),
+        a_plan(91, ("run_command", {"CommandLine": "ls"})), a_ran(92, 1),  # after the reply: not its work
     ]
-    path = _write(home / ".gemini" / "antigravity-cli" / "brain" / "b1" / ".system_generated" / "logs" / "transcript.jsonl", recs)
-    w = T.read_work(path, ASK)
-    assert w.seen and w.cli == "agy" and not w.failures_known
-    assert dict(w.tools) == {"view_file": 1, "run_command": 1, "replace_file_content": 1}
-    assert "failures not readable for agy" in T.compose(w, 90, guard=1)["line"]
+    return _write(home / ".gemini" / "antigravity-cli" / "brain" / "b1" / ".system_generated" / "logs" / "transcript.jsonl",
+                  recs)
+
+
+def test_agy_counts_failures_by_step_status_and_exit_code(home):
+    work = [
+        a_plan(4, ("run_command", {"CommandLine": CMD}), ("view_file", {"AbsolutePath": SECRET})),
+        a_ran(5, 1),                                                      # failed: its exit code, after the header
+        a_step(6, body="File Path: x\nShowing lines 1-3 of 3\n1: a\n2: The command exited with code 1.\n3: b"),
+        a_plan(7, ("run_command", {"CommandLine": "make"}), ("run_command", {"CommandLine": "make"}),
+               ("run_command", {"CommandLine": "make"})),
+        a_ran(8, 0), a_ran(9, 3, older=True),
+        a_step(10, kind="RUN_COMMAND", body="old shape", exit_code=2),
+        a_plan(11, ("read_file", {"Path": SECRET}), ("replace_file_content", {"TargetFile": SECRET}),
+               ("run_command", {"CommandLine": "cat " + SECRET}), ("run_command", {"CommandLine": "sleep 9"})),
+        a_failed(12, "file does not exist"),
+        a_failed(13, "Could not successfully apply any edits. Please review the target content."),
+        a_failed(14, f'permission check failed for unsandboxed "cat {SECRET}"'),
+        a_step(15, status="RUNNING", body="Task Description: sleep"),       # gone to the background: not a failure
+        a_plan(16, ("list_dir", {"DirectoryPath": "/x"}), ("run_command", {"CommandLine": "x"})),
+        a_step(17, kind="LIST_DIRECTORY", status="ERROR", body="no such dir"),
+        a_failed(18, "invalid arguments: - additional properties", status="INVALID"),
+        {"source": "SYSTEM", "type": "ERROR_MESSAGE", "status": "DONE", "created_at": "t19", "step_index": 19,
+         "error": "The model API is currently overloaded"},              # agy's, not a tool's
+    ]
+    w = T.read_work(agy_session(home, work), ASK)
+    assert w.seen and w.cli == "agy" and w.failures_known
+    assert dict(w.tools) == {"run_command": 7, "view_file": 1, "read_file": 1, "replace_file_content": 1, "list_dir": 1}
+    assert dict(w.failed) == {"shell": 3, "other": 3, "edit": 1, "denied": 1}
+    out = T.compose(w, 90)
+    assert out["line"] == ("How it went: 1 min · 11 tool calls, 8 failed (3 other errors, 3 shell exits, "
+                           "1 permission denial, 1 edit not applied) · " + T.NUDGE)
+
+
+def test_agy_a_far_exit_line_is_not_its_exit(home):
+    "Only near a step's top: a command's own output may say anything below."
+    body = "\n" + "\n".join(f"line {i}" for i in range(T.AGY_HEAD)) + "\nThe command exited with code 1."
+    w = T.read_work(agy_session(home, [a_plan(4, ("run_command", {"CommandLine": "x"})), a_step(5, body=body)]), ASK)
+    assert not w.failed
+
+
+def test_agy_denials_the_herd_recorded_are_its_to_count(home):
+    """The guard's denials -- recorded by the herd, each once -- and a check's
+    are counted from the herd's records; another hook's is a permission
+    denial.  A denial the guard repeats beyond what it recorded still counts."""
+    calls = [a_plan(4, *[("run_command", {"CommandLine": f"rm -rf b{i}"}) for i in range(5)])]
+    steps = [
+        a_failed(5, HOOK + GUARD_SAID),
+        a_failed(6, HOOK + GUARD_SAID + " [request 1a2b3c4d]"),
+        a_failed(7, HOOK + "Denied by the herd's check for the fact `f': use the other way."),
+        a_failed(8, HOOK + "some-hook: this file is not for agents"),
+        a_failed(9, HOOK + GUARD_SAID),
+    ]
+    path = agy_session(home, calls + steps)
+    said = [GUARD_SAID, GUARD_SAID]
+    w = T.read_work(path, ASK, said=said)
+    assert dict(w.failed) == {"denied": 2} and said == [GUARD_SAID, GUARD_SAID]   # the caller's list untouched
+    assert T.compose(w, 60, guard=2, lint=1)["line"] == (
+        "How it went: 1 min · 5 tool calls, 2 failed (2 permission denials) · 2 guard denials · 1 check denial · "
+        + T.NUDGE)
+    # Told nothing by the herd: every hook's denial but the check's is the transcript's.
+    assert dict(T.read_work(path, ASK).failed) == {"denied": 4}
+
+
+def test_no_command_text_or_path_in_grok_or_agy_lines(home):
+    lines = [T.compose(T.read_work(grok_session(home, GROK_WORK, GROK_EVENTS), ASK), 60),
+             T.compose(T.read_work(agy_session(home, [a_plan(4, ("run_command", {"CommandLine": CMD})),
+                                                      a_failed(5, f"permission check failed for {SECRET}")]), ASK), 60)]
+    blob = json.dumps(lines)
+    for secret in (SECRET, CMD, "test_secret_thing", ".env", "rm -rf", "FAILED", "does not exist", "permission check"):
+        assert secret not in blob, secret
+
+
+def test_the_room_reads_a_grok_shells_exit_too():
+    "grok opens each shell result with `exit: N' -- 0 too: the room's ask outcome reads it as claude's."
+    ok = conversation.ask_outcome("exit: 0\nherd: asked qa (ask 1a2b3c4d)\nit is fixed")
+    assert (ok.get("failed"), ok["answer"], ok["ask"]) == (None, "it is fixed", "1a2b3c4d")
+    bad = conversation.ask_outcome("exit: 1 [truncated: showing first/last 8.0 KB of 9.0 KB]\nherd: no such agent: qa")
+    assert bad["failed"] and bad["answer"] == "no such agent: qa"
+    assert conversation.ask_outcome("exit: 3\nherd: asked qa (ask 1a2b3c4d)")["waiting"]
 
 
 # ---- Left out, or saying what it could not see -------------------------------------
@@ -318,6 +485,28 @@ def test_a_reply_gets_its_line_on_the_asks_answer(home, tmp_path):
         rows = h._thread_rows("WHERE id = ?", (ask["id"],))
     answer = next(m for m in threads_mod.messages(rows) if m["kind"] == "answer")
     assert answer["trace"] == got["trace"] and answer["traceDetail"]["failed"] == {"shell": 1}
+
+
+def test_an_agy_takers_guard_denial_is_counted_once(home, tmp_path):
+    "The herd hands the reader what its guard recorded: that denial is the guard's, not a failure too."
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "clean up", from_name="claude-main")
+    _deliver_t(h)
+    frame = f"[ghostherd message from claude-main → agy-a2]\n[ask {ask['id']} -- whoever asked]\nclean up"
+    path = _write(home / ".gemini" / "antigravity-cli" / "brain" / "b2" / ".system_generated" / "logs" / "transcript.jsonl", [
+        {"source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE", "created_at": "t0", "step_index": 0,
+         "content": "<USER_REQUEST>" + frame + "</USER_REQUEST>"},
+        a_plan(1, ("run_command", {"CommandLine": "rm -rf build"}), ("run_command", {"CommandLine": "make"})),
+        a_failed(2, HOOK + GUARD_SAID),
+        a_failed(3, HOOK + "another hook said no"),
+        a_plan(4, ("run_command", {"CommandLine": f'herd reply {ask["id"]} "done"'})),
+    ])
+    h.report("agy-a2", cli="agy", conversation="b2", transcript=path)
+    h.guard_denied("agy-a2", "/g", "run_command", "rm -rf build", GUARD_SAID, "never:rm", "never", False, "", "{}")
+    h.reply(ask["id"], "done", from_name="agy-a2")
+    h.wait_traces()
+    got = h.get_ask(ask["id"])["trace"]
+    assert "2 tool calls, 1 failed (1 permission denial) · 1 guard denial" in got, got
 
 
 def test_the_answer_mail_waits_for_its_line_only_a_moment(home, tmp_path, monkeypatch):
