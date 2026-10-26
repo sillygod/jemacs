@@ -2425,6 +2425,34 @@ sibling document works; one to anything else does not.
   (setq ghostherd-docs-directories '("~/notes/html/"))
 #+end_src
 
+*Reports, beside the documents* (under them on a phone): the HTML
+reports agents' replies named, as the sidecar keeps their copies ---
+newest first, each by its title (or its file's name), the agent that
+named it first and its project, when it was copied, and its size.  One
+opens exactly as its /Open/ under the message does: =/SECRET/.reports/<id>.html=,
+sandboxed; in the xwidget, a view of Emacs's over loopback.  They are
+read from the sidecar's index of its copies (=herd_reports=, the
+herd's own method, not the agents'), asked when the tab is shown and
+never waited on --- thirty at a time, /Older reports/ for the next
+thirty --- so a long history costs one indexed query a page.  Nothing
+is copied again, nothing is written to =docs/= or to
+=ghostherd-docs-directories=, and where a report was copied from is
+never said: only its file's name.
+
+- *Who wrote it* is recorded when the copy is made: the agent whose
+  turn ended with it (its hook), who answered an ask with it (=herd
+  reply=), or whose room it was said in --- and its project, as the
+  herd knew it then, so it outlives the agent.  A report another agent
+  names later (a lead passing it on) stays its first writer's.  One met
+  first where its writer is not known (a push read before the reply was
+  recorded) learns it from the reply's own copy; copies made before
+  this was recorded say /writer unknown/.
+- *A copy gone from the directory* (deleted by hand) stays listed until
+  it would have been pruned, greyed, saying its copy is gone, with
+  nothing to open; its address answers 404.  A pruned copy leaves the
+  list with its index row.
+- Refresh, on the Docs tab, lists both again.
+
 ** The memory page
 
 =SPC a h /= (=ghostherd-memory-page=) and =SPC a h v=

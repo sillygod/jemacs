@@ -15340,12 +15340,66 @@ letter, a symlink, another file."
                      (list (abbreviate-file-name mine) "ghostherd" "ghostherd" "ghostherd")))
       (should (equal (plist-get (car docs) :bytes) (length "<title>Mine</title><script>alert(1)</script>")))
       (should (numberp (plist-get (car docs) :mtime))))
-    ;; What the page gets.
-    (let (sent)
-      (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) sent))))
+    ;; What the page gets: the Docs at once, the reports when the sidecar answers.
+    (let (sent asked)
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) sent)))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method &rest _) (push method asked))))
         (ghostherd-memory-page--handle '((op . "docs"))))
-      (should (equal (caar sent) "renderDocs"))
-      (should (= (length (plist-get (cdar sent) :docs)) 4)))))
+      (should (equal (mapcar #'car sent) '("renderDocs")))
+      (should (= (length (plist-get (cdar sent) :docs)) 4))
+      (should (equal asked '("herd_reports"))))))
+
+(ert-deftest ghostherd-test-docs-reports-from-the-sidecar ()
+  "The Docs tab's reports are the sidecar's (`herd_reports'), asked when
+the tab is shown and never waited on: the newest page, then each older
+one from the last shown, which the page adds them after.  Field by
+field: one whose id is not a copy's is dropped, a gone copy says so.
+A sidecar that cannot answer says why; an older page asked from what
+is not a report's place is not asked at all."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((id ghostherd-test--image-id)
+         (id2 (make-string 32 ?a))
+         (answer (list :reports (list (list :id id :title "A report" :name "r.html" :agent "rd"
+                                            :project "x" :at 1700000000.25 :bytes 120 :gone nil)
+                                      (list :id "../index" :at 1.0)
+                                      (list :id (upcase id) :at 1.0)
+                                      (list :id id2 :title nil :at 1700000000.0 :bytes -1 :gone t :agent 3))
+                       :more t))
+         asked sent)
+    (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb &optional params err)
+                 (push (list method params) asked)
+                 (if (eq answer 'fail) (funcall err "refused") (funcall cb answer))))
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) sent)))
+              ((symbol-function 'ghostherd-memory-page--send-docs) #'ignore))
+      (ghostherd-memory-page--handle '((op . "docs")))
+      (should (equal (car asked) '("herd_reports" (:limit 30))))
+      (should (equal (car sent)
+                     `("renderReports"
+                       :reports [(:id ,id :title "A report" :name "r.html" :agent "rd" :project "x"
+                                  :at 1700000000.25 :bytes 120 :gone :json-false)
+                                 (:id ,id2 :title "" :name ,(concat id2 ".html") :agent "" :project ""
+                                  :at 1700000000.0 :bytes 0 :gone t)]
+                       :more t :after :json-false)))
+      ;; The page older than the last shown.
+      (ghostherd-memory-page--handle `((op . "reports-more") (at . 1761469012.1234567) (id . ,id2)))
+      (should (equal (car asked) `("herd_reports" (:limit 30 :before (:at 1761469012.1234567 :id ,id2)))))
+      (should (equal (plist-get (cdar sent) :after) id2))
+      ;; As it goes to the sidecar: the place exactly as the page had it.
+      (let ((req (json-parse-string (ghostherd-memory--request-body "herd_reports" (cadar asked))
+                                    :object-type 'plist)))
+        (should (eql (plist-get (plist-get (plist-get req :params) :before) :at) 1761469012.1234567)))
+      ;; Not a report's place: nothing asked.
+      (let ((n (length asked)))
+        (dolist (bad `(((at . "1") (id . ,id)) ((at . 1.0) (id . "../index")) ((id . ,id))
+                       ((at . 1.0) (id . ,(upcase id))) ((at . 1.0))))
+          (ghostherd-memory-page--handle (cons '(op . "reports-more") bad)))
+        (should (= (length asked) n)))
+      ;; The sidecar away.
+      (setq answer 'fail)
+      (ghostherd-memory-page--handle '((op . "docs")))
+      (should (equal (car sent) '("renderReports" :error "refused" :after :json-false))))))
 
 (ert-deftest ghostherd-test-docs-and-reports-served-sandboxed ()
   "Each set the herd page is served: the Docs by their exact names from

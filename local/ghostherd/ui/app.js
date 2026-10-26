@@ -305,8 +305,12 @@
     }).join("") + "</div>";
   }
 
-  // The Docs tab: what Emacs lists (renderDocs), newest first.
+  // The Docs tab: the documents Emacs lists (renderDocs), newest first;
+  // and the reports agents' replies named (renderReports) -- the sidecar's
+  // copies, by id, newest first, a page at a time.
   let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
+  // {list: [{id, title, name, agent, project, at, bytes, gone}], more, error, asking}
+  let reports = null;
 
   function showDocs() {
     view = "docs";
@@ -330,11 +334,50 @@
       '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(d.where || "") + "</span>" +
       "<span>" + esc(sizeText(d.bytes)) + "</span>" +
       '<span title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div></div>").join("");
-    app.innerHTML = '<div class="page docs">' +
+    app.innerHTML = '<div class="page docs"><div class="dcols"><section class="dsec" id="docs-documents">' +
+      '<h2 class="section">Documents</h2>' +
       '<div class="sum">' + (docs ? docs.length + (docs.length === 1 ? " document" : " documents") : "Asking Emacs…") +
       "</div>" + (docs && !docs.length ? '<p class="empty">No HTML document in the folders listed.</p>' : rows) +
-      '<p class="docsays muted">' + esc(DOC_SAYS) + " ghostherd's docs/ and the folders of " +
-      "<code>ghostherd-docs-directories</code> are listed.</p></div>";
+      "</section>" + reportsSection() + "</div>" +
+      '<p class="docsays muted">' + esc(DOC_SAYS) + " Documents: ghostherd's docs/ and the folders of " +
+      "<code>ghostherd-docs-directories</code>. Reports: the HTML files agents' replies named, as the herd " +
+      "copied them then, kept as their images are.</p></div>";
+  }
+
+  // The reports, as the sidecar keeps their copies: each opens as the Open
+  // link under its message does.  One whose copy is gone from the
+  // directory is still listed, marked, with nothing to open.
+  function reportsSection() {
+    const r = reports;
+    const list = r ? r.list : [];
+    const rows = list.map((rep) => {
+      const name = String(rep.name || rep.id + ".html");
+      const title = String(rep.title || "").trim() || name;
+      const who = String(rep.agent || "");
+      const head = rep.gone
+        ? '<span class="dtitle dgone" title="' + esc(name) + '">' + esc(title) + "</span>"
+        : docLink("reports", rep.id + ".html", esc(title), "dtitle", name);
+      return '<div class="doc report' + (rep.gone ? " gone" : "") + '" data-report="' + esc(rep.id) + '">' + head +
+        '<div class="dmeta">' +
+        (rep.gone ? '<span class="dgonesays">Its copy is gone from the herd\'s folder: nothing to open.</span>' : "") +
+        '<span class="dwho">' + (who ? esc(who) : '<span class="muted">writer unknown</span>') + "</span>" +
+        (rep.project ? '<span class="dwhere" title="' + esc(rep.project) + '">' + esc(rep.project) + "</span>" : "") +
+        '<span title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span>" +
+        "<span>" + esc(sizeText(rep.bytes)) + "</span>" +
+        '<span class="dname">' + esc(name) + "</span></div></div>";
+    }).join("");
+    const sum = !r ? "Asking the herd…"
+      : list.length + (list.length === 1 ? " report" : " reports") + (r.more ? ", the newest" : "");
+    const more = r && r.more && list.length
+      ? '<div class="foot"><button type="button" class="ghost small" data-act="reports:more"' + (r.asking ? " disabled" : "") +
+        ">" + (r.asking ? "Asking…" : "Older reports") + "</button></div>"
+      : "";
+    return '<section class="dsec" id="docs-reports"><h2 class="section">Reports</h2>' +
+      '<div class="sum">' + esc(sum) + "</div>" +
+      (r && r.error ? '<p class="empty derror">The herd could not be asked: ' + esc(r.error) + "</p>" : "") +
+      (r && !list.length && !r.error
+        ? '<p class="empty">No HTML report yet: one is listed here once an agent\'s reply names an .html file.</p>'
+        : rows) + more + "</section>";
   }
 
   // The image whole, over the page: fitted to it, at its own size at a
@@ -4024,6 +4067,13 @@
       openImage(el);
     } else if (act === "doc:open") {
       emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
+    } else if (act === "reports:more") {
+      const last = reports && reports.list[reports.list.length - 1];
+      if (last && !reports.asking) {
+        reports.asking = true;
+        renderDocs();
+        emit("reports-more", { at: last.at, id: last.id });
+      }
     } else if (act === "agent") {
       filters.agent = el.getAttribute("data-agent") || "";
       onFilters();
@@ -4179,6 +4229,7 @@
   $("btn-refresh").addEventListener("click", () => {
     if (view === "log") emit("log");
     else if (view === "agents") emit("usage-refresh");
+    else if (view === "docs") emit("docs");
     else emit("refresh");
   });
   $("btn-new").addEventListener("click", newAgentAnywhere);
@@ -5061,6 +5112,28 @@
     // The Docs tab's list.
     renderDocs: (p) => {
       docs = Array.isArray(p && p.docs) ? p.docs : [];
+      renderDocs();
+    },
+
+    // Its reports: the newest, or (AFTER, the id it was asked from) the
+    // page older than the last shown -- added only while that is still the
+    // last, so an answer to a list since replaced is dropped.
+    renderReports: (p) => {
+      const got = (Array.isArray(p && p.reports) ? p.reports : []).filter((r) =>
+        r && IMG_ID.test(String(r.id)) && typeof r.at === "number");
+      if (p && p.after) {
+        const last = reports && reports.list[reports.list.length - 1];
+        if (!last || last.id !== p.after) return;
+        reports.asking = false;
+        if (p.error) reports.error = String(p.error);
+        else {
+          const have = new Set(reports.list.map((r) => r.id));
+          reports.list = reports.list.concat(got.filter((r) => !have.has(r.id)));
+          reports.more = !!p.more;
+          reports.error = "";
+        }
+      } else if (p && p.error) reports = { list: reports ? reports.list : [], more: false, error: String(p.error) };
+      else reports = { list: got, more: !!(p && p.more), error: "" };
       renderDocs();
     },
 

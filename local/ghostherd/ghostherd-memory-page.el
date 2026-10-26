@@ -2380,7 +2380,9 @@ An HTML report a reply named comes among them, with its title."
 ;; HTML documents to read on the phone without publishing them anywhere:
 ;; ghostherd's docs/ and `ghostherd-docs-directories', listed by title,
 ;; each served by its name alone (`ghostherd-memory-page--serve-files').
-;; The list is read when the tab asks -- a few small files' heads.
+;; The list is read when the tab asks -- a few small files' heads.  Beside
+;; them, the reports agents' replies named: the sidecar's copies, as its
+;; index keeps them (`herd_reports'), a page at a time.
 
 (defun ghostherd-memory-page--unescape (s)
   "S with the character references a <title> may hold read."
@@ -2438,6 +2440,48 @@ when it changed."
 (defun ghostherd-memory-page--send-docs ()
   "Give the page the Docs tab's list."
   (ghostherd-memory-page--js "renderDocs" (list :docs (vconcat (ghostherd-memory-page--docs)))))
+
+(defconst ghostherd-memory-page--reports-page 30
+  "How many reports the Docs tab shows at a time: the newest, and as
+many more each time its \"Older reports\" is pressed.")
+
+(defun ghostherd-memory-page--report (r)
+  "Report R, from `herd_reports', as the page takes it, field by field:
+nil unless its id is a copy's."
+  (let ((id (plist-get r :id)))
+    (when (and (stringp id) (numberp (plist-get r :at))
+               (let ((case-fold-search nil)) (string-match-p "\\`[0-9a-f]\\{32\\}\\'" id)))
+      (list :id id
+            :title (or (ghostherd-memory-page--str (plist-get r :title)) "")
+            :name (or (ghostherd-memory-page--str (plist-get r :name)) (concat id ".html"))
+            :agent (or (ghostherd-memory-page--str (plist-get r :agent)) "")
+            :project (or (ghostherd-memory-page--str (plist-get r :project)) "")
+            :at (plist-get r :at)
+            :bytes (if (natnump (plist-get r :bytes)) (plist-get r :bytes) 0)
+            :gone (if (plist-get r :gone) t :json-false)))))
+
+(defun ghostherd-memory-page--send-reports (&optional at id)
+  "Give the page the Docs tab's reports, asked of the sidecar: the
+newest, or those older than the one AT and ID name -- the last the page
+shows, which it adds them after.  Asked, never waited on."
+  (let ((after (and (numberp at) (stringp id)
+                    (let ((case-fold-search nil)) (string-match-p "\\`[0-9a-f]\\{32\\}\\'" id))
+                    id)))
+    (when (or after (not (or at id)))
+      (ghostherd-memory-request-async
+       "herd_reports"
+       (lambda (r)
+         (ghostherd-memory-page--js
+          "renderReports"
+          (list :reports (vconcat (delq nil (mapcar #'ghostherd-memory-page--report
+                                                    (plist-get r :reports))))
+                :more (if (plist-get r :more) t :json-false)
+                :after (or after :json-false))))
+       (append (list :limit ghostherd-memory-page--reports-page)
+               (and after (list :before (list :at at :id after))))
+       (lambda (e)
+         (ghostherd-memory-page--js
+          "renderReports" (list :error (format "%s" e) :after (or after :json-false))))))))
 
 (defun ghostherd-memory-page--doc-open (intent)
   "Show the document INTENT names -- one of the Docs (set \"docs\") or a
@@ -3606,7 +3650,8 @@ user's state (or none) and push."
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))
         ("paste" (ghostherd-memory-page-paste))
-        ("docs" (ghostherd-memory-page--send-docs))
+        ("docs" (ghostherd-memory-page--send-docs) (ghostherd-memory-page--send-reports))
+        ("reports-more" (ghostherd-memory-page--send-reports (alist-get 'at intent) (alist-get 'id intent)))
         ("doc-open" (ghostherd-memory-page--doc-open intent))
         ((and op (guard (and (stringp op) (string-prefix-p "agent-" op))))
          (ghostherd-memory-page--agent-act op intent))
