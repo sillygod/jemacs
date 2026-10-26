@@ -35,6 +35,13 @@ and Emacs serves a copy by its id alone (`ghostherd-reply-images-directory').
 The copies are yours alone (0700 / 0600), and go KEEP_DAYS after a
 message last named them, or the oldest first past the BUDGET.
 
+Each copy keeps who named it first -- the agent whose reply it was, and
+its project, as the herd knew them then (`writer') -- so the
+reports can be listed on their own, newest first (`reports'): the Docs
+tab's Reports.  A copy first met where the writer is not known (a push
+read before its reply was recorded) learns it from the reply's own
+capture.
+
 A message is known by its text (`key'): the same words in the Inbox, a
 thread, a room or a push find the same images, wherever they are read.
 """
@@ -86,6 +93,8 @@ EXTS = ("png", "jpg", "gif", "webp")
 TYPES = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
          "html": "text/html"}
 ID = re.compile(r"\A[0-9a-f]{32}\Z")
+# How long the names of who wrote a copy may be.
+WHO_CHARS = 200
 
 # Where a path is named.  An extension it must end in, not glued to more
 # of a name (x.png.bak is not one).
@@ -101,6 +110,12 @@ _MD = re.compile(r"\]\(\s*<?(" + _START + r"[^\n<>()]*?" + _EXT + r")>?(?:\s+\"[
 _TICK = re.compile(r"`(" + _START + r"[^`\n]*?" + _EXT + r")`", re.I)
 # Bare: no spaces, and not the tail of a URL or a longer word.
 _BARE = re.compile(r"(?<![\w.:/~%-])(" + _START + r"[^\s`'\"<>()\[\]{}|,;*]*?" + _EXT + r")", re.I)
+
+
+def writer(agent: Any, project: Any = None) -> dict[str, str] | None:
+    "Who wrote a message, as a copy keeps it: AGENT's name, and its PROJECT."
+    agent = str(agent or "").strip()[:WHO_CHARS]
+    return {"agent": agent, "project": str(project or "").strip()[:WHO_CHARS * 4]} if agent else None
 
 
 def key(text: str) -> str:
@@ -302,12 +317,17 @@ class ImageStore:
                     key TEXT NOT NULL, ord INTEGER NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
                     PRIMARY KEY (key, ord));
                 CREATE INDEX IF NOT EXISTS refs_id ON refs (id);
+                -- The reports, newest first (`reports').
+                CREATE INDEX IF NOT EXISTS images_kind ON images (ext, created, id);
                 """
             )
-            # A report's title: a column an index from before reports lacks.
-            if "title" not in {r[1] for r in conn.execute("PRAGMA table_info(images)")}:
-                conn.execute("ALTER TABLE images ADD COLUMN title TEXT NOT NULL DEFAULT ''")
-                conn.commit()
+            # A report's title, and who named a copy first: columns an index
+            # from before them lacks.
+            have = {r[1] for r in conn.execute("PRAGMA table_info(images)")}
+            for col in ("title", "agent", "project"):
+                if col not in have:
+                    conn.execute(f"ALTER TABLE images ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            conn.commit()
             self._conn = conn
         return self._conn
 
@@ -328,16 +348,23 @@ class ImageStore:
                 out.append(rec)
         return out
 
-    def capture(self, text: str, at: float | None = None) -> list[dict[str, Any]]:
+    def capture(self, text: str, at: float | None = None,
+                who: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """Copy the images TEXT names, as a reply recorded now: tried again
         when none were found before (a file not written yet).  AT, when
-        the message was written, for one read later; see `load'."""
+        the message was written, for one read later; see `load'.  WHO
+        wrote it (`writer'), for the copies no one is known to have named."""
         k = key(text)
         paths = named(text)
         with self._mu:
             db = self._db()
             seen = db.execute("SELECT n FROM messages WHERE key = ?", (k,)).fetchone()
             if seen and seen[0]:
+                if who:
+                    db.execute("""UPDATE images SET agent = ?, project = ?
+                                  WHERE agent = '' AND id IN (SELECT id FROM refs WHERE key = ?)""",
+                               (who["agent"], who["project"], k))
+                    db.commit()
                 return self._recs(k)
             if not paths:
                 return []
@@ -346,7 +373,7 @@ class ImageStore:
             for p in paths:
                 if len(recs) >= MAX_PER_MESSAGE:
                     break
-                rec = self._copy(p, at, now)
+                rec = self._copy(p, at, now, who)
                 if rec and all(r["id"] != rec["id"] for r in recs):
                     recs.append(rec)
             db.execute("INSERT OR REPLACE INTO messages (key, n, at) VALUES (?, ?, ?)", (k, len(recs), now))
@@ -357,20 +384,24 @@ class ImageStore:
         self._maybe_prune()
         return recs
 
-    def lookup(self, text: str, at: float | None = None) -> list[dict[str, Any]]:
+    def lookup(self, text: str, at: float | None = None,
+               who: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """The images message TEXT named, as recorded -- or, a message the
         herd has not seen (one in a room, say), copied now when AT says
-        when it was written.  Without AT, only what was recorded."""
+        when it was written, WHO wrote it.  Without AT, only what was
+        recorded."""
         if not text or not named(text):
             return []
         k = key(text)
         with self._mu:
             if self._db().execute("SELECT 1 FROM messages WHERE key = ?", (k,)).fetchone():
                 return self._recs(k)
-        return self.capture(text, at) if at is not None else []
+        return self.capture(text, at, who) if at is not None else []
 
-    def _copy(self, p: str, at: float | None, now: float) -> dict[str, Any] | None:
-        "Copy the image or page at P, once by its content.  Caller holds `_mu'."
+    def _copy(self, p: str, at: float | None, now: float,
+              who: dict[str, str] | None = None) -> dict[str, Any] | None:
+        """Copy the image or page at P, once by its content, as WHO named it.
+        Caller holds `_mu'."""
         got = load(p, at)
         if not got:
             return None
@@ -385,6 +416,9 @@ class ImageStore:
         row = db.execute("SELECT id, ext, w, h, thumb, bytes, title FROM images WHERE sha = ?", (sha,)).fetchone()
         if row and self.path({"id": row[0], "ext": row[1]}).exists():
             db.execute("UPDATE images SET used = ? WHERE id = ?", (now, row[0]))
+            if who:
+                db.execute("UPDATE images SET agent = ?, project = ? WHERE id = ? AND agent = ''",
+                           (who["agent"], who["project"], row[0]))
             return {"id": row[0], "ext": row[1], "name": name, "w": row[2], "h": row[3],
                     "thumb": bool(row[4]), "bytes": row[5], "title": row[6]}
         if row:  # its file gone from under it: copy afresh
@@ -396,11 +430,36 @@ class ImageStore:
         if small:
             _write(self.path(rec, thumb=True), small)
         rec["thumb"] = bool(small)
-        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used, title)"
-                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used, title, agent, project)"
+                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                    (rec["id"], sha, ext, len(data), rec["w"], rec["h"], int(rec["thumb"]), now, now,
-                    rec["title"]))
+                    rec["title"], (who or {}).get("agent", ""), (who or {}).get("project", "")))
         return rec
+
+    def reports(self, limit: int = 30, before: tuple[float, str] | None = None) -> dict[str, Any]:
+        """The HTML reports kept, newest first: LIMIT of them -- older than
+        BEFORE, the (`at', id) of the last one shown, when given -- and
+        whether there are more.  Each with its title, the name of the file
+        it was copied from (never where that was), who named it first, when
+        it was copied, its size, and `gone' when its copy is no longer on
+        disk (taken from the directory by hand: the index outlives it until
+        the copy would have been pruned).  Read from the index and a stat
+        of each copy shown, nothing more."""
+        sql = ("SELECT i.id, i.title, i.bytes, i.created, i.agent, i.project,"
+               " (SELECT r.name FROM refs r WHERE r.id = i.id LIMIT 1)"
+               " FROM images i WHERE i.ext = 'html'")
+        args: list[Any] = []
+        if before:
+            sql += " AND (i.created < ? OR (i.created = ? AND i.id < ?))"
+            args += [before[0], before[0], before[1]]
+        sql += " ORDER BY i.created DESC, i.id DESC LIMIT ?"
+        with self._mu:
+            rows = self._db().execute(sql, (*args, limit + 1)).fetchall()
+        out = [{"id": id_, "title": title, "name": name or f"{id_}.html", "bytes": size, "at": created,
+                "agent": agent, "project": project,
+                "gone": not self.path({"id": id_, "ext": "html"}).is_file()}
+               for id_, title, size, created, agent, project, name in rows[:limit]]
+        return {"reports": out, "more": len(rows) > limit}
 
     def _maybe_prune(self) -> None:
         if time.time() - self._pruned >= PRUNE_EVERY:
@@ -481,9 +540,10 @@ def reset_store() -> None:
         _store = None
 
 
-def capture_soon(text: str | None) -> None:
+def capture_soon(text: str | None, who: dict[str, str] | None = None) -> None:
     """Copy what TEXT names in the background, one message at a time: the
-    hook or `herd reply' that recorded it does not wait on Pillow."""
+    hook or `herd reply' that recorded it does not wait on Pillow.  WHO
+    wrote it (`writer')."""
     global _worker
     if not text or not named(text):
         return
@@ -491,12 +551,12 @@ def capture_soon(text: str | None) -> None:
         if _worker is None:
             _worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ghostherd-images")
         worker = _worker
-    worker.submit(_capture_quietly, text)
+    worker.submit(_capture_quietly, text, who)
 
 
-def _capture_quietly(text: str) -> None:
+def _capture_quietly(text: str, who: dict[str, str] | None = None) -> None:
     try:
-        get_store().capture(text)
+        get_store().capture(text, who=who)
     except Exception as exc:  # noqa: BLE001 -- a reply is never failed by its images
         print(f"[ghostherd-memory] images: {exc}", flush=True)
 
@@ -509,11 +569,15 @@ def drain() -> None:
         worker.submit(lambda: None).result()
 
 
-def attach(entries: list[dict[str, Any]], at_of=None) -> None:
+def attach(entries: list[dict[str, Any]], at_of=None, owner=None) -> None:
     """Give each of a conversation's ENTRIES that an agent wrote the
     images it names: `images' for its text, `answer_images' for the
-    answer an ask of it got.  AT_OF gives an entry's time (epoch)."""
+    answer an ask of it got.  AT_OF gives an entry's time (epoch); OWNER,
+    called once if at all, whose conversation it is (`writer'): the
+    writer of what it says itself -- an answer it got is another's,
+    known when that was recorded."""
     store = None
+    mine_by: list[dict[str, str] | None] = []
     for e in entries:
         role, kind = e.get("role"), e.get("kind")
         mine = (role in ("assistant", "sub") or (role == "herd" and kind == "reply")
@@ -528,8 +592,16 @@ def attach(entries: list[dict[str, Any]], at_of=None) -> None:
                 continue
             store = store or get_store()
             at = at_of(e) if at_of else None
+            who = None
+            if field == "text" and role in ("assistant", "sub", "herd") and owner:
+                if not mine_by:
+                    try:
+                        mine_by.append(owner())
+                    except Exception:  # noqa: BLE001 -- a room is never failed by its writer
+                        mine_by.append(None)
+                who = mine_by[0]
             try:
-                recs = store.lookup(text, at)
+                recs = store.lookup(text, at, who)
             except Exception:  # noqa: BLE001 -- a room is never failed by its images
                 recs = []
             if recs:

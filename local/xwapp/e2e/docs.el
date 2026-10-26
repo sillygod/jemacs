@@ -4,8 +4,9 @@
 ;; serves it -- the Docs (a set :sandbox, by exact names) and the HTML
 ;; reports a reply named (a set :sandbox, by ids) -- as ghostherd says
 ;; it (`ghostherd-memory-page--serve-files'), from E2E_DIR's docs/ and
-;; replies/.  xwapp alone is loaded: the herd's own Elisp is the ERT
-;; suite's.  Every request and its answer is noted, and the page the app
+;; replies/; the Docs tab's Reports as the sidecar would list them
+;; (reports.json: the newest page, and the one older).  xwapp alone is
+;; loaded: the herd's own Elisp is the ERT suite's.  Every request and its answer is noted, and the page the app
 ;; has, so the test can see what reached Emacs and what changed.
 ;; Started by appslib.js, as apps.el is.
 (require 'cl-lib)
@@ -46,6 +47,19 @@
                      :mtime (float-time (file-attribute-modification-time (file-attributes file))))))
            (directory-files e2e-docs nil "\\.html\\'"))))
 
+(defun e2e-reports (&optional after)
+  "The Docs tab's Reports, as `ghostherd-memory-page--send-reports' gives
+them: the newest page, or the one older than AFTER."
+  (let* ((all (json-parse-string
+               (with-temp-buffer
+                 (insert-file-contents (expand-file-name "reports.json" e2e-dir))
+                 (buffer-string))
+               :object-type 'plist :array-type 'array :false-object :json-false :null-object nil))
+         (page (plist-get all (if after :older :first))))
+    (xwapp-js e2e-app "renderReports"
+              (list :reports (plist-get page :reports) :more (plist-get page :more)
+                    :after (or after :json-false)))))
+
 (defvar e2e-app nil)
 (defun e2e-reopen () (e2e-note "reopened"))
 (setq e2e-app
@@ -55,7 +69,9 @@
                     :handler (lambda (intent)
                                (e2e-note (list :intent intent))
                                (pcase (alist-get 'op intent)
-                                 ("docs" (xwapp-js e2e-app "renderDocs" (list :docs (e2e-docs-list))))))
+                                 ("docs" (xwapp-js e2e-app "renderDocs" (list :docs (e2e-docs-list)))
+                                  (e2e-reports))
+                                 ("reports-more" (e2e-reports (alist-get 'id intent)))))
                     :reopen #'e2e-reopen))
 
 ;; As ghostherd serves them.

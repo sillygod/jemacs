@@ -2431,6 +2431,25 @@ class HerdStore:
             ).fetchone()
         return self._link_dict(row, full=True) if row else None
 
+    def writer(self, name: str | None = None,
+               transcript: str | None = None) -> tuple[str, str] | None:
+        """Who wrote a message, as a copy of what it names keeps it
+        (images.py): the agent NAME, or the one whose conversation is at
+        TRANSCRIPT, and its project as Emacs last said it ("" once it has
+        left the herd).  None when neither names one."""
+        name = (name or "").strip()
+        with self._mu:
+            if not name and transcript:
+                row = self._conn.execute(
+                    "SELECT session FROM links WHERE transcript = ? ORDER BY updated_at DESC LIMIT 1",
+                    (transcript,)).fetchone()
+                name = row[0] if row else ""
+            if not name:
+                return None
+            row = self._conn.execute(
+                "SELECT project FROM snapshot WHERE name = ?", (name,)).fetchone()
+        return name, (row[0] if row and row[0] else "")
+
     @staticmethod
     def _link_dict(r, full: bool = False) -> dict[str, Any]:
         out = {

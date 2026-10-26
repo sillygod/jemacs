@@ -148,6 +148,7 @@ class JsonRpcHandler:
             "herd_thread": self._herd_thread,
             "herd_report": self._herd_report,
             "herd_link": self._herd_link,
+            "herd_reports": self._herd_reports,
             "herd_conversation": self._herd_conversation,
             "herd_sub_conversation": self._herd_sub_conversation,
             "herd_chat": self._herd_chat,
@@ -420,11 +421,28 @@ class JsonRpcHandler:
         except OSError:
             return []
 
+    @staticmethod
+    def _writer(name: str | None = None, transcript: str | None = None) -> dict[str, str] | None:
+        "Who wrote a message, as a copy of what it names keeps it (images.writer)."
+        try:
+            who = get_herd().writer(name, transcript)
+        except Exception:  # noqa: BLE001 -- a copy is never failed by its writer
+            return None
+        return images.writer(*who) if who else None
+
     def _herd_reply(self, params: dict) -> dict:
         ask_id = str(params.get("id") or "")
         out = get_herd().reply(ask_id, params.get("body"), from_name=params.get("from"))
-        # The images the answer names, copied before their scratch dir goes.
-        images.capture_soon(str(params.get("body")))
+        # The images the answer names, copied before their scratch dir goes:
+        # its writer the one who says it is answering, or the ask's taker.
+        if images.named(str(params.get("body"))):
+            name = str(params.get("from") or "").strip()
+            if not name:
+                try:
+                    name = get_herd().get_ask(ask_id)["to"]
+                except ValueError:
+                    name = ""
+            images.capture_soon(str(params.get("body")), self._writer(name))
         # A promotion the lead was asked to apply is done once that ask is
         # answered: mark its facts promoted so they leave the index, the
         # openings and retrieval.  Best effort -- never fails the reply.
@@ -549,8 +567,8 @@ class JsonRpcHandler:
         )
         # The turn's last words: the images they name, copied now -- not a
         # probe's words under the agent's name, which were not recorded.
-        if not out.get("ignored"):
-            images.capture_soon(text("last"))
+        if not out.get("ignored") and images.named(text("last") or ""):
+            images.capture_soon(text("last"), self._writer(str(params.get("session") or "")))
         return out
 
     def _herd_link(self, params: dict) -> dict:
@@ -559,6 +577,28 @@ class JsonRpcHandler:
             at = link["last_ms"] / 1000 if link.get("last_ms") else None
             link["last_images"] = images.public(images.get_store().lookup(link["last"], at))
         return {"link": link}
+
+    def _herd_reports(self, params: dict) -> dict:
+        """The Docs tab's Reports: the HTML reports agents' replies named,
+        as the sidecar keeps their copies -- newest first, LIMIT of them,
+        older than the one BEFORE names ({at, id}, the last shown) -- each
+        by its id, never where it was copied from; its project by name."""
+        try:
+            limit = max(1, min(100, int(params.get("limit") or 30)))
+        except (TypeError, ValueError):
+            raise ValueError("limit must be a number") from None
+        before = params.get("before")
+        cursor = None
+        if before is not None:
+            at, id_ = (before.get("at"), before.get("id")) if isinstance(before, dict) else (None, None)
+            if (isinstance(at, bool) or not isinstance(at, (int, float))
+                    or not isinstance(id_, str) or not images.ID.match(id_)):
+                raise ValueError("before is {at, id} of a report")
+            cursor = (float(at), id_)
+        out = images.get_store().reports(limit, cursor)
+        for r in out["reports"]:
+            r["project"] = projects.leaf(r["project"]) if r["project"] else ""
+        return out
 
     def _herd_conversation(self, params: dict) -> dict:
         try:
@@ -569,7 +609,8 @@ class JsonRpcHandler:
             before = max(0, int(params.get("before") or 0))
         except (TypeError, ValueError):
             raise ValueError("before must be a number") from None
-        return conversation.read(str(params.get("path") or ""), limit, before)
+        path = str(params.get("path") or "")
+        return conversation.read(path, limit, before, owner=lambda: self._writer(transcript=path))
 
     def _herd_sub_conversation(self, params: dict) -> dict:
         """Sub-agent SUB's own conversation, under parent transcript PATH.
@@ -579,8 +620,9 @@ class JsonRpcHandler:
             limit = max(1, min(200, int(params.get("limit") or conversation.LIMIT)))
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
-        return conversation.read_sub(str(params.get("path") or ""),
-                                     str(params.get("sub") or ""), limit)
+        path = str(params.get("path") or "")
+        return conversation.read_sub(path, str(params.get("sub") or ""), limit,
+                                     owner=lambda: self._writer(transcript=path))
 
     def _herd_meter(self, params: dict) -> dict:
         """What a claude agent runs on and how full its context is, from
@@ -627,7 +669,7 @@ class JsonRpcHandler:
             before = max(0, int(params.get("before") or 0))
         except (TypeError, ValueError):
             raise ValueError("before must be a number") from None
-        return conversation.chat(pairs, limit, before)
+        return conversation.chat(pairs, limit, before, owner=lambda name: self._writer(name))
 
     def _herd_links(self, params: dict) -> dict:
         """The pull requests and ClickUp tasks a transcript names, as given

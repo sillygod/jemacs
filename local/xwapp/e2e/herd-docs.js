@@ -9,6 +9,14 @@
 // -- a document would run as one -- but a button that asks Emacs to show
 // it.  Desk and phone.  The sandbox the document gets is
 // herd-docs-sandbox.js's, against a real Emacs.
+//
+// The Docs tab's Reports (ask ab8e8838): the reports agents' replies
+// named, as the sidecar keeps their copies -- newest first, each by its
+// title (or file), who wrote it and in which project, when, its size --
+// opening as the Open link does; one whose copy is gone listed, marked,
+// with nothing to open; older ones a page at a time, an answer to a list
+// since replaced dropped; beside the documents on a desk, under them on
+// a phone.
 const fs = require("fs");
 const path = require("path");
 const { webkit } = require("playwright");
@@ -35,7 +43,26 @@ const DOCS = [
   { name: "../x.html", title: "climbs", where: "~/notes/", bytes: 10, mtime: 0 },
   { name: "x.HTML", title: "caps", where: "~/notes/", bytes: 10, mtime: 0 },
 ];
-const SETS = { reports: { [ID + ".html"]: "<!doctype html><title>The viewer</title><h1 id=h>report</h1>" },
+// The Docs tab's Reports, as Emacs gives them from the sidecar: the
+// newest page, and the page older than its last.
+const R1 = "c1c2c3d4e5f60718293a4b5c6d7e8f90", R2 = "d1d2c3d4e5f60718293a4b5c6d7e8f90";
+const R3 = "e1e2c3d4e5f60718293a4b5c6d7e8f90", R4 = "f1f2c3d4e5f60718293a4b5c6d7e8f90";
+const SEC = Date.now() / 1000;
+const REPORTS1 = [
+  { id: R1, title: "Viewer review: what changed & why", name: "viewer-review.html", agent: RD, project: "deploy-platform",
+    at: SEC - 120, bytes: 48200, gone: false },
+  { id: R2, title: "", name: "perf.html", agent: "", project: "", at: SEC - 7200, bytes: 900, gone: false },
+  { id: R3, title: "A report since taken away", name: "gone.html", agent: "qa-deploy-platform", project: "deploy-platform",
+    at: SEC - 3 * 86400, bytes: 1000, gone: true },
+  // Not a copy's id: never drawn.
+  { id: "../../etc/passwd", title: "climbs", name: "x", agent: "x", project: "", at: SEC, bytes: 1, gone: false },
+  { id: R1.toUpperCase(), title: "caps", name: "x", agent: "x", project: "", at: SEC, bytes: 1, gone: false },
+  { id: R2, title: "no time", name: "x", agent: "x", project: "", at: "yesterday", bytes: 1, gone: false },
+];
+const REPORTS2 = [{ id: R4, title: "An older report", name: "old.html", agent: "lead-deploy-platform", project: "deploy-platform",
+  at: SEC - 10 * 86400, bytes: 3000, gone: false }];
+const SETS = { reports: { [ID + ".html"]: "<!doctype html><title>The viewer</title><h1 id=h>report</h1>",
+                          [R1 + ".html"]: "<!doctype html><title>Viewer review</title><h1 id=h>listed report</h1>" },
                docs: { "sidecar-memory.html": "<!doctype html><title>Sidecar</title><h1 id=h>doc</h1>" } };
 const ts = new Date(Date.now() - 60e3).toISOString();
 const SAID = "Done.  The write-up is in /private/tmp/x/viewer-report.html";
@@ -144,14 +171,15 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await sleep(150);
       check(W("the Docs tab asks Emacs for its list"), intents.slice(before).some((i) => i.op === "docs"));
       check(W("and says so meanwhile"), /Asking Emacs/.test(await page.textContent(".page.docs .sum")));
+      check(W("and the reports beside them, asked of the herd"), /Asking the herd/.test(await page.textContent("#docs-reports .sum")));
       await page.evaluate((d) => GM.renderDocs({ docs: d }), DOCS);
       await sleep(150);
-      const docs = await links(page, ".page.docs .dtitle");
+      const docs = await links(page, "#docs-documents .dtitle");
       check(W("a link a document, by its title; none for a name that is not one"),
         docs.length === 2 && docs.map((d) => d.text).join("|") === "Sidecar 記憶體瘦身|Herd 頁面門禁", docs.map((d) => d.text));
       check(W("each under the page's secret, a tab of its own with no opener"), docs.every((d) =>
         d.tag === "A" && /^\/0123456789abcdef0123456789abcdef\/\.docs\/[a-z-]+\.html$/.test(d.href) && d.target === "_blank" && /noopener/.test(d.rel)), docs);
-      const meta = await page.textContent(".page.docs .doc .dmeta");
+      const meta = await page.textContent("#docs-documents .doc .dmeta");
       check(W("with its file, where it is, its size and age"), /sidecar-memory\.html/.test(meta) && /ghostherd/.test(meta) &&
         /34 KB/.test(meta) && /1h ago/.test(meta), meta);
       check(W("and what a document can show"), /no script runs/.test(await page.textContent(".page.docs .docsays")));
@@ -168,8 +196,90 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await doc.waitForLoadState("load").catch(() => {});
       check(W("pressed, the document in a tab of its own"), (await doc.textContent("#h")) === "doc");
       await doc.close();
+
+      // ---- The Docs tab's Reports ----
+      await page.evaluate((r) => GM.renderReports({ reports: r, more: true, after: false }), REPORTS1);
+      await sleep(150);
+      const rows = await page.$$eval("#docs-reports .doc", (ds) => ds.map((d) => ({
+        id: d.getAttribute("data-report"), gone: d.classList.contains("gone"), text: d.textContent,
+        open: [...d.querySelectorAll("a, button")].map((a) => ({ tag: a.tagName, href: a.getAttribute("href"),
+          target: a.getAttribute("target"), rel: a.getAttribute("rel"), text: a.textContent,
+          h: a.getBoundingClientRect().height })) })));
+      check(W("the reports, newest first; none whose id is not a copy's, or with no time"),
+        rows.map((r) => r.id).join() === [R1, R2, R3].join(), rows.map((r) => r.id));
+      const r1 = rows[0] || { open: [] };
+      check(W("a report opens as its Open link does: its copy by id under the secret, a tab of its own, no opener"),
+        r1.open.length === 1 && r1.open[0].tag === "A" && r1.open[0].href === "/" + SECRET + "/.reports/" + R1 + ".html" &&
+        r1.open[0].target === "_blank" && /noopener/.test(r1.open[0].rel) && /noreferrer/.test(r1.open[0].rel), r1.open);
+      check(W("by its title, who wrote it and where, when, its size and its file"),
+        r1.open[0] && r1.open[0].text === "Viewer review: what changed & why" && r1.text.includes(RD) &&
+        r1.text.includes("deploy-platform") && /2m ago/.test(r1.text) && /47 KB/.test(r1.text) && r1.text.includes("viewer-review.html"),
+        r1.text);
+      check(W("one with no title by its file; its writer unknown, said so"),
+        rows[1] && rows[1].open[0] && rows[1].open[0].text === "perf.html" && /writer unknown/.test(rows[1].text), rows[1]);
+      check(W("one whose copy is gone: listed, marked, nothing to open"),
+        rows[2] && rows[2].gone && rows[2].open.length === 0 && /copy is gone/.test(rows[2].text) &&
+        rows[2].text.includes("A report since taken away") && /3d ago/.test(rows[2].text), rows[2]);
+      check(W("it says how many, and that there are older"), /^3 reports, the newest$/.test(await page.textContent("#docs-reports .sum")));
+      if (where === "phone") {
+        const fit = await page.evaluate(() => {
+          const d = document.getElementById("docs-documents").getBoundingClientRect();
+          const r = document.getElementById("docs-reports").getBoundingClientRect();
+          return { wide: document.documentElement.scrollWidth > innerWidth + 1, under: r.top >= d.bottom - 1,
+            small: [...document.querySelectorAll("#docs-reports a.dtitle, #docs-reports [data-act]")]
+              .filter((a) => a.getBoundingClientRect().height < 32).length };
+        });
+        check(W("on the phone: under the documents, it fits, a finger's height each"), !fit.wide && fit.under && !fit.small, fit);
+      } else {
+        const side = await page.evaluate(() => {
+          const d = document.getElementById("docs-documents").getBoundingClientRect();
+          const r = document.getElementById("docs-reports").getBoundingClientRect();
+          return { beside: r.left >= d.right && Math.abs(r.top - d.top) < 2, wide: document.documentElement.scrollWidth > innerWidth + 1 };
+        });
+        check(W("on the desk: beside the documents"), side.beside && !side.wide, side);
+      }
+      await page.screenshot({ path: path.join(SHOTS, "docs-reports-" + where + ".png"), fullPage: true });
+      // Older ones: asked from the last shown.
+      const was = intents.length;
+      await tap('#docs-reports [data-act="reports:more"]');
+      await sleep(150);
+      const more = intents.slice(was).filter((i) => i.op === "reports-more");
+      check(W("older reports are asked from the last shown"), more.length === 1 && more[0].id === R3 && more[0].at === REPORTS1[2].at, more);
+      check(W("and the page says it is asking"), /Asking/.test(await page.textContent('#docs-reports [data-act="reports:more"]')) &&
+        await page.$eval('#docs-reports [data-act="reports:more"]', (b) => b.disabled));
+      // An answer to a list since replaced: dropped.
+      await page.evaluate((r) => GM.renderReports({ reports: r, more: false, after: "0".repeat(32) }), REPORTS2);
+      await sleep(100);
+      check(W("an answer for another list is dropped"), (await page.$$("#docs-reports .doc")).length === 3);
+      await page.evaluate((a) => GM.renderReports({ reports: a.r, more: false, after: a.after }), { r: REPORTS2, after: R3 });
+      await sleep(150);
+      const ids = await page.$$eval("#docs-reports .doc", (ds) => ds.map((d) => d.getAttribute("data-report")));
+      check(W("the older page added after the last; nothing more to ask"), ids.join() === [R1, R2, R3, R4].join() &&
+        !(await page.$('#docs-reports [data-act="reports:more"]')) && /^4 reports$/.test(await page.textContent("#docs-reports .sum")), ids);
+      // Pressed: the copy, by its id; Emacs is asked nothing for it.
+      const asked2 = intents.length;
+      const p3 = ctx.waitForEvent("page");
+      await tap('#docs-reports a[href$="/.reports/' + R1 + '.html"]');
+      const rep = await p3;
+      await rep.waitForLoadState("load").catch(() => {});
+      check(W("pressed, the report in a tab of its own"),
+        rep.url() === "http://box.tail0.ts.net/" + SECRET + "/.reports/" + R1 + ".html" && (await rep.textContent("#h")) === "listed report", rep.url());
+      check(W("and Emacs was asked nothing for it"), !intents.slice(asked2).some((i) => /doc|report/.test(i.op)), intents.slice(asked2));
+      await rep.close();
+      // The herd away: said so, the list as it was.
+      await page.evaluate(() => GM.renderReports({ error: "herd_reports: no answer in 10s", after: false }));
+      await sleep(100);
+      check(W("the herd away: said so, the list kept"), /could not be asked: herd_reports: no answer/.test(
+        await page.textContent("#docs-reports .derror")) && (await page.$$("#docs-reports .doc")).length === 4);
+      if (where === "desk") {
+        const was3 = intents.length;
+        await page.click("#btn-refresh");
+        await sleep(150);
+        check(W("Refresh lists the Docs tab again"), intents.slice(was3).some((i) => i.op === "docs"), intents.slice(was3));
+      }
       check(W("only copies' and documents' names were asked for"), fileLog.every((f) =>
-        f === IMG.id + ".t.jpg" || f === "reports/" + ID + ".html" || f === "docs/sidecar-memory.html"), fileLog);
+        f === IMG.id + ".t.jpg" || f === "reports/" + ID + ".html" || f === "reports/" + R1 + ".html" ||
+        f === "docs/sidecar-memory.html"), fileLog);
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }
@@ -224,11 +334,21 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await page.click('.tab[data-tab="docs"]');
       await page.evaluate((d) => GM.renderDocs({ docs: d }), DOCS);
       await sleep(100);
-      const d = await links(page, ".page.docs .dtitle");
+      const d = await links(page, "#docs-documents .dtitle");
       check("xwidget: the Docs are buttons too", d.length === 2 && d.every((x) => x.tag === "BUTTON" && x.set === "docs"), d);
       await page.click('.page.docs [data-name="phone-access.html"]');
       await drain();
       check("xwidget: pressed, Emacs is asked to show it", said.some((i) => i.op === "doc-open" && i.set === "docs" && i.name === "phone-access.html"));
+      await page.evaluate((r) => GM.renderReports({ reports: r, more: false, after: false }), REPORTS1);
+      await sleep(100);
+      const rb = await links(page, "#docs-reports .dtitle");
+      check("xwidget: the Reports are buttons too, and the gone one none", rb.length === 3 &&
+        rb.slice(0, 2).every((x) => x.tag === "BUTTON" && x.set === "reports") && rb[2].tag === "SPAN" &&
+        rb[0].name === R1 + ".html", rb);
+      await page.click('#docs-reports [data-name="' + R1 + '.html"]');
+      await drain();
+      check("xwidget: a report pressed, Emacs is asked to show it as its Open does",
+        said.some((i) => i.op === "doc-open" && i.set === "reports" && i.name === R1 + ".html"));
       check("xwidget: nowhere a link to a document", (await page.$$('a[href*=".reports/"], a[href*=".docs/"]')).length === 0);
       check("xwidget: no page errors", errors.length === 0, errors);
       await ctx.close();

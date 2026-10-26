@@ -397,13 +397,17 @@ it would on the phone.
 |                | none fetched; under the CSP in a browser and as files (xwidget) |
 | =herd-docs=    | an agent's HTML report: Open under the message wherever it is   |
 |                | read, by its id under the secret, a tab of its own with no      |
-|                | opener; the Docs tab; none for a record or name not one; in the |
-|                | xwidget a button that asks Emacs, never a =file:= link          |
+|                | opener; the Docs tab and its Reports (newest first, who and     |
+|                | when, a gone copy marked with nothing to open, older a page at  |
+|                | a time, a stale page dropped; beside on a desk, under on a      |
+|                | phone); none for a record or name not one; in the xwidget a     |
+|                | button that asks Emacs, never a =file:= link                    |
 | =herd-docs-sandbox= | against a real Emacs (=e2e/docs.el=) on the phone (through |
 |                | serve) and the desk: a document runs no script and reaches      |
 |                | nothing of the page's --- fetch, XHR, beacon, form, image,      |
-|                | style, frame, navigation --- the page stays the app's; refused  |
-|                | by case, traversal, another set, a guessed id, another login   |
+|                | style, frame, navigation --- the page stays the app's, opened   |
+|                | from the Docs tab's Reports too; refused by case, traversal,    |
+|                | another set, a guessed id, a gone copy, another login           |
 | =herd-chips=   | the herd page's PR and task chips: pr-view's and                |
 |                | clickup-view's pages on the phone, one tab per app, else the    |
 |                | forge's; a PR of another repository named with it, and opened   |

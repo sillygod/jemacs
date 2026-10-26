@@ -8,6 +8,12 @@
 // reaches nothing: no script of it runs, nothing it asks for takes the
 // page or sends an intent, and the page goes on as the app's.  Only for
 // the tailnet login it is served to; and the Docs tab fits a phone.
+//
+// The Docs tab's Reports (ask ab8e8838): a report listed there opens as
+// its Open link does -- its copy, by id, sandboxed -- so one out to act
+// does nothing from there either; one whose copy is gone is listed with
+// nothing to open, and its address answers nothing; older ones come from
+// Emacs a page at a time.
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
@@ -17,6 +23,10 @@ const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const DESK = { viewport: { width: 1280, height: 860 } };
 const RID = "c0ffee00c0ffee00c0ffee00c0ffee00";
+// The Reports: one out to act (the newest), the report above, one whose
+// copy is gone, and an older page of one.
+const LID = "bad0bad0bad0bad0bad0bad0bad0bad0", GID = "9011e0009011e0009011e0009011e000";
+const OID = "01d001d001d001d001d001d001d001d0";
 const PNG1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 // What each run's Emacs serves: a doc as ghostherd's are made, one out
@@ -50,6 +60,18 @@ const REFRESH = '<!DOCTYPE html><html><head><title>Leaves by itself</title>' +
 const REPORT = '<!doctype html><html><head><title>A report</title></head><body><h1 id="h">untouched</h1>' +
   '<script>document.getElementById("h").textContent = "ran"; fetch("../../hello?page=evil-report", { method: "POST" });</script></body></html>';
 
+const SEC = Date.now() / 1000;
+const REPORTS = {
+  first: { more: true, reports: [
+    { id: LID, title: "Evil report", name: "evil-report.html", agent: "rd", project: "x", at: SEC - 60, bytes: EVIL.length, gone: false },
+    { id: RID, title: "A report", name: "report.html", agent: "lead-x", project: "x", at: SEC - 3600, bytes: REPORT.length, gone: false },
+    { id: GID, title: "Taken away", name: "gone.html", agent: "rd", project: "x", at: SEC - 7200, bytes: 10, gone: true },
+  ] },
+  older: { more: false, reports: [
+    { id: OID, title: "An older one", name: "old.html", agent: "rd", project: "x", at: SEC - 86400, bytes: 10, gone: false },
+  ] },
+};
+
 function setup(dir) {
   fs.mkdirSync(path.join(dir, "docs"));
   fs.mkdirSync(path.join(dir, "replies"));
@@ -57,6 +79,9 @@ function setup(dir) {
   fs.writeFileSync(path.join(dir, "docs", "evil.html"), EVIL);
   fs.writeFileSync(path.join(dir, "docs", "refresh.html"), REFRESH);
   fs.writeFileSync(path.join(dir, "replies", RID + ".html"), REPORT);
+  fs.writeFileSync(path.join(dir, "replies", LID + ".html"), EVIL.replace(/evil-/g, "evil-listed-"));
+  fs.writeFileSync(path.join(dir, "replies", OID + ".html"), "<!doctype html><title>Old</title><h1 id=h>old</h1>");
+  fs.writeFileSync(path.join(dir, "reports.json"), JSON.stringify(REPORTS));
 }
 
 const reqs = () => log().filter((w) => w && w.req);
@@ -101,8 +126,10 @@ function viaServe(s, target, login) {
       watch(herd, errors);
       const before = hellos().length;
       await herd.goto(base + ROOT + "ghostherd/ui/index.html#docs");
-      const listed = await until(async () => (await herd.$$(".page.docs .doc")).length === 3, 10000);
-      check(W("the Docs tab, asked of Emacs, lists its documents"), listed, await herd.textContent("#app").catch(() => ""));
+      const listed = await until(async () => (await herd.$$("#docs-documents .doc")).length === 3 &&
+        (await herd.$$("#docs-reports .doc")).length === 3, 10000);
+      check(W("the Docs tab, asked of Emacs, lists its documents and the reports"), listed,
+        await herd.textContent("#app").catch(() => ""));
       const mine = hellos().slice(before);
       const P = mine.length ? idOf(mine[mine.length - 1].target) : null;
       // Emacs notes whose the page is every 200 ms.
@@ -199,7 +226,52 @@ function viaServe(s, target, login) {
       }
       const noSecret = await report.goto(base + "/.docs/good.html");
       check(W("not without the page's secret"), noSecret && noSecret.status() === 404);
+
+      // ---- The Docs tab's Reports ----
+      const gone = await report.goto(base + ROOT + ".reports/" + GID + ".html");
+      check(W("a listed report whose copy is gone: its address answers nothing"), gone && gone.status() === 404);
       await report.close();
+      const rl = await herd.$$eval("#docs-reports .doc", (ds) => ds.map((d) => ({ id: d.getAttribute("data-report"),
+        gone: d.classList.contains("gone"), open: [...d.querySelectorAll("a, button")].map((a) =>
+          ({ href: a.getAttribute("href"), target: a.target, rel: a.rel })) })));
+      check(W("the Reports: each a link to its copy by id under the secret, a tab of its own; the gone one none"),
+        rl.length === 3 && rl[0].open.length === 1 && rl[0].open[0].href === ROOT + ".reports/" + LID + ".html" &&
+        rl[0].open[0].target === "_blank" && /noopener/.test(rl[0].open[0].rel) &&
+        rl[1].open[0] && rl[1].open[0].href === ROOT + ".reports/" + RID + ".html" &&
+        rl[2].gone && rl[2].open.length === 0, rl);
+      const lBefore = evil().length;
+      popped = ctx.waitForEvent("page");
+      await tap(herd, '#docs-reports a[href$="/.reports/' + LID + '.html"]');
+      const lr = await popped;
+      await lr.waitForLoadState("load").catch(() => {});
+      await sleep(1200);
+      const lh = heads[base + ROOT + ".reports/" + LID + ".html"] || {};
+      check(W("a report out to act, opened from the list: under the page's policy for documents"),
+        lr.url() === base + ROOT + ".reports/" + LID + ".html" && lh["content-security-policy"] === policy && /^sandbox;/.test(policy),
+        { url: lr.url(), csp: lh["content-security-policy"] });
+      const ls = await lr.evaluate(() => ({ h: document.getElementById("h").textContent, origin: self.origin }))
+        .catch((e) => ({ err: String(e) }));
+      check(W("no script of it ran, and its origin is none"), ls.h === "untouched" && ls.origin === "null", ls);
+      await tap(lr, "#b").catch(() => {});
+      await sleep(600);
+      const lreached = evil().slice(lBefore);
+      check(W("nothing it asked for reached Emacs, and the page is still the app's"),
+        lreached.length === 0 && pageNow(s) === P && lr.url() === base + ROOT + ".reports/" + LID + ".html",
+        { lreached, now: pageNow(s), url: lr.url() });
+      await lr.close();
+      // Older ones: from Emacs, asked from the last shown.
+      await tap(herd, '#docs-reports [data-act="reports:more"]');
+      const older = await until(async () => (await herd.$$("#docs-reports .doc")).length === 4, 5000);
+      const more = log().filter((w) => w && w.intent && w.intent.op === "reports-more");
+      check(W("older reports: asked of Emacs from the last shown, added after it"), older &&
+        more.length && more[more.length - 1].intent.id === GID &&
+        (await herd.$eval("#docs-reports .doc:last-child", (d) => d.getAttribute("data-report")).catch(() => "")) === OID,
+        more.map((w) => w.intent));
+      if (where === "phone") {
+        const m = await measure(herd);
+        check(W("the Docs tab with its Reports fits the phone"), !m.pageScroll && !m.past.length && !m.small.length, m);
+        await herd.screenshot({ path: path.join(__dirname, "shots", "docs-reports-real-phone.png"), fullPage: true });
+      }
 
       // ---- The page goes on ----
       const asked = log().filter((w) => w && w.intent && w.intent.op === "docs").length;
@@ -220,7 +292,8 @@ function viaServe(s, target, login) {
     const ok = await viaServe(s, target, "me@example.com");
     check("through serve, for your login: the doc, sandboxed", ok.code === 200 && ok.csp === policy && /^sandbox;/.test(policy), ok.code);
     for (const login of ["someone@else.com", null]) {
-      for (const t of [target, ROOT + ".reports/" + RID + ".html", ROOT + "ghostherd/ui/index.html"]) {
+      for (const t of [target, ROOT + ".reports/" + RID + ".html", ROOT + ".reports/" + LID + ".html",
+                       ROOT + "ghostherd/ui/index.html"]) {
         const r = await viaServe(s, t, login);
         check("through serve for " + (login || "no login") + ": nothing (" + t.replace(secret, "SECRET") + ")", r.code === 404, r.code);
       }
