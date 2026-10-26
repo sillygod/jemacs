@@ -30,6 +30,7 @@ lead: an agent in a project that has a lead tells its lead instead.
 from __future__ import annotations
 
 import collections
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -158,6 +159,34 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def _hold_until(seconds: float) -> str:
+    "When a mail held for SECONDS is let go."
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _seconds(row: dict[str, Any]) -> float | None:
+    "How long ask ROW's work took: delivered (or made) to answered."
+    begun, end = row.get("delivered_at") or row.get("created_at"), row.get("answered_at")
+    try:
+        return (datetime.fromisoformat(end) - datetime.fromisoformat(begun)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def _trace_line(trace: str | None) -> str | None:
+    "The one line of a stored trace (ask_trace), or None."
+    try:
+        line = json.loads(trace)["line"] if trace else None
+    except (ValueError, KeyError, TypeError):
+        return None
+    return line if isinstance(line, str) and line else None
+
+
+def trace_note(line: str) -> str:
+    "LINE as it ends an answer's message: bracketed, alone on its line."
+    return f"[{line}]"
+
+
 def guard_root() -> str:
     "Where guarded agents' guard directories live: GHOSTHERD_GUARD_ROOT, as Emacs says."
     return os.environ.get("GHOSTHERD_GUARD_ROOT") or os.path.expanduser("~/.ghostherd/guard")
@@ -196,6 +225,11 @@ def _lint_lib():
 # USE_FLUSH_MAX at a time: nothing that hands out memory ever waits on this
 # database, and no tick writes more than a moment's worth.
 USE_KINDS = ("ask", "opening", "recall")
+
+# How an answered ask's work went, in one line (ask_trace.py): made off the
+# reply's path, after it; the answer's mail to an asker not waiting holds
+# for it this long at most, then goes without.
+TRACE_HOLD = 3.0
 USE_DETAIL_DAYS = 90
 USE_ROWS_MAX = 200_000
 USE_QUEUE_MAX = 10_000
@@ -318,6 +352,9 @@ class HerdStore:
         self._uses: collections.deque = collections.deque(maxlen=USE_QUEUE_MAX)
         self._reader: sqlite3.Connection | None = None
         self._read_mu = threading.Lock()
+        # One worker makes the asks' traces, after their replies.
+        self._tracer: concurrent.futures.ThreadPoolExecutor | None = None
+        self._traces: collections.deque = collections.deque(maxlen=32)
         # Seconds a guard request waits before it expires (`tick' sets it).
         self.guard_ttl = GUARD_REQUEST_SECONDS
         self._mu = threading.Lock()
@@ -614,6 +651,9 @@ class HerdStore:
         # as a use when the mail is delivered (`use').
         if "memory_facts" not in mail_cols:
             self._conn.execute("ALTER TABLE mail ADD COLUMN memory_facts TEXT")
+        # The ask whose answer this mail is, waiting for its trace (`_trace').
+        if "trace_of" not in mail_cols:
+            self._conn.execute("ALTER TABLE mail ADD COLUMN trace_of TEXT")
         # Each time a shared-memory fact reached an agent, and the totals of
         # the rows rolled up (`use', `_roll_up_uses').  Since when they are
         # counted is in `meta' (uses_since): a fact used before has no
@@ -657,6 +697,9 @@ class HerdStore:
         }
         if "auto_source" not in ask_cols:
             self._conn.execute("ALTER TABLE asks ADD COLUMN auto_source TEXT")
+        # How its work went, as JSON {line, rough, detail} (ask_trace.py).
+        if "trace" not in ask_cols:
+            self._conn.execute("ALTER TABLE asks ADD COLUMN trace TEXT")
         # When the agent's current turn began (its last `working'), and the
         # turn that produced `last_message'.  An ask is answered by a turn's
         # own words only when that turn began after the ask -- not by the
@@ -697,6 +740,8 @@ class HerdStore:
         self._conn.commit()
 
     def close(self) -> None:
+        if self._tracer is not None:
+            self._tracer.shutdown(wait=False, cancel_futures=True)
         with self._mu:
             self._flush_uses()
             try:
@@ -1392,7 +1437,7 @@ class HerdStore:
     _ASK_COLS = (
         "id, from_name, to_name, body, wait, status, reply, auto, replied_by, "
         "error, collected, created_at, delivered_at, answered_at, auto_source, "
-        "project, from_project"
+        "project, from_project, trace"
     )
 
     def _ask_row(self, ask_id: str) -> dict[str, Any]:
@@ -1437,6 +1482,9 @@ class HerdStore:
             # Its outcome went out as mail: nobody was waiting for it, or
             # the waiting asker was gone for longer than the herd holds it.
             "mailed": not row["wait"] and bool(row["collected"]),
+            # How the work went, one line (ask_trace), once it is made.
+            "trace": _trace_line(row["trace"]),
+            "traced": bool(row["trace"]),
         }
 
     def relay_asks(self, name: str) -> dict[str, list[dict[str, Any]]]:
@@ -1491,12 +1539,13 @@ class HerdStore:
             self._conn.execute(
                 """
                 UPDATE asks SET status = 'answered', reply = ?, auto = 0,
-                  replied_by = ?, collected = ?, answered_at = ?
+                  replied_by = ?, collected = ?, answered_at = ?, trace = NULL
                 WHERE id = ?
                 """,
                 (str(body), (from_name or "").strip() or None,
                  1 if superseded_seen else 0, now, row["id"]),
             )
+            later = self._trace_inline(row["id"])
             # Answered before Emacs pasted it: nothing left to deliver.
             self._conn.execute(
                 """
@@ -1513,14 +1562,18 @@ class HerdStore:
                 self._conn.execute(
                     """
                     INSERT INTO mail (
-                        id, from_name, to_name, body, submit, handoff, status, created_at
-                    ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?)
+                        id, from_name, to_name, body, submit, handoff, status, created_at,
+                        memory_until, trace_of
+                    ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?)
                     """,
-                    (str(uuid.uuid4()), row["to_name"], row["from_name"], text, now),
+                    (str(uuid.uuid4()), row["to_name"], row["from_name"], text, now,
+                     _hold_until(TRACE_HOLD) if later else None, row["id"] if later else None),
                 )
             else:
-                self._mail_back(row["id"])
+                self._mail_back(row["id"], hold=later)
             self._conn.commit()
+        if later:
+            self._trace_soon(row["id"])
         return {"id": row["id"], "status": "answered"}
 
     def settle(
@@ -1621,8 +1674,11 @@ class HerdStore:
                     ),
                 )
                 status = "answered"
-            self._mail_back(row["id"])
+            later = status == "answered" and self._trace_inline(row["id"])
+            self._mail_back(row["id"], hold=later)
             self._conn.commit()
+        if later:
+            self._trace_soon(row["id"])
         return {"id": row["id"], "status": status}
 
     def cancel(self, ask_id: str) -> dict[str, Any]:
@@ -1686,7 +1742,7 @@ class HerdStore:
     # ---- Threads: who is talking to whom (threads.py) --------------------
 
     _THREAD_COLS = ("id, from_name, to_name, body, reply, status, auto, error, created_at, "
-                    "delivered_at, answered_at, parent, round, round_of, project, from_project")
+                    "delivered_at, answered_at, parent, round, round_of, project, from_project, trace")
 
     def _thread_rows(self, where: str, args: tuple = ()) -> list[dict[str, Any]]:
         "Asks as dicts, for threads.py.  Caller holds `_mu`."
@@ -1769,9 +1825,10 @@ class HerdStore:
             (status, error, now, ask_id),
         )
 
-    def _mail_back(self, ask_id: str) -> None:
+    def _mail_back(self, ask_id: str, hold: bool = False) -> None:
         """Mail a closed ask's outcome to an asker that is not waiting.
-        Caller holds `_mu`."""
+        HOLD: its trace is being made (`_trace_soon'), and the mail waits a
+        moment for it.  Caller holds `_mu`."""
         row = self._ask_row(ask_id)
         if row["wait"] or row["collected"] or row["status"] not in ("answered", "failed"):
             return
@@ -1788,19 +1845,116 @@ class HerdStore:
                 f"Answer to ask {row['id']} ({_head(row['body'], 80)}){note}:\n"
                 f"{row['reply']}"
             )
+        # An answer goes with how its work went: made already (from the
+        # herd's records alone, or an answer swept back late), or waited for
+        # a moment while its taker's transcript is read (`_trace').
+        line = _trace_line(row["trace"]) if row["status"] == "answered" else None
+        held = hold and row["status"] == "answered" and not row["trace"]
         self._conn.execute(
             """
             INSERT INTO mail (
-                id, from_name, to_name, body, submit, handoff, status, created_at
-            ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?)
+                id, from_name, to_name, body, submit, handoff, status, created_at,
+                memory, memory_until, trace_of
+            ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?, ?)
             """,
             (
                 # A handoff that failed before it had a taker: the herd says so.
                 str(uuid.uuid4()), row["to_name"] or "herd", row["from_name"], text,
                 datetime.now(timezone.utc).isoformat(),
+                trace_note(line) if line else None,
+                _hold_until(TRACE_HOLD) if held else None, row["id"] if held else None,
             ),
         )
         self._conn.execute("UPDATE asks SET collected = 1 WHERE id = ?", (row["id"],))
+
+    # ---- How the work went (ask_trace) ----------------------------------------
+
+    def _trace_inline(self, ask_id: str) -> bool:
+        """ASK_ID's trace when there is no transcript to read -- the herd's
+        own records alone, made here, stored at once -- and True when there
+        is one: then `_trace_soon' makes it, off the reply's path.  Caller
+        holds `_mu`; never raises (False: no line)."""
+        try:
+            import ask_trace
+            row = self._ask_row(ask_id)
+            if self._transcript(row["to_name"]):
+                return True
+            work = ask_trace.Work()
+            work.why = "no conversation known for it"
+            out = ask_trace.compose(work, _seconds(row), **self._trace_facts(row))
+            self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
+                               (json.dumps(out, ensure_ascii=False), ask_id))
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _trace_soon(self, ask_id: str) -> None:
+        "Make ASK_ID's trace on the worker, after its reply: never in its way."
+        try:
+            if self._tracer is None:
+                self._tracer = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="ask-trace")
+            self._traces.append(self._tracer.submit(self._trace, ask_id))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def wait_traces(self, timeout: float = 10.0) -> None:
+        "Until the traces asked for so far are made (tests, a measurement)."
+        concurrent.futures.wait(list(self._traces), timeout=timeout)
+
+    def _trace(self, ask_id: str) -> None:
+        """ASK_ID's line: what its taker's transcript shows of the work, and
+        the herd's own records of it -- stored on the ask, and put on the
+        answer's mail that waits for it.  A failure releases the mail without."""
+        import ask_trace
+        try:
+            with self._mu:
+                row = self._ask_row(ask_id)
+                if row["status"] != "answered":
+                    return
+                transcript = self._transcript(row["to_name"])
+                facts = self._trace_facts(row)
+            work = ask_trace.read_work(transcript, row["id"])
+            out = ask_trace.compose(work, _seconds(row), **facts)
+            with self._mu:
+                self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
+                                   (json.dumps(out, ensure_ascii=False), row["id"]))
+                self._conn.execute(
+                    "UPDATE mail SET memory = ?, memory_until = NULL WHERE trace_of = ? AND status = 'queued'",
+                    (trace_note(out["line"]) if out["line"] else None, row["id"]))
+                self._conn.commit()
+        except Exception:  # noqa: BLE001 -- no line, never a held answer
+            try:
+                with self._mu:
+                    self._conn.execute(
+                        "UPDATE mail SET memory_until = NULL WHERE trace_of = ? AND status = 'queued'",
+                        (ask_id,))
+                    self._conn.commit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _trace_facts(self, row: dict[str, Any]) -> dict[str, Any]:
+        """What the herd itself saw of ROW's work: the guard's and the checks'
+        denials of its taker while it worked, the asks it sent answering it,
+        the relays it was asked for.  Caller holds `_mu`."""
+        taker, begun = row["to_name"], row["delivered_at"] or row["created_at"]
+        end = row["answered_at"] or datetime.now(timezone.utc).isoformat()
+        window = (taker, begun, end)
+
+        def count(sql: str) -> int:
+            return self._conn.execute(sql, window).fetchone()[0]
+        asks: dict[str, int] = {}
+        for to, project in self._conn.execute(
+                "SELECT to_name, project FROM asks WHERE parent = ?", (row["id"],)).fetchall():
+            who = to or (projects.leaf(project) + "'s lead" if project else "?")
+            asks[who] = asks.get(who, 0) + 1
+        return {
+            "guard": count("SELECT COUNT(*) FROM guard_requests WHERE session = ? AND created_at >= ? AND created_at <= ?"),
+            "lint": count("SELECT COUNT(*) FROM lint_denials WHERE session = ? AND created_at >= ? AND created_at <= ?"),
+            "relays": count("SELECT COUNT(*) FROM commands WHERE op = 'relay' AND session = ?"
+                            " AND created_at >= ? AND created_at <= ?"),
+            "asks": asks,
+        }
 
     def _sweep_uncollected(self, now: str) -> None:
         """Answers a waiting asker never collected go out as mail.
@@ -2578,7 +2732,7 @@ class HerdStore:
                     """,
                     (session, state, reason or None, now),
                 )
-            closed = None
+            closed, later = None, False
             if state == "done" and last:
                 turn_at = self._conn.execute(
                     "SELECT turn_at FROM links WHERE session = ?", (session,)
@@ -2613,9 +2767,12 @@ class HerdStore:
                         """,
                         (last, now, open_ask[0]),
                     )
-                    self._mail_back(open_ask[0])
+                    later = self._trace_inline(open_ask[0])
+                    self._mail_back(open_ask[0], hold=later)
                     closed = open_ask[0]
             self._conn.commit()
+        if closed and later:
+            self._trace_soon(closed)
         return {"session": session, "state": state, "closed_ask": closed}
 
     def _not_its_own(self, session: str, cli: str | None, pid: int | None,

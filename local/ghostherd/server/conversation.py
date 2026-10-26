@@ -51,6 +51,10 @@ ANSWER = re.compile(
     r"\AAnswer to ask ([0-9A-Za-z]{4,32}) \((.*?)\)( -- no answer was sent[^:\n]*)?:\n(.*)\Z", re.S
 )
 FAILED = re.compile(r"\AAsk ([0-9A-Za-z]{4,32}) failed: (.*)\Z", re.S)
+# How the taker's work went, as the herd ends an answer's message with it
+# (herd.py's `trace_note') and `herd ask --wait' says it (bin/herd).
+TRACE = re.compile(r"\n*\[(How it went: [^\n]*)\]\s*\Z")
+TRACE_SAID = "How it went: "
 # What opens the user's message to a lead: the herd's words, not theirs
 # (`ghostherd--lead-unheard-note', `ghostherd--lead-work-note').  After
 # the role, on a CLI that takes it with the first message; just inside
@@ -326,7 +330,12 @@ def user_entry(text: str, ts: Any) -> dict[str, Any] | None:
         if (a := ASK.match(body)):
             entry.update(kind="ask", ask=a.group(1), text=clip(a.group(2).split(ASK_TAIL, 1)[0]))
         elif (a := ANSWER.match(body)):
-            entry.update(kind="answer", ask=a.group(1), text=clip(a.group(4)), auto=bool(a.group(3)))
+            answer, trace = a.group(4), None
+            if (t := TRACE.search(answer)):
+                answer, trace = answer[: t.start()], t.group(1)
+            entry.update(kind="answer", ask=a.group(1), text=clip(answer), auto=bool(a.group(3)))
+            if trace:
+                entry["trace"] = trace
         elif (a := FAILED.match(body)):
             entry.update(kind="answer", ask=a.group(1), text=clip(a.group(2)), failed=True)
         else:
@@ -384,6 +393,9 @@ def ask_outcome(text: str, error: bool = False, final: bool = True) -> dict[str,
         out["answer"] = clip(body)
         if any("stopped without answering" in l for l in said):
             out["auto"] = True
+        trace = next((l for l in said if l.startswith(TRACE_SAID)), None)
+        if trace:
+            out["trace"] = trace
     return out
 
 
@@ -868,7 +880,8 @@ def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
                 add(who=e.get("who"), to=name, kind=kind, ask=ask, text=e.get("text"), ts=e.get("ts"))
             elif kind == "answer" and ask not in replied:
                 add(who=e.get("who"), to=name, kind="answer", ask=ask, text=e.get("text"),
-                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("ts"), images=e.get("images"))
+                    auto=e.get("auto"), failed=e.get("failed"), ts=e.get("ts"), images=e.get("images"),
+                    trace=e.get("trace"))
         elif role == "herd" and kind == "reply":
             add(who=name, to=taken.get(ask, ""), kind="reply", ask=ask, text=e.get("text"), ts=e.get("ts"),
                 images=e.get("images"))
@@ -876,11 +889,11 @@ def _chat_items(name: str, entries: list[dict[str, Any]], taken: dict[str, str],
             if ask not in taken:
                 add(who=name, to=e.get("to"), kind="ask", ask=ask, text=e.get("text"), ts=e.get("ts"),
                     answer=e.get("answer"), auto=e.get("auto"), failed=e.get("failed"),
-                    waiting=e.get("waiting"), answer_images=e.get("answer_images"))
+                    waiting=e.get("waiting"), answer_images=e.get("answer_images"), trace=e.get("trace"))
             elif ask not in replied and (e.get("answer") or e.get("failed")):
                 add(who=e.get("to"), to=name, kind="answer", ask=ask, text=e.get("answer"),
                     auto=e.get("auto"), failed=e.get("failed"), ts=e.get("answered_ts") or e.get("ts"),
-                    images=e.get("answer_images"))
+                    images=e.get("answer_images"), trace=e.get("trace"))
     turn()
     return out
 
