@@ -496,6 +496,12 @@ class JsonRpcHandler:
         while True:
             ask = await asyncio.to_thread(herd.get_ask, ask_id)
             if ask["status"] in ASK_CLOSED:
+                # An answer goes with how its work went: made just after the
+                # reply, waited for a moment here -- never the reply itself.
+                held = loop.time() + herd_module.TRACE_HOLD
+                while ask["status"] == "answered" and not ask.get("traced") and loop.time() < held:
+                    await asyncio.sleep(AWAIT_POLL)
+                    ask = await asyncio.to_thread(herd.get_ask, ask_id)
                 # Collected by the asker, or by a client that does not say
                 # who it is; one looking on at another's ask is not it.
                 if not who or who == ask["from"]:

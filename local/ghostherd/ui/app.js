@@ -2458,7 +2458,7 @@
       const outcome = e.kind !== "ask" ? ""
         : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
         : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered" + (e.auto ? " — stopped without answering" : ""), "", null, tcolor,
-          copyButton(i, e.answer, "answer")) + plainBody(e.answer) + imagesHtml(e.answerImages) + "</div>"
+          copyButton(i, e.answer, "answer")) + plainBody(e.answer) + imagesHtml(e.answerImages) + traceHtml(e.trace) + "</div>"
         : e.waiting ? '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>"
         : "";
       return '<div class="ent herd" style="border-left-color:' + own + '">' +
@@ -2472,7 +2472,7 @@
     if (e.kind === "answer") {
       const how = e.failed ? " — ask failed" : e.auto ? " — stopped without answering" : "";
       return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from + " answered" + how, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) +
-        imagesHtml(e.images) + "</div>";
+        imagesHtml(e.images) + traceHtml(e.trace) + "</div>";
     }
     if (e.kind === "message" && from) return '<div class="ent from"' + bar + ">" + entHead("⇠ " + from, "", e.ts, color, copyButton(i, e.text)) + plainBody(e.text) + "</div>";
     return '<div class="ent you" data-i="' + i + '">' + entHead("You", "", e.ts, "", copyButton(i, e.text)) + herdNotes(e) + plainBody(e.text) + "</div>";
@@ -2743,6 +2743,37 @@
 
   // What the herd put before your words to a lead: a line each, not
   // your words.
+  // How the taker's work went: the herd's counts beside an answer -- never
+  // a verdict on it (ask_trace.py).  A rough one suggests remembering what
+  // it found.  DETAIL, when given, is the counts behind the line.
+  function traceHtml(line, rough, detail) {
+    if (!line) return "";
+    const isRough = rough || / · rough going: /.test(line);
+    return '<div class="trace' + (isRough ? " rough" : "") + '">' + esc(line) + "</div>" +
+      (detail ? '<div class="tracedetail">' + esc(traceDetailText(detail)) + "</div>" : "");
+  }
+
+  // A failure's kind as the line says it (ask_trace.LABELS).
+  const TRACE_FAIL = { shell: "shell exit", edit: "edit not applied", denied: "permission denial",
+                       timeout: "timeout", other: "other error" };
+  function traceDetailText(d) {
+    const by = (o, names) => Object.keys(o || {}).sort((a, b) => o[b] - o[a] || a.localeCompare(b))
+      .map((k) => ((names && names[k]) || k) + " " + o[k]).join(", ");
+    const parts = [];
+    if (d.seen) {
+      parts.push("tools: " + (by(d.tools) || "none"));
+      if (d.failures_known) parts.push("failed: " + (by(d.failed, TRACE_FAIL) || "none"));
+      else parts.push("failures not readable for " + (d.cli || "this CLI"));
+      if (d.subs) parts.push("sub-agents: " + d.subs + (d.subs_read ? " (" + d.sub_tools + " tool calls" +
+        (by(d.sub_failed) ? "; failed: " + by(d.sub_failed, TRACE_FAIL) : "") + ")" : " (their own work not read)"));
+    } else if (d.why) parts.push("its tool calls were not seen: " + d.why);
+    if (d.guard) parts.push("guard denials: " + d.guard);
+    if (d.lint) parts.push("check denials: " + d.lint);
+    if (d.asks && Object.keys(d.asks).length) parts.push("asked: " + by(d.asks));
+    if (d.relays) parts.push("relays: " + d.relays);
+    return parts.join(" · ");
+  }
+
   function herdNotes(e) {
     return (e.notes || []).map((n) => '<div class="hnote">herd note: ' + esc(n) + "</div>").join("");
   }
@@ -2764,11 +2795,12 @@
     const outcome = e.kind !== "ask" || !(e.failed || e.answer || e.waiting) ? ""
       : e.failed ? '<div class="eanswer failed">' + entHead("the ask failed", "", null, "", copyButton(i, e.answer, "answer")) + plainBody(e.answer) + "</div>"
       : e.answer ? '<div class="eanswer">' + entHead("⇠ " + (e.to || "") + " answered", "", null, sessionColor(e.to || ""), copyButton(i, e.answer, "answer")) +
-        plainBody(e.answer) + imagesHtml(e.answerImages) + "</div>"
+        plainBody(e.answer) + imagesHtml(e.answerImages) + traceHtml(e.trace) + "</div>"
       : '<div class="eanswer waiting">waiting for ' + esc(e.to || "the answer") + "…</div>";
     return '<div class="ent cmsg' + (you ? " you" : "") + (long && !open ? " folded" : "") + '" data-i="' + i + '"' +
       (color ? ' style="border-left-color:' + color + '"' : "") + ">" +
-      entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + imagesHtml(e.images) + outcome +
+      entHead(head, you ? "" : "", e.ts, color, copyButton(i, e.text)) + herdNotes(e) + body + imagesHtml(e.images) +
+      (e.kind === "answer" ? traceHtml(e.trace) : "") + outcome +
       (long ? '<button type="button" class="linkish cmore" data-act="a:chat-more" data-key="' + esc(key) + '">' + (open ? "less" : "more") + "</button>" : "") +
       "</div>";
   }
@@ -4912,6 +4944,13 @@
   function thStatus(st) { return '<span class="thst s-' + esc(st) + '">' + esc(TH_STATUS[st] || st) + "</span>"; }
   function thLabel(m) { return m.kind === "answer" && m.auto ? "stopped · its last words" : TH_LABEL[m.kind] || m.kind; }
   function thRound(m) { return m.round && m.of ? "round " + m.round + "/" + m.of : ""; }
+  // An answer's trace inside its card (spans: the card is a button); the
+  // counts behind it once the card is opened.
+  function thTrace(m, open) {
+    if (!m.trace) return "";
+    return '<span class="thtrace' + (m.rough ? " rough" : "") + '">' + esc(m.trace) + "</span>" +
+      (open && m.traceDetail ? '<span class="thtracedetail">' + esc(traceDetailText(m.traceDetail)) + "</span>" : "");
+  }
 
   function threadsBadge() {
     const b = $("threads-n");
@@ -5045,7 +5084,7 @@
         '<button type="button" class="thcard" style="' + gc + '" data-act="' + msgAct + '" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
         '<span class="thmeta"><span>' + esc(thWho(m.from)) + " → " + esc(thWho(m.to)) + "</span><span>· " + esc(thTime(m.at)) + "</span>" +
         (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") + "</span>" +
-        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>" +
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span>" + thTrace(m, open) + "</button>" +
         (m.images ? '<div class="thimgs" style="' + gc + '">' + imagesHtml(m.images) + "</div>" : "") + "</div>";
     }).join("");
     const wait = thWaiting(t);
@@ -5089,7 +5128,7 @@
         '<span class="thpwho">' + esc(thWho(m.to)) + "</span>" +
         '<span class="thpkind">' + esc(thLabel(m)) + "</span></span>" +
         '<span class="thmeta"><span>' + esc(thTime(m.at)) + "</span>" + (round ? "<span>· " + esc(round) + "</span>" : "") + "</span>" +
-        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span></button>" + imagesHtml(m.images);
+        '<span class="thtext">' + esc(open ? m.text : m.head) + "</span>" + thTrace(m, open) + "</button>" + imagesHtml(m.images);
     }).join("") + (wait ? '<p class="thwait">' + esc(wait) + "</p>" : "");
   }
 

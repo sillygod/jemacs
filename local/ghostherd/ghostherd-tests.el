@@ -14855,6 +14855,24 @@ answered and kept working -- leaked into the Inbox as a report."
     (should (= 2 (length (plist-get (car props) :facts))))
     (should (string-match-p "\\+x" (plist-get (car props) :diff)))))
 
+;;; How an answer's work went (ask_trace.py; ask 4093758e)
+
+(ert-deftest ghostherd-test-an-answers-trace-reaches-the-threads-page ()
+  "A thread's answer goes to the page with its line, whether it was rough,
+and the counts behind it -- empty ones as nothing, not a broken object."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((reply (json-parse-string
+                 (concat "{\"id\":\"t\",\"msgs\":[{\"kind\":\"answer\",\"from\":\"a\",\"to\":\"b\",\"ask\":\"k\","
+                         "\"trace\":\"How it went: 4 min · 3 tool calls, none failed\",\"rough\":false,"
+                         "\"traceDetail\":{\"seen\":true,\"tools\":{\"Bash\":2,\"Read\":1},\"failed\":{},"
+                         "\"asks\":{},\"failures_known\":true}}],\"lanes\":[]}")
+                 :object-type 'plist :array-type 'list :false-object nil :null-object nil))
+         (json (json-encode (ghostherd-threads--js reply))))
+    (should (string-search "\"trace\":\"How it went: 4 min · 3 tool calls, none failed\"" json))
+    (should (string-search "\"tools\":{\"Bash\":2,\"Read\":1}" json))
+    (should (string-search "\"msgs\":[{" json))
+    (should (string-search "\"failed\":null" json))))
+
 ;;; The checks (bin/herd_lint.py; ask bd7efaa8)
 
 (ert-deftest ghostherd-test-a-checks-denial-is-logged-once ()

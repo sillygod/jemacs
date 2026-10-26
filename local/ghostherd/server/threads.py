@@ -16,6 +16,8 @@ open ask in the herd, for the strip across the top.
 
 from __future__ import annotations
 
+import json
+
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -143,7 +145,7 @@ def messages(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if r["status"] == "answered":
             out.append({"kind": "answer", "from": to, "to": r["from_name"], "at": ms(r["answered_at"]),
                         "ask": r["id"], "auto": bool(r.get("auto")), "head": head(r.get("reply")),
-                        "text": (r.get("reply") or "")[:TEXT_MAX]})
+                        "text": (r.get("reply") or "")[:TEXT_MAX], **trace(r.get("trace"))})
         elif r["status"] in ("failed", "cancelled"):
             why = r.get("error") or ("cancelled" if r["status"] == "cancelled" else "failed")
             out.append({"kind": r["status"], "from": to, "to": r["from_name"],
@@ -151,6 +153,18 @@ def messages(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "head": head(why), "text": why[:TEXT_MAX]})
     out.sort(key=lambda m: m["at"] or 0)
     return out
+
+
+def trace(stored: str | None) -> dict[str, Any]:
+    """How the answer's work went (ask_trace): its line, whether it was
+    rough, and the counts behind it for the page to show on demand."""
+    try:
+        t = json.loads(stored) if stored else None
+    except ValueError:
+        t = None
+    if not (isinstance(t, dict) and t.get("line")):
+        return {}
+    return {"trace": t["line"], "rough": bool(t.get("rough")), "traceDetail": t.get("detail") or {}}
 
 
 def participants(msgs: list[dict[str, Any]]) -> list[str]:

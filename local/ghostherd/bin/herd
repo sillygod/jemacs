@@ -264,6 +264,11 @@ def show_answer(ask):
         sys.stdout.write(ask.get("reply") or "")
         if not (ask.get("reply") or "").endswith("\n"):
             sys.stdout.write("\n")
+        # How the taker's work went (the herd's counts, not a judgement):
+        # beside the answer, never in it.
+        if ask.get("trace"):
+            sys.stdout.flush()
+            say(ask["trace"])
         return 0
     say("ask %s %s: %s" % (ask["id"], ask["status"], ask.get("error") or ""))
     return 4
