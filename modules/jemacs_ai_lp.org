@@ -555,6 +555,11 @@
                    ghostherd-notify-on-exit t
                    ghostherd-notify-on-done t)
 
+             ;; My own HTML documents for the herd page's Docs tab, kept out
+             ;; of the repo: ghostherd's docs/ there holds only its own
+             ;; write-ups.  Only .html files right in it are listed.
+             (setq ghostherd-docs-directories '("~/.ghostherd/docs/"))
+
              ;; Host new agents on tmux rather than as Emacs children.
              ;; The package itself defaults to `ghostel', which is right
              ;; for a package -- that backend needs nothing installed.
