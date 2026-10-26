@@ -9302,7 +9302,7 @@ use once."
   "Log each of DENIALS from a `herd_tick' once: a call one of the herd's
 checks denied (bin/herd_lint.py) -- the fact, and the command, so a check
 that denies what it should not shows.  The page counts them per check."
-  (dolist (d denials)
+  (dolist (d (reverse denials))          ; the tick's are newest first
     (let ((id (plist-get d :id)))
       (unless (gethash id ghostherd--lint-seen)
         (puthash id t ghostherd--lint-seen)

@@ -1149,10 +1149,57 @@ lists promoted facts, with *Put back in memory*); a reject keeps the fact and
 records why.  A *Suggest promotions* button asks the lead to review and
 propose.
 
+*Make a fact a check.*  Some facts guard against real damage --- the live
+session index opened twice, a CPU pegged by a regex over a CLI binary, the
+user's Emacs frozen by a probe --- and prose is what an agent skips when its
+context is long.  A /check/ is such a fact as a rule run before every shell
+call an agent makes (claude's Bash, grok's =run_terminal_command=, a guarded
+agy's =run_command=): a call it matches is denied, and the agent is told the
+fact's name and a hint saying what to do instead.  It is proposed like a
+promotion --- =herd promote propose --fact NAME --lint= with the rule on
+stdin (=--user= for a fact of the user store) --- and waits in the same
+*Proposals* and Inbox for the user; Approve turns it on, nothing to apply.
+The herd holds a rule to its own examples first: every call it says it
+=catches= it must deny, every one it =passes= let through.  The first three
+proposals are in [[file:docs/checks/][docs/checks/]].
+
+What a check may do, and no more:
+- *Deny, only.*  It never allows a call.  For a guarded agy it runs inside
+  =herd guard=, first: it can turn the guard's allow into a deny, never the
+  other way, and never spends a call the user approved once.
+- *Fail open.*  An unreadable rules file, a rule that does not compile, its
+  own error, a match past its 1-second budget: no decision, as if there were
+  no check.  A broken check must never stop work.
+- *Read from files, not the sidecar.*  The rules are the herd's own store,
+  outside any repo: =~/.ghostherd/lint/user.json= for every agent,
+  =~/.ghostherd/lint/<project slug>.json= for a project's (a worktree is its
+  main checkout's) --- =GHOSTHERD_LINT_DIR= moves them.  Only the herd
+  writes them, on the user's word; an agent's token cannot.
+
+A rule looks at the command three ways --- one simple command at a time (its
+=VAR=value= words and wrappers like =timeout= or =rtk= cut off; one reading a
+pipe written =| grep …=), the code the line hands an interpreter (=python -c=,
+=python - <<EOF=, a script it writes and runs in the same line), and the
+whole line --- and never at text the line hands a program: a commit message,
+an answer to =herd reply=, a fact written with =cat > f <<EOF= that names
+the pattern is not a call that runs it.  =herd lint check COMMAND= says which
+check would deny a command here; =--rule FILE= tries a candidate.  A check
+catches a mistake, not an agent working round it: what a script run by name
+does, or a path built in a variable, it cannot see.
+
+The *Memory tab* lists the store's *Checks*: each on or off, how many calls
+it denied, when and whose the last, and that call --- where a false positive
+shows --- with /Turn off/, /Turn on/ and /Remove/.  Each denial is a line in
+the herd log (kind =lint=).  A fact with a check wears a =check= badge.
+Claude and grok run =herd lint= from =~/.claude/settings.json= (=herd hooks
+install= adds it); it costs a shell call about 25 ms --- Python starting,
+mostly; the matching is a tenth of a millisecond --- and a denial about 20 ms
+more, telling the sidecar.
+
 The *Memory tab* on the herd page shows a project's facts (pick the store, or
 it follows the open room), with a filter, the body as Markdown, edit and
-delete through the store, and the Proposals / Promoted / Suggest controls
-above --- desk and phone.
+delete through the store, the Proposals / Checks / Promoted / Suggest
+controls above --- desk and phone.
 
 * Worktrees: two agents in one project at once
 
@@ -1501,9 +1548,9 @@ replaces --- and backs each file up:
 
 | CLI    | Read from                    | Events                                              |
 |--------+------------------------------+-----------------------------------------------------|
-| claude | =~/.claude/settings.json=    | SessionStart, UserPromptSubmit, Notification, Stop  |
-| grok   | the same file (its default)  | the same names                                      |
-| agy    | =~/.gemini/config/hooks.json= | PreInvocation, Stop                                 |
+| claude | =~/.claude/settings.json=    | SessionStart, UserPromptSubmit, Notification, Stop; PreToolUse (Bash) runs =herd lint= |
+| grok   | the same file (its default)  | the same names; its =run_terminal_command= is =Bash= to it |
+| agy    | =~/.gemini/config/hooks.json= | PreInvocation, Stop --- its checks run in its guard |
 
 The command does nothing in a CLI the herd did not start, so every
 session of each CLI can carry it.  A CLI reads its hooks when it

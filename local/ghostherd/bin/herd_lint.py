@@ -700,16 +700,19 @@ def report(cli, key, rule, command, timeout=2):
     the answer is decided; a sidecar away changes nothing but the telling."""
     params = {"session": os.environ.get("GHOSTHERD_SESSION") or "", "key": key,
               "fact": rule.fact, "cli": cli, "command": command[:2000]}
-    import urllib.request
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "herd_lint_denied",
-                       "params": params}).encode("utf-8")
     urls = [os.environ.get("GHOSTHERD_RPC", "").strip()]
     try:
         with open(os.environ.get("GHOSTHERD_RPC_FILE", "") or os.devnull, encoding="utf-8") as f:
             urls.append(f.read().strip())
     except OSError:
         pass
-    for url in dict.fromkeys(u for u in urls if u):
+    urls = list(dict.fromkeys(u for u in urls if u))
+    if not urls:
+        return False
+    import urllib.request
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "herd_lint_denied",
+                       "params": params}).encode("utf-8")
+    for url in urls:
         try:
             req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
