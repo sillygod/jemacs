@@ -650,10 +650,12 @@ READERS = {"claude": _claude, "agy": _agy, "grok": _grok}
 
 
 def _read(real: Path, cli: str, limit: int, reader, key: str,
-          before: int = 0) -> dict[str, Any]:
+          before: int = 0, owner=None) -> dict[str, Any]:
     """A page of LIMIT entries of REAL ending BEFORE from the newest, parsed
     by READER, cached under KEY.  BEFORE 0 is the newest LIMIT -- the tail a
-    poll refreshes; a larger BEFORE is a `load earlier' page further back."""
+    poll refreshes; a larger BEFORE is a `load earlier' page further back.
+    OWNER gives whose conversation it is, for the copies of what it names
+    (images.attach)."""
     before = max(0, before)
     st = real.stat()
     ckey = (key, before)
@@ -672,7 +674,7 @@ def _read(real: Path, cli: str, limit: int, reader, key: str,
     entries, more = thread.done(limit, before)
     # The images what an agent wrote names: as recorded, or copied now when
     # still as they were then.  Cached with the rest, so once a change.
-    images.attach(entries, at_of=lambda e: _epoch(e.get("ts")))
+    images.attach(entries, at_of=lambda e: _epoch(e.get("ts")), owner=owner)
     out = {
         "path": key,
         "cli": cli,
@@ -692,11 +694,11 @@ def _read(real: Path, cli: str, limit: int, reader, key: str,
     return out
 
 
-def read(path: str, limit: int = LIMIT, before: int = 0) -> dict[str, Any]:
+def read(path: str, limit: int = LIMIT, before: int = 0, owner=None) -> dict[str, Any]:
     """A page of LIMIT entries of transcript PATH ending BEFORE from the
-    newest (BEFORE 0 is the newest LIMIT)."""
+    newest (BEFORE 0 is the newest LIMIT).  OWNER gives whose it is (`_read')."""
     real, cli = locate(path)
-    return _read(real, cli, limit, READERS[cli], str(real), before)
+    return _read(real, cli, limit, READERS[cli], str(real), before, owner)
 
 
 def edited(path: str, root: str | None = None, limit: int = LIMIT) -> dict[str, Any]:
@@ -725,11 +727,12 @@ def sub_path(transcript: Path, sid: str) -> Path:
     return transcript.with_suffix("") / "subagents" / f"agent-{sid}.jsonl"
 
 
-def read_sub(path: str, sid: str, limit: int = LIMIT) -> dict[str, Any]:
+def read_sub(path: str, sid: str, limit: int = LIMIT, owner=None) -> dict[str, Any]:
     """The last LIMIT entries of sub-agent SID's own transcript, under parent
     transcript PATH.  Only claude keeps sub-agent transcripts; SID is held to
     the same shape as a filename and the path resolved under the CLI root, so
-    it cannot climb out.  Its records are all sidechain, read as the thread."""
+    it cannot climb out.  Its records are all sidechain, read as the thread.
+    OWNER gives whose it is -- the parent's agent (`_read')."""
     if not SUB_ID.match(sid or ""):
         raise ValueError("no such sub-agent")
     parent, cli = locate(path)
@@ -738,7 +741,7 @@ def read_sub(path: str, sid: str, limit: int = LIMIT) -> dict[str, Any]:
     real, _ = locate(str(sub_path(parent, sid)))
     return _read(real, "claude", limit,
                  lambda recs, thread: _claude(recs, thread, sub=True),
-                 "sub:" + str(real))
+                 "sub:" + str(real), owner=owner)
 
 
 # ---- A project's chat ------------------------------------------------------
@@ -899,11 +902,12 @@ def _keys(items: list[dict[str, Any]], mtime: float) -> list[float]:
 
 
 def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT,
-         before: int = 0) -> dict[str, Any]:
+         before: int = 0, owner=None) -> dict[str, Any]:
     """The conversations of AGENTS -- (name, transcript) pairs -- as one
     timeline: a page of LIMIT items ending BEFORE from the newest (BEFORE 0
     is the newest LIMIT), each saying which agent's it is.  `load earlier'
-    walks the merged timeline back a page at a time with BEFORE."""
+    walks the merged timeline back a page at a time with BEFORE.  OWNER,
+    given an agent's name, says who it is (`_read')."""
     before = max(0, before)
     # Read enough of each agent to reach the page BEFORE+LIMIT from the end of
     # the merged timeline.  Folding turns can only shrink a stream, so the
@@ -913,7 +917,7 @@ def chat(agents: list[tuple[str, str]], limit: int = CHAT_LIMIT,
     streams, missing, earlier = [], [], False
     for name, path in agents:
         try:
-            r = read(path, per)
+            r = read(path, per, owner=(lambda name=name: owner(name)) if owner else None)
         except ValueError:
             missing.append(name)
             continue

@@ -220,7 +220,7 @@ def test_an_answer_brings_its_images_to_the_thread(herd, tmp_path):
 
 def test_an_agent_cannot_ask_for_images():
     "No method takes a path, and what reads them back is the page's alone."
-    for method in ("herd_link", "herd_thread", "herd_conversation", "herd_chat"):
+    for method in ("herd_link", "herd_thread", "herd_conversation", "herd_chat", "herd_reports"):
         r = asyncio.run(handler.handle(JsonRpcRequest(id=1, method=method, params={}), "agent"))
         assert r.error and r.error.code == -32003, method
     assert not any("image" in m for m in handler._methods)
@@ -527,3 +527,153 @@ def test_reports_turned_off_and_a_few_at_most(herd, tmp_path):
     tg = FakeTelegram()
     asyncio.run(_report(herd, tmp_path, words + " ", images=False)._flush_pushes(tg, "https://t/{method}"))
     assert [m for m, _, _ in tg.sent] == ["sendMessage"] + ["sendDocument"] * PUSH_REPORTS
+
+
+# ---- The Docs tab's Reports --------------------------------------------------
+
+def _at(store, rec, at):
+    "Say REC was copied at AT."
+    store._db().execute("UPDATE images SET created = ? WHERE id = ?", (at, rec["id"]))
+    store._db().commit()
+
+
+def test_reports_listed_newest_first_with_who_wrote_them(herd, tmp_path):
+    first = page(tmp_path / "a" / "first.html", PAGE.replace("The viewer", "First"))
+    rpc("herd_report", {"session": "lead-x", "state": "done", "cli": "claude",
+                        "last": f"Shipped.  {png(tmp_path / 'a' / 'shot.png')} and {first}"}, role="agent")
+    images.drain()
+    ask = herd.ask(to="rd", body="Write it up", from_name="lead-x")
+    second = page(tmp_path / "b" / "second.html", PAGE.replace("The viewer", "Second"))
+    rpc("herd_reply", {"id": ask["id"], "body": f"Here: `{second}`", "from": "rd"}, role="agent")
+    images.drain()
+    store = images.get_store()
+    one, two = store.lookup(f"Here: `{second}`")[0], [r for r in store.lookup(
+        f"Shipped.  {tmp_path / 'a' / 'shot.png'} and {first}") if r["ext"] == "html"][0]
+    _at(store, two, 1_700_000_000.25)
+    _at(store, one, 1_700_000_100.5)
+    out = rpc("herd_reports", {})
+    # Reports alone, the newest first; the image is not one.
+    assert out == {"more": False, "reports": [
+        {"id": one["id"], "title": "Second & its theme", "name": "second.html", "bytes": len(PAGE.replace("The viewer", "Second")),
+         "at": 1_700_000_100.5, "agent": "rd", "project": "x", "gone": False},
+        {"id": two["id"], "title": "First & its theme", "name": "first.html", "bytes": len(PAGE.replace("The viewer", "First")),
+         "at": 1_700_000_000.25, "agent": "lead-x", "project": "x", "gone": False}]}
+    # Never where a report came from.
+    assert str(tmp_path) not in json.dumps(out)
+
+
+def test_reports_page_by_page(store, herd, tmp_path):
+    recs = []
+    for n in range(5):
+        recs.append(store.capture(f"r{n} {page(tmp_path / f'r{n}.html', PAGE.replace('Report', f'R{n}'))}",
+                                  who=images.writer("rd", "/tmp/x"))[0])
+    # Three copied at the same moment, across a page's end: told apart by id.
+    for n, rec in enumerate(recs):
+        _at(store, rec, 1_700_000_000 + min(n, 2))
+    want = [r["id"] for r in sorted(recs, key=lambda r: (1_700_000_000 + min(recs.index(r), 2), r["id"]),
+                                    reverse=True)]
+    got, before = [], None
+    for _ in range(len(recs)):                      # a page that never ends fails, not hangs
+        out = rpc("herd_reports", dict({"limit": 2}, **({"before": before} if before else {})))
+        got += [r["id"] for r in out["reports"]]
+        assert len(out["reports"]) <= 2
+        if not out["more"]:
+            break
+        before = {"at": out["reports"][-1]["at"], "id": out["reports"][-1]["id"]}
+    assert got == want
+    for bad in ({"at": "x", "id": recs[0]["id"]}, {"at": 1, "id": "../index"}, {"at": True, "id": recs[0]["id"]},
+                [1, 2], "x"):
+        r = asyncio.run(handler.handle(JsonRpcRequest(id=1, method="herd_reports",
+                                                      params={"before": bad}), "admin"))
+        assert r.error and "before" in r.error.message, bad
+    assert len(rpc("herd_reports", {"limit": 10_000})["reports"]) == 5
+
+
+def test_a_report_whose_copy_is_gone_says_so(store, tmp_path):
+    rec = store.capture(f"See {page(tmp_path / 'r.html')}", who=images.writer("rd", "/tmp/x"))[0]
+    store.path(rec).unlink()
+    [listed] = store.reports()["reports"]
+    assert listed["id"] == rec["id"] and listed["gone"] is True and listed["title"] == "The viewer & its theme"
+    # A message shows it no more; and pruned in its time, it leaves the list.
+    assert store.lookup(f"See {tmp_path / 'r.html'}") == []
+    store.prune(now=time.time() + store.keep + 10)
+    assert store.reports() == {"reports": [], "more": False}
+
+
+def test_who_wrote_a_report_is_its_first_writer(store, tmp_path):
+    src = page(tmp_path / "r.html")
+    os.utime(src, (1_700_000_000, 1_700_000_000))
+    # Met first where its writer is not known -- a push read before the
+    # reply was recorded: the reply's own capture says who.
+    said = f"Done: {src}"
+    rec = store.lookup(said, at=1_700_000_000)[0]
+    assert store.reports()["reports"][0]["agent"] == ""
+    assert store.capture(said, who=images.writer("rd", "/tmp/x"))[0]["id"] == rec["id"]
+    assert [(r["agent"], r["project"]) for r in store.reports()["reports"]] == [("rd", "/tmp/x")]
+    # Named again by another -- a lead passing it on -- it stays the writer's.
+    store.capture(f"rd's report: {src}", who=images.writer("lead-x", "/tmp/x"))
+    store.capture(said, who=images.writer("lead-x", "/tmp/x"))
+    assert [r["agent"] for r in store.reports()["reports"]] == ["rd"]
+    assert images.writer("") is None and images.writer("  ") is None
+
+
+def test_a_rooms_report_is_its_agents(tmp_path, monkeypatch, herd):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    conv._cache.clear()
+    src = page(tmp_path / "s" / "room.html")
+    os.utime(src, (1_700_000_000, 1_700_000_000))
+    path = tmp_path / ".claude" / "projects" / "-x" / "c.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"type": "assistant", "timestamp": "2026-10-09T01:00:05Z", "message": {
+        "role": "assistant", "id": "m1", "content": [{"type": "text", "text": f"Mid-turn: {src}"}]}}) + "\n")
+    herd.report(session="rd", transcript=str(path), cli="claude")
+    entries = rpc("herd_conversation", {"path": str(path)})["entries"]
+    assert [i["name"] for i in entries[0]["images"]] == ["room.html"]
+    assert [(r["agent"], r["project"]) for r in rpc("herd_reports", {})["reports"]] == [("rd", "x")]
+    # Read in the chat, by the agent's name.
+    conv._cache.clear()
+    other = page(tmp_path / "s" / "chat.html", PAGE.replace("Report", "Chat"))
+    os.utime(other, (1_700_000_000, 1_700_000_000))
+    path.write_text(json.dumps({"type": "assistant", "timestamp": "2026-10-09T01:00:05Z", "message": {
+        "role": "assistant", "id": "m1", "content": [{"type": "text", "text": f"And {other}"}]}}) + "\n")
+    rpc("herd_chat", {"agents": [{"name": "lead-x", "path": str(path)}]})
+    assert sorted((r["name"], r["agent"]) for r in rpc("herd_reports", {})["reports"]) == [
+        ("chat.html", "lead-x"), ("room.html", "rd")]
+    # A sub-agent's, read in its own view: its parent's agent's.
+    sub = page(tmp_path / "s" / "sub.html", PAGE.replace("Report", "Sub"))
+    os.utime(sub, (1_700_000_000, 1_700_000_000))
+    spath = conv.sub_path(path, "a1")
+    spath.parent.mkdir(parents=True)
+    spath.write_text(json.dumps({"type": "assistant", "isSidechain": True, "timestamp": "2026-10-09T01:00:05Z",
+                                 "message": {"role": "assistant", "id": "m9",
+                                             "content": [{"type": "text", "text": f"Sub: {sub}"}]}}) + "\n")
+    rpc("herd_sub_conversation", {"path": str(path), "sub": "a1"})
+    assert ("sub.html", "rd") in [(r["name"], r["agent"]) for r in rpc("herd_reports", {})["reports"]]
+    conv._cache.clear()
+
+
+def test_an_index_from_before_writers_gains_them(tmp_path, monkeypatch):
+    import sqlite3
+    root = tmp_path / "kept"
+    root.mkdir()
+    old = sqlite3.connect(root / "index.sqlite")
+    old.executescript("""
+        CREATE TABLE images (id TEXT PRIMARY KEY, sha TEXT UNIQUE NOT NULL, ext TEXT NOT NULL,
+            bytes INTEGER NOT NULL, w INTEGER NOT NULL, h INTEGER NOT NULL,
+            thumb INTEGER NOT NULL, created REAL NOT NULL, used REAL NOT NULL,
+            title TEXT NOT NULL DEFAULT '');
+    """)
+    old.execute("INSERT INTO images VALUES ('0123456789abcdef0123456789abcdef', 's', 'html', 3, 0, 0, 0, ?, ?, 'Old')",
+                (time.time(), time.time()))
+    (root / "0123456789abcdef0123456789abcdef.html").write_bytes(b"<html>")
+    old.commit()
+    old.close()
+    monkeypatch.setenv("GHOSTHERD_IMAGES_DIR", str(root))
+    images.reset_store()
+    try:
+        st = images.get_store()
+        st.capture(f"See {page(tmp_path / 'r.html')}", who=images.writer("rd", "/tmp/x"))
+        assert [(r["title"], r["agent"], r["name"]) for r in st.reports()["reports"]] == [
+            ("The viewer & its theme", "rd", "r.html"), ("Old", "", "0123456789abcdef0123456789abcdef.html")]
+    finally:
+        images.reset_store()
