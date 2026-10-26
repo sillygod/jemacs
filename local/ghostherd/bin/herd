@@ -52,6 +52,12 @@ may hand off, and so may an agent in a project with no lead; an agent
 working under a lead is refused -- it puts what the other project needs
 in its answer to its lead, which hands it off.
 
+`reply' stores the answer and says so at once.  When your work on that
+ask went rough -- many failed calls, denials, asks to one agent -- it
+then says what made it rough and to `remember' a non-obvious gotcha
+behind it; it looks three seconds at most, and says nothing more when
+the work was smooth.
+
 `start' and `stop' are for a lead: it runs agents in its own project
 through the herd rather than by hand.  `start KIND' reuses an idle agent
 it started whose branch is merged and worktree clean (fast-forwarding it,
@@ -151,6 +157,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -404,11 +411,45 @@ def cmd_handoff(args):
     return wait_for(out["id"], to or "%s's lead" % where, args.timeout)
 
 
+# How long `reply' looks, after the answer is in, for how the work went:
+# the line is made just after the reply (the sidecar's `_trace_soon').
+REPLY_NOTE_WAIT = 3.0
+
+
+def _taker_note(ask_id, seconds):
+    """What the herd tells the taker of ASK_ID when its work went rough, or
+    None: the smooth case, no line within SECONDS, any error.  Looked for
+    on a thread given SECONDS at most, whatever the sidecar does."""
+    found = []
+
+    def look():
+        try:
+            # From the taker: an onlooker, which never collects the answer.
+            ask = rpc("herd_await", {"id": ask_id, "timeout": 0, "from": me()},
+                      timeout=seconds)
+            found.append(ask.get("taker_note"))
+        except Exception:  # noqa: BLE001 -- no note, never a failed reply
+            pass
+
+    t = threading.Thread(target=look, daemon=True)
+    t.start()
+    t.join(seconds)
+    note = found[0] if found else None
+    return note if isinstance(note, str) and note.strip() else None
+
+
 def cmd_reply(args):
     out = rpc(
         "herd_reply", {"id": args.id, "body": text_arg(args.text), "from": me()}
     )
     say("answered ask %s" % out["id"])
+    # Only an agent hears how its work went: the answer is in and on its
+    # way already; this only holds the exit, REPLY_NOTE_WAIT at most.
+    if os.environ.get("GHOSTHERD_SESSION", "").strip():
+        sys.stderr.flush()
+        note = _taker_note(out["id"], REPLY_NOTE_WAIT)
+        for line in (note or "").splitlines():
+            say(line)
     return 0
 
 

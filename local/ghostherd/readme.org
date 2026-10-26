@@ -819,6 +819,27 @@ claude counts that), two edits that did not apply, two denials, three
 asks to one agent, or a relay --- adds the nudge to =herd remember= a
 gotcha it found.  Never on a smooth ask.
 
+The taker is nudged too: it is the one who knows what the gotcha was.
+Its =herd reply= stores the answer and says so at once; then, with the
+answer already on its way, it looks for the line, three seconds at most,
+and on rough work says what made it rough, on the output the agent reads
+before its turn ends --- claude, grok and agy alike:
+
+#+begin_example
+herd: answered ask 1a2b3c4d
+herd: Your work on ask 1a2b3c4d went rough: 5 tool calls failed (4 shell exits, 1 edit not applied); 2 denials (1 guard, 1 check).
+herd: If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:
+herd: "$GHOSTHERD_HERD" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do.
+#+end_example
+
+Counts only, as in the line.  On a smooth ask it says nothing more, nor
+when no line comes within the three seconds or anything fails; from a
+plain shell (no =GHOSTHERD_SESSION=) it does not look.  The line is
+usually there before it looks: the exit comes a millisecond later than
+without the look, some 50 ms after twelve megabytes of work.  An ask the
+herd closes on its taker's last words --- no =herd reply= --- tells the
+taker nothing: its turn is already over.
+
 =herd ask --wait= prints the answer on stdout and the line on stderr, as
 =herd: How it went: …=; the answer's message ends with it in brackets;
 Threads shows it under the answer, and the counts behind it when the

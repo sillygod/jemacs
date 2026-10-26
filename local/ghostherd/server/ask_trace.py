@@ -22,6 +22,9 @@ Counts and tool kinds only: never a command, a path or what a tool said.
 
 It is made after the reply, off the reply's path (herd.py `_trace_soon'),
 within READ_SECONDS; past that it says the work took too long to read.
+
+Rough work nudges the asker to remember a gotcha (NUDGE), and the taker,
+who knows what it was, on its own `herd reply' (`taker_note', ask e6c80d6d).
 """
 
 from __future__ import annotations
@@ -50,6 +53,15 @@ ROUGH_EDITS = 2
 ROUGH_DENIED = 2
 ROUGH_ROUNDS = 3
 NUDGE = "rough going: if it found a non-obvious gotcha, `herd remember` it"
+# The same nudge, said to the taker -- who knows what the gotcha was -- on
+# its own `herd reply' (bin/herd), which it reads before its turn ends:
+# the counts that made the work rough, then what to do.  Every CLI reads a
+# shell call's output, stderr too, as its tool result: one wording for all.
+TAKER_NOTE = (
+    "Your work on ask {ask} went rough: {why}.\n"
+    "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:\n"
+    "\"$GHOSTHERD_HERD\" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do."
+)
 
 SHELL_TOOLS = {"Bash", "run_terminal_command", "run_command"}
 EDIT_TOOLS = conversation.EDIT_TOOLS | {"MultiEdit", "NotebookEdit"}
@@ -476,6 +488,38 @@ def _kinds(failed: collections.Counter) -> str:
     return ", ".join(_n(n, *LABELS[k]) for k, n in sorted(failed.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
+def rough_counts(failed: dict[str, int] | None, guard: int = 0, lint: int = 0,
+                 asks: dict[str, int] | None = None, relays: int = 0) -> list[str]:
+    """What made the work rough, as counts -- empty when it was not: the
+    failed calls, by kind; the denials, by whom; the asks to one agent; the
+    relays.  FAILED is the taker's own (not its sub-agents')."""
+    failed = collections.Counter({k: n for k, n in (failed or {}).items() if k in LABELS})
+    out = []
+    total = sum(failed.values())
+    if total >= ROUGH_FAILED or failed["edit"] >= ROUGH_EDITS:
+        out.append(f"{_n(total, 'tool call')} failed ({_kinds(failed)})")
+    denied = failed["denied"]
+    if denied + guard + lint >= ROUGH_DENIED:
+        by = [f"{n} {who}" for n, who in ((denied, "permission"), (guard, "guard"), (lint, "check")) if n]
+        out.append(f"{_n(denied + guard + lint, 'denial')} ({', '.join(by)})")
+    out += [f"asked {who} {n}×" for who, n in sorted((asks or {}).items(), key=lambda kv: (-kv[1], kv[0]))
+            if n >= ROUGH_ROUNDS]
+    if relays:
+        out.append(f"relayed {relays}×")
+    return out
+
+
+def taker_note(trace: dict[str, Any] | None, ask_id: str) -> str | None:
+    """What the taker of ASK_ID is told on its `herd reply' when the work
+    was rough -- TRACE is `compose''s -- or None.  Counts only, as the line."""
+    if not (isinstance(trace, dict) and trace.get("rough")):
+        return None
+    d = trace.get("detail") or {}
+    why = rough_counts(d.get("failed"), d.get("guard") or 0, d.get("lint") or 0,
+                       d.get("asks"), d.get("relays") or 0)
+    return TAKER_NOTE.format(ask=ask_id, why="; ".join(why)) if why else None
+
+
 def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
             asks: dict[str, int] | None = None, relays: int = 0) -> dict[str, Any]:
     """The line, and what it is made of: {line, rough, detail}.  LINE is
@@ -515,9 +559,7 @@ def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
         parts.append(f"asked others {total}× ({whom})")
     if relays:
         parts.append(f"relayed {relays}×")
-    rough = (failed >= ROUGH_FAILED or work.failed.get("edit", 0) >= ROUGH_EDITS
-             or work.failed.get("denied", 0) + guard + lint >= ROUGH_DENIED
-             or max(asks.values(), default=0) >= ROUGH_ROUNDS or relays > 0)
+    rough = bool(rough_counts(work.failed, guard, lint, asks, relays))
     line = "How it went: " + " · ".join(p for p in parts if p)
     if rough:
         line += " · " + NUDGE
