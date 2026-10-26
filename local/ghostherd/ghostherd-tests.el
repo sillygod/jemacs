@@ -14805,6 +14805,105 @@ answered and kept working -- leaked into the Inbox as a report."
     (should (= 2 (length (plist-get (car props) :facts))))
     (should (string-match-p "\\+x" (plist-get (car props) :diff)))))
 
+;;; The checks (bin/herd_lint.py; ask bd7efaa8)
+
+(ert-deftest ghostherd-test-a-checks-denial-is-logged-once ()
+  "Each denial a check reports is one log line, of kind `lint', naming the
+fact and the command -- on one line, cut short."
+  (ghostherd-tests--with-herd ((ghostherd--log nil)
+                               (ghostherd--lint-seen (make-hash-table :test 'equal)))
+    (let ((d (list :id "d1" :session "claude-p" :key "user" :fact "grep-cli-binaries-cheaply"
+                   :cli "claude" :command (concat "grep -a -o '.{0,60}x'\n  ~/.local/bin/claude "
+                                                  (make-string 300 ?y)))))
+      (ghostherd--herd-take-lint (list d))
+      (ghostherd--herd-take-lint (list d (list :id "d2" :session "agy-p" :fact "no-ls" :cli "agy" :command "ls")))
+      (should (equal (mapcar #'ghostherd-log-entry-session (reverse ghostherd--log)) '("claude-p" "agy-p")))
+      (let ((first (ghostherd-log-entry-text (cadr ghostherd--log))))
+        (should (string-prefix-p "check grep-cli-binaries-cheaply denied (claude): grep -a -o '.{0,60}x' ~/.local/bin/claude"
+                                 first))
+        (should-not (string-match-p "\n" first))
+        (should (< (length first) 230)))
+      (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'lint)))))
+
+(defconst ghostherd-tests--check-rule
+  (list :fact "no-ls" :hint "List with find instead." :status "on"
+        :check (list :command (list :all (list "^ls\\b") :none (list "-s")))
+        :catches (list "ls") :passes (list "find ." "ls -s"))
+  "A check's rule as json.el reads it from the sidecar: every list a list.")
+
+(ert-deftest ghostherd-test-a-check-reaches-the-page-with-arrays ()
+  "A check proposal's rule -- its examples and each view's patterns -- and
+the store's checks go to the page as JSON arrays, never a list json.el
+might take for an object."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((p (ghostherd-memory-page--proposal-for-page
+             (list :id "p1" :kind "lint" :status "pending" :file "lint" :author "claude-p"
+                   :facts (list (list :name "no-ls" :title "No ls"))
+                   :rule ghostherd-tests--check-rule)))
+         (json (json-encode p)))
+    (should (string-match-p "\"catches\":\\[\"ls\"\\]" json))
+    (should (string-match-p "\"passes\":\\[\"find .\",\"ls -s\"\\]" json))
+    (should (string-match-p "\"command\":{\"all\":\\[\"\\^ls\\\\\\\\b\"\\],\"none\":\\[\"-s\"\\]}" json))
+    (should (string-match-p "\"facts\":\\[{" json)))
+  (let ((ghostherd-memory-page--memory-key "-k")
+        (ghostherd-memory-page--checks-sig nil)
+        pushed)
+    (cl-letf (((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb params &rest _)
+                 (should (equal (list method params) '("herd_lint_rules" (:key "-k"))))
+                 (funcall cb (list :key "-k" :rules (list (append (list :count 3 :last_command "ls")
+                                                                  ghostherd-tests--check-rule))))))
+              ((symbol-function 'ghostherd-memory-page--js)
+               (lambda (fn obj) (push (cons fn obj) pushed))))
+      (ghostherd-memory-page--memory-checks-tick "-k")
+      ;; Unchanged: not pushed again.
+      (ghostherd-memory-page--memory-checks-tick "-k"))
+    (should (= 1 (length pushed)))
+    (should (equal (caar pushed) "renderChecks"))
+    (let ((json (json-encode (cdar pushed))))
+      (should (string-match-p "\"rules\":\\[{" json))
+      (should (string-match-p "\"count\":3" json)))))
+
+(ert-deftest ghostherd-test-a-check-proposal-is-an-inbox-item ()
+  "A check proposal is a Needs-you item of its own: the fact, the hint and
+what it denies and lets through, approved by the same proposal id."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((items (ghostherd-inbox--proposal-items
+                 (list (list :id "p9" :kind "lint" :project "user" :author "claude-p" :file "lint"
+                             :status "pending" :diff "{}" :rule ghostherd-tests--check-rule
+                             :facts (list (list :name "no-ls" :title "No ls"))))))
+         (it (car items)))
+    (should (equal (ghostherd-tests--inbox-kinds items) '("proposal")))
+    (should (equal (plist-get it :id) "proposal:p9"))
+    (should (equal (plist-get it :proposalId) "p9"))
+    (should (equal (plist-get it :title) "Make “No ls” a check"))
+    (should (eq (plist-get it :lint) t))
+    (should (equal (plist-get it :hint) "List with find instead."))
+    (should (equal (plist-get it :catches) ["ls"]))
+    (should (equal (plist-get it :passes) ["find ." "ls -s"]))
+    (should (string-match-p "any project" (plist-get it :body)))))
+
+(ert-deftest ghostherd-test-the-pages-check-controls-send-the-right-rpc ()
+  "Turn off, turn on and remove reach the sidecar by store and fact; an
+approved check says it is on."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (sent flashed)
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js)
+               (lambda (fn &rest args) (when (equal fn "flash") (push (car args) flashed))))
+              ((symbol-function 'ghostherd-memory-page--memory-tick) (lambda () nil))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method cb params &rest _)
+                 (push (list method params) sent)
+                 (funcall cb '(:kind "lint" :fact "no-ls" :status "applied")))))
+      (ghostherd-memory-page--handle '((op . "lint-set") (key . "user") (fact . "no-ls") (status . "off")))
+      (should (equal (car sent) '("herd_lint_set" (:key "user" :fact "no-ls" :status "off"))))
+      (ghostherd-memory-page--handle '((op . "lint-set") (key . "~/src/dp/") (fact . "no-ls") (status . "on")))
+      (should (equal (car sent) '("herd_lint_set" (:project "~/src/dp/" :fact "no-ls" :status "on"))))
+      (ghostherd-memory-page--handle '((op . "lint-remove") (key . "-src-dp") (fact . "no-ls")))
+      (should (equal (car sent) '("herd_lint_remove" (:key "-src-dp" :fact "no-ls"))))
+      (ghostherd-memory-page--memory-proposal-approve '((id . "p9")))
+      (should (equal (car flashed) "Check on: no-ls")))))
+
 (ert-deftest ghostherd-test-inbox-ask-items ()
   (skip-unless (require 'ghostherd-memory-page nil t))
   (let ((items (ghostherd-inbox--ask-items

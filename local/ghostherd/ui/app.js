@@ -553,7 +553,8 @@
   // The Memory tab's store, facts and view state (see showMemory).
   let mem = { key: "", projects: [], user: { key: "user", label: "User (shared)" },
               facts: [], filter: "", open: new Set(), editing: "", confirmDel: "",
-              proposals: [], promotedOnly: false, rejecting: "", sort: memSortKept() };
+              proposals: [], promotedOnly: false, rejecting: "", sort: memSortKept(),
+              checks: [], checkOpen: "", confirmRm: "" };
   let memWatching = false; // Emacs is pushing this store's facts
 
   // How the Memory tab orders its facts -- "recent" or "name" -- kept for
@@ -3851,6 +3852,7 @@
     src = null;
     mem.open = new Set(); mem.editing = ""; mem.confirmDel = "";
     mem.proposals = []; mem.promotedOnly = false; mem.rejecting = "";
+    mem.checks = []; mem.checkOpen = ""; mem.confirmRm = "";
     const target = (opts && opts.project) || herdNow.room || ctx.currentProject || "";
     chrome();
     app.innerHTML =
@@ -3868,6 +3870,7 @@
       '<button type="button" class="ghost small" data-act="mem-suggest" title="Ask the project\'s lead to review the memory and propose promotions">Suggest promotions</button>' +
       '</div>' +
       '<div id="mem-proposals"></div>' +
+      '<div id="mem-checks"></div>' +
       '<div id="mem-list" class="results"><p class="empty">Reading memory…</p></div></div>';
     renderMemPicker();
     emit("memory-watch", target ? { project: target } : { key: "user" });
@@ -3940,9 +3943,14 @@
     const meta = (f.author ? "by " + esc(f.author) : "") + (f.author && upd ? " · " : "") + (upd ? esc(upd) : "");
     const prom = f.promoted
       ? '<span class="mprom" title="In an instruction file now">promoted → ' + esc(f.promoted) + "</span>" : "";
+    const ck = !f.shared && (mem.checks || []).find((c) => c.fact === f.name);
+    const check = ck
+      ? '<span class="mcheck' + (ck.status === "on" ? "" : " off") + '" title="' +
+        (ck.status === "on" ? "A check denies shell calls this fact warns of" : "Its check is off") + '">check' +
+        (ck.status === "on" ? "" : " off") + "</span>" : "";
     const head =
       '<div class="mhead" data-act="mem-open" data-name="' + esc(f.name) + '" tabindex="0" role="button">' +
-      '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where + prom +
+      '<div class="mtop"><span class="mname">' + esc(f.title || f.name) + "</span>" + badge + where + prom + check +
       '<span class="mmeta">' + meta + "</span></div>" +
       (f.description ? '<div class="mdesc">' + esc(f.description) + "</div>" : "") + "</div>";
     if (!open) return '<div class="mfact' + (f.promoted ? " promoted" : "") + '">' + head + "</div>";
@@ -3996,7 +4004,30 @@
     }).join("\n");
   }
 
+  // What a check does, from its own examples: the calls it denies and
+  // those it lets through -- the proposal's promise, and the rule's.
+  function checkExamples(r) {
+    const list = (xs, cls, mark) => (xs || []).map((c) =>
+      '<li class="' + cls + '"><span class="ckmark">' + mark + "</span><code>" + esc(c) + "</code></li>").join("");
+    return '<div class="ckex"><div class="ckexh">Denies</div><ul>' + list(r.catches, "ckno", "✕") + "</ul>" +
+      '<div class="ckexh">Lets through</div><ul>' + list(r.passes, "ckok", "✓") + "</ul></div>";
+  }
+
+  // Its patterns, view by view (bin/herd_lint.py): every `all' must match,
+  // no `none' may.
+  function checkPatterns(check) {
+    const views = { command: "one command", code: "code run by an interpreter", line: "the whole line" };
+    return '<div class="ckpats">' + Object.keys(check || {}).map((v) => {
+      const spec = check[v] || {};
+      const pats = (xs, how) => (xs || []).map((x) =>
+        '<div class="ckpat"><span class="ckhow">' + how + '</span><code>' + esc(x) + "</code></div>").join("");
+      return '<div class="ckview"><div class="ckvh">' + esc(views[v] || v) + "</div>" +
+        pats(spec.all, "matches") + pats(spec.none, "but not") + "</div>";
+    }).join("") + "</div>";
+  }
+
   function renderMemProposal(p) {
+    if (p.kind === "lint" && p.rule) return renderCheckProposal(p);
     const facts = (p.facts || []).map((f) =>
       '<span class="mpfact' + (f.gone ? " gone" : "") + '" title="' + esc(f.name) + '">' +
       esc(f.title || f.name) + "</span>").join("");
@@ -4013,6 +4044,70 @@
       '<span class="mpinto">→ ' + esc(p.file) + "</span>" +
       '<span class="mpby">' + (p.author ? "by " + esc(p.author) : "") + "</span></div>" +
       '<pre class="mpdiff">' + diffHtml(p.diff) + "</pre>" + acts + "</div>";
+  }
+
+  function renderCheckProposal(p) {
+    const f = (p.facts || [])[0] || {};
+    const rejecting = mem.rejecting === p.id;
+    const acts = rejecting
+      ? '<div class="mpreject"><input id="mem-prej" type="text" placeholder="Why? (optional)" value="">' +
+        '<button type="button" class="ghost small danger" data-act="prop-reject-send" data-id="' + esc(p.id) + '">Reject</button>' +
+        '<button type="button" class="ghost small" data-act="prop-reject-cancel" data-id="' + esc(p.id) + '">Keep</button></div>'
+      : '<div class="mpacts">' +
+        '<button type="button" class="primary small" data-act="prop-approve" data-id="' + esc(p.id) + '">Turn the check on</button>' +
+        '<button type="button" class="ghost small" data-act="prop-reject" data-id="' + esc(p.id) + '">Reject</button></div>';
+    return '<div class="mprop ckprop">' +
+      '<div class="mptop"><span class="mpfacts"><span class="mpfact' + (f.gone ? " gone" : "") + '" title="' +
+      esc(f.name || "") + '">' + esc(f.title || f.name || "") + "</span></span>" +
+      '<span class="mpinto">→ a check before every shell call</span>' +
+      '<span class="mpby">' + (p.author ? "by " + esc(p.author) : "") + "</span></div>" +
+      '<div class="ckhint">' + esc(p.rule.hint || "") + "</div>" +
+      checkExamples(p.rule) +
+      '<details class="ckmore"><summary>Its patterns</summary>' + checkPatterns(p.rule.check) + "</details>" +
+      acts + "</div>";
+  }
+
+  // The store's checks: each one's fact, on or off, how many calls it
+  // denied and the last of them -- where a false positive shows -- and
+  // Turn off / Turn on / Remove.
+  function renderMemChecks() {
+    const box = $("mem-checks");
+    if (!box) return;
+    const cs = mem.checks || [];
+    if (!cs.length) { box.innerHTML = ""; return; }
+    box.innerHTML = '<div class="mchecks"><h3 class="mprops-h">Checks</h3>' + cs.map(renderMemCheck).join("") + "</div>";
+  }
+
+  function renderMemCheck(c) {
+    const on = c.status === "on";
+    const open = mem.checkOpen === c.fact;
+    const n = c.count || 0;
+    const denied = n
+      ? "denied " + n + (n === 1 ? " call" : " calls") +
+        (c.last_ms ? " · last " + esc(when(c.last_ms / 1000)) : "") +
+        (c.last_session ? " by " + esc(c.last_session) : "")
+      : "denied nothing yet";
+    const confirming = mem.confirmRm === c.fact;
+    const acts = '<div class="mpacts">' +
+      '<button type="button" class="' + (on ? "ghost" : "primary") + ' small" data-act="check-' + (on ? "off" : "on") +
+      '" data-fact="' + esc(c.fact) + '">' + (on ? "Turn off" : "Turn on") + "</button>" +
+      (confirming
+        ? '<span class="mconfirm">Remove this check?</span>' +
+          '<button type="button" class="ghost small danger" data-act="check-rm" data-fact="' + esc(c.fact) + '">Remove</button>' +
+          '<button type="button" class="ghost small" data-act="check-rm-cancel" data-fact="' + esc(c.fact) + '">Keep</button>'
+        : '<button type="button" class="ghost small" data-act="check-rm-ask" data-fact="' + esc(c.fact) + '">Remove</button>') +
+      "</div>";
+    return '<div class="mprop mcheckrow' + (on ? "" : " off") + '">' +
+      '<div class="mptop" data-act="check-open" data-fact="' + esc(c.fact) + '" tabindex="0" role="button">' +
+      '<span class="mpfacts"><span class="mpfact' + (c.gone ? " gone" : "") + '" title="' +
+      esc(c.gone ? "This fact is gone from the memory; the check stays until you remove it" : c.fact) + '">' +
+      esc(c.title || c.fact) + "</span></span>" +
+      '<span class="ckstate ' + (on ? "on" : "off") + '">' + (on ? "on" : "off") + "</span>" +
+      '<span class="mpby">' + denied + "</span></div>" +
+      (n && c.last_command ? '<div class="cklast" title="The last call it denied">' + esc(c.last_command) + "</div>" : "") +
+      (open ? '<div class="ckhint">' + esc(c.hint || "") + "</div>" + checkExamples(c) +
+              '<details class="ckmore"><summary>Its patterns</summary>' + checkPatterns(c.check) + "</details>" : "") +
+      acts + "</div>";
   }
 
   function memEditForm(f) {
@@ -4195,6 +4290,22 @@
     } else if (act === "mem-suggest") {
       emit("memory-suggest", mem.key && mem.key.indexOf("/") >= 0
         ? { project: mem.key } : { key: mem.key || "user" });
+    } else if (act === "check-open") {
+      const fct = el.getAttribute("data-fact");
+      mem.checkOpen = mem.checkOpen === fct ? "" : fct;
+      renderMemChecks();
+    } else if (act === "check-off" || act === "check-on") {
+      emit("lint-set", { key: mem.key || "user", fact: el.getAttribute("data-fact"),
+                         status: act === "check-on" ? "on" : "off" });
+    } else if (act === "check-rm-ask") {
+      mem.confirmRm = el.getAttribute("data-fact");
+      renderMemChecks();
+    } else if (act === "check-rm-cancel") {
+      mem.confirmRm = "";
+      renderMemChecks();
+    } else if (act === "check-rm") {
+      emit("lint-remove", { key: mem.key || "user", fact: el.getAttribute("data-fact") });
+      mem.confirmRm = "";
     } else if (act === "prop-approve") {
       emit("memory-proposal-approve", { id: el.getAttribute("data-id") });
     } else if (act === "prop-reject") {
@@ -4481,6 +4592,13 @@
         '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:reply" data-id="' + d + '">Send</button>' +
         '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Answer later</button></div></div>';
     }
+    if (it.kind === "proposal" && it.lint) {
+      return '<div class="ibprop">' +
+        '<div class="ibfacts">' + (it.facts || []).map((f) => '<span class="ibfact">' + esc(f) + "</span>").join("") + "</div>" +
+        '<div class="ckhint">' + esc(it.hint || "") + "</div>" + checkExamples(it) +
+        '<div class="ibacts"><button type="button" class="ibbtn ok" data-act="ib:prop-approve" data-id="' + d + '">Turn the check on</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:prop-reject" data-id="' + d + '">Reject</button></div></div>';
+    }
     if (it.kind === "proposal") {
       return '<div class="ibprop">' +
         '<div class="ibfacts">' + (it.facts || []).map((f) => '<span class="ibfact">' + esc(f) + "</span>").join("") + "</div>" +
@@ -4632,8 +4750,8 @@
     }
     if (act === "answer") { emit("agent-answer", { name: it.agent, n: +el.getAttribute("data-n") }); inboxResolve(it, "Sent " + el.getAttribute("data-n") + " to " + it.agent, false); return; }
     if (act === "guard-approve") { emit("guard-approve", { id: it.guardId }); inboxResolve(it, "Approved once — the agent was told to run it again", false); return; }
-    if (act === "prop-approve") { emit("memory-proposal-approve", { id: it.proposalId }); inboxResolve(it, "Approved — handed to the lead to apply on a branch", false); return; }
-    if (act === "prop-reject") { emit("memory-proposal-reject", { id: it.proposalId, reason: "" }); inboxResolve(it, "Rejected — the facts stay in memory", false); return; }
+    if (act === "prop-approve") { emit("memory-proposal-approve", { id: it.proposalId }); inboxResolve(it, it.lint ? "Check on — turn it off on the Memory tab" : "Approved — handed to the lead to apply on a branch", false); return; }
+    if (act === "prop-reject") { emit("memory-proposal-reject", { id: it.proposalId, reason: "" }); inboxResolve(it, it.lint ? "Rejected — no check; the fact stays in memory" : "Rejected — the facts stay in memory", false); return; }
     if (act === "reply") {
       const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       const text = ((ta && ta.value) || inbox.reply || "").trim();
@@ -5162,6 +5280,14 @@
       renderMemPicker();
       // Not while an editor is open, so a live push does not wipe it.
       if (!mem.editing) renderMemoryList();
+    },
+
+    renderChecks: (p) => {
+      if (view !== "memory") return;
+      mem.checks = (p && p.rules) || [];
+      if (mem.confirmRm && !mem.checks.some((c) => c.fact === mem.confirmRm)) mem.confirmRm = "";
+      renderMemChecks();
+      if (!mem.editing) renderMemoryList();   // the facts' check badges
     },
 
     renderProposals: (p) => {

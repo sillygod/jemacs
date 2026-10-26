@@ -1047,6 +1047,34 @@ button.ghost.small.danger:hover:not(:disabled) { background: rgba(248, 81, 73, 0
 .mpreject input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; }
 
+/* Checks: facts made into rules run before each shell call -- a proposal's
+   examples, and the store's checks with their counts. */
+.mchecks { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 12px; padding: 4px 0 2px; }
+.mchecks .mprops-h { color: var(--text); }
+.mcheckrow .mptop { cursor: pointer; }
+.mcheckrow.off .mpfact { color: var(--muted); }
+.ckstate { font-size: 10.5px; font-weight: 600; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); }
+.ckstate.on { color: var(--plus); border-color: var(--plus); }
+.ckstate.off { color: var(--muted); }
+.ckhint { margin: 6px 0; font-size: 12.5px; overflow-wrap: anywhere; color: var(--text); }
+.cklast { margin: 4px 0; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ckex ul { list-style: none; margin: 2px 0 6px; padding: 0; }
+.ckex li { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; }
+.ckex code, .ckpat code { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; color: var(--text); }
+.ckexh { margin-top: 4px; font-size: 11px; color: var(--muted); }
+.ckmark { flex: none; width: 1em; text-align: center; font-weight: 700; }
+.ckno .ckmark { color: var(--minus); }
+.ckok .ckmark { color: var(--plus); }
+.ckmore { margin: 4px 0 8px; font-size: 12px; }
+.ckmore summary { cursor: pointer; color: var(--muted); }
+.ckview { margin: 4px 0; }
+.ckvh { font-size: 11px; color: var(--muted); }
+.ckpat { display: flex; gap: 6px; align-items: baseline; }
+.ckhow { flex: none; min-width: 4.5em; font-size: 11px; color: var(--muted); }
+.mcheck { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); }
+.mcheck.off { border-color: var(--line); color: var(--muted); }
+
 /* Narrow: the picker a row, the filter and the order the next, Promoted and
    Suggest promotions the last, from its start -- one row left the filter
    too little room. */
