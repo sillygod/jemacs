@@ -17,6 +17,9 @@ Usage:
   herd search WORDS... | --session ID [--at TURN]
   herd forget [--user|--project P] NAME
   herd promote propose --fact NAME... --file PATH [--project P]   (diff on stdin)
+  herd promote propose --fact NAME --lint [--user|--project P]    (the rule on stdin)
+  herd lint check [--rule FILE] [--cwd DIR] [COMMAND|-]
+  herd lint                        (a CLI's PreToolUse hook on a shell call)
   herd hook [EVENT]                (from a CLI's lifecycle hook)
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
@@ -94,6 +97,17 @@ rest pending the user's approval on the page; on approval it asks the
 project's lead to apply the diff by the project's branch/PR rules, and only
 then does the fact leave memory.  The herd never edits the repo itself.
 
+`promote propose --lint' proposes a check instead: a fact that guards
+against real damage made into a rule run before every shell call, which
+denies a call it matches with the fact's name and a hint.  The rule is
+JSON on stdin -- {hint, check, catches, passes}, as bin/herd_lint.py
+says -- and the herd holds it to its own examples: each of `catches' it
+must deny, each of `passes' let through.  It is pending until the user
+approves it on the page; then it is on for every agent of the fact's
+store (--user: every agent), until the user turns it off.  The fact
+stays a memory.  `lint check COMMAND' says which rule would deny
+COMMAND here -- or, with --rule FILE, whether that candidate would.
+
 Exit status: 0 answered, 1 error, 2 usage, 3 the answer comes to you
 as a message instead (still open when --timeout ran out, or answered
 while the sidecar was away), 4 failed or cancelled.  A wait that loses
@@ -117,16 +131,25 @@ under whatever python3 the agent's shell finds.
 
 from __future__ import annotations
 
+import os
+import sys
+
+# `herd lint' runs before every shell call an agent makes: it answers
+# from herd_lint.py before the rest of this file is imported (argparse,
+# urllib... a tenth of the hook's time).
+if __name__ == "__main__" and sys.argv[1:] == ["lint"]:
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import herd_lint
+    sys.exit(herd_lint.hook())
+
 import argparse
 import datetime
 import fnmatch
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -497,7 +520,10 @@ def cmd_forget(args):
 def cmd_promote(args):
     """Propose promoting stable, general facts into the project's instruction
     file.  The exact diff comes on stdin.  The herd holds it pending the user's
-    approval on the page; nothing is written to the repo here."""
+    approval on the page; nothing is written to the repo here.  With --lint,
+    a check made of one fact instead: the rule, JSON, on stdin."""
+    if args.lint:
+        return _propose_lint(args)
     if not args.file:
         raise HerdError("--file is required (the instruction file, e.g. CLAUDE.md)")
     if not args.fact:
@@ -511,6 +537,60 @@ def cmd_promote(args):
     say("proposed promoting %s into %s (pending the user's approval)"
         % (", ".join(out["facts"]), out["file"]))
     return 0
+
+
+def _propose_lint(args):
+    "`promote propose --lint': one fact's check, pending the user's approval."
+    if args.file:
+        raise HerdError("--lint proposes a check, not a change to --file")
+    if not args.fact or len(args.fact) != 1:
+        raise HerdError("a check is one fact's: name it with --fact NAME, once")
+    text = text_arg("-")
+    try:
+        rule = json.loads(text)
+    except ValueError as exc:
+        raise HerdError("the rule on stdin is not JSON: %s" % exc)
+    if not isinstance(rule, dict):
+        raise HerdError("the rule on stdin is a JSON object: {hint, check, catches, passes}")
+    params = _mem_params(args)
+    params.update(facts=args.fact, lint=dict(rule, fact=args.fact[0]))
+    out = rpc("herd_promote_propose", params, timeout=30)
+    say("proposed a check for %s (pending the user's approval)%s"
+        % (out["facts"][0], " -- the same one was already waiting" if out.get("duplicate") else ""))
+    return 0
+
+
+def _lint_module():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import herd_lint
+    return herd_lint
+
+
+def cmd_lint(args):
+    """`lint check COMMAND': the rule that would deny COMMAND here, or that
+    none would.  Exit 0 when it would run, 3 when a rule denies it."""
+    lint = _lint_module()
+    command = text_arg(args.text)
+    rule = None
+    if args.rule:
+        try:
+            with open(args.rule, encoding="utf-8") as f:
+                rule = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise HerdError("--rule %s: %s" % (args.rule, exc))
+        if not isinstance(rule, dict):
+            raise HerdError("--rule %s: not a JSON object" % args.rule)
+        rule.setdefault("fact", "candidate")
+    try:
+        hit = lint.check(command, cwd=args.cwd, rule=rule)
+    except ValueError as exc:
+        raise HerdError(str(exc))
+    if hit is None:
+        print("runs: no check denies it")
+        return 0
+    key, r = hit
+    print("denied by the check for `%s' (%s): %s" % (r.fact, key, r.hint))
+    return 3
 
 
 def cmd_memory(args):
@@ -957,12 +1037,36 @@ def _guard_module():
 GUARD_REPORT_TIMEOUT = 2
 
 
+def _guard_lint(guard_dir, payload):
+    """The herd's checks on a guarded agy's shell call (bin/herd_lint.py):
+    their deny, or None.  Asked before the guard, so a check denies
+    whatever the guard would say, and an approval the user gave once is not
+    spent on a call that cannot run; a check never allows.  Their failure
+    is no decision: the guard decides, as ever."""
+    try:
+        lint = _lint_module()
+        with open(os.path.join(guard_dir, "policy.json"), encoding="utf-8") as f:
+            workspace = json.load(f).get("workspace")
+        hit = lint.decide(payload, cwd=workspace)
+        if hit is None:
+            return None
+        cli, key, rule, command = hit
+        lint.report(cli, key, rule, command, timeout=GUARD_REPORT_TIMEOUT)
+        return lint.answer(cli, rule)
+    except Exception:  # noqa: BLE001 -- fail open: the guard still decides
+        return None
+
+
 def cmd_guard(args):
     "agy's PreToolUse hook for a guarded agent: allow or deny, never anything else."
     verdict = call = None
     try:
         guard = _guard_module()
         payload = json.loads(sys.stdin.read() or "{}")
+        denied = _guard_lint(args.dir, payload)
+        if denied is not None:
+            print(json.dumps(denied, ensure_ascii=False))
+            return 0
         answer, verdict, call = guard.judge(args.dir, payload)
     except Exception as exc:  # noqa: BLE001 -- the guard's failure is a denial
         answer = {"decision": "deny",
@@ -1031,9 +1135,19 @@ def cmd_scrub_exec(args):
 # both.  agy reads ~/.gemini/config/hooks.json, as named hook specs.
 # Each command does nothing outside the herd, so it is safe in settings
 # every session of the CLI reads.
+#
+# The checks (`herd lint') are claude's and grok's PreToolUse on a shell
+# call: matcher Bash, which grok reads as its run_terminal_command too.
+# agy's are its guard's (`herd guard' asks them first): a second
+# PreToolUse in agy's own hooks.json would sit beside the guard's, and
+# how agy weighs two answers is not measured -- a `{}' after the guard's
+# deny must not be what lets a call through.
 
 MARK = '"$GHOSTHERD_HERD" hook'
+LINT_MARK = '"$GHOSTHERD_HERD" lint'
 CLAUDE_EVENTS = ("SessionStart", "UserPromptSubmit", "Notification", "Stop")
+LINT_EVENT, LINT_MATCHER = "PreToolUse", "Bash"
+CLAUDE_HOOKS = CLAUDE_EVENTS + (LINT_EVENT,)
 AGY_HOOKS = ("PreInvocation", "Stop")
 
 
@@ -1049,13 +1163,26 @@ def _claude_command():
     return '[ -z "$GHOSTHERD_HERD" ] || ' + MARK
 
 
+def _lint_command():
+    return '[ -z "$GHOSTHERD_HERD" ] || ' + LINT_MARK
+
+
+def _claude_entry(event):
+    "The settings entry for EVENT: the checks' on a shell call, else the report."
+    if event == LINT_EVENT:
+        return {"matcher": LINT_MATCHER,
+                "hooks": [{"type": "command", "command": _lint_command(), "timeout": 5}]}
+    return {"hooks": [{"type": "command", "command": _claude_command(), "timeout": 10}]}
+
+
 def _agy_command(event):
     return ('if [ -n "$GHOSTHERD_HERD" ]; then %s %s; else echo \'{}\'; fi'
             % (MARK, event))
 
 
 def _ours(handler):
-    return isinstance(handler, dict) and MARK in str(handler.get("command") or "")
+    command = str(handler.get("command") or "") if isinstance(handler, dict) else ""
+    return MARK in command or LINT_MARK in command
 
 
 def _load(path):
@@ -1093,7 +1220,7 @@ def _save(path, data, dry_run, preview):
 
 def claude_installed(data):
     hooks = data.get("hooks") if isinstance(data.get("hooks"), dict) else {}
-    return [ev for ev in CLAUDE_EVENTS
+    return [ev for ev in CLAUDE_HOOKS
             if any(_ours(h) for g in hooks.get(ev) or [] if isinstance(g, dict)
                    for h in g.get("hooks") or [])]
 
@@ -1106,11 +1233,10 @@ def agy_installed(data):
 def install_claude(data):
     hooks = data.setdefault("hooks", {})
     have = claude_installed(data)
-    for ev in CLAUDE_EVENTS:
+    for ev in CLAUDE_HOOKS:
         if ev not in have:
-            hooks.setdefault(ev, []).append(
-                {"hooks": [{"type": "command", "command": _claude_command(), "timeout": 10}]})
-    return [ev for ev in CLAUDE_EVENTS if ev not in have]
+            hooks.setdefault(ev, []).append(_claude_entry(ev))
+    return [ev for ev in CLAUDE_HOOKS if ev not in have]
 
 
 def uninstall_claude(data):
@@ -1147,10 +1273,9 @@ def install_agy(data):
 
 
 def cmd_hooks(args):
-    claude_entry = {"hooks": [{"type": "command", "command": _claude_command(), "timeout": 10}]}
     targets = (
         ("claude/grok", claude_settings(), claude_installed, install_claude, uninstall_claude,
-         lambda evs: {"hooks": {ev: [claude_entry] for ev in evs}}),
+         lambda evs: {"hooks": {ev: [_claude_entry(ev)] for ev in evs}}),
         ("agy", agy_hooks_file(), agy_installed, install_agy,
          lambda d: list(d.pop("ghostherd", {}) or {}),
          lambda evs: {"ghostherd": {ev: [{"type": "command", "command": _agy_command(ev),
@@ -1373,7 +1498,7 @@ def inventory(projects=()):
         else:
             hooks += _claude_style(path, readers, scope, source, enabled)
 
-    want = {"claude": list(CLAUDE_EVENTS), "grok": list(CLAUDE_EVENTS), "agy": list(AGY_HOOKS)}
+    want = {"claude": list(CLAUDE_HOOKS), "grok": list(CLAUDE_HOOKS), "agy": list(AGY_HOOKS)}
     ghostherd = {}
     for cli, events in want.items():
         have = sorted({h["event"] for h in hooks
@@ -1470,6 +1595,9 @@ def main(argv=None):
     p.add_argument("--fact", action="append", metavar="NAME",
                    help="a fact to promote (repeatable)")
     p.add_argument("--file", metavar="PATH", help="the instruction file (e.g. CLAUDE.md)")
+    p.add_argument("--lint", action="store_true",
+                   help="propose a check made of the fact instead: the rule, JSON, on stdin")
+    p.add_argument("--user", action="store_true", help="a fact of the user store (--lint only)")
     p.add_argument("--project", metavar="P",
                    help="the project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_promote)
@@ -1511,6 +1639,13 @@ def main(argv=None):
     p = sub.add_parser("hook", help="run by a CLI's lifecycle hook, payload on stdin")
     p.add_argument("event", nargs="?")
     p.set_defaults(fn=cmd_hook)
+    p = sub.add_parser("lint", help="the checks: a CLI's PreToolUse hook, or `check COMMAND'")
+    p.add_argument("action", choices=("check",))
+    p.add_argument("text", nargs="?", metavar="COMMAND",
+                   help="the command line to try (`-' or none: stdin)")
+    p.add_argument("--rule", metavar="FILE", help="try this candidate rule alone (JSON)")
+    p.add_argument("--cwd", metavar="DIR", help="as if run here (default: this shell's cwd)")
+    p.set_defaults(fn=cmd_lint)
     p = sub.add_parser("guard", help="a guarded agy agent's PreToolUse hook, payload on stdin")
     p.add_argument("dir", help="the agent's guard directory")
     p.set_defaults(fn=cmd_guard)

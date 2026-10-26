@@ -2079,6 +2079,8 @@ of several agents."
 and the page is not re-rendered under an open editor every few seconds.")
 (defvar ghostherd-memory-page--proposals-sig nil
   "A signature of the promotion proposals last pushed, like `--memory-sig'.")
+(defvar ghostherd-memory-page--checks-sig nil
+  "A signature of the checks last pushed, like `--memory-sig'.")
 
 (defun ghostherd-memory-page--memory-send-projects ()
   "Push the picker -- the user store and each project store -- to the page."
@@ -2114,7 +2116,8 @@ and the page is not re-rendered under an open editor every few seconds.")
        ;; `key' must be a slug; a path goes as `project' for it to slug.
        (ghostherd-memory-page--memory-where key)
        (ghostherd-memory-page--fail "Memory"))
-      (ghostherd-memory-page--memory-proposals-tick key))))
+      (ghostherd-memory-page--memory-proposals-tick key)
+      (ghostherd-memory-page--memory-checks-tick key))))
 
 (defun ghostherd-memory-page--memory-where (key)
   "The RPC params for watched store KEY: `:project' for a path, else `:key'."
@@ -2128,7 +2131,70 @@ single bogus {\"name\":[…]} object -- so the page's `renderMemProposal' throws
 on `p.facts.map' and the whole Proposals section shows nothing.  A vector
 encodes as the JSON array the page maps over."
   (let ((c (copy-sequence p)))
-    (plist-put c :facts (ghostherd-memory-page--vec (plist-get p :facts)))))
+    (setq c (plist-put c :facts (ghostherd-memory-page--vec (plist-get p :facts))))
+    (if (plist-get p :rule)
+        (plist-put c :rule (ghostherd-memory-page--rule-for-page (plist-get p :rule)))
+      c)))
+
+(defun ghostherd-memory-page--rule-for-page (rule)
+  "A check's RULE with each of its lists a vector: its examples, and each
+view's patterns -- what the page maps over (bin/herd_lint.py)."
+  (let ((c (copy-sequence rule))
+        (check (plist-get rule :check)))
+    (dolist (k '(:catches :passes))
+      (setq c (plist-put c k (ghostherd-memory-page--vec (plist-get rule k)))))
+    (plist-put c :check
+               (cl-loop for (view spec) on check by #'cddr
+                        append (list view
+                                     (cl-loop for (part pats) on spec by #'cddr
+                                              append (list part (ghostherd-memory-page--vec pats))))))))
+
+(defun ghostherd-memory-page--memory-checks-tick (key)
+  "Fetch KEY's checks -- each with how many calls it denied -- and push
+them when they changed."
+  (ghostherd-memory-request-async
+   "herd_lint_rules"
+   (lambda (result)
+     (when (equal key ghostherd-memory-page--memory-key)
+       (let* ((rules (ghostherd-memory-page--vec
+                      (mapcar #'ghostherd-memory-page--rule-for-page (plist-get result :rules))))
+              (sig (sxhash-equal (list key (append rules nil)))))
+         (unless (equal sig ghostherd-memory-page--checks-sig)
+           (setq ghostherd-memory-page--checks-sig sig)
+           (ghostherd-memory-page--js
+            "renderChecks" (list :key (or (plist-get result :key) key) :rules rules))))))
+   (ghostherd-memory-page--memory-where key)
+   ;; Silent, as the proposals: a sidecar before checks has no such method.
+   #'ignore))
+
+(defun ghostherd-memory-page--lint-set (intent)
+  "Turn a check off, or on again (INTENT: key, fact, status)."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (fact (ghostherd-memory-page--str (alist-get 'fact intent)))
+        (status (ghostherd-memory-page--str (alist-get 'status intent))))
+    (unless (and key fact status) (user-error "No check"))
+    (ghostherd-memory-request-async
+     "herd_lint_set"
+     (lambda (_r)
+       (setq ghostherd-memory-page--checks-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" (format "Check %s: %s" status fact)))
+     (append (ghostherd-memory-page--memory-where key) (list :fact fact :status status))
+     (ghostherd-memory-page--fail "Turning the check"))))
+
+(defun ghostherd-memory-page--lint-remove (intent)
+  "Remove a check (INTENT: key, fact).  Its denials stay in the log."
+  (let ((key (ghostherd-memory-page--str (alist-get 'key intent)))
+        (fact (ghostherd-memory-page--str (alist-get 'fact intent))))
+    (unless (and key fact) (user-error "No check"))
+    (ghostherd-memory-request-async
+     "herd_lint_remove"
+     (lambda (_r)
+       (setq ghostherd-memory-page--checks-sig nil)
+       (ghostherd-memory-page--memory-tick)
+       (ghostherd-memory-page--js "flash" (format "Removed the check for %s" fact)))
+     (append (ghostherd-memory-page--memory-where key) (list :fact fact))
+     (ghostherd-memory-page--fail "Removing the check"))))
 
 (defun ghostherd-memory-page--memory-proposals-tick (key)
   "Fetch KEY's promotion proposals; push them when they changed."
@@ -2157,7 +2223,8 @@ facts live.  Re-emitting with another key switches the watched store."
         (project (ghostherd-memory-page--str (alist-get 'project intent))))
     (setq ghostherd-memory-page--memory-key (or key project "user")
           ghostherd-memory-page--memory-sig nil     ; force a push for the new key
-          ghostherd-memory-page--proposals-sig nil)
+          ghostherd-memory-page--proposals-sig nil
+          ghostherd-memory-page--checks-sig nil)
     (ghostherd-memory-page--memory-send-projects)
     (unless (timerp ghostherd-memory-page--memory-timer)
       (setq ghostherd-memory-page--memory-timer
@@ -2171,7 +2238,8 @@ facts live.  Re-emitting with another key switches the watched store."
   (setq ghostherd-memory-page--memory-timer nil
         ghostherd-memory-page--memory-key nil
         ghostherd-memory-page--memory-sig nil
-        ghostherd-memory-page--proposals-sig nil))
+        ghostherd-memory-page--proposals-sig nil
+        ghostherd-memory-page--checks-sig nil))
 
 (defun ghostherd-memory-page--memory-edit (intent)
   "Save a fact's edit (description, type, body) through the store, then refresh."
@@ -2213,10 +2281,13 @@ facts live.  Re-emitting with another key switches the watched store."
      "herd_memory_promote_approve"
      (lambda (r)
        (setq ghostherd-memory-page--proposals-sig nil
-             ghostherd-memory-page--memory-sig nil)
+             ghostherd-memory-page--memory-sig nil
+             ghostherd-memory-page--checks-sig nil)
        (ghostherd-memory-page--memory-tick)
        (ghostherd-memory-page--js
-        "flash" (format "Approved — asked %s to apply it" (or (plist-get r :to) "the lead"))))
+        "flash" (if (equal (plist-get r :kind) "lint")
+                    (format "Check on: %s" (plist-get r :fact))
+                  (format "Approved — asked %s to apply it" (or (plist-get r :to) "the lead")))))
      (list :id id)
      (ghostherd-memory-page--fail "Approving proposal"))))
 
@@ -3436,7 +3507,23 @@ full-width) in its last line or two."
            (when (equal (plist-get p :status) "pending")
              (let* ((facts (append (plist-get p :facts) nil))
                     (titles (mapcar (lambda (f) (or (plist-get f :title) (plist-get f :name))) facts))
-                    (file (plist-get p :file)) (n (length titles)))
+                    (file (plist-get p :file)) (n (length titles))
+                    (rule (plist-get p :rule)))
+               (if (and (equal (plist-get p :kind) "lint") rule)
+                   (ghostherd-inbox--item
+                    (concat "proposal:" (plist-get p :id)) 'proposal
+                    (plist-get p :author) "claude" (plist-get p :project)
+                    (format "Make “%s” a check" (car titles))
+                    (plist-get p :created_at)
+                    :whyLabel "A check before every shell call"
+                    :body (format "Every shell call an agent of %s makes is checked against it: one it matches is denied, with this hint.  It never allows anything; turn it off on the Memory tab."
+                                  (if (equal (plist-get p :project) "user") "any project" "this project"))
+                    :facts (ghostherd-memory-page--vec titles)
+                    :lint t :hint (or (plist-get rule :hint) "")
+                    :catches (ghostherd-memory-page--vec (plist-get rule :catches))
+                    :passes (ghostherd-memory-page--vec (plist-get rule :passes))
+                    :preview (ghostherd-inbox--clip (or (plist-get rule :hint) "") 90)
+                    :proposalId (plist-get p :id))
                (ghostherd-inbox--item
                 (concat "proposal:" (plist-get p :id)) 'proposal
                 (plist-get p :author) "claude" (plist-get p :project)
@@ -3447,7 +3534,7 @@ full-width) in its last line or two."
                               n (if (= n 1) "" "s") file)
                 :facts (ghostherd-memory-page--vec titles) :diff (or (plist-get p :diff) "")
                 :preview (ghostherd-inbox--clip (mapconcat #'identity titles " · ") 90)
-                :proposalId (plist-get p :id)))))
+                :proposalId (plist-get p :id))))))
          proposals)))
 
 (defun ghostherd-inbox--ask-items (asks)
@@ -3627,6 +3714,8 @@ user's state (or none) and push."
         ("memory-proposal-reject" (ghostherd-memory-page--memory-proposal-reject intent))
         ("memory-unpromote" (ghostherd-memory-page--memory-unpromote intent))
         ("memory-suggest" (ghostherd-memory-page--memory-suggest intent))
+        ("lint-set" (ghostherd-memory-page--lint-set intent))
+        ("lint-remove" (ghostherd-memory-page--lint-remove intent))
         ("room-watch" (ghostherd-memory-page--room-open intent))
         ("room-earlier" (ghostherd-memory-page--room-earlier intent))
         ("chat-earlier" (ghostherd-memory-page--chat-earlier intent))

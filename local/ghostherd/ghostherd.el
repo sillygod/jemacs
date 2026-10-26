@@ -9295,6 +9295,24 @@ use once."
            (_ (format "guard %s %s: %s" id status (plist-get r :summary))))))))
   (setq ghostherd--guard-requests requests))
 
+(defvar ghostherd--lint-seen (make-hash-table :test 'equal)
+  "The checks' denials the log has told of, by id.")
+
+(defun ghostherd--herd-take-lint (denials)
+  "Log each of DENIALS from a `herd_tick' once: a call one of the herd's
+checks denied (bin/herd_lint.py) -- the fact, and the command, so a check
+that denies what it should not shows.  The page counts them per check."
+  (dolist (d (reverse denials))          ; the tick's are newest first
+    (let ((id (plist-get d :id)))
+      (unless (gethash id ghostherd--lint-seen)
+        (puthash id t ghostherd--lint-seen)
+        (ghostherd--log-add
+         (or (plist-get d :session) "?") 'lint
+         (format "check %s denied (%s): %s" (plist-get d :fact) (or (plist-get d :cli) "?")
+                 (truncate-string-to-width
+                  (replace-regexp-in-string "[\n\t ]+" " " (or (plist-get d :command) ""))
+                  160 nil nil "…")))))))
+
 (defun ghostherd--guard-clear (name)
   "Tell the sidecar agent NAME is a new process: its open guard requests expire."
   (when (and (fboundp 'ghostherd-memory-rpc-url) (ghostherd-memory-rpc-url)
@@ -10089,6 +10107,7 @@ reaches you there."
          (ghostherd--herd-take-links (plist-get result :links))
          (ghostherd--herd-take-reports (plist-get result :reports))
          (ghostherd--herd-take-guard (plist-get result :guard))
+         (ghostherd--herd-take-lint (plist-get result :lint))
          (ghostherd--herd-run-commands result))
        (list :sessions (vconcat (ghostherd--herd-snapshot))
              :page_url (or (ghostherd--room-url) "")

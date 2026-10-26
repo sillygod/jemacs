@@ -1,0 +1,24 @@
+{
+  "fact": "embedded-qdrant-open-is-a-write",
+  "hint": "Opening the live session index (~/.emacs.d/emacs-home/ghostherd-memory) with QdrantClient(path=...) reads every point and WRITES to it before it fails on the lock -- and it holds the only copy of old sessions.  Copy it in one step and open the copy: local/ghostherd/server/eval/session_eval.py snapshot SRC DST.",
+  "check": {
+    "code": {
+      "all": [
+        "\\bQdrant(?:Client|Local)\\s*\\(",
+        "\\.emacs\\.d['\"]?\\s*[/,]\\s*['\"]?emacs-home['\"]?\\s*[/,]\\s*['\"]?ghostherd-memory"
+      ]
+    }
+  },
+  "catches": [
+    ".venv/bin/python -c \"import os; from qdrant_client import QdrantClient; c = QdrantClient(path=os.path.expanduser('~/.emacs.d/emacs-home/ghostherd-memory/qdrant')); print(c.get_collections())\"",
+    "cd server && .venv/bin/python - <<'EOF'\nimport os\nfrom qdrant_client import QdrantClient\nc = QdrantClient(path=os.path.expanduser(\"~/.emacs.d/emacs-home/ghostherd-memory/qdrant\"))\nprint(c.count(\"ghostherd_turns\"))\nEOF",
+    "cat > $S/peek.py <<'EOF'\nfrom pathlib import Path\nfrom qdrant_client import QdrantClient\nroot = Path.home() / \".emacs.d\" / \"emacs-home\" / \"ghostherd-memory\"\nprint(QdrantClient(path=str(root / \"qdrant\")).get_collections())\nEOF\nuv run python $S/peek.py"
+  ],
+  "passes": [
+    ".venv/bin/python eval/session_eval.py snapshot ~/.emacs.d/emacs-home/ghostherd-memory $S/snap && .venv/bin/python -c \"from qdrant_client import QdrantClient; print(QdrantClient(path='$S/snap/qdrant').get_collections())\"",
+    "\"$GHOSTHERD_HERD\" remember --name embedded-qdrant-open-is-a-write <<'EOF'\nNever open the live session index (~/.emacs.d/emacs-home/ghostherd-memory) with QdrantClient(path=...), not even to look.\nEOF",
+    "git commit -q -F - <<'EOF'\nfix: no QdrantClient(path=~/.emacs.d/emacs-home/ghostherd-memory) from a probe\nEOF",
+    "sqlite3 -readonly \"file:$HOME/.emacs.d/emacs-home/ghostherd-memory/sources.sqlite?mode=ro\" 'select count(*) from sources'",
+    "python3 -c \"from qdrant_client import QdrantClient; QdrantClient(path='/private/tmp/scratch/ghostherd-memory/qdrant')\""
+  ]
+}

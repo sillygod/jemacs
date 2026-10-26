@@ -14,6 +14,7 @@ import fact_index
 import herd as herd_module
 import images
 import links
+import lint
 import memory_migrate
 import meter
 import projects
@@ -52,7 +53,7 @@ AGENT_METHODS = frozenset({
     "ping",
     "herd_list", "herd_message", "herd_inbox",
     "herd_ask", "herd_handoff", "herd_reply", "herd_await", "herd_cancel", "herd_detach", "herd_asks",
-    "herd_report", "herd_guard_denied", "herd_guard_used",
+    "herd_report", "herd_guard_denied", "herd_guard_used", "herd_lint_denied",
     "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose", "herd_search",
     "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
 })
@@ -182,6 +183,10 @@ class JsonRpcHandler:
             "herd_memory_promote_reject": self._herd_memory_promote_reject,
             "herd_memory_unpromote": self._herd_memory_unpromote,
             "herd_memory_suggest": self._herd_memory_suggest,
+            "herd_lint_denied": self._herd_lint_denied,
+            "herd_lint_rules": self._herd_lint_rules,
+            "herd_lint_set": self._herd_lint_set,
+            "herd_lint_remove": self._herd_lint_remove,
         }
 
     async def handle(self, request: JsonRpcRequest, role: str = "admin") -> JsonRpcResponse:
@@ -1101,8 +1106,18 @@ class JsonRpcHandler:
         """An agent proposes promoting stable facts into the project's
         instruction file, with the exact diff.  The herd checks each fact is
         the project's (never a machine/user one) and stores it pending the
-        user's approval on the page; it writes nothing to the repo."""
+        user's approval on the page; it writes nothing to the repo.  With
+        LINT, a check made of one fact instead (lint.py): any store's,
+        the user's too -- it is the herd's, not the repo's."""
         store, key = self._write_store(params)
+        if params.get("lint") is not None:
+            rule, facts = params.get("lint"), params.get("facts") or []
+            if not isinstance(rule, dict):
+                raise ValueError("the rule is a JSON object: {hint, check, catches, passes}")
+            if not isinstance(facts, list) or len(facts) != 1:
+                raise ValueError("a check is one fact's: name it once")
+            return lint.propose(store, key, str(facts[0]).strip(), rule,
+                                str(params.get("from") or "unknown"))
         if key == shared_memory.USER_KEY:
             raise ValueError("user-store facts cannot be promoted")
         facts = params.get("facts") or []
@@ -1157,6 +1172,9 @@ class JsonRpcHandler:
         prop = get_herd().proposal(pid)
         if prop["status"] != "pending":
             raise ValueError(f"proposal is already {prop['status']}")
+        if prop["kind"] == "lint":
+            # A check is the herd's own: on at once, nobody asked to apply it.
+            return lint.approve(prop)
         key = prop["project"]
         to = self._lead_for(key) or prop["author"]
         if not to or to == "unknown":
@@ -1182,6 +1200,29 @@ class JsonRpcHandler:
         "Put a promoted fact back: it returns to the index, openings, retrieval."
         store, key = self._memory_store_by_key(params)
         return shared_memory.unpromote(store, key, str(params.get("name") or ""))
+
+    def _herd_lint_denied(self, params: dict) -> dict:
+        "A check denied a shell call (`herd lint', `herd guard'): for the log and its count."
+        return get_herd().lint_denied(
+            shared_memory.valid_key(str(params.get("key") or "")), str(params.get("fact") or ""),
+            str(params.get("session") or ""), str(params.get("cli") or ""),
+            str(params.get("command") or ""))
+
+    def _herd_lint_rules(self, params: dict) -> dict:
+        "Store KEY's checks, with what each denied: the Memory tab's Checks."
+        store, key = self._memory_store_by_key(params)
+        return {"key": key, "rules": lint.rules(store, key)}
+
+    def _herd_lint_set(self, params: dict) -> dict:
+        "The user turns a check off, or on again."
+        _store, key = self._memory_store_by_key(params)
+        return lint.set_status(key, str(params.get("fact") or "").strip(),
+                               str(params.get("status") or "").strip())
+
+    def _herd_lint_remove(self, params: dict) -> dict:
+        "The user removes a check."
+        _store, key = self._memory_store_by_key(params)
+        return lint.remove(key, str(params.get("fact") or "").strip())
 
     def _herd_memory_suggest(self, params: dict) -> dict:
         """The page's "Suggest promotions": ask the project's lead (or the agent

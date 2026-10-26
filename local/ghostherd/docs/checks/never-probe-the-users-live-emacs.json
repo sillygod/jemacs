@@ -1,0 +1,27 @@
+{
+  "fact": "never-probe-the-users-live-emacs",
+  "hint": "This runs a long synchronous eval in the user's live Emacs -- profiler-report, a walk over the profiler's log, a synchronous url-retrieve -- which can freeze it, and a freeze costs the user their whole session.  Do it in a scratch Emacs (emacsclient -s <its socket>), or ask the user first.",
+  "check": {
+    "command": {
+      "all": [
+        "^emacsclient\\b",
+        "\\b(?:profiler-report|profiler-(?:cpu|memory)-log|url-retrieve-synchronously)\\b"
+      ],
+      "none": [
+        "\\s(?:-s|--socket-name)(?:\\s|=)|\\s-s\\S"
+      ]
+    }
+  },
+  "catches": [
+    "timeout 15 emacsclient -e '(progn (require (quote profiler)) (profiler-report) (with-current-buffer \"*CPU-Profiler-Report-Cpu*\" (profiler-report-expand-all)))'",
+    "emacsclient -e '(let ((n 0)) (maphash (lambda (k v) (setq n (1+ n))) (profiler-cpu-log)) n)'",
+    "emacsclient --eval '(with-current-buffer (url-retrieve-synchronously \"http://127.0.0.1:49152/health\") (buffer-string))'"
+  ],
+  "passes": [
+    "emacsclient -s ah-scratch --eval '(progn (profiler-report) t)'",
+    "emacsclient -e '(progn (require (quote profiler)) (ignore-errors (profiler-stop)) :stopped)'",
+    "emacsclient -e '(let (out) (maphash (lambda (k v) (push k out)) ghostherd-memory-page--meters) out)'",
+    "emacs --batch -l profile.el --eval '(profiler-report)'",
+    "\"$GHOSTHERD_HERD\" reply abc <<'HERD'\nI ran emacsclient -e '(profiler-report)' in the scratch Emacs only.\nHERD"
+  ]
+}
