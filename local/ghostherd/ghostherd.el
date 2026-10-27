@@ -9169,6 +9169,9 @@ The sidecar writes the user's approvals there, and only there
     ;; use of it (git push, ssh) asks the user first.
     "HTTP_PROXY" "HTTPS_PROXY" "NO_PROXY" "ALL_PROXY" "http_proxy" "https_proxy" "no_proxy" "all_proxy"
     "SSH_AUTH_SOCK"
+    ;; Switches that keep what it runs from phoning home: onnxruntime 1.29
+    ;; posts telemetry to Microsoft unless this is set when it loads.
+    "ORT_DISABLE_TELEMETRY"
     ;; The herd's own: GHOSTHERD_RPC holds the agents' token, not the herd's.
     "GHOSTHERD_RPC" "GHOSTHERD_RPC_FILE" "GHOSTHERD_SESSION" "GHOSTHERD_HERD"
     "GHOSTHERD_SOCKET" "GHOSTHERD_BACKEND")

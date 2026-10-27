@@ -14798,7 +14798,7 @@ with a password in it is dropped.  A project adds names of its own."
                     "HTTPS_PROXY=http://proxy:3128" "HTTP_PROXY=http://me:pw@proxy:3128"
                     "GHOSTHERD_RPC=keep" "GHOSTHERD_SESSION=keep" "GHOSTHERD_HERD=keep" "SSH_AUTH_SOCK=keep"
                     "GIT_AUTHOR_NAME=keep" "LC_CTYPE=keep" "XDG_CONFIG_HOME=keep" "TERM_PROGRAM=keep"
-                    "MY_TOOL_HOME=keep")
+                    "MY_TOOL_HOME=keep" "ORT_DISABLE_TELEMETRY=1")
                   process-environment)))
     (unwind-protect
         (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () herd)))
@@ -14814,7 +14814,8 @@ with a password in it is dropped.  A project adds names of its own."
                             "HTTP_PROXY"))
               (should-not (member gone out)))
             (dolist (kept '("GHOSTHERD_RPC" "GHOSTHERD_SESSION" "GHOSTHERD_HERD" "SSH_AUTH_SOCK" "GIT_AUTHOR_NAME"
-                            "LC_CTYPE" "XDG_CONFIG_HOME" "TERM_PROGRAM" "HTTPS_PROXY" "MY_TOOL_HOME" "PATH" "HOME"))
+                            "LC_CTYPE" "XDG_CONFIG_HOME" "TERM_PROGRAM" "HTTPS_PROXY" "MY_TOOL_HOME" "PATH" "HOME"
+                            "ORT_DISABLE_TELEMETRY"))
               (should (member kept out)))))
       (delete-directory dir t))))
 
