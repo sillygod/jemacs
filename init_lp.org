@@ -45,6 +45,17 @@
 
   #+end_src
 
+* keep onnxruntime's telemetry off
+
+  #+begin_src emacs-lisp
+    ;; onnxruntime 1.29 starts Microsoft's telemetry when it loads, without
+    ;; asking, and posts a device ID and the machine's model about ten
+    ;; seconds later.  It reads this switch once, at load, so it has to be in
+    ;; the environment before: set here, everything Emacs starts inherits it
+    ;; -- the ghostherd sidecar, its agents and whatever they run.
+    (setenv "ORT_DISABLE_TELEMETRY" "1")
+  #+end_src
+
 * set up where the packages to be installed
   #+begin_src emacs-lisp
     (setq package-user-dir (concat user-emacs-directory "elpa"))
