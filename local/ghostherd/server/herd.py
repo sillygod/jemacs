@@ -182,6 +182,23 @@ def _trace_line(trace: str | None) -> str | None:
     return line if isinstance(line, str) and line else None
 
 
+def _no_trace(why: str) -> str:
+    """What `asks.trace' holds once the line cannot be made, WHY in a word: a
+    trace with no line, which every reader takes as none -- not smooth, not
+    rough -- where NULL is one not made yet, that each waiter waits for."""
+    return json.dumps({"line": None, "failed": why})
+
+
+def trace_hold_left(answered_at: str | None) -> float:
+    """How long an answer's waiters still hold for its line: TRACE_HOLD from
+    the answer, as its mail -- none for an answer long given."""
+    try:
+        since = (datetime.now(timezone.utc) - datetime.fromisoformat(answered_at)).total_seconds()
+    except (TypeError, ValueError):
+        return TRACE_HOLD
+    return max(0.0, min(TRACE_HOLD, TRACE_HOLD - since))
+
+
 def _taker_note(trace: str | None, ask_id: str) -> str | None:
     "What a stored trace tells the ask's taker on its `herd reply' (ask_trace), or None."
     try:
@@ -746,6 +763,13 @@ class HerdStore:
         # to fetch secrets for it.
         if "guarded" not in ask_cols:
             self._conn.execute("ALTER TABLE asks ADD COLUMN guarded INTEGER")
+        # A line the last sidecar was to make and never did -- it stopped
+        # between an answer and its trace -- will not come now: no waiter
+        # holds for it, and an answer held for it goes without.
+        self._conn.execute("UPDATE asks SET trace = ? WHERE status = 'answered' AND trace IS NULL",
+                           (_no_trace("lost"),))
+        self._conn.execute("UPDATE mail SET memory_until = NULL"
+                           " WHERE trace_of IS NOT NULL AND status = 'queued' AND memory_until IS NOT NULL")
         self._conn.commit()
 
     def close(self) -> None:
@@ -1491,7 +1515,8 @@ class HerdStore:
             # Its outcome went out as mail: nobody was waiting for it, or
             # the waiting asker was gone for longer than the herd holds it.
             "mailed": not row["wait"] and bool(row["collected"]),
-            # How the work went, one line (ask_trace), once it is made.
+            # How the work went, one line (ask_trace), once it is made; and
+            # whether it is, or never will be: nothing more is coming.
             "trace": _trace_line(row["trace"]),
             "traced": bool(row["trace"]),
             # And, when it was rough, what its taker is told (bin/herd reply).
@@ -1896,8 +1921,29 @@ class HerdStore:
             self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
                                (json.dumps(out, ensure_ascii=False), ask_id))
         except Exception:  # noqa: BLE001
-            pass
+            try:
+                self._no_line(ask_id, "error")
+            except Exception:  # noqa: BLE001
+                pass
         return False
+
+    def _no_line(self, ask_id: str, why: str) -> None:
+        """No line is coming for ASK_ID (WHY): say so on the ask, which lets
+        each await on it go, and send the answer held for it without.  A
+        line already made stays.  Caller holds `_mu`, and commits."""
+        self._conn.execute("UPDATE asks SET trace = ? WHERE id = ? AND trace IS NULL",
+                           (_no_trace(why), ask_id))
+        self._conn.execute(
+            "UPDATE mail SET memory_until = NULL WHERE trace_of = ? AND status = 'queued'", (ask_id,))
+
+    def _give_up_trace(self, ask_id: str, why: str) -> None:
+        "`_no_line', taking `_mu'; never raises."
+        try:
+            with self._mu:
+                self._no_line(ask_id, why)
+                self._conn.commit()
+        except Exception:  # noqa: BLE001 -- closed: the next sidecar's sweep says it
+            pass
 
     def _trace_soon(self, ask_id: str) -> None:
         "Make ASK_ID's trace on the worker, after its reply: never in its way."
@@ -1906,8 +1952,8 @@ class HerdStore:
                 self._tracer = concurrent.futures.ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="ask-trace")
             self._traces.append(self._tracer.submit(self._trace, ask_id))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 -- the worker would not take it
+            self._give_up_trace(ask_id, "not started")
 
     def wait_traces(self, timeout: float = 10.0) -> None:
         "Until the traces asked for so far are made (tests, a measurement)."
@@ -1916,12 +1962,15 @@ class HerdStore:
     def _trace(self, ask_id: str) -> None:
         """ASK_ID's line: what its taker's transcript shows of the work, and
         the herd's own records of it -- stored on the ask, and put on the
-        answer's mail that waits for it.  A failure releases the mail without."""
+        answer's mail that waits for it.  Without one (`_no_line'), every
+        waiter goes on at once: the mail, an await, the taker's look."""
         import ask_trace
         try:
             with self._mu:
                 row = self._ask_row(ask_id)
                 if row["status"] != "answered":
+                    self._no_line(ask_id, "not answered")
+                    self._conn.commit()
                     return
                 transcript = self._transcript(row["to_name"])
                 facts = self._trace_facts(row)
@@ -1938,14 +1987,7 @@ class HerdStore:
                     (trace_note(out["line"]) if out["line"] else None, row["id"]))
                 self._conn.commit()
         except Exception:  # noqa: BLE001 -- no line, never a held answer
-            try:
-                with self._mu:
-                    self._conn.execute(
-                        "UPDATE mail SET memory_until = NULL WHERE trace_of = ? AND status = 'queued'",
-                        (ask_id,))
-                    self._conn.commit()
-            except Exception:  # noqa: BLE001
-                pass
+            self._give_up_trace(ask_id, "error")
 
     @staticmethod
     def _trace_window(row: dict[str, Any]) -> tuple[str, str, str]:
