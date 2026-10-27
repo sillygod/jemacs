@@ -977,12 +977,17 @@ restart), the log records it, and the card shows "by lead-…".
 
 =stop= kills an agent the caller started --- not one owing an open or
 queued ask --- and removes its worktree when merged and clean, else keeps
-it.
+it.  One whose worktree was already removed outside the herd is stopped
+all the same, and =stop= says so: "its worktree … was already gone
+(branch X is merged into master)" --- or "is gone too", or "has N commits
+not on master; the branch is kept" (see /A worktree removed outside the
+herd/).
 
 =herd list= shows a lead what it needs to decide whether to queue work
 behind a busy agent or start another: per agent, the open ask and how many
 wait behind it, the files its turn is editing, who started it, its worktree
-branch, how many commits ahead of its base, and whether it is merged.
+branch, how many commits ahead of its base, whether it is merged, and
+whether its directory is gone (=directory_missing=).
 
 * Handoffs: work for another project's lead (=herd handoff=)
 
@@ -1404,6 +1409,40 @@ idle worktree.  Removing one is your call: =M-x ghostherd-worktree-forget=
 offers the project's idle worktrees and removes the one you pick --- keeping
 its branch, so committed work is never lost.  The herd never deletes
 unmerged or uncommitted work, and never merges.
+
+** A worktree removed outside the herd
+
+A worktree can go while its agent is still up: =git worktree remove= by
+hand once its branch merged, an =rm -rf=.  Once a minute the poll looks
+whether each agent's directory --- its worktree, else its project --- is
+still there (a stat per agent: 34 µs for twenty, byte-compiled; nothing
+on the other polls).  One that is gone is marked: its sidebar row shows
+=✗= (=ghostherd-gone-glyph=) and =wt gone= for its state, with a line in
+words above its screen (=/gone= finds it); its card says "worktree gone"
+and where its branch stands, with a Stop; =herd list= gives it
+="directory_missing": true=.  Where its branch stands is read by git in
+the main checkout, in the background: merged into its base, deleted (as
+after a merge), N commits not on its base, or unknown (the main checkout
+gone too).
+
+The Inbox has it under Needs you, worded by the branch --- /Worktree gone
+--- safe to stop/ when it is merged or deleted, /Worktree gone --- N
+commits not merged/ (stopping it may lose that work; the branch is kept)
+when it is not --- with *Stop it* (or *Stop it anyway*) and *Later*.  The
+herd never stops it for you.  The item goes once the agent is stopped or
+its directory is back; a directory that comes back is unmarked as soon as
+the agent is next shown, not a minute on.
+
+Nothing starts an agent in a directory that is not there: =tmux
+new-session -c= starts it in =$HOME= instead, without a word, and the CLI
+there asks to trust all of =~=.  =ghostherd-spawn= refuses it, so every
+path does (herd start, a lead started for a message or a handoff, + New
+agent, a resume); respawn, a relay (when asked and again when its brief
+comes back), =herd relay=, the page's and Telegram's Respawn refuse before
+they kill the old agent, which stays in the herd, marked; and the resume
+backstop leaves a dead one as it is rather than start it fresh.  A herd
+restored after an Emacs restart starts nothing (its agents are still
+running in tmux), and is looked at by the next poll rather than a minute on.
 
 Because there is one running Emacs for all worktrees, =bin/reload= refuses a
 file that is not under the checkout the live Emacs loads from: reloading a

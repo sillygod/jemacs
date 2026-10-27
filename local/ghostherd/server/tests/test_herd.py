@@ -308,6 +308,47 @@ def test_list_enriches_agents_for_the_queue_decision(tmp_path: Path, monkeypatch
     reset_herd()
 
 
+def test_list_sessions_says_a_directory_is_gone(tmp_path: Path):
+    "`herd list' carries directory_missing as Emacs ticks it: true only when it says so."
+    h = _store(tmp_path)
+    h.tick(sessions=[
+        {"name": "rd-tabs", "kind": "claude", "state": "idle", "project": "/p/",
+         "directory": "~/.ghostherd/worktrees/p/rd-tabs", "branch": "rd-tabs",
+         "directoryMissing": True},
+        {"name": "rd-here", "kind": "claude", "state": "idle", "project": "/p/",
+         "directoryMissing": False},
+        # An Emacs from before the field: not missing.
+        {"name": "old", "kind": "claude", "state": "idle", "project": "/p/"},
+    ], ack_ids=[])
+    by = {s["name"]: s for s in h.list_sessions()["sessions"]}
+    assert by["rd-tabs"]["directory_missing"] is True
+    assert by["rd-tabs"]["directory"] == "~/.ghostherd/worktrees/p/rd-tabs"
+    assert by["rd-here"]["directory_missing"] is False
+    assert by["old"]["directory_missing"] is False
+    # Back the next tick: unmarked.
+    h.tick(sessions=[{"name": "rd-tabs", "kind": "claude", "state": "idle",
+                      "project": "/p/", "directoryMissing": False}], ack_ids=[])
+    assert h.list_sessions()["sessions"][0]["directory_missing"] is False
+    reset_herd()
+
+
+def test_snapshot_gains_directory_missing_on_an_old_store(tmp_path: Path):
+    "A store made before the column gets it on open, and lists the old rows as not missing."
+    import sqlite3
+    db = tmp_path / "herd.sqlite"
+    h = _store(tmp_path)
+    h.tick(sessions=[{"name": "a", "kind": "claude", "state": "idle"}], ack_ids=[])
+    h.close()
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE snapshot DROP COLUMN directory_missing")
+    con.commit()
+    con.close()
+    h2 = HerdStore(db, inline_limit=4000)
+    assert h2.list_sessions()["sessions"][0]["directory_missing"] is False
+    h2.close()
+    reset_herd()
+
+
 def test_stop_queues_a_stop_command(tmp_path: Path, monkeypatch):
     "`herd stop NAME' queues a `stop' command against that agent."
     import asyncio

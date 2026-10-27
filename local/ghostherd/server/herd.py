@@ -662,6 +662,10 @@ class HerdStore:
         # what it asks of another is marked so (`GUARDED_NOTE').
         if "guarded" not in cols:
             self._conn.execute("ALTER TABLE snapshot ADD COLUMN guarded INTEGER")
+        # Its directory is gone -- a worktree removed outside the herd: so
+        # `herd list' tells its lead, who can stop it.
+        if "directory_missing" not in cols:
+            self._conn.execute("ALTER TABLE snapshot ADD COLUMN directory_missing INTEGER")
         mail_cols = {
             r[1] for r in self._conn.execute("PRAGMA table_info(mail)")
         }
@@ -797,7 +801,7 @@ class HerdStore:
 
     def list_sessions(self, project: str | None = None) -> dict[str, Any]:
         cols = ("name, kind, state, notes, project, reason, role, since, "
-                "directory, branch, started_by, ahead, merged")
+                "directory, branch, started_by, ahead, merged, directory_missing")
         with self._mu:
             if project:
                 rows = self._conn.execute(
@@ -827,6 +831,7 @@ class HerdStore:
                     "started_by": (r[10] if len(r) > 10 else "") or "",
                     "ahead": (r[11] if len(r) > 11 else 0) or 0,
                     "merged": bool(r[12]) if len(r) > 12 and r[12] is not None else False,
+                    "directory_missing": bool(r[13]) if len(r) > 13 and r[13] is not None else False,
                     # What a lead needs to decide queue-or-start: the ask this
                     # agent owes now and how many wait behind it, and the files
                     # its turn is editing (so work on the same files queues).
@@ -3168,8 +3173,9 @@ class HerdStore:
                     """
                     INSERT INTO snapshot
                       (name, kind, state, notes, project, reason, screen, role, prompt, room, since,
-                       directory, branch, started_by, ahead, merged, host_pid, guarded)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       directory, branch, started_by, ahead, merged, host_pid, guarded,
+                       directory_missing)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         name,
@@ -3190,6 +3196,7 @@ class HerdStore:
                         1 if row.get("merged") is True else 0,
                         _pid(row.get("hostPid")),
                         1 if row.get("guarded") is True else 0,
+                        1 if row.get("directoryMissing") is True else 0,
                     ),
                 )
                 self._upsert_alias(name)

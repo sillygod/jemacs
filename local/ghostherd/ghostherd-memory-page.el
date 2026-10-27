@@ -426,6 +426,20 @@ draws lanes from fields rather than parsing prose."
 (defconst ghostherd-memory-page--agent-name-re "\\`[A-Za-z0-9][A-Za-z0-9._-]*\\'"
   "A name the page may give a new agent: it becomes a tmux target.")
 
+(defun ghostherd-memory-page--gone (s)
+  "Session S's gone directory as the page has it, or nil while it is there:
+:path, :worktree, and for a worktree :branch, :base, :state (\"merged\",
+\"deleted\", \"ahead\", \"unknown\", or \"\" until git has said) and :ahead."
+  (when-let* ((gone (ghostherd-session-directory-gone s)))
+    (let ((wt (ghostherd-session-worktree s)))
+      (list :path (ghostherd--abbreviate (plist-get gone :path))
+            :worktree (if (plist-get gone :worktree) t :json-false)
+            :branch (or (plist-get gone :branch) (plist-get wt :branch) "")
+            :base (or (plist-get gone :base) (plist-get wt :base) "")
+            :state (if (plist-get gone :state) (symbol-name (plist-get gone :state)) "")
+            :ahead (or (plist-get gone :ahead) 0)
+            :since (* 1000 (or (plist-get gone :since) 0))))))
+
 (defun ghostherd-memory-page--agent (s)
   "Session S as the page shows it."
   (let* ((buf (ghostherd-session-buffer s))
@@ -447,6 +461,10 @@ draws lanes from fields rather than parsing prose."
           :url (or (and blocked (ghostherd--login-url s)) "")
           ;; Who started it through `herd start', shown on the card.
           :startedBy (or (ghostherd-session-started-by s) "")
+          ;; Its directory gone -- a worktree removed outside the herd: the
+          ;; card says so and the Inbox asks whether to stop it, by where
+          ;; its branch stands.  Null while it is there.
+          :gone (ghostherd-memory-page--gone s)
           ;; A turn killed by the Mac sleeping or a dropped connection: the
           ;; herd continues it itself.  `continueAt' (float ms) drives the
           ;; card's "continuing after sleep in Ns" countdown and its Cancel;
@@ -2947,6 +2965,9 @@ from the newest -- and send it to the page to prepend."
                (ghostherd-relay s (intern kind))
                (format "Relaying %s to %s: its heir starts once its work is read" name kind)))
             ("agent-kill" (ghostherd-kill s t) (format "Killed %s" name))
+            ;; The Inbox's and the card's Stop for an agent whose directory
+            ;; is gone: refused if it is back.
+            ("agent-stop-gone" (ghostherd-stop-gone s))
             ("agent-notes"
              (ghostherd-set-notes s (or (alist-get 'text intent) ""))
              (format "Notes for %s saved" name))
@@ -3336,6 +3357,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (relay      "need" "Relay"      "warn")
     (ask-failed "need" "Ask failed" "red")
     (unsent     "need" "Not sent"   "warn")
+    (gone       "need" "Gone"       "red")
     (report     "fyi"  "Report"     "green")
     (handoff    "fyi"  "Handoff"    "purple")
     (lead-started "fyi" "Lead"      "muted")
@@ -3377,6 +3399,57 @@ full-width) in its last line or two."
     (let ((p props))
       (while p (setq item (plist-put item (car p) (cadr p)) p (cddr p))))
     item))
+
+(defun ghostherd-inbox--gone-item (a gone)
+  "The Inbox item for agent A, whose directory is GONE (its `:gone').
+Safe to stop -- its branch merged, or deleted as after a merge, or no
+branch at all -- or not: its branch has commits not on its base, and the
+item says how many, or git could not say."
+  (let* ((name (plist-get a :name))
+         (wt (eq (plist-get gone :worktree) t))
+         (path (plist-get gone :path))
+         (branch (plist-get gone :branch)) (base (plist-get gone :base))
+         (state (plist-get gone :state))
+         (ahead (or (plist-get gone :ahead) 0))
+         (commits (format "%d commit%s" ahead (if (= ahead 1) "" "s")))
+         (safe (or (not wt) (member state '("merged" "deleted"))))
+         (gone-line (format "%s's %s `%s` is gone: it was removed outside the herd."
+                            name (if wt "worktree" "directory") path))
+         (refused "A respawn is refused: it would start in your home directory.")
+         (says
+          (cond
+           ((not wt)
+            (list "Directory gone" (format "Its directory %s is gone" path)
+                  "It is in no herd worktree, so it has no branch of its own to lose."))
+           ((equal state "merged")
+            (list "Worktree gone — safe to stop"
+                  (format "Branch %s is merged into %s: nothing is lost by stopping it" branch base)
+                  (format "Its branch `%s` is merged into `%s`, so nothing is lost by stopping it." branch base)))
+           ((equal state "deleted")
+            (list "Worktree gone — safe to stop"
+                  (format "Branch %s is gone too, as after a merge: nothing left to lose" branch)
+                  (format "Its branch `%s` is gone too — deleted, as after a merge — so stopping it loses nothing that is still there." branch)))
+           ((equal state "ahead")
+            (list (format "Worktree gone — %s not merged" commits)
+                  (format "Branch %s has %s not on %s: stopping it may lose that work" branch commits base)
+                  (format "Its branch `%s` still has %s that %s not on `%s`.  Stopping the agent keeps the branch, but nothing will be working on it: that work may be lost unless someone merges it or picks it up.  Look before you stop it."
+                          branch commits (if (= ahead 1) "is" "are") base)))
+           ((equal state "unknown")
+            (list "Worktree gone"
+                  (format "Could not tell whether branch %s is merged" branch)
+                  (format "Whether its branch `%s` is merged into `%s` could not be read — its main checkout may be gone too.  Look before you stop it." branch base)))
+           (t
+            (list "Worktree gone"
+                  (format "Reading where branch %s stands…" branch)
+                  (format "Where its branch `%s` stands against `%s` is being read." branch base))))))
+    (ghostherd-inbox--item
+     (concat "gone:" name) 'gone name (plist-get a :kind) (plist-get a :project)
+     (nth 0 says) (plist-get gone :since)
+     :state (plist-get a :state) :tone (if safe "warn" "red")
+     :whyLabel (if wt "Its worktree is gone" "Its directory is gone")
+     :preview (nth 1 says)
+     :body (concat gone-line "  " (nth 2 says) "\n\n" refused)
+     :safe (if safe t :json-false))))
 
 (defun ghostherd-inbox--agent-items (a)
   "Inbox items (0+) from one serialised agent plist A."
@@ -3435,6 +3508,11 @@ full-width) in its last line or two."
                            "again, but its CLI never took it: it is still there, unsent.\n\n> "
                            unsent))
             items))
+    ;; Its directory gone -- a worktree removed outside the herd: whether to
+    ;; stop it is the user's, by where its branch stands.  Never stopped for
+    ;; them; the item goes once it is stopped or its directory is back.
+    (when-let* ((gone (plist-get a :gone)))
+      (push (ghostherd-inbox--gone-item a gone) items))
     (when (and (stringp used-up) (not (string-empty-p used-up))
                (stringp relay-to) (not (equal relay-to cli)))
       (push (ghostherd-inbox--item
