@@ -2293,6 +2293,111 @@ actionable first; a clean one names none."
     (should-not (ghostherd--auto-capture-why
                  "✶ Thinking… (3s · esc to interrupt)\n❯ \n" '(working . "s") nil))))
 
+(defconst ghostherd-tests--idle-box
+  "────────────────────────────────────────\n❯ \n────────────────────────────────────────\n"
+  "An idle input box, as claude draws it: a rule, the prompt sign, a rule.")
+
+(ert-deftest ghostherd-test-auto-capture-limit-is-the-clis-notice-not-words ()
+  "A limit capture is the CLI's own notice -- under its input box, or in
+its place -- not the conversation above the box, not agy's paid-credit
+footer, not a panel the herd itself opened (ask d197da21)."
+  (let ((agy (ghostherd--spec 'agy))
+        (claude (ghostherd--spec 'claude))
+        (grok (ghostherd--spec 'grok)))
+    ;; agy's footer: paid overage credit, an agent with quota left.
+    (should-not (ghostherd--auto-capture-why
+                 (concat "Done with the change.\n" ghostherd-tests--idle-box
+                         "  ? for shortcuts      Model X · high · AI: Out of credits\n")
+                 nil nil agy))
+    ;; agy's /usage panel, opened by the herd to read its quota: all
+    ;; "quota", and a view paged over the conversation, not its state.
+    (should-not (ghostherd--auto-capture-why
+                 (concat "GROUP ONE\n  Weekly Limit Remaining\n    [█████] 100.00%\n"
+                         "    Quota available\n  Some text about a separate quota\n"
+                         "  (1–9 of 12 lines)\n"
+                         "  ↑/↓ Scroll · pgup/pgdown Page · ctrl+end Bottom · ctrl+home Top · esc Close\n"
+                         "                     Model X · high · AI: Out of credits\n")
+                 nil nil agy))
+    ;; A reply about rate limits, a test's 429, a spinner's token count:
+    ;; words above the box.
+    (should-not (ghostherd--auto-capture-why
+                 (concat "⏺ The client must back off on a 429 and on the rate limit.\n"
+                         "  It retries once the quota resets.\n"
+                         "✻ Pondering… (11s · ↓ 429 tokens)\n" ghostherd-tests--idle-box
+                         "  ⏵⏵ auto mode on (shift+tab to cycle)\n")
+                 nil nil claude))
+    ;; The CLI's own notice, under its box: kept.
+    (should (eq (ghostherd--auto-capture-why
+                 (concat "⏺ Working on it.\n" ghostherd-tests--idle-box
+                         "  ⚠ Usage limit reached · limit resets 1am\n"
+                         "  ⏵⏵ auto mode on (shift+tab to cycle)\n")
+                 nil nil claude)
+                'limit))
+    ;; A quota notice under agy's box is kept, credits footer and all.
+    (should (eq (ghostherd--auto-capture-why
+                 (concat "Done.\n" ghostherd-tests--idle-box
+                         "  Quota exceeded for this model\n"
+                         "  ? for shortcuts      Model X · high · AI: Out of credits\n")
+                 nil nil agy)
+                'limit))
+    ;; A card in the box's place: kept.
+    (should (eq (ghostherd--auto-capture-why
+                 (concat "  ┃  You hit your free usage limit.\n  ┃\n"
+                         "  ┃  1 (○) Upgrade to Plan A\n  ┃  2 (○) Upgrade to Plan B\n"
+                         "  ┃  ↑/↓ navigate                    Enter:submit\n"
+                         "  Tab:next answer  │  Esc:scrollback\n")
+                 nil nil grok)
+                'limit))
+    ;; With the ignore unset, the footer counts as it did.
+    (let ((ghostherd-auto-capture-limit-ignore-re nil))
+      (should (eq (ghostherd--auto-capture-why
+                   (concat "Done.\n" ghostherd-tests--idle-box
+                           "  ? for shortcuts      Model X · AI: Out of credits\n")
+                   nil nil agy)
+                  'limit)))))
+
+(ert-deftest ghostherd-test-auto-capture-menu-is-read-as-detection-reads-it ()
+  "A menu capture is a menu with no input box under it, as
+`ghostherd--detect-state' reads one: not a numbered list in a reply above
+an idle box, not the model picker (ask d197da21)."
+  (let ((claude (ghostherd--spec 'claude))
+        (reply (concat "⏺ Three things to do next:\n"
+                       "  ❯ 1. Fix the parser\n    2. Add a test\n    3. Ship it\n"
+                       ghostherd-tests--idle-box "  ⏵⏵ auto mode on (shift+tab to cycle)\n")))
+    (should-not (ghostherd--auto-capture-why reply nil nil claude))
+    (should-not (ghostherd--auto-capture-why reply '(working . "s") nil claude))
+    ;; A real menu, the box gone: kept.
+    (should (eq (ghostherd--auto-capture-why ghostherd-tests--claude-login-menu nil nil claude)
+                'menu))
+    ;; The model picker replaces the box too, but the herd drives it.
+    (should-not (ghostherd--auto-capture-why
+                 (concat " Select model\n"
+                         " ❯ 1. Model One ✔   The newest\n   2. Model Two   Older\n"
+                         " ◉ High effort ←/→ to adjust\n"
+                         " Enter to confirm · s to use this session only · Esc to exit\n")
+                 nil nil claude))
+    ;; A kind whose menus do not take the box's place reads as before.
+    (should (eq (ghostherd--auto-capture-why reply nil nil nil) 'menu))))
+
+(ert-deftest ghostherd-test-auto-capture-reads-the-agents-own-kind ()
+  "The poll's capture passes the agent's spec: agy's credits footer is
+not kept, a claude reply's numbered list is not kept."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((a (ghostherd-tests--session :name "agy-x" :kind 'agy :state 'idle))
+            (c (ghostherd-tests--session :name "claude-x" :kind 'claude :state 'idle)))
+        (puthash "agy-x" (concat "Done.\n" ghostherd-tests--idle-box
+                                 "  ? for shortcuts      Model X · high · AI: Out of credits\n")
+                 ghostherd--screens)
+        (puthash "claude-x" (concat "⏺ Options:\n  ❯ 1. One\n    2. Two\n" ghostherd-tests--idle-box)
+                 ghostherd--screens)
+        (ghostherd--auto-capture a)
+        (ghostherd--auto-capture c)
+        (should-not (cl-find 'screen ghostherd--log :key #'ghostherd-log-entry-kind))
+        (puthash "claude-x" ghostherd-tests--claude-login-menu ghostherd--screens)
+        (ghostherd--auto-capture c)
+        (should (eq (ghostherd-log-entry-why (car ghostherd--log)) 'menu))))))
+
 (ert-deftest ghostherd-test-auto-capture-keeps-a-screen-once ()
   "A suspicious screen is kept unpinned and tagged; the same one is not
 kept twice, and the trigger is throttled per agent."
