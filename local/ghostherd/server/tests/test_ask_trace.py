@@ -2,10 +2,13 @@
 the taker's own transcript between the ask's delivery and its reply, and
 the herd's records -- counts only, never a guess, never in a reply's way."""
 
+import concurrent.futures
 import json
 import os
 import subprocess
+import threading
 import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -16,7 +19,7 @@ import conversation
 import herd as herd_mod
 import threads as threads_mod
 from herd import HerdStore, get_herd, reset_herd
-from tests.test_ask import HERD, SNAP, _deliver, live  # noqa: F401  (fixture)
+from tests.test_ask import HERD, SNAP, _deliver, _rpc, client, live  # noqa: F401  (fixtures)
 
 ASK = "4093758e"
 SECRET = "/Users/me/src/proj/.env"     # a path no line may carry
@@ -767,10 +770,10 @@ def test_herd_reply_keeps_its_bound_when_the_sidecar_holds_longer(live, home, mo
 
 def test_herd_reply_says_nothing_more_when_the_trace_or_the_look_fails(live, home, monkeypatch):
     h, k = _open_ask(live)
-    # The trace fails: no line, so none comes in time.
+    # The trace fails: no line will come, and the look goes at once.
     monkeypatch.setattr(T, "read_work", lambda *a, **kw: 1 / 0)
     stderr, code, _, after = _reply_cli(live, home, k, *ROUGH_WORK)
-    assert (code, stderr) == (0, f"herd: answered ask {k}\n") and after < ask_trace_bound()
+    assert (code, stderr) == (0, f"herd: answered ask {k}\n") and after < LET_GO, after
     assert h.get_ask(k)["status"] == "answered"
     # The look itself fails: the answer stands, and the exit is at once.
     _, k2 = _open_ask(live)
@@ -779,3 +782,194 @@ def test_herd_reply_says_nothing_more_when_the_trace_or_the_look_fails(live, hom
     assert (code, stderr) == (0, f"herd: answered ask {k2}\n") and after < 1.0
     monkeypatch.undo()
     assert h.get_ask(k2)["reply"] == "fixed it"
+
+
+# ---- A line that will not come is not waited for (ask c357df0e) ----------------------
+
+# How long a waiter takes to go once the herd knows no line is coming: a
+# few of the await's TRACE_POLLs, far under TRACE_HOLD.
+LET_GO = 0.5
+
+
+def _await(client, ask_id, who):
+    "WHO's look at ASK_ID, as `herd ask --wait' and `herd reply' make it: (ask, seconds)."
+    t = time.monotonic()
+    got = _rpc(client, "herd_await", {"id": ask_id, "timeout": 0, "from": who})["result"]
+    return got, time.monotonic() - t
+
+
+def _no_line(h, ask_id, why):
+    """ASK_ID's trace failed (WHY): stored so, apart from one not made yet;
+    nothing held for it; and no line, note, smooth or rough, anywhere."""
+    with h._mu:
+        stored = h._conn.execute("SELECT trace FROM asks WHERE id = ?", (ask_id,)).fetchone()[0]
+        held = h._conn.execute("SELECT COUNT(*) FROM mail WHERE trace_of = ? AND memory_until IS NOT NULL",
+                               (ask_id,)).fetchone()[0]
+        rows = h._thread_rows("WHERE id = ?", (ask_id,))
+    assert json.loads(stored) == {"line": None, "failed": why}
+    assert held == 0
+    got = h.get_ask(ask_id)
+    assert (got["trace"], got["traced"], got["taker_note"]) == (None, True, None)
+    for m in threads_mod.messages(rows):                     # the page
+        assert not {"trace", "rough", "traceDetail"} & m.keys(), m
+    mail = [p for p in h.tick(sessions=TSNAP)["pending"] if p["to"] == "claude-main"]
+    assert mail and "[" not in mail[-1]["body"]               # the answer goes, bare
+    entry = conversation.user_entry(f"[ghostherd message from claude-t → claude-main]\n{mail[-1]['body']}", None)
+    assert "trace" not in entry                               # the room
+
+
+def _reads_nothing(h, monkeypatch, home):
+    monkeypatch.setattr(T, "read_work", lambda *a, **k: 1 / 0)
+    return True
+
+
+def _no_records(h, monkeypatch, home):
+    "No transcript, so made on the reply's path -- from records that cannot be read."
+    monkeypatch.setattr(HerdStore, "_trace_facts", lambda *a: 1 / 0)
+    return False
+
+
+def _worker_gone(h, monkeypatch, home):
+    h._tracer = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    h._tracer.shutdown()
+    return True
+
+
+def _closed_meanwhile(h, monkeypatch, home):
+    "Never seen: an answered ask stays so.  Its worker finds it closed all the same."
+    real = HerdStore._trace_soon
+
+    def soon(self, ask_id):
+        with self._mu:
+            self._conn.execute("UPDATE asks SET status = 'failed' WHERE id = ?", (ask_id,))
+            self._conn.commit()
+        real(self, ask_id)
+    monkeypatch.setattr(HerdStore, "_trace_soon", soon)
+    return True
+
+
+@pytest.mark.parametrize("fails,why", [
+    (_reads_nothing, "error"), (_no_records, "error"), (_worker_gone, "not started"),
+    (_closed_meanwhile, "not answered")])
+def test_a_trace_that_fails_lets_every_waiter_go(client, home, monkeypatch, fails, why):
+    h = herd_mod.get_herd()
+    h.tick(sessions=TSNAP)
+    ask = h.ask("claude-t", "fix the build", from_name="claude-main")
+    _deliver_t(h)
+    if fails(h, monkeypatch, home):
+        _taken(h, home, ask["id"], *ROUGH_WORK)
+    h.reply(ask["id"], "answer", from_name="claude-t")
+    h.wait_traces()
+    _no_line(h, ask["id"], why)
+    for who in ("claude-t", "claude-main"):                  # the taker's look, the asker's await
+        _, took = _await(client, ask["id"], who)
+        assert took < LET_GO, (who, took)
+
+
+def test_an_await_holding_for_the_line_goes_the_moment_it_fails(client, home, monkeypatch):
+    h = herd_mod.get_herd()
+    h.tick(sessions=TSNAP)
+    ask = h.ask("claude-t", "fix the build", from_name="claude-main", wait=True)
+    _deliver_t(h)
+    _taken(h, home, ask["id"], *ROUGH_WORK)
+    gate = threading.Event()
+    monkeypatch.setattr(T, "read_work", lambda *a, **k: (gate.wait(5), 1 / 0))
+    h.reply(ask["id"], "answer", from_name="claude-t")
+    took = []
+    waiter = threading.Thread(target=lambda: took.append(_await(client, ask["id"], "claude-main")))
+    waiter.start()
+    time.sleep(0.4)
+    assert waiter.is_alive()                                 # held: the line is being made
+    failed = time.monotonic()
+    gate.set()
+    waiter.join(5)
+    got, _ = took[0]
+    assert time.monotonic() - failed < LET_GO
+    assert (got["reply"], got["trace"], got["traced"], got["taker_note"]) == ("answer", None, True, None)
+
+
+def test_herd_reply_and_its_asker_go_at_once_when_the_trace_fails(live, home, monkeypatch):
+    h, k = _open_ask(live)
+    monkeypatch.setattr(T, "read_work", lambda *a, **kw: 1 / 0)
+    stderr, code, took, after = _reply_cli(live, home, k, *ROUGH_WORK)
+    assert (code, stderr) == (0, f"herd: answered ask {k}\n")
+    assert after < LET_GO and took < 2 * LET_GO, (took, after)
+    req = urllib.request.Request(live["url"], headers={"Content-Type": "application/json"}, data=json.dumps(
+        {"jsonrpc": "2.0", "id": 1, "method": "herd_await",
+         "params": {"id": k, "timeout": 0, "from": "claude-main"}}).encode())
+    t = time.monotonic()
+    with urllib.request.urlopen(req, timeout=10) as r:
+        got = json.loads(r.read())["result"]
+    assert time.monotonic() - t < LET_GO
+    assert (got["reply"], got["trace"], got["traced"]) == ("fixed it", None, True)
+
+
+def test_a_sidecar_restarted_before_the_line_was_made_lets_its_waiters_go(client, home, monkeypatch):
+    h = herd_mod.get_herd()
+    h.tick(sessions=TSNAP)
+    asks = []
+    for i, said in enumerate(("made", "lost")):
+        asks.append(h.ask("claude-t", f"step {i}", from_name="claude-main"))
+        _deliver_t(h)
+        _taken(h, home, asks[-1]["id"], c_use("a", "Bash", 2, command="make"))
+        if said == "lost":                                   # the sidecar stops between answer and line
+            real = HerdStore._trace_soon
+            monkeypatch.setattr(HerdStore, "_trace_soon", lambda *a: None)
+        h.reply(asks[-1]["id"], said, from_name="claude-t")
+        h.wait_traces()
+    monkeypatch.setattr(HerdStore, "_trace_soon", real)
+    made = h.get_ask(asks[0]["id"])["trace"]
+    asks.append(h.ask("claude-t", "step 2", from_name="claude-main"))
+    reset_herd()
+    h = herd_mod.get_herd()
+    _no_line(h, asks[1]["id"], "lost")
+    for who in ("claude-t", "claude-main"):
+        _, took = _await(client, asks[1]["id"], who)
+        assert took < LET_GO, (who, took)
+    # A line made stays; an ask not answered has none to give up.
+    assert h.get_ask(asks[0]["id"])["trace"] == made and made.startswith("How it went: ")
+    assert h.get_ask(asks[2]["id"])["traced"] is False
+
+
+def test_an_answer_long_given_is_not_held_for(client, home, monkeypatch):
+    "Whatever kept its line -- a worker stuck -- no await holds past the moment its mail would."
+    h = herd_mod.get_herd()
+    h.tick(sessions=TSNAP)
+    ask = h.ask("claude-t", "x", from_name="claude-main")
+    _deliver_t(h)
+    _taken(h, home, ask["id"])
+    monkeypatch.setattr(HerdStore, "_trace_soon", lambda *a: None)
+    h.reply(ask["id"], "answer", from_name="claude-t")
+    long_ago = (datetime.now(timezone.utc) - timedelta(seconds=herd_mod.TRACE_HOLD + 1)).isoformat()
+    with h._mu:
+        h._conn.execute("UPDATE asks SET answered_at = ? WHERE id = ?", (long_ago, ask["id"]))
+        h._conn.commit()
+    got, took = _await(client, ask["id"], "claude-main")
+    assert took < LET_GO and got["traced"] is False        # not given up: nothing says it failed
+
+
+def test_how_long_an_answer_is_still_held_for():
+    now = datetime.now(timezone.utc)
+    assert herd_mod.TRACE_HOLD - 0.1 < herd_mod.trace_hold_left(now.isoformat()) <= herd_mod.TRACE_HOLD
+    assert 1.5 < herd_mod.trace_hold_left((now - timedelta(seconds=1)).isoformat()) < 2.1
+    assert herd_mod.trace_hold_left((now - timedelta(seconds=60)).isoformat()) == 0
+    assert herd_mod.trace_hold_left((now + timedelta(seconds=60)).isoformat()) == herd_mod.TRACE_HOLD
+    assert herd_mod.trace_hold_left(None) == herd_mod.trace_hold_left("nonsense") == herd_mod.TRACE_HOLD
+
+
+def test_a_later_answer_gets_its_line_though_the_first_ones_failed(home, tmp_path, monkeypatch):
+    "The herd closed it on the taker's last words, and that line failed; then the taker answers."
+    h = _store(tmp_path)
+    ask = h.ask("claude-t", "x", from_name="claude-main")
+    _deliver_t(h)
+    _taken(h, home, ask["id"], c_use("a", "Bash", 2, command="make"))
+    real = T.read_work
+    monkeypatch.setattr(T, "read_work", lambda *a, **k: 1 / 0)
+    h.report("claude-t", state="working")
+    assert h.report("claude-t", state="done", last="On it.")["closed_ask"] == ask["id"]
+    h.wait_traces()
+    assert h.get_ask(ask["id"])["traced"] is True and h.get_ask(ask["id"])["trace"] is None
+    monkeypatch.setattr(T, "read_work", real)
+    h.reply(ask["id"], "done", from_name="claude-t")
+    h.wait_traces()
+    assert "1 tool call, none failed" in h.get_ask(ask["id"])["trace"]

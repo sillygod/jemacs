@@ -501,8 +501,10 @@ class JsonRpcHandler:
             ask = await asyncio.to_thread(herd.get_ask, ask_id)
             if ask["status"] in ASK_CLOSED:
                 # An answer goes with how its work went: made just after the
-                # reply, waited for a moment here -- never the reply itself.
-                held = loop.time() + herd_module.TRACE_HOLD
+                # reply, waited for a moment here -- never the reply itself,
+                # nor once the herd knows none is coming (`traced'), nor past
+                # the moment its mail would wait.
+                held = loop.time() + herd_module.trace_hold_left(ask["answered_at"])
                 while ask["status"] == "answered" and not ask.get("traced") and loop.time() < held:
                     await asyncio.sleep(TRACE_POLL)
                     ask = await asyncio.to_thread(herd.get_ask, ask_id)
