@@ -2771,6 +2771,16 @@ many again after the first import), the facts' multilingual model
 to watch and what was not done are written up in
 [[file:docs/sidecar-memory.html][docs/sidecar-memory.html]].
 
+Its telemetry.  ONNX Runtime 1.29 sends Microsoft telemetry from any
+process that loads it --- the sidecar, a test run, a one-off script:
+=import qdrant_client= does, through fastembed --- posted from a thread
+of its own about ten seconds after it loads.  A process that exited
+while that post was out aborted, its work done (=libc++abi: ...
+recursive_mutex lock failed: Invalid argument=; half the pytest runs
+that ended in that second).  The sidecar's modules set
+=ORT_DISABLE_TELEMETRY=1= before they load it (=server/onnx_telemetry.py=),
+so it never starts: nothing is posted, nothing is torn down at exit.
+
 Needs =uv= on PATH.  First real embed downloads FastEmbed's model into
 its cache; watch =*ghostherd-memory*= if that seems stuck.
 

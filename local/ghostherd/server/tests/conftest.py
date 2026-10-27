@@ -1,6 +1,11 @@
 import os
 import tempfile
 
+# ONNX Runtime's telemetry off before a test file's own `import
+# qdrant_client' loads onnxruntime: a run that ended while its post was out
+# aborted at exit, every test passed (onnx_telemetry.py).
+import onnx_telemetry  # noqa: F401
+
 os.environ.setdefault("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
 # A test that reaches `get_herd()' without setting GHOSTHERD_MEMORY_DIR would
 # otherwise fall back to config.py's default -- the real

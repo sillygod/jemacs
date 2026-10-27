@@ -16,6 +16,7 @@ import sys
 import threading
 from typing import Iterable
 
+import onnx_telemetry  # noqa: F401 -- before fastembed loads onnxruntime
 from config import Config
 from lexical import segment
 
