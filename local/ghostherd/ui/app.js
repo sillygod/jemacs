@@ -1764,6 +1764,25 @@
       '<button type="button" class="ghost small" data-act="a:agent-submit" title="Press Return for it">Press Return</button></div>';
   }
 
+  // Its directory gone -- a worktree removed outside the herd.  The card
+  // says so and where its branch stands, with a Stop; a respawn would be
+  // refused.  `gone' is null while the directory is there.
+  function goneBranchText(g) {
+    if (!g.worktree) return "no branch of its own";
+    if (g.state === "merged") return "branch " + g.branch + " merged into " + g.base + ", safe to stop";
+    if (g.state === "deleted") return "branch " + g.branch + " gone too, safe to stop";
+    if (g.state === "ahead") return "branch " + g.branch + " has " + g.ahead + " commit" + (g.ahead === 1 ? "" : "s") + " not on " + g.base;
+    if (g.state === "unknown") return "could not tell whether " + g.branch + " is merged";
+    return "reading branch " + g.branch + "…";
+  }
+  function goneHtml(a) {
+    const g = a.gone;
+    if (!g) return "";
+    return '<div class="contline gone"><span class="cont stopped" title="' + esc(g.path) + ' is gone: a respawn is refused">' +
+      (g.worktree ? "worktree" : "directory") + " gone — " + esc(goneBranchText(g)) + "</span>" +
+      '<button type="button" class="ghost small danger" data-act="a:stop-gone" title="Stop it: it leaves the herd">Stop</button></div>';
+  }
+
   function contText(secs, after) {
     after = after || "after sleep";
     return secs > 0 ? "continuing " + after + " in " + secs + "s" : "continuing " + after + " now…";
@@ -2002,7 +2021,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span></div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) + goneHtml(a) +
       (a.said ? '<div class="aask said" title="' + esc((a.conversation ? "conversation " + a.conversation + "\n" : "") + a.said) + '">' +
         '<span class="awhat">said</span><span class="atext">' + esc(a.said) + "</span>" +
         '<span class="when">' + esc(a.saidAt ? when(a.saidAt / 1000) : "") + "</span></div>" : "") +
@@ -2362,7 +2381,7 @@
       (a.notes ? '<span class="anotes" title="' + esc(a.notes) + '">' + esc(a.notes) + "</span>" : "") +
       '<span class="when" title="' + esc(a.since ? new Date(a.since).toLocaleString() : "") + '">' +
       esc(a.since ? when(a.since / 1000) : "") + "</span>" + cx + "</div>" +
-      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) +
+      meterHtml(a) + modelFormHtml(a) + reasonHtml(a) + continueHtml(a) + unsentHtml(a) + goneHtml(a) +
       (asks && asks.length ? '<div class="aasks">' + asks.map((k) => askLine(k, name)).join("") + "</div>" : "") +
       guardHtml(name) +
       (a.work ? workHtml(a.work) : "") + linksHtml(a) + menu +
@@ -3294,6 +3313,15 @@
     if (act === "kill") {
       return ask("Kill " + name + "?", "The agent stops and leaves the herd. Its transcript stays.",
         [["Cancel", "ghost", null], ["Kill", "primary danger", () => emit("agent-kill", { name })]]);
+    }
+    if (act === "stop-gone") {
+      const a = ((herdNow.data && herdNow.data.agents) || []).find((x) => x.name === name);
+      const g = a && a.gone;
+      const risk = g && g.worktree && g.state === "ahead"
+        ? " Its branch " + g.branch + " has " + g.ahead + " commit" + (g.ahead === 1 ? "" : "s") + " not on " + g.base + ": it is kept, but nothing will be working on it."
+        : "";
+      return ask("Stop " + name + "?", "Its " + (g && !g.worktree ? "directory" : "worktree") + " is gone. It stops and leaves the herd." + risk,
+        [["Cancel", "ghost", null], ["Stop", "primary danger", () => emit("agent-stop-gone", { name })]]);
     }
     if (act === "new-agent") return openNewForm(project);
     if (act === "new-go") {
@@ -4760,6 +4788,13 @@
       return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:relay" data-id="' + d + '">Relay to ' + esc(it.relayTo || "") + "</button>" +
         '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
     }
+    // Its directory gone: Stop, as `herd stop' does.  Where work may be lost
+    // the button says so, and is not the one that looks like the way on.
+    if (it.kind === "gone") {
+      return '<div class="ibacts"><button type="button" class="ibbtn' + (it.safe ? " ok" : "") + '" data-act="ib:stop-gone" data-id="' + d + '">' +
+        (it.safe ? "Stop it" : "Stop it anyway") + "</button>" +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
     return '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Mark read</button></div>';
   }
 
@@ -4907,6 +4942,7 @@
     if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
     if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
     if (act === "submit") { emit("agent-submit", { name: it.agent }); inboxResolve(it, "Return pressed for " + it.agent, false); return; }
+    if (act === "stop-gone") { emit("agent-stop-gone", { name: it.agent }); inboxResolve(it, "Stopped " + it.agent, false); return; }
     if (act === "done" && it.kind === "guard") { guardKeepDenied(it); return; }
     if (act === "done") { emit("inbox-set", { id: it.id, done: true }); inboxResolve(it, "Marked read", true); return; }
   }

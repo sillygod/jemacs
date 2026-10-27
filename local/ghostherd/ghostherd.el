@@ -1005,6 +1005,234 @@ base contains them -- the work is in, the worktree removable."
           (puthash id (list (float-time) ahead merged) ghostherd--worktree-stat)
           (list :ahead ahead :merged merged))))))
 
+;;; An agent whose directory is gone
+;;
+;; A worktree removed outside the herd -- `git worktree remove' by hand
+;; once its branch merged, an `rm -rf' -- leaves its agent where it was,
+;; and the herd went on as if the directory were there: `herd list' named
+;; it, `herd stop' said the worktree "was not merged or not clean, so it
+;; was kept", and a respawn started the agent in the home directory --
+;; tmux's `new-session -c' falls back to $HOME, without a word, when the
+;; directory is missing, and there claude asked to trust all of ~.  So
+;; the poll looks, once a minute, whether each agent's directory is still
+;; there.  One that is gone is marked -- its sidebar row, its card, `herd
+;; list' -- the Inbox tells the user where its branch stands, and nothing
+;; starts it there again.  It is never stopped for the user: whether its
+;; work is safe to leave is theirs to say.
+
+(defcustom ghostherd-directory-check-every 60
+  "Seconds between the poll's looks at whether each agent's directory is
+still there: a stat per agent.  One found gone has its branch read again,
+by git in the background, at each look; one marked gone is looked at
+again whenever it is shown, so it is unmarked as soon as it is back."
+  :type 'number
+  :group 'ghostherd)
+
+(defcustom ghostherd-gone-glyph "✗"
+  "Marker in the sidebar's glyph column for an agent whose directory is
+gone.  It takes the spare character the detached marker rides in."
+  :type 'string
+  :group 'ghostherd)
+
+(defvar ghostherd--dir-gone (make-hash-table :test 'equal)
+  "Session id -> a plist of its directory that is gone: :path, :since
+\(float time) and :worktree; for a worktree, once git has said where its
+branch stands, :branch, :base, :state (`merged', `deleted', `ahead' or
+`unknown') and :ahead, its commits not on base.")
+
+(defvar ghostherd--dir-gone-reading (make-hash-table :test 'equal)
+  "Session id -> the git process reading where its gone worktree's branch
+stands, while it does.")
+
+(defvar ghostherd--dir-checked-at 0
+  "When the poll last looked at every agent's directory (float time).")
+
+(defun ghostherd--recorded-directory (session)
+  "Where SESSION works by its recipe -- its worktree, else its project --
+which is where a respawn would start it; nil when it has neither."
+  (or (plist-get (ghostherd-session-worktree session) :path)
+      (ghostherd-session-project session)))
+
+(defun ghostherd--directory-missing-p (dir)
+  "Non-nil when DIR, a local directory, is not there; nil for no DIR.
+No file-name handlers: an agent's directory is local (tmux starts it
+there), and their regexps would cost more than the stat."
+  (and (stringp dir) (not (string-empty-p dir))
+       (let ((file-name-handler-alist nil))
+         (not (file-directory-p (expand-file-name dir))))))
+
+(defun ghostherd--mark-gone (session &optional no-read)
+  "Mark SESSION's directory gone, when it is and is not marked yet; then,
+unless NO-READ, read where its branch stands.  Its entry, or nil when it
+is there."
+  (let* ((id (ghostherd-session-id session))
+         (dir (ghostherd--recorded-directory session))
+         (was (gethash id ghostherd--dir-gone)))
+    (when (ghostherd--directory-missing-p dir)
+      (unless (and was (equal (plist-get was :path) dir))
+        (let ((worktree (and (plist-get (ghostherd-session-worktree session) :path) t)))
+          (puthash id (list :path dir :since (float-time) :worktree worktree)
+                   ghostherd--dir-gone)
+          (ghostherd--log-add session 'life
+                              (format "its %s %s is gone"
+                                      (if worktree "worktree" "directory")
+                                      (abbreviate-file-name dir)))))
+      (unless no-read
+        (ghostherd--gone-branch-read session))
+      (gethash id ghostherd--dir-gone))))
+
+(defun ghostherd--unmark-gone (session)
+  "Unmark SESSION, whose directory is back."
+  (when (gethash (ghostherd-session-id session) ghostherd--dir-gone)
+    (remhash (ghostherd-session-id session) ghostherd--dir-gone)
+    (ghostherd--log-add session 'life "its directory is back")))
+
+(defun ghostherd-session-directory-gone (session)
+  "SESSION's gone directory as `ghostherd--dir-gone' has it, or nil.
+Looked at again here -- one stat, and only for an agent marked gone -- so
+one whose directory is back is unmarked at once, not at the next look."
+  (when-let* ((gone (gethash (ghostherd-session-id session) ghostherd--dir-gone)))
+    (if (ghostherd--directory-missing-p (plist-get gone :path))
+        gone
+      (ghostherd--unmark-gone session)
+      nil)))
+
+(defun ghostherd--check-directories (&optional now)
+  "Mark each agent whose directory is gone and unmark each whose is back;
+at most once every `ghostherd-directory-check-every' seconds, unless NOW.
+From the poll.  Returns non-nil when a mark changed."
+  (when (or now (>= (- (float-time) ghostherd--dir-checked-at)
+                    ghostherd-directory-check-every))
+    (setq ghostherd--dir-checked-at (float-time))
+    (let ((before (hash-table-count ghostherd--dir-gone))
+          (paths (let (l) (maphash (lambda (id g) (push (cons id (plist-get g :path)) l))
+                                   ghostherd--dir-gone)
+                      l))
+          changed)
+      (dolist (s (hash-table-values ghostherd--sessions))
+        (if (ghostherd--mark-gone s)
+            (unless (equal (cdr (assoc (ghostherd-session-id s) paths))
+                           (ghostherd--recorded-directory s))
+              (setq changed t))
+          (when (gethash (ghostherd-session-id s) ghostherd--dir-gone)
+            (ghostherd--unmark-gone s)
+            (setq changed t))))
+      ;; An agent that left the herd takes its mark with it.
+      (dolist (id (mapcar #'car paths))
+        (unless (gethash id ghostherd--sessions)
+          (remhash id ghostherd--dir-gone)))
+      (when (or changed (/= before (hash-table-count ghostherd--dir-gone)))
+        (ghostherd--sidebar-refresh)
+        t))))
+
+(defconst ghostherd--gone-branch-script
+  "cd \"$1\" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1 || { echo unknown; exit 0; }
+git rev-parse -q --verify \"refs/heads/$2\" >/dev/null 2>&1 || { echo deleted; exit 0; }
+git rev-list --count \"$3..refs/heads/$2\" 2>/dev/null || echo unknown"
+  "Where a gone worktree's branch stands, read in its main checkout $1:
+`deleted' when branch $2 is no more; else how many of its commits are not
+on base $3, 0 when it is merged; `unknown' when git cannot say -- the
+main checkout gone as well, or the base.")
+
+(defun ghostherd--gone-branch-parse (out)
+  "(STATE . AHEAD) from `ghostherd--gone-branch-script''s OUT: STATE
+`merged', `deleted', `ahead' or `unknown', AHEAD the commits not on base."
+  (let ((s (car (last (split-string (or out "") "\n" t "[ \t\r]+")))))
+    (cond ((equal s "deleted") '(deleted . 0))
+          ((and s (string-match-p "\\`[0-9]+\\'" s))
+           (let ((n (string-to-number s)))
+             (if (zerop n) '(merged . 0) (cons 'ahead n))))
+          (t '(unknown . 0)))))
+
+(defun ghostherd--gone-branch-args (session)
+  "The script's arguments (MAIN BRANCH BASE) for SESSION's worktree, or
+nil when it has none to read."
+  (let* ((wt (ghostherd-session-worktree session))
+         (branch (plist-get wt :branch))
+         (base (plist-get wt :base))
+         (main (ghostherd-session-project session)))
+    (and (plist-get wt :path) (stringp branch) (stringp base) (stringp main)
+         (list (expand-file-name main) branch base))))
+
+(defun ghostherd--gone-branch-put (session args out)
+  "Put where SESSION's branch stands, from the script's OUT for ARGS, into
+its gone entry, when it still has one."
+  (let ((id (ghostherd-session-id session)))
+    (when-let* ((gone (gethash id ghostherd--dir-gone)))
+      (pcase-let ((`(,state . ,ahead) (ghostherd--gone-branch-parse out)))
+        (puthash id (append (list :branch (nth 1 args) :base (nth 2 args)
+                                  :state state :ahead ahead)
+                            (list :path (plist-get gone :path) :since (plist-get gone :since)
+                                  :worktree (plist-get gone :worktree)))
+                 ghostherd--dir-gone)))))
+
+(defun ghostherd--gone-branch-read (session)
+  "Read where SESSION's gone worktree's branch stands into its entry, in
+the background: git takes milliseconds a call, and this runs from the
+poll.  One read at a time per agent; nothing for one with no worktree."
+  (let ((id (ghostherd-session-id session))
+        (args (ghostherd--gone-branch-args session)))
+    (when (and args (not (process-live-p (gethash id ghostherd--dir-gone-reading))))
+      (let ((buf (generate-new-buffer " *ghostherd-gone*"))
+            ;; The buffer the timer runs in may itself be in a directory
+            ;; that is gone, and a process cannot start there.
+            (default-directory "/"))
+        (condition-case err
+            (puthash
+             id
+             (make-process
+              :name "ghostherd-gone" :buffer buf :noquery t :connection-type 'pipe
+              :command (append (list "sh" "-c" ghostherd--gone-branch-script "sh") args)
+              :sentinel
+              (lambda (proc _event)
+                (unless (process-live-p proc)
+                  ;; Its own entry only: an agent stopped and started again
+                  ;; under the name may be reading by now.
+                  (when (eq (gethash id ghostherd--dir-gone-reading) proc)
+                    (remhash id ghostherd--dir-gone-reading))
+                  (let ((out (and (buffer-live-p buf)
+                                  (with-current-buffer buf (buffer-string)))))
+                    (when (buffer-live-p buf) (kill-buffer buf))
+                    (when (eq (ghostherd-get id) session)
+                      (ghostherd--gone-branch-put session args out))))))
+             ghostherd--dir-gone-reading)
+          (error
+           (when (buffer-live-p buf) (kill-buffer buf))
+           (message "ghostherd: reading %s's branch: %s" id (error-message-string err))))))))
+
+(defun ghostherd--gone-branch-now (session)
+  "Where SESSION's gone worktree's branch stands, read now: (STATE . AHEAD)
+as `ghostherd--gone-branch-parse' gives it, or nil with no worktree.  For
+a command, not the poll: it waits on git."
+  (when-let* ((args (ghostherd--gone-branch-args session)))
+    (with-temp-buffer
+      (let ((default-directory "/"))
+        (apply #'call-process "sh" nil '(t nil) nil "-c" ghostherd--gone-branch-script "sh" args))
+      (let ((out (buffer-string)))
+        (ghostherd--gone-branch-put session args out)
+        (ghostherd--gone-branch-parse out)))))
+
+(defun ghostherd--gone-branch-words (branch base state ahead)
+  "Where BRANCH stands against BASE, by STATE and AHEAD, in a few words."
+  (pcase state
+    ('merged (format "branch %s is merged into %s" branch base))
+    ('deleted (format "branch %s is gone too" branch))
+    ('ahead (format "branch %s has %d commit%s not on %s" branch ahead
+                    (if (= ahead 1) "" "s") base))
+    (_ (format "whether branch %s is merged into %s could not be read" branch base))))
+
+(defun ghostherd--refuse-gone (session doing)
+  "Signal a `user-error' when SESSION's directory is gone, rather than
+DOING it (\"respawning\", \"relaying\"): it would start in the home
+directory.  SESSION is marked gone first, so the Inbox says so."
+  (when (ghostherd--mark-gone session)
+    (let ((gone (gethash (ghostherd-session-id session) ghostherd--dir-gone)))
+      (user-error "%s's %s %s is gone: not %s it (it would start in your home directory); stop it instead"
+                  (ghostherd-session-name session)
+                  (if (plist-get gone :worktree) "worktree" "directory")
+                  (abbreviate-file-name (plist-get gone :path))
+                  doing))))
+
 (defun ghostherd--worktree-remove (main path &optional force branch)
   "Remove git worktree PATH of the MAIN checkout; return t on success.
 With FORCE, discard the worktree's uncommitted changes.  With BRANCH, also
@@ -4022,6 +4250,14 @@ PLIST keys:
                      (or (plist-get plist :directory)
                          project
                          default-directory)))
+         ;; Never where the directory is not: tmux's `new-session -c'
+         ;; starts the agent in $HOME instead, without a word, and the
+         ;; CLI there asks to trust the whole home directory.  Every path
+         ;; that starts an agent comes through here; the ones that kill
+         ;; one first (respawn, relay) look before they do.
+         (_ (when (ghostherd--directory-missing-p directory)
+              (user-error "%s's directory %s is not there: not starting it (it would start in your home directory)"
+                          name (abbreviate-file-name directory))))
          (command (or (plist-get plist :command)
                       (plist-get spec :command)))
          (args (let ((base (if (plist-member plist :args)
@@ -4231,6 +4467,9 @@ running, and a session keeps the backend it was born with anyway."
                               (format "restored from %s, detached" backend))
           (setq restored (1+ restored)))))
     (when (> restored 0)
+      ;; The next poll looks whether their directories are there, not a
+      ;; minute on: one restored with its worktree gone is marked at once.
+      (setq ghostherd--dir-checked-at 0)
       (ghostherd--ensure-poll-timer)
       (ghostherd--sidebar-refresh))
     (setq ghostherd--restored t)
@@ -4323,6 +4562,8 @@ one, and otherwise prompts."
   (setq session (ghostherd-get session))
   (unless session
     (user-error "No such session"))
+  ;; Before it is killed: refused after, it would be gone from the herd too.
+  (ghostherd--refuse-gone session "respawning")
   (let* ((kind (ghostherd-session-kind session))
          (spec (ghostherd--spec kind))
          (recipe (ghostherd-session-recipe session))
@@ -4846,6 +5087,7 @@ in a second or two, while a resume that worked is long up by now.")
 (defun ghostherd--respawn-fresh (session)
   "Respawn SESSION cold -- its args stripped of any resume flag.  A lead on
 a CLI that takes no role flag re-reads its role, as a cold respawn does."
+  (ghostherd--refuse-gone session "respawning")
   (let* ((kind (ghostherd-session-kind session))
          (recipe (ghostherd-session-recipe session))
          (role (plist-get recipe :role))
@@ -4879,7 +5121,11 @@ the kept conversation.  For `ghostherd-state-change-hook'."
                     (when-let* ((s (ghostherd-get name))) (ghostherd-kill s t))
                     (ghostherd-primary-start))
            (when-let* ((s (ghostherd-get name)))
-             (ghostherd--respawn-fresh s))))))))
+             ;; Its directory gone, it stays as it is, dead and marked:
+             ;; started fresh it would come up in the home directory.
+             (if (ghostherd--mark-gone s)
+                 (ghostherd--log-add s 'life "not started fresh: its directory is gone")
+               (ghostherd--respawn-fresh s)))))))))
 
 (add-hook 'ghostherd-state-change-hook #'ghostherd--resume-backstop)
 
@@ -5145,6 +5391,7 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (remhash id ghostherd--panes)
     (remhash id ghostherd--feet)
     (remhash id ghostherd--started-by)
+    (remhash id ghostherd--dir-gone)
     (ghostherd--log-add session 'life
                         (if kill-buffer "killed" "released from the herd"))
     (run-hook-with-args 'ghostherd-session-removed-hook session)
@@ -5163,6 +5410,22 @@ When KILL-BUFFER is non-nil (the interactive default), also kill its buffer."
     (ghostherd--stop-poll-timer)
     (ghostherd--sidebar-refresh)
     (message "Killed session %s" (ghostherd-session-name session))))
+
+(defun ghostherd-stop-gone (session)
+  "Stop SESSION, whose directory is gone, as `herd stop' does: it leaves
+the herd and its host is killed; its branch, if any, is left as it is.
+The Inbox's and the card's Stop.  Refused when its directory is back --
+what offered it was out of date.  Returns what to say."
+  (setq session (or (ghostherd-get session) (user-error "No such session")))
+  (let ((name (ghostherd-session-name session))
+        (gone (ghostherd--mark-gone session t)))
+    (unless gone
+      (ghostherd--unmark-gone session)
+      (user-error "%s's directory is back: not stopping it" name))
+    (ghostherd--log-add session 'life "stopped by the user: its directory was gone")
+    (ghostherd-kill session t)
+    (format "Stopped %s; its %s was already gone" name
+            (if (plist-get gone :worktree) "worktree" "directory"))))
 
 ;;;###autoload
 ;;;###autoload
@@ -5204,7 +5467,8 @@ annotation, which is where you are choosing between agents."
     ;; which was invisible; dropping a report is not, since it would put a
     ;; blocked row back under the rules mid-prompt.
     (dolist (table (list ghostherd--input-at ghostherd--idle-since
-                         ghostherd--reports ghostherd--screens))
+                         ghostherd--reports ghostherd--screens
+                         ghostherd--dir-gone))
       (when-let* ((value (gethash old-id table)))
         (remhash old-id table)
         (puthash new-name value table)))
@@ -7184,19 +7448,31 @@ columns back rather than needing the buffer recreated."
         (setq tabulated-list-format fitted)
         (tabulated-list-init-header)))))
 
+(defun ghostherd--gone-label (gone)
+  "The sidebar's word for GONE, a `ghostherd--dir-gone' entry."
+  (if (plist-get gone :worktree) "wt gone" "dir gone"))
+
 (defun ghostherd--sidebar-cell (session key state face)
   "Return SESSION's cell for column KEY, given its STATE and FACE."
   (pcase key
     ('glyph   (concat
                (propertize (ghostherd--state-glyph state) 'face face)
-               ;; Whether anyone is looking is a fact about the *view*,
-               ;; so it is a separate mark rather than a state glyph of
-               ;; its own -- an agent is working or blocked regardless.
-               ;; It belongs in the overview all the same: without it a
-               ;; herd running headless looks exactly like one you are
-               ;; watching.
-               (unless (buffer-live-p (ghostherd-session-buffer session))
-                 (propertize ghostherd-detached-glyph 'face face))))
+               ;; Its directory gone outranks how it is viewed: the mark
+               ;; that says so has the spare character, as the state
+               ;; column, when it fits, has the words.
+               (if-let* ((gone (ghostherd-session-directory-gone session)))
+                   (propertize ghostherd-gone-glyph 'face 'error
+                               'help-echo (format "its %s %s is gone"
+                                                  (if (plist-get gone :worktree) "worktree" "directory")
+                                                  (abbreviate-file-name (plist-get gone :path))))
+                 ;; Whether anyone is looking is a fact about the *view*,
+                 ;; so it is a separate mark rather than a state glyph of
+                 ;; its own -- an agent is working or blocked regardless.
+                 ;; It belongs in the overview all the same: without it a
+                 ;; herd running headless looks exactly like one you are
+                 ;; watching.
+                 (unless (buffer-live-p (ghostherd-session-buffer session))
+                   (propertize ghostherd-detached-glyph 'face face)))))
     ('name    (let ((name (propertize (ghostherd-session-name session) 'face face))
                     (generation (ghostherd-session-generation session)))
                 ;; An heir's place in the line of its name, as the herd
@@ -7207,7 +7483,12 @@ columns back rather than needing the buffer recreated."
                                                        'face (list 'bold face)))
                               'help-echo (ghostherd--line-text session)))))
     ('kind    (symbol-name (ghostherd-session-kind session)))
-    ('state   (propertize (symbol-name state) 'face face))
+    ('state   (if-let* ((gone (ghostherd-session-directory-gone session)))
+                  (propertize (ghostherd--gone-label gone) 'face 'error
+                              'help-echo (format "%s; its %s %s is gone" state
+                                                 (if (plist-get gone :worktree) "worktree" "directory")
+                                                 (abbreviate-file-name (plist-get gone :path))))
+                (propertize (symbol-name state) 'face face)))
     ('project (ghostherd--abbreviate (ghostherd-session-project session)))
     ('title   (or (ghostherd--session-title session) ""))
     ('age     (ghostherd--age-string
@@ -7242,7 +7523,10 @@ Each character is quoted, so `emacs.d` does not become `emacs<any>d`."
                          (ghostherd--abbreviate
                           (ghostherd-session-project session))
                          (ghostherd-session-notes session)
-                         (ignore-errors (ghostherd--session-title session))))
+                         (ignore-errors (ghostherd--session-title session))
+                         ;; So `/gone' finds the agents whose directory is.
+                         (and (ghostherd-session-directory-gone session)
+                              "gone")))
              " "))
 
 (defun ghostherd--sidebar-query-matches-p (session query)
@@ -7319,10 +7603,21 @@ Used by the interactive refresh and `tabulated-list-revert-hook'."
     (when (and raw (not (string-empty-p raw))
                (not (equal raw "(no screen yet)")))
       (puthash (ghostherd-session-id session) raw ghostherd--screens))
-    (mapconcat (lambda (line)
-                 (truncate-string-to-width line width nil nil t))
-               (split-string tail "\n")
-               "\n")))
+    (concat
+     ;; Above its screen, in words: what the row's mark means.
+     (when-let* ((gone (ghostherd-session-directory-gone session)))
+       (concat (propertize
+                (truncate-string-to-width
+                 (format "%s %s is gone: a respawn is refused; stop it instead"
+                         (if (plist-get gone :worktree) "worktree" "directory")
+                         (abbreviate-file-name (plist-get gone :path)))
+                 width nil nil t)
+                'face 'error)
+               "\n"))
+     (mapconcat (lambda (line)
+                  (truncate-string-to-width line width nil nil t))
+                (split-string tail "\n")
+                "\n"))))
 
 (defun ghostherd--sidebar-draw-preview ()
   "Rebuild the preview pane under the current row."
@@ -7464,6 +7759,9 @@ poll hitchs typing; that path is `ghostherd--herd-tick-timer'."
   ;; to a new conversation).
   (when (zerop (% (cl-incf ghostherd--poll-count) ghostherd--turn-ends-prune-every))
     (ghostherd--prune-turn-ends))
+  ;; Whose directory is gone: a stat each, once a minute.
+  (with-demoted-errors "ghostherd: looking at the agents' directories: %S"
+    (ghostherd--check-directories))
   (when (ghostherd--sidebar-on-screen-p)
     (ghostherd--sidebar-refresh)))
 
@@ -7655,6 +7953,9 @@ address of each one's room from your phone, for the bot to link to."
                                    (ghostherd-session-project s))))
                         (if d (ghostherd--abbreviate d) ""))
            :branch (or (plist-get (ghostherd-session-worktree s) :branch) "")
+           ;; That directory is gone -- a worktree removed outside the herd:
+           ;; `herd list' says so, for its lead to stop it.
+           :directoryMissing (if (ghostherd-session-directory-gone s) t :json-false)
            ;; Who started it through `herd start', and where its worktree
            ;; branch stands -- for `herd list' and the card's "started by".
            :startedBy (or (ghostherd-session-started-by s) "")
@@ -8959,13 +9260,29 @@ merged, clean worktree; keeps an unmerged one.  Returns the line to tell BY."
       (format "%s holds an open or queued ask; let it answer, or cancel it, first" name))
      (t
       (let* ((wt (ghostherd-session-worktree s))
-             (will-remove (and wt (plist-get wt :path)
+             ;; Looked at now, not as the last poll saw it.
+             (gone (ghostherd--mark-gone s t))
+             (branch (and gone (ghostherd--gone-branch-now s)))
+             (will-remove (and wt (plist-get wt :path) (not gone)
                                (ghostherd--worktree-clean-p (plist-get wt :path))
                                (ghostherd--worktree-merged-p (ghostherd-session-project s)
                                                              (plist-get wt :branch)
                                                              (plist-get wt :base)))))
         (ghostherd-kill s t)
         (cond
+         ;; Removed outside the herd: nothing of it to keep or remove, and
+         ;; the branch, whatever it holds, is left as it is.
+         (gone
+          (format "stopped %s; its %s %s was already gone%s"
+                  name (if (plist-get gone :worktree) "worktree" "directory")
+                  (abbreviate-file-name (plist-get gone :path))
+                  (if branch
+                      (concat " (" (ghostherd--gone-branch-words
+                                    (plist-get wt :branch) (plist-get wt :base)
+                                    (car branch) (cdr branch))
+                              (if (eq (car branch) 'ahead) "; the branch is kept" "")
+                              ")")
+                    "")))
          ((not wt) (format "stopped %s" name))
          (will-remove
           (format "stopped %s; its worktree was merged and clean, so it was removed" name))
@@ -9864,6 +10181,7 @@ Returns at once: the heir starts when the sidecar has the brief."
       (user-error "A relay needs the herd's sidecar, to read %s's conversation" name))
     (when (gethash id ghostherd--relaying)
       (user-error "%s is already being relayed" name))
+    (ghostherd--refuse-gone session "relaying")
     (puthash id t ghostherd--relaying)
     (ghostherd--log-add session 'life (format "relaying to %s: reading where its work stands" kind))
     (ghostherd-memory-request-async
@@ -9899,12 +10217,19 @@ Returns at once: the heir starts when the sidecar has the brief."
   "Kill SESSION and start its heir on KIND, told TEXT once it is ready.
 REASON is why SESSION stopped.  The asks SESSION was answering are held
 for the heir meanwhile.  Return the heir, or nil when SESSION left the
-herd while the brief was written."
+herd, or its directory went, while the brief was written."
   (let ((id (ghostherd-session-id session))
         (name (ghostherd-session-name session)))
-    (if (not (eq (gethash id ghostherd--sessions) session))
-        (progn (message "ghostherd: %s left the herd before its heir could take over" name)
-               nil)
+    (cond
+     ((not (eq (gethash id ghostherd--sessions) session))
+      (message "ghostherd: %s left the herd before its heir could take over" name)
+      nil)
+     ;; Its directory went while the brief was written: it stays as it is.
+     ((ghostherd--mark-gone session)
+      (ghostherd--log-add session 'life (format "not relayed to %s: its directory is gone" kind))
+      (message "ghostherd: %s's directory is gone: not relaying it; stop it instead" name)
+      nil)
+     (t
       (let* ((old (ghostherd-session-kind session))
              (recipe (plist-put (ghostherd-session-recipe session) :kind old))
              (lead (equal (plist-get recipe :role) "lead"))
@@ -9944,7 +10269,7 @@ herd while the brief was written."
                                (lambda () (ghostherd--relay-tell heir text held lead))
                                nil
                                (lambda () (ghostherd--relay-release heir held)))
-        heir))))
+        heir)))))
 
 (defun ghostherd--relay-tell (heir text held lead)
   "Tell HEIR its work, TEXT; then the asks HELD for it are its to answer.

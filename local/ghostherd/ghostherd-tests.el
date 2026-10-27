@@ -11877,7 +11877,9 @@ set; otherwise it is told at once."
         (ghostherd-relay-kinds '(claude grok agy))
         (ghostherd--log nil)
         (requests nil) (spawned nil) (told nil) (ready nil) (hold nil) (brief-error nil))
-     (cl-letf (((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
+     ;; Its paths are labels: nothing starts in them, so none is missing.
+     (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+               ((symbol-function 'ghostherd-herd-client) (lambda () "/p/bin/herd"))
                ((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://127.0.0.1:1/jsonrpc"))
                ((symbol-function 'ghostherd-memory-request-async)
                 (lambda (method cb &optional params err)
@@ -12348,7 +12350,9 @@ an agent spawned without one is the first of its name."
   (ghostherd-tests--with-herd ((ghostherd--lineage (make-hash-table :test 'equal))
                                (ghostherd--roles (make-hash-table :test 'equal))
                                (ghostherd-tests--fake-spawned nil))
-    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+    ;; Its paths are labels: nothing starts in them, so none is missing.
+    (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+              ((symbol-function 'ghostherd--install-hooks) #'ignore)
               ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
               ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
               ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
@@ -12419,7 +12423,9 @@ respawn -- so a lead still owns an agent it started after a restart."
        (ghostherd--started-by (make-hash-table :test 'equal))
        (ghostherd--lineage (make-hash-table :test 'equal))
        (ghostherd-tests--fake-spawned nil))
-    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+    ;; Its paths are labels: nothing starts in them, so none is missing.
+    (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+              ((symbol-function 'ghostherd--install-hooks) #'ignore)
               ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
               ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
               ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
@@ -12723,7 +12729,9 @@ whole, within the cap, with how many were left out."
                (ghostherd--started-by (make-hash-table :test 'equal))
                (ghostherd--lineage (make-hash-table :test 'equal))
                (ghostherd-tests--fake-spawned nil))
-            (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+            ;; Its paths are labels: nothing starts in them, so none is missing.
+            (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+                      ((symbol-function 'ghostherd--install-hooks) #'ignore)
                       ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
                       ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
                       ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
@@ -12764,7 +12772,9 @@ role text before it -- never two blocks, always the current index."
                (ghostherd--started-by (make-hash-table :test 'equal))
                (ghostherd--lineage (make-hash-table :test 'equal))
                (ghostherd-tests--fake-spawned nil))
-            (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+            ;; Its paths are labels: nothing starts in them, so none is missing.
+            (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+                      ((symbol-function 'ghostherd--install-hooks) #'ignore)
                       ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
                       ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
                       ((symbol-function 'ghostherd--sidebar-refresh) #'ignore)
@@ -13059,7 +13069,9 @@ tmux options round-trip; and restore rebuilds the worktree from them."
                                (ghostherd-known-backends '(fake))
                                (ghostherd-tests--fake-recipes nil)
                                (ghostherd-tests--fake-spawned nil))
-    (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+    ;; Its paths are labels: nothing starts in them, so none is missing.
+    (cl-letf (((symbol-function 'ghostherd--directory-missing-p) #'ignore)
+              ((symbol-function 'ghostherd--install-hooks) #'ignore)
               ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
               ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
               ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
@@ -16002,6 +16014,433 @@ them, in the same push -- checked; and a thread's answer its own."
                             (plist-get (plist-get (cdr thr) :thread) :msgs))))
         (should (vectorp (plist-get msg :images)))
         (should (eq (plist-get (aref (plist-get msg :images) 0) :thumb) t))))))
+
+;;; An agent whose directory is gone (ask 0c54c5b6)
+;;
+;; rd-tabs and rd-reading's worktrees were removed outside the herd once
+;; their branches merged; `herd list' still named the directories, `herd
+;; stop' said they were "not merged or not clean, so ... kept", and a
+;; respawn brought both up in the home directory.
+
+(defmacro ghostherd-tests--with-gone (&rest body)
+  "BODY in a clean herd over a temp git `repo' (`with-repo') on the fake
+backend, the gone-directory tables fresh and worktrees under the temp dir.
+`wt-of' makes agent NAME a worktree agent of `repo', in a real git
+worktree off `main', and returns the worktree's path."
+  (declare (indent 0) (debug t))
+  `(ghostherd-tests--with-repo
+     (ghostherd-tests--with-herd
+         ((ghostherd--roles (make-hash-table :test 'equal))
+          (ghostherd--worktrees (make-hash-table :test 'equal))
+          (ghostherd--worktree-stat (make-hash-table :test 'equal))
+          (ghostherd--started-by (make-hash-table :test 'equal))
+          (ghostherd--lineage (make-hash-table :test 'equal))
+          (ghostherd--relaying (make-hash-table :test 'equal))
+          (ghostherd--dir-gone (make-hash-table :test 'equal))
+          (ghostherd--dir-gone-reading (make-hash-table :test 'equal))
+          (ghostherd--dir-checked-at 0)
+          (ghostherd--log nil)
+          (ghostherd--herd-asks nil)
+          (ghostherd-relay-kinds '(claude grok agy))
+          (ghostherd-tests--fake-spawned nil)
+          (ghostherd-backend 'fake)
+          (ghostherd-worktree-root (concat base "wts/"))
+          (ghostherd-lead-may-start t))
+       (cl-letf (((symbol-function 'ghostherd--install-hooks) #'ignore)
+                 ((symbol-function 'ghostherd--register-eval-cmds) #'ignore)
+                 ((symbol-function 'ghostherd--ensure-poll-timer) #'ignore)
+                 ((symbol-function 'ghostherd--host-kill) #'ignore)
+                 ((symbol-function 'ghostherd--sidebar-refresh) #'ignore))
+         (let ((wt-of (lambda (name)
+                        (let ((wt (ghostherd--worktree-create repo name)))
+                          (ghostherd-tests--session :name name :kind 'claude :state 'idle
+                                                    :backend 'fake :project repo)
+                          (puthash name wt ghostherd--worktrees)
+                          (plist-get wt :path)))))
+           ;; A read left going would be heard in the next test, by its tables.
+           (unwind-protect (progn ,@body)
+             (ghostherd-tests--gone-read-wait t)))))))
+
+(defun ghostherd-tests--gone-reads ()
+  "The background branch reads still going, or not yet heard from."
+  (seq-filter (lambda (p) (and (string-prefix-p "ghostherd-gone" (process-name p))
+                               (or (process-live-p p) (buffer-live-p (process-buffer p)))))
+              (process-list)))
+
+(defun ghostherd-tests--gone-read-wait (&optional quiet)
+  "Wait, five seconds at most, for every background branch read to end
+and be heard; unless QUIET, fail when one has not."
+  (let ((until (+ (float-time) 5)))
+    (while (and (ghostherd-tests--gone-reads) (< (float-time) until))
+      (accept-process-output nil 0.02))
+    (unless quiet
+      (should-not (ghostherd-tests--gone-reads))
+      (should (zerop (hash-table-count ghostherd--dir-gone-reading))))))
+
+(defun ghostherd-tests--logged-p (re)
+  "Non-nil when a log entry's text matches RE."
+  (seq-find (lambda (e) (string-match-p re (ghostherd-log-entry-text e))) ghostherd--log))
+
+(ert-deftest ghostherd-test-gone-the-poll-marks-and-unmarks ()
+  "The poll looks once a minute: an agent whose worktree is gone is marked,
+then where its branch stands is read; one whose directory is there is not.
+A look inside the minute does nothing unless asked now.  One whose
+directory is back is unmarked as soon as it is shown, not a minute on; an
+agent that leaves the herd takes its mark with it."
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs")))
+      (ghostherd-tests--session :name "here" :kind 'claude :backend 'fake :project repo)
+      (should-not (ghostherd--check-directories))
+      (should (zerop (hash-table-count ghostherd--dir-gone)))
+      (delete-directory path t)                  ; removed outside the herd
+      (should-not (ghostherd--check-directories))  ; inside the minute: not looked
+      (should-not (gethash "rd-tabs" ghostherd--dir-gone))
+      (should (ghostherd--check-directories t))
+      (let ((g (gethash "rd-tabs" ghostherd--dir-gone)))
+        (should (equal (plist-get g :path) path))
+        (should (eq (plist-get g :worktree) t)))
+      (should-not (gethash "here" ghostherd--dir-gone))
+      (should (ghostherd-tests--logged-p "its worktree .*rd-tabs/ is gone"))
+      (ghostherd-tests--gone-read-wait)
+      (should (eq (plist-get (gethash "rd-tabs" ghostherd--dir-gone) :state) 'merged))
+      ;; A minute on, the poll looks by itself; still gone is no change.
+      (setq ghostherd--dir-checked-at (- (float-time) ghostherd-directory-check-every 1))
+      (should-not (ghostherd--check-directories))
+      (should (< (- (float-time) ghostherd--dir-checked-at) 5))
+      (ghostherd-tests--gone-read-wait)
+      ;; Back: unmarked when shown.
+      (make-directory path t)
+      (should-not (ghostherd-session-directory-gone (ghostherd-get "rd-tabs")))
+      (should-not (gethash "rd-tabs" ghostherd--dir-gone))
+      (should (ghostherd-tests--logged-p "its directory is back"))
+      ;; Gone again, then it leaves the herd: the mark goes with it.
+      (delete-directory path t)
+      (should (ghostherd--check-directories t))
+      (ghostherd-tests--gone-read-wait)
+      (remhash "rd-tabs" ghostherd--sessions)
+      (should (ghostherd--check-directories t))
+      (should (zerop (hash-table-count ghostherd--dir-gone)))
+      ;; An agent with neither worktree nor project has nothing to look at.
+      (ghostherd-tests--session :name "nowhere" :kind 'shell :backend 'fake)
+      (should-not (ghostherd--check-directories t)))))
+
+(ert-deftest ghostherd-test-gone-where-its-branch-stands ()
+  "Where a gone worktree's branch stands, read by git in the main checkout:
+merged; commits not on its base, and how many; deleted; or unknown when
+the main checkout is gone as well.  The poll's background read and a
+command's read now say the same."
+  (ghostherd-tests--with-gone
+    (let ((merged (funcall wt-of "m"))
+          (ahead (funcall wt-of "a"))
+          (deleted (funcall wt-of "d")))
+      (funcall git ahead "commit" "-q" "--allow-empty" "-m" "one")
+      (funcall git ahead "commit" "-q" "--allow-empty" "-m" "two")
+      (delete-directory merged t)
+      (delete-directory ahead t)
+      ;; Removed as a lead does once it merged: the worktree and the branch.
+      (funcall git repo "worktree" "remove" "--force" (directory-file-name deleted))
+      (funcall git repo "branch" "-D" "d")
+      (should (equal (ghostherd--gone-branch-now (ghostherd-get "m")) '(merged . 0)))
+      (should (equal (ghostherd--gone-branch-now (ghostherd-get "a")) '(ahead . 2)))
+      (should (equal (ghostherd--gone-branch-now (ghostherd-get "d")) '(deleted . 0)))
+      (ghostherd--check-directories t)
+      (ghostherd-tests--gone-read-wait)
+      (should (equal (mapcar (lambda (n) (plist-get (gethash n ghostherd--dir-gone) :state))
+                             '("m" "a" "d"))
+                     '(merged ahead deleted)))
+      (let ((a (gethash "a" ghostherd--dir-gone)))
+        (should (= (plist-get a :ahead) 2))
+        (should (equal (list (plist-get a :branch) (plist-get a :base)) '("a" "main")))
+        (should (equal (plist-get a :path) ahead)))
+      ;; The main checkout gone too: git cannot say.
+      (delete-directory repo t)
+      (should (equal (ghostherd--gone-branch-now (ghostherd-get "m")) '(unknown . 0)))
+      (should (equal (ghostherd--gone-branch-parse "") '(unknown . 0)))
+      (should (equal (ghostherd--gone-branch-parse "warning: x\n3\n") '(ahead . 3)))
+      ;; No worktree: nothing to read.
+      (ghostherd-tests--session :name "plain" :kind 'claude :backend 'fake :project repo)
+      (should-not (ghostherd--gone-branch-now (ghostherd-get "plain"))))))
+
+(ert-deftest ghostherd-test-gone-herd-list-says-so ()
+  "`herd list' says an agent's directory is gone: the snapshot Emacs ticks
+carries directoryMissing, true only for that agent."
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs"))
+          (row (lambda (rows name) (seq-find (lambda (r) (equal (plist-get r :name) name)) rows))))
+      (ghostherd-tests--session :name "here" :kind 'claude :backend 'fake :project repo)
+      (should (eq (plist-get (funcall row (ghostherd--herd-snapshot) "rd-tabs") :directoryMissing)
+                  :json-false))
+      (delete-directory path t)
+      (ghostherd--check-directories t)
+      (ghostherd-tests--gone-read-wait)
+      (let ((rows (ghostherd--herd-snapshot)))
+        (should (eq (plist-get (funcall row rows "rd-tabs") :directoryMissing) t))
+        (should (equal (plist-get (funcall row rows "rd-tabs") :directory)
+                       (ghostherd--abbreviate path)))
+        (should (eq (plist-get (funcall row rows "here") :directoryMissing) :json-false))))))
+
+(ert-deftest ghostherd-test-gone-spawn-refuses-a-missing-directory ()
+  "Nothing starts an agent in a directory that is not there: tmux would
+start it in the home directory instead, without a word.  Refused before
+the host is asked, on tmux as on any backend."
+  (ghostherd-tests--with-gone
+    (let ((missing (concat base "no-such/"))
+          (tmux-calls nil))
+      (should (string-match-p
+               "x.s directory .*no-such/ is not there: not starting it"
+               (cadr (should-error (ghostherd-spawn 'claude :name "x" :project repo :directory missing
+                                                    :display nil)
+                                   :type 'user-error))))
+      (should-not ghostherd-tests--fake-spawned)
+      (should-not (ghostherd-get "x"))
+      ;; A project that is gone, with no directory of its own: the same.
+      (should-error (ghostherd-spawn 'claude :name "y" :project missing :display nil)
+                    :type 'user-error)
+      ;; On tmux, tmux is never asked.
+      (cl-letf (((symbol-function 'ghostherd-tmux--ensure-available) #'ignore)
+                ((symbol-function 'ghostherd-tmux--call)
+                 (lambda (args) (push args tmux-calls) '(0 . ""))))
+        (should-error (ghostherd-spawn 'claude :name "t" :project repo :directory missing
+                                       :backend 'tmux :display nil)
+                      :type 'user-error))
+      (should-not tmux-calls)
+      ;; There, it starts.
+      (should (ghostherd-spawn 'claude :name "z" :project repo :display nil))
+      (should (equal (plist-get ghostherd-tests--fake-spawned :directory) repo)))))
+
+(ert-deftest ghostherd-test-gone-no-path-starts-it-there ()
+  "An agent whose worktree is gone is started by no path: a respawn, fresh
+or continuing; the resume backstop's fresh start; a relay, asked and when
+its brief comes back; `herd relay'; Telegram's Respawn.  Each refuses
+before it kills the old one, so the agent stays in the herd, marked, for
+the user to stop."
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs"))
+          (spawned 0) (asked nil))
+      (delete-directory path t)
+      (cl-letf (((symbol-function 'ghostherd-spawn) (lambda (&rest _) (cl-incf spawned) nil))
+                ((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://127.0.0.1:1/jsonrpc"))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (method &rest _) (push method asked)))
+                ((symbol-function 'run-at-time) (lambda (_t _r fn &rest args) (apply fn args))))
+        (let ((s (ghostherd-get "rd-tabs")))
+          (dolist (continue '(nil t))
+            (should (string-match-p
+                     "rd-tabs.s worktree .*rd-tabs/ is gone: not respawning it (it would start in your home directory); stop it instead"
+                     (cadr (should-error (ghostherd-respawn s continue) :type 'user-error)))))
+          (should (gethash "rd-tabs" ghostherd--dir-gone)) ; marked by the refusal
+          (should-error (ghostherd--respawn-fresh s) :type 'user-error)
+          ;; Its resumed start died at once: the backstop leaves it as it is.
+          (setf (ghostherd-session-args s) '("-r" "c1")
+                (ghostherd-session-started-at s) (current-time))
+          (ghostherd--resume-backstop s 'starting 'dead)
+          (should (ghostherd-tests--logged-p "not started fresh: its directory is gone"))
+          (should (string-match-p "is gone: not relaying it"
+                                  (cadr (should-error (ghostherd-relay s 'grok) :type 'user-error))))
+          (should-not (member "herd_relay_brief" asked))
+          (should-not (gethash "rd-tabs" ghostherd--relaying))
+          ;; The brief came back after it went: no heir.
+          (should-not (ghostherd--relay-hand s 'grok "BRIEF" nil))
+          (should (ghostherd-tests--logged-p "not relayed to grok: its directory is gone"))
+          ;; Asked over the wire, by its lead.
+          (ghostherd-tests--session :name "lead-p" :kind 'claude :backend 'fake :project repo)
+          (puthash "lead-p" "lead" ghostherd--roles)
+          (should (string-match-p "is gone: not relaying it"
+                                  (ghostherd--relay-request "lead-p" "rd-tabs" "grok" "")))
+          ;; Telegram's Respawn.
+          (should (string-match-p "is gone: not respawning it"
+                                  (plist-get (ghostherd--herd-run-command
+                                              (list :id "c1" :op "respawn" :session "rd-tabs"))
+                                             :text)))
+          (should (= spawned 0))
+          (should (eq (ghostherd-get "rd-tabs") s)))))))
+
+(ert-deftest ghostherd-test-gone-restore-looks-at-once ()
+  "A herd restored after an Emacs restart is looked at by the next poll,
+not a minute on, so an agent restored with its worktree gone is marked at
+once.  The restore itself starts nothing."
+  (ghostherd-tests--with-gone
+    (let ((ghostherd-known-backends '(fake))
+          (ghostherd-tests--fake-recipes
+           `((:name "rk" :kind claude :host-id "gh-rk" :project ,repo
+              :worktree ,(concat base "wts/repo/rk/") :branch "rk" :base "main"))))
+      (setq ghostherd--dir-checked-at (float-time))
+      (ghostherd-restore)
+      (should-not ghostherd-tests--fake-spawned)
+      (should (= ghostherd--dir-checked-at 0))
+      (should (ghostherd--check-directories))
+      (ghostherd-tests--gone-read-wait)
+      (should (eq (plist-get (gethash "rk" ghostherd--dir-gone) :state) 'deleted)))))
+
+(ert-deftest ghostherd-test-gone-herd-stop-says-it-was-already-gone ()
+  "`herd stop' of an agent whose worktree is gone says so -- not \"not
+merged or not clean, so it was kept\" -- with where its branch stands, and
+still removes the agent; the branch is left as it is."
+  (ghostherd-tests--with-gone
+    (pcase-dolist (`(,name ,commits ,re)
+                   '(("m" 0 "its worktree .*/m/ was already gone (branch m is merged into main)\\'")
+                     ("a" 1 "its worktree .*/a/ was already gone (branch a has 1 commit not on main; the branch is kept)\\'")
+                     ("b" 3 "(branch b has 3 commits not on main; the branch is kept)\\'")))
+      (let ((path (funcall wt-of name)))
+        (puthash name "lead-p" ghostherd--started-by)
+        (dotimes (_ commits) (funcall git path "commit" "-q" "--allow-empty" "-m" "w"))
+        (delete-directory path t)
+        (let ((r (ghostherd-lead-stop "lead-p" name)))
+          (should (string-prefix-p (format "stopped %s; " name) r))
+          (should (string-match-p re r))
+          (should-not (string-match-p "not merged or not clean" r)))
+        (should-not (ghostherd-get name))
+        (should-not (gethash name ghostherd--dir-gone))
+        (should (eq 0 (funcall git repo "rev-parse" "-q" "--verify" (concat "refs/heads/" name))))))
+    ;; Removed with its branch, as a lead does after merging.
+    (let ((path (funcall wt-of "d")))
+      (puthash "d" "lead-p" ghostherd--started-by)
+      (funcall git repo "worktree" "remove" "--force" (directory-file-name path))
+      (funcall git repo "branch" "-D" "d")
+      (should (string-match-p "was already gone (branch d is gone too)\\'"
+                              (ghostherd-lead-stop "lead-p" "d"))))
+    ;; No worktree, its directory gone.
+    (let ((dir (concat base "proj/")))
+      (make-directory dir)
+      (ghostherd-tests--session :name "plain" :kind 'claude :backend 'fake :project dir)
+      (puthash "plain" "lead-p" ghostherd--started-by)
+      (delete-directory dir t)
+      (should (string-match-p "\\`stopped plain; its directory .*/proj/ was already gone\\'"
+                              (ghostherd-lead-stop "lead-p" "plain"))))
+    ;; A worktree that is there is still removed when merged and clean.
+    (funcall wt-of "ok")
+    (puthash "ok" "lead-p" ghostherd--started-by)
+    (should (string-match-p "merged and clean, so it was removed" (ghostherd-lead-stop "lead-p" "ok")))))
+
+(ert-deftest ghostherd-test-gone-stop-it ()
+  "The Inbox's Stop stops an agent whose directory is gone, as `herd stop'
+does; one whose directory is there is not stopped -- what offered it was
+out of date."
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs")))
+      (should (string-match-p "directory is back: not stopping it"
+                              (cadr (should-error (ghostherd-stop-gone "rd-tabs") :type 'user-error))))
+      (should (ghostherd-get "rd-tabs"))
+      (delete-directory path t)
+      (should (equal (ghostherd-stop-gone "rd-tabs") "Stopped rd-tabs; its worktree was already gone"))
+      (should-not (ghostherd-get "rd-tabs"))
+      (should-not (gethash "rd-tabs" ghostherd--dir-gone)))))
+
+(ert-deftest ghostherd-test-gone-the-sidebar-row-says-so ()
+  "The sidebar row of an agent whose worktree is gone says so: its mark in
+the glyph column, `wt gone' for its state, a line in words above its
+screen; `/gone' finds it, by the word.  Back, the row is as before."
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs")))
+      (delete-directory path t)
+      (ghostherd--check-directories t)
+      (ghostherd-tests--gone-read-wait)
+      (let ((s (ghostherd-get "rd-tabs")))
+        (should (equal (ghostherd--sidebar-cell s 'state 'idle 'default) "wt gone"))
+        (should (string-suffix-p ghostherd-gone-glyph (ghostherd--sidebar-cell s 'glyph 'idle 'default)))
+        (let ((ghostherd--sidebar-target-width 300))
+          (should (string-match-p "\\`worktree .*rd-tabs/ is gone: a respawn is refused; stop it instead\n"
+                                  (ghostherd--sidebar-preview-body s))))
+        (should (string-suffix-p " gone" (ghostherd--sidebar-session-haystack s)))
+        (make-directory path t)
+        (should (equal (ghostherd--sidebar-cell s 'state 'idle 'default) "idle"))
+        (should-not (string-suffix-p ghostherd-gone-glyph (ghostherd--sidebar-cell s 'glyph 'idle 'default)))
+        (should-not (string-suffix-p " gone" (ghostherd--sidebar-session-haystack s)))))))
+
+(ert-deftest ghostherd-test-gone-inbox-item-by-its-branch ()
+  "An agent whose directory is gone is a Needs-you item with a Stop, its
+words by where its branch stands: merged, or deleted as after a merge --
+safe to stop; commits not on its base -- work may be lost, and how many;
+unknown or not read yet -- look first.  None while it is there."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((gone (lambda (&rest g)
+                 (append g (list :path "~/.ghostherd/worktrees/jnotes/rd-tabs/" :worktree t
+                                 :branch "rd-tabs" :base "master" :state "" :ahead 0 :since 1000))))
+         (item (lambda (g)
+                 (seq-find (lambda (x) (equal (plist-get x :kind) "gone"))
+                           (ghostherd-inbox--agent-items
+                            (list :name "rd-tabs" :kind "claude" :state "idle" :role ""
+                                  :project "~/src/jnotes/" :gone g)))))
+         (merged (funcall item (funcall gone :state "merged")))
+         (deleted (funcall item (funcall gone :state "deleted")))
+         (ahead (funcall item (funcall gone :state "ahead" :ahead 3)))
+         (one (funcall item (funcall gone :state "ahead" :ahead 1)))
+         (unknown (funcall item (funcall gone :state "unknown")))
+         (reading (funcall item (funcall gone)))
+         (plain (funcall item (list :path "~/src/scratch/" :worktree :json-false :branch "" :base ""
+                                    :state "" :ahead 0 :since 1000))))
+    (should (equal (plist-get merged :id) "gone:rd-tabs"))
+    (should (equal (plist-get merged :group) "need"))
+    (should (equal (plist-get merged :tag) "Gone"))
+    (should (equal (plist-get merged :at) 1000))
+    (should (equal (plist-get merged :title) "Worktree gone — safe to stop"))
+    (should (equal (plist-get merged :preview)
+                   "Branch rd-tabs is merged into master: nothing is lost by stopping it"))
+    (should (string-match-p "\\`rd-tabs's worktree `~/.ghostherd/worktrees/jnotes/rd-tabs/` is gone: it was removed outside the herd."
+                            (plist-get merged :body)))
+    (should (string-match-p "nothing is lost by stopping it" (plist-get merged :body)))
+    (should (string-match-p "A respawn is refused: it would start in your home directory." (plist-get merged :body)))
+    (should (eq (plist-get merged :safe) t))
+    (should (equal (plist-get deleted :title) "Worktree gone — safe to stop"))
+    (should (string-match-p "gone too, as after a merge" (plist-get deleted :preview)))
+    (should (eq (plist-get deleted :safe) t))
+    (should (equal (plist-get ahead :title) "Worktree gone — 3 commits not merged"))
+    (should (equal (plist-get ahead :preview)
+                   "Branch rd-tabs has 3 commits not on master: stopping it may lose that work"))
+    (should (string-match-p "still has 3 commits that are not on `master`" (plist-get ahead :body)))
+    (should (string-match-p "that work may be lost" (plist-get ahead :body)))
+    (should (eq (plist-get ahead :safe) :json-false))
+    (should (equal (plist-get ahead :tone) "red"))
+    (should (equal (plist-get merged :tone) "warn"))
+    (should (equal (plist-get one :title) "Worktree gone — 1 commit not merged"))
+    (should (string-match-p "1 commit that is not on" (plist-get one :body)))
+    (should (eq (plist-get unknown :safe) :json-false))
+    (should (string-match-p "Could not tell" (plist-get unknown :preview)))
+    (should (string-match-p "Reading where branch rd-tabs stands" (plist-get reading :preview)))
+    (should (eq (plist-get reading :safe) :json-false))
+    (should (equal (plist-get plain :title) "Directory gone"))
+    (should (equal (plist-get plain :whyLabel) "Its directory is gone"))
+    (should (eq (plist-get plain :safe) t))
+    (should-not (funcall item nil))))
+
+(ert-deftest ghostherd-test-gone-the-page-has-it-and-stops-it ()
+  "The page's agent carries where its gone worktree's branch stands (null
+for one that is there), so its card and its Inbox item say so; the Stop
+they offer stops it, and a Respawn of it is refused on the page."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-gone
+    (let ((path (funcall wt-of "rd-tabs"))
+          (pushes nil))
+      (ghostherd-tests--session :name "here" :kind 'claude :backend 'fake :project repo)
+      (funcall git path "commit" "-q" "--allow-empty" "-m" "w")
+      (delete-directory path t)
+      (ghostherd--check-directories t)
+      (ghostherd-tests--gone-read-wait)
+      (let ((g (plist-get (ghostherd-memory-page--agent (ghostherd-get "rd-tabs")) :gone)))
+        (should (equal (plist-get g :state) "ahead"))
+        (should (= (plist-get g :ahead) 1))
+        (should (eq (plist-get g :worktree) t))
+        (should (equal (list (plist-get g :branch) (plist-get g :base)) '("rd-tabs" "main")))
+        (should (equal (plist-get g :path) (ghostherd--abbreviate path))))
+      (should-not (plist-get (ghostherd-memory-page--agent (ghostherd-get "here")) :gone))
+      (should (equal (mapcar (lambda (it) (plist-get it :id))
+                             (seq-filter (lambda (it) (equal (plist-get it :kind) "gone"))
+                                         (mapcan #'ghostherd-inbox--agent-items
+                                                 (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))))
+                     '("gone:rd-tabs")))
+      (cl-letf (((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+                ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore)
+                ((symbol-function 'ghostherd-memory-page--serve-files) #'ignore))
+        (ghostherd-memory-page--handle '((op . "agent-respawn") (name . "rd-tabs") (continue . t)))
+        (should (string-match-p "is gone: not respawning it" (cdr (assoc "showError" pushes))))
+        (should (ghostherd-get "rd-tabs"))
+        (ghostherd-memory-page--handle '((op . "agent-stop-gone") (name . "rd-tabs")))
+        (should (equal (cdr (assoc "flash" pushes)) "Stopped rd-tabs; its worktree was already gone"))
+        (should-not (ghostherd-get "rd-tabs"))
+        ;; One that is there is not stopped by it.
+        (ghostherd-memory-page--handle '((op . "agent-stop-gone") (name . "here")))
+        (should (string-match-p "back: not stopping it" (cdr (assoc "showError" pushes))))
+        (should (ghostherd-get "here"))))))
 
 (provide 'ghostherd-tests)
 ;;; ghostherd-tests.el ends here
