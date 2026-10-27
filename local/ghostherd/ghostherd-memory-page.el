@@ -2290,9 +2290,10 @@ facts live.  Re-emitting with another key switches the watched store."
              ghostherd-memory-page--checks-sig nil)
        (ghostherd-memory-page--memory-tick)
        (ghostherd-memory-page--js
-        "flash" (if (equal (plist-get r :kind) "lint")
-                    (format "Check on: %s" (plist-get r :fact))
-                  (format "Approved — asked %s to apply it" (or (plist-get r :to) "the lead")))))
+        "flash" (pcase (plist-get r :kind)
+                  ("lint" (format "Check on: %s" (plist-get r :fact)))
+                  ("share" (format "Every project's now: %s" (plist-get r :fact)))
+                  (_ (format "Approved — asked %s to apply it" (or (plist-get r :to) "the lead"))))))
      (list :id id)
      (ghostherd-memory-page--fail "Approving proposal"))))
 
@@ -3514,32 +3515,54 @@ full-width) in its last line or two."
                     (titles (mapcar (lambda (f) (or (plist-get f :title) (plist-get f :name))) facts))
                     (file (plist-get p :file)) (n (length titles))
                     (rule (plist-get p :rule)))
-               (if (and (equal (plist-get p :kind) "lint") rule)
+               (cond
+                ((equal (plist-get p :kind) "share")
+                 ;; A project fact to make every project's: the herd moves
+                 ;; it on Approve -- its check and its counts with it.
+                 (let ((check (plist-get (car facts) :check)))
                    (ghostherd-inbox--item
                     (concat "proposal:" (plist-get p :id)) 'proposal
                     (plist-get p :author) "claude" (plist-get p :project)
-                    (format "Make “%s” a check" (car titles))
+                    (format "Make “%s” every project's" (car titles))
                     (plist-get p :created_at)
-                    :whyLabel "A check before every shell call"
-                    :body (format "Every shell call an agent of %s makes is checked against it: one it matches is denied, with this hint.  It never allows anything; turn it off on the Memory tab."
-                                  (if (equal (plist-get p :project) "user") "any project" "this project"))
+                    :whyLabel "A fact for every project"
+                    :body (concat "It moves to the user store: every project's agents get it, "
+                                  "and its counts go with it."
+                                  (pcase check
+                                    ("on" "  Its check moves too, and stays on.")
+                                    ("off" "  Its check moves too, and stays off.")
+                                    (_ "")))
                     :facts (ghostherd-memory-page--vec titles)
-                    :lint t :hint (or (plist-get rule :hint) "")
-                    :catches (ghostherd-memory-page--vec (plist-get rule :catches))
-                    :passes (ghostherd-memory-page--vec (plist-get rule :passes))
-                    :preview (ghostherd-inbox--clip (or (plist-get rule :hint) "") 90)
-                    :proposalId (plist-get p :id))
-               (ghostherd-inbox--item
-                (concat "proposal:" (plist-get p :id)) 'proposal
-                (plist-get p :author) "claude" (plist-get p :project)
-                (format "Promote %d fact%s into %s" n (if (= n 1) "" "s") file)
-                (plist-get p :created_at)
-                :whyLabel "Memory promotion"
-                :body (format "%d stable fact%s from the shared memory become part of %s, versioned with the code."
-                              n (if (= n 1) "" "s") file)
-                :facts (ghostherd-memory-page--vec titles) :diff (or (plist-get p :diff) "")
-                :preview (ghostherd-inbox--clip (mapconcat #'identity titles " · ") 90)
-                :proposalId (plist-get p :id))))))
+                    :share t :text (or (plist-get p :diff) "") :check (or check "")
+                    :preview (ghostherd-inbox--clip (or (plist-get (car facts) :description) "") 90)
+                    :proposalId (plist-get p :id))))
+                ((and (equal (plist-get p :kind) "lint") rule)
+                 (ghostherd-inbox--item
+                  (concat "proposal:" (plist-get p :id)) 'proposal
+                  (plist-get p :author) "claude" (plist-get p :project)
+                  (format "Make “%s” a check" (car titles))
+                  (plist-get p :created_at)
+                  :whyLabel "A check before every shell call"
+                  :body (format "Every shell call an agent of %s makes is checked against it: one it matches is denied, with this hint.  It never allows anything; turn it off on the Memory tab."
+                                (if (equal (plist-get p :project) "user") "any project" "this project"))
+                  :facts (ghostherd-memory-page--vec titles)
+                  :lint t :hint (or (plist-get rule :hint) "")
+                  :catches (ghostherd-memory-page--vec (plist-get rule :catches))
+                  :passes (ghostherd-memory-page--vec (plist-get rule :passes))
+                  :preview (ghostherd-inbox--clip (or (plist-get rule :hint) "") 90)
+                  :proposalId (plist-get p :id)))
+                (t
+                 (ghostherd-inbox--item
+                  (concat "proposal:" (plist-get p :id)) 'proposal
+                  (plist-get p :author) "claude" (plist-get p :project)
+                  (format "Promote %d fact%s into %s" n (if (= n 1) "" "s") file)
+                  (plist-get p :created_at)
+                  :whyLabel "Memory promotion"
+                  :body (format "%d stable fact%s from the shared memory become part of %s, versioned with the code."
+                                n (if (= n 1) "" "s") file)
+                  :facts (ghostherd-memory-page--vec titles) :diff (or (plist-get p :diff) "")
+                  :preview (ghostherd-inbox--clip (mapconcat #'identity titles " · ") 90)
+                  :proposalId (plist-get p :id)))))))
          proposals)))
 
 (defun ghostherd-inbox--ask-items (asks)

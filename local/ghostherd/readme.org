@@ -1107,6 +1107,7 @@ herd remember [--type project|feedback|reference] [--name SLUG] [--new] [--user|
 herd recall [--user|--project P] [QUERY...]   # no query prints the index; a fact's name, that fact; else the most relevant facts
 herd forget [--user|--project P] NAME
 herd promote propose --fact NAME... --file PATH [--project P]   # the exact diff on stdin
+herd promote propose --fact NAME --every-project [--project P]   # move it to the user store
 #+end_src
 
 The author is =GHOSTHERD_SESSION=, or =user= from a plain shell; the
@@ -1232,6 +1233,25 @@ retrieval, so it is not loaded twice.  It is reversible (a =Promoted= filter
 lists promoted facts, with *Put back in memory*); a reject keeps the fact and
 records why.  A *Suggest promotions* button asks the lead to review and
 propose.
+
+*Make a fact every project's.*  A fact one project's agents found may hold
+everywhere --- how to grep a CLI binary, a trap of the machine.  Its lead
+runs =herd promote propose --fact NAME --every-project=, and the user
+approves it once, in the Inbox or the Memory tab's *Proposals* (the fact's
+text, and its check if it has one); the herd then moves it, nothing for
+anyone to apply:
+- the fact goes to the user store whole --- its text, type, author,
+  created, its earlier texts --- and every project's store gains its link;
+  its project copy is kept in that project's =.history/=, as a forget keeps
+  it;
+- its check, if it has one, moves from =<project slug>.json= to
+  =user.json=, on or off as it was;
+- its uses, their lifetime totals and its check's denials are counted on
+  under the user store.
+It is refused for a fact the user store already has by that name, or
+already says (the said-again test =herd remember= refuses with), and for a
+fact promoted into an instruction file.  A project with a fact of its own
+by that name keeps its own, as with any user fact.
 
 *Make a fact a check.*  Some facts guard against real damage --- the live
 session index opened twice, a CPU pegged by a regex over a CLI binary, the

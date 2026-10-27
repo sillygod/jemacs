@@ -15056,6 +15056,40 @@ what it denies and lets through, approved by the same proposal id."
     (should (equal (plist-get it :passes) ["find ." "ls -s"]))
     (should (string-match-p "any project" (plist-get it :body)))))
 
+(ert-deftest ghostherd-test-a-fact-for-every-project-is-an-inbox-item ()
+  "A proposal to make a project fact every project's (ask d197da21) is a
+Needs-you item: the fact, its text and its check, approved by its id; and
+the approval says it moved."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((p (list :id "p7" :kind "share" :project "-src-dp" :author "lead-dp" :file "user"
+                  :status "pending" :diff "Never grep a CLI binary with a leading .{0,N}."
+                  :facts (list (list :name "grep-cli" :title "Grep cli" :description "strings | grep -F"
+                                     :check "off"))))
+         (it (car (ghostherd-inbox--proposal-items (list p)))))
+    (should (equal (plist-get it :id) "proposal:p7"))
+    (should (equal (plist-get it :proposalId) "p7"))
+    (should (equal (plist-get it :title) "Make “Grep cli” every project's"))
+    (should (eq (plist-get it :share) t))
+    (should (equal (plist-get it :text) "Never grep a CLI binary with a leading .{0,N}."))
+    (should (equal (plist-get it :check) "off"))
+    (should (equal (plist-get it :preview) "strings | grep -F"))
+    (should (string-match-p "Its check moves too, and stays off" (plist-get it :body)))
+    (should-not (plist-get it :lint))
+    ;; No check: none said.
+    (setf (plist-get (car (plist-get p :facts)) :check) nil)
+    (let ((it (car (ghostherd-inbox--proposal-items (list p)))))
+      (should (equal (plist-get it :check) ""))
+      (should-not (string-match-p "check" (plist-get it :body)))))
+  (let (flashed)
+    (cl-letf (((symbol-function 'ghostherd-memory-page--js)
+               (lambda (fn &rest args) (when (equal fn "flash") (push (car args) flashed))))
+              ((symbol-function 'ghostherd-memory-page--memory-tick) (lambda () nil))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (_method cb _params &rest _)
+                 (funcall cb '(:kind "share" :fact "grep-cli" :status "applied")))))
+      (ghostherd-memory-page--handle '((op . "memory-proposal-approve") (id . "p7")))
+      (should (equal (car flashed) "Every project's now: grep-cli")))))
+
 (ert-deftest ghostherd-test-the-pages-check-controls-send-the-right-rpc ()
   "Turn off, turn on and remove reach the sidecar by store and fact; an
 approved check says it is on."

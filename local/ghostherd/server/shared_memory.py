@@ -630,6 +630,60 @@ def unpromote(store: Path, key: str, name: str, now: str | None = None) -> dict:
     return {"name": name, "promoted": "", "store": key, "changed": True}
 
 
+def check_shareable(store: Path, key: str, name: str) -> Fact:
+    """Return project store KEY's fact NAME when it may move to the user
+    store, shared by every project, else raise ValueError saying why: it is
+    the project's own (not a user fact's link), not promoted into an
+    instruction file, and no user fact has its name.  Whether the user
+    store already says it is the fact index's to tell (share.py)."""
+    name = valid_name(name)
+    if key == USER_KEY:
+        raise ValueError(f"{name} is a user fact: every project has it already")
+    path = store / f"{name}.md"
+    if path.is_symlink():
+        raise ValueError(f"{name} is a user fact: every project has it already")
+    f = parse(path)
+    if f is None or not path.exists():
+        raise ValueError(f"no fact named {name} in this project")
+    if f.promoted:
+        raise ValueError(f"{name} is promoted into {f.promoted.rsplit(' ', 1)[0]}: "
+                         "it is in the instruction file, not a memory to move")
+    if (user_store() / f"{name}.md").exists():
+        raise ValueError(f"the user store already has a fact named {name}")
+    return f
+
+
+@_locked
+def move_to_user(store: Path, key: str, name: str, by: str = "user", now: str | None = None) -> dict:
+    """Move project store KEY's fact NAME to the user store, so every
+    project has it: the same file there -- its text, type, author, created
+    and claude's provenance -- with its earlier texts; and here its text
+    kept in this store's history, as a forget keeps it, and the user
+    fact's link in its place."""
+    f = check_shareable(store, key, name)
+    now = now or iso_now()
+    notice(store, key)
+    user = user_store()
+    user.mkdir(parents=True, exist_ok=True)
+    notice(user, USER_KEY)
+    text = f.path.read_text(encoding="utf-8")
+    # What it said before goes with it, so `recall' still says what it was.
+    if (store / HISTORY).is_dir():
+        (user / HISTORY).mkdir(parents=True, exist_ok=True)
+        for p in (store / HISTORY).glob(f"{f.name}.*.md"):
+            if not (user / HISTORY / p.name).exists():
+                _atomic_write(user / HISTORY / p.name, p.read_text(encoding="utf-8"))
+    keep_history(store, f.name, text, how="moved to the user store", by=by, now=now)
+    _put(user, user / f"{f.name}.md", text)
+    f.path.unlink()
+    _seen_drop(store, f.name)
+    regenerate(user, USER_KEY)
+    regenerate_all_projects()  # each project gains its link; this one in place of the file
+    _changed(key, [f.name])
+    _changed(USER_KEY, [f.name])
+    return {"name": f.name, "from": key, "store": USER_KEY}
+
+
 def facts_for(key: str) -> list[dict]:
     """The facts to show for store KEY: the user facts, and a project's own
     too -- each with its last few earlier versions, one line each, for the

@@ -2117,19 +2117,26 @@ class HerdStore:
                       "ask_id, created_at, decided_at, kind, rule")
 
     def propose(self, project: str, facts: list[str], file: str, diff: str,
-                author: str, rule: dict[str, Any] | None = None) -> dict[str, Any]:
+                author: str, rule: dict[str, Any] | None = None,
+                share: bool = False) -> dict[str, Any]:
         """Store a pending proposal to promote FACTS of PROJECT (a store key)
         into instruction FILE, with the exact DIFF.  The herd holds it until
         the user decides on the page; it writes nothing to the repo.  With
         RULE, a check made of the one fact instead (`lint': FILE and DIFF
-        are the herd's own, `lint' and the rule as JSON)."""
+        are the herd's own, `lint' and the rule as JSON).  With SHARE, the
+        one fact moved to the user store, so every project has it (`share':
+        FILE `user', DIFF the fact's text as it was proposed; share.py)."""
         project = (project or "").strip()
         names = [str(f).strip() for f in (facts or []) if str(f).strip()]
-        kind = "lint" if rule is not None else "promote"
+        kind = "lint" if rule is not None else "share" if share else "promote"
         if rule is not None:
             if len(names) != 1:
                 raise ValueError("a check is one fact's")
             file, diff = "lint", json.dumps(rule, sort_keys=True, ensure_ascii=False)
+        if share:
+            if len(names) != 1:
+                raise ValueError("move one fact at a time")
+            file = "user"
         file = (file or "").strip()
         if not project:
             raise ValueError("project is required")
@@ -2230,18 +2237,41 @@ class HerdStore:
                 raise ValueError("no pending proposal with that id")
         return {"id": proposal_id, "status": "rejected"}
 
-    def apply_lint_proposal(self, proposal_id: str) -> None:
-        "The user approved a check: it is on, nothing left for anyone to do."
+    def apply_lint_proposal(self, proposal_id: str, kind: str = "lint") -> None:
+        """The user approved a check (or a move to the user store, KIND
+        `share'): the herd has done it, nothing left for anyone to do."""
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             cur = self._conn.execute(
                 "UPDATE proposals SET status = 'applied', decided_at = ? "
-                "WHERE id = ? AND status = 'pending' AND kind = 'lint'",
-                (now, proposal_id),
+                "WHERE id = ? AND status = 'pending' AND kind = ?",
+                (now, proposal_id, kind),
             )
             self._conn.commit()
             if cur.rowcount == 0:
-                raise ValueError("no pending check with that id")
+                raise ValueError("no pending check with that id" if kind == "lint"
+                                 else "no pending proposal with that id")
+
+    def move_fact_counts(self, key: str, fact: str, to: str) -> None:
+        """Store KEY's FACT is store TO's now (share.py): its uses, their
+        lifetime totals and its check's denials go with it, so the page
+        counts on from where it was."""
+        with self._mu:
+            self._flush_uses()
+            self._conn.execute("UPDATE fact_uses SET key = ? WHERE key = ? AND fact = ?", (to, key, fact))
+            self._conn.execute(
+                """
+                INSERT INTO fact_use_totals (key, fact, kind, n, first_at, last_at)
+                SELECT ?, fact, kind, n, first_at, last_at FROM fact_use_totals
+                WHERE key = ? AND fact = ?
+                ON CONFLICT (key, fact, kind) DO UPDATE SET
+                  n = n + excluded.n,
+                  first_at = MIN(first_at, excluded.first_at),
+                  last_at = MAX(last_at, excluded.last_at)
+                """, (to, key, fact))
+            self._conn.execute("DELETE FROM fact_use_totals WHERE key = ? AND fact = ?", (key, fact))
+            self._conn.execute("UPDATE lint_denials SET key = ? WHERE key = ? AND fact = ?", (to, key, fact))
+            self._conn.commit()
 
     # ---- The checks' denials ------------------------------------------------
     #
