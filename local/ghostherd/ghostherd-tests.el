@@ -4813,6 +4813,75 @@ no GHOSTHERD_RPC at all: never the herd's own in its place."
               (ghostherd-agent-environment 'tmux '(:name "a"))
               :test (lambda (pre s) (string-prefix-p pre s))))))
 
+;;; What an agent never has
+
+(defconst ghostherd-tests--bot-env
+  '("GHOSTHERD_TELEGRAM_TOKEN=fake-token" "GHOSTHERD_TELEGRAM_CHAT_IDS=1" "GITHUB_TOKEN=fake-gh")
+  "The Telegram bot's variables, fake, and a token agents work with.")
+
+(defun ghostherd-tests--env-lines ()
+  "The environment a process started now has, one VAR=VALUE a line."
+  (with-temp-buffer
+    (call-process "env" nil t nil)
+    (split-string (buffer-string) "\n" t)))
+
+(defun ghostherd-tests--bot-free-p (env)
+  "Non-nil when ENV, VAR=VALUE strings, has no Telegram bot variable."
+  (not (cl-find-if (lambda (v) (string-prefix-p "GHOSTHERD_TELEGRAM_" v)) env)))
+
+(ert-deftest ghostherd-test-agent-env-withhold-is-the-bots-alone ()
+  "The default withholds the bot's two variables and nothing an agent
+works with."
+  (should (equal (sort (copy-sequence (eval (car (get 'ghostherd-agent-env-withhold
+                                                       'standard-value))
+                                            t))
+                       #'string<)
+                 '("GHOSTHERD_TELEGRAM_CHAT_IDS" "GHOSTHERD_TELEGRAM_TOKEN"))))
+
+(ert-deftest ghostherd-test-agent-process-environment-unsets-the-withheld ()
+  "A process started under it has none of the withheld names and the rest
+as they were; a \"name\" with an = would set a variable, so it is not one.
+Emacs's own `getenv' is untouched: it is bound around a spawn, never set."
+  (let ((ghostherd-agent-env-withhold
+         '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS" "PLANTED=x"))
+        (process-environment (append ghostherd-tests--bot-env process-environment)))
+    (let ((env (let ((process-environment (ghostherd-agent-process-environment)))
+                 (ghostherd-tests--env-lines))))
+      (should (ghostherd-tests--bot-free-p env))
+      (should-not (member "PLANTED=x" env))
+      (should (member "GITHUB_TOKEN=fake-gh" env)))
+    (should (equal (getenv "GHOSTHERD_TELEGRAM_TOKEN") "fake-token"))))
+
+(ert-deftest ghostherd-test-agent-environment-never-names-a-withheld-one ()
+  "Identity is injected after the environment is cleaned -- tmux's `-e'
+-- so a withheld name has to stay out of it too."
+  (let ((server-name "herd")
+        (ghostherd-agent-env-withhold '("GHOSTHERD_SOCKET")))
+    (let ((env (ghostherd-agent-environment 'tmux '(:name "a"))))
+      (should (member "GHOSTHERD_SESSION=a" env))
+      (should-not (cl-find "GHOSTHERD_SOCKET" env :test #'string-prefix-p)))))
+
+(ert-deftest ghostherd-test-ghostel-spawn-withholds-the-bot ()
+  "The shell ghostel starts -- and so the agent typed into it -- has no
+withheld name, and its identity and the tokens agents work with."
+  (let ((buf (generate-new-buffer " *gh-withhold-test*"))
+        (ghostherd-agent-env-withhold '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS"))
+        (process-environment (append ghostherd-tests--bot-env process-environment))
+        seen)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostherd--require-ghostel) #'ignore)
+                  ;; A real process, started where ghostel starts its shell.
+                  ((symbol-function 'ghostel)
+                   (lambda (&rest _) (setq seen (ghostherd-tests--env-lines)) buf))
+                  ((symbol-function 'ghostherd--launch-in-buffer) #'ignore))
+          (ghostherd-backend-spawn 'ghostel (list :name "gh-withhold-test" :command "claude"
+                                                  :directory "/tmp/")))
+      (kill-buffer buf))
+    (should (ghostherd-tests--bot-free-p seen))
+    (should (member "GITHUB_TOKEN=fake-gh" seen))
+    (should (member "GHOSTHERD_SESSION=gh-withhold-test" seen))
+    (should (equal (getenv "GHOSTHERD_TELEGRAM_TOKEN") "fake-token"))))
+
 (ert-deftest ghostherd-test-the-agents-url-is-the-agents-token ()
   "Read from the sidecar's rpc.agent-token, beside its own rpc.token."
   (let* ((data (make-temp-file "gh-data-" t))
@@ -5925,6 +5994,97 @@ sidecar file can be deleted while the process it describes is running."
         (dolist (call ghostherd-tests--tmux-calls)
           (when (equal (car call) "set-option")
             (should (equal (nth 2 call) target))))))))
+
+(ert-deftest ghostherd-test-tmux-client-runs-without-the-withheld ()
+  "The client that starts the server hands it its own environment, and the
+server hands that to every pane: no tmux client of ours has a withheld
+name."
+  (let* ((fake (make-temp-file "gh-fake-tmux"))
+         (ghostherd-tmux-executable fake)
+         (ghostherd-tmux-config "/dev/null")
+         (ghostherd-agent-env-withhold '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS"))
+         (process-environment (append ghostherd-tests--bot-env process-environment)))
+    (unwind-protect
+        (progn
+          (with-temp-file fake (insert "#!/bin/sh\nenv\n"))
+          (set-file-modes fake #o755)
+          (let ((env (split-string (cdr (ghostherd-tmux--call '("new-session"))) "\n" t)))
+            (should (ghostherd-tests--bot-free-p env))
+            (should (member "GITHUB_TOKEN=fake-gh" env))))
+      (delete-file fake))))
+
+(ert-deftest ghostherd-test-tmux-spawn-unsets-the-withheld-in-the-server ()
+  "A server keeps the environment it started with for life: one started
+before the names were withheld still has them.  Each spawn unsets them
+there first, in one call."
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-agent-env-withhold '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS")))
+      (ghostherd-tests--with-tmux '(("has-session" . (1 . "")))
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev" :kind 'agy :command "agy"
+                     :directory "/tmp/" :project "/tmp/")))))
+  (should (equal (ghostherd-tests--tmux-call "set-environment")
+                 '("set-environment" "-g" "-u" "GHOSTHERD_TELEGRAM_TOKEN" ";"
+                   "set-environment" "-g" "-u" "GHOSTHERD_TELEGRAM_CHAT_IDS")))
+  (should (< (cl-position "set-environment" ghostherd-tests--tmux-calls :key #'car :test #'equal)
+             (cl-position "new-session" ghostherd-tests--tmux-calls :key #'car :test #'equal))))
+
+(ert-deftest ghostherd-test-tmux-spawn-with-nothing-withheld-unsets-nothing ()
+  (ghostherd-tests--with-herd ()
+    (let ((ghostherd-agent-env-withhold nil))
+      (ghostherd-tests--with-tmux '(("has-session" . (1 . "")))
+        (ghostherd-backend-spawn
+         'tmux (list :name "rev" :kind 'agy :command "agy"
+                     :directory "/tmp/" :project "/tmp/")))))
+  (should-not (ghostherd-tests--tmux-call "set-environment"))
+  (should (ghostherd-tests--tmux-call "new-session")))
+
+(ert-deftest ghostherd-test-tmux-agent-never-sees-the-withheld ()
+  "Against a real tmux: a server started by a client that had the bot's
+variables -- as the herd's was, from Emacs's environment -- spawns an
+agent without them, a token agents work with still there, and keeps
+them no more."
+  (skip-unless (ghostherd-tmux-available-p))
+  (ghostherd-tests--with-herd ()
+    (let* ((ghostherd-tmux-socket (format "ghostherd-test-withhold-%d" (emacs-pid)))
+           (ghostherd-tmux-config "/dev/null")
+           (ghostherd-tmux--status-cache nil)
+           (ghostherd-tmux--env-supported 'unknown)
+           (ghostherd-agent-env-withhold '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS"))
+           (process-environment (append ghostherd-tests--bot-env process-environment))
+           (out (make-temp-file "gh-withhold-env"))
+           (part (concat out ".part")))
+      (unwind-protect
+          (progn
+            (should (eq 0 (call-process ghostherd-tmux-executable nil nil nil
+                                        "-L" ghostherd-tmux-socket "-f" "/dev/null"
+                                        "new-session" "-d" "-s" "before" "sleep" "60")))
+            (should (string-match-p "^GHOSTHERD_TELEGRAM_TOKEN="
+                                    (ghostherd-tmux--run "show-environment" "-g")))
+            (ghostherd-backend-spawn
+             'tmux (list :name "probe" :kind 'shell :command "sh"
+                         :args (list "-c" (format "env > %s && mv %s %s; sleep 60"
+                                                  (shell-quote-argument part)
+                                                  (shell-quote-argument part)
+                                                  (shell-quote-argument out)))
+                         :directory temporary-file-directory
+                         :project temporary-file-directory))
+            (let ((deadline (+ (float-time) 5)))
+              (while (and (zerop (file-attribute-size (file-attributes out)))
+                          (< (float-time) deadline))
+                (sleep-for 0.05)))
+            (let ((env (with-temp-buffer
+                         (insert-file-contents out)
+                         (split-string (buffer-string) "\n" t))))
+              (should (ghostherd-tests--bot-free-p env))
+              (should (member "GITHUB_TOKEN=fake-gh" env))
+              (should (member "GHOSTHERD_SESSION=probe" env)))
+            (should-not (string-match-p "^GHOSTHERD_TELEGRAM_"
+                                        (ghostherd-tmux--run "show-environment" "-g"))))
+        (call-process ghostherd-tmux-executable nil nil nil
+                      "-L" ghostherd-tmux-socket "kill-server")
+        (ignore-errors (delete-file part))
+        (delete-file out)))))
 
 (ert-deftest ghostherd-test-tmux-args-round-trip-through-json ()
   "Arguments are a list of free text: spaces, quotes and backslashes all

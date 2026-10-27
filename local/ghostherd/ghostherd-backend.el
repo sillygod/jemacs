@@ -285,6 +285,38 @@ naming.  A title equal to the buffer name is the shell echoing us back."
 ;; Nobody can tell it after the fact, either: the value has to be in the
 ;; process environment before the agent execs.  So identity is injected
 ;; at spawn, by every implementor, from one list.
+;;
+;; And what Emacs has that an agent must not is taken out the same way,
+;; by every implementor, from one list: `ghostherd-agent-env-withhold'.
+
+(defcustom ghostherd-agent-env-withhold
+  '("GHOSTHERD_TELEGRAM_TOKEN" "GHOSTHERD_TELEGRAM_CHAT_IDS")
+  "Variables in Emacs's environment that no agent starts with.
+Exact names; every agent, either backend, the lead too.  The Telegram
+bot's are the sidecar's alone -- it is handed them by name
+\(`ghostherd-memory--spawn') -- and an agent that has them can start a
+second bot that takes the live one's updates: the test suite did, long-
+polling it some 60 times a run (ask 72535795).  Not the tokens agents
+work with (GITHUB_TOKEN, CLICKUP_API_TOKEN, ...): they need those.
+
+An agent keeps the environment it started with: one running when a
+name is added here has it until it is respawned."
+  :type '(repeat string)
+  :group 'ghostherd)
+
+(defun ghostherd-agent-env-withheld ()
+  "The names in `ghostherd-agent-env-withhold' that can be a variable's:
+one with an = in it would set a variable rather than unset one."
+  (seq-filter (lambda (name) (and (stringp name) (string-match-p "\\`[^=]+\\'" name)))
+              ghostherd-agent-env-withhold))
+
+(defun ghostherd-agent-process-environment (&optional env)
+  "ENV, `process-environment' by default, with the withheld names unset.
+A bare NAME in front is Emacs's way of saying no NAME at all, to a
+process it starts and to `getenv' alike -- so bind this around what
+starts an agent, never set it: Emacs's own Telegram code reads the
+same variable."
+  (append (ghostherd-agent-env-withheld) (or env process-environment)))
 
 (defun ghostherd-agent-environment (backend plist)
   "Return VAR=VALUE strings identifying the session PLIST describes.
@@ -310,21 +342,27 @@ It is omitted when server.el has not been loaded, which is not a case
 worth handling: an Emacs `emacsclient' can reach has loaded it, and
 `emacsclient' with no `-s' looks for the same default the variable
 would have held.  server.el is deliberately not required for it --
-loading a subsystem to read one variable off it would be backwards."
-  (append
-   (list (format "GHOSTHERD_SESSION=%s" (plist-get plist :name))
-         (format "GHOSTHERD_BACKEND=%s" backend))
-   (when (and (boundp 'server-name) (stringp server-name))
-     (list (format "GHOSTHERD_SOCKET=%s" server-name)))
-   (when-let* (((fboundp 'ghostherd-memory-agent-rpc-url))
-               (url (ghostherd-memory-agent-rpc-url)))
-     (list (format "GHOSTHERD_RPC=%s" url)))
-   (when (fboundp 'ghostherd-memory--mail-directory)
-     (list (format "GHOSTHERD_RPC_FILE=%s"
-                   (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))
-   (when-let* (((fboundp 'ghostherd-herd-client))
-               (client (ghostherd-herd-client)))
-     (list (format "GHOSTHERD_HERD=%s" client)))))
+loading a subsystem to read one variable off it would be backwards.
+
+None of them is one `ghostherd-agent-env-withhold' names: tmux's `-e'
+would put it back."
+  (let ((withheld (ghostherd-agent-env-withheld)))
+    (seq-remove
+     (lambda (var) (member (car (split-string var "=")) withheld))
+     (append
+      (list (format "GHOSTHERD_SESSION=%s" (plist-get plist :name))
+            (format "GHOSTHERD_BACKEND=%s" backend))
+      (when (and (boundp 'server-name) (stringp server-name))
+        (list (format "GHOSTHERD_SOCKET=%s" server-name)))
+      (when-let* (((fboundp 'ghostherd-memory-agent-rpc-url))
+                  (url (ghostherd-memory-agent-rpc-url)))
+        (list (format "GHOSTHERD_RPC=%s" url)))
+      (when (fboundp 'ghostherd-memory--mail-directory)
+        (list (format "GHOSTHERD_RPC_FILE=%s"
+                      (expand-file-name "rpc.url" (ghostherd-memory--mail-directory)))))
+      (when-let* (((fboundp 'ghostherd-herd-client))
+                  (client (ghostherd-herd-client)))
+        (list (format "GHOSTHERD_HERD=%s" client)))))))
 
 
 ;;; Key names
@@ -744,10 +782,12 @@ _KIND is reserved for kind-specific quoting later."
           ;; The shell ghostel starts inherits this, and exports it to the
           ;; agent command typed into it afterwards -- which is why the
           ;; binding has to be in force around `ghostel', not around the
-          ;; launch string.
+          ;; launch string.  The withheld names are unset in it, so the
+          ;; shell never has them to pass on.
           (process-environment
-           (append (ghostherd-agent-environment 'ghostel plist)
-                   process-environment))
+           (ghostherd-agent-process-environment
+            (append (ghostherd-agent-environment 'ghostel plist)
+                    process-environment)))
           ;; Keep exited agent buffers so the herd can mark them dead.
           (ghostel-kill-buffer-on-exit nil))
       (setq buffer (ghostel t))
