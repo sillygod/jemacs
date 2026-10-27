@@ -607,8 +607,8 @@ def test_herd_ask_wait_prints_the_line_apart_from_the_answer(live, home, tmp_pat
 # ---- The taker hears it too, on its own `herd reply' (ask e6c80d6d) ------------------
 
 
-def _note(ask_id, why):
-    return T.TAKER_NOTE.format(ask=ask_id, why=why)
+def _note(ask_id, why, memory=""):
+    return T.TAKER_NOTE.format(ask=ask_id, why=why, memory=memory)
 
 
 def test_the_taker_note_says_the_counts_that_made_it_rough():
@@ -616,8 +616,11 @@ def test_the_taker_note_says_the_counts_that_made_it_rough():
     assert T.taker_note(out, ASK) == _note(
         ASK, "5 tool calls failed (4 shell exits, 1 edit not applied); 2 denials (1 guard, 1 check); asked qa-dp 3×")
     assert T.taker_note(out, ASK).splitlines()[1:] == [
-        "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:",
-        "\"$GHOSTHERD_HERD\" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do."]
+        "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now, as one fact:",
+        "\"$GHOSTHERD_HERD\" remember <<'FACT'",
+        "<the gotcha, and what to do instead>",
+        "FACT",
+        "Otherwise, nothing to do."]
     # Only what made it rough: two edits that did not apply, alone, are.
     assert T.taker_note(T.compose(_work(9, edit=2), 60), ASK) == _note(ASK, "2 tool calls failed (2 edits not applied)")
     assert T.taker_note(T.compose(_work(9, denied=1), 60, guard=1, relays=1), ASK) == _note(
@@ -973,3 +976,92 @@ def test_a_later_answer_gets_its_line_though_the_first_ones_failed(home, tmp_pat
     h.reply(ask["id"], "done", from_name="claude-t")
     h.wait_traces()
     assert "1 tool call, none failed" in h.get_ask(ask["id"])["trace"]
+
+
+# ---- The taker note: a form no quote breaks, and the facts it came with (ask d197da21) --
+
+
+def test_the_taker_note_names_the_facts_the_ask_came_with_as_remember_updates_them():
+    out = T.compose(_work(9, shell=4), 60)
+    out["memory"] = [{"name": "deploy-gotcha", "user": False}, {"name": "grep-cli", "user": True}]
+    assert T.taker_note(out, ASK) == _note(ASK, "4 tool calls failed (4 shell exits)", (
+        "If it is a fact this ask came with, update that one instead (its old text is kept): "
+        "add --name deploy-gotcha or --user --name grep-cli.\n"))
+    out["memory"] = [{"name": "deploy-gotcha", "user": False}]
+    assert "add --name deploy-gotcha.\n" in T.taker_note(out, ASK)
+    # Nothing it came with, or nothing readable: no such line.
+    for memory in ([], None, [{"user": True}], ["x"]):
+        out["memory"] = memory
+        assert T.taker_note(out, ASK) == _note(ASK, "4 tool calls failed (4 shell exits)")
+
+
+def _with_memory(h, facts):
+    "The ask's memory block holds FACTS, [[store, name]...], as fact_index gives them."
+    h.ask_memory = lambda taker, body: ("Relevant memory:\n" + "".join(f"- {n} (x): y\n" for _, n in facts), facts)
+
+
+def test_a_rough_asks_note_names_what_it_was_delivered_with(home, tmp_path):
+    h = _store(tmp_path)
+    _with_memory(h, [["src-a", "deploy-gotcha"], ["user", "grep-cli"]])
+    ask = h.ask("claude-t", "fix the build", from_name="claude-main")
+    _deliver_t(h)
+    _taken(h, home, ask["id"], *ROUGH_WORK)
+    h.reply(ask["id"], "fixed", from_name="claude-t")
+    h.wait_traces()
+    note = h.get_ask(ask["id"])["taker_note"]
+    assert note.splitlines()[-2] == ("If it is a fact this ask came with, update that one instead "
+                                     "(its old text is kept): add --name deploy-gotcha or --user --name grep-cli.")
+    # Smooth work stores none, and its asker's line is as it was.
+    smooth = h.ask("claude-t", "and this", from_name="claude-main")
+    _deliver_t(h)
+    _taken(h, home, smooth["id"], c_use("a", "Bash", 2, command="make"))
+    h.reply(smooth["id"], "done", from_name="claude-t")
+    h.wait_traces()
+    with h._mu:
+        stored = h._conn.execute("SELECT trace FROM asks WHERE id = ?", (smooth["id"],)).fetchone()[0]
+    assert "memory" not in json.loads(stored) and h.get_ask(smooth["id"])["taker_note"] is None
+
+
+def test_a_rough_ask_with_no_transcript_names_them_too(tmp_path):
+    "Made on the reply's path from the herd's records alone: three asks to one agent."
+    h = _store(tmp_path)
+    _with_memory(h, [["src-a", "deploy-gotcha"]])
+    parent = h.ask("claude-t", "x", from_name="claude-main")
+    _deliver_t(h)
+    h.ask_memory = None
+    for _ in range(3):
+        k = h.ask("agy-a2", "check it", from_name="claude-t")
+        _deliver_t(h)
+        h.reply(k["id"], "ok", from_name="agy-a2")
+    h.reply(parent["id"], "done", from_name="claude-t")
+    assert "add --name deploy-gotcha." in h.get_ask(parent["id"])["taker_note"]
+
+
+def test_the_facts_lookup_failing_costs_the_note_its_line_only(home, tmp_path, monkeypatch):
+    h = _store(tmp_path)
+    _with_memory(h, [["src-a", "deploy-gotcha"]])
+    ask = h.ask("claude-t", "x", from_name="claude-main")
+    _deliver_t(h)
+    _taken(h, home, ask["id"], *ROUGH_WORK)
+    monkeypatch.setattr(HerdStore, "_flush_uses", lambda self: 1 / 0)
+    h.reply(ask["id"], "fixed", from_name="claude-t")
+    h.wait_traces()
+    got = h.get_ask(ask["id"])
+    assert got["trace"].startswith("How it went: ") and got["taker_note"] == _note(
+        ask["id"], "4 tool calls failed (4 shell exits)")
+
+
+def test_the_notes_heredoc_keeps_a_fact_with_quotes_whole(live, home, tmp_path, monkeypatch):
+    "The command the note shows, run as an agent runs it: apostrophes and quotes are the fact's."
+    monkeypatch.setenv("GHOSTHERD_SHARED_MEMORY_DIR", str(tmp_path / "shared"))
+    lines = T.TAKER_NOTE.format(ask=ASK, why="x", memory="").splitlines()
+    start = next(i for i, l in enumerate(lines) if l.endswith("remember <<'FACT'"))
+    fact = "Don't grep a CLI binary with a leading .{0,60}: it's \"slow\" -- grep -a -F 'word' instead."
+    script = "\n".join([lines[start], fact, lines[start + 2]]) + "\n"
+    assert lines[start + 2] == "FACT"
+    env = dict(live["env"], HOME=str(home), GHOSTHERD_SESSION="claude-t", GHOSTHERD_HERD=str(HERD))
+    herd_mod.get_herd().tick(sessions=TSNAP)
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, timeout=30)
+    assert done.returncode == 0 and "herd: remembered `" in done.stderr, done.stderr
+    kept = [p.read_text() for p in (tmp_path / "shared").rglob("*.md")]
+    assert any(fact in t for t in kept), kept

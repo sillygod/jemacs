@@ -4136,19 +4136,25 @@
     }).join("") + "</div>";
   }
 
-  function renderMemProposal(p) {
-    if (p.kind === "lint" && p.rule) return renderCheckProposal(p);
-    const facts = (p.facts || []).map((f) =>
-      '<span class="mpfact' + (f.gone ? " gone" : "") + '" title="' + esc(f.name) + '">' +
-      esc(f.title || f.name) + "</span>").join("");
-    const rejecting = mem.rejecting === p.id;
-    const acts = rejecting
+  // A proposal's buttons: APPROVE (its own words), Reject -- or, once
+  // Reject is pressed, why, and Reject / Keep.
+  function propActs(p, approve) {
+    return mem.rejecting === p.id
       ? '<div class="mpreject"><input id="mem-prej" type="text" placeholder="Why? (optional)" value="">' +
         '<button type="button" class="ghost small danger" data-act="prop-reject-send" data-id="' + esc(p.id) + '">Reject</button>' +
         '<button type="button" class="ghost small" data-act="prop-reject-cancel" data-id="' + esc(p.id) + '">Keep</button></div>'
       : '<div class="mpacts">' +
-        '<button type="button" class="primary small" data-act="prop-approve" data-id="' + esc(p.id) + '">Approve</button>' +
+        '<button type="button" class="primary small" data-act="prop-approve" data-id="' + esc(p.id) + '">' + esc(approve) + "</button>" +
         '<button type="button" class="ghost small" data-act="prop-reject" data-id="' + esc(p.id) + '">Reject</button></div>';
+  }
+
+  function renderMemProposal(p) {
+    if (p.kind === "lint" && p.rule) return renderCheckProposal(p);
+    if (p.kind === "share") return renderShareProposal(p);
+    const facts = (p.facts || []).map((f) =>
+      '<span class="mpfact' + (f.gone ? " gone" : "") + '" title="' + esc(f.name) + '">' +
+      esc(f.title || f.name) + "</span>").join("");
+    const acts = propActs(p, "Approve");
     return '<div class="mprop">' +
       '<div class="mptop"><span class="mpfacts">' + facts + '</span>' +
       '<span class="mpinto">→ ' + esc(p.file) + "</span>" +
@@ -4158,14 +4164,7 @@
 
   function renderCheckProposal(p) {
     const f = (p.facts || [])[0] || {};
-    const rejecting = mem.rejecting === p.id;
-    const acts = rejecting
-      ? '<div class="mpreject"><input id="mem-prej" type="text" placeholder="Why? (optional)" value="">' +
-        '<button type="button" class="ghost small danger" data-act="prop-reject-send" data-id="' + esc(p.id) + '">Reject</button>' +
-        '<button type="button" class="ghost small" data-act="prop-reject-cancel" data-id="' + esc(p.id) + '">Keep</button></div>'
-      : '<div class="mpacts">' +
-        '<button type="button" class="primary small" data-act="prop-approve" data-id="' + esc(p.id) + '">Turn the check on</button>' +
-        '<button type="button" class="ghost small" data-act="prop-reject" data-id="' + esc(p.id) + '">Reject</button></div>';
+    const acts = propActs(p, "Turn the check on");
     return '<div class="mprop ckprop">' +
       '<div class="mptop"><span class="mpfacts"><span class="mpfact' + (f.gone ? " gone" : "") + '" title="' +
       esc(f.name || "") + '">' + esc(f.title || f.name || "") + "</span></span>" +
@@ -4175,6 +4174,27 @@
       checkExamples(p.rule) +
       '<details class="ckmore"><summary>Its patterns</summary>' + checkPatterns(p.rule.check) + "</details>" +
       acts + "</div>";
+  }
+
+  // What a fact moving to every project takes with it: its check, on or
+  // off as it is, and its counts.
+  function shareCheck(check) {
+    return '<div class="shcheck">' + (check
+      ? "Its check moves too, and stays " + esc(check) + ". Its counts go with it."
+      : "Its counts go with it.") + "</div>";
+  }
+
+  // A project fact to make every project's: its text as proposed, and what
+  // goes with it.  Approved, the herd moves it at once -- nobody applies it.
+  function renderShareProposal(p) {
+    const f = (p.facts || [])[0] || {};
+    return '<div class="mprop shprop">' +
+      '<div class="mptop"><span class="mpfacts"><span class="mpfact' + (f.gone ? " gone" : "") + '" title="' +
+      esc(f.name || "") + '">' + esc(f.title || f.name || "") + "</span></span>" +
+      '<span class="mpinto">→ every project (the user store)</span>' +
+      '<span class="mpby">' + (p.author ? "by " + esc(p.author) : "") + "</span></div>" +
+      '<div class="shtext msg-body">' + markdown(p.diff || "") + "</div>" + shareCheck(f.check) +
+      propActs(p, "Move to every project") + "</div>";
   }
 
   // The store's checks: each one's fact, on or off, how many calls it
@@ -4712,6 +4732,13 @@
         '<div class="ibfacts">' + (it.facts || []).map((f) => '<span class="ibfact">' + esc(f) + "</span>").join("") + "</div>" +
         '<div class="ckhint">' + esc(it.hint || "") + "</div>" + checkExamples(it) +
         '<div class="ibacts"><button type="button" class="ibbtn ok" data-act="ib:prop-approve" data-id="' + d + '">Turn the check on</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:prop-reject" data-id="' + d + '">Reject</button></div></div>';
+    }
+    if (it.kind === "proposal" && it.share) {
+      return '<div class="ibprop">' +
+        '<div class="ibfacts">' + (it.facts || []).map((f) => '<span class="ibfact">' + esc(f) + "</span>").join("") + "</div>" +
+        '<div class="shtext msg-body">' + markdown(it.text || "") + "</div>" +
+        '<div class="ibacts"><button type="button" class="ibbtn ok" data-act="ib:prop-approve" data-id="' + d + '">Move to every project</button>' +
         '<button type="button" class="ibbtn" data-act="ib:prop-reject" data-id="' + d + '">Reject</button></div></div>';
     }
     if (it.kind === "proposal") {

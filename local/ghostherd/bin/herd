@@ -567,7 +567,10 @@ def cmd_promote(args):
     """Propose promoting stable, general facts into the project's instruction
     file.  The exact diff comes on stdin.  The herd holds it pending the user's
     approval on the page; nothing is written to the repo here.  With --lint,
-    a check made of one fact instead: the rule, JSON, on stdin."""
+    a check made of one fact instead: the rule, JSON, on stdin.  With
+    --every-project, one fact moved to the user store."""
+    if args.every_project:
+        return _propose_share(args)
     if args.lint:
         return _propose_lint(args)
     if not args.file:
@@ -582,6 +585,22 @@ def cmd_promote(args):
     out = rpc("herd_promote_propose", params)
     say("proposed promoting %s into %s (pending the user's approval)"
         % (", ".join(out["facts"]), out["file"]))
+    return 0
+
+
+def _propose_share(args):
+    """`promote propose --every-project': one fact of this project moved to the
+    user store, so every project has it -- its check and its counts too --
+    once the user approves.  Nothing on stdin."""
+    if args.file or args.lint or args.user:
+        raise HerdError("--every-project moves a project fact to the user store: no --file, --lint or --user")
+    if not args.fact or len(args.fact) != 1:
+        raise HerdError("move one fact at a time: name it with --fact NAME, once")
+    params = _mem_params(args)
+    params.update(facts=args.fact, share=True)
+    out = rpc("herd_promote_propose", params, timeout=30)
+    say("proposed making %s every project's (pending the user's approval)%s"
+        % (out["facts"][0], " -- the same one was already waiting" if out.get("duplicate") else ""))
     return 0
 
 
@@ -1636,13 +1655,16 @@ def main(argv=None):
                    help="another project's store: a path, its leaf name, or its slug")
     p.set_defaults(fn=cmd_forget)
     p = sub.add_parser("promote",
-                       help="propose promoting stable facts into the project's instruction file")
+                       help="propose promoting stable facts into the project's instruction file, "
+                            "a check, or every project")
     p.add_argument("action", choices=("propose",))
     p.add_argument("--fact", action="append", metavar="NAME",
                    help="a fact to promote (repeatable)")
     p.add_argument("--file", metavar="PATH", help="the instruction file (e.g. CLAUDE.md)")
     p.add_argument("--lint", action="store_true",
                    help="propose a check made of the fact instead: the rule, JSON, on stdin")
+    p.add_argument("--every-project", action="store_true",
+                   help="move the fact to the user store, so every project has it -- its check and counts too")
     p.add_argument("--user", action="store_true", help="a fact of the user store (--lint only)")
     p.add_argument("--project", metavar="P",
                    help="the project's store: a path, its leaf name, or its slug")

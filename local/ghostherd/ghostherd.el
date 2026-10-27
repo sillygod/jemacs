@@ -1947,10 +1947,11 @@ the situation has had time to become a new one."
   :group 'ghostherd)
 
 (defcustom ghostherd-auto-capture-foot 8
-  "Lines at the screen's foot an auto-capture limit-word search looks at.
-A fresh CLI message -- a quota notice, say -- lands here, by the input
-box; the words it uses are all over our own conversations higher up, so
-only the foot is searched."
+  "Lines at the screen's foot an auto-capture limit-word search looks at,
+when no input box is drawn there (see `ghostherd--screen-limit-p').
+A fresh CLI message -- a quota notice, say -- lands here, in the box's
+place; the words it uses are all over our own conversations higher up,
+so only the foot is searched."
   :type 'integer
   :group 'ghostherd)
 
@@ -1963,6 +1964,15 @@ only the foot is searched."
 Tuned the way `:screen-rules' are; the Log tab's `limit'-tagged captures
 are the samples to tune it against."
   :type 'regexp
+  :group 'ghostherd)
+
+(defcustom ghostherd-auto-capture-limit-ignore-re "AI: Out of credits"
+  "What a line's limit words are read without, or nil.
+agy's footer says `· AI: Out of credits' of its paid Google AI credits
+-- the overage past the model quota, which the usage reader ignores for
+the same reason -- not of a quota: an agent with quota left shows it
+all day, and was kept as a limit every half hour."
+  :type '(choice (const :tag "None" nil) regexp)
   :group 'ghostherd)
 
 (defcustom ghostherd-auto-capture-mismatch-grace 8
@@ -2035,23 +2045,52 @@ ARGS, compared by `equal'."
                            (split-string (or screen "") "\n"))))
     (last lines (max 1 n))))
 
-(defun ghostherd--screen-limit-p (screen)
-  "Non-nil when a limit or quota message sits near SCREEN's foot."
-  (let ((case-fold-search t))
-    (seq-some (lambda (l) (string-match-p ghostherd-auto-capture-limit-re l))
-              (ghostherd--screen-foot screen ghostherd-auto-capture-foot))))
+(defun ghostherd--screen-limit-p (screen &optional scrolled)
+  "Non-nil when a limit or quota message sits at SCREEN's foot.
+Read where the CLI speaks, not where the agents do.  With an input box
+drawn, the box and what is under it: a notice by it, as claude's
+\"Usage limit reached\" -- above it is the conversation, where a reply
+on rate limits, a test's 429, or a spinner's \"↓ 429 tokens\" are all
+words, not a notice.  With none, a card or a notice took its place
+(grok's \"You hit your free usage limit\"): the last
+`ghostherd-auto-capture-foot' lines.  A view scrolled back -- SCROLLED
+is the kind's `:scrolled' -- is not read at all: agy's /usage panel,
+which the herd itself opens to read its quota, is all \"quota\".  Nor
+what `ghostherd-auto-capture-limit-ignore-re' matches."
+  (and (not (ghostherd--scrolled-back-p screen scrolled))
+       (let* ((lines (vconcat (split-string (or screen "") "\n")))
+              (top (ghostherd--box-top lines))
+              (case-fold-search t))
+         (seq-some (lambda (l)
+                     (string-match-p ghostherd-auto-capture-limit-re
+                                     (if ghostherd-auto-capture-limit-ignore-re
+                                         (replace-regexp-in-string
+                                          ghostherd-auto-capture-limit-ignore-re "" l t t)
+                                       l)))
+                   (if top
+                       (seq-remove #'string-blank-p (append (seq-drop lines top) nil))
+                     (ghostherd--screen-foot screen ghostherd-auto-capture-foot))))))
 
 (defun ghostherd--screen-compacting-p (screen)
   "Non-nil when SCREEN shows a conversation compaction in progress."
   (and screen (string-match-p "[Cc]ompacting conversation" screen)))
 
-(defun ghostherd--screen-menu-p (screen hit)
-  "Non-nil when SCREEN looks like a menu that no `blocked' rule matched."
+(defun ghostherd--screen-menu-p (screen hit &optional replaces-input)
+  "Non-nil when SCREEN looks like a menu that no `blocked' rule matched.
+Read as `ghostherd--detect-state' reads a menu: for a kind whose menus
+take its input box's place -- REPLACES-INPUT, its
+`:prompt-replaces-input' -- only with no input box at the foot, for a
+numbered list in a reply above an idle box is not a menu; and never
+the model picker, which the herd drives itself."
   (and (not (eq (car-safe hit) 'blocked))
        ;; A cheap marker check before the full menu parse, since this runs
        ;; every poll: ❯/› marks, or the confirm/pick footers.
        (string-match-p "[❯›]\\|Enter to \\(?:confirm\\|select\\)\\|Tab/Arrow keys"
                        screen)
+       (not (and replaces-input
+                 (ghostherd--screen-read screen (list 'box ghostherd-status-lines)
+                                         #'ghostherd--input-at-foot-p)))
+       (not (ghostherd--model-picker screen))
        (ghostherd--prompt screen)))
 
 (defun ghostherd--screen-hook-mismatch-p (hit report)
@@ -2061,15 +2100,20 @@ ARGS, compared by `equal'."
        (memq (car report) '(working blocked))
        (not (memq (car-safe hit) '(working blocked)))))
 
-(defun ghostherd--auto-capture-why (screen hit report)
+(defun ghostherd--auto-capture-why (screen hit report &optional spec)
   "The trigger SCREEN fires for an auto-capture, or nil.
-Checked in order, most actionable first, so one screen keeps one entry."
+SPEC is its agent's kind's, for how its CLI draws a menu and a view
+scrolled back.  Checked in order, most actionable first, so one screen
+keeps one entry."
   (cond
-   ((ghostherd--screen-read screen (list 'limit ghostherd-auto-capture-limit-re ghostherd-auto-capture-foot)
-                            #'ghostherd--screen-limit-p)
+   ((ghostherd--screen-read screen (list 'limit ghostherd-auto-capture-limit-re ghostherd-auto-capture-foot
+                                         ghostherd-auto-capture-limit-ignore-re)
+                            #'ghostherd--screen-limit-p (plist-get spec :scrolled))
     'limit)
    ((ghostherd--screen-compacting-p screen) 'compaction)
-   ((ghostherd--screen-read screen 'menu #'ghostherd--screen-menu-p hit) 'menu)
+   ((ghostherd--screen-read screen (list 'menu ghostherd-status-lines) #'ghostherd--screen-menu-p
+                            hit (plist-get spec :prompt-replaces-input))
+    'menu)
    ((ghostherd--screen-hook-mismatch-p hit report) 'mismatch)))
 
 (defun ghostherd--auto-capture-ok (id why screen)
@@ -2102,7 +2146,7 @@ Reads the screen the poll just stored, so it adds no capture of its own."
                                 (plist-get spec :prompt-replaces-input)
                                 (plist-get spec :spinner))))
                (report (ghostherd--fresh-report session))
-               (why (ghostherd--auto-capture-why screen hit report)))
+               (why (ghostherd--auto-capture-why screen hit report spec)))
           ;; A mismatch must hold a moment before it counts: a hook lagging
           ;; a turn's end disagrees with a correctly-idle screen for an
           ;; instant, which is noise.  A real misread persists.

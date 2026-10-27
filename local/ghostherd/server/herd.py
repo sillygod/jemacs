@@ -701,6 +701,8 @@ class HerdStore:
         self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_at ON fact_uses (at)")
         # The page's window, read from the index alone.
         self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_window ON fact_uses (key, at, fact, kind)")
+        # The facts an ask came with, for its taker's note (`_delivered_facts').
+        self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_ask ON fact_uses (ask) WHERE ask IS NOT NULL")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS fact_use_totals (
@@ -1918,6 +1920,8 @@ class HerdStore:
             work = ask_trace.Work()
             work.why = "no conversation known for it"
             out = ask_trace.compose(work, _seconds(row), **self._trace_facts(row))
+            if out["rough"]:
+                out["memory"] = self._delivered_facts(ask_id)
             self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
                                (json.dumps(out, ensure_ascii=False), ask_id))
         except Exception:  # noqa: BLE001
@@ -1980,6 +1984,8 @@ class HerdStore:
             work = ask_trace.read_work(transcript, row["id"], said=said)
             out = ask_trace.compose(work, _seconds(row), **facts)
             with self._mu:
+                if out["rough"]:
+                    out["memory"] = self._delivered_facts(row["id"])
                 self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
                                    (json.dumps(out, ensure_ascii=False), row["id"]))
                 self._conn.execute(
@@ -1988,6 +1994,19 @@ class HerdStore:
                 self._conn.commit()
         except Exception:  # noqa: BLE001 -- no line, never a held answer
             self._give_up_trace(ask_id, "error")
+
+    def _delivered_facts(self, ask_id: str) -> list[dict[str, Any]]:
+        """The shared-memory facts ASK_ID came with (its uses of kind `ask'),
+        as {name, user}: what its taker's note offers to update rather than
+        say again.  Only for rough work; caller holds `_mu`; never raises."""
+        try:
+            from shared_memory import USER_KEY
+            self._flush_uses()
+            return [{"name": fact, "user": key == USER_KEY} for key, fact in self._conn.execute(
+                "SELECT key, fact FROM fact_uses WHERE ask = ? AND kind = 'ask'"
+                " GROUP BY key, fact ORDER BY MIN(rowid) LIMIT 8", (ask_id,)).fetchall()]
+        except Exception:  # noqa: BLE001 -- the note goes without, never the line
+            return []
 
     @staticmethod
     def _trace_window(row: dict[str, Any]) -> tuple[str, str, str]:
@@ -2098,19 +2117,26 @@ class HerdStore:
                       "ask_id, created_at, decided_at, kind, rule")
 
     def propose(self, project: str, facts: list[str], file: str, diff: str,
-                author: str, rule: dict[str, Any] | None = None) -> dict[str, Any]:
+                author: str, rule: dict[str, Any] | None = None,
+                share: bool = False) -> dict[str, Any]:
         """Store a pending proposal to promote FACTS of PROJECT (a store key)
         into instruction FILE, with the exact DIFF.  The herd holds it until
         the user decides on the page; it writes nothing to the repo.  With
         RULE, a check made of the one fact instead (`lint': FILE and DIFF
-        are the herd's own, `lint' and the rule as JSON)."""
+        are the herd's own, `lint' and the rule as JSON).  With SHARE, the
+        one fact moved to the user store, so every project has it (`share':
+        FILE `user', DIFF the fact's text as it was proposed; share.py)."""
         project = (project or "").strip()
         names = [str(f).strip() for f in (facts or []) if str(f).strip()]
-        kind = "lint" if rule is not None else "promote"
+        kind = "lint" if rule is not None else "share" if share else "promote"
         if rule is not None:
             if len(names) != 1:
                 raise ValueError("a check is one fact's")
             file, diff = "lint", json.dumps(rule, sort_keys=True, ensure_ascii=False)
+        if share:
+            if len(names) != 1:
+                raise ValueError("move one fact at a time")
+            file = "user"
         file = (file or "").strip()
         if not project:
             raise ValueError("project is required")
@@ -2211,18 +2237,41 @@ class HerdStore:
                 raise ValueError("no pending proposal with that id")
         return {"id": proposal_id, "status": "rejected"}
 
-    def apply_lint_proposal(self, proposal_id: str) -> None:
-        "The user approved a check: it is on, nothing left for anyone to do."
+    def apply_lint_proposal(self, proposal_id: str, kind: str = "lint") -> None:
+        """The user approved a check (or a move to the user store, KIND
+        `share'): the herd has done it, nothing left for anyone to do."""
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             cur = self._conn.execute(
                 "UPDATE proposals SET status = 'applied', decided_at = ? "
-                "WHERE id = ? AND status = 'pending' AND kind = 'lint'",
-                (now, proposal_id),
+                "WHERE id = ? AND status = 'pending' AND kind = ?",
+                (now, proposal_id, kind),
             )
             self._conn.commit()
             if cur.rowcount == 0:
-                raise ValueError("no pending check with that id")
+                raise ValueError("no pending check with that id" if kind == "lint"
+                                 else "no pending proposal with that id")
+
+    def move_fact_counts(self, key: str, fact: str, to: str) -> None:
+        """Store KEY's FACT is store TO's now (share.py): its uses, their
+        lifetime totals and its check's denials go with it, so the page
+        counts on from where it was."""
+        with self._mu:
+            self._flush_uses()
+            self._conn.execute("UPDATE fact_uses SET key = ? WHERE key = ? AND fact = ?", (to, key, fact))
+            self._conn.execute(
+                """
+                INSERT INTO fact_use_totals (key, fact, kind, n, first_at, last_at)
+                SELECT ?, fact, kind, n, first_at, last_at FROM fact_use_totals
+                WHERE key = ? AND fact = ?
+                ON CONFLICT (key, fact, kind) DO UPDATE SET
+                  n = n + excluded.n,
+                  first_at = MIN(first_at, excluded.first_at),
+                  last_at = MAX(last_at, excluded.last_at)
+                """, (to, key, fact))
+            self._conn.execute("DELETE FROM fact_use_totals WHERE key = ? AND fact = ?", (key, fact))
+            self._conn.execute("UPDATE lint_denials SET key = ? WHERE key = ? AND fact = ?", (to, key, fact))
+            self._conn.commit()
 
     # ---- The checks' denials ------------------------------------------------
     #

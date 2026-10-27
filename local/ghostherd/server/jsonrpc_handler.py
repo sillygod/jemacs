@@ -19,6 +19,7 @@ import memory_migrate
 import meter
 import projects
 import relay
+import share
 import shared_memory
 import subagents
 from engine import get_engine
@@ -1168,8 +1169,15 @@ class JsonRpcHandler:
         the project's (never a machine/user one) and stores it pending the
         user's approval on the page; it writes nothing to the repo.  With
         LINT, a check made of one fact instead (lint.py): any store's,
-        the user's too -- it is the herd's, not the repo's."""
+        the user's too -- it is the herd's, not the repo's.  With SHARE,
+        one project fact moved to the user store, so every project has it
+        (share.py)."""
         store, key = self._write_store(params)
+        if params.get("share"):
+            facts = params.get("facts") or []
+            if not isinstance(facts, list) or len(facts) != 1:
+                raise ValueError("move one fact at a time: name it once")
+            return share.propose(store, key, str(facts[0]).strip(), str(params.get("from") or "unknown"))
         if params.get("lint") is not None:
             rule, facts = params.get("lint"), params.get("facts") or []
             if not isinstance(rule, dict):
@@ -1200,27 +1208,33 @@ class JsonRpcHandler:
         _store, key = self._memory_store_by_key(params)
         status = str(params.get("status") or "").strip() or None
         props = get_herd().proposals(project=key, status=status)
-        # The page shows the facts' titles and whether each is still a memory.
         for p in props:
-            titled = []
-            for name in p["facts"]:
-                f = shared_memory.parse(shared_memory.project_store(key) / f"{name}.md")
-                titled.append({"name": name, "title": f.title if f else shared_memory.title_of(name),
-                               "gone": f is None, "promoted": bool(f and f.promoted)})
-            p["facts"] = titled
+            self._titled(p)
         return {"key": key, "proposals": props}
+
+    @staticmethod
+    def _titled(p: dict) -> dict:
+        """Proposal P as the page shows it: each fact's title and whether it
+        is still a memory -- and, for one to make every project's, its
+        description and its check, which moves with it."""
+        store = shared_memory.project_store(p["project"])
+        titled = []
+        for name in p["facts"]:
+            f = shared_memory.parse(store / f"{name}.md")
+            t = {"name": name, "title": f.title if f else shared_memory.title_of(name),
+                 "gone": f is None, "promoted": bool(f and f.promoted)}
+            if p.get("kind") == "share":
+                t.update(description=f.description if f else "",
+                         check=share.check_status(p["project"], name))
+            titled.append(t)
+        p["facts"] = titled
+        return p
 
     def _herd_pending_proposals(self, _params: dict) -> dict:
         "Every pending memory proposal across projects, for the Inbox."
         props = get_herd().proposals(status="pending")
         for p in props:
-            titled = []
-            store = shared_memory.project_store(p["project"])
-            for name in p["facts"]:
-                f = shared_memory.parse(store / f"{name}.md")
-                titled.append({"name": name, "title": f.title if f else shared_memory.title_of(name),
-                               "gone": f is None, "promoted": bool(f and f.promoted)})
-            p["facts"] = titled
+            self._titled(p)
         return {"proposals": props}
 
     def _herd_memory_promote_approve(self, params: dict) -> dict:
@@ -1235,6 +1249,9 @@ class JsonRpcHandler:
         if prop["kind"] == "lint":
             # A check is the herd's own: on at once, nobody asked to apply it.
             return lint.approve(prop)
+        if prop["kind"] == "share":
+            # So is the memory: the fact moves now, its check and counts too.
+            return share.approve(prop)
         key = prop["project"]
         to = self._lead_for(key) or prop["author"]
         if not to or to == "unknown":
@@ -1294,17 +1311,27 @@ class JsonRpcHandler:
         if not to:
             raise ValueError("no lead for this project; start one or pick an agent")
         body = (
-            "Please review this project's shared memory and propose any facts "
-            "that are stable, general rules belonging in the project's "
-            "instruction file (CLAUDE.md, or AGENTS.md where it links to it) -- "
-            "e.g. a branch/PR rule the whole team follows.\n\n"
-            "Read the memory (`$GHOSTHERD_HERD recall`) and the instruction file, "
-            "then for the ones worth promoting run:\n"
+            "Please review this project's shared memory and propose where any "
+            "fact belongs better than it is.  Read the memory "
+            "(`$GHOSTHERD_HERD recall`) and the instruction file first.\n\n"
+            "- A stable, general rule of this project -- e.g. a branch/PR rule "
+            "the whole team follows -- into its instruction file (CLAUDE.md, or "
+            "AGENTS.md where it links to it):\n"
             "  $GHOSTHERD_HERD promote propose --fact NAME [--fact NAME ...] "
-            "--file CLAUDE.md   (the exact diff on stdin)\n\n"
-            "Propose only stable, general rules. Never machine- or user-specific "
-            "facts (paths, credentials setup, personal preferences) -- those stay "
-            "memories; the herd refuses them. The user approves each on the page."
+            "--file CLAUDE.md   (the exact diff on stdin)\n"
+            "  Never machine- or user-specific facts (paths, credentials setup, "
+            "personal preferences): those stay memories; the herd refuses them.\n"
+            "- A fact that holds in every project, not only this one -- how to "
+            "use a tool, a trap of the machine -- moved to the user store, its "
+            "check and counts with it:\n"
+            "  $GHOSTHERD_HERD promote propose --fact NAME --every-project\n"
+            "- A fact about a shell command never to run, made a check run before "
+            "every shell call, which denies it with a hint:\n"
+            "  $GHOSTHERD_HERD promote propose --lint --fact NAME   (the rule, "
+            "JSON {hint, check, catches, passes}, on stdin; try it first with "
+            "`$GHOSTHERD_HERD lint check --rule FILE COMMAND`)\n\n"
+            "Propose only what you are sure of. The user approves each in the "
+            "Inbox or on the Memory tab."
         )
         ask = get_herd().ask(to=to, body=body, from_name="user")
         return {"key": key, "ask": ask["id"], "to": to}
