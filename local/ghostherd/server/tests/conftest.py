@@ -27,3 +27,10 @@ os.environ.setdefault("GHOSTHERD_IMAGES_DIR",
 # The checks' rules (bin/herd_lint.py): never the user's ~/.ghostherd/lint.
 os.environ.setdefault("GHOSTHERD_LINT_DIR",
                       tempfile.mkdtemp(prefix="ghostherd-test-lint-"))
+# Never the user's Telegram bot.  A herd agent's environment has its token
+# and chats, from the Emacs that started it, and every `TestClient(app)'
+# runs the sidecar's lifespan, which starts the bot when both are set: a
+# full run long-polled the real bot ~60 times (ask 72535795), taking what
+# the live sidecar should have had.  A test that wants a bot makes its own.
+os.environ.pop("GHOSTHERD_TELEGRAM_TOKEN", None)
+os.environ.pop("GHOSTHERD_TELEGRAM_CHAT_IDS", None)
