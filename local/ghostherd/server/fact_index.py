@@ -32,6 +32,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Any
 
+import onnx_telemetry  # noqa: F401 -- before qdrant_client loads onnxruntime
 from qdrant_client.models import (
     Distance,
     FieldCondition,

@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import onnx_telemetry  # noqa: F401 -- before qdrant_client loads onnxruntime
 from qdrant_client.models import PointStruct
 
 from importers.claude import memory_source

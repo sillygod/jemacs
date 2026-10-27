@@ -2,11 +2,37 @@
 machine (ask 2b76d37d): FastEmbed sets ONNX intra_op_num_threads to it, so a
 batch embed burns that many cores.  Two at most, unless configured."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 import embedder as emb
 from config import Config
 
+SERVER = Path(__file__).resolve().parent.parent
+
 # The cap values themselves are pinned in test_store.py
 # (test_embedding_takes_a_few_cores); here we prove the cap reaches the model.
+
+
+@pytest.mark.parametrize("module", ["main", "store", "fact_index", "sparse_migrate", "embedder"])
+def test_onnx_runtimes_telemetry_never_starts(module, tmp_path):
+    """ONNX Runtime posts telemetry ~10 s after it loads, and a process that
+    exits while the post is out aborts (onnx_telemetry.py, ask 72535795).
+    The sidecar, and each module that loads qdrant_client or fastembed,
+    turns it off first: onnxruntime makes no telemetry store under HOME
+    (with it on, `Library/Application Support/Microsoft/DeveloperTools/
+    .onnxruntime' -- ~/.cache/... on Linux -- holds a device ID and the
+    events to post).  A fresh process each: onnxruntime reads the switch
+    once, when it loads, and this one is loaded already."""
+    env = {k: v for k, v in os.environ.items() if k != "ORT_DISABLE_TELEMETRY"}
+    env.update(HOME=str(tmp_path), XDG_CACHE_HOME=str(tmp_path / ".cache"))
+    subprocess.run([sys.executable, "-c", f"import {module}, fastembed"],
+                   cwd=SERVER, env=env, check=True, timeout=120)
+    assert not list(tmp_path.rglob(".onnxruntime"))
 
 
 def test_load_passes_the_capped_count_to_both_models(monkeypatch):

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import onnx_telemetry  # noqa: F401 -- before qdrant_client loads onnxruntime
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,

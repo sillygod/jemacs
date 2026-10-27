@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from config import Config
+from config import Config, get_config
 from engine import MemoryEngine, reset_engine
 from main import app
 
@@ -17,6 +17,14 @@ def _rpc(client, method, params=None, id=1):
     data = resp.json()
     assert data.get("error") is None, data
     return data["result"]
+
+
+def test_the_lifespan_never_starts_the_users_telegram_bot():
+    """A herd agent runs the suite with Emacs's Telegram token and chats in
+    its environment, and the lifespan below starts the bot when both are
+    set: conftest drops them (ask 72535795)."""
+    cfg = get_config()
+    assert not cfg.telegram_token and not cfg.telegram_chat_ids
 
 
 def test_health_and_ping(tmp_path: Path, monkeypatch):

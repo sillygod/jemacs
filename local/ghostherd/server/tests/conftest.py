@@ -1,6 +1,11 @@
 import os
 import tempfile
 
+# ONNX Runtime's telemetry off before a test file's own `import
+# qdrant_client' loads onnxruntime: a run that ended while its post was out
+# aborted at exit, every test passed (onnx_telemetry.py).
+import onnx_telemetry  # noqa: F401
+
 os.environ.setdefault("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
 # A test that reaches `get_herd()' without setting GHOSTHERD_MEMORY_DIR would
 # otherwise fall back to config.py's default -- the real
@@ -22,3 +27,10 @@ os.environ.setdefault("GHOSTHERD_IMAGES_DIR",
 # The checks' rules (bin/herd_lint.py): never the user's ~/.ghostherd/lint.
 os.environ.setdefault("GHOSTHERD_LINT_DIR",
                       tempfile.mkdtemp(prefix="ghostherd-test-lint-"))
+# Never the user's Telegram bot.  A herd agent's environment has its token
+# and chats, from the Emacs that started it, and every `TestClient(app)'
+# runs the sidecar's lifespan, which starts the bot when both are set: a
+# full run long-polled the real bot ~60 times (ask 72535795), taking what
+# the live sidecar should have had.  A test that wants a bot makes its own.
+os.environ.pop("GHOSTHERD_TELEGRAM_TOKEN", None)
+os.environ.pop("GHOSTHERD_TELEGRAM_CHAT_IDS", None)
