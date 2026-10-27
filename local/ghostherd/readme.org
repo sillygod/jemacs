@@ -828,9 +828,21 @@ before its turn ends --- claude, grok and agy alike:
 #+begin_example
 herd: answered ask 1a2b3c4d
 herd: Your work on ask 1a2b3c4d went rough: 5 tool calls failed (4 shell exits, 1 edit not applied); 2 denials (1 guard, 1 check).
-herd: If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:
-herd: "$GHOSTHERD_HERD" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do.
+herd: If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now, as one fact:
+herd: "$GHOSTHERD_HERD" remember <<'FACT'
+herd: <the gotcha, and what to do instead>
+herd: FACT
+herd: If it is a fact this ask came with, update that one instead (its old text is kept): add --name deploy-gotcha or --user --name grep-cli-binaries-cheaply.
+herd: Otherwise, nothing to do.
 #+end_example
+
+The fact goes in a heredoc (=herd remember= reads stdin when given no
+text), which no quote in it can break: a fact in ='single quotes'= ended
+at its first apostrophe.  The facts are those its ask was delivered with
+(its uses in the Memory tab), named as =herd remember= updates them ---
+the flags its said-again refusal would ask for --- so a gotcha one of
+them half says goes into it rather than being refused.  Left out when the
+ask came with none.
 
 Counts only, as in the line.  On a smooth ask it says nothing more, nor
 when no line comes within the three seconds or anything fails --- a line

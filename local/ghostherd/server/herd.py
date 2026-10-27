@@ -701,6 +701,8 @@ class HerdStore:
         self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_at ON fact_uses (at)")
         # The page's window, read from the index alone.
         self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_window ON fact_uses (key, at, fact, kind)")
+        # The facts an ask came with, for its taker's note (`_delivered_facts').
+        self._conn.execute("CREATE INDEX IF NOT EXISTS fact_uses_by_ask ON fact_uses (ask) WHERE ask IS NOT NULL")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS fact_use_totals (
@@ -1918,6 +1920,8 @@ class HerdStore:
             work = ask_trace.Work()
             work.why = "no conversation known for it"
             out = ask_trace.compose(work, _seconds(row), **self._trace_facts(row))
+            if out["rough"]:
+                out["memory"] = self._delivered_facts(ask_id)
             self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
                                (json.dumps(out, ensure_ascii=False), ask_id))
         except Exception:  # noqa: BLE001
@@ -1980,6 +1984,8 @@ class HerdStore:
             work = ask_trace.read_work(transcript, row["id"], said=said)
             out = ask_trace.compose(work, _seconds(row), **facts)
             with self._mu:
+                if out["rough"]:
+                    out["memory"] = self._delivered_facts(row["id"])
                 self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
                                    (json.dumps(out, ensure_ascii=False), row["id"]))
                 self._conn.execute(
@@ -1988,6 +1994,19 @@ class HerdStore:
                 self._conn.commit()
         except Exception:  # noqa: BLE001 -- no line, never a held answer
             self._give_up_trace(ask_id, "error")
+
+    def _delivered_facts(self, ask_id: str) -> list[dict[str, Any]]:
+        """The shared-memory facts ASK_ID came with (its uses of kind `ask'),
+        as {name, user}: what its taker's note offers to update rather than
+        say again.  Only for rough work; caller holds `_mu`; never raises."""
+        try:
+            from shared_memory import USER_KEY
+            self._flush_uses()
+            return [{"name": fact, "user": key == USER_KEY} for key, fact in self._conn.execute(
+                "SELECT key, fact FROM fact_uses WHERE ask = ? AND kind = 'ask'"
+                " GROUP BY key, fact ORDER BY MIN(rowid) LIMIT 8", (ask_id,)).fetchall()]
+        except Exception:  # noqa: BLE001 -- the note goes without, never the line
+            return []
 
     @staticmethod
     def _trace_window(row: dict[str, Any]) -> tuple[str, str, str]:

@@ -57,11 +57,20 @@ NUDGE = "rough going: if it found a non-obvious gotcha, `herd remember` it"
 # its own `herd reply' (bin/herd), which it reads before its turn ends:
 # the counts that made the work rough, then what to do.  Every CLI reads a
 # shell call's output, stderr too, as its tool result: one wording for all.
+# The fact goes in a heredoc, which no quote in it can break -- a fact said
+# in 'single quotes' ended at its first apostrophe -- and when the ask came
+# with facts, the note names them as `herd remember' would update them
+# (its `_restated'), so a gotcha one of them half says is not refused as
+# said again.
 TAKER_NOTE = (
     "Your work on ask {ask} went rough: {why}.\n"
-    "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now:\n"
-    "\"$GHOSTHERD_HERD\" remember 'FACT' -- one fact, the gotcha and what to do instead.  Otherwise, nothing to do."
+    "If a non-obvious gotcha caused it (not an ordinary miss, such as grep finding nothing), record it now, as one fact:\n"
+    "\"$GHOSTHERD_HERD\" remember <<'FACT'\n"
+    "<the gotcha, and what to do instead>\n"
+    "FACT\n"
+    "{memory}Otherwise, nothing to do."
 )
+TAKER_MEMORY = "If it is a fact this ask came with, update that one instead (its old text is kept): add {flags}.\n"
 
 SHELL_TOOLS = {"Bash", "run_terminal_command", "run_command"}
 EDIT_TOOLS = conversation.EDIT_TOOLS | {"MultiEdit", "NotebookEdit"}
@@ -511,13 +520,20 @@ def rough_counts(failed: dict[str, int] | None, guard: int = 0, lint: int = 0,
 
 def taker_note(trace: dict[str, Any] | None, ask_id: str) -> str | None:
     """What the taker of ASK_ID is told on its `herd reply' when the work
-    was rough -- TRACE is `compose''s -- or None.  Counts only, as the line."""
+    was rough -- TRACE is `compose''s, with the facts the ask came with as
+    its `memory' -- or None.  Counts only, as the line, and fact names."""
     if not (isinstance(trace, dict) and trace.get("rough")):
         return None
     d = trace.get("detail") or {}
     why = rough_counts(d.get("failed"), d.get("guard") or 0, d.get("lint") or 0,
                        d.get("asks"), d.get("relays") or 0)
-    return TAKER_NOTE.format(ask=ask_id, why="; ".join(why)) if why else None
+    if not why:
+        return None
+    flags = [("--user " if f.get("user") else "") + "--name " + f["name"]
+             for f in trace.get("memory") or [] if isinstance(f, dict) and isinstance(f.get("name"), str)]
+    flags = ", ".join(flags[:-1]) + " or " + flags[-1] if len(flags) > 1 else "".join(flags)
+    return TAKER_NOTE.format(ask=ask_id, why="; ".join(why),
+                             memory=TAKER_MEMORY.format(flags=flags) if flags else "")
 
 
 def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
