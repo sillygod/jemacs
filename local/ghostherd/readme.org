@@ -614,6 +614,13 @@ you (below).
 Then restart the sidecar (=ghostherd-memory-stop= / enable
 =ghostherd-mode=, or restart Emacs) so uvicorn inherits the env.
 
+Only the sidecar gets them: no agent does, on either backend
+(=ghostherd-agent-env-withhold=, a list you can add names to).  An agent
+with the token could start a second bot and take the live one's
+updates.  The tmux server's own environment is rid of them at each
+spawn; an agent already running keeps what it started with until it
+is respawned.
+
 =/herd= lists sessions from the last Emacs poll, ordered by state
 priority and recency just like the herd page.  Tap a row for
 screen / explain / prompt / interrupt.  =screen= and =explain= reply
@@ -2877,6 +2884,8 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
         ghostherd-guard-root "~/.ghostherd/guard/")
   ;; ghostherd-agent-env-allow / ghostherd-agent-env-allow-extra: the only
   ;; variables a guarded agent starts with, and more of yours or a project's.
+  ;; ghostherd-agent-env-withhold: the ones no agent starts with, guarded
+  ;; or not (default: the Telegram bot's two).
 
   ;; How long an agent's own report about itself is believed.  Short is
   ;; safe: when the report was true the prompt is still on screen, so

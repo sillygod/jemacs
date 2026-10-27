@@ -234,12 +234,17 @@ middle would need quoting that has already been got wrong once (see
 bin/ghostherd).  UTF-8 is pinned in both directions and neither is
 decorative: a captured screen is full of box drawing, and an argument
 can be a prompt in any language on its way to `set-buffer'.  A guessed
-coding system either mangles those or stops to ask."
+coding system either mangles those or stops to ask.
+
+The client runs without `ghostherd-agent-env-withhold': the one that
+starts the server hands it its own environment, and the server hands
+that to every pane it ever starts."
   (condition-case error
       (with-temp-buffer
         (let* ((default-directory (ghostherd-tmux--directory))
                (coding-system-for-read 'utf-8)
                (coding-system-for-write 'utf-8)
+               (process-environment (ghostherd-agent-process-environment))
                (status (apply #'call-process ghostherd-tmux-executable nil t nil
                               (append (ghostherd-tmux--socket-args) args))))
           (cons status (buffer-string))))
@@ -1012,6 +1017,18 @@ agent tmux has no pane for does not cost a `list-panes' every tick.")
 (defvar ghostherd-tmux--env-supported 'unknown
   "Whether this tmux accepts `new-session -e'.  See `ghostherd-tmux--new-session'.")
 
+(defun ghostherd-tmux--unset-withheld ()
+  "Unset `ghostherd-agent-env-withhold' in the server's global environment.
+A pane starts from that, and a server keeps it for life: one started
+before the names were withheld -- or by a client of someone else's --
+still has them, and would hand them to the next agent.  One call,
+whatever the number of names.  With no server it fails, which is fine:
+the server the spawn starts is ours, and clean (`ghostherd-tmux--call')."
+  (when-let* ((names (ghostherd-agent-env-withheld)))
+    (apply #'ghostherd-tmux--try
+           (cdr (mapcan (lambda (name) (list ";" "set-environment" "-g" "-u" name))
+                        names)))))
+
 (defun ghostherd-tmux--new-session (args env)
   "Run new-session with ARGS, passing ENV as `-e' options where supported.
 
@@ -1029,7 +1046,11 @@ the warning is worth saying once rather than every time.
 
 ENV is separate from ARGS so the caller can keep ARGS in tmux's own
 order: the options go in front of the command, and the command has to
-stay last, since everything after it belongs to execvp."
+stay last, since everything after it belongs to execvp.
+
+The server's global environment is rid of the withheld names first
+\(`ghostherd-tmux--unset-withheld'), so the agent never starts with them."
+  (ghostherd-tmux--unset-withheld)
   (let* ((env-args (and (not (eq ghostherd-tmux--env-supported nil))
                         (mapcan (lambda (var) (list "-e" var)) (copy-sequence env))))
          (full (if env-args
