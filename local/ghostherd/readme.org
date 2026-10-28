@@ -798,8 +798,8 @@ allowed to --- so the approvals on each agent are the real boundary.
 went --- the herd's counts, never a verdict on the answer:
 
 #+begin_example
-How it went: 38 min · 108 tool calls, 5 failed (5 shell exits) · 1 check denial · rough going: if it found a non-obvious gotcha, `herd remember` it
-How it went: 4 min · 12 tool calls, none failed · asked others 1× (qa-dp)
+How it went: 38 min · 108 tool calls, 5 failed (5 shell exits) · 2.1M weighted tokens · 1 check denial · rough going: if it found a non-obvious gotcha, `herd remember` it
+How it went: 4 min · 12 tool calls, none failed · 340k weighted tokens · asked others 1× (qa-dp)
 #+end_example
 
 It is read from the taker's own transcript, from the message that
@@ -815,7 +815,17 @@ conversation (without that file, the line says grok's failures are not
 readable rather than guess, and a call with no outcome there is counted
 as not told how it ended, never as fine); agy a step's status and error,
 and a command's exit code.  A denial the herd recorded itself --- the
-guard's, a check's --- is counted once, from that record.  When the transcript
+guard's, a check's --- is counted once, from that record.  And what
+the work cost: each reply from the delivery to the answer --- the
+answer's own too --- and its sub-agents', as the page counts them
+(input-equivalent, /weighted tokens/); =herd status ID= has the kinds
+under =tokens= (=weighted=, =input=, =cache_write=, =cache_read=,
+=output=, the =subagents= share of the number, =pending=).  grok
+writes its usage once a turn, as the turn ends --- after the answer it
+gave in it --- so its line says =— weighted tokens (grok writes them as
+its turn ends: `herd status` has them then)=, and the sidecar adds that
+turn to the ask when it reads its end (the first of the taker's turns
+to end after the answer, within half an hour).  When the transcript
 cannot be read, or does not show the ask (a =/clear=, a relay's heir),
 the line says what it could not see --- or is left out, when the herd has
 nothing else to say.  Counts and tool kinds only: never a command, a path
@@ -2300,6 +2310,33 @@ are the other tabs (below, and "What happened while you were away").
   sidecar's tokens in.  Not claude's status line: turning that on
   takes =esc to interrupt= off the screen, which is how the herd knows
   an agent is working.
+- What each agent's replies cost, beside its context: =today 1.3M · 7d
+  12.4M=, and each project's in its head with its lead's share of the
+  week, =today 4.7M · 7d 53.4M · lead 23%=.  One number each:
+  input-equivalent tokens, each kind weighted as it is priced --- input
+  1, cache read 0.1, cache write 1.25 (2 for claude's 1-hour cache),
+  output 5 --- roughly what eats the plan's quota (the quota left is in
+  no transcript, so it is not shown).  The title has the kinds apart,
+  input / cache write / cache read / output, and the project's lead
+  and workers apart, today and over the week.  The sidecar reads it
+  off the transcripts (=server/tally.py=): claude's =message.usage= on
+  each reply --- written as several records with the same usage, so a
+  reply counts once, by its message and request ids, and a synthetic
+  one not at all --- and its sub-agents' beside it; agy's planner
+  responses; grok's =turn_completed= updates in =updates.jsonl=, once a
+  turn, as it ends, whose input includes what it read from cache.  It
+  reads each file from where it last stopped, at most 64 MB a pass ---
+  a first look at a 144 MB transcript and its 47 sub-agents took three
+  passes, under half a second --- and keeps the offsets and the totals
+  by day in =herd.sqlite= (=tally_files=, =tally_days=), so a restart
+  loses nothing and a stopped agent's usage still counts in its
+  project's week; what it wrote as it stopped is read after it left.
+  Days are local time.  A lead is a project's lead, or primary; the
+  rest are its workers.  Emacs asks for it (=herd_tally=) every 30
+  seconds while the page is seen; the sidecar reads after a tick, ten
+  seconds apart at most.  Counted from when the sidecar first read an
+  agent's transcript --- all of it, back to its start --- so an agent
+  stopped before then is not in it.
 - The model chip switches the model: a model and, if you like, an
   effort, then Switch.  All three CLIs have a =:model-picker= in
   =ghostherd-agent-specs=, driven as each CLI allows: for claude, Emacs

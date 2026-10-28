@@ -34,3 +34,15 @@ os.environ.setdefault("GHOSTHERD_LINT_DIR",
 # the live sidecar should have had.  A test that wants a bot makes its own.
 os.environ.pop("GHOSTHERD_TELEGRAM_TOKEN", None)
 os.environ.pop("GHOSTHERD_TELEGRAM_CHAT_IDS", None)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_tally_passes(monkeypatch):
+    """No test's tick starts a tally pass of its own (herd.py `_tally_soon'):
+    it would read whatever transcript a test's links name.  A test that
+    wants one runs it itself (`_tally_pass'), its HOME a temp dir."""
+    import tally
+    monkeypatch.setattr(tally, "EVERY", float("inf"))

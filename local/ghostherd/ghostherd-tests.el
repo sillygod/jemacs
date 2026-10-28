@@ -13787,6 +13787,63 @@ agent whose transcript is not known, or that has not replied yet."
               (should (eq (funcall meter "claude-api") :json-false)))
           (delete-file file))))))
 
+(ert-deftest ghostherd-test-page-asks-for-the-tally-once-an-interval ()
+  "What the agents' replies cost is tallied by the sidecar as their
+transcripts grow, so the page asks for it once every
+`ghostherd-memory-page--tally-every' seconds, not on every look, and
+sends it field by field: each agent's today and week beside its
+context, each project's with its lead's and workers' apart.  None for
+an agent the sidecar has counted nothing of.  A failed ask keeps the
+last answer, and the next look asks again."
+  (ghostherd-test--with-herd
+    (let* ((ghostherd-memory-page--tally nil)
+           (ghostherd-memory-page--tally-at 0)
+           (ghostherd-memory-page--tallying nil)
+           (ghostherd-memory-page--herd-soon nil)
+           (now 1000.0)
+           (span (lambda (w) (list :weighted w :input 1 :cache_write 2 :cache_read 3 :output 4)))
+           (answer (list :today "2026-10-28" :days 7
+                         :agents (list (list :name "claude-api" :project "/p/" :role "lead"
+                                             :today (funcall span 10) :week (funcall span 70)))
+                         :projects (list (list :project "/p/" :today (funcall span 10) :week (funcall span 70)
+                                               :lead (list :today (funcall span 10) :week (funcall span 70))
+                                               :workers (list :today (funcall span 0)
+                                                              :week (funcall span "x")))))))
+      (puthash "agy-x" (ghostherd-session--create :id "agy-x" :name "agy-x" :kind 'agy :state 'idle
+                                                  :project "/p/" :backend 'tmux)
+               ghostherd--sessions)
+      (setq reply (lambda (_m _p) answer))
+      (cl-letf* ((real-float-time (symbol-function 'float-time))
+                 ((symbol-function 'float-time)
+                  (lambda (&optional time) (if time (funcall real-float-time time) now))))
+        (ghostherd-memory-page--tally-look)
+        (ghostherd-memory-page--tally-look)
+        (should (equal requests '(("herd_tally" nil))))
+        (let ((tally (lambda (name) (plist-get (ghostherd-memory-page--agent (ghostherd-get name)) :tally))))
+          (should (equal (funcall tally "claude-api")
+                         '(:today (:w 10 :input 1 :write 2 :read 3 :output 4)
+                           :week (:w 70 :input 1 :write 2 :read 3 :output 4))))
+          (should (eq (funcall tally "agy-x") :json-false))
+          (let ((p (aref (ghostherd-memory-page--tally-projects) 0)))
+            (should (equal (plist-get p :project) "/p/"))
+            (should (equal (plist-get (plist-get p :lead) :week) '(:w 70 :input 1 :write 2 :read 3 :output 4)))
+            ;; What is not a count is none.
+            (should (equal (plist-get (plist-get (plist-get p :workers) :week) :w) 0)))
+          ;; Due again: asked again.
+          (setq now (+ now ghostherd-memory-page--tally-every 1))
+          (ghostherd-memory-page--tally-look)
+          (should (= (length requests) 2))
+          (setq fail "gone" now (+ now ghostherd-memory-page--tally-every 1))
+          (ghostherd-memory-page--tally-look)
+          (should (= (length requests) 3))
+          (should-not ghostherd-memory-page--tallying)
+          (should (equal (plist-get (plist-get (funcall tally "claude-api") :week) :w) 70)))
+        ;; The page is sent it with the herd.
+        (ghostherd-memory-page--send-herd)
+        (let ((sent (ghostherd-test--call calls "renderHerd")))
+          (should (vectorp (plist-get sent :projectTally)))
+          (should (equal (plist-get (aref (plist-get sent :projectTally) 0) :project) "/p/")))))))
+
 (ert-deftest ghostherd-test-page-forgets-the-sidecars-answers-on-restart ()
   "Stopping the sidecar drops what the old instance answered -- meters,
 sub-agents, links and the open conversations' signatures -- so an idle

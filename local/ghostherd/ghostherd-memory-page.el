@@ -521,6 +521,7 @@ draws lanes from fields rather than parsing prose."
                               (ghostherd--ask-in s (plist-get (ghostherd--submit-of s) :text)))
                          t :json-false)
           :meter (ghostherd-memory-page--meter s)
+          :tally (ghostherd-memory-page--tally-of s)
           :subs (ghostherd-memory-page--subs-of s)
           :switching (if (gethash (ghostherd-session-id s) ghostherd--switching) t :json-false))))
 
@@ -624,6 +625,76 @@ changed; the page hears of it on the next look."
         (ghostherd-memory-page--ask-on-change
          ghostherd-memory-page--meters ghostherd-memory-page--metering
          name sig "herd_meter" path)))))
+
+;; What each agent's replies cost, in tokens, today and over the last
+;; seven days, and each project's with its lead's share -- tallied by the
+;; sidecar as the transcripts grow (tally.py), so asked here only every
+;; `ghostherd-memory-page--tally-every' seconds while the page is seen.
+
+(defconst ghostherd-memory-page--tally-every 30
+  "Seconds between asks for the tally while the page is seen.")
+
+(defvar ghostherd-memory-page--tally nil
+  "The sidecar's last tally (`herd_tally'): a plist of :agents and :projects.")
+
+(defvar ghostherd-memory-page--tally-at 0
+  "When the tally was last asked for.")
+
+(defvar ghostherd-memory-page--tallying nil
+  "Non-nil while the sidecar is asked for the tally.")
+
+(defun ghostherd-memory-page--tally-look ()
+  "Ask the sidecar for the tally, when it is due and not on its way; the
+page hears of a new one at once."
+  (unless (or ghostherd-memory-page--tallying
+              (< (- (float-time) ghostherd-memory-page--tally-at) ghostherd-memory-page--tally-every))
+    (setq ghostherd-memory-page--tally-at (float-time)
+          ghostherd-memory-page--tallying t)
+    (condition-case nil
+        (ghostherd-memory-request-async
+         "herd_tally"
+         (lambda (answer)
+           (setq ghostherd-memory-page--tallying nil)
+           (unless (equal answer ghostherd-memory-page--tally)
+             (setq ghostherd-memory-page--tally answer)
+             (ghostherd-memory-page--send-herd-soon)))
+         nil
+         (lambda (_e) (setq ghostherd-memory-page--tallying nil)))
+      (error (setq ghostherd-memory-page--tallying nil)))))
+
+(defun ghostherd-memory-page--tokens (u)
+  "Tokens U as the page takes them: the one number (:w) and its kinds."
+  (let ((n (lambda (k) (let ((v (plist-get u k))) (if (natnump v) v 0)))))
+    (list :w (funcall n :weighted) :input (funcall n :input) :write (funcall n :cache_write)
+          :read (funcall n :cache_read) :output (funcall n :output))))
+
+(defun ghostherd-memory-page--span (p)
+  "P's today and week, as the page takes them."
+  (list :today (ghostherd-memory-page--tokens (plist-get p :today))
+        :week (ghostherd-memory-page--tokens (plist-get p :week))))
+
+(defun ghostherd-memory-page--tally-of (s)
+  "What S's replies cost, today and over the week, or false before the
+sidecar has counted any.  Its rows in its project; a stopped agent's stay
+in the project's."
+  (let* ((name (ghostherd-session-name s))
+         (project (or (ghostherd--project-name (ghostherd-session-project s)) ""))
+         (rows (seq-filter (lambda (a) (equal (plist-get a :name) name))
+                           (plist-get ghostherd-memory-page--tally :agents)))
+         (a (or (seq-find (lambda (a) (equal (plist-get a :project) project)) rows)
+                (car rows))))
+    (if a (ghostherd-memory-page--span a) :json-false)))
+
+(defun ghostherd-memory-page--tally-projects ()
+  "Each project's tokens, today and over the week, its lead's and its
+workers' apart: the head of its group on the page."
+  (ghostherd-memory-page--vec
+   (mapcar (lambda (p)
+             (append (list :project (or (ghostherd-memory-page--str (plist-get p :project)) ""))
+                     (ghostherd-memory-page--span p)
+                     (list :lead (ghostherd-memory-page--span (plist-get p :lead))
+                           :workers (ghostherd-memory-page--span (plist-get p :workers)))))
+           (seq-filter #'consp (plist-get ghostherd-memory-page--tally :projects)))))
 
 ;; Each agent's sub-agents still running -- what each is and is doing --
 ;; read by the sidecar from their own transcripts, beside its own.
@@ -2001,6 +2072,7 @@ minutes ago, how long until a reset -- still moves on."
         :hooks (ghostherd-memory-page--hooks-payload)
         :work (ghostherd-memory-page--projects-work)
         :usage (ghostherd-memory-page--usage)
+        :projectTally (ghostherd-memory-page--tally-projects)
         :open (list :pr (ghostherd-memory-page--opens-elsewhere 'pr-view--app)
                     :task (ghostherd-memory-page--opens-elsewhere 'clickup-view--app))
         :kinds (ghostherd-memory-page--vec
@@ -2049,6 +2121,8 @@ minutes ago, how long until a reset -- still moves on."
       (ghostherd-memory-page--chore #'ghostherd-usage-refresh))
     (when (> (- (float-time) ghostherd-memory-page--hooks-at) ghostherd-memory-page--hooks-every)
       (ghostherd-memory-page--hooks-refresh))
+    (when (xwapp-seen-p ghostherd-memory-page--app)
+      (ghostherd-memory-page--tally-look))
     (ghostherd-memory-page--meter-look)
     (ghostherd-memory-page--subs-look)
     (ghostherd-memory-page--edits-look)

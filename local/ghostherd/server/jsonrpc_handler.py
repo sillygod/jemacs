@@ -163,6 +163,7 @@ class JsonRpcHandler:
             "herd_sub_conversation": self._herd_sub_conversation,
             "herd_chat": self._herd_chat,
             "herd_meter": self._herd_meter,
+            "herd_tally": self._herd_tally,
             "herd_subagents": self._herd_subagents,
             "herd_edits": self._herd_edits,
             "herd_links": self._herd_links,
@@ -651,6 +652,12 @@ class JsonRpcHandler:
         """What a claude agent runs on and how full its context is, from
         the transcript at PATH: empty for another CLI's, or before a reply."""
         return meter.read(str(params.get("path") or ""))
+
+    def _herd_tally(self, _params: dict) -> dict:
+        """What the agents' replies cost, in tokens, today and over the last
+        week: each agent's and each project's, its lead's share apart --
+        as the sidecar has read them from their transcripts (tally.py)."""
+        return get_herd().tally()
 
     def _herd_subagents(self, params: dict) -> dict:
         """The sub-agents a claude agent has running, from the transcript
