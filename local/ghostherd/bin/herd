@@ -23,6 +23,7 @@ Usage:
   herd hook [EVENT]                (from a CLI's lifecycle hook)
   herd hooks install|uninstall|status [--dry-run]
   herd hooks list [--json] [--project DIR]...
+  herd cost [--days N] [--project P] [--tasks] [--json]
 
 TO is an agent's name, or a kind -- claude, grok, agy -- to take that
 kind's agent in your project.  TEXT `-', or left out, reads stdin.
@@ -51,6 +52,13 @@ there, if the herd is set to and it is a git checkout.  A project's lead
 may hand off, and so may an agent in a project with no lead; an agent
 working under a lead is refused -- it puts what the other project needs
 in its answer to its lead, which hands it off.
+
+`cost' compares what a task costs, in weighted tokens (input 1, cache
+read 0.1, cache write 1.25 or 2, output 5), through a lead and talking to
+an agent directly, over the last N local days (7; at most 30): the
+tasks, the median and total per task, the tokens per 100 changed lines,
+and the lead's own share.  A task is one message of the user's and what
+it set off; `--tasks' lists each, newest first.
 
 `reply' stores the answer and says so at once.  When your work on that
 ask went rough -- many failed calls, denials, asks to one agent -- it
@@ -150,6 +158,7 @@ if __name__ == "__main__" and sys.argv[1:] == ["lint"]:
 
 import argparse
 import datetime
+import decimal
 import fnmatch
 import hashlib
 import json
@@ -472,6 +481,55 @@ def cmd_list(_args):
 
 def cmd_asks(_args):
     print(json.dumps(rpc("herd_asks"), indent=2, ensure_ascii=False))
+
+
+def _tokens(n):
+    "N as the page writes it: 12M, 1.3M, 340k, 999 -- halves up; None as a dash."
+    if n is None:
+        return "—"
+    if n >= 1000000:
+        if not n % 1000000:
+            return "%dM" % (n // 1000000)
+        v = decimal.Decimal(n / 1000000.0).quantize(decimal.Decimal("0.1"), decimal.ROUND_HALF_UP).normalize()
+        return "%sM" % format(v, "f")
+    return "%dk" % int(n / 1000.0 + 0.5) if n >= 1000 else str(n)
+
+
+def cmd_cost(args):
+    """Lead mode against direct mode: what a task costs, over the last
+    --days local days; --tasks lists each task."""
+    out = rpc("herd_costs", {"days": args.days, "project": args.project or "", "tasks": args.tasks})
+    if args.json:
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+    c = out["compare"]
+    lead, direct = c["lead"], c["direct"]
+    print("Tasks in the last %d days (since %s)%s, in weighted tokens:\n" % (
+        c["days"], c["since"], " in " + args.project if args.project else ""))
+    rows = (
+        ("tasks", str(lead["tasks"]), str(direct["tasks"])),
+        ("median per task", _tokens(lead["median"]), _tokens(direct["median"])),
+        ("total", _tokens(lead["total"]), _tokens(direct["total"])),
+        ("per 100 lines", _tokens(lead["per100"]), _tokens(direct["per100"])),
+        ("lines changed", "%d in %d" % (lead["lines"], lead["coded"]), "%d in %d" % (direct["lines"], direct["coded"])),
+        ("no code", str(lead["noCode"]), str(direct["noCode"])),
+        ("not merged yet", str(lead.get("unmerged", 0)), "—"),
+        ("not read yet", str(lead.get("pending", 0)), str(direct.get("pending", 0))),
+        ("not readable", str(lead["unknown"]), str(direct["unknown"])),
+        ("lead's own share", "—" if lead["own"] is None else "%d%%" % lead["own"], "—"),
+    )
+    print("%-18s %14s %14s" % ("", "lead mode", "direct"))
+    for name, a, b in rows:
+        print("%-18s %14s %14s" % (name, a, b))
+    for t in out.get("tasks") or []:
+        when = datetime.datetime.fromtimestamp(t["at"]).strftime("%m-%d %H:%M") if t.get("at") else "?"
+        made = {"no": "no code", "unknown": "code not readable", "unmerged": "not merged yet",
+                "pending": "code not read yet"}.get(
+            t["code"], "%d lines" % t["lines"])
+        print("\n%s  %-6s %s  %s (own %s, workers %s, sub-agents %s)  %s\n  %s" % (
+            when, t["mode"], t["agent"], _tokens(t["total"]), _tokens(t["own"]), _tokens(t["workers"]),
+            _tokens(t["subs"]), made, t["prompt"][:100]))
+    return 0
 
 
 def _cwd_project():
@@ -1625,6 +1683,12 @@ def main(argv=None):
         p.set_defaults(fn=fn)
     sub.add_parser("list", help="the herd").set_defaults(fn=cmd_list)
     sub.add_parser("asks", help="open and recent asks").set_defaults(fn=cmd_asks)
+    p = sub.add_parser("cost", help="what a task costs, through a lead and talking to an agent directly")
+    p.add_argument("--days", type=int, default=7, help="the last N local days (7; at most 30)")
+    p.add_argument("--project", metavar="P", help="one project's tasks: a path or its leaf name")
+    p.add_argument("--tasks", action="store_true", help="list each task too, newest first")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_cost)
     p = sub.add_parser("remember", help="write a fact to the herd's shared memory")
     p.add_argument("text", nargs="?")
     p.add_argument("--type", choices=("project", "feedback", "reference", "user"),

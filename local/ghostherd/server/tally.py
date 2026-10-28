@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import math
 from collections import deque
+from decimal import ROUND_HALF_UP, Decimal
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -261,10 +262,14 @@ def day(when: float | None, today: date | None = None) -> str:
 
 
 def text(n: int) -> str:
-    "N as the page writes it (app.js `tokens'): 12M, 1.3M, 340k, 999 -- halves up."
+    """N as the page writes it (app.js `tokens'): 12M, 1.3M, 340k, 999.  As
+    JavaScript's toFixed rounds: the float's own value, a half up -- 1.25M
+    is 1.3M, but 1.65M, which as a float is 1.6499..., is 1.6M."""
     if n >= 1_000_000:
-        v = math.floor(n / 100_000 + 0.5) / 10 if n % 1_000_000 else n // 1_000_000
-        return f"{v:g}M"
+        if not n % 1_000_000:
+            return f"{n // 1_000_000}M"
+        v = Decimal(n / 1_000_000).quantize(Decimal("0.1"), ROUND_HALF_UP).normalize()
+        return f"{v:f}M"
     if n >= 1000:
         return f"{math.floor(n / 1000 + 0.5)}k"
     return str(n)
