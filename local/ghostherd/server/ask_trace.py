@@ -18,6 +18,12 @@ step's status and error and a command's exit code (ask 299bc678).  A
 denial the herd recorded itself -- the guard's, a check's -- is counted
 from that record, not again from the transcript.
 
+And what the work cost, in tokens (tally.py): each reply in that stretch,
+its sub-agents' too, as one input-equivalent number -- the kinds beside it
+in `herd status'.  grok writes its usage once a turn, as the turn ends,
+after the answer given in it: the line says so, and the sidecar adds the
+turn to the ask when it ends (herd.py `_grok_turns_ended').
+
 Counts and tool kinds only: never a command, a path or what a tool said.
 
 It is made after the reply, off the reply's path (herd.py `_trace_soon'),
@@ -37,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import conversation
+import tally
 
 READ_SECONDS = 2.0
 FIRST_WINDOW = 1024 * 1024
@@ -144,6 +151,13 @@ class Work:
         self.subs_read = 0
         self.start_ts: str | None = None
         self.end_ts: str | None = None
+        # What its replies cost, and its sub-agents' (tally.py), each reply
+        # once; for grok, its turns that ended while it worked, the turn it
+        # answered in still to come (`pending').
+        self.tokens = tally.Usage()
+        self.sub_tokens = tally.Usage()
+        self.tokens_pending = False
+        self.replies: set[str] = set()
 
 
 class _Late(Exception):
@@ -225,6 +239,19 @@ def _from_delivery(real: Path, cli: str, ask_id: str, deadline: float) -> list[s
         window *= 4
 
 
+def _cost(o: dict, cli: str, w: Work, sub: bool = False) -> None:
+    "What reply O cost, added to the work's once."
+    found = tally.record(o, cli)
+    if not found:
+        return
+    key, _, u = found
+    if key is not None:
+        if key in w.replies:
+            return
+        w.replies.add(key)
+    (w.sub_tokens if sub else w.tokens).add(u)
+
+
 def _reply_to(command: Any, ask_id: str) -> bool:
     call = conversation.herd_call(command) if isinstance(command, str) else None
     return bool(call and call["kind"] == "reply" and call.get("ask") == ask_id)
@@ -234,6 +261,9 @@ def _claude(records, ask_id: str, w: Work, sub: bool = False) -> None:
     names: dict[str, str] = {}
     first = True
     for o in records:
+        if o.get("type") == "assistant":
+            # Its reply's usage, the one that answers too.
+            _cost(o, "claude", w, sub or bool(o.get("isSidechain")))
         if (o.get("isSidechain") and not sub) or o.get("isMeta"):
             continue
         ts = o.get("timestamp")
@@ -392,6 +422,7 @@ def _agy(records, ask_id: str, w: Work, said: list[str] | None = None) -> None:
             if kind:
                 w.failed[kind] += 1
             continue
+        _cost(o, "agy", w)
         for call in o.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
@@ -430,10 +461,13 @@ def _subs(real: Path, w: Work, deadline: float) -> None:
 
 
 def read_work(transcript: str | None, ask_id: str, seconds: float = READ_SECONDS,
-              said: list[str] | None = None) -> Work:
+              said: list[str] | None = None, since: float | None = None,
+              until: float | None = None) -> Work:
     """What TRANSCRIPT shows of the work on ASK_ID, within SECONDS.  SAID
     is the reasons the herd's guard recorded denying the taker meanwhile:
-    those denials are counted from the herd's record, not again here."""
+    those denials are counted from the herd's record, not again here.
+    SINCE and UNTIL, in seconds, are when the work began and ended: grok's
+    usage is by turn, and its turns are found by when they ended."""
     w = Work()
     if not transcript:
         w.why = "no conversation known for it"
@@ -460,6 +494,10 @@ def read_work(transcript: str | None, ask_id: str, seconds: float = READ_SECONDS
             events = real.with_name(GROK_EVENTS)
             w.failures_known = (events.is_file() and events.resolve().parent == real.parent
                                 and _grok_outcomes(events, calls, w, deadline))
+            turns = tally.grok_turns(real, since, until)
+            if turns is not None:
+                w.tokens.add(turns)
+                w.tokens_pending = True
         elif cli == "agy":
             _agy(records, ask_id, w, list(said or ()))
             w.failures_known = True
@@ -536,9 +574,31 @@ def taker_note(trace: dict[str, Any] | None, ask_id: str) -> str | None:
                              memory=TAKER_MEMORY.format(flags=flags) if flags else "")
 
 
+def spent(work: Work) -> dict[str, Any] | None:
+    """What the work cost, as `herd status' shows it: the one number
+    (tally.WEIGHTS) and the kinds, its sub-agents' share of the number, and
+    whether grok's turn is still to add.  None when its replies were not seen."""
+    total = tally.Usage().add(work.tokens).add(work.sub_tokens)
+    if not (work.seen and (total or work.tokens_pending)):
+        return None
+    return dict(total.shown(), subagents=work.sub_tokens.weighted(), pending=work.tokens_pending)
+
+
+def spent_words(work: Work) -> str:
+    "What the work cost, for the line: empty when nothing was read of it."
+    tokens = spent(work)
+    if not tokens:
+        return ""
+    if tokens["pending"]:
+        if tokens["weighted"]:
+            return f"{tally.text(tokens['weighted'])}+ weighted tokens (grok writes its last turn's as it ends)"
+        return "— weighted tokens (grok writes them as its turn ends: `herd status` has them then)"
+    return f"{tally.text(tokens['weighted'])} weighted tokens"
+
+
 def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
             asks: dict[str, int] | None = None, relays: int = 0) -> dict[str, Any]:
-    """The line, and what it is made of: {line, rough, detail}.  LINE is
+    """The line, and what it is made of: {line, rough, tokens, detail}.  LINE is
     None when the work was not seen and the herd's records say nothing of
     it either: then there is no line, rather than one that only says so."""
     asks = asks or {}
@@ -562,6 +622,7 @@ def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
                 sf = sum(work.sub_failed.values())
                 sub += f" ({_n(work.sub_tools, 'tool call')}" + (f", {sf} failed" if sf else "") + ")"
             parts.append(sub)
+        parts.append(spent_words(work))
     else:
         parts.append(f"tool calls not seen: {work.why}")
     if guard:
@@ -582,7 +643,7 @@ def compose(work: Work, seconds: float | None, guard: int = 0, lint: int = 0,
     if not (work.seen or guard or lint or asks or relays):
         line, rough = None, False
     return {
-        "line": line, "rough": rough,
+        "line": line, "rough": rough, "tokens": spent(work),
         "detail": {
             "seconds": seconds, "seen": work.seen, "why": work.why, "cli": work.cli,
             "tools": dict(work.tools), "failed": dict(work.failed),

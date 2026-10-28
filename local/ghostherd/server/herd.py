@@ -36,13 +36,15 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import projects
 import subagents
+import tally
 import threads as threads_mod
 from config import get_config
 
@@ -199,6 +201,15 @@ def trace_hold_left(answered_at: str | None) -> float:
     return max(0.0, min(TRACE_HOLD, TRACE_HOLD - since))
 
 
+def _trace_tokens(trace: str | None) -> dict[str, Any] | None:
+    "What a stored trace says the work cost, in tokens (ask_trace), or None."
+    try:
+        tokens = json.loads(trace).get("tokens") if trace else None
+    except (ValueError, AttributeError):
+        return None
+    return tokens if isinstance(tokens, dict) else None
+
+
 def _taker_note(trace: str | None, ask_id: str) -> str | None:
     "What a stored trace tells the ask's taker on its `herd reply' (ask_trace), or None."
     try:
@@ -256,6 +267,9 @@ USE_KINDS = ("ask", "opening", "recall")
 # reply's path, after it; the answer's mail to an asker not waiting holds
 # for it this long at most, then goes without.
 TRACE_HOLD = 3.0
+# How long after its answer a grok taker's turn may end and still be the
+# turn the answer was given in, whose usage the ask's tokens wait for.
+GROK_TURN_WAIT = 1800
 USE_DETAIL_DAYS = 90
 USE_ROWS_MAX = 200_000
 USE_QUEUE_MAX = 10_000
@@ -383,6 +397,13 @@ class HerdStore:
         self._traces: collections.deque = collections.deque(maxlen=32)
         # Seconds a guard request waits before it expires (`tick' sets it).
         self.guard_ttl = GUARD_REQUEST_SECONDS
+        # One worker reads what the agents' replies cost (`_tally_pass'),
+        # after a tick, every tally.EVERY at most.
+        self._tallier: concurrent.futures.ThreadPoolExecutor | None = None
+        self._tally_mu = threading.Lock()
+        self._tallying = False
+        self._tally_at = 0.0
+        self._closed = False
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -720,6 +741,45 @@ class HerdStore:
             )
             """
         )
+        # What the agents' replies cost, in tokens (tally.py): each transcript
+        # read, whose it is and where the last pass stopped -- with the last
+        # replies it counted, which a pass can end between the records of --
+        # and each agent's totals by local day in a project, by kind.  Kept
+        # for an agent stopped: its usage still counts in its project's week.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tally_files (
+                path TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                project TEXT NOT NULL,
+                role TEXT,
+                cli TEXT NOT NULL,
+                offset INTEGER NOT NULL DEFAULT 0,
+                keys TEXT,
+                last_ts REAL,
+                read_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS tally_files_by_read ON tally_files (read_at)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tally_days (
+                agent TEXT NOT NULL,
+                project TEXT NOT NULL,
+                day TEXT NOT NULL,
+                role TEXT,
+                input INTEGER NOT NULL DEFAULT 0,
+                cache_write_5m INTEGER NOT NULL DEFAULT 0,
+                cache_write_1h INTEGER NOT NULL DEFAULT 0,
+                cache_read INTEGER NOT NULL DEFAULT 0,
+                output INTEGER NOT NULL DEFAULT 0,
+                replies INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (agent, project, day)
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS tally_days_by_day ON tally_days (day)")
         self._conn.execute(
             "INSERT OR IGNORE INTO meta (k, v) VALUES ('uses_since', ?)",
             (datetime.now(timezone.utc).isoformat(),),
@@ -779,8 +839,11 @@ class HerdStore:
         self._conn.commit()
 
     def close(self) -> None:
+        self._closed = True
         if self._tracer is not None:
             self._tracer.shutdown(wait=False, cancel_futures=True)
+        if self._tallier is not None:
+            self._tallier.shutdown(wait=False, cancel_futures=True)
         with self._mu:
             self._flush_uses()
             try:
@@ -1528,6 +1591,10 @@ class HerdStore:
             "traced": bool(row["trace"]),
             # And, when it was rough, what its taker is told (bin/herd reply).
             "taker_note": _taker_note(row["trace"], row["id"]),
+            # What the work cost, in tokens (tally.py): the one number, the
+            # kinds, its sub-agents' share; `pending' while grok's turn has
+            # yet to end.  None when its transcript was not read.
+            "tokens": _trace_tokens(row["trace"]),
         }
 
     def relay_asks(self, name: str) -> dict[str, list[dict[str, Any]]]:
@@ -1986,7 +2053,9 @@ class HerdStore:
                 said = [r for (r,) in self._conn.execute(
                     "SELECT reason FROM guard_requests WHERE session = ? AND created_at >= ? AND created_at <= ?"
                     " ORDER BY created_at LIMIT 500", self._trace_window(row))]
-            work = ask_trace.read_work(transcript, row["id"], said=said)
+            _, begun, end = self._trace_window(row)
+            work = ask_trace.read_work(transcript, row["id"], said=said,
+                                       since=tally.epoch(begun), until=tally.epoch(end))
             out = ask_trace.compose(work, _seconds(row), **facts)
             with self._mu:
                 if out["rough"]:
@@ -2039,6 +2108,189 @@ class HerdStore:
                             " AND created_at >= ? AND created_at <= ?"),
             "asks": asks,
         }
+
+    # ---- What the agents' replies cost (tally.py) ------------------------------
+
+    def _tally_soon(self) -> None:
+        """A pass of the tally on its worker, unless one is on its way or
+        one ran within tally.EVERY: never in a tick's way."""
+        if self._tallying or self._closed or time.monotonic() - self._tally_at < tally.EVERY:
+            return
+        self._tallying = True
+        try:
+            if self._tallier is None:
+                self._tallier = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="tally")
+            self._tallier.submit(self._tally_run)
+        except Exception:  # noqa: BLE001 -- shutting down: the next sidecar reads it
+            self._tallying = False
+
+    def _tally_run(self) -> None:
+        "Passes, a moment apart, until each file is read to its end."
+        try:
+            while self._tally_pass() and not self._closed:
+                time.sleep(tally.CATCH_UP)
+        except Exception:  # noqa: BLE001 -- a failed pass wrote nothing; the next reads it
+            pass
+        finally:
+            self._tally_at = time.monotonic()
+            self._tallying = False
+
+    def _tally_pass(self, budget: int = tally.PASS_BYTES) -> bool:
+        """Read what each agent's transcripts have added since the last pass
+        and add it to its days -- a live agent's, and a file read within
+        tally.IDLE_DAYS, so what one wrote as it stopped still counts.  True
+        when a file has more than BUDGET let this pass read.  Files are read
+        without `_mu'; what each gave is written with its new offset in one
+        commit, so nothing is counted twice, not even after a crash.  One
+        pass at a time."""
+        with self._tally_mu:
+            return self._tally_read(budget)
+
+    def _tally_read(self, budget: int) -> bool:
+        "`_tally_pass', its lock held."
+        now = datetime.now(timezone.utc)
+        with self._mu:
+            live = {r[0]: (r[1] or "", r[2] or "") for r in self._conn.execute(
+                "SELECT name, project, role FROM snapshot")}
+            links = {r[0]: r[1] for r in self._conn.execute("SELECT session, transcript FROM links")
+                     if r[0] in live}
+        wanted: dict[str, tuple[str, str, str, str]] = {}
+        for name, (project, role) in live.items():
+            for path, cli in tally.files_of(links.get(name)):
+                wanted.setdefault(str(path), (name, project, role, cli))
+        cols = ("path", "agent", "project", "role", "cli", "offset", "keys", "last_ts")
+        cutoff = (now - timedelta(days=tally.IDLE_DAYS)).isoformat()
+        with self._mu:
+            known = {r[0]: dict(zip(cols, r)) for r in self._conn.execute(
+                f"SELECT {', '.join(cols)} FROM tally_files WHERE read_at >= ?", (cutoff,))}
+            paths = [p for p in wanted if p not in known]
+            for i in range(0, len(paths), 500):
+                chunk = paths[i:i + 500]
+                known.update({r[0]: dict(zip(cols, r)) for r in self._conn.execute(
+                    f"SELECT {', '.join(cols)} FROM tally_files WHERE path IN ({','.join('?' * len(chunk))})",
+                    chunk)})
+        for path, (name, project, role, cli) in wanted.items():
+            f = known.get(path)
+            if f is None:
+                known[path] = {"path": path, "agent": name, "project": project, "role": role, "cli": cli,
+                               "offset": 0, "keys": None, "last_ts": None, "new": True}
+            elif f["agent"] == name:
+                # Its agent as it is now: a project's lead may be made one later.
+                f["project"], f["role"] = project, role
+        days: dict[tuple[str, str, str], tally.Usage] = {}
+        roles: dict[tuple[str, str, str], str] = {}
+        done = []
+        turns = []
+        more, left = False, budget
+        for path, f in known.items():
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                continue
+            offset, upto = f["offset"] or 0, None
+            if size < offset:
+                # Written anew, shorter: read again, past what was counted.
+                offset, upto, f["keys"] = 0, f["last_ts"], None
+            if size == offset and not f.get("new"):
+                continue
+            if left <= 0:
+                more = True
+                break
+            try:
+                found, end, rest = tally.read_from(Path(path), f["cli"], offset, left)
+            except (OSError, KeyError):
+                continue
+            left -= end - offset
+            more = more or rest
+            try:
+                counted = tally.Counted(json.loads(f["keys"]) if f["keys"] else ())
+            except ValueError:
+                counted = tally.Counted()
+            last = f["last_ts"]
+            for key, when, u in found:
+                if not counted.first(key) or (upto is not None and when is not None and when <= upto):
+                    continue
+                k = (f["agent"], f["project"], tally.day(when))
+                days.setdefault(k, tally.Usage()).add(u)
+                roles[k] = f["role"] or ""
+                if when is not None:
+                    last = max(last or 0.0, when)
+                    if f["cli"] == "grok":
+                        turns.append((f["agent"], when, u))
+            done.append((path, f, end, json.dumps(list(counted.keys)), last))
+        if not done:
+            return more
+        with self._mu:
+            for (agent, project, d), u in days.items():
+                v = u.stored()
+                self._conn.execute(
+                    """
+                    INSERT INTO tally_days (agent, project, day, role, input, cache_write_5m,
+                      cache_write_1h, cache_read, output, replies)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (agent, project, day) DO UPDATE SET
+                      role = excluded.role, input = input + excluded.input,
+                      cache_write_5m = cache_write_5m + excluded.cache_write_5m,
+                      cache_write_1h = cache_write_1h + excluded.cache_write_1h,
+                      cache_read = cache_read + excluded.cache_read,
+                      output = output + excluded.output, replies = replies + excluded.replies
+                    """,
+                    (agent, project, d, roles[(agent, project, d)], v["input"], v["cache_write_5m"],
+                     v["cache_write_1h"], v["cache_read"], v["output"], v["replies"]),
+                )
+            for path, f, end, keys, last in done:
+                self._conn.execute(
+                    """
+                    INSERT INTO tally_files (path, agent, project, role, cli, offset, keys, last_ts, read_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (path) DO UPDATE SET project = excluded.project, role = excluded.role,
+                      offset = excluded.offset, keys = excluded.keys, last_ts = excluded.last_ts,
+                      read_at = excluded.read_at
+                    """,
+                    (path, f["agent"], f["project"], f["role"] or "", f["cli"], end, keys, last,
+                     now.isoformat()),
+                )
+            if turns:
+                self._grok_turns_ended(turns)
+            self._conn.commit()
+        return more
+
+    def _grok_turns_ended(self, turns: list[tuple[str, float, tally.Usage]]) -> None:
+        """grok writes a turn's usage as the turn ends -- after the answer it
+        gave in it, so an ask's line went without (ask_trace: `pending').
+        Each such ask takes the first of its taker's TURNS to end after its
+        answer, within GROK_TURN_WAIT.  Caller holds `_mu`."""
+        for agent, when, u in sorted(turns, key=lambda t: t[1]):
+            for ask_id, trace, answered_at in self._conn.execute(
+                    "SELECT id, trace, answered_at FROM asks WHERE to_name = ? AND status = 'answered'"
+                    " AND trace LIKE '%\"pending\": true%'", (agent,)).fetchall():
+                answered = tally.epoch(answered_at)
+                try:
+                    out = json.loads(trace)
+                    tokens = out["tokens"]
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if not (isinstance(tokens, dict) and tokens.get("pending") and answered is not None
+                        and answered <= when <= answered + GROK_TURN_WAIT):
+                    continue
+                spent = tally.Usage(input=tokens.get("input"), cache_write_5m=tokens.get("cache_write"),
+                                    cache_read=tokens.get("cache_read"), output=tokens.get("output")).add(u)
+                out["tokens"] = dict(tokens, **spent.shown(), pending=False)
+                self._conn.execute("UPDATE asks SET trace = ? WHERE id = ?",
+                                   (json.dumps(out, ensure_ascii=False), ask_id))
+
+    def tally(self) -> dict[str, Any]:
+        """Each agent's and each project's tokens, today and over the last
+        week, as the passes have counted them (tally.summary).  Read through
+        the read-only connection: never in an ask's way."""
+        today = date.today()
+        first = (today - timedelta(days=tally.WEEK - 1)).isoformat()
+        cols = ("agent", "project", "day", "role") + tally.Usage.__slots__
+        with self._read_mu:
+            rows = [dict(zip(cols, r)) for r in self._read_conn().execute(
+                f"SELECT {', '.join(cols)} FROM tally_days WHERE day >= ?", (first,))]
+        return tally.summary(rows, today)
 
     def _sweep_uncollected(self, now: str) -> None:
         """Answers a waiting asker never collected go out as mail.
@@ -3403,6 +3655,8 @@ class HerdStore:
                 pending[-1]["rounds"] = rounds or ASK_ROUNDS
                 # Its asker runs behind the herd's guard: for the log.
                 pending[-1]["guarded"] = bool(guarded)
+        # What the replies since cost: read on its worker, not here.
+        self._tally_soon()
         return {
             "pending": pending,
             "commands": commands,
