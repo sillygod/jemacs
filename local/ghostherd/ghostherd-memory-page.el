@@ -4025,7 +4025,8 @@ Kept screens open in place; new entries arrive as they are logged."
 ;; builds them from its asks (herd_threads, herd_thread; server/threads.py).
 ;; What it cannot see is the user's own prompt that set a root going: that
 ;; is in the herd log here, so it is added here, as the thread's first
-;; message.  The page asks for the list while the tab is shown and for one
+;; message.  A task told to an agent directly is a thread the sidecar
+;; makes whole, from its transcript (`You → agent', its id `task:ID').  The page asks for the list while the tab is shown and for one
 ;; thread at a time, never the whole history.
 
 (defvar ghostherd-threads--watching nil)
@@ -4102,7 +4103,7 @@ user asked from a shell (FROM \"user\") has none."
 
 (defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged :thumb)
   "Keys that are true or false: the reply reads JSON false as nil.")
-(defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking :costs)
+(defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking :costs :made)
   "Keys that are arrays: the reply reads [] as nil.")
 
 (defun ghostherd-threads--js (v)
@@ -4120,8 +4121,10 @@ plists, arrays as vectors, true and false as such."
 (defun ghostherd-threads--with-opener (th prompts)
   "Thread TH, a list's summary or a whole one, with the user's prompt that
 set it going: \"You\" as its first participant, and -- a whole thread --
-the prompt as its first message, as the herd log has it (its first line)."
-  (let ((op (ghostherd-threads--opener prompts (plist-get th :rootFrom) (plist-get th :started))))
+the prompt as its first message, as the herd log has it (its first line).
+A task told to an agent directly has the user's words already: none."
+  (let ((op (and (not (plist-get th :direct))
+                 (ghostherd-threads--opener prompts (plist-get th :rootFrom) (plist-get th :started)))))
     (if (not op)
         th
       (let ((th (copy-sequence th)))

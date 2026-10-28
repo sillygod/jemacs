@@ -12,6 +12,12 @@ what the user typed to whom.
 `summaries' is the list the page shows (newest activity first); `detail'
 is one thread, its lanes and its messages in time order; `talking' is every
 open ask in the herd, for the strip across the top.
+
+A task told to an agent directly -- not through a lead -- begins with no
+ask, so it is a thread of its own (`direct', `direct_detail'): You → the
+agent, the user's words and the reply that ended the turn they began.  Two
+threads of one task -- a lead's two asks for it -- show its cost once
+(`one_cost').
 """
 
 from __future__ import annotations
@@ -247,3 +253,64 @@ def talking(open_rows: list[dict[str, Any]], snap: dict[str, dict[str, Any]],
                     "since": ms(r["delivered_at"] or r["created_at"]),
                     "working": r["status"] == "delivered" and (snap.get(to) or {}).get("state") == "working"})
     return out
+
+
+# ---- A task told to an agent directly ----------------------------------------------
+
+
+def direct(task: dict[str, Any], snap: dict[str, dict[str, Any]], on: bool) -> dict[str, Any]:
+    """TASK (cost.costs' row) as the list shows it: You → its agent, the
+    user's words its title; live while its agent is ON it and working."""
+    agent = task["agent"]
+    working = on and (snap.get(agent) or {}).get("state") == "working"
+    started = task["at"] * 1000 if task.get("at") else None
+    return {
+        "id": "task:" + task["id"], "title": title(task.get("prompt")), "status": "live" if working else "answered",
+        "participants": ["user", agent], "projects": [projects.leaf(task["project"])] if task.get("project") else [],
+        "cross": False, "count": 2, "open": 0, "started": started,
+        "at": task["end"] * 1000 if task.get("end") else started, "rootFrom": "user", "rootTo": agent,
+        "direct": True,
+    }
+
+
+def direct_detail(task: dict[str, Any], said: dict[str, Any] | None, snap: dict[str, dict[str, Any]],
+                  on: bool) -> dict[str, Any]:
+    """TASK whole: its lanes, the user's words and -- SAID
+    (conversation.turn) has it -- the reply that ended their turn.  Read
+    from nowhere, the first line kept with the task."""
+    out = direct(task, snap, on)
+    agent = task["agent"]
+    said = said or {}
+    prompt = said.get("prompt") or {"text": task.get("prompt") or "", "at": task.get("at")}
+    msgs = [{"kind": "message", "from": "user", "to": agent, "at": prompt["at"] * 1000 if prompt.get("at") else out["started"],
+             "head": head(prompt["text"]), "text": prompt["text"][:TEXT_MAX]}]
+    reply = said.get("reply")
+    if reply:
+        msgs.append({"kind": "answer", "from": agent, "to": "user",
+                     "at": reply["at"] * 1000 if reply.get("at") else out["at"],
+                     "head": head(reply["text"]), "text": reply["text"][:TEXT_MAX]})
+    them = lane(agent, [], snap)
+    if not them["project"] and task.get("project"):
+        them["project"] = projects.leaf(task["project"])
+    out.update(count=len(msgs), lanes=[lane("user", [], snap), them], msgs=msgs, waiting=[])
+    return out
+
+
+def one_cost(listed: list[dict[str, Any]]) -> None:
+    """A task's cost once among LISTED, the threads shown: on its own
+    direct thread, else on its first; each other thread of it says it is
+    part of that one's task, with no cost of its own -- two asks a lead
+    made for one task are two threads of one cost."""
+    by: dict[str, list[dict[str, Any]]] = {}
+    for t in listed:
+        c = t.get("cost")
+        if c and c.get("id"):
+            by.setdefault(c["id"], []).append(t)
+    for task, ts in by.items():
+        if len(ts) < 2:
+            continue
+        first = next((t for t in ts if t.get("direct")), None) or min(ts, key=lambda t: t.get("started") or 0)
+        for t in ts:
+            if t is not first:
+                t["cost"] = {"id": task, "mode": first["cost"]["mode"], "same": first["id"],
+                             "sameTitle": first["title"]}

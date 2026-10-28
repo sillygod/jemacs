@@ -33,13 +33,21 @@ Each file is read from where the last pass stopped (herd.py
 up where it was; what the work cost is kept by item, agent and whether a
 sub-agent wrote it (`cost_usage'), in tally.py's unit.
 
-What a task produced: the commits it brought.  Lead mode: each ask's
-taker's commits while it worked on it, in its own checkout, once they are
-in its project's main branch (merged, not rebased: a squash or a rebase
-makes new commits, which are not these).  Direct mode: the commits made
-in the agent's checkout while it worked on the task.  Lines changed are
-insertions plus deletions, merges left out.  A task with none is "no
-code"; one whose checkout could not be read, unknown.
+What a task produced: the commits made for it, merged or not -- a work
+project merges on its forge, often squashed, which no local branch shows.
+Each checkout the herd works in has its HEAD's reflog read as it changes
+(herd.py `_cost_capture'): every commit made there, on any branch -- a
+feature branch, a pull request opened, back to main -- and only those: a
+fetch or a pull brings commits in, it makes none.  They are kept, so a
+worktree removed with its reflog when its agent stops leaves them.  A
+commit is the work its checkout's agent was on as it was made (`attribute'):
+lead mode, each ask's taker's; direct mode, the agent's own.  A rebase, an
+amend or a cherry-pick makes a copy of a commit already made, counted once,
+where it was first made.  Whether each is in its project's main branch is
+said beside it, not counted.  An ask whose taker's checkout was never read
+-- gone before this was -- has the commits in the main branch that name
+it.  Lines changed are insertions plus deletions, merges left out.  A task
+with none is "no code"; one whose checkout could not be read, unknown.
 """
 
 from __future__ import annotations
@@ -160,6 +168,9 @@ class Tracker:
         # Each switch, as (when, item): an ask the herd keeps is the work
         # its asker was on when it was made.
         self.switches: list[tuple[float, str | None]] = []
+        # Where the line being read begins: a task's prompt is read again
+        # from there (conversation.turn_from).
+        self.at = 0
 
     def _cost(self, item: str | None, when: float | None, u: tally.Usage, sub: bool) -> None:
         if not item:
@@ -180,7 +191,8 @@ class Tracker:
         if kind == "user" and self.tasks_ok:
             tid = task_id(self.path, ref)
             self.item = "task:" + tid
-            self.tasks.append({"id": tid, "at": when, "prompt": conversation.first_line(what, PROMPT_MAX)})
+            self.tasks.append({"id": tid, "at": when, "prompt": conversation.first_line(what, PROMPT_MAX),
+                               "offset": self.at})
         elif kind == "user":
             self.item = None
         elif kind == "ask":
@@ -197,6 +209,7 @@ class Tracker:
 
     def feed(self, line: bytes, at: int) -> None:
         "One whole LINE of the file, which begins at byte AT."
+        self.at = at
         if self.cli == "claude":
             if TOOL_RESULT.search(line):
                 if b"herd: " not in line:
@@ -319,15 +332,29 @@ def _usage(row: dict[str, Any]) -> tally.Usage:
     return tally.Usage(**{f: row.get(f) for f in tally.Usage.__slots__})
 
 
+def _commit(c: list[Any] | dict[str, Any]) -> dict[str, Any]:
+    "A commit found otherwise (`costs'' OUTPUT), [sha, lines, merged], as one read from a reflog."
+    if isinstance(c, dict):
+        return c
+    return {"sha": c[0], "lines": c[1], "merged": bool(c[2]), "subject": c[3] if len(c) > 3 else "",
+            "of": None, "at": None}
+
+
 def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[str, str],
-          commits: dict[str, list[list[Any]]], now: float | None = None) -> dict[str, dict[str, Any]]:
+          output: dict[str, dict[str, Any]], now: float | None = None,
+          made: dict[tuple[str, str], dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
     """Each of TASKS' cost and output, by id: from USAGE (rows of item,
-    agent, sub and the kinds), ASKED (ask -> the work it was made for) and
-    COMMITS (`task:ID' or `ask:ID' -> [sha, lines, merged]).  The task's
-    own agent's replies are its `own' -- the lead's, in lead mode -- the
-    rest of the herd's its `workers'', sub-agents' apart.  Work not over by
-    NOW -- SETTLED quiet -- has had its commits not looked for yet: pending."""
+    agent, sub and the kinds), ASKED (ask -> the work it was made for),
+    MADE (`attribute'': each agent's piece of work's commits, and whether
+    its checkout was read for it) and OUTPUT (`task:ID' or `ask:ID' ->
+    {commits, named}: the commits found otherwise -- those in the main
+    branch that name an ask (NAMED: none found is not none made), or an
+    earlier read).  The task's own agent's replies are its `own' -- the
+    lead's, in lead mode -- the rest of the herd's its `workers'',
+    sub-agents' apart.  Work not over by NOW -- SETTLED quiet -- that has
+    made nothing yet is pending."""
     now = time.time() if now is None else now
+    made = made or {}
     out = {t["id"]: {"own": tally.Usage(), "workers": tally.Usage(), "subs": tally.Usage(), "asks": set(),
                      "end": t.get("at")} for t in tasks}
     owner = {t["id"]: t["agent"] for t in tasks}
@@ -343,26 +370,36 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
             got["asks"].add(r["item"][4:])
         if r.get("last_at") and (got["end"] is None or r["last_at"] > got["end"]):
             got["end"] = r["last_at"]
+    units: dict[str, list[tuple[str, str]]] = {}
+    for key in made:
+        tid = task_of(key[0], asked)
+        if tid in out:
+            units.setdefault(tid, []).append(key)
     result = {}
     for t in tasks:
         got = out[t["id"]]
-        shas: dict[str, int] = {}
-        known, waiting = False, False
-        if t["mode"] == "direct":
-            listed = commits.get("task:" + t["id"])
-            if listed is not None:
-                known = True
-                shas.update({c[0]: c[1] for c in listed})
-        else:
-            # A lead's own work makes no code here: its asks' takers' does.
-            chain = got["asks"] | set(asks_in(t["id"], asked))
-            known = not chain
-            for a in sorted(chain):
-                listed = commits.get("ask:" + a)
-                if listed is not None:
-                    known = True
-                    shas.update({c[0]: c[1] for c in listed if c[2]})
-                    waiting = waiting or any(not c[2] for c in listed)
+        lead = t["mode"] != "direct"
+        found: dict[str, dict[str, Any]] = {}
+        unread = []
+        # A lead's own work makes no code here: its asks' takers' does.
+        mine = [k for k in units.get(t["id"], []) if not (lead and k[1] == t["agent"])]
+        works = [(k[0], made[k]) for k in mine]
+        chain = got["asks"] | set(asks_in(t["id"], asked)) if lead else set()
+        works += [("ask:" + a, None) for a in sorted(chain) if not any(k[0] == "ask:" + a for k in mine)]
+        if not lead and not mine:
+            works.append(("task:" + t["id"], None))
+        for item, m in works:
+            listed = list(m["commits"]) if m else []
+            if not (m and m["read"]):
+                o = output.get(item)
+                if o and (o["commits"] or not o.get("named")):
+                    listed += [_commit(c) for c in o["commits"]]
+                elif not listed:
+                    unread.append(item)
+            for c in listed:
+                found.setdefault(c["sha"], c)
+        shown = sorted(found.values(), key=lambda c: (c.get("at") or 0, c["sha"]))
+        new = [c for c in shown if not c.get("of")]
         total = tally.Usage().add(got["own"]).add(got["workers"]).add(got["subs"])
         recent = now - (got["end"] or t.get("at") or 0) < SETTLED
         result[t["id"]] = {
@@ -370,10 +407,14 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
             "prompt": t.get("prompt") or "", "at": t.get("at"), "end": got["end"],
             "total": total.weighted(), "own": got["own"].weighted(), "workers": got["workers"].weighted(),
             "subs": got["subs"].weighted(), "kinds": total.shown(), "asks": len(got["asks"]),
-            "commits": len(shas), "lines": sum(shas.values()),
-            # Made, but not in the main branch yet: no code so far, but not none.
-            "code": ("yes" if shas else "unmerged" if waiting else "no" if known
-                     else "pending" if recent else "unknown"),
+            "commits": len(new), "lines": sum(c["lines"] for c in new),
+            "merged": sum(1 for c in new if c["merged"]), "mergedLines": sum(c["lines"] for c in new if c["merged"]),
+            "code": ("yes" if new else "pending" if recent else "unknown" if unread else "no"),
+            # The work whose checkout was never read: an ask's taker's gone
+            # before it was -- what names it is looked for (herd.py).
+            "unread": unread,
+            # Each commit, its copies too (`of'), for the thread it is shown in.
+            "made": [{k: c.get(k) for k in ("sha", "subject", "lines", "merged", "of", "at")} for c in shown],
         }
     return result
 
@@ -382,10 +423,11 @@ def compare(rows: Iterable[dict[str, Any]], days: int, today: date | None = None
     """Lead mode against direct mode over the last DAYS local days (today
     and the ones before): ROWS are `costs'' tasks.  Per mode: the tasks,
     the median and total per task, the tokens per 100 changed lines -- all
-    the mode's tokens over all its lines: a commit counts in the task it was
-    made in, and "commit and push" is a task of its own, so per task it
-    would flatter the one that only committed -- and, for lead mode, the
-    lead's own share."""
+    the mode's tokens over all its lines, merged or not: a commit counts in
+    the task it was made in, and "commit and push" is a task of its own, so
+    per task it would flatter the one that only committed -- how many of
+    those lines are in a main branch yet, and, for lead mode, the lead's
+    own share."""
     today = today or date.today()
     since = datetime.combine(today - timedelta(days=days - 1), datetime.min.time()).timestamp()
     out: dict[str, Any] = {"days": days, "since": (today - timedelta(days=days - 1)).isoformat()}
@@ -394,14 +436,14 @@ def compare(rows: Iterable[dict[str, Any]], days: int, today: date | None = None
         coded = [r for r in mine if r["lines"]]
         total = sum(r["total"] for r in mine)
         lines = sum(r["lines"] for r in coded)
+        merged = sum(r.get("mergedLines") or 0 for r in coded)
         out[mode] = {
             "tasks": len(mine),
             "median": round(statistics.median([r["total"] for r in mine])) if mine else 0,
             "total": total,
             "per100": round(total * 100 / lines) if lines else None,
-            "lines": lines, "coded": len(coded),
+            "lines": lines, "coded": len(coded), "merged": merged,
             "noCode": sum(1 for r in mine if r["code"] == "no"),
-            "unmerged": sum(1 for r in mine if r["code"] == "unmerged"),
             "unknown": sum(1 for r in mine if r["code"] == "unknown"),
             "pending": sum(1 for r in mine if r["code"] == "pending"),
             "own": round(sum(r["own"] for r in mine) * 100 / total) if total else None,
@@ -428,33 +470,200 @@ def checkout(directory: str | None) -> str | None:
     return d if Path(d).is_dir() and _git(d, "rev-parse", "--git-dir") is not None else None
 
 
+def place(directory: str | None) -> str:
+    "DIRECTORY as the commits made in it are kept by: expanded, absolute, no trailing slash."
+    return str(Path(directory).expanduser().absolute()).rstrip("/") if directory else ""
+
+
+def reflog_file(repo: str) -> Path | None:
+    "Where REPO's checkout keeps its HEAD's reflog: a worktree's is its own."
+    out = (_git(repo, "rev-parse", "--git-path", "logs/HEAD") or "").strip()
+    return (Path(repo) / out) if out else None
+
+
+def main_checkout(repo: str) -> str | None:
+    """The checkout REPO's worktree is of, which keeps its commits once the
+    worktree is gone: where its common git directory is."""
+    out = (_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").strip()
+    if not out:
+        return None
+    common = Path(out)
+    return place(str(common.parent if common.name == ".git" else common))
+
+
+# What a reflog entry did (its subject up to the first ": "), when it made a
+# commit: new work; an amend, a copy of the commit HEAD was on; a copy of a
+# commit made before -- a rebase's or a pull's replaying, a cherry-pick --
+# which keeps its author and author date.  The rest -- a checkout, a reset,
+# a merge, a pull or a fetch's fast-forward -- made none here.
+NEW = ("commit", "commit (initial)", "revert")
+AMEND = "commit (amend)"
+COPY = re.compile(r"\A(?:(?:rebase|pull)\b[^:(]*\((?:pick|continue|reword|edit|squash|fixup)\)"
+                  r"|cherry-pick|commit \(cherry-pick\))\Z")
+REFLOG_MAX = 1000
+
+
+def kind(action: str) -> str | None:
+    "What a reflog entry's ACTION made: `new' work, an `amend', a `copy' -- or None, no commit."
+    if action in NEW:
+        return "new"
+    if action == AMEND:
+        return "amend"
+    return "copy" if COPY.match(action) else None
+
+
+def reflog(repo: str, limit: int = REFLOG_MAX) -> list[dict[str, Any]] | None:
+    """REPO's HEAD reflog, newest first, at most LIMIT entries: each one's
+    commit, when HEAD moved to it (`at'), what moved it (`action'), the
+    commit's author and author date, parents and subject, and the commit
+    HEAD was on before.  None when there is none to read."""
+    out = _git(repo, "reflog", "show", f"-n{limit}", "--date=unix",
+               "--format=%H%x1f%gd%x1f%ae %at%x1f%P%x1f%s%x1f%gs", "HEAD")
+    if out is None:
+        return None
+    rows = []
+    for line in out.splitlines():
+        parts = line.split("\x1f")
+        when = re.search(r"@\{(\d+)\}\Z", parts[1]) if len(parts) == 6 else None
+        if when:
+            rows.append({"sha": parts[0], "at": float(when.group(1)), "author": parts[2],
+                         "parents": parts[3].split(), "subject": parts[4], "action": parts[5].split(": ", 1)[0]})
+    for i, r in enumerate(rows):
+        r["before"] = rows[i + 1]["sha"] if i + 1 < len(rows) else None
+    return rows
+
+
+def new_commits(entries: list[dict[str, Any]], known: dict[str, dict[str, Any]],
+                since: float) -> list[dict[str, Any]]:
+    """The commits reflog ENTRIES (newest first) made from SINCE that KNOWN
+    (sha -> {author, of}: those kept, from any checkout) does not have,
+    oldest first: sha, at, author, subject and `of' -- for a copy, the
+    commit first made, whose work it is; None for new work.  An amend is a
+    copy of the commit it replaced, a rebase's or a cherry-pick's of the
+    one with its author and author date; a copy of none known -- made
+    before SINCE, or by someone else -- is no work of this checkout's."""
+    seen = dict(known)
+    first = {}
+    for sha, c in seen.items():
+        if not c.get("of"):
+            first.setdefault(c["author"], sha)
+    out = []
+    for e in reversed(entries):
+        what = kind(e["action"])
+        if what is None or e["sha"] in seen or len(e["parents"]) > 1 or e["at"] < since:
+            continue
+        of = None
+        if what == "amend" and e["before"] in seen:
+            of = seen[e["before"]].get("of") or e["before"]
+        elif what == "copy":
+            of = first.get(e["author"])
+            if of is None:
+                continue
+        c = {"sha": e["sha"], "at": e["at"], "author": e["author"], "subject": e["subject"], "of": of}
+        seen[e["sha"]] = c
+        if of is None:
+            first.setdefault(e["author"], e["sha"])
+        out.append(c)
+    return out
+
+
+def numstat(repo: str, shas: list[str]) -> dict[str, int]:
+    "Insertions plus deletions of each of SHAS (binary files not counted), in one `git show'."
+    out = _git(repo, "show", "--numstat", "--no-renames", "--format=%x1e%H", *shas) if shas else None
+    lines: dict[str, int] = {}
+    sha = None
+    for row in (out or "").split("\n"):   # not splitlines: \x1e is a line break to it
+        if row.startswith("\x1e"):
+            sha = row[1:].strip()
+            lines[sha] = 0
+            continue
+        parts = row.split("\t")
+        if sha and len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+            lines[sha] += int(parts[0]) + int(parts[1])
+    return lines
+
+
 def lines_of(repo: str, sha: str) -> int:
     "Insertions plus deletions of commit SHA (binary files not counted)."
-    out = _git(repo, "show", "--numstat", "--format=", "--no-renames", sha) or ""
-    n = 0
-    for row in out.splitlines():
-        parts = row.split("\t")
-        if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-            n += int(parts[0]) + int(parts[1])
-    return n
+    return numstat(repo, [sha]).get(sha, 0)
 
 
-def made(repo: str, since: float, until: float) -> list[list[Any]]:
-    """The commits made in REPO's checkout -- on what it has checked out,
-    its own line of them: what other branches brought in by a merge is
-    another's work -- from SINCE to UNTIL (seconds), merges left out,
-    oldest first: [sha, lines]."""
-    out = _git(repo, "log", "HEAD", "--first-parent", "--no-merges", "--reverse", "--format=%H",
-               f"--since=@{int(since)}", f"--until=@{int(until) + COMMIT_SLACK}") or ""
-    return [[sha, lines_of(repo, sha)] for sha in out.split()]
+# ---- Which work a commit was made for ----------------------------------------------
+
+
+def cover(spans: list[list[float]], start: float, end: float) -> list[list[float]]:
+    "SPANS (times a checkout's reflog has been read for, [from, to]) with START to END added."
+    out = []
+    for s, e in sorted(spans + [[start, end]]):
+        if out and s <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def covers(spans: Iterable[list[float]], start: float, end: float) -> bool:
+    "Whether SPANS (`cover') hold all of START to END."
+    return any(s <= start and end <= e for s, e in spans)
+
+
+def attribute(commits: dict[str, list[dict[str, Any]]], spans: Iterable[tuple[str, str, float, float]],
+              homes: dict[str, list[str]], covered: dict[str, list[list[float]]],
+              now: float | None = None) -> dict[tuple[str, str], dict[str, Any]]:
+    """Each agent's piece of work's commits: COMMITS (checkout -> those made
+    there, `new_commits'' with lines and merged), SPANS (item, agent, first
+    and last reply), HOMES (agent -> its checkouts), COVERED (checkout ->
+    when its reflog was read, `cover').  A commit is the work of the agent
+    whose checkout it was made in, on what it was then: of the work there
+    whose replies it falls among -- up to COMMIT_SLACK after the last: an
+    agent commits, then says so -- the latest begun.  A piece of work is
+    `read' when its checkout's reflog was, from its start to its last
+    reply: none found then is none made.
+    A commit's lines are its last copy's -- an amend, a rebase -- and it is
+    merged when any copy is; a copy is shown where it was made, as one."""
+    now = time.time() if now is None else now
+    last: dict[str, dict[str, Any]] = {}
+    for c in sorted((c for cs in commits.values() for c in cs), key=lambda c: c["at"]):
+        root = c.get("of") or c["sha"]
+        got = last.setdefault(root, {"lines": c["lines"], "merged": False})
+        got["lines"] = c["lines"]
+        got["merged"] = got["merged"] or bool(c.get("merged"))
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    works: dict[str, list[tuple[float, float, tuple[str, str]]]] = {}
+    for item, agent, first, end in spans:
+        key = (item, agent)
+        out[key] = {"commits": [], "read": False}
+        for d in homes.get(agent, ()):
+            works.setdefault(d, []).append((first, end, key))
+            if covers(covered.get(d, ()), first - 5, min(end, now)):
+                out[key]["read"] = True
+    for d, cs in commits.items():
+        here = works.get(d, [])
+        for c in cs:
+            on = [w for w in here if w[0] - 5 <= c["at"] <= w[1] + COMMIT_SLACK]
+            if not on:
+                continue
+            begun = [w for w in on if w[0] <= c["at"]]
+            key = max(begun)[2] if begun else min(on)[2]
+            root = last.get(c["sha"], {}) if not c.get("of") else {}
+            out[key]["commits"].append(dict(c, lines=root.get("lines", c["lines"]),
+                                            merged=root.get("merged", bool(c.get("merged")))))
+    return out
+
+
+# ---- In a main branch ------------------------------------------------------------------
 
 
 def naming(repo: str, ask: str) -> list[list[Any]]:
     """The commits in REPO's main branch whose message names ASK -- this
-    herd's habit, "(ask ID)" -- for an ask whose taker's checkout is gone."""
+    herd's habit, "(ask ID)" -- for an ask whose taker's checkout was
+    never read: [sha, lines, merged, subject]."""
     ref = main_branch(repo)
-    out = _git(repo, "log", ref or "HEAD", "--no-merges", "--reverse", "--format=%H", "-F", f"--grep=ask {ask}") or ""
-    return [[sha, lines_of(repo, sha)] for sha in out.split()]
+    out = _git(repo, "log", ref or "HEAD", "--no-merges", "--reverse", "--format=%H%x1f%s", "-F",
+               f"--grep=ask {ask}") or ""
+    found = [line.split("\x1f", 1) for line in out.splitlines() if "\x1f" in line]
+    lines = numstat(repo, [sha for sha, _ in found])
+    return [[sha, lines.get(sha, 0), 1 if ref else 0, subject] for sha, subject in found]
 
 
 def main_branch(repo: str) -> str | None:
@@ -466,16 +675,41 @@ def main_branch(repo: str) -> str | None:
     return None
 
 
-def merged(repo: str, sha: str, ref: str | None) -> bool:
-    "Whether SHA is in REPO's main branch REF."
-    if not ref:
-        return False
-    try:
-        r = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, ref],
-                           capture_output=True, timeout=GIT_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
+def in_main(repo: str, shas: Iterable[str], since: float) -> set[str] | None:
+    """Those of SHAS in REPO's main branch -- the local one, or origin's as
+    last fetched: a pull request merged on the forge is there before it is
+    pulled -- looked for among its commits since SINCE.  A squash or a
+    rebase on merging makes other commits: these are not in it.  None when
+    REPO has no main branch to look in."""
+    name = main_branch(repo)
+    refs = ["refs/heads/" + name] if name else []
+    for other in [name] if name else ["main", "master"]:
+        if _git(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + other) is not None:
+            refs.append("refs/remotes/origin/" + other)
+    if not refs:
+        return None
+    out = _git(repo, "rev-list", f"--since=@{int(since)}", *refs)
+    return None if out is None else set(out.split()) & set(shas)
+
+
+# ---- Where a task's prompt is ------------------------------------------------------
+
+
+def offset_of(path: str, cli: str, tid: str, chunk: int = 4 << 20) -> int | None:
+    """Where in transcript PATH task TID's prompt begins, read again in
+    `Tracker''s own way: for a task kept before tasks kept it."""
+    t = Tracker(path, cli, None)
+    offset, more = 0, True
+    while more:
+        try:
+            offset, more = read_from(Path(path), t, offset, chunk)
+        except OSError:
+            return None
+        hit = next((x for x in t.tasks if x["id"] == tid), None)
+        if hit:
+            return hit["offset"]
+        t.tasks.clear()
+    return None
 
 
 def text(n: int | None) -> str:

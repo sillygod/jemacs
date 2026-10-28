@@ -764,6 +764,82 @@ def read_sub(path: str, sid: str, limit: int = LIMIT, owner=None) -> dict[str, A
                  "sub:" + str(real), owner=owner)
 
 
+# ---- One turn of a conversation ------------------------------------------------
+#
+# A task told to an agent directly is shown as a thread of its own: what
+# the user said, and the reply that ended the turn it began -- the chat's
+# `prompt' and `turn' items, read from where the prompt is.
+
+def _from(path: Path, offset: int, window: int) -> tuple[list[str], bool]:
+    "PATH's WINDOW bytes from OFFSET as lines, and whether later ones were left out."
+    with path.open("rb") as f:
+        f.seek(offset)
+        data = f.read(window + 1)
+    cut = len(data) > window
+    lines = data[:window].decode("utf-8", "replace").splitlines()
+    if cut:
+        lines = lines[:-1]  # ended mid-line
+    return [l for l in lines if l.strip()], cut
+
+
+def _turn(items: list[dict[str, Any]], name: str, start: int) -> dict[str, Any] | None:
+    """The reply that ended the turn ITEMS[START] (a prompt) began: the last
+    of NAME's turns before what set it other work -- the user's next words,
+    an ask the herd delivered -- or ITEMS' end."""
+    reply = None
+    for it in items[start + 1:]:
+        if it["kind"] == "prompt" or (it["kind"] == "ask" and it.get("to") == name):
+            break
+        if it["kind"] == "turn":
+            reply = it
+    return reply
+
+
+def _said(item: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {"text": item.get("text") or "", "at": _epoch(item.get("ts"))} if item else None
+
+
+def turn(path: str, name: str, prompt: str, offset: int | None = None,
+         width: int = 200) -> dict[str, Any] | None:
+    """What the user said to NAME -- the prompt whose first line is PROMPT
+    (WIDTH of it, cost.PROMPT_MAX), at byte OFFSET of transcript PATH when known --
+    and the reply that ended the turn it began, as {prompt, reply}, each
+    {text, at}: read on from OFFSET a window at a time, up to TAIL_MAX,
+    until what set NAME other work; else the last such prompt in the tail.
+    None when it is not there."""
+    real, cli = locate(path)
+    reader = READERS[cli]
+
+    def items(lines):
+        thread = Thread(real)
+        reader(_records(lines), thread)
+        return _chat_items(name, thread.entries, {}, set())
+
+    def ours(it):
+        return it["kind"] == "prompt" and first_line(it.get("text") or "", width) == prompt
+
+    if offset is not None:
+        window = TAIL_BYTES
+        while True:
+            lines, cut = _from(real, offset, window)
+            got = items(lines)
+            start = next((i for i, it in enumerate(got) if it["kind"] == "prompt"), None)
+            if start is None or not ours(got[start]):
+                break
+            reply = _turn(got, name, start)
+            done = any(it["kind"] == "prompt" or (it["kind"] == "ask" and it.get("to") == name)
+                       for it in got[start + 1:])
+            if done or not cut or window >= TAIL_MAX:
+                return {"prompt": _said(got[start]), "reply": _said(reply)}
+            window *= 4
+    lines, _ = _tail(real, TAIL_MAX)
+    got = items(lines)
+    start = next((i for i in range(len(got) - 1, -1, -1) if ours(got[i])), None)
+    if start is None:
+        return None
+    return {"prompt": _said(got[start]), "reply": _said(_turn(got, name, start))}
+
+
 # ---- A project's chat ------------------------------------------------------
 #
 # The room shows each agent's conversation in a column; the chat is the

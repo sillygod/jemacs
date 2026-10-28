@@ -298,6 +298,10 @@ def test_the_page_asks_the_sidecar(home, client, monkeypatch):  # noqa: F811
 def test_a_tick_starts_a_pass_on_its_worker(home, tmp_path, monkeypatch):
     monkeypatch.setattr(tally, "EVERY", 0.0)
     h = _store(tmp_path)
+    # `_store''s own tick started a pass: a tick while one is on its way starts none.
+    deadline = time.monotonic() + 5
+    while h._tallying and time.monotonic() < deadline:
+        time.sleep(0.01)
     path = claude_file(home, "s1", reply("1", usage(inp=10)))
     h.report("claude-dp", cli="claude", conversation="s1", transcript=path)
     h.tick(sessions=SNAP)
