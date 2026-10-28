@@ -4102,7 +4102,7 @@ user asked from a shell (FROM \"user\") has none."
 
 (defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged :thumb)
   "Keys that are true or false: the reply reads JSON false as nil.")
-(defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking)
+(defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking :costs)
   "Keys that are arrays: the reply reads [] as nil.")
 
 (defun ghostherd-threads--js (v)
@@ -4143,7 +4143,10 @@ the prompt as its first message, as the herd log has it (its first line)."
                                      (plist-get result :threads))
                     :talking (plist-get result :talking)
                     :live (or (plist-get result :live) 0)
-                    :more (plist-get result :more)))
+                    :more (plist-get result :more)
+                    ;; What a task costs, lead mode against direct mode: a
+                    ;; week's and a month's (server/cost.py).
+                    :costs (plist-get result :costs)))
          (sig (sxhash-equal out)))
     (unless (equal sig ghostherd-threads--sig)
       (setq ghostherd-threads--sig sig)
