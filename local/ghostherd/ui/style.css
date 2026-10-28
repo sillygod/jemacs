@@ -394,6 +394,11 @@ button.mchip.mbare:hover { color: var(--text); border-color: var(--accent); }
 .mctx { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .mbar { flex: 1 1 60px; min-width: 40px; max-width: 220px; height: 6px; }
 .mwords { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* What its replies cost: today's and the week's tokens, the kinds in its
+   title.  Gives way before the context does. */
+.mtally, .ptally { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mtally { flex: 0 1 auto; margin-left: auto; }
+.ptally { font-size: 11px; }
 .modelform { margin: 4px 0 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 6px; }
 .mrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .mlab { width: 3.6em; flex-shrink: 0; font-size: 11.5px; color: var(--muted); }

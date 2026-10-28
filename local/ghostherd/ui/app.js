@@ -1822,18 +1822,56 @@
       : "Switch its model, for this session only";
   }
 
+  // ---- What its replies cost, in tokens ----------------------------------
+  //
+  // Today's and the last seven days', as the sidecar tallies them from the
+  // transcripts: one number each, input-equivalent tokens -- each kind
+  // weighted as it is priced -- and the kinds in its title.
+
+  const WEIGHTS = "input-equivalent tokens: input ×1, cache write ×1.25 (1-hour ×2), cache read ×0.1, output ×5";
+
+  function kinds(t) {
+    return "input " + tokens(t.input) + " · cache write " + tokens(t.write) + " · cache read " + tokens(t.read) +
+      " · output " + tokens(t.output);
+  }
+
+  function tallyHtml(t) {
+    if (!t || !t.today || !t.week) return "";
+    const title = "What its replies cost, in " + WEIGHTS + "\nToday: " + tokens(t.today.w) + " — " + kinds(t.today) +
+      "\nLast 7 days: " + tokens(t.week.w) + " — " + kinds(t.week);
+    return '<span class="mtally" title="' + esc(title) + '">today ' + esc(tokens(t.today.w)) + " · 7d " +
+      esc(tokens(t.week.w)) + "</span>";
+  }
+
+  // A project's: its agents' together -- a stopped one's too -- and its
+  // lead's share of the week, the rest its workers'.
+  function share(part, all) {
+    return all ? Math.round((part / all) * 100) + "%" : "—";
+  }
+
+  function projectTallyHtml(p) {
+    if (!p || !p.week || !p.week.w) return "";
+    const line = (label, span) => label + ": " + tokens(p[span].w) + " — lead " + tokens(p.lead[span].w) + " (" +
+      share(p.lead[span].w, p[span].w) + "), workers " + tokens(p.workers[span].w);
+    const title = "What this project's agents' replies cost, in " + WEIGHTS + "\n" + line("Today", "today") + "\n" +
+      line("Last 7 days", "week") + "\n" + kinds(p.week);
+    return '<span class="ptally" title="' + esc(title) + '">today ' + esc(tokens(p.today.w)) + " · 7d " +
+      esc(tokens(p.week.w)) + " · lead " + esc(share(p.lead.week.w, p.week.w)) + "</span>";
+  }
+
   function meterHtml(a) {
     const m = a && a.meter;
     const p = pickerFor(a);
+    const spent = tallyHtml(a && a.tally);
     // No meter (grok, agy do not report one) but a picker the herd knows:
     // still offer the switch, with no model to show until it is read.
     if (!m) {
-      if (!p) return "";
+      if (!p) return spent ? '<div class="meter">' + spent + "</div>" : "";
       const btn = a.switching
         ? '<span class="mchip"><span class="meff">switching…</span></span>'
         : '<button type="button" class="mchip mbare" data-act="a:model" title="' +
           esc(switchHint(p)) + '">Model</button>';
-      return '<div class="meter">' + btn + "</div>";
+      return '<div class="meter">' + btn + spent + "</div>";
     }
     const label = esc(m.model) + (m.effort ? '<span class="meff">' + esc(m.effort) + "</span>" : "");
     const cls = "mchip" + (m.pending ? " pending" : "");
@@ -1858,7 +1896,7 @@
     return '<div class="meter">' + chip + (bar || words
       ? '<span class="mctx" title="Context: what its last reply was given, of the window its model has">' + bar +
         (words ? '<span class="mwords">' + esc(words) + "</span>" : "") + "</span>"
-      : "") + "</div>";
+      : "") + spent + "</div>";
   }
 
   // The model and effort to switch to, picked as chips; the effort left
@@ -2081,6 +2119,7 @@
                 '\nits agents\' conversations side by side">' + esc(leaf(g.project)) + "</button>"
               : '<span class="pname">No project</span>') +
             '<span class="ppath">' + esc(g.project) + "</span>" + summary +
+            projectTallyHtml((d.projectTally || []).find((p) => p.project === g.project)) +
             (g.project && !(d.primary && g.project === d.primary.directory)
               ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
             "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
