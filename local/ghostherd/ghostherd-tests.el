@@ -15478,6 +15478,34 @@ task is not known with none."
         (ghostherd-threads--tick)
         (should (equal (plist-get (cdr (assoc "renderThreads" shown)) :costs) []))))))
 
+(ert-deftest ghostherd-test-threads-a-direct-task-and-its-commits ()
+  "A task told to an agent directly comes whole from the sidecar: no
+opener from the herd log goes before it, even with a prompt in the log
+just before it began; its commits reach the page as an array -- none too
+-- and a task's merged count stays a count."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((th (list :id "task:k1" :rootFrom "claude-dp" :rootTo "claude-dp" :started 2000000 :direct t
+                   :participants '("user" "claude-dp") :count 2
+                   :msgs (list (list :kind "message" :from "user" :to "claude-dp" :at 1999000 :text "Fix it."))
+                   :cost (list :id "k1" :mode "direct" :commits 2 :merged 0 :lines 30 :threadCount 2
+                               :made (list (list :sha "abc" :lines 30 :merged nil :of nil)))))
+         (prompts (make-hash-table :test #'equal)))
+    (puthash "claude-dp" (list (cons 1999000 "Fix it.")) prompts)
+    (should (eq (ghostherd-threads--with-opener th prompts) th))
+    ;; The same as an ask's thread would get the log's prompt before it.
+    (should (= 2 (length (plist-get (ghostherd-threads--with-opener
+                                     (plist-put (copy-sequence th) :direct nil) prompts)
+                                    :msgs))))
+    (let* ((json (json-read-from-string (json-encode (ghostherd-threads--js th))))
+           (c (alist-get 'cost json)))
+      (should (eq (alist-get 'direct json) t))
+      (should (equal (alist-get 'merged c) 0))
+      (should (equal (alist-get 'threadCount c) 2))
+      (should (vectorp (alist-get 'made c)))
+      (should (equal (alist-get 'sha (aref (alist-get 'made c) 0)) "abc")))
+    (should (equal (plist-get (plist-get (ghostherd-threads--js (list :cost (list :id "k2" :made nil))) :cost) :made)
+                   []))))
+
 (ert-deftest ghostherd-test-threads-go-to-the-page-as-json ()
   "The reply reads false and [] as nil: the page gets them back as false
 and arrays, objects as objects."

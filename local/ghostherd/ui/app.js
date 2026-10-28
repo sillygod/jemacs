@@ -5061,26 +5061,50 @@
   // A thread's task: the user's message that set it going and all it set
   // off -- the lead's replies, its asks' takers', their sub-agents' -- in
   // weighted tokens (the tally's unit), and the lines its commits changed,
-  // once merged.  Above the list, lead mode against direct mode.
+  // merged or not.  A task two threads are part of (a lead's two asks for
+  // it) shows its cost on one; the other says whose it is.  Above the
+  // list, lead mode against direct mode.
 
-  const TASK_CODE = { no: "no code", unknown: "code not readable", unmerged: "not merged yet", pending: "code not read yet" };
+  const TASK_CODE = { no: "no code", unknown: "code not readable", pending: "code not read yet" };
   function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
+  function taskMerged(c) { return c.commits ? (c.merged === c.commits ? "all merged" : (c.merged || 0) + " merged") : ""; }
   function taskTitle(c) {
     return "Its task" + (c.prompt ? ": " + c.prompt : "") + "\n" + tokens(c.total) + " weighted tokens — " +
       (c.mode === "lead" ? "the lead " : c.agent + " itself ") + tokens(c.own) + " · workers " + tokens(c.workers) +
       " · sub-agents " + tokens(c.subs) + "\n" + c.asks + (c.asks === 1 ? " ask" : " asks") + " · " +
-      (c.code === "yes" ? c.lines + " lines changed in " + c.commits + (c.commits === 1 ? " commit" : " commits") : taskMade(c));
+      (c.code === "yes" ? c.lines + " lines changed in " + c.commits + (c.commits === 1 ? " commit" : " commits") +
+        ", " + taskMerged(c) : taskMade(c));
   }
   function thCost(c) {
     if (!c) return "";
+    if (c.same) {
+      const of = c.sameTitle && c.sameTitle.length > 40 ? c.sameTitle.slice(0, 39) + "…" : c.sameTitle || "";
+      return '<span class="thcost thsame" title="One task with another thread: its cost is shown there, once">' +
+        "same task as “" + esc(of) + "”</span>";
+    }
     return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) + " · " + esc(taskMade(c)) + "</span>";
   }
   function thCostLine(c) {
     if (!c) return "";
     const per = c.code === "yes" && c.lines ? " · " + tokens(Math.round((c.total * 100) / c.lines)) + " per 100 lines" : "";
-    return '<p class="thcostline" title="' + esc(taskTitle(c)) + '">Its task: ' + esc(tokens(c.total)) + " weighted tokens — " +
+    const merged = c.code === "yes" ? " (" + taskMerged(c) + ")" : "";
+    return '<p class="thcostline" title="' + esc(taskTitle(c)) + '">Its task' +
+      (c.threadCount > 1 ? ", across " + c.threadCount + " threads" : "") + ": " + esc(tokens(c.total)) + " weighted tokens — " +
       (c.mode === "lead" ? "lead " : "itself ") + esc(tokens(c.own)) + " · workers " + esc(tokens(c.workers)) +
-      " · sub-agents " + esc(tokens(c.subs)) + " · " + esc(taskMade(c)) + esc(per) + "</p>";
+      " · sub-agents " + esc(tokens(c.subs)) + " · " + esc(taskMade(c)) + esc(merged) + esc(per) + "</p>";
+  }
+  // The open thread's commits: each, its lines and whether it is in a main
+  // branch yet; a copy (an amend, a rebase, a cherry-pick) counted where
+  // its first was made.
+  function thCommits(c) {
+    const made = (c && c.made) || [];
+    if (!made.length) return "";
+    return '<ul class="thcommits" aria-label="Commits">' + made.map((m) =>
+      '<li class="' + (m.of ? "copy" : "") + '"><code>' + esc(String(m.sha).slice(0, 8)) + "</code>" +
+      '<span class="thcsubj">' + esc(m.subject || "") + "</span>" +
+      '<span class="thcmeta">' + esc(m.lines + (m.lines === 1 ? " line" : " lines")) + " · " +
+      (m.merged ? "merged" : "not merged") +
+      (m.of ? " · a copy of " + esc(String(m.of).slice(0, 8)) + ", not counted again" : "") + "</span></li>").join("") + "</ul>";
   }
   function thCosts() {
     const all = threads.costs || [];
@@ -5098,6 +5122,7 @@
       row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
       row("total", n(L.total), n(D.total)) + row("per 100 lines", n(L.per100), n(D.per100)) +
       row("lines changed", L.lines + " in " + L.coded, D.lines + " in " + D.coded) +
+      row("of them merged", String(L.merged || 0), String(D.merged || 0)) +
       row("no code", String(L.noCode), String(D.noCode)) +
       row("lead's own share", L.own == null ? "—" : L.own + "%", "—") + "</tbody></table></section>";
   }
@@ -5170,7 +5195,7 @@
   function thList() {
     return '<section class="thlist" aria-label="Threads">' +
       (threads.list.length ? threads.list.map(thRow).join("")
-        : '<p class="thquiet thpad">No threads yet: one starts when an agent asks another, or hands work to another project.</p>') +
+        : '<p class="thquiet thpad">No threads yet: one starts when an agent asks another, hands work to another project, or you tell an agent something directly.</p>') +
       (threads.more ? '<button type="button" class="ghost thmore" data-act="th:more">Older threads</button>' : "") + "</section>";
   }
 
@@ -5196,6 +5221,7 @@
     const first = (t.msgs || [])[0];
     const ask = (t.msgs || []).find((m) => m.kind === "ask" || m.kind === "handoff");
     const who = (t.lanes || []).length;
+    if (t.direct) return "You told " + thWho(t.rootTo) + " directly, not through a lead";
     return (first && first.kind === "message" ? "You asked " + thWho(first.to) + "; " : "") +
       (ask ? thWho(ask.from) + (ask.kind === "handoff" ? " handed it to " : " asked ") + thWho(ask.to) : "") +
       (who > 2 ? " · " + who + " in it" : "") + (t.cross ? " · across projects" : "");
@@ -5248,7 +5274,7 @@
 
   function thHeader(t) {
     return '<div class="thhead1">' + thStatus(t.status) + '<h1 class="thh1">' + esc(t.title || "(no text)") + "</h1></div>" +
-      '<p class="thsummary">' + esc(thSummary(t)) + "</p>" + thCostLine(t.cost);
+      '<p class="thsummary">' + esc(thSummary(t)) + "</p>" + thCostLine(t.cost) + thCommits(t.cost);
   }
 
   function thMain() {

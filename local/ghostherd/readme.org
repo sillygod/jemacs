@@ -2545,6 +2545,13 @@ projects.  Read-only: it only shows, and leads where you click.
   first line; its participants as a path; its projects,
   =cross-project=, how many messages, how long ago.  Older threads
   forty at a time.
+- A task you told an agent directly --- not through a lead --- is a
+  thread of its own: no ask begins it, so no ask's thread has it.  Its
+  row is =You → claude-deploy-platform=, your message its title, its
+  project and what it cost; opened, your message and the reply that
+  ended the turn it began, read from the agent's transcript the way the
+  room reads it, from where your message is (kept with the task;
+  found again once for a task kept before that was).
 - The open thread as a sequence diagram: a lane per participant, in its
   CLI's colour with its project and role; a row per message --- ask,
   answer, a handoff dashed, the user's message dotted --- an arrow
@@ -2573,18 +2580,24 @@ projects.  Read-only: it only shows, and leads where you click.
   replies until it is set other work, and its sub-agents'.  The herd's
   own words are never one: an ask, an answer, mail, a relay's brief, a
   task notification, a command.  Each row shows its thread's task:
-  =6.5M · 1472 lines=, or =not merged yet=, =no code=, =code not read
-  yet= (the work is not over), =code not readable= (its checkout could
-  not be read); its title, the message and the parts.  The open thread
-  says it in full under its summary: =Its task: 6.5M weighted tokens —
-  lead 287k · workers 6.2M · sub-agents 0 · 1472 lines · 442k per 100
-  lines=.  Above the list, *What a task costs*: lead mode against
+  =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is
+  not over), =code not readable= (its checkout could not be read); its
+  title, the message and the parts.  Two threads of one task --- a
+  lead's two asks for it --- show its cost once: on the task's own
+  direct thread, else its first; the other says =same task as “fix the
+  build”=.  The open thread says it in full under its summary: =Its
+  task, across 2 threads: 6.5M weighted tokens — lead 287k · workers
+  6.2M · sub-agents 0 · 1472 lines (1 merged) · 442k per 100 lines=,
+  and under it each commit: its sha and subject, its lines, =merged= or
+  =not merged=, and a copy (an amend, a rebase, a cherry-pick) as =a
+  copy of 81b8baca, not counted again=.  Above the list, *What a task costs*: lead mode against
   direct mode over the last 7 or 30 local days --- how many tasks, the
   median and the total per task, the tokens per 100 changed lines (all
   of a mode's tokens over all its lines: a commit counts in the task it
   was made in, and "commit and push" is a task of its own, so per task
   it would flatter the one that only committed), the lines and the
-  tasks they came in, those with no code, and the lead's own share.
+  tasks they came in, how many of those are merged yet, those with no
+  code, and the lead's own share.
   =herd cost [--days N] [--project P] [--tasks]= prints the same, and
   with =--tasks= each task, newest first --- an agent may run it.  An
   agent sees every project's numbers, but the tasks --- your words that
@@ -2613,18 +2626,39 @@ projects.  Read-only: it only shows, and leads where you click.
   still read for the asks it took (its own words make no task: its role
   and project are not known).  Kept in =herd.sqlite= (=cost_files=,
   =cost_usage=, =cost_tasks=, =cost_links=, =cost_switches=,
-  =cost_output=); a first look reads each conversation the tally knows
-  from its start, so the numbers go back as far as those do.
+  =cost_commits=, =cost_reflogs=, =cost_output=); a first look reads
+  each conversation the tally knows from its start, so the numbers go
+  back as far as those do.
 
-  What a task made: lead mode, the commits each ask's taker made in its
-  own checkout while it worked on it --- its own line of them, first
-  parents --- once they are in its project's main branch (merged, not
-  rebased or squashed, which make new commits); direct mode, the
-  commits made in the agent's checkout while it worked on the task.
-  Lines are insertions plus deletions, merges left out.  Read from git
-  once the work is over (half an hour quiet, or its agent on other
-  work), a few a minute, on the sidecar's worker; an ask's taker's
-  checkout gone, the commits in the main branch that name the ask.
+  What a task made: the commits made for it, merged or not --- a work
+  project merges on its forge, often squashed, which no local branch
+  shows, so "per 100 lines" counts every commit made; whether each is
+  in its project's main branch (the local one, or origin's as last
+  fetched) is said beside it.  Each checkout the herd works in --- every
+  live agent's, and those its work of the last 30 days was done in that
+  are still there --- has its HEAD's reflog read on the sidecar's
+  worker as it changes (its size and time looked at each pass, git run
+  only when they moved): every commit made there, on any branch, so a
+  feature branch, a pull request and back to main are all seen.  Only
+  what was made there: a fetch or a pull brings commits in and makes
+  none, so a colleague's never count.  What is read is kept
+  (=cost_commits=), and when (=cost_reflogs=): a worktree removed when
+  its agent stops takes its reflog with it, so its commits are read
+  within a pass of their making, again when it answers an ask, and once
+  more as =herd stop= queues the stop, before Emacs removes it.  A
+  commit is the work its checkout's agent was on as it was made --- of
+  the work its replies fall in, up to two minutes after the last (an
+  agent commits, then says so), the latest begun --- so lead mode counts
+  each ask's taker's, direct mode the agent's own.  An amend, a rebase's
+  pick and a cherry-pick copy a commit made before (the commit replaced,
+  or the same author and author date): its work counts once, where it
+  was first made, at its last copy's lines, and is merged when any copy
+  is; the task that made the copy shows it, counting nothing.  A merge,
+  a reset, a checkout make no commit.  Lines are insertions plus
+  deletions.  An ask whose taker's checkout was never read (removed
+  before it was) has the commits in its project's main branch that
+  name it, =(ask ID)=; none found there is not none made, so it stays
+  =code not readable=.
 - From the Inbox, =Open thread= on an item opens the thread of its ask
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.

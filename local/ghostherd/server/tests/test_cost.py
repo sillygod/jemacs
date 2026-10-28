@@ -171,7 +171,7 @@ def herd_at_work(home, tmp_path, merged=True):
     directly, which commits.  Returns the store and the paths."""
     dp = repo(tmp_path / "dp", at(600))
     wt = tmp_path / "wt-rd"
-    git(dp, "worktree", "add", "-q", "-b", "rd-work", str(wt))
+    git(dp, "worktree", "add", "-q", "-b", "rd-work", str(wt), when=at(500))
     solo = repo(tmp_path / "solo", at(600))
     snap = [{"name": LEAD, "kind": "claude", "state": "idle", "project": str(dp) + "/", "role": "lead",
              "directory": str(dp) + "/"},
@@ -244,16 +244,20 @@ def test_a_task_is_its_prompt_and_all_it_set_off(home, tmp_path):
     assert (push["own"], push["code"]) == (60, "no")
 
 
-def test_not_merged_yet_is_not_no_code(home, tmp_path):
+def test_a_commit_counts_merged_or_not(home, tmp_path):
+    """A work project merges on its forge, often squashed: a commit made
+    counts as made; whether it is in the main branch is said beside it."""
     h, ask, dp = herd_at_work(home, tmp_path, merged=False)
     fix = counted(h)["Fix the build, please."]
-    assert (fix["code"], fix["lines"]) == ("unmerged", 0)
+    assert (fix["code"], fix["lines"], fix["merged"], fix["mergedLines"]) == ("yes", 30, 0, 0)
+    assert [(c["lines"], c["merged"], c["subject"]) for c in fix["made"]] == [(30, False, f"fix (ask {ask})")]
     git(dp, "merge", "-q", "--no-ff", "rd-work", "-m", "Merge rd-work")
     with h._mu:   # looked at a minute ago
-        h._conn.execute("UPDATE cost_output SET checked_at = checked_at - 120")
+        h._conn.execute("UPDATE cost_commits SET checked_at = checked_at - 120")
         h._conn.commit()
     fix = counted(h)["Fix the build, please."]
-    assert (fix["code"], fix["lines"]) == ("yes", 30)
+    assert (fix["code"], fix["lines"], fix["merged"], fix["mergedLines"]) == ("yes", 30, 1, 30)
+    assert h.costs(7)["compare"]["lead"]["merged"] == 30
 
 
 def test_lead_mode_against_direct_mode(home, tmp_path):
@@ -274,7 +278,7 @@ def test_lead_mode_against_direct_mode(home, tmp_path):
 def test_each_thread_carries_its_tasks_cost(home, tmp_path):
     h, ask, _ = herd_at_work(home, tmp_path)
     counted(h)
-    (t,) = h.threads()["threads"]
+    (t,) = [t for t in h.threads()["threads"] if not t.get("direct")]
     assert t["cost"]["prompt"] == "Fix the build, please." and t["cost"]["lines"] == 30
     assert h.thread(ask=ask)["cost"]["workers"] == 6510
     assert [c["days"] for c in h.threads()["costs"]] == [7, 30]
@@ -309,6 +313,174 @@ def test_an_agent_gone_from_the_herd_still_counts_for_the_asks_it_took(home, tmp
     h.tick(sessions=snap)
     fix = counted(h)["Fix the build, please."]
     assert fix["workers"] == 6510
+
+
+# ---- The commits a task made ------------------------------------------------------
+
+
+def rewrite(repo, *args, when):
+    "A git command that copies commits: its own time, theirs kept (their author and author date)."
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t",
+               GIT_COMMITTER_EMAIL="t@x", GIT_COMMITTER_DATE=when.isoformat(), GIT_EDITOR="true")
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env)
+    return git(repo, "rev-parse", "HEAD").strip()
+
+
+def told(h, name, prompt, start, replies):
+    "The user's PROMPT to NAME at START, and its replies at REPLIES (minutes ago)."
+    path = Path(h._transcript(name))
+    records = [you(prompt, at(start))]
+    for i, m in enumerate(replies):
+        records += reply(f"{prompt[:6]}{i}", usage(inp=40), when=at(m))
+    _write(path, records, mode="a")
+
+
+def test_a_direct_agents_commits_on_a_feature_branch_are_its_tasks(home, tmp_path):
+    """A work project commits on a feature branch, opens a pull request and
+    goes back to main: the commit is still the task's.  What a pull brings
+    in -- a colleague's commit -- was made elsewhere, and is no one's here."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    solo, theirs = tmp_path / "solo", tmp_path / "colleague"
+    git(tmp_path, "clone", "-q", str(solo), str(theirs))
+    told(h, SOLO, "Fix the login page.", 70, [69, 60])
+    git(solo, "switch", "-q", "-c", "login", when=at(68))
+    sha = commit(solo, "login.py", 25, at(66))
+    git(solo, "switch", "-q", "master", when=at(65))
+    commit(theirs, "theirs.py", 400, at(64))
+    git(solo, "pull", "-q", "--ff-only", str(theirs), "master", when=at(63))
+    login = counted(h)["Fix the login page."]
+    assert (login["code"], login["commits"], login["lines"], login["merged"]) == ("yes", 1, 25, 0)
+    assert [c["sha"] for c in login["made"]] == [sha]
+    # And the branch merged, a merge commit -- no work of its own: merged.
+    git(solo, "merge", "-q", "--no-ff", "login", "-m", "Merge login", when=at(10))
+    with h._mu:   # looked at long enough ago for an hour-old commit: asked less often as it ages
+        h._conn.execute("UPDATE cost_commits SET checked_at = checked_at - 600")
+        h._conn.commit()
+    login = counted(h)["Fix the login page."]
+    assert (login["commits"], login["merged"]) == (1, 1)
+
+
+def test_a_stopped_takers_commits_outlive_its_worktree(home, tmp_path):
+    """Its lead stops a worker right after merging, and its worktree goes,
+    reflog and all: the commits were kept first -- each by the pass after
+    it was made, the last by the stop itself."""
+    h, ask, dp = herd_at_work(home, tmp_path, merged=False)
+    counted(h)
+    wt = tmp_path / "wt-rd"
+    late = commit(wt, "docs.md", 4, at(26), message="docs")
+    h.enqueue_command("stop", RD, {"by": LEAD})
+    git(dp, "worktree", "remove", "--force", str(wt))
+    git(dp, "branch", "-q", "-D", "rd-work")
+    h._reflogs.clear()
+    fix = counted(h)["Fix the build, please."]
+    assert (fix["code"], fix["commits"], fix["lines"]) == ("yes", 2, 34)
+    assert late in [c["sha"] for c in fix["made"]]
+
+
+def test_an_amend_a_rebase_and_a_cherry_pick_count_once(home, tmp_path):
+    """Each is a copy of a commit made before: its work counts once, where it
+    was first made, at its last copy's lines; it is merged when any copy
+    is; and the task that made a copy shows it, counting nothing."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    solo = tmp_path / "solo"
+    told(h, SOLO, "Add a cache.", 70, [69, 55])
+    told(h, SOLO, "Put it on master too.", 50, [49, 45])
+    git(solo, "switch", "-q", "-c", "cache", when=at(68))
+    first = commit(solo, "cache.py", 10, at(66))
+    (solo / "cache.py").write_text("".join(f"line {i}\n" for i in range(15)))
+    amended = rewrite(solo, "commit", "-q", "-a", "--amend", "--no-edit", when=at(64))
+    rebased = rewrite(solo, "rebase", "-q", "--force-rebase", "master", "cache", when=at(58))
+    git(solo, "switch", "-q", "master", when=at(48))
+    picked = rewrite(solo, "cherry-pick", rebased, when=at(47))
+    tasks = counted(h)
+    cache, pick = tasks["Add a cache."], tasks["Put it on master too."]
+    assert len({first, amended, rebased, picked}) == 4
+    assert (cache["commits"], cache["lines"], cache["merged"]) == (1, 15, 1)
+    assert [(c["sha"], c["of"]) for c in cache["made"]] == [(first, None), (amended, first), (rebased, first)]
+    assert (pick["code"], pick["commits"], pick["lines"]) == ("no", 0, 0)
+    assert [(c["sha"], c["of"]) for c in pick["made"]] == [(picked, first)]
+
+
+def test_an_ask_whose_takers_checkout_was_never_read(home, tmp_path, monkeypatch):
+    """Its taker's worktree gone before the herd read it (asks before this
+    was): the commits in the main branch that name the ask are its."""
+    monkeypatch.setattr(HerdStore, "_capture_soon", lambda self, agent: None)
+    h, ask, dp = herd_at_work(home, tmp_path)
+    git(dp, "worktree", "remove", "--force", str(tmp_path / "wt-rd"))
+    fix = counted(h)["Fix the build, please."]
+    assert (fix["code"], fix["commits"], fix["lines"], fix["merged"]) == ("yes", 1, 30, 1)
+    assert fix["made"][0]["subject"] == f"fix (ask {ask})"
+
+
+def test_a_commit_is_the_work_its_agent_was_on():
+    """The latest begun of the work it falls in, up to COMMIT_SLACK after
+    its last reply; read when its checkout's reflog was, all that time."""
+    c = lambda sha, t: {"sha": sha, "at": t, "lines": 1, "of": None, "merged": False}
+    spans = [("task:a", "x", 100, 200), ("task:b", "x", 250, 300), ("ask:q", "y", 100, 400)]
+    made = cost.attribute({"/x": [c("1", 150), c("2", 260), c("3", 310), c("4", 900)], "/y": [c("5", 200)]},
+                          spans, {"x": ["/x"], "y": ["/y"]}, {"/x": [[0, 1000]]}, now=1000)
+    assert [m["sha"] for m in made[("task:a", "x")]["commits"]] == ["1"]
+    assert [m["sha"] for m in made[("task:b", "x")]["commits"]] == ["2", "3"]
+    assert [m["sha"] for m in made[("ask:q", "y")]["commits"]] == ["5"]
+    assert made[("task:a", "x")]["read"] and not made[("ask:q", "y")]["read"]
+    assert cost.cover([[0, 10]], 5, 20) == [[0, 20]] and cost.cover([[0, 10]], 30, 40) == [[0, 10], [30, 40]]
+
+
+def test_none_found_by_name_is_not_none_made():
+    "An ask whose checkout was never read, and nothing names: its task's code is not known."
+    tasks = [{"id": "t", "agent": "lead", "project": "/p", "mode": "lead", "prompt": "x", "at": 1.0}]
+    usage = [{"item": "task:t", "agent": "lead", "sub": 0, "input": 5, "first_at": 1.0, "last_at": 2.0}]
+    named = {"ask:q": {"commits": [], "named": True}}
+    row = cost.costs(tasks, usage, {"q": "task:t"}, named, now=10 ** 9)["t"]
+    assert (row["code"], row["unread"]) == ("unknown", ["ask:q"])
+    old = {"ask:q": {"commits": [], "named": False}}
+    assert cost.costs(tasks, usage, {"q": "task:t"}, old, now=10 ** 9)["t"]["code"] == "no"
+
+
+# ---- Direct tasks on the Threads tab -----------------------------------------------------
+
+
+def test_a_task_told_directly_is_a_thread_of_its_own(home, tmp_path):
+    h, _, _ = herd_at_work(home, tmp_path)
+    counted(h)
+    direct = [t for t in h.threads()["threads"] if t.get("direct")]
+    assert [t["title"] for t in direct] == ["Now push it.", "Add a health check."]
+    health = direct[1]
+    assert (health["participants"], health["projects"], health["rootFrom"]) == (["user", SOLO], ["solo"], "user")
+    assert health["id"].startswith("task:") and health["cost"]["lines"] == 12
+    t = h.thread(id=health["id"])
+    assert [(m["kind"], m["from"], m["to"], m["text"]) for m in t["msgs"]] == [
+        ("message", "user", SOLO, "Add a health check."), ("answer", SOLO, "user", "block 0")]
+    assert [ln["name"] for ln in t["lanes"]] == ["user", SOLO] and t["lanes"][1]["project"] == "solo"
+    (c,) = t["cost"]["made"]
+    assert (c["lines"], c["merged"], c["subject"], c["of"]) == (12, True, "work", None)
+    assert t["cost"]["threadCount"] == 1
+    # A task kept before tasks kept where its prompt is: found again.
+    with h._mu:
+        h._conn.execute("UPDATE cost_tasks SET offset = NULL")
+        h._conn.commit()
+    assert [m["text"] for m in h.thread(id=health["id"])["msgs"]] == ["Add a health check.", "block 0"]
+    with pytest.raises(ValueError):
+        h.thread(id="task:nosuchtask")
+
+
+def test_two_threads_of_one_task_show_its_cost_once(home, tmp_path):
+    """A lead's two asks for one task are two threads: the first shows the
+    task's cost, the other says it is part of that one's task."""
+    h, ask, _ = herd_at_work(home, tmp_path)
+    second = h.ask(RD, "and the docs", from_name=LEAD)["id"]
+    with h._mu:   # asked as the answer to the first woke the lead
+        h._conn.execute("UPDATE asks SET created_at = ?, delivered_at = ? WHERE id = ?",
+                        (at(19.5).isoformat(), at(19.4).isoformat(), second))
+        h._conn.commit()
+    h.reply(second, "Done.", from_name=RD)
+    counted(h)
+    asks = {t["id"]: t for t in h.threads()["threads"] if not t.get("direct")}
+    assert set(asks) == {ask, second}
+    assert asks[ask]["cost"]["lines"] == 30 and "same" not in asks[ask]["cost"]
+    assert asks[second]["cost"] == {"id": asks[ask]["cost"]["id"], "mode": "lead", "same": ask,
+                                    "sameTitle": "fix the build"}
+    assert h.thread(id=ask)["cost"]["threadCount"] == 2
 
 
 def test_herd_cost_from_an_agent(home, live):  # noqa: F811

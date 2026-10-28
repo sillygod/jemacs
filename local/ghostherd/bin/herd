@@ -514,8 +514,8 @@ def cmd_cost(args):
         ("total", _tokens(lead["total"]), _tokens(direct["total"])),
         ("per 100 lines", _tokens(lead["per100"]), _tokens(direct["per100"])),
         ("lines changed", "%d in %d" % (lead["lines"], lead["coded"]), "%d in %d" % (direct["lines"], direct["coded"])),
+        ("of them merged", str(lead.get("merged", 0)), str(direct.get("merged", 0))),
         ("no code", str(lead["noCode"]), str(direct["noCode"])),
-        ("not merged yet", str(lead.get("unmerged", 0)), "—"),
         ("not read yet", str(lead.get("pending", 0)), str(direct.get("pending", 0))),
         ("not readable", str(lead["unknown"]), str(direct["unknown"])),
         ("lead's own share", "—" if lead["own"] is None else "%d%%" % lead["own"], "—"),
@@ -525,9 +525,8 @@ def cmd_cost(args):
         print("%-18s %14s %14s" % (name, a, b))
     for t in out.get("tasks") or []:
         when = datetime.datetime.fromtimestamp(t["at"]).strftime("%m-%d %H:%M") if t.get("at") else "?"
-        made = {"no": "no code", "unknown": "code not readable", "unmerged": "not merged yet",
-                "pending": "code not read yet"}.get(
-            t["code"], "%d lines" % t["lines"])
+        made = {"no": "no code", "unknown": "code not readable", "pending": "code not read yet"}.get(
+            t["code"], "%d lines (%d of %d commits merged)" % (t["lines"], t.get("merged", 0), t.get("commits", 0)))
         print("\n%s  %-6s %s  %s (own %s, workers %s, sub-agents %s)  %s\n  %s" % (
             when, t["mode"], t["agent"], _tokens(t["total"]), _tokens(t["own"]), _tokens(t["workers"]),
             _tokens(t["subs"]), made, t["prompt"][:100]))
