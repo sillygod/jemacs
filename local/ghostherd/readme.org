@@ -2565,6 +2565,66 @@ projects.  Read-only: it only shows, and leads where you click.
   what shows, marked =as the herd log has it=.  It keeps no link from a
   prompt to the asks it led to, so this is still a guess, one that
   fails to nothing rather than to the wrong prompt.
+- What its task cost.  A *task* is one message of yours and everything
+  it set off.  Told to a lead (or primary) --- lead mode --- that is the
+  lead's replies from it on, the asks it made for it and those made
+  answering them (handoffs too), their takers' replies, and each one's
+  sub-agents; told to any other agent --- direct mode --- that agent's
+  replies until it is set other work, and its sub-agents'.  The herd's
+  own words are never one: an ask, an answer, mail, a relay's brief, a
+  task notification, a command.  Each row shows its thread's task:
+  =6.5M · 1472 lines=, or =not merged yet=, =no code=, =code not read
+  yet= (the work is not over), =code not readable= (its checkout could
+  not be read); its title, the message and the parts.  The open thread
+  says it in full under its summary: =Its task: 6.5M weighted tokens —
+  lead 287k · workers 6.2M · sub-agents 0 · 1472 lines · 442k per 100
+  lines=.  Above the list, *What a task costs*: lead mode against
+  direct mode over the last 7 or 30 local days --- how many tasks, the
+  median and the total per task, the tokens per 100 changed lines (all
+  of a mode's tokens over all its lines: a commit counts in the task it
+  was made in, and "commit and push" is a task of its own, so per task
+  it would flatter the one that only committed), the lines and the
+  tasks they came in, those with no code, and the lead's own share.
+  =herd cost [--days N] [--project P] [--tasks]= prints the same, and
+  with =--tasks= each task, newest first --- an agent may run it.  An
+  agent sees every project's numbers, but the tasks --- your words that
+  began each --- of its own project only, the one the herd knows it in
+  (never one it names, as =herd search=); one the herd does not know,
+  none; Emacs and the page, all.
+
+  How the sidecar works it out (=server/cost.py=).  It reads each
+  transcript the tally reads again, on a cursor of its own: every reply
+  counts to the work its agent was on as it wrote it, which what is said
+  to it switches --- your words to a task of their own; an ask the herd
+  delivered (=[ghostherd message from … ][ask ID --=) to that ask; the
+  answer to one of its own asks back to the task that ask was made for,
+  so a lead's turn woken by an answer is that task's, not whatever you
+  said last.  Nothing else switches it: mail, the herd's notes, a
+  sub-agent or shell that ended.  Your words are told from the herd's by
+  what the herd frames its own in, per CLI: claude's user records (not
+  =isMeta=, not a compaction's summary, a message taken mid-turn too),
+  agy's =USER_INPUT= (=<USER_REQUEST>=), grok's =user_message_chunk= in
+  =updates.jsonl=; the herd's notes before a message to a lead, and the
+  lead's role, are taken off.  An ask is the work its asker was on when
+  it made it: by the herd's record of it --- the ask it was answering,
+  else its asker's work at that moment --- or, the record gone after a
+  week, by what its client printed (=herd: asked rd (ask ID)=).  A
+  sub-agent's is its parent's call's.  An agent gone from the herd is
+  still read for the asks it took (its own words make no task: its role
+  and project are not known).  Kept in =herd.sqlite= (=cost_files=,
+  =cost_usage=, =cost_tasks=, =cost_links=, =cost_switches=,
+  =cost_output=); a first look reads each conversation the tally knows
+  from its start, so the numbers go back as far as those do.
+
+  What a task made: lead mode, the commits each ask's taker made in its
+  own checkout while it worked on it --- its own line of them, first
+  parents --- once they are in its project's main branch (merged, not
+  rebased or squashed, which make new commits); direct mode, the
+  commits made in the agent's checkout while it worked on the task.
+  Lines are insertions plus deletions, merges left out.  Read from git
+  once the work is over (half an hour quiet, or its agent on other
+  work), a few a minute, on the sidecar's worker; an ask's taker's
+  checkout gone, the commits in the main branch that name the ask.
 - From the Inbox, =Open thread= on an item opens the thread of its ask
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.

@@ -128,6 +128,8 @@ def test_agy_and_grok_say_it_their_own_way():
 def test_the_number_as_the_page_writes_it():
     assert [tally.text(n) for n in (0, 999, 1000, 340_400, 1_000_000, 1_250_000, 12_000_000)] == \
         ["0", "999", "1k", "340k", "1M", "1.3M", "12M"]
+    # As toFixed rounds a float: 1.65 is 1.6499... as one; 12.4 stays.
+    assert [tally.text(n) for n in (1_650_000, 12_400_000, 1_000_100)] == ["1.6M", "12.4M", "1M"]
 
 
 # ---- Read as it grows ----------------------------------------------------------------------

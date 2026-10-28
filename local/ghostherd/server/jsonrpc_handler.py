@@ -61,7 +61,13 @@ AGENT_METHODS = frozenset({
     "herd_report", "herd_guard_denied", "herd_guard_used", "herd_lint_denied",
     "herd_remember", "herd_recall", "herd_forget", "herd_promote_propose", "herd_search",
     "herd_start", "herd_stop", "herd_relay", "herd_screens", "herd_command_reply",
+    # What tasks cost, as numbers: `herd cost' from a lead at a review --
+    # its task list, the user's words in it, only its own project's.
+    "herd_costs",
 })
+# Methods told who calls them -- the herd's own token (`admin') or an
+# agent's -- because what they show depends on it.
+ROLE_METHODS = frozenset({"herd_costs"})
 
 
 def _recall_block(fact: dict, key: str) -> str:
@@ -164,6 +170,7 @@ class JsonRpcHandler:
             "herd_chat": self._herd_chat,
             "herd_meter": self._herd_meter,
             "herd_tally": self._herd_tally,
+            "herd_costs": self._herd_costs,
             "herd_subagents": self._herd_subagents,
             "herd_edits": self._herd_edits,
             "herd_links": self._herd_links,
@@ -222,10 +229,11 @@ class JsonRpcHandler:
                 ),
             )
         try:
+            args = (request.params or {},) + ((role,) if request.method in ROLE_METHODS else ())
             if inspect.iscoroutinefunction(method):
-                result = await method(request.params or {})
+                result = await method(*args)
             else:
-                result = await asyncio.to_thread(method, request.params or {})
+                result = await asyncio.to_thread(method, *args)
             return JsonRpcResponse(id=request.id, result=result)
         except ValueError as exc:
             return JsonRpcResponse(
@@ -658,6 +666,26 @@ class JsonRpcHandler:
         week: each agent's and each project's, its lead's share apart --
         as the sidecar has read them from their transcripts (tally.py)."""
         return get_herd().tally()
+
+    def _herd_costs(self, params: dict, role: str = "admin") -> dict:
+        """What a task costs, lead mode against direct mode, over the last
+        DAYS local days -- of PROJECT's tasks when given -- and, with
+        TASKS, each one (cost.py).  `herd cost', and the Threads tab.
+        An agent sees every project's numbers, but the tasks -- the user's
+        words that began each -- of its own project only: the one the herd
+        knows it in, from FROM, never one named in the call, as `herd
+        search'.  A caller the herd does not know sees none; the herd's own
+        token (Emacs, the page), all."""
+        try:
+            days = int(params.get("days") or 7)
+        except (TypeError, ValueError):
+            raise ValueError("days must be a number") from None
+        own = None
+        if role != "admin":
+            who = str(params.get("from") or "").strip()
+            me = get_herd().session(who) if who and who != "user" else None
+            own = (me or {}).get("project") or ""
+        return get_herd().costs(days, str(params.get("project") or "") or None, bool(params.get("tasks")), own=own)
 
     def _herd_subagents(self, params: dict) -> dict:
         """The sub-agents a claude agent has running, from the transcript

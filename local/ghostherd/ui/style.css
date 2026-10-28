@@ -1513,6 +1513,20 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .thhead1 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .thh1 { margin: 0; font-size: 19px; font-weight: 650; overflow-wrap: anywhere; }
 .thsummary { margin: 0; color: var(--muted); font-size: 13px; }
+/* What a thread's task cost: in its row, under its summary, and lead mode
+   against direct mode above the list. */
+.thcost { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.thcostline { margin: 4px 0 0; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.thcosts { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.thcosts h2 { margin: 0; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--th-ask); }
+.thcds { display: inline-flex; gap: 4px; margin-left: auto; }
+.thcd { padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--muted); font: inherit; font-size: 11px; }
+.thcd.on { color: var(--text); border-color: var(--accent); }
+.thctable { border-collapse: collapse; font-size: 12px; max-width: 520px; }
+.thctable th, .thctable td { padding: 2px 12px 2px 0; text-align: right; white-space: nowrap; }
+.thctable th:first-child { text-align: left; font-weight: normal; color: var(--muted); }
+.thctable thead th { color: var(--muted); font-weight: normal; }
+.thctable td { font-family: var(--mono); }
 
 /* The sequence diagram: a lane per participant, a row per message. */
 .thdiagwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: #0f141b; }
@@ -1566,6 +1580,7 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 
 /* The phone: the list, then the thread as a conversation. */
 .threadspage.narrow .thtalk { padding: 0 2px 8px; }
+.threadspage.narrow .thcosts { padding: 0 2px 8px; overflow-x: auto; }
 .threadspage.narrow .thchips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
 .threadspage.narrow .thchip { flex: none; min-height: 44px; }
 .threadspage.narrow .thlist { max-width: none; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; flex: none; }

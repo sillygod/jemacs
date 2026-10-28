@@ -15436,6 +15436,48 @@ summary names \"user\" first and counts it."
     (should (equal (ghostherd-threads--with-opener (plist-put (copy-sequence sum) :rootFrom "nobody") prompts)
                    (plist-put (copy-sequence sum) :rootFrom "nobody")))))
 
+(ert-deftest ghostherd-test-threads-carry-what-a-task-cost ()
+  "The Threads tab gets what each thread's task cost and lead mode against
+direct mode (server/cost.py) as the sidecar said them: a week's and a
+month's comparison as an array -- an empty one too -- and a thread whose
+task is not known with none."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (shown reply
+        (ghostherd--log nil)
+        (ghostherd-threads--watching nil) (ghostherd-threads--timer nil)
+        (ghostherd-threads--limit 40) (ghostherd-threads--req nil)
+        (ghostherd-threads--sig nil) (ghostherd-threads--thread-sig nil))
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'run-at-time) (lambda (&rest _) 'a-timer))
+              ((symbol-function 'timerp) (lambda (x) (eq x 'a-timer)))
+              ((symbol-function 'cancel-timer) #'ignore)
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) shown)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok _params &optional _err)
+                 (when (equal method "herd_threads") (funcall ok reply)))))
+      (let ((week (list :days 7 :since "2026-10-22"
+                        :lead (list :tasks 2 :median 900 :total 1800 :per100 6000 :own 40)
+                        :direct (list :tasks 1 :median 700 :total 700 :per100 nil :own 100))))
+        (setq reply (list :threads (list (list :id "t1" :participants '("lead" "rd") :count 2
+                                               :cost (list :id "k1" :mode "lead" :total 1800 :own 700
+                                                           :workers 1000 :subs 100 :lines 30 :code "yes"))
+                                         (list :id "t2" :participants '("rd" "qa") :count 2 :cost nil))
+                          :talking nil :live 0 :more nil :costs (list week (plist-put (copy-sequence week) :days 30))))
+        (ghostherd-memory-page--handle '((op . "threads-watch")))
+        (let* ((sent (cdr (assoc "renderThreads" shown)))
+               (json (json-read-from-string (json-encode sent))))
+          (should (vectorp (plist-get sent :costs)))
+          (should (equal (mapcar (lambda (c) (alist-get 'days c)) (alist-get 'costs json)) '(7 30)))
+          (should (equal (alist-get 'per100 (alist-get 'direct (aref (alist-get 'costs json) 0))) nil))
+          (let ((threads (alist-get 'threads json)))
+            (should (equal (alist-get 'lines (alist-get 'cost (aref threads 0))) 30))
+            (should (null (alist-get 'cost (aref threads 1))))))
+        ;; No tasks yet: an empty array, not a missing key.
+        (setq shown nil ghostherd-threads--sig nil
+              reply (list :threads nil :talking nil :live 0 :more nil :costs nil))
+        (ghostherd-threads--tick)
+        (should (equal (plist-get (cdr (assoc "renderThreads" shown)) :costs) []))))))
+
 (ert-deftest ghostherd-test-threads-go-to-the-page-as-json ()
   "The reply reads false and [] as nil: the page gets them back as false
 and arrays, objects as objects."

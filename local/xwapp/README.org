@@ -431,6 +431,10 @@ it would on the phone.
 |                | its session: what it sends, held while the agent works, open    |
 |                | while it waits on its sub-agents --- =waiting= in its colour,   |
 |                | counted, and a run it asked in not yet done                     |
+| =herd-cost=    | what a thread's task cost on the Threads tab: its total and lines |
+|                | in its row, or not merged yet / no code; lead / workers /        |
+|                | sub-agents and per 100 lines under the open thread; lead mode    |
+|                | against direct mode above the list, 7 or 30 days; on a phone too |
 | =herd-tally=   | what each agent's replies cost, today and over seven days,      |
 |                | beside its context on its row and its column, the kinds in its  |
 |                | title; each project's in its head with its lead's share; none   |

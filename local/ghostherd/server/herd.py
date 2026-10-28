@@ -43,6 +43,8 @@ from pathlib import Path
 from typing import Any
 
 import projects
+import conversation
+import cost
 import subagents
 import tally
 import threads as threads_mod
@@ -267,6 +269,14 @@ USE_KINDS = ("ask", "opening", "recall")
 # reply's path, after it; the answer's mail to an asker not waiting holds
 # for it this long at most, then goes without.
 TRACE_HOLD = 3.0
+# What one task cost (cost.py): the days it is worked out for, how long a
+# working-out is kept, and how often -- and how many at a time -- the
+# work's commits are looked for in git.
+COST_DAYS = 30
+COST_KEEP = 30.0
+OUTPUT_EVERY = 60.0
+OUTPUT_MAX = 20
+
 # How long after its answer a grok taker's turn may end and still be the
 # turn the answer was given in, whose usage the ask's tokens wait for.
 GROK_TURN_WAIT = 1800
@@ -368,6 +378,30 @@ def _background(transcript: str | None) -> list[str]:
     return [f"{n} {what}{'' if n == 1 else 's'}" for n, what in counts if n]
 
 
+def _first_at(path: Path) -> float | None:
+    "When the conversation at PATH began: its first record's time."
+    try:
+        with path.open("rb") as f:
+            for line in f:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(o, dict) and o.get("timestamp"):
+                    return tally.epoch(o["timestamp"])
+    except OSError:
+        pass
+    return None
+
+
+def _size(path: Path) -> int:
+    "PATH's size, or 0."
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _mtime(path: str | None) -> float:
     "When PATH last changed, or 0."
     try:
@@ -404,6 +438,10 @@ class HerdStore:
         self._tallying = False
         self._tally_at = 0.0
         self._closed = False
+        # The tasks' costs as last worked out (`_cost_view'), and when; when
+        # their commits were last looked for (`_cost_output').
+        self._cost_seen: tuple[float, dict[str, Any]] | None = None
+        self._output_at = 0.0
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -780,6 +818,97 @@ class HerdStore:
             """
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS tally_days_by_day ON tally_days (day)")
+        # What one task cost, end to end (cost.py): each transcript the tally
+        # reads, read again on a cursor of its own -- the work its agent was
+        # on where it stopped -- and what each piece of work cost, by agent
+        # and whether a sub-agent wrote it.  A task is a prompt of the user's;
+        # `cost_links' says which work each ask was made for -- by the herd's
+        # record of it (`ask:ID'), or, that gone, by what its asker's client
+        # said (`said:ID') -- and each sub-agent's call (`call:ID');
+        # `cost_output' the commits each task
+        # (direct mode) or ask (lead mode) made, as [sha, lines, merged].
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_files (
+                path TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                project TEXT NOT NULL,
+                role TEXT,
+                cli TEXT NOT NULL,
+                directory TEXT,
+                offset INTEGER NOT NULL DEFAULT 0,
+                keys TEXT,
+                item TEXT,
+                read_at TEXT NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_usage (
+                item TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                sub INTEGER NOT NULL,
+                input INTEGER NOT NULL DEFAULT 0,
+                cache_write_5m INTEGER NOT NULL DEFAULT 0,
+                cache_write_1h INTEGER NOT NULL DEFAULT 0,
+                cache_read INTEGER NOT NULL DEFAULT 0,
+                output INTEGER NOT NULL DEFAULT 0,
+                replies INTEGER NOT NULL DEFAULT 0,
+                first_at REAL,
+                last_at REAL,
+                PRIMARY KEY (item, agent, sub)
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS cost_usage_by_last ON cost_usage (last_at)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_tasks (
+                id TEXT PRIMARY KEY,
+                agent TEXT NOT NULL,
+                project TEXT NOT NULL,
+                role TEXT,
+                mode TEXT NOT NULL,
+                cli TEXT,
+                prompt TEXT,
+                at REAL,
+                directory TEXT,
+                path TEXT
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS cost_tasks_by_at ON cost_tasks (at)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_links (
+                key TEXT PRIMARY KEY,
+                item TEXT NOT NULL
+            )
+            """
+        )
+        # When each agent's work switched, and to what: an ask the herd still
+        # keeps is the work its asker was on as it was made.
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_switches (
+                agent TEXT NOT NULL,
+                at REAL NOT NULL,
+                item TEXT
+            )
+            """
+        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS cost_switches_by_agent ON cost_switches (agent, at)")
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_output (
+                work TEXT PRIMARY KEY,
+                repo TEXT,
+                commits TEXT NOT NULL,
+                checked_at REAL NOT NULL
+            )
+            """
+        )
         self._conn.execute(
             "INSERT OR IGNORE INTO meta (k, v) VALUES ('uses_since', ?)",
             (datetime.now(timezone.utc).isoformat(),),
@@ -1892,8 +2021,14 @@ class HerdStore:
             snap = self._thread_snap()
         listed, more = threads_mod.summaries(list(by_id.values()), snap, limit)
         talking = threads_mod.talking(open_rows, snap, by_id)
+        # What the task each thread is part of cost (cost.py), and lead mode
+        # against direct mode over a week and a month.
+        view = self._cost_view()
+        for t in listed:
+            t["cost"] = self._thread_cost(t["id"], view)
         return {"threads": listed, "more": more, "talking": talking,
-                "live": len({t["thread"] for t in talking})}
+                "live": len({t["thread"] for t in talking}),
+                "costs": [self.costs(days)["compare"] for days in (7, 30)]}
 
     def thread(self, id: str | None = None, ask: str | None = None,
                agent: str | None = None) -> dict[str, Any]:
@@ -1923,7 +2058,9 @@ class HerdStore:
                 frontier = [k["id"] for k in kids if k["id"] not in rows]
                 rows.update({k["id"]: k for k in kids})
             snap = self._thread_snap()
-        return threads_mod.detail(root, list(rows.values()), snap)
+        out = threads_mod.detail(root, list(rows.values()), snap)
+        out["cost"] = self._thread_cost(root, self._cost_view())
+        return out
 
     def _close_ask(self, ask_id: str, status: str, now: str, error: str) -> None:
         "Caller holds `_mu`."
@@ -2145,7 +2282,10 @@ class HerdStore:
         commit, so nothing is counted twice, not even after a crash.  One
         pass at a time."""
         with self._tally_mu:
-            return self._tally_read(budget)
+            more = self._tally_read(budget)
+            more = self._cost_read(budget) or more
+            self._cost_output()
+            return more
 
     def _tally_read(self, budget: int) -> bool:
         "`_tally_pass', its lock held."
@@ -2291,6 +2431,315 @@ class HerdStore:
             rows = [dict(zip(cols, r)) for r in self._read_conn().execute(
                 f"SELECT {', '.join(cols)} FROM tally_days WHERE day >= ?", (first,))]
         return tally.summary(rows, today)
+
+    # ---- What one task cost (cost.py) ------------------------------------------
+
+    def _cost_read(self, budget: int) -> bool:
+        """`_tally_pass''s second reading: each file the tally reads, on a
+        cursor of its own (cost.Tracker) -- the work its agent was on, and
+        what each reply cost it.  A file the tally read before this was is
+        read from its start.  A sub-agent's after its parent's, whose call
+        to it says whose work it is.  True when a file has more than BUDGET
+        let this pass read.  Caller holds `_tally_mu'."""
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=tally.IDLE_DAYS)).isoformat()
+        with self._mu:
+            live = {r[0]: r[1] or "" for r in self._conn.execute("SELECT name, directory FROM snapshot")}
+            files = [dict(zip(("path", "agent", "project", "role", "cli"), r), tasks=True) for r in self._conn.execute(
+                "SELECT path, agent, project, role, cli FROM tally_files WHERE read_at >= ?", (cutoff,))]
+            gone = [r for r in self._conn.execute("SELECT session, transcript FROM links") if r[0] not in live]
+            cur = {r[0]: dict(zip(("offset", "keys", "item", "directory"), r[1:])) for r in self._conn.execute(
+                "SELECT path, offset, keys, item, directory FROM cost_files")}
+            links = dict(self._conn.execute("SELECT key, item FROM cost_links WHERE key LIKE 'call:%'"))
+        # An agent no longer in the herd, read for the asks it took: the work
+        # behind a task its lead is still costed for.  Its own words are no
+        # task -- its role and project are not known -- and only a
+        # conversation of the last COST_DAYS.
+        seen = {f["path"] for f in files}
+        for name, transcript in gone:
+            for path, cli in tally.files_of(transcript):
+                if str(path) not in seen and time.time() - _mtime(str(path)) < COST_DAYS * 86400:
+                    seen.add(str(path))
+                    files.append({"path": str(path), "agent": name, "project": "", "role": "", "cli": cli,
+                                  "tasks": False})
+        # Parents first: a sub-agent's work is its parent's call's.
+        files.sort(key=lambda f: "/subagents/" in f["path"])
+        usage: dict[tuple[str, str, int], list[Any]] = {}
+        tasks, new_links, done, switches, read = [], {}, [], [], set()
+        more, left = False, budget
+        for f in files:
+            path, c = f["path"], cur.get(f["path"]) or {"offset": 0, "keys": None, "item": None, "directory": None}
+            directory = live.get(f["agent"]) or c["directory"] or ""
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                continue
+            offset = c["offset"] or 0
+            if size < offset:
+                offset, c["keys"] = 0, None
+            if size == offset and path in cur:
+                continue
+            if left <= 0:
+                more = True
+                break
+            sub = "/subagents/agent-" in path
+            item = c["item"]
+            if sub and item is None:
+                parent = Path(path).parent.parent.with_suffix(".jsonl")
+                call = conversation.sub_meta(parent, Path(path).stem[len("agent-"):]).get("toolUseId")
+                item = new_links.get(f"call:{call}") or links.get(f"call:{call}")
+                if item is None:
+                    pc = cur.get(str(parent))
+                    behind = (pc is None or (pc["offset"] or 0) < _size(parent)) and str(parent) not in read
+                    if call and behind:
+                        continue   # its parent's call not read yet: next pass
+                    # No call to go by (an older claude wrote no meta): what
+                    # its parent was on as it began.
+                    item = self._cost_on(f["agent"], _first_at(Path(path)), switches)
+            try:
+                keys = json.loads(c["keys"]) if c["keys"] else ()
+            except ValueError:
+                keys = ()
+            t = cost.Tracker(path, f["cli"], item, keys, sub=sub, tasks=f["tasks"])
+            try:
+                end, rest = cost.read_from(Path(path), t, offset, left)
+            except OSError:
+                continue
+            left -= end - offset
+            more = more or rest
+            for (it, s), (u, first, last) in t.usage.items():
+                got = usage.setdefault((it, f["agent"], s), [tally.Usage(), None, None])
+                got[0].add(u)
+                got[1] = first if got[1] is None else got[1] if first is None else min(got[1], first)
+                got[2] = last if got[2] is None else got[2] if last is None else max(got[2], last)
+            mode = "lead" if (f["role"] or "") in cost.LEADS else "direct"
+            for task in t.tasks:
+                tasks.append((task["id"], f["agent"], f["project"], f["role"] or "", mode, f["cli"],
+                              task["prompt"], task["at"], directory, path))
+            new_links.update({"said:" + a: it for a, it in t.asked.items()})
+            new_links.update({"call:" + k: it for k, it in t.spawned.items()})
+            switches += [(f["agent"], at, it) for at, it in t.switches]
+            done.append((path, f, directory, end, json.dumps(list(t.counted.keys)), t.item))
+            read.add(path)
+        if not done:
+            return more
+        with self._mu:
+            for (it, agent, s), (u, first, last) in usage.items():
+                v = u.stored()
+                self._conn.execute(
+                    """
+                    INSERT INTO cost_usage (item, agent, sub, input, cache_write_5m, cache_write_1h,
+                      cache_read, output, replies, first_at, last_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (item, agent, sub) DO UPDATE SET
+                      input = input + excluded.input,
+                      cache_write_5m = cache_write_5m + excluded.cache_write_5m,
+                      cache_write_1h = cache_write_1h + excluded.cache_write_1h,
+                      cache_read = cache_read + excluded.cache_read,
+                      output = output + excluded.output, replies = replies + excluded.replies,
+                      first_at = MIN(COALESCE(first_at, excluded.first_at), COALESCE(excluded.first_at, first_at)),
+                      last_at = MAX(COALESCE(last_at, excluded.last_at), COALESCE(excluded.last_at, last_at))
+                    """,
+                    (it, agent, s, v["input"], v["cache_write_5m"], v["cache_write_1h"], v["cache_read"],
+                     v["output"], v["replies"], first, last),
+                )
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO cost_tasks (id, agent, project, role, mode, cli, prompt, at, directory, path)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tasks)
+            # The first word on an ask is its asker's: a later one is a quote.
+            self._conn.executemany("INSERT OR IGNORE INTO cost_links (key, item) VALUES (?, ?)",
+                                   list(new_links.items()))
+            self._conn.executemany("INSERT INTO cost_switches (agent, at, item) VALUES (?, ?, ?)", switches)
+            self._cost_asks()
+            for path, f, directory, end, keys, item in done:
+                self._conn.execute(
+                    """
+                    INSERT INTO cost_files (path, agent, project, role, cli, directory, offset, keys, item, read_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (path) DO UPDATE SET project = excluded.project, role = excluded.role,
+                      directory = excluded.directory, offset = excluded.offset, keys = excluded.keys,
+                      item = excluded.item, read_at = excluded.read_at
+                    """,
+                    (path, f["agent"], f["project"], f["role"] or "", f["cli"], directory, end, keys, item,
+                     now.isoformat()),
+                )
+            self._conn.commit()
+        self._cost_seen = None
+        return more
+
+    def _cost_on(self, agent: str, at: float | None, fresh: list[tuple[str, float, str | None]]) -> str | None:
+        "What AGENT was on AT: from its switches this pass (FRESH) or kept."
+        mine = sorted((w, it) for a, w, it in fresh if a == agent)
+        with self._mu:
+            kept = self._conn.execute("SELECT at, item FROM cost_switches WHERE agent = ? AND at <= ?"
+                                      " ORDER BY at DESC LIMIT 1", (agent, at or 0)).fetchall()
+        return cost.made_for(sorted(kept + mine), at)
+
+    def _cost_asks(self) -> None:
+        """Which work each ask the herd keeps was made for: the ask its asker
+        was answering (`parent'), else what its asker was on as it made it
+        -- once its asker's conversation has been read past that.  Kept
+        (`ask:ID'), so it outlives the ask's row.  Caller holds `_mu'."""
+        since = (datetime.now(timezone.utc) - timedelta(days=COST_DAYS)).isoformat()
+        for ask_id, asker, created, parent in self._conn.execute(
+                "SELECT id, from_name, created_at, parent FROM asks WHERE created_at >= ?"
+                " AND 'ask:' || id NOT IN (SELECT key FROM cost_links)", (since,)).fetchall():
+            item = "ask:" + parent if parent else None
+            at = tally.epoch(created)
+            if item is None and at is not None:
+                read = self._conn.execute("SELECT MAX(at) FROM cost_switches WHERE agent = ?", (asker,)).fetchone()[0]
+                last = self._conn.execute("SELECT MAX(last_at) FROM cost_usage WHERE agent = ?", (asker,)).fetchone()[0]
+                if max(read or 0, last or 0) < at:
+                    continue   # its asker not read that far yet
+                row = self._conn.execute("SELECT item FROM cost_switches WHERE agent = ? AND at <= ?"
+                                         " ORDER BY at DESC LIMIT 1", (asker, at)).fetchone()
+                item = row[0] if row else None
+            if item:
+                self._conn.execute("INSERT OR REPLACE INTO cost_links (key, item) VALUES (?, ?)",
+                                   ("ask:" + ask_id, item))
+
+    def _cost_output(self, force: bool = False) -> None:
+        """What the work made, read from git once it is over (cost.SETTLED
+        quiet, or its agent on other work since): a direct task's commits in
+        its agent's checkout, an ask's in its taker's -- or, the taker's
+        checkout gone, those in its project's main branch that name the ask.
+        Whether an ask's are merged is asked again until they are.  Once a
+        minute, a few at a time, on the tally's worker: never in a page's
+        way.  Caller holds `_tally_mu'."""
+        if not force and time.monotonic() - self._output_at < OUTPUT_EVERY:
+            return
+        self._output_at = time.monotonic()
+        now = time.time()
+        since = now - COST_DAYS * 86400
+        with self._mu:
+            had = {r[0]: (r[1], r[2], r[3]) for r in self._conn.execute(
+                "SELECT work, repo, commits, checked_at FROM cost_output")}
+            tasks = self._conn.execute(
+                "SELECT id, agent, directory, at FROM cost_tasks WHERE mode = 'direct' AND at >= ?", (since,)).fetchall()
+            spans = {}
+            for item, agent, first, last in self._conn.execute(
+                    "SELECT item, agent, first_at, last_at FROM cost_usage WHERE sub = 0 AND last_at >= ?"
+                    " AND (item LIKE 'task:%' OR item LIKE 'ask:%') ORDER BY replies", (since,)):
+                spans[item] = (agent, first, last)
+            on = {r[0]: r[1] for r in self._conn.execute("SELECT agent, item FROM cost_files WHERE item IS NOT NULL"
+                                                         " AND path NOT LIKE '%/subagents/%'")}
+            where = {r[0]: (r[1] or "", r[2] or "") for r in self._conn.execute(
+                "SELECT agent, directory, project FROM cost_files ORDER BY read_at")}
+            closed = {r[0] for r in self._conn.execute(
+                "SELECT id FROM asks WHERE status IN ('answered', 'failed', 'cancelled')")}
+            asked = {k.split(":", 1)[1]: v for k, v in self._conn.execute(
+                "SELECT key, item FROM cost_links WHERE key LIKE 'ask:%' OR key LIKE 'said:%' ORDER BY key DESC")}
+            homes = dict(self._conn.execute("SELECT id, project FROM cost_tasks"))
+        found: dict[str, tuple[str, list[list[Any]]]] = {}
+        budget = OUTPUT_MAX
+        # An ask's first: what a lead-mode task made is in them.
+        for work, (agent, first, last) in spans.items():
+            if not work.startswith("ask:") or work in had or budget <= 0:
+                continue
+            ask = work[4:]
+            if ask not in closed and now - last < cost.SETTLED:
+                continue
+            directory, project = where.get(agent, ("", ""))
+            # A taker no longer in the herd: its task's project's.
+            project = project or homes.get(cost.task_of(work, asked) or "", "")
+            repo, main = cost.checkout(directory), cost.checkout(project) or cost.checkout(directory)
+            if not (repo or main):
+                continue
+            budget -= 1
+            # Its checkout since moved on, or gone: the commits that name it.
+            commits = (cost.made(repo, first - 5, last) if repo else []) or (cost.naming(main, ask) if main else [])
+            ref = cost.main_branch(main) if main else None
+            found[work] = (main or repo, [c + [1 if cost.merged(main or repo, c[0], ref) else 0] for c in commits])
+        for tid, agent, directory, at in tasks:
+            work = "task:" + tid
+            span = spans.get(work)
+            if work in had or budget <= 0 or not span:
+                continue
+            if on.get(agent) == work and now - span[2] < cost.SETTLED:
+                continue
+            repo = cost.checkout(directory)
+            if repo:
+                budget -= 1
+                found[work] = (repo, [c + [1] for c in cost.made(repo, (at or span[1]) - 5, span[2])])
+        for work, (repo, commits, checked) in had.items():
+            if budget <= 0 or not work.startswith("ask:") or now - checked < OUTPUT_EVERY:
+                continue
+            listed = json.loads(commits)
+            if all(c[2] for c in listed) or not repo or now - checked > COST_DAYS * 86400:
+                continue
+            budget -= 1
+            ref = cost.main_branch(repo)
+            found[work] = (repo, [c[:2] + [1 if c[2] or cost.merged(repo, c[0], ref) else 0] for c in listed])
+        if not found:
+            return
+        with self._mu:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO cost_output (work, repo, commits, checked_at) VALUES (?, ?, ?, ?)",
+                [(w, repo, json.dumps(c), now) for w, (repo, c) in found.items()])
+            self._conn.commit()
+        self._cost_seen = None
+
+    def _cost_view(self) -> dict[str, Any]:
+        """Every task of the last COST_DAYS, costed (cost.costs), and which
+        work each ask was made for: worked out again COST_KEEP seconds after
+        the last time, or once a pass has read more.  Through the read-only
+        connection: never in an ask's way."""
+        seen = self._cost_seen
+        if seen and time.monotonic() - seen[0] < COST_KEEP:
+            return seen[1]
+        since = datetime.combine(date.today() - timedelta(days=COST_DAYS - 1), datetime.min.time()).timestamp()
+        tcols = ("id", "agent", "project", "role", "mode", "cli", "prompt", "at")
+        ucols = ("item", "agent", "sub") + tally.Usage.__slots__ + ("first_at", "last_at")
+        with self._read_mu:
+            conn = self._read_conn()
+            tasks = [dict(zip(tcols, r)) for r in conn.execute(
+                f"SELECT {', '.join(tcols)} FROM cost_tasks WHERE at >= ?", (since,))]
+            links = conn.execute("SELECT key, item FROM cost_links WHERE key LIKE 'ask:%' OR key LIKE 'said:%'"
+                                 " ORDER BY key DESC").fetchall()
+            # The herd's own record of an ask wins over what its client said.
+            asked = {k.split(":", 1)[1]: v for k, v in links}
+            usage = [dict(zip(ucols, r)) for r in conn.execute(
+                f"SELECT {', '.join(ucols)} FROM cost_usage WHERE last_at >= ?", (since,))]
+            commits = {w: json.loads(c) for w, c in conn.execute("SELECT work, commits FROM cost_output")}
+        view = {"tasks": cost.costs(tasks, usage, asked, commits), "asked": asked}
+        self._cost_seen = (time.monotonic(), view)
+        return view
+
+    def costs(self, days: int = 7, project: str | None = None, tasks: bool = False,
+              own: str | None = None) -> dict[str, Any]:
+        """Lead mode against direct mode over the last DAYS local days
+        (cost.compare) -- of PROJECT's tasks when given -- and, with TASKS,
+        each task, newest first.  OWN, for an agent's call: the project the
+        herd knows it in, whose tasks -- and the user's words that began
+        them -- are the only ones it is shown; the numbers are every
+        project's.  "" for a caller the herd does not know: numbers only.
+        None for Emacs and the page: everything."""
+        days = max(1, min(COST_DAYS, int(days)))
+        rows = list(self._cost_view()["tasks"].values())
+        if project:
+            rows = [r for r in rows if projects.same(r["project"], project)
+                    or projects.leaf(r["project"]) == projects.leaf(project)]
+        out: dict[str, Any] = {"compare": cost.compare(rows, days)}
+        if tasks:
+            since = out["compare"]["since"]
+            listed = sorted((r for r in rows if r["at"] and date.fromtimestamp(r["at"]).isoformat() >= since),
+                            key=lambda r: -(r["at"] or 0))
+            if own is not None:
+                mine = [r for r in listed if own and projects.same(r["project"], own)]
+                if len(mine) < len(listed):
+                    out["withheld"] = len(listed) - len(mine)
+                listed = mine
+            out["tasks"] = listed
+        return out
+
+    def _thread_cost(self, root: str, view: dict[str, Any]) -> dict[str, Any] | None:
+        "What the task thread ROOT is part of cost, as the Threads tab shows it; None when not known."
+        task = cost.task_of("ask:" + root, view["asked"])
+        row = view["tasks"].get(task) if task else None
+        if not row:
+            return None
+        keys = ("id", "agent", "mode", "prompt", "total", "own", "workers", "subs", "asks", "commits", "lines", "code")
+        return {k: row[k] for k in keys}
 
     def _sweep_uncollected(self, now: str) -> None:
         """Answers a waiting asker never collected go out as mail.

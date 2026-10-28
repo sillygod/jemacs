@@ -5025,7 +5025,8 @@
   // / renderThreads) and one thread at a time (thread-open / renderThread).
   // Phone: the list, then the thread as a conversation, "A → B".
 
-  let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false };
+  let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
+                  costs: [], costDays: 7 };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
@@ -5054,6 +5055,51 @@
     if (!m.trace) return "";
     return '<span class="thtrace' + (m.rough ? " rough" : "") + '">' + esc(m.trace) + "</span>" +
       (open && m.traceDetail ? '<span class="thtracedetail">' + esc(traceDetailText(m.traceDetail)) + "</span>" : "");
+  }
+
+  // ---- What a task cost ----------------------------------------------------
+  // A thread's task: the user's message that set it going and all it set
+  // off -- the lead's replies, its asks' takers', their sub-agents' -- in
+  // weighted tokens (the tally's unit), and the lines its commits changed,
+  // once merged.  Above the list, lead mode against direct mode.
+
+  const TASK_CODE = { no: "no code", unknown: "code not readable", unmerged: "not merged yet", pending: "code not read yet" };
+  function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
+  function taskTitle(c) {
+    return "Its task" + (c.prompt ? ": " + c.prompt : "") + "\n" + tokens(c.total) + " weighted tokens — " +
+      (c.mode === "lead" ? "the lead " : c.agent + " itself ") + tokens(c.own) + " · workers " + tokens(c.workers) +
+      " · sub-agents " + tokens(c.subs) + "\n" + c.asks + (c.asks === 1 ? " ask" : " asks") + " · " +
+      (c.code === "yes" ? c.lines + " lines changed in " + c.commits + (c.commits === 1 ? " commit" : " commits") : taskMade(c));
+  }
+  function thCost(c) {
+    if (!c) return "";
+    return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) + " · " + esc(taskMade(c)) + "</span>";
+  }
+  function thCostLine(c) {
+    if (!c) return "";
+    const per = c.code === "yes" && c.lines ? " · " + tokens(Math.round((c.total * 100) / c.lines)) + " per 100 lines" : "";
+    return '<p class="thcostline" title="' + esc(taskTitle(c)) + '">Its task: ' + esc(tokens(c.total)) + " weighted tokens — " +
+      (c.mode === "lead" ? "lead " : "itself ") + esc(tokens(c.own)) + " · workers " + esc(tokens(c.workers)) +
+      " · sub-agents " + esc(tokens(c.subs)) + " · " + esc(taskMade(c)) + esc(per) + "</p>";
+  }
+  function thCosts() {
+    const all = threads.costs || [];
+    const c = all.find((x) => x.days === threads.costDays) || all[0];
+    if (!c || !c.lead || !c.direct) return "";
+    const n = (v) => (v == null ? "—" : tokens(v));
+    const row = (label, a, b) => "<tr><th>" + esc(label) + "</th><td>" + esc(a) + "</td><td>" + esc(b) + "</td></tr>";
+    const L = c.lead, D = c.direct;
+    const days = all.map((x) => '<button type="button" class="thcd' + (x.days === c.days ? " on" : "") +
+      '" data-act="th:cost-days" data-days="' + x.days + '">' + x.days + " days</button>").join("");
+    return '<section class="thcosts" aria-label="What a task costs"><div class="thtalkhead"><h2>What a task costs</h2>' +
+      '<span class="thsub">through a lead, or told to an agent directly · weighted tokens · since ' + esc(c.since) + "</span>" +
+      '<span class="thcds">' + days + "</span></div>" +
+      '<table class="thctable"><thead><tr><th></th><th>lead mode</th><th>direct</th></tr></thead><tbody>' +
+      row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
+      row("total", n(L.total), n(D.total)) + row("per 100 lines", n(L.per100), n(D.per100)) +
+      row("lines changed", L.lines + " in " + L.coded, D.lines + " in " + D.coded) +
+      row("no code", String(L.noCode), String(D.noCode)) +
+      row("lead's own share", L.own == null ? "—" : L.own + "%", "—") + "</tbody></table></section>";
   }
 
   function threadsBadge() {
@@ -5117,7 +5163,7 @@
       '<span class="thage">' + esc(thAge(t.at)) + "</span></span>" +
       '<span class="thpath">' + esc((t.participants || []).map(thWho).join(" → ")) + "</span>" +
       '<span class="thr3">' + (t.projects || []).map((p) => '<span class="thproj">' + esc(p) + "</span>").join("") +
-      (t.cross ? '<span class="thcross">cross-project</span>' : "") +
+      (t.cross ? '<span class="thcross">cross-project</span>' : "") + thCost(t.cost) +
       '<span class="thcount">' + t.count + (t.count === 1 ? " message" : " messages") + "</span></span></button>";
   }
 
@@ -5202,7 +5248,7 @@
 
   function thHeader(t) {
     return '<div class="thhead1">' + thStatus(t.status) + '<h1 class="thh1">' + esc(t.title || "(no text)") + "</h1></div>" +
-      '<p class="thsummary">' + esc(thSummary(t)) + "</p>";
+      '<p class="thsummary">' + esc(thSummary(t)) + "</p>" + thCostLine(t.cost);
   }
 
   function thMain() {
@@ -5214,7 +5260,7 @@
   }
 
   function threadsDeskHtml() {
-    return thTalk() + '<div class="thbody">' + thList() + '<main class="thmain" aria-label="Thread">' + thMain() + "</main></div>";
+    return thTalk() + thCosts() + '<div class="thbody">' + thList() + '<main class="thmain" aria-label="Thread">' + thMain() + "</main></div>";
   }
 
   // The phone: the thread as a conversation, each message "A → B".  The
@@ -5242,7 +5288,7 @@
       return '<div class="thpback"><button type="button" class="ghost" data-act="th:back">← Threads</button></div>' +
         (t ? thHeader(t) + '<div class="thconv">' + thConv(t) + "</div>" : thMain());
     }
-    return thTalk() + thList();
+    return thTalk() + thCosts() + thList();
   }
 
   // A small text link to the full Threads tab, in the inline thread's header.
@@ -5271,6 +5317,9 @@
       else openThread(id ? { id } : { ask });
     } else if (act === "more") {
       emit("threads-more");
+    } else if (act === "cost-days") {
+      threads.costDays = +el.getAttribute("data-days") || 7;
+      renderThreads();
     } else if (act === "msg") {
       const i = el.getAttribute("data-i");
       threads.open[i] = !threads.open[i];
@@ -5300,6 +5349,7 @@
       threads.talking = (p && p.talking) || [];
       threads.live = (p && p.live) || 0;
       threads.more = !!(p && p.more);
+      threads.costs = (p && p.costs) || [];
       threadsBadge();
       if (view !== "threads") return;
       if (!threads.req && !thNarrow() && threads.list.length) openThread({ id: threads.list[0].id });
