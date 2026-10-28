@@ -15,8 +15,9 @@ silent for STALE is counted out, its parent likely gone with it.
 
 The shells and monitors an agent started in the background are read off
 its own conversation: begun where the call's result says so, ended where
-it was told -- a notice with a status, a monitor's expiry.  A monitor's
-events are not its end.  None is counted STALE after it began: a server
+it was told -- a notice with a status, a monitor's expiry -- or where it
+stopped one itself (TaskStop), of which it is told nothing more.  A
+monitor's events are not its end.  None is counted STALE after it began: a server
 left running, or a wait stuck, is not something it will be woken by.
 
 Each file is read as it grows, from where it was last read; the parent's
@@ -45,9 +46,20 @@ SLACK = 2.0
 CACHE_MAX = 256
 HANDBACK_TOOL = "SubagentHandback"
 TASK_ID = re.compile(r"<task-id>([A-Za-z0-9_-]{1,64})</task-id>")
-# What the Bash and Monitor tools answer, as Claude Code 2.1 says it.
-BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task )([A-Za-z0-9_-]{1,64})\b")
+# What the Bash and Monitor tools answer, as Claude Code 2.1 says it -- and
+# Bash for a call that ran past its timeout and was moved to the background
+# (46 here, 2026-10-28): a notification ends it, as any other.
+BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task |"
+                        r"Command did not complete within its \d+s timeout and was moved to the background \(ID: )"
+                        r"([A-Za-z0-9_-]{1,64})\b")
 EXPIRED = re.compile(r"\[Monitor expired after\b")
+# A task its parent stopped: TaskStop -- KillShell, KillBash before it --
+# after which Claude Code writes no task notification, only the call's
+# result: JSON whose message is "Successfully stopped task: ID (COMMAND)"
+# (52 read here, 2026-10-28), "Successfully killed shell: ID (...)" for
+# the older ones.  Each tool, and the input that names the task.
+STOP_TOOLS = {"TaskStop": "task_id", "KillShell": "shell_id", "KillBash": "shell_id"}
+STOPPED = re.compile(r"\ASuccessfully (?:stopped task|killed shell): ([A-Za-z0-9_-]{1,64})\b")
 
 # Agy sub-agent and background task markers in transcript.jsonl.
 AGY_SUB_ID = re.compile(r'"conversationId":\s*"([A-Za-z0-9_-]{1,64})"')
@@ -167,15 +179,21 @@ class Parent:
         self.follow = Follow(path, conv.TAIL_MAX)
         self.stopped: dict[str, float] = {}
         self.tasks: dict[str, dict[str, Any]] = {}
+        # Its stop calls (STOP_TOOLS) not yet answered: call id -> task id.
+        self.stopping: dict[str, str] = {}
 
     def look(self) -> None:
         lines, fresh = self.follow.look()
         if fresh:
             self.stopped.clear()
             self.tasks.clear()
+            self.stopping.clear()
         for line in lines:
             told = "<task-notification>" in line
-            if not (told or "Command running in background" in line or "Monitor started" in line):
+            stop = (any(t in line for t in STOP_TOOLS) or "Successfully stopped task" in line
+                    or "Successfully killed shell" in line or any(c in line for c in self.stopping))
+            if not (told or stop or "Command running in background" in line or "Monitor started" in line
+                    or "moved to the background" in line):
                 continue
             try:
                 o = json.loads(line)
@@ -184,6 +202,8 @@ class Parent:
             if told:
                 self._told(o, line)
             self._started(o)
+            if stop:
+                self._ended(o)
 
     def _told(self, o: dict[str, Any], line: str) -> None:
         at = conv._epoch(o.get("timestamp"))
@@ -216,6 +236,55 @@ class Parent:
             if m:
                 self.tasks[m.group(2)] = {"kind": "monitor" if m.group(1).startswith("Monitor") else "shell",
                                           "started": at}
+
+
+    def _ended(self, o: dict[str, Any]) -> None:
+        """A task it stopped itself (STOP_TOOLS): ended, and its parent told
+        so, once the call's result came back fine -- named by the call, or,
+        the call out of what was read, by the result's own words."""
+        msg = o.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            return
+        if o.get("type") == "assistant":
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in STOP_TOOLS:
+                    inp = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    tid = inp.get(STOP_TOOLS[b["name"]]) or inp.get("task_id") or inp.get("shell_id")
+                    if isinstance(tid, str) and tid and b.get("id"):
+                        self.stopping[str(b["id"])] = tid
+            return
+        if o.get("type") != "user":
+            return
+        at = conv._epoch(o.get("timestamp"))
+        for b in content:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                continue
+            tid = self.stopping.pop(str(b.get("tool_use_id")), None)
+            if b.get("is_error"):
+                continue
+            m = STOPPED.match(_stop_said(b.get("content")))
+            for t in {tid, m and m.group(1)} - {None}:
+                self.tasks.pop(t, None)
+                if at is not None and at > self.stopped.get(t, 0):
+                    self.stopped[t] = at
+
+
+def _stop_said(content: Any) -> str:
+    "What a stop call's result says: its JSON's message, or its text."
+    if isinstance(content, list):
+        content = "\n".join(t.get("text", "") for t in content if isinstance(t, dict))
+    if not isinstance(content, str):
+        return ""
+    text = content.strip()
+    if text.startswith("{"):
+        try:
+            said = json.loads(text)
+        except ValueError:
+            return text
+        if isinstance(said, dict) and isinstance(said.get("message"), str):
+            return said["message"]
+    return text
 
 
 def _said(o: dict[str, Any]) -> str:

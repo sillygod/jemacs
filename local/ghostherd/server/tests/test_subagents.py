@@ -486,6 +486,69 @@ def test_shells_and_monitors_run_until_told_they_ended(home):
     assert [t["id"] for t in subagents.tasks(str(p))] == ["bx4"]
 
 
+def stop(i, tid, seconds, tool="TaskStop", key="task_id", said="Successfully stopped task: %s (pytest -q)",
+         error=False):
+    """A stop call SECONDS ago and its result, as Claude Code writes them: no
+    task notification follows.  TaskStop's result is JSON (its message, the
+    task); KillShell's, before it, said "Successfully killed shell"."""
+    text = json.dumps({"message": said % tid, key: tid, "task_type": "local_bash", "command": "pytest -q"})
+    return [dict(a(use(i, tool, **{key: tid})), timestamp=ago_at(seconds)),
+            dict(u([result(i, text, **({"is_error": True} if error else {}))]),
+                 timestamp=ago_at(seconds), toolUseResult={"message": said % tid, key: tid})]
+
+
+def test_a_task_it_stopped_itself_has_ended(home):
+    """TaskStop -- KillShell before it -- ends the task it names once its
+    result comes back fine: Claude Code tells nothing more of it.  Not a
+    stop that failed, nor one only quoted (an api-request-blob)."""
+    p = parent(home, shell("t1", "bx1", 90) + shell("t2", "bx2", 80) + shell("t3", "bx3", 70)
+               + shell("t4", "bash_1", 60) + shell("t5", "bx5", 50)
+               + stop("s1", "bx1", 40)
+               + [{"type": "api-request-blob", "hash": "h", "sessionId": "x",
+                   "message": {"content": [use("s9", "TaskStop", task_id="bx2"),
+                                           result("s9", json.dumps({"message": "Successfully stopped task: bx2 (x)"}))]}}]
+               + stop("s3", "bx3", 30, said="No task found with ID: %s", error=True)
+               + stop("s4", "bash_1", 20, tool="KillShell", key="shell_id", said="Successfully killed shell: %s (sleep 100)"))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3", "bx5"]
+    # Its call read in an earlier look, its result -- in words not known --
+    # in this one: the call names it.
+    call, answer = stop("s5", "bx5", 10, said="Task %s is no more")
+    with p.open("a") as w:
+        w.write(lines([call]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3", "bx5"]
+    with p.open("a") as w:
+        w.write(lines([answer]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3"]
+    # Its call out of what was read: the result's own words name it.
+    with p.open("a") as w:
+        w.write(lines(stop("s6", "bx3", 5)[1:]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2"]
+
+
+def moved(i, bid, seconds, timeout=120):
+    """A Bash call SECONDS ago, not asked to run in the background, that ran
+    past its timeout: Claude Code moved it there, as it words it."""
+    return [dict(a(use(i, "Bash", command="pytest -q", description="Run the suite")), timestamp=ago_at(seconds)),
+            dict(u([result(i, "Command did not complete within its %ds timeout and was moved to the background "
+                              "(ID: %s). Output is being written to: /private/tmp/x/tasks/%s.output. You will be "
+                              "notified when it completes. To check interim output, use Read on that file path."
+                              % (timeout, bid, bid))]), timestamp=ago_at(seconds))]
+
+
+def test_a_call_moved_to_the_background_past_its_timeout_runs_until_told(home):
+    """A shell like any other: running until its notification -- or its
+    TaskStop -- so its agent waits on it rather than reading done."""
+    p = parent(home, moved("t1", "bmv1", 60) + moved("t2", "bmv2", 50, timeout=600))
+    assert [(t["id"], t["kind"]) for t in subagents.tasks(str(p))] == [("bmv1", "shell"), ("bmv2", "shell")]
+    assert herd_mod._background(str(p)) == ["2 shells"]
+    with p.open("a") as w:
+        w.write(lines([shell_ended("bmv1", "failed")]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bmv2"]
+    with p.open("a") as w:
+        w.write(lines(stop("s1", "bmv2", 5)))
+    assert subagents.tasks(str(p)) == [] and herd_mod._background(str(p)) == []
+
+
 def test_one_begun_an_hour_ago_is_not_waited_on(home):
     "A server left running, or a wait stuck: one ran 23 hours here (2026-10)."
     p = parent(home, shell("t1", "bx1", subagents.STALE + 5) + shell("t2", "bx2", 10))

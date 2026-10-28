@@ -80,8 +80,10 @@ FAILED_RUN = re.compile(r"\AExit code (\d+)\n")
 # without the `The'.  As this machine's transcripts have them (2026-10-26).
 GROK_EXIT = re.compile(r"\Aexit: (\d+)(?: \[truncated[^\n]*\])?(?:\n|\Z)")
 AGY_EXIT = re.compile(r"^(?:The c|C)ommand exited with code (\d+)\.$", re.M)
+# A call run in the background, and one moved there past its timeout.
 BACKGROUND = re.compile(
-    r"\ACommand running in background with ID: \S+? Output is being written to: (\S+?)\.?(?:\s|\Z)"
+    r"\A(?:Command running in background with ID: \S+?|Command did not complete within its \d+s timeout"
+    r" and was moved to the background \(ID: [^)\s]+\)\.) Output is being written to: (\S+?)\.?(?:\s|\Z)"
 )
 # Ends the output file -- though the reading command may print on after it.
 EXITED = re.compile(r"\n*^\[exited with code (\d+)\]$", re.M)
