@@ -525,6 +525,30 @@ def test_a_task_it_stopped_itself_has_ended(home):
     assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2"]
 
 
+def moved(i, bid, seconds, timeout=120):
+    """A Bash call SECONDS ago, not asked to run in the background, that ran
+    past its timeout: Claude Code moved it there, as it words it."""
+    return [dict(a(use(i, "Bash", command="pytest -q", description="Run the suite")), timestamp=ago_at(seconds)),
+            dict(u([result(i, "Command did not complete within its %ds timeout and was moved to the background "
+                              "(ID: %s). Output is being written to: /private/tmp/x/tasks/%s.output. You will be "
+                              "notified when it completes. To check interim output, use Read on that file path."
+                              % (timeout, bid, bid))]), timestamp=ago_at(seconds))]
+
+
+def test_a_call_moved_to_the_background_past_its_timeout_runs_until_told(home):
+    """A shell like any other: running until its notification -- or its
+    TaskStop -- so its agent waits on it rather than reading done."""
+    p = parent(home, moved("t1", "bmv1", 60) + moved("t2", "bmv2", 50, timeout=600))
+    assert [(t["id"], t["kind"]) for t in subagents.tasks(str(p))] == [("bmv1", "shell"), ("bmv2", "shell")]
+    assert herd_mod._background(str(p)) == ["2 shells"]
+    with p.open("a") as w:
+        w.write(lines([shell_ended("bmv1", "failed")]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bmv2"]
+    with p.open("a") as w:
+        w.write(lines(stop("s1", "bmv2", 5)))
+    assert subagents.tasks(str(p)) == [] and herd_mod._background(str(p)) == []
+
+
 def test_one_begun_an_hour_ago_is_not_waited_on(home):
     "A server left running, or a wait stuck: one ran 23 hours here (2026-10)."
     p = parent(home, shell("t1", "bx1", subagents.STALE + 5) + shell("t2", "bx2", 10))

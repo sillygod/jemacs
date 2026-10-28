@@ -211,6 +211,22 @@ def test_an_ask_in_the_background_is_answered_from_its_output(home):
     assert (e["answer"], "waiting" in e) == ("All green.", False)
 
 
+def test_an_ask_moved_to_the_background_past_its_timeout_too(home):
+    "A `herd ask --wait' the Bash call's timeout moved there: answered from its output all the same."
+    ask = "\"$GHOSTHERD_HERD\" ask qa --wait <<'EOF'\nTest round 2.\nEOF"
+    moved = ("Command did not complete within its 120s timeout and was moved to the background (ID: b0x). "
+             "Output is being written to: " + OUT + ". You will be notified when it completes. To check interim "
+             "output, use Read on that file path.")
+    records = [a("m1", use("t1", "Bash", command=ask)), u([result("t1", moved)])]
+    entry = lambda: next(x for x in conv.read(_claude_file(home, records))["entries"] if x["role"] == "herd")
+    assert entry()["waiting"] is True and "answer" not in entry()
+    records += [a("m2", use("t2", "Read", file_path=OUT)),
+                u([result("t2", "     1→herd: asked qa (ask 26910956), round 2 of 4\n     2→All green.\n     3→\n"
+                                "     4→[exited with code 0]")])]
+    e = entry()
+    assert (e["answer"], e["ask"], "waiting" in e) == ("All green.", "26910956", False)
+
+
 def test_what_became_of_an_ask(home):
     def ran(i, cmd, out, error=False, bg=False):
         return [a("m" + i, use(i, "Bash", command=cmd, run_in_background=bg)),

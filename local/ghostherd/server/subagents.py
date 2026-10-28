@@ -46,8 +46,12 @@ SLACK = 2.0
 CACHE_MAX = 256
 HANDBACK_TOOL = "SubagentHandback"
 TASK_ID = re.compile(r"<task-id>([A-Za-z0-9_-]{1,64})</task-id>")
-# What the Bash and Monitor tools answer, as Claude Code 2.1 says it.
-BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task )([A-Za-z0-9_-]{1,64})\b")
+# What the Bash and Monitor tools answer, as Claude Code 2.1 says it -- and
+# Bash for a call that ran past its timeout and was moved to the background
+# (46 here, 2026-10-28): a notification ends it, as any other.
+BACKGROUND = re.compile(r"\A(Command running in background with ID: |Monitor started \(task |"
+                        r"Command did not complete within its \d+s timeout and was moved to the background \(ID: )"
+                        r"([A-Za-z0-9_-]{1,64})\b")
 EXPIRED = re.compile(r"\[Monitor expired after\b")
 # A task its parent stopped: TaskStop -- KillShell, KillBash before it --
 # after which Claude Code writes no task notification, only the call's
@@ -188,7 +192,8 @@ class Parent:
             told = "<task-notification>" in line
             stop = (any(t in line for t in STOP_TOOLS) or "Successfully stopped task" in line
                     or "Successfully killed shell" in line or any(c in line for c in self.stopping))
-            if not (told or stop or "Command running in background" in line or "Monitor started" in line):
+            if not (told or stop or "Command running in background" in line or "Monitor started" in line
+                    or "moved to the background" in line):
                 continue
             try:
                 o = json.loads(line)
