@@ -486,6 +486,45 @@ def test_shells_and_monitors_run_until_told_they_ended(home):
     assert [t["id"] for t in subagents.tasks(str(p))] == ["bx4"]
 
 
+def stop(i, tid, seconds, tool="TaskStop", key="task_id", said="Successfully stopped task: %s (pytest -q)",
+         error=False):
+    """A stop call SECONDS ago and its result, as Claude Code writes them: no
+    task notification follows.  TaskStop's result is JSON (its message, the
+    task); KillShell's, before it, said "Successfully killed shell"."""
+    text = json.dumps({"message": said % tid, key: tid, "task_type": "local_bash", "command": "pytest -q"})
+    return [dict(a(use(i, tool, **{key: tid})), timestamp=ago_at(seconds)),
+            dict(u([result(i, text, **({"is_error": True} if error else {}))]),
+                 timestamp=ago_at(seconds), toolUseResult={"message": said % tid, key: tid})]
+
+
+def test_a_task_it_stopped_itself_has_ended(home):
+    """TaskStop -- KillShell before it -- ends the task it names once its
+    result comes back fine: Claude Code tells nothing more of it.  Not a
+    stop that failed, nor one only quoted (an api-request-blob)."""
+    p = parent(home, shell("t1", "bx1", 90) + shell("t2", "bx2", 80) + shell("t3", "bx3", 70)
+               + shell("t4", "bash_1", 60) + shell("t5", "bx5", 50)
+               + stop("s1", "bx1", 40)
+               + [{"type": "api-request-blob", "hash": "h", "sessionId": "x",
+                   "message": {"content": [use("s9", "TaskStop", task_id="bx2"),
+                                           result("s9", json.dumps({"message": "Successfully stopped task: bx2 (x)"}))]}}]
+               + stop("s3", "bx3", 30, said="No task found with ID: %s", error=True)
+               + stop("s4", "bash_1", 20, tool="KillShell", key="shell_id", said="Successfully killed shell: %s (sleep 100)"))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3", "bx5"]
+    # Its call read in an earlier look, its result -- in words not known --
+    # in this one: the call names it.
+    call, answer = stop("s5", "bx5", 10, said="Task %s is no more")
+    with p.open("a") as w:
+        w.write(lines([call]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3", "bx5"]
+    with p.open("a") as w:
+        w.write(lines([answer]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2", "bx3"]
+    # Its call out of what was read: the result's own words name it.
+    with p.open("a") as w:
+        w.write(lines(stop("s6", "bx3", 5)[1:]))
+    assert [t["id"] for t in subagents.tasks(str(p))] == ["bx2"]
+
+
 def test_one_begun_an_hour_ago_is_not_waited_on(home):
     "A server left running, or a wait stuck: one ran 23 hours here (2026-10)."
     p = parent(home, shell("t1", "bx1", subagents.STALE + 5) + shell("t2", "bx2", 10))
