@@ -350,3 +350,69 @@ def test_work_not_over_has_its_commits_read_later(home, tmp_path):
     tasks = counted(h)
     assert tasks["And a readiness check."]["code"] == "pending"
     assert h.costs(7)["compare"]["direct"]["pending"] == 1
+
+
+# ---- Who may read the tasks -----------------------------------------------------------
+
+
+def _costs(client, token, **params):
+    resp = client.post("/jsonrpc/" + token, json={"jsonrpc": "2.0", "id": 1, "method": "herd_costs",
+                                                  "params": dict({"days": 7, "tasks": True}, **params)})
+    assert resp.status_code == 200
+    return resp.json()["result"]
+
+
+def test_an_agent_reads_its_own_projects_tasks_and_every_projects_numbers(home, tmp_path, monkeypatch):
+    """`herd cost' from an agent: the numbers of every project -- a lead
+    compares with direct mode elsewhere -- but the tasks, and the user's
+    words that began them, of its own project only, the one the herd knows
+    it in; a project it names is no way round that.  A caller the herd does
+    not know reads no task; the herd's own token (Emacs, the page) all."""
+    from fastapi.testclient import TestClient
+    from engine import reset_engine
+    from main import app
+    reset_engine()
+    # The herd of herd_at_work, in the store the sidecar serves.
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path))
+    built, _, dp = herd_at_work(home, tmp_path)
+    built.close()
+    reset_herd()
+    solo = str(tmp_path / "solo") + "/"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        counted(herd_mod.get_herd())
+        admin, agent = client.app.state.token, client.app.state.agent_token
+        prompts = lambda out: sorted(t["prompt"] for t in out["tasks"])
+        everything = _costs(client, admin)
+        assert prompts(everything) == ["Add a health check.", "Fix the build, please.", "Now push it.",
+                                       "Unrelated: how is the weather?"] and "withheld" not in everything
+        # The lead: its project's tasks; every project's numbers.
+        lead = _costs(client, agent, **{"from": LEAD})
+        assert prompts(lead) == ["Fix the build, please.", "Unrelated: how is the weather?"]
+        assert lead["withheld"] == 2 and lead["compare"] == everything["compare"]
+        assert lead["compare"]["direct"]["tasks"] == 2
+        # Another project named: its numbers, none of its words.
+        other = _costs(client, agent, project=solo, **{"from": LEAD})
+        assert other["tasks"] == [] and other["withheld"] == 2 and other["compare"]["direct"]["total"] == 760
+        # The direct agent, likewise, the other way round.
+        assert prompts(_costs(client, agent, **{"from": SOLO})) == ["Add a health check.", "Now push it."]
+        # A caller the herd does not know -- a plain shell, or a name it
+        # made up: numbers only.
+        for who in ({}, {"from": "user"}, {"from": "nobody-here"}):
+            out = _costs(client, agent, **who)
+            assert out["tasks"] == [] and out["withheld"] == 4 and out["compare"]["lead"]["tasks"] == 2
+        # Saying it is the herd in the call changes nothing: the token does.
+        assert _costs(client, agent, role="admin", **{"from": "nobody-here"})["tasks"] == []
+    reset_herd()
+    reset_engine()
+
+
+def test_herd_cost_says_what_it_left_out(home, live):  # noqa: F811
+    "The CLI names its caller, and says the rest of the tasks are another project's."
+    h = herd_mod.get_herd()
+    h._cost_seen = (float("inf"), {"asked": {}, "tasks": {
+        "k1": {"id": "k1", "agent": "lead-x", "project": "/elsewhere/", "mode": "lead", "prompt": "secret plans",
+               "at": NOW.timestamp(), "end": NOW.timestamp(), "total": 10, "own": 10, "workers": 0, "subs": 0,
+               "kinds": {}, "asks": 0, "commits": 0, "lines": 0, "code": "no"}}})
+    out = run(live, "cost", "--tasks")
+    assert out.returncode == 0, out.stderr
+    assert "secret plans" not in out.stdout and "1 more task" in out.stdout

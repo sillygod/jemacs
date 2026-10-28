@@ -57,8 +57,10 @@ in its answer to its lead, which hands it off.
 read 0.1, cache write 1.25 or 2, output 5), through a lead and talking to
 an agent directly, over the last N local days (7; at most 30): the
 tasks, the median and total per task, the tokens per 100 changed lines,
-and the lead's own share.  A task is one message of the user's and what
-it set off; `--tasks' lists each, newest first.
+and the lead's own share -- of every project, or of --project P.  A task
+is one message of the user's and what it set off; `--tasks' lists each,
+newest first: your own project's only, which the herd knows you in --
+another's tasks, and the user's words in them, are not yours to read.
 
 `reply' stores the answer and says so at once.  When your work on that
 ask went rough -- many failed calls, denials, asks to one agent -- it
@@ -498,7 +500,7 @@ def _tokens(n):
 def cmd_cost(args):
     """Lead mode against direct mode: what a task costs, over the last
     --days local days; --tasks lists each task."""
-    out = rpc("herd_costs", {"days": args.days, "project": args.project or "", "tasks": args.tasks})
+    out = rpc("herd_costs", {"days": args.days, "project": args.project or "", "tasks": args.tasks, "from": me()})
     if args.json:
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
@@ -529,6 +531,9 @@ def cmd_cost(args):
         print("\n%s  %-6s %s  %s (own %s, workers %s, sub-agents %s)  %s\n  %s" % (
             when, t["mode"], t["agent"], _tokens(t["total"]), _tokens(t["own"]), _tokens(t["workers"]),
             _tokens(t["subs"]), made, t["prompt"][:100]))
+    if out.get("withheld"):
+        print("\n(%d more task%s: an agent is shown its own project's tasks only -- the rest are in the "
+              "numbers above, and on the herd page)" % (out["withheld"], "" if out["withheld"] == 1 else "s"))
     return 0
 
 

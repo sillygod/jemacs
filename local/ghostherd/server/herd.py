@@ -2705,10 +2705,15 @@ class HerdStore:
         self._cost_seen = (time.monotonic(), view)
         return view
 
-    def costs(self, days: int = 7, project: str | None = None, tasks: bool = False) -> dict[str, Any]:
+    def costs(self, days: int = 7, project: str | None = None, tasks: bool = False,
+              own: str | None = None) -> dict[str, Any]:
         """Lead mode against direct mode over the last DAYS local days
         (cost.compare) -- of PROJECT's tasks when given -- and, with TASKS,
-        each task, newest first."""
+        each task, newest first.  OWN, for an agent's call: the project the
+        herd knows it in, whose tasks -- and the user's words that began
+        them -- are the only ones it is shown; the numbers are every
+        project's.  "" for a caller the herd does not know: numbers only.
+        None for Emacs and the page: everything."""
         days = max(1, min(COST_DAYS, int(days)))
         rows = list(self._cost_view()["tasks"].values())
         if project:
@@ -2717,8 +2722,14 @@ class HerdStore:
         out: dict[str, Any] = {"compare": cost.compare(rows, days)}
         if tasks:
             since = out["compare"]["since"]
-            out["tasks"] = sorted((r for r in rows if r["at"] and date.fromtimestamp(r["at"]).isoformat() >= since),
-                                  key=lambda r: -(r["at"] or 0))
+            listed = sorted((r for r in rows if r["at"] and date.fromtimestamp(r["at"]).isoformat() >= since),
+                            key=lambda r: -(r["at"] or 0))
+            if own is not None:
+                mine = [r for r in listed if own and projects.same(r["project"], own)]
+                if len(mine) < len(listed):
+                    out["withheld"] = len(listed) - len(mine)
+                listed = mine
+            out["tasks"] = listed
         return out
 
     def _thread_cost(self, root: str, view: dict[str, Any]) -> dict[str, Any] | None:

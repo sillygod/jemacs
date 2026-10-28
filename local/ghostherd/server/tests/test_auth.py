@@ -209,7 +209,8 @@ def _stubbed(monkeypatch):
     what is tested, and the real ones would act on this machine (import
     every transcript, migrate claude's memory dirs)."""
     for name in list(handler._methods):
-        monkeypatch.setitem(handler._methods, name, lambda _params, n=name: {"ran": n})
+        # A method told who calls it (ROLE_METHODS) takes the role after its params.
+        monkeypatch.setitem(handler._methods, name, lambda _params, *_role, n=name: {"ran": n})
 
 
 def test_the_agents_token_cannot_call_the_herds_own(tmp_path: Path, monkeypatch):

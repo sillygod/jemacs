@@ -2586,7 +2586,11 @@ projects.  Read-only: it only shows, and leads where you click.
   it would flatter the one that only committed), the lines and the
   tasks they came in, those with no code, and the lead's own share.
   =herd cost [--days N] [--project P] [--tasks]= prints the same, and
-  with =--tasks= each task, newest first --- an agent may run it.
+  with =--tasks= each task, newest first --- an agent may run it.  An
+  agent sees every project's numbers, but the tasks --- your words that
+  began each --- of its own project only, the one the herd knows it in
+  (never one it names, as =herd search=); one the herd does not know,
+  none; Emacs and the page, all.
 
   How the sidecar works it out (=server/cost.py=).  It reads each
   transcript the tally reads again, on a cursor of its own: every reply
