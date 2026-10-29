@@ -89,10 +89,11 @@ ROLE_RULE = "\n---\n"
 # spaces aside (test_cost checks it).
 OPENINGS = ("A herd guard checks each of your tool calls.",
             "The herd keeps shared memory for this project --")
-# How many times the rules that tell the herd's words from the user's
-# changed: tasks kept by an earlier reading are read again (herd.py
-# `_cost_recheck').
-SAID_VERSION = 2
+# How many times the rules that tell the herd's words from the user's, or
+# what of them a task keeps as its title (`title'), changed: tasks kept by
+# an earlier reading are read again (herd.py `_cost_recheck').  3: the
+# title is the words whole, no longer their first line.
+SAID_VERSION = 3
 PROMPT_MAX = 200
 # A prompt this wide at most, its whole text -- a go-ahead, "好，派人做吧",
 # "yes merge please" -- says little of what its task is: it is shown with
@@ -147,6 +148,14 @@ def said(text: str | None) -> tuple[str, str] | None:
 def width(text: str) -> int:
     "The columns TEXT takes, its spacing collapsed: a wide character, two."
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in " ".join(text.split()))
+
+
+def title(text: str) -> str:
+    """A task's title: the user's words whole, in one line, cut to
+    PROMPT_MAX.  Not their first line: that may be only an image's
+    stand-in ("[Image #5]") or the head of a paste, with what is asked
+    after it."""
+    return conversation.one_line(text, PROMPT_MAX)
 
 
 def _agy_text(o: dict[str, Any]) -> str:
@@ -224,7 +233,7 @@ class Tracker:
         if kind == "user" and self.tasks_ok:
             tid = task_id(self.path, ref)
             self.item = "task:" + tid
-            self.tasks.append({"id": tid, "at": when, "prompt": conversation.first_line(what, PROMPT_MAX),
+            self.tasks.append({"id": tid, "at": when, "prompt": title(what),
                                "offset": self.at, "size": width(what)})
         elif kind == "user":
             self.item = None
@@ -491,7 +500,7 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
 
 def contexts(tasks: list[dict[str, Any]]) -> dict[str, str]:
     """For each of TASKS whose prompt is short (`SHORT', by its `size',
-    else its first line's), the prompt of the last task before it to the
+    else its title's), the prompt of the last task before it to the
     same agent in the same project that is not -- else of the last one --
     cut to CONTEXT_MAX: by id."""
     out: dict[str, str] = {}

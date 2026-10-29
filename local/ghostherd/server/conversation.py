@@ -146,6 +146,11 @@ def first_line(text: str, limit: int = HINT_MAX) -> str:
     return line if len(line) <= limit else line[: limit - 1].rstrip() + "…"
 
 
+def one_line(text: str, limit: int = HINT_MAX) -> str:
+    "TEXT whole, its spacing collapsed into one line, cut to LIMIT."
+    return first_line(" ".join((text or "").split()), limit)
+
+
 def locate(path: str) -> tuple[Path, str]:
     """PATH, resolved, and the CLI that wrote it; ValueError otherwise."""
     try:
@@ -809,8 +814,9 @@ def _said(item: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def turn(path: str, name: str, prompt: str, offset: int | None = None,
          width: int = 200) -> dict[str, Any] | None:
-    """What the user said to NAME -- the prompt whose first line is PROMPT
-    (WIDTH of it, cost.PROMPT_MAX), at byte OFFSET of transcript PATH when known --
+    """What the user said to NAME -- the prompt whose words, in one line,
+    are PROMPT (WIDTH of them, cost.PROMPT_MAX; its first line, as tasks
+    were titled before), at byte OFFSET of transcript PATH when known --
     and the reply that ended the turn it began, as {prompt, reply}, each
     {text, at}: read on from OFFSET a window at a time, up to TAIL_MAX,
     until what set NAME other work; else the last such prompt in the tail.
@@ -824,7 +830,8 @@ def turn(path: str, name: str, prompt: str, offset: int | None = None,
         return _chat_items(name, thread.entries, {}, set())
 
     def ours(it):
-        return it["kind"] == "prompt" and first_line(it.get("text") or "", width) == prompt
+        text = it.get("text") or ""
+        return it["kind"] == "prompt" and prompt in (one_line(text, width), first_line(text, width))
 
     if offset is not None:
         window = TAIL_BYTES

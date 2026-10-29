@@ -704,10 +704,12 @@ def old_rules_herd(home, tmp_path, monkeypatch):
     monkeypatch.setattr(cost, "OPENINGS", ())
     monkeypatch.setattr(cost, "ROLES", ())
     monkeypatch.setattr(conversation, "LEAD_NOTE", re.compile(OLD_NOTE, re.S | re.M))
+    monkeypatch.setattr(cost, "title", old_title)
     old = counted(h)
     monkeypatch.setattr(cost, "OPENINGS", OPENINGS)
     monkeypatch.setattr(cost, "ROLES", ROLES)
     monkeypatch.setattr(conversation, "LEAD_NOTE", LEAD_NOTE)
+    monkeypatch.setattr(cost, "title", TITLE)
     with h._mu:   # a store from before the rules were versioned
         h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_said%'")
         h._conn.commit()
@@ -717,7 +719,12 @@ def old_rules_herd(home, tmp_path, monkeypatch):
 
 import conversation as _conversation  # noqa: E402
 
-OPENINGS, ROLES, LEAD_NOTE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE
+OPENINGS, ROLES, LEAD_NOTE, TITLE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE, cost.title
+
+
+def old_title(text):
+    "A task's title by the rules before SAID_VERSION 3: its first line."
+    return _conversation.first_line(text, cost.PROMPT_MAX)
 
 
 def test_tasks_kept_by_older_rules_are_read_again(home, tmp_path, monkeypatch):
@@ -810,6 +817,64 @@ def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
                    "c": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX), "g": "看這個錯誤"}
     assert len(got["b"]) <= cost.CONTEXT_MAX and got["b"].endswith("…")
     assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
+
+
+def test_a_title_is_the_users_words_whole(tmp_path):
+    """A task's title is what the user said, whole, in one line -- not its
+    first line, which may be only an image's stand-in or a paste's head --
+    cut to PROMPT_MAX; how wide it is, as before, is the whole text's."""
+    words = "The footer overlaps the menu on narrow screens; move it below the fold."
+    paste = "  ✓ rd-x · x\n    3 asks open\n\nWhy does the count say 3 here?"
+    long = " ".join(["word"] * 80)
+    f = Path(_write(tmp_path / "t.jsonl", [
+        you([{"type": "text", "text": "[Image #5]\n" + words}, {"type": "image", "source": {"type": "base64", "data": ""}}],
+            at(30)),
+        you(paste, at(20)), you(long, at(10))]))
+    t = cost.Tracker(str(f), "claude", None)
+    cost.read_from(f, t, 0, 1 << 20)
+    assert [x["prompt"] for x in t.tasks] == ["[Image #5] " + words, "✓ rd-x · x 3 asks open Why does the count say 3 here?",
+                                              long[:cost.PROMPT_MAX - 1].rstrip() + "…"]
+    assert [x["size"] for x in t.tasks] == [cost.width("[Image #5]\n" + words), cost.width(paste), len(long)]
+    assert cost.title("[Image #5]") == "[Image #5]"
+
+
+def test_tasks_titled_by_their_first_line_are_titled_again(home, tmp_path, monkeypatch):
+    """The live case (2026-10-29): a prompt that opens with an image was
+    titled "[Image #5]", and the go-ahead after it went on from that.  The
+    tasks kept are read again (SAID_VERSION 3) and take their words whole
+    -- the go-ahead goes on from them -- the store backed up first, the
+    commits as they were.  A direct task's thread finds its words by either
+    title."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    words = "The footer overlaps the menu on narrow screens; move it below the fold."
+    told(h, SOLO, "[Image #5]\n" + words, 70, [69, 60])
+    told(h, SOLO, "好，照你的建議做", 55, [54])
+    monkeypatch.setattr(cost, "title", old_title)
+    old = counted(h)
+    monkeypatch.setattr(cost, "title", TITLE)
+    assert old["好，照你的建議做"]["context"] == "[Image #5]"
+    with h._mu:
+        tid = h._conn.execute("SELECT id FROM cost_tasks WHERE prompt = '[Image #5]'").fetchone()[0]
+        commits = h._cost_census()
+    # Kept by the first line, found by it all the same.
+    assert h.thread(id="task:" + tid)["msgs"][0]["text"] == "[Image #5]\n" + words
+    with h._mu:   # as a store kept by the rules before
+        h._conn.execute("UPDATE meta SET v = '2' WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    new = counted(h)
+    assert set(new) == set(old) - {"[Image #5]"} | {"[Image #5] " + words}
+    assert new["好，照你的建議做"]["context"] == cost.conversation.first_line("[Image #5] " + words, cost.CONTEXT_MAX)
+    assert new["[Image #5] " + words]["own"] == old["[Image #5]"]["own"]
+    with h._mu:
+        assert h._cost_census() == commits
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == ("3",)
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert (report["ok"], report["retitled"], report["unmade"], report["moved"]) == (True, 1, 0, 0)
+    assert Path(report["backup"]).exists()
+    t = h.thread(id="task:" + tid)
+    assert [(m["from"], m["text"]) for m in t["msgs"]] == [("user", "[Image #5]\n" + words), (SOLO, "block 0")]
+    assert t["title"].startswith("[Image #5] The footer")
 
 
 def test_the_median_of_the_tasks_that_changed_code(home, tmp_path):

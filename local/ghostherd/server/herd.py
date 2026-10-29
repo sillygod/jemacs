@@ -2705,13 +2705,13 @@ class HerdStore:
 
     def _cost_recheck(self) -> None:
         """The tasks kept, read again by the rules that tell the user's words
-        from the herd's as they are now (cost.SAID_VERSION) -- once each
-        time they change, before the pass reads on.  A task whose words are
-        now the herd's is none: what it cost goes to the work its agent was
-        on before them, as a reading now would count it (`_cost_unmake'),
-        and one whose words read otherwise now takes them as its prompt.  A
-        task whose file no longer has its words is judged by the first line
-        kept of them.  The commits kept are not touched: they cannot be
+        from the herd's, and what of them is a task's title, as they are now
+        (cost.SAID_VERSION) -- once each time they change, before the pass
+        reads on.  A task whose words are now the herd's is none: what it
+        cost goes to the work its agent was on before them, as a reading now
+        would count it (`_cost_unmake'), and one whose words read otherwise
+        now takes them as its prompt.  A task whose file no longer has its
+        words is judged by the title kept of them, and keeps it.  The commits kept are not touched: they cannot be
         read again.
 
         First a backup of the store, beside it in backups/; then each task

@@ -279,7 +279,7 @@ def direct_detail(task: dict[str, Any], said: dict[str, Any] | None, snap: dict[
                   on: bool) -> dict[str, Any]:
     """TASK whole: its lanes, the user's words and -- SAID
     (conversation.turn) has it -- the reply that ended their turn.  Read
-    from nowhere, the first line kept with the task."""
+    from nowhere, the title kept with the task."""
     out = direct(task, snap, on)
     agent = task["agent"]
     said = said or {}
