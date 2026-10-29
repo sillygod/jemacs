@@ -855,3 +855,102 @@ def test_herd_cost_shows_the_median_per_coded_task_and_what_a_go_ahead_goes_on_f
     assert any(l.split()[:4] == ["median", "per", "coded", "task"] and l.split()[4] == "8.7M" for l in lines), out.stdout
     assert any(l.split()[:3] == ["median", "per", "task"] and l.split()[3] == "40k" for l in lines), out.stdout
     assert "  好，派人做吧 ← Fold the reports of one file" in lines
+
+
+# ---- Two commits made in one second ---------------------------------------------------
+
+
+def two_in_one_second(home, tmp_path):
+    """A direct agent's two commits in one second -- 500 lines and 10 --
+    rebased and merged into master: two copies of the same author and
+    author date."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    solo = tmp_path / "solo"
+    told(h, SOLO, "Add the parser and its test.", 70, [69, 45])
+    git(solo, "switch", "-q", "-c", "parser", when=at(68))
+    a = commit(solo, "parser.py", 500, at(66), message="feat: the parser")
+    b = commit(solo, "test_parser.py", 10, at(66), message="test: the parser")
+    b2 = rewrite(solo, "rebase", "-q", "--force-rebase", "master", "parser", when=at(58))
+    a2 = git(solo, "rev-parse", "HEAD~1").strip()
+    git(solo, "switch", "-q", "master", when=at(50))
+    git(solo, "merge", "-q", "--ff-only", "parser", when=at(50))
+    return h, a, b, a2, b2
+
+
+def test_two_commits_in_one_second_rebased_keep_their_own_lines(home, tmp_path):
+    """Told apart by subject: each copy is its own commit's, so each keeps
+    its lines, and each is merged."""
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    task = counted(h)["Add the parser and its test."]
+    assert (task["commits"], task["lines"], task["merged"]) == (2, 510, 2)
+    assert {(c["sha"], c["of"], c["lines"]) for c in task["made"]} == {
+        (a, None, 500), (b, None, 10), (a2, a, 500), (b2, b, 10)}
+
+
+def test_a_reworded_copy_is_the_first_commits_of_its_second():
+    "No commit of its subject: its author and author date say whose it is, as before."
+    who = "t@x 1700000000"
+    entries = [{"sha": s, "at": 1700000100 + i, "author": who, "parents": ["p"], "subject": subj, "action": act,
+                "before": None} for i, (s, subj, act) in enumerate(
+        [("a", "one", "commit"), ("b", "two", "commit"), ("a2", "one, reworded", "rebase (reword)"),
+         ("b2", "two", "rebase (pick)")])]
+    got = {c["sha"]: c["of"] for c in cost.new_commits(list(reversed(entries)), {}, 0)}
+    assert got == {"a": None, "b": None, "a2": "a", "b2": "b"}
+
+
+def test_copies_kept_by_the_older_rule_are_put_right(home, tmp_path):
+    """Kept before the rule told two commits of one second apart, both
+    copies are the first's -- which then shows the other's lines -- and the
+    other is never merged: put right once, backed up first, checked; a
+    copy reworded is left as it is."""
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    counted(h)
+    with h._mu:   # as the older rule kept them
+        h._conn.execute("UPDATE cost_commits SET of = ? WHERE sha = ?", (a, b2))
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_copies%'")
+        h._conn.commit()
+        before = h._cost_census()
+    h._cost_seen = None
+    with h._tally_mu:
+        old = h.costs(7, tasks=True)
+    old = {t["prompt"]: t for t in old["tasks"]}["Add the parser and its test."]
+    assert (old["lines"], old["merged"]) == (10 + 10, 1)   # a took b's copy's lines; b never merged
+    h._copies_ok = False
+    task = counted(h)["Add the parser and its test."]
+    assert (task["lines"], task["merged"]) == (510, 2)
+    with h._mu:
+        assert h._conn.execute("SELECT of FROM cost_commits WHERE sha = ?", (b2,)).fetchone() == (b,)
+        assert h._cost_census() == before
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies_report'").fetchone()[0])
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies'").fetchone() == (str(cost.COPY_VERSION),)
+    assert (report["ok"], report["fixed"], report["left"]) == (True, 1, [])
+    assert [p.name.startswith("herd-cost-copies-") for p in (tmp_path / "backups").iterdir()] == [True]
+    # Once: marked, not again; and none to put right, no backup.
+    h._copies_ok = False
+    assert counted(h)["Add the parser and its test."]["lines"] == 510
+    assert len(list((tmp_path / "backups").iterdir())) == 1
+    rows = [("x", "t@x 1", "one", None, 1.0), ("y", "t@x 1", "two", None, 1.0),
+            ("y2", "t@x 1", "two, reworded", "y", 2.0), ("x2", "t@x 1", "one", "y", 2.0)]
+    assert cost.recopied(rows) == {"x2": "x"}
+
+
+def test_copies_put_right_wrongly_are_undone(home, tmp_path, monkeypatch):
+    "A correction that fails its check is undone, and marked so: not tried again."
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    counted(h)
+    with h._mu:
+        h._conn.execute("UPDATE cost_commits SET of = ? WHERE sha = ?", (a, b2))
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_copies%'")
+        h._conn.commit()
+    real, calls = cost.recopied, []
+    monkeypatch.setattr(cost, "recopied", lambda rows: calls.append(1) or (real(rows) if len(calls) == 1 else {"x": "y"}))
+    h._copies_ok = False
+    with h._tally_mu:
+        h._cost_recopy()
+    with h._mu:
+        assert h._conn.execute("SELECT of FROM cost_commits WHERE sha = ?", (b2,)).fetchone() == (a,)
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies'").fetchone() == ("failed %d" % cost.COPY_VERSION,)
+    h._copies_ok = False
+    with h._tally_mu:
+        h._cost_recopy()
+    assert len(calls) == 2

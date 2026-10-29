@@ -597,6 +597,10 @@ AMEND = "commit (amend)"
 COPY = re.compile(r"\A(?:(?:rebase|pull)\b[^:(]*\((?:pick|continue|reword|edit|squash|fixup)\)"
                   r"|cherry-pick|commit \(cherry-pick\))\Z")
 REFLOG_MAX = 1000
+# How many times the rule that tells which commit a copy is of changed:
+# copies kept by an earlier one are put right (`recopied', herd.py
+# `_cost_recopy').  2: by subject too, not author and author date alone.
+COPY_VERSION = 2
 
 
 def kind(action: str) -> str | None:
@@ -632,17 +636,21 @@ def reflog(repo: str, limit: int = REFLOG_MAX) -> list[dict[str, Any]] | None:
 def new_commits(entries: list[dict[str, Any]], known: dict[str, dict[str, Any]],
                 since: float) -> list[dict[str, Any]]:
     """The commits reflog ENTRIES (newest first) made from SINCE that KNOWN
-    (sha -> {author, of}: those kept, from any checkout) does not have,
-    oldest first: sha, at, author, subject and `of' -- for a copy, the
-    commit first made, whose work it is; None for new work.  An amend is a
-    copy of the commit it replaced, a rebase's or a cherry-pick's of the
-    one with its author and author date; a copy of none known -- made
+    (sha -> {author, subject, of}: those kept, from any checkout, the first
+    made first) does not have, oldest first: sha, at, author, subject and
+    `of' -- for a copy, the commit first made, whose work it is; None for
+    new work.  An amend is a copy of the commit it replaced, a rebase's or
+    a cherry-pick's of the one with its author, author date and subject --
+    two made in one second are told apart by it -- or, reworded, of the
+    first with its author and author date; a copy of none known -- made
     before SINCE, or by someone else -- is no work of this checkout's."""
     seen = dict(known)
-    first = {}
+    first: dict[tuple[str, str], str] = {}
+    by_author: dict[str, str] = {}
     for sha, c in seen.items():
         if not c.get("of"):
-            first.setdefault(c["author"], sha)
+            first.setdefault((c["author"], c.get("subject") or ""), sha)
+            by_author.setdefault(c["author"], sha)
     out = []
     for e in reversed(entries):
         what = kind(e["action"])
@@ -652,14 +660,37 @@ def new_commits(entries: list[dict[str, Any]], known: dict[str, dict[str, Any]],
         if what == "amend" and e["before"] in seen:
             of = seen[e["before"]].get("of") or e["before"]
         elif what == "copy":
-            of = first.get(e["author"])
+            of = first.get((e["author"], e["subject"])) or by_author.get(e["author"])
             if of is None:
                 continue
         c = {"sha": e["sha"], "at": e["at"], "author": e["author"], "subject": e["subject"], "of": of}
         seen[e["sha"]] = c
         if of is None:
-            first.setdefault(e["author"], e["sha"])
+            first.setdefault((e["author"], e["subject"]), e["sha"])
+            by_author.setdefault(e["author"], e["sha"])
         out.append(c)
+    return out
+
+
+def recopied(commits: Iterable[tuple[str, str, str | None, str | None, float]]) -> dict[str, str]:
+    """Of COMMITS kept (sha, author, subject, of, at), the copies `new_commits'
+    gave to another commit than it gives them now: one of its author and
+    author date but another subject, while one with theirs was made too --
+    two commits made in one second, rebased.  sha -> the commit it is a
+    copy of.  A copy whose subject is not its commit's for another reason
+    (a reword, an amend) is left as it is."""
+    commits = list(commits)
+    first: dict[tuple[str, str], str] = {}
+    subject = {}
+    for sha, author, subj, of, _ in sorted(commits, key=lambda c: (c[4], c[0])):
+        subject[sha] = subj or ""
+        if not of:
+            first.setdefault((author, subj or ""), sha)
+    out = {}
+    for sha, author, subj, of, _ in commits:
+        right = first.get((author, subj or "")) if of else None
+        if right and right != of and subject.get(of) != (subj or ""):
+            out[sha] = right
     return out
 
 

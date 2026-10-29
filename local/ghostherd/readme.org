@@ -2674,7 +2674,11 @@ projects.  Read-only: it only shows, and leads where you click.
   agent commits, then says so), the latest begun --- so lead mode counts
   each ask's taker's, direct mode the agent's own.  An amend, a rebase's
   pick and a cherry-pick copy a commit made before (the commit replaced,
-  or the same author and author date): its work counts once, where it
+  or the one with the same author, author date and subject --- two made
+  in one second are told apart by it; reworded, the same author and
+  author date alone; copies kept by the older rule, author and date
+  alone, were put right once, backed up first, =meta= =cost_copies=):
+  its work counts once, where it
   was first made, at its last copy's lines, and is merged when any copy
   is; the task that made the copy shows it, counting nothing.  A merge,
   a reset, a checkout make no commit.  Lines are insertions plus

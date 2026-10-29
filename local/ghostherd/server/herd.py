@@ -460,8 +460,9 @@ class HerdStore:
         # kept before tasks kept it (cost.offset_of): found once.
         self._offsets: dict[str, int | None] = {}
         # Whether the tasks kept were read by the rules the reader has now
-        # (`_cost_recheck').
+        # (`_cost_recheck'), and the copies kept told by its rule (`_cost_recopy').
         self._said_ok = False
+        self._copies_ok = False
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -2410,6 +2411,7 @@ class HerdStore:
         pass at a time."""
         with self._tally_mu:
             self._cost_recheck()
+            self._cost_recopy()
             more = self._tally_read(budget)
             more = self._cost_read(budget) or more
             self._cost_capture()
@@ -2732,19 +2734,12 @@ class HerdStore:
         report: dict[str, Any] = {"version": cost.SAID_VERSION, "tasks": len(tasks), "unmade": 0, "retitled": 0,
                                   "placed": 0, "unread": 0, "moved": 0, "dropped": 0}
         if tasks and not (backup and backup[0].startswith(version + " ")):
-            dest = self.path.parent / "backups" / f"herd-cost-said-{version}-{datetime.now():%Y%m%d-%H%M%S}.sqlite"
-            dest.parent.mkdir(parents=True, exist_ok=True)
             with self._mu:
-                out = sqlite3.connect(dest)
-                try:
-                    self._conn.backup(out)
-                    out.execute("PRAGMA journal_mode=DELETE")   # one file, whole
-                finally:
-                    out.close()
+                dest = self._cost_backup(f"cost-said-{version}")
                 self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_said_backup', ?)",
                                    (f"{version} {dest}",))
                 self._conn.commit()
-            report["backup"] = str(dest)
+            report["backup"] = dest
         by_path: dict[tuple[str, str], list[tuple[str, str, str, int | None, int | None]]] = {}
         for tid, agent, path, cli, prompt, offset, size in tasks:
             by_path.setdefault((path or "", cli or ""), []).append((tid, agent, prompt or "", offset, size))
@@ -2791,6 +2786,68 @@ class HerdStore:
         self._offsets.clear()
         if tasks:
             print(f"[ghostherd-memory] cost: tasks read again (rules {version}): {json.dumps(report)}", flush=True)
+
+    def _cost_backup(self, tag: str) -> str:
+        """The store copied whole -- one file, by SQLite's backup -- beside it
+        in backups/, named for TAG and the time: where.  Caller holds `_mu'."""
+        dest = self.path.parent / "backups" / f"herd-{tag}-{datetime.now():%Y%m%d-%H%M%S}.sqlite"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        out = sqlite3.connect(dest)
+        try:
+            self._conn.backup(out)
+            out.execute("PRAGMA journal_mode=DELETE")   # one file, whole
+        finally:
+            out.close()
+        return str(dest)
+
+    def _cost_recopy(self) -> None:
+        """The commits kept as copies of another (`of') by the rule before
+        cost.COPY_VERSION, put right: a rebase's copy was the first commit's
+        with its author and author date, so two made in one second gave
+        both copies to the first -- which then took the other's lines, the
+        other never merged (cost.recopied).  Once: backed up first, when
+        there is one to put right; all in one commit, checked -- none left,
+        nothing else changed -- before it is kept and marked (meta
+        `cost_copies'); one that fails is undone and marked so.  Caller
+        holds `_tally_mu'."""
+        if self._copies_ok:
+            return
+        version = str(cost.COPY_VERSION)
+        cols = "sha, author, subject, of, at"
+        report: dict[str, Any] = {"version": cost.COPY_VERSION}
+        with self._mu:
+            row = self._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies'").fetchone()
+            if row and row[0] in (version, "failed " + version):
+                self._copies_ok = True
+                return
+            commits = self._conn.execute(f"SELECT {cols} FROM cost_commits").fetchall()
+            wrong = cost.recopied(commits)
+            report.update(copies=sum(1 for c in commits if c[3]), fixed=len(wrong))
+            ok = True
+            if wrong:
+                before = self._cost_census()
+                report["backup"] = self._cost_backup(f"cost-copies-{version}")
+                was = {c[0]: c[3] for c in commits}
+                self._conn.executemany("UPDATE cost_commits SET of = ? WHERE sha = ?",
+                                       [(to, sha) for sha, to in wrong.items()])
+                now = self._conn.execute(f"SELECT {cols} FROM cost_commits").fetchall()
+                left = cost.recopied(now)
+                # Those copies, and nothing else: every other row as it was.
+                ok = (not left and self._cost_census() == before
+                      and {c[0]: c[3] for c in now} == dict(was, **wrong))
+                report.update(ok=ok, left=sorted(left)[:20],
+                              moved=[[sha[:12], (was.get(sha) or "")[:12], to[:12]] for sha, to in sorted(wrong.items())][:50])
+                if not ok:
+                    self._conn.rollback()
+            self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_copies', ?)",
+                               (version if ok else "failed " + version,))
+            self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_copies_report', ?)",
+                               (json.dumps(report),))
+            self._conn.commit()
+        self._copies_ok = True
+        self._cost_seen = None
+        if wrong:
+            print(f"[ghostherd-memory] cost: copies put right (rule {version}): {json.dumps(report)}", flush=True)
 
     def _cost_census(self) -> tuple[Any, ...]:
         "The commits kept, to tell they are as they were.  Caller holds `_mu'."
@@ -2902,8 +2959,9 @@ class HerdStore:
                     continue
                 if known is None:
                     with self._mu:
-                        known = {r[0]: {"author": r[1], "of": r[2]} for r in self._conn.execute(
-                            "SELECT sha, author, of FROM cost_commits WHERE at >= ?", (now - 2 * COST_DAYS * 86400,))}
+                        known = {r[0]: {"author": r[1], "subject": r[2] or "", "of": r[3]} for r in self._conn.execute(
+                            "SELECT sha, author, subject, of FROM cost_commits WHERE at >= ? ORDER BY at, sha",
+                            (now - 2 * COST_DAYS * 86400,))}
                 new = cost.new_commits(entries, known, now - COST_DAYS * 86400)
                 lines: dict[str, int] = {}
                 for i in range(0, len(new), 200):
