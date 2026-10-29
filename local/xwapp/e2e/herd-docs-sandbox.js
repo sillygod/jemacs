@@ -9,7 +9,8 @@
 // page or sends an intent, and the page goes on as the app's.  Only for
 // the tailnet login it is served to; and the Docs tab fits a phone.
 //
-// The Docs tab's Reports (ask ab8e8838): a report listed there opens as
+// The Docs tab's Reports (ask ab8e8838), in its one list with the
+// documents (ask 825339b7): a report listed there opens as
 // its Open link does -- its copy, by id, sandboxed -- so one out to act
 // does nothing from there either; one whose copy is gone is listed with
 // nothing to open, and its address answers nothing; older ones come from
@@ -126,8 +127,8 @@ function viaServe(s, target, login) {
       watch(herd, errors);
       const before = hellos().length;
       await herd.goto(base + ROOT + "ghostherd/ui/index.html#docs");
-      const listed = await until(async () => (await herd.$$("#docs-documents .doc")).length === 3 &&
-        (await herd.$$("#docs-reports .doc")).length === 3, 10000);
+      const listed = await until(async () => (await herd.$$("#docs-list .doc:not(.report)")).length === 3 &&
+        (await herd.$$("#docs-list .doc.report")).length === 3, 10000);
       check(W("the Docs tab, asked of Emacs, lists its documents and the reports"), listed,
         await herd.textContent("#app").catch(() => ""));
       const mine = hellos().slice(before);
@@ -231,7 +232,7 @@ function viaServe(s, target, login) {
       const gone = await report.goto(base + ROOT + ".reports/" + GID + ".html");
       check(W("a listed report whose copy is gone: its address answers nothing"), gone && gone.status() === 404);
       await report.close();
-      const rl = await herd.$$eval("#docs-reports .doc", (ds) => ds.map((d) => ({ id: d.getAttribute("data-report"),
+      const rl = await herd.$$eval("#docs-list .doc.report", (ds) => ds.map((d) => ({ id: d.getAttribute("data-report"),
         gone: d.classList.contains("gone"), open: [...d.querySelectorAll("a, button")].map((a) =>
           ({ href: a.getAttribute("href"), target: a.target, rel: a.rel })) })));
       check(W("the Reports: each a link to its copy by id under the secret, a tab of its own; the gone one none"),
@@ -241,7 +242,7 @@ function viaServe(s, target, login) {
         rl[2].gone && rl[2].open.length === 0, rl);
       const lBefore = evil().length;
       popped = ctx.waitForEvent("page");
-      await tap(herd, '#docs-reports a[href$="/.reports/' + LID + '.html"]');
+      await tap(herd, '#docs-list a[href$="/.reports/' + LID + '.html"]');
       const lr = await popped;
       await lr.waitForLoadState("load").catch(() => {});
       await sleep(1200);
@@ -260,12 +261,12 @@ function viaServe(s, target, login) {
         { lreached, now: pageNow(s), url: lr.url() });
       await lr.close();
       // Older ones: from Emacs, asked from the last shown.
-      await tap(herd, '#docs-reports [data-act="reports:more"]');
-      const older = await until(async () => (await herd.$$("#docs-reports .doc")).length === 4, 5000);
+      await tap(herd, '#docs-list [data-act="reports:more"]');
+      const older = await until(async () => (await herd.$$("#docs-list .doc.report")).length === 4, 5000);
       const more = log().filter((w) => w && w.intent && w.intent.op === "reports-more");
       check(W("older reports: asked of Emacs from the last shown, added after it"), older &&
         more.length && more[more.length - 1].intent.id === GID &&
-        (await herd.$eval("#docs-reports .doc:last-child", (d) => d.getAttribute("data-report")).catch(() => "")) === OID,
+        (await herd.$$eval("#docs-list .doc.report", (ds) => ds[ds.length - 1].getAttribute("data-report")).catch(() => "")) === OID,
         more.map((w) => w.intent));
       if (where === "phone") {
         const m = await measure(herd);

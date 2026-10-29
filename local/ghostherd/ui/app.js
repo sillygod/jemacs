@@ -305,9 +305,11 @@
     }).join("") + "</div>";
   }
 
-  // The Docs tab: the documents Emacs lists (renderDocs), newest first;
-  // and the reports agents' replies named (renderReports) -- the sidecar's
-  // copies, by id, newest first, a page at a time.
+  // The Docs tab: one list, newest first -- the documents Emacs lists
+  // (renderDocs) and the reports agents' replies named (renderReports):
+  // the sidecar's copies, by id, newest first, a page at a time.  Above
+  // it, a filter (title or file name) and a chip per source: all, each
+  // docs directory, the reports.
   let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
   // {list: [{id, title, name, agent, project, at, bytes, gone, older: [...]}], more, error, asking}
   let reports = null;
@@ -315,6 +317,9 @@
   // what one is, whichever copy is its newest.
   const reportsOpen = new Set();
   const reportKey = (rep) => String(rep.project || "") + "\0" + String(rep.name || rep.id);
+  // What the list shows, for the page's life: the filter's words, and the
+  // source -- "" all, "d:" and a directory as Emacs says it, "reports".
+  const docsView = { q: "", src: "" };
 
   function showDocs() {
     view = "docs";
@@ -329,72 +334,108 @@
     return n < 1024 ? n + " B" : n < 1024 * 1024 ? Math.round(n / 1024) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
   }
 
+  // A docs directory as its chip says it: ghostherd's own, or the path.
+  const dirLabel = (where) => String(where || "").replace(/(.)\/+$/, "$1");
+
+  // The filter and the chips stay put as the list is drawn again: the
+  // filter keeps its words, and the caret, while it is typed in.
   function renderDocs() {
     if (view !== "docs") return;
-    const rows = (docs || []).filter((d) => d && DOC_NAME.docs.test(String(d.name))).map((d) =>
-      '<div class="doc">' +
-      docLink("docs", d.name, esc(d.title || d.name), "dtitle", d.name) +
-      '<div class="dmeta"><span class="dname">' + esc(d.name) + "</span>" +
-      '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(d.where || "") + "</span>" +
-      "<span>" + esc(sizeText(d.bytes)) + "</span>" +
-      '<span title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div></div>").join("");
-    app.innerHTML = '<div class="page docs"><div class="dcols"><section class="dsec" id="docs-documents">' +
-      '<h2 class="section">Documents</h2>' +
-      '<div class="sum">' + (docs ? docs.length + (docs.length === 1 ? " document" : " documents") : "Asking Emacs…") +
-      "</div>" + (docs && !docs.length ? '<p class="empty">No HTML document in the folders listed.</p>' : rows) +
-      "</section>" + reportsSection() + "</div>" +
-      '<p class="docsays muted">' + esc(DOC_SAYS) + " Documents: ghostherd's docs/ and the folders of " +
-      "<code>ghostherd-docs-directories</code>. Reports: the HTML files agents' replies named, as the herd " +
-      "copied them then, kept as their images are.</p></div>";
+    if (!$("docs-filter")) {
+      app.innerHTML = '<div class="page docs"><div class="dbar">' +
+        '<input id="docs-filter" type="search" placeholder="Filter by title or file name" autocomplete="off" ' +
+        'spellcheck="false" aria-label="Filter the documents by title or file name">' +
+        '<div class="chips dchips" role="group" aria-label="Where from"></div></div>' +
+        '<div class="sum" id="docs-sum"></div><div class="dlist" id="docs-list"></div></div>';
+      $("docs-filter").value = docsView.q;
+    }
+    renderDocsList();
   }
 
-  // The reports, as the sidecar keeps their copies: each opens as the Open
-  // link under its message does.  One whose copy is gone from the
-  // directory is still listed, marked, with nothing to open.  A file an
-  // agent rewrote and named again is one row, its newest copy: "2 older"
-  // under it shows the others, newest first, and folds them away again.
-  function reportsSection() {
+  function renderDocsList() {
+    const box = $("docs-list");
+    if (!box) return;
     const r = reports;
-    const list = r ? r.list : [];
-    const one = (rep, older) => {
-      const name = String(rep.name || rep.id + ".html");
-      const title = String(rep.title || "").trim() || name;
-      const who = String(rep.agent || "");
-      const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
-        o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
-      const open = them.length > 0 && reportsOpen.has(reportKey(rep));
-      const head = rep.gone
-        ? '<span class="dtitle dgone" title="' + esc(name) + '">' + esc(title) + "</span>"
-        : docLink("reports", rep.id + ".html", esc(title), "dtitle", name);
-      return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
-        esc(rep.id) + '">' + head +
-        '<div class="dmeta">' +
-        (rep.gone ? '<span class="dgonesays">Its copy is gone from the herd\'s folder: nothing to open.</span>' : "") +
-        '<span class="dwho">' + (who ? esc(who) : '<span class="muted">writer unknown</span>') + "</span>" +
-        (rep.project ? '<span class="dwhere" title="' + esc(rep.project) + '">' + esc(rep.project) + "</span>" : "") +
-        '<span title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span>" +
-        "<span>" + esc(sizeText(rep.bytes)) + "</span>" +
-        '<span class="dname">' + esc(name) + "</span>" +
-        (them.length
-          ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
-            '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
-            them.length + " older" + "</button>"
-          : "") + "</div>" +
-        (open ? '<div class="dolders">' + them.map((o) => one(o, true)).join("") + "</div>" : "") + "</div>";
-    };
-    const rows = list.map((rep) => one(rep, false)).join("");
-    const sum = !r ? "Asking the herd…"
-      : list.length + (list.length === 1 ? " report" : " reports") + (r.more ? ", the newest" : "");
-    const more = r && r.more && list.length
+    const ds = (docs || []).filter((d) => d && DOC_NAME.docs.test(String(d.name)));
+    const rs = r ? r.list : [];
+    const q = docsView.q.trim().toLowerCase();
+    const hit = (x) => !q || String(x.title || "").toLowerCase().includes(q) || String(x.name || "").toLowerCase().includes(q);
+    // ghostherd's own directory first, then the others by name.
+    const dirs = [...new Set(ds.map((d) => String(d.where || "")))].sort((a, b) =>
+      (b === "ghostherd") - (a === "ghostherd") || a.localeCompare(b));
+    const srcs = dirs.map((w) => "d:" + w).concat(rs.length ? ["reports"] : []);
+    if (docsView.src && !srcs.includes(docsView.src)) docsView.src = "";
+    const all = !docsView.src;
+    const items = ds.filter(hit).map((d) => ({ src: "d:" + String(d.where || ""), at: stamp(d.mtime) || 0, d }))
+      .concat(rs.filter(hit).map((x) => ({ src: "reports", at: stamp(x.at) || 0, x })))
+      .sort((a, b) => b.at - a.at);
+    const count = (k) => items.filter((i) => i.src === k).length;
+    const chip = (k, label, n) => '<button type="button" class="chip' + (docsView.src === k ? " on" : "") +
+      '" data-act="docs:src" data-src="' + esc(k) + '" aria-pressed="' + (docsView.src === k) + '">' + esc(label) +
+      ' <span class="dcount">' + esc(n) + "</span></button>";
+    const chips = app.querySelector(".dchips");
+    if (chips) chips.innerHTML = chip("", "All", items.length + (r && r.more ? "+" : "")) +
+      dirs.map((w) => chip("d:" + w, dirLabel(w), count("d:" + w))).join("") +
+      (rs.length ? chip("reports", "Reports", count("reports") + (r.more ? "+" : "")) : "");
+    const asking = [docs ? "" : "Asking Emacs for the documents…", r ? "" : "Asking the herd for the reports…"].filter(Boolean);
+    $("docs-sum").textContent = asking.join(" · ");
+    const shown = all ? items : items.filter((i) => i.src === docsView.src);
+    const rows = shown.map((i) => (i.d ? docRow(i.d, all) : reportRow(i.x, false))).join("");
+    const more = r && r.more && rs.length && (all || docsView.src === "reports")
       ? '<div class="foot"><button type="button" class="ghost small" data-act="reports:more"' + (r.asking ? " disabled" : "") +
         ">" + (r.asking ? "Asking…" : "Older reports") + "</button></div>"
       : "";
-    return '<section class="dsec" id="docs-reports"><h2 class="section">Reports</h2>' +
-      '<div class="sum">' + esc(sum) + "</div>" +
-      (r && r.error ? '<p class="empty derror">The herd could not be asked: ' + esc(r.error) + "</p>" : "") +
-      (r && !list.length && !r.error
-        ? '<p class="empty">No HTML report yet: one is listed here once an agent\'s reply names an .html file.</p>'
-        : rows) + more + "</section>";
+    const empty = shown.length ? ""
+      : q && (ds.length || rs.length) ? '<p class="empty">Nothing here matches “' + esc(docsView.q.trim()) + "”.</p>"
+      : docs && !ds.length && (!r || !rs.length) ? '<p class="empty">No HTML document in the folders listed.</p>'
+      : "";
+    box.innerHTML = (r && r.error ? '<p class="empty derror">The herd could not be asked for the reports: ' + esc(r.error) + "</p>" : "") +
+      empty + rows + more;
+  }
+
+  // A row: its title, and when, on one line; its file, its size and --
+  // all sources shown -- its directory on the next.
+  function docRow(d, all) {
+    const title = String(d.title || d.name);
+    return '<div class="doc" data-src="d:' + esc(d.where || "") + '"><div class="dl1">' +
+      docLink("docs", d.name, esc(title), "dtitle", (title !== d.name ? title + " · " : "") + d.name) +
+      '<span class="dwhen" title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div>" +
+      '<div class="dmeta"><span class="dname">' + esc(d.name) + "</span>" +
+      '<span class="dsize">' + esc(sizeText(d.bytes)) + "</span>" +
+      (all ? '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(dirLabel(d.where)) + "</span>" : "") +
+      "</div></div>";
+  }
+
+  // A report, as the sidecar keeps its copy: it opens as the Open link
+  // under its message does, and says who wrote it, in which project.  One
+  // whose copy is gone from the directory is still listed, marked, with
+  // nothing to open.  A file an agent rewrote and named again is one row,
+  // its newest copy: "2 older" under it shows the others, newest first,
+  // and folds them away again.
+  function reportRow(rep, older) {
+    const name = String(rep.name || rep.id + ".html");
+    const title = String(rep.title || "").trim() || name;
+    const who = String(rep.agent || "");
+    const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
+      o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
+    const open = them.length > 0 && reportsOpen.has(reportKey(rep));
+    const head = rep.gone
+      ? '<span class="dtitle dgone" title="' + esc(title + " · " + name) + '">' + esc(title) + "</span>"
+      : docLink("reports", rep.id + ".html", esc(title), "dtitle", (title !== name ? title + " · " : "") + name);
+    const from = (who ? "from " + who : "writer unknown") + (rep.project ? " · " + rep.project : "");
+    return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
+      esc(rep.id) + '"><div class="dl1">' + head +
+      '<span class="dwhen" title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span></div>" +
+      '<div class="dmeta"><span class="dwho" title="' + esc(from) + '">' + esc(from) + "</span>" +
+      '<span class="dname">' + esc(name) + "</span>" +
+      '<span class="dsize">' + esc(sizeText(rep.bytes)) + "</span>" +
+      (rep.gone ? '<span class="dgonesays" title="Its copy is gone from the herd\'s folder: nothing to open.">its copy is gone</span>' : "") +
+      (them.length
+        ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
+          '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
+          them.length + " older" + "</button>"
+        : "") + "</div>" +
+      (open ? '<div class="dolders">' + them.map((o) => reportRow(o, true)).join("") + "</div>" : "") + "</div>";
   }
 
   // The image whole, over the page: fitted to it, at its own size at a
@@ -3959,6 +4000,9 @@
     } else if (ev.target.id === "mem-filter") {
       mem.filter = ev.target.value;
       renderMemoryList();
+    } else if (ev.target.id === "docs-filter") {
+      docsView.q = ev.target.value;
+      renderDocsList();
     }
   });
 
@@ -4407,6 +4451,9 @@
       openImage(el);
     } else if (act === "doc:open") {
       emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
+    } else if (act === "docs:src") {
+      docsView.src = el.getAttribute("data-src") || "";
+      renderDocsList();
     } else if (act === "reports:older") {
       const rep = reports && reports.list.find((x) => x.id === el.getAttribute("data-report"));
       if (rep) {

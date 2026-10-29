@@ -181,9 +181,22 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 
 /* ---- The Docs tab -------------------------------------------------------- */
 
-.page.docs .doc { border-bottom: 1px solid var(--line); padding: 10px 2px; min-width: 0; }
+/* The filter, the source chips, and one list under them, newest first. */
+.page.docs .dbar { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 6px; }
+.page.docs #docs-filter { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; font-size: 13.5px; outline: none; }
+.page.docs #docs-filter:focus { border-color: var(--accent); }
+.page.docs .dchips .chip { cursor: pointer; }
+.page.docs .dcount { color: var(--muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.page.docs .sum:empty { display: none; }
+/* A row, two lines: its title and when; its file, size -- and, all
+   sources shown, where it is.  Neither wraps: what does not fit is cut. */
+.page.docs .doc { border-bottom: 1px solid var(--line); padding: 9px 2px; min-width: 0; }
+.page.docs .dl1 { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .page.docs .dtitle {
-  display: inline;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0;
   border: 0;
   background: none;
@@ -193,26 +206,22 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
   font-weight: 600;
   text-align: left;
   text-decoration: none;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .page.docs .dtitle:hover, .page.docs .dtitle:focus-visible { text-decoration: underline; }
-.page.docs .dmeta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--muted); }
-.page.docs .dname { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
-.page.docs .dwhere { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.page.docs .docsays { font-size: 12px; margin-top: 16px; }
-/* The documents and the reports: side by side when there is room, the
-   reports under the documents on a phone. */
-.page.docs .dcols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 32px; align-items: start; }
-@media (min-width: 900px) {
-  .page.docs .dcols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-}
-.page.docs .dsec { min-width: 0; }
-.page.docs .dsec > .section { margin-top: 6px; }
-.page.docs .dwho { font-weight: 600; color: var(--text); }
+.page.docs .dwhen { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.page.docs .dmeta { display: flex; align-items: baseline; gap: 12px; margin-top: 3px; font-size: 12px; color: var(--muted);
+  white-space: nowrap; min-width: 0; overflow: hidden; }
+.page.docs .dmeta > * { flex: none; }
+.page.docs .dname, .page.docs .dwhere, .page.docs .dwho { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.page.docs .dname { font-family: var(--mono); font-size: 11.5px; }
+.page.docs .dwho { color: var(--text); }
 /* A report whose copy is gone: listed, with nothing to open. */
 .page.docs .report.gone .dtitle { color: var(--muted); cursor: default; text-decoration: none; }
-.page.docs .dgonesays { flex-basis: 100%; font-style: italic; }
+.page.docs .dgonesays { font-style: italic; }
 /* A report rewritten and named again: its older copies, folded under its
    newest, indented and a step quieter. */
 .page.docs .dolder { font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
@@ -224,7 +233,8 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 .page.docs .derror { padding: 8px 2px; }
 /* A finger's height for what opens a document, on a phone. */
 @media (max-width: 640px) {
-  .page.docs .dtitle { display: inline-block; min-height: 32px; padding: 4px 0; }
+  .page.docs .dtitle { min-height: 32px; line-height: 32px; }
+  .page.docs .dchips .chip { min-height: 32px; }
   .page.docs .foot .ghost { min-height: 40px; }
   .page.docs .dolder { min-height: 32px; padding: 0 6px; }
   .ereport { min-height: 32px; align-items: center; }

@@ -2818,8 +2818,13 @@ your files.
 The tab lists HTML documents to read here and on the phone without
 publishing them anywhere: ghostherd's own =docs/= (the checkout's ---
 straight's build has none), then each directory of
-=ghostherd-docs-directories=, newest first, by =<title>=, with the
-file, where it is, its size and age.  A name in two is the first's.
+=ghostherd-docs-directories= --- and the reports below --- in one list,
+newest first: each row its =<title>= and age, then its file, its size
+and where it is (a report: who wrote it, in which project).  Above it,
+a filter, by title or file name, and a chip per source with how many
+match: /All/, each directory (=ghostherd=, =~/notes/html=), /Reports/
+once there is one; a directory's own chip leaves out where.  Both kept
+while the page is.  A name in two is the first's.
 Only a file right in one of them, named in letters, digits, =.=, =_=
 and =-= and ending =.html= to the letter --- not a symlink, 8 MB at
 most --- is listed or served, by that name alone:
@@ -2832,10 +2837,10 @@ sibling document works; one to anything else does not.
   (setq ghostherd-docs-directories '("~/notes/html/"))
 #+end_src
 
-*Reports, beside the documents* (under them on a phone): the HTML
-reports agents' replies named, as the sidecar keeps their copies ---
-newest first, each by its title (or its file's name), the agent that
-named it first and its project, when it was copied, and its size.  One
+*Reports, among the documents*: the HTML reports agents' replies
+named, as the sidecar keeps their copies --- each by its title (or its
+file's name), =from= the agent that named it first =·= its project,
+when it was copied, and its size.  One
 opens exactly as its /Open/ under the message does: =/SECRET/.reports/<id>.html=,
 sandboxed; in the xwidget, a view of Emacs's over loopback.  They are
 read from the sidecar's index of its copies (=herd_reports=, the
