@@ -499,6 +499,10 @@ def test_a_commit_is_the_work_its_agent_was_on():
     assert [m["sha"] for m in made[("task:b", "x")]["commits"]] == ["2", "3"]
     assert [m["sha"] for m in made[("ask:q", "y")]["commits"]] == ["5"]
     assert made[("task:a", "x")]["read"] and not made[("ask:q", "y")]["read"]
+    # Read through COMMIT_SLACK after its last reply, too: no commit of it to come.
+    assert made[("task:a", "x")]["through"] and made[("task:b", "x")]["through"]
+    late = cost.attribute({}, [("task:c", "x", 900, 950)], {"x": ["/x"]}, {"/x": [[0, 1000]]}, now=1000)
+    assert late[("task:c", "x")]["read"] and not late[("task:c", "x")]["through"]
     assert cost.cover([[0, 10]], 5, 20) == [[0, 20]] and cost.cover([[0, 10]], 30, 40) == [[0, 10], [30, 40]]
 
 
@@ -520,8 +524,9 @@ def test_a_task_told_directly_is_a_thread_of_its_own(home, tmp_path):
     h, _, _ = herd_at_work(home, tmp_path)
     counted(h)
     direct = [t for t in h.threads()["threads"] if t.get("direct")]
-    # A go-ahead's title says what it goes on from.
-    assert [t["title"] for t in direct] == ["Now push it. ← Add a health check.", "Add a health check."]
+    # A go-ahead's title is its own words; what it goes on from, its cost's.
+    assert [t["title"] for t in direct] == ["Now push it.", "Add a health check."]
+    assert [t["cost"]["context"] for t in direct] == ["Add a health check.", ""]
     health = direct[1]
     assert (health["participants"], health["projects"], health["rootFrom"]) == (["user", SOLO], ["solo"], "user")
     assert health["id"].startswith("task:") and health["cost"]["lines"] == 12
@@ -611,13 +616,41 @@ def test_a_sub_agent_with_no_meta_is_its_parents_work(home, tmp_path):
 
 
 def test_work_not_over_has_its_commits_read_later(home, tmp_path):
-    "A task its agent is still on, five minutes in: its code is not read yet -- not none, not unreadable."
+    """A task its agent is still on, five minutes in: its code is not read
+    yet -- not none, not unreadable.  Once it is quiet, its checkout read
+    through its last reply and COMMIT_SLACK: none, at once -- not after
+    SETTLED.  One whose last reply is too recent for that: not read yet."""
     h, _, _ = herd_at_work(home, tmp_path)
     so = Path(h._transcript(SOLO))
     _write(so, [you("And a readiness check.", at(6))] + reply("10", usage(inp=5), when=at(5)), mode="a")
+    snap = lambda state: [{"name": SOLO, "kind": "claude", "state": state, "project": str(tmp_path / "solo") + "/",  # noqa: E731
+                           "directory": str(tmp_path / "solo") + "/"}]
+    h.tick(sessions=snap("working"))
     tasks = counted(h)
     assert tasks["And a readiness check."]["code"] == "pending"
     assert h.costs(7)["compare"]["direct"]["pending"] == 1
+    h.tick(sessions=snap("idle"))
+    tasks = counted(h)
+    assert tasks["And a readiness check."]["code"] == "no"
+    assert h.costs(7)["compare"]["direct"]["pending"] == 0
+    _write(so, [you("And a liveness check.", at(1.5))] + reply("11", usage(inp=5), when=at(1)), mode="a")
+    assert counted(h)["And a liveness check."]["code"] == "pending"
+
+
+def test_a_task_with_an_ask_open_is_not_read_yet(home, tmp_path):
+    "A lead's task whose ask is still open: its taker may yet commit for it."
+    h, ask, _ = herd_at_work(home, tmp_path)
+    assert counted(h)["Fix the build, please."]["code"] == "yes"
+    lead = Path(h._transcript(LEAD))
+    _write(lead, [you("Now the release notes, please.", at(10))] + reply("12", usage(inp=5), when=at(9)), mode="a")
+    assert counted(h)["Now the release notes, please."]["code"] == "no"
+    with h._mu:
+        tid = h._conn.execute("SELECT id FROM cost_tasks WHERE prompt = 'Now the release notes, please.'").fetchone()[0]
+    second = h.ask(RD, "write the release notes", from_name=LEAD)["id"]
+    with h._mu:
+        h._conn.execute("INSERT OR REPLACE INTO cost_links (key, item) VALUES (?, ?)", ("ask:" + second, "task:" + tid))
+        h._conn.commit()
+    assert counted(h)["Now the release notes, please."]["code"] == "pending"
 
 
 # ---- Who may read the tasks -----------------------------------------------------------
@@ -854,7 +887,19 @@ def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
     assert got == {"b": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX),
                    "c": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX), "g": "看這個錯誤"}
     assert len(got["b"]) <= cost.CONTEXT_MAX and got["b"].endswith("…")
-    assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
+
+
+def test_a_short_prompt_goes_on_from_the_words_not_the_images_ahead_of_them():
+    """The images pasted ahead of the words a go-ahead goes on from take no
+    room of its context; an image alone is still said."""
+    url = "https://staging.example.test/#/login and the page under it"
+    T = lambda tid, prompt, when: {"id": tid, "agent": "rd", "prompt": prompt, "at": when, "size": None, "project": "/p/"}  # noqa: E731
+    tasks = [T("a", "[Image #2] [Image #3]" + url, 1), T("b", "可以讀 pre，繼續查", 2), T("c", "[Image #4]", 3), T("d", "ok", 4)]
+    got = cost.contexts(tasks)
+    assert got["b"] == cost.conversation.first_line(url, cost.CONTEXT_MAX) and got["b"].startswith("https://")
+    # c, an image alone, is short: d goes on from the words before it too.
+    assert got["c"] == got["d"] == got["b"]
+    assert cost.contexts([T("a", "[Image #4]", 1), T("b", "ok", 2)]) == {"b": "[Image #4]"}
 
 
 def test_a_short_prompt_goes_on_only_from_work_just_heard_of():
@@ -932,7 +977,7 @@ def test_tasks_titled_by_their_first_line_are_titled_again(home, tmp_path, monke
     h._said_ok = False
     new = counted(h)
     assert set(new) == set(old) - {"[Image #5]"} | {"[Image #5] " + words}
-    assert new["好，照你的建議做"]["context"] == cost.conversation.first_line("[Image #5] " + words, cost.CONTEXT_MAX)
+    assert new["好，照你的建議做"]["context"] == cost.conversation.first_line(words, cost.CONTEXT_MAX)
     assert new["[Image #5] " + words]["own"] == old["[Image #5]"]["own"]
     with h._mu:
         assert h._cost_census() == commits
