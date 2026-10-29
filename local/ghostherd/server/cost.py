@@ -18,7 +18,8 @@ it (`said'):
   for (`back:ID') -- a lead's turn woken by an answer is that ask's
   task's, not whatever the user said last;
 and nothing else: mail, the herd's notes and nudges, a sub-agent or a
-shell that ended, a command -- the work goes on as it was.  An ask is
+shell that ended, a sub-agent's report handed back, a command -- the
+work goes on as it was.  An ask is
 the work its asker was on when the herd client said so ("herd: asked qa
 (ask ID)", "herd: handed off to ..."), read off the asker's own tool
 results; a sub-agent's replies, the work of the call that started it
@@ -92,7 +93,8 @@ OPENINGS = ("A herd guard checks each of your tool calls.",
 # How many times the rules that tell the herd's words from the user's, or
 # what of them a task keeps as its title (`title'), changed: tasks kept by
 # an earlier reading are read again (herd.py `_cost_recheck').  3: the
-# title is the words whole, no longer their first line.
+# title is the words whole, no longer their first line; a sub-agent's
+# report handed back is no task.
 SAID_VERSION = 3
 PROMPT_MAX = 200
 # A prompt this wide at most, its whole text -- a go-ahead, "好，派人做吧",
@@ -132,7 +134,10 @@ def said(text: str | None) -> tuple[str, str] | None:
     user's words), ("ask", ID) or ("answer", ID) -- or None for the
     herd's own words, which switch nothing."""
     text = text or ""
-    if text.lstrip().startswith(RELAY):
+    # A sub-agent's report, handed back to the claude agent that started it
+    # in the background, comes queued as if typed: what it says goes on
+    # with the work the sub-agent was started for.
+    if text.lstrip().startswith(RELAY) or conversation.AGENT_MESSAGE.match(text.lstrip()):
         return None
     e = conversation.user_entry(text, None)
     if not e:

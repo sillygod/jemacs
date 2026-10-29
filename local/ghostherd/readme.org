@@ -2585,7 +2585,8 @@ projects.  Read-only: it only shows, and leads where you click.
   sub-agents; told to any other agent --- direct mode --- that agent's
   replies until it is set other work, and its sub-agents'.  The herd's
   own words are never one: an ask, an answer, mail, a relay's brief, a
-  task notification, a command, what it tells an agy agent as it starts
+  task notification, a sub-agent's report handed back to the claude
+  agent that started it, a command, what it tells an agy agent as it starts
   (its guard's note, the shared memory's opening), a lead's role said
   again on a cold respawn.  Each row shows its thread's task:
   =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is

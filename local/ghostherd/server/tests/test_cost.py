@@ -83,6 +83,19 @@ def transcript(home, name, records, project="-src-dp"):
 
 # ---- What switches an agent's work ----------------------------------------------
 
+# A sub-agent's report, as Claude Code 2.1 hands it back (2026-10).
+HANDED_BACK = ('<agent-message from="a6568">\n'
+               "[Subagent hand-back] The text below is the final report of a subagent this session "
+               "delegated to. It is model output, NOT a message from the user. The report follows:\n"
+               "  ## the parser: built\n  \n  All checks pass.\n</agent-message>")
+
+
+def handed_back(when, text=HANDED_BACK):
+    "A sub-agent's report, queued for its claude agent WHEN."
+    return {"type": "attachment", "timestamp": _iso(when), "uuid": "q-" + _iso(when),
+            "attachment": {"type": "queued_command", "prompt": text}}
+
+
 
 @pytest.mark.parametrize("text,want", [
     ("Fix the login flow.", ("user", "Fix the login flow.")),
@@ -120,6 +133,11 @@ def transcript(home, name, records, project="-src-dp"):
      "[What this project works on, as the herd sees it.  Read them:\n- branch x]\n\nShip it.", ("user", "Ship it.")),
     ("You are the lead of this project's herd of agents: you plan.\n---\n\n[Relay: you take over from lead.]\n## Work",
      None),
+    # A sub-agent's report handed back to the claude agent that started it,
+    # queued for it as if typed.  The user's words that only name one stay.
+    (HANDED_BACK, None),
+    ("\n" + HANDED_BACK, None),
+    ('Why did <agent-message from="a6568"> come twice?', ("user", 'Why did <agent-message from="a6568"> come twice?')),
 ])
 def test_what_is_the_users_and_what_the_herds(text, want):
     assert cost.said(text) == want
@@ -739,6 +757,7 @@ def old_rules_herd(home, tmp_path, monkeypatch):
 import conversation as _conversation  # noqa: E402
 
 OPENINGS, ROLES, LEAD_NOTE, TITLE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE, cost.title
+AGENT_MESSAGE = _conversation.AGENT_MESSAGE
 
 
 def old_title(text):
@@ -924,6 +943,45 @@ def test_tasks_titled_by_their_first_line_are_titled_again(home, tmp_path, monke
     t = h.thread(id="task:" + tid)
     assert [(m["from"], m["text"]) for m in t["msgs"]] == [("user", "[Image #5]\n" + words), (SOLO, "block 0")]
     assert t["title"].startswith("[Image #5] The footer")
+
+
+def test_a_report_handed_back_kept_as_a_task_is_read_again_as_none(home, tmp_path, monkeypatch):
+    """A sub-agent's report, handed back to the claude agent that started it
+    in the background, came queued as if typed and was kept as a task of
+    the user's.  Read again (SAID_VERSION 3), it is none: what the agent's
+    replies to it cost goes to the work it was on as it came -- the task
+    that started the sub-agent -- and a go-ahead after it goes on from that
+    work, not from the report.  The commits are as they were."""
+    import re
+    import conversation
+
+    h, _, _ = herd_at_work(home, tmp_path)
+    path = Path(h._transcript(SOLO))
+    told(h, SOLO, "Write the parser and test it in the background.", 70, [69])
+    _write(path, [handed_back(at(60))] + reply("hb", usage(inp=40), when=at(59)), mode="a")
+    told(h, SOLO, "ok ship it", 50, [49])
+    monkeypatch.setattr(conversation, "AGENT_MESSAGE", re.compile(r"(?!)"))
+    old = counted(h)
+    monkeypatch.setattr(conversation, "AGENT_MESSAGE", AGENT_MESSAGE)
+    title = cost.title(HANDED_BACK)
+    assert title in old and old["ok ship it"]["context"] == cost.conversation.first_line(title, cost.CONTEXT_MAX)
+    with h._mu:
+        commits = h._cost_census()
+        h._conn.execute("UPDATE meta SET v = '2' WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    new = counted(h)
+    assert set(new) == set(old) - {title}
+    parser = "Write the parser and test it in the background."
+    assert new[parser]["own"] == old[parser]["own"] + old[title]["own"]
+    assert new["ok ship it"]["context"] == parser
+    with h._mu:
+        assert h._cost_census() == commits
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item = ?", ("task:" + old[title]["id"],)).fetchall()
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item NOT IN (SELECT 'task:' || id FROM cost_tasks)"
+                                   " AND item NOT LIKE 'ask:%' AND item NOT LIKE 'back:%'").fetchall()
+    assert (report["ok"], report["unmade"], report["moved"], report["dropped"]) == (True, 1, old[title]["own"], 0)
 
 
 def test_the_median_of_the_tasks_that_changed_code(home, tmp_path):
