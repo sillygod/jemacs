@@ -309,8 +309,12 @@
   // and the reports agents' replies named (renderReports) -- the sidecar's
   // copies, by id, newest first, a page at a time.
   let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
-  // {list: [{id, title, name, agent, project, at, bytes, gone}], more, error, asking}
+  // {list: [{id, title, name, agent, project, at, bytes, gone, older: [...]}], more, error, asking}
   let reports = null;
+  // The reports whose older copies are shown, by project and file name:
+  // what one is, whichever copy is its newest.
+  const reportsOpen = new Set();
+  const reportKey = (rep) => String(rep.project || "") + "\0" + String(rep.name || rep.id);
 
   function showDocs() {
     view = "docs";
@@ -346,26 +350,39 @@
 
   // The reports, as the sidecar keeps their copies: each opens as the Open
   // link under its message does.  One whose copy is gone from the
-  // directory is still listed, marked, with nothing to open.
+  // directory is still listed, marked, with nothing to open.  A file an
+  // agent rewrote and named again is one row, its newest copy: "2 older"
+  // under it shows the others, newest first, and folds them away again.
   function reportsSection() {
     const r = reports;
     const list = r ? r.list : [];
-    const rows = list.map((rep) => {
+    const one = (rep, older) => {
       const name = String(rep.name || rep.id + ".html");
       const title = String(rep.title || "").trim() || name;
       const who = String(rep.agent || "");
+      const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
+        o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
+      const open = them.length > 0 && reportsOpen.has(reportKey(rep));
       const head = rep.gone
         ? '<span class="dtitle dgone" title="' + esc(name) + '">' + esc(title) + "</span>"
         : docLink("reports", rep.id + ".html", esc(title), "dtitle", name);
-      return '<div class="doc report' + (rep.gone ? " gone" : "") + '" data-report="' + esc(rep.id) + '">' + head +
+      return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
+        esc(rep.id) + '">' + head +
         '<div class="dmeta">' +
         (rep.gone ? '<span class="dgonesays">Its copy is gone from the herd\'s folder: nothing to open.</span>' : "") +
         '<span class="dwho">' + (who ? esc(who) : '<span class="muted">writer unknown</span>') + "</span>" +
         (rep.project ? '<span class="dwhere" title="' + esc(rep.project) + '">' + esc(rep.project) + "</span>" : "") +
         '<span title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span>" +
         "<span>" + esc(sizeText(rep.bytes)) + "</span>" +
-        '<span class="dname">' + esc(name) + "</span></div></div>";
-    }).join("");
+        '<span class="dname">' + esc(name) + "</span>" +
+        (them.length
+          ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
+            '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
+            them.length + " older" + "</button>"
+          : "") + "</div>" +
+        (open ? '<div class="dolders">' + them.map((o) => one(o, true)).join("") + "</div>" : "") + "</div>";
+    };
+    const rows = list.map((rep) => one(rep, false)).join("");
     const sum = !r ? "Asking the herd…"
       : list.length + (list.length === 1 ? " report" : " reports") + (r.more ? ", the newest" : "");
     const more = r && r.more && list.length
@@ -1076,7 +1093,7 @@
 
   const RANK = { blocked: 0, working: 1, starting: 2, waiting: 3, done: 4, idle: 5, dead: 6 };
   let herdNow = {
-    data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
+    data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(), tallyOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, capture: null, newFor: null, pending: false,
     // What the open forms say, kept here as the prompts are: the page is
     // drawn again every 5s and on news, and a form drawn from nothing
@@ -1826,7 +1843,22 @@
   //
   // Today's and the last seven days', as the sidecar tallies them from the
   // transcripts: one number each, input-equivalent tokens -- each kind
-  // weighted as it is priced -- and the kinds in its title.
+  // weighted as it is priced -- and the kinds in its title.  A touch
+  // screen shows no title: a tap shows the same lines under it, and
+  // another folds them (`herdNow.tallyOpen', by "a:" agent or "p:"
+  // project); at the desk the title shows on hover as well.
+
+  function tallyButton(cls, key, lines, label) {
+    const open = herdNow.tallyOpen.has(key);
+    return '<button type="button" class="' + cls + (open ? " open" : "") + '" data-act="a:tally" data-tally="' + esc(key) +
+      '" aria-expanded="' + open + '" title="' + esc(lines.join("\n")) + '">' + esc(label) + "</button>";
+  }
+
+  function tallyMore(key, lines) {
+    if (!lines || !herdNow.tallyOpen.has(key)) return "";
+    return '<div class="tallymore" data-act="a:tally" data-tally="' + esc(key) + '">' +
+      lines.map((l) => "<span>" + esc(l) + "</span>").join("") + "</div>";
+  }
 
   const WEIGHTS = "input-equivalent tokens: input ×1, cache write ×1.25 (1-hour ×2), cache read ×0.1, output ×5";
 
@@ -1835,12 +1867,15 @@
       " · output " + tokens(t.output);
   }
 
-  function tallyHtml(t) {
-    if (!t || !t.today || !t.week) return "";
-    const title = "What its replies cost, in " + WEIGHTS + "\nToday: " + tokens(t.today.w) + " — " + kinds(t.today) +
-      "\nLast 7 days: " + tokens(t.week.w) + " — " + kinds(t.week);
-    return '<span class="mtally" title="' + esc(title) + '">today ' + esc(tokens(t.today.w)) + " · 7d " +
-      esc(tokens(t.week.w)) + "</span>";
+  function tallyLines(t) {
+    if (!t || !t.today || !t.week) return null;
+    return ["What its replies cost, in " + WEIGHTS, "Today: " + tokens(t.today.w) + " — " + kinds(t.today),
+      "Last 7 days: " + tokens(t.week.w) + " — " + kinds(t.week)];
+  }
+
+  function tallyHtml(t, name) {
+    const lines = tallyLines(t);
+    return lines ? tallyButton("mtally", "a:" + name, lines, "today " + tokens(t.today.w) + " · 7d " + tokens(t.week.w)) : "";
   }
 
   // A project's: its agents' together -- a stopped one's too -- and its
@@ -1849,29 +1884,35 @@
     return all ? Math.round((part / all) * 100) + "%" : "—";
   }
 
-  function projectTallyHtml(p) {
-    if (!p || !p.week || !p.week.w) return "";
+  function projectTallyLines(p) {
+    if (!p || !p.week || !p.week.w) return null;
     const line = (label, span) => label + ": " + tokens(p[span].w) + " — lead " + tokens(p.lead[span].w) + " (" +
       share(p.lead[span].w, p[span].w) + "), workers " + tokens(p.workers[span].w);
-    const title = "What this project's agents' replies cost, in " + WEIGHTS + "\n" + line("Today", "today") + "\n" +
-      line("Last 7 days", "week") + "\n" + kinds(p.week);
-    return '<span class="ptally" title="' + esc(title) + '">today ' + esc(tokens(p.today.w)) + " · 7d " +
-      esc(tokens(p.week.w)) + " · lead " + esc(share(p.lead.week.w, p.week.w)) + "</span>";
+    return ["What this project's agents' replies cost, in " + WEIGHTS, line("Today", "today"), line("Last 7 days", "week"),
+      kinds(p.week)];
+  }
+
+  function projectTallyHtml(p) {
+    const lines = projectTallyLines(p);
+    return lines ? tallyButton("ptally", "p:" + p.project, lines, "today " + tokens(p.today.w) + " · 7d " +
+      tokens(p.week.w) + " · lead " + share(p.lead.week.w, p.week.w)) : "";
   }
 
   function meterHtml(a) {
     const m = a && a.meter;
     const p = pickerFor(a);
-    const spent = tallyHtml(a && a.tally);
+    const spent = tallyHtml(a && a.tally, a && a.name);
+    // What the tally's title says, under the meter, once it is tapped.
+    const more = tallyMore("a:" + (a && a.name), tallyLines(a && a.tally));
     // No meter (grok, agy do not report one) but a picker the herd knows:
     // still offer the switch, with no model to show until it is read.
     if (!m) {
-      if (!p) return spent ? '<div class="meter">' + spent + "</div>" : "";
+      if (!p) return spent ? '<div class="meter">' + spent + "</div>" + more : "";
       const btn = a.switching
         ? '<span class="mchip"><span class="meff">switching…</span></span>'
         : '<button type="button" class="mchip mbare" data-act="a:model" title="' +
           esc(switchHint(p)) + '">Model</button>';
-      return '<div class="meter">' + btn + spent + "</div>";
+      return '<div class="meter">' + btn + spent + "</div>" + more;
     }
     const label = esc(m.model) + (m.effort ? '<span class="meff">' + esc(m.effort) + "</span>" : "");
     const cls = "mchip" + (m.pending ? " pending" : "");
@@ -1896,7 +1937,7 @@
     return '<div class="meter">' + chip + (bar || words
       ? '<span class="mctx" title="Context: what its last reply was given, of the window its model has">' + bar +
         (words ? '<span class="mwords">' + esc(words) + "</span>" : "") + "</span>"
-      : "") + spent + "</div>";
+      : "") + spent + "</div>" + more;
   }
 
   // The model and effort to switch to, picked as chips; the effort left
@@ -2122,6 +2163,7 @@
             projectTallyHtml((d.projectTally || []).find((p) => p.project === g.project)) +
             (g.project && !(d.primary && g.project === d.primary.directory)
               ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
+            tallyMore("p:" + g.project, projectTallyLines((d.projectTally || []).find((p) => p.project === g.project))) +
             "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
       : herdNow.newFor === "*" ? ""
@@ -3092,6 +3134,12 @@
   }
 
   function onAgentAction(act, el) {
+    if (act === "tally") {
+      const key = el.getAttribute("data-tally") || "";
+      if (herdNow.tallyOpen.has(key)) herdNow.tallyOpen.delete(key);
+      else herdNow.tallyOpen.add(key);
+      return GM.renderHerdAgain();
+    }
     const row = el.closest(".arow, .rcol, .cfoot, .cmeter");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
@@ -4359,6 +4407,14 @@
       openImage(el);
     } else if (act === "doc:open") {
       emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
+    } else if (act === "reports:older") {
+      const rep = reports && reports.list.find((x) => x.id === el.getAttribute("data-report"));
+      if (rep) {
+        const k = reportKey(rep);
+        if (reportsOpen.has(k)) reportsOpen.delete(k);
+        else reportsOpen.add(k);
+        renderDocs();
+      }
     } else if (act === "reports:more") {
       const last = reports && reports.list[reports.list.length - 1];
       if (last && !reports.asking) {
@@ -5068,8 +5124,10 @@
   const TASK_CODE = { no: "no code", unknown: "code not readable", pending: "code not read yet" };
   function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
   function taskMerged(c) { return c.commits ? (c.merged === c.commits ? "all merged" : (c.merged || 0) + " merged") : ""; }
+  // A short prompt -- a go-ahead -- with the one it goes on from.
   function taskTitle(c) {
-    return "Its task" + (c.prompt ? ": " + c.prompt : "") + "\n" + tokens(c.total) + " weighted tokens — " +
+    return "Its task" + (c.prompt ? ": " + c.prompt + (c.context ? " ← " + c.context : "") : "") + "\n" +
+      tokens(c.total) + " weighted tokens — " +
       (c.mode === "lead" ? "the lead " : c.agent + " itself ") + tokens(c.own) + " · workers " + tokens(c.workers) +
       " · sub-agents " + tokens(c.subs) + "\n" + c.asks + (c.asks === 1 ? " ask" : " asks") + " · " +
       (c.code === "yes" ? c.lines + " lines changed in " + c.commits + (c.commits === 1 ? " commit" : " commits") +
@@ -5115,15 +5173,21 @@
     const L = c.lead, D = c.direct;
     const days = all.map((x) => '<button type="button" class="thcd' + (x.days === c.days ? " on" : "") +
       '" data-act="th:cost-days" data-days="' + x.days + '">' + x.days + " days</button>").join("");
+    // A task whose code is not known yet, or cannot be: in neither "lines
+    // changed" nor "no code" -- said when there is one, as `herd cost' says it.
+    const some = (key, label) => (L[key] || D[key] ? row(label, String(L[key] || 0), String(D[key] || 0)) : "");
     return '<section class="thcosts" aria-label="What a task costs"><div class="thtalkhead"><h2>What a task costs</h2>' +
       '<span class="thsub">through a lead, or told to an agent directly · weighted tokens · since ' + esc(c.since) + "</span>" +
       '<span class="thcds">' + days + "</span></div>" +
       '<table class="thctable"><thead><tr><th></th><th>lead mode</th><th>direct</th></tr></thead><tbody>' +
       row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
+      // A go-ahead is a task of its own: the tasks that changed code apart.
+      row("median per coded task", n(L.medianCoded), n(D.medianCoded)) +
       row("total", n(L.total), n(D.total)) + row("per 100 lines", n(L.per100), n(D.per100)) +
       row("lines changed", L.lines + " in " + L.coded, D.lines + " in " + D.coded) +
       row("of them merged", String(L.merged || 0), String(D.merged || 0)) +
       row("no code", String(L.noCode), String(D.noCode)) +
+      some("pending", "not read yet") + some("unknown", "not readable") +
       row("lead's own share", L.own == null ? "—" : L.own + "%", "—") + "</tbody></table></section>";
   }
 

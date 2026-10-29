@@ -27,6 +27,7 @@ import json
 from datetime import datetime
 from typing import Any, Iterable
 
+import cost
 import projects
 
 ASK_OPEN = ("queued", "delivered")
@@ -260,12 +261,13 @@ def talking(open_rows: list[dict[str, Any]], snap: dict[str, dict[str, Any]],
 
 def direct(task: dict[str, Any], snap: dict[str, dict[str, Any]], on: bool) -> dict[str, Any]:
     """TASK (cost.costs' row) as the list shows it: You → its agent, the
-    user's words its title; live while its agent is ON it and working."""
+    user's words its title -- a short one's with the words it goes on from
+    (cost.titled); live while its agent is ON it and working."""
     agent = task["agent"]
     working = on and (snap.get(agent) or {}).get("state") == "working"
     started = task["at"] * 1000 if task.get("at") else None
     return {
-        "id": "task:" + task["id"], "title": title(task.get("prompt")), "status": "live" if working else "answered",
+        "id": "task:" + task["id"], "title": title(cost.titled(task)), "status": "live" if working else "answered",
         "participants": ["user", agent], "projects": [projects.leaf(task["project"])] if task.get("project") else [],
         "cross": False, "count": 2, "open": 0, "started": started,
         "at": task["end"] * 1000 if task.get("end") else started, "rootFrom": "user", "rootTo": agent,

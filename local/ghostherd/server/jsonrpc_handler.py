@@ -614,7 +614,9 @@ class JsonRpcHandler:
         """The Docs tab's Reports: the HTML reports agents' replies named,
         as the sidecar keeps their copies -- newest first, LIMIT of them,
         older than the one BEFORE names ({at, id}, the last shown) -- each
-        by its id, never where it was copied from; its project by name."""
+        by its id, never where it was copied from; its project by name; a
+        file named again as it was rewritten, one report with its `older'
+        copies."""
         try:
             limit = max(1, min(100, int(params.get("limit") or 30)))
         except (TypeError, ValueError):
@@ -629,7 +631,8 @@ class JsonRpcHandler:
             cursor = (float(at), id_)
         out = images.get_store().reports(limit, cursor)
         for r in out["reports"]:
-            r["project"] = projects.leaf(r["project"]) if r["project"] else ""
+            for one in [r] + r["older"]:
+                one["project"] = projects.leaf(one["project"]) if one["project"] else ""
         return out
 
     def _herd_conversation(self, params: dict) -> dict:

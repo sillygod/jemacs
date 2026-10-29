@@ -2318,7 +2318,9 @@ are the other tabs (below, and "What happened while you were away").
   output 5 --- roughly what eats the plan's quota (the quota left is in
   no transcript, so it is not shown).  The title has the kinds apart,
   input / cache write / cache read / output, and the project's lead
-  and workers apart, today and over the week.  The sidecar reads it
+  and workers apart, today and over the week.  A phone shows no title:
+  a tap on the numbers shows the same lines under them, and another
+  tap folds them (at the desk too; hover still shows the title).  The sidecar reads it
   off the transcripts (=server/tally.py=): claude's =message.usage= on
   each reply --- written as several records with the same usage, so a
   reply counts once, by its message and request ids, and a synthetic
@@ -2579,10 +2581,16 @@ projects.  Read-only: it only shows, and leads where you click.
   sub-agents; told to any other agent --- direct mode --- that agent's
   replies until it is set other work, and its sub-agents'.  The herd's
   own words are never one: an ask, an answer, mail, a relay's brief, a
-  task notification, a command.  Each row shows its thread's task:
+  task notification, a command, what it tells an agy agent as it starts
+  (its guard's note, the shared memory's opening), a lead's role said
+  again on a cold respawn.  Each row shows its thread's task:
   =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is
   not over), =code not readable= (its checkout could not be read); its
-  title, the message and the parts.  Two threads of one task --- a
+  title, the message and the parts.  A short message --- a go-ahead,
+  =好，派人做吧=, its whole text at most 30 columns wide, a CJK
+  character two --- is shown with the last one before it to the same
+  agent that is not, cut: =好，派人做吧 ← fold the copies of one report…=
+  (=--tasks= too, and a direct task's thread title).  Two threads of one task --- a
   lead's two asks for it --- show its cost once: on the task's own
   direct thread, else its first; the other says =same task as “fix the
   build”=.  The open thread says it in full under its summary: =Its
@@ -2592,12 +2600,15 @@ projects.  Read-only: it only shows, and leads where you click.
   =not merged=, and a copy (an amend, a rebase, a cherry-pick) as =a
   copy of 81b8baca, not counted again=.  Above the list, *What a task costs*: lead mode against
   direct mode over the last 7 or 30 local days --- how many tasks, the
-  median and the total per task, the tokens per 100 changed lines (all
+  median and the total per task, the median per task that changed code
+  (go-aheads are tasks of their own, and many pull the first median
+  down), the tokens per 100 changed lines (all
   of a mode's tokens over all its lines: a commit counts in the task it
   was made in, and "commit and push" is a task of its own, so per task
   it would flatter the one that only committed), the lines and the
   tasks they came in, how many of those are merged yet, those with no
-  code, and the lead's own share.
+  code, those whose code is =not read yet= or =not readable= (when there
+  are any), and the lead's own share.
   =herd cost [--days N] [--project P] [--tasks]= prints the same, and
   with =--tasks= each task, newest first --- an agent may run it.  An
   agent sees every project's numbers, but the tasks --- your words that
@@ -2617,8 +2628,20 @@ projects.  Read-only: it only shows, and leads where you click.
   what the herd frames its own in, per CLI: claude's user records (not
   =isMeta=, not a compaction's summary, a message taken mid-turn too),
   agy's =USER_INPUT= (=<USER_REQUEST>=), grok's =user_message_chunk= in
-  =updates.jsonl=; the herd's notes before a message to a lead, and the
-  lead's role, are taken off.  An ask is the work its asker was on when
+  =updates.jsonl=; the herd's notes before a message to a lead (after
+  the images pasted into claude's input too, =[Image #1]=, where claude
+  keeps their blank line as a bare line break), and a lead's or
+  primary's role, are taken off.  When those rules change
+  (=cost.SAID_VERSION=), the tasks kept are read again once, on the
+  sidecar's worker: one whose words are now the herd's is none, what it
+  cost going to the work its agent was on as they came; one whose words
+  read otherwise takes them as its title.  The commits kept are not
+  touched.  The store is backed up first, to
+  =backups/herd-cost-said-<version>-<time>.sqlite= beside =herd.sqlite=;
+  each task is put right in a commit of its own, so a sidecar stopped
+  half-way does the rest next time; then every task and the commits are
+  checked, and only then is it marked done (=meta= =cost_said=, its
+  counts in =cost_said_report=).  An ask is the work its asker was on when
   it made it: by the herd's record of it --- the ask it was answering,
   else its asker's work at that moment --- or, the record gone after a
   week, by what its client printed (=herd: asked rd (ask ID)=).  A
@@ -2651,7 +2674,11 @@ projects.  Read-only: it only shows, and leads where you click.
   agent commits, then says so), the latest begun --- so lead mode counts
   each ask's taker's, direct mode the agent's own.  An amend, a rebase's
   pick and a cherry-pick copy a commit made before (the commit replaced,
-  or the same author and author date): its work counts once, where it
+  or the one with the same author, author date and subject --- two made
+  in one second are told apart by it; reworded, the same author and
+  author date alone; copies kept by the older rule, author and date
+  alone, were put right once, backed up first, =meta= =cost_copies=):
+  its work counts once, where it
   was first made, at its last copy's lines, and is merged when any copy
   is; the task that made the copy shows it, counting nothing.  A merge,
   a reset, a checkout make no commit.  Lines are insertions plus
@@ -2788,7 +2815,7 @@ sandboxed; in the xwidget, a view of Emacs's over loopback.  They are
 read from the sidecar's index of its copies (=herd_reports=, the
 herd's own method, not the agents'), asked when the tab is shown and
 never waited on --- thirty at a time, /Older reports/ for the next
-thirty --- so a long history costs one indexed query a page.  Nothing
+thirty.  Nothing
 is copied again, nothing is written to =docs/= or to
 =ghostherd-docs-directories=, and where a report was copied from is
 never said: only its file's name.
@@ -2801,6 +2828,15 @@ never said: only its file's name.
   first where its writer is not known (a push read before the reply was
   recorded) learns it from the reply's own copy; copies made before
   this was recorded say /writer unknown/.
+- *A report rewritten and named again* is one row: its newest copy,
+  and under it =2 older=, which opens the earlier copies there, newest
+  first, and folds them away again --- one report per file name in a
+  project; the same name in another project is another report.  The
+  message that names it in the same words again shows the new copy:
+  said again, a message looks at each file it named by its size and
+  time (kept with the copy, beside a digest of its path --- never the
+  path), copies again the one that changed, reads none that did not,
+  and keeps the copy of one gone.
 - *A copy gone from the directory* (deleted by hand) stays listed until
   it would have been pruned, greyed, saying its copy is gone, with
   nothing to open; its address answers 404.  A pruned copy leaves the

@@ -996,3 +996,15 @@ def test_herd_search_is_a_guarded_agents_one_way_into_the_sessions(guard, line):
     not the agent's."""
     assert allowed(cmd(guard, '"$GHOSTHERD_HERD" search deploy'))
     assert cmd(guard, line).decision == "deny", line
+
+
+@pytest.mark.parametrize("line", [
+    '"$GHOSTHERD_HERD" cost',
+    '"$GHOSTHERD_HERD" cost --days 30 --tasks',
+    '"$GHOSTHERD_HERD" cost --project jnotes --json',
+])
+def test_herd_cost_is_a_guarded_agents_too(guard, line):
+    """`herd cost' runs for a guarded agent as for any other: herd_costs is
+    an agent's method on purpose (a lead's review), and the herd decides
+    what it is shown -- the numbers, its own project's tasks."""
+    assert allowed(cmd(guard, line)), line

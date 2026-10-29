@@ -100,9 +100,67 @@ def transcript(home, name, records, project="-src-dp"):
     ('<pasted_content id="a1">\n' + frame("lead", "rd", "[ask 1a2b3c4d -- x]\nDo it.") + "\n</pasted_content>",
      ("ask", "1a2b3c4d")),
     ("   ", None),
+    # The note after images pasted into claude's input, which keeps its
+    # blank line as a bare line break.
+    ("[Image #1][What this project works on, as the herd sees it.  Read them:\n- branch x in ~/p/\n- PR #3 [y]]\n"
+     "Ship it.", ("user", "[Image #1]Ship it.")),
+    ("[Image #1] [Image #2][Since you last heard from me, I wrote:\n- to rd: a]\n\nShip it.",
+     ("user", "[Image #1] [Image #2]Ship it.")),
+    ("[Image #5]", ("user", "[Image #5]")),
+    # What the herd tells an agy agent as it starts: no task, guarded or not.
+    ("A herd guard checks each of your tool calls.  Your workspace is /w and your\ncommands run there.\n\n"
+     "The herd keeps shared memory for this project -- curated facts every\nagent sees.", None),
+    ("The herd keeps shared memory for this project -- curated facts every\nagent sees.", None),
+    # A role alone -- a cold respawn's -- is the herd's; primary's opens its
+    # first message as a lead's does, the notes after it.
+    ("You are the lead of this project's herd of agents: you plan.\n", None),
+    ("You are primary: the herd-wide lead.  You route.\n---\n\nWhat is everyone doing?",
+     ("user", "What is everyone doing?")),
+    ("You are the lead of this project's herd of agents: you plan.\n---\n\n"
+     "[What this project works on, as the herd sees it.  Read them:\n- branch x]\n\nShip it.", ("user", "Ship it.")),
+    ("You are the lead of this project's herd of agents: you plan.\n---\n\n[Relay: you take over from lead.]\n## Work",
+     None),
 ])
 def test_what_is_the_users_and_what_the_herds(text, want):
     assert cost.said(text) == want
+
+
+def test_what_the_herd_writes_an_agent_as_it_starts_is_no_task(tmp_path):
+    """The agy start message, a lead's role alone and primary's first
+    message, as Emacs writes them -- not as copied here, so a change to
+    them fails here, not silently in the numbers."""
+    import shutil
+
+    from tests.test_conversation import GHOSTHERD_EL
+
+    emacs = shutil.which("emacs")
+    if not emacs:
+        pytest.skip("no emacs")
+    root = GHOSTHERD_EL.parent
+    lisp = r"""
+(let ((ghostherd-memory-dir "%s"))
+  (princ (concat (format ghostherd--agy-guard-note "/w/" "/g/") (ghostherd--memory-opening "/no/project/")))
+  (princ "\0")
+  (princ (ghostherd--memory-opening "/no/project/"))
+  (princ "\0")
+  (princ ghostherd--lead-role)
+  (princ "\0")
+  (princ (concat ghostherd--primary-role "\n---\n\n" "What is everyone doing?")))
+""" % (tmp_path / "memory")
+    out = subprocess.run([emacs, "-Q", "--batch", "-L", str(root), "-L", str(root.parent / "xwapp"),
+                          "-l", "ghostherd", "--eval", lisp], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-2000:]
+    guarded, unguarded, role, primary = out.stdout.split("\0")
+    assert guarded.startswith(cost.OPENINGS[0]) and len(guarded) > 400
+    assert cost.said(guarded) is None and cost.said(unguarded) is None and cost.said(role) is None
+    assert cost.said(primary) == ("user", "What is everyone doing?")
+    # agy's own record of it, read for tasks: none.
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [{"type": "USER_INPUT", "step_index": 0, "created_at": _iso(at(5)),
+                   "content": "<USER_REQUEST>" + guarded + "</USER_REQUEST>"}])
+    t = cost.Tracker(str(path), "agy", None)
+    cost.read_from(path, t, 0, 1 << 20)
+    assert t.tasks == [] and t.item is None
 
 
 def test_a_lead_turn_woken_by_an_answer_is_that_asks_tasks(tmp_path):
@@ -444,7 +502,8 @@ def test_a_task_told_directly_is_a_thread_of_its_own(home, tmp_path):
     h, _, _ = herd_at_work(home, tmp_path)
     counted(h)
     direct = [t for t in h.threads()["threads"] if t.get("direct")]
-    assert [t["title"] for t in direct] == ["Now push it.", "Add a health check."]
+    # A go-ahead's title says what it goes on from.
+    assert [t["title"] for t in direct] == ["Now push it. ← Add a health check.", "Add a health check."]
     health = direct[1]
     assert (health["participants"], health["projects"], health["rootFrom"]) == (["user", SOLO], ["solo"], "user")
     assert health["id"].startswith("task:") and health["cost"]["lines"] == 12
@@ -588,3 +647,310 @@ def test_herd_cost_says_what_it_left_out(home, live):  # noqa: F811
     out = run(live, "cost", "--tasks")
     assert out.returncode == 0, out.stderr
     assert "secret plans" not in out.stdout and "1 more task" in out.stdout
+
+
+# ---- Tasks kept by older rules ------------------------------------------------------
+
+AGY = "agy-dp"
+# What the rules before SAID_VERSION 2 read as a lead's note: it at the
+# very start, closed by a blank line.
+OLD_NOTE = r"(?:^|(?<=>))\[((?:Since you last heard from me|What this project works on)[^\n]*)\n.*?\]\n\n"
+
+
+def agy_said(text, when, step):
+    return {"type": "USER_INPUT", "source": "USER_EXPLICIT", "step_index": step, "created_at": _iso(when),
+            "content": "<USER_REQUEST>" + text + "</USER_REQUEST>"}
+
+
+def agy_reply(inp, when, step):
+    return {"type": "PLANNER_RESPONSE", "source": "MODEL", "step_index": step, "created_at": _iso(when),
+            "input_tokens": inp, "cache_read_tokens": 0, "output_tokens": 0}
+
+
+def old_rules_herd(home, tmp_path, monkeypatch):
+    """A lead told, after two pasted images and its note, to ship a fix,
+    which it asks an agy agent for; the agy agent, respawned on its
+    conversation while on that ask, told the herd's opening again, then
+    told directly to tidy the docs, which it commits -- all read by the
+    older rules: the opening a task, the note the lead's task's title."""
+    import re
+    import conversation
+
+    dp = repo(tmp_path / "dp", at(600))
+    snap = [{"name": LEAD, "kind": "claude", "state": "idle", "project": str(dp) + "/", "role": "lead",
+             "directory": str(dp) + "/"},
+            {"name": AGY, "kind": "agy", "state": "idle", "project": str(dp) + "/", "directory": str(dp) + "/"}]
+    reset_herd()
+    h = HerdStore(tmp_path / "herd.sqlite")
+    h.tick(sessions=snap)
+    ask = h.ask(AGY, "ship the fix", from_name=LEAD)["id"]
+    out = h.tick(sessions=snap)
+    h.tick(sessions=snap, ack_ids=[p["id"] for p in out["pending"]])
+    note = "[What this project works on, as the herd sees it.  Read them:\n- branch x in ~/p/\n- its PR #3 [open]]\n"
+    lead = transcript(home, "lead", [you([{"type": "text", "text": "[Image #1] [Image #2]" + note + "Ship the fix."},
+                                          {"type": "image", "source": {"type": "base64", "data": ""}}], at(50))]
+                      + reply("1", usage(inp=100), when=at(49))
+                      + ran("2", f"herd ask {AGY} 'ship the fix'", f"herd: asked {AGY} (ask {ask}), round 1 of 5", at(48)))
+    opening = ("A herd guard checks each of your tool calls.  Your workspace is /w and your\ncommands run there.\n\n"
+               "The herd keeps shared memory for this project -- curated facts every\nagent sees.")
+    agy = _write(home / ".gemini" / "antigravity-cli" / "brain" / "b1" / ".system_generated" / "logs" / "transcript.jsonl",
+                 [agy_said(frame(LEAD, AGY, f"[ask {ask} -- whoever asked is waiting]\nship the fix"), at(47), 0),
+                  agy_reply(20, at(46), 1),
+                  agy_said(opening, at(40), 2), agy_reply(300, at(39), 3),
+                  agy_said("Tidy the docs.", at(30), 4), agy_reply(50, at(28), 5)])
+    commit(dp, "docs.md", 9, at(29), message="docs")
+    h.report(LEAD, cli="claude", conversation="lead", transcript=lead)
+    h.report(AGY, cli="agy", conversation="b1", transcript=agy)
+    monkeypatch.setattr(cost, "OPENINGS", ())
+    monkeypatch.setattr(cost, "ROLES", ())
+    monkeypatch.setattr(conversation, "LEAD_NOTE", re.compile(OLD_NOTE, re.S | re.M))
+    old = counted(h)
+    monkeypatch.setattr(cost, "OPENINGS", OPENINGS)
+    monkeypatch.setattr(cost, "ROLES", ROLES)
+    monkeypatch.setattr(conversation, "LEAD_NOTE", LEAD_NOTE)
+    with h._mu:   # a store from before the rules were versioned
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_said%'")
+        h._conn.commit()
+    h._said_ok = False
+    return h, ask, old
+
+
+import conversation as _conversation  # noqa: E402
+
+OPENINGS, ROLES, LEAD_NOTE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE
+
+
+def test_tasks_kept_by_older_rules_are_read_again(home, tmp_path, monkeypatch):
+    """The herd's opening, read as a task by the older rules, is none: what
+    its replies cost goes to the work its agent was on as it came -- the
+    lead's ask -- and the lead's task, titled by the note, takes the user's
+    words.  The commits kept are left as they were; the store is backed up
+    first; the check passes and is marked."""
+    h, ask, old = old_rules_herd(home, tmp_path, monkeypatch)
+    titled = "[Image #1] [Image #2][What this project works on, as the herd sees it.  Read them:"
+    assert set(old) == {titled, cost.OPENINGS[0] + "  Your workspace is /w and your", "Tidy the docs."}
+    assert old[titled]["workers"] == 20 and old["Tidy the docs."]["lines"] == 9
+    with h._mu:
+        commits = h._cost_census()
+    new = counted(h)
+    assert set(new) == {"[Image #1] [Image #2]Ship the fix.", "Tidy the docs."}
+    ship = new["[Image #1] [Image #2]Ship the fix."]
+    assert (ship["own"], ship["workers"]) == (old[titled]["own"], 20 + 300)
+    assert (new["Tidy the docs."]["own"], new["Tidy the docs."]["lines"]) == (50, 9)
+    with h._mu:
+        assert h._cost_census() == commits
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == (str(cost.SAID_VERSION),)
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+        # The agy agent is on what it was told last, as a reading now leaves it.
+        assert h._conn.execute("SELECT item FROM cost_files WHERE agent = ?", (AGY,)).fetchone()[0].startswith("task:")
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item NOT IN"
+                                   " (SELECT 'task:' || id FROM cost_tasks) AND item NOT LIKE 'ask:%'").fetchall()
+    assert (report["ok"], report["unmade"], report["retitled"], report["moved"]) == (True, 1, 1, 300)
+    backups = list((tmp_path / "backups").iterdir())
+    assert len(backups) == 1 and report["backup"] == str(backups[0])
+    import sqlite3
+    with sqlite3.connect(backups[0]) as b:   # the store as it was before
+        assert b.execute("SELECT COUNT(*) FROM cost_tasks").fetchone()[0] == 3
+    # Done: not again -- and a run stopped half-way, done again, finds the
+    # rest as it should be, with no second backup.
+    h._said_ok = False
+    assert counted(h) == new
+    with h._mu:
+        h._conn.execute("DELETE FROM meta WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    assert counted(h) == new and len(list((tmp_path / "backups").iterdir())) == 1
+    with h._mu:
+        again = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert (again["ok"], again["unmade"], again["retitled"], again["placed"]) == (True, 0, 0, 0)
+
+
+def test_a_task_whose_words_are_gone_is_judged_by_its_first_line(home, tmp_path, monkeypatch):
+    """Its transcript gone, a task is judged by what was kept of its words:
+    the herd's opening is none, the user's words stay."""
+    h, ask, old = old_rules_herd(home, tmp_path, monkeypatch)
+    Path(h._transcript(AGY)).unlink()
+    with h._tally_mu:
+        h._cost_recheck()
+    with h._mu:
+        left = {p for (p,) in h._conn.execute("SELECT prompt FROM cost_tasks")}
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert left == {"[Image #1] [Image #2]Ship the fix.", "Tidy the docs."}
+    assert (report["ok"], report["unread"], report["unmade"], report["dropped"]) == (True, 2, 1, 300)
+
+
+def test_a_fresh_store_is_marked_with_no_backup(home, tmp_path):
+    reset_herd()
+    h = HerdStore(tmp_path / "herd.sqlite")
+    h._tally_pass()
+    with h._mu:
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == (str(cost.SAID_VERSION),)
+    assert not (tmp_path / "backups").exists()
+
+
+# ---- A go-ahead is a task of its own -------------------------------------------------
+
+
+def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
+    """A prompt at most SHORT columns wide, whole -- a CJK character two --
+    is shown with the last one before it to the same agent, in the same
+    project, that is not short: two go-aheads in a row both go on from the
+    request.  A short first line over a long paste is not short."""
+    long_ask = "Move the reports into their own tab and fold the copies of one file under it, newest first"
+    T = lambda tid, agent, prompt, when, size=None, project="/p/": {  # noqa: E731
+        "id": tid, "agent": agent, "prompt": prompt, "at": when, "size": size, "project": project}
+    tasks = [T("a", "lead", long_ask, 1), T("b", "lead", "好，派人做吧", 2), T("c", "lead", "好", 3),
+             T("d", "rd", "yes merge please", 4),                         # nothing before it: none
+             T("e", "lead", "看這個錯誤", 5, size=900),                    # a paste under it: not short
+             T("f", "lead", "ok", 6, project="/q/"),                      # another project's: not this one's
+             T("g", "lead", "ok go", 7)]
+    assert cost.width("好，派人做吧") == 12 and cost.width("yes  merge\nplease") == 16
+    got = cost.contexts(tasks)
+    assert got == {"b": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX),
+                   "c": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX), "g": "看這個錯誤"}
+    assert len(got["b"]) <= cost.CONTEXT_MAX and got["b"].endswith("…")
+    assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
+
+
+def test_the_median_of_the_tasks_that_changed_code(home, tmp_path):
+    """Many go-aheads pull the median per task down: the median per coded
+    task is beside it."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    tasks = counted(h)
+    c = h.costs(7)["compare"]
+    fix = tasks["Fix the build, please."]["total"]
+    assert c["lead"]["medianCoded"] == fix and c["direct"]["medianCoded"] == 700
+    assert c["lead"]["median"] == round((fix + 50) / 2)
+    assert cost.compare([], 7)["lead"]["medianCoded"] is None
+
+
+def test_herd_cost_tasks_show_what_a_go_ahead_goes_on_from(home, tmp_path):
+    h, _, _ = herd_at_work(home, tmp_path)
+    tasks = counted(h)
+    assert tasks["Now push it."]["context"] == "Add a health check."
+    assert tasks["Add a health check."]["context"] == ""
+    # And on the thread's cost, as the page shows it.
+    with h._mu:
+        tid = h._conn.execute("SELECT id FROM cost_tasks WHERE prompt = 'Now push it.'").fetchone()[0]
+        size = h._conn.execute("SELECT size FROM cost_tasks WHERE id = ?", (tid,)).fetchone()[0]
+    assert size == 12
+    assert h.thread(id="task:" + tid)["cost"]["context"] == "Add a health check."
+
+
+def test_herd_cost_shows_the_median_per_coded_task_and_what_a_go_ahead_goes_on_from(home, live):  # noqa: F811
+    h = herd_mod.get_herd()
+    row = lambda tid, prompt, total, lines, context="": {  # noqa: E731
+        "id": tid, "agent": "claude-main", "project": "/src/a/", "mode": "lead", "prompt": prompt, "context": context,
+        "at": NOW.timestamp(), "end": NOW.timestamp(), "total": total, "own": total, "workers": 0, "subs": 0,
+        "kinds": {}, "asks": 0, "commits": 1 if lines else 0, "lines": lines, "merged": 0, "mergedLines": 0,
+        "code": "yes" if lines else "no"}
+    h._cost_seen = (float("inf"), {"asked": {}, "tasks": {
+        "k1": row("k1", "Fold the reports of one file", 8700000, 120),
+        "k2": row("k2", "好，派人做吧", 40000, 0, context="Fold the reports of one file"),
+        "k3": row("k3", "ok", 30000, 0)}})
+    h.tick(sessions=[{"name": "claude-main", "kind": "claude", "state": "idle", "project": "/src/a/"}])
+    out = run(live, "cost", "--tasks", session="claude-main")
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert any(l.split()[:4] == ["median", "per", "coded", "task"] and l.split()[4] == "8.7M" for l in lines), out.stdout
+    assert any(l.split()[:3] == ["median", "per", "task"] and l.split()[3] == "40k" for l in lines), out.stdout
+    assert "  好，派人做吧 ← Fold the reports of one file" in lines
+
+
+# ---- Two commits made in one second ---------------------------------------------------
+
+
+def two_in_one_second(home, tmp_path):
+    """A direct agent's two commits in one second -- 500 lines and 10 --
+    rebased and merged into master: two copies of the same author and
+    author date."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    solo = tmp_path / "solo"
+    told(h, SOLO, "Add the parser and its test.", 70, [69, 45])
+    git(solo, "switch", "-q", "-c", "parser", when=at(68))
+    a = commit(solo, "parser.py", 500, at(66), message="feat: the parser")
+    b = commit(solo, "test_parser.py", 10, at(66), message="test: the parser")
+    b2 = rewrite(solo, "rebase", "-q", "--force-rebase", "master", "parser", when=at(58))
+    a2 = git(solo, "rev-parse", "HEAD~1").strip()
+    git(solo, "switch", "-q", "master", when=at(50))
+    git(solo, "merge", "-q", "--ff-only", "parser", when=at(50))
+    return h, a, b, a2, b2
+
+
+def test_two_commits_in_one_second_rebased_keep_their_own_lines(home, tmp_path):
+    """Told apart by subject: each copy is its own commit's, so each keeps
+    its lines, and each is merged."""
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    task = counted(h)["Add the parser and its test."]
+    assert (task["commits"], task["lines"], task["merged"]) == (2, 510, 2)
+    assert {(c["sha"], c["of"], c["lines"]) for c in task["made"]} == {
+        (a, None, 500), (b, None, 10), (a2, a, 500), (b2, b, 10)}
+
+
+def test_a_reworded_copy_is_the_first_commits_of_its_second():
+    "No commit of its subject: its author and author date say whose it is, as before."
+    who = "t@x 1700000000"
+    entries = [{"sha": s, "at": 1700000100 + i, "author": who, "parents": ["p"], "subject": subj, "action": act,
+                "before": None} for i, (s, subj, act) in enumerate(
+        [("a", "one", "commit"), ("b", "two", "commit"), ("a2", "one, reworded", "rebase (reword)"),
+         ("b2", "two", "rebase (pick)")])]
+    got = {c["sha"]: c["of"] for c in cost.new_commits(list(reversed(entries)), {}, 0)}
+    assert got == {"a": None, "b": None, "a2": "a", "b2": "b"}
+
+
+def test_copies_kept_by_the_older_rule_are_put_right(home, tmp_path):
+    """Kept before the rule told two commits of one second apart, both
+    copies are the first's -- which then shows the other's lines -- and the
+    other is never merged: put right once, backed up first, checked; a
+    copy reworded is left as it is."""
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    counted(h)
+    with h._mu:   # as the older rule kept them
+        h._conn.execute("UPDATE cost_commits SET of = ? WHERE sha = ?", (a, b2))
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_copies%'")
+        h._conn.commit()
+        before = h._cost_census()
+    h._cost_seen = None
+    with h._tally_mu:
+        old = h.costs(7, tasks=True)
+    old = {t["prompt"]: t for t in old["tasks"]}["Add the parser and its test."]
+    assert (old["lines"], old["merged"]) == (10 + 10, 1)   # a took b's copy's lines; b never merged
+    h._copies_ok = False
+    task = counted(h)["Add the parser and its test."]
+    assert (task["lines"], task["merged"]) == (510, 2)
+    with h._mu:
+        assert h._conn.execute("SELECT of FROM cost_commits WHERE sha = ?", (b2,)).fetchone() == (b,)
+        assert h._cost_census() == before
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies_report'").fetchone()[0])
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies'").fetchone() == (str(cost.COPY_VERSION),)
+    assert (report["ok"], report["fixed"], report["left"]) == (True, 1, [])
+    assert [p.name.startswith("herd-cost-copies-") for p in (tmp_path / "backups").iterdir()] == [True]
+    # Once: marked, not again; and none to put right, no backup.
+    h._copies_ok = False
+    assert counted(h)["Add the parser and its test."]["lines"] == 510
+    assert len(list((tmp_path / "backups").iterdir())) == 1
+    rows = [("x", "t@x 1", "one", None, 1.0), ("y", "t@x 1", "two", None, 1.0),
+            ("y2", "t@x 1", "two, reworded", "y", 2.0), ("x2", "t@x 1", "one", "y", 2.0)]
+    assert cost.recopied(rows) == {"x2": "x"}
+
+
+def test_copies_put_right_wrongly_are_undone(home, tmp_path, monkeypatch):
+    "A correction that fails its check is undone, and marked so: not tried again."
+    h, a, b, a2, b2 = two_in_one_second(home, tmp_path)
+    counted(h)
+    with h._mu:
+        h._conn.execute("UPDATE cost_commits SET of = ? WHERE sha = ?", (a, b2))
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_copies%'")
+        h._conn.commit()
+    real, calls = cost.recopied, []
+    monkeypatch.setattr(cost, "recopied", lambda rows: calls.append(1) or (real(rows) if len(calls) == 1 else {"x": "y"}))
+    h._copies_ok = False
+    with h._tally_mu:
+        h._cost_recopy()
+    with h._mu:
+        assert h._conn.execute("SELECT of FROM cost_commits WHERE sha = ?", (b2,)).fetchone() == (a,)
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_copies'").fetchone() == ("failed %d" % cost.COPY_VERSION,)
+    h._copies_ok = False
+    with h._tally_mu:
+        h._cost_recopy()
+    assert len(calls) == 2

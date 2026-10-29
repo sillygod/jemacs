@@ -83,6 +83,43 @@ const herd = (extra) => Object.assign({}, HERD, {
         head.title.includes("Last 7 days: 53.4M — lead 12.4M (23%), workers 41M"), head && head.title);
       const other = await page.$('.pgroup[data-project="~/src/jnotes/"] .phead .ptally');
       check(W("a project the sidecar has counted nothing of: none"), !other);
+
+      // ---- Tapped: what its title says, inline (a touch screen shows no title) ----
+      const more = (scope) => page.$eval(scope, (r) => {
+        const b = r.querySelector(".mtally, .ptally");
+        const m = r.querySelector(".tallymore");
+        return { expanded: b && b.getAttribute("aria-expanded"), lines: m ? [...m.children].map((c) => c.textContent) : null,
+                 title: b && b.title, wide: document.documentElement.scrollWidth > innerWidth + 1 };
+      });
+      await tap(row(LEAD) + " .mtally");
+      await sleep(100);
+      let m = await more(row(LEAD));
+      check(W("an agent's tally tapped: its title's lines under the meter"),
+        m.expanded === "true" && m.lines && m.lines.length === 3 && m.lines.join("\n") === m.title &&
+        m.lines[1] === "Today: 1.3M — input 2k · cache write 300k · cache read 8M · output 40k" && !m.wide, m);
+      check(W("only its own"), (await more(row(RD))).lines === null);
+      await show(herd());
+      await sleep(100);
+      check(W("it stays open as the herd is drawn again"), ((await more(row(LEAD))).lines || []).length === 3);
+      await tap(row(LEAD) + " .tallymore");
+      await sleep(100);
+      m = await more(row(LEAD));
+      check(W("tapped again: folded; the title is still there to hover"),
+        m.expanded === "false" && m.lines === null && /Last 7 days: 12.4M/.test(m.title), m);
+      const ph = '.pgroup[data-project="' + DP + '"] .phead';
+      await tap(ph + " .ptally");
+      await sleep(100);
+      m = await more(ph);
+      check(W("a project's tapped: lead and workers apart, each span, the kinds"),
+        m.expanded === "true" && m.lines && m.lines.length === 4 &&
+        m.lines[2] === "Last 7 days: 53.4M — lead 12.4M (23%), workers 41M" && !m.wide, m);
+      if (where === "phone") {
+        const fits = await page.$eval(ph, (h) => h.scrollWidth <= h.clientWidth + 1);
+        check(W("open, the head still fits the phone"), fits);
+      }
+      await tap(ph + " .ptally");
+      await sleep(100);
+      check(W("and folded again"), (await more(ph)).lines === null);
       if (where === "phone") {
         const fits = await page.$eval('.pgroup[data-project="' + DP + '"] .phead', (h) =>
           h.scrollWidth <= h.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1);

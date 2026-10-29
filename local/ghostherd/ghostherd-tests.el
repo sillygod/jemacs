@@ -15961,13 +15961,18 @@ letter, a symlink, another file."
 the tab is shown and never waited on: the newest page, then each older
 one from the last shown, which the page adds them after.  Field by
 field: one whose id is not a copy's is dropped, a gone copy says so.
-A sidecar that cannot answer says why; an older page asked from what
-is not a report's place is not asked at all."
+A report's older copies -- its file rewritten and named again -- come
+with it, each likewise.  A sidecar that cannot answer says why; an
+older page asked from what is not a report's place is not asked at all."
   (skip-unless (require 'ghostherd-memory-page nil t))
   (let* ((id ghostherd-test--image-id)
          (id2 (make-string 32 ?a))
          (answer (list :reports (list (list :id id :title "A report" :name "r.html" :agent "rd"
-                                            :project "x" :at 1700000000.25 :bytes 120 :gone nil)
+                                            :project "x" :at 1700000000.25 :bytes 120 :gone nil
+                                            :older (list (list :id id2 :title "A draft" :name "r.html"
+                                                               :agent "rd" :project "x" :at 1699999000.5
+                                                               :bytes 90 :gone nil :older (list (list :id id)))
+                                                         (list :id "../draft" :at 1.0)))
                                       (list :id "../index" :at 1.0)
                                       (list :id (upcase id) :at 1.0)
                                       (list :id id2 :title nil :at 1700000000.0 :bytes -1 :gone t :agent 3))
@@ -15984,9 +15989,12 @@ is not a report's place is not asked at all."
       (should (equal (car sent)
                      `("renderReports"
                        :reports [(:id ,id :title "A report" :name "r.html" :agent "rd" :project "x"
-                                  :at 1700000000.25 :bytes 120 :gone :json-false)
+                                  :at 1700000000.25 :bytes 120 :gone :json-false
+                                  ;; Its older copies, each likewise -- none of their own.
+                                  :older [(:id ,id2 :title "A draft" :name "r.html" :agent "rd" :project "x"
+                                           :at 1699999000.5 :bytes 90 :gone :json-false)])
                                  (:id ,id2 :title "" :name ,(concat id2 ".html") :agent "" :project ""
-                                  :at 1700000000.0 :bytes 0 :gone t)]
+                                  :at 1700000000.0 :bytes 0 :gone t :older [])]
                        :more t :after :json-false)))
       ;; The page older than the last shown.
       (ghostherd-memory-page--handle `((op . "reports-more") (at . 1761469012.1234567) (id . ,id2)))

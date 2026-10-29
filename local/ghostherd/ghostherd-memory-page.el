@@ -2614,20 +2614,27 @@ when it changed."
   "How many reports the Docs tab shows at a time: the newest, and as
 many more each time its \"Older reports\" is pressed.")
 
-(defun ghostherd-memory-page--report (r)
+(defun ghostherd-memory-page--report (r &optional older)
   "Report R, from `herd_reports', as the page takes it, field by field:
-nil unless its id is a copy's."
+nil unless its id is a copy's.  With its older copies -- the same file,
+rewritten and named again -- each likewise; OLDER, R is one of those."
   (let ((id (plist-get r :id)))
     (when (and (stringp id) (numberp (plist-get r :at))
                (let ((case-fold-search nil)) (string-match-p "\\`[0-9a-f]\\{32\\}\\'" id)))
-      (list :id id
-            :title (or (ghostherd-memory-page--str (plist-get r :title)) "")
-            :name (or (ghostherd-memory-page--str (plist-get r :name)) (concat id ".html"))
-            :agent (or (ghostherd-memory-page--str (plist-get r :agent)) "")
-            :project (or (ghostherd-memory-page--str (plist-get r :project)) "")
-            :at (plist-get r :at)
-            :bytes (if (natnump (plist-get r :bytes)) (plist-get r :bytes) 0)
-            :gone (if (plist-get r :gone) t :json-false)))))
+      (append
+       (list :id id
+             :title (or (ghostherd-memory-page--str (plist-get r :title)) "")
+             :name (or (ghostherd-memory-page--str (plist-get r :name)) (concat id ".html"))
+             :agent (or (ghostherd-memory-page--str (plist-get r :agent)) "")
+             :project (or (ghostherd-memory-page--str (plist-get r :project)) "")
+             :at (plist-get r :at)
+             :bytes (if (natnump (plist-get r :bytes)) (plist-get r :bytes) 0)
+             :gone (if (plist-get r :gone) t :json-false))
+       (unless older
+         (let ((them (plist-get r :older)))
+           (list :older (vconcat (delq nil (mapcar (lambda (o) (ghostherd-memory-page--report o t))
+                                                   (and (sequencep them) (not (stringp them))
+                                                        (append them nil))))))))))))
 
 (defun ghostherd-memory-page--send-reports (&optional at id)
   "Give the page the Docs tab's reports, asked of the sidecar: the

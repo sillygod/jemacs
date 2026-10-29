@@ -56,11 +56,13 @@ in its answer to its lead, which hands it off.
 `cost' compares what a task costs, in weighted tokens (input 1, cache
 read 0.1, cache write 1.25 or 2, output 5), through a lead and talking to
 an agent directly, over the last N local days (7; at most 30): the
-tasks, the median and total per task, the tokens per 100 changed lines,
-and the lead's own share -- of every project, or of --project P.  A task
-is one message of the user's and what it set off; `--tasks' lists each,
-newest first: your own project's only, which the herd knows you in --
-another's tasks, and the user's words in them, are not yours to read.
+tasks, the median and total per task, the median of those that changed
+code, the tokens per 100 changed lines, and the lead's own share -- of
+every project, or of --project P.  A task is one message of the user's
+and what it set off; `--tasks' lists each, newest first, a short one (a
+go-ahead) with the one before it it goes on from: your own project's
+only, which the herd knows you in -- another's tasks, and the user's
+words in them, are not yours to read.
 
 `reply' stores the answer and says so at once.  When your work on that
 ask went rough -- many failed calls, denials, asks to one agent -- it
@@ -511,6 +513,8 @@ def cmd_cost(args):
     rows = (
         ("tasks", str(lead["tasks"]), str(direct["tasks"])),
         ("median per task", _tokens(lead["median"]), _tokens(direct["median"])),
+        # A go-ahead is a task of its own: the tasks that changed code apart.
+        ("median per coded task", _tokens(lead.get("medianCoded")), _tokens(direct.get("medianCoded"))),
         ("total", _tokens(lead["total"]), _tokens(direct["total"])),
         ("per 100 lines", _tokens(lead["per100"]), _tokens(direct["per100"])),
         ("lines changed", "%d in %d" % (lead["lines"], lead["coded"]), "%d in %d" % (direct["lines"], direct["coded"])),
@@ -520,16 +524,17 @@ def cmd_cost(args):
         ("not readable", str(lead["unknown"]), str(direct["unknown"])),
         ("lead's own share", "—" if lead["own"] is None else "%d%%" % lead["own"], "—"),
     )
-    print("%-18s %14s %14s" % ("", "lead mode", "direct"))
+    print("%-21s %14s %14s" % ("", "lead mode", "direct"))
     for name, a, b in rows:
-        print("%-18s %14s %14s" % (name, a, b))
+        print("%-21s %14s %14s" % (name, a, b))
     for t in out.get("tasks") or []:
         when = datetime.datetime.fromtimestamp(t["at"]).strftime("%m-%d %H:%M") if t.get("at") else "?"
         made = {"no": "no code", "unknown": "code not readable", "pending": "code not read yet"}.get(
             t["code"], "%d lines (%d of %d commits merged)" % (t["lines"], t.get("merged", 0), t.get("commits", 0)))
         print("\n%s  %-6s %s  %s (own %s, workers %s, sub-agents %s)  %s\n  %s" % (
             when, t["mode"], t["agent"], _tokens(t["total"]), _tokens(t["own"]), _tokens(t["workers"]),
-            _tokens(t["subs"]), made, t["prompt"][:100]))
+            # A short prompt -- a go-ahead -- with the one it goes on from.
+            _tokens(t["subs"]), made, t["prompt"][:100] + (" ← " + t["context"] if t.get("context") else "")))
     if out.get("withheld"):
         print("\n(%d more task%s: an agent is shown its own project's tasks only -- the rest are in the "
               "numbers above, and on the herd page)" % (out["withheld"], "" if out["withheld"] == 1 else "s"))
