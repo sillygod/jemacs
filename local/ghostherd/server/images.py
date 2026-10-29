@@ -44,6 +44,12 @@ capture.
 
 A message is known by its text (`key'): the same words in the Inbox, a
 thread, a room or a push find the same images, wherever they are read.
+Said again -- an agent that rewrote its report names it in the same
+words -- a message looks again at each file it named, by its size and
+time (`stamp'), never reading one that did not change: one rewritten is
+copied again, and the message shows the new copy; one gone keeps the
+copy it had.  The reports list shows one row per file a project's agents
+named (`reports'), its newest copy, the older ones under it.
 """
 
 from __future__ import annotations
@@ -186,11 +192,39 @@ def html_title(text: str) -> str:
     return " ".join(html.unescape(m.group(1)).split())[:TITLE_CHARS] if m else ""
 
 
+def source(p: str) -> str:
+    """Which file P names, as a copy keeps it: a digest of its path, never
+    the path; "" for none."""
+    path = _local(p)
+    return hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest()[:32] if path else ""
+
+
+def _stamp(st: os.stat_result) -> str:
+    return f"{st.st_mtime_ns}:{st.st_size}"
+
+
+def stamp(p: str) -> str | None:
+    """The size and time of the file P names, to tell it changed since it
+    was copied; None when it is gone, or no regular file."""
+    path = _local(p)
+    try:
+        st = os.lstat(path) if path else None
+    except OSError:
+        return None
+    return _stamp(st) if st and stat.S_ISREG(st.st_mode) else None
+
+
 def load(p: str, at: float | None = None) -> tuple[bytes, str] | None:
     """The bytes of the image or HTML page at P and its extension, or None
     when it is not one to copy (see the module's doc): AT is when the
     message naming it was written, which the file may not be newer than.
     What P ends in says which it must be."""
+    got = _load(p, at)
+    return got[:2] if got else None
+
+
+def _load(p: str, at: float | None = None) -> tuple[bytes, str, str] | None:
+    "`load', and the file's `stamp' as it was read."
     path = _local(p)
     if not path:
         return None
@@ -216,9 +250,9 @@ def load(p: str, at: float | None = None) -> tuple[bytes, str] | None:
     if len(data) > cap:
         return None
     if page:
-        return (data, "html") if html_text(data) is not None else None
+        return (data, "html", _stamp(st)) if html_text(data) is not None else None
     kind = _kind(data[:16])
-    return (data, kind[0]) if kind else None
+    return (data, kind[0], _stamp(st)) if kind else None
 
 
 def _pillow():
@@ -327,6 +361,18 @@ class ImageStore:
             for col in ("title", "agent", "project"):
                 if col not in have:
                     conn.execute(f"ALTER TABLE images ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            # The name of the file a copy was first made from: a report's
+            # older copy, which no message names any more, keeps it.  ""
+            # for one from before it, named by its messages (`refs').
+            if "name" not in have:
+                conn.execute("ALTER TABLE images ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+            # Which file each copy a message names came from (`source') and
+            # its size and time then (`stamp'): the message said again looks
+            # whether it changed.  "" for a copy from before them.
+            have = {r[1] for r in conn.execute("PRAGMA table_info(refs)")}
+            for col in ("src", "stamp"):
+                if col not in have:
+                    conn.execute(f"ALTER TABLE refs ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
             conn.commit()
             self._conn = conn
         return self._conn
@@ -338,12 +384,12 @@ class ImageStore:
     def _recs(self, k: str) -> list[dict[str, Any]]:
         "The images message K named, those still kept.  Caller holds `_mu'."
         rows = self._db().execute(
-            """SELECT i.id, i.ext, r.name, i.w, i.h, i.thumb, i.bytes, i.title FROM refs r
+            """SELECT i.id, i.ext, r.name, i.w, i.h, i.thumb, i.bytes, i.title, r.src, r.stamp FROM refs r
                JOIN images i ON i.id = r.id WHERE r.key = ? ORDER BY r.ord""", (k,)).fetchall()
         out = []
-        for id_, ext, name, w, h, thumb, size, title in rows:
+        for id_, ext, name, w, h, thumb, size, title, src, st in rows:
             rec = {"id": id_, "ext": ext, "name": name, "w": w, "h": h, "thumb": bool(thumb), "bytes": size,
-                   "title": title}
+                   "title": title, "src": src, "stamp": st}
             if self.path(rec).exists():
                 out.append(rec)
         return out
@@ -351,38 +397,70 @@ class ImageStore:
     def capture(self, text: str, at: float | None = None,
                 who: dict[str, str] | None = None) -> list[dict[str, Any]]:
         """Copy the images TEXT names, as a reply recorded now: tried again
-        when none were found before (a file not written yet).  AT, when
-        the message was written, for one read later; see `load'.  WHO
+        when none were found before (a file not written yet), and, a
+        message said again, each file that changed since it was copied
+        (`_changed') -- copied again, the others kept as they were.  AT,
+        when the message was written, for one read later; see `load'.  WHO
         wrote it (`writer'), for the copies no one is known to have named."""
         k = key(text)
         paths = named(text)
         with self._mu:
             db = self._db()
             seen = db.execute("SELECT n FROM messages WHERE key = ?", (k,)).fetchone()
+            old: list[dict[str, Any]] = []
             if seen and seen[0]:
                 if who:
                     db.execute("""UPDATE images SET agent = ?, project = ?
                                   WHERE agent = '' AND id IN (SELECT id FROM refs WHERE key = ?)""",
                                (who["agent"], who["project"], k))
                     db.commit()
-                return self._recs(k)
+                old = self._recs(k)
+                if not self._changed(old, paths):
+                    return old
             if not paths:
                 return []
             now = time.time()
+            # What the message showed: each copy by the file it came from --
+            # a copy from before they were kept, by its name.
+            had = {r["src"]: r for r in old if r["src"]}
+            named_as = {r["name"]: r for r in old if not r["src"]}
             recs = []
             for p in paths:
                 if len(recs) >= MAX_PER_MESSAGE:
                     break
-                rec = self._copy(p, at, now, who)
+                prev = had.get(source(p)) or named_as.get(os.path.basename(_local(p) or p))
+                if prev and prev["stamp"] and prev["stamp"] == stamp(p):
+                    rec = prev                      # unchanged: not read again
+                else:                               # changed, or not known: copied; gone, the copy kept
+                    rec = self._copy(p, at, now, who) or prev
                 if rec and all(r["id"] != rec["id"] for r in recs):
                     recs.append(rec)
             db.execute("INSERT OR REPLACE INTO messages (key, n, at) VALUES (?, ?, ?)", (k, len(recs), now))
+            # A copy the message no longer names -- an older draft -- keeps
+            # the name it was named by.
+            db.execute("""UPDATE images SET name = (SELECT r.name FROM refs r WHERE r.id = images.id LIMIT 1)
+                          WHERE name = '' AND id IN (SELECT id FROM refs WHERE key = ?)""", (k,))
             db.execute("DELETE FROM refs WHERE key = ?", (k,))
-            db.executemany("INSERT INTO refs (key, ord, id, name) VALUES (?, ?, ?, ?)",
-                           [(k, n, r["id"], r["name"]) for n, r in enumerate(recs)])
+            db.executemany("INSERT INTO refs (key, ord, id, name, src, stamp) VALUES (?, ?, ?, ?, ?, ?)",
+                           [(k, n, r["id"], r["name"], r.get("src", ""), r.get("stamp", ""))
+                            for n, r in enumerate(recs)])
             db.commit()
         self._maybe_prune()
         return recs
+
+    def _changed(self, recs: list[dict[str, Any]], paths: list[str]) -> bool:
+        """Whether a file of PATHS that RECS, a message's copies, came from
+        changed since -- by its size and time; one gone has not -- or one
+        is a copy from before that was kept, looked at once."""
+        if any(not r["src"] for r in recs):
+            return True
+        by = {r["src"]: r["stamp"] for r in recs}
+        for p in paths:
+            was = by.get(source(p))
+            now = stamp(p) if was is not None else None
+            if now is not None and now != was:
+                return True
+        return False
 
     def lookup(self, text: str, at: float | None = None,
                who: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -402,10 +480,11 @@ class ImageStore:
               who: dict[str, str] | None = None) -> dict[str, Any] | None:
         """Copy the image or page at P, once by its content, as WHO named it.
         Caller holds `_mu'."""
-        got = load(p, at)
+        got = _load(p, at)
         if not got:
             return None
-        data, ext = got
+        data, ext, st = got
+        src = {"src": source(p), "stamp": st}
         page = ext == "html"
         size = (0, 0) if page else _inspect(data, ext)
         if not size:
@@ -420,7 +499,7 @@ class ImageStore:
                 db.execute("UPDATE images SET agent = ?, project = ? WHERE id = ? AND agent = ''",
                            (who["agent"], who["project"], row[0]))
             return {"id": row[0], "ext": row[1], "name": name, "w": row[2], "h": row[3],
-                    "thumb": bool(row[4]), "bytes": row[5], "title": row[6]}
+                    "thumb": bool(row[4]), "bytes": row[5], "title": row[6], **src}
         if row:  # its file gone from under it: copy afresh
             db.execute("DELETE FROM images WHERE id = ?", (row[0],))
         rec = {"id": secrets.token_hex(16), "ext": ext, "name": name, "w": size[0], "h": size[1],
@@ -430,11 +509,11 @@ class ImageStore:
         if small:
             _write(self.path(rec, thumb=True), small)
         rec["thumb"] = bool(small)
-        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used, title, agent, project)"
-                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        db.execute("INSERT INTO images (id, sha, ext, bytes, w, h, thumb, created, used, title, agent, project, name)"
+                   " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                    (rec["id"], sha, ext, len(data), rec["w"], rec["h"], int(rec["thumb"]), now, now,
-                    rec["title"], (who or {}).get("agent", ""), (who or {}).get("project", "")))
-        return rec
+                    rec["title"], (who or {}).get("agent", ""), (who or {}).get("project", ""), name))
+        return dict(rec, **src)
 
     def reports(self, limit: int = 30, before: tuple[float, str] | None = None) -> dict[str, Any]:
         """The HTML reports kept, newest first: LIMIT of them -- older than
@@ -443,23 +522,29 @@ class ImageStore:
         it was copied from (never where that was), who named it first, when
         it was copied, its size, and `gone' when its copy is no longer on
         disk (taken from the directory by hand: the index outlives it until
-        the copy would have been pruned).  Read from the index and a stat
-        of each copy shown, nothing more."""
-        sql = ("SELECT i.id, i.title, i.bytes, i.created, i.agent, i.project,"
-               " (SELECT r.name FROM refs r WHERE r.id = i.id LIMIT 1)"
-               " FROM images i WHERE i.ext = 'html'")
-        args: list[Any] = []
-        if before:
-            sql += " AND (i.created < ? OR (i.created = ? AND i.id < ?))"
-            args += [before[0], before[0], before[1]]
-        sql += " ORDER BY i.created DESC, i.id DESC LIMIT ?"
+        the copy would have been pruned).  A file a project's agents named
+        more than once as they rewrote it is one report: its newest copy,
+        and the older ones under it (`older', newest first), by project and
+        name.  Read from the index and a stat of each copy shown, nothing
+        more."""
         with self._mu:
-            rows = self._db().execute(sql, (*args, limit + 1)).fetchall()
-        out = [{"id": id_, "title": title, "name": name or f"{id_}.html", "bytes": size, "at": created,
-                "agent": agent, "project": project,
-                "gone": not self.path({"id": id_, "ext": "html"}).is_file()}
-               for id_, title, size, created, agent, project, name in rows[:limit]]
-        return {"reports": out, "more": len(rows) > limit}
+            rows = self._db().execute(
+                "SELECT i.id, i.title, i.bytes, i.created, i.agent, i.project,"
+                " COALESCE(NULLIF(i.name, ''), (SELECT r.name FROM refs r WHERE r.id = i.id LIMIT 1))"
+                " FROM images i WHERE i.ext = 'html' ORDER BY i.created DESC, i.id DESC").fetchall()
+        groups: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
+        for r in rows:
+            groups.setdefault((r[5], r[6] or f"{r[0]}.html"), []).append(r)
+        # Each report by its newest copy, which the page goes on from.
+        listed = [g for g in groups.values() if not before or (g[0][3], g[0][0]) < before]
+
+        def one(r: tuple[Any, ...]) -> dict[str, Any]:
+            id_, title, size, created, agent, project, name = r
+            return {"id": id_, "title": title, "name": name or f"{id_}.html", "bytes": size, "at": created,
+                    "agent": agent, "project": project, "gone": not self.path({"id": id_, "ext": "html"}).is_file()}
+
+        out = [dict(one(g[0]), older=[one(r) for r in g[1:]]) for g in listed[:limit]]
+        return {"reports": out, "more": len(listed) > limit}
 
     def _maybe_prune(self) -> None:
         if time.time() - self._pruned >= PRUNE_EVERY:

@@ -2809,7 +2809,7 @@ sandboxed; in the xwidget, a view of Emacs's over loopback.  They are
 read from the sidecar's index of its copies (=herd_reports=, the
 herd's own method, not the agents'), asked when the tab is shown and
 never waited on --- thirty at a time, /Older reports/ for the next
-thirty --- so a long history costs one indexed query a page.  Nothing
+thirty.  Nothing
 is copied again, nothing is written to =docs/= or to
 =ghostherd-docs-directories=, and where a report was copied from is
 never said: only its file's name.
@@ -2822,6 +2822,15 @@ never said: only its file's name.
   first where its writer is not known (a push read before the reply was
   recorded) learns it from the reply's own copy; copies made before
   this was recorded say /writer unknown/.
+- *A report rewritten and named again* is one row: its newest copy,
+  and under it =2 older=, which opens the earlier copies there, newest
+  first, and folds them away again --- one report per file name in a
+  project; the same name in another project is another report.  The
+  message that names it in the same words again shows the new copy:
+  said again, a message looks at each file it named by its size and
+  time (kept with the copy, beside a digest of its path --- never the
+  path), copies again the one that changed, reads none that did not,
+  and keeps the copy of one gone.
 - *A copy gone from the directory* (deleted by hand) stays listed until
   it would have been pruned, greyed, saying its copy is gone, with
   nothing to open; its address answers 404.  A pruned copy leaves the

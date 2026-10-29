@@ -47,10 +47,17 @@ const DOCS = [
 // newest page, and the page older than its last.
 const R1 = "c1c2c3d4e5f60718293a4b5c6d7e8f90", R2 = "d1d2c3d4e5f60718293a4b5c6d7e8f90";
 const R3 = "e1e2c3d4e5f60718293a4b5c6d7e8f90", R4 = "f1f2c3d4e5f60718293a4b5c6d7e8f90";
+const R5 = "a1a2c3d4e5f60718293a4b5c6d7e8f90", R6 = "b1b2c3d4e5f60718293a4b5c6d7e8f90";
 const SEC = Date.now() / 1000;
 const REPORTS1 = [
+  // Rewritten and named again: its older copies under it.
   { id: R1, title: "Viewer review: what changed & why", name: "viewer-review.html", agent: RD, project: "deploy-platform",
-    at: SEC - 120, bytes: 48200, gone: false },
+    at: SEC - 120, bytes: 48200, gone: false,
+    older: [{ id: R5, title: "Viewer review: draft 2", name: "viewer-review.html", agent: RD, project: "deploy-platform",
+              at: SEC - 1800, bytes: 40100, gone: false },
+            { id: R6, title: "Viewer review: draft 1", name: "viewer-review.html", agent: RD, project: "deploy-platform",
+              at: SEC - 7200, bytes: 30100, gone: true },
+            { id: "../x", title: "climbs", name: "x", at: SEC, bytes: 1, gone: false }] },
   { id: R2, title: "", name: "perf.html", agent: "", project: "", at: SEC - 7200, bytes: 900, gone: false },
   { id: R3, title: "A report since taken away", name: "gone.html", agent: "qa-deploy-platform", project: "deploy-platform",
     at: SEC - 3 * 86400, bytes: 1000, gone: true },
@@ -202,7 +209,7 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await sleep(150);
       const rows = await page.$$eval("#docs-reports .doc", (ds) => ds.map((d) => ({
         id: d.getAttribute("data-report"), gone: d.classList.contains("gone"), text: d.textContent,
-        open: [...d.querySelectorAll("a, button")].map((a) => ({ tag: a.tagName, href: a.getAttribute("href"),
+        open: [...d.querySelectorAll(":scope > a, :scope > button")].map((a) => ({ tag: a.tagName, href: a.getAttribute("href"),
           target: a.getAttribute("target"), rel: a.getAttribute("rel"), text: a.textContent,
           h: a.getBoundingClientRect().height })) })));
       check(W("the reports, newest first; none whose id is not a copy's, or with no time"),
@@ -221,6 +228,35 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
         rows[2] && rows[2].gone && rows[2].open.length === 0 && /copy is gone/.test(rows[2].text) &&
         rows[2].text.includes("A report since taken away") && /3d ago/.test(rows[2].text), rows[2]);
       check(W("it says how many, and that there are older"), /^3 reports, the newest$/.test(await page.textContent("#docs-reports .sum")));
+      // A report rewritten and named again: one row, its older copies folded.
+      const folded = () => page.evaluate((R1) => {
+        const d = document.querySelector('#docs-reports .doc[data-report="' + R1 + '"]');
+        const b = d && d.querySelector('[data-act="reports:older"]');
+        return { button: b && b.textContent, expanded: b && b.getAttribute("aria-expanded"), h: b && b.getBoundingClientRect().height,
+          older: [...d.querySelectorAll(".dolders .doc.older")].map((o) => ({ id: o.getAttribute("data-report"),
+            gone: o.classList.contains("gone"), link: (o.querySelector(":scope > a") || {}).href || "", text: o.textContent,
+            more: !!o.querySelector('[data-act="reports:older"]') })),
+          rows: document.querySelectorAll("#docs-reports .doc:not(.older)").length };
+      }, R1);
+      let f = await folded();
+      check(W("a rewritten report: one row, \"2 older\" under it, folded"),
+        f.button === "2 older" && f.expanded === "false" && f.older.length === 0 && f.rows === 3, f);
+      await tap('#docs-reports [data-act="reports:older"][data-report="' + R1 + '"]');
+      await sleep(100);
+      f = await folded();
+      check(W("tapped: its older copies, newest first, each opening its own copy; one gone, nothing to open"),
+        f.expanded === "true" && f.older.map((o) => o.id).join() === [R5, R6].join() &&
+        /\/.reports\/a1a2c3d4e5f60718293a4b5c6d7e8f90\.html$/.test(f.older[0].link) && /draft 2/.test(f.older[0].text) &&
+        f.older[1].gone && f.older[1].link === "" && !f.older[0].more && f.rows === 3, f);
+      if (where === "phone") check(W("its button a finger's height"), f.h >= 32, f.h);
+      await page.screenshot({ path: path.join(SHOTS, "docs-reports-older-" + where + ".png"), fullPage: true });
+      await page.evaluate((r) => GM.renderReports({ reports: r, more: true, after: false }), REPORTS1);
+      await sleep(100);
+      check(W("it stays open as the list is drawn again"), (await folded()).older.length === 2);
+      await tap('#docs-reports [data-act="reports:older"][data-report="' + R1 + '"]');
+      await sleep(100);
+      f = await folded();
+      check(W("tapped again: folded"), f.expanded === "false" && f.older.length === 0, f);
       if (where === "phone") {
         const fit = await page.evaluate(() => {
           const d = document.getElementById("docs-documents").getBoundingClientRect();

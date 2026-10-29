@@ -555,9 +555,9 @@ def test_reports_listed_newest_first_with_who_wrote_them(herd, tmp_path):
     # Reports alone, the newest first; the image is not one.
     assert out == {"more": False, "reports": [
         {"id": one["id"], "title": "Second & its theme", "name": "second.html", "bytes": len(PAGE.replace("The viewer", "Second")),
-         "at": 1_700_000_100.5, "agent": "rd", "project": "x", "gone": False},
+         "at": 1_700_000_100.5, "agent": "rd", "project": "x", "gone": False, "older": []},
         {"id": two["id"], "title": "First & its theme", "name": "first.html", "bytes": len(PAGE.replace("The viewer", "First")),
-         "at": 1_700_000_000.25, "agent": "lead-x", "project": "x", "gone": False}]}
+         "at": 1_700_000_000.25, "agent": "lead-x", "project": "x", "gone": False, "older": []}]}
     # Never where a report came from.
     assert str(tmp_path) not in json.dumps(out)
 
@@ -677,3 +677,96 @@ def test_an_index_from_before_writers_gains_them(tmp_path, monkeypatch):
             ("The viewer & its theme", "rd", "r.html"), ("Old", "", "0123456789abcdef0123456789abcdef.html")]
     finally:
         images.reset_store()
+
+
+# ---- A report rewritten and named again -------------------------------------
+
+
+def _rewrite(path, text, when):
+    "PATH rewritten with TEXT, its time WHEN: an agent's second draft."
+    Path(path).write_text(text, encoding="utf-8")
+    os.utime(path, (when, when))
+
+
+def test_a_message_said_again_shows_the_file_as_it_is_now(store, tmp_path):
+    """The same words naming a report the agent rewrote: the new copy, not
+    the old one.  A file not changed is not read again; one gone keeps its
+    copy."""
+    src = page(tmp_path / "r.html", PAGE.replace("Report", "Draft 1"))
+    shot = png(tmp_path / "s.png")
+    said = f"The report: {src}, and {shot}"
+    first = store.capture(said)
+    assert len(first) == 2
+    _rewrite(src, PAGE.replace("Report", "Draft 2"), time.time() + 5)
+    reads = []
+    real = images._load
+    images._load = lambda p, at=None: reads.append(os.path.basename(p)) or real(p, at)
+    try:
+        second = store.capture(said)
+    finally:
+        images._load = real
+    assert reads == ["r.html"]                              # the image did not change: not read
+    assert second[0]["id"] != first[0]["id"] and second[1]["id"] == first[1]["id"]
+    assert b"Draft 2" in store.path(second[0]).read_bytes()
+    assert store.lookup(said) == second                     # the message shows the new one
+    # Said again unchanged: nothing read, the same copies.
+    images._load = lambda p, at=None: pytest.fail("read again: " + p)
+    try:
+        assert store.capture(said) == second
+        os.unlink(src)                                       # gone: the copy kept
+        assert store.capture(said) == second
+    finally:
+        images._load = real
+    # Never where it came from: a digest of the path, not the path.
+    rows = store._db().execute("SELECT src, stamp FROM refs").fetchall()
+    assert rows and all(len(src_) == 32 and str(tmp_path) not in src_ + st for src_, st in rows)
+
+
+def test_a_message_copied_before_sources_were_kept_is_looked_at_once(store, tmp_path):
+    src = page(tmp_path / "r.html", PAGE.replace("Report", "Draft 1"))
+    said = f"See {src}"
+    first = store.capture(said)
+    store._db().execute("UPDATE refs SET src = '', stamp = ''")   # as an index from before kept it
+    store._db().commit()
+    _rewrite(src, PAGE.replace("Report", "Draft 2"), time.time() + 5)
+    second = store.capture(said)
+    assert second[0]["id"] != first[0]["id"] and second[0]["src"] == images.source(src)
+    # Gone before it was looked at: the copy it had, by its name.
+    store._db().execute("UPDATE refs SET src = '', stamp = ''")
+    store._db().commit()
+    os.unlink(src)
+    assert [r["id"] for r in store.capture(said)] == [second[0]["id"]]
+
+
+def test_a_report_rewritten_is_one_row_its_older_copies_under_it(herd, tmp_path):
+    """Named again as an agent rewrote it, a report is one row: its newest
+    copy, the older under it, newest first -- by project and file name; the
+    same name in another project is another report."""
+    store = images.get_store()
+    src = page(tmp_path / "a" / "status.html", PAGE.replace("Report", "v1"))
+    rd = images.writer("rd", "/src/x")
+    v1 = store.capture(f"Status: {src}", who=rd)[0]
+    for n, when in ((2, 1_700_000_100), (3, 1_700_000_200)):
+        _rewrite(src, PAGE.replace("Report", f"v{n}"), time.time() + n)
+        store.capture(f"Status: {src}", who=rd)
+    other = store.capture(f"Theirs: {page(tmp_path / 'b' / 'status.html', PAGE.replace('Report', 'y'))}",
+                          who=images.writer("rd-y", "/src/y"))[0]
+    copies = store._db().execute("SELECT id FROM images WHERE ext = 'html' AND project = '/src/x'"
+                                 " ORDER BY created").fetchall()
+    assert len(copies) == 3
+    for (id_,), at in zip(copies, (1_700_000_000, 1_700_000_100, 1_700_000_200)):
+        _at(store, {"id": id_}, at)
+    _at(store, other, 1_700_000_050)
+    out = rpc("herd_reports", {})
+    assert [(r["id"], r["project"], [o["id"] for o in r["older"]]) for r in out["reports"]] == [
+        (copies[2][0], "x", [copies[1][0], copies[0][0]]), (other["id"], "y", [])]
+    assert copies[0][0] == v1["id"]
+    older = out["reports"][0]["older"]
+    assert [(o["name"], o["agent"], o["project"], o["at"], o["gone"]) for o in older] == [
+        ("status.html", "rd", "x", 1_700_000_100, False), ("status.html", "rd", "x", 1_700_000_000, False)]
+    # A page at a time: by each report's newest.
+    first = rpc("herd_reports", {"limit": 1})
+    assert [r["id"] for r in first["reports"]] == [copies[2][0]] and first["more"]
+    rest = rpc("herd_reports", {"limit": 1, "before": {"at": first["reports"][0]["at"], "id": copies[2][0]}})
+    assert [r["id"] for r in rest["reports"]] == [other["id"]] and not rest["more"]
+    assert str(tmp_path) not in json.dumps(out)

@@ -197,7 +197,7 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
   cursor: pointer;
 }
 .page.docs .dtitle:hover, .page.docs .dtitle:focus-visible { text-decoration: underline; }
-.page.docs .dmeta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--muted); }
+.page.docs .dmeta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--muted); }
 .page.docs .dname { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
 .page.docs .dwhere { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .page.docs .docsays { font-size: 12px; margin-top: 16px; }
@@ -213,11 +213,20 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 /* A report whose copy is gone: listed, with nothing to open. */
 .page.docs .report.gone .dtitle { color: var(--muted); cursor: default; text-decoration: none; }
 .page.docs .dgonesays { flex-basis: 100%; font-style: italic; }
+/* A report rewritten and named again: its older copies, folded under its
+   newest, indented and a step quieter. */
+.page.docs .dolder { font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
+.page.docs .dolder:hover, .page.docs .dolder:focus-visible { text-decoration: underline; }
+.page.docs .dolders { margin: 6px 0 0 14px; border-left: 2px solid var(--line); padding-left: 10px; }
+.page.docs .doc.older { padding: 6px 2px; }
+.page.docs .doc.older:last-child { border-bottom: 0; }
+.page.docs .doc.older .dtitle { font-size: 13.5px; font-weight: 500; }
 .page.docs .derror { padding: 8px 2px; }
 /* A finger's height for what opens a document, on a phone. */
 @media (max-width: 640px) {
   .page.docs .dtitle { display: inline-block; min-height: 32px; padding: 4px 0; }
   .page.docs .foot .ghost { min-height: 40px; }
+  .page.docs .dolder { min-height: 32px; padding: 0 6px; }
   .ereport { min-height: 32px; align-items: center; }
 }
 

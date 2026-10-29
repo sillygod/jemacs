@@ -309,8 +309,12 @@
   // and the reports agents' replies named (renderReports) -- the sidecar's
   // copies, by id, newest first, a page at a time.
   let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
-  // {list: [{id, title, name, agent, project, at, bytes, gone}], more, error, asking}
+  // {list: [{id, title, name, agent, project, at, bytes, gone, older: [...]}], more, error, asking}
   let reports = null;
+  // The reports whose older copies are shown, by project and file name:
+  // what one is, whichever copy is its newest.
+  const reportsOpen = new Set();
+  const reportKey = (rep) => String(rep.project || "") + "\0" + String(rep.name || rep.id);
 
   function showDocs() {
     view = "docs";
@@ -346,26 +350,39 @@
 
   // The reports, as the sidecar keeps their copies: each opens as the Open
   // link under its message does.  One whose copy is gone from the
-  // directory is still listed, marked, with nothing to open.
+  // directory is still listed, marked, with nothing to open.  A file an
+  // agent rewrote and named again is one row, its newest copy: "2 older"
+  // under it shows the others, newest first, and folds them away again.
   function reportsSection() {
     const r = reports;
     const list = r ? r.list : [];
-    const rows = list.map((rep) => {
+    const one = (rep, older) => {
       const name = String(rep.name || rep.id + ".html");
       const title = String(rep.title || "").trim() || name;
       const who = String(rep.agent || "");
+      const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
+        o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
+      const open = them.length > 0 && reportsOpen.has(reportKey(rep));
       const head = rep.gone
         ? '<span class="dtitle dgone" title="' + esc(name) + '">' + esc(title) + "</span>"
         : docLink("reports", rep.id + ".html", esc(title), "dtitle", name);
-      return '<div class="doc report' + (rep.gone ? " gone" : "") + '" data-report="' + esc(rep.id) + '">' + head +
+      return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
+        esc(rep.id) + '">' + head +
         '<div class="dmeta">' +
         (rep.gone ? '<span class="dgonesays">Its copy is gone from the herd\'s folder: nothing to open.</span>' : "") +
         '<span class="dwho">' + (who ? esc(who) : '<span class="muted">writer unknown</span>') + "</span>" +
         (rep.project ? '<span class="dwhere" title="' + esc(rep.project) + '">' + esc(rep.project) + "</span>" : "") +
         '<span title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span>" +
         "<span>" + esc(sizeText(rep.bytes)) + "</span>" +
-        '<span class="dname">' + esc(name) + "</span></div></div>";
-    }).join("");
+        '<span class="dname">' + esc(name) + "</span>" +
+        (them.length
+          ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
+            '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
+            them.length + " older" + "</button>"
+          : "") + "</div>" +
+        (open ? '<div class="dolders">' + them.map((o) => one(o, true)).join("") + "</div>" : "") + "</div>";
+    };
+    const rows = list.map((rep) => one(rep, false)).join("");
     const sum = !r ? "Asking the herd…"
       : list.length + (list.length === 1 ? " report" : " reports") + (r.more ? ", the newest" : "");
     const more = r && r.more && list.length
@@ -4359,6 +4376,14 @@
       openImage(el);
     } else if (act === "doc:open") {
       emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
+    } else if (act === "reports:older") {
+      const rep = reports && reports.list.find((x) => x.id === el.getAttribute("data-report"));
+      if (rep) {
+        const k = reportKey(rep);
+        if (reportsOpen.has(k)) reportsOpen.delete(k);
+        else reportsOpen.add(k);
+        renderDocs();
+      }
     } else if (act === "reports:more") {
       const last = reports && reports.list[reports.list.length - 1];
       if (last && !reports.asking) {
