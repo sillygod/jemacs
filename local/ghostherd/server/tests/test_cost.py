@@ -819,6 +819,36 @@ def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
     assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
 
 
+def test_a_short_prompt_goes_on_only_from_work_just_heard_of():
+    """A go-ahead answers what its agent has just proposed: it goes on from
+    the work before it only within CONTEXT_WINDOW of that work's last
+    reply -- not of the prompt that set it, which may have taken an hour.
+    A short question a day later goes on from nothing, and the go-ahead
+    after it from it.  An image alone is short like any go-ahead."""
+    H = 3600
+    long_ask = "Move the reports into their own tab and fold the copies of one file under it"
+    T = lambda tid, agent, prompt, when, size=None: {  # noqa: E731
+        "id": tid, "agent": agent, "prompt": prompt, "at": when, "size": size, "project": "/p/"}
+    tasks = [T("a", "lead", long_ask, 0),
+             T("b", "lead", "好，派人做吧", 4.5 * H),        # 4h30m after a's prompt, 2h30m after its last reply
+             T("c", "lead", "看一下最後那則評論", 30 * H),   # a day later: a question of its own
+             T("d", "lead", "ok", 30 * H + 300),
+             T("e", "rd", "Make the footer stick to the bottom on every page", 0),
+             T("f", "rd", "[Image #5]", 600),
+             T("g", "rd", "[Image #6]", 5 * H)]
+    ends = {"a": 2 * H, "b": 4.5 * H + 600, "c": 30 * H + 60, "e": 300}
+    cut = lambda s: cost.conversation.first_line(s, cost.CONTEXT_MAX)  # noqa: E731
+    assert cost.contexts(tasks, ends) == {"b": cut(long_ask), "d": "看一下最後那則評論", "f": cut(tasks[4]["prompt"])}
+    # Its work's last reply not known: its prompt is when it was last heard of.
+    assert "b" not in cost.contexts(tasks)
+    # As `costs' reads it: the work's last reply from what it cost.
+    for t in tasks:
+        t["mode"] = "direct"
+    usage = [{"item": "task:a", "agent": "lead", "sub": 0, "input": 10, "first_at": 60, "last_at": 2 * H}]
+    got = cost.costs(tasks, usage, {}, {}, now=31 * H)
+    assert (got["b"]["context"], got["c"]["context"], got["d"]["context"]) == (cut(long_ask), "", "看一下最後那則評論")
+
+
 def test_a_title_is_the_users_words_whole(tmp_path):
     """A task's title is what the user said, whole, in one line -- not its
     first line, which may be only an image's stand-in or a paste's head --
