@@ -5323,7 +5323,8 @@
         '<span class="thlabel">' + esc(thLabel(m)) + "</span></div>" +
         '<button type="button" class="thcard" style="' + gc + '" data-act="' + msgAct + '" data-i="' + i + '" aria-expanded="' + open + '" title="' + (open ? "Show less" : "Show the whole message") + '">' +
         '<span class="thmeta"><span>' + esc(thWho(m.from)) + " → " + esc(thWho(m.to)) + "</span><span>· " + esc(thTime(m.at)) + "</span>" +
-        (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") + "</span>" +
+        (round ? "<span>· " + esc(round) + "</span>" : "") + (m.logged ? "<span>· as the herd log has it</span>" : "") +
+        (m.transcript ? "<span>· as its task's transcript has it</span>" : "") + "</span>" +
         '<span class="thtext">' + esc(open ? m.text : m.head) + "</span>" + thTrace(m, open) + "</button>" +
         (m.images ? '<div class="thimgs" style="' + gc + '">' + imagesHtml(m.images) + "</div>" : "") + "</div>";
     }).join("");

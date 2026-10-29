@@ -3144,13 +3144,17 @@ class HerdStore:
     def _thread_cost(self, root: str, view: dict[str, Any], whole: bool = False) -> dict[str, Any] | None:
         """What the task thread ROOT (an ask, or `task:ID') is part of cost,
         as the Threads tab shows it; None when not known.  WHOLE, for the
-        open thread: its commits too, and how many threads the task is."""
+        open thread: its commits too, and how many threads the task is.
+        Its agent, prompt and time (`at') too: the page opens a thread with
+        them when the herd log has only the note before the user's words
+        (`ghostherd-threads--note-opener').  The page's alone: herd_threads
+        and herd_thread are not an agent's to call."""
         task = root[5:] if root.startswith("task:") else cost.task_of("ask:" + root, view["asked"])
         row = view["tasks"].get(task) if task else None
         if not row:
             return None
-        keys = ("id", "agent", "mode", "prompt", "context", "total", "own", "workers", "subs", "asks", "commits",
-                "lines", "merged", "mergedLines", "code")
+        keys = ("id", "agent", "mode", "prompt", "context", "at", "total", "own", "workers", "subs", "asks",
+                "commits", "lines", "merged", "mergedLines", "code")
         out = {k: row[k] for k in keys}
         if whole:
             out["made"] = row["made"]

@@ -538,8 +538,27 @@ def test_two_threads_of_one_task_show_its_cost_once(home, tmp_path):
     assert set(asks) == {ask, second}
     assert asks[ask]["cost"]["lines"] == 30 and "same" not in asks[ask]["cost"]
     assert asks[second]["cost"] == {"id": asks[ask]["cost"]["id"], "mode": "lead", "same": ask,
-                                    "sameTitle": "fix the build"}
+                                    "sameTitle": "fix the build", "agent": LEAD, "prompt": "Fix the build, please.",
+                                    "at": at(45).timestamp()}
     assert h.thread(id=ask)["cost"]["threadCount"] == 2
+
+
+def test_a_thread_says_who_began_its_task_and_when(home, tmp_path):
+    """What the page needs to open a lead's thread with the user's words
+    when the herd log has only the note before them: its task's agent,
+    prompt -- the notes taken off -- and time, on the list and the whole
+    thread alike."""
+    h, ask, _ = herd_at_work(home, tmp_path)
+    lead = Path(h._transcript(LEAD))
+    note = "[Since you last heard from me, I wrote to the team directly:\n- to rd: hold the deploy]\n\n"
+    lead.write_text(lead.read_text().replace('"content": "Fix the build, please."',
+                                             '"content": ' + json.dumps(note + "Fix the build, please.")))
+    assert "Since you last heard from me" in lead.read_text()
+    counted(h)
+    (t,) = [t for t in h.threads()["threads"] if not t.get("direct")]
+    whole = h.thread(ask=ask)["cost"]
+    for c in (t["cost"], whole):
+        assert (c["agent"], c["prompt"], c["at"]) == (LEAD, "Fix the build, please.", at(45).timestamp())
 
 
 def test_herd_cost_from_an_agent(home, live):  # noqa: F811

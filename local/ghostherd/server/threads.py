@@ -302,7 +302,10 @@ def one_cost(listed: list[dict[str, Any]]) -> None:
     """A task's cost once among LISTED, the threads shown: on its own
     direct thread, else on its first; each other thread of it says it is
     part of that one's task, with no cost of its own -- two asks a lead
-    made for one task are two threads of one cost."""
+    made for one task are two threads of one cost.  What the user said to
+    begin it -- its agent, prompt and time -- each keeps: the page opens a
+    thread with those words when the herd log has only the note before
+    them (`ghostherd-threads--note-opener')."""
     by: dict[str, list[dict[str, Any]]] = {}
     for t in listed:
         c = t.get("cost")
@@ -315,4 +318,5 @@ def one_cost(listed: list[dict[str, Any]]) -> None:
         for t in ts:
             if t is not first:
                 t["cost"] = {"id": task, "mode": first["cost"]["mode"], "same": first["id"],
-                             "sameTitle": first["title"]}
+                             "sameTitle": first["title"],
+                             **{k: first["cost"].get(k) for k in ("agent", "prompt", "at")}}

@@ -100,6 +100,17 @@ const ITEMS = [
       await page.click('.throw[data-id="t1"]');
       await sleep(200);
       check("desk: a thread being worked on says who is working", (await page.textContent(".thwait")) === "claude-.emacs.d-2 is working · 6m");
+      // The log had only the herd's note before the user's words: Emacs
+      // opened the thread with them as its task's transcript has them.
+      const behind = Object.assign({}, DETAILS.t1, { msgs: [Object.assign({}, DETAILS.t1.msgs[0], { logged: false, transcript: true }),
+                                                            ...DETAILS.t1.msgs.slice(1)] });
+      await page.evaluate((d) => GM.renderThread(d), behind);
+      await sleep(100);
+      const read = await page.textContent('.thcard[data-i="0"]');
+      check("desk: the user's words behind a note, as its task's transcript has them",
+        /You → lead-\.emacs\.d/.test(read) && /as its task's transcript has it/.test(read) && !/herd log/.test(read), read);
+      await page.evaluate((d) => GM.renderThread(d), DETAILS.t1);
+      await sleep(100);
 
       // The Inbox's way in: the thread is drawn inline below the item, with a
       // quiet "Open in Threads" link in its header (shown once Emacs pushes the

@@ -4049,16 +4049,28 @@ Kept screens open in place; new entries arrive as they are logged."
 be, to be taken for what set it going: the log keeps no link, so a prompt
 much older is more likely about something else.")
 
+(defconst ghostherd-threads--note-re
+  "\\`\\[\\(?:Since you last heard from me\\|What this project works on\\)"
+  "The first line of a note the herd puts before the user's words to a lead
+\(`ghostherd--lead-unheard-note', `ghostherd--lead-work-note').  A log line
+that is one could not see past it: the words behind it are the user's.")
+
+(defconst ghostherd-threads--note-slack 10
+  "Seconds a task's time, as its transcript has it, may be before the log's
+line of the note it came behind: the log stamps the line as it is sent.")
+
 (defun ghostherd-threads--said (text)
   "What TEXT, an input line of the herd log, says of who spoke: the user's
-words (a string); `herd' -- the herd's deliveries (asks, messages, a
-note before a prompt the log could not see past, all in brackets), the
-first words a guarded agent, a memory opening or a lead's role gets;
-or nil, a line that is not a prompt (a retry, text left unsubmitted)."
+words (a string); `note' -- a note before a prompt to a lead that the log
+could not see past (`ghostherd-threads--note-re'); `herd' -- the herd's
+deliveries (asks, messages, all in brackets), the first words a guarded
+agent, a memory opening or a lead's role gets; or nil, a line that is
+not a prompt (a retry, text left unsubmitted)."
   (let ((said (and (string-prefix-p "← " text) (substring text 2))))
     (cond
      ((null said) nil)
      ((or (string-suffix-p "(not submitted)" said) (string-prefix-p "still in its input box" said)) nil)
+     ((string-match-p ghostherd-threads--note-re said) 'note)
      ((or (string-prefix-p "[" said)
           (and (boundp 'ghostherd--agy-guard-note)
                (string-prefix-p (car (split-string ghostherd--agy-guard-note "\\." t)) said))
@@ -4079,8 +4091,8 @@ or nil, a line that is not a prompt (a retry, text left unsubmitted)."
 
 (defun ghostherd-threads--prompts ()
   "What began and ended each agent's turns, from the herd log, newest
-first: (MS . WHAT), WHAT the user's words (a string) or `herd' for a
-prompt, `end' for a turn that ended."
+first: (MS . WHAT), WHAT the user's words (a string), `note' or `herd'
+for a prompt (`ghostherd-threads--said'), `end' for a turn that ended."
   (let ((by (make-hash-table :test #'equal)))
     (dolist (e (and (boundp 'ghostherd--log) ghostherd--log))
       (when-let* ((text (or (ghostherd-log-entry-text e) ""))
@@ -4092,23 +4104,48 @@ prompt, `end' for a turn that ended."
     (maphash (lambda (k v) (puthash k (sort v (lambda (a b) (> (car a) (car b)))) by)) by)
     by))
 
+(defun ghostherd-threads--last-input (prompts from started)
+  "FROM's last entry in PROMPTS (`ghostherd-threads--prompts') before
+STARTED (ms) -- (MS . WHAT) -- when it is within the opener window."
+  (when-let* (((and (stringp from) (numberp started)))
+              (last (seq-find (lambda (p) (< (car p) started)) (gethash from prompts))))
+    (and (> (car last) (- started (* 1000 ghostherd-threads--opener-window)))
+         last)))
+
 (defun ghostherd-threads--opener (prompts from started)
   "The user's prompt that set going a thread whose first ask FROM made at
 STARTED (ms), from PROMPTS (`ghostherd-threads--prompts'): (MS . TEXT),
 or nil.  Only the prompt the turn the ask was made in began with can be:
 FROM's last prompt before it, with no turn ended between.  When the last
 is the herd's -- an answer come back, a message, a prompt behind a note
-the log could not see past -- or a turn ended after it (an answer the
-hook brought began the next, with no line in the log), or it is older
-than the window, there is none: never one from before it.  A thread the
-user asked from a shell (FROM \"user\") has none."
-  (when-let* (((and (stringp from) (numberp started)))
-              (last (seq-find (lambda (p) (< (car p) started)) (gethash from prompts))))
-    (and (stringp (cdr last))
-         (> (car last) (- started (* 1000 ghostherd-threads--opener-window)))
-         last)))
+the log could not see past (`ghostherd-threads--note-opener') -- or a
+turn ended after it (an answer the hook brought began the next, with no
+line in the log), or it is older than the window, there is none: never
+one from before it.  A thread the user asked from a shell (FROM \"user\")
+has none."
+  (let ((last (ghostherd-threads--last-input prompts from started)))
+    (and (stringp (cdr last)) last)))
 
-(defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged :thumb)
+(defun ghostherd-threads--note-opener (prompts from started cost)
+  "The user's words behind a note that set going a thread whose first ask
+FROM made at STARTED (ms), where the log has only the note: (MS . TEXT)
+from COST, the thread's task (server/herd.py `_thread_cost'), or nil.
+The note must be FROM's last input before the ask, as for
+`ghostherd-threads--opener'; the task FROM's own, begun between the note
+and the ask -- its prompt, the herd's notes taken off, is those words.
+Only the page has them: herd_threads and herd_thread answer the herd's
+own token, never an agent's."
+  (when-let* ((last (ghostherd-threads--last-input prompts from started))
+              ((eq (cdr last) 'note))
+              (at (plist-get cost :at))
+              ((numberp at))
+              ((equal (plist-get cost :agent) from))
+              ((<= (- (car last) (* 1000 ghostherd-threads--note-slack)) (* 1000 at) started))
+              (text (plist-get cost :prompt))
+              ((and (stringp text) (not (string-empty-p text)))))
+    (cons (* 1000 at) text)))
+
+(defconst ghostherd-threads--bools '(:cross :working :auto :worktree :more :logged :transcript :thumb)
   "Keys that are true or false: the reply reads JSON false as nil.")
 (defconst ghostherd-threads--lists '(:participants :projects :lanes :msgs :waiting :threads :talking :costs :made)
   "Keys that are arrays: the reply reads [] as nil.")
@@ -4128,10 +4165,16 @@ plists, arrays as vectors, true and false as such."
 (defun ghostherd-threads--with-opener (th prompts)
   "Thread TH, a list's summary or a whole one, with the user's prompt that
 set it going: \"You\" as its first participant, and -- a whole thread --
-the prompt as its first message, as the herd log has it (its first line).
-A task told to an agent directly has the user's words already: none."
-  (let ((op (and (not (plist-get th :direct))
-                 (ghostherd-threads--opener prompts (plist-get th :rootFrom) (plist-get th :started)))))
+the prompt as its first message, as the herd log has it (its first line)
+or, behind a note the log could not see past, as its task's transcript
+has it (`ghostherd-threads--note-opener').  A task told to an agent
+directly has the user's words already: none."
+  (let* ((from (plist-get th :rootFrom))
+         (started (plist-get th :started))
+         (direct (plist-get th :direct))
+         (logged (and (not direct) (ghostherd-threads--opener prompts from started)))
+         (op (or logged
+                 (and (not direct) (ghostherd-threads--note-opener prompts from started (plist-get th :cost))))))
     (if (not op)
         th
       (let ((th (copy-sequence th)))
@@ -4141,8 +4184,9 @@ A task told to an agent directly has the user's words already: none."
           (setq th (plist-put th :lanes (cons (list :name "user" :kind "you" :project "" :role "" :worktree nil)
                                               (seq-remove (lambda (l) (equal (plist-get l :name) "user"))
                                                           (plist-get th :lanes)))))
-          (setq th (plist-put th :msgs (cons (list :kind "message" :from "user" :to (plist-get th :rootFrom)
-                                                   :at (car op) :head (cdr op) :text (cdr op) :logged t)
+          (setq th (plist-put th :msgs (cons (list :kind "message" :from "user" :to from
+                                                   :at (car op) :head (cdr op) :text (cdr op)
+                                                   :logged (and logged t) :transcript (not logged))
                                              (plist-get th :msgs)))))
         th))))
 
