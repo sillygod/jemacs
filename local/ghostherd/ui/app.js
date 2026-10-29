@@ -5082,7 +5082,7 @@
   // Phone: the list, then the thread as a conversation, "A → B".
 
   let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
-                  costs: [], costDays: 7 };
+                  costs: [], costDays: 7, costOpen: false };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
@@ -5119,7 +5119,7 @@
   // weighted tokens (the tally's unit), and the lines its commits changed,
   // merged or not.  A task two threads are part of (a lead's two asks for
   // it) shows its cost on one; the other says whose it is.  Above the
-  // list, lead mode against direct mode.
+  // list, lead mode against direct mode, folded to a line.
 
   const TASK_CODE = { no: "no code", unknown: "code not readable", pending: "code not read yet" };
   function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
@@ -5140,16 +5140,27 @@
       return '<span class="thcost thsame" title="One task with another thread: its cost is shown there, once">' +
         "same task as “" + esc(of) + "”</span>";
     }
-    return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) + " · " + esc(taskMade(c)) + "</span>";
+    // In its row, what it cost and the lines it changed, if any: why none
+    // -- no code, not read yet -- is the open thread's to say.
+    return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) +
+      (c.code === "yes" ? " · " + esc(taskMade(c)) : "") + "</span>";
   }
   function thCostLine(c) {
     if (!c) return "";
     const per = c.code === "yes" && c.lines ? " · " + tokens(Math.round((c.total * 100) / c.lines)) + " per 100 lines" : "";
     const merged = c.code === "yes" ? " (" + taskMerged(c) + ")" : "";
+    // Whose tokens they are, the parts that had none left out.
+    const parts = [[c.mode === "lead" ? "lead" : "itself", c.own], ["workers", c.workers], ["sub-agents", c.subs]]
+      .filter((x) => x[1]).map((x) => x[0] + " " + tokens(x[1]));
     return '<p class="thcostline" title="' + esc(taskTitle(c)) + '">Its task' +
-      (c.threadCount > 1 ? ", across " + c.threadCount + " threads" : "") + ": " + esc(tokens(c.total)) + " weighted tokens — " +
-      (c.mode === "lead" ? "lead " : "itself ") + esc(tokens(c.own)) + " · workers " + esc(tokens(c.workers)) +
-      " · sub-agents " + esc(tokens(c.subs)) + " · " + esc(taskMade(c)) + esc(merged) + esc(per) + "</p>";
+      (c.threadCount > 1 ? ", across " + c.threadCount + " threads" : "") + ": " + esc(tokens(c.total)) + " weighted tokens" +
+      (parts.length ? " — " + esc(parts.join(" · ")) : "") + " · " + esc(taskMade(c)) + esc(merged) + esc(per) + "</p>";
+  }
+  // What a short prompt told an agent directly goes on from (cost.py
+  // `contexts'): a quiet line under its title, not part of it.
+  function thContext(t) {
+    const c = t && t.direct && t.cost;
+    return c && !c.same && c.context ? String(c.context) : "";
   }
   // The open thread's commits: each, its lines and whether it is in a main
   // branch yet; a copy (an amend, a rebase, a cherry-pick) counted where
@@ -5164,6 +5175,9 @@
       (m.merged ? "merged" : "not merged") +
       (m.of ? " · a copy of " + esc(String(m.of).slice(0, 8)) + ", not counted again" : "") + "</span></li>").join("") + "</ul>";
   }
+  // Folded, one line: a week's or a month's median per task that changed
+  // code, per 100 lines, the lead's share -- the table a press away, open
+  // or folded for the page's life.
   function thCosts() {
     const all = threads.costs || [];
     const c = all.find((x) => x.days === threads.costDays) || all[0];
@@ -5171,14 +5185,25 @@
     const n = (v) => (v == null ? "—" : tokens(v));
     const row = (label, a, b) => "<tr><th>" + esc(label) + "</th><td>" + esc(a) + "</td><td>" + esc(b) + "</td></tr>";
     const L = c.lead, D = c.direct;
+    const open = !!threads.costOpen;
     const days = all.map((x) => '<button type="button" class="thcd' + (x.days === c.days ? " on" : "") +
-      '" data-act="th:cost-days" data-days="' + x.days + '">' + x.days + " days</button>").join("");
+      '" data-act="th:cost-days" data-days="' + x.days + '" title="The last ' + x.days + ' days">' + x.days + "d</button>").join("");
+    const sub = "through a lead, or told to an agent directly · weighted tokens · since " + c.since;
+    const fig = (label, a, b) => '<span class="thcfig"><span class="thclab">' + esc(label) + "</span> lead <b>" + esc(a) +
+      "</b> · direct <b>" + esc(b) + "</b></span>";
+    const bar = '<div class="thcbar"><h2>What a task costs</h2>' +
+      '<span class="thcsum" title="' + esc(sub) + '">' + fig("median per coded task", n(L.medianCoded), n(D.medianCoded)) +
+      fig("per 100 lines", n(L.per100), n(D.per100)) +
+      '<span class="thcfig"><span class="thclab">lead\'s share</span> <b>' + esc(L.own == null ? "—" : L.own + "%") + "</b></span></span>" +
+      '<span class="thcctl"><span class="thcds">' + days + "</span>" +
+      '<button type="button" class="thctoggle" data-act="th:cost-table" aria-expanded="' + open + '">' +
+      (open ? "Table ▾" : "Table ▸") + "</button></span></div>";
+    if (!open) return '<section class="thcosts" aria-label="What a task costs">' + bar + "</section>";
     // A task whose code is not known yet, or cannot be: in neither "lines
     // changed" nor "no code" -- said when there is one, as `herd cost' says it.
     const some = (key, label) => (L[key] || D[key] ? row(label, String(L[key] || 0), String(D[key] || 0)) : "");
-    return '<section class="thcosts" aria-label="What a task costs"><div class="thtalkhead"><h2>What a task costs</h2>' +
-      '<span class="thsub">through a lead, or told to an agent directly · weighted tokens · since ' + esc(c.since) + "</span>" +
-      '<span class="thcds">' + days + "</span></div>" +
+    return '<section class="thcosts open" aria-label="What a task costs">' + bar +
+      '<p class="thsub thcsince">' + esc(sub) + "</p>" +
       '<table class="thctable"><thead><tr><th></th><th>lead mode</th><th>direct</th></tr></thead><tbody>' +
       row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
       // A go-ahead is a task of its own: the tasks that changed code apart.
@@ -5233,7 +5258,9 @@
     if (narrow && top) app.scrollTop = 0;
   }
 
+  // Nobody talking: nothing -- the tab's "N live" says so.
   function thTalk() {
+    if (!threads.talking.length) return "";
     const chips = threads.talking.map((e) =>
       '<button type="button" class="thchip" data-act="th:open" data-ask="' + esc(e.ask) + '" title="' + esc(e.kind + " " + e.ask) + '">' +
       '<span class="thname">' + esc(thWho(e.from)) + "</span>" +
@@ -5242,14 +5269,16 @@
       '<span class="thwhat">' + esc(e.status === "queued" ? "queued" : (e.working ? "working " : "waiting ") + thAge(e.since)) + "</span></button>").join("");
     return '<section class="thtalk" aria-label="Talking now"><div class="thtalkhead"><h2>Talking now</h2>' +
       '<span class="thsub">every open ask and handoff in the herd, across projects</span></div>' +
-      (chips ? '<div class="thchips">' + chips + "</div>" : '<p class="thquiet">Nobody is waiting on anyone right now.</p>') + "</section>";
+      '<div class="thchips">' + chips + "</div></section>";
   }
 
   function thRow(t) {
     const on = !!(threads.cur ? t.id === threads.cur.id : threads.req && threads.req.id === t.id);
+    const ctx = thContext(t);
     return '<button type="button" class="throw' + (on ? " on" : "") + '" data-act="th:open" data-id="' + esc(t.id) + '" aria-current="' + (on ? "true" : "false") + '">' +
       '<span class="thr1">' + thStatus(t.status) + '<span class="thtitle">' + esc(t.title || "(no text)") + "</span>" +
       '<span class="thage">' + esc(thAge(t.at)) + "</span></span>" +
+      (ctx ? '<span class="thctx" title="' + esc("What it goes on from: " + ctx) + '">← ' + esc(ctx) + "</span>" : "") +
       '<span class="thpath">' + esc((t.participants || []).map(thWho).join(" → ")) + "</span>" +
       '<span class="thr3">' + (t.projects || []).map((p) => '<span class="thproj">' + esc(p) + "</span>").join("") +
       (t.cross ? '<span class="thcross">cross-project</span>' : "") + thCost(t.cost) +
@@ -5338,7 +5367,9 @@
   }
 
   function thHeader(t) {
+    const ctx = thContext(t);
     return '<div class="thhead1">' + thStatus(t.status) + '<h1 class="thh1">' + esc(t.title || "(no text)") + "</h1></div>" +
+      (ctx ? '<p class="thctx thh1ctx" title="What it goes on from">← ' + esc(ctx) + "</p>" : "") +
       '<p class="thsummary">' + esc(thSummary(t)) + "</p>" + thCostLine(t.cost) + thCommits(t.cost);
   }
 
@@ -5410,6 +5441,9 @@
       emit("threads-more");
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
+      renderThreads();
+    } else if (act === "cost-table") {
+      threads.costOpen = !threads.costOpen;
       renderThreads();
     } else if (act === "msg") {
       const i = el.getAttribute("data-i");
