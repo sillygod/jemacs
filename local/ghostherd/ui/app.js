@@ -1093,7 +1093,7 @@
 
   const RANK = { blocked: 0, working: 1, starting: 2, waiting: 3, done: 4, idle: 5, dead: 6 };
   let herdNow = {
-    data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(),
+    data: null, screens: {}, open: new Set(), more: new Set(), hooksOpen: new Set(), tallyOpen: new Set(),
     compose: {}, composing: new Set(), notes: null, capture: null, newFor: null, pending: false,
     // What the open forms say, kept here as the prompts are: the page is
     // drawn again every 5s and on news, and a form drawn from nothing
@@ -1843,7 +1843,22 @@
   //
   // Today's and the last seven days', as the sidecar tallies them from the
   // transcripts: one number each, input-equivalent tokens -- each kind
-  // weighted as it is priced -- and the kinds in its title.
+  // weighted as it is priced -- and the kinds in its title.  A touch
+  // screen shows no title: a tap shows the same lines under it, and
+  // another folds them (`herdNow.tallyOpen', by "a:" agent or "p:"
+  // project); at the desk the title shows on hover as well.
+
+  function tallyButton(cls, key, lines, label) {
+    const open = herdNow.tallyOpen.has(key);
+    return '<button type="button" class="' + cls + (open ? " open" : "") + '" data-act="a:tally" data-tally="' + esc(key) +
+      '" aria-expanded="' + open + '" title="' + esc(lines.join("\n")) + '">' + esc(label) + "</button>";
+  }
+
+  function tallyMore(key, lines) {
+    if (!lines || !herdNow.tallyOpen.has(key)) return "";
+    return '<div class="tallymore" data-act="a:tally" data-tally="' + esc(key) + '">' +
+      lines.map((l) => "<span>" + esc(l) + "</span>").join("") + "</div>";
+  }
 
   const WEIGHTS = "input-equivalent tokens: input ×1, cache write ×1.25 (1-hour ×2), cache read ×0.1, output ×5";
 
@@ -1852,12 +1867,15 @@
       " · output " + tokens(t.output);
   }
 
-  function tallyHtml(t) {
-    if (!t || !t.today || !t.week) return "";
-    const title = "What its replies cost, in " + WEIGHTS + "\nToday: " + tokens(t.today.w) + " — " + kinds(t.today) +
-      "\nLast 7 days: " + tokens(t.week.w) + " — " + kinds(t.week);
-    return '<span class="mtally" title="' + esc(title) + '">today ' + esc(tokens(t.today.w)) + " · 7d " +
-      esc(tokens(t.week.w)) + "</span>";
+  function tallyLines(t) {
+    if (!t || !t.today || !t.week) return null;
+    return ["What its replies cost, in " + WEIGHTS, "Today: " + tokens(t.today.w) + " — " + kinds(t.today),
+      "Last 7 days: " + tokens(t.week.w) + " — " + kinds(t.week)];
+  }
+
+  function tallyHtml(t, name) {
+    const lines = tallyLines(t);
+    return lines ? tallyButton("mtally", "a:" + name, lines, "today " + tokens(t.today.w) + " · 7d " + tokens(t.week.w)) : "";
   }
 
   // A project's: its agents' together -- a stopped one's too -- and its
@@ -1866,29 +1884,35 @@
     return all ? Math.round((part / all) * 100) + "%" : "—";
   }
 
-  function projectTallyHtml(p) {
-    if (!p || !p.week || !p.week.w) return "";
+  function projectTallyLines(p) {
+    if (!p || !p.week || !p.week.w) return null;
     const line = (label, span) => label + ": " + tokens(p[span].w) + " — lead " + tokens(p.lead[span].w) + " (" +
       share(p.lead[span].w, p[span].w) + "), workers " + tokens(p.workers[span].w);
-    const title = "What this project's agents' replies cost, in " + WEIGHTS + "\n" + line("Today", "today") + "\n" +
-      line("Last 7 days", "week") + "\n" + kinds(p.week);
-    return '<span class="ptally" title="' + esc(title) + '">today ' + esc(tokens(p.today.w)) + " · 7d " +
-      esc(tokens(p.week.w)) + " · lead " + esc(share(p.lead.week.w, p.week.w)) + "</span>";
+    return ["What this project's agents' replies cost, in " + WEIGHTS, line("Today", "today"), line("Last 7 days", "week"),
+      kinds(p.week)];
+  }
+
+  function projectTallyHtml(p) {
+    const lines = projectTallyLines(p);
+    return lines ? tallyButton("ptally", "p:" + p.project, lines, "today " + tokens(p.today.w) + " · 7d " +
+      tokens(p.week.w) + " · lead " + share(p.lead.week.w, p.week.w)) : "";
   }
 
   function meterHtml(a) {
     const m = a && a.meter;
     const p = pickerFor(a);
-    const spent = tallyHtml(a && a.tally);
+    const spent = tallyHtml(a && a.tally, a && a.name);
+    // What the tally's title says, under the meter, once it is tapped.
+    const more = tallyMore("a:" + (a && a.name), tallyLines(a && a.tally));
     // No meter (grok, agy do not report one) but a picker the herd knows:
     // still offer the switch, with no model to show until it is read.
     if (!m) {
-      if (!p) return spent ? '<div class="meter">' + spent + "</div>" : "";
+      if (!p) return spent ? '<div class="meter">' + spent + "</div>" + more : "";
       const btn = a.switching
         ? '<span class="mchip"><span class="meff">switching…</span></span>'
         : '<button type="button" class="mchip mbare" data-act="a:model" title="' +
           esc(switchHint(p)) + '">Model</button>';
-      return '<div class="meter">' + btn + spent + "</div>";
+      return '<div class="meter">' + btn + spent + "</div>" + more;
     }
     const label = esc(m.model) + (m.effort ? '<span class="meff">' + esc(m.effort) + "</span>" : "");
     const cls = "mchip" + (m.pending ? " pending" : "");
@@ -1913,7 +1937,7 @@
     return '<div class="meter">' + chip + (bar || words
       ? '<span class="mctx" title="Context: what its last reply was given, of the window its model has">' + bar +
         (words ? '<span class="mwords">' + esc(words) + "</span>" : "") + "</span>"
-      : "") + spent + "</div>";
+      : "") + spent + "</div>" + more;
   }
 
   // The model and effort to switch to, picked as chips; the effort left
@@ -2139,6 +2163,7 @@
             projectTallyHtml((d.projectTally || []).find((p) => p.project === g.project)) +
             (g.project && !(d.primary && g.project === d.primary.directory)
               ? '<button type="button" class="linkish" data-act="a:new-agent">+ New agent</button>' : "") +
+            tallyMore("p:" + g.project, projectTallyLines((d.projectTally || []).find((p) => p.project === g.project))) +
             "</div>" + workHtml(workFor(g.project)) + form + g.list.map((a) => agentRow(a, kinds, asksFor(a.name, d.asks))).join("") + "</section>";
         }).join("")
       : herdNow.newFor === "*" ? ""
@@ -3109,6 +3134,12 @@
   }
 
   function onAgentAction(act, el) {
+    if (act === "tally") {
+      const key = el.getAttribute("data-tally") || "";
+      if (herdNow.tallyOpen.has(key)) herdNow.tallyOpen.delete(key);
+      else herdNow.tallyOpen.add(key);
+      return GM.renderHerdAgain();
+    }
     const row = el.closest(".arow, .rcol, .cfoot, .cmeter");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");

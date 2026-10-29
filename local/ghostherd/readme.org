@@ -2318,7 +2318,9 @@ are the other tabs (below, and "What happened while you were away").
   output 5 --- roughly what eats the plan's quota (the quota left is in
   no transcript, so it is not shown).  The title has the kinds apart,
   input / cache write / cache read / output, and the project's lead
-  and workers apart, today and over the week.  The sidecar reads it
+  and workers apart, today and over the week.  A phone shows no title:
+  a tap on the numbers shows the same lines under them, and another
+  tap folds them (at the desk too; hover still shows the title).  The sidecar reads it
   off the transcripts (=server/tally.py=): claude's =message.usage= on
   each reply --- written as several records with the same usage, so a
   reply counts once, by its message and request ids, and a synthetic
