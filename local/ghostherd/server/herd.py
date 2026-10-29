@@ -273,6 +273,8 @@ TRACE_HOLD = 3.0
 # working-out is kept, and how often -- and how many at a time -- the
 # work's commits are looked for in git.
 COST_DAYS = 30
+# What a piece of work cost, as `cost_usage' keeps it: tally.Usage's kinds.
+COST_KINDS = tally.Usage.__slots__
 COST_KEEP = 30.0
 OUTPUT_EVERY = 60.0
 OUTPUT_MAX = 20
@@ -457,6 +459,9 @@ class HerdStore:
         # Where in its transcript each direct task's prompt is, for a task
         # kept before tasks kept it (cost.offset_of): found once.
         self._offsets: dict[str, int | None] = {}
+        # Whether the tasks kept were read by the rules the reader has now
+        # (`_cost_recheck').
+        self._said_ok = False
         self._mu = threading.Lock()
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -2399,6 +2404,7 @@ class HerdStore:
         commit, so nothing is counted twice, not even after a crash.  One
         pass at a time."""
         with self._tally_mu:
+            self._cost_recheck()
             more = self._tally_read(budget)
             more = self._cost_read(budget) or more
             self._cost_capture()
@@ -2644,23 +2650,8 @@ class HerdStore:
         with self._mu:
             for (it, agent, s), (u, first, last) in usage.items():
                 v = u.stored()
-                self._conn.execute(
-                    """
-                    INSERT INTO cost_usage (item, agent, sub, input, cache_write_5m, cache_write_1h,
-                      cache_read, output, replies, first_at, last_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (item, agent, sub) DO UPDATE SET
-                      input = input + excluded.input,
-                      cache_write_5m = cache_write_5m + excluded.cache_write_5m,
-                      cache_write_1h = cache_write_1h + excluded.cache_write_1h,
-                      cache_read = cache_read + excluded.cache_read,
-                      output = output + excluded.output, replies = replies + excluded.replies,
-                      first_at = MIN(COALESCE(first_at, excluded.first_at), COALESCE(excluded.first_at, first_at)),
-                      last_at = MAX(COALESCE(last_at, excluded.last_at), COALESCE(excluded.last_at, last_at))
-                    """,
-                    (it, agent, s, v["input"], v["cache_write_5m"], v["cache_write_1h"], v["cache_read"],
-                     v["output"], v["replies"], first, last),
-                )
+                self._cost_add((it, agent, s, v["input"], v["cache_write_5m"], v["cache_write_1h"], v["cache_read"],
+                                v["output"], v["replies"], first, last))
             self._conn.executemany(
                 "INSERT OR IGNORE INTO cost_tasks (id, agent, project, role, mode, cli, prompt, at, directory, path,"
                 " offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tasks)
@@ -2684,6 +2675,146 @@ class HerdStore:
             self._conn.commit()
         self._cost_seen = None
         return more
+
+    def _cost_add(self, row: tuple[Any, ...]) -> None:
+        """Add ROW -- item, agent, sub, the kinds as stored (COST_KINDS),
+        first and last reply -- to what that piece of work cost.  Caller
+        holds `_mu'."""
+        self._conn.execute(
+            f"""
+            INSERT INTO cost_usage (item, agent, sub, {', '.join(COST_KINDS)}, first_at, last_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (item, agent, sub) DO UPDATE SET
+              input = input + excluded.input,
+              cache_write_5m = cache_write_5m + excluded.cache_write_5m,
+              cache_write_1h = cache_write_1h + excluded.cache_write_1h,
+              cache_read = cache_read + excluded.cache_read,
+              output = output + excluded.output, replies = replies + excluded.replies,
+              first_at = MIN(COALESCE(first_at, excluded.first_at), COALESCE(excluded.first_at, first_at)),
+              last_at = MAX(COALESCE(last_at, excluded.last_at), COALESCE(excluded.last_at, last_at))
+            """,
+            row,
+        )
+
+    def _cost_recheck(self) -> None:
+        """The tasks kept, read again by the rules that tell the user's words
+        from the herd's as they are now (cost.SAID_VERSION) -- once each
+        time they change, before the pass reads on.  A task whose words are
+        now the herd's is none: what it cost goes to the work its agent was
+        on before them, as a reading now would count it (`_cost_unmake'),
+        and one whose words read otherwise now takes them as its prompt.  A
+        task whose file no longer has its words is judged by the first line
+        kept of them.  The commits kept are not touched: they cannot be
+        read again.
+
+        First a backup of the store, beside it in backups/; then each task
+        put right in a commit of its own, so a sidecar stopped half-way
+        does the rest the next time; then checked -- every task as read
+        now, the commits as they were -- and only then marked done.  One
+        that fails the check is marked so, not tried again: the backup is
+        there.  Caller holds `_tally_mu'."""
+        if self._said_ok:
+            return
+        version = str(cost.SAID_VERSION)
+        with self._mu:
+            row = self._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone()
+            if row and row[0] in (version, "failed " + version):
+                self._said_ok = True
+                return
+            tasks = self._conn.execute("SELECT id, agent, path, cli, prompt, offset FROM cost_tasks").fetchall()
+            commits = self._cost_census()
+            backup = self._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_backup'").fetchone()
+        report: dict[str, Any] = {"version": cost.SAID_VERSION, "tasks": len(tasks), "unmade": 0, "retitled": 0,
+                                  "placed": 0, "unread": 0, "moved": 0, "dropped": 0}
+        if tasks and not (backup and backup[0].startswith(version + " ")):
+            dest = self.path.parent / "backups" / f"herd-cost-said-{version}-{datetime.now():%Y%m%d-%H%M%S}.sqlite"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with self._mu:
+                out = sqlite3.connect(dest)
+                try:
+                    self._conn.backup(out)
+                    out.execute("PRAGMA journal_mode=DELETE")   # one file, whole
+                finally:
+                    out.close()
+                self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_said_backup', ?)",
+                                   (f"{version} {dest}",))
+                self._conn.commit()
+            report["backup"] = str(dest)
+        by_path: dict[tuple[str, str], list[tuple[str, str, str, int | None]]] = {}
+        for tid, agent, path, cli, prompt, offset in tasks:
+            by_path.setdefault((path or "", cli or ""), []).append((tid, agent, prompt or "", offset))
+        want: dict[str, str | None] = {}
+        for (path, cli), mine in by_path.items():
+            found = cost.recheck(path, cli, [t[0] for t in mine]) if path else None
+            for tid, agent, prompt, offset in mine:
+                got = (found or {}).get(tid)
+                if got is None:
+                    report["unread"] += 1
+                    if cost.said(prompt) is not None:
+                        want[tid] = prompt
+                        continue
+                    got = {"before": None, "prompt": None}
+                if got["prompt"] is None:
+                    moved, dropped = self._cost_unmake(tid, agent, got["before"])
+                    report["unmade"] += 1
+                    report["moved"] += moved
+                    report["dropped"] += dropped
+                    want[tid] = None
+                    continue
+                want[tid] = got["prompt"]
+                if got["prompt"] != prompt or offset is None:
+                    with self._mu:
+                        self._conn.execute("UPDATE cost_tasks SET prompt = ?, offset = COALESCE(offset, ?)"
+                                           " WHERE id = ?", (got["prompt"], got["offset"], tid))
+                        self._conn.commit()
+                    report["retitled"] += got["prompt"] != prompt
+                    report["placed"] += offset is None
+        with self._mu:
+            kept = dict(self._conn.execute("SELECT id, prompt FROM cost_tasks"))
+            wrong = [t for t, p in want.items() if (p is None) != (t not in kept) or (p is not None and kept[t] != p)]
+            herds = [t for t, p in kept.items() if t in want and cost.said(p or "") is None]
+            same = self._cost_census() == commits
+            ok = not wrong and not herds and same
+            report.update(ok=ok, wrong=wrong[:20], herds=herds[:20], commits=same)
+            self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_said', ?)",
+                               (version if ok else "failed " + version,))
+            self._conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('cost_said_report', ?)",
+                               (json.dumps(report),))
+            self._conn.commit()
+        self._said_ok = True
+        self._cost_seen = None
+        self._offsets.clear()
+        if tasks:
+            print(f"[ghostherd-memory] cost: tasks read again (rules {version}): {json.dumps(report)}", flush=True)
+
+    def _cost_census(self) -> tuple[Any, ...]:
+        "The commits kept, to tell they are as they were.  Caller holds `_mu'."
+        return self._conn.execute("SELECT COUNT(*), TOTAL(lines), TOTAL(merged), group_concat(directory || sha, ',')"
+                                  " FROM (SELECT * FROM cost_commits ORDER BY directory, sha)").fetchone()
+
+    def _cost_unmake(self, tid: str, agent: str, before: str | None) -> tuple[int, int]:
+        """Task TID, of AGENT, is none: its words were the herd's.  What it
+        cost goes to BEFORE, the work its agent was on as they came -- or,
+        on nothing, is counted to none -- and so do the asks and sub-agents
+        it was said to have set off, and the agent's switch to it.  In one
+        commit.  The weighted tokens moved and dropped."""
+        item = "task:" + tid
+        with self._mu:
+            cols = ("agent", "sub") + COST_KINDS + ("first_at", "last_at")
+            rows = self._conn.execute(f"SELECT {', '.join(cols)} FROM cost_usage WHERE item = ?", (item,)).fetchall()
+            weighted = sum(tally.Usage(**dict(zip(COST_KINDS, r[2:2 + len(COST_KINDS)]))).weighted() for r in rows)
+            if before:
+                for r in rows:
+                    self._cost_add((before,) + tuple(r))
+                self._conn.execute("UPDATE cost_links SET item = ? WHERE item = ?", (before, item))
+            else:
+                self._conn.execute("DELETE FROM cost_links WHERE item = ?", (item,))
+            self._conn.execute("DELETE FROM cost_usage WHERE item = ?", (item,))
+            self._conn.execute("UPDATE cost_switches SET item = ? WHERE item = ?", (before, item))
+            self._conn.execute("UPDATE cost_files SET item = ? WHERE item = ?", (before, item))
+            self._conn.execute("DELETE FROM cost_tasks WHERE id = ?", (tid,))
+            self._conn.commit()
+        return (weighted, 0) if before else (0, weighted)
 
     def _cost_on(self, agent: str, at: float | None, fresh: list[tuple[str, float, str | None]]) -> str | None:
         "What AGENT was on AT: from its switches this pass (FRESH) or kept."

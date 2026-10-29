@@ -56,11 +56,17 @@ FAILED = re.compile(r"\AAsk ([0-9A-Za-z]{4,32}) failed: (.*)\Z", re.S)
 TRACE = re.compile(r"\n*\[(How it went: [^\n]*)\]\s*\Z")
 TRACE_SAID = "How it went: "
 # What opens the user's message to a lead: the herd's words, not theirs
-# (`ghostherd--lead-unheard-note', `ghostherd--lead-work-note').  After
-# the role, on a CLI that takes it with the first message; just inside
-# the tag a CLI wraps a prompt in.
-LEAD_NOTE = re.compile(r"(?:^|(?<=>))\[((?:Since you last heard from me|What this project works on)[^\n]*)\n.*?\]\n\n",
-                       re.S | re.M)
+# (`ghostherd--lead-unheard-note', `ghostherd--lead-work-note') -- a line
+# saying what it is, a "- " line each, the last closing it, and a blank
+# line, which claude keeps as a bare line break after pasted images.
+# After the role, on a CLI that takes it with the first message; just
+# inside the tag a CLI wraps a prompt in; right after the images pasted
+# into the CLI's input before the herd typed the message ("[Image #1]").
+LEAD_NOTE = re.compile(r"(?:^|(?<=>)|(?<=\]))\[((?:Since you last heard from me|What this project works on)[^\n]*)\n"
+                       r"(?:- [^\n]*\n)*?(?:- [^\n]*)?\](?:\n\n|\n(?!- )|\Z)", re.M)
+# Claude Code's stand-ins for the images pasted into its input, which open
+# the message ahead of what the herd typed after them.
+IMAGES = re.compile(r"(?:\[Image #\d+\]\s*)*")
 
 # The herd client in a shell command: `"$GHOSTHERD_HERD" ask qa --wait
 # <<'HERD'', `/path/bin/herd reply 1a2b3c4d "done"'.
@@ -366,10 +372,12 @@ def user_entry(text: str, ts: Any) -> dict[str, Any] | None:
         entry.update(kind="note", text=first_line(text.strip("[]")))
     else:
         notes = []
+        pasted = IMAGES.match(text).group(0)
+        text = text[len(pasted):]
         while (n := LEAD_NOTE.match(text)):
             notes.append(re.split(r"[.:]", n.group(1), maxsplit=1)[0])
             text = text[n.end():]
-        entry["text"] = clip(text)
+        entry["text"] = clip(pasted + text)
         if notes:
             entry["notes"] = notes
     return entry

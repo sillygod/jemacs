@@ -72,10 +72,26 @@ ASKED = re.compile(r'herd: (?:asked [^\s"\\]+|handed off to [^\n"\\]*?|[^\n"\\]*
                    r' \((?:ask|handoff) ([0-9A-Za-z]{4,32})\)')
 # The herd's own prompt to an agent taking over another's work (relay.py).
 RELAY = "[Relay: "
-# The role a lead is owed opens its first message (`ghostherd--lead-role'):
-# what follows its rule is the user's.
+# The role a lead or primary is owed on a CLI that takes none as it starts
+# opens its first message (`ghostherd--lead-role', `ghostherd--primary-role'):
+# what follows its rule is the user's.  Alone -- a cold respawn says it
+# again -- it is the herd's.
 LEAD_ROLE = "You are the lead of this project's herd of agents"
+PRIMARY_ROLE = "You are primary: the herd-wide lead."
+ROLES = (LEAD_ROLE, PRIMARY_ROLE)
 ROLE_RULE = "\n---\n"
+# What the herd tells an agy agent as it starts, with no word of the
+# user's in it: its guard, when it has one (`ghostherd--agy-guard-note'),
+# then the shared memory's opening (`ghostherd--memory-rules').  grok
+# reads the same from --rules, claude its role from a flag and its memory
+# from a linked directory: neither is told anything.  As Emacs writes them,
+# spaces aside (test_cost checks it).
+OPENINGS = ("A herd guard checks each of your tool calls.",
+            "The herd keeps shared memory for this project --")
+# How many times the rules that tell the herd's words from the user's
+# changed: tasks kept by an earlier reading are read again (herd.py
+# `_cost_recheck').
+SAID_VERSION = 2
 PROMPT_MAX = 200
 LEADS = ("lead", "primary")
 # Commits made up to this long after the work's last reply are its own: an
@@ -110,10 +126,15 @@ def said(text: str | None) -> tuple[str, str] | None:
     if e["kind"] != "prompt":
         return None
     body = e.get("text") or ""
-    if body.startswith(LEAD_ROLE) and ROLE_RULE in body:
-        body = body.split(ROLE_RULE, 1)[1]
+    if body.startswith(ROLES):
+        if ROLE_RULE not in body:
+            return None
+        # The notes a lead hears first come after its role.
+        body = conversation.without_herd_notes(body.split(ROLE_RULE, 1)[1].strip())
     body = body.strip()
-    return ("user", body) if body else None
+    if not body or body.startswith(RELAY) or " ".join(body[:200].split()).startswith(OPENINGS):
+        return None
+    return "user", body
 
 
 def _agy_text(o: dict[str, Any]) -> str:
@@ -298,6 +319,40 @@ def read_from(path: Path, tracker: Tracker, offset: int, budget: int) -> tuple[i
             offset = start = offset + end + 1
             if read >= budget:
                 return offset, True
+
+
+class Recheck(Tracker):
+    """A transcript read again, as `Tracker' reads it now, for the tasks
+    kept from it (IDS): for each found, where its words are (`offset'),
+    what its agent was on before them (`before') and what they are now --
+    the user's, its `prompt'; the herd's, None (`said').  A task of the
+    file's not found: its words are no longer there to read."""
+
+    def __init__(self, path: str, cli: str, ids: Iterable[str]):
+        super().__init__(path, cli, None)
+        self.ids = set(ids)
+        self.found: dict[str, dict[str, Any]] = {}
+
+    def _said(self, text: str | None, ref: Any, when: float | None) -> None:
+        tid = task_id(self.path, ref) if text is not None else None
+        before, n = self.item, len(self.tasks)
+        super()._said(text, ref, when)
+        if tid in self.ids and tid not in self.found:
+            mine = [t for t in self.tasks[n:] if t["id"] == tid]
+            self.found[tid] = {"offset": self.at, "before": before, "prompt": mine[0]["prompt"] if mine else None}
+
+
+def recheck(path: str, cli: str, ids: Iterable[str], chunk: int = 4 << 20) -> dict[str, dict[str, Any]] | None:
+    "`Recheck' PATH whole for tasks IDS; None when it cannot be read."
+    t = Recheck(path, cli, ids)
+    offset, more = 0, True
+    while more:
+        try:
+            offset, more = read_from(Path(path), t, offset, chunk)
+        except OSError:
+            return None
+        t.tasks.clear()
+    return t.found
 
 
 # ---- A task's cost --------------------------------------------------------------

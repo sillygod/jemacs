@@ -100,9 +100,67 @@ def transcript(home, name, records, project="-src-dp"):
     ('<pasted_content id="a1">\n' + frame("lead", "rd", "[ask 1a2b3c4d -- x]\nDo it.") + "\n</pasted_content>",
      ("ask", "1a2b3c4d")),
     ("   ", None),
+    # The note after images pasted into claude's input, which keeps its
+    # blank line as a bare line break.
+    ("[Image #1][What this project works on, as the herd sees it.  Read them:\n- branch x in ~/p/\n- PR #3 [y]]\n"
+     "Ship it.", ("user", "[Image #1]Ship it.")),
+    ("[Image #1] [Image #2][Since you last heard from me, I wrote:\n- to rd: a]\n\nShip it.",
+     ("user", "[Image #1] [Image #2]Ship it.")),
+    ("[Image #5]", ("user", "[Image #5]")),
+    # What the herd tells an agy agent as it starts: no task, guarded or not.
+    ("A herd guard checks each of your tool calls.  Your workspace is /w and your\ncommands run there.\n\n"
+     "The herd keeps shared memory for this project -- curated facts every\nagent sees.", None),
+    ("The herd keeps shared memory for this project -- curated facts every\nagent sees.", None),
+    # A role alone -- a cold respawn's -- is the herd's; primary's opens its
+    # first message as a lead's does, the notes after it.
+    ("You are the lead of this project's herd of agents: you plan.\n", None),
+    ("You are primary: the herd-wide lead.  You route.\n---\n\nWhat is everyone doing?",
+     ("user", "What is everyone doing?")),
+    ("You are the lead of this project's herd of agents: you plan.\n---\n\n"
+     "[What this project works on, as the herd sees it.  Read them:\n- branch x]\n\nShip it.", ("user", "Ship it.")),
+    ("You are the lead of this project's herd of agents: you plan.\n---\n\n[Relay: you take over from lead.]\n## Work",
+     None),
 ])
 def test_what_is_the_users_and_what_the_herds(text, want):
     assert cost.said(text) == want
+
+
+def test_what_the_herd_writes_an_agent_as_it_starts_is_no_task(tmp_path):
+    """The agy start message, a lead's role alone and primary's first
+    message, as Emacs writes them -- not as copied here, so a change to
+    them fails here, not silently in the numbers."""
+    import shutil
+
+    from tests.test_conversation import GHOSTHERD_EL
+
+    emacs = shutil.which("emacs")
+    if not emacs:
+        pytest.skip("no emacs")
+    root = GHOSTHERD_EL.parent
+    lisp = r"""
+(let ((ghostherd-memory-dir "%s"))
+  (princ (concat (format ghostherd--agy-guard-note "/w/" "/g/") (ghostherd--memory-opening "/no/project/")))
+  (princ "\0")
+  (princ (ghostherd--memory-opening "/no/project/"))
+  (princ "\0")
+  (princ ghostherd--lead-role)
+  (princ "\0")
+  (princ (concat ghostherd--primary-role "\n---\n\n" "What is everyone doing?")))
+""" % (tmp_path / "memory")
+    out = subprocess.run([emacs, "-Q", "--batch", "-L", str(root), "-L", str(root.parent / "xwapp"),
+                          "-l", "ghostherd", "--eval", lisp], capture_output=True, text=True, timeout=60)
+    assert out.returncode == 0, out.stderr[-2000:]
+    guarded, unguarded, role, primary = out.stdout.split("\0")
+    assert guarded.startswith(cost.OPENINGS[0]) and len(guarded) > 400
+    assert cost.said(guarded) is None and cost.said(unguarded) is None and cost.said(role) is None
+    assert cost.said(primary) == ("user", "What is everyone doing?")
+    # agy's own record of it, read for tasks: none.
+    path = tmp_path / "transcript.jsonl"
+    _write(path, [{"type": "USER_INPUT", "step_index": 0, "created_at": _iso(at(5)),
+                   "content": "<USER_REQUEST>" + guarded + "</USER_REQUEST>"}])
+    t = cost.Tracker(str(path), "agy", None)
+    cost.read_from(path, t, 0, 1 << 20)
+    assert t.tasks == [] and t.item is None
 
 
 def test_a_lead_turn_woken_by_an_answer_is_that_asks_tasks(tmp_path):
@@ -588,3 +646,142 @@ def test_herd_cost_says_what_it_left_out(home, live):  # noqa: F811
     out = run(live, "cost", "--tasks")
     assert out.returncode == 0, out.stderr
     assert "secret plans" not in out.stdout and "1 more task" in out.stdout
+
+
+# ---- Tasks kept by older rules ------------------------------------------------------
+
+AGY = "agy-dp"
+# What the rules before SAID_VERSION 2 read as a lead's note: it at the
+# very start, closed by a blank line.
+OLD_NOTE = r"(?:^|(?<=>))\[((?:Since you last heard from me|What this project works on)[^\n]*)\n.*?\]\n\n"
+
+
+def agy_said(text, when, step):
+    return {"type": "USER_INPUT", "source": "USER_EXPLICIT", "step_index": step, "created_at": _iso(when),
+            "content": "<USER_REQUEST>" + text + "</USER_REQUEST>"}
+
+
+def agy_reply(inp, when, step):
+    return {"type": "PLANNER_RESPONSE", "source": "MODEL", "step_index": step, "created_at": _iso(when),
+            "input_tokens": inp, "cache_read_tokens": 0, "output_tokens": 0}
+
+
+def old_rules_herd(home, tmp_path, monkeypatch):
+    """A lead told, after two pasted images and its note, to ship a fix,
+    which it asks an agy agent for; the agy agent, respawned on its
+    conversation while on that ask, told the herd's opening again, then
+    told directly to tidy the docs, which it commits -- all read by the
+    older rules: the opening a task, the note the lead's task's title."""
+    import re
+    import conversation
+
+    dp = repo(tmp_path / "dp", at(600))
+    snap = [{"name": LEAD, "kind": "claude", "state": "idle", "project": str(dp) + "/", "role": "lead",
+             "directory": str(dp) + "/"},
+            {"name": AGY, "kind": "agy", "state": "idle", "project": str(dp) + "/", "directory": str(dp) + "/"}]
+    reset_herd()
+    h = HerdStore(tmp_path / "herd.sqlite")
+    h.tick(sessions=snap)
+    ask = h.ask(AGY, "ship the fix", from_name=LEAD)["id"]
+    out = h.tick(sessions=snap)
+    h.tick(sessions=snap, ack_ids=[p["id"] for p in out["pending"]])
+    note = "[What this project works on, as the herd sees it.  Read them:\n- branch x in ~/p/\n- its PR #3 [open]]\n"
+    lead = transcript(home, "lead", [you([{"type": "text", "text": "[Image #1] [Image #2]" + note + "Ship the fix."},
+                                          {"type": "image", "source": {"type": "base64", "data": ""}}], at(50))]
+                      + reply("1", usage(inp=100), when=at(49))
+                      + ran("2", f"herd ask {AGY} 'ship the fix'", f"herd: asked {AGY} (ask {ask}), round 1 of 5", at(48)))
+    opening = ("A herd guard checks each of your tool calls.  Your workspace is /w and your\ncommands run there.\n\n"
+               "The herd keeps shared memory for this project -- curated facts every\nagent sees.")
+    agy = _write(home / ".gemini" / "antigravity-cli" / "brain" / "b1" / ".system_generated" / "logs" / "transcript.jsonl",
+                 [agy_said(frame(LEAD, AGY, f"[ask {ask} -- whoever asked is waiting]\nship the fix"), at(47), 0),
+                  agy_reply(20, at(46), 1),
+                  agy_said(opening, at(40), 2), agy_reply(300, at(39), 3),
+                  agy_said("Tidy the docs.", at(30), 4), agy_reply(50, at(28), 5)])
+    commit(dp, "docs.md", 9, at(29), message="docs")
+    h.report(LEAD, cli="claude", conversation="lead", transcript=lead)
+    h.report(AGY, cli="agy", conversation="b1", transcript=agy)
+    monkeypatch.setattr(cost, "OPENINGS", ())
+    monkeypatch.setattr(cost, "ROLES", ())
+    monkeypatch.setattr(conversation, "LEAD_NOTE", re.compile(OLD_NOTE, re.S | re.M))
+    old = counted(h)
+    monkeypatch.setattr(cost, "OPENINGS", OPENINGS)
+    monkeypatch.setattr(cost, "ROLES", ROLES)
+    monkeypatch.setattr(conversation, "LEAD_NOTE", LEAD_NOTE)
+    with h._mu:   # a store from before the rules were versioned
+        h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_said%'")
+        h._conn.commit()
+    h._said_ok = False
+    return h, ask, old
+
+
+import conversation as _conversation  # noqa: E402
+
+OPENINGS, ROLES, LEAD_NOTE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE
+
+
+def test_tasks_kept_by_older_rules_are_read_again(home, tmp_path, monkeypatch):
+    """The herd's opening, read as a task by the older rules, is none: what
+    its replies cost goes to the work its agent was on as it came -- the
+    lead's ask -- and the lead's task, titled by the note, takes the user's
+    words.  The commits kept are left as they were; the store is backed up
+    first; the check passes and is marked."""
+    h, ask, old = old_rules_herd(home, tmp_path, monkeypatch)
+    titled = "[Image #1] [Image #2][What this project works on, as the herd sees it.  Read them:"
+    assert set(old) == {titled, cost.OPENINGS[0] + "  Your workspace is /w and your", "Tidy the docs."}
+    assert old[titled]["workers"] == 20 and old["Tidy the docs."]["lines"] == 9
+    with h._mu:
+        commits = h._cost_census()
+    new = counted(h)
+    assert set(new) == {"[Image #1] [Image #2]Ship the fix.", "Tidy the docs."}
+    ship = new["[Image #1] [Image #2]Ship the fix."]
+    assert (ship["own"], ship["workers"]) == (old[titled]["own"], 20 + 300)
+    assert (new["Tidy the docs."]["own"], new["Tidy the docs."]["lines"]) == (50, 9)
+    with h._mu:
+        assert h._cost_census() == commits
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == (str(cost.SAID_VERSION),)
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+        # The agy agent is on what it was told last, as a reading now leaves it.
+        assert h._conn.execute("SELECT item FROM cost_files WHERE agent = ?", (AGY,)).fetchone()[0].startswith("task:")
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item NOT IN"
+                                   " (SELECT 'task:' || id FROM cost_tasks) AND item NOT LIKE 'ask:%'").fetchall()
+    assert (report["ok"], report["unmade"], report["retitled"], report["moved"]) == (True, 1, 1, 300)
+    backups = list((tmp_path / "backups").iterdir())
+    assert len(backups) == 1 and report["backup"] == str(backups[0])
+    import sqlite3
+    with sqlite3.connect(backups[0]) as b:   # the store as it was before
+        assert b.execute("SELECT COUNT(*) FROM cost_tasks").fetchone()[0] == 3
+    # Done: not again -- and a run stopped half-way, done again, finds the
+    # rest as it should be, with no second backup.
+    h._said_ok = False
+    assert counted(h) == new
+    with h._mu:
+        h._conn.execute("DELETE FROM meta WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    assert counted(h) == new and len(list((tmp_path / "backups").iterdir())) == 1
+    with h._mu:
+        again = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert (again["ok"], again["unmade"], again["retitled"], again["placed"]) == (True, 0, 0, 0)
+
+
+def test_a_task_whose_words_are_gone_is_judged_by_its_first_line(home, tmp_path, monkeypatch):
+    """Its transcript gone, a task is judged by what was kept of its words:
+    the herd's opening is none, the user's words stay."""
+    h, ask, old = old_rules_herd(home, tmp_path, monkeypatch)
+    Path(h._transcript(AGY)).unlink()
+    with h._tally_mu:
+        h._cost_recheck()
+    with h._mu:
+        left = {p for (p,) in h._conn.execute("SELECT prompt FROM cost_tasks")}
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert left == {"[Image #1] [Image #2]Ship the fix.", "Tidy the docs."}
+    assert (report["ok"], report["unread"], report["unmade"], report["dropped"]) == (True, 2, 1, 300)
+
+
+def test_a_fresh_store_is_marked_with_no_backup(home, tmp_path):
+    reset_herd()
+    h = HerdStore(tmp_path / "herd.sqlite")
+    h._tally_pass()
+    with h._mu:
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == (str(cost.SAID_VERSION),)
+    assert not (tmp_path / "backups").exists()
