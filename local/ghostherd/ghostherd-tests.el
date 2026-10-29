@@ -15733,6 +15733,63 @@ prompt in the middle of a turn ends nothing."
                         (concat "← " (car (split-string ghostherd--lead-role "\n")))))
       (should (eq (ghostherd-threads--said herd) 'herd)))))
 
+(ert-deftest ghostherd-test-a-prompt-behind-a-note-opens-its-thread-from-its-task ()
+  "The live case (2026-10-29): a lead's thread lost its \"You → lead\"
+opener when the herd's note came before the user's words, the log having
+only the note's first line.  The thread's task has the words, the notes
+taken off: they open it -- labelled as its task's transcript has them --
+when the task is the asker's own and began between the note and the ask.
+Never another agent's task, one begun before the note or after the ask,
+one with a turn ended or an answer come back between, or past the window."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let* ((now (* 1000 (float-time)))
+         (ask (- now 60000))
+         (task-at (/ (- now 119000) 1000.0))            ; a second after the note's line
+         (words "Fix the flaky test, then the docs.")
+         (cost (list :id "k1" :agent "lead-x" :prompt words :at task-at))
+         (note "← [Since you last heard from me, I wrote to the team directly:")
+         (ghostherd--log (list (ghostherd-tests--input "lead-x" note 120)
+                               (ghostherd-tests--input "lead-x" "← an older prompt" 900)))
+         (prompts (ghostherd-threads--prompts))
+         (sum (list :id "t1" :participants '("lead-x" "rd") :count 2 :rootFrom "lead-x" :started ask :cost cost))
+         (whole (append sum (list :lanes (list (list :name "lead-x" :kind "claude")) :msgs (list (list :kind "ask")))))
+         (with (lambda (c) (ghostherd-threads--with-opener (plist-put (copy-sequence sum) :cost c) prompts))))
+    (should (eq (ghostherd-threads--said note) 'note))
+    (should (eq (ghostherd-threads--said "← [What this project works on, as the herd sees it.  Read them for the work;")
+                'note))
+    (should (ghostherd-threads--herd-made-p note))
+    ;; The log alone has none -- never the older prompt.
+    (should-not (ghostherd-threads--opener prompts "lead-x" ask))
+    (should (equal (ghostherd-threads--note-opener prompts "lead-x" ask cost) (cons (* 1000 task-at) words)))
+    (let ((s (ghostherd-threads--with-opener sum prompts)))
+      (should (equal (plist-get s :participants) '("user" "lead-x" "rd")))
+      (should (= (plist-get s :count) 3)))
+    (let* ((w (ghostherd-threads--with-opener whole prompts))
+           (m (car (plist-get w :msgs)))
+           (js (aref (plist-get (ghostherd-threads--js w) :msgs) 0)))
+      (should (equal (list (plist-get m :from) (plist-get m :to) (plist-get m :text) (plist-get m :at))
+                     (list "user" "lead-x" words (* 1000 task-at))))
+      (should (equal (list (plist-get js :logged) (plist-get js :transcript)) '(:json-false t))))
+    ;; A second thread of the task -- its cost shown on the first -- too.
+    (should (equal (plist-get (funcall with (list :id "k1" :same "t0" :agent "lead-x" :prompt words :at task-at))
+                              :participants)
+                   '("user" "lead-x" "rd")))
+    (dolist (c (list nil
+                     (plist-put (copy-sequence cost) :agent "rd")                   ; another agent's
+                     (plist-put (copy-sequence cost) :at (/ (- now 200000) 1000.0)) ; begun before the note
+                     (plist-put (copy-sequence cost) :at (/ (- now 30000) 1000.0))  ; after the ask
+                     (plist-put (copy-sequence cost) :prompt "")))
+      (should-not (ghostherd-threads--note-opener prompts "lead-x" ask c))
+      (should (equal (plist-get (funcall with c) :participants) '("lead-x" "rd"))))
+    ;; A turn ended, or an answer came back, after the note: the ask is not its turn's.
+    (dolist (after (list (ghostherd-log-entry--create :session "lead-x" :kind 'state :text "working → done  reported done"
+                                                      :time (time-subtract (current-time) 90))
+                         (ghostherd-tests--input "lead-x" "← [ghostherd message from rd → lead-x]" 90)))
+      (let ((ghostherd--log (cons after ghostherd--log)))
+        (should-not (ghostherd-threads--note-opener (ghostherd-threads--prompts) "lead-x" ask cost))))
+    ;; An ask two hours and a minute after the note: out of the window.
+    (should-not (ghostherd-threads--note-opener prompts "lead-x" (- now (* 1000 (- 120 60 (* 2 3600)))) cost))))
+
 (ert-deftest ghostherd-test-inbox-detail-id-ms ()
   "The trailing :MS of a report/question item id, as a number, or nil."
   (skip-unless (require 'ghostherd-memory-page nil t))

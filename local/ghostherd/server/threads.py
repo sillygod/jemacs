@@ -279,7 +279,7 @@ def direct_detail(task: dict[str, Any], said: dict[str, Any] | None, snap: dict[
                   on: bool) -> dict[str, Any]:
     """TASK whole: its lanes, the user's words and -- SAID
     (conversation.turn) has it -- the reply that ended their turn.  Read
-    from nowhere, the first line kept with the task."""
+    from nowhere, the title kept with the task."""
     out = direct(task, snap, on)
     agent = task["agent"]
     said = said or {}
@@ -302,7 +302,10 @@ def one_cost(listed: list[dict[str, Any]]) -> None:
     """A task's cost once among LISTED, the threads shown: on its own
     direct thread, else on its first; each other thread of it says it is
     part of that one's task, with no cost of its own -- two asks a lead
-    made for one task are two threads of one cost."""
+    made for one task are two threads of one cost.  What the user said to
+    begin it -- its agent, prompt and time -- each keeps: the page opens a
+    thread with those words when the herd log has only the note before
+    them (`ghostherd-threads--note-opener')."""
     by: dict[str, list[dict[str, Any]]] = {}
     for t in listed:
         c = t.get("cost")
@@ -315,4 +318,5 @@ def one_cost(listed: list[dict[str, Any]]) -> None:
         for t in ts:
             if t is not first:
                 t["cost"] = {"id": task, "mode": first["cost"]["mode"], "same": first["id"],
-                             "sameTitle": first["title"]}
+                             "sameTitle": first["title"],
+                             **{k: first["cost"].get(k) for k in ("agent", "prompt", "at")}}

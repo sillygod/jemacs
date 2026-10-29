@@ -2705,13 +2705,13 @@ class HerdStore:
 
     def _cost_recheck(self) -> None:
         """The tasks kept, read again by the rules that tell the user's words
-        from the herd's as they are now (cost.SAID_VERSION) -- once each
-        time they change, before the pass reads on.  A task whose words are
-        now the herd's is none: what it cost goes to the work its agent was
-        on before them, as a reading now would count it (`_cost_unmake'),
-        and one whose words read otherwise now takes them as its prompt.  A
-        task whose file no longer has its words is judged by the first line
-        kept of them.  The commits kept are not touched: they cannot be
+        from the herd's, and what of them is a task's title, as they are now
+        (cost.SAID_VERSION) -- once each time they change, before the pass
+        reads on.  A task whose words are now the herd's is none: what it
+        cost goes to the work its agent was on before them, as a reading now
+        would count it (`_cost_unmake'), and one whose words read otherwise
+        now takes them as its prompt.  A task whose file no longer has its
+        words is judged by the title kept of them, and keeps it.  The commits kept are not touched: they cannot be
         read again.
 
         First a backup of the store, beside it in backups/; then each task
@@ -3144,13 +3144,17 @@ class HerdStore:
     def _thread_cost(self, root: str, view: dict[str, Any], whole: bool = False) -> dict[str, Any] | None:
         """What the task thread ROOT (an ask, or `task:ID') is part of cost,
         as the Threads tab shows it; None when not known.  WHOLE, for the
-        open thread: its commits too, and how many threads the task is."""
+        open thread: its commits too, and how many threads the task is.
+        Its agent, prompt and time (`at') too: the page opens a thread with
+        them when the herd log has only the note before the user's words
+        (`ghostherd-threads--note-opener').  The page's alone: herd_threads
+        and herd_thread are not an agent's to call."""
         task = root[5:] if root.startswith("task:") else cost.task_of("ask:" + root, view["asked"])
         row = view["tasks"].get(task) if task else None
         if not row:
             return None
-        keys = ("id", "agent", "mode", "prompt", "context", "total", "own", "workers", "subs", "asks", "commits",
-                "lines", "merged", "mergedLines", "code")
+        keys = ("id", "agent", "mode", "prompt", "context", "at", "total", "own", "workers", "subs", "asks",
+                "commits", "lines", "merged", "mergedLines", "code")
         out = {k: row[k] for k in keys}
         if whole:
             out["made"] = row["made"]

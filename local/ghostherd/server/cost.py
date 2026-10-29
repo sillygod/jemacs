@@ -18,7 +18,8 @@ it (`said'):
   for (`back:ID') -- a lead's turn woken by an answer is that ask's
   task's, not whatever the user said last;
 and nothing else: mail, the herd's notes and nudges, a sub-agent or a
-shell that ended, a command -- the work goes on as it was.  An ask is
+shell that ended, a sub-agent's report handed back, a command -- the
+work goes on as it was.  An ask is
 the work its asker was on when the herd client said so ("herd: asked qa
 (ask ID)", "herd: handed off to ..."), read off the asker's own tool
 results; a sub-agent's replies, the work of the call that started it
@@ -89,10 +90,12 @@ ROLE_RULE = "\n---\n"
 # spaces aside (test_cost checks it).
 OPENINGS = ("A herd guard checks each of your tool calls.",
             "The herd keeps shared memory for this project --")
-# How many times the rules that tell the herd's words from the user's
-# changed: tasks kept by an earlier reading are read again (herd.py
-# `_cost_recheck').
-SAID_VERSION = 2
+# How many times the rules that tell the herd's words from the user's, or
+# what of them a task keeps as its title (`title'), changed: tasks kept by
+# an earlier reading are read again (herd.py `_cost_recheck').  3: the
+# title is the words whole, no longer their first line; a sub-agent's
+# report handed back is no task.
+SAID_VERSION = 3
 PROMPT_MAX = 200
 # A prompt this wide at most, its whole text -- a go-ahead, "好，派人做吧",
 # "yes merge please" -- says little of what its task is: it is shown with
@@ -100,6 +103,16 @@ PROMPT_MAX = 200
 # CONTEXT_MAX.  Wide by the columns it takes: a CJK character is two.
 SHORT = 30
 CONTEXT_MAX = 60
+# ... when it comes this soon after the last reply of the work before it:
+# a go-ahead answers what the agent has just proposed, so the clock starts
+# at the proposal, not at the prompt that asked for it -- that work may
+# have taken an hour.  A short question a day later is a question of its
+# own.  Three hours: a break, a meeting, not a night.  The live store
+# (2026-10-29) had go-aheads up to 2h14m after the proposal, then none
+# until the next day; the Threads tab's two hours for what set a thread
+# going (`ghostherd-threads--opener-window') would cut that one -- it
+# times the agent, this the user.
+CONTEXT_WINDOW = 3 * 3600
 LEADS = ("lead", "primary")
 # Commits made up to this long after the work's last reply are its own: an
 # agent commits, then says so.
@@ -121,7 +134,10 @@ def said(text: str | None) -> tuple[str, str] | None:
     user's words), ("ask", ID) or ("answer", ID) -- or None for the
     herd's own words, which switch nothing."""
     text = text or ""
-    if text.lstrip().startswith(RELAY):
+    # A sub-agent's report, handed back to the claude agent that started it
+    # in the background, comes queued as if typed: what it says goes on
+    # with the work the sub-agent was started for.
+    if text.lstrip().startswith(RELAY) or conversation.AGENT_MESSAGE.match(text.lstrip()):
         return None
     e = conversation.user_entry(text, None)
     if not e:
@@ -147,6 +163,14 @@ def said(text: str | None) -> tuple[str, str] | None:
 def width(text: str) -> int:
     "The columns TEXT takes, its spacing collapsed: a wide character, two."
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in " ".join(text.split()))
+
+
+def title(text: str) -> str:
+    """A task's title: the user's words whole, in one line, cut to
+    PROMPT_MAX.  Not their first line: that may be only an image's
+    stand-in ("[Image #5]") or the head of a paste, with what is asked
+    after it."""
+    return conversation.one_line(text, PROMPT_MAX)
 
 
 def _agy_text(o: dict[str, Any]) -> str:
@@ -224,7 +248,7 @@ class Tracker:
         if kind == "user" and self.tasks_ok:
             tid = task_id(self.path, ref)
             self.item = "task:" + tid
-            self.tasks.append({"id": tid, "at": when, "prompt": conversation.first_line(what, PROMPT_MAX),
+            self.tasks.append({"id": tid, "at": when, "prompt": title(what),
                                "offset": self.at, "size": width(what)})
         elif kind == "user":
             self.item = None
@@ -424,7 +448,6 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
     made nothing yet is pending."""
     now = time.time() if now is None else now
     made = made or {}
-    context = contexts(tasks)
     out = {t["id"]: {"own": tally.Usage(), "workers": tally.Usage(), "subs": tally.Usage(), "asks": set(),
                      "end": t.get("at")} for t in tasks}
     owner = {t["id"]: t["agent"] for t in tasks}
@@ -440,6 +463,7 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
             got["asks"].add(r["item"][4:])
         if r.get("last_at") and (got["end"] is None or r["last_at"] > got["end"]):
             got["end"] = r["last_at"]
+    context = contexts(tasks, {tid: got["end"] for tid, got in out.items()})
     units: dict[str, list[tuple[str, str]]] = {}
     for key in made:
         tid = task_of(key[0], asked)
@@ -489,22 +513,29 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
     return result
 
 
-def contexts(tasks: list[dict[str, Any]]) -> dict[str, str]:
+def contexts(tasks: list[dict[str, Any]], ends: dict[str, float | None] | None = None) -> dict[str, str]:
     """For each of TASKS whose prompt is short (`SHORT', by its `size',
-    else its first line's), the prompt of the last task before it to the
-    same agent in the same project that is not -- else of the last one --
-    cut to CONTEXT_MAX: by id."""
+    else its title's), the prompt of the last task before it to the same
+    agent in the same project that is not -- else of the last one -- cut
+    to CONTEXT_MAX: by id.  Only for one within CONTEXT_WINDOW of the last
+    task's work's last reply (ENDS, by id; its prompt, when it has none):
+    one later goes on from nothing, and the next goes on from it."""
+    ends = ends or {}
     out: dict[str, str] = {}
-    last: dict[tuple[str, str], tuple[str, str]] = {}   # (agent, project) -> (last prompt, last not short)
+    # (agent, project) -> (last prompt, last not short, when its work was last heard of)
+    last: dict[tuple[str, str], tuple[str, str, float]] = {}
     for t in sorted(tasks, key=lambda t: (t.get("at") or 0, t["id"])):
         prompt = t.get("prompt") or ""
+        at = t.get("at") or 0
         short = (t["size"] if t.get("size") is not None else width(prompt)) <= SHORT
         key = (t["agent"], t.get("project") or "")
         before = last.get(key)
+        if before and at - before[2] > CONTEXT_WINDOW:
+            before = None
         if short and before:
             said = before[1] or before[0]
             out[t["id"]] = conversation.first_line(said, CONTEXT_MAX)
-        last[key] = (prompt, prompt if not short else (before[1] if before else ""))
+        last[key] = (prompt, prompt if not short else (before[1] if before else ""), max(ends.get(t["id"]) or at, at))
     return out
 
 

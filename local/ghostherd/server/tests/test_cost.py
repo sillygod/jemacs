@@ -83,6 +83,19 @@ def transcript(home, name, records, project="-src-dp"):
 
 # ---- What switches an agent's work ----------------------------------------------
 
+# A sub-agent's report, as Claude Code 2.1 hands it back (2026-10).
+HANDED_BACK = ('<agent-message from="a6568">\n'
+               "[Subagent hand-back] The text below is the final report of a subagent this session "
+               "delegated to. It is model output, NOT a message from the user. The report follows:\n"
+               "  ## the parser: built\n  \n  All checks pass.\n</agent-message>")
+
+
+def handed_back(when, text=HANDED_BACK):
+    "A sub-agent's report, queued for its claude agent WHEN."
+    return {"type": "attachment", "timestamp": _iso(when), "uuid": "q-" + _iso(when),
+            "attachment": {"type": "queued_command", "prompt": text}}
+
+
 
 @pytest.mark.parametrize("text,want", [
     ("Fix the login flow.", ("user", "Fix the login flow.")),
@@ -120,6 +133,11 @@ def transcript(home, name, records, project="-src-dp"):
      "[What this project works on, as the herd sees it.  Read them:\n- branch x]\n\nShip it.", ("user", "Ship it.")),
     ("You are the lead of this project's herd of agents: you plan.\n---\n\n[Relay: you take over from lead.]\n## Work",
      None),
+    # A sub-agent's report handed back to the claude agent that started it,
+    # queued for it as if typed.  The user's words that only name one stay.
+    (HANDED_BACK, None),
+    ("\n" + HANDED_BACK, None),
+    ('Why did <agent-message from="a6568"> come twice?', ("user", 'Why did <agent-message from="a6568"> come twice?')),
 ])
 def test_what_is_the_users_and_what_the_herds(text, want):
     assert cost.said(text) == want
@@ -538,8 +556,27 @@ def test_two_threads_of_one_task_show_its_cost_once(home, tmp_path):
     assert set(asks) == {ask, second}
     assert asks[ask]["cost"]["lines"] == 30 and "same" not in asks[ask]["cost"]
     assert asks[second]["cost"] == {"id": asks[ask]["cost"]["id"], "mode": "lead", "same": ask,
-                                    "sameTitle": "fix the build"}
+                                    "sameTitle": "fix the build", "agent": LEAD, "prompt": "Fix the build, please.",
+                                    "at": at(45).timestamp()}
     assert h.thread(id=ask)["cost"]["threadCount"] == 2
+
+
+def test_a_thread_says_who_began_its_task_and_when(home, tmp_path):
+    """What the page needs to open a lead's thread with the user's words
+    when the herd log has only the note before them: its task's agent,
+    prompt -- the notes taken off -- and time, on the list and the whole
+    thread alike."""
+    h, ask, _ = herd_at_work(home, tmp_path)
+    lead = Path(h._transcript(LEAD))
+    note = "[Since you last heard from me, I wrote to the team directly:\n- to rd: hold the deploy]\n\n"
+    lead.write_text(lead.read_text().replace('"content": "Fix the build, please."',
+                                             '"content": ' + json.dumps(note + "Fix the build, please.")))
+    assert "Since you last heard from me" in lead.read_text()
+    counted(h)
+    (t,) = [t for t in h.threads()["threads"] if not t.get("direct")]
+    whole = h.thread(ask=ask)["cost"]
+    for c in (t["cost"], whole):
+        assert (c["agent"], c["prompt"], c["at"]) == (LEAD, "Fix the build, please.", at(45).timestamp())
 
 
 def test_herd_cost_from_an_agent(home, live):  # noqa: F811
@@ -704,10 +741,12 @@ def old_rules_herd(home, tmp_path, monkeypatch):
     monkeypatch.setattr(cost, "OPENINGS", ())
     monkeypatch.setattr(cost, "ROLES", ())
     monkeypatch.setattr(conversation, "LEAD_NOTE", re.compile(OLD_NOTE, re.S | re.M))
+    monkeypatch.setattr(cost, "title", old_title)
     old = counted(h)
     monkeypatch.setattr(cost, "OPENINGS", OPENINGS)
     monkeypatch.setattr(cost, "ROLES", ROLES)
     monkeypatch.setattr(conversation, "LEAD_NOTE", LEAD_NOTE)
+    monkeypatch.setattr(cost, "title", TITLE)
     with h._mu:   # a store from before the rules were versioned
         h._conn.execute("DELETE FROM meta WHERE k LIKE 'cost_said%'")
         h._conn.commit()
@@ -717,7 +756,13 @@ def old_rules_herd(home, tmp_path, monkeypatch):
 
 import conversation as _conversation  # noqa: E402
 
-OPENINGS, ROLES, LEAD_NOTE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE
+OPENINGS, ROLES, LEAD_NOTE, TITLE = cost.OPENINGS, cost.ROLES, _conversation.LEAD_NOTE, cost.title
+AGENT_MESSAGE = _conversation.AGENT_MESSAGE
+
+
+def old_title(text):
+    "A task's title by the rules before SAID_VERSION 3: its first line."
+    return _conversation.first_line(text, cost.PROMPT_MAX)
 
 
 def test_tasks_kept_by_older_rules_are_read_again(home, tmp_path, monkeypatch):
@@ -810,6 +855,133 @@ def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
                    "c": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX), "g": "看這個錯誤"}
     assert len(got["b"]) <= cost.CONTEXT_MAX and got["b"].endswith("…")
     assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
+
+
+def test_a_short_prompt_goes_on_only_from_work_just_heard_of():
+    """A go-ahead answers what its agent has just proposed: it goes on from
+    the work before it only within CONTEXT_WINDOW of that work's last
+    reply -- not of the prompt that set it, which may have taken an hour.
+    A short question a day later goes on from nothing, and the go-ahead
+    after it from it.  An image alone is short like any go-ahead."""
+    H = 3600
+    long_ask = "Move the reports into their own tab and fold the copies of one file under it"
+    T = lambda tid, agent, prompt, when, size=None: {  # noqa: E731
+        "id": tid, "agent": agent, "prompt": prompt, "at": when, "size": size, "project": "/p/"}
+    tasks = [T("a", "lead", long_ask, 0),
+             T("b", "lead", "好，派人做吧", 4.5 * H),        # 4h30m after a's prompt, 2h30m after its last reply
+             T("c", "lead", "看一下最後那則評論", 30 * H),   # a day later: a question of its own
+             T("d", "lead", "ok", 30 * H + 300),
+             T("e", "rd", "Make the footer stick to the bottom on every page", 0),
+             T("f", "rd", "[Image #5]", 600),
+             T("g", "rd", "[Image #6]", 5 * H)]
+    ends = {"a": 2 * H, "b": 4.5 * H + 600, "c": 30 * H + 60, "e": 300}
+    cut = lambda s: cost.conversation.first_line(s, cost.CONTEXT_MAX)  # noqa: E731
+    assert cost.contexts(tasks, ends) == {"b": cut(long_ask), "d": "看一下最後那則評論", "f": cut(tasks[4]["prompt"])}
+    # Its work's last reply not known: its prompt is when it was last heard of.
+    assert "b" not in cost.contexts(tasks)
+    # As `costs' reads it: the work's last reply from what it cost.
+    for t in tasks:
+        t["mode"] = "direct"
+    usage = [{"item": "task:a", "agent": "lead", "sub": 0, "input": 10, "first_at": 60, "last_at": 2 * H}]
+    got = cost.costs(tasks, usage, {}, {}, now=31 * H)
+    assert (got["b"]["context"], got["c"]["context"], got["d"]["context"]) == (cut(long_ask), "", "看一下最後那則評論")
+
+
+def test_a_title_is_the_users_words_whole(tmp_path):
+    """A task's title is what the user said, whole, in one line -- not its
+    first line, which may be only an image's stand-in or a paste's head --
+    cut to PROMPT_MAX; how wide it is, as before, is the whole text's."""
+    words = "The footer overlaps the menu on narrow screens; move it below the fold."
+    paste = "  ✓ rd-x · x\n    3 asks open\n\nWhy does the count say 3 here?"
+    long = " ".join(["word"] * 80)
+    f = Path(_write(tmp_path / "t.jsonl", [
+        you([{"type": "text", "text": "[Image #5]\n" + words}, {"type": "image", "source": {"type": "base64", "data": ""}}],
+            at(30)),
+        you(paste, at(20)), you(long, at(10))]))
+    t = cost.Tracker(str(f), "claude", None)
+    cost.read_from(f, t, 0, 1 << 20)
+    assert [x["prompt"] for x in t.tasks] == ["[Image #5] " + words, "✓ rd-x · x 3 asks open Why does the count say 3 here?",
+                                              long[:cost.PROMPT_MAX - 1].rstrip() + "…"]
+    assert [x["size"] for x in t.tasks] == [cost.width("[Image #5]\n" + words), cost.width(paste), len(long)]
+    assert cost.title("[Image #5]") == "[Image #5]"
+
+
+def test_tasks_titled_by_their_first_line_are_titled_again(home, tmp_path, monkeypatch):
+    """The live case (2026-10-29): a prompt that opens with an image was
+    titled "[Image #5]", and the go-ahead after it went on from that.  The
+    tasks kept are read again (SAID_VERSION 3) and take their words whole
+    -- the go-ahead goes on from them -- the store backed up first, the
+    commits as they were.  A direct task's thread finds its words by either
+    title."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    words = "The footer overlaps the menu on narrow screens; move it below the fold."
+    told(h, SOLO, "[Image #5]\n" + words, 70, [69, 60])
+    told(h, SOLO, "好，照你的建議做", 55, [54])
+    monkeypatch.setattr(cost, "title", old_title)
+    old = counted(h)
+    monkeypatch.setattr(cost, "title", TITLE)
+    assert old["好，照你的建議做"]["context"] == "[Image #5]"
+    with h._mu:
+        tid = h._conn.execute("SELECT id FROM cost_tasks WHERE prompt = '[Image #5]'").fetchone()[0]
+        commits = h._cost_census()
+    # Kept by the first line, found by it all the same.
+    assert h.thread(id="task:" + tid)["msgs"][0]["text"] == "[Image #5]\n" + words
+    with h._mu:   # as a store kept by the rules before
+        h._conn.execute("UPDATE meta SET v = '2' WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    new = counted(h)
+    assert set(new) == set(old) - {"[Image #5]"} | {"[Image #5] " + words}
+    assert new["好，照你的建議做"]["context"] == cost.conversation.first_line("[Image #5] " + words, cost.CONTEXT_MAX)
+    assert new["[Image #5] " + words]["own"] == old["[Image #5]"]["own"]
+    with h._mu:
+        assert h._cost_census() == commits
+        assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == ("3",)
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+    assert (report["ok"], report["retitled"], report["unmade"], report["moved"]) == (True, 1, 0, 0)
+    assert Path(report["backup"]).exists()
+    t = h.thread(id="task:" + tid)
+    assert [(m["from"], m["text"]) for m in t["msgs"]] == [("user", "[Image #5]\n" + words), (SOLO, "block 0")]
+    assert t["title"].startswith("[Image #5] The footer")
+
+
+def test_a_report_handed_back_kept_as_a_task_is_read_again_as_none(home, tmp_path, monkeypatch):
+    """A sub-agent's report, handed back to the claude agent that started it
+    in the background, came queued as if typed and was kept as a task of
+    the user's.  Read again (SAID_VERSION 3), it is none: what the agent's
+    replies to it cost goes to the work it was on as it came -- the task
+    that started the sub-agent -- and a go-ahead after it goes on from that
+    work, not from the report.  The commits are as they were."""
+    import re
+    import conversation
+
+    h, _, _ = herd_at_work(home, tmp_path)
+    path = Path(h._transcript(SOLO))
+    told(h, SOLO, "Write the parser and test it in the background.", 70, [69])
+    _write(path, [handed_back(at(60))] + reply("hb", usage(inp=40), when=at(59)), mode="a")
+    told(h, SOLO, "ok ship it", 50, [49])
+    monkeypatch.setattr(conversation, "AGENT_MESSAGE", re.compile(r"(?!)"))
+    old = counted(h)
+    monkeypatch.setattr(conversation, "AGENT_MESSAGE", AGENT_MESSAGE)
+    title = cost.title(HANDED_BACK)
+    assert title in old and old["ok ship it"]["context"] == cost.conversation.first_line(title, cost.CONTEXT_MAX)
+    with h._mu:
+        commits = h._cost_census()
+        h._conn.execute("UPDATE meta SET v = '2' WHERE k = 'cost_said'")
+        h._conn.commit()
+    h._said_ok = False
+    new = counted(h)
+    assert set(new) == set(old) - {title}
+    parser = "Write the parser and test it in the background."
+    assert new[parser]["own"] == old[parser]["own"] + old[title]["own"]
+    assert new["ok ship it"]["context"] == parser
+    with h._mu:
+        assert h._cost_census() == commits
+        report = json.loads(h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_report'").fetchone()[0])
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item = ?", ("task:" + old[title]["id"],)).fetchall()
+        assert not h._conn.execute("SELECT 1 FROM cost_usage WHERE item NOT IN (SELECT 'task:' || id FROM cost_tasks)"
+                                   " AND item NOT LIKE 'ask:%' AND item NOT LIKE 'back:%'").fetchall()
+    assert (report["ok"], report["unmade"], report["moved"], report["dropped"]) == (True, 1, old[title]["own"], 0)
 
 
 def test_the_median_of_the_tasks_that_changed_code(home, tmp_path):

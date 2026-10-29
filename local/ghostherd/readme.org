@@ -2571,9 +2571,13 @@ projects.  Read-only: it only shows, and leads where you click.
   the thread has none --- never an older prompt.  The log keeps the
   first line of what you typed, without the notes the herd put before
   it (what the project works on, what you told the team), so that is
-  what shows, marked =as the herd log has it=.  It keeps no link from a
-  prompt to the asks it led to, so this is still a guess, one that
-  fails to nothing rather than to the wrong prompt.
+  what shows, marked =as the herd log has it=.  Where the log has only
+  such a note's first line --- what it kept before it kept your words
+  --- the thread's task has them, the notes taken off: they open it,
+  marked =as its task's transcript has it=, when that task is its first
+  asker's own and began between the note and the ask.  It keeps no link
+  from a prompt to the asks it led to, so this is still a guess, one
+  that fails to nothing rather than to the wrong prompt.
 - What its task cost.  A *task* is one message of yours and everything
   it set off.  Told to a lead (or primary) --- lead mode --- that is the
   lead's replies from it on, the asks it made for it and those made
@@ -2581,16 +2585,22 @@ projects.  Read-only: it only shows, and leads where you click.
   sub-agents; told to any other agent --- direct mode --- that agent's
   replies until it is set other work, and its sub-agents'.  The herd's
   own words are never one: an ask, an answer, mail, a relay's brief, a
-  task notification, a command, what it tells an agy agent as it starts
+  task notification, a sub-agent's report handed back to the claude
+  agent that started it, a command, what it tells an agy agent as it starts
   (its guard's note, the shared memory's opening), a lead's role said
   again on a cold respawn.  Each row shows its thread's task:
   =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is
   not over), =code not readable= (its checkout could not be read); its
-  title, the message and the parts.  A short message --- a go-ahead,
+  title, the message and the parts.  A task's title is your message
+  whole, in one line --- =[Image #5] the footer overlaps…=, not the
+  image alone --- cut to 200 characters.  A short message --- a go-ahead,
   =好，派人做吧=, its whole text at most 30 columns wide, a CJK
   character two --- is shown with the last one before it to the same
   agent that is not, cut: =好，派人做吧 ← fold the copies of one report…=
-  (=--tasks= too, and a direct task's thread title).  Two threads of one task --- a
+  (=--tasks= too, and a direct task's thread title) --- when it comes
+  within three hours of that work's last reply: a go-ahead answers what
+  was just proposed, while a short question the next day is one of its
+  own, shown alone.  Two threads of one task --- a
   lead's two asks for it --- show its cost once: on the task's own
   direct thread, else its first; the other says =same task as “fix the
   build”=.  The open thread says it in full under its summary: =Its
