@@ -15,7 +15,7 @@ const DESK = { viewport: { width: 1360, height: 980 }, deviceScaleFactor: 1, isM
 const now = Date.now();
 const C = (sha, subject, lines, merged, of) => ({ sha, subject, lines, merged, of: of || null, at: now / 1000 });
 const COSTS = {
-  t1: { id: "k1", agent: "lead-.emacs.d", mode: "lead", prompt: "三項補強都做", total: 6512000, own: 287000, workers: 6225000,
+  t1: { id: "k1", agent: "lead-.emacs.d", mode: "lead", prompt: "三項補強都做", context: "Harden the agy guard: approve once, env…", total: 6512000, own: 287000, workers: 6225000,
         subs: 0, asks: 1, commits: 2, merged: 1, mergedLines: 1000, lines: 1472, code: "yes", threadCount: 2,
         made: [C("03ed56b76613dcb2", "feat: what one task cost", 1000, true), C("c4f217ac952539ef", "feat: the tab shows it", 472, false),
                C("9c986fb657c77416", "the same, rebased", 472, false, "c4f217ac952539ef")] },
@@ -37,12 +37,13 @@ const DIRECT = { id: "task:k9", title: "Deploy the staging fix", status: "answer
   waiting: [], rootFrom: "user", rootTo: "claude-deploy-platform", projects: ["deploy-platform"], cross: false,
   started: now - 30 * 60e3, at: now - 20 * 60e3 };
 const DETAILS = Object.assign({}, ASKED, { "task:k9": DIRECT });
-const side = (tasks, median, total, per100, lines, coded, noCode, own, merged) =>
-  ({ tasks, median, total, per100, lines, coded, noCode, unknown: 0, own, merged: merged || 0 });
+const side = (tasks, median, total, per100, lines, coded, noCode, own, merged, more) =>
+  Object.assign({ tasks, median, total, per100, lines, coded, noCode, unknown: 0, pending: 0, own, merged: merged || 0,
+                  medianCoded: null }, more || {});
 const COMPARE = [
-  { days: 7, since: "2026-10-22", lead: side(80, 259265, 124810072, 1468009, 8502, 9, 51, 16, 8000),
-    direct: side(44, 261628, 20339800, 22108478, 92, 1, 41, 100, 0) },
-  { days: 30, since: "2026-09-29", lead: side(210, 300000, 400000000, 1200000, 33000, 30, 120, 14),
+  { days: 7, since: "2026-10-22", lead: side(80, 259265, 124810072, 1468009, 8502, 9, 51, 16, 8000, { medianCoded: 8700000, pending: 2 }),
+    direct: side(44, 261628, 20339800, 22108478, 92, 1, 41, 100, 0, { medianCoded: 1200000, unknown: 1 }) },
+  { days: 30, since: "2026-09-29", lead: side(210, 300000, 400000000, 1200000, 33000, 30, 120, 14, 0, { medianCoded: 9100000 }),
     direct: side(150, 250000, 60000000, null, 0, 0, 150, 100) },
 ];
 const withCost = (t) => Object.assign({}, t, { cost: COSTS[t.id] || null });
@@ -88,6 +89,12 @@ const table = (page) => page.$$eval(".thcosts .thctable tbody tr", (rs) =>
       check(W("the lines and the tasks they came in, no code, the lead's own share"),
         t["lines changed"].join() === "8502 in 9,92 in 1" && t["no code"].join() === "51,41" && t["lead's own share"].join() === "16%,—", t);
       check(W("how many of the lines are merged yet"), t["of them merged"] && t["of them merged"].join() === "8000,0", t);
+      check(W("the median of the tasks that changed code, beside the median of all"),
+        t["median per coded task"] && t["median per coded task"].join() === "8.7M,1.2M", t);
+      check(W("tasks whose code is not read yet, or not readable, as the CLI says them"),
+        t["not read yet"] && t["not read yet"].join() === "2,0" && t["not readable"] && t["not readable"].join() === "0,1" &&
+        Object.keys(t).join() === "tasks,median per task,median per coded task,total,per 100 lines,lines changed," +
+          "of them merged,no code,not read yet,not readable,lead's own share", Object.keys(t));
       const head = await page.textContent(".thcosts .thtalkhead");
       check(W("since when, in what unit"), /since 2026-10-22/.test(head) && /weighted tokens/.test(head), head);
       await tap('.thcosts [data-act="th:cost-days"][data-days="30"]');
@@ -95,6 +102,8 @@ const table = (page) => page.$$eval(".thcosts .thctable tbody tr", (rs) =>
       t = await table(page);
       check(W("a month at a tap; none per 100 lines with no lines"),
         t["tasks"].join() === "210,150" && t["per 100 lines"].join() === "1.2M,—", t);
+      check(W("no coded task: no median of them; none unread: no such rows"),
+        t["median per coded task"].join() === "9.1M,—" && !t["not read yet"] && !t["not readable"], t);
       await tap('.thcosts [data-act="th:cost-days"][data-days="7"]');
       await sleep(100);
 
@@ -107,6 +116,9 @@ const table = (page) => page.$$eval(".thcosts .thctable tbody tr", (rs) =>
       check(W("its title: the task, lead / workers / sub-agents, its asks and commits"),
         chips[0] && /Its task: 三項補強都做/.test(chips[0].title) && /the lead 287k · workers 6.2M · sub-agents 0/.test(chips[0].title) &&
         /1 ask · 1472 lines changed in 2 commits, 1 merged/.test(chips[0].title), chips[0] && chips[0].title);
+      check(W("a go-ahead's task says what it goes on from"),
+        chips[0] && chips[0].title.split("\n")[0] === "Its task: 三項補強都做 ← Harden the agy guard: approve once, env…",
+        chips[0] && chips[0].title);
       check(W("a second thread of one task says whose it is, not its cost again"),
         chips[1] && /^same task as “Three hardenings of the agy guard, a.*…”$/.test(chips[1].text) && !/\d+(\.\d)?[kM]/.test(chips[1].text),
         chips[1]);

@@ -908,6 +908,11 @@ class HerdStore:
         # turn from there.  Kept since the Threads tab shows direct tasks.
         if "offset" not in {r[1] for r in self._conn.execute("PRAGMA table_info(cost_tasks)")}:
             self._conn.execute("ALTER TABLE cost_tasks ADD COLUMN offset INTEGER")
+        # How wide its prompt is, whole (cost.width): a short one is shown
+        # with the one before it (cost.contexts).  Set for the tasks kept
+        # before it was as they are read again (`_cost_recheck').
+        if "size" not in {r[1] for r in self._conn.execute("PRAGMA table_info(cost_tasks)")}:
+            self._conn.execute("ALTER TABLE cost_tasks ADD COLUMN size INTEGER")
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS cost_links (
@@ -2639,7 +2644,7 @@ class HerdStore:
             mode = "lead" if (f["role"] or "") in cost.LEADS else "direct"
             for task in t.tasks:
                 tasks.append((task["id"], f["agent"], f["project"], f["role"] or "", mode, f["cli"],
-                              task["prompt"], task["at"], directory, path, task["offset"]))
+                              task["prompt"], task["at"], directory, path, task["offset"], task["size"]))
             new_links.update({"said:" + a: it for a, it in t.asked.items()})
             new_links.update({"call:" + k: it for k, it in t.spawned.items()})
             switches += [(f["agent"], at, it) for at, it in t.switches]
@@ -2654,7 +2659,7 @@ class HerdStore:
                                 v["output"], v["replies"], first, last))
             self._conn.executemany(
                 "INSERT OR IGNORE INTO cost_tasks (id, agent, project, role, mode, cli, prompt, at, directory, path,"
-                " offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tasks)
+                " offset, size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", tasks)
             # The first word on an ask is its asker's: a later one is a quote.
             self._conn.executemany("INSERT OR IGNORE INTO cost_links (key, item) VALUES (?, ?)",
                                    list(new_links.items()))
@@ -2721,7 +2726,7 @@ class HerdStore:
             if row and row[0] in (version, "failed " + version):
                 self._said_ok = True
                 return
-            tasks = self._conn.execute("SELECT id, agent, path, cli, prompt, offset FROM cost_tasks").fetchall()
+            tasks = self._conn.execute("SELECT id, agent, path, cli, prompt, offset, size FROM cost_tasks").fetchall()
             commits = self._cost_census()
             backup = self._conn.execute("SELECT v FROM meta WHERE k = 'cost_said_backup'").fetchone()
         report: dict[str, Any] = {"version": cost.SAID_VERSION, "tasks": len(tasks), "unmade": 0, "retitled": 0,
@@ -2740,13 +2745,13 @@ class HerdStore:
                                    (f"{version} {dest}",))
                 self._conn.commit()
             report["backup"] = str(dest)
-        by_path: dict[tuple[str, str], list[tuple[str, str, str, int | None]]] = {}
-        for tid, agent, path, cli, prompt, offset in tasks:
-            by_path.setdefault((path or "", cli or ""), []).append((tid, agent, prompt or "", offset))
+        by_path: dict[tuple[str, str], list[tuple[str, str, str, int | None, int | None]]] = {}
+        for tid, agent, path, cli, prompt, offset, size in tasks:
+            by_path.setdefault((path or "", cli or ""), []).append((tid, agent, prompt or "", offset, size))
         want: dict[str, str | None] = {}
         for (path, cli), mine in by_path.items():
             found = cost.recheck(path, cli, [t[0] for t in mine]) if path else None
-            for tid, agent, prompt, offset in mine:
+            for tid, agent, prompt, offset, size in mine:
                 got = (found or {}).get(tid)
                 if got is None:
                     report["unread"] += 1
@@ -2762,10 +2767,10 @@ class HerdStore:
                     want[tid] = None
                     continue
                 want[tid] = got["prompt"]
-                if got["prompt"] != prompt or offset is None:
+                if got["prompt"] != prompt or offset is None or size != got["size"]:
                     with self._mu:
-                        self._conn.execute("UPDATE cost_tasks SET prompt = ?, offset = COALESCE(offset, ?)"
-                                           " WHERE id = ?", (got["prompt"], got["offset"], tid))
+                        self._conn.execute("UPDATE cost_tasks SET prompt = ?, offset = COALESCE(offset, ?), size = ?"
+                                           " WHERE id = ?", (got["prompt"], got["offset"], got["size"], tid))
                         self._conn.commit()
                     report["retitled"] += got["prompt"] != prompt
                     report["placed"] += offset is None
@@ -2999,7 +3004,7 @@ class HerdStore:
             return seen[1]
         now = time.time()
         since = datetime.combine(date.today() - timedelta(days=COST_DAYS - 1), datetime.min.time()).timestamp()
-        tcols = ("id", "agent", "project", "role", "mode", "cli", "prompt", "at")
+        tcols = ("id", "agent", "project", "role", "mode", "cli", "prompt", "at", "size")
         ucols = ("item", "agent", "sub") + tally.Usage.__slots__ + ("first_at", "last_at")
         ccols = ("directory", "sha", "at", "author", "subject", "lines", "of", "merged")
         with self._read_mu:
@@ -3086,8 +3091,8 @@ class HerdStore:
         row = view["tasks"].get(task) if task else None
         if not row:
             return None
-        keys = ("id", "agent", "mode", "prompt", "total", "own", "workers", "subs", "asks", "commits", "lines",
-                "merged", "mergedLines", "code")
+        keys = ("id", "agent", "mode", "prompt", "context", "total", "own", "workers", "subs", "asks", "commits",
+                "lines", "merged", "mergedLines", "code")
         out = {k: row[k] for k in keys}
         if whole:
             out["made"] = row["made"]

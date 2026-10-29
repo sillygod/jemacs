@@ -5068,8 +5068,10 @@
   const TASK_CODE = { no: "no code", unknown: "code not readable", pending: "code not read yet" };
   function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
   function taskMerged(c) { return c.commits ? (c.merged === c.commits ? "all merged" : (c.merged || 0) + " merged") : ""; }
+  // A short prompt -- a go-ahead -- with the one it goes on from.
   function taskTitle(c) {
-    return "Its task" + (c.prompt ? ": " + c.prompt : "") + "\n" + tokens(c.total) + " weighted tokens — " +
+    return "Its task" + (c.prompt ? ": " + c.prompt + (c.context ? " ← " + c.context : "") : "") + "\n" +
+      tokens(c.total) + " weighted tokens — " +
       (c.mode === "lead" ? "the lead " : c.agent + " itself ") + tokens(c.own) + " · workers " + tokens(c.workers) +
       " · sub-agents " + tokens(c.subs) + "\n" + c.asks + (c.asks === 1 ? " ask" : " asks") + " · " +
       (c.code === "yes" ? c.lines + " lines changed in " + c.commits + (c.commits === 1 ? " commit" : " commits") +
@@ -5115,15 +5117,21 @@
     const L = c.lead, D = c.direct;
     const days = all.map((x) => '<button type="button" class="thcd' + (x.days === c.days ? " on" : "") +
       '" data-act="th:cost-days" data-days="' + x.days + '">' + x.days + " days</button>").join("");
+    // A task whose code is not known yet, or cannot be: in neither "lines
+    // changed" nor "no code" -- said when there is one, as `herd cost' says it.
+    const some = (key, label) => (L[key] || D[key] ? row(label, String(L[key] || 0), String(D[key] || 0)) : "");
     return '<section class="thcosts" aria-label="What a task costs"><div class="thtalkhead"><h2>What a task costs</h2>' +
       '<span class="thsub">through a lead, or told to an agent directly · weighted tokens · since ' + esc(c.since) + "</span>" +
       '<span class="thcds">' + days + "</span></div>" +
       '<table class="thctable"><thead><tr><th></th><th>lead mode</th><th>direct</th></tr></thead><tbody>' +
       row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
+      // A go-ahead is a task of its own: the tasks that changed code apart.
+      row("median per coded task", n(L.medianCoded), n(D.medianCoded)) +
       row("total", n(L.total), n(D.total)) + row("per 100 lines", n(L.per100), n(D.per100)) +
       row("lines changed", L.lines + " in " + L.coded, D.lines + " in " + D.coded) +
       row("of them merged", String(L.merged || 0), String(D.merged || 0)) +
       row("no code", String(L.noCode), String(D.noCode)) +
+      some("pending", "not read yet") + some("unknown", "not readable") +
       row("lead's own share", L.own == null ? "—" : L.own + "%", "—") + "</tbody></table></section>";
   }
 

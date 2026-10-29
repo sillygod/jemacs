@@ -58,6 +58,7 @@ import re
 import statistics
 import subprocess
 import time
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -93,6 +94,12 @@ OPENINGS = ("A herd guard checks each of your tool calls.",
 # `_cost_recheck').
 SAID_VERSION = 2
 PROMPT_MAX = 200
+# A prompt this wide at most, its whole text -- a go-ahead, "好，派人做吧",
+# "yes merge please" -- says little of what its task is: it is shown with
+# the last one before it to the same agent that is not (`context'), cut to
+# CONTEXT_MAX.  Wide by the columns it takes: a CJK character is two.
+SHORT = 30
+CONTEXT_MAX = 60
 LEADS = ("lead", "primary")
 # Commits made up to this long after the work's last reply are its own: an
 # agent commits, then says so.
@@ -135,6 +142,11 @@ def said(text: str | None) -> tuple[str, str] | None:
     if not body or body.startswith(RELAY) or " ".join(body[:200].split()).startswith(OPENINGS):
         return None
     return "user", body
+
+
+def width(text: str) -> int:
+    "The columns TEXT takes, its spacing collapsed: a wide character, two."
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in " ".join(text.split()))
 
 
 def _agy_text(o: dict[str, Any]) -> str:
@@ -213,7 +225,7 @@ class Tracker:
             tid = task_id(self.path, ref)
             self.item = "task:" + tid
             self.tasks.append({"id": tid, "at": when, "prompt": conversation.first_line(what, PROMPT_MAX),
-                               "offset": self.at})
+                               "offset": self.at, "size": width(what)})
         elif kind == "user":
             self.item = None
         elif kind == "ask":
@@ -325,8 +337,9 @@ class Recheck(Tracker):
     """A transcript read again, as `Tracker' reads it now, for the tasks
     kept from it (IDS): for each found, where its words are (`offset'),
     what its agent was on before them (`before') and what they are now --
-    the user's, its `prompt'; the herd's, None (`said').  A task of the
-    file's not found: its words are no longer there to read."""
+    the user's, its `prompt' and how wide they are whole (`size'); the
+    herd's, None (`said').  A task of the file's not found: its words are
+    no longer there to read."""
 
     def __init__(self, path: str, cli: str, ids: Iterable[str]):
         super().__init__(path, cli, None)
@@ -339,7 +352,8 @@ class Recheck(Tracker):
         super()._said(text, ref, when)
         if tid in self.ids and tid not in self.found:
             mine = [t for t in self.tasks[n:] if t["id"] == tid]
-            self.found[tid] = {"offset": self.at, "before": before, "prompt": mine[0]["prompt"] if mine else None}
+            self.found[tid] = {"offset": self.at, "before": before, "prompt": mine[0]["prompt"] if mine else None,
+                               "size": mine[0]["size"] if mine else None}
 
 
 def recheck(path: str, cli: str, ids: Iterable[str], chunk: int = 4 << 20) -> dict[str, dict[str, Any]] | None:
@@ -410,6 +424,7 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
     made nothing yet is pending."""
     now = time.time() if now is None else now
     made = made or {}
+    context = contexts(tasks)
     out = {t["id"]: {"own": tally.Usage(), "workers": tally.Usage(), "subs": tally.Usage(), "asks": set(),
                      "end": t.get("at")} for t in tasks}
     owner = {t["id"]: t["agent"] for t in tasks}
@@ -459,7 +474,7 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
         recent = now - (got["end"] or t.get("at") or 0) < SETTLED
         result[t["id"]] = {
             "id": t["id"], "agent": t["agent"], "project": t["project"], "mode": t["mode"],
-            "prompt": t.get("prompt") or "", "at": t.get("at"), "end": got["end"],
+            "prompt": t.get("prompt") or "", "context": context.get(t["id"], ""), "at": t.get("at"), "end": got["end"],
             "total": total.weighted(), "own": got["own"].weighted(), "workers": got["workers"].weighted(),
             "subs": got["subs"].weighted(), "kinds": total.shown(), "asks": len(got["asks"]),
             "commits": len(new), "lines": sum(c["lines"] for c in new),
@@ -474,15 +489,40 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
     return result
 
 
+def contexts(tasks: list[dict[str, Any]]) -> dict[str, str]:
+    """For each of TASKS whose prompt is short (`SHORT', by its `size',
+    else its first line's), the prompt of the last task before it to the
+    same agent in the same project that is not -- else of the last one --
+    cut to CONTEXT_MAX: by id."""
+    out: dict[str, str] = {}
+    last: dict[tuple[str, str], tuple[str, str]] = {}   # (agent, project) -> (last prompt, last not short)
+    for t in sorted(tasks, key=lambda t: (t.get("at") or 0, t["id"])):
+        prompt = t.get("prompt") or ""
+        short = (t["size"] if t.get("size") is not None else width(prompt)) <= SHORT
+        key = (t["agent"], t.get("project") or "")
+        before = last.get(key)
+        if short and before:
+            said = before[1] or before[0]
+            out[t["id"]] = conversation.first_line(said, CONTEXT_MAX)
+        last[key] = (prompt, prompt if not short else (before[1] if before else ""))
+    return out
+
+
+def titled(row: dict[str, Any]) -> str:
+    "A task's prompt, and what a short one goes on from (`contexts')."
+    return (row.get("prompt") or "") + (" ← " + row["context"] if row.get("context") else "")
+
+
 def compare(rows: Iterable[dict[str, Any]], days: int, today: date | None = None) -> dict[str, Any]:
     """Lead mode against direct mode over the last DAYS local days (today
     and the ones before): ROWS are `costs'' tasks.  Per mode: the tasks,
-    the median and total per task, the tokens per 100 changed lines -- all
-    the mode's tokens over all its lines, merged or not: a commit counts in
-    the task it was made in, and "commit and push" is a task of its own, so
-    per task it would flatter the one that only committed -- how many of
-    those lines are in a main branch yet, and, for lead mode, the lead's
-    own share."""
+    the median and total per task, the median of those that changed code
+    -- a go-ahead is a task of its own, and many pull the median down --
+    the tokens per 100 changed lines -- all the mode's tokens over all its
+    lines, merged or not: a commit counts in the task it was made in, and
+    "commit and push" is a task of its own, so per task it would flatter
+    the one that only committed -- how many of those lines are in a main
+    branch yet, and, for lead mode, the lead's own share."""
     today = today or date.today()
     since = datetime.combine(today - timedelta(days=days - 1), datetime.min.time()).timestamp()
     out: dict[str, Any] = {"days": days, "since": (today - timedelta(days=days - 1)).isoformat()}
@@ -495,6 +535,7 @@ def compare(rows: Iterable[dict[str, Any]], days: int, today: date | None = None
         out[mode] = {
             "tasks": len(mine),
             "median": round(statistics.median([r["total"] for r in mine])) if mine else 0,
+            "medianCoded": round(statistics.median([r["total"] for r in coded])) if coded else None,
             "total": total,
             "per100": round(total * 100 / lines) if lines else None,
             "lines": lines, "coded": len(coded), "merged": merged,

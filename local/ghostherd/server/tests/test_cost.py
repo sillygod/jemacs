@@ -502,7 +502,8 @@ def test_a_task_told_directly_is_a_thread_of_its_own(home, tmp_path):
     h, _, _ = herd_at_work(home, tmp_path)
     counted(h)
     direct = [t for t in h.threads()["threads"] if t.get("direct")]
-    assert [t["title"] for t in direct] == ["Now push it.", "Add a health check."]
+    # A go-ahead's title says what it goes on from.
+    assert [t["title"] for t in direct] == ["Now push it. ← Add a health check.", "Add a health check."]
     health = direct[1]
     assert (health["participants"], health["projects"], health["rootFrom"]) == (["user", SOLO], ["solo"], "user")
     assert health["id"].startswith("task:") and health["cost"]["lines"] == 12
@@ -785,3 +786,72 @@ def test_a_fresh_store_is_marked_with_no_backup(home, tmp_path):
     with h._mu:
         assert h._conn.execute("SELECT v FROM meta WHERE k = 'cost_said'").fetchone() == (str(cost.SAID_VERSION),)
     assert not (tmp_path / "backups").exists()
+
+
+# ---- A go-ahead is a task of its own -------------------------------------------------
+
+
+def test_a_short_prompt_goes_on_from_the_last_one_that_says_something():
+    """A prompt at most SHORT columns wide, whole -- a CJK character two --
+    is shown with the last one before it to the same agent, in the same
+    project, that is not short: two go-aheads in a row both go on from the
+    request.  A short first line over a long paste is not short."""
+    long_ask = "Move the reports into their own tab and fold the copies of one file under it, newest first"
+    T = lambda tid, agent, prompt, when, size=None, project="/p/": {  # noqa: E731
+        "id": tid, "agent": agent, "prompt": prompt, "at": when, "size": size, "project": project}
+    tasks = [T("a", "lead", long_ask, 1), T("b", "lead", "好，派人做吧", 2), T("c", "lead", "好", 3),
+             T("d", "rd", "yes merge please", 4),                         # nothing before it: none
+             T("e", "lead", "看這個錯誤", 5, size=900),                    # a paste under it: not short
+             T("f", "lead", "ok", 6, project="/q/"),                      # another project's: not this one's
+             T("g", "lead", "ok go", 7)]
+    assert cost.width("好，派人做吧") == 12 and cost.width("yes  merge\nplease") == 16
+    got = cost.contexts(tasks)
+    assert got == {"b": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX),
+                   "c": cost.conversation.first_line(long_ask, cost.CONTEXT_MAX), "g": "看這個錯誤"}
+    assert len(got["b"]) <= cost.CONTEXT_MAX and got["b"].endswith("…")
+    assert cost.titled({"prompt": "好", "context": "x"}) == "好 ← x" and cost.titled({"prompt": "好"}) == "好"
+
+
+def test_the_median_of_the_tasks_that_changed_code(home, tmp_path):
+    """Many go-aheads pull the median per task down: the median per coded
+    task is beside it."""
+    h, _, _ = herd_at_work(home, tmp_path)
+    tasks = counted(h)
+    c = h.costs(7)["compare"]
+    fix = tasks["Fix the build, please."]["total"]
+    assert c["lead"]["medianCoded"] == fix and c["direct"]["medianCoded"] == 700
+    assert c["lead"]["median"] == round((fix + 50) / 2)
+    assert cost.compare([], 7)["lead"]["medianCoded"] is None
+
+
+def test_herd_cost_tasks_show_what_a_go_ahead_goes_on_from(home, tmp_path):
+    h, _, _ = herd_at_work(home, tmp_path)
+    tasks = counted(h)
+    assert tasks["Now push it."]["context"] == "Add a health check."
+    assert tasks["Add a health check."]["context"] == ""
+    # And on the thread's cost, as the page shows it.
+    with h._mu:
+        tid = h._conn.execute("SELECT id FROM cost_tasks WHERE prompt = 'Now push it.'").fetchone()[0]
+        size = h._conn.execute("SELECT size FROM cost_tasks WHERE id = ?", (tid,)).fetchone()[0]
+    assert size == 12
+    assert h.thread(id="task:" + tid)["cost"]["context"] == "Add a health check."
+
+
+def test_herd_cost_shows_the_median_per_coded_task_and_what_a_go_ahead_goes_on_from(home, live):  # noqa: F811
+    h = herd_mod.get_herd()
+    row = lambda tid, prompt, total, lines, context="": {  # noqa: E731
+        "id": tid, "agent": "claude-main", "project": "/src/a/", "mode": "lead", "prompt": prompt, "context": context,
+        "at": NOW.timestamp(), "end": NOW.timestamp(), "total": total, "own": total, "workers": 0, "subs": 0,
+        "kinds": {}, "asks": 0, "commits": 1 if lines else 0, "lines": lines, "merged": 0, "mergedLines": 0,
+        "code": "yes" if lines else "no"}
+    h._cost_seen = (float("inf"), {"asked": {}, "tasks": {
+        "k1": row("k1", "Fold the reports of one file", 8700000, 120),
+        "k2": row("k2", "好，派人做吧", 40000, 0, context="Fold the reports of one file"),
+        "k3": row("k3", "ok", 30000, 0)}})
+    h.tick(sessions=[{"name": "claude-main", "kind": "claude", "state": "idle", "project": "/src/a/"}])
+    out = run(live, "cost", "--tasks", session="claude-main")
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.splitlines()
+    assert any(l.split()[:4] == ["median", "per", "coded", "task"] and l.split()[4] == "8.7M" for l in lines), out.stdout
+    assert any(l.split()[:3] == ["median", "per", "task"] and l.split()[3] == "40k" for l in lines), out.stdout
+    assert "  好，派人做吧 ← Fold the reports of one file" in lines

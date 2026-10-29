@@ -2579,10 +2579,16 @@ projects.  Read-only: it only shows, and leads where you click.
   sub-agents; told to any other agent --- direct mode --- that agent's
   replies until it is set other work, and its sub-agents'.  The herd's
   own words are never one: an ask, an answer, mail, a relay's brief, a
-  task notification, a command.  Each row shows its thread's task:
+  task notification, a command, what it tells an agy agent as it starts
+  (its guard's note, the shared memory's opening), a lead's role said
+  again on a cold respawn.  Each row shows its thread's task:
   =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is
   not over), =code not readable= (its checkout could not be read); its
-  title, the message and the parts.  Two threads of one task --- a
+  title, the message and the parts.  A short message --- a go-ahead,
+  =好，派人做吧=, its whole text at most 30 columns wide, a CJK
+  character two --- is shown with the last one before it to the same
+  agent that is not, cut: =好，派人做吧 ← fold the copies of one report…=
+  (=--tasks= too, and a direct task's thread title).  Two threads of one task --- a
   lead's two asks for it --- show its cost once: on the task's own
   direct thread, else its first; the other says =same task as “fix the
   build”=.  The open thread says it in full under its summary: =Its
@@ -2592,12 +2598,15 @@ projects.  Read-only: it only shows, and leads where you click.
   =not merged=, and a copy (an amend, a rebase, a cherry-pick) as =a
   copy of 81b8baca, not counted again=.  Above the list, *What a task costs*: lead mode against
   direct mode over the last 7 or 30 local days --- how many tasks, the
-  median and the total per task, the tokens per 100 changed lines (all
+  median and the total per task, the median per task that changed code
+  (go-aheads are tasks of their own, and many pull the first median
+  down), the tokens per 100 changed lines (all
   of a mode's tokens over all its lines: a commit counts in the task it
   was made in, and "commit and push" is a task of its own, so per task
   it would flatter the one that only committed), the lines and the
   tasks they came in, how many of those are merged yet, those with no
-  code, and the lead's own share.
+  code, those whose code is =not read yet= or =not readable= (when there
+  are any), and the lead's own share.
   =herd cost [--days N] [--project P] [--tasks]= prints the same, and
   with =--tasks= each task, newest first --- an agent may run it.  An
   agent sees every project's numbers, but the tasks --- your words that
@@ -2617,8 +2626,20 @@ projects.  Read-only: it only shows, and leads where you click.
   what the herd frames its own in, per CLI: claude's user records (not
   =isMeta=, not a compaction's summary, a message taken mid-turn too),
   agy's =USER_INPUT= (=<USER_REQUEST>=), grok's =user_message_chunk= in
-  =updates.jsonl=; the herd's notes before a message to a lead, and the
-  lead's role, are taken off.  An ask is the work its asker was on when
+  =updates.jsonl=; the herd's notes before a message to a lead (after
+  the images pasted into claude's input too, =[Image #1]=, where claude
+  keeps their blank line as a bare line break), and a lead's or
+  primary's role, are taken off.  When those rules change
+  (=cost.SAID_VERSION=), the tasks kept are read again once, on the
+  sidecar's worker: one whose words are now the herd's is none, what it
+  cost going to the work its agent was on as they came; one whose words
+  read otherwise takes them as its title.  The commits kept are not
+  touched.  The store is backed up first, to
+  =backups/herd-cost-said-<version>-<time>.sqlite= beside =herd.sqlite=;
+  each task is put right in a commit of its own, so a sidecar stopped
+  half-way does the rest next time; then every task and the commits are
+  checked, and only then is it marked done (=meta= =cost_said=, its
+  counts in =cost_said_report=).  An ask is the work its asker was on when
   it made it: by the herd's record of it --- the ask it was answering,
   else its asker's work at that moment --- or, the record gone after a
   week, by what its client printed (=herd: asked rd (ask ID)=).  A
