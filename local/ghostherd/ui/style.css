@@ -181,9 +181,22 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 
 /* ---- The Docs tab -------------------------------------------------------- */
 
-.page.docs .doc { border-bottom: 1px solid var(--line); padding: 10px 2px; min-width: 0; }
+/* The filter, the source chips, and one list under them, newest first. */
+.page.docs .dbar { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 6px; }
+.page.docs #docs-filter { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; font-size: 13.5px; outline: none; }
+.page.docs #docs-filter:focus { border-color: var(--accent); }
+.page.docs .dchips .chip { cursor: pointer; }
+.page.docs .dcount { color: var(--muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
+.page.docs .sum:empty { display: none; }
+/* A row, two lines: its title and when; its file, size -- and, all
+   sources shown, where it is.  Neither wraps: what does not fit is cut. */
+.page.docs .doc { border-bottom: 1px solid var(--line); padding: 9px 2px; min-width: 0; }
+.page.docs .dl1 { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
 .page.docs .dtitle {
-  display: inline;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0;
   border: 0;
   background: none;
@@ -193,26 +206,22 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
   font-weight: 600;
   text-align: left;
   text-decoration: none;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
 }
 .page.docs .dtitle:hover, .page.docs .dtitle:focus-visible { text-decoration: underline; }
-.page.docs .dmeta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin-top: 3px; font-size: 12px; color: var(--muted); }
-.page.docs .dname { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
-.page.docs .dwhere { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.page.docs .docsays { font-size: 12px; margin-top: 16px; }
-/* The documents and the reports: side by side when there is room, the
-   reports under the documents on a phone. */
-.page.docs .dcols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 32px; align-items: start; }
-@media (min-width: 900px) {
-  .page.docs .dcols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-}
-.page.docs .dsec { min-width: 0; }
-.page.docs .dsec > .section { margin-top: 6px; }
-.page.docs .dwho { font-weight: 600; color: var(--text); }
+.page.docs .dwhen { flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.page.docs .dmeta { display: flex; align-items: baseline; gap: 12px; margin-top: 3px; font-size: 12px; color: var(--muted);
+  white-space: nowrap; min-width: 0; overflow: hidden; }
+.page.docs .dmeta > * { flex: none; }
+.page.docs .dname, .page.docs .dwhere, .page.docs .dwho { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.page.docs .dname { font-family: var(--mono); font-size: 11.5px; }
+.page.docs .dwho { color: var(--text); }
 /* A report whose copy is gone: listed, with nothing to open. */
 .page.docs .report.gone .dtitle { color: var(--muted); cursor: default; text-decoration: none; }
-.page.docs .dgonesays { flex-basis: 100%; font-style: italic; }
+.page.docs .dgonesays { font-style: italic; }
 /* A report rewritten and named again: its older copies, folded under its
    newest, indented and a step quieter. */
 .page.docs .dolder { font: inherit; font-size: 12px; color: var(--accent); cursor: pointer; }
@@ -224,7 +233,8 @@ button.linkish:hover:not(:disabled) { color: var(--accent); }
 .page.docs .derror { padding: 8px 2px; }
 /* A finger's height for what opens a document, on a phone. */
 @media (max-width: 640px) {
-  .page.docs .dtitle { display: inline-block; min-height: 32px; padding: 4px 0; }
+  .page.docs .dtitle { min-height: 32px; line-height: 32px; }
+  .page.docs .dchips .chip { min-height: 32px; }
   .page.docs .foot .ghost { min-height: 40px; }
   .page.docs .dolder { min-height: 32px; padding: 0 6px; }
   .ereport { min-height: 32px; align-items: center; }
@@ -1482,7 +1492,9 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 
 .thtalk { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .thtalkhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.thtalkhead h2 { margin: 0; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--th-ask); }
+/* Its section heads as the other tabs' (`.section'): quiet. */
+.thtalkhead h2, .thcosts h2 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--muted); white-space: nowrap; }
 .thsub, .thquiet { color: var(--muted); font-size: 12px; }
 .thquiet { margin: 0; }
 .thpad { padding: 16px; }
@@ -1510,10 +1522,13 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .thtitle { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thage { color: var(--muted); font-size: 12px; flex: none; }
 .thpath { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
-.thr3 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+/* What a short prompt goes on from: a quiet line under its title. */
+.thctx { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.thh1ctx { margin: -6px 0 0; font-size: 13px; width: auto; white-space: normal; overflow-wrap: anywhere; }
+.thr3 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; }
 .thproj { font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; }
 .thcross { font-size: 11px; color: var(--th-handoff); border: 1px solid #6e40c9; border-radius: 4px; padding: 0 6px; }
-.thcount { font-size: 11px; color: var(--muted); }
+.thcount { font-size: 11px; color: var(--muted); margin-left: auto; white-space: nowrap; }
 .thmore { margin: 12px 16px; align-self: flex-start; }
 .thst { flex: none; font-size: 11px; font-weight: 700; border: 1px solid currentColor; border-radius: 4px; padding: 0 6px; }
 .thst.s-live { color: var(--th-ask); }
@@ -1530,20 +1545,31 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .thsummary { margin: 0; color: var(--muted); font-size: 13px; }
 /* What a thread's task cost: in its row, under its summary, and lead mode
    against direct mode above the list. */
-.thcost { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.thcostline { margin: 4px 0 0; font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.thcost.thsame { font-family: inherit; font-style: italic; }
+.thcost { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.thcostline { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* Whose task it is, on one line beside the count: cut, not wrapped. */
+.thcost.thsame { font-style: italic; flex: 1 1 10em; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .thcommits { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .thcommits li { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; min-width: 0; }
 .thcommits li.copy { opacity: .7; }
 .thcommits code { font-family: var(--mono); font-size: 11px; color: var(--th-ask); }
 .thcsubj { min-width: 0; overflow-wrap: anywhere; }
 .thcmeta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-.thcosts { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
-.thcosts h2 { margin: 0; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--th-ask); }
-.thcds { display: inline-flex; gap: 4px; margin-left: auto; }
+.thcosts { padding: 8px 20px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+/* Folded: one line -- the head, the figures, the days and the table's
+   toggle; on a phone the figures wrap under them, a figure whole a line. */
+.thcbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; min-width: 0; }
+.thcsum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 16px; min-width: 0; font-size: 12.5px;
+  color: var(--muted); font-variant-numeric: tabular-nums; }
+.thcfig { white-space: nowrap; }
+.thcfig b { color: var(--text); font-weight: 600; }
+.thcctl { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.thcsince { margin: 0; }
+.thcds { display: inline-flex; gap: 4px; }
 .thcd { padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; background: none; color: var(--muted); font: inherit; font-size: 11px; }
 .thcd.on { color: var(--text); border-color: var(--accent); }
+.thctoggle { padding: 1px 4px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
+.thctoggle:hover, .thctoggle:focus-visible { text-decoration: underline; }
 .thctable { border-collapse: collapse; font-size: 12px; max-width: 520px; }
 .thctable th, .thctable td { padding: 2px 12px 2px 0; text-align: right; white-space: nowrap; }
 .thctable th:first-child { text-align: left; font-weight: normal; color: var(--muted); }
@@ -1603,6 +1629,8 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 /* The phone: the list, then the thread as a conversation. */
 .threadspage.narrow .thtalk { padding: 0 2px 8px; }
 .threadspage.narrow .thcosts { padding: 0 2px 8px; overflow-x: auto; }
+.threadspage.narrow .thcsum { order: 3; flex-basis: 100%; }
+.threadspage.narrow .thcd, .threadspage.narrow .thctoggle { min-height: 32px; min-width: 40px; }
 .threadspage.narrow .thchips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
 .threadspage.narrow .thchip { flex: none; min-height: 44px; }
 .threadspage.narrow .thlist { max-width: none; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; flex: none; }

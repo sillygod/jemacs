@@ -11,12 +11,15 @@
 // herd-docs-sandbox.js's, against a real Emacs.
 //
 // The Docs tab's Reports (ask ab8e8838): the reports agents' replies
-// named, as the sidecar keeps their copies -- newest first, each by its
-// title (or file), who wrote it and in which project, when, its size --
-// opening as the Open link does; one whose copy is gone listed, marked,
-// with nothing to open; older ones a page at a time, an answer to a list
-// since replaced dropped; beside the documents on a desk, under them on
-// a phone.
+// named, as the sidecar keeps their copies -- each by its title (or
+// file), who wrote it and in which project, when, its size -- opening as
+// the Open link does; one whose copy is gone listed, marked, with nothing
+// to open; older ones a page at a time, an answer to a list since
+// replaced dropped.  One list with the documents (ask 825339b7), newest
+// first, each row two lines -- its title and when; its file, its size,
+// and, all shown, where it is -- under a filter (a title or a file name)
+// and a chip per source with its count: all, each docs directory, the
+// reports once there are.
 const fs = require("fs");
 const path = require("path");
 const { webkit } = require("playwright");
@@ -39,6 +42,7 @@ const BAD = [{ id: ID.toUpperCase(), ext: "html", name: "up" }, { id: "../../etc
 const DOCS = [
   { name: "sidecar-memory.html", title: "Sidecar 記憶體瘦身", where: "ghostherd", bytes: 34700, mtime: Date.now() / 1000 - 3600 },
   { name: "phone-access.html", title: "Herd 頁面門禁", where: "ghostherd", bytes: 23100, mtime: Date.now() / 1000 - 86400 },
+  { name: "notes.html", title: "Notes from the desk", where: "~/notes/", bytes: 2048, mtime: Date.now() / 1000 - 5 * 86400 },
   { name: "my notes.html", title: "a name that is not one", where: "~/notes/", bytes: 10, mtime: 0 },
   { name: "../x.html", title: "climbs", where: "~/notes/", bytes: 10, mtime: 0 },
   { name: "x.HTML", title: "caps", where: "~/notes/", bytes: 10, mtime: 0 },
@@ -95,6 +99,22 @@ const THREAD = { id: "t1", title: "the viewer", status: "answered", participants
 const links = (page, sel) => page.$$eval(sel, (as) => as.map((a) => ({
   tag: a.tagName, href: a.getAttribute("href"), target: a.getAttribute("target"), rel: a.getAttribute("rel"),
   text: a.textContent, set: a.getAttribute("data-set"), name: a.getAttribute("data-name"), h: a.getBoundingClientRect().height })));
+// The Docs tab's rows as shown: what each is, its two lines, and whether
+// each is one line, its time at the right, all of it in the page.
+const rowsOf = (page) => page.$$eval("#docs-list > .doc", (ds) => ds.map((d) => {
+  const l1 = d.querySelector(".dl1"), l2 = d.querySelector(".dmeta"), t = d.querySelector(".dtitle"), w = d.querySelector(".dwhen");
+  const oneLine = (e) => { const rs = [...e.children].map((c) => c.getBoundingClientRect()); return rs.every((r) => r.top < rs[0].bottom && r.bottom > rs[0].top); };
+  const open = [...l1.querySelectorAll(":scope > a, :scope > button")].map((a) => ({ tag: a.tagName, href: a.getAttribute("href"),
+    target: a.getAttribute("target"), rel: a.getAttribute("rel"), text: a.textContent }));
+  return { key: d.getAttribute("data-report") || (open[0] ? (open[0].href || "").split("/").pop() : ""), report: d.classList.contains("report"),
+    gone: d.classList.contains("gone"), title: t && t.textContent, when: w && w.textContent, open,
+    meta: [...l2.children].map((c) => c.textContent), twoLines: oneLine(l1) && oneLine(l2),
+    whenRight: !!w && Math.abs(w.getBoundingClientRect().right - l1.getBoundingClientRect().right) < 1.5,
+    inside: d.getBoundingClientRect().right <= innerWidth + 1 };
+}));
+// Its source chips, as each says itself; * the one shown.
+const chipsOf = (page) => page.$$eval(".dchips .chip", (cs) => cs.map((c) => c.textContent.replace(/\s+/g, " ").trim() +
+  (c.classList.contains("on") ? "*" : "")));
 const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + ID + ".html" && l.target === "_blank" &&
   /noopener/.test(l.rel) && /noreferrer/.test(l.rel);
 
@@ -172,31 +192,36 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
         await page.$$eval(".ibthwrap .ereport", (bs) => bs.every((b) => !b.parentElement.closest("button"))));
       await page.screenshot({ path: path.join(SHOTS, "docs-report-inbox-" + where + ".png"), fullPage: true });
 
-      // ---- The Docs tab ----
+      // ---- The Docs tab: one list, newest first ----
       const before = intents.length;
       await page.click('.tab[data-tab="docs"]');
       await sleep(150);
       check(W("the Docs tab asks Emacs for its list"), intents.slice(before).some((i) => i.op === "docs"));
-      check(W("and says so meanwhile"), /Asking Emacs/.test(await page.textContent(".page.docs .sum")));
-      check(W("and the reports beside them, asked of the herd"), /Asking the herd/.test(await page.textContent("#docs-reports .sum")));
+      const asking = await page.textContent(".page.docs .sum");
+      check(W("and says so meanwhile, and that the herd is asked for the reports"),
+        /Asking Emacs/.test(asking) && /Asking the herd/.test(asking), asking);
       await page.evaluate((d) => GM.renderDocs({ docs: d }), DOCS);
       await sleep(150);
-      const docs = await links(page, "#docs-documents .dtitle");
+      const docs = await links(page, "#docs-list .doc:not(.report) .dtitle");
       check(W("a link a document, by its title; none for a name that is not one"),
-        docs.length === 2 && docs.map((d) => d.text).join("|") === "Sidecar 記憶體瘦身|Herd 頁面門禁", docs.map((d) => d.text));
+        docs.length === 3 && docs.map((d) => d.text).join("|") === "Sidecar 記憶體瘦身|Herd 頁面門禁|Notes from the desk", docs.map((d) => d.text));
       check(W("each under the page's secret, a tab of its own with no opener"), docs.every((d) =>
         d.tag === "A" && /^\/0123456789abcdef0123456789abcdef\/\.docs\/[a-z-]+\.html$/.test(d.href) && d.target === "_blank" && /noopener/.test(d.rel)), docs);
-      const meta = await page.textContent("#docs-documents .doc .dmeta");
-      check(W("with its file, where it is, its size and age"), /sidecar-memory\.html/.test(meta) && /ghostherd/.test(meta) &&
-        /34 KB/.test(meta) && /1h ago/.test(meta), meta);
-      check(W("and what a document can show"), /no script runs/.test(await page.textContent(".page.docs .docsays")));
+      let rows = await rowsOf(page);
+      check(W("each row two lines: its title with when, on the right; its file, its size and where it is"),
+        rows.length === 3 && rows[0].title === "Sidecar 記憶體瘦身" && rows[0].when === "1h ago" &&
+        rows[0].meta.join("|") === "sidecar-memory.html|34 KB|ghostherd" && rows[2].meta.join("|") === "notes.html|2 KB|~/notes" &&
+        rows.every((r) => r.twoLines && r.whenRight && r.inside), rows);
+      check(W("no Reports chip before there is a report; a chip for each directory, with its count"),
+        (await chipsOf(page)).join() === "All 3*,ghostherd 2,~/notes 1", await chipsOf(page));
+      check(W("no prose under the list: what a document can show is its link's title"),
+        !(await page.$(".docsays")) && /no script runs/.test(await page.getAttribute("#docs-list .dtitle", "title")));
       if (where === "phone") {
         const fit = await page.evaluate(() => ({ wide: document.documentElement.scrollWidth > innerWidth + 1,
-          small: [...document.querySelectorAll(".page.docs .dtitle")].filter((a) => a.getBoundingClientRect().height < 32).length }));
-        check(W("the Docs tab fits the phone, a finger's height a document"), !fit.wide && !fit.small, fit);
+          small: [...document.querySelectorAll(".page.docs .dtitle, .page.docs .chip")].filter((a) => a.getBoundingClientRect().height < 32).length }));
+        check(W("the Docs tab fits the phone, a finger's height a document and a chip"), !fit.wide && !fit.small, fit);
       }
       check(W("the tab is kept in the address"), /#docs$/.test(page.url()), page.url());
-      await page.screenshot({ path: path.join(SHOTS, "docs-tab-" + where + ".png") });
       const p2 = ctx.waitForEvent("page");
       await tap('.page.docs a[href$="sidecar-memory.html"]');
       const doc = await p2;
@@ -204,44 +229,61 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       check(W("pressed, the document in a tab of its own"), (await doc.textContent("#h")) === "doc");
       await doc.close();
 
-      // ---- The Docs tab's Reports ----
+      // ---- The reports, in the same list ----
       await page.evaluate((r) => GM.renderReports({ reports: r, more: true, after: false }), REPORTS1);
       await sleep(150);
-      const rows = await page.$$eval("#docs-reports .doc", (ds) => ds.map((d) => ({
-        id: d.getAttribute("data-report"), gone: d.classList.contains("gone"), text: d.textContent,
-        open: [...d.querySelectorAll(":scope > a, :scope > button")].map((a) => ({ tag: a.tagName, href: a.getAttribute("href"),
-          target: a.getAttribute("target"), rel: a.getAttribute("rel"), text: a.textContent,
-          h: a.getBoundingClientRect().height })) })));
-      check(W("the reports, newest first; none whose id is not a copy's, or with no time"),
-        rows.map((r) => r.id).join() === [R1, R2, R3].join(), rows.map((r) => r.id));
+      rows = await rowsOf(page);
+      check(W("the reports among the documents, all newest first; none whose id is not a copy's, or with no time"),
+        rows.map((r) => r.key).join() === [R1, "sidecar-memory.html", R2, "phone-access.html", R3, "notes.html"].join(), rows.map((r) => r.key));
+      check(W("a Reports chip once there are, its count -- more to ask for, a +"),
+        (await chipsOf(page)).join() === "All 6+*,ghostherd 2,~/notes 1,Reports 3+", await chipsOf(page));
       const r1 = rows[0] || { open: [] };
       check(W("a report opens as its Open link does: its copy by id under the secret, a tab of its own, no opener"),
         r1.open.length === 1 && r1.open[0].tag === "A" && r1.open[0].href === "/" + SECRET + "/.reports/" + R1 + ".html" &&
         r1.open[0].target === "_blank" && /noopener/.test(r1.open[0].rel) && /noreferrer/.test(r1.open[0].rel), r1.open);
-      check(W("by its title, who wrote it and where, when, its size and its file"),
-        r1.open[0] && r1.open[0].text === "Viewer review: what changed & why" && r1.text.includes(RD) &&
-        r1.text.includes("deploy-platform") && /2m ago/.test(r1.text) && /47 KB/.test(r1.text) && r1.text.includes("viewer-review.html"),
-        r1.text);
+      check(W("marked a report: by its title and when; who wrote it and where, its file and size"),
+        r1.report && r1.title === "Viewer review: what changed & why" && r1.when === "2m ago" &&
+        r1.meta.slice(0, 3).join("|") === "from " + RD + " · deploy-platform|viewer-review.html|47 KB" && r1.twoLines && r1.whenRight, r1);
       check(W("one with no title by its file; its writer unknown, said so"),
-        rows[1] && rows[1].open[0] && rows[1].open[0].text === "perf.html" && /writer unknown/.test(rows[1].text), rows[1]);
+        rows[2] && rows[2].open[0] && rows[2].open[0].text === "perf.html" && rows[2].meta[0] === "writer unknown", rows[2]);
       check(W("one whose copy is gone: listed, marked, nothing to open"),
-        rows[2] && rows[2].gone && rows[2].open.length === 0 && /copy is gone/.test(rows[2].text) &&
-        rows[2].text.includes("A report since taken away") && /3d ago/.test(rows[2].text), rows[2]);
-      check(W("it says how many, and that there are older"), /^3 reports, the newest$/.test(await page.textContent("#docs-reports .sum")));
+        rows[4] && rows[4].gone && rows[4].open.length === 0 && rows[4].meta.includes("its copy is gone") &&
+        rows[4].title === "A report since taken away" && rows[4].when === "3d ago" && rows[4].twoLines, rows[4]);
+      if (where === "desk") {
+        const one = await page.evaluate(() => {
+          const ls = [...document.querySelectorAll("#docs-list > .doc")].map((d) => Math.round(d.getBoundingClientRect().left));
+          return { lefts: [...new Set(ls)], page: document.querySelector(".page.docs").getBoundingClientRect().width,
+            wide: document.documentElement.scrollWidth > innerWidth + 1 };
+        });
+        check(W("on the desk: one column, as wide as the other tabs' pages"), one.lefts.length === 1 && one.page <= 1000 && !one.wide, one);
+      }
+      await page.screenshot({ path: path.join(SHOTS, "docs-tab-" + where + ".png"), fullPage: true });
+
+      // ---- A source: a directory's documents, or the reports ----
+      await tap('.dchips [data-act="docs:src"][data-src="d:ghostherd"]');
+      await sleep(100);
+      rows = await rowsOf(page);
+      check(W("a directory's chip: its documents alone, where they are not said again"),
+        rows.map((r) => r.key).join() === "sidecar-memory.html,phone-access.html" && rows.every((r) => r.meta.length === 2) &&
+        (await chipsOf(page)).join() === "All 6+,ghostherd 2*,~/notes 1,Reports 3+" && !(await page.$('[data-act="reports:more"]')), rows);
+      await tap('.dchips [data-act="docs:src"][data-src="reports"]');
+      await sleep(100);
+      const reportRows = () => page.$$eval("#docs-list > .doc", (ds) => ds.map((d) => d.getAttribute("data-report")));
+      check(W("the Reports chip: the reports alone"), (await reportRows()).join() === [R1, R2, R3].join(), await reportRows());
       // A report rewritten and named again: one row, its older copies folded.
       const folded = () => page.evaluate((R1) => {
-        const d = document.querySelector('#docs-reports .doc[data-report="' + R1 + '"]');
+        const d = document.querySelector('#docs-list .doc[data-report="' + R1 + '"]');
         const b = d && d.querySelector('[data-act="reports:older"]');
         return { button: b && b.textContent, expanded: b && b.getAttribute("aria-expanded"), h: b && b.getBoundingClientRect().height,
           older: [...d.querySelectorAll(".dolders .doc.older")].map((o) => ({ id: o.getAttribute("data-report"),
-            gone: o.classList.contains("gone"), link: (o.querySelector(":scope > a") || {}).href || "", text: o.textContent,
+            gone: o.classList.contains("gone"), link: (o.querySelector(".dl1 > a") || {}).href || "", text: o.textContent,
             more: !!o.querySelector('[data-act="reports:older"]') })),
-          rows: document.querySelectorAll("#docs-reports .doc:not(.older)").length };
+          rows: document.querySelectorAll("#docs-list > .doc").length };
       }, R1);
       let f = await folded();
       check(W("a rewritten report: one row, \"2 older\" under it, folded"),
         f.button === "2 older" && f.expanded === "false" && f.older.length === 0 && f.rows === 3, f);
-      await tap('#docs-reports [data-act="reports:older"][data-report="' + R1 + '"]');
+      await tap('#docs-list [data-act="reports:older"][data-report="' + R1 + '"]');
       await sleep(100);
       f = await folded();
       check(W("tapped: its older copies, newest first, each opening its own copy; one gone, nothing to open"),
@@ -253,60 +295,81 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await page.evaluate((r) => GM.renderReports({ reports: r, more: true, after: false }), REPORTS1);
       await sleep(100);
       check(W("it stays open as the list is drawn again"), (await folded()).older.length === 2);
-      await tap('#docs-reports [data-act="reports:older"][data-report="' + R1 + '"]');
+      await tap('#docs-list [data-act="reports:older"][data-report="' + R1 + '"]');
       await sleep(100);
       f = await folded();
       check(W("tapped again: folded"), f.expanded === "false" && f.older.length === 0, f);
       if (where === "phone") {
-        const fit = await page.evaluate(() => {
-          const d = document.getElementById("docs-documents").getBoundingClientRect();
-          const r = document.getElementById("docs-reports").getBoundingClientRect();
-          return { wide: document.documentElement.scrollWidth > innerWidth + 1, under: r.top >= d.bottom - 1,
-            small: [...document.querySelectorAll("#docs-reports a.dtitle, #docs-reports [data-act]")]
-              .filter((a) => a.getBoundingClientRect().height < 32).length };
-        });
-        check(W("on the phone: under the documents, it fits, a finger's height each"), !fit.wide && fit.under && !fit.small, fit);
-      } else {
-        const side = await page.evaluate(() => {
-          const d = document.getElementById("docs-documents").getBoundingClientRect();
-          const r = document.getElementById("docs-reports").getBoundingClientRect();
-          return { beside: r.left >= d.right && Math.abs(r.top - d.top) < 2, wide: document.documentElement.scrollWidth > innerWidth + 1 };
-        });
-        check(W("on the desk: beside the documents"), side.beside && !side.wide, side);
+        const fit = await page.evaluate(() => ({ wide: document.documentElement.scrollWidth > innerWidth + 1,
+          small: [...document.querySelectorAll("#docs-list a.dtitle, #docs-list [data-act]")]
+            .filter((a) => a.getBoundingClientRect().height < 32).length }));
+        check(W("on the phone: the reports fit, a finger's height each"), !fit.wide && !fit.small, fit);
       }
       await page.screenshot({ path: path.join(SHOTS, "docs-reports-" + where + ".png"), fullPage: true });
       // Older ones: asked from the last shown.
       const was = intents.length;
-      await tap('#docs-reports [data-act="reports:more"]');
+      await tap('#docs-list [data-act="reports:more"]');
       await sleep(150);
       const more = intents.slice(was).filter((i) => i.op === "reports-more");
       check(W("older reports are asked from the last shown"), more.length === 1 && more[0].id === R3 && more[0].at === REPORTS1[2].at, more);
-      check(W("and the page says it is asking"), /Asking/.test(await page.textContent('#docs-reports [data-act="reports:more"]')) &&
-        await page.$eval('#docs-reports [data-act="reports:more"]', (b) => b.disabled));
+      check(W("and the page says it is asking"), /Asking/.test(await page.textContent('#docs-list [data-act="reports:more"]')) &&
+        await page.$eval('#docs-list [data-act="reports:more"]', (b) => b.disabled));
       // An answer to a list since replaced: dropped.
       await page.evaluate((r) => GM.renderReports({ reports: r, more: false, after: "0".repeat(32) }), REPORTS2);
       await sleep(100);
-      check(W("an answer for another list is dropped"), (await page.$$("#docs-reports .doc")).length === 3);
+      check(W("an answer for another list is dropped"), (await reportRows()).length === 3);
       await page.evaluate((a) => GM.renderReports({ reports: a.r, more: false, after: a.after }), { r: REPORTS2, after: R3 });
       await sleep(150);
-      const ids = await page.$$eval("#docs-reports .doc", (ds) => ds.map((d) => d.getAttribute("data-report")));
+      const ids = await reportRows();
       check(W("the older page added after the last; nothing more to ask"), ids.join() === [R1, R2, R3, R4].join() &&
-        !(await page.$('#docs-reports [data-act="reports:more"]')) && /^4 reports$/.test(await page.textContent("#docs-reports .sum")), ids);
+        !(await page.$('#docs-list [data-act="reports:more"]')) && (await chipsOf(page)).includes("Reports 4*"), ids);
       // Pressed: the copy, by its id; Emacs is asked nothing for it.
       const asked2 = intents.length;
       const p3 = ctx.waitForEvent("page");
-      await tap('#docs-reports a[href$="/.reports/' + R1 + '.html"]');
+      await tap('#docs-list a[href$="/.reports/' + R1 + '.html"]');
       const rep = await p3;
       await rep.waitForLoadState("load").catch(() => {});
       check(W("pressed, the report in a tab of its own"),
         rep.url() === "http://box.tail0.ts.net/" + SECRET + "/.reports/" + R1 + ".html" && (await rep.textContent("#h")) === "listed report", rep.url());
       check(W("and Emacs was asked nothing for it"), !intents.slice(asked2).some((i) => /doc|report/.test(i.op)), intents.slice(asked2));
       await rep.close();
+
+      // ---- The filter: a title or a file name ----
+      await tap('.dchips [data-act="docs:src"][data-src=""]');
+      await sleep(100);
+      await page.click("#docs-filter");
+      await page.keyboard.type("viewer");
+      await sleep(150);
+      const typed = await page.evaluate(() => ({ focus: document.activeElement && document.activeElement.id,
+        value: document.getElementById("docs-filter").value }));
+      rows = await rowsOf(page);
+      check(W("typed: what its title holds, the rest away; the filter kept, the caret in it"),
+        rows.map((r) => r.key).join() === R1 && typed.focus === "docs-filter" && typed.value === "viewer", { rows: rows.map((r) => r.key), typed });
+      check(W("each chip counts what matches"), (await chipsOf(page)).join() === "All 1*,ghostherd 0,~/notes 0,Reports 1", await chipsOf(page));
+      await page.fill("#docs-filter", "PHONE-ACCESS");
+      await sleep(100);
+      rows = await rowsOf(page);
+      check(W("or its file's name, whatever the case"), rows.map((r) => r.key).join() === "phone-access.html", rows.map((r) => r.key));
+      await page.fill("#docs-filter", "nothing like it");
+      await sleep(100);
+      check(W("nothing matches: said so"), /Nothing here matches “nothing like it”/.test(await page.textContent("#docs-list")) &&
+        (await rowsOf(page)).length === 0);
+      await page.fill("#docs-filter", "e");
+      await tap('.dchips [data-act="docs:src"][data-src="d:~/notes/"]');
+      await page.evaluate((d) => GM.renderDocs({ docs: d }), DOCS);
+      await sleep(150);
+      check(W("the filter and the chip kept as the list comes again"),
+        (await page.inputValue("#docs-filter")) === "e" && (await rowsOf(page)).map((r) => r.key).join() === "notes.html" &&
+        (await chipsOf(page)).includes("~/notes 1*"), await chipsOf(page));
+      await page.fill("#docs-filter", "");
+      await tap('.dchips [data-act="docs:src"][data-src=""]');
+      await sleep(100);
+
       // The herd away: said so, the list as it was.
       await page.evaluate(() => GM.renderReports({ error: "herd_reports: no answer in 10s", after: false }));
       await sleep(100);
-      check(W("the herd away: said so, the list kept"), /could not be asked: herd_reports: no answer/.test(
-        await page.textContent("#docs-reports .derror")) && (await page.$$("#docs-reports .doc")).length === 4);
+      check(W("the herd away: said so, the list kept"), /could not be asked for the reports: herd_reports: no answer/.test(
+        await page.textContent("#docs-list .derror")) && (await reportRows()).filter(Boolean).length === 4);
       if (where === "desk") {
         const was3 = intents.length;
         await page.click("#btn-refresh");
@@ -370,18 +433,18 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       await page.click('.tab[data-tab="docs"]');
       await page.evaluate((d) => GM.renderDocs({ docs: d }), DOCS);
       await sleep(100);
-      const d = await links(page, "#docs-documents .dtitle");
-      check("xwidget: the Docs are buttons too", d.length === 2 && d.every((x) => x.tag === "BUTTON" && x.set === "docs"), d);
+      const d = await links(page, "#docs-list .doc:not(.report) .dtitle");
+      check("xwidget: the Docs are buttons too", d.length === 3 && d.every((x) => x.tag === "BUTTON" && x.set === "docs"), d);
       await page.click('.page.docs [data-name="phone-access.html"]');
       await drain();
       check("xwidget: pressed, Emacs is asked to show it", said.some((i) => i.op === "doc-open" && i.set === "docs" && i.name === "phone-access.html"));
       await page.evaluate((r) => GM.renderReports({ reports: r, more: false, after: false }), REPORTS1);
       await sleep(100);
-      const rb = await links(page, "#docs-reports .dtitle");
+      const rb = await links(page, "#docs-list .doc.report .dtitle");
       check("xwidget: the Reports are buttons too, and the gone one none", rb.length === 3 &&
         rb.slice(0, 2).every((x) => x.tag === "BUTTON" && x.set === "reports") && rb[2].tag === "SPAN" &&
         rb[0].name === R1 + ".html", rb);
-      await page.click('#docs-reports [data-name="' + R1 + '.html"]');
+      await page.click('#docs-list [data-name="' + R1 + '.html"]');
       await drain();
       check("xwidget: a report pressed, Emacs is asked to show it as its Open does",
         said.some((i) => i.op === "doc-open" && i.set === "reports" && i.name === R1 + ".html"));

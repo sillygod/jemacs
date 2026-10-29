@@ -305,9 +305,11 @@
     }).join("") + "</div>";
   }
 
-  // The Docs tab: the documents Emacs lists (renderDocs), newest first;
-  // and the reports agents' replies named (renderReports) -- the sidecar's
-  // copies, by id, newest first, a page at a time.
+  // The Docs tab: one list, newest first -- the documents Emacs lists
+  // (renderDocs) and the reports agents' replies named (renderReports):
+  // the sidecar's copies, by id, newest first, a page at a time.  Above
+  // it, a filter (title or file name) and a chip per source: all, each
+  // docs directory, the reports.
   let docs = null; // [{name, title, where, bytes, mtime}] once Emacs has said
   // {list: [{id, title, name, agent, project, at, bytes, gone, older: [...]}], more, error, asking}
   let reports = null;
@@ -315,6 +317,9 @@
   // what one is, whichever copy is its newest.
   const reportsOpen = new Set();
   const reportKey = (rep) => String(rep.project || "") + "\0" + String(rep.name || rep.id);
+  // What the list shows, for the page's life: the filter's words, and the
+  // source -- "" all, "d:" and a directory as Emacs says it, "reports".
+  const docsView = { q: "", src: "" };
 
   function showDocs() {
     view = "docs";
@@ -329,72 +334,108 @@
     return n < 1024 ? n + " B" : n < 1024 * 1024 ? Math.round(n / 1024) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB";
   }
 
+  // A docs directory as its chip says it: ghostherd's own, or the path.
+  const dirLabel = (where) => String(where || "").replace(/(.)\/+$/, "$1");
+
+  // The filter and the chips stay put as the list is drawn again: the
+  // filter keeps its words, and the caret, while it is typed in.
   function renderDocs() {
     if (view !== "docs") return;
-    const rows = (docs || []).filter((d) => d && DOC_NAME.docs.test(String(d.name))).map((d) =>
-      '<div class="doc">' +
-      docLink("docs", d.name, esc(d.title || d.name), "dtitle", d.name) +
-      '<div class="dmeta"><span class="dname">' + esc(d.name) + "</span>" +
-      '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(d.where || "") + "</span>" +
-      "<span>" + esc(sizeText(d.bytes)) + "</span>" +
-      '<span title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div></div>").join("");
-    app.innerHTML = '<div class="page docs"><div class="dcols"><section class="dsec" id="docs-documents">' +
-      '<h2 class="section">Documents</h2>' +
-      '<div class="sum">' + (docs ? docs.length + (docs.length === 1 ? " document" : " documents") : "Asking Emacs…") +
-      "</div>" + (docs && !docs.length ? '<p class="empty">No HTML document in the folders listed.</p>' : rows) +
-      "</section>" + reportsSection() + "</div>" +
-      '<p class="docsays muted">' + esc(DOC_SAYS) + " Documents: ghostherd's docs/ and the folders of " +
-      "<code>ghostherd-docs-directories</code>. Reports: the HTML files agents' replies named, as the herd " +
-      "copied them then, kept as their images are.</p></div>";
+    if (!$("docs-filter")) {
+      app.innerHTML = '<div class="page docs"><div class="dbar">' +
+        '<input id="docs-filter" type="search" placeholder="Filter by title or file name" autocomplete="off" ' +
+        'spellcheck="false" aria-label="Filter the documents by title or file name">' +
+        '<div class="chips dchips" role="group" aria-label="Where from"></div></div>' +
+        '<div class="sum" id="docs-sum"></div><div class="dlist" id="docs-list"></div></div>';
+      $("docs-filter").value = docsView.q;
+    }
+    renderDocsList();
   }
 
-  // The reports, as the sidecar keeps their copies: each opens as the Open
-  // link under its message does.  One whose copy is gone from the
-  // directory is still listed, marked, with nothing to open.  A file an
-  // agent rewrote and named again is one row, its newest copy: "2 older"
-  // under it shows the others, newest first, and folds them away again.
-  function reportsSection() {
+  function renderDocsList() {
+    const box = $("docs-list");
+    if (!box) return;
     const r = reports;
-    const list = r ? r.list : [];
-    const one = (rep, older) => {
-      const name = String(rep.name || rep.id + ".html");
-      const title = String(rep.title || "").trim() || name;
-      const who = String(rep.agent || "");
-      const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
-        o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
-      const open = them.length > 0 && reportsOpen.has(reportKey(rep));
-      const head = rep.gone
-        ? '<span class="dtitle dgone" title="' + esc(name) + '">' + esc(title) + "</span>"
-        : docLink("reports", rep.id + ".html", esc(title), "dtitle", name);
-      return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
-        esc(rep.id) + '">' + head +
-        '<div class="dmeta">' +
-        (rep.gone ? '<span class="dgonesays">Its copy is gone from the herd\'s folder: nothing to open.</span>' : "") +
-        '<span class="dwho">' + (who ? esc(who) : '<span class="muted">writer unknown</span>') + "</span>" +
-        (rep.project ? '<span class="dwhere" title="' + esc(rep.project) + '">' + esc(rep.project) + "</span>" : "") +
-        '<span title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span>" +
-        "<span>" + esc(sizeText(rep.bytes)) + "</span>" +
-        '<span class="dname">' + esc(name) + "</span>" +
-        (them.length
-          ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
-            '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
-            them.length + " older" + "</button>"
-          : "") + "</div>" +
-        (open ? '<div class="dolders">' + them.map((o) => one(o, true)).join("") + "</div>" : "") + "</div>";
-    };
-    const rows = list.map((rep) => one(rep, false)).join("");
-    const sum = !r ? "Asking the herd…"
-      : list.length + (list.length === 1 ? " report" : " reports") + (r.more ? ", the newest" : "");
-    const more = r && r.more && list.length
+    const ds = (docs || []).filter((d) => d && DOC_NAME.docs.test(String(d.name)));
+    const rs = r ? r.list : [];
+    const q = docsView.q.trim().toLowerCase();
+    const hit = (x) => !q || String(x.title || "").toLowerCase().includes(q) || String(x.name || "").toLowerCase().includes(q);
+    // ghostherd's own directory first, then the others by name.
+    const dirs = [...new Set(ds.map((d) => String(d.where || "")))].sort((a, b) =>
+      (b === "ghostherd") - (a === "ghostherd") || a.localeCompare(b));
+    const srcs = dirs.map((w) => "d:" + w).concat(rs.length ? ["reports"] : []);
+    if (docsView.src && !srcs.includes(docsView.src)) docsView.src = "";
+    const all = !docsView.src;
+    const items = ds.filter(hit).map((d) => ({ src: "d:" + String(d.where || ""), at: stamp(d.mtime) || 0, d }))
+      .concat(rs.filter(hit).map((x) => ({ src: "reports", at: stamp(x.at) || 0, x })))
+      .sort((a, b) => b.at - a.at);
+    const count = (k) => items.filter((i) => i.src === k).length;
+    const chip = (k, label, n) => '<button type="button" class="chip' + (docsView.src === k ? " on" : "") +
+      '" data-act="docs:src" data-src="' + esc(k) + '" aria-pressed="' + (docsView.src === k) + '">' + esc(label) +
+      ' <span class="dcount">' + esc(n) + "</span></button>";
+    const chips = app.querySelector(".dchips");
+    if (chips) chips.innerHTML = chip("", "All", items.length + (r && r.more ? "+" : "")) +
+      dirs.map((w) => chip("d:" + w, dirLabel(w), count("d:" + w))).join("") +
+      (rs.length ? chip("reports", "Reports", count("reports") + (r.more ? "+" : "")) : "");
+    const asking = [docs ? "" : "Asking Emacs for the documents…", r ? "" : "Asking the herd for the reports…"].filter(Boolean);
+    $("docs-sum").textContent = asking.join(" · ");
+    const shown = all ? items : items.filter((i) => i.src === docsView.src);
+    const rows = shown.map((i) => (i.d ? docRow(i.d, all) : reportRow(i.x, false))).join("");
+    const more = r && r.more && rs.length && (all || docsView.src === "reports")
       ? '<div class="foot"><button type="button" class="ghost small" data-act="reports:more"' + (r.asking ? " disabled" : "") +
         ">" + (r.asking ? "Asking…" : "Older reports") + "</button></div>"
       : "";
-    return '<section class="dsec" id="docs-reports"><h2 class="section">Reports</h2>' +
-      '<div class="sum">' + esc(sum) + "</div>" +
-      (r && r.error ? '<p class="empty derror">The herd could not be asked: ' + esc(r.error) + "</p>" : "") +
-      (r && !list.length && !r.error
-        ? '<p class="empty">No HTML report yet: one is listed here once an agent\'s reply names an .html file.</p>'
-        : rows) + more + "</section>";
+    const empty = shown.length ? ""
+      : q && (ds.length || rs.length) ? '<p class="empty">Nothing here matches “' + esc(docsView.q.trim()) + "”.</p>"
+      : docs && !ds.length && (!r || !rs.length) ? '<p class="empty">No HTML document in the folders listed.</p>'
+      : "";
+    box.innerHTML = (r && r.error ? '<p class="empty derror">The herd could not be asked for the reports: ' + esc(r.error) + "</p>" : "") +
+      empty + rows + more;
+  }
+
+  // A row: its title, and when, on one line; its file, its size and --
+  // all sources shown -- its directory on the next.
+  function docRow(d, all) {
+    const title = String(d.title || d.name);
+    return '<div class="doc" data-src="d:' + esc(d.where || "") + '"><div class="dl1">' +
+      docLink("docs", d.name, esc(title), "dtitle", (title !== d.name ? title + " · " : "") + d.name) +
+      '<span class="dwhen" title="' + esc(fullTime(d.mtime)) + '">' + esc(when(d.mtime)) + "</span></div>" +
+      '<div class="dmeta"><span class="dname">' + esc(d.name) + "</span>" +
+      '<span class="dsize">' + esc(sizeText(d.bytes)) + "</span>" +
+      (all ? '<span class="dwhere" title="' + esc(d.where || "") + '">' + esc(dirLabel(d.where)) + "</span>" : "") +
+      "</div></div>";
+  }
+
+  // A report, as the sidecar keeps its copy: it opens as the Open link
+  // under its message does, and says who wrote it, in which project.  One
+  // whose copy is gone from the directory is still listed, marked, with
+  // nothing to open.  A file an agent rewrote and named again is one row,
+  // its newest copy: "2 older" under it shows the others, newest first,
+  // and folds them away again.
+  function reportRow(rep, older) {
+    const name = String(rep.name || rep.id + ".html");
+    const title = String(rep.title || "").trim() || name;
+    const who = String(rep.agent || "");
+    const them = older ? [] : (Array.isArray(rep.older) ? rep.older : []).filter((o) =>
+      o && IMG_ID.test(String(o.id)) && typeof o.at === "number");
+    const open = them.length > 0 && reportsOpen.has(reportKey(rep));
+    const head = rep.gone
+      ? '<span class="dtitle dgone" title="' + esc(title + " · " + name) + '">' + esc(title) + "</span>"
+      : docLink("reports", rep.id + ".html", esc(title), "dtitle", (title !== name ? title + " · " : "") + name);
+    const from = (who ? "from " + who : "writer unknown") + (rep.project ? " · " + rep.project : "");
+    return '<div class="doc report' + (rep.gone ? " gone" : "") + (older ? " older" : "") + '" data-report="' +
+      esc(rep.id) + '"><div class="dl1">' + head +
+      '<span class="dwhen" title="' + esc(fullTime(rep.at)) + '">' + esc(when(rep.at)) + "</span></div>" +
+      '<div class="dmeta"><span class="dwho" title="' + esc(from) + '">' + esc(from) + "</span>" +
+      '<span class="dname">' + esc(name) + "</span>" +
+      '<span class="dsize">' + esc(sizeText(rep.bytes)) + "</span>" +
+      (rep.gone ? '<span class="dgonesays" title="Its copy is gone from the herd\'s folder: nothing to open.">its copy is gone</span>' : "") +
+      (them.length
+        ? '<button type="button" class="linkish dolder" data-act="reports:older" data-report="' + esc(rep.id) +
+          '" aria-expanded="' + open + '" title="The copies of this file as it was before it was rewritten">' +
+          them.length + " older" + "</button>"
+        : "") + "</div>" +
+      (open ? '<div class="dolders">' + them.map((o) => reportRow(o, true)).join("") + "</div>" : "") + "</div>";
   }
 
   // The image whole, over the page: fitted to it, at its own size at a
@@ -3959,6 +4000,9 @@
     } else if (ev.target.id === "mem-filter") {
       mem.filter = ev.target.value;
       renderMemoryList();
+    } else if (ev.target.id === "docs-filter") {
+      docsView.q = ev.target.value;
+      renderDocsList();
     }
   });
 
@@ -4407,6 +4451,9 @@
       openImage(el);
     } else if (act === "doc:open") {
       emit("doc-open", { set: el.getAttribute("data-set"), name: el.getAttribute("data-name") });
+    } else if (act === "docs:src") {
+      docsView.src = el.getAttribute("data-src") || "";
+      renderDocsList();
     } else if (act === "reports:older") {
       const rep = reports && reports.list.find((x) => x.id === el.getAttribute("data-report"));
       if (rep) {
@@ -5082,7 +5129,7 @@
   // Phone: the list, then the thread as a conversation, "A → B".
 
   let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
-                  costs: [], costDays: 7 };
+                  costs: [], costDays: 7, costOpen: false };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
@@ -5119,7 +5166,7 @@
   // weighted tokens (the tally's unit), and the lines its commits changed,
   // merged or not.  A task two threads are part of (a lead's two asks for
   // it) shows its cost on one; the other says whose it is.  Above the
-  // list, lead mode against direct mode.
+  // list, lead mode against direct mode, folded to a line.
 
   const TASK_CODE = { no: "no code", unknown: "code not readable", pending: "code not read yet" };
   function taskMade(c) { return TASK_CODE[c.code] || c.lines + (c.lines === 1 ? " line" : " lines"); }
@@ -5140,16 +5187,27 @@
       return '<span class="thcost thsame" title="One task with another thread: its cost is shown there, once">' +
         "same task as “" + esc(of) + "”</span>";
     }
-    return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) + " · " + esc(taskMade(c)) + "</span>";
+    // In its row, what it cost and the lines it changed, if any: why none
+    // -- no code, not read yet -- is the open thread's to say.
+    return '<span class="thcost" title="' + esc(taskTitle(c)) + '">' + esc(tokens(c.total)) +
+      (c.code === "yes" ? " · " + esc(taskMade(c)) : "") + "</span>";
   }
   function thCostLine(c) {
     if (!c) return "";
     const per = c.code === "yes" && c.lines ? " · " + tokens(Math.round((c.total * 100) / c.lines)) + " per 100 lines" : "";
     const merged = c.code === "yes" ? " (" + taskMerged(c) + ")" : "";
+    // Whose tokens they are, the parts that had none left out.
+    const parts = [[c.mode === "lead" ? "lead" : "itself", c.own], ["workers", c.workers], ["sub-agents", c.subs]]
+      .filter((x) => x[1]).map((x) => x[0] + " " + tokens(x[1]));
     return '<p class="thcostline" title="' + esc(taskTitle(c)) + '">Its task' +
-      (c.threadCount > 1 ? ", across " + c.threadCount + " threads" : "") + ": " + esc(tokens(c.total)) + " weighted tokens — " +
-      (c.mode === "lead" ? "lead " : "itself ") + esc(tokens(c.own)) + " · workers " + esc(tokens(c.workers)) +
-      " · sub-agents " + esc(tokens(c.subs)) + " · " + esc(taskMade(c)) + esc(merged) + esc(per) + "</p>";
+      (c.threadCount > 1 ? ", across " + c.threadCount + " threads" : "") + ": " + esc(tokens(c.total)) + " weighted tokens" +
+      (parts.length ? " — " + esc(parts.join(" · ")) : "") + " · " + esc(taskMade(c)) + esc(merged) + esc(per) + "</p>";
+  }
+  // What a short prompt told an agent directly goes on from (cost.py
+  // `contexts'): a quiet line under its title, not part of it.
+  function thContext(t) {
+    const c = t && t.direct && t.cost;
+    return c && !c.same && c.context ? String(c.context) : "";
   }
   // The open thread's commits: each, its lines and whether it is in a main
   // branch yet; a copy (an amend, a rebase, a cherry-pick) counted where
@@ -5164,6 +5222,9 @@
       (m.merged ? "merged" : "not merged") +
       (m.of ? " · a copy of " + esc(String(m.of).slice(0, 8)) + ", not counted again" : "") + "</span></li>").join("") + "</ul>";
   }
+  // Folded, one line: a week's or a month's median per task that changed
+  // code, per 100 lines, the lead's share -- the table a press away, open
+  // or folded for the page's life.
   function thCosts() {
     const all = threads.costs || [];
     const c = all.find((x) => x.days === threads.costDays) || all[0];
@@ -5171,14 +5232,25 @@
     const n = (v) => (v == null ? "—" : tokens(v));
     const row = (label, a, b) => "<tr><th>" + esc(label) + "</th><td>" + esc(a) + "</td><td>" + esc(b) + "</td></tr>";
     const L = c.lead, D = c.direct;
+    const open = !!threads.costOpen;
     const days = all.map((x) => '<button type="button" class="thcd' + (x.days === c.days ? " on" : "") +
-      '" data-act="th:cost-days" data-days="' + x.days + '">' + x.days + " days</button>").join("");
+      '" data-act="th:cost-days" data-days="' + x.days + '" title="The last ' + x.days + ' days">' + x.days + "d</button>").join("");
+    const sub = "through a lead, or told to an agent directly · weighted tokens · since " + c.since;
+    const fig = (label, a, b) => '<span class="thcfig"><span class="thclab">' + esc(label) + "</span> lead <b>" + esc(a) +
+      "</b> · direct <b>" + esc(b) + "</b></span>";
+    const bar = '<div class="thcbar"><h2>What a task costs</h2>' +
+      '<span class="thcsum" title="' + esc(sub) + '">' + fig("median per coded task", n(L.medianCoded), n(D.medianCoded)) +
+      fig("per 100 lines", n(L.per100), n(D.per100)) +
+      '<span class="thcfig"><span class="thclab">lead\'s share</span> <b>' + esc(L.own == null ? "—" : L.own + "%") + "</b></span></span>" +
+      '<span class="thcctl"><span class="thcds">' + days + "</span>" +
+      '<button type="button" class="thctoggle" data-act="th:cost-table" aria-expanded="' + open + '">' +
+      (open ? "Table ▾" : "Table ▸") + "</button></span></div>";
+    if (!open) return '<section class="thcosts" aria-label="What a task costs">' + bar + "</section>";
     // A task whose code is not known yet, or cannot be: in neither "lines
     // changed" nor "no code" -- said when there is one, as `herd cost' says it.
     const some = (key, label) => (L[key] || D[key] ? row(label, String(L[key] || 0), String(D[key] || 0)) : "");
-    return '<section class="thcosts" aria-label="What a task costs"><div class="thtalkhead"><h2>What a task costs</h2>' +
-      '<span class="thsub">through a lead, or told to an agent directly · weighted tokens · since ' + esc(c.since) + "</span>" +
-      '<span class="thcds">' + days + "</span></div>" +
+    return '<section class="thcosts open" aria-label="What a task costs">' + bar +
+      '<p class="thsub thcsince">' + esc(sub) + "</p>" +
       '<table class="thctable"><thead><tr><th></th><th>lead mode</th><th>direct</th></tr></thead><tbody>' +
       row("tasks", String(L.tasks), String(D.tasks)) + row("median per task", n(L.median), n(D.median)) +
       // A go-ahead is a task of its own: the tasks that changed code apart.
@@ -5233,7 +5305,9 @@
     if (narrow && top) app.scrollTop = 0;
   }
 
+  // Nobody talking: nothing -- the tab's "N live" says so.
   function thTalk() {
+    if (!threads.talking.length) return "";
     const chips = threads.talking.map((e) =>
       '<button type="button" class="thchip" data-act="th:open" data-ask="' + esc(e.ask) + '" title="' + esc(e.kind + " " + e.ask) + '">' +
       '<span class="thname">' + esc(thWho(e.from)) + "</span>" +
@@ -5242,14 +5316,16 @@
       '<span class="thwhat">' + esc(e.status === "queued" ? "queued" : (e.working ? "working " : "waiting ") + thAge(e.since)) + "</span></button>").join("");
     return '<section class="thtalk" aria-label="Talking now"><div class="thtalkhead"><h2>Talking now</h2>' +
       '<span class="thsub">every open ask and handoff in the herd, across projects</span></div>' +
-      (chips ? '<div class="thchips">' + chips + "</div>" : '<p class="thquiet">Nobody is waiting on anyone right now.</p>') + "</section>";
+      '<div class="thchips">' + chips + "</div></section>";
   }
 
   function thRow(t) {
     const on = !!(threads.cur ? t.id === threads.cur.id : threads.req && threads.req.id === t.id);
+    const ctx = thContext(t);
     return '<button type="button" class="throw' + (on ? " on" : "") + '" data-act="th:open" data-id="' + esc(t.id) + '" aria-current="' + (on ? "true" : "false") + '">' +
       '<span class="thr1">' + thStatus(t.status) + '<span class="thtitle">' + esc(t.title || "(no text)") + "</span>" +
       '<span class="thage">' + esc(thAge(t.at)) + "</span></span>" +
+      (ctx ? '<span class="thctx" title="' + esc("What it goes on from: " + ctx) + '">← ' + esc(ctx) + "</span>" : "") +
       '<span class="thpath">' + esc((t.participants || []).map(thWho).join(" → ")) + "</span>" +
       '<span class="thr3">' + (t.projects || []).map((p) => '<span class="thproj">' + esc(p) + "</span>").join("") +
       (t.cross ? '<span class="thcross">cross-project</span>' : "") + thCost(t.cost) +
@@ -5338,7 +5414,9 @@
   }
 
   function thHeader(t) {
+    const ctx = thContext(t);
     return '<div class="thhead1">' + thStatus(t.status) + '<h1 class="thh1">' + esc(t.title || "(no text)") + "</h1></div>" +
+      (ctx ? '<p class="thctx thh1ctx" title="What it goes on from">← ' + esc(ctx) + "</p>" : "") +
       '<p class="thsummary">' + esc(thSummary(t)) + "</p>" + thCostLine(t.cost) + thCommits(t.cost);
   }
 
@@ -5410,6 +5488,9 @@
       emit("threads-more");
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
+      renderThreads();
+    } else if (act === "cost-table") {
+      threads.costOpen = !threads.costOpen;
       renderThreads();
     } else if (act === "msg") {
       const i = el.getAttribute("data-i");

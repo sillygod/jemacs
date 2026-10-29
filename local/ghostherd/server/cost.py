@@ -117,7 +117,9 @@ LEADS = ("lead", "primary")
 # Commits made up to this long after the work's last reply are its own: an
 # agent commits, then says so.
 COMMIT_SLACK = 120
-# Work quiet this long is done: its commits are read then.
+# How long work quiet, not going on, is waited for: its checkout read
+# through its last reply and COMMIT_SLACK, it has made what it made.  A
+# checkout still not read by then -- its worktree gone first -- never will be.
 SETTLED = 1800
 GIT_TIMEOUT = 10
 # claude's records worth parsing: replies, things said, and -- of the tool
@@ -435,7 +437,8 @@ def _commit(c: list[Any] | dict[str, Any]) -> dict[str, Any]:
 
 def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[str, str],
           output: dict[str, dict[str, Any]], now: float | None = None,
-          made: dict[tuple[str, str], dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+          made: dict[tuple[str, str], dict[str, Any]] | None = None,
+          going: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
     """Each of TASKS' cost and output, by id: from USAGE (rows of item,
     agent, sub and the kinds), ASKED (ask -> the work it was made for),
     MADE (`attribute'': each agent's piece of work's commits, and whether
@@ -444,10 +447,14 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
     branch that name an ask (NAMED: none found is not none made), or an
     earlier read).  The task's own agent's replies are its `own' -- the
     lead's, in lead mode -- the rest of the herd's its `workers'',
-    sub-agents' apart.  Work not over by NOW -- SETTLED quiet -- that has
-    made nothing yet is pending."""
+    sub-agents' apart.  A task that has made nothing yet is pending while
+    its work is GOING on (the work still going on: an ask open, what an
+    agent working is on) or, quiet less than SETTLED by NOW, any piece of
+    it is not read `through'; else it made none -- or, a piece never read,
+    what it made is not known."""
     now = time.time() if now is None else now
     made = made or {}
+    busy = {task_of(item, asked) for item in going}
     out = {t["id"]: {"own": tally.Usage(), "workers": tally.Usage(), "subs": tally.Usage(), "asks": set(),
                      "end": t.get("at")} for t in tasks}
     owner = {t["id"]: t["agent"] for t in tasks}
@@ -495,7 +502,8 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
         shown = sorted(found.values(), key=lambda c: (c.get("at") or 0, c["sha"]))
         new = [c for c in shown if not c.get("of")]
         total = tally.Usage().add(got["own"]).add(got["workers"]).add(got["subs"])
-        recent = now - (got["end"] or t.get("at") or 0) < SETTLED
+        pending = t["id"] in busy or (now - (got["end"] or t.get("at") or 0) < SETTLED
+                                      and not all(m and m.get("through") for _, m in works))
         result[t["id"]] = {
             "id": t["id"], "agent": t["agent"], "project": t["project"], "mode": t["mode"],
             "prompt": t.get("prompt") or "", "context": context.get(t["id"], ""), "at": t.get("at"), "end": got["end"],
@@ -503,7 +511,7 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
             "subs": got["subs"].weighted(), "kinds": total.shown(), "asks": len(got["asks"]),
             "commits": len(new), "lines": sum(c["lines"] for c in new),
             "merged": sum(1 for c in new if c["merged"]), "mergedLines": sum(c["lines"] for c in new if c["merged"]),
-            "code": ("yes" if new else "pending" if recent else "unknown" if unread else "no"),
+            "code": ("yes" if new else "pending" if pending else "unknown" if unread else "no"),
             # The work whose checkout was never read: an ask's taker's gone
             # before it was -- what names it is looked for (herd.py).
             "unread": unread,
@@ -516,8 +524,8 @@ def costs(tasks: list[dict[str, Any]], usage: list[dict[str, Any]], asked: dict[
 def contexts(tasks: list[dict[str, Any]], ends: dict[str, float | None] | None = None) -> dict[str, str]:
     """For each of TASKS whose prompt is short (`SHORT', by its `size',
     else its title's), the prompt of the last task before it to the same
-    agent in the same project that is not -- else of the last one -- cut
-    to CONTEXT_MAX: by id.  Only for one within CONTEXT_WINDOW of the last
+    agent in the same project that is not -- else of the last one -- the
+    images pasted ahead of it left out, cut to CONTEXT_MAX: by id.  Only for one within CONTEXT_WINDOW of the last
     task's work's last reply (ENDS, by id; its prompt, when it has none):
     one later goes on from nothing, and the next goes on from it."""
     ends = ends or {}
@@ -534,14 +542,12 @@ def contexts(tasks: list[dict[str, Any]], ends: dict[str, float | None] | None =
             before = None
         if short and before:
             said = before[1] or before[0]
+            # The images pasted ahead of the words ("[Image #2]") say
+            # nothing of them, and would take the room: the words, when any.
+            said = said[conversation.IMAGES.match(said).end():] or said
             out[t["id"]] = conversation.first_line(said, CONTEXT_MAX)
         last[key] = (prompt, prompt if not short else (before[1] if before else ""), max(ends.get(t["id"]) or at, at))
     return out
-
-
-def titled(row: dict[str, Any]) -> str:
-    "A task's prompt, and what a short one goes on from (`contexts')."
-    return (row.get("prompt") or "") + (" ← " + row["context"] if row.get("context") else "")
 
 
 def compare(rows: Iterable[dict[str, Any]], days: int, today: date | None = None) -> dict[str, Any]:
@@ -776,7 +782,9 @@ def attribute(commits: dict[str, list[dict[str, Any]]], spans: Iterable[tuple[st
     whose replies it falls among -- up to COMMIT_SLACK after the last: an
     agent commits, then says so -- the latest begun.  A piece of work is
     `read' when its checkout's reflog was, from its start to its last
-    reply: none found then is none made.
+    reply: none found then is none made; read `through' when up to
+    COMMIT_SLACK after that too: no commit of it is to come, unless it
+    goes on.
     A commit's lines are its last copy's -- an amend, a rebase -- and it is
     merged when any copy is; a copy is shown where it was made, as one."""
     now = time.time() if now is None else now
@@ -790,11 +798,13 @@ def attribute(commits: dict[str, list[dict[str, Any]]], spans: Iterable[tuple[st
     works: dict[str, list[tuple[float, float, tuple[str, str]]]] = {}
     for item, agent, first, end in spans:
         key = (item, agent)
-        out[key] = {"commits": [], "read": False}
+        out[key] = {"commits": [], "read": False, "through": False}
         for d in homes.get(agent, ()):
             works.setdefault(d, []).append((first, end, key))
             if covers(covered.get(d, ()), first - 5, min(end, now)):
                 out[key]["read"] = True
+            if covers(covered.get(d, ()), first - 5, end + COMMIT_SLACK):
+                out[key]["through"] = True
     for d, cs in commits.items():
         here = works.get(d, [])
         for c in cs:

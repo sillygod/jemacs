@@ -3053,10 +3053,11 @@ class HerdStore:
 
     def _cost_view(self) -> dict[str, Any]:
         """Every task of the last COST_DAYS, costed (cost.costs) with the
-        commits each piece of work made (cost.attribute), which work each
-        ask was made for, and what each agent is on: worked out again
-        COST_KEEP seconds after the last time, or once a pass has read
-        more.  Through the read-only connection: never in an ask's way."""
+        commits each piece of work made (cost.attribute) and the work still
+        going on, which work each ask was made for, and what each agent is
+        on: worked out again COST_KEEP seconds after the last time, or once
+        a pass has read more.  Through the read-only connection: never in
+        an ask's way."""
         seen = self._cost_seen
         if seen and time.monotonic() - seen[0] < COST_KEEP:
             return seen[1]
@@ -3094,6 +3095,11 @@ class HerdStore:
                                 " WHERE delivered_at IS NOT NULL AND to_name != ''").fetchall()
             on = dict(conn.execute("SELECT agent, item FROM cost_files WHERE item IS NOT NULL"
                                    " AND path NOT LIKE '%/subagents/%' ORDER BY read_at"))
+            # The work still going on: an ask open, what an agent working is on.
+            going = ["ask:" + r[0] for r in conn.execute(
+                f"SELECT id FROM asks WHERE status IN {ASK_OPEN}")]
+            going += [on[r[0]] for r in conn.execute("SELECT name FROM snapshot WHERE state = 'working'")
+                      if r[0] in on]
             # A piece of work begins as it is set: the user's words, an ask delivered.
             began = {(r[1], r[0]): r[2] for r in conn.execute(
                 "SELECT agent, item, MIN(at) FROM cost_switches WHERE at >= ? GROUP BY agent, item", (since,))}
@@ -3110,7 +3116,7 @@ class HerdStore:
                 if start is not None:
                     spans[("ask:" + ask, taker)] = [start, tally.epoch(answered) or now]
         made = cost.attribute(commits, [(k[0], k[1], v[0], v[1]) for k, v in spans.items()], homes, covered, now)
-        view = {"tasks": cost.costs(tasks, usage, asked, output, now, made), "asked": asked, "on": on}
+        view = {"tasks": cost.costs(tasks, usage, asked, output, now, made, going), "asked": asked, "on": on}
         self._cost_seen = (time.monotonic(), view)
         return view
 

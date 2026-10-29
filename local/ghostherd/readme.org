@@ -2533,10 +2533,12 @@ are the other tabs (below, and "What happened while you were away").
 The Threads tab shows the herd's conversations with each other, across
 projects.  Read-only: it only shows, and leads where you click.
 
-- *Talking now*, across the top: every open ask and handoff in the
-  herd, =from → to= (=⇢= for a handoff to another project), queued, or
-  working or waiting and for how long.  A click opens its thread.  The
-  tab's badge counts the threads with something open (=3 live=).
+- *Talking now*, across the top while there is any: every open ask and
+  handoff in the herd, =from → to= (=⇢= for a handoff to another
+  project), queued, or working or waiting and for how long.  A click
+  opens its thread.  The tab's badge counts the threads with something
+  open (=3 live=); with nothing open there is neither, and the threads
+  have the room.
 - The threads, newest activity first.  A thread is a chain of work: a
   root ask --- one its asker made while answering none --- and every ask
   made while answering one in it (the herd keeps which ask an agent is
@@ -2549,8 +2551,10 @@ projects.  Read-only: it only shows, and leads where you click.
   forty at a time.
 - A task you told an agent directly --- not through a lead --- is a
   thread of its own: no ask begins it, so no ask's thread has it.  Its
-  row is =You → claude-deploy-platform=, your message its title, its
-  project and what it cost; opened, your message and the reply that
+  row is =You → claude-deploy-platform=, your message its title ---
+  what a go-ahead goes on from a quiet line under it, in the row and
+  under the open thread's title, never part of it --- its project and
+  what it cost; opened, your message and the reply that
   ended the turn it began, read from the agent's transcript the way the
   room reads it, from where your message is (kept with the task;
   found again once for a task kept before that was).
@@ -2588,16 +2592,22 @@ projects.  Read-only: it only shows, and leads where you click.
   task notification, a sub-agent's report handed back to the claude
   agent that started it, a command, what it tells an agy agent as it starts
   (its guard's note, the shared memory's opening), a lead's role said
-  again on a cold respawn.  Each row shows its thread's task:
-  =6.5M · 1472 lines=, or =no code=, =code not read yet= (the work is
-  not over), =code not readable= (its checkout could not be read); its
-  title, the message and the parts.  A task's title is your message
+  again on a cold respawn.  Each row shows its thread's task: its
+  tokens, and the lines it changed when it changed any, =6.5M · 1472
+  lines= or =900k=, the message count at the right; its title, the
+  message and the parts.  Why none, the open thread says: =no code=,
+  =code not read yet= (its work going on --- an ask of it open, its
+  agent working on it --- or its checkout not yet read through two
+  minutes after its last reply; half an hour quiet at most), =code not
+  readable= (its checkout could not be read).  A task's title is your message
   whole, in one line --- =[Image #5] the footer overlaps…=, not the
   image alone --- cut to 200 characters.  A short message --- a go-ahead,
   =好，派人做吧=, its whole text at most 30 columns wide, a CJK
   character two --- is shown with the last one before it to the same
-  agent that is not, cut: =好，派人做吧 ← fold the copies of one report…=
-  (=--tasks= too, and a direct task's thread title) --- when it comes
+  agent that is not, the images pasted ahead of its words left out,
+  cut: =好，派人做吧 ← fold the copies of one report…= in =--tasks=, a
+  quiet =← fold the copies of one report…= under a direct task's thread
+  title --- when it comes
   within three hours of that work's last reply: a go-ahead answers what
   was just proposed, while a short question the next day is one of its
   own, shown alone.  Two threads of one task --- a
@@ -2605,11 +2615,15 @@ projects.  Read-only: it only shows, and leads where you click.
   direct thread, else its first; the other says =same task as “fix the
   build”=.  The open thread says it in full under its summary: =Its
   task, across 2 threads: 6.5M weighted tokens — lead 287k · workers
-  6.2M · sub-agents 0 · 1472 lines (1 merged) · 442k per 100 lines=,
-  and under it each commit: its sha and subject, its lines, =merged= or
+  6.2M · 1472 lines (1 merged) · 442k per 100 lines= --- the parts that
+  had none left out --- and under it each commit: its sha and subject, its lines, =merged= or
   =not merged=, and a copy (an amend, a rebase, a cherry-pick) as =a
-  copy of 81b8baca, not counted again=.  Above the list, *What a task costs*: lead mode against
-  direct mode over the last 7 or 30 local days --- how many tasks, the
+  copy of 81b8baca, not counted again=.  Above the list, *What a task
+  costs*, folded to a line: the median per task that changed code and
+  the tokens per 100 lines, lead mode against direct mode, and the
+  lead's share, over the last 7 or 30 local days (=7d=, =30d=).  /Table/
+  opens the whole, and it stays open, or folded, while the page does
+  --- how many tasks, the
   median and the total per task, the median per task that changed code
   (go-aheads are tasks of their own, and many pull the first median
   down), the tokens per 100 changed lines (all
@@ -2700,11 +2714,13 @@ projects.  Read-only: it only shows, and leads where you click.
   (a failed ask, an answered handoff) or, for an agent's item, that
   agent's latest.
 - On the desk the tab is the window: the list and the open thread each
-  scroll by themselves, under the tabs and Talking now, which stay put.
+  scroll by themselves, under the tabs, Talking now and the cost line,
+  which stay put.
   A thread picked far down the list shows from its top, as does another
   pushed in its place; the refresh every few seconds leaves both where
   they were.  The Inbox's list and item do the same.
-- On the phone: the strip, the list; a thread opens as a conversation,
+- On the phone: the strip, the cost line --- its figures wrapped under
+  it --- and the list; a thread opens as a conversation,
   each message =A → B=, since lanes do not fit 390 px.  The page
   scrolls as one, and a thread opens at its top.
 
@@ -2802,8 +2818,13 @@ your files.
 The tab lists HTML documents to read here and on the phone without
 publishing them anywhere: ghostherd's own =docs/= (the checkout's ---
 straight's build has none), then each directory of
-=ghostherd-docs-directories=, newest first, by =<title>=, with the
-file, where it is, its size and age.  A name in two is the first's.
+=ghostherd-docs-directories= --- and the reports below --- in one list,
+newest first: each row its =<title>= and age, then its file, its size
+and where it is (a report: who wrote it, in which project).  Above it,
+a filter, by title or file name, and a chip per source with how many
+match: /All/, each directory (=ghostherd=, =~/notes/html=), /Reports/
+once there is one; a directory's own chip leaves out where.  Both kept
+while the page is.  A name in two is the first's.
 Only a file right in one of them, named in letters, digits, =.=, =_=
 and =-= and ending =.html= to the letter --- not a symlink, 8 MB at
 most --- is listed or served, by that name alone:
@@ -2816,10 +2837,10 @@ sibling document works; one to anything else does not.
   (setq ghostherd-docs-directories '("~/notes/html/"))
 #+end_src
 
-*Reports, beside the documents* (under them on a phone): the HTML
-reports agents' replies named, as the sidecar keeps their copies ---
-newest first, each by its title (or its file's name), the agent that
-named it first and its project, when it was copied, and its size.  One
+*Reports, among the documents*: the HTML reports agents' replies
+named, as the sidecar keeps their copies --- each by its title (or its
+file's name), =from= the agent that named it first =·= its project,
+when it was copied, and its size.  One
 opens exactly as its /Open/ under the message does: =/SECRET/.reports/<id>.html=,
 sandboxed; in the xwidget, a view of Emacs's over loopback.  They are
 read from the sidecar's index of its copies (=herd_reports=, the
