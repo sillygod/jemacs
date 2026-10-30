@@ -3613,8 +3613,11 @@
 
   // A prompt that did not reach Emacs after all goes back in NAME's box,
   // before what has been written there since: a lost send loses no words.
+  // Returns what takes it out again, should Emacs have had it after all
+  // (xwapp's emit calls it): sent again, it would go twice.
   function giveBack(name, draft) {
-    const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
+    const box = () => app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
+    const ta = box();
     const now = ((ta ? ta.value : herdNow.compose[name]) || "").trim();
     const text = now ? draft + "\n\n" + now : draft;
     herdNow.compose[name] = text;
@@ -3625,7 +3628,35 @@
       herdNow.composing.add(name);
       if (view === "agents") renderAgents();
     }
-    setStatus("Not sent: Emacs did not get it. It is back in " + name + "'s box.", "error");
+    const said = "Not sent: Emacs did not get it. It is back in " + name + "'s box.";
+    setStatus(said, "error");
+    return () => {
+      const ta = box();
+      const rest = unGiven((ta ? ta.value : herdNow.compose[name]) || "", draft);
+      if (rest !== null) {
+        herdNow.compose[name] = rest;
+        if (ta) {
+          ta.value = rest;
+          autoGrow(ta);
+        } else if (!rest) {
+          herdNow.composing.delete(name);
+          if (view === "agents") renderAgents();
+        }
+      }
+      unsay(said);
+    };
+  }
+
+  // TEXT with DRAFT, given back at its start, taken out again; null when
+  // it is no longer there as given, which is then left as it is.
+  function unGiven(text, draft) {
+    if (text === draft) return "";
+    return text.startsWith(draft + "\n\n") ? text.slice(draft.length + 2) : null;
+  }
+
+  // The status line cleared, if it still says SAID.
+  function unsay(said) {
+    if (!statusEl.hidden && statusEl.textContent === said) setStatus("");
   }
 
   // TEXT with the images attached for NAME's next prompt after it, a
@@ -3722,9 +3753,16 @@
   });
   // Keep the reply text across the Inbox's periodic re-renders.
   const isReplyBox = (t) => !!(t && t.classList && t.classList.contains("ibreplybox"));
+  // A reply given back keeps what is written in its box, for when its
+  // item is picked again.
+  const replyTyped = (ta) => {
+    inbox.reply = ta.value;
+    const id = ta.getAttribute("data-id");
+    if (inbox.back.has(id)) inbox.back.set(id, ta.value);
+  };
   app.addEventListener("input", (ev) => {
     if (!isReplyBox(ev.target)) return;
-    inbox.reply = ev.target.value;
+    replyTyped(ev.target);
     if (ev.isComposing) inboxComposing = true;
   });
   // A composition open holds the Inbox's redraws back (`renderInbox');
@@ -3733,7 +3771,7 @@
   const composed = (ev) => {
     if (!inboxComposing || !isReplyBox(ev.target)) return;
     inboxComposing = false;
-    inbox.reply = ev.target.value;
+    replyTyped(ev.target);
     setTimeout(() => { if (inboxHeld && !inboxComposing) renderInbox(); }, 0);
   };
   app.addEventListener("compositionstart", (ev) => { if (isReplyBox(ev.target)) inboxComposing = true; });
@@ -4870,8 +4908,11 @@
   // handler.  Phone: cards with their actions inline.
 
   // REPLYING, the report whose reply box is open: a report stays compact
-  // until Reply is pressed.
-  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {} };
+  // until Reply is pressed.  BACK, by item, a reply that did not reach
+  // Emacs, given back to its box until sent or cancelled; HELD, by item,
+  // one given back, kept in the list a while ({it, until}).
+  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
+                back: new Map(), held: new Map() };
   let inboxWatching = false;
 
   const INBOX_FILTERS = [["all", "All"], ["stuck", "Stuck"], ["approve", "Approvals"], ["questions", "Questions"], ["updates", "Updates"]];
@@ -5188,8 +5229,9 @@
   // read, and fetch this one's.
   function inboxSelect(it) {
     inbox.sel = it ? it.id : "";
-    inbox.reply = "";
-    inbox.replying = "";
+    const back = (it && inbox.back.get(it.id)) || "";
+    inbox.reply = back;
+    inbox.replying = back && it.kind === "report" ? it.id : "";
     inbox.toast = "";
     inbox.detail = null;
     inbox.thOpen = {};
@@ -5198,6 +5240,7 @@
 
   // Resolve an item: hide it at once (optimistic), toast, move to the next.
   function inboxResolve(it, msg, undoable) {
+    inbox.held.delete(it.id);
     const rest = inbox.items.filter((x) => x.id !== it.id);
     const next = rest.filter(inboxNeed)[0] || rest[0] || null;
     inbox.items = rest;
@@ -5214,6 +5257,68 @@
       setTimeout(() => { if (inbox.undo && inbox.undo.id === token) { inbox.undo = null; inbox.toast = ""; renderInbox(); } }, 6000);
     }
     renderInbox();
+  }
+
+  // A reply that did not reach Emacs goes back in its item's own box,
+  // before what has been written there since, its image lines and all,
+  // and the item back in the list -- a report unmarked, as it was marked
+  // read for the reply.  Shown at once, unless another reply is being
+  // written; then it waits in its box for the item to be picked.  Returns
+  // what takes it out again, should Emacs have had it after all (xwapp's
+  // emit calls it): sent again, it would go twice.
+  function inboxGiveBack(it, draft) {
+    const unmark = it.kind === "report";
+    if (unmark) emit("inbox-set", { id: it.id, done: false });
+    const box = () => app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
+    const ta = box();
+    const now = (ta ? ta.value : inbox.back.get(it.id) || "").trim();
+    const text = now ? draft + "\n\n" + now : draft;
+    inbox.back.set(it.id, text);
+    inbox.held.set(it.id, { it: it, until: Date.now() + INBOX_HOLD });
+    if (!inbox.items.some((x) => x.id === it.id)) inbox.items.unshift(it);
+    if (inbox.toast === "Reply sent to " + it.agent) inbox.toast = "";
+    if (inbox.sel === it.id) {
+      inbox.reply = text;
+      if (unmark) inbox.replying = it.id;
+      if (ta) ta.value = text;
+    } else if (!inbox.reply.trim()) {
+      inboxSelect(it);
+    }
+    renderInbox();
+    const said = "Not sent: Emacs did not get it. " + (unmark
+      ? "The report is back in the Inbox, your reply in its box."
+      : "Your answer is back in the question's box in the Inbox.");
+    setStatus(said, "error");
+    return () => {
+      const ta = box();
+      const rest = unGiven(ta ? ta.value : inbox.back.get(it.id) || "", draft);
+      unsay(said);
+      if (rest === null) return;
+      if (rest) inbox.back.set(it.id, rest);
+      else inbox.back.delete(it.id);
+      if (inbox.sel === it.id) {
+        inbox.reply = rest;
+        if (ta) ta.value = rest;
+      }
+      if (rest) return;
+      // Nothing of it left to send: the item goes, as it went when sent.
+      if (unmark) emit("inbox-set", { id: it.id, done: true });
+      if (inbox.sel === it.id) return inboxResolve(it, "Reply sent to " + it.agent, false);
+      inbox.held.delete(it.id);
+      inbox.items = inbox.items.filter((x) => x.id !== it.id);
+      renderInbox();
+    };
+  }
+
+  // How long an item given back stays in the list whatever Emacs pushes:
+  // a push it sent before the unmark reached it would drop the item.
+  const INBOX_HOLD = 20000;
+  function inboxKeepHeld() {
+    const t = Date.now();
+    inbox.held.forEach((h, id) => {
+      if (t > h.until) inbox.held.delete(id);
+      else if (!inbox.items.some((x) => x.id === id)) inbox.items.unshift(h.it);
+    });
   }
 
   // A guard request kept denied: the herd closes it and tells the agent,
@@ -5253,10 +5358,10 @@
     if (act === "prop-reject") { emit("memory-proposal-reject", { id: it.proposalId, reason: "" }); inboxResolve(it, it.lint ? "Rejected — no check; the fact stays in memory" : "Rejected — the facts stay in memory", false); return; }
     if (act === "reply-open" || act === "reply-close") {
       inbox.replying = act === "reply-open" ? it.id : "";
-      inbox.reply = "";
-      // Cancel drops the images put in the box too; another item picked
-      // keeps them for when this one is back.
-      if (act === "reply-close") { delete herdNow.attach[it.agent]; inboxUnhold(); }
+      inbox.reply = act === "reply-open" ? inbox.back.get(it.id) || "" : "";
+      // Cancel drops the images put in the box too, and a reply given
+      // back; another item picked keeps them for when this one is back.
+      if (act === "reply-close") { delete herdNow.attach[it.agent]; inbox.back.delete(it.id); inboxUnhold(); }
       renderInbox();
       const ta = act === "reply-open" && app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       if (ta) ta.focus();
@@ -5268,14 +5373,16 @@
       if (!text) { setStatus("Write the answer first"); return; }
       // A lead's through its project (`ghostherd-lead-say' finds the lead
       // from it, and starts one if it is gone); primary's through primary.
-      // Lost on the way, it is back in the agent's own box.
-      const lost = () => giveBack(it.agent, text);
+      // Lost on the way, it is back in this item's box, and the item back
+      // in the list.
+      const lost = () => inboxGiveBack(it, text);
       const sent = it.replyVia === "primary" ? emit("primary-say", { text: text }, lost)
         : it.replyVia === "agent" ? emit("agent-prompt", { name: it.agent, text: text }, lost)
         : emit("lead-say", { project: it.project, text: text }, lost);
       if (sent === false) { setStatus(TOO_LONG, "error"); return; }
       inboxUnhold();
       delete herdNow.attach[it.agent];
+      inbox.back.delete(it.id);
       // A report answered is read, as Mark read has it; a question's goes
       // when its agent takes the answer.
       if (it.kind === "report") emit("inbox-set", { id: it.id, done: true });
@@ -5868,6 +5975,7 @@
     // seconds (and after an action).  The badge updates whatever the view.
     renderInbox: (p) => {
       inbox.items = (p && p.items) || [];
+      inboxKeepHeld();
       inbox.count = (p && p.count) || 0;
       if (inbox.sel && !inbox.items.some((x) => x.id === inbox.sel)) { inbox.sel = ""; inbox.detail = null; inbox.thOpen = {}; }
       inboxBadge();
