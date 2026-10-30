@@ -47,7 +47,7 @@ def test_what_a_reply_names():
         "With spaces: `/tmp/my shots/c d.webp`, and ![dark](/tmp/e.gif \"Dark\") or "
         "[the log](</tmp/with space/f.png>).\n"
         "Also file:///tmp/g%20h.jpeg and ~/Desktop/i.png; again /tmp/b.JPG.\n"
-        "Not these: https://example.com/j.png, /tmp/k.png.bak, /tmp/l.pngx, docs/m.png, "
+        "Not these: https://example.com/j.png, /tmp/k.png.bak, /tmp/l.pngx, "
         "/tmp/n.txt, C:/o.png"
     )
     assert images.named(text) == [
@@ -83,10 +83,65 @@ def test_files_named_apart_from_their_folder():
     # Not one with `..' in it, not a URL's path for a folder, nor a file's.
     assert images.named("In /tmp/s/shots/: `../a.png`, ../b.png, `sub/../c.png`.") == []
     assert images.named("Up at https://host/dir/ : `a.png`, and `https://host/dir/`: b.png") == []
-    assert images.named("Wrote /tmp/s/notes.txt, `a.png`") == []
+    # Any other path may be a folder: a file in none of those named is
+    # joined to the nearest, and refused as any path is (`load').
+    assert images.named("Wrote /tmp/s/notes.txt, `a.png`") == ["/tmp/s/notes.txt/a.png"]
     assert images.named("Saved /tmp/s/x.png and y.png") == ["/tmp/s/x.png"]
     # A message that names no folder: a name alone is no path.
     assert images.named("Saved `01-before.png` and 03-after.png, docs/m.png.") == []
+
+
+def test_a_file_is_joined_to_the_folder_it_is_in(tmp_path):
+    shots = tmp_path / "shots"
+    png(shots / "01-before.png")
+    png(shots / "03-after.png", color=(0, 0, 255, 255))
+    want = [f"{shots}/01-before.png", f"{shots}/03-after.png"]
+    # A command or a program named between the folder and its files.
+    assert images.named(f"Screenshots: `{shots}/`.  Ran `/login`, then /Users/x/bin/reload; "
+                        "`01-before.png` is before, 03-after.png after.") == want
+    # Named after them, past one that is not theirs.
+    assert images.named(f"`01-before.png` and 03-after.png: ran /login, they are in {shots}.") == want
+    # In none of them -- not written yet -- the nearest before, or after.
+    assert images.named(f"In {shots}/, ran /login: `02-later.png`") == ["/login/02-later.png"]
+    assert images.named(f"`02-later.png`: /login, then {shots}/") == ["/login/02-later.png"]
+    # A symlink is no file there: the folder past it that holds one.
+    other = tmp_path / "other"
+    png(other / "real.png")
+    (tmp_path / "links").mkdir()
+    (tmp_path / "links" / "real.png").symlink_to(other / "real.png")
+    assert images.named(f"In {other}/ and {tmp_path}/links/: `real.png`") == [f"{other}/real.png"]
+
+
+def test_a_folder_with_a_dot_in_its_last_part():
+    "Without its /, a dot in its name is no file's extension."
+    assert images.named("Saved in /Users/x/.emacs.d: `a.png`") == ["/Users/x/.emacs.d/a.png"]
+    assert images.named("Built `/tmp/release-1.2`, see shots/b.png.") == ["/tmp/release-1.2/shots/b.png"]
+    assert images.named("Under ~/.config/app.d, c.webp") == ["~/.config/app.d/c.webp"]
+
+
+def test_a_command_naming_a_whole_path_is_no_name_in_a_folder():
+    "A span in backticks whose path is taken whole is not taken again."
+    assert images.named("Ran `open /tmp/shots/a.png` in /tmp/shots/") == ["/tmp/shots/a.png"]
+    # Nor a name in it: a command's, not the folder's.
+    assert images.named("In /tmp/shots/: `cp /tmp/x/b.png c.png`, `d.png`") == [
+        "/tmp/x/b.png", "/tmp/shots/d.png"]
+
+
+def test_a_huge_message_looks_on_disk_a_few_times(monkeypatch):
+    "Its folders and names are many; its looks on disk are not."
+    looked = []
+    real = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: looked.append(p) or real(p, *a, **k))
+    text = " ".join(f"/tmp/nowhere-{n}/ `shot-{n}.png`" for n in range(20_000))
+    start = time.perf_counter()
+    got = images.named(text)
+    took = time.perf_counter() - start
+    assert len(looked) == images.MAX_LOOKS
+    assert len(got) == 20_000 and got[-1] == "/tmp/nowhere-19999/shot-19999.png"
+    assert took < 2, took
+    # One folder, named over and over: never looked in.
+    looked.clear()
+    assert len(images.named("/tmp/one/ `a.png` " * 20_000)) == 1 and not looked
 
 
 def test_a_joined_path_is_refused_as_any_other():
@@ -475,9 +530,11 @@ def page(path: Path, text: str = PAGE) -> str:
 def test_a_reply_names_its_html_reports():
     text = ("The report: /tmp/x/report.html, also `/tmp/my dir/b.htm` and [c](</tmp/c d.html>), "
             "~/r/e.HTML and file:///tmp/f%20g.html.  Not https://example.com/h.html, /tmp/i.html.bak, "
-            "/tmp/j.htmlx, docs/k.html")
+            "/tmp/j.htmlx")
     assert images.named(text) == ["/tmp/x/report.html", "/tmp/my dir/b.htm", "/tmp/c d.html",
                                   "~/r/e.HTML", "file:///tmp/f%20g.html"]
+    # A name alone, in a message naming no folder, is no path.
+    assert images.named("Not https://example.com/h.html, docs/k.html") == []
 
 
 def test_an_html_report_is_copied_under_an_id(store, tmp_path):

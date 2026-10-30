@@ -15,7 +15,7 @@ What is copied, and nothing else:
   backticks, or the target of a Markdown link or image -- ending in an
   image's extension, with no `..' in it; or a file it names apart from
   the folder it names -- "in /tmp/shots/: `before.png`, `after.png`" --
-  joined to it;
+  joined to it: of the folders it names, the one the file is in on disk;
 - to a regular file, not a symlink (opened O_NOFOLLOW), this user's own,
   of at most MAX_BYTES;
 - that is an image by its first bytes -- PNG, JPEG, GIF or WebP -- and
@@ -81,6 +81,13 @@ TITLE_CHARS = 200
 TITLE_WITHIN = 64 * 1024
 # How many images one message brings, at most.
 MAX_PER_MESSAGE = 8
+# A file named apart from its folder (`_in_folders'): how many of the
+# folders named nearest it it is looked for in, how many mentions of them
+# on each side are read for those, and how many looks on disk one message
+# takes at most -- as many as the images it may bring, in each folder.
+FOLDERS_PER_NAME = 4
+FOLDER_MENTIONS = 4 * FOLDERS_PER_NAME
+MAX_LOOKS = MAX_PER_MESSAGE * FOLDERS_PER_NAME
 # A thumbnail's longest side: sharp at three pixels a point.
 THUMB_PX = 480
 # A file may be this much newer than the message that names it: written
@@ -109,6 +116,7 @@ WHO_CHARS = 200
 # of a name (x.png.bak is not one).
 _EXT = r"\.(?:png|jpe?g|gif|webp|html?)(?![\w/-]|\.\w)"
 _HTML_PATH = re.compile(r"\.html?\Z", re.I)
+_FILE_PATH = re.compile(r"\.(?:png|jpe?g|gif|webp|html?)\Z", re.I)
 _DOCTYPE = re.compile(r"(?:<!doctype\s+html|<html)[\s>]", re.I)
 _TITLE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.I | re.S)
 _START = r"(?:file://|~/|/)"
@@ -123,7 +131,8 @@ _STOP = r"\s`'\"<>()\[\]{}|,;*，、：；。！？「」『』（）【】《�
 # Bare: no spaces, and not the tail of a URL or a longer word.
 _BARE = re.compile(r"(?<![\w.:/~%-])(" + _START + r"[^" + _STOP + r"]*?" + _EXT + r")", re.I)
 # A folder named apart from the files in it (`_in_folders'): any other
-# absolute path, in backticks or bare, which `_folder' tells.
+# absolute path, in backticks or bare, but an image's or a page's
+# (`_folder').
 _DIR_TICK = re.compile(r"`(" + _START + r"[^`\n]+)`", re.I)
 _DIR_BARE = re.compile(r"(?<![\w.:/~%-])(" + _START + r"[^" + _STOP + r"]+)", re.I)
 # A file in it: its name, or a path under it, in backticks or bare.  Bare,
@@ -149,8 +158,9 @@ def key(text: str) -> str:
 def named(text: str) -> list[str]:
     """The image and HTML paths TEXT names, in order, once each: as
     written, or a file named apart from its folder joined to it
-    (`_in_folders').  Only a path that reads as one: whether it is one is
-    for `load'."""
+    (`_in_folders') -- the folder it is in, the disk says, when TEXT names
+    more than one: a few lstats, no more.  Only a path that reads as one:
+    whether it is one is for `load'."""
     text = text or ""
     found: list[tuple[int, str]] = []
     taken = bytearray(len(text))
@@ -166,14 +176,18 @@ def named(text: str) -> list[str]:
 def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
     """The files TEXT names apart from their folder -- "the screenshots:
     `/tmp/shots/`, `before.png` is before" -- as (where named, path): a
-    name or a path under it, with no `..', joined to the folder named
-    nearest before it, or after it when none is.  Nothing when TEXT names
-    no folder.  TAKEN, what of TEXT names whole paths, holds neither, and
-    takes the folders'."""
+    name or a path under it, with no `..', joined to a folder TEXT names.
+    Which one, the disk says: of the FOLDERS_PER_NAME named nearest it --
+    before it, nearest first, then after it -- the first it is a regular
+    file in (`stamp': lstat, no symlink), MAX_LOOKS looks a message at
+    most; in none -- not written yet, or the looks spent -- the folder
+    named nearest before it, or after it when none is.  One folder alone
+    is not looked in.  Nothing when TEXT names no folder.  TAKEN, what of
+    TEXT names whole paths, holds neither, and takes the folders'."""
     def take(m: re.Match) -> bool:
-        "Whether M is free, taking it if so."
+        "Whether M is free, none of it taken, taking it if so."
         a, b = m.span(1)
-        if taken[a]:
+        if taken.find(1, a, b) >= 0:
             return False
         taken[a:b] = b"\1" * (b - a)
         return True
@@ -188,31 +202,60 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
         return []
     folders.sort()
     starts = [pos for pos, _ in folders]
-    out: list[tuple[int, str]] = []
+    looks = MAX_LOOKS
+
+    def join(d: str, rel: str) -> str:
+        return d + ("" if d.endswith("/") else "/") + rel
+
+    def where(rel: str, at: int) -> str:
+        "REL, named at AT, joined to the folder it is in."
+        nonlocal looks
+        i = bisect.bisect_left(starts, at)
+        nearest = folders[i - 1 if i else 0][1]
+        if not looks:
+            return join(nearest, rel)
+        near: list[str] = []
+        for j in [*range(i - 1, max(i - 1 - FOLDER_MENTIONS, -1), -1),
+                  *range(i, min(i + FOLDER_MENTIONS, len(folders)))]:
+            if folders[j][1] not in near:
+                near.append(folders[j][1])
+                if len(near) == FOLDERS_PER_NAME:
+                    break
+        if len(near) > 1:
+            for d in near:
+                if not looks:
+                    break
+                looks -= 1
+                if stamp(join(d, rel)) is not None:
+                    return join(d, rel)
+        return join(nearest, rel)
+
+    rels: list[tuple[int, str]] = []
     for rx in (_REL_TICK, _REL_BARE):
         for m in rx.finditer(text):
             if not take(m):
+                if rx is _REL_TICK:
+                    # A command naming a whole path -- `open /tmp/a.png` --
+                    # names nothing in a folder, no word of it.
+                    a, b = m.span(1)
+                    taken[a:b] = b"\1" * (b - a)
                 continue
             rel = m.group(1)
             while rel.startswith("./"):
                 rel = rel[2:]
-            if ".." in rel.split("/"):
-                continue
-            at = m.start(1)
-            i = bisect.bisect_left(starts, at)
-            d = folders[i - 1 if i else 0][1]
-            out.append((at, d + ("" if d.endswith("/") else "/") + rel))
-    return out
+            if ".." not in rel.split("/"):
+                rels.append((m.start(1), rel))
+    # Looked for in the order named: the first ones get the looks.
+    return [(at, where(rel, at)) for at, rel in sorted(rels)]
 
 
 def _folder(p: str) -> str | None:
-    """P as a folder, or None: a path ending in /, or whose last part has
-    no extension -- the end of the sentence it closes aside.  Whether it
-    is one is for `load', to find a file in."""
+    """P as a folder, or None: any path but one ending in an image's or a
+    page's extension -- a dot in its last part is no file's (~/.emacs.d,
+    /tmp/release-1.2) -- the end of the sentence it closes aside.  Whether
+    it is one is for the disk (`_in_folders'), and `load'."""
     p = p.rstrip(".:!?")
-    if p.endswith("/"):
-        return p
-    return p if not os.path.splitext(p.rsplit("/", 1)[-1])[1] else None
+    return p if p.endswith("/") or not _FILE_PATH.search(p) else None
 
 
 def _local(p: str) -> str | None:
