@@ -9,9 +9,13 @@ prompt, in its own command, or in what it said.  One that only went by
 in a tool's output is what it happened to see -- a search, a docs page,
 a list -- and is left out; so is what the herd told a lead its project
 works on, at the head of your prompt, which is the others' named again.
+And what it wrote into a file is the file's -- a test's made-up fixture,
+a doc's example -- not a reference it was given or made.
 
 A transcript can run to tens of megabytes and grows a turn at a time,
-so each is read on from where it was left, its references kept.
+so each is read on from where it was left, its references kept -- in
+this process alone: a restarted sidecar reads each from its start, so
+a change to what counts reaches every reference, not only new ones.
 """
 
 from __future__ import annotations
@@ -39,6 +43,36 @@ TASK = re.compile(
 
 LIMIT = 40  # of each, the most recently named
 
+# The arguments that carry what a tool writes into a file, by CLI and tool:
+# left out of its call, whose path, command and description stay.  As this
+# machine's transcripts have them (claude's Edit both old_string and
+# old_str); claude's MultiEdit and NotebookEdit as its tools' schema names
+# them, and grok's other file toolsets (apply_patch, hashline_edit,
+# StrReplace, EditNotebook) as its binary does.
+FILE_CONTENT = {
+    "claude": {
+        "Write": {"content"},
+        "Edit": {"old_string", "new_string", "old_str", "new_str"},
+        "MultiEdit": {"edits"},
+        "NotebookEdit": {"new_source"},
+    },
+    "agy": {
+        "write_to_file": {"CodeContent"},
+        "write_file": {"Content"},
+        "replace_file_content": {"TargetContent", "ReplacementContent"},
+        "multi_replace_file_content": {"ReplacementChunks"},
+        "edit_file": {"Target", "Replacement"},
+    },
+    "grok": {
+        "write": {"content"},
+        "search_replace": {"old_string", "new_string"},
+        "apply_patch": {"patch"},
+        "hashline_edit": {"edits"},
+        "StrReplace": {"old_string", "new_string"},
+        "EditNotebook": {"old_string", "new_string"},
+    },
+}
+
 _state: dict[str, dict[str, Any]] = {}
 
 
@@ -64,6 +98,15 @@ def _note(refs: dict, key: tuple, ts: Any, order: int) -> None:
         seen["last"] = ts
 
 
+def _call(cli: str, name: Any, args: Any) -> str:
+    """ARGS of CLI's call to tool NAME, as text: without what it writes
+    into a file."""
+    drop = FILE_CONTENT[cli].get(name) if isinstance(name, str) else None
+    if drop and isinstance(args, dict):
+        args = {k: v for k, v in args.items() if k not in drop}
+    return json.dumps(args, ensure_ascii=False)
+
+
 def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
     """The texts of record O that count: given to the agent, or by it."""
     out: list[tuple[str, Any]] = []
@@ -81,7 +124,7 @@ def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
             if b.get("type") == "text":
                 out.append((conversation.without_herd_notes(b.get("text") or ""), ts))
             elif b.get("type") == "tool_use":
-                out.append((json.dumps(b.get("input"), ensure_ascii=False), ts))
+                out.append((_call(cli, b.get("name"), b.get("input")), ts))
     elif cli == "agy":
         ts = o.get("created_at")
         if o.get("type") == "USER_INPUT":
@@ -89,7 +132,8 @@ def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
         elif o.get("type") == "PLANNER_RESPONSE":
             out.append((o.get("content") or "", ts))
             for call in o.get("tool_calls") or []:
-                out.append((json.dumps(call, ensure_ascii=False), ts))
+                if isinstance(call, dict):
+                    out.append((_call(cli, call.get("name"), call.get("args")), ts))
     elif cli == "grok":
         if o.get("type") == "user" and not o.get("synthetic_reason"):
             out.append((conversation.without_herd_notes(conversation.content_to_text(o.get("content"))), None))
@@ -97,7 +141,15 @@ def _said(o: dict, cli: str) -> list[tuple[str, Any]]:
             content = o.get("content")
             out.append((content if isinstance(content, str) else conversation.content_to_text(content), None))
             for call in o.get("tool_calls") or []:
-                out.append((json.dumps(call, ensure_ascii=False), None))
+                if not isinstance(call, dict):
+                    continue
+                # Its arguments come as JSON text; kept whole when not.
+                args = call.get("arguments")
+                try:
+                    args = json.loads(args) if isinstance(args, str) else args
+                except ValueError:
+                    pass
+                out.append((_call(cli, call.get("name"), args), None))
     return out
 
 

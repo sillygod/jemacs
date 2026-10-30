@@ -194,6 +194,89 @@ def test_grok(home):
     assert tasks(r) == ["86grok01"]
 
 
+FIXTURE = ('PR = "https://bitbucket.org/acme/widgets/pull-requests/20114"\n'
+           'API = "https://api.github.com/repos/acme/widgets/pulls/20200"  # CU-86fixt01\n')
+
+
+def test_what_a_tool_writes_into_a_file_is_not_named(home):
+    """A test's made-up PR, written into its file, is the file's: neither
+    its new text nor the text it replaces is named.  Its command, a URL it
+    fetched, the rest of an edit's call and what it says still are."""
+    path = _claude(home, [
+        u("add a test"),
+        a(tool("Write", file_path="/x/test_widgets.py", content=FIXTURE),
+          tool("Edit", file_path="/x/test_widgets.py", old_string=FIXTURE, new_string=FIXTURE + "#"),
+          tool("Edit", file_path="/x/a.py", old_str=FIXTURE, new_str=""),
+          tool("MultiEdit", file_path="/x/a.py", edits=[{"old_string": FIXTURE, "new_string": FIXTURE}]),
+          tool("NotebookEdit", notebook_path="/x/n.ipynb", new_source=FIXTURE, cell_id="c1")),
+        a(tool("Bash", command="gh pr view https://github.com/me/x/pull/4"),
+          tool("WebFetch", url="https://github.com/me/x/pull/5", prompt="what changed"),
+          tool("Edit", file_path="/x/a.py", old_string="a", new_string="b",
+               description="as https://github.com/me/x/pull/6 does")),
+        a(text("Done; it mirrors CU-86real01.")),
+    ])
+    r = links.scan(str(path))
+    assert prs(r) == [("github", "me", "x", 6), ("github", "me", "x", 5), ("github", "me", "x", 4)]
+    assert tasks(r) == ["86real01"]
+
+
+def test_what_agy_writes_into_a_file_is_not_named(home):
+    path = home / ".gemini" / "antigravity-cli" / "brain" / "c2" / ".system_generated" / "logs" / "transcript.jsonl"
+    path.parent.mkdir(parents=True)
+    chunk = {"TargetContent": FIXTURE, "ReplacementContent": FIXTURE, "StartLine": 1, "EndLine": 2}
+    path.write_text("".join(map(_line, [
+        {"type": "USER_INPUT", "created_at": "t0", "content": "<USER_REQUEST>add a test</USER_REQUEST>"},
+        {"type": "PLANNER_RESPONSE", "created_at": "t1", "tool_calls": [
+            {"name": "write_to_file", "args": {"TargetFile": "/x/t.py", "CodeContent": FIXTURE,
+                                               "Description": "a test, as https://github.com/me/x/pull/8 has"}},
+            {"name": "write_file", "args": {"Path": "/x/t.py", "Content": FIXTURE}},
+            {"name": "replace_file_content", "args": {"TargetFile": "/x/t.py", **chunk}},
+            {"name": "multi_replace_file_content", "args": {"TargetFile": "/x/t.py", "ReplacementChunks": [chunk]}},
+            # Its arguments' values sometimes come as JSON text.
+            {"name": "multi_replace_file_content", "args": {"TargetFile": "/x/t.py",
+                                                            "ReplacementChunks": json.dumps([chunk])}},
+            {"name": "edit_file", "args": {"Path": "/x/t.py", "Target": FIXTURE, "Replacement": FIXTURE}},
+        ]},
+        {"type": "PLANNER_RESPONSE", "created_at": "t2", "tool_calls": [
+            {"name": "run_command", "args": {"CommandLine": "gh pr view https://github.com/me/x/pull/4"}},
+            {"name": "read_url_content", "args": {"Url": "https://github.com/me/x/pull/5"}},
+        ]},
+        {"type": "PLANNER_RESPONSE", "created_at": "t3", "content": "Done, for CU-86agy002."},
+    ])))
+    r = links.scan(str(path))
+    assert prs(r) == [("github", "me", "x", 5), ("github", "me", "x", 4), ("github", "me", "x", 8)]
+    assert tasks(r) == ["86agy002"]
+
+
+def test_what_grok_writes_into_a_file_is_not_named(home):
+    path = home / ".grok" / "sessions" / "%2Fx%2Fproj" / "s2" / "chat_history.jsonl"
+    path.parent.mkdir(parents=True)
+
+    def call(name, **args):
+        return {"id": "c", "name": name, "arguments": json.dumps(args)}
+
+    path.write_text("".join(map(_line, [
+        {"type": "user", "content": [{"type": "text", "text": "<user_query>add a test</user_query>"}]},
+        {"type": "assistant", "content": "Writing it.", "tool_calls": [
+            call("write", file_path="/x/t.py", content=FIXTURE),
+            call("search_replace", file_path="/x/t.py", old_string=FIXTURE, new_string=FIXTURE),
+            call("apply_patch", patch="*** Add File: /x/t.py\n+" + FIXTURE),
+            call("hashline_edit", file_path="/x/t.py", edits=[{"line": "1#ab", "content": FIXTURE}]),
+            call("StrReplace", path="/x/t.py", old_string=FIXTURE, new_string=FIXTURE),
+            call("EditNotebook", target_notebook="/x/n.ipynb", old_string="", new_string=FIXTURE),
+        ]},
+        {"type": "assistant", "content": "Done, for CU-86grok02.", "tool_calls": [
+            call("run_terminal_command", command="gh pr view https://github.com/me/x/pull/4"),
+            call("web_fetch", url="https://github.com/me/x/pull/5"),
+            # Arguments that are not JSON are kept whole.
+            {"id": "c", "name": "write", "arguments": '{"content": "https://github.com/me/x/pull/9"'},
+        ]},
+    ])))
+    r = links.scan(str(path))
+    assert prs(r) == [("github", "me", "x", 9), ("github", "me", "x", 5), ("github", "me", "x", 4)]
+    assert tasks(r) == ["86grok02"]
+
+
 def test_only_transcripts_are_read(home):
     secret = home / ".ssh" / "notes.jsonl"
     secret.parent.mkdir()
