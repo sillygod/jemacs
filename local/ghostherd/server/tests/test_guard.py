@@ -860,6 +860,8 @@ def test_the_herd_records_approves_once_and_tells_the_agent(guard, home, tmp_pat
     mail = [m["body"] for m in h.tick(sessions=[{"name": "agy-proj", "kind": "agy", "state": "idle",
                                                  "project": str(home["ws"])}])["pending"]]
     assert any(b.startswith("[guard] The user approved, once: run_command: cat .env") for b in mail), mail
+    # The work it was on goes on: its turn is whoever's the last one was.
+    assert h._conn.execute("SELECT turn FROM mail WHERE body LIKE '[guard]%'").fetchall() == [("carry",)]
     # The agent runs it: allowed, once, and the herd hears it was used.
     answer, v, _ = g.judge(str(guard), {"toolCall": call, "workspacePaths": agy_paths(guard)})
     assert answer["decision"] == "allow" and v.rule == f"approved:{one['id']}"
@@ -907,6 +909,7 @@ def test_kept_denied_closes_the_request_and_tells_the_agent_once(guard, home, tm
     told = [b for b in _mail(h, "agy-proj") if "kept this denied" in b]
     assert told == [f"[guard] The user kept this denied: run_command: cat .env.  Don't retry it; say "
                     f"what you needed instead (request {req['id']})."]
+    assert h._conn.execute("SELECT turn FROM mail WHERE body LIKE '[guard] The user kept%'").fetchall() == [("carry",)]
     got = {r["id"]: r for r in h.guard_requests()["requests"]}
     assert got[req["id"]]["status"] == "declined"
     # Tried again: it stays denied, and does not ask the user again.

@@ -117,6 +117,16 @@ WAIT_GRACE = 30
 # lands a tick or two after the paste, well inside this.
 DELIVER_GRACE = 8
 
+# Whose turn a mail starts in its taker (the mail's `turn').  The herd's
+# mail is never the user's prompt -- an agent's message, a note of its
+# own -- so the turn it starts is no report to the user, save two kinds:
+# the user's own words, which the sidecar carries for Telegram (USER),
+# and mail that carries on the work its taker was on (CARRY): the answer
+# to an ask it made, the user's verdict on a call its guard refused --
+# that turn is whoever's the one before it was.
+MAIL_TURN_USER = "user"
+MAIL_TURN_CARRY = "carry"
+
 # How long an ask's delivery waits for the shared memory it will carry to
 # be found (fact_index; tens of milliseconds once the embedder is up).
 # Past it, it goes without -- a crash in between never strands an ask.
@@ -766,6 +776,12 @@ class HerdStore:
         # The ask whose answer this mail is, waiting for its trace (`_trace').
         if "trace_of" not in mail_cols:
             self._conn.execute("ALTER TABLE mail ADD COLUMN trace_of TEXT")
+        # Whose turn the mail starts in its taker, for Emacs to mark it
+        # (`ghostherd--herd-deliver-one'): MAIL_TURN_USER, the user's own
+        # words; MAIL_TURN_CARRY, the work it was on carried on; NULL, the
+        # herd's or another agent's -- never the user's.
+        if "turn" not in mail_cols:
+            self._conn.execute("ALTER TABLE mail ADD COLUMN turn TEXT")
         # Each time a shared-memory fact reached an agent, and the totals of
         # the rows rolled up (`use', `_roll_up_uses').  Since when they are
         # counted is in `meta' (uses_since): a fact used before has no
@@ -1152,7 +1168,11 @@ class HerdStore:
         from_name: str | None = None,
         submit: bool = True,
         handoff: bool = False,
+        user: bool = False,
     ) -> dict[str, Any]:
+        """Mail BODY to TO.  USER: it is the user's own words (Telegram's
+        prompt), and the turn it starts is the user's -- never set from an
+        agent's `herd_message', which can name any sender."""
         to = (to or "").strip()
         if not to:
             raise ValueError("to is required")
@@ -1164,11 +1184,12 @@ class HerdStore:
                 """
                 INSERT INTO mail (
                     id, from_name, to_name, body, submit, handoff,
-                    status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
+                    status, created_at, turn
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
                 """,
                 (mail_id, sender, to, body if body is not None else "",
-                 1 if submit else 0, 1 if handoff else 0, now),
+                 1 if submit else 0, 1 if handoff else 0, now,
+                 MAIL_TURN_USER if user else None),
             )
             self._conn.commit()
         return {"id": mail_id, "queued": True}
@@ -1873,11 +1894,12 @@ class HerdStore:
                     """
                     INSERT INTO mail (
                         id, from_name, to_name, body, submit, handoff, status, created_at,
-                        memory_until, trace_of
-                    ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?)
+                        memory_until, trace_of, turn
+                    ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?, ?)
                     """,
                     (str(uuid.uuid4()), row["to_name"], row["from_name"], text, now,
-                     _hold_until(TRACE_HOLD) if later else None, row["id"] if later else None),
+                     _hold_until(TRACE_HOLD) if later else None, row["id"] if later else None,
+                     MAIL_TURN_CARRY),
                 )
             else:
                 self._mail_back(row["id"], hold=later)
@@ -2038,9 +2060,17 @@ class HerdStore:
         and what its conversation last switched to since the ask reached it
         (`cost_switches', as the tally pass read it) is the ask, or an
         answer to an ask it made for it -- or nothing read since.  Another
-        ask, or words of the user's, and it moved on.  Caller holds `_mu`."""
+        ask, or words of the user's, and it moved on.  Caller holds `_mu`.
+
+        cost_switches is only as fresh as the tally's last pass (every
+        ~15 s): another ask the herd delivered to it after this one, it
+        moved on to, whatever the switches read so far."""
         state = self._conn.execute("SELECT state FROM snapshot WHERE name = ?", (row["to_name"],)).fetchone()
         if not state or state[0] != "working":
+            return False
+        if self._conn.execute(
+                "SELECT 1 FROM asks WHERE to_name = ? AND id != ? AND delivered_at > ? LIMIT 1",
+                (row["to_name"], row["id"], row["delivered_at"] or row["created_at"])).fetchone():
             return False
         since = tally.epoch(row["delivered_at"] or row["created_at"]) or 0
         last = self._conn.execute(
@@ -2278,8 +2308,8 @@ class HerdStore:
             """
             INSERT INTO mail (
                 id, from_name, to_name, body, submit, handoff, status, created_at,
-                memory, memory_until, trace_of
-            ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?, ?)
+                memory, memory_until, trace_of, turn
+            ) VALUES (?, ?, ?, ?, 1, 0, 'queued', ?, ?, ?, ?, ?)
             """,
             (
                 # A handoff that failed before it had a taker: the herd says so.
@@ -2287,6 +2317,7 @@ class HerdStore:
                 datetime.now(timezone.utc).isoformat(),
                 trace_note(line) if line else None,
                 _hold_until(TRACE_HOLD) if held else None, row["id"] if held else None,
+                MAIL_TURN_CARRY,
             ),
         )
         self._conn.execute("UPDATE asks SET collected = 1 WHERE id = ?", (row["id"],))
@@ -3751,12 +3782,12 @@ class HerdStore:
                 "UPDATE guard_requests SET status = 'approved', approved_at = ? WHERE id = ?", (now, gid))
             self._conn.execute(
                 """
-                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at)
-                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?)
+                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at, turn)
+                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?, ?)
                 """,
                 (str(uuid.uuid4()), session,
                  f"[guard] The user approved, once: {summary}.  Run exactly that call again -- it is "
-                 f"allowed this once (request {gid}).", now),
+                 f"allowed this once (request {gid}).", now, MAIL_TURN_CARRY),
             )
             self._conn.commit()
         return {"id": gid, "status": "approved"}
@@ -3787,12 +3818,12 @@ class HerdStore:
                 "UPDATE guard_requests SET status = 'declined', closed_at = ? WHERE id = ?", (now, gid))
             self._conn.execute(
                 """
-                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at)
-                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?)
+                INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at, turn)
+                VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?, ?)
                 """,
                 (str(uuid.uuid4()), session,
                  f"[guard] The user kept this denied: {summary}.  Don't retry it; say what you "
-                 f"needed instead (request {gid}).", now),
+                 f"needed instead (request {gid}).", now, MAIL_TURN_CARRY),
             )
             self._conn.commit()
         return {"id": gid, "status": "declined"}
@@ -4496,7 +4527,7 @@ class HerdStore:
             for row in self._conn.execute(
                 """
                 SELECT m.id, m.from_name, m.to_name, m.body,
-                       m.submit, m.handoff, m.ask_id, s.state, a.rounds, m.memory, a.guarded
+                       m.submit, m.handoff, m.ask_id, s.state, a.rounds, m.memory, a.guarded, m.turn
                 FROM mail m
                 JOIN snapshot s ON s.name = m.to_name
                 LEFT JOIN asks a ON a.id = m.ask_id
@@ -4573,7 +4604,7 @@ class HerdStore:
         for mail_id, target, body in to_attach:
             self._attach_memory(mail_id, target, body)
         pending = []
-        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory, guarded in deliverable:
+        for mail_id, from_name, to_name, body, submit, handoff, ask_id, rounds, memory, guarded, turn in deliverable:
             text = body or ""
             truncated = len(text) > self.inline_limit
             if truncated:
@@ -4599,6 +4630,8 @@ class HerdStore:
                     "submit": bool(submit),
                     "handoff": bool(handoff),
                     "ask": ask_id,
+                    # Whose turn it starts (the mail table's `turn').
+                    "turn": turn or "",
                 }
             )
             if ask_id:

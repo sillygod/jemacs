@@ -763,8 +763,13 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   Emacs's =interrupt= command (=ghostherd-interrupt=, Escape).  "On it"
   is by what its conversation last switched to since the ask reached it
   (the tally pass's =cost_switches=): the ask, or an answer to an ask it
-  made for it.  One that moved on --- the user's words, another ask ---
-  or is idle is only told.
+  made for it.  One that moved on --- the user's words, another ask,
+  or one the herd delivered it since (the tally reads its conversation
+  only every ~15 s) --- or is idle is only told.  What it says to that
+  line is no report in the Inbox: a turn the herd's mail starts is not
+  the user's, save the user's own words it carries (a Telegram prompt);
+  an answer to an ask the agent made, or the user's verdict on a call
+  its guard refused, goes on with the turn before it, the user's or not.
 - *Stopped means its turn ended.*  For a taker whose hooks report, the
   ask closes only on a turn's end its hook says (=Stop=, or grok's
   interrupt) or its transcript does --- claude's marks a turn over

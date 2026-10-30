@@ -81,6 +81,8 @@ def test_prompt_next_message(tmp_path):
     )["pending"]
     assert mail[0]["from"] == "telegram"
     assert mail[0]["body"] == "please commit"
+    # The user's own words: the turn they start is the user's.
+    assert mail[0]["turn"] == "user"
     reset_herd()
 
 

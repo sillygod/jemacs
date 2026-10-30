@@ -15451,6 +15451,89 @@ answered and kept working -- leaked into the Inbox as a report."
                              :login :json-false :continueAt 0 :prompt :json-false
                              :saidFromUser t :said "Shipped it." :saidAt 2000))))))))
 
+(ert-deftest ghostherd-test-herd-mail-turn-is-not-the-users ()
+  "Mail the sidecar delivers starts a turn that is not the user's -- the
+herd's note that an ask was cancelled, an agent's message, a handoff --
+so a worker's \"ok, stopped\" after it is no Inbox report.  The user's
+own words (Telegram's prompt, `turn' \"user\") are the user's turn; an
+answer to its own ask or a guard verdict (\"carry\") keeps the origin of
+the turn it carries on.  Mail not submitted marks nothing: the Return
+pressed on it later is someone's own."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ((ghostherd--turn-origin (make-hash-table :test 'equal))
+                               (ghostherd--turn-ask-pending (make-hash-table :test 'equal))
+                               (ghostherd--handoff-watches (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "w" :kind 'claude :state 'idle))
+          (deliver (lambda (&rest msg)
+                     (ghostherd--herd-deliver-one (append msg '(:from "herd" :to "w" :body "x" :turn "")))
+                     (prog1 (ghostherd--turn-origin-of "w")
+                       ;; The turn ends; the next starts from idle.
+                       (ghostherd--turn-origin-on-state (ghostherd-get "w") 'working 'idle)))))
+      ;; The send moves the taker to `working' at once, running the hook.
+      (cl-letf (((symbol-function 'ghostherd-message)
+                 (lambda (_from to &rest _)
+                   (ghostherd--turn-origin-on-state (ghostherd-get to) 'idle 'working)))
+                ((symbol-function 'run-with-timer) #'ignore))
+        (should (eq (funcall deliver :body "[herd] Ask 1 was cancelled by its asker") 'mail))
+        ;; Its "ok, stopped" is no Inbox item.
+        (should (null (ghostherd-inbox--agent-items
+                       (list :name "w" :kind "claude" :state "idle" :role ""
+                             :login :json-false :continueAt 0 :prompt :json-false
+                             :saidFromUser (if (eq (ghostherd--turn-origin-of s) 'user) t :json-false)
+                             :said "Ok, stopped." :saidAt 2000))))
+        (should (eq (funcall deliver :from "claude-rd" :turn "") 'mail))
+        (should (eq (funcall deliver :from "claude-rd" :handoff t) 'mail))
+        (should (eq (funcall deliver :from "telegram" :turn "user") 'user))
+        ;; Carried on: the user's work goes on as the user's, an ask's as
+        ;; the ask's; with no turn known, it is not the user's.
+        (should (eq (funcall deliver :from "qa" :turn "carry") 'user))
+        (should (eq (funcall deliver :from "qa" :turn "carry") 'user))
+        (puthash (ghostherd-session-id s) 'ask ghostherd--turn-origin)
+        (should (eq (funcall deliver :from "qa" :turn "carry") 'ask))
+        (remhash (ghostherd-session-id s) ghostherd--turn-origin)
+        (should (eq (funcall deliver :from "qa" :turn "carry") 'mail))
+        ;; A sidecar from before `turn' says nothing: left as it was.
+        (cl-letf (((symbol-function 'ghostherd-message) #'ignore))
+          (ghostherd--herd-deliver-one '(:from "claude-rd" :to "w" :body "x")))
+        (should-not (gethash (ghostherd-session-id s) ghostherd--turn-ask-pending))
+        ;; Not submitted: no mark, so the turn its Return starts is the user's.
+        (cl-letf (((symbol-function 'ghostherd-message) #'ignore))
+          (ghostherd--herd-deliver-one '(:from "claude-rd" :to "w" :body "draft" :submit nil :turn "")))
+        (should-not (gethash (ghostherd-session-id s) ghostherd--turn-ask-pending))
+        (ghostherd--turn-origin-on-state s 'idle 'working)
+        (should (eq (ghostherd--turn-origin-of s) 'user))
+        ;; The mail's paste never reached the CLI: its mark goes with it.
+        (ghostherd--turn-origin-on-state s 'working 'idle)
+        (ghostherd--turn-from-ask s 'mail)
+        (cl-letf (((symbol-function 'ghostherd--log-add) #'ignore)
+                  ((symbol-function 'ghostherd--role-give-back) #'ignore))
+          (ghostherd--submit-lost s "x" ""))
+        (ghostherd--turn-origin-on-state s 'idle 'working)
+        (should (eq (ghostherd--turn-origin-of s) 'user))))))
+
+(ert-deftest ghostherd-test-mail-turn-waits-for-its-submit ()
+  "A mail's mark, as an ask's, waits for its prompt to reach the CLI: a
+lost Return then pressed again starts the mail's turn, not the user's."
+  (ghostherd-tests--with-herd ((ghostherd--turn-origin (make-hash-table :test 'equal))
+                               (ghostherd--turn-ask-pending (make-hash-table :test 'equal)))
+    (let ((s (ghostherd-tests--session :name "w" :kind 'claude :state 'idle)))
+      (ghostherd--turn-from-ask s 'mail)
+      (cl-letf (((symbol-function 'ghostherd--submit-pending-p) (lambda (_) t)))
+        (ghostherd--turn-origin-on-state s 'idle 'working))
+      (should (eq (ghostherd--turn-origin-of s) 'mail))
+      (should (gethash (ghostherd-session-id s) ghostherd--turn-ask-pending))
+      (ghostherd--turn-origin-on-state s 'working 'idle)
+      (setf (ghostherd-session-state s) 'idle)
+      (ghostherd--turn-submitted s)
+      (should (equal (gethash (ghostherd-session-id s) ghostherd--turn-ask-pending) '(submitted . mail)))
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'mail))
+      (should-not (gethash (ghostherd-session-id s) ghostherd--turn-ask-pending))
+      ;; A flag left from before the table held an origin is an ask's.
+      (puthash (ghostherd-session-id s) t ghostherd--turn-ask-pending)
+      (ghostherd--turn-origin-on-state s 'idle 'working)
+      (should (eq (ghostherd--turn-origin-of s) 'ask)))))
+
 (ert-deftest ghostherd-test-inbox-asks-p-heuristic ()
   (skip-unless (require 'ghostherd-memory-page nil t))
   (should (ghostherd-inbox--asks-p "all done.\nShall I open a PR?"))
