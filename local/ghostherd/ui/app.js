@@ -5295,7 +5295,7 @@
   // before it cuts the list to a page (herd_threads).  PROJECTS, every
   // project the threads it read name, for the chips.
   let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
-                  costs: [], costDays: 7, costOpen: false, projects: [], ...thViewKept() };
+                  costs: [], costDays: 7, costOpen: false, projects: [], repick: false, ...thViewKept() };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
@@ -5323,12 +5323,42 @@
   }
 
   // The page of threads loaded, as the view now picked shows it -- until
-  // the herd's own list of that view comes.
+  // the herd's own list of that view comes, in its order, so the list does
+  // not jump when it does: newest first; by cost (server/threads.py
+  // by_cost), a task's threads together, the costliest task first and
+  // none known last, the thread that shows its cost first in its group
+  // and the "same task as ..." ones after it, newest first.
   function thPreview(list) {
     const p = threads.project;
-    const out = list.filter((t) => !p || (t.projects || []).includes(p));
-    const total = (t) => (t.cost && t.cost.total) || -1;
-    return out.sort((a, b) => (threads.sort === "cost" ? total(b) - total(a) : 0) || (b.at || 0) - (a.at || 0));
+    const out = list.filter((t) => !p || (t.projects || []).includes(p)).sort((a, b) => (b.at || 0) - (a.at || 0));
+    if (threads.sort !== "cost") return out;
+    // Each task's total, from the thread that shows it -- loaded, if not
+    // one of this project's.
+    const total = {};
+    list.forEach((t) => { if (t.cost && t.cost.id && !t.cost.same) total[t.cost.id] = t.cost.total || 0; });
+    const groups = new Map();
+    out.forEach((t) => {
+      const k = t.cost && t.cost.id in total ? "task:" + t.cost.id : "thread:" + t.id;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(t);
+    });
+    // The one that shows it: as the herd picks it (threads.py carrier) when
+    // that one is not among these.
+    const carrier = (ts) => ts.find((t) => t.cost && !t.cost.same) || ts.find((t) => t.direct) ||
+      ts.reduce((a, b) => ((b.started || 0) < (a.started || 0) ? b : a));
+    const rows = Array.from(groups.values()).map((ts) => {
+      const first = carrier(ts);
+      const c = ts[0].cost;
+      return { known: !!(c && c.id in total), total: c && c.id in total ? total[c.id] : 0, at: ts[0].at || 0,
+               ts: [first].concat(ts.filter((t) => t !== first)) };
+    });
+    rows.sort((a, b) => (b.known - a.known) || (b.total - a.total) || (b.at - a.at));
+    return rows.reduce((acc, g) => acc.concat(g.ts), []);
+  }
+
+  // The thread open now, by its id: the one shown, else the one asked for.
+  function thOpenId() {
+    return threads.cur ? threads.cur.id : (threads.req && threads.req.id) || "";
   }
 
   function thNarrow() { return window.innerWidth < 720; }
@@ -5692,6 +5722,20 @@
       inboxThreadLink(it) + "</div>" + body + "</section>";
   }
 
+  // A project picked on the desk (REPICK): the thread open, when the new
+  // list has it not, gives way to the list's first -- the loaded page's
+  // preview of it, then the herd's own list (FINAL), which spends it.
+  // True when it opened one.
+  function thRepick(final) {
+    if (!threads.repick) return false;
+    if (final || thNarrow()) threads.repick = false;
+    if (thNarrow() || !threads.list.length) return false;
+    const id = thOpenId();
+    if (id && threads.list.some((t) => t.id === id)) return false;
+    openThread({ id: threads.list[0].id });
+    return true;
+  }
+
   function onThreadsAction(act, el) {
     if (act === "open") {
       const id = el.getAttribute("data-id"), ask = el.getAttribute("data-ask");
@@ -5705,6 +5749,10 @@
       thViewKeep();
       emit("threads-view", { project: threads.project, sort: threads.sort });
       threads.list = thPreview(threads.list);
+      // On the desk, a project's list without the thread open opens its
+      // first -- now, or once the herd's list of it comes.
+      if (act === "project") threads.repick = true;
+      if (thRepick(false)) return;
       renderThreads();
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
@@ -5740,7 +5788,8 @@
       // A list of the view before the viewer changed it, asked for before
       // they did: not shown.
       const v = p && p.view;
-      if (!(v && v.sort && (v.project !== threads.project || v.sort !== threads.sort))) {
+      const mine = !(v && v.sort && (v.project !== threads.project || v.sort !== threads.sort));
+      if (mine) {
         threads.list = (p && p.threads) || [];
         threads.more = !!(p && p.more);
         threads.projects = (p && Array.isArray(p.projects) && p.projects) || [];
@@ -5751,7 +5800,7 @@
       threadsBadge();
       if (view !== "threads") return;
       if (!threads.req && !thNarrow() && threads.list.length) openThread({ id: threads.list[0].id });
-      else renderThreads();
+      else if (!(mine && thRepick(true))) renderThreads();
     },
 
     // One thread, whole -- or why it could not be read.

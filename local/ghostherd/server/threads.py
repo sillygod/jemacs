@@ -298,6 +298,32 @@ def direct_detail(task: dict[str, Any], said: dict[str, Any] | None, snap: dict[
     return out
 
 
+def carrier(ts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Which of TS, threads of one task, shows its cost (`one_cost'): its
+    own direct thread, else the one begun first."""
+    return next((t for t in ts if t.get("direct")), None) or min(ts, key=lambda t: t.get("started") or 0)
+
+
+def by_cost(listed: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """LISTED, newest first, by what their task cost: the most first, those
+    with none known last.  A task's threads go together, the one that will
+    show its cost (`carrier') first and the others after it, newest first --
+    sorted by their one total alone, the newest came first and the rows
+    above the number all said "same task as ...".  Of one total, and
+    among those with none known, the newest group first.  The page's
+    preview orders the loaded threads the same way (ui/app.js thPreview)."""
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for t in listed:
+        c = t.get("cost")
+        groups.setdefault(c["id"] if c and c.get("id") else ("thread", t["id"]), []).append(t)
+    out = []
+    for ts in groups.values():
+        first = carrier(ts)
+        out.append((first.get("cost"), ts[0].get("at") or 0, [first] + [t for t in ts if t is not first]))
+    out.sort(key=lambda g: (g[0] is None, -((g[0] or {}).get("total") or 0), -g[1]))
+    return [t for _, _, ts in out for t in ts]
+
+
 def one_cost(listed: list[dict[str, Any]]) -> None:
     """A task's cost once among LISTED, the threads shown: on its own
     direct thread, else on its first; each other thread of it says it is
@@ -314,7 +340,7 @@ def one_cost(listed: list[dict[str, Any]]) -> None:
     for task, ts in by.items():
         if len(ts) < 2:
             continue
-        first = next((t for t in ts if t.get("direct")), None) or min(ts, key=lambda t: t.get("started") or 0)
+        first = carrier(ts)
         for t in ts:
             if t is not first:
                 t["cost"] = {"id": task, "mode": first["cost"]["mode"], "same": first["id"],

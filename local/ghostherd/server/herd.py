@@ -2196,7 +2196,7 @@ class HerdStore:
             listed = [t for t in listed if project in t["projects"]]
         listed.sort(key=lambda t: -(t["at"] or 0))
         if sort == "cost":
-            listed.sort(key=lambda t: (t["cost"] is None, -((t["cost"] or {}).get("total") or 0)))
+            listed = threads_mod.by_cost(listed)
         # A project's threads may be older than the asks read: more are
         # there to read while the window is full.
         more = len(listed) > limit or bool(project and len(rows) >= window and limit < 200)

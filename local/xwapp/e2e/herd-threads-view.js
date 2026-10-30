@@ -15,7 +15,8 @@ const DESK = { viewport: { width: 1360, height: 900 }, deviceScaleFactor: 1, isM
 const TOTAL = { t2: 52000, t3: 9000, t4: 120000, t5: 400 };
 const ALL = LIST.threads.map((t) => Object.assign({}, t, { cost: TOTAL[t.id] ? { id: "k" + t.id, mode: "lead", total: TOTAL[t.id] } : null }));
 const PROJECTS = [".emacs.d", "deploy-platform", "jnotes"];
-// What the herd answers for a view: as server/herd.py `threads' does it.
+// What the herd answers for a view: as server/herd.py `threads' does it
+// (a task a thread here, so threads.py by_cost is a plain sort).
 function herd(view, limit) {
   let list = ALL.filter((t) => !view.project || t.projects.includes(view.project)).sort((a, b) => b.at - a.at);
   if (view.sort === "cost") list = list.sort((a, b) => (!a.cost - !b.cost) || ((b.cost || {}).total || 0) - ((a.cost || {}).total || 0));
@@ -28,6 +29,26 @@ const bar = (page) => page.evaluate(() => ({
   sort: [...document.querySelectorAll(".thbar .msort button")].filter((b) => b.classList.contains("on")).map((b) => b.textContent),
 }));
 const stored = (page) => page.evaluate(() => [localStorage.getItem("ghostherd.threads.project"), localStorage.getItem("ghostherd.threads.sort")]);
+// One task (kA) across t2, t3 and t5, its cost on t5 -- begun first; t4
+// a costlier task of its own; t1, the newest, none known.  As the herd lists them:
+// newest first, or by cost (threads.py by_cost) -- the costliest task
+// first, a task's thread with the number first and its others after it.
+const KA = { id: "kA", mode: "lead", total: 90000 };
+const SAME = { id: "kA", mode: "lead", same: "t5", sameTitle: "Fetch the release notes for 4.2" };
+const byId = Object.fromEntries(LIST.threads.map((t) => [t.id, t]));
+const G = (view, rows) => Object.assign({}, LIST, { threads: rows.map(([id, cost]) => Object.assign({}, byId[id], { cost })),
+  more: false, projects: PROJECTS, view });
+const G_RECENT = G({ project: "", sort: "recent" },
+  [["t1", null], ["t2", SAME], ["t3", SAME], ["t4", { id: "kB", mode: "lead", total: 120000 }], ["t5", KA]]);
+const G_COST = G({ project: "", sort: "cost" },
+  [["t4", { id: "kB", mode: "lead", total: 120000 }], ["t5", KA], ["t2", SAME], ["t3", SAME], ["t1", null]]);
+const G_DP = G({ project: "deploy-platform", sort: "cost" }, [["t4", { id: "kB", mode: "lead", total: 120000 }], ["t5", KA]]);
+const G_JN = G({ project: "jnotes", sort: "cost" }, [["t2", KA], ["t3", Object.assign({}, SAME, { same: "t2" })]]);
+const costs = (page) => page.$$eval(".thlist .throw", (rs) => rs.map((r) => {
+  const c = r.querySelector(".thcost");
+  return c ? (c.classList.contains("thsame") ? "s" : "n") : "-";
+}).join(""));
+const opened = (intents) => intents.filter((i) => i.op === "thread-open").map((i) => i.id);
 
 (async () => {
   const browser = await webkit.launch();
@@ -58,6 +79,11 @@ const stored = (page) => page.evaluate(() => [localStorage.getItem("ghostherd.th
         JSON.stringify(views().pop()) === JSON.stringify({ op: "threads-view", project: "jnotes", sort: "recent" }));
       check(W("until it answers, the loaded page's threads of it"), (await ids(page)).join() === "t2,t3");
       check(W("the chip is on"), (await bar(page)).chips.includes("jnotes*"));
+      check(W(where === "desk" ? "the desk's open thread, not in jnotes, gives way to its first"
+                                : "the phone opens no thread on a chip"),
+        where === "desk" ? opened(intents).pop() === "t2" && (await ids(page)).join() === "t2,t3" &&
+                           (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t2"
+                         : opened(intents).length === 0, opened(intents));
       check(W("and kept for this viewer"), JSON.stringify(await stored(page)) === JSON.stringify(["jnotes", "recent"]));
       // A list asked for before the change comes late: not shown.
       await page.evaluate((l) => GM.renderThreads(l), herd({ project: "", sort: "recent" }, 40));
@@ -100,6 +126,40 @@ const stored = (page) => page.evaluate(() => [localStorage.getItem("ghostherd.th
         b.chips.join() === "All,.emacs.d,deploy-platform,jnotes,taiex*" && b.sort.join() === "Cost", b);
       check(W("and the list says it has none of it"),
         (await ids(page)).length === 0 && /No threads of taiex/.test(await page.textContent(".thlist")));
+
+      // ---- A task's threads by cost: its number first, and no jump ----
+      await tap('.thbar [data-act="th:sort"][data-sort="recent"]');
+      await tap('.thbar .chip[data-project=""]');
+      await sleep(80);
+      await page.evaluate((l) => GM.renderThreads(l), G_RECENT);
+      await sleep(120);
+      check(W("newest first, the task's cost on the thread it began with"),
+        (await ids(page)).join() === "t1,t2,t3,t4,t5" && (await costs(page)) === "-ssnn",
+        [await ids(page), await costs(page)]);
+      await tap('.thbar [data-act="th:sort"][data-sort="cost"]');
+      await sleep(80);
+      const preview = (await ids(page)).join();
+      check(W("by cost, until the herd answers: the costliest task, then the task with its number first"),
+        preview === "t4,t5,t2,t3,t1" && (await costs(page)) === "nnss-", [preview, await costs(page)]);
+      await page.evaluate((l) => GM.renderThreads(l), G_COST);
+      await sleep(100);
+      check(W("the herd's list comes: no row moves"), (await ids(page)).join() === preview, await ids(page));
+      intents.length = 0;
+      await tap('.thbar .chip[data-project="deploy-platform"]');
+      await sleep(120);
+      await page.evaluate((l) => GM.renderThreads(l), G_DP);
+      await sleep(100);
+      // The loaded page has none of jnotes's now: the desk waits for the herd's list.
+      await tap('.thbar .chip[data-project="jnotes"]');
+      await sleep(120);
+      const before = opened(intents).slice();
+      await page.evaluate((l) => GM.renderThreads(l), G_JN);
+      await sleep(150);
+      check(W(where === "desk" ? "a chip opens its list's first: at once, or once the herd's list comes"
+                                : "the phone opens none"),
+        where === "desk" ? before.join() === (before.length ? "t4" : "") && opened(intents).join() === before.concat(["t2"]).join() &&
+                           (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t2"
+                         : opened(intents).length === 0, [before, opened(intents)]);
       stop();
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
