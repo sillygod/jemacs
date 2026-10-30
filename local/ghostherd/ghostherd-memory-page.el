@@ -464,6 +464,10 @@ draws lanes from fields rather than parsing prose."
           :login (if (and (eq (cdr err) 'login) (not url) (not signed-in)) t :json-false)
           :url (or url "")
           :loginContinue (if signed-in t :json-false)
+          ;; Signed in again, its turn still stopped at the expired login:
+          ;; Continue carries it on (`ghostherd-carry-on') -- once the
+          ;; sign-in's last Return is pressed.
+          :carryOn (if (and (eq (cdr err) 'carry-on) (not signed-in)) t :json-false)
           ;; Who started it through `herd start', shown on the card.
           :startedBy (or (ghostherd-session-started-by s) "")
           ;; Its directory gone -- a worktree removed outside the herd: the
@@ -3031,6 +3035,11 @@ from the newest -- and send it to the page to prepend."
              ;; its screen.
              (ghostherd-login-continue s)
              (format "Pressed Return: %s's sign-in is done" name))
+            ("agent-carry-on"
+             ;; The card's and the Inbox's Continue, signed in again: the
+             ;; continue prompt, as after a sleep.
+             (ghostherd-carry-on s)
+             (format "Continuing %s's turn" name))
             ("agent-sleep-cancel"
              ;; The card's Cancel on a pending continue-after-sleep: it stays
              ;; blocked, and the herd will not carry this turn on.
@@ -3447,6 +3456,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (proposal   "need" "Proposal"   "purple")
     (login      "need" "Login"      "warn")
     (login-continue "need" "Login"  "warn")
+    (carry-on   "need" "Login"      "warn")
     (relay      "need" "Relay"      "warn")
     (ask-failed "need" "Ask failed" "red")
     (unsent     "need" "Not sent"   "warn")
@@ -3553,6 +3563,7 @@ item says how many, or git could not say."
          (opts (and (consp prompt) (plist-get prompt :options)))
          (login (eq (plist-get a :login) t))
          (login-continue (eq (plist-get a :loginContinue) t))
+         (carry-on (eq (plist-get a :carryOn) t))
          (cont (plist-get a :continueAt))
          (cont-stop (eq (plist-get a :continueStopped) t))
          (said (plist-get a :said)) (said-ms (plist-get a :saidAt))
@@ -3577,6 +3588,15 @@ item says how many, or git could not say."
              :state state :whyLabel "Its sign-in waits on one key"
              :preview "Its login went through; Return gives it its input box back"
              :body "Its /login went through, and the CLI waits for Return before it gives the input box back.  Press Return here: it is pressed only while that step is still on its screen.")
+            items))
+     ;; Signed in again; the turn the expired login stopped waits to go on.
+     (carry-on
+      (push (ghostherd-inbox--item
+             (concat "carry-on:" name) 'carry-on name cli project
+             "Signed in again — its turn stopped" at
+             :state state :whyLabel "Its turn waits to go on"
+             :preview "Its login expired mid-turn; Continue picks the turn up where it stopped"
+             :body "Its login expired mid-turn, and it is signed in again.  The turn did not finish: Continue sends it the herd's continue prompt, as after a sleep, and the ask it holds is answered by the turn that goes on.")
             items))
      ((and (numberp cont) (> cont 0) (not cont-stop))
       (push (ghostherd-inbox--item

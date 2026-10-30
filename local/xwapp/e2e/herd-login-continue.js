@@ -3,7 +3,10 @@
 // "signed in: press Return to continue", and its card (Agents tab and
 // room, never folded on the phone) offers a Press Return -- and no
 // /login -- that tells Emacs to press it; the Inbox has it under Needs you
-// (and Stuck) with the same.  Desk and phone.
+// (and Stuck) with the same.  Then (ask 3346c963) signed in again, its
+// turn still stopped at the expired login: the card says so and offers
+// Continue -- no /login -- and the Inbox has it in place of "Login
+// expired", with the same.  Desk and phone.
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep } = require("./herdlib");
 const results = [];
@@ -26,6 +29,21 @@ const ITEMS = [{
   whyLabel: "Its sign-in waits on one key", preview: "Its login went through; Return gives it its input box back",
   state: "blocked", read: false, override: null,
   body: "Its /login went through, and the CLI waits for Return before it gives the input box back.",
+  code: "", note: "" }];
+// Then signed in again, its turn still stopped.
+const AGAIN = "signed in again: its turn stopped at the expired login";
+const again = () => {
+  const h = JSON.parse(JSON.stringify(HERD));
+  const a = h.agents.find((x) => x.name === NAME);
+  a.state = "blocked"; a.reason = AGAIN; a.login = false; a.url = ""; a.loginContinue = false; a.carryOn = true;
+  return h;
+};
+const AGAIN_ITEMS = [{
+  id: "carry-on:" + NAME, kind: "carry-on", group: "need", tag: "Login", tone: "warn", agent: NAME,
+  cli: "claude", project: DP, title: "Signed in again — its turn stopped", at: now - 10000,
+  whyLabel: "Its turn waits to go on", preview: "Its login expired mid-turn; Continue picks the turn up where it stopped",
+  state: "blocked", read: false, override: null,
+  body: "Its login expired mid-turn, and it is signed in again.  The turn did not finish.",
   code: "", note: "" }];
 
 (async () => {
@@ -89,6 +107,49 @@ const ITEMS = [{
       await sleep(80);
       check(W("Press Return in the Inbox tells Emacs, for that agent"),
         sent().length === 3 && sent()[2].name === NAME, sent());
+
+      // ---- Signed in again: its turn waits to go on ----
+      const goes = () => intents.filter((i) => i.op === "agent-carry-on");
+      await page.evaluate((h) => { GM.showView("agents"); GM.renderHerd(h); }, again());
+      await sleep(120);
+      check(W("signed in again, it shows blocked, saying its turn stopped at the expired login"),
+        !!(await page.$(row + ".s-blocked")) && (await page.$eval(row, (r) => r.textContent)).includes(AGAIN));
+      check(W("its card offers Continue, and no /login or Press Return"),
+        !!(await page.$(row + ' [data-act="a:agent-carry-on"]')) && !(await page.$(row + ' [data-act="a:agent-login"]')) &&
+        !(await page.$(row + ' [data-act="a:agent-login-continue"]')));
+      await tap(row + ' [data-act="a:agent-carry-on"]');
+      await sleep(80);
+      check(W("Continue tells Emacs, for that agent"), goes().length === 1 && goes()[0].name === NAME, goes());
+      check(W("no other agent has Continue"),
+        (await page.$$('.arow:not([data-name="' + NAME + '"]) [data-act="a:agent-carry-on"]')).length === 0);
+      await tap('.pgroup[data-project="' + DP + '"] [data-act="a:room"]');
+      await sleep(150);
+      await tap('.room [data-act="a:room-view"][data-view="columns"]');
+      await sleep(150);
+      await page.evaluate((h) => GM.renderHerd(h), again());
+      await sleep(120);
+      check(W("the room card offers Continue, shown with the card collapsed"),
+        !(await page.$(col + ".expanded")) && (await shown(col + ' [data-act="a:agent-carry-on"]')) &&
+        !(await page.$(col + ' [data-act="a:agent-login"]')));
+      await tap(col + ' [data-act="a:agent-carry-on"]');
+      await sleep(80);
+      check(W("the room's Continue tells Emacs, for that agent"), goes().length === 2 && goes()[1].name === NAME, goes());
+      await tap('.tab[data-tab="inbox"]');
+      await sleep(80);
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), AGAIN_ITEMS);
+      await sleep(120);
+      await tap('[data-act="ib:filter"][data-f="stuck"]');
+      await sleep(80);
+      const card2 = (where === "phone" ? ".ibcard" : ".ibrow") + '[data-id="carry-on:' + NAME + '"]';
+      check(W("the Inbox lists it under Needs you, and Stuck"), !!(await page.$(card2)));
+      await tap(card2);
+      await sleep(120);
+      check(W("it says its turn waits to go on"), /Its turn waits to go on/.test(await page.textContent(".app")));
+      const go = '[data-act="ib:carry-on"][data-id="carry-on:' + NAME + '"]';
+      check(W("it offers Continue"), !!(await page.$(go)) && /Continue/.test(await page.textContent(go)));
+      await tap(go);
+      await sleep(80);
+      check(W("Continue in the Inbox tells Emacs, for that agent"), goes().length === 3 && goes()[2].name === NAME, goes());
 
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();

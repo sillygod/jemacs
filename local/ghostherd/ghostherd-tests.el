@@ -802,6 +802,14 @@ the old shape or the new -- leaves it stuck."
                         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/login</command-name>\"}}"
                         "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Login interrupted</local-command-stdout>\"}}"
                         "{\"type\":\"last-prompt\",\"lastPrompt\":\"go on\"}"))
+        ;; Still stuck on the error.  A /login went through (login-out),
+        ;; so what it needs is to go on, not /login (ask 3346c963).
+        (should (eq (car (ghostherd--transcript-turn-end s)) :error))
+        (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) 'carry-on)))
+      ;; A /login that did not go through -- run, or interrupted -- is /login again.
+      (ghostherd-tests--with-transcript s
+          (append (ghostherd-tests--entries 'login 'login-turn 'login-cmd)
+                  (list "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Login interrupted</local-command-stdout>\"}}"))
         (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) 'login))))))
 
 ;;; /login's last step: signed in, waiting on Return (ask 25b5f652)
@@ -946,6 +954,128 @@ page shows the refusal and nothing is pressed."
             (ghostherd-memory-page--handle '((op . "agent-login-continue") (name . "c"))))
           (should-not keys)
           (should (string-match-p "no longer on its sign-in" (cdr (assoc "showError" pushes)))))))))
+
+;;; Signed in again: its turn waits to go on (ask 3346c963)
+
+(defconst ghostherd-tests--signed-in-again
+  '(login login-turn login-cmd login-out)
+  "A claude transcript's tail after its turn died on an expired login and
+a /login went through: the real entries, the error and its /login.")
+
+(ert-deftest ghostherd-test-signed-in-again-card-and-inbox ()
+  "Signed in again after the expired login, the turn is still stuck: the
+agent reads blocked -- an ask it holds held -- but says it is signed in
+and its turn stopped, the card and the snapshot offer Continue and no
+/login, and the Inbox has that, not \"Login expired\".  Never carried on
+by the timer: that is the cut-short errors'.  The newer shape of the
+/login's output reads the same."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+             (ghostherd-tests--fake-screen ghostherd-tests--idle-screen)
+             (ghostherd--asks-open (make-hash-table :test 'equal))
+             (ghostherd--asks-settled (make-hash-table :test 'equal))
+             (settled nil)
+             (newer "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Login successful</local-command-stdout>\"}}"))
+        (puthash "ask1" (ghostherd-session-id s) ghostherd--asks-open)
+        (cl-letf (((symbol-function 'ghostherd--ask-settle) (lambda (&rest _) (setq settled t))))
+          (dolist (lines (list (apply #'ghostherd-tests--entries ghostherd-tests--signed-in-again)
+                               (append (ghostherd-tests--entries 'login 'login-turn 'login-cmd) (list newer))))
+            (ghostherd-tests--with-transcript s lines
+              (ghostherd--set-state s 'working "on it")
+              (ghostherd-poll-session s)
+              (should (eq (ghostherd-session-state s) 'blocked))
+              (should (equal (ghostherd-session-state-reason s)
+                             "signed in again: its turn stopped at the expired login"))
+              (should-not settled)
+              (should-not (ghostherd--continue-cause s))
+              (should-not (ghostherd--sleep-continue-at s))
+              (let ((a (ghostherd-memory-page--agent s))
+                    (snap (car (ghostherd--herd-snapshot))))
+                (dolist (k '(:login :loginContinue :carryOn))
+                  (should (equal (plist-get a k) (plist-get snap k))))
+                (should (eq (plist-get a :carryOn) t))
+                (should (eq (plist-get a :login) :json-false))
+                (let ((items (ghostherd-inbox--agent-items a)))
+                  (should (equal (ghostherd-tests--inbox-kinds items) '("carry-on")))
+                  (should (equal (plist-get (car items) :id) "carry-on:c"))
+                  (should (equal (plist-get (car items) :group) "need"))))))
+          ;; Still on the sign-in's last step: its Return first, no Continue.
+          (ghostherd-tests--with-transcript s (apply #'ghostherd-tests--entries ghostherd-tests--signed-in-again)
+            (let ((ghostherd-tests--fake-screen ghostherd-tests--signed-in-screen))
+              (ghostherd-poll-session s))
+            (let ((a (ghostherd-memory-page--agent s)))
+              (should (eq (plist-get a :loginContinue) t))
+              (should (eq (plist-get a :carryOn) :json-false))
+              (should (equal (ghostherd-tests--inbox-kinds (ghostherd-inbox--agent-items a)) '("login-continue"))))))))))
+
+(ert-deftest ghostherd-test-carry-on-sends-the-continue-prompt ()
+  "Continue, signed in again, sends the continue prompt for an expired
+login -- the herd's way of carrying a stopped turn on, as after a sleep
+-- with Return, and logs it.  Refused, nothing sent, when the turn is not
+that: no /login gone through, or its screen with no input box for the
+prompt (a sign-in step, a menu), or its host gone.  From the page too."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'blocked))
+            (ghostherd-tests--fake-screen ghostherd-tests--idle-screen)
+            (sends nil) (pushes nil))
+        (cl-letf (((symbol-function 'ghostherd-send)
+                   (lambda (_s text &optional submit) (push (list text submit) sends)))
+                  ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+                  ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore)
+                  ((symbol-function 'ghostherd-memory-page--serve-files) #'ignore))
+          (ghostherd-tests--with-transcript s (apply #'ghostherd-tests--entries ghostherd-tests--signed-in-again)
+            (should (equal (ghostherd-carry-on s) "c"))
+            (should (equal sends (list (list ghostherd-expired-continue-prompt t))))
+            (should (string-match-p "\\`↻ continuing a turn an expired login cut short, as asked"
+                                    (ghostherd-log-entry-text (car ghostherd--log))))
+            (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'continue))
+            ;; Through the page: the same.
+            (setq sends nil)
+            (ghostherd-memory-page--handle '((op . "agent-carry-on") (name . "c")))
+            (should (equal (caar sends) ghostherd-expired-continue-prompt))
+            (should (equal (cdr (assoc "flash" pushes)) "Continuing c's turn"))
+            (setq sends nil)
+            ;; No input box on its screen: nowhere for the prompt.
+            (dolist (screen (list ghostherd-tests--signed-in-screen ghostherd-tests--claude-login-menu))
+              (let ((ghostherd-tests--fake-screen screen))
+                (should-error (ghostherd-carry-on s) :type 'user-error)))
+            (let ((ghostherd-tests--fake-live nil))
+              (should-error (ghostherd-carry-on s) :type 'user-error)))
+          ;; Not signed in again: /login is what it needs.
+          (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'login 'login-turn 'login-cmd)
+            (should-error (ghostherd-carry-on s) :type 'user-error))
+          (should-not sends))))))
+
+(ert-deftest ghostherd-test-login-back-when-it-expires-again ()
+  "Signed in again and carried on, a login that expires again ends the
+new turn on a new error: /login is back on the card and in the Inbox,
+Continue gone -- the /login that went through was for the error before."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+            (ghostherd-tests--fake-screen ghostherd-tests--idle-screen)
+            (go-on (format "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":%s}}"
+                           (json-encode ghostherd-expired-continue-prompt))))
+        (ghostherd-tests--with-transcript s
+            (append (apply #'ghostherd-tests--entries ghostherd-tests--signed-in-again)
+                    (list go-on)
+                    (ghostherd-tests--entries 'login 'login-turn))
+          (ghostherd-poll-session s)
+          (should (equal (ghostherd--detect-state s) '(blocked . "its login expired -- run /login")))
+          (let ((a (ghostherd-memory-page--agent s)))
+            (should (eq (plist-get a :login) t))
+            (should (eq (plist-get a :carryOn) :json-false))
+            (should (equal (ghostherd-tests--inbox-kinds (ghostherd-inbox--agent-items a)) '("login")))))
+        ;; Carried on and still going: no error at its end, nothing stuck.
+        (ghostherd-tests--with-transcript s
+            (append (apply #'ghostherd-tests--entries ghostherd-tests--signed-in-again) (list go-on))
+          (should (eq (ghostherd--transcript-turn-end s) :clean))
+          (should-not (ghostherd--cli-error s)))))))
 
 (ert-deftest ghostherd-test-the-turn-end-is-read-past-a-large-entry ()
   "The transcript is read back from its end a chunk at a time, growing:
