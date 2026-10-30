@@ -457,7 +457,9 @@ window system cannot report counts as focus."
 ;; goes only once the last is read, and 20,000 CJK characters are 30.
 
 (defconst xwapp--part-wait 10
-  "Seconds without a part after which an intent sent in parts is dropped.")
+  "Seconds without a part after which an intent sent in parts is dropped.
+The page waits as long (WAIT in ui/xwapp.js) for a title to be read
+before it gives it up for another intent.")
 
 (defconst xwapp--part-poll 0.02
   "Seconds between title reads while an intent's parts are coming in.")
@@ -520,13 +522,69 @@ longer one, that one once its every part is in -- nil until then."
   (xwapp--untimer app :part-wait)
   (xwapp--untimer app :part-poll))
 
+;; A title read is answered.
+;;
+;; Emacs used to clear a title it had read by setting the page's own
+;; back, but a script run in the page lands later than it is sent, and
+;; Emacs may have read the title late, from WebKit's copy of it: by
+;; then the page may have given that title up (see WAIT in
+;; ui/xwapp.js) and set the next, which the clear wiped out unread.
+;; So Emacs now says which title it read, by its intent N and part I
+;; -- the title's own words may differ in WebKit's copy -- and the kit
+;; clears the title only while it is still that one:
+;;
+;;   if (!(window.XW && XW.kit && XW.kit({"xwapp":"read","n":N,"i":I,
+;;          "whole":true,"idle":IDLE}))) document.title = IDLE;
+;;
+;; "unread" in place of "read" when Emacs could make no intent of it,
+;; or dropped the intent it was a part of: the kit gives that intent
+;; up.  WHOLE when Emacs has the whole intent: one the page had given
+;; up, Emacs read after all, and the page takes its loss back.  A page
+;; with no kit, or a kit from before, answers nothing, and the title
+;; is cleared as it always was.
+
+(defun xwapp--title-id (title prefixes intent)
+  "Which of the page kit's titles TITLE is, as (N . I): part I of the
+intent numbered N, an intent in a title of its own being its part 0.
+From INTENT, what TITLE was read as, or, when it could not be read,
+from TITLE's start, which WebKit keeps.  Nil for a title the kit did
+not set."
+  (if intent
+      (let* ((part (assq 'xwpart intent))
+             (n (if part (cdr part) (alist-get 'n intent)))
+             (i (if part (alist-get 'i intent) 0)))
+        (and (integerp n) (integerp i) (cons n i)))
+    (when-let* ((prefix (seq-find (lambda (p) (string-prefix-p p title)) prefixes))
+                (json (substring title (length prefix))))
+      (cond
+       ((string-match "\\`{\"xwpart\":\\([0-9]+\\),\"i\":\\([0-9]+\\)," json)
+        (cons (string-to-number (match-string 1 json))
+              (string-to-number (match-string 2 json))))
+       ((string-match "\\`{\"op\":\"\\(?:[^\"\\\\]\\|\\\\.\\)*\",\"n\":\\([0-9]+\\)[,}]" json)
+        (cons (string-to-number (match-string 1 json)) 0))))))
+
+(defun xwapp--title-answer (app what id whole)
+  "The script that answers APP's page for a title Emacs has read: WHAT
+is \"read\", or \"unread\" when the intent it carries is lost; ID is
+the title's (N . I), if it has one; WHOLE, whether Emacs has the whole
+intent now.  The kit clears the title only while it is that one."
+  (let ((idle (xwapp-idle-title app)))
+    (format "if (!(window.XW && XW.kit && XW.kit(%s))) document.title = %s;"
+            (json-encode `((xwapp . ,what)
+                           ,@(when id `((n . ,(car id)) (i . ,(cdr id))))
+                           ,@(when whole '((whole . t)))
+                           (idle . ,idle)))
+            (json-encode idle))))
+
 (defun xwapp--poll (app)
   "Read one intent from APP's page title and dispatch it.
 A title that cannot be read -- a crashed WebKit process still looks live
 -- counts toward the breaker; a run of them stops the poll rather than
 spin Emacs reading and scripting a broken IPC channel every interval.
-An intent that cannot be parsed is said to be, once, and the page told,
-so it goes on to the next and gives back what was lost."
+A title read is answered, so the page sends the next: see
+`xwapp--title-answer'.  An intent that cannot be parsed is said to be,
+once, and the page told it is lost, so it goes on to the next and
+gives back what was lost; so is one sent in parts that Emacs dropped."
   (when-let* ((xw (xwapp-session app)))
     (let ((title (condition-case nil
                      (prog1 (xwidget-webkit-title xw)
@@ -536,16 +594,21 @@ so it goes on to the next and gives back what was lost."
                  (xwapp--prefixed-p title (xwapp-prefixes app))
                  (not (equal title (xwapp-last-title app))))
         (setf (xwapp-last-title app) title)
-        (let ((intent (xwapp-parse-intent title (xwapp-prefixes app)))
-              (reset (format "document.title = %s;" (json-encode (xwapp-idle-title app)))))
-          (if (not intent)
-              (progn
-                (xwapp--exec app xw (concat reset " window.XW && XW.kit({\"xwapp\":\"unread\"});"))
-                (xwapp--say-dropped
-                 app (format "a %d-character message Emacs could not read" (length title))))
-            (xwapp--exec app xw reset)
-            (when-let* ((whole (xwapp--part app intent)))
-              (xwapp--dispatch app whole)))))
+        (let* ((intent (xwapp-parse-intent title (xwapp-prefixes app)))
+               (id (xwapp--title-id title (xwapp-prefixes app) intent))
+               (whole (and intent (xwapp--part app intent)))
+               ;; A part whose intent is in neither WHOLE nor the parts
+               ;; kept was dropped: the rest of it would come for nothing.
+               (lost (or (not intent)
+                         (and (not whole)
+                              (not (assoc (alist-get 'xwpart intent)
+                                          (xwapp--get app :parts)))))))
+          (xwapp--exec app xw (xwapp--title-answer app (if lost "unread" "read") id whole))
+          (unless intent
+            (xwapp--say-dropped
+             app (format "a %d-character message Emacs could not read" (length title))))
+          (when whole
+            (xwapp--dispatch app whole))))
       (if (and (xwapp--get app :parts) (not (xwapp--get app :wedged)))
           (xwapp--timer app :part-poll xwapp--part-poll #'xwapp--poll)
         (xwapp--untimer app :part-poll)))))

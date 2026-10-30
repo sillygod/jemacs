@@ -2,6 +2,7 @@
 // queue, through a page that loads it the way the apps do.
 const path = require("path");
 const { webkit } = require("playwright");
+const { readTitles } = require("./titlelib");
 
 const UI = "file://" + path.join(process.env.LOCAL || path.resolve(__dirname, "../.."), "pr-view", "ui", "index.html");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -75,42 +76,15 @@ function check(name, ok, detail) {
   // A long intent.  Emacs reads the title WebKit keeps, which is its
   // first 1000 UTF-16 units with runs of spaces folded (the page's own
   // document.title folds them too), so the bridge sends one that would
-  // be longer in parts.  Read here as xwapp reads them, from the title
-  // cut as WebKit cuts it, and strung back together.  The text is made up.
-  async function readLikeEmacs(prefix, until, opts) {
-    opts = opts || {};
-    const got = [], titles = [], parts = {};
-    let last = null;
-    const end = Date.now() + (opts.ms || 20000);
-    while (Date.now() < end && !until(got)) {
-      const full = await page.title();
-      const t = full.slice(0, 1000);
-      if (t.startsWith(prefix) && t !== last && !opts.deaf) {
-        last = t;
-        titles.push(full);
-        let it = null;
-        try { it = JSON.parse(t.slice(prefix.length)); } catch (e) { it = null; }
-        if (!it) {
-          got.push({ unread: t.length });
-          await page.evaluate(() => { document.title = "PR View"; XW.kit({ xwapp: "unread" }); });
-          continue;
-        }
-        await page.evaluate(() => { document.title = "PR View"; });
-        if (it.xwpart === undefined) got.push(it);
-        else {
-          const p = (parts[it.xwpart] = parts[it.xwpart] || []);
-          p[it.i] = it.s;
-          if (p.filter((x) => x !== undefined).length === it.n) got.push(JSON.parse(p.join("")));
-        }
-      }
-      await sleep(5);
-    }
-    return { got, titles };
-  }
+  // be longer in parts.  Read here as xwapp reads them (titlelib.js),
+  // from the title cut as WebKit cuts it, strung back together, and
+  // each answered.  The text is made up.
+  const readLikeEmacs = (prefix, until, opts) => readTitles(page, prefix, until, Object.assign({ idle: "PR View" }, opts));
   await page.evaluate(() => {
     window.LONG = XW.bridge("kitlong:");
     window.LOST = [];
-    const u = "\u9577\u3044\u4e2d\u6587  \u0020 \"q\" \\ \u{1F600}\n    \u3000";
+    window.FOUND = [];
+    const u = "長い中文    \"q\" \\ \u{1F600}\n    　";
     let s = "";
     while (s.length < 20000) s += u;
     window.WANT = s.slice(0, 20000).replace(/[\ud800-\udbff]$/, "x");
@@ -131,37 +105,108 @@ function check(name, ok, detail) {
     partTitles.length > 25 && lr.titles.every((t) => t.length <= 800 && !/ {2}/.test(t)),
     JSON.stringify({ parts: partTitles.length, longest: Math.max(...lr.titles.map((t) => t.length)) }));
   check("its runs of spaces arrive whole", lr.got.find((i) => i.op === "after").note === "a  b" &&
-    /\u3000/.test(prompt ? prompt.text : "") && (prompt ? prompt.text : "").indexOf("  \u0020 ") > 0);
+    /　/.test(prompt ? prompt.text : "") && (prompt ? prompt.text : "").indexOf("    ") > 0);
   const shortT = lr.titles.find((t) => t.indexOf('"op":"before"') > 0);
   check("a short intent is one title, prefix and JSON, as before", !!shortT &&
     JSON.stringify(JSON.parse(shortT.slice(8))) === shortT.slice(8) && !/xwpart/.test(shortT), shortT);
   check("nothing lost", (await page.evaluate(() => LOST)).length === 0);
+
+  // One with an n of the page's own (an answer's option) goes as a part,
+  // named by the bridge's n: two alike are two titles, each answered.
+  const ownR = readLikeEmacs("kitlong:", (g) => g.filter((i) => i.op === "answer").length === 2, { ms: 3000 });
+  await page.evaluate(() => { LONG("answer", { n: 2 }); LONG("answer", { n: 2 }); });
+  const own = await ownR;
+  check("an intent with an n of its own goes named by the bridge's, and two alike both arrive",
+    own.got.filter((i) => i.op === "answer" && i.n === 2).length === 2 &&
+    own.titles.filter((t) => /xwpart/.test(t)).length === 2, JSON.stringify(own));
 
   // Past INTENT_MAX it is not sent at all, and emit says so.
   const tooLong = await page.evaluate(() => [LONG("huge", { text: "x".repeat(2 * 1024 * 1024 + 1) }), document.title]);
   await sleep(150);
   check("an intent past 2M characters is refused, and nothing sent", tooLong[0] === false && !/huge/.test(await page.title()), tooLong[0]);
 
-  // A title Emacs cannot read -- one an older page cut -- is said to be,
-  // and the intent it was is lost: its LOST is called, the next goes.
-  const cutRead = readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "next-one"));
+  // A title Emacs cannot read -- one WebKit mangled -- is said to be, by
+  // its n from the start of it, and the intent it was is lost: its LOST
+  // is called, the next goes.
+  const cutRead = readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "next-one"),
+    { refuse: (t) => /cut-short/.test(t) });
   await page.evaluate(() => {
     LONG("cut-short", {}, () => LOST.push("cut-short"));
-    document.title = "kitlong:" + JSON.stringify({ op: "raw", text: "y".repeat(3000) });
     setTimeout(() => LONG("next-one"), 50);
   });
   const cr = await cutRead;
   check("Emacs could not read it: the page gives it up and goes on",
-    cr.got.some((i) => i.unread === 1000) && cr.got.some((i) => i.op === "next-one") &&
+    cr.got.some((i) => i.unread) && cr.got.some((i) => i.op === "next-one") &&
     JSON.stringify(await page.evaluate(() => LOST)) === '["cut-short"]', JSON.stringify(cr.got));
 
-  // Left unread 2 s with another to send, it is given up on: sent over.
-  await page.evaluate(() => { LOST.length = 0; LONG("unheard", {}, () => LOST.push("unheard")); LONG("heard"); });
-  await readLikeEmacs("kitlong:", () => false, { deaf: true, ms: 2300 });
-  const overR = await readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "heard"), { ms: 3000 });
-  check("unread for 2 s, it is given up and the next sent over it",
-    JSON.stringify(await page.evaluate(() => LOST)) === '["unheard"]' && overR.got.map((i) => i.op).join() === "heard",
-    JSON.stringify(overR.got));
+  // A prefixed title no bridge set, that Emacs cannot read, is cleared --
+  // and one a bridge set, that Emacs cannot name, is left to be read.
+  await page.evaluate(() => { document.title = "kitlong:" + JSON.stringify({ op: "raw", text: "y".repeat(3000) }); });
+  await readLikeEmacs("kitlong:", (g) => g.some((i) => i.unread), { ms: 3000 });
+  await sleep(100);
+  check("a title no bridge set, unread, is cleared", (await page.title()) === "PR View", await page.title());
+  const kept = await page.evaluate(() => {
+    LONG("mine");
+    const t = document.title;
+    const taken = XW.kit({ xwapp: "unread", idle: "PR View" });
+    return { taken, kept: document.title === t && /"op":"mine"/.test(t) };
+  });
+  check("a bridge's own title, unread but not named, is left", kept.taken === true && kept.kept, JSON.stringify(kept));
+  await readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "mine"), { ms: 3000 });
+
+  // Emacs busy 3 s between two parts of a long intent, with another
+  // intent waiting behind it: not given up -- it waits as long as Emacs
+  // waits for a part, 10 s.
+  await page.evaluate(() => { LOST.length = 0; });
+  let stalled = false;
+  const slowR = readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "behind"), {
+    stall: (it) => (it.xwpart !== undefined && it.i === 2 && !stalled ? (stalled = 3000) : 0),
+  });
+  await page.evaluate(() => { LONG("slow", { text: WANT.slice(0, 4000) }, () => LOST.push("slow")); LONG("behind"); });
+  const slow = await slowR;
+  check("Emacs busy 3 s mid-way through a long intent, another behind it: nothing given up, both arrive",
+    stalled && slow.got.some((i) => i.op === "slow" && i.text === want.slice(0, 4000)) && slow.got.some((i) => i.op === "behind") &&
+    (await page.evaluate(() => LOST)).length === 0, JSON.stringify({ stalled, ops: slow.got.map((i) => i.op || i), lost: await page.evaluate(() => LOST) }));
+
+  // Past 10 s unread with nothing behind it but its own next parts: still
+  // not given up -- its own next part is not another intent.
+  let deaf = false;
+  const aloneR = readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "alone"), {
+    ms: 25000, deaf: () => deaf,
+    stall: (it) => {
+      if (it.xwpart === undefined || it.i !== 1 || deaf !== false) return 0;
+      deaf = true;
+      setTimeout(() => { deaf = null; }, 10600);
+      return 0;
+    },
+  });
+  await page.evaluate(() => { LONG("alone", { text: WANT.slice(0, 4000) }, () => LOST.push("alone")); });
+  const alone = await aloneR;
+  check("unread 10.6 s with only its own parts to come: not given up, and it arrives whole",
+    deaf === null && alone.got.some((i) => i.op === "alone" && i.text === want.slice(0, 4000)) &&
+    (await page.evaluate(() => LOST)).length === 0, JSON.stringify({ deaf, lost: await page.evaluate(() => LOST) }));
+
+  // The answer that lands late.  Emacs reads A, then is busy past 10 s
+  // before its answer lands; meanwhile the page gives A up (LOST, which
+  // emits one of its own, as the Inbox's does) and sends B over it.  A's
+  // answer must not clear B, and as Emacs has A whole, A's loss is taken
+  // back: no silent loss, no duplicate.
+  await page.evaluate(() => { LOST.length = 0; FOUND.length = 0; });
+  const raceR = readLikeEmacs("kitlong:", (g) => g.some((i) => i.op === "A-lost"), {
+    ms: 25000, stall: (it) => (it.op === "A" ? 10600 : 0),
+  });
+  await page.evaluate(() => {
+    LONG("A", {}, () => { LOST.push("A"); LONG("A-lost"); return () => FOUND.push("A"); });
+    LONG("B", {}, () => { LOST.push("B"); });
+  });
+  const race = await raceR;
+  await sleep(100);
+  check("an answer landing after the page gave its title up does not clear the next: B arrives, once",
+    JSON.stringify(race.got.map((i) => i.op)) === '["A","B","A-lost"]' &&
+    race.titles.filter((t) => /"op":"B"/.test(t)).length === 1, JSON.stringify(race.got.map((i) => i.op)));
+  check("A was given up unread, then taken back when Emacs said it had it; B never lost",
+    JSON.stringify(await page.evaluate(() => [LOST, FOUND])) === '[["A"],["A"]]', JSON.stringify(await page.evaluate(() => [LOST, FOUND])));
+  check("and the title is put back after B", (await page.title()) === "PR View", await page.title());
 
   // XW.open: a tab of this device's browser, for a web address or a page
   // of Emacs's own; nothing else.
