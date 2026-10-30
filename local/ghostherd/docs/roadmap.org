@@ -1047,6 +1047,17 @@ project's agents are on, and open them from there.
 - [X] For that: 3 ERT, 2 pytest and 2 extended (one on the notes as
   Emacs writes them), 5 WebKit checks; 32 guards broken on purpose,
   each caught
+- [X] What an agent writes into a file is not what it names: a test's
+  made-up PR URLs, in a fixture it wrote, showed on its card as two PRs
+  that do not exist (2026-10-30).  =herd_links= takes each tool call
+  less the arguments that carry a file's text --- claude's Write, Edit,
+  MultiEdit, NotebookEdit; agy's write_to_file, write_file,
+  replace_file_content, multi_replace_file_content, edit_file; grok's
+  write, search_replace and its other toolsets' edits
+  (=links.FILE_CONTENT=) --- and keeps the path, the command, a URL
+  fetched.  What it read is kept by the sidecar alone, so a restart
+  reads every transcript again under the new rule.  3 pytest, each
+  broken on purpose and caught
 
 ** What is left
 
