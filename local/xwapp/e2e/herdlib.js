@@ -28,7 +28,14 @@ async function phonePage(browser, opts) {
     if (parts[0] !== SECRET) return route.fulfill({ status: 404, body: "Not Found" });
     const rest = parts.slice(1);
     if (rest[0] === "hello") return route.fulfill({ status: 204 });
-    if (rest[0] === "intent") { intents.push(JSON.parse(req.postData())); return route.fulfill({ status: 204 }); }
+    if (rest[0] === "intent") {
+      const it = JSON.parse(req.postData());
+      // OPTS.refuse(intent): answered as Emacs answers one it cannot take.
+      const no = opts.refuse && opts.refuse(it);
+      if (no) return route.fulfill({ status: no, contentType: "text/plain", body: "refused" });
+      intents.push(it);
+      return route.fulfill({ status: 204 });
+    }
     if (rest[0] === "next") { await sleep(1500); return route.fulfill({ status: 200, contentType: "application/json", body: "[]" }).catch(() => {}); }
     // The files Emacs serves the page by name (xwapp-serve-files): from
     // OPTS.files, a name each, as xwapp checks it; each asked for logged.

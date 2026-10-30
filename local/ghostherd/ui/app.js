@@ -3572,6 +3572,9 @@
   function sendPrompt(name) {
     const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
     let text = (ta ? ta.value : herdNow.compose[name] || "").trim();
+    // What the box holds, images and all, for it to have back if the
+    // prompt does not reach Emacs.
+    const draft = withImages(name, text);
     let to = name;
     // In the chat, @name at the start writes to that agent instead, and
     // @lead to the project's lead, or the one it starts.
@@ -3588,9 +3591,11 @@
     }
     const body = withImages(name, text);
     if (!body) return;
-    if (to === "@lead") emit("lead-say", { project: herdNow.room, text: body });
-    else if (to === "@primary") emit("primary-say", { text: body });
-    else emit("agent-prompt", { name: to, text: body });
+    const lost = () => giveBack(name, draft);
+    const sent = to === "@lead" ? emit("lead-say", { project: herdNow.room, text: body }, lost)
+      : to === "@primary" ? emit("primary-say", { text: body }, lost)
+      : emit("agent-prompt", { name: to, text: body }, lost);
+    if (sent === false) return setStatus(TOO_LONG, "error");
     herdNow.compose[name] = "";
     herdNow.composing.delete(name);
     delete herdNow.attach[name];
@@ -3601,6 +3606,26 @@
     }
     if (ta) ta.blur();
     renderAgents();
+  }
+
+  // Past what the page sends Emacs in one intent (xwapp.js's INTENT_MAX).
+  const TOO_LONG = "Too long to send: over 2 million characters. It is still in the box.";
+
+  // A prompt that did not reach Emacs after all goes back in NAME's box,
+  // before what has been written there since: a lost send loses no words.
+  function giveBack(name, draft) {
+    const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
+    const now = ((ta ? ta.value : herdNow.compose[name]) || "").trim();
+    const text = now ? draft + "\n\n" + now : draft;
+    herdNow.compose[name] = text;
+    if (ta) {
+      ta.value = text;
+      autoGrow(ta);
+    } else {
+      herdNow.composing.add(name);
+      if (view === "agents") renderAgents();
+    }
+    setStatus("Not sent: Emacs did not get it. It is back in " + name + "'s box.", "error");
   }
 
   // TEXT with the images attached for NAME's next prompt after it, a
@@ -5241,12 +5266,15 @@
       const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       const text = withImages(it.agent, ((ta && ta.value) || inbox.reply || "").trim());
       if (!text) { setStatus("Write the answer first"); return; }
-      inboxUnhold();
       // A lead's through its project (`ghostherd-lead-say' finds the lead
       // from it, and starts one if it is gone); primary's through primary.
-      if (it.replyVia === "primary") emit("primary-say", { text: text });
-      else if (it.replyVia === "agent") emit("agent-prompt", { name: it.agent, text: text });
-      else emit("lead-say", { project: it.project, text: text });
+      // Lost on the way, it is back in the agent's own box.
+      const lost = () => giveBack(it.agent, text);
+      const sent = it.replyVia === "primary" ? emit("primary-say", { text: text }, lost)
+        : it.replyVia === "agent" ? emit("agent-prompt", { name: it.agent, text: text }, lost)
+        : emit("lead-say", { project: it.project, text: text }, lost);
+      if (sent === false) { setStatus(TOO_LONG, "error"); return; }
+      inboxUnhold();
       delete herdNow.attach[it.agent];
       // A report answered is read, as Mark read has it; a question's goes
       // when its agent takes the answer.
