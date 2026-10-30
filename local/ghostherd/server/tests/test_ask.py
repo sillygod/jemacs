@@ -632,6 +632,78 @@ def test_cancel_withdraws_a_queued_ask(tmp_path):
         h.reply(ask["id"], "too late")
 
 
+def _cancel_note(h, name, ask_id):
+    "The line telling NAME ask ASK_ID was cancelled, as the next tick delivers it."
+    return [p["body"] for p in _deliver(h)
+            if p["to"] == name and f"Ask {ask_id} was cancelled by its asker" in p["body"]]
+
+
+def test_cancel_interrupts_a_taker_at_work_on_it(tmp_path):
+    """Delivered, its taker at work on it: Emacs is asked to interrupt it,
+    and it is told -- once it has stopped -- not to go on nor answer."""
+    h = _store(tmp_path)
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")
+    _deliver(h)
+    working = _snap(**{"agy-a2": "working"})
+    h.tick(sessions=working)
+    out = h.cancel(ask["id"])
+    assert out == {"id": ask["id"], "status": "cancelled", "told": "agy-a2", "interrupted": True}
+    got = h.tick(sessions=working)
+    assert [(c["op"], c["session"], c["args"]) for c in got["commands"]] == [
+        ("interrupt", "agy-a2", {"ask": ask["id"], "by": "claude-main"})]
+    # The note waits while it is still at work: a paste into a turn.
+    assert not [p for p in got["pending"] if p["to"] == "agy-a2"]
+    assert _cancel_note(h, "agy-a2", ask["id"]) == [
+        f"[herd] Ask {ask['id']} was cancelled by its asker, claude-main: do not carry on with it, "
+        "and do not answer it."]
+    # Once: the command is taken, and cancelling again does nothing more.
+    assert h.cancel(ask["id"]) == {"id": ask["id"], "status": "cancelled"}
+    assert h.tick(sessions=SNAP)["commands"] == []
+
+
+def test_cancel_does_not_interrupt_a_taker_idle_or_on_other_work(tmp_path, monkeypatch):
+    """Idle on it (waiting on its own asks, say), or at work on something
+    else since -- the user's words, another ask -- it is not interrupted:
+    only told.  An answer to an ask it made for this one is this one."""
+    monkeypatch.setattr(herd_mod, "ASK_ROUNDS", 20)
+    h = _store(tmp_path)
+    idle = h.ask("agy-a2", "fetch", from_name="claude-main")
+    _deliver(h)
+    assert h.cancel(idle["id"])["interrupted"] is False
+    assert h.tick(sessions=SNAP)["commands"] == []
+    assert len(_cancel_note(h, "agy-a2", idle["id"])) == 1   # not at work: told at once
+
+    working = _snap(**{"agy-a2": "working"})
+    for moved, interrupted in (("task:t1", False), ("ask:{other}", False), ("back:{sub}", True),
+                               (None, False), ("ask:{ask}", True)):
+        h.tick(sessions=SNAP)
+        ask = h.ask("agy-a2", "fetch again", from_name="claude-main")
+        _deliver(h)
+        h.tick(sessions=working)
+        sub = h.ask("agy-a", "part of it", from_name="agy-a2")
+        _deliver(h, working)
+        h.cancel(sub["id"])
+        h.tick(sessions=working)
+        item = moved and moved.format(other="feedbeef", sub=sub["id"], ask=ask["id"])
+        with h._mu:   # its conversation, as the tally pass read it since
+            h._conn.execute("INSERT INTO cost_switches (agent, at, item) VALUES (?, ?, ?)",
+                            ("agy-a2", time.time() + 1, item))
+            h._conn.commit()
+        assert h.cancel(ask["id"])["interrupted"] is interrupted, moved
+        ops = [c["op"] for c in h.tick(sessions=working)["commands"]]
+        assert ops == (["interrupt"] if interrupted else []), moved
+        assert len(_cancel_note(h, "agy-a2", ask["id"])) == 1, moved
+
+
+def test_cancel_of_an_ask_not_delivered_tells_no_one(tmp_path):
+    h = _store(tmp_path)
+    h.tick(sessions=_snap(**{"agy-a2": "working"}))
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")
+    assert h.cancel(ask["id"]) == {"id": ask["id"], "status": "cancelled"}
+    out = h.tick(sessions=SNAP)
+    assert out["commands"] == [] and out["pending"] == []
+
+
 # ---- The answer finds its way back --------------------------------------
 
 
@@ -972,6 +1044,18 @@ def test_client_failure_exit_codes(live):
     run(live, "cancel", ask_id)
     out = run(live, "reply", ask_id, "x", session="agy-a2")
     assert out.returncode == 1 and "cancelled" in out.stderr
+
+
+def test_client_cancel_says_whom_it_stopped(live):
+    "`herd cancel' of an ask its taker is at work on: interrupted, and told."
+    h = herd_mod.get_herd()
+    ask_id = run(live, "ask", "agy-a2", "fetch").stdout.strip()
+    _deliver(h)
+    h.tick(sessions=_snap(**{"agy-a2": "working"}))
+    out = run(live, "cancel", ask_id)
+    assert out.returncode == 0, out.stderr
+    assert f"ask {ask_id} cancelled; agy-a2, at work on it, is interrupted" in out.stderr
+    assert [c["op"] for c in h.tick(sessions=SNAP)["commands"]] == ["interrupt"]
 
 
 def test_client_falls_back_to_the_url_file(live, tmp_path):

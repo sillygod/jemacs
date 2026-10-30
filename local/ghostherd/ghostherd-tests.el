@@ -5233,6 +5233,20 @@ ticks live on the idle timer instead."
           (should (equal (plist-get out :id) "1"))
           (should (equal (plist-get out :text) "interrupted")))))))
 
+(ert-deftest ghostherd-test-a-cancelled-ask-interrupts-its-taker ()
+  "`herd cancel' of an ask its taker is at work on: the sidecar's
+`interrupt' command, the ask and its asker with it, reaches the taker
+through the tick's commands, and what was done goes back as its reply."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "rd")
+    (let ((got nil) (ghostherd--herd-replies nil))
+      (cl-letf (((symbol-function 'ghostherd-interrupt) (lambda (s) (push s got))))
+        (ghostherd--herd-run-commands
+         '(:commands ((:id "c1" :op "interrupt" :session "rd"
+                       :args (:ask "1a2b3c4d" :by "lead-x") :chat_id nil))))
+        (should (equal got '("rd")))
+        (should (equal ghostherd--herd-replies '((:id "c1" :text "interrupted"))))))))
+
 (ert-deftest ghostherd-test-herd-run-command-answer ()
   (ghostherd-tests--with-herd ()
     (ghostherd-tests--session :name "a")

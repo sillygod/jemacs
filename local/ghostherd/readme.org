@@ -756,6 +756,15 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   has not stopped: it is =waiting=, and its ask stays open until a turn
   ends with nothing out.  A real answer sent later still
   replaces the screen or the failure; only a cancel is final.
+- *A cancel stops its taker.*  =herd cancel= of an ask its taker already
+  has closes it, and tells the taker in a line not to go on with it
+  nor answer it --- mail, so it waits until the taker is not at work.
+  A taker at work on it still is interrupted first: the sidecar queues
+  Emacs's =interrupt= command (=ghostherd-interrupt=, Escape).  "On it"
+  is by what its conversation last switched to since the ask reached it
+  (the tally pass's =cost_switches=): the ask, or an answer to an ask it
+  made for it.  One that moved on --- the user's words, another ask ---
+  or is idle is only told.
 - *Stopped means its turn ended.*  For a taker whose hooks report, the
   ask closes only on a turn's end its hook says (=Stop=, or grok's
   interrupt) or its transcript does --- claude's marks a turn over

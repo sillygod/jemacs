@@ -61,6 +61,6 @@ the herd refuses a round, answer with where the work stands.
 
 ```bash
 "$GHOSTHERD_HERD" status ID    # the ask as it stands (JSON)
-"$GHOSTHERD_HERD" cancel ID    # withdraw it
+"$GHOSTHERD_HERD" cancel ID    # withdraw it: its taker, at work on it, is interrupted and told to stop
 "$GHOSTHERD_HERD" asks         # open and recent asks
 ```
