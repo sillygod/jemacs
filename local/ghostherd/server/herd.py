@@ -273,6 +273,8 @@ TRACE_HOLD = 3.0
 # working-out is kept, and how often -- and how many at a time -- the
 # work's commits are looked for in git.
 COST_DAYS = 30
+# How the Threads tab may order its list (`threads').
+THREAD_SORTS = ("recent", "cost")
 # What a piece of work cost, as `cost_usage' keeps it: tally.Usage's kinds.
 COST_KINDS = tally.Usage.__slots__
 COST_KEEP = 30.0
@@ -1991,11 +1993,20 @@ class HerdStore:
         return {"id": row["id"], "status": status}
 
     def cancel(self, ask_id: str) -> dict[str, Any]:
+        """Withdraw ask ASK_ID: closed as cancelled, its mail not delivered
+        yet dropped.  One its taker has is in its conversation, and closing
+        it here stops nothing there: the taker is told, in a line, not to
+        go on with it nor answer it -- mail, which waits until it is not at
+        work -- and, at work on it still (`_on_it'), is interrupted first,
+        through Emacs (the `interrupt' command: `ghostherd-interrupt').  A
+        taker that moved on from it, or is idle, is not interrupted."""
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
             row = self._ask_row(ask_id)
             if row["status"] in ASK_CLOSED:
                 return {"id": row["id"], "status": row["status"]}
+            taker = row["to_name"] if row["status"] == "delivered" else ""
+            stop = bool(taker) and self._on_it(row)
             self._close_ask(row["id"], "cancelled", now, error="cancelled by the asker")
             self._conn.execute(
                 """
@@ -2004,8 +2015,46 @@ class HerdStore:
                 """,
                 (row["id"],),
             )
+            if stop:
+                self._command("interrupt", taker, {"ask": row["id"], "by": row["from_name"]})
+            if taker:
+                self._conn.execute(
+                    """
+                    INSERT INTO mail (id, from_name, to_name, body, submit, handoff, status, created_at)
+                    VALUES (?, 'herd', ?, ?, 1, 0, 'queued', ?)
+                    """,
+                    (str(uuid.uuid4()), taker,
+                     f"[herd] Ask {row['id']} was cancelled by its asker, {row['from_name']}: do not "
+                     "carry on with it, and do not answer it.", now),
+                )
             self._conn.commit()
-        return {"id": row["id"], "status": "cancelled"}
+        out: dict[str, Any] = {"id": row["id"], "status": "cancelled"}
+        if taker:
+            out.update(told=taker, interrupted=stop)
+        return out
+
+    def _on_it(self, row: dict[str, Any]) -> bool:
+        """Whether ROW's taker is at work on ROW's ask, delivered: working,
+        and what its conversation last switched to since the ask reached it
+        (`cost_switches', as the tally pass read it) is the ask, or an
+        answer to an ask it made for it -- or nothing read since.  Another
+        ask, or words of the user's, and it moved on.  Caller holds `_mu`."""
+        state = self._conn.execute("SELECT state FROM snapshot WHERE name = ?", (row["to_name"],)).fetchone()
+        if not state or state[0] != "working":
+            return False
+        since = tally.epoch(row["delivered_at"] or row["created_at"]) or 0
+        last = self._conn.execute(
+            "SELECT item FROM cost_switches WHERE agent = ? AND at >= ? ORDER BY at DESC, rowid DESC LIMIT 1",
+            (row["to_name"], since)).fetchone()
+        if not last:
+            return True
+        item = last[0] or ""
+        if item == "ask:" + row["id"]:
+            return True
+        if item.startswith("back:"):
+            sub = self._conn.execute("SELECT parent FROM asks WHERE id = ?", (item[5:],)).fetchone()
+            return bool(sub) and sub[0] == row["id"]
+        return False
 
     def detach(self, ask_id: str) -> dict[str, Any]:
         """The asker stopped waiting: send the answer as mail instead."""
@@ -2077,19 +2126,28 @@ class HerdStore:
                 for r in self._conn.execute(
                     "SELECT name, kind, state, project, role, branch FROM snapshot").fetchall()}
 
-    def threads(self, limit: int = 40) -> dict[str, Any]:
+    def threads(self, limit: int = 40, project: str | None = None, sort: str = "recent") -> dict[str, Any]:
         """The threads with the latest activity (LIMIT of them), every open
         ask in the herd for the strip across the top, and how many threads
-        are live -- an ask in them still open."""
+        are live -- an ask in them still open.  PROJECT, a project as a
+        thread names it (its leaf), keeps the threads it is in; SORT "cost"
+        puts them by what their task cost, the most first, those with no
+        cost known last (newest first among them).  Both are done before
+        the list is cut to LIMIT, so its older pages are the same view's;
+        `projects' is every project the threads read name, for the page's
+        chips, and `view' what was asked for."""
         limit = max(1, min(200, int(limit)))
+        if sort not in THREAD_SORTS:
+            raise ValueError(f"sort is one of {', '.join(THREAD_SORTS)}")
+        project = (project or "").strip() or None
+        window = max(threads_mod.WINDOW, limit * 10)
         with self._mu:
             rows = self._thread_rows(
-                "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT ?",
-                (max(threads_mod.WINDOW, limit * 10),))
+                "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT ?", (window,))
             open_rows = self._thread_rows(f"WHERE status IN {ASK_OPEN}")
             by_id = self._with_ancestors(rows + open_rows)
             snap = self._thread_snap()
-        listed, more = threads_mod.summaries(list(by_id.values()), snap, limit)
+        listed, _ = threads_mod.summaries(list(by_id.values()), snap, len(by_id))
         talking = threads_mod.talking(open_rows, snap, by_id)
         # What the task each thread is part of cost (cost.py), and lead mode
         # against direct mode over a week and a month.
@@ -2103,12 +2161,20 @@ class HerdStore:
                 t = threads_mod.direct(row, snap, view["on"].get(row["agent"]) == "task:" + row["id"])
                 t["cost"] = self._thread_cost(t["id"], view)
                 listed.append(t)
+        names = sorted({p for t in listed for p in t["projects"]}, key=str.lower)
+        if project:
+            listed = [t for t in listed if project in t["projects"]]
         listed.sort(key=lambda t: -(t["at"] or 0))
-        more = more or len(listed) > limit
+        if sort == "cost":
+            listed.sort(key=lambda t: (t["cost"] is None, -((t["cost"] or {}).get("total") or 0)))
+        # A project's threads may be older than the asks read: more are
+        # there to read while the window is full.
+        more = len(listed) > limit or bool(project and len(rows) >= window and limit < 200)
         listed = listed[:limit]
         threads_mod.one_cost(listed)
         return {"threads": listed, "more": more, "talking": talking,
                 "live": len({t["thread"] for t in talking}),
+                "projects": names, "view": {"project": project or "", "sort": sort},
                 "costs": [self.costs(days)["compare"] for days in (7, 30)]}
 
     def thread(self, id: str | None = None, ask: str | None = None,

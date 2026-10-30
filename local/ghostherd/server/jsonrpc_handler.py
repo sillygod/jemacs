@@ -545,12 +545,18 @@ class JsonRpcHandler:
         return get_herd().recent_asks()
 
     def _herd_threads(self, params: dict) -> dict:
-        "The page's Threads tab: the recent threads, and what is open now."
+        """The page's Threads tab: the recent threads -- one project's, by
+        what they cost -- and what is open now."""
         try:
             limit = int(params.get("limit") or 40)
         except (TypeError, ValueError):
             raise ValueError("limit must be a number") from None
-        return get_herd().threads(limit)
+        project, sort = params.get("project") or "", params.get("sort") or "recent"
+        if not isinstance(project, str) or len(project) > 400:
+            raise ValueError("project must be a project's name")
+        if not isinstance(sort, str):
+            raise ValueError("sort must be a string")
+        return get_herd().threads(limit, project=project, sort=sort)
 
     def _herd_thread(self, params: dict) -> dict:
         "One thread, whole: by its id, an ask in it, or an agent's latest."

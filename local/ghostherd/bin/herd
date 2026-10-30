@@ -474,7 +474,12 @@ def cmd_status(args):
 
 def cmd_cancel(args):
     out = rpc("herd_cancel", {"id": args.id})
-    say("ask %s %s" % (out["id"], out["status"]))
+    said = "ask %s %s" % (out["id"], out["status"])
+    # One its taker had: interrupted when at work on it, and told to stop.
+    if out.get("told"):
+        said += ("; %s, at work on it, is interrupted and told not to go on with it" if out.get("interrupted")
+                 else "; %s is told not to go on with it (not interrupted: it is not at work on it)") % out["told"]
+    say(said)
     return 0
 
 

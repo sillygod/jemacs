@@ -5233,6 +5233,20 @@ ticks live on the idle timer instead."
           (should (equal (plist-get out :id) "1"))
           (should (equal (plist-get out :text) "interrupted")))))))
 
+(ert-deftest ghostherd-test-a-cancelled-ask-interrupts-its-taker ()
+  "`herd cancel' of an ask its taker is at work on: the sidecar's
+`interrupt' command, the ask and its asker with it, reaches the taker
+through the tick's commands, and what was done goes back as its reply."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--session :name "rd")
+    (let ((got nil) (ghostherd--herd-replies nil))
+      (cl-letf (((symbol-function 'ghostherd-interrupt) (lambda (s) (push s got))))
+        (ghostherd--herd-run-commands
+         '(:commands ((:id "c1" :op "interrupt" :session "rd"
+                       :args (:ask "1a2b3c4d" :by "lead-x") :chat_id nil))))
+        (should (equal got '("rd")))
+        (should (equal ghostherd--herd-replies '((:id "c1" :text "interrupted"))))))))
+
 (ert-deftest ghostherd-test-herd-run-command-answer ()
   (ghostherd-tests--with-herd ()
     (ghostherd-tests--session :name "a")
@@ -15719,6 +15733,7 @@ task is not known with none."
         (ghostherd--log nil)
         (ghostherd-threads--watching nil) (ghostherd-threads--timer nil)
         (ghostherd-threads--limit 40) (ghostherd-threads--req nil)
+        (ghostherd-threads--project "") (ghostherd-threads--sort "recent")
         (ghostherd-threads--sig nil) (ghostherd-threads--thread-sig nil))
     (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
               ((symbol-function 'run-at-time) (lambda (&rest _) 'a-timer))
@@ -15804,6 +15819,7 @@ comes to the page whole -- or why it could not be read."
         (ghostherd--log nil)
         (ghostherd-threads--watching nil) (ghostherd-threads--timer nil)
         (ghostherd-threads--limit 40) (ghostherd-threads--req nil)
+        (ghostherd-threads--project "") (ghostherd-threads--sort "recent")
         (ghostherd-threads--sig nil) (ghostherd-threads--thread-sig nil))
     (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
               ((symbol-function 'run-at-time) (lambda (&rest _) 'a-timer))
@@ -15819,7 +15835,7 @@ comes to the page whole -- or why it could not be read."
                                                        :talking nil :live 1 :more nil))
                                  ("herd_thread" (list :id "t1" :lanes nil :msgs nil :waiting nil))))))))
       (ghostherd-memory-page--handle '((op . "threads-watch")))
-      (should (equal (car asked) '("herd_threads" :limit 40)))
+      (should (equal (car asked) '("herd_threads" :limit 40 :project "" :sort "recent")))
       (should (equal (car (car shown)) "renderThreads"))
       (should (equal (plist-get (cdr (car shown)) :live) 1))
       ;; The same list again is not pushed again.
@@ -15827,7 +15843,7 @@ comes to the page whole -- or why it could not be read."
       (ghostherd-threads--tick)
       (should-not shown)
       (ghostherd-memory-page--handle '((op . "threads-more")))
-      (should (equal (car asked) '("herd_threads" :limit 80)))
+      (should (equal (car asked) '("herd_threads" :limit 80 :project "" :sort "recent")))
       (ghostherd-memory-page--handle '((op . "thread-open") (ask . "1a2b3c4d")))
       (should (equal (car asked) '("herd_thread" :ask "1a2b3c4d")))
       (should (equal (car (car shown)) "renderThread"))
@@ -15848,6 +15864,50 @@ comes to the page whole -- or why it could not be read."
       (ghostherd-memory-page--handle '((op . "threads-unwatch")))
       (should-not ghostherd-threads--watching)
       (should (= ghostherd-threads--limit 40)))))
+
+(ert-deftest ghostherd-test-the-threads-list-is-of-the-project-and-order-the-page-keeps ()
+  "The page says which project's threads, and in which order, as it
+watches and when the viewer changes them: asked of the sidecar from the
+first page again, with every project and the view it is of passed on."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (let (asked shown
+        (ghostherd--log nil)
+        (ghostherd-threads--watching nil) (ghostherd-threads--timer nil)
+        (ghostherd-threads--limit 40) (ghostherd-threads--req nil)
+        (ghostherd-threads--project "") (ghostherd-threads--sort "recent")
+        (ghostherd-threads--sig nil) (ghostherd-threads--thread-sig nil))
+    (cl-letf (((symbol-function 'xwapp-live-p) (lambda (&rest _) t))
+              ((symbol-function 'run-at-time) (lambda (&rest _) 'a-timer))
+              ((symbol-function 'timerp) (lambda (x) (eq x 'a-timer)))
+              ((symbol-function 'cancel-timer) #'ignore)
+              ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) shown)))
+              ((symbol-function 'ghostherd-memory-request-async)
+               (lambda (method ok params &optional _err)
+                 (push (cons method params) asked)
+                 (funcall ok (list :threads nil :talking nil :live 0 :more nil
+                                   :projects '("dp" "solo")
+                                   :view (list :project (plist-get params :project)
+                                               :sort (plist-get params :sort)))))))
+      (ghostherd-memory-page--handle '((op . "threads-watch") (project . "solo") (sort . "cost")))
+      (should (equal (car asked) '("herd_threads" :limit 40 :project "solo" :sort "cost")))
+      (let ((pushed (cdr (car shown))))
+        (should (equal (car (car shown)) "renderThreads"))
+        (should (equal (json-encode (plist-get pushed :projects)) "[\"dp\",\"solo\"]"))
+        (should (equal (json-encode (plist-get pushed :view)) "{\"project\":\"solo\",\"sort\":\"cost\"}")))
+      ;; A change goes back to the first page of the new view.
+      (ghostherd-memory-page--handle '((op . "threads-more")))
+      (should (equal (car asked) '("herd_threads" :limit 80 :project "solo" :sort "cost")))
+      (ghostherd-memory-page--handle '((op . "threads-view") (project . "") (sort . "recent")))
+      (should (equal (car asked) '("herd_threads" :limit 40 :project "" :sort "recent")))
+      ;; An order not one of the two is the newest first; no project, every one.
+      (ghostherd-memory-page--handle '((op . "threads-view") (project . 5) (sort . "size")))
+      (should (equal (car asked) '("herd_threads" :limit 40 :project "" :sort "recent")))
+      ;; Not watching: kept for the next watch, not asked for now.
+      (ghostherd-memory-page--handle '((op . "threads-unwatch")))
+      (setq asked nil)
+      (ghostherd-memory-page--handle '((op . "threads-view") (project . "dp") (sort . "cost")))
+      (should-not asked)
+      (should (equal (list ghostherd-threads--project ghostherd-threads--sort) '("dp" "cost"))))))
 
 ;;; Kept denied, expired, cleared (ask 6c009f2f)
 

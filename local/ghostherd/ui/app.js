@@ -441,35 +441,82 @@
   // The image whole, over the page: fitted to it, at its own size at a
   // press, scrolled.  Esc, ✕ or a press beside it puts it away.  In a
   // browser, Open gives it a tab of its own -- a phone zooms it there.
+  // Its message's other images are a ‹ › away, ← → or a swipe: the
+  // thumbnails beside it (its .eimgs), not the reports among them.
   function openImage(el) {
-    const file = el.getAttribute("data-img") || "";
-    const url = IMG_ID.test(file.split(".")[0]) ? XW.file(file) : "";
-    if (!url) return;
+    const shot = (b) => {
+      const file = b.getAttribute("data-img") || "";
+      const url = IMG_ID.test(file.split(".")[0]) ? XW.file(file) : "";
+      return url ? { url: url, name: b.getAttribute("data-name") || "" } : null;
+    };
+    if (!shot(el)) return;
+    const group = el.closest(".eimgs");
+    const them = group ? Array.from(group.querySelectorAll(".eimg")) : [el];
+    const shots = them.map(shot).filter(Boolean);
+    let at = Math.max(0, them.filter(shot).indexOf(el));
+    const many = shots.length > 1;
     closeImage();
     const wrap = document.createElement("div");
     wrap.className = "imgview";
     wrap.setAttribute("role", "dialog");
-    wrap.setAttribute("aria-label", el.getAttribute("data-name") || "Image");
     wrap.tabIndex = -1;
-    wrap.innerHTML = '<div class="imgbar"><span class="imgname"></span>' +
+    wrap.innerHTML = '<div class="imgbar">' +
+      (many ? '<button type="button" class="ghost imgprev" title="The one before (←)">‹</button>' +
+        '<span class="imgat"></span>' +
+        '<button type="button" class="ghost imgnext" title="The next (→)">›</button>' : "") +
+      '<span class="imgname"></span>' +
       (XW.browser ? '<a class="imgopen" target="_blank" rel="noopener noreferrer">Open</a>' : "") +
       '<button type="button" class="ghost imgclose" title="Close (Esc)">✕</button></div>' +
       '<div class="imgscroll"><img alt=""></div>';
-    wrap.querySelector(".imgname").textContent = el.getAttribute("data-name") || "";
     const img = wrap.querySelector("img");
-    img.src = url;
-    img.alt = el.getAttribute("data-name") || "";
     const open = wrap.querySelector(".imgopen");
-    if (open) open.href = url;
+    const show = (i) => {
+      if (i < 0 || i >= shots.length) return;
+      at = i;
+      const s = shots[i];
+      wrap.classList.remove("actual");
+      wrap.setAttribute("aria-label", s.name || "Image");
+      wrap.querySelector(".imgname").textContent = s.name;
+      img.src = s.url;
+      img.alt = s.name;
+      if (open) open.href = s.url;
+      if (!many) return;
+      wrap.querySelector(".imgat").textContent = (i + 1) + " / " + shots.length;
+      wrap.querySelector(".imgprev").disabled = i === 0;
+      wrap.querySelector(".imgnext").disabled = i === shots.length - 1;
+    };
+    show(at);
     wrap.addEventListener("click", (ev) => {
       if (ev.target === img) wrap.classList.toggle("actual");
+      else if (ev.target.closest(".imgprev")) show(at - 1);
+      else if (ev.target.closest(".imgnext")) show(at + 1);
       else if (ev.target.closest(".imgclose") || ev.target === wrap || ev.target.classList.contains("imgscroll")) closeImage();
     });
     // Over the page: its keys (j, k, 1-4 ...) are not the page's meanwhile.
     wrap.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
       if (ev.key === "Escape") { closeImage(); ev.preventDefault(); }
+      else if (many && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+        show(at + (ev.key === "ArrowRight" ? 1 : -1));
+        ev.preventDefault();
+      }
     });
+    // A swipe across it, one finger: the next, or the one before -- not
+    // at its own size, where a swipe scrolls it.
+    if (many) {
+      const scroll = wrap.querySelector(".imgscroll");
+      let from = null;
+      scroll.addEventListener("touchstart", (ev) => {
+        from = ev.touches.length === 1 && !wrap.classList.contains("actual")
+          ? { x: ev.touches[0].clientX, y: ev.touches[0].clientY } : null;
+      }, { passive: true });
+      scroll.addEventListener("touchend", (ev) => {
+        const t = from && ev.changedTouches[0];
+        const dx = t ? t.clientX - from.x : 0, dy = t ? t.clientY - from.y : 0;
+        from = null;
+        if (Math.abs(dx) > 40 && Math.abs(dx) > 2 * Math.abs(dy)) show(at + (dx < 0 ? 1 : -1));
+      }, { passive: true });
+    }
     imgBack = document.activeElement;
     document.body.appendChild(wrap);
     wrap.focus();
@@ -1186,6 +1233,11 @@
   const IMAGE_BUTTON = '<button type="button" class="ghost small" data-act="a:image" ' +
     (XW.elsewhere ? 'title="A photo, or one from the camera, in the prompt as a file">'
       : 'title="Put the clipboard\'s image in the prompt, as a file (⌘V does too)">') + "Image</button>";
+  // Where a prompt is written to an agent (its data-name), and the box:
+  // its card, a room's column or chat foot, or the Inbox's reply to it --
+  // each takes images the same way.
+  const PROMPT_ROW = ".arow, .rcol, .cfoot, .ibreply";
+  const PROMPT_BOX = "textarea.agent-text, textarea.ibreplybox";
 
   function cssName(n) {
     return String(n).replace(/["\\]/g, "\\$&");
@@ -3198,7 +3250,7 @@
       else herdNow.tallyOpen.add(key);
       return GM.renderHerdAgain();
     }
-    const row = el.closest(".arow, .rcol, .cfoot, .cmeter");
+    const row = el.closest(PROMPT_ROW + ", .cmeter");
     const name = row && row.getAttribute("data-name");
     const group = el.closest(".pgroup");
     const project = group && group.getAttribute("data-project");
@@ -3402,7 +3454,7 @@
     }
     if (act === "send") return sendPrompt(name);
     if (act === "image") {
-      const ta = row && row.querySelector("textarea.agent-text");
+      const ta = row && row.querySelector(PROMPT_BOX);
       if (ta) askImage(ta);
       return;
     }
@@ -3530,10 +3582,8 @@
         text = text.slice(at[0].length).trim();
       }
     }
-    const files = (herdNow.attach[name] || []).map((a) => a.path);
-    if (!text && !files.length) return;
-    // The images go after what you wrote, a file name a line.
-    const body = [text, files.join("\n")].filter(Boolean).join("\n\n");
+    const body = withImages(name, text);
+    if (!body) return;
     if (to === "@lead") emit("lead-say", { project: herdNow.room, text: body });
     else if (to === "@primary") emit("primary-say", { text: body });
     else emit("agent-prompt", { name: to, text: body });
@@ -3549,6 +3599,13 @@
     renderAgents();
   }
 
+  // TEXT with the images attached for NAME's next prompt after it, a
+  // file name a line; "" with neither.
+  function withImages(name, text) {
+    const files = (herdNow.attach[name] || []).map((a) => a.path);
+    return [text, files.join("\n")].filter(Boolean).join("\n\n");
+  }
+
   // An image goes with a prompt as a file: Emacs reads the clipboard,
   // saves it, and hands back its name and a preview, shown above the box
   // until the prompt is sent.  Every CLI can read a file, and the page
@@ -3560,7 +3617,7 @@
   // and the page sends it, in a request.  Made smaller first: a photo is
   // larger than a prompt needs, and than a request Emacs takes.
   function askImage(ta) {
-    const name = ta.closest(".arow, .rcol, .cfoot").getAttribute("data-name");
+    const name = ta.closest(PROMPT_ROW).getAttribute("data-name");
     if (!XW.elsewhere) return emit("agent-image", { name: name });
     pickFor = name;
     picker.value = "";
@@ -3643,7 +3700,7 @@
   // textarea would take anyway; Emacs says which.
   app.addEventListener("paste", (ev) => {
     const t = ev.target;
-    if (!t.classList || !t.classList.contains("agent-text")) return;
+    if (!t.matches || !t.matches(PROMPT_BOX)) return;
     if (Array.from((ev.clipboardData && ev.clipboardData.types) || []).includes("text/plain")) return;
     ev.preventDefault();
     askImage(t);
@@ -4768,7 +4825,9 @@
   // inbox-set for read / done / override.  Desk: a list and an in-place
   // handler.  Phone: cards with their actions inline.
 
-  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", undo: null, detail: null, thOpen: {} };
+  // REPLYING, the report whose reply box is open: a report stays compact
+  // until Reply is pressed.
+  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {} };
   let inboxWatching = false;
 
   const INBOX_FILTERS = [["all", "All"], ["stuck", "Stuck"], ["approve", "Approvals"], ["questions", "Questions"], ["updates", "Updates"]];
@@ -4909,10 +4968,16 @@
         (phone ? "" : '<span class="ibmeta">The agent is told and runs exactly this call again. It lapses in 30 min.</span>') + "</div>";
     }
     if (it.kind === "question") {
-      return '<div class="ibreply">' +
-        '<textarea class="ibreplybox" data-id="' + d + '" rows="3" placeholder="Write the answer it is waiting for">' + esc(inbox.reply) + "</textarea>" +
-        '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:reply" data-id="' + d + '">Send</button>' +
-        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Answer later</button></div></div>';
+      return inboxReplyBox(it, "Write the answer it is waiting for",
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Answer later</button>');
+    }
+    if (it.kind === "report" && inbox.replying === it.id) {
+      return inboxReplyBox(it, "Write your reply",
+        '<button type="button" class="ibbtn" data-act="ib:reply-close" data-id="' + d + '">Cancel</button>');
+    }
+    if (it.kind === "report") {
+      return '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:reply-open" data-id="' + d + '">Reply</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Mark read</button></div>';
     }
     if (it.kind === "proposal" && it.lint) {
       return '<div class="ibprop">' +
@@ -4963,6 +5028,19 @@
         '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
     }
     return '<div class="ibacts"><button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Mark read</button></div>';
+  }
+
+  // The box a question's answer or a reply to a report is written in, sent
+  // as `ib:reply' routes it, and the images attached for its agent's next
+  // prompt as a room's box takes them (the Image button, a paste).  LATER,
+  // the button beside Send that puts it off.
+  function inboxReplyBox(it, placeholder, later) {
+    const d = esc(it.id);
+    return '<div class="ibreply" data-name="' + esc(it.agent) + '">' +
+      '<div class="attach">' + attachHtml(it.agent) + "</div>" +
+      '<textarea class="ibreplybox" data-id="' + d + '" rows="3" placeholder="' + placeholder + '">' + esc(inbox.reply) + "</textarea>" +
+      '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:reply" data-id="' + d + '">Send</button>' +
+      IMAGE_BUTTON + later + "</div></div>";
   }
 
   // The full detail of one item: the desk's right pane, and a phone card once
@@ -5036,6 +5114,7 @@
   function inboxSelect(it) {
     inbox.sel = it ? it.id : "";
     inbox.reply = "";
+    inbox.replying = "";
     inbox.toast = "";
     inbox.detail = null;
     inbox.thOpen = {};
@@ -5049,6 +5128,7 @@
     inbox.items = rest;
     inbox.sel = next ? next.id : "";
     inbox.reply = "";
+    inbox.replying = "";
     inbox.toast = msg;
     inbox.undo = undoable ? { id: it.id } : null;
     inbox.detail = null;
@@ -5096,13 +5176,27 @@
     if (act === "guard-approve") { emit("guard-approve", { id: it.guardId }); inboxResolve(it, "Approved once — the agent was told to run it again", false); return; }
     if (act === "prop-approve") { emit("memory-proposal-approve", { id: it.proposalId }); inboxResolve(it, it.lint ? "Check on — turn it off on the Memory tab" : "Approved — handed to the lead to apply on a branch", false); return; }
     if (act === "prop-reject") { emit("memory-proposal-reject", { id: it.proposalId, reason: "" }); inboxResolve(it, it.lint ? "Rejected — no check; the fact stays in memory" : "Rejected — the facts stay in memory", false); return; }
+    if (act === "reply-open" || act === "reply-close") {
+      inbox.replying = act === "reply-open" ? it.id : "";
+      inbox.reply = "";
+      renderInbox();
+      const ta = act === "reply-open" && app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
+      if (ta) ta.focus();
+      return;
+    }
     if (act === "reply") {
       const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
-      const text = ((ta && ta.value) || inbox.reply || "").trim();
+      const text = withImages(it.agent, ((ta && ta.value) || inbox.reply || "").trim());
       if (!text) { setStatus("Write the answer first"); return; }
+      // A lead's through its project (`ghostherd-lead-say' finds the lead
+      // from it, and starts one if it is gone); primary's through primary.
       if (it.replyVia === "primary") emit("primary-say", { text: text });
       else if (it.replyVia === "agent") emit("agent-prompt", { name: it.agent, text: text });
       else emit("lead-say", { project: it.project, text: text });
+      delete herdNow.attach[it.agent];
+      // A report answered is read, as Mark read has it; a question's goes
+      // when its agent takes the answer.
+      if (it.kind === "report") emit("inbox-set", { id: it.id, done: true });
       inboxResolve(it, "Reply sent to " + it.agent, false);
       return;
     }
@@ -5155,12 +5249,46 @@
   // / renderThreads) and one thread at a time (thread-open / renderThread).
   // Phone: the list, then the thread as a conversation, "A → B".
 
+  // PROJECT / SORT, the view the list is of: one project's threads ("" for
+  // every one's), newest first or by what they cost -- done by the herd
+  // before it cuts the list to a page (herd_threads).  PROJECTS, every
+  // project the threads it read name, for the chips.
   let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
-                  costs: [], costDays: 7, costOpen: false };
+                  costs: [], costDays: 7, costOpen: false, projects: [], ...thViewKept() };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
   const TH_LABEL = { ask: "ask", handoff: "handoff", answer: "answer", message: "message", failed: "failed", cancelled: "cancelled" };
+
+  // The view the viewer picked, kept for them in this browser.  Storage
+  // can be missing or refused (a private window, the desk's file page):
+  // every project's threads then, newest first.
+  function thViewKept() {
+    try {
+      const project = localStorage.getItem("ghostherd.threads.project") || "";
+      return { project: project, sort: localStorage.getItem("ghostherd.threads.sort") === "cost" ? "cost" : "recent" };
+    } catch (e) {
+      return { project: "", sort: "recent" };
+    }
+  }
+
+  function thViewKeep() {
+    try {
+      localStorage.setItem("ghostherd.threads.project", threads.project);
+      localStorage.setItem("ghostherd.threads.sort", threads.sort);
+    } catch (e) {
+      // Not kept: this page keeps it until it is loaded again.
+    }
+  }
+
+  // The page of threads loaded, as the view now picked shows it -- until
+  // the herd's own list of that view comes.
+  function thPreview(list) {
+    const p = threads.project;
+    const out = list.filter((t) => !p || (t.projects || []).includes(p));
+    const total = (t) => (t.cost && t.cost.total) || -1;
+    return out.sort((a, b) => (threads.sort === "cost" ? total(b) - total(a) : 0) || (b.at || 0) - (a.at || 0));
+  }
 
   function thNarrow() { return window.innerWidth < 720; }
   function thWho(n) { return n === "user" ? "You" : String(n || "?"); }
@@ -5301,7 +5429,7 @@
     src = null;
     chrome();
     app.innerHTML = '<div class="page wide threadspage"></div>';
-    if (!threadsWatching) { threadsWatching = true; emit("threads-watch"); }
+    if (!threadsWatching) { threadsWatching = true; emit("threads-watch", { project: threads.project, sort: threads.sort }); }
     if (req) openThread(req);
     else renderThreads();
   }
@@ -5359,9 +5487,26 @@
       '<span class="thcount">' + t.count + (t.count === 1 ? " message" : " messages") + "</span></span></button>";
   }
 
+  // Above the list: a chip a project, every one's first -- the one picked
+  // too, though none of its threads is among those read -- and the order.
+  function thBar() {
+    const names = threads.projects.slice();
+    if (threads.project && !names.includes(threads.project)) names.push(threads.project);
+    const chip = (p, label) => '<button type="button" class="chip' + (threads.project === p ? " on" : "") +
+      '" data-act="th:project" data-project="' + esc(p) + '" aria-pressed="' + (threads.project === p) + '">' + esc(label) + "</button>";
+    const order = (k, label, title) => '<button type="button" class="ghost small' + (threads.sort === k ? " on" : "") +
+      '" data-act="th:sort" data-sort="' + k + '" aria-pressed="' + (threads.sort === k) + '" title="' + title + '">' + label + "</button>";
+    return '<div class="thbar">' +
+      (names.length ? '<div class="chips thpchips" role="group" aria-label="Project">' + chip("", "All") +
+        names.map((p) => chip(p, p)).join("") + "</div>" : "") +
+      '<span class="msort" role="group" aria-label="Order">' + order("recent", "Recent", "Newest activity first") +
+      order("cost", "Cost", "What its task cost, the most first; those whose cost is not known last") + "</span></div>";
+  }
+
   function thList() {
-    return '<section class="thlist" aria-label="Threads">' +
+    return '<section class="thlist" aria-label="Threads">' + thBar() +
       (threads.list.length ? threads.list.map(thRow).join("")
+        : threads.project ? '<p class="thquiet thpad">No threads of ' + esc(threads.project) + " among the recent ones.</p>"
         : '<p class="thquiet thpad">No threads yet: one starts when an agent asks another, hands work to another project, or you tell an agent something directly.</p>') +
       (threads.more ? '<button type="button" class="ghost thmore" data-act="th:more">Older threads</button>' : "") + "</section>";
   }
@@ -5513,6 +5658,13 @@
       else openThread(id ? { id } : { ask });
     } else if (act === "more") {
       emit("threads-more");
+    } else if (act === "project" || act === "sort") {
+      if (act === "project") threads.project = el.getAttribute("data-project") || "";
+      else threads.sort = el.getAttribute("data-sort") === "cost" ? "cost" : "recent";
+      thViewKeep();
+      emit("threads-view", { project: threads.project, sort: threads.sort });
+      threads.list = thPreview(threads.list);
+      renderThreads();
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
       renderThreads();
@@ -5544,10 +5696,16 @@
     // The Threads tab's list and what is open now, pushed while it is
     // shown.  The desk opens the newest thread when none is open.
     renderThreads: (p) => {
-      threads.list = (p && p.threads) || [];
+      // A list of the view before the viewer changed it, asked for before
+      // they did: not shown.
+      const v = p && p.view;
+      if (!(v && v.sort && (v.project !== threads.project || v.sort !== threads.sort))) {
+        threads.list = (p && p.threads) || [];
+        threads.more = !!(p && p.more);
+        threads.projects = (p && Array.isArray(p.projects) && p.projects) || [];
+      }
       threads.talking = (p && p.talking) || [];
       threads.live = (p && p.live) || 0;
-      threads.more = !!(p && p.more);
       threads.costs = (p && p.costs) || [];
       threadsBadge();
       if (view !== "threads") return;
@@ -5613,7 +5771,7 @@
       const name = p && p.name;
       if (!name || !p.path) return;
       (herdNow.attach[name] = herdNow.attach[name] || []).push({ path: String(p.path), thumb: p.thumb || null });
-      const ta = app.querySelector('[data-name="' + cssName(name) + '"] textarea.agent-text');
+      const ta = app.querySelector(PROMPT_BOX.split(", ").map((b) => '[data-name="' + cssName(name) + '"] ' + b).join(", "));
       if (!ta) {
         herdNow.composing.add(name);
         if (view === "agents") renderAgents();
@@ -5632,7 +5790,7 @@
         if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) document.execCommand("insertText", false, text);
         return;
       }
-      if (el && el.classList && el.classList.contains("agent-text")) askImage(el);
+      if (el && el.matches && el.matches(PROMPT_BOX)) askImage(el);
       else setStatus("To attach an image, click into a prompt box first");
     },
 
