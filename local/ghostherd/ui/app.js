@@ -484,6 +484,10 @@
       wrap.querySelector(".imgat").textContent = (i + 1) + " / " + shots.length;
       wrap.querySelector(".imgprev").disabled = i === 0;
       wrap.querySelector(".imgnext").disabled = i === shots.length - 1;
+      // ‹ or › with the focus, shut at an end, drops it to the page -- and
+      // with it ← → and Esc, which then is the page's own (back).
+      const a = document.activeElement;
+      if (wrap.isConnected && (!wrap.contains(a) || a.disabled)) wrap.focus();
     };
     show(at);
     wrap.addEventListener("click", (ev) => {
