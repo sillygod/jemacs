@@ -12,7 +12,9 @@
  *   XW.esc(s)            text for HTML, quotes included
  *   XW.bridge(prefix)    an emit(op, extra, lost) that queues intents for
  *                        Emacs: false for one too long to send, and LOST
- *                        called if one sent does not reach Emacs
+ *                        called if one sent does not reach Emacs; what
+ *                        LOST returns, if a function, is called should
+ *                        Emacs turn out to have had it after all
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -47,12 +49,25 @@
 
   // ---- Intents ---------------------------------------------------------
   //
-  // Emacs polls document.title and resets it once read.  A title set
-  // before then would overwrite the unread one, so intents queue and go
-  // out one per reset.  The counter keeps two identical intents (a second
-  // Refresh) apart -- xwapp ignores a title equal to the last one it read
-  // -- and seeding it with the clock keeps a reloaded page's first intent
-  // apart from the last page's.
+  // Emacs polls document.title and answers each title it reads.  A title
+  // set before then would overwrite the unread one, so intents queue and
+  // go out one per answer.  The counter keeps two identical intents (a
+  // second Refresh) apart -- xwapp ignores a title equal to the last one
+  // it read -- and seeding it with the clock keeps a reloaded page's
+  // first intent apart from the last page's.
+  //
+  // Emacs's answer names the title it read by its intent's number N and
+  // its part I (a title of its own is part 0), not by its words, which
+  // in WebKit's copy may not be the page's:
+  //
+  //   XW.kit({xwapp: "read", n: N, i: I, whole: true, idle: IDLE})
+  //
+  // The kit puts IDLE back as the title only while the title is still
+  // that one: Emacs may have read it late, from WebKit's copy, after the
+  // page gave it up and set the next, which a plain reset would wipe out
+  // unread.  WHOLE: Emacs has the whole intent now, so one the page gave
+  // up reached it after all, and its loss is taken back.  "unread" in
+  // place of "read": Emacs could make no intent of it, and it is lost.
   //
   // The title Emacs reads is WebKit's copy of it, which is not all of it
   // (measured 2026-10-30, macOS 15's WKWebView under Emacs 31; the page's
@@ -70,11 +85,19 @@
   // the intent's own n.  Emacs acts on it once it has them all.
   //
   // An intent Emacs could not read, it says so of (XW.kit "unread"); one
-  // it left unread so long that the next is sent over it is given up on.
-  // Either way it is lost, and its emit's LOST is called.
+  // it left unread for WAIT while another intent waits to go is given up
+  // on, and the other sent over it.  Either way it is lost, and its
+  // emit's LOST is called -- and taken back if Emacs says after all that
+  // it has it whole.
 
   const TITLE_MAX = 800;               // UTF-16 units: WebKit keeps 1000
   const INTENT_MAX = 2 * 1024 * 1024;  // UTF-16 units of an intent's JSON
+  // How long a title may stay unread before it is given up for another
+  // intent: as long as Emacs waits for a long intent's next part
+  // (xwapp--part-wait in xwapp.el, 10 s).  Emacs busy for a while -- a
+  // GC, a sync process -- reads it after; one wedged for good does not
+  // hold up the page forever.
+  const WAIT = 10000;
 
   // A lost intent: its LOST is called, and what is left of it not sent.
   function giveUp(rec) {
@@ -82,7 +105,19 @@
     rec.gone = true;
     if (!rec.lost) return;
     try {
-      rec.lost();
+      rec.undo = rec.lost();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  // A lost intent that reached Emacs after all: what its LOST did undone.
+  function takeBack(rec) {
+    if (!rec.gone || rec.found) return;
+    rec.found = true;
+    if (typeof rec.undo !== "function") return;
+    try {
+      rec.undo();
     } catch (e) {
       console.error(e);
     }
@@ -112,34 +147,53 @@
   }
 
   // The titles that carry intent N, of JSON, to Emacs: one, or its parts.
-  function titles(prefix, n, json) {
+  // One that has an n of its page's own (an answer's option) goes as a
+  // part even when short, for Emacs to name it by N, which no other has.
+  function titles(prefix, n, json, named) {
     json = keepSpaces(json);
-    if (prefix.length + json.length <= TITLE_MAX) return [prefix + json];
+    if (named && prefix.length + json.length <= TITLE_MAX) return [prefix + json];
     const room = TITLE_MAX - prefix.length -
       (JSON.stringify({ xwpart: n, i: INTENT_MAX, n: INTENT_MAX, s: "" }).length - 2);
     const all = pieces(json, room);
     return all.map((s, i) => prefix + JSON.stringify({ xwpart: n, i: i, n: all.length, s: s }));
   }
 
-  // What the title bridge does when Emacs says it could not read a title.
-  let unread = null;
+  // The page's title bridges, for Emacs's answers: one, but in a test.
+  const titleBridges = [];
 
   function titleBridge(prefix) {
-    const outbox = [];   // {title, rec}: rec is the intent's, shared by its parts
+    // {title, rec, n, i}: rec is the intent's, shared by its parts, and
+    // n and i what Emacs names the title by.
+    const outbox = [];
     let n = Date.now();
     let sent = null;     // the one last set, until Emacs reads it
     let sentAt = 0;
+    // Intents given up unread, by n, for Emacs to say it had after all.
+    const given = new Map();
     // Whether there is a title to send, what is left of lost intents dropped.
     function more() {
       while (outbox.length && outbox[0].rec.gone) outbox.shift();
       return outbox.length > 0;
     }
+    // Whether another intent than REC's waits to go: its own next part
+    // is not another.
+    function another(rec) {
+      return outbox.some((o) => o.rec !== rec && !o.rec.gone);
+    }
     function pump() {
+      // Unread, unless the title is no longer an intent: Emacs from
+      // before the answers clears it itself.
       if (sent && document.title.startsWith(prefix)) {
-        // Unread: wait, unless Emacs has evidently stopped reading it --
-        // and then for another to send, which goes over it.
-        if (Date.now() - sentAt < 2000 || !more()) return;
-        giveUp(sent.rec);
+        // Wait for WAIT, and then for as long as no other intent waits
+        // to go, which goes over it.
+        if (Date.now() - sentAt < WAIT || !another(sent.rec)) return;
+        const old = sent;
+        sent = null;
+        given.set(old.n, old.rec);
+        if (given.size > 32) given.delete(given.keys().next().value);
+        // Its LOST may emit, which pumps: that has sent the next.
+        giveUp(old.rec);
+        if (sent) return;
       }
       sent = null;
       if (!more()) return;
@@ -147,24 +201,58 @@
       document.title = sent.title;
       sentAt = Date.now();
     }
-    unread = () => {
-      if (sent) giveUp(sent.rec);
-      sent = null;
-      pump();
-    };
+    titleBridges.push({
+      // Emacs's answer for a title it read: whether it was this bridge's.
+      answer(call) {
+        if (sent && sent.n === call.n && sent.i === call.i) {
+          const rec = sent.rec;
+          sent = null;
+          if (typeof call.idle === "string") document.title = call.idle;
+          // Its LOST may emit, which pumps, before this does.
+          if (call.xwapp === "unread") giveUp(rec);
+          pump();
+          return true;
+        }
+        const rec = call.xwapp === "read" && call.whole ? given.get(call.n) : null;
+        if (!rec) return false;
+        given.delete(call.n);
+        takeBack(rec);
+        return true;
+      },
+      // Whether the title is this bridge's, unread.
+      showing() {
+        return !!sent && document.title === sent.title;
+      },
+    });
     setInterval(pump, 50);
-    // The next part as soon as Emacs has reset the title, not a tick later.
+    // The next part as soon as the title is cleared, not a tick later.
     new MutationObserver(pump).observe(document.head || document.documentElement,
       { subtree: true, childList: true, characterData: true });
     return function emit(op, extra, lost) {
-      const intent = Object.assign({ op: op, n: ++n }, extra || {});
+      const id = ++n;
+      const intent = Object.assign({ op: op, n: id }, extra || {});
       const json = JSON.stringify(intent);
       if (json.length > INTENT_MAX) return false;
       const rec = { lost: lost, gone: false };
-      titles(prefix, intent.n, json).forEach((title) => outbox.push({ title: title, rec: rec }));
+      titles(prefix, id, json, intent.n === id).forEach((title, i) =>
+        outbox.push({ title: title, rec: rec, n: id, i: i }));
       pump();
       return true;
     };
+  }
+
+  // Emacs's answer for a title it read (see Intents above), to the
+  // bridge whose it was.  One no bridge set is cleared, as Emacs did
+  // before; one a bridge set, but Emacs could not name, is left until
+  // read or given up.  False with no bridge: Emacs clears the title.
+  function answer(call) {
+    if (!titleBridges.length) return false;
+    if (titleBridges.some((b) => b.answer(call))) return true;
+    if (typeof call.n !== "number" && typeof call.idle === "string" &&
+        !titleBridges.some((b) => b.showing())) {
+      document.title = call.idle;
+    }
+    return true;
   }
 
   // ---- In a web browser -------------------------------------------------
@@ -532,8 +620,8 @@
   // Emacs's calls to the kit itself: in a browser through next, in the
   // xwidget as XW.kit(call).
   function kit(call) {
-    if (call.xwapp === "unread") {
-      if (unread) unread();
+    if (call.xwapp === "read" || call.xwapp === "unread") {
+      return answer(call);
     } else if (call.xwapp === "phone") {
       document.documentElement.classList.toggle("xw-phone", !ELSEWHERE);
     } else if (call.xwapp === "qr") {

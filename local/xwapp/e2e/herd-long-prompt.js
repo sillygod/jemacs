@@ -9,6 +9,7 @@
 const path = require("path");
 const { webkit } = require("playwright");
 const { phonePage, HERD, sleep } = require("./herdlib");
+const { readTitles } = require("./titlelib");
 const DESK = "file://" + path.join(process.env.LOCAL || path.resolve(__dirname, "../.."), "ghostherd", "ui", "index.html");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
@@ -41,34 +42,11 @@ const fillBox = (page, text) => page.$eval(BOX, (ta, t) => {
 }, text);
 
 // Emacs at the desk: the title as WebKit hands it over -- its first 1000
-// units -- read and reset, parts strung together.  REFUSE(title) makes a
-// title one Emacs cannot read, which it says to the page.
-async function emacs(page, until, refuse, ms) {
-  const got = [], parts = {};
-  let last = null;
-  const end = Date.now() + (ms || 20000);
-  while (Date.now() < end && !until(got)) {
-    const t = (await page.title()).slice(0, 1000);
-    if (t.startsWith("ghmem:") && t !== last) {
-      last = t;
-      let it = null;
-      try { it = JSON.parse(t.slice(6)); } catch (e) { it = null; }
-      if (!it || (refuse && refuse(t))) {
-        got.push({ unread: true });
-        await page.evaluate(() => { document.title = "Herd"; XW.kit({ xwapp: "unread" }); });
-        continue;
-      }
-      await page.evaluate(() => { document.title = "Herd"; });
-      if (it.xwpart === undefined) got.push(it);
-      else {
-        const p = (parts[it.xwpart] = parts[it.xwpart] || []);
-        p[it.i] = it.s;
-        if (p.filter((x) => x !== undefined).length === it.n) got.push(JSON.parse(p.join("")));
-      }
-    }
-    await sleep(5);
-  }
-  return got;
+// units -- read and answered, parts strung together (titlelib.js).
+// REFUSE(title) makes a title one Emacs cannot read, which it says to
+// the page; OPTS as readTitles takes them.
+async function emacs(page, until, refuse, ms, opts) {
+  return (await readTitles(page, "ghmem:", until, Object.assign({ refuse, ms, idle: "Herd" }, opts))).got;
 }
 
 (async () => {
@@ -117,6 +95,51 @@ async function emacs(page, until, refuse, ms) {
       await sleep(100);
       const both = await page.$eval(BOX, (t) => t.value);
       check("desk: given back before what was written since, not over it", both === "the first\n\nwritten since", both);
+
+      // Emacs busy 3 s mid-way through the prompt's parts -- a GC, a sync
+      // process: the page waits for it, as Emacs waits for a part.
+      // (The last case's Not sent stays up until something else is said.)
+      await page.evaluate(() => { document.getElementById("status").hidden = true; });
+      await fillBox(page, TEXT);
+      let stalled = 0;
+      const slow = emacs(page, (g) => g.some((i) => i.op === "agent-prompt"), null, 30000,
+        { stall: (it) => (it.xwpart !== undefined && it.i === 5 && !stalled ? (stalled = 3000) : 0) });
+      await page.click(SEND);
+      const sg = await slow;
+      await sleep(100);
+      const sp = sg.find((i) => i.op === "agent-prompt");
+      const st = await page.$eval("#status", (s) => (s.hidden ? "" : s.textContent));
+      check("desk: Emacs busy 3 s mid-way through a long prompt: it arrives whole, nothing said Not sent",
+        stalled && sp && sp.text === TEXT && !/Not sent/.test(st) && (await page.$eval(BOX, (t) => t.value)) === "",
+        { stalled, len: sp && sp.text.length, st });
+
+      // The answer that lands late: Emacs reads prompt A, then is busy past
+      // the page's 10 s before its answer lands.  The page has given A up
+      // -- back in the box, Not sent -- and sent B over it.  A's answer
+      // must not clear B; and as Emacs had A, A comes out of the box again
+      // and Not sent goes: sent again, it would go twice.
+      const A = "a made-up prompt Emacs reads late";
+      const B = "a made-up prompt sent after it";
+      await fillBox(page, A);
+      const raced = emacs(page, (g) => g.some((i) => i.op === "agent-prompt" && i.text === B), null, 30000,
+        { stall: (it) => (it.op === "agent-prompt" && it.text === A ? 10600 : 0) });
+      await page.click(SEND);
+      await page.waitForFunction((sel) => document.querySelector(sel).value === "", BOX);
+      await fillBox(page, B);
+      await page.click(SEND);
+      // Given up after 10 s: A back in the box, before nothing.
+      await page.waitForFunction((sel) => document.querySelector(sel).value !== "", BOX, { timeout: 12000 }).catch(() => {});
+      const given = await page.$eval(BOX, (t) => t.value);
+      const said = await page.$eval("#status", (s) => (s.hidden ? "" : s.textContent));
+      const rg = await raced;
+      await sleep(150);
+      const after = await page.$eval(BOX, (t) => t.value);
+      const st2 = await page.$eval("#status", (s) => (s.hidden ? "" : s.textContent));
+      const prompts = rg.filter((i) => i.op === "agent-prompt").map((i) => i.text);
+      check("desk: unread 10 s with another behind it, A was given back, Not sent", given === A && /Not sent/.test(said), { given, said });
+      check("desk: A's late answer clears nothing of B's: Emacs gets A and B, once each",
+        JSON.stringify(prompts) === JSON.stringify([A, B]), prompts);
+      check("desk: Emacs had A after all: out of the box again, and Not sent gone", after === "" && !/Not sent/.test(st2), { after, st2 });
       check("desk: no page errors", errors.length === 0, errors);
       await ctx.close();
     }

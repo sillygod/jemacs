@@ -299,11 +299,23 @@ because the browser resolves =..= on the URL, not on a symlink's
 target; it needs =ui= in xwapp's own =:files=.
 
 - =XW.bridge(prefix)= returns an =emit(op, extra, lost)= that queues
-  intents and sets the next title only once Emacs has reset the last,
+  intents and sets the next title only once Emacs has read the last,
   with a counter seeded from the clock.  Without the queue, two intents
   within a poll overwrite each other; without the counter, a second
   identical one (a second Refresh) is taken for the one already read.
   pr-view had neither until it moved here.
+- Emacs answers each title it reads, naming it by its intent's =n= and
+  its part =i= (0 for a title of its own) --- never by its words, which
+  may differ in WebKit's copy:
+  =if (!(window.XW && XW.kit && XW.kit({"xwapp":"read","n":N,"i":I,"whole":true,"idle":IDLE}))) document.title = IDLE;=
+  The kit clears the title only while it is still that one.  Emacs
+  may read a title late, from WebKit's copy, once the page has given
+  it up and set the next: clearing it then, as Emacs used to, wiped
+  the next out unread.  =whole=: Emacs has the whole intent now, so a
+  given-up one reached it after all and its =lost= is taken back.
+  ="unread"=: Emacs could make no intent of it, or dropped the one it
+  was a part of.  A page without the kit's bridge answers nothing, and
+  Emacs clears the title as before.
 - The title Emacs reads is WebKit's copy, not the page's: its first
   1000 UTF-16 units (a CJK character is one, an emoji two; an emoji cut
   in half leaves an empty title), with each run of spaces folded to one
@@ -318,9 +330,12 @@ target; it needs =ui= in xwapp's own =:files=.
 - =emit= returns false for an intent past 2M UTF-16 units of JSON,
   which it does not send, and calls =lost= for one that does not reach
   Emacs: a title Emacs could not read (it says so in the echo area, and
-  tells the page), one left unread 2 s with another to send over it, or
-  in a browser one Emacs refuses (400, 413).  The herd page gives a
-  lost prompt back to its box.
+  tells the page), one left unread 10 s --- as long as xwapp waits for
+  a part --- with another intent to send over it (its own next part is
+  not another), or in a browser one Emacs refuses (400, 413).  What
+  =lost= returns, if a function, is called should Emacs say after all
+  that it had the intent.  The herd page gives a lost prompt back to
+  its box, and takes it out again then.
 - =XW.sanitizer(opts)= returns a =sanitize(html)=: an inert
   =DOMParser= document, a whitelist of tags and attributes, the rest
   unwrapped, links only http(s) and mailto.  Options per page: =images=

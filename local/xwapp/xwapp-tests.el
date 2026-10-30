@@ -167,7 +167,7 @@ Return (OK-ARGS . FAIL-ARGS), each nil when not called."
       (xwapp--poll app)
       (should (= (length seen) 1))
       (should (equal (alist-get 'op (car seen)) "refresh"))
-      (should (member "document.title = \"Idle\";" scripts))
+      (should (member (xwapp-test--title-answer "read" nil t) scripts))
       (setq title "Idle")
       (xwapp--poll app)
       (setq title "t:{\"op\":\"open\",\"id\":7}")
@@ -1104,7 +1104,19 @@ The timers parts start are stopped after, so none fires in a later test."
                                      (s . ,(substring json (min (length json) (* i size))
                                                       (min (length json) (* (1+ i) size))))))))))
 
-(defconst xwapp-test--reset "document.title = \"Idle\";")
+(defun xwapp-test--title-answer (what id whole)
+  "The script Emacs answers a title with: WHAT, ID (N . I), WHOLE."
+  (concat "if (!(window.XW && XW.kit && XW.kit({\"xwapp\":\"" what "\""
+          (if id (format ",\"n\":%d,\"i\":%d" (car id) (cdr id)) "")
+          (if whole ",\"whole\":true" "")
+          ",\"idle\":\"Idle\"}))) document.title = \"Idle\";"))
+
+(defun xwapp-test--told (script)
+  "What SCRIPT, an answer, tells the kit, as an alist; nil for another
+script.  The title is cleared only when the kit does not take it."
+  (and (string-match "\\`if (!(window\\.XW && XW\\.kit && XW\\.kit(\\({.*}\\)))) document\\.title = \"Idle\";\\'"
+                     script)
+       (json-parse-string (match-string 1 script) :object-type 'alist)))
 
 (ert-deftest xwapp-test-parts-reassemble ()
   "A long intent comes as parts, each read and reset; the whole of it is
@@ -1115,8 +1127,10 @@ handed on once, when the last is in."
            (titles (xwapp-test--parts 7 json 4)))
       (dolist (part (butlast titles)) (show part))
       (should-not seen)
-      (should (equal scripts (make-list 3 xwapp-test--reset)))
+      (should (equal (reverse scripts)
+                     (mapcar (lambda (i) (xwapp-test--title-answer "read" (cons 7 i) nil)) '(0 1 2))))
       (show (car (last titles)))
+      (should (equal (car scripts) (xwapp-test--title-answer "read" '(7 . 3) t)))
       (should (= (length seen) 1))
       (should (equal (alist-get 'text (car seen)) text))
       (should (equal (car seen) (xwapp-parse-intent (concat "t:" json) '("t:"))))
@@ -1197,7 +1211,7 @@ reset, no parts, no sooner read."
   (xwapp-test--with-page
     (show "t:{\"op\":\"open\",\"id\":7,\"xw\":{\"xwpart\":1}}")
     (should (equal seen '(((op . "open") (id . 7) (xw (xwpart . 1))))))
-    (should (equal scripts (list xwapp-test--reset)))
+    (should (equal scripts (list (xwapp-test--title-answer "read" nil t))))
     (should-not (xwapp--get app :parts))
     (should-not (xwapp--get app :part-poll))
     (should-not said)))
@@ -1216,12 +1230,68 @@ page told, so it goes on and gives back what was lost."
                                       (length cut))
                               (car said)))
       (should-not (string-search "字" (car said)))
-      (should (equal scripts (list (concat xwapp-test--reset
-                                           " window.XW && XW.kit({\"xwapp\":\"unread\"});"))))
+      (should (equal scripts (list (xwapp-test--title-answer "unread" nil nil))))
       ;; A title that is no intent says nothing.
       (show "Idle")
       (show "Some page")
       (should (= (length said) 1)))))
+
+(ert-deftest xwapp-test-answer-names-the-title ()
+  "Each title read is answered by its intent's n and its part's i -- a
+title of its own being part 0 -- never by its words; whole once Emacs
+has all of the intent.  One cut short is named from its start, which
+WebKit keeps."
+  (xwapp-test--with-page
+    (show "t:{\"op\":\"say\",\"n\":1793368514001,\"text\":\"a\"}")
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "read") (n . 1793368514001) (i . 0) (whole . t) (idle . "Idle"))))
+    (let ((titles (xwapp-test--parts 1793368514002 "{\"op\":\"say\",\"n\":1793368514002}" 2)))
+      (show (nth 0 titles))
+      (should (equal (xwapp-test--told (car scripts))
+                     '((xwapp . "read") (n . 1793368514002) (i . 0) (idle . "Idle"))))
+      (show (nth 1 titles))
+      (should (equal (xwapp-test--told (car scripts))
+                     '((xwapp . "read") (n . 1793368514002) (i . 1) (whole . t) (idle . "Idle")))))
+    ;; Cut short, so no intent: named from its start, and lost.
+    (show (concat "t:{\"op\":\"a \\\"q\\\" op\",\"n\":1793368514003,\"text\":\"" (make-string 990 ?字)))
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "unread") (n . 1793368514003) (i . 0) (idle . "Idle"))))
+    (show (concat "t:{\"xwpart\":1793368514004,\"i\":5,\"n\":9,\"s\":\"" (make-string 990 ?字)))
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "unread") (n . 1793368514004) (i . 5) (idle . "Idle"))))
+    ;; No n of its own: not the kit's, so not named.
+    (show "t:{\"op\":\"say\",\"n\":\"one\"}")
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "read") (whole . t) (idle . "Idle"))))
+    ;; Every answer leaves the title to the kit while it is there.
+    (should (cl-every #'xwapp-test--told scripts))))
+
+(ert-deftest xwapp-test-answer-a-dropped-part-is-lost ()
+  "A part of an intent Emacs dropped is answered as lost, so the page
+gives the intent up rather than send the rest of it for nothing."
+  (xwapp-test--with-page
+    (show "t:{\"xwpart\":5,\"i\":0,\"n\":3,\"s\":\"{\\\"op\\\"\"}")
+    (should (equal (alist-get 'xwapp (xwapp-test--told (car scripts))) "read"))
+    (show "t:{\"xwpart\":5,\"i\":1,\"n\":4,\"s\":\":1}\"}")
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "unread") (n . 5) (i . 1) (idle . "Idle"))))
+    (show "t:{\"xwpart\":7,\"i\":0,\"n\":2,\"s\":\"{\\\"op\"}")
+    (show "t:{\"xwpart\":7,\"i\":1,\"n\":2,\"s\":\"\\\":\"}")
+    (should (equal (xwapp-test--told (car scripts))
+                   '((xwapp . "unread") (n . 7) (i . 1) (idle . "Idle"))))
+    (should-not seen)))
+
+(ert-deftest xwapp-test-answer-late-does-not-clear-the-next ()
+  "Emacs read A late, and the page has since set B.  Emacs does not
+clear the title, which is B now, but leaves it to the kit, which clears
+only A; B is read next, as itself."
+  (xwapp-test--with-page
+    (show "t:{\"op\":\"a\",\"n\":11}")
+    ;; The page gave A up and set B before A's answer landed.
+    (show "t:{\"op\":\"b\",\"n\":12}")
+    (should (equal (mapcar (lambda (i) (alist-get 'op i)) seen) '("b" "a")))
+    (should (equal (mapcar (lambda (s) (alist-get 'n (xwapp-test--told s))) scripts) '(12 11)))
+    (should-not (seq-some (lambda (s) (string-prefix-p "document.title" s)) scripts))))
 
 (ert-deftest xwapp-test-parts-forgotten-with-the-page ()
   "A page killed or loaded afresh sends its own parts: those of the one
@@ -1515,7 +1585,7 @@ policy -- in the browser when that is where pages go."
                  (lambda (_xw s) (push s scripts))))
         (setq title "t:{\"op\":\"xwapp-hello\",\"n\":1}" scripts nil)
         (xwapp--poll app)
-        (let ((told (seq-filter (lambda (s) (string-match-p "XW\\.kit" s)) scripts)))
+        (let ((told (seq-filter (lambda (s) (string-match-p "XW\\.kit({\"xwapp\":\"files\"" s)) scripts)))
           (should (= (length told) 1))
           (should (string-match-p (regexp-quote (concat "file://" dir)) (car told)))
           (should-not (string-match-p "docs" (car told)))))
