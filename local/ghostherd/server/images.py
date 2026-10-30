@@ -15,7 +15,8 @@ What is copied, and nothing else:
   backticks, or the target of a Markdown link or image -- ending in an
   image's extension, with no `..' in it; or a file it names apart from
   the folder it names -- "in /tmp/shots/: `before.png`, `after.png`" --
-  joined to it: of the folders it names, the one the file is in on disk;
+  joined to it: of the folders it names, the one the file is in on disk
+  (a symlink to a folder is one: /tmp, on macOS);
 - to a regular file, not a symlink (opened O_NOFOLLOW), this user's own,
   of at most MAX_BYTES;
 - that is an image by its first bytes -- PNG, JPEG, GIF or WebP -- and
@@ -181,10 +182,11 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
     `/tmp/shots/`, `before.png` is before" -- as (where named, path): a
     name or a path under it, with no `..', joined to a folder TEXT names.
     Which one, the disk says: of the FOLDERS_PER_NAME named nearest it
-    that are folders (`_is_dir': lstat, no symlink -- a path to a file,
-    /x/ui/app.js, is named as often as a folder, and is none) -- before it,
-    nearest first, then after it -- the one when there is one, else the
-    first it is a regular file in (`stamp': lstat, no symlink); MAX_LOOKS
+    that are folders (`_is_dir': stat, a symlink to one is one -- a path
+    to a file, /x/ui/app.js, is named as often as a folder, and is none)
+    -- before it, nearest first, then after it -- the one when there is
+    one, else the first it is a regular file in (`stamp': lstat, no
+    symlink); MAX_LOOKS
     looks a message at most, a folder's answer read once.  In none -- not
     written yet, or the looks spent -- the nearest of those folders, or,
     with none, the path named nearest before it, or after it when none
@@ -309,10 +311,13 @@ def _folder(p: str) -> str | None:
 
 
 def _is_dir(p: str) -> bool:
-    "Whether P names a folder: lstat, so a symlink to one is not."
+    """Whether P names a folder: stat, so a symlink to one is one -- /tmp
+    and /var are, on macOS.  The file in it is held to its own checks
+    (`stamp', `load': lstat, O_NOFOLLOW), so a folder past a link gets a
+    regular file of yours or nothing."""
     path = _local(p)
     try:
-        return bool(path) and stat.S_ISDIR(os.lstat(path.rstrip("/") or "/").st_mode)
+        return bool(path) and stat.S_ISDIR(os.stat(path.rstrip("/") or "/").st_mode)
     except OSError:
         return False
 

@@ -2815,8 +2815,9 @@ as one, of at most 50 million pixels.  Eight a message at most.  A
 name alone --- =`before.png`= --- in a reply that names its folder
 apart is joined to the folder it is in: of the four named nearest it
 that are folders on disk (a path to a file, or a place in one such as
-=/x/herd.py:210=, is none), the one, or the first that holds it; 32
-looks on disk a message at most.
+=/x/herd.py:210=, is none; a symlink to a folder is one --- =/tmp= is,
+on macOS --- while the file itself still may not be), the one, or the
+first that holds it; 32 looks on disk a message at most.
 
 *Served by the id alone.*  Nothing takes a path: the page and the bot
 get ids, and Emacs serves the page a copy by its name --- the id and

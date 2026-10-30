@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import stat
+import tempfile
 import time
 from pathlib import Path
 
@@ -31,6 +32,16 @@ def png(path: Path, size=(64, 40), color=(200, 30, 30, 255), fmt="PNG") -> str:
     im = Image.new("RGBA" if fmt == "PNG" else "RGB", size, color if fmt == "PNG" else color[:3])
     im.save(path, fmt)
     return str(path)
+
+
+def watch_looks(monkeypatch) -> list[str]:
+    "The paths looked at on disk from now on: a folder's stat, a file's lstat."
+    looked: list[str] = []
+    for name in ("stat", "lstat"):
+        real = getattr(os, name)
+        monkeypatch.setattr(os, name, lambda p, *a, _real=real, **k:
+                            looked.append(str(p)) or _real(p, *a, **k))
+    return looked
 
 
 def rpc(method, params, role="admin"):
@@ -116,6 +127,41 @@ def test_a_file_is_joined_to_the_folder_it_is_in(tmp_path):
     assert images.named(f"In {other}/ and {tmp_path}/links/: `real.png`") == [f"{other}/real.png"]
 
 
+def test_a_symlink_to_a_folder_is_one(tmp_path):
+    """/tmp and /var are symlinks on macOS (to /private/...): a folder
+    named so is one, past a real folder named nearer or farther.  The file
+    in it is still held to its own checks: a symlinked file is none."""
+    ui = tmp_path / "proj" / "ui"
+    ui.mkdir(parents=True)
+    fd, shot = tempfile.mkstemp(dir="/tmp", prefix="ghostherd-test-", suffix=".png")
+    os.close(fd)
+    try:
+        png(Path(shot))
+        name = os.path.basename(shot)
+        want = [f"/tmp/{name}"]
+        # A real folder named before the link, then after it.
+        assert images.named(f"edited `{ui}` then shots in `/tmp/`: `{name}`") == want
+        assert images.named(f"shots in /tmp/, then edited {ui}: `{name}`") == want
+        assert images.load(want[0]) is not None
+    finally:
+        os.unlink(shot)
+    # The same with a link of the test's own, wherever /tmp is real.
+    real = tmp_path / "real"
+    png(real / "a.png")
+    (tmp_path / "link").symlink_to(real)
+    link = tmp_path / "link"
+    assert images._is_dir(f"{link}/") and images._is_dir(str(link))
+    assert images.named(f"edited `{ui}` then shots in `{link}/`: `a.png`") == [f"{link}/a.png"]
+    assert images.load(f"{link}/a.png") is not None
+    # A symlinked file in it is still refused: the folder that holds a
+    # real one is had, and the link itself copies nothing.
+    elsewhere = tmp_path / "elsewhere"
+    png(elsewhere / "b.png")
+    (real / "b.png").symlink_to(elsewhere / "b.png")
+    assert images.named(f"In {elsewhere}/ and {link}/: `b.png`") == [f"{elsewhere}/b.png"]
+    assert images.stamp(f"{link}/b.png") is None and images.load(f"{link}/b.png") is None
+
+
 def test_files_named_between_a_folder_and_its_images_are_no_folders(tmp_path):
     """Paths to code -- written as often as a folder, five of them between
     it and its images -- are files, or places in one (path:line[:col]): they
@@ -135,20 +181,18 @@ def test_files_named_between_a_folder_and_its_images_are_no_folders(tmp_path):
     assert images._folder(f"{code}/server/herd.py:210") is None
     assert images._folder("/x/b.py:3:7.") is None
     assert images._folder("/x/release-1:2/") == "/x/release-1:2/"
-    # A symlink to a folder is none: a folder named before it is still had.
+    # A symlink to a folder is one, a path to a file past it none.
     (tmp_path / "ln").symlink_to(shots)
     assert images.named(f"In {shots}/, then {tmp_path}/ln and {code}/a.el: `01-before.png`") == [
-        f"{shots}/01-before.png"]
+        f"{tmp_path}/ln/01-before.png"]
 
 
 def test_the_looks_on_disk_stay_within_the_cap(tmp_path, monkeypatch):
     """A folder's answer is asked once a message, and the folders' looks
     and the files' together stay within MAX_LOOKS."""
-    looked = []
-    real = os.lstat
-    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: looked.append(str(p)) or real(p, *a, **k))
     shots = tmp_path / "shots"
     png(shots / "keep.png")
+    looked = watch_looks(monkeypatch)
     # Ten paths to code after the folder, thirty names: each folder asked
     # once -- the one folder there is, joined to with no look at the file.
     code = " ".join(f"{tmp_path}/src/f{n}.py" for n in range(10))
@@ -183,9 +227,7 @@ def test_a_command_naming_a_whole_path_is_no_name_in_a_folder():
 
 def test_a_huge_message_looks_on_disk_a_few_times(monkeypatch, tmp_path):
     "Its folders and names are many; its looks on disk are not."
-    looked = []
-    real = os.lstat
-    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: looked.append(p) or real(p, *a, **k))
+    looked = watch_looks(monkeypatch)
     text = " ".join(f"/tmp/nowhere-{n}/ `shot-{n}.png`" for n in range(20_000))
     start = time.perf_counter()
     got = images.named(text)
