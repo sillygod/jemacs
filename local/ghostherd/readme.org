@@ -2591,7 +2591,9 @@ projects.  Read-only: it only shows, and leads where you click.
   Recent | Cost: by cost, the costliest task first, its threads
   together --- the one that shows its cost first, the others after it
   --- and threads of no task known last.  On the desk, a project picked
-  whose list has not the thread open opens its first.
+  whose list has not the thread open opens its first, once the herd's
+  list of it comes (till then, the threads loaded show what they have
+  of it).
 - A task you told an agent directly --- not through a lead --- is a
   thread of its own: no ask begins it, so no ask's thread has it.  Its
   row is =You → claude-deploy-platform=, your message its title ---
