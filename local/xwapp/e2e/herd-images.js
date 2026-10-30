@@ -23,6 +23,10 @@ const ID = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const FIX = path.join(__dirname, "fixtures");
 const FILES = { [ID + ".png"]: path.join(FIX, "reply-shot.png"), [ID + ".t.jpg"]: path.join(FIX, "reply-shot.t.jpg") };
 const IMG = { id: ID, ext: "png", name: "after-light-5-tldr-viewer.png", w: 640, h: 400, thumb: true };
+// A message of three images and a report among them: ‹ › go through the three.
+const SET = ["b2", "c3", "d4"].map((k, i) => ({ id: k.repeat(16), ext: "png", name: "shot-" + (i + 1) + ".png", w: 640, h: 400, thumb: true }));
+for (const im of SET) Object.assign(FILES, { [im.id + ".png"]: FILES[ID + ".png"], [im.id + ".t.jpg"]: FILES[ID + ".t.jpg"] });
+const AMONG = { id: "e5".repeat(16), ext: "html", name: "report.html", title: "The report" };
 // None of these is a copy's name: never drawn, never asked for.
 const BAD = [{ id: "../../etc/passwd", ext: "png", name: "x" }, { id: ID.toUpperCase(), ext: "png", name: "up" },
              { id: ID, ext: "svg", name: "svg" }, { id: ID + "0", ext: "png", name: "long" }, null, "x"];
@@ -98,6 +102,7 @@ async function loaded(page, sel) {
       const fitted = await page.$eval(".imgview .imgscroll img", (i) => {
         const r = i.getBoundingClientRect(); return r.width <= innerWidth && r.height <= innerHeight; });
       check(W("fitted to the page"), fitted);
+      check(W("one image alone: no ‹ › and no count"), !(await page.$(".imgview .imgprev, .imgview .imgnext, .imgview .imgat")));
       await page.screenshot({ path: path.join(SHOTS, "images-whole-" + where + ".png") });
       await tap(".imgview .imgscroll img");
       await sleep(80);
@@ -133,6 +138,75 @@ async function loaded(page, sel) {
       await sleep(300);
       const chat = await loaded(page, ".chat .cbody .eimg img");
       check(W("the chat: under the turn and under the answer"), chat.length === 2 && chat.every((t) => t.ok), chat);
+
+      // ---- A message of several: ‹ ›, ← →, a swipe ----
+      await page.evaluate((a) => GM.setChat({ project: a.dp, earlier: false, missing: [], absent: [], entries: [
+        { who: a.rd, kind: "turn", ts: a.ts, text: "Three shots and the report", images: [a.set[0], a.among, a.set[1], a.set[2]] },
+      ] }), { dp: DP, rd: RD, ts, set: SET, among: AMONG });
+      await sleep(300);
+      const viewer = () => page.evaluate(() => {
+        const v = document.querySelector(".imgview");
+        return v && { at: v.querySelector(".imgat").textContent, src: v.querySelector("img").getAttribute("src"),
+          name: v.querySelector(".imgname").textContent, prev: v.querySelector(".imgprev").disabled,
+          next: v.querySelector(".imgnext").disabled, actual: v.classList.contains("actual") };
+      });
+      const file = (i) => "/" + SECRET + "/.files/" + SET[i].id + ".png";
+      const swipe = (dx, dy) => page.$eval(".imgview .imgscroll", (el, d) => {
+        const ev = (type, x, y) => {
+          const e = new Event(type, { bubbles: true });
+          const t = [{ clientX: x, clientY: y }];
+          Object.defineProperty(e, "touches", { value: type === "touchend" ? [] : t });
+          Object.defineProperty(e, "changedTouches", { value: t });
+          el.dispatchEvent(e);
+        };
+        ev("touchstart", 200, 300);
+        ev("touchend", 200 + d.dx, 300 + d.dy);
+      }, { dx, dy });
+      await tap(".chat .cbody .eimgs .eimg:nth-child(2)");
+      await sleep(200);
+      let v = await viewer();
+      check(W("the second of three: 2 / 3, both ways open"),
+        v && v.at === "2 / 3" && v.src === file(1) && v.name === "shot-2.png" && !v.prev && !v.next, v);
+      await page.keyboard.press("ArrowRight");
+      await sleep(60);
+      v = await viewer();
+      check(W("→ the next: 3 / 3, the last, › shut"), v.at === "3 / 3" && v.src === file(2) && v.next && !v.prev, v);
+      await page.keyboard.press("ArrowRight");
+      await sleep(40);
+      check(W("→ past the last stays on it"), (await viewer()).at === "3 / 3");
+      await tap(".imgview .imgprev");
+      await sleep(60);
+      check(W("‹ the one before"), (await viewer()).at === "2 / 3");
+      await tap(".imgview .imgscroll img");
+      await sleep(60);
+      await swipe(-120, 5);
+      await sleep(40);
+      check(W("at its own size a swipe scrolls it, no other"), (v = await viewer()).at === "2 / 3" && v.actual, v);
+      await page.keyboard.press("ArrowLeft");
+      await sleep(60);
+      v = await viewer();
+      check(W("← the first, fitted again: 1 / 3, ‹ shut; the report is none of them"),
+        v.at === "1 / 3" && v.src === file(0) && v.prev && !v.actual, v);
+      await swipe(-120, 10);
+      await sleep(40);
+      check(W("a swipe to the left, the next"), (await viewer()).at === "2 / 3");
+      await swipe(110, -8);
+      await sleep(40);
+      check(W("to the right, the one before"), (await viewer()).at === "1 / 3");
+      await swipe(-30, 0);
+      await swipe(-90, 120);
+      await sleep(40);
+      check(W("a short one, or one going down, none"), (await viewer()).at === "1 / 3");
+      await tap(".imgview .imgnext");
+      await sleep(40);
+      await page.keyboard.press("Escape");
+      await sleep(60);
+      check(W("Esc still puts it away"), !(await page.$(".imgview")));
+      await tap(".chat .cbody .eimgs .eimg:nth-child(3)");
+      await sleep(150);
+      await tap(".imgview .imgclose");
+      await sleep(60);
+      check(W("and ✕"), !(await page.$(".imgview")));
 
       // ---- The Inbox: the report's images, and its thread's answer's ----
       await page.click('.tab[data-tab="inbox"]');

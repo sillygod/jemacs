@@ -441,35 +441,82 @@
   // The image whole, over the page: fitted to it, at its own size at a
   // press, scrolled.  Esc, ✕ or a press beside it puts it away.  In a
   // browser, Open gives it a tab of its own -- a phone zooms it there.
+  // Its message's other images are a ‹ › away, ← → or a swipe: the
+  // thumbnails beside it (its .eimgs), not the reports among them.
   function openImage(el) {
-    const file = el.getAttribute("data-img") || "";
-    const url = IMG_ID.test(file.split(".")[0]) ? XW.file(file) : "";
-    if (!url) return;
+    const shot = (b) => {
+      const file = b.getAttribute("data-img") || "";
+      const url = IMG_ID.test(file.split(".")[0]) ? XW.file(file) : "";
+      return url ? { url: url, name: b.getAttribute("data-name") || "" } : null;
+    };
+    if (!shot(el)) return;
+    const group = el.closest(".eimgs");
+    const them = group ? Array.from(group.querySelectorAll(".eimg")) : [el];
+    const shots = them.map(shot).filter(Boolean);
+    let at = Math.max(0, them.filter(shot).indexOf(el));
+    const many = shots.length > 1;
     closeImage();
     const wrap = document.createElement("div");
     wrap.className = "imgview";
     wrap.setAttribute("role", "dialog");
-    wrap.setAttribute("aria-label", el.getAttribute("data-name") || "Image");
     wrap.tabIndex = -1;
-    wrap.innerHTML = '<div class="imgbar"><span class="imgname"></span>' +
+    wrap.innerHTML = '<div class="imgbar">' +
+      (many ? '<button type="button" class="ghost imgprev" title="The one before (←)">‹</button>' +
+        '<span class="imgat"></span>' +
+        '<button type="button" class="ghost imgnext" title="The next (→)">›</button>' : "") +
+      '<span class="imgname"></span>' +
       (XW.browser ? '<a class="imgopen" target="_blank" rel="noopener noreferrer">Open</a>' : "") +
       '<button type="button" class="ghost imgclose" title="Close (Esc)">✕</button></div>' +
       '<div class="imgscroll"><img alt=""></div>';
-    wrap.querySelector(".imgname").textContent = el.getAttribute("data-name") || "";
     const img = wrap.querySelector("img");
-    img.src = url;
-    img.alt = el.getAttribute("data-name") || "";
     const open = wrap.querySelector(".imgopen");
-    if (open) open.href = url;
+    const show = (i) => {
+      if (i < 0 || i >= shots.length) return;
+      at = i;
+      const s = shots[i];
+      wrap.classList.remove("actual");
+      wrap.setAttribute("aria-label", s.name || "Image");
+      wrap.querySelector(".imgname").textContent = s.name;
+      img.src = s.url;
+      img.alt = s.name;
+      if (open) open.href = s.url;
+      if (!many) return;
+      wrap.querySelector(".imgat").textContent = (i + 1) + " / " + shots.length;
+      wrap.querySelector(".imgprev").disabled = i === 0;
+      wrap.querySelector(".imgnext").disabled = i === shots.length - 1;
+    };
+    show(at);
     wrap.addEventListener("click", (ev) => {
       if (ev.target === img) wrap.classList.toggle("actual");
+      else if (ev.target.closest(".imgprev")) show(at - 1);
+      else if (ev.target.closest(".imgnext")) show(at + 1);
       else if (ev.target.closest(".imgclose") || ev.target === wrap || ev.target.classList.contains("imgscroll")) closeImage();
     });
     // Over the page: its keys (j, k, 1-4 ...) are not the page's meanwhile.
     wrap.addEventListener("keydown", (ev) => {
       ev.stopPropagation();
       if (ev.key === "Escape") { closeImage(); ev.preventDefault(); }
+      else if (many && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+        show(at + (ev.key === "ArrowRight" ? 1 : -1));
+        ev.preventDefault();
+      }
     });
+    // A swipe across it, one finger: the next, or the one before -- not
+    // at its own size, where a swipe scrolls it.
+    if (many) {
+      const scroll = wrap.querySelector(".imgscroll");
+      let from = null;
+      scroll.addEventListener("touchstart", (ev) => {
+        from = ev.touches.length === 1 && !wrap.classList.contains("actual")
+          ? { x: ev.touches[0].clientX, y: ev.touches[0].clientY } : null;
+      }, { passive: true });
+      scroll.addEventListener("touchend", (ev) => {
+        const t = from && ev.changedTouches[0];
+        const dx = t ? t.clientX - from.x : 0, dy = t ? t.clientY - from.y : 0;
+        from = null;
+        if (Math.abs(dx) > 40 && Math.abs(dx) > 2 * Math.abs(dy)) show(at + (dx < 0 ? 1 : -1));
+      }, { passive: true });
+    }
     imgBack = document.activeElement;
     document.body.appendChild(wrap);
     wrap.focus();
