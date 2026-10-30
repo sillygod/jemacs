@@ -804,6 +804,149 @@ the old shape or the new -- leaves it stuck."
                         "{\"type\":\"last-prompt\",\"lastPrompt\":\"go on\"}"))
         (should (eq (cdr (ghostherd--cli-error s ghostherd-tests--idle-screen)) 'login))))))
 
+;;; /login's last step: signed in, waiting on Return (ask 25b5f652)
+
+(defconst ghostherd-tests--signed-in-screen
+  (concat
+   "⏺ A made-up reply, before the login ran out.\n\n"
+   "✻ Simmered for 1s · done 8:00 AM\n"
+   "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔\n"
+   "   Login\n\n"
+   "   Logged in as someone@example.com\n"
+   "   Login successful. Press Enter to continue…\n\n\n")
+  "A made-up claude screen on /login's last step, shaped by claude's own
+text and `ghostherd-login-done-re', not a capture: the step drawn in the
+input box's place.")
+
+(defconst ghostherd-tests--code-entry-screen
+  (concat "Visit this URL to sign in:\nhttps://example.com/oauth/authorize?state=made-up\n\n"
+          "Paste code here if prompted:\n> \n")
+  "A made-up /login code-entry screen, shaped by `ghostherd-login-code-re'.")
+
+(ert-deftest ghostherd-test-signed-in-step-reads-blocked ()
+  "/login's last step -- signed in, \"Press Enter to continue\" -- reads
+as blocked on the user, with or without a transcript still ending on the
+expired login, and wrapped in a narrow pane.  The same words over an
+input box -- quoted in a reply -- or on another kind's screen are not
+the step."
+  (ghostherd-tests--with-herd ()
+    (let ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+          (g (ghostherd-tests--session :name "g" :kind 'grok :backend 'fake))
+          (step '(blocked . "signed in: press Return to continue")))
+      (let ((ghostherd-tests--fake-screen ghostherd-tests--signed-in-screen))
+        (should (ghostherd--login-done s ghostherd-tests--signed-in-screen))
+        (should (equal (ghostherd--detect-state s) step))
+        ;; Its transcript still ends on the expired login -- a /login run
+        ;; is not the conversation -- and the step is what shows.
+        (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'login 'login-turn 'login-cmd)
+          (should (eq (cdr (ghostherd--cli-error s)) 'login))
+          (should (equal (ghostherd--detect-state s) step)))
+        (should-not (ghostherd--login-done g ghostherd-tests--signed-in-screen)))
+      ;; Wrapped in a narrow pane.
+      (should (ghostherd--login-done
+               s (concat "   Login\n\n   Logged in as\n   someone@example.com\n"
+                         "   Login successful. Press Enter\n   to continue…\n")))
+      ;; Quoted in a reply, right over an input box: not the step.
+      (let ((quoted (concat "⏺ It then says: Login successful. Press Enter to continue…\n"
+                            "────────────────────\n❯ \n────────────────────\n")))
+        (should (string-match-p ghostherd-login-done-re
+                                (string-join (ghostherd--screen-foot quoted ghostherd--login-done-foot) "\n")))
+        (should-not (ghostherd--login-done s quoted))
+        (let ((ghostherd-tests--fake-screen quoted))
+          (should-not (equal (ghostherd--detect-state s) step))))
+      ;; Up in the screen, under other lines since: not at the foot.
+      (should-not (ghostherd--login-done
+                   s (concat ghostherd-tests--signed-in-screen
+                             "   one\n   two\n   three\n   four\n"))))))
+
+(ert-deftest ghostherd-test-signed-in-return-only-while-on-the-step ()
+  "The Press Return for /login's signed-in step reads the live screen at
+the click, and presses Return only while the step is still on it --
+logged with that screen.  Moved on since the last poll -- its input box
+back, a menu in its place -- or its host gone, it is refused and nothing
+is pressed."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((ghostherd-tests--fake-screen ghostherd-tests--signed-in-screen)
+            (keys nil)
+            (s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'blocked)))
+        (puthash "c" ghostherd-tests--signed-in-screen ghostherd--screens)
+        (cl-letf (((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k keys))))
+          (should (equal (ghostherd-login-continue s) "c"))
+          (should (equal keys '(("return"))))
+          (should (string-match-p "finish its sign-in" (ghostherd-log-entry-text (car ghostherd--log))))
+          (should (equal (ghostherd-log-entry-screen (car ghostherd--log))
+                         ghostherd-tests--signed-in-screen))
+          (setq keys nil)
+          ;; The last poll still saw the step; the live screen has moved on.
+          (dolist (now (list ghostherd-tests--idle-screen ghostherd-tests--claude-login-menu
+                             ghostherd-tests--code-entry-screen))
+            (let ((ghostherd-tests--fake-screen now))
+              (should-error (ghostherd-login-continue s) :type 'user-error)))
+          (let ((ghostherd-tests--fake-live nil))
+            (should-error (ghostherd-login-continue s) :type 'user-error))
+          (should-not keys))))))
+
+(ert-deftest ghostherd-test-signed-in-card-offers-return-not-login ()
+  "On the signed-in step the card -- and the snapshot, the phone's path --
+carry `loginContinue', and no /login, which would take the step's
+Return; the Inbox has the step, not the expired login.  On the
+code-entry screen, the link and no /login, which would be typed as the
+code.  Back at its input box, the expired login offers /login again."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let* ((s (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake))
+             (card (lambda (screen)
+                     (let ((ghostherd-tests--fake-screen screen))
+                       (ghostherd-poll-session s))
+                     (let ((a (ghostherd-memory-page--agent s))
+                           (snap (car (ghostherd--herd-snapshot))))
+                       (dolist (k '(:login :loginContinue :url))
+                         (should (equal (plist-get a k) (plist-get snap k))))
+                       a))))
+        (ghostherd-tests--with-transcript s (ghostherd-tests--entries 'login 'login-turn 'login-cmd)
+          (let ((a (funcall card ghostherd-tests--signed-in-screen)))
+            (should (equal (plist-get a :state) "blocked"))
+            (should (equal (plist-get a :reason) "signed in: press Return to continue"))
+            (should (eq (plist-get a :loginContinue) t))
+            (should (eq (plist-get a :login) :json-false))
+            (let ((items (ghostherd-inbox--agent-items a)))
+              (should (equal (ghostherd-tests--inbox-kinds items) '("login-continue")))
+              (should (equal (plist-get (car items) :id) "login-continue:c"))
+              (should (equal (plist-get (car items) :group) "need"))))
+          (let ((a (funcall card ghostherd-tests--code-entry-screen)))
+            (should (equal (plist-get a :url) "https://example.com/oauth/authorize?state=made-up"))
+            (should (eq (plist-get a :login) :json-false))
+            (should (eq (plist-get a :loginContinue) :json-false)))
+          (let ((a (funcall card ghostherd-tests--idle-screen)))
+            (should (eq (plist-get a :login) t))
+            (should (eq (plist-get a :loginContinue) :json-false))
+            (should (equal (ghostherd-tests--inbox-kinds (ghostherd-inbox--agent-items a)) '("login")))))))))
+
+(ert-deftest ghostherd-test-page-presses-the-signed-in-return ()
+  "The page's `agent-login-continue' -- the card's and the Inbox's Press
+Return -- presses it on the signed-in step and says so; moved on, the
+page shows the refusal and nothing is pressed."
+  (skip-unless (require 'ghostherd-memory-page nil t))
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((ghostherd-tests--fake-screen ghostherd-tests--signed-in-screen)
+            (keys nil) (pushes nil))
+        (ghostherd-tests--session :name "c" :kind 'claude :backend 'fake :state 'blocked)
+        (cl-letf (((symbol-function 'ghostherd--host-send-keys) (lambda (_s k) (push k keys)))
+                  ((symbol-function 'ghostherd-memory-page--js) (lambda (fn obj) (push (cons fn obj) pushes)))
+                  ((symbol-function 'ghostherd-memory-page--send-herd) #'ignore)
+                  ((symbol-function 'ghostherd-memory-page--serve-files) #'ignore))
+          (ghostherd-memory-page--handle '((op . "agent-login-continue") (name . "c")))
+          (should (equal keys '(("return"))))
+          (should (equal (cdr (assoc "flash" pushes)) "Pressed Return: c's sign-in is done"))
+          (setq keys nil pushes nil)
+          (let ((ghostherd-tests--fake-screen ghostherd-tests--idle-screen))
+            (ghostherd-memory-page--handle '((op . "agent-login-continue") (name . "c"))))
+          (should-not keys)
+          (should (string-match-p "no longer on its sign-in" (cdr (assoc "showError" pushes)))))))))
+
 (ert-deftest ghostherd-test-the-turn-end-is-read-past-a-large-entry ()
   "The transcript is read back from its end a chunk at a time, growing:
 an entry larger than a chunk after the error does not hide it."

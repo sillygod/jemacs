@@ -445,6 +445,8 @@ draws lanes from fields rather than parsing prose."
   (let* ((buf (ghostherd-session-buffer s))
          (blocked (eq (ghostherd-session-state s) 'blocked))
          (err (and blocked (ghostherd--cli-error s)))
+         (url (and blocked (ghostherd--login-url s)))
+         (signed-in (and blocked (ghostherd--login-done s)))
          (continue-at (and blocked (ghostherd--sleep-continue-at s)))
          (words (and blocked (ghostherd--continue-words s))))
     (list :name (ghostherd-session-name s)
@@ -453,12 +455,15 @@ draws lanes from fields rather than parsing prose."
           :reason (or (ghostherd-session-state-reason s) "")
           :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
           ;; A turn killed by an expired login offers a one-click /login;
-          ;; the /login code-entry screen offers its URL to open/copy.  Only
-          ;; while blocked on each, so the card's buttons are there exactly
-          ;; when they would work.  (The phone path mirrors this in
-          ;; `ghostherd--herd-snapshot'.)
-          :login (if (eq (cdr err) 'login) t :json-false)
-          :url (or (and blocked (ghostherd--login-url s)) "")
+          ;; the /login code-entry screen offers its URL to open/copy; its
+          ;; last step, signed in, the Return it waits on.  Only while
+          ;; blocked on each, so the card's buttons are there exactly when
+          ;; they would work: /login not once it is under way, where it
+          ;; would be typed as the code or eat the last Return.  (The phone
+          ;; path mirrors this in `ghostherd--herd-snapshot'.)
+          :login (if (and (eq (cdr err) 'login) (not url) (not signed-in)) t :json-false)
+          :url (or url "")
+          :loginContinue (if signed-in t :json-false)
           ;; Who started it through `herd start', shown on the card.
           :startedBy (or (ghostherd-session-started-by s) "")
           ;; Its directory gone -- a worktree removed outside the herd: the
@@ -3020,6 +3025,12 @@ from the newest -- and send it to the page to prepend."
              ;; The card's one-click /login for an expired-login turn end.
              (ghostherd-send s "/login" t)
              (format "Running /login on %s" name))
+            ("agent-login-continue"
+             ;; The card's and the Inbox's Return for /login's signed-in
+             ;; step: pressed only while that step is verifiably still on
+             ;; its screen.
+             (ghostherd-login-continue s)
+             (format "Pressed Return: %s's sign-in is done" name))
             ("agent-sleep-cancel"
              ;; The card's Cancel on a pending continue-after-sleep: it stays
              ;; blocked, and the herd will not carry this turn on.
@@ -3435,6 +3446,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (question   "need" "Question"   "accent")
     (proposal   "need" "Proposal"   "purple")
     (login      "need" "Login"      "warn")
+    (login-continue "need" "Login"  "warn")
     (relay      "need" "Relay"      "warn")
     (ask-failed "need" "Ask failed" "red")
     (unsent     "need" "Not sent"   "warn")
@@ -3540,6 +3552,7 @@ item says how many, or git could not say."
          (prompt (plist-get a :prompt))
          (opts (and (consp prompt) (plist-get prompt :options)))
          (login (eq (plist-get a :login) t))
+         (login-continue (eq (plist-get a :loginContinue) t))
          (cont (plist-get a :continueAt))
          (cont-stop (eq (plist-get a :continueStopped) t))
          (said (plist-get a :said)) (said-ms (plist-get a :saidAt))
@@ -3555,6 +3568,15 @@ item says how many, or git could not say."
              :state state :whyLabel "Its CLI stopped"
              :preview "Its turn stopped until someone runs /login"
              :body "The session token expired mid-turn.  Its turn waits until /login runs; the ask it holds is not lost.")
+            items))
+     ;; /login's last step: signed in, waiting for one Return.
+     (login-continue
+      (push (ghostherd-inbox--item
+             (concat "login-continue:" name) 'login-continue name cli project
+             "Signed in — press Return to continue" at
+             :state state :whyLabel "Its sign-in waits on one key"
+             :preview "Its login went through; Return gives it its input box back"
+             :body "Its /login went through, and the CLI waits for Return before it gives the input box back.  Press Return here: it is pressed only while that step is still on its screen.")
             items))
      ((and (numberp cont) (> cont 0) (not cont-stop))
       (push (ghostherd-inbox--item

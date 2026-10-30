@@ -1986,6 +1986,22 @@ the error screen, the asker sees the plain reason, and it is answered for
 real once the agent can work again.  For an expired login the card, herd
 and room, offers a one-click =/login=.
 
+The rest of claude's sign-in is done from the page too.  On =/login='s
+code-entry screen the card opens or copies the sign-in link, and the
+code goes back through /Prompt/.  On its last step --- "Login
+successful. Press Enter to continue" (=ghostherd-login-done-re=), read
+at the screen's foot with no input box there, so the words quoted in a
+reply do not count --- the agent reads as blocked, "signed in: press
+Return to continue", and the card and the Inbox (Needs you, /Login/)
+offer /Press Return/.  It is pressed only while that step is still on the
+live screen, read again at the click (=ghostherd-login-continue=);
+moved on, it is refused.  While =/login= is under way the card offers
+no =/login=, which would be typed as the code or take that last Return.
+Signed in, the turn the expired login stopped still waits for a prompt
+to send it on, and the ask it holds stays held till then.  grok and agy
+have no such step: grok's sign-in prints "Signed in as …", agy's
+"Authentication successful!", and neither waits on a key.
+
 Only the CLI's own error counts, never an agent's words about one.  An
 agent that quotes "API Error: Connection lost mid-response" in a reply,
 or prints "Login expired" in a test it runs, puts the same characters
