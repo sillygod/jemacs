@@ -101,15 +101,69 @@ def test_a_file_is_joined_to_the_folder_it_is_in(tmp_path):
                         "`01-before.png` is before, 03-after.png after.") == want
     # Named after them, past one that is not theirs.
     assert images.named(f"`01-before.png` and 03-after.png: ran /login, they are in {shots}.") == want
-    # In none of them -- not written yet -- the nearest before, or after.
-    assert images.named(f"In {shots}/, ran /login: `02-later.png`") == ["/login/02-later.png"]
-    assert images.named(f"`02-later.png`: /login, then {shots}/") == ["/login/02-later.png"]
+    # In none of them -- not written yet -- the folder of them nearest, so
+    # it is found when read again; with none a folder on disk, the path
+    # named nearest before, or after.
+    assert images.named(f"In {shots}/, ran /login: `02-later.png`") == [f"{shots}/02-later.png"]
+    assert images.named(f"`02-later.png`: /login, then {shots}/") == [f"{shots}/02-later.png"]
+    assert images.named("In /nowhere-a/, ran /login: `02-later.png`") == ["/login/02-later.png"]
+    assert images.named("`02-later.png`: /login, then /nowhere-b/") == ["/login/02-later.png"]
     # A symlink is no file there: the folder past it that holds one.
     other = tmp_path / "other"
     png(other / "real.png")
     (tmp_path / "links").mkdir()
     (tmp_path / "links" / "real.png").symlink_to(other / "real.png")
     assert images.named(f"In {other}/ and {tmp_path}/links/: `real.png`") == [f"{other}/real.png"]
+
+
+def test_files_named_between_a_folder_and_its_images_are_no_folders(tmp_path):
+    """Paths to code -- written as often as a folder, five of them between
+    it and its images -- are files, or places in one (path:line[:col]): they
+    take none of the FOLDERS_PER_NAME a name is looked for in."""
+    shots = tmp_path / "shots"
+    png(shots / "01-before.png")
+    png(shots / "03-after.png", color=(0, 0, 255, 255))
+    code = tmp_path / "x"
+    for f in ("ui/app.js", "server/herd.py", "ui/style.css", "a.el", "b.py"):
+        (code / f).parent.mkdir(parents=True, exist_ok=True)
+        (code / f).write_text("x")
+    text = (f"Screenshots in `{shots}/`.  Changed {code}/ui/app.js, `{code}/server/herd.py:210`, "
+            f"{code}/ui/style.css, {code}/a.el and {code}/b.py:3:7.  "
+            "`01-before.png` is before, 03-after.png after.")
+    assert images.named(text) == [f"{shots}/01-before.png", f"{shots}/03-after.png"]
+    # A place in a file is no folder at all, on disk or not.
+    assert images._folder(f"{code}/server/herd.py:210") is None
+    assert images._folder("/x/b.py:3:7.") is None
+    assert images._folder("/x/release-1:2/") == "/x/release-1:2/"
+    # A symlink to a folder is none: a folder named before it is still had.
+    (tmp_path / "ln").symlink_to(shots)
+    assert images.named(f"In {shots}/, then {tmp_path}/ln and {code}/a.el: `01-before.png`") == [
+        f"{shots}/01-before.png"]
+
+
+def test_the_looks_on_disk_stay_within_the_cap(tmp_path, monkeypatch):
+    """A folder's answer is asked once a message, and the folders' looks
+    and the files' together stay within MAX_LOOKS."""
+    looked = []
+    real = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: looked.append(str(p)) or real(p, *a, **k))
+    shots = tmp_path / "shots"
+    png(shots / "keep.png")
+    # Ten paths to code after the folder, thirty names: each folder asked
+    # once -- the one folder there is, joined to with no look at the file.
+    code = " ".join(f"{tmp_path}/src/f{n}.py" for n in range(10))
+    names = " ".join(f"`n{n}.png`" for n in range(30))
+    got = images.named(f"In {shots}/: {code}.  {names} and `keep.png`")
+    assert got == [f"{shots}/n{n}.png" for n in range(30)] + [f"{shots}/keep.png"]
+    assert len(looked) == 11 and len(set(looked)) == 11, looked
+    # Forty folders, each one, and names in none: the cap, each path once.
+    looked.clear()
+    for n in range(40):
+        (tmp_path / f"d{n}").mkdir()
+    dirs = " ".join(f"{tmp_path}/d{n}/" for n in range(40))
+    got = images.named(f"In {dirs}: " + " ".join(f"`m{n}.png`" for n in range(20)))
+    assert len(looked) == images.MAX_LOOKS and len(set(looked)) == images.MAX_LOOKS
+    assert len(got) == 20 and all(g.startswith(f"{tmp_path}/d39/") for g in got)
 
 
 def test_a_folder_with_a_dot_in_its_last_part():
@@ -127,7 +181,7 @@ def test_a_command_naming_a_whole_path_is_no_name_in_a_folder():
         "/tmp/x/b.png", "/tmp/shots/d.png"]
 
 
-def test_a_huge_message_looks_on_disk_a_few_times(monkeypatch):
+def test_a_huge_message_looks_on_disk_a_few_times(monkeypatch, tmp_path):
     "Its folders and names are many; its looks on disk are not."
     looked = []
     real = os.lstat
@@ -142,6 +196,17 @@ def test_a_huge_message_looks_on_disk_a_few_times(monkeypatch):
     # One folder, named over and over: never looked in.
     looked.clear()
     assert len(images.named("/tmp/one/ `a.png` " * 20_000)) == 1 and not looked
+    # A real folder among twenty, every name near one or another of them:
+    # each folder asked once, and the rest read by bisection.
+    looked.clear()
+    real_dir = str(tmp_path)
+    cycle = [real_dir + "/"] + [f"/tmp/nowhere-{k}/" for k in range(19)]
+    text = " ".join(f"{cycle[n % 20]} `shot-{n}.png`" for n in range(20_000))
+    start = time.perf_counter()
+    got = images.named(text)
+    took = time.perf_counter() - start
+    assert len(looked) <= images.MAX_LOOKS and got[0] == f"{real_dir}/shot-0.png"
+    assert took < 2, took
 
 
 def test_a_joined_path_is_refused_as_any_other():

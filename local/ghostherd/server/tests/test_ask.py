@@ -704,6 +704,70 @@ def test_cancel_of_an_ask_not_delivered_tells_no_one(tmp_path):
     assert out["commands"] == [] and out["pending"] == []
 
 
+def test_cancel_does_not_interrupt_a_taker_handed_a_newer_ask(tmp_path):
+    """Its conversation as the tally last read it (every ~15 s) says it is
+    on the ask; but the herd has delivered it another ask since: it moved
+    on, and is only told."""
+    h = _store(tmp_path)
+    old = h.ask("agy-a2", "fetch", from_name="claude-main")
+    _deliver(h)
+    working = _snap(**{"agy-a2": "working"})
+    h.tick(sessions=working)
+    with h._mu:   # what the tally read, before the newer ask
+        h._conn.execute("INSERT INTO cost_switches (agent, at, item) VALUES (?, ?, ?)",
+                        ("agy-a2", time.time() + 1, "ask:" + old["id"]))
+        h._conn.commit()
+    # As the store has it once the herd hands it another (a relay, a
+    # restore): delivered after the first, to the same taker.
+    new = h.ask("agy-a2", "fetch the next", from_name="agy-a")
+    with h._mu:
+        later = h._conn.execute("SELECT delivered_at FROM asks WHERE id = ?", (old["id"],)).fetchone()[0]
+        h._conn.execute("UPDATE asks SET status = 'delivered', delivered_at = ? WHERE id = ?",
+                        (later.replace("+00:00", "1+00:00"), new["id"]))
+        h._conn.commit()
+    assert h.cancel(old["id"])["interrupted"] is False
+    assert h.tick(sessions=working)["commands"] == []
+    assert len(_cancel_note(h, "agy-a2", old["id"])) == 1
+    # The newer one, nothing read since it reached it, it is at work on.
+    h.tick(sessions=working)
+    with h._mu:
+        h._conn.execute("DELETE FROM cost_switches")
+        h._conn.commit()
+    assert h.cancel(new["id"])["interrupted"] is True
+
+
+def test_mail_says_whose_turn_it_starts(tmp_path):
+    """Emacs marks the turn mail starts by its `turn': the user's own words
+    are the user's ("user"); an answer to an ask it made carries on the
+    work it was on ("carry"); an agent's message and the herd's note on a
+    cancelled ask are no one's the user reports from ("")."""
+    h = _store(tmp_path)
+    turns = lambda: {p["body"].split("\n")[0][:30]: p["turn"] for p in _deliver(h)}  # noqa: E731
+    h.enqueue(to="agy-a2", body="from an agent", from_name="claude-main")
+    h.enqueue(to="agy-a2", body="from telegram", from_name="telegram", user=True)
+    h.enqueue(to="agy-b", body="named telegram", from_name="telegram")
+    assert turns() == {"from an agent": "", "from telegram": "user", "named telegram": ""}
+    ask = h.ask("agy-a2", "fetch", from_name="claude-main")
+    _deliver(h)
+    h.reply(ask["id"], "fetched", from_name="agy-a2")
+    h.detach(ask["id"])
+    assert turns() == {f"Answer to ask {ask['id']} (fetch)": "carry"}
+    other = h.ask("agy-b", "fetch again", from_name="claude-b")
+    _deliver(h)
+    h.cancel(other["id"])
+    assert turns() == {f"[herd] Ask {other['id']} was cancel"[:30]: ""}
+
+
+def test_an_agents_message_cannot_say_it_is_the_users(tmp_path, monkeypatch):
+    "`herd_message' takes no `user': any agent can name any sender."
+    import jsonrpc_handler
+    h = _store(tmp_path)
+    monkeypatch.setattr(jsonrpc_handler, "get_herd", lambda: h)
+    jsonrpc_handler.handler._herd_message(
+        {"to": "agy-a2", "from": "telegram", "body": "do it", "user": True})
+    assert [p["turn"] for p in _deliver(h)] == [""]
+
+
 # ---- The answer finds its way back --------------------------------------
 
 

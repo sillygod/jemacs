@@ -566,6 +566,37 @@ def test_two_threads_of_one_task_show_its_cost_once(home, tmp_path):
     assert h.thread(id=ask)["cost"]["threadCount"] == 2
 
 
+def test_by_cost_a_tasks_threads_follow_the_one_that_shows_its_cost(home, tmp_path):
+    """In Cost order a task's threads go together, the one that shows its
+    cost first and the others -- "same task as ..." -- after it, newest
+    first: sorted by their one total alone, the newest came first, and
+    every row above the number had none.  The first page shows it, too;
+    Recent order is as it was."""
+    h, ask, _ = herd_at_work(home, tmp_path)
+    more = []
+    for i, when in enumerate((19.7, 19.5)):
+        sid = h.ask(RD, f"and part {i + 2}", from_name=LEAD)["id"]
+        with h._mu:   # asked as the answer to the first woke the lead
+            h._conn.execute("UPDATE asks SET created_at = ?, delivered_at = ? WHERE id = ?",
+                            (at(when).isoformat(), at(when - 0.1).isoformat(), sid))
+            h._conn.commit()
+        h.reply(sid, "Done.", from_name=RD)
+        more.append(sid)
+    counted(h)
+    recent = h.threads()["threads"]
+    mine = [t["id"] for t in recent if t["id"] in (ask, *more)]
+    assert mine[0] != ask   # newest first: the one that shows the cost is not
+    by_cost = h.threads(sort="cost")["threads"]
+    assert [t["id"] for t in by_cost[:3]] == [ask] + [i for i in mine if i != ask]
+    assert "total" in by_cost[0]["cost"] and [t["cost"].get("same") for t in by_cost[1:3]] == [ask, ask]
+    assert [t["title"] for t in by_cost[3:]] == ["Add a health check.", "Now push it."]
+    top = h.threads(limit=2, sort="cost")["threads"]
+    assert [t["id"] for t in top] == [ask, mine[0]] and "total" in top[0]["cost"]
+    # Recent: the same rows, newest first, the cost on the same thread.
+    assert [t["id"] for t in recent] == [t["id"] for t in sorted(recent, key=lambda t: -t["at"])]
+    assert [t["id"] for t in recent if "total" in (t["cost"] or {})][0] == ask
+
+
 def test_the_threads_of_one_project_and_by_what_they_cost(home, tmp_path):
     """The Threads tab's project chips and its sort, done before the list
     is cut to the page: a project's threads, and the costliest first --

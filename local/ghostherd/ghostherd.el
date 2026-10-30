@@ -6090,9 +6090,9 @@ Nothing is left to press Return on, so the card shows nothing."
     (plist-put sub :state 'lost))
   ;; A lead owed its role read none of it: the next message carries it.
   (ghostherd--role-give-back session text)
+  ;; Its turn will not come: the next one is not the ask's, nor the mail's.
+  (remhash (ghostherd-session-id session) ghostherd--turn-ask-pending)
   (when-let* ((id (ghostherd--ask-in session text)))
-    ;; Its turn will not come: the next one is not the ask's.
-    (remhash (ghostherd-session-id session) ghostherd--turn-ask-pending)
     (ghostherd--ask-settle
      id session nil
      (format "not taken: %s's CLI started no turn on it -- send it again"
@@ -8122,15 +8122,33 @@ address of each one's room from your phone, for the bot to link to."
    (hash-table-values ghostherd--sessions)))
 
 (defun ghostherd--herd-deliver-one (msg)
-  "Paste one sidecar mail MSG through `ghostherd-message' / `handoff'."
+  "Paste one sidecar mail MSG through `ghostherd-message' / `handoff'.
+Mail is not the user's prompt -- an agent's message, the herd's note --
+so the turn it starts is marked `mail' (`ghostherd--turn-from-ask'),
+and its end is no report to the user.  Save what the sidecar says
+otherwise (its `turn'): \"user\", the user's own words (a prompt from
+Telegram), is the user's turn as any prompt is; \"carry\", the answer to
+an ask the taker made or the user's verdict on a call its guard
+refused, carries on the work it was on, and its turn is whoever's the
+last one was."
   (let* ((from (or (plist-get msg :from) "unknown"))
          (to (plist-get msg :to))
          (body (or (plist-get msg :body) ""))
          (handoff (plist-get msg :handoff))
          (ask (plist-get msg :ask))
+         (turn (plist-get msg :turn))
          (submit (if (plist-member msg :submit)
                      (plist-get msg :submit)
                    t)))
+    ;; Before the paste, which moves the taker to `working' at once (see
+    ;; `ghostherd--ask-deliver'); none when it is not submitted -- the
+    ;; Return pressed on it later is someone's own -- nor from a sidecar
+    ;; that does not say yet (no `turn'; until it is restarted).
+    (when (and (not ask) (or handoff submit) (plist-member msg :turn)
+               (not (equal turn "user")))
+      (ghostherd--turn-from-ask to (if (equal turn "carry")
+                                       (or (ghostherd--turn-origin-of to) 'mail)
+                                     'mail)))
     (cond
      (ask (ghostherd--ask-deliver ask from to body (plist-get msg :rounds)
                                   (eq (plist-get msg :guarded) t)))
@@ -8240,25 +8258,38 @@ say it in your answer -- what, where, why -- and whoever asked takes it on.")))
 ;; the room or chat composer, Telegram, or typed straight into the
 ;; terminal -- ends as an Inbox item: its report to the user (a Question
 ;; when it ends by asking, else a Report).  A turn that an ask from
-;; another agent started stays out: whoever asked reports.  The herd
-;; knows a turn is from an ask by its own delivery of it
-;; (`ghostherd--ask-deliver'); every other turn start is the user's.
-;; Leads and primary are unaffected -- their turn end is surfaced by
-;; role, as before.
+;; another agent started stays out: whoever asked reports.  So does one
+;; the herd's other mail started -- an agent's message, the herd's note
+;; that an ask was cancelled -- save the user's own words it carries
+;; (`ghostherd--herd-deliver-one').  The herd knows a turn is from its
+;; own delivery (`ghostherd--ask-deliver', `ghostherd--herd-deliver-one');
+;; every other turn start is the user's.  Leads and primary are
+;; unaffected -- their turn end is surfaced by role, as before.
 
 (defvar ghostherd--turn-origin (make-hash-table :test 'equal)
   "Session id -> how its current or last turn began: `ask' (the herd
-delivered it another agent's ask) or `user' (the user's own prompt).
-Read to decide whether a worker's turn end is its report to the user.")
+delivered it another agent's ask), `mail' (the herd's other mail) or
+`user' (the user's own prompt).  Read to decide whether a worker's turn
+end is its report to the user.")
 
 (defvar ghostherd--turn-ask-pending (make-hash-table :test 'equal)
-  "Session id -> t after the herd delivers an ask, until the turn it
-starts is settled.  The next turn-start marks that turn `ask'.")
+  "Session id -> the origin the turn the herd's delivery starts takes
+(`ask', `mail', or a turn's origin carried on), until that turn is
+settled; (submitted . ORIGIN) once its CLI has the prompt.  The next
+turn start is marked so.")
 
-(defun ghostherd--turn-from-ask (session)
-  "Mark that SESSION's next turn begins from an ask the herd delivered."
+(defun ghostherd--turn-from-ask (session &optional origin)
+  "Mark that SESSION's next turn begins from an ask the herd delivered --
+or, with ORIGIN, from other mail it delivered, marked ORIGIN."
   (when-let* ((s (ghostherd-get session)))
-    (puthash (ghostherd-session-id s) t ghostherd--turn-ask-pending)))
+    (puthash (ghostherd-session-id s) (or origin 'ask) ghostherd--turn-ask-pending)))
+
+(defun ghostherd--turn-pending-origin (pending)
+  "The origin PENDING, a `ghostherd--turn-ask-pending' value, gives its
+turn (t, from before the table held one, is an ask's)."
+  (cond ((consp pending) (cdr pending))
+        ((memq pending '(t submitted)) 'ask)
+        (t pending)))
 
 (defun ghostherd--turn-origin-of (session)
   "How SESSION's current or last turn began: `ask', `user', or nil."
@@ -8268,7 +8299,8 @@ starts is settled.  The next turn-start marks that turn `ask'.")
 (defun ghostherd--turn-origin-on-state (session old new)
   "Settle SESSION's turn origin as a turn starts (OLD resting, NEW busy).
 A turn the herd started by delivering an ask (`ghostherd--turn-ask-pending')
-is `ask'; any other turn start -- a user prompt through the herd, or one
+is `ask', one its other mail started `mail' (or the origin it carries
+on); any other turn start -- a user prompt through the herd, or one
 typed straight into the terminal -- is `user'.  A mid-turn move into a
 busy state (OLD already busy) is not a turn start and is left alone, so
 an ask turn that blocks to ask is not re-marked.
@@ -8283,8 +8315,8 @@ by the herd or by hand -- and is still the ask's."
     (let* ((id (ghostherd-session-id session))
            (pending (gethash id ghostherd--turn-ask-pending)))
       (if pending
-          (progn (puthash id 'ask ghostherd--turn-origin)
-                 (when (or (eq pending 'submitted)
+          (progn (puthash id (ghostherd--turn-pending-origin pending) ghostherd--turn-origin)
+                 (when (or (consp pending) (eq pending 'submitted)
                            (not (ghostherd--submit-pending-p session)))
                    (remhash id ghostherd--turn-ask-pending)))
         (puthash id 'user ghostherd--turn-origin)))))
@@ -8292,12 +8324,14 @@ by the herd or by hand -- and is still the ask's."
 (defun ghostherd--turn-submitted (session)
   "SESSION's CLI took the prompt the herd sent it: an ask's flag is spent
 on the turn it starts -- the one under way, else the next to start."
-  (let ((id (ghostherd-session-id session)))
-    (when (gethash id ghostherd--turn-ask-pending)
+  (let* ((id (ghostherd-session-id session))
+         (pending (gethash id ghostherd--turn-ask-pending))
+         (origin (and pending (ghostherd--turn-pending-origin pending))))
+    (when pending
       (if (memq (ghostherd-session-state session) '(working blocked waiting))
           (progn (remhash id ghostherd--turn-ask-pending)
-                 (puthash id 'ask ghostherd--turn-origin))
-        (puthash id 'submitted ghostherd--turn-ask-pending)))))
+                 (puthash id origin ghostherd--turn-origin))
+        (puthash id (cons 'submitted origin) ghostherd--turn-ask-pending)))))
 
 (add-hook 'ghostherd-state-change-hook #'ghostherd--turn-origin-on-state)
 

@@ -763,8 +763,13 @@ agents have no =ghostel_cmd=, and a shell profile may rebuild PATH.
   Emacs's =interrupt= command (=ghostherd-interrupt=, Escape).  "On it"
   is by what its conversation last switched to since the ask reached it
   (the tally pass's =cost_switches=): the ask, or an answer to an ask it
-  made for it.  One that moved on --- the user's words, another ask ---
-  or is idle is only told.
+  made for it.  One that moved on --- the user's words, another ask,
+  or one the herd delivered it since (the tally reads its conversation
+  only every ~15 s) --- or is idle is only told.  What it says to that
+  line is no report in the Inbox: a turn the herd's mail starts is not
+  the user's, save the user's own words it carries (a Telegram prompt);
+  an answer to an ask the agent made, or the user's verdict on a call
+  its guard refused, goes on with the turn before it, the user's or not.
 - *Stopped means its turn ended.*  For a taker whose hooks report, the
   ask closes only on a turn's end its hook says (=Stop=, or grok's
   interrupt) or its transcript does --- claude's marks a turn over
@@ -2582,7 +2587,11 @@ projects.  Read-only: it only shows, and leads where you click.
   (open, nobody on it working), Answered or Failed; its first ask's
   first line; its participants as a path; its projects,
   =cross-project=, how many messages, how long ago.  Older threads
-  forty at a time.
+  forty at a time.  Above the list, All and a chip a project, and
+  Recent | Cost: by cost, the costliest task first, its threads
+  together --- the one that shows its cost first, the others after it
+  --- and threads of no task known last.  On the desk, a project picked
+  whose list has not the thread open opens its first.
 - A task you told an agent directly --- not through a lead --- is a
   thread of its own: no ask begins it, so no ask's thread has it.  Its
   row is =You → claude-deploy-platform=, your message its title ---
@@ -2802,7 +2811,12 @@ absolute, =~/= or =file://=, bare, in backticks or in a Markdown link
 or image --- ending in an image's extension, with no =..= in it; to a
 regular file of yours (not a symlink, not another user's), 16 MB at
 most; PNG, JPEG, GIF or WebP by its first bytes, and one that decodes
-as one, of at most 50 million pixels.  Eight a message at most.
+as one, of at most 50 million pixels.  Eight a message at most.  A
+name alone --- =`before.png`= --- in a reply that names its folder
+apart is joined to the folder it is in: of the four named nearest it
+that are folders on disk (a path to a file, or a place in one such as
+=/x/herd.py:210=, is none), the one, or the first that holds it; 32
+looks on disk a message at most.
 
 *Served by the id alone.*  Nothing takes a path: the page and the bot
 get ids, and Emacs serves the page a copy by its name --- the id and

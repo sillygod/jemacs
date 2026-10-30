@@ -575,11 +575,13 @@ class TelegramBot:
             return {"chat_id": chat_id, "text": f"→ the lead of {_leaf(project)}"}
         if chat_id in self.pending_prompt:
             session = self.pending_prompt.pop(chat_id)
+            # The user's own words: the turn they start is the user's.
             self.herd.enqueue(
                 to=session,
                 body=text,
                 from_name="telegram",
                 submit=True,
+                user=True,
             )
             return {
                 "chat_id": chat_id,

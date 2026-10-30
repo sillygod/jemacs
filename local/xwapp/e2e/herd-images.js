@@ -202,6 +202,34 @@ async function loaded(page, sel) {
       await page.keyboard.press("Escape");
       await sleep(60);
       check(W("Esc still puts it away"), !(await page.$(".imgview")));
+      // › pressed to the last, where it shuts, with the focus on it (Tab,
+      // Return -- or a browser that gives a pressed button the focus): the
+      // keys stay the viewer's.
+      await tap(".chat .cbody .eimgs .eimg:nth-child(1)");
+      await sleep(150);
+      await page.focus(".imgview .imgnext");
+      for (let i = 0; i < 2; i++) {
+        await page.keyboard.press("Enter");
+        await sleep(60);
+      }
+      v = await viewer();
+      check(W("› to the last: 3 / 3, › shut, the focus still the viewer's"),
+        v.at === "3 / 3" && v.next && (await page.evaluate(() => !!document.activeElement.closest(".imgview"))), v);
+      await page.keyboard.press("ArrowLeft");
+      await sleep(60);
+      check(W("then ← still goes back: 2 / 3"), (await viewer()).at === "2 / 3");
+      await page.focus(".imgview .imgprev");
+      await page.keyboard.press("Enter");
+      await sleep(60);
+      check(W("‹ pressed to the first, → still goes on"), (await viewer()).at === "1 / 3" &&
+        (await page.keyboard.press("ArrowRight"), await sleep(60), (await viewer()).at === "2 / 3"));
+      await page.focus(".imgview .imgnext");
+      await page.keyboard.press("Enter");
+      await sleep(60);
+      await page.keyboard.press("Escape");
+      await sleep(80);
+      check(W("and Esc at the end puts it away, the room still open"),
+        !(await page.$(".imgview")) && !!(await page.$(".room .chat")));
       await tap(".chat .cbody .eimgs .eimg:nth-child(3)");
       await sleep(150);
       await tap(".imgview .imgclose");
