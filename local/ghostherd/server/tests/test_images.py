@@ -56,6 +56,47 @@ def test_what_a_reply_names():
     ]
 
 
+def test_files_named_apart_from_their_folder():
+    shots = ["/tmp/s/shots/01-before.png", "/tmp/s/shots/03-after.png"]
+    # The folder before them, in backticks or bare, with its / or without.
+    assert images.named("Screenshots: `/tmp/s/shots/` , `01-before.png` is before, "
+                        "`03-after.png` is after.") == shots
+    assert images.named("They are in /tmp/s/shots, 01-before.png and `03-after.png`.") == shots
+    assert images.named("They are in /tmp/s/shots. 01-before.png, then 03-after.png") == shots
+    # After them, when none is named before.
+    assert images.named("`01-before.png` and 03-after.png are in `/tmp/s/shots`.") == shots
+    # CJK punctuation around, the names in backticks or bare.
+    assert images.named("截圖在 /tmp/s/shots/，`01-before.png`、`03-after.png`：看這裡。") == shots
+    assert images.named("截圖：01-before.png、03-after.png，都在 /tmp/s/shots 裡。") == shots
+    assert images.named("截圖在`/tmp/s/shots/`：01-before.png是之前，03-after.png是之後") == shots
+    # A path under it; a folder in backticks with spaces, or ~/ or file://.
+    assert images.named("Under ~/run/: `sub/a.png`, ./b.gif and `./c d.webp`") == [
+        "~/run/sub/a.png", "~/run/b.gif", "~/run/c d.webp"]
+    assert images.named("`/tmp/my shots/` holds `c d.png`") == ["/tmp/my shots/c d.png"]
+    assert images.named("See file:///tmp/s/ for `a.jpg`") == ["file:///tmp/s/a.jpg"]
+    # The nearest folder before each; the nearest after for one before all.
+    assert images.named("`a.png` first; /tmp/one/ has `b.png`, and /tmp/two/ has c.png, `d.html`.") == [
+        "/tmp/one/a.png", "/tmp/one/b.png", "/tmp/two/c.png", "/tmp/two/d.html"]
+    # In the order named, each once: a whole path, then the same by its name.
+    assert images.named("See /tmp/s/x.png -- in /tmp/s/: `y.png`, and `x.png` again.") == [
+        "/tmp/s/x.png", "/tmp/s/y.png"]
+    # Not one with `..' in it, not a URL's path for a folder, nor a file's.
+    assert images.named("In /tmp/s/shots/: `../a.png`, ../b.png, `sub/../c.png`.") == []
+    assert images.named("Up at https://host/dir/ : `a.png`, and `https://host/dir/`: b.png") == []
+    assert images.named("Wrote /tmp/s/notes.txt, `a.png`") == []
+    assert images.named("Saved /tmp/s/x.png and y.png") == ["/tmp/s/x.png"]
+    # A message that names no folder: a name alone is no path.
+    assert images.named("Saved `01-before.png` and 03-after.png, docs/m.png.") == []
+
+
+def test_a_joined_path_is_refused_as_any_other():
+    "A folder with `..' in it: the join is named, and refused as a path is."
+    joined = images.named("In /tmp/s/../t/: `a.png`")
+    assert joined == ["/tmp/s/../t/a.png"]
+    assert images.source(joined[0]) == "" and images.stamp(joined[0]) is None
+    assert images.load(joined[0]) is None
+
+
 def test_a_named_image_is_copied_under_an_id(store, tmp_path):
     src = png(tmp_path / "scratch" / "shots" / "after.png", size=(1200, 800))
     recs = store.capture(f"Done.  The screenshot: {src}")
@@ -154,6 +195,29 @@ def test_only_its_own_message_finds_an_image(store, tmp_path):
 def test_at_most_a_few_per_message(store, tmp_path):
     paths = [png(tmp_path / f"{n}.png", color=(n * 20, 0, 0, 255)) for n in range(images.MAX_PER_MESSAGE + 3)]
     assert len(store.capture(" ".join(paths))) == images.MAX_PER_MESSAGE
+    # Named by their names in their folder, too.
+    names = "、".join(f"`{os.path.basename(p)}`" for p in paths)
+    assert len(store.capture(f"In `{tmp_path}/`：{names}")) == images.MAX_PER_MESSAGE
+
+
+def test_files_named_apart_from_their_folder_are_copied(store, tmp_path):
+    shots = tmp_path / "scratch" / "shots"
+    before = png(shots / "01-before.png", size=(300, 200))
+    after = png(shots / "sub" / "03-after.png", color=(0, 90, 200, 255))
+    # Beside them, one a `..' would reach: not copied.
+    png(tmp_path / "scratch" / "outside.png", color=(9, 9, 9, 255))
+    recs = store.capture(f"Screenshots: `{shots}/` , `01-before.png` is before，"
+                         f"sub/03-after.png is after, `../outside.png` is not.")
+    assert [r["name"] for r in recs] == ["01-before.png", "03-after.png"]
+    assert [store.path(r).read_bytes() for r in recs] == [Path(before).read_bytes(), Path(after).read_bytes()]
+    assert recs[0]["src"] == images.source(before) and recs[1]["src"] == images.source(after)
+    assert len(list(store.root.glob("*.png"))) == 2
+    # Read again later, its scratch dir gone: the same copies.
+    for p in (before, after):
+        os.unlink(p)
+    assert [r["id"] for r in store.lookup(f"Screenshots: `{shots}/` , `01-before.png` is before，"
+                                          f"sub/03-after.png is after, `../outside.png` is not.")] == \
+        [r["id"] for r in recs]
 
 
 def test_old_copies_go(store, tmp_path):
@@ -216,6 +280,31 @@ def test_an_answer_brings_its_images_to_the_thread(herd, tmp_path):
     assert [i["name"] for i in answer["images"]] == ["shot.png"]
     # The ask itself is not a reply: what it names is not copied.
     assert "images" not in [m for m in th["msgs"] if m["kind"] == "ask"][0]
+
+
+def test_a_reply_read_before_names_its_files_when_read_again(herd, tmp_path, monkeypatch):
+    """A reply recorded when its folder's files were not taken for paths
+    shows them the next time it is read: it named nothing then, so nothing
+    of it was recorded."""
+    shots = tmp_path / "shots"
+    png(shots / "01-before.png")
+    png(shots / "03-after.png", color=(0, 0, 255, 255))
+    words = f"Done.  Screenshots: `{shots}/` , `01-before.png` is before, `03-after.png` is after."
+
+    def whole_paths_alone(text):
+        found = sorted((m.start(1), m.group(1)) for rx in (images._MD, images._TICK, images._BARE)
+                       for m in rx.finditer(text or ""))
+        return list(dict.fromkeys(p for _, p in found))
+
+    real = images.named
+    monkeypatch.setattr(images, "named", whole_paths_alone)
+    rpc("herd_report", {"session": "lead-x", "state": "done", "cli": "claude", "last": words}, role="agent")
+    images.drain()
+    assert rpc("herd_link", {"session": "lead-x"})["link"]["last_images"] == []
+    assert images.get_store()._db().execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    monkeypatch.setattr(images, "named", real)
+    link = rpc("herd_link", {"session": "lead-x"})["link"]
+    assert [i["name"] for i in link["last_images"]] == ["01-before.png", "03-after.png"]
 
 
 def test_an_agent_cannot_ask_for_images():
