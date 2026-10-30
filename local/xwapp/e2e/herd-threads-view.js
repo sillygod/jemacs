@@ -44,6 +44,11 @@ const G_COST = G({ project: "", sort: "cost" },
   [["t4", { id: "kB", mode: "lead", total: 120000 }], ["t5", KA], ["t2", SAME], ["t3", SAME], ["t1", null]]);
 const G_DP = G({ project: "deploy-platform", sort: "cost" }, [["t4", { id: "kB", mode: "lead", total: 120000 }], ["t5", KA]]);
 const G_JN = G({ project: "jnotes", sort: "cost" }, [["t2", KA], ["t3", Object.assign({}, SAME, { same: "t2" })]]);
+// Every project's by cost, the first three loaded; and jnotes's, as the
+// herd has it: t3 first, its task's cost the most, not loaded.
+const KB = { id: "kB", mode: "lead", total: 120000 };
+const SLICE = Object.assign(G({ project: "", sort: "cost" }, [["t4", KB], ["t5", KA], ["t2", SAME]]), { more: true });
+const G_JN2 = G({ project: "jnotes", sort: "cost" }, [["t3", { id: "kC", mode: "lead", total: 200000 }], ["t2", KA]]);
 const costs = (page) => page.$$eval(".thlist .throw", (rs) => rs.map((r) => {
   const c = r.querySelector(".thcost");
   return c ? (c.classList.contains("thsame") ? "s" : "n") : "-";
@@ -79,20 +84,24 @@ const opened = (intents) => intents.filter((i) => i.op === "thread-open").map((i
         JSON.stringify(views().pop()) === JSON.stringify({ op: "threads-view", project: "jnotes", sort: "recent" }));
       check(W("until it answers, the loaded page's threads of it"), (await ids(page)).join() === "t2,t3");
       check(W("the chip is on"), (await bar(page)).chips.includes("jnotes*"));
-      check(W(where === "desk" ? "the desk's open thread, not in jnotes, gives way to its first"
+      check(W(where === "desk" ? "the desk keeps its open thread, not in jnotes, till the herd answers"
                                 : "the phone opens no thread on a chip"),
-        where === "desk" ? opened(intents).pop() === "t2" && (await ids(page)).join() === "t2,t3" &&
-                           (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t2"
-                         : opened(intents).length === 0, opened(intents));
+        where === "desk" ? opened(intents).join() === "t1" : opened(intents).length === 0, opened(intents));
       check(W("and kept for this viewer"), JSON.stringify(await stored(page)) === JSON.stringify(["jnotes", "recent"]));
       // A list asked for before the change comes late: not shown.
       await page.evaluate((l) => GM.renderThreads(l), herd({ project: "", sort: "recent" }, 40));
       await sleep(80);
-      check(W("a list of the view before, come late, is not shown"), (await ids(page)).join() === "t2,t3");
+      check(W("a list of the view before, come late, is not shown"),
+        (await ids(page)).join() === "t2,t3" && opened(intents).length === (where === "desk" ? 1 : 0));
       await page.evaluate((l) => GM.renderThreads(l), herd({ project: "jnotes", sort: "recent" }, 1));
       await sleep(80);
       check(W("the herd's list of it, paged, with Older threads"),
         (await ids(page)).join() === "t2" && !!(await page.$(".thmore")));
+      if (where === "desk") {
+        check(W("the herd's list without the open thread: the desk opens its first"),
+          opened(intents).join() === "t1,t2" &&
+          (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t2", opened(intents));
+      }
 
       // ---- By cost: the costliest first, none known last ----
       await tap('.thbar [data-act="th:sort"][data-sort="cost"]');
@@ -155,11 +164,47 @@ const opened = (intents) => intents.filter((i) => i.op === "thread-open").map((i
       const before = opened(intents).slice();
       await page.evaluate((l) => GM.renderThreads(l), G_JN);
       await sleep(150);
-      check(W(where === "desk" ? "a chip opens its list's first: at once, or once the herd's list comes"
+      check(W(where === "desk" ? "a chip opens the first of the herd's list, once it comes"
                                 : "the phone opens none"),
         where === "desk" ? before.join() === (before.length ? "t4" : "") && opened(intents).join() === before.concat(["t2"]).join() &&
                            (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t2"
                          : opened(intents).length === 0, [before, opened(intents)]);
+
+      // ---- By cost, the herd's first of a project, not the loaded page's ----
+      // Every project's by cost, three loaded: of jnotes's only t2 -- while
+      // the herd's first of jnotes is t3, its task the costliest.
+      await tap('.thbar .chip[data-project=""]');
+      await sleep(80);
+      await page.evaluate((l) => GM.renderThreads(l), SLICE);
+      await sleep(120);
+      if (where === "desk") { await page.click('.thlist .throw[data-id="t4"]'); await sleep(120); }
+      intents.length = 0;
+      await tap('.thbar .chip[data-project="jnotes"]');
+      await sleep(80);
+      const slice = (await ids(page)).join(), atPick = opened(intents).slice();
+      await page.evaluate((l) => GM.renderThreads(l), G_JN2);
+      await sleep(150);
+      check(W(where === "desk" ? "by cost, the desk opens the herd's first of a project, not the loaded page's"
+                                : "by cost, the phone opens none"),
+        slice === "t2" && (await ids(page)).join() === "t3,t2" &&
+        (where === "desk" ? atPick.length === 0 && opened(intents).join() === "t3" &&
+                            (await page.$eval(".thlist .throw.on", (r) => r.getAttribute("data-id"))) === "t3"
+                          : opened(intents).length === 0), [slice, atPick, opened(intents)]);
+
+      // ---- Two chips picked before the herd answers: each of the loaded page ----
+      await tap('.thbar .chip[data-project=""]');
+      await sleep(80);
+      await page.evaluate((l) => GM.renderThreads(l), SLICE);
+      await sleep(120);
+      await tap('.thbar .chip[data-project="deploy-platform"]');
+      const one = (await ids(page)).join();
+      await tap('.thbar .chip[data-project="jnotes"]');
+      const two = (await ids(page)).join();
+      check(W("two chips picked quickly: each the loaded page's threads of it, never none"),
+        one === "t4,t5" && two === "t2" && !/No threads of/.test(await page.textContent(".thlist")), [one, two]);
+      await page.evaluate((l) => GM.renderThreads(l), G({ project: "deploy-platform", sort: "cost" }, [["t4", KB], ["t5", KA]]));
+      await sleep(80);
+      check(W("the first chip's list, come late, is not shown"), (await ids(page)).join() === "t2", await ids(page));
       stop();
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();

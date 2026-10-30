@@ -4914,6 +4914,14 @@
   let inboxComposing = false;
   let inboxHeld = false;
 
+  // A box sent or closed: its composition no longer holds the Inbox, and
+  // the redraw that clears the box is drawn now -- held, it would be drawn
+  // when the composition ends, after `composed' put the old text back.
+  function inboxUnhold() {
+    inboxComposing = false;
+    inboxHeld = false;
+  }
+
   function inboxReplyFocused() {
     const a = document.activeElement;
     return a && a.classList && a.classList.contains("ibreplybox") ? a : null;
@@ -5223,7 +5231,7 @@
       inbox.reply = "";
       // Cancel drops the images put in the box too; another item picked
       // keeps them for when this one is back.
-      if (act === "reply-close") delete herdNow.attach[it.agent];
+      if (act === "reply-close") { delete herdNow.attach[it.agent]; inboxUnhold(); }
       renderInbox();
       const ta = act === "reply-open" && app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       if (ta) ta.focus();
@@ -5233,6 +5241,7 @@
       const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       const text = withImages(it.agent, ((ta && ta.value) || inbox.reply || "").trim());
       if (!text) { setStatus("Write the answer first"); return; }
+      inboxUnhold();
       // A lead's through its project (`ghostherd-lead-say' finds the lead
       // from it, and starts one if it is gone); primary's through primary.
       if (it.replyVia === "primary") emit("primary-say", { text: text });
@@ -5297,8 +5306,10 @@
   // PROJECT / SORT, the view the list is of: one project's threads ("" for
   // every one's), newest first or by what they cost -- done by the herd
   // before it cuts the list to a page (herd_threads).  PROJECTS, every
-  // project the threads it read name, for the chips.
-  let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
+  // project the threads it read name, for the chips.  RAW, the herd's last
+  // list as it came, LIST shown from it (thPreview) until the herd's list
+  // of the view picked comes.
+  let threads = { list: [], raw: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
                   costs: [], costDays: 7, costOpen: false, projects: [], repick: false, ...thViewKept() };
   let threadsWatching = false;
 
@@ -5726,13 +5737,15 @@
       inboxThreadLink(it) + "</div>" + body + "</section>";
   }
 
-  // A project picked on the desk (REPICK): the thread open, when the new
-  // list has it not, gives way to the list's first -- the loaded page's
-  // preview of it, then the herd's own list (FINAL), which spends it.
+  // A project picked on the desk (REPICK): once the herd's list of it
+  // comes, the thread open, when that list has it not, gives way to its
+  // first.  Judged by the herd's list, not the loaded page's preview of
+  // it: by cost the herd's first may be one the page had not loaded, and
+  // a thread opened from the preview would be in its list, and kept.
   // True when it opened one.
-  function thRepick(final) {
+  function thRepick() {
     if (!threads.repick) return false;
-    if (final || thNarrow()) threads.repick = false;
+    threads.repick = false;
     if (thNarrow() || !threads.list.length) return false;
     const id = thOpenId();
     if (id && threads.list.some((t) => t.id === id)) return false;
@@ -5752,11 +5765,12 @@
       else threads.sort = el.getAttribute("data-sort") === "cost" ? "cost" : "recent";
       thViewKeep();
       emit("threads-view", { project: threads.project, sort: threads.sort });
-      threads.list = thPreview(threads.list);
+      // From the herd's list, not the one shown: a chip picked again
+      // before the herd answers would filter a filtered list.
+      threads.list = thPreview(threads.raw);
       // On the desk, a project's list without the thread open opens its
-      // first -- now, or once the herd's list of it comes.
+      // first, once the herd's list of it comes (thRepick).
       if (act === "project") threads.repick = true;
-      if (thRepick(false)) return;
       renderThreads();
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
@@ -5794,7 +5808,7 @@
       const v = p && p.view;
       const mine = !(v && v.sort && (v.project !== threads.project || v.sort !== threads.sort));
       if (mine) {
-        threads.list = (p && p.threads) || [];
+        threads.list = threads.raw = (p && p.threads) || [];
         threads.more = !!(p && p.more);
         threads.projects = (p && Array.isArray(p.projects) && p.projects) || [];
       }
@@ -5804,7 +5818,7 @@
       threadsBadge();
       if (view !== "threads") return;
       if (!threads.req && !thNarrow() && threads.list.length) openThread({ id: threads.list[0].id });
-      else if (!(mine && thRepick(true))) renderThreads();
+      else if (!(mine && thRepick())) renderThreads();
     },
 
     // One thread, whole -- or why it could not be read.
