@@ -343,7 +343,7 @@
     if (view !== "docs") return;
     if (!$("docs-filter")) {
       app.innerHTML = '<div class="page docs"><div class="dbar">' +
-        '<input id="docs-filter" type="search" placeholder="Filter by title or file name" autocomplete="off" ' +
+        '<input id="docs-filter" type="search" placeholder="Filter by title or file name' + SLASH + '" autocomplete="off" ' +
         'spellcheck="false" aria-label="Filter the documents by title or file name">' +
         '<div class="chips dchips" role="group" aria-label="Where from"></div></div>' +
         '<div class="sum" id="docs-sum"></div><div class="dlist" id="docs-list"></div></div>';
@@ -4723,7 +4723,7 @@
       return;
     }
     if (ev.key === "/" && view !== "source") {
-      const input = $("q") || $("sess-filter") || $("log-filter");
+      const input = $("q") || $("sess-filter") || $("log-filter") || $("docs-filter") || $("mem-filter");
       if (input) {
         input.focus();
         ev.preventDefault();

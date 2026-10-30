@@ -128,6 +128,16 @@ async function toolbar(page) {
       if (label === "desk") await page.screenshot({ path: path.join(SHOTS, "desk-az.png") });
 
       // ---- the filter and Promoted keep working, in the chosen order ----
+      // At the desk "/" puts the caret in the filter, as its placeholder says.
+      if (label === "desk") {
+        await page.evaluate(() => document.activeElement && document.activeElement.blur());
+        await page.keyboard.press("/");
+        await sleep(60);
+        const slashed = await page.evaluate(() => ({ focus: document.activeElement && document.activeElement.id,
+          value: document.getElementById("mem-filter").value, hint: document.getElementById("mem-filter").placeholder }));
+        check(W("/ puts the caret in the filter, as its placeholder says, and is not typed there"),
+          slashed.focus === "mem-filter" && slashed.value === "" && /\( \/ \)$/.test(slashed.hint), slashed);
+      }
       await page.fill("#mem-filter", "undated");
       await sleep(60);
       check(W("the filter narrows the sorted list"),
