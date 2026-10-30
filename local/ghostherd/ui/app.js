@@ -3692,9 +3692,24 @@
     inboxKey(ev);
   });
   // Keep the reply text across the Inbox's periodic re-renders.
+  const isReplyBox = (t) => !!(t && t.classList && t.classList.contains("ibreplybox"));
   app.addEventListener("input", (ev) => {
-    if (ev.target && ev.target.classList && ev.target.classList.contains("ibreplybox")) inbox.reply = ev.target.value;
+    if (!isReplyBox(ev.target)) return;
+    inbox.reply = ev.target.value;
+    if (ev.isComposing) inboxComposing = true;
   });
+  // A composition open holds the Inbox's redraws back (`renderInbox');
+  // the one held is drawn once it ends -- after the input event that may
+  // follow compositionend -- or once the box loses focus, which ends it.
+  const composed = (ev) => {
+    if (!inboxComposing || !isReplyBox(ev.target)) return;
+    inboxComposing = false;
+    inbox.reply = ev.target.value;
+    setTimeout(() => { if (inboxHeld && !inboxComposing) renderInbox(); }, 0);
+  };
+  app.addEventListener("compositionstart", (ev) => { if (isReplyBox(ev.target)) inboxComposing = true; });
+  app.addEventListener("compositionend", composed);
+  app.addEventListener("focusout", composed);
 
   // A paste with no text in it holds the clipboard's image, or nothing a
   // textarea would take anyway; Emacs says which.
@@ -4890,11 +4905,29 @@
   }
 
   let inboxShown = null; // the item the detail pane shows, to start a new one at its top
+  // An IME composition open in a reply box (CJK input): a redraw would
+  // end it, so one asked for meanwhile waits for it to end (HELD).
+  let inboxComposing = false;
+  let inboxHeld = false;
 
+  function inboxReplyFocused() {
+    const a = document.activeElement;
+    return a && a.classList && a.classList.contains("ibreplybox") ? a : null;
+  }
+
+  // The whole pane is drawn anew -- every push, every few seconds while
+  // agents work -- so a reply box being written in is found again after,
+  // with its cursor, selection and scroll: else the next key falls to
+  // `inboxKey' (`e' marks the item read and drops the draft).
   function renderInbox() {
     if (view !== "inbox") return;
     const box = app.querySelector(".inboxpage");
     if (!box) return;
+    const ta = inboxReplyFocused();
+    if (ta && inboxComposing) { inboxHeld = true; return; }
+    inboxHeld = false;
+    const kept = ta && box.contains(ta) && { id: ta.getAttribute("data-id"), start: ta.selectionStart, end: ta.selectionEnd,
+                                            dir: ta.selectionDirection, top: ta.scrollTop };
     const narrow = inboxNarrow();
     box.classList.toggle("narrow", narrow);
     const fresh = inbox.sel !== inboxShown;
@@ -4902,6 +4935,11 @@
     keepScroll(box, [".iblistcol", ".ibdetail"], () => {
       box.innerHTML = narrow ? inboxPhoneHtml() : inboxDeskHtml();
     }, fresh ? [".ibdetail"] : []);
+    const again = kept && box.querySelector('.ibreplybox[data-id="' + cssName(kept.id) + '"]');
+    if (!again) return;
+    again.focus({ preventScroll: true });
+    again.setSelectionRange(kept.start, kept.end, kept.dir);
+    again.scrollTop = kept.top;
   }
 
   function inboxTag(it) {
@@ -5179,6 +5217,9 @@
     if (act === "reply-open" || act === "reply-close") {
       inbox.replying = act === "reply-open" ? it.id : "";
       inbox.reply = "";
+      // Cancel drops the images put in the box too; another item picked
+      // keeps them for when this one is back.
+      if (act === "reply-close") delete herdNow.attach[it.agent];
       renderInbox();
       const ta = act === "reply-open" && app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       if (ta) ta.focus();

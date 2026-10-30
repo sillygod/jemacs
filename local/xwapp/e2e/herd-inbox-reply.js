@@ -91,6 +91,48 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       check(W("a redraw keeps the box open, its text and its image"),
         (await page.$eval('.ibreplybox[data-id="' + R + '"]', (t) => t.value)) === "Good -- merge the first two" &&
         !!(await page.$('.ibreply[data-name="lead-.emacs.d"] .attach .chip')));
+
+      // ---- A push while the box is written in: it keeps the cursor ----
+      const BOX = '.ibreplybox[data-id="' + R + '"]';
+      const inBox = () => page.evaluate((r) => {
+        const a = document.activeElement;
+        return a && a.classList.contains("ibreplybox") && a.getAttribute("data-id") === r
+          ? { start: a.selectionStart, end: a.selectionEnd, dir: a.selectionDirection } : null;
+      }, R);
+      await page.$eval(BOX, (t) => { t.focus(); t.setSelectionRange(5, 10, "backward"); });
+      await push();
+      await sleep(80);
+      check(W("a push while typing keeps the box focused, with its selection"),
+        JSON.stringify(await inBox()) === JSON.stringify({ start: 5, end: 10, dir: "backward" }), await inBox());
+      await page.$eval(BOX, (t) => t.setSelectionRange(t.value.length, t.value.length));
+      await push();
+      await sleep(80);
+      const marks = sent(intents, "inbox-set").length;
+      await page.keyboard.press("e");
+      await sleep(60);
+      check(W("`e' typed after a push goes into the box, and marks nothing read"),
+        (await page.$eval(BOX, (t) => t.value)) === "Good -- merge the first twoe" &&
+        sent(intents, "inbox-set").length === marks && !!(await page.$(BOX)));
+      await page.keyboard.press("Backspace");
+      // An IME composition open (CJK): a push waits for it to end.
+      const NEW = "report:claude-jnotes:3";
+      const more = ITEMS.concat([mk({ id: NEW, agent: "claude-jnotes", title: "Notes synced", preview: "both ways", replyVia: "agent" })]);
+      const row = '.ibrow[data-id="' + NEW + '"], .ibcard[data-id="' + NEW + '"]';
+      await page.$eval(BOX, (t) => {
+        t.kept = true;
+        t.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+        t.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "ㄏ" }));
+      });
+      await page.evaluate((it) => GM.renderInbox({ items: it, count: 1 }), more);
+      await sleep(80);
+      check(W("a push during a composition is not drawn: the box is the same one"),
+        (await page.$eval(BOX, (t) => t.kept === true)) && !(await page.$(row)));
+      await page.$eval(BOX, (t) => t.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "好" })));
+      await sleep(80);
+      check(W("the push held is drawn once the composition ends, the box still focused"),
+        !!(await page.$(row)) && (await page.$eval(BOX, (t) => t.kept !== true)) && !!(await inBox()));
+      await push();
+      await sleep(80);
       await tap('[data-act="ib:reply"][data-id="' + R + '"]');
       await sleep(80);
       const say = sent(intents, "lead-say").pop() || {};
@@ -150,6 +192,22 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       await sleep(80);
       await tap('[data-act="ib:reply-open"][data-id="' + P + '"]');
       await sleep(60);
+      // Images put in the box: another item picked keeps them, Cancel drops them.
+      const pchips = () => page.$$('.ibreply[data-name="primary"] .attach .chip');
+      await page.evaluate(() => GM.attachImage({ name: "primary", path: "/tmp/herd-e2e/p.png", thumb: null }));
+      await sleep(60);
+      await open(R);
+      await sleep(60);
+      await open(P);
+      await sleep(60);
+      await tap('[data-act="ib:reply-open"][data-id="' + P + '"]');
+      await sleep(60);
+      check(W("another item picked keeps the box's images"), (await pchips()).length === 1);
+      await tap('[data-act="ib:reply-close"][data-id="' + P + '"]');
+      await sleep(60);
+      await tap('[data-act="ib:reply-open"][data-id="' + P + '"]');
+      await sleep(60);
+      check(W("Cancel drops the box's images"), (await pchips()).length === 0);
       const before = intents.length;
       await tap('[data-act="ib:reply"][data-id="' + P + '"]');
       await sleep(60);
