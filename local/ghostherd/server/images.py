@@ -82,9 +82,10 @@ TITLE_WITHIN = 64 * 1024
 # How many images one message brings, at most.
 MAX_PER_MESSAGE = 8
 # A file named apart from its folder (`_in_folders'): how many of the
-# folders named nearest it it is looked for in, how many mentions of them
-# on each side are read for those, and how many looks on disk one message
-# takes at most -- as many as the images it may bring, in each folder.
+# folders named nearest it it is looked for in -- those the disk says are
+# folders -- how many mentions of them on each side are read for those,
+# and how many looks on disk one message takes at most, at a folder or at
+# a file in it: as many as the images it may bring, in each folder.
 FOLDERS_PER_NAME = 4
 FOLDER_MENTIONS = 4 * FOLDERS_PER_NAME
 MAX_LOOKS = MAX_PER_MESSAGE * FOLDERS_PER_NAME
@@ -134,6 +135,8 @@ _BARE = re.compile(r"(?<![\w.:/~%-])(" + _START + r"[^" + _STOP + r"]*?" + _EXT 
 # absolute path, in backticks or bare, but an image's or a page's
 # (`_folder').
 _DIR_TICK = re.compile(r"`(" + _START + r"[^`\n]+)`", re.I)
+# A place in a file -- /x/herd.py:210, /x/app.js:12:5 -- is no folder.
+_LINE_REF = re.compile(r":\d+(?::\d+)?\Z")
 _DIR_BARE = re.compile(r"(?<![\w.:/~%-])(" + _START + r"[^" + _STOP + r"]+)", re.I)
 # A file in it: its name, or a path under it, in backticks or bare.  Bare,
 # of ASCII alone, so CJK prose glued to it is not taken for part of it.
@@ -177,13 +180,17 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
     """The files TEXT names apart from their folder -- "the screenshots:
     `/tmp/shots/`, `before.png` is before" -- as (where named, path): a
     name or a path under it, with no `..', joined to a folder TEXT names.
-    Which one, the disk says: of the FOLDERS_PER_NAME named nearest it --
-    before it, nearest first, then after it -- the first it is a regular
-    file in (`stamp': lstat, no symlink), MAX_LOOKS looks a message at
-    most; in none -- not written yet, or the looks spent -- the folder
-    named nearest before it, or after it when none is.  One folder alone
-    is not looked in.  Nothing when TEXT names no folder.  TAKEN, what of
-    TEXT names whole paths, holds neither, and takes the folders'."""
+    Which one, the disk says: of the FOLDERS_PER_NAME named nearest it
+    that are folders (`_is_dir': lstat, no symlink -- a path to a file,
+    /x/ui/app.js, is named as often as a folder, and is none) -- before it,
+    nearest first, then after it -- the one when there is one, else the
+    first it is a regular file in (`stamp': lstat, no symlink); MAX_LOOKS
+    looks a message at most, a folder's answer read once.  In none -- not
+    written yet, or the looks spent -- the nearest of those folders, or,
+    with none, the path named nearest before it, or after it when none
+    is.  One folder alone is not looked in.  Nothing when TEXT names no
+    folder.  TAKEN, what of TEXT names whole paths, holds neither, and
+    takes the folders'."""
     def take(m: re.Match) -> bool:
         "Whether M is free, none of it taken, taking it if so."
         a, b = m.span(1)
@@ -202,25 +209,65 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
         return []
     folders.sort()
     starts = [pos for pos, _ in folders]
+    distinct = len({d for _, d in folders})
     looks = MAX_LOOKS
+    dirs: dict[str, bool] = {}   # each folder asked, and the disk's answer
+    found: set[str] = set()      # those it said are folders
+    # Where those are named, once no folder is left to ask (`mentions').
+    settled: list[int] | None = None
+    # The folders near each place a name is named at (`where'): the same
+    # for every name there, once read -- each folder asked is answered for
+    # good, and looks spent are not had back.
+    nears: dict[int, list[str]] = {}
 
     def join(d: str, rel: str) -> str:
         return d + ("" if d.endswith("/") else "/") + rel
+
+    def is_dir(d: str) -> bool:
+        "Whether D is a folder, the disk asked once a message; not known, no."
+        nonlocal looks
+        if d not in dirs:
+            if not looks:
+                return False
+            looks -= 1
+            dirs[d] = _is_dir(d)
+            if dirs[d]:
+                found.add(d)
+        return dirs[d]
+
+    def mentions(i: int) -> list[int]:
+        """The folders named within FOLDER_MENTIONS of I, by where: before
+        it, nearest first, then after it.  Once no folder is left to ask,
+        only those found -- a few, by bisection -- so a name joined to the
+        one folder near it, which takes no look, does not read the rest
+        over again."""
+        nonlocal settled
+        lo, hi = i - FOLDER_MENTIONS, i + FOLDER_MENTIONS
+        if looks and len(dirs) < distinct:
+            return [*range(i - 1, max(lo, 0) - 1, -1), *range(i, min(hi, len(folders)))]
+        if settled is None:
+            settled = [j for j, (_, d) in enumerate(folders) if d in found]
+        a, k, b = (bisect.bisect_left(settled, x) for x in (lo, i, hi))
+        return settled[a:k][::-1] + settled[k:b]
 
     def where(rel: str, at: int) -> str:
         "REL, named at AT, joined to the folder it is in."
         nonlocal looks
         i = bisect.bisect_left(starts, at)
         nearest = folders[i - 1 if i else 0][1]
-        if not looks:
+        # One folder alone is not looked in; nor any when none is known to
+        # be one and none can be: every one asked, or the looks spent.
+        if distinct == 1 or (not found and (not looks or len(dirs) == distinct)):
             return join(nearest, rel)
-        near: list[str] = []
-        for j in [*range(i - 1, max(i - 1 - FOLDER_MENTIONS, -1), -1),
-                  *range(i, min(i + FOLDER_MENTIONS, len(folders)))]:
-            if folders[j][1] not in near:
-                near.append(folders[j][1])
-                if len(near) == FOLDERS_PER_NAME:
-                    break
+        near = nears.get(i)
+        if near is None:
+            near = nears[i] = []
+            for j in mentions(i):
+                d = folders[j][1]
+                if d not in near and is_dir(d):
+                    near.append(d)
+                    if len(near) == FOLDERS_PER_NAME:
+                        break
         if len(near) > 1:
             for d in near:
                 if not looks:
@@ -228,7 +275,7 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
                 looks -= 1
                 if stamp(join(d, rel)) is not None:
                     return join(d, rel)
-        return join(nearest, rel)
+        return join(near[0] if near else nearest, rel)
 
     rels: list[tuple[int, str]] = []
     for rx in (_REL_TICK, _REL_BARE):
@@ -252,10 +299,22 @@ def _in_folders(text: str, taken: bytearray) -> list[tuple[int, str]]:
 def _folder(p: str) -> str | None:
     """P as a folder, or None: any path but one ending in an image's or a
     page's extension -- a dot in its last part is no file's (~/.emacs.d,
-    /tmp/release-1.2) -- the end of the sentence it closes aside.  Whether
-    it is one is for the disk (`_in_folders'), and `load'."""
+    /tmp/release-1.2) -- or a place in a file (/x/herd.py:210), the end of
+    the sentence it closes aside.  Whether it is one is for the disk
+    (`_in_folders'), and `load'."""
     p = p.rstrip(".:!?")
+    if _LINE_REF.search(p):
+        return None
     return p if p.endswith("/") or not _FILE_PATH.search(p) else None
+
+
+def _is_dir(p: str) -> bool:
+    "Whether P names a folder: lstat, so a symlink to one is not."
+    path = _local(p)
+    try:
+        return bool(path) and stat.S_ISDIR(os.lstat(path.rstrip("/") or "/").st_mode)
+    except OSError:
+        return False
 
 
 def _local(p: str) -> str | None:

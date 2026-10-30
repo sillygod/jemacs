@@ -2811,7 +2811,12 @@ absolute, =~/= or =file://=, bare, in backticks or in a Markdown link
 or image --- ending in an image's extension, with no =..= in it; to a
 regular file of yours (not a symlink, not another user's), 16 MB at
 most; PNG, JPEG, GIF or WebP by its first bytes, and one that decodes
-as one, of at most 50 million pixels.  Eight a message at most.
+as one, of at most 50 million pixels.  Eight a message at most.  A
+name alone --- =`before.png`= --- in a reply that names its folder
+apart is joined to the folder it is in: of the four named nearest it
+that are folders on disk (a path to a file, or a place in one such as
+=/x/herd.py:210=, is none), the one, or the first that holds it; 32
+looks on disk a message at most.
 
 *Served by the id alone.*  Nothing takes a path: the page and the bot
 get ids, and Emacs serves the page a copy by its name --- the id and
