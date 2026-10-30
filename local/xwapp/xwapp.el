@@ -419,34 +419,136 @@ window system cannot report counts as focus."
     (when-let* ((buf (xwapp-buffer app)))
       (with-current-buffer buf (xwidget-webkit-reload)))))
 
+(defun xwapp--read-intent (json)
+  "The intent JSON holds, as an alist, or nil."
+  (ignore-errors
+    (json-parse-string json :object-type 'alist :array-type 'list)))
+
 (defun xwapp-parse-intent (title prefixes)
   "The intent TITLE carries after one of PREFIXES, as an alist, or nil."
   (when (stringp title)
     (seq-some (lambda (prefix)
                 (and (string-prefix-p prefix title)
-                     (ignore-errors
-                       (json-parse-string (substring title (length prefix))
-                                          :object-type 'alist
-                                          :array-type 'list))))
+                     (xwapp--read-intent (substring title (length prefix)))))
               prefixes)))
+
+(defun xwapp--prefixed-p (title prefixes)
+  "Non-nil when TITLE starts with one of PREFIXES: an intent, read or not."
+  (and (stringp title)
+       (seq-some (lambda (prefix) (string-prefix-p prefix title)) prefixes)))
+
+;; A long intent comes in parts.
+;;
+;; WebKit hands Emacs no more than the first 1000 UTF-16 units of a
+;; page's title (measured 2026-10-30 on macOS 15: WKWebView's own title
+;; is cut there, while the page's document.title keeps all of it), and
+;; an emoji cut in half leaves Emacs an empty title.  A prompt of a few
+;; hundred words is past it.  So the kit sends a title that would be
+;; longer as parts, each a title of its own,
+;;
+;;   PREFIX{"xwpart":N,"i":K,"n":COUNT,"s":"..."}
+;;
+;; the S of parts 0 to COUNT-1, strung together, being the intent's
+;; JSON, and N the intent's own n.  Emacs keeps the parts by N, in
+;; whatever order they come, and acts on the intent once it has them
+;; all.  One that stops coming for `xwapp--part-wait' seconds is
+;; dropped, and said to be.  While parts are coming the title is read
+;; every `xwapp--part-poll' seconds, not every poll interval: a part
+;; goes only once the last is read, and 20,000 CJK characters are 30.
+
+(defconst xwapp--part-wait 10
+  "Seconds without a part after which an intent sent in parts is dropped.")
+
+(defconst xwapp--part-poll 0.02
+  "Seconds between title reads while an intent's parts are coming in.")
+
+(defconst xwapp--part-max 100000
+  "Most parts an intent comes in.  The page's longest, 2M characters of
+plain text, is some 3,000; escapes can make one several times that.")
+
+(defun xwapp--say-dropped (app what)
+  "Say in the echo area that APP's page sent WHAT, which was dropped.
+Never what it said: that may be anything you wrote."
+  (message "xwapp: %s's page sent %s; it was dropped" (xwapp-buffer-name app) what))
+
+(defun xwapp--part (app intent)
+  "INTENT, as APP's page meant it: itself, or when it is a part of a
+longer one, that one once its every part is in -- nil until then."
+  (if (not (assq 'xwpart intent))
+      intent
+    (let-alist intent
+      (let* ((parts (xwapp--get app :parts))
+             (entry (assoc .xwpart parts)))
+        (cond
+         ((not (and (natnump .n) (<= 1 .n xwapp--part-max) (natnump .i) (< .i .n)
+                    (stringp .s) (or (null entry) (= .n (plist-get (cdr entry) :count)))))
+          (when entry
+            (xwapp--put app :parts (delq entry parts)))
+          (xwapp--say-dropped app "a long message in parts that do not fit together")
+          nil)
+         (t
+          (unless entry
+            (setq entry (list .xwpart :count .n :got 0 :pieces (make-vector .n nil)))
+            (xwapp--put app :parts (cons entry parts)))
+          (let ((pieces (plist-get (cdr entry) :pieces)))
+            (unless (aref pieces .i)
+              (aset pieces .i .s)
+              (plist-put (cdr entry) :got (1+ (plist-get (cdr entry) :got))))
+            (if (< (plist-get (cdr entry) :got) .n)
+                (progn (xwapp--timer app :part-wait xwapp--part-wait #'xwapp--parts-expire)
+                       nil)
+              (xwapp--put app :parts (delq entry (xwapp--get app :parts)))
+              (unless (xwapp--get app :parts)
+                (xwapp--untimer app :part-wait))
+              (or (xwapp--read-intent (mapconcat #'identity pieces ""))
+                  (progn (xwapp--say-dropped app "a long message Emacs could not read")
+                         nil))))))))))
+
+(defun xwapp--parts-expire (app)
+  "Drop the intents APP's page has stopped sending the parts of, saying so."
+  (dolist (entry (xwapp--get app :parts))
+    (let ((plist (cdr entry)))
+      (xwapp--say-dropped
+       app (format "a long message in %d parts, %d of which never came"
+                   (plist-get plist :count)
+                   (- (plist-get plist :count) (plist-get plist :got))))))
+  (xwapp--parts-clear app))
+
+(defun xwapp--parts-clear (app)
+  "Forget the parts APP's page has sent so far: a new page sends its own."
+  (xwapp--put app :parts nil)
+  (xwapp--untimer app :part-wait)
+  (xwapp--untimer app :part-poll))
 
 (defun xwapp--poll (app)
   "Read one intent from APP's page title and dispatch it.
 A title that cannot be read -- a crashed WebKit process still looks live
 -- counts toward the breaker; a run of them stops the poll rather than
-spin Emacs reading and scripting a broken IPC channel every interval."
+spin Emacs reading and scripting a broken IPC channel every interval.
+An intent that cannot be parsed is said to be, once, and the page told,
+so it goes on to the next and gives back what was lost."
   (when-let* ((xw (xwapp-session app)))
     (let ((title (condition-case nil
                      (prog1 (xwidget-webkit-title xw)
                        (xwapp--put app :poll-fails 0))
                    (error (xwapp--poll-failed app) :failed))))
-      (unless (eq title :failed)
-        (let ((intent (xwapp-parse-intent title (xwapp-prefixes app))))
-          (when (and intent (not (equal title (xwapp-last-title app))))
-            (setf (xwapp-last-title app) title)
-            (xwapp--exec app xw (format "document.title = %s;"
-                                        (json-encode (xwapp-idle-title app))))
-            (xwapp--dispatch app intent)))))))
+      (when (and (not (eq title :failed))
+                 (xwapp--prefixed-p title (xwapp-prefixes app))
+                 (not (equal title (xwapp-last-title app))))
+        (setf (xwapp-last-title app) title)
+        (let ((intent (xwapp-parse-intent title (xwapp-prefixes app)))
+              (reset (format "document.title = %s;" (json-encode (xwapp-idle-title app)))))
+          (if (not intent)
+              (progn
+                (xwapp--exec app xw (concat reset " window.XW && XW.kit({\"xwapp\":\"unread\"});"))
+                (xwapp--say-dropped
+                 app (format "a %d-character message Emacs could not read" (length title))))
+            (xwapp--exec app xw reset)
+            (when-let* ((whole (xwapp--part app intent)))
+              (xwapp--dispatch app whole)))))
+      (if (and (xwapp--get app :parts) (not (xwapp--get app :wedged)))
+          (xwapp--timer app :part-poll xwapp--part-poll #'xwapp--poll)
+        (xwapp--untimer app :part-poll)))))
 
 (defun xwapp-start-poll (app)
   "Start polling APP's page title for intents."
@@ -458,12 +560,14 @@ spin Emacs reading and scripting a broken IPC channel every interval."
 
 (defun xwapp-stop-poll (app)
   "Stop polling APP's page title."
+  (xwapp--untimer app :part-poll)
   (when (timerp (xwapp-timer app))
     (cancel-timer (xwapp-timer app))
     (setf (xwapp-timer app) nil)))
 
 (defun xwapp--on-kill (app)
   (xwapp-stop-poll app)
+  (xwapp--parts-clear app)
   (setf (xwapp-last-title app) nil)
   ;; A page that has moved to a browser tab is not closed.
   (when (and (xwapp-on-kill app) (not (xwapp--get app :page)))
@@ -490,6 +594,7 @@ a page open in a browser tab is let go: an app has one page at a time."
         (user-error "Missing UI at %s" index))
       (xwapp--let-go app)
       (xwapp--save)
+      (xwapp--parts-clear app)
       (setf (xwapp-last-title app) nil)
       (if-let* ((buf (xwapp-buffer app)))
           (progn
@@ -554,7 +659,9 @@ a page open in a browser tab is let go: an app has one page at a time."
   "Seconds a browser page may go without asking before it is let go.")
 
 (defconst xwapp--max-request (* 8 1024 1024)
-  "Bytes past which a request is refused.")
+  "Bytes past which a request is refused.
+Above the page's longest intent (INTENT_MAX in ui/xwapp.js): 2M UTF-16
+units of JSON, 6 MB at most as UTF-8.")
 
 (defconst xwapp--reasons
   '((200 . "OK") (204 . "No Content") (302 . "Found") (400 . "Bad Request")
@@ -593,7 +700,11 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :restored non-nil from a restart until its tab comes back, or does not
 :sets     the files it serves besides its page: (SET . HOW) each, as
           `xwapp-serve-files' was told
-:hold :flush :gone :forget   its timers.")
+:hold :flush :gone :forget   its timers.
+And of its page in Emacs:
+:parts    the long intents it is sending in parts, (N :count C :got G
+          :pieces V) each: see `xwapp--part'
+:part-wait :part-poll   their timers.")
 
 (defun xwapp--get (app key)
   (plist-get (gethash app xwapp--served) key))
