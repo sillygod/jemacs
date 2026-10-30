@@ -3271,7 +3271,9 @@ until acted on; it is read as blocked, so an ask it was answering is
 held, not closed, and REASON says why.  An error the transcript marks
 that no rule names still blocks, with its own words as the reason.
 
-ACTION `login' offers a one-click /login on the card.  ACTION
+ACTION `login' offers a one-click /login on the card; once a /login has
+gone through after the error, the turn is still stuck but the action is
+`carry-on', a one-click continue (`ghostherd-carry-on').  ACTION
 `continue' lets the herd carry the turn on by itself after
 `ghostherd-sleep-continue-delay', at most `ghostherd-sleep-continue-max'
 times per stuck turn; CAUSE, a key of `ghostherd--continue-causes'
@@ -3376,6 +3378,24 @@ for one to read past -- bookkeeping, a sub-agent's, a local command."
                                              content)))
               :clean))))))))
 
+(defun ghostherd--claude-login-ok-p (line)
+  "Non-nil when claude transcript LINE is a /login that went through: its
+output, \"Login successful\" (an interrupted one says \"Login
+interrupted\"), as a local command writes it -- a system entry, or a
+user one in the newer shape.  Only for a LINE that is not the
+conversation (`ghostherd--claude-entry-verdict' nil): a reply quoting the
+words is the model's."
+  (and (string-search "<local-command-stdout>Login successful" line)
+       (when-let* ((entry (ignore-errors
+                            (json-parse-string line :object-type 'plist
+                                               :null-object nil :false-object nil))))
+         (let ((content (pcase (plist-get entry :type)
+                          ("system" (plist-get entry :content))
+                          ("user" (plist-get (plist-get entry :message) :content)))))
+           (and (not (plist-get entry :isSidechain))
+                (stringp content)
+                (string-prefix-p "<local-command-stdout>Login successful" content))))))
+
 (defun ghostherd--claude-read-turn-end (path size)
   "Read claude transcript PATH, SIZE bytes long, back from its end for
 `ghostherd--claude-turn-end'.  A chunk at a time, growing, since one
@@ -3387,12 +3407,19 @@ entry can be large; up to `ghostherd--transcript-tail-max'."
         (let* ((beg (max 0 (- size chunk)))
                (lines (with-temp-buffer
                         (insert-file-contents path nil beg size)
-                        (split-string (buffer-string) "\n" t))))
+                        (split-string (buffer-string) "\n" t)))
+               (signed-in nil))
           ;; A chunk that starts inside the file starts inside a line.
           (when (> beg 0) (pop lines))
           (dolist (line (nreverse lines))
-            (when-let* ((verdict (ghostherd--claude-entry-verdict line)))
-              (throw 'done verdict)))
+            (let ((verdict (ghostherd--claude-entry-verdict line)))
+              (cond
+               ;; A /login that went through after claude's error: the
+               ;; turn still ended on the error, but it is signed in again.
+               ((and (eq (car-safe verdict) :error) signed-in)
+                (throw 'done (append verdict '(:signed-in t))))
+               (verdict (throw 'done verdict))
+               ((ghostherd--claude-login-ok-p line) (setq signed-in t)))))
           (when (or (= beg 0) (>= chunk ghostherd--transcript-tail-max))
             (throw 'done nil))
           (setq chunk (* chunk 4)))))))
@@ -3400,8 +3427,10 @@ entry can be large; up to `ghostherd--transcript-tail-max'."
 (defun ghostherd--claude-turn-end (path)
   "What the last turn in claude transcript PATH ended on: (:error TEXT)
 when the conversation's last entry is claude's own error (an assistant
-entry marked `isApiErrorMessage'), :clean when it is any other, nil
-when none can be read.  Read once per change of the file."
+entry marked `isApiErrorMessage') -- (:error TEXT :signed-in t) when a
+/login went through after it (`ghostherd--claude-login-ok-p') -- :clean
+when it is any other, nil when none can be read.  Read once per change
+of the file."
   (when-let* ((attrs (file-attributes path)))
     (let ((size (file-attribute-size attrs))
           (mtime (file-attribute-modification-time attrs))
@@ -3467,12 +3496,19 @@ only the last message above the input box counts."
                            when (string-match-p re text)
                            return (list :reason reason :action action :cause cause)))))
       (pcase (ghostherd--transcript-turn-end session)
-        (`(:error ,text)
-         (or (rule-for text)
-             (list :reason (concat "its turn ended on an error: "
-                                   (truncate-string-to-width
-                                    (car (split-string text "\n")) 80 nil nil "…"))
-                   :action nil :cause nil)))
+        (`(:error ,text . ,more)
+         (let ((m (or (rule-for text)
+                      (list :reason (concat "its turn ended on an error: "
+                                            (truncate-string-to-width
+                                             (car (split-string text "\n")) 80 nil nil "…"))
+                            :action nil :cause nil))))
+           ;; Signed in again since the expired login: still stuck -- the
+           ;; turn did not finish -- but /login is not what it needs now.
+           ;; One click carries the turn on (`ghostherd-carry-on').
+           (if (and (eq (plist-get m :action) 'login) (plist-get more :signed-in))
+               (list :reason "signed in again: its turn stopped at the expired login"
+                     :action 'carry-on :cause 'expired)
+             m)))
         (:clean nil)
         (_ (when-let* ((screen (or screen (gethash (ghostherd-session-id session)
                                                    ghostherd--screens)))
@@ -3549,6 +3585,15 @@ It says nothing of sleep: the computer did not sleep."
   :type 'string
   :group 'ghostherd)
 
+(defcustom ghostherd-expired-continue-prompt
+  "Your last turn was cut off because your login expired mid-response -- not because the work was finished. Pick up exactly where you left off and carry on to the end."
+  "The prompt sent to an agent whose turn an expired login cut short,
+once it is signed in again and you click Continue (`ghostherd-carry-on').
+The same as the others but for its cause: it says nothing of sleep or
+the connection."
+  :type 'string
+  :group 'ghostherd)
+
 (defconst ghostherd--continue-causes
   '((slept :prompt ghostherd-sleep-continue-prompt
            :cut "the computer's sleep"
@@ -3557,12 +3602,15 @@ It says nothing of sleep: the computer did not sleep."
     (dropped :prompt ghostherd-dropped-continue-prompt
              :cut "a dropped connection"
              :after "after a dropped connection"
-             :again "the connection dropped again"))
-  "How the herd speaks of each cause of a `continue' CLI error (see
+             :again "the connection dropped again")
+    ;; Carried on only by a click, once signed in again: no countdown.
+    (expired :prompt ghostherd-expired-continue-prompt
+             :cut "an expired login"))
+  "How the herd speaks of each cause of a turn it carries on (see
 `ghostherd-cli-errors'): the variable holding the prompt it sends the
-agent, what cut the turn short in its log, and the card's words --
-\"continuing AFTER in Ns\" while it counts down, \"stopped retrying --
-AGAIN\" once it has stopped.")
+agent, what cut the turn short in its log, and, for a `continue' CLI
+error, the card's words -- \"continuing AFTER in Ns\" while it counts
+down, \"stopped retrying -- AGAIN\" once it has stopped.")
 
 (defvar ghostherd--sleep-continue (make-hash-table :test 'equal)
   "Session id -> the plist of its current cut-short episode, or nothing.
@@ -3611,19 +3659,26 @@ live."
        (let ((at (gethash (ghostherd-session-id session) ghostherd--input-at)))
          (or (null at) (< at (plist-get ep :since))))))
 
+(defun ghostherd--continue-send (session cause how)
+  "Send SESSION the continue prompt for CAUSE, a key of
+`ghostherd--continue-causes', and log it -- HOW after the cause.  The
+one way the herd carries a stopped turn on, by its timer or your click:
+the turn it starts answers an ask the agent holds."
+  (let ((says (alist-get cause ghostherd--continue-causes)))
+    (ghostherd--log-add
+     session 'continue
+     (format "↻ continuing a turn %s cut short%s" (plist-get says :cut) how))
+    (ghostherd-send session (symbol-value (plist-get says :prompt)) t)))
+
 (defun ghostherd--sleep-continue-fire (session ep cause)
   "Send SESSION the continue prompt for CAUSE, log it, and spend one of
 EP's tries.  CAUSE is a key of `ghostherd--continue-causes'."
-  (let ((n (1+ (plist-get ep :attempts)))
-        (says (alist-get cause ghostherd--continue-causes)))
+  (let ((n (1+ (plist-get ep :attempts))))
     (puthash (ghostherd-session-id session)
              (plist-put ep :attempts n)
              ghostherd--sleep-continue)
-    (ghostherd--log-add
-     session 'continue
-     (format "↻ continuing a turn %s cut short (try %d of %d)"
-             (plist-get says :cut) n ghostherd-sleep-continue-max))
-    (ghostherd-send session (symbol-value (plist-get says :prompt)) t)))
+    (ghostherd--continue-send session cause
+                              (format " (try %d of %d)" n ghostherd-sleep-continue-max))))
 
 (defun ghostherd--sleep-maybe-continue (session screen)
   "After a poll set SESSION's state, carry its turn on if it was cut short.
@@ -3656,6 +3711,28 @@ send the continue prompt for its cause, at most
                        ghostherd-sleep-continue-delay)
                    (ghostherd--sleep-continue-ok-p session screen ep))
           (ghostherd--sleep-continue-fire session ep cause)))))))
+
+;;;###autoload
+(defun ghostherd-carry-on (session)
+  "Carry on SESSION's turn an expired login stopped, now that it is signed
+in again: send it the continue prompt for that cause, as a turn the Mac's
+sleep cut short is continued, so an ask it holds is answered by the
+turn that goes on.  Only while that is still so -- its transcript ends
+on the expired login with a /login gone through since -- and its input
+box is on its live screen, for the prompt to land in."
+  (interactive (list (ghostherd--read-session "Carry on the turn of: ")))
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session host is not live"))
+  (let* ((name (ghostherd-session-name session))
+         (screen (ghostherd--host-capture session 20))
+         (m (ghostherd--cli-error-match session screen)))
+    (unless (eq (plist-get m :action) 'carry-on)
+      (user-error "%s's turn is not one an expired login stopped, signed in again since" name))
+    (unless (and screen (ghostherd--input-at-foot-p screen))
+      (user-error "%s's input box is not on its screen" name))
+    (ghostherd--continue-send session (plist-get m :cause) ", as asked")
+    name))
 
 (defun ghostherd-sleep-continue-cancel (session)
   "Wave off the pending auto-continue for SESSION's cut-short turn.
@@ -3704,6 +3781,43 @@ for what is confirmed and what is not."
     (when (and (string-match-p ghostherd-login-code-re foot)
                (string-match ghostherd-login-url-re foot))
       (match-string 0 foot))))
+
+(defcustom ghostherd-login-done-re
+  "Login successful\\.[[:space:]]+Press[[:space:]]+Enter[[:space:]]+to[[:space:]]+continue"
+  "What claude's /login says once the sign-in went through, under
+\"Logged in as …\": the step that waits for one Return before it gives
+the input box back.  From claude's own text (2.1.312: \"Login
+successful. Press \", Enter in bold, \" to continue…\"); the space
+between the words may be a wrap in a narrow pane.  Read only at the
+screen's foot, and only with no input box there
+(`ghostherd--login-done-on').  grok and agy have no such step: grok's
+sign-in prints \"Signed in as …\", agy's \"Authentication successful!\",
+and neither waits on a key."
+  :type 'regexp
+  :group 'ghostherd)
+
+(defconst ghostherd--login-done-foot 4
+  "Non-blank lines at a screen's foot read for claude's signed-in step:
+its one line, wrapped in a narrow pane, and the \"Logged in as\" above.")
+
+(defun ghostherd--login-done (session &optional screen)
+  "Non-nil when SESSION sits on claude's /login signed-in step -- \"Login
+successful. Press Enter to continue\" -- which waits for one Return.
+SCREEN is the screen to read, else its last one stored."
+  (when (eq (ghostherd-session-kind session) 'claude)
+    (when-let* ((screen (or screen (gethash (ghostherd-session-id session) ghostherd--screens))))
+      (ghostherd--screen-read screen (list 'login-done ghostherd-login-done-re ghostherd-status-lines)
+                              #'ghostherd--login-done-on))))
+
+(defun ghostherd--login-done-on (screen)
+  "Non-nil when claude's signed-in step is at SCREEN's foot: its words in
+the last few lines, and no input box drawn there.  The step takes the
+box's place, so the same words quoted in the conversation, over a box,
+do not count."
+  (let ((foot (string-join (ghostherd--screen-foot screen ghostherd--login-done-foot) "\n"))
+        (case-fold-search nil))
+    (and (string-match-p ghostherd-login-done-re foot)
+         (not (ghostherd--input-at-foot-p screen)))))
 
 (defun ghostherd--prompt-json (prompt)
   "PROMPT for JSON: its options as (:n N :label LABEL); false for none."
@@ -3757,13 +3871,17 @@ does."
                (report (ghostherd--fresh-report session))
                (err (and tail (not scrolled) (ghostherd--cli-error session tail)))
                (login-url (and tail (not scrolled) (not err) (ghostherd--login-url session tail)))
+               ;; Not behind `err': the transcript keeps the expired login
+               ;; as the turn's end through the whole sign-in (a /login run
+               ;; is not the conversation), so it would hide this step.
+               (login-done (and tail (not scrolled) (ghostherd--login-done session tail)))
                ;; A dialog drawn from the top of a pane taller than the tail
                ;; -- each CLI's trust prompt, in a window over 40 rows --
                ;; leaves the tail blank and no box in it: it read idle, and
                ;; took a paste's Return as its answer (ask cf9873be).  With
                ;; nothing read and no box at the foot, the whole pane is
                ;; read, its blank rows dropped.
-               (pane (and tail (not scrolled) (not err) (not login-url)
+               (pane (and tail (not scrolled) (not err) (not login-url) (not login-done)
                           (memq (car-safe hit) '(nil idle))
                           (plist-get spec :prompt-replaces-input)
                           (not (ghostherd--input-at-foot-p tail))
@@ -3806,6 +3924,12 @@ does."
                  (not (ghostherd--model-picker seen))
                  (ghostherd--prompt seen))
             (cons 'blocked (or (ghostherd--prompt-reason seen) "waiting for a choice")))
+           ;; /login's last step: signed in, and waiting for Return before
+           ;; it gives the input box back.  Ahead of the CLI error, which
+           ;; still names the expired login (see `login-done' above); the
+           ;; card and the Inbox offer the Return
+           ;; (`ghostherd-login-continue').
+           (login-done (cons 'blocked "signed in: press Return to continue"))
            ;; A turn that ended on a CLI error -- login expired, the computer
            ;; slept mid-response -- has not answered and is not idle: read it
            ;; as blocked, so an ask it was answering is held rather than
@@ -6232,6 +6356,24 @@ as a fresh submit."
       name))))
 
 ;;;###autoload
+(defun ghostherd-login-continue (session)
+  "Press Return for SESSION's /login on its last step: signed in, \"Press
+Enter to continue\".  Only while that step is verifiably still on its
+screen -- read live now, not the last poll's -- so the Return never
+lands in its input box or on a menu that has taken the step's place."
+  (interactive (list (ghostherd--read-session "Continue the sign-in of: ")))
+  (setq session (ghostherd-get session))
+  (unless (ghostherd--session-live-p session)
+    (user-error "Session host is not live"))
+  (let ((name (ghostherd-session-name session))
+        (screen (ghostherd--host-capture session 20)))
+    (unless (and screen (ghostherd--login-done session screen))
+      (user-error "%s is no longer on its sign-in's \"Press Enter to continue\"" name))
+    (ghostherd--host-send-keys session '("return"))
+    (ghostherd--log-add session 'input "↵ to finish its sign-in, as asked: it was signed in" screen)
+    name))
+
+;;;###autoload
 (defun ghostherd-send-keys (session &rest keys)
   "Send control KEYS to SESSION -- Escape, C-c, arrows, Tab and so on.
 
@@ -7909,6 +8051,8 @@ address of each one's room from your phone, for the bot to link to."
    (lambda (s)
      (let* ((blocked (eq (ghostherd-session-state s) 'blocked))
             (err (and blocked (ghostherd--cli-error s)))
+            (url (and blocked (ghostherd--login-url s)))
+            (signed-in (and blocked (ghostherd--login-done s)))
             (continue-at (and blocked (ghostherd--sleep-continue-at s)))
             (words (and blocked (ghostherd--continue-words s)))
             (wstat (and (ghostherd-session-worktree s) (ghostherd--worktree-stat s))))
@@ -7928,8 +8072,16 @@ address of each one's room from your phone, for the bot to link to."
            :prompt (ghostherd--prompt-json (ghostherd-session-prompt s))
            ;; A turn killed by an expired login: the card offers a one-click
            ;; /login.  Only while blocked on it, so the button is there
-           ;; exactly when it would work.
-           :login (if (eq (cdr err) 'login) t :json-false)
+           ;; exactly when it would work -- not once /login is under way,
+           ;; where it would be typed as the code or eat the last Return.
+           :login (if (and (eq (cdr err) 'login) (not url) (not signed-in)) t :json-false)
+           ;; /login's last step, signed in: the card offers the Return it
+           ;; waits on (`ghostherd-login-continue').
+           :loginContinue (if signed-in t :json-false)
+           ;; Signed in again, its turn still stopped at the expired login:
+           ;; the card offers Continue (`ghostherd-carry-on') -- once the
+           ;; sign-in's last Return is pressed.
+           :carryOn (if (and (eq (cdr err) 'carry-on) (not signed-in)) t :json-false)
            ;; A turn killed by the Mac sleeping or a dropped connection: the
            ;; herd continues it itself.  `continueAt' is when (float ms), for
            ;; the card's "continuing after sleep in Ns" countdown and its
@@ -7942,9 +8094,7 @@ address of each one's room from your phone, for the bot to link to."
            :continueAgain (or (cdr words) "")
            ;; The /login URL to open/copy from the card, while it waits on
            ;; the code.
-           :url (or (and (eq (ghostherd-session-state s) 'blocked)
-                         (ghostherd--login-url s))
-                    "")
+           :url (or url "")
            ;; Where it works and the branch it is on, so the lead can find
            ;; and read its work.  A worktree agent is in its own directory
            ;; on its own branch (from the recipe, no per-poll git); the

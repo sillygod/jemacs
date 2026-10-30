@@ -337,6 +337,20 @@ const isLink = (l) => l.tag === "A" && l.href === "/" + SECRET + "/.reports/" + 
       // ---- The filter: a title or a file name ----
       await tap('.dchips [data-act="docs:src"][data-src=""]');
       await sleep(100);
+      // "/" puts the caret in it, as on every tab with a filter, and the
+      // desk's placeholder says so; a touch screen has no key to hint at.
+      const hint = await page.$eval("#docs-filter", (f) => f.placeholder);
+      check(W(where === "desk" ? "its placeholder says / filters" : "no / in its placeholder: no key for it"),
+        where === "desk" ? /\( \/ \)$/.test(hint) : !/\//.test(hint), hint);
+      if (where === "desk") {
+        await page.evaluate(() => document.activeElement && document.activeElement.blur());
+        await page.keyboard.press("/");
+        await sleep(80);
+        const slashed = await page.evaluate(() => ({ focus: document.activeElement && document.activeElement.id,
+          value: document.getElementById("docs-filter").value }));
+        check(W("/ puts the caret in the filter, and is not typed there"),
+          slashed.focus === "docs-filter" && slashed.value === "", slashed);
+      }
       await page.click("#docs-filter");
       await page.keyboard.type("viewer");
       await sleep(150);

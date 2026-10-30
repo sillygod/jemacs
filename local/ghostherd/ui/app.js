@@ -343,7 +343,7 @@
     if (view !== "docs") return;
     if (!$("docs-filter")) {
       app.innerHTML = '<div class="page docs"><div class="dbar">' +
-        '<input id="docs-filter" type="search" placeholder="Filter by title or file name" autocomplete="off" ' +
+        '<input id="docs-filter" type="search" placeholder="Filter by title or file name' + SLASH + '" autocomplete="off" ' +
         'spellcheck="false" aria-label="Filter the documents by title or file name">' +
         '<div class="chips dchips" role="group" aria-label="Where from"></div></div>' +
         '<div class="sum" id="docs-sum"></div><div class="dlist" id="docs-list"></div></div>';
@@ -1822,6 +1822,16 @@
       '<button type="button" class="ghost small" data-act="a:agent-submit" title="Press Return for it">Press Return</button></div>';
   }
 
+  // /login's last step: signed in, the CLI waits for Return before it gives
+  // the input box back.  The card's one click for it -- Emacs presses it
+  // only while that step is verifiably still on the screen.
+  const LOGIN_CONTINUE_BUTTON = '<button type="button" class="primary small" data-act="a:agent-login-continue" ' +
+    'title="Signed in: press Return to continue">Press Return</button>';
+  // Signed in again, the turn the expired login stopped waits to go on:
+  // Emacs sends it the herd's continue prompt, as after a sleep.
+  const CARRY_ON_BUTTON = '<button type="button" class="primary small" data-act="a:agent-carry-on" ' +
+    'title="Signed in again: pick its turn up where the expired login stopped it">Continue</button>';
+
   // Its directory gone -- a worktree removed outside the herd.  The card
   // says so and where its branch stands, with a Stop; a respawn would be
   // refused.  `gone' is null while the directory is there.
@@ -2094,6 +2104,10 @@
       acts.push('<button type="button" class="primary small" data-act="a:login-open" data-url="' + esc(a.url) + '" title="Open the sign-in link">Open sign-in link</button>');
       acts.push('<button type="button" class="ghost small" data-act="a:login-copy" data-url="' + esc(a.url) + '">Copy link</button>');
     }
+    // Signed in, the sign-in's last step waits on Return; then its turn
+    // waits to go on.
+    if (a.loginContinue) acts.push(LOGIN_CONTINUE_BUTTON);
+    if (a.carryOn) acts.push(CARRY_ON_BUTTON);
     // Its CLI's usage used up: its relay first.
     if (a.usedUp && a.relayTo && a.relayTo !== a.kind) {
       acts.push('<button type="button" class="primary small" data-act="a:relay" title="' + esc(a.usedUp) + '">Relay to ' + esc(a.relayTo) + "</button>");
@@ -2479,7 +2493,8 @@
     const acts = [];
     const menu = choicesHtml(a);
     // Anything that needs the user stays out of the ▾ fold on the phone:
-    // /login and its link are kept; Esc and Screen are `sec' (secondary).
+    // /login, its link, its last Return and Continue are kept; Esc and
+    // Screen are `sec' (secondary).
     if (a.login) {
       acts.push('<button type="button" class="primary small" data-act="a:agent-login" title="Run /login to sign in again">/login</button>');
     }
@@ -2487,6 +2502,8 @@
       acts.push('<button type="button" class="primary small" data-act="a:login-open" data-url="' + esc(a.url) + '" title="Open the sign-in link">Open sign-in link</button>');
       acts.push('<button type="button" class="ghost small" data-act="a:login-copy" data-url="' + esc(a.url) + '">Copy link</button>');
     }
+    if (a.loginContinue) acts.push(LOGIN_CONTINUE_BUTTON);
+    if (a.carryOn) acts.push(CARRY_ON_BUTTON);
     acts.push('<button type="button" class="ghost small sec" data-act="a:agent-interrupt" title="Send Escape">Esc</button>');
     const conv = herdNow.convs[name];
     if (!(conv && conv.none)) {
@@ -3359,7 +3376,7 @@
       return renderAgents();
     }
     if (act === "agent-answer") return emit("agent-answer", { name, n: +el.getAttribute("data-n") });
-    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login" || act === "agent-sleep-cancel" || act === "agent-submit") return emit(act, { name });
+    if (act === "agent-visit" || act === "agent-interrupt" || act === "agent-abort" || act === "agent-login" || act === "agent-login-continue" || act === "agent-carry-on" || act === "agent-sleep-cancel" || act === "agent-submit") return emit(act, { name });
     if (act === "login-open") return emit("open-browser", { url: el.getAttribute("data-url") });
     if (act === "login-copy") return emit("copy", { text: el.getAttribute("data-url") });
     if (act === "screen") {
@@ -4713,7 +4730,7 @@
       return;
     }
     if (ev.key === "/" && view !== "source") {
-      const input = $("q") || $("sess-filter") || $("log-filter");
+      const input = $("q") || $("sess-filter") || $("log-filter") || $("docs-filter") || $("mem-filter");
       if (input) {
         input.focus();
         ev.preventDefault();
@@ -4786,7 +4803,7 @@
   function inboxPass(it) {
     const f = inbox.filter;
     if (f === "all") return true;
-    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "ask-failed" || it.kind === "unsent";
+    if (f === "stuck") return it.kind === "blocked" || it.kind === "login" || it.kind === "login-continue" || it.kind === "carry-on" || it.kind === "ask-failed" || it.kind === "unsent";
     if (f === "approve") return it.kind === "guard" || it.kind === "proposal";
     if (f === "questions") return it.kind === "question";
     if (f === "updates") return !inboxNeed(it);
@@ -4920,6 +4937,14 @@
     }
     if (it.kind === "login") {
       return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:login" data-id="' + d + '">Run /login</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
+    if (it.kind === "login-continue") {
+      return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:login-continue" data-id="' + d + '">Press Return</button>' +
+        '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
+    }
+    if (it.kind === "carry-on") {
+      return '<div class="ibacts"><button type="button" class="ibbtn send" data-act="ib:carry-on" data-id="' + d + '">Continue</button>' +
         '<button type="button" class="ibbtn" data-act="ib:done" data-id="' + d + '">Later</button></div>';
     }
     if (it.kind === "unsent") {
@@ -5082,6 +5107,8 @@
       return;
     }
     if (act === "login") { emit("agent-login", { name: it.agent }); inboxResolve(it, "/login sent to " + it.agent, false); return; }
+    if (act === "login-continue") { emit("agent-login-continue", { name: it.agent }); inboxResolve(it, "Return pressed for " + it.agent + "'s sign-in", false); return; }
+    if (act === "carry-on") { emit("agent-carry-on", { name: it.agent }); inboxResolve(it, "Continuing " + it.agent + "'s turn", false); return; }
     if (act === "relay") { emit("agent-relay", { name: it.agent, kind: it.relayTo }); inboxResolve(it, "Relayed to " + it.relayTo, false); return; }
     if (act === "submit") { emit("agent-submit", { name: it.agent }); inboxResolve(it, "Return pressed for " + it.agent, false); return; }
     if (act === "stop-gone") { emit("agent-stop-gone", { name: it.agent }); inboxResolve(it, "Stopped " + it.agent, false); return; }
