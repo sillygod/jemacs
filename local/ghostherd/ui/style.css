@@ -1438,6 +1438,8 @@ html { -webkit-text-size-adjust: 100%; }
 .ibbtn.ok { background: #238636; border-color: #2ea043; color: #fff; font-weight: 600; }
 .ibbtn.send { background: #1f6feb; border-color: #388bfd; color: #fff; font-weight: 600; }
 .ibreply { display: flex; flex-direction: column; gap: 10px; }
+/* The room's Image button beside Send, as big as the Inbox's own. */
+.ibreply .ibacts button.ghost.small { padding: 10px 16px; min-height: 44px; border-radius: 8px; font-size: inherit; }
 .ibreplybox { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; color: var(--text);
   padding: 10px 12px; font: inherit; resize: vertical; }
 .ibprop { display: flex; flex-direction: column; gap: 10px; }
@@ -1474,7 +1476,8 @@ button.ibcardhead { width: 100%; background: none; border: none; font: inherit;
 .ibcard.open .ibh1 { font-size: 17px; }
 .ibcard.open .ibhead { align-items: flex-start; }
 .inboxpage.narrow .ibopts { gap: 8px; }
-.inboxpage.narrow .ibbtn, .inboxpage.narrow .iboptbtn { flex: 1 1 44%; }
+.inboxpage.narrow .ibbtn, .inboxpage.narrow .iboptbtn,
+.inboxpage.narrow .ibreply .ibacts button.ghost.small { flex: 1 1 44%; }
 
 /* ---- Threads: who is talking to whom, across the herd -------------------- */
 
