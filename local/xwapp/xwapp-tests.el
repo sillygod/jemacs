@@ -362,6 +362,24 @@ go together."
       (should (equal (xwapp-test--answer next)
                      '(200 . "[{\"ns\":\"T\",\"fn\":\"render\",\"arg\":{\"title\":\"標題\",\"items\":[1,2]}},{\"ns\":\"T\",\"fn\":\"flash\",\"arg\":\"done\"}]"))))))
 
+(ert-deftest xwapp-test-browser-long-intent-arrives-whole ()
+  "A long prompt from a browser tab is taken whole, however the socket
+cuts it: the page's longest (2M UTF-16 units of JSON) is 6 MB at most,
+under `xwapp--max-request'; past that, 413, which the page drops.
+The text is made up."
+  (xwapp-test--with-browser
+    (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")) 204))
+    (let* ((text (apply #'concat (make-list 60000 "長い中文  \"q\" \\ 😀\n")))
+           (said (json-encode `((op . "say") (text . ,text)))))
+      (should (> (string-bytes said) (* 1024 1024)))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1") said)) 204))
+      (xwapp-test--turn)
+      (should (equal (alist-get 'text (car intents)) text)))
+    (let ((xwapp--max-request 1000))
+      (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p1")
+                                          (json-encode `((op . "say") (text . ,(make-string 2000 ?x))))))
+                     413)))))
+
 (ert-deftest xwapp-test-browser-idle-next-is-answered-empty ()
   (xwapp-test--with-browser
     (let ((xwapp--hold 0.1))
@@ -1053,6 +1071,168 @@ live) stops the poll and marks the app wedged after the limit."
       (xwapp--poll app)                              ; a good read resets
       (should (= (or (xwapp--get app :poll-fails) 0) 0))
       (should-not (xwapp--get app :wedged)))))
+
+;;; A long intent, in parts
+;;
+;; WebKit hands Emacs 1000 UTF-16 units of a title, so the page sends a
+;; longer intent as parts, a title each (ui/xwapp.js).  The text in
+;; these is made up.
+
+(defmacro xwapp-test--with-page (&rest body)
+  "Run BODY with `app' polling a stubbed page.  (show TITLE) makes TITLE
+the page's and polls once; `seen' gathers what the handler gets,
+`scripts' what is run in the page, `said' the echo area's messages.
+The timers parts start are stopped after, so none fires in a later test."
+  (declare (indent 0))
+  `(let* ((seen nil) (scripts nil) (said nil) (title nil)
+          (app (xwapp-test--app :handler (lambda (i) (push i seen)))))
+     (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+               ((symbol-function 'xwidget-webkit-title) (lambda (_) title))
+               ((symbol-function 'xwidget-webkit-execute-script) (lambda (_xw s) (push s scripts)))
+               ((symbol-function 'message)
+                (lambda (f &rest args) (push (apply #'format f args) said))))
+       (cl-flet ((show (s) (setq title s) (xwapp--poll app)))
+         (unwind-protect (progn ,@body)
+           (xwapp--parts-clear app))))))
+
+(defun xwapp-test--parts (n json count)
+  "Titles carrying JSON as intent N's COUNT parts, as the page sends them."
+  (let ((size (ceiling (length json) (float count))))
+    (cl-loop for i below count
+             collect (concat "t:" (json-encode
+                                   `((xwpart . ,n) (i . ,i) (n . ,count)
+                                     (s . ,(substring json (min (length json) (* i size))
+                                                      (min (length json) (* (1+ i) size))))))))))
+
+(defconst xwapp-test--reset "document.title = \"Idle\";")
+
+(ert-deftest xwapp-test-parts-reassemble ()
+  "A long intent comes as parts, each read and reset; the whole of it is
+handed on once, when the last is in."
+  (xwapp-test--with-page
+    (let* ((text (apply #'concat (make-list 400 "長い中文  \"q\" \\ 😀\n    ")))
+           (json (json-encode `((op . "agent-prompt") (n . 7) (name . "a") (text . ,text))))
+           (titles (xwapp-test--parts 7 json 4)))
+      (dolist (part (butlast titles)) (show part))
+      (should-not seen)
+      (should (equal scripts (make-list 3 xwapp-test--reset)))
+      (show (car (last titles)))
+      (should (= (length seen) 1))
+      (should (equal (alist-get 'text (car seen)) text))
+      (should (equal (car seen) (xwapp-parse-intent (concat "t:" json) '("t:"))))
+      (should-not (xwapp--get app :parts))
+      (should-not (xwapp--get app :part-wait))
+      (should-not said))))
+
+(ert-deftest xwapp-test-parts-out-of-order ()
+  "Parts are placed by their number, not by when they come; one read
+twice counts once."
+  (xwapp-test--with-page
+    (let* ((json "{\"op\":\"say\",\"n\":9,\"text\":\"one two three four\"}")
+           (titles (xwapp-test--parts 9 json 3)))
+      (show (nth 2 titles))
+      (show (nth 0 titles))
+      (show "Idle")
+      (show (nth 0 titles))
+      (should-not seen)
+      (should (= (plist-get (cdr (assoc 9 (xwapp--get app :parts))) :got) 2))
+      (show (nth 1 titles))
+      (should (equal seen (list (xwapp--read-intent json))))
+      (should-not said))))
+
+(ert-deftest xwapp-test-parts-read-sooner-while-coming ()
+  "While an intent's parts are coming, the title is read every
+`xwapp--part-poll' seconds; once it is whole, by the poll alone."
+  (xwapp-test--with-page
+    (let ((titles (xwapp-test--parts 4 "{\"op\":\"say\",\"n\":4}" 2)))
+      (show (nth 0 titles))
+      (should (timerp (xwapp--get app :part-poll)))
+      (should (timerp (xwapp--get app :part-wait)))
+      (show (nth 1 titles))
+      (should (= (length seen) 1))
+      (should-not (xwapp--get app :part-poll))
+      (should-not (xwapp--get app :part-wait)))))
+
+(ert-deftest xwapp-test-parts-missing-one-is-dropped-after-a-wait ()
+  "An intent whose parts stop coming is dropped once
+`xwapp--part-wait' passes without one, and said to be -- never its
+words.  What comes of it later is the start of nothing."
+  (xwapp-test--with-page
+    (let* ((xwapp--part-wait 0.1)
+           (json "{\"op\":\"say\",\"n\":3,\"text\":\"made-up words here\"}")
+           (titles (xwapp-test--parts 3 json 3)))
+      (show (nth 0 titles))
+      (show (nth 2 titles))
+      (xwapp-test--turn 0.3)
+      (should-not seen)
+      (should-not (xwapp--get app :parts))
+      (should-not (xwapp--get app :part-wait))
+      (should-not (xwapp--get app :part-poll))
+      (should (= (length said) 1))
+      (should (string-match-p "page sent a long message in 3 parts, 1 of which never came; it was dropped"
+                              (car said)))
+      (should-not (string-search "made-up" (car said)))
+      (show (nth 1 titles))
+      (should-not seen))))
+
+(ert-deftest xwapp-test-parts-that-do-not-fit-are-dropped ()
+  "Parts that disagree on their count, or name one past it, or make no
+intent strung together, are dropped and said to be."
+  (xwapp-test--with-page
+    (show "t:{\"xwpart\":5,\"i\":0,\"n\":3,\"s\":\"{\\\"op\\\"\"}")
+    (show "t:{\"xwpart\":5,\"i\":1,\"n\":4,\"s\":\":1}\"}")
+    (should-not (xwapp--get app :parts))
+    (should (string-match-p "parts that do not fit together" (car said)))
+    (show "t:{\"xwpart\":6,\"i\":3,\"n\":3,\"s\":\"x\"}")
+    (should (= (length said) 2))
+    (show "t:{\"xwpart\":7,\"i\":0,\"n\":2,\"s\":\"{\\\"op\"}")
+    (show "t:{\"xwpart\":7,\"i\":1,\"n\":2,\"s\":\"\\\":\"}")
+    (should (string-match-p "a long message Emacs could not read" (car said)))
+    (should-not seen)
+    (should-not (xwapp--get app :parts))))
+
+(ert-deftest xwapp-test-short-intent-unchanged ()
+  "An intent that fits a title is read as it always was: at once, one
+reset, no parts, no sooner read."
+  (xwapp-test--with-page
+    (show "t:{\"op\":\"open\",\"id\":7,\"xw\":{\"xwpart\":1}}")
+    (should (equal seen '(((op . "open") (id . 7) (xw (xwpart . 1))))))
+    (should (equal scripts (list xwapp-test--reset)))
+    (should-not (xwapp--get app :parts))
+    (should-not (xwapp--get app :part-poll))
+    (should-not said)))
+
+(ert-deftest xwapp-test-unreadable-title-is-said-once ()
+  "A title cut short -- WebKit keeps the first 1000 UTF-16 units of
+one -- is not dropped in silence: said once, never its words, and the
+page told, so it goes on and gives back what was lost."
+  (xwapp-test--with-page
+    (let ((cut (concat "t:{\"op\":\"agent-prompt\",\"text\":\"" (make-string 970 ?字))))
+      (show cut)
+      (show cut)
+      (should-not seen)
+      (should (= (length said) 1))
+      (should (string-match-p (format "page sent a %d-character message Emacs could not read; it was dropped"
+                                      (length cut))
+                              (car said)))
+      (should-not (string-search "字" (car said)))
+      (should (equal scripts (list (concat xwapp-test--reset
+                                           " window.XW && XW.kit({\"xwapp\":\"unread\"});"))))
+      ;; A title that is no intent says nothing.
+      (show "Idle")
+      (show "Some page")
+      (should (= (length said) 1)))))
+
+(ert-deftest xwapp-test-parts-forgotten-with-the-page ()
+  "A page killed or loaded afresh sends its own parts: those of the one
+before are forgotten, timers and all."
+  (xwapp-test--with-page
+    (show (car (xwapp-test--parts 2 "{\"op\":\"say\",\"n\":2}" 2)))
+    (should (xwapp--get app :parts))
+    (xwapp--on-kill app)
+    (should-not (xwapp--get app :parts))
+    (should-not (xwapp--get app :part-wait))
+    (should-not (xwapp--get app :part-poll))))
 
 ;;; Files an app serves besides its page
 

@@ -10,7 +10,9 @@
  * the symlink's target.
  *
  *   XW.esc(s)            text for HTML, quotes included
- *   XW.bridge(prefix)    an emit(op, extra) that queues intents for Emacs
+ *   XW.bridge(prefix)    an emit(op, extra, lost) that queues intents for
+ *                        Emacs: false for one too long to send, and LOST
+ *                        called if one sent does not reach Emacs
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -51,22 +53,117 @@
   // Refresh) apart -- xwapp ignores a title equal to the last one it read
   // -- and seeding it with the clock keeps a reloaded page's first intent
   // apart from the last page's.
+  //
+  // The title Emacs reads is WebKit's copy of it, which is not all of it
+  // (measured 2026-10-30, macOS 15's WKWebView under Emacs 31; the page's
+  // own document.title keeps all):
+  //   - it holds the first 1000 UTF-16 units: a CJK character is one, an
+  //     emoji two, and an emoji cut in half leaves Emacs no title at all;
+  //   - a run of spaces in it is one space.
+  // So a space after another goes as \u0020, which JSON reads back as a
+  // space, and an intent whose title would pass TITLE_MAX goes in parts,
+  // a title each,
+  //
+  //   PREFIX{"xwpart":N,"i":K,"n":COUNT,"s":"..."}
+  //
+  // whose s, strung together in order of K, is the intent's JSON, and N
+  // the intent's own n.  Emacs acts on it once it has them all.
+  //
+  // An intent Emacs could not read, it says so of (XW.kit "unread"); one
+  // it left unread so long that the next is sent over it is given up on.
+  // Either way it is lost, and its emit's LOST is called.
+
+  const TITLE_MAX = 800;               // UTF-16 units: WebKit keeps 1000
+  const INTENT_MAX = 2 * 1024 * 1024;  // UTF-16 units of an intent's JSON
+
+  // A lost intent: its LOST is called, and what is left of it not sent.
+  function giveUp(rec) {
+    if (rec.gone) return;
+    rec.gone = true;
+    if (!rec.lost) return;
+    try {
+      rec.lost();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  // JSON with no run of spaces for WebKit to fold.  JSON.stringify puts
+  // a space nowhere but in a string, where \u0020 is one too.
+  function keepSpaces(json) {
+    return json.replace(/ {2,}/g, (run) => " " + "\\u0020".repeat(run.length - 1));
+  }
+
+  // JSON cut into pieces whose own JSON is at most ROOM units long, none
+  // between the halves of an emoji.
+  function pieces(json, room) {
+    const out = [];
+    for (let at = 0; at < json.length;) {
+      let end = Math.min(json.length, at + room);
+      let over;
+      // Escaped again, a " or \ is two: shed what that adds.
+      while ((over = JSON.stringify(json.slice(at, end)).length - room) > 0) end -= Math.ceil(over / 2);
+      const c = json.charCodeAt(end - 1);
+      if (end < json.length && c >= 0xd800 && c < 0xdc00) end--;
+      out.push(json.slice(at, end));
+      at = end;
+    }
+    return out;
+  }
+
+  // The titles that carry intent N, of JSON, to Emacs: one, or its parts.
+  function titles(prefix, n, json) {
+    json = keepSpaces(json);
+    if (prefix.length + json.length <= TITLE_MAX) return [prefix + json];
+    const room = TITLE_MAX - prefix.length -
+      (JSON.stringify({ xwpart: n, i: INTENT_MAX, n: INTENT_MAX, s: "" }).length - 2);
+    const all = pieces(json, room);
+    return all.map((s, i) => prefix + JSON.stringify({ xwpart: n, i: i, n: all.length, s: s }));
+  }
+
+  // What the title bridge does when Emacs says it could not read a title.
+  let unread = null;
 
   function titleBridge(prefix) {
-    const outbox = [];
+    const outbox = [];   // {title, rec}: rec is the intent's, shared by its parts
     let n = Date.now();
+    let sent = null;     // the one last set, until Emacs reads it
     let sentAt = 0;
+    // Whether there is a title to send, what is left of lost intents dropped.
+    function more() {
+      while (outbox.length && outbox[0].rec.gone) outbox.shift();
+      return outbox.length > 0;
+    }
     function pump() {
-      if (!outbox.length) return;
-      // Unread: wait, unless Emacs has evidently stopped reading it.
-      if (document.title.startsWith(prefix) && Date.now() - sentAt < 2000) return;
-      document.title = prefix + JSON.stringify(outbox.shift());
+      if (sent && document.title.startsWith(prefix)) {
+        // Unread: wait, unless Emacs has evidently stopped reading it --
+        // and then for another to send, which goes over it.
+        if (Date.now() - sentAt < 2000 || !more()) return;
+        giveUp(sent.rec);
+      }
+      sent = null;
+      if (!more()) return;
+      sent = outbox.shift();
+      document.title = sent.title;
       sentAt = Date.now();
     }
-    setInterval(pump, 50);
-    return function emit(op, extra) {
-      outbox.push(Object.assign({ op: op, n: ++n }, extra || {}));
+    unread = () => {
+      if (sent) giveUp(sent.rec);
+      sent = null;
       pump();
+    };
+    setInterval(pump, 50);
+    // The next part as soon as Emacs has reset the title, not a tick later.
+    new MutationObserver(pump).observe(document.head || document.documentElement,
+      { subtree: true, childList: true, characterData: true });
+    return function emit(op, extra, lost) {
+      const intent = Object.assign({ op: op, n: ++n }, extra || {});
+      const json = JSON.stringify(intent);
+      if (json.length > INTENT_MAX) return false;
+      const rec = { lost: lost, gone: false };
+      titles(prefix, intent.n, json).forEach((title) => outbox.push({ title: title, rec: rec }));
+      pump();
+      return true;
     };
   }
 
@@ -159,6 +256,7 @@
       over = true;
       closeQr();
       notice(msg);
+      outbox.splice(0).forEach(giveUp);
     }
     // A request failed: do what Emacs said, or ask again later.
     function trouble(e) {
@@ -202,16 +300,25 @@
         pump();
       }, trouble);
     }
+    // An intent Emacs answers it cannot take -- unreadable (400), too big
+    // (413) -- is lost, not asked again: asked again, it would be refused
+    // again, and hold up every intent after it.
     function pump() {
       if (!hello || sending || over || retry || !outbox.length) return;
       sending = true;
-      ask("intent", outbox[0]).then(() => {
+      ask("intent", outbox[0].intent).then(() => {
         outbox.shift();
         sending = false;
         answered();
         pump();
       }, (e) => {
         sending = false;
+        if (e.status === 400 || e.status === 413) {
+          giveUp(outbox.shift());
+          answered();
+          pump();
+          return;
+        }
         trouble(e);
       });
     }
@@ -256,7 +363,7 @@
       const now = document.visibilityState === "visible" && document.hasFocus();
       if (now === seen) return;
       seen = now;
-      outbox.push({ op: "xwapp-seen", seen: now });
+      outbox.push({ intent: { op: "xwapp-seen", seen: now } });
       pump();
     }
     document.addEventListener("visibilitychange", look);
@@ -266,9 +373,12 @@
 
     connect();
 
-    served = function emit(op, extra) {
-      outbox.push(Object.assign({ op: op }, extra || {}));
+    served = function emit(op, extra, lost) {
+      const intent = Object.assign({ op: op }, extra || {});
+      if (JSON.stringify(intent).length > INTENT_MAX) return false;
+      outbox.push({ intent: intent, lost: lost });
       pump();
+      return true;
     };
     return served;
   }
@@ -422,7 +532,9 @@
   // Emacs's calls to the kit itself: in a browser through next, in the
   // xwidget as XW.kit(call).
   function kit(call) {
-    if (call.xwapp === "phone") {
+    if (call.xwapp === "unread") {
+      if (unread) unread();
+    } else if (call.xwapp === "phone") {
       document.documentElement.classList.toggle("xw-phone", !ELSEWHERE);
     } else if (call.xwapp === "qr") {
       showQr(call);

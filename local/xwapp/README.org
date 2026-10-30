@@ -298,12 +298,29 @@ repo (=local/<pkg>/ui=) and in straight's build (=build/<pkg>/ui=),
 because the browser resolves =..= on the URL, not on a symlink's
 target; it needs =ui= in xwapp's own =:files=.
 
-- =XW.bridge(prefix)= returns an =emit(op, extra)= that queues intents
-  and sets the next title only once Emacs has reset the last, with a
-  counter seeded from the clock.  Without the queue, two intents within
-  a poll overwrite each other; without the counter, a second identical
-  one (a second Refresh) is taken for the one already read.  pr-view
-  had neither until it moved here.
+- =XW.bridge(prefix)= returns an =emit(op, extra, lost)= that queues
+  intents and sets the next title only once Emacs has reset the last,
+  with a counter seeded from the clock.  Without the queue, two intents
+  within a poll overwrite each other; without the counter, a second
+  identical one (a second Refresh) is taken for the one already read.
+  pr-view had neither until it moved here.
+- The title Emacs reads is WebKit's copy, not the page's: its first
+  1000 UTF-16 units (a CJK character is one, an emoji two; an emoji cut
+  in half leaves an empty title), with each run of spaces folded to one
+  (measured 2026-10-30, macOS 15 WKWebView under Emacs 31; the page's
+  own =document.title= keeps the length).  So a space after another
+  goes as =\u0020=, and an intent whose title would pass 800 units goes
+  in parts, =PREFIX{"xwpart":N,"i":K,"n":COUNT,"s":"..."}= a title
+  each, the =s= strung together being the intent's JSON.  xwapp keeps
+  them by =N=, reads the title every 20 ms while they come, acts on the
+  intent once whole, and drops one whose parts stop coming for 10 s,
+  saying so.  20,000 characters take a second or two.
+- =emit= returns false for an intent past 2M UTF-16 units of JSON,
+  which it does not send, and calls =lost= for one that does not reach
+  Emacs: a title Emacs could not read (it says so in the echo area, and
+  tells the page), one left unread 2 s with another to send over it, or
+  in a browser one Emacs refuses (400, 413).  The herd page gives a
+  lost prompt back to its box.
 - =XW.sanitizer(opts)= returns a =sanitize(html)=: an inert
   =DOMParser= document, a whitelist of tags and attributes, the rest
   unwrapped, links only http(s) and mailto.  Options per page: =images=
