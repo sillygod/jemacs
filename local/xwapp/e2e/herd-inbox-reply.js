@@ -217,6 +217,55 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
       await sleep(80);
       check(W("primary's report is answered to primary (⌘Return)"), (sent(intents, "primary-say").pop() || {}).text === "thanks");
 
+      // ---- Sent or cancelled with a composition open: drawn at once, the old text gone ----
+      // Clicked as a click that leaves the box its focus (Safari's), so
+      // no focusout ends the composition first.
+      const composing = async (text) => {
+        await push();
+        await sleep(80);
+        await open(R);
+        await sleep(60);
+        await tap('[data-act="ib:reply-open"][data-id="' + R + '"]');
+        await sleep(60);
+        await page.fill(BOX, text);
+        const box = await page.$(BOX);
+        await box.evaluate((t) => {
+          t.focus();
+          t.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+          t.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, data: "ㄏ" }));
+        });
+        return box;
+      };
+      const ended = (box) => box.evaluate((t) => {
+        t.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "好" }));
+        t.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      });
+      const left = () => page.$$eval(".ibreplybox", (ts) => ts.map((t) => t.value).filter(Boolean));
+      let box = await composing("sent mid-word");
+      await page.$eval('[data-act="ib:reply"][data-id="' + R + '"]', (b) => b.click());
+      await sleep(80);
+      check(W("Send during a composition: sent, and the Inbox drawn at once"),
+        (sent(intents, "lead-say").pop() || {}).text === "sent mid-word" &&
+        !(await page.$('.ibrow[data-id="' + R + '"], .ibcard[data-id="' + R + '"]')) && !(await page.$(BOX)));
+      await ended(box);
+      await sleep(80);
+      await push();
+      await sleep(80);
+      check(W("its composition ending after puts no old text back, in any box"),
+        (await left()).length === 0 && !!(await page.$(".ibreplybox")), await left());
+      box = await composing("cancelled mid-word");
+      await page.$eval('[data-act="ib:reply-close"][data-id="' + R + '"]', (b) => b.click());
+      await sleep(80);
+      check(W("Cancel during a composition: the box closed at once"),
+        !(await page.$(BOX)) && !!(await page.$('[data-act="ib:reply-open"][data-id="' + R + '"]')));
+      await ended(box);
+      await sleep(80);
+      await push();
+      await sleep(80);
+      await tap('[data-act="ib:reply-open"][data-id="' + R + '"]');
+      await sleep(60);
+      check(W("and opened again, empty"), (await page.$eval(BOX, (t) => t.value)) === "" && (await left()).length === 0, await left());
+
       check(W("no page errors"), errors.length === 0, errors);
       await ctx.close();
     }

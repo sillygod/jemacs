@@ -4914,6 +4914,14 @@
   let inboxComposing = false;
   let inboxHeld = false;
 
+  // A box sent or closed: its composition no longer holds the Inbox, and
+  // the redraw that clears the box is drawn now -- held, it would be drawn
+  // when the composition ends, after `composed' put the old text back.
+  function inboxUnhold() {
+    inboxComposing = false;
+    inboxHeld = false;
+  }
+
   function inboxReplyFocused() {
     const a = document.activeElement;
     return a && a.classList && a.classList.contains("ibreplybox") ? a : null;
@@ -5223,7 +5231,7 @@
       inbox.reply = "";
       // Cancel drops the images put in the box too; another item picked
       // keeps them for when this one is back.
-      if (act === "reply-close") delete herdNow.attach[it.agent];
+      if (act === "reply-close") { delete herdNow.attach[it.agent]; inboxUnhold(); }
       renderInbox();
       const ta = act === "reply-open" && app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       if (ta) ta.focus();
@@ -5233,6 +5241,7 @@
       const ta = app.querySelector('.ibreplybox[data-id="' + cssName(it.id) + '"]');
       const text = withImages(it.agent, ((ta && ta.value) || inbox.reply || "").trim());
       if (!text) { setStatus("Write the answer first"); return; }
+      inboxUnhold();
       // A lead's through its project (`ghostherd-lead-say' finds the lead
       // from it, and starts one if it is gone); primary's through primary.
       if (it.replyVia === "primary") emit("primary-say", { text: text });
