@@ -5249,12 +5249,46 @@
   // / renderThreads) and one thread at a time (thread-open / renderThread).
   // Phone: the list, then the thread as a conversation, "A → B".
 
+  // PROJECT / SORT, the view the list is of: one project's threads ("" for
+  // every one's), newest first or by what they cost -- done by the herd
+  // before it cuts the list to a page (herd_threads).  PROJECTS, every
+  // project the threads it read name, for the chips.
   let threads = { list: [], talking: [], live: 0, more: false, req: null, cur: null, error: "", open: {}, phone: false,
-                  costs: [], costDays: 7, costOpen: false };
+                  costs: [], costDays: 7, costOpen: false, projects: [], ...thViewKept() };
   let threadsWatching = false;
 
   const TH_STATUS = { live: "Live", waiting: "Waiting", answered: "Answered", failed: "Failed" };
   const TH_LABEL = { ask: "ask", handoff: "handoff", answer: "answer", message: "message", failed: "failed", cancelled: "cancelled" };
+
+  // The view the viewer picked, kept for them in this browser.  Storage
+  // can be missing or refused (a private window, the desk's file page):
+  // every project's threads then, newest first.
+  function thViewKept() {
+    try {
+      const project = localStorage.getItem("ghostherd.threads.project") || "";
+      return { project: project, sort: localStorage.getItem("ghostherd.threads.sort") === "cost" ? "cost" : "recent" };
+    } catch (e) {
+      return { project: "", sort: "recent" };
+    }
+  }
+
+  function thViewKeep() {
+    try {
+      localStorage.setItem("ghostherd.threads.project", threads.project);
+      localStorage.setItem("ghostherd.threads.sort", threads.sort);
+    } catch (e) {
+      // Not kept: this page keeps it until it is loaded again.
+    }
+  }
+
+  // The page of threads loaded, as the view now picked shows it -- until
+  // the herd's own list of that view comes.
+  function thPreview(list) {
+    const p = threads.project;
+    const out = list.filter((t) => !p || (t.projects || []).includes(p));
+    const total = (t) => (t.cost && t.cost.total) || -1;
+    return out.sort((a, b) => (threads.sort === "cost" ? total(b) - total(a) : 0) || (b.at || 0) - (a.at || 0));
+  }
 
   function thNarrow() { return window.innerWidth < 720; }
   function thWho(n) { return n === "user" ? "You" : String(n || "?"); }
@@ -5395,7 +5429,7 @@
     src = null;
     chrome();
     app.innerHTML = '<div class="page wide threadspage"></div>';
-    if (!threadsWatching) { threadsWatching = true; emit("threads-watch"); }
+    if (!threadsWatching) { threadsWatching = true; emit("threads-watch", { project: threads.project, sort: threads.sort }); }
     if (req) openThread(req);
     else renderThreads();
   }
@@ -5453,9 +5487,26 @@
       '<span class="thcount">' + t.count + (t.count === 1 ? " message" : " messages") + "</span></span></button>";
   }
 
+  // Above the list: a chip a project, every one's first -- the one picked
+  // too, though none of its threads is among those read -- and the order.
+  function thBar() {
+    const names = threads.projects.slice();
+    if (threads.project && !names.includes(threads.project)) names.push(threads.project);
+    const chip = (p, label) => '<button type="button" class="chip' + (threads.project === p ? " on" : "") +
+      '" data-act="th:project" data-project="' + esc(p) + '" aria-pressed="' + (threads.project === p) + '">' + esc(label) + "</button>";
+    const order = (k, label, title) => '<button type="button" class="ghost small' + (threads.sort === k ? " on" : "") +
+      '" data-act="th:sort" data-sort="' + k + '" aria-pressed="' + (threads.sort === k) + '" title="' + title + '">' + label + "</button>";
+    return '<div class="thbar">' +
+      (names.length ? '<div class="chips thpchips" role="group" aria-label="Project">' + chip("", "All") +
+        names.map((p) => chip(p, p)).join("") + "</div>" : "") +
+      '<span class="msort" role="group" aria-label="Order">' + order("recent", "Recent", "Newest activity first") +
+      order("cost", "Cost", "What its task cost, the most first; those whose cost is not known last") + "</span></div>";
+  }
+
   function thList() {
-    return '<section class="thlist" aria-label="Threads">' +
+    return '<section class="thlist" aria-label="Threads">' + thBar() +
       (threads.list.length ? threads.list.map(thRow).join("")
+        : threads.project ? '<p class="thquiet thpad">No threads of ' + esc(threads.project) + " among the recent ones.</p>"
         : '<p class="thquiet thpad">No threads yet: one starts when an agent asks another, hands work to another project, or you tell an agent something directly.</p>') +
       (threads.more ? '<button type="button" class="ghost thmore" data-act="th:more">Older threads</button>' : "") + "</section>";
   }
@@ -5607,6 +5658,13 @@
       else openThread(id ? { id } : { ask });
     } else if (act === "more") {
       emit("threads-more");
+    } else if (act === "project" || act === "sort") {
+      if (act === "project") threads.project = el.getAttribute("data-project") || "";
+      else threads.sort = el.getAttribute("data-sort") === "cost" ? "cost" : "recent";
+      thViewKeep();
+      emit("threads-view", { project: threads.project, sort: threads.sort });
+      threads.list = thPreview(threads.list);
+      renderThreads();
     } else if (act === "cost-days") {
       threads.costDays = +el.getAttribute("data-days") || 7;
       renderThreads();
@@ -5638,10 +5696,16 @@
     // The Threads tab's list and what is open now, pushed while it is
     // shown.  The desk opens the newest thread when none is open.
     renderThreads: (p) => {
-      threads.list = (p && p.threads) || [];
+      // A list of the view before the viewer changed it, asked for before
+      // they did: not shown.
+      const v = p && p.view;
+      if (!(v && v.sort && (v.project !== threads.project || v.sort !== threads.sort))) {
+        threads.list = (p && p.threads) || [];
+        threads.more = !!(p && p.more);
+        threads.projects = (p && Array.isArray(p.projects) && p.projects) || [];
+      }
       threads.talking = (p && p.talking) || [];
       threads.live = (p && p.live) || 0;
-      threads.more = !!(p && p.more);
       threads.costs = (p && p.costs) || [];
       threadsBadge();
       if (view !== "threads") return;

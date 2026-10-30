@@ -180,6 +180,32 @@ def test_the_list_is_newest_first_and_says_when_there_is_more(tmp_path):
     assert not h.threads(limit=5)["more"]
 
 
+def test_a_projects_older_threads_are_read_for_while_the_asks_read_are_full(tmp_path, monkeypatch):
+    """One project's threads may all be older than the asks read for the
+    list: it says there are more, and the next page reads further back."""
+    import herd
+    monkeypatch.setattr(th, "WINDOW", 3)
+    monkeypatch.setattr(herd, "ASK_ROUNDS", 20)
+    h = _store(tmp_path)
+    h.tick(sessions=SNAP + [{"name": "claude-b", "kind": "claude", "state": "idle", "project": "/src/b/"}])
+    old = h.ask("agy-b", "the b one", from_name="claude-b")["id"]
+    _deliver(h)
+    h.reply(old, "done", from_name="agy-b")
+    with h._mu:   # answered long ago
+        h._conn.execute("UPDATE asks SET created_at = ?, delivered_at = ?, answered_at = ? WHERE id = ?",
+                        ("2026-01-01T00:00:00+00:00",) * 3 + (old,))
+        h._conn.commit()
+    for i in range(12):
+        h.ask("agy-a", f"ask {i}", from_name="claude-main")
+    first = h.threads(limit=1, project="b")
+    assert first["threads"] == [] and first["more"] and first["projects"] == ["a"]
+    out = h.threads(limit=2, project="b")
+    assert [t["id"] for t in out["threads"]] == [old] and not out["more"]
+    assert out["projects"] == ["a", "b"]
+    # Every project's: as before, more only past the page.
+    assert not h.threads(limit=40)["more"]
+
+
 def test_asking_for_a_thread_that_is_not_there(tmp_path):
     h = _store(tmp_path)
     with pytest.raises(ValueError, match="no thread with nobody"):
@@ -196,3 +222,6 @@ def test_the_rpcs_check_what_they_are_given(tmp_path, monkeypatch):
             rpc._herd_thread(bad)
     with pytest.raises(ValueError, match="limit"):
         rpc._herd_threads({"limit": "many"})
+    for bad in ({"project": 5}, {"project": "x" * 401}, {"sort": ["cost"]}, {"sort": "size"}):
+        with pytest.raises(ValueError, match="project|sort"):
+            rpc._herd_threads(bad)

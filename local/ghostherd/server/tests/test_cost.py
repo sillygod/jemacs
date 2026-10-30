@@ -566,6 +566,42 @@ def test_two_threads_of_one_task_show_its_cost_once(home, tmp_path):
     assert h.thread(id=ask)["cost"]["threadCount"] == 2
 
 
+def test_the_threads_of_one_project_and_by_what_they_cost(home, tmp_path):
+    """The Threads tab's project chips and its sort, done before the list
+    is cut to the page: a project's threads, and the costliest first --
+    one whose task is not known last."""
+    h, _, dp = herd_at_work(home, tmp_path)
+    snap = [{"name": LEAD, "kind": "claude", "state": "idle", "project": f"{dp}/", "role": "lead", "directory": f"{dp}/"},
+            {"name": RD, "kind": "claude", "state": "idle", "project": f"{dp}/", "directory": f"{tmp_path}/wt-rd/"},
+            {"name": SOLO, "kind": "claude", "state": "idle", "project": f"{tmp_path}/solo/",
+             "directory": f"{tmp_path}/solo/"},
+            {"name": "agy-dp", "kind": "agy", "state": "idle", "project": f"{dp}/"}]
+    h.tick(sessions=snap)
+    h.ask(RD, "a question for rd", from_name="agy-dp")   # the newest, of no task known
+    counted(h)
+
+    def titles(**kw):
+        return [t["title"] for t in h.threads(**kw)["threads"]]
+
+    assert titles() == ["a question for rd", "fix the build", "Now push it.", "Add a health check."]
+    out = h.threads(sort="cost")
+    assert [t["title"] for t in out["threads"]] == ["fix the build", "Add a health check.", "Now push it.",
+                                                    "a question for rd"]
+    assert out["view"] == {"project": "", "sort": "cost"} and out["projects"] == ["dp", "solo"]
+    assert titles(project="solo") == ["Now push it.", "Add a health check."]
+    assert titles(project="dp", sort="cost") == ["fix the build", "a question for rd"]
+    # Every project still a chip, the list one project's.
+    assert h.threads(project="solo")["projects"] == ["dp", "solo"]
+    # Cut after: a page, then the next of the same view.
+    first = h.threads(limit=1, sort="cost")
+    assert [t["title"] for t in first["threads"]] == ["fix the build"] and first["more"]
+    assert titles(limit=2, project="solo", sort="cost") == ["Add a health check.", "Now push it."]
+    assert not h.threads(limit=2, project="solo")["more"]
+    assert titles(project="nowhere") == []
+    with pytest.raises(ValueError, match="sort"):
+        h.threads(sort="size")
+
+
 def test_a_thread_says_who_began_its_task_and_when(home, tmp_path):
     """What the page needs to open a lead's thread with the user's words
     when the herd log has only the note before them: its task's agent,

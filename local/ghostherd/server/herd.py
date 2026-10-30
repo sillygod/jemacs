@@ -273,6 +273,8 @@ TRACE_HOLD = 3.0
 # working-out is kept, and how often -- and how many at a time -- the
 # work's commits are looked for in git.
 COST_DAYS = 30
+# How the Threads tab may order its list (`threads').
+THREAD_SORTS = ("recent", "cost")
 # What a piece of work cost, as `cost_usage' keeps it: tally.Usage's kinds.
 COST_KINDS = tally.Usage.__slots__
 COST_KEEP = 30.0
@@ -2077,19 +2079,28 @@ class HerdStore:
                 for r in self._conn.execute(
                     "SELECT name, kind, state, project, role, branch FROM snapshot").fetchall()}
 
-    def threads(self, limit: int = 40) -> dict[str, Any]:
+    def threads(self, limit: int = 40, project: str | None = None, sort: str = "recent") -> dict[str, Any]:
         """The threads with the latest activity (LIMIT of them), every open
         ask in the herd for the strip across the top, and how many threads
-        are live -- an ask in them still open."""
+        are live -- an ask in them still open.  PROJECT, a project as a
+        thread names it (its leaf), keeps the threads it is in; SORT "cost"
+        puts them by what their task cost, the most first, those with no
+        cost known last (newest first among them).  Both are done before
+        the list is cut to LIMIT, so its older pages are the same view's;
+        `projects' is every project the threads read name, for the page's
+        chips, and `view' what was asked for."""
         limit = max(1, min(200, int(limit)))
+        if sort not in THREAD_SORTS:
+            raise ValueError(f"sort is one of {', '.join(THREAD_SORTS)}")
+        project = (project or "").strip() or None
+        window = max(threads_mod.WINDOW, limit * 10)
         with self._mu:
             rows = self._thread_rows(
-                "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT ?",
-                (max(threads_mod.WINDOW, limit * 10),))
+                "ORDER BY COALESCE(answered_at, delivered_at, created_at) DESC LIMIT ?", (window,))
             open_rows = self._thread_rows(f"WHERE status IN {ASK_OPEN}")
             by_id = self._with_ancestors(rows + open_rows)
             snap = self._thread_snap()
-        listed, more = threads_mod.summaries(list(by_id.values()), snap, limit)
+        listed, _ = threads_mod.summaries(list(by_id.values()), snap, len(by_id))
         talking = threads_mod.talking(open_rows, snap, by_id)
         # What the task each thread is part of cost (cost.py), and lead mode
         # against direct mode over a week and a month.
@@ -2103,12 +2114,20 @@ class HerdStore:
                 t = threads_mod.direct(row, snap, view["on"].get(row["agent"]) == "task:" + row["id"])
                 t["cost"] = self._thread_cost(t["id"], view)
                 listed.append(t)
+        names = sorted({p for t in listed for p in t["projects"]}, key=str.lower)
+        if project:
+            listed = [t for t in listed if project in t["projects"]]
         listed.sort(key=lambda t: -(t["at"] or 0))
-        more = more or len(listed) > limit
+        if sort == "cost":
+            listed.sort(key=lambda t: (t["cost"] is None, -((t["cost"] or {}).get("total") or 0)))
+        # A project's threads may be older than the asks read: more are
+        # there to read while the window is full.
+        more = len(listed) > limit or bool(project and len(rows) >= window and limit < 200)
         listed = listed[:limit]
         threads_mod.one_cost(listed)
         return {"threads": listed, "more": more, "talking": talking,
                 "live": len({t["thread"] for t in talking}),
+                "projects": names, "view": {"project": project or "", "sort": sort},
                 "costs": [self.costs(days)["compare"] for days in (7, 30)]}
 
     def thread(self, id: str | None = None, ask: str | None = None,

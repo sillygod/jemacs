@@ -3925,7 +3925,8 @@ user's state (or none) and push."
         ("herd-unwatch"
          (ghostherd-memory-page--room-close)
          (ghostherd-memory-page--herd-unwatch))
-        ("threads-watch" (ghostherd-threads--watch))
+        ("threads-watch" (ghostherd-threads--watch intent))
+        ("threads-view" (ghostherd-threads--view intent))
         ("threads-unwatch" (ghostherd-threads--unwatch))
         ("threads-more" (ghostherd-threads--more))
         ("threads-peek" (ghostherd-threads--peek))
@@ -4081,6 +4082,11 @@ Kept screens open in place; new entries arrive as they are logged."
 (defvar ghostherd-threads--watching nil)
 (defvar ghostherd-threads--timer nil)
 (defvar ghostherd-threads--limit 40 "How many threads the list holds; `threads-more' grows it.")
+(defvar ghostherd-threads--project ""
+  "The project the list is of -- a project as a thread names it, its
+leaf -- or \"\" for every one: the viewer's choice, the page's to keep.")
+(defvar ghostherd-threads--sort "recent"
+  "How the list is ordered: \"recent\" or \"cost\" (herd_threads).")
 (defvar ghostherd-threads--req nil
   "The open thread, as the page asked for it: (:id ID), (:ask ID) or (:agent NAME).")
 (defvar ghostherd-threads--sig nil "Signature of the last list pushed.")
@@ -4240,6 +4246,10 @@ directly has the user's words already: none."
                     :talking (plist-get result :talking)
                     :live (or (plist-get result :live) 0)
                     :more (plist-get result :more)
+                    ;; Every project the threads name, for the chips, and
+                    ;; the project and order this list is of.
+                    :projects (plist-get result :projects)
+                    :view (plist-get result :view)
                     ;; What a task costs, lead mode against direct mode: a
                     ;; week's and a month's (server/cost.py).
                     :costs (plist-get result :costs)))
@@ -4273,11 +4283,28 @@ directly has the user's words already: none."
     (ghostherd-memory-request-async
      "herd_threads"
      (lambda (r) (when ghostherd-threads--watching (ghostherd-threads--push-list r)))
-     (list :limit ghostherd-threads--limit)
+     (list :limit ghostherd-threads--limit
+           :project ghostherd-threads--project :sort ghostherd-threads--sort)
      #'ignore)
     (ghostherd-threads--fetch-thread)))
 
-(defun ghostherd-threads--watch ()
+(defun ghostherd-threads--set-view (intent)
+  "Take the project and order INTENT says the list is of (`threads-view')."
+  (let ((project (alist-get 'project intent))
+        (sort (alist-get 'sort intent)))
+    (setq ghostherd-threads--project (if (stringp project) (string-trim project) "")
+          ghostherd-threads--sort (if (member sort '("recent" "cost")) sort "recent"))))
+
+(defun ghostherd-threads--view (intent)
+  "The list of INTENT's project, in its order, from its first page."
+  (ghostherd-threads--set-view intent)
+  (setq ghostherd-threads--limit 40 ghostherd-threads--sig nil)
+  (when ghostherd-threads--watching (ghostherd-threads--tick)))
+
+(defun ghostherd-threads--watch (&optional intent)
+  "Refresh the list while the tab is shown: of the project, in the order,
+INTENT says, as the page keeps them."
+  (ghostherd-threads--set-view intent)
   (setq ghostherd-threads--watching t ghostherd-threads--sig nil ghostherd-threads--thread-sig nil)
   (unless (timerp ghostherd-threads--timer)
     (setq ghostherd-threads--timer
