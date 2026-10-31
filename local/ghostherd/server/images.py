@@ -33,6 +33,19 @@ serves the copy as a document to read, never to run (a sandbox: no
 script, no request but fonts), so only what the page holds itself is
 shown -- a stylesheet or image beside it on disk is not.
 
+A page is no report, and is not copied, when it is source rather than
+something delivered (a review naming jwebkit's md-viewer/viewer.html
+showed it as one, 2026-10-31):
+
+- it loads a script or stylesheet of its own, by a path -- relative, or
+  from the root of where it is served (`needs_files'): alone, a copy of
+  it shows nothing but "Loading…".  One whole in itself, or loading
+  only from the web (https: and the like), is a report;
+- git tracks it in the checkout it is in (`_tracked'): asked last, of a
+  page that passed every other check, a few times a message at most; no
+  git, or git failing, is not tracked -- a report is never lost to it.
+  An image is not asked: a screenshot in a checkout still shows.
+
 Nothing takes a path but a reply's text: the page and the bot get ids,
 and Emacs serves a copy by its id alone (`ghostherd-reply-images-directory').
 The copies are yours alone (0700 / 0600), and go KEEP_DAYS after a
@@ -61,11 +74,13 @@ import bisect
 import hashlib
 import html
 import io
+import json
 import os
 import re
 import secrets
 import sqlite3
 import stat
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -90,6 +105,10 @@ MAX_PER_MESSAGE = 8
 FOLDERS_PER_NAME = 4
 FOLDER_MENTIONS = 4 * FOLDERS_PER_NAME
 MAX_LOOKS = MAX_PER_MESSAGE * FOLDERS_PER_NAME
+# A page git tracks where it is is no report (`_tracked'): how many pages
+# of a message git is asked of, and how long it may take to answer.
+GIT_LOOKS = 4
+GIT_SECONDS = 2.0
 # A thumbnail's longest side: sharp at three pixels a point.
 THUMB_PX = 480
 # A file may be this much newer than the message that names it: written
@@ -121,6 +140,31 @@ _HTML_PATH = re.compile(r"\.html?\Z", re.I)
 _FILE_PATH = re.compile(r"\.(?:png|jpe?g|gif|webp|html?)\Z", re.I)
 _DOCTYPE = re.compile(r"(?:<!doctype\s+html|<html)[\s>]", re.I)
 _TITLE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.I | re.S)
+# What a page loads (`needs_files'): its tags that load a script or a
+# stylesheet, their attributes up to the ">" that ends them -- a quoted
+# value may hold one -- within TAG_CHARS (an agent's page is read in
+# linear time: a tag that is not closed by then is none), what a <script>
+# or <style> holds, and the attributes of a tag.
+_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+_LOADS = re.compile(r"<(script|style|link|base)\b", re.I)
+_LOADS_END = re.compile(r"((?:[^>\"']|\"[^\"]*\"|'[^']*')*)>")
+TAG_CHARS = 2048
+_ATTR = re.compile(r"([^\s\"'>/=]+)(?:\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s\"'=<>`]+))?")
+_END = {"script": re.compile(r"</script\s*>", re.I), "style": re.compile(r"</style\s*>", re.I)}
+# A stylesheet a <style> imports; a module a script imports: `import x
+# from "./a.js"', `import "./a.js"', `export ... from', `} from "./a.js"'
+# ending an import over lines, `import("./a.js")'.  On one line, no part
+# of it matching what another may: an agent's page is read in linear time.
+_CSS_IMPORT = re.compile(r"@import\s+(?:url\(\s*)?([\"']?)([^\"')\s;]+)\1", re.I)
+_JS_IMPORT = re.compile(r"(?m)^[ \t]*(?:import\b(?:[^;'\"\n]*?\bfrom)?|(?:export|\})[^;'\"\n]*?\bfrom)"
+                        r"[ \t]*([\"'])([^\"'\n]+)\1")
+_JS_DYNAMIC = re.compile(r"\bimport\(\s*([\"'`])([^\"'`\n]+)\1")
+# rel= of a <link> that loads a script or stylesheet; preload, as= one.
+_LINK_RELS = {"stylesheet", "modulepreload", "import"}
+_PRELOAD_AS = {"script", "style"}
+# Where from the web: what a copy loads as well as the page did.
+_REMOTE = re.compile(r"\A(?:https?:|data:|//)", re.I)
+_SCHEME = re.compile(r"\A[a-z][a-z0-9+.-]*:", re.I)
 _START = r"(?:file://|~/|/)"
 # The target of a Markdown link or image, which may hold spaces: ](path),
 # ](<path>), ](path "title").
@@ -364,6 +408,112 @@ def html_text(data: bytes) -> str | None:
     return text if _DOCTYPE.match(head[:64] + " ") else None
 
 
+def _attrs(s: str) -> dict[str, str]:
+    "The attributes S of a tag, by name in lower case, values unescaped."
+    out: dict[str, str] = {}
+    for m in _ATTR.finditer(s):
+        v = m.group(2) or ""
+        if v[:1] in ("\"", "'"):
+            v = v[1:-1]
+        out.setdefault(m.group(1).lower(), html.unescape(v).strip())
+    return out
+
+
+def _from_here(url: str, web: bool) -> bool:
+    """Whether URL loads from where the page is -- a relative path, one
+    from the root of where it is served, file: -- not from the web: not
+    http:, https:, data: or //.  WEB: a <base> sends the page's relative
+    paths to the web.  Nothing, or a place in the page (#x), is no load."""
+    if not url or url.startswith("#") or _REMOTE.match(url):
+        return False
+    if _SCHEME.match(url):
+        return url[:5].lower() == "file:"
+    return not web
+
+
+def needs_files(text: str) -> bool:
+    """Whether the HTML page TEXT loads a script or a stylesheet of its own
+    from where it is (`_from_here'): <script src>, <link rel=stylesheet>
+    (and modulepreload, import; preload as one), @import in a <style>, an
+    import in a <script> -- outside comments.  A page whose copy, alone,
+    would load none of them: source beside its files, not a report.
+    Decided on TEXT alone, as read for the copy."""
+    text = _COMMENT.sub("", text)
+    web = False
+    found: list[tuple[str, dict[str, str], str]] = []
+    pos = 0
+    while True:
+        m = _LOADS.search(text, pos)
+        if not m:
+            break
+        end = _LOADS_END.match(text, m.end(), m.end() + TAG_CHARS)
+        if not end:
+            pos = m.end() + TAG_CHARS
+            continue
+        tag, attrs, pos = m.group(1).lower(), _attrs(end.group(1)), end.end()
+        body = ""
+        if tag in _END:
+            end = _END[tag].search(text, pos)
+            body, pos = (text[pos:end.start()], end.end()) if end else (text[pos:], len(text))
+        if tag == "base" and _REMOTE.match(attrs.get("href", "")):
+            web = True
+        found.append((tag, attrs, body))
+    for tag, attrs, body in found:
+        if tag == "script":
+            urls = [attrs["src"]] if "src" in attrs else [
+                u for rx in (_JS_IMPORT, _JS_DYNAMIC) for _, u in rx.findall(body)]
+        elif tag == "style":
+            urls = [u for _, u in _CSS_IMPORT.findall(body)]
+        elif tag == "link":
+            rel = set(attrs.get("rel", "").lower().split())
+            loads = rel & _LINK_RELS or ("preload" in rel and attrs.get("as", "").lower() in _PRELOAD_AS)
+            urls = [attrs.get("href", "")] if loads else []
+        else:
+            urls = []
+        if any(_from_here(u.strip(), web) for u in urls):
+            return True
+    return False
+
+
+def _tracked(path: str) -> bool:
+    """Whether git tracks the file at PATH in the checkout it is in: source
+    being talked of, not a report delivered.  git asked with the path as
+    an argument, never through a shell, the name taken literally, its
+    checkout's fsmonitor and hooks off (a folder an agent made could name
+    a command there), its own GIT_ settings dropped; GIT_SECONDS at most.
+    No git, no checkout there, an error, too slow: not tracked -- a report
+    is never lost to git."""
+    folder, name = os.path.split(path)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    try:
+        done = subprocess.run(
+            ["git", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "-C", folder or "/", "ls-files", "--error-unmatch", "--", name],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env, timeout=GIT_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+class _GitLooks:
+    """`_tracked', for one message: each path asked once, GIT_LOOKS paths
+    at most; past them, not tracked."""
+
+    def __init__(self) -> None:
+        self.left = GIT_LOOKS
+        self.said: dict[str, bool] = {}
+
+    def __call__(self, path: str) -> bool:
+        if path not in self.said:
+            if not self.left:
+                return False
+            self.left -= 1
+            self.said[path] = _tracked(path)
+        return self.said[path]
+
+
 def html_title(text: str) -> str:
     "The title of the HTML page TEXT, on one line, or \"\"."
     m = _TITLE.search(text[:TITLE_WITHIN])
@@ -428,7 +578,8 @@ def _load(p: str, at: float | None = None) -> tuple[bytes, str, str] | None:
     if len(data) > cap:
         return None
     if page:
-        return (data, "html", _stamp(st)) if html_text(data) is not None else None
+        text = html_text(data)
+        return (data, "html", _stamp(st)) if text is not None and not needs_files(text) else None
     kind = _kind(data[:16])
     return (data, kind[0], _stamp(st)) if kind else None
 
@@ -531,6 +682,8 @@ class ImageStore:
                 CREATE INDEX IF NOT EXISTS refs_id ON refs (id);
                 -- The reports, newest first (`reports').
                 CREATE INDEX IF NOT EXISTS images_kind ON images (ext, created, id);
+                -- What was done to the index once (`_drop_pages_needing_files').
+                CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
                 """
             )
             # A report's title, and who named a copy first: columns an index
@@ -552,8 +705,60 @@ class ImageStore:
                 if col not in have:
                     conn.execute(f"ALTER TABLE refs ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
             conn.commit()
+            self._drop_pages_needing_files(conn)
             self._conn = conn
         return self._conn
+
+    # The pages copied as reports before a page that loads its own files
+    # was known to be none (`needs_files'): dropped, once.
+    DROP_PAGES = "dropped pages needing files"
+
+    def _drop_pages_needing_files(self, db: sqlite3.Connection) -> dict[str, Any] | None:
+        """Drop, once, the copies kept as reports that `needs_files' says are
+        none -- judged by the copy, the same bytes -- with the messages'
+        refs to them: what was done, or None when it was done before.
+        First the index backed up, beside it in backups/; the copies moved
+        there after it changed, so all of it can be put back.  Whether git
+        tracked one cannot be told now: where it came from is not kept."""
+        if db.execute("SELECT 1 FROM meta WHERE k = ?", (self.DROP_PAGES,)).fetchone():
+            return None
+        drop = []
+        for (id_,) in db.execute("SELECT id FROM images WHERE ext = 'html'").fetchall():
+            try:
+                with open(self.path({"id": id_, "ext": "html"}), "rb") as f:
+                    data = f.read(MAX_HTML_BYTES + 1)
+            except OSError:
+                continue  # gone: pruned in its time
+            text = html_text(data)
+            if text is not None and needs_files(text):
+                drop.append(id_)
+        done: dict[str, Any] = {"dropped": len(drop), "at": time.time()}
+        if drop:
+            backups = self.root / "backups"
+            backups.mkdir(mode=0o700, exist_ok=True)
+            dest = backups / f"index-before-pages-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+            dest.mkdir(mode=0o700)
+            out = sqlite3.connect(dest / "index.sqlite")
+            try:
+                db.backup(out)
+                out.execute("PRAGMA journal_mode=DELETE")   # one file, whole
+            finally:
+                out.close()
+            done["backup"] = str(dest)
+        for id_ in drop:
+            db.execute("DELETE FROM images WHERE id = ?", (id_,))
+            db.execute("DELETE FROM refs WHERE id = ?", (id_,))
+        db.execute("INSERT INTO meta (k, v) VALUES (?, ?)", (self.DROP_PAGES, json.dumps(done)))
+        db.commit()
+        for id_ in drop:
+            try:
+                os.replace(self.path({"id": id_, "ext": "html"}), dest / f"{id_}.html")
+            except OSError:
+                pass
+        if drop:
+            print(f"[ghostherd-memory] images: dropped {len(drop)} page(s) that load their own files, "
+                  f"not reports; backed up in {dest}", flush=True)
+        return done
 
     def path(self, rec: dict[str, Any], thumb: bool = False) -> Path:
         "Where the copy REC (or its thumbnail) is."
@@ -603,6 +808,7 @@ class ImageStore:
             had = {r["src"]: r for r in old if r["src"]}
             named_as = {r["name"]: r for r in old if not r["src"]}
             recs = []
+            tracked = _GitLooks()
             for p in paths:
                 if len(recs) >= MAX_PER_MESSAGE:
                     break
@@ -610,7 +816,7 @@ class ImageStore:
                 if prev and prev["stamp"] and prev["stamp"] == stamp(p):
                     rec = prev                      # unchanged: not read again
                 else:                               # changed, or not known: copied; gone, the copy kept
-                    rec = self._copy(p, at, now, who) or prev
+                    rec = self._copy(p, at, now, who, tracked) or prev
                 if rec and all(r["id"] != rec["id"] for r in recs):
                     recs.append(rec)
             db.execute("INSERT OR REPLACE INTO messages (key, n, at) VALUES (?, ?, ?)", (k, len(recs), now))
@@ -655,15 +861,19 @@ class ImageStore:
         return self.capture(text, at, who) if at is not None else []
 
     def _copy(self, p: str, at: float | None, now: float,
-              who: dict[str, str] | None = None) -> dict[str, Any] | None:
-        """Copy the image or page at P, once by its content, as WHO named it.
-        Caller holds `_mu'."""
+              who: dict[str, str] | None = None, tracked: _GitLooks | None = None) -> dict[str, Any] | None:
+        """Copy the image or page at P, once by its content, as WHO named it:
+        a page none of TRACKED, git asked for the message.  Caller holds
+        `_mu'."""
         got = _load(p, at)
         if not got:
             return None
         data, ext, st = got
         src = {"src": source(p), "stamp": st}
         page = ext == "html"
+        # Asked last, of a page that passed every other check.
+        if page and (tracked or _GitLooks())(_local(p) or p):
+            return None
         size = (0, 0) if page else _inspect(data, ext)
         if not size:
             return None

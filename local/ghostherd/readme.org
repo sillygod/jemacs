@@ -2871,6 +2871,31 @@ at most, that is HTML --- UTF-8, no NUL, opening (past blank space and
 comments) with a doctype or =<html>=.  A file named =.html= that is not
 is not copied; nor is one named =.png= that is HTML.
 
+*Source is no report.*  A reply that talks about a page --- a review
+naming =local/jwebkit/md-viewer/viewer.html= --- names it as a report
+names its own, so two more checks tell them apart:
+
+- a page that loads its own scripts or stylesheets from where it is ---
+  =<script src>=, =<link rel=stylesheet>= (and =modulepreload=, =import=,
+  a =preload= of one), an =@import= in a =<style>=, an import in a
+  =<script>=, by a relative path or one from the root (=/md/x.js=) --- is
+  not copied: alone, its copy shows nothing but "Loading…".  A page whole
+  in itself, or loading only from the web (=https:=, =//=, =data:=), is
+  a report.  Judged on the bytes read for the copy;
+- a page git tracks in the checkout it is in is source being talked
+  about, not a report delivered.  Asked last, of a page that passed
+  every other check: =git ls-files --error-unmatch=, the path an
+  argument (no shell, taken literally), the checkout's =fsmonitor= and
+  hooks off --- a folder an agent made could name a command there ---
+  two seconds at most, four pages a message.  No git, or git failing:
+  not tracked, so a report is never lost to it.  Images are not asked:
+  a screenshot in a checkout still shows.
+
+Copies kept as reports before these checks that load their own files
+were dropped once, when the sidecar first opened its index after the
+change --- the index backed up first, and the copies moved beside it,
+in =backups/= of the same directory.
+
 *Read, never run.*  The copy is served by its id alone, as
 =/SECRET/.reports/<id>.html=, under its own policy
 (=xwapp-sandbox-policy=): =sandbox= --- no script of it runs, and its
