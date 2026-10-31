@@ -16,44 +16,9 @@
 const fs = require("fs");
 const path = require("path");
 const { start, watch, until, sleep, log, BOX, PHONE } = require("./appslib");
-const { HERD } = require("./herdlib");
-const LOCAL = process.env.LOCAL || path.resolve(__dirname, "../..");
+const { measure, text, fresh, pageOf, NAME, copyTree, herdFile, shows } = require("./wakelib");
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
-const measure = (what, t0, traffic) => {
-  const files = traffic.filter((t) => /\/ui\//.test(t.path));
-  const line = what + ": " + traffic.reduce((n, t) => n + t.bytes, 0) + " bytes in " + traffic.length + " answers (" +
-    files.filter((t) => t.status === 200).length + " files sent, " + files.filter((t) => t.status === 304).length +
-    " not modified), usable in " + (Date.now() - t0) + " ms";
-  console.log("MEASURE " + line);
-  return line;
-};
-const text = (page, sel) => page.textContent(sel).catch(() => "");
-// A reload's files, as the browser asked for them again: each it had
-// (asked with its ETag) not modified -- and the page itself, which this
-// WebKit asks for whole on a reload, never with its ETag (measured: not
-// on location.reload(), nor on Playwright's).
-const fresh = (files) => files.filter((t) => t.asked).length >= 4 &&
-  files.every((t) => (t.asked ? t.status === 304 : /\/index\.html$/.test(t.path)));
-const pageOf = (dir) => { try { return fs.readFileSync(path.join(dir, "page.txt"), "utf8"); } catch (_) { return ""; } };
-const NAME = "claude-deploy-platform";
-
-// The ui trees the herd page is served from, this run's own copy.
-function copyTree(run) {
-  for (const pkg of ["ghostherd", "xwapp"]) {
-    fs.cpSync(path.join(LOCAL, pkg, "ui"), path.join(run, "tree", pkg, "ui"), { recursive: true, dereference: true });
-  }
-}
-// The herd Emacs sends, with MARKER in an agent's line; enough agents
-// for the page to scroll on a phone.
-function herdFile(run, marker) {
-  const h = JSON.parse(JSON.stringify(HERD));
-  for (let i = 0; i < 30; i++) h.agents.push(Object.assign({}, h.agents[3], { name: "grok-more-" + i }));
-  h.agents.find((a) => a.name === NAME).reason = "marker " + marker;
-  fs.writeFileSync(path.join(run, "herd.json"), JSON.stringify(h));
-}
-const shows = (page, marker) => async () => (await text(page, '.arow[data-name="' + NAME + '"]')).includes("marker " + marker);
-
 (async () => {
   // ---- The herd page: it comes back where it is ----
   {
