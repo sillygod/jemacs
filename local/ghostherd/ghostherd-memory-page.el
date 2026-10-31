@@ -3968,7 +3968,6 @@ user's state (or none) and push."
         ("open-pr" (ghostherd-memory-page--open-pr intent))
         ("open-task" (ghostherd-memory-page--open-task intent))
         ("open-changes" (ghostherd-memory-page--open-changes intent))
-        ("paste" (ghostherd-memory-page-paste))
         ("docs" (ghostherd-memory-page--send-docs) (ghostherd-memory-page--send-reports))
         ("reports-more" (ghostherd-memory-page--send-reports (alist-get 'at intent) (alist-get 'id intent)))
         ("doc-open" (ghostherd-memory-page--doc-open intent))
@@ -3989,25 +3988,6 @@ user's state (or none) and push."
 
 ;;; Commands
 
-(defun ghostherd-memory-page-paste ()
-  "Paste the clipboard into the page's focused box.
-The page never gets a paste of its own: Cmd-V reaches the web view as a
-key, the paste being the menu's to send, and with Emacs's keys it is
-Emacs's.  So the page asks, and Emacs hands it the clipboard's text --
-which goes in where the cursor is -- or none, and the clipboard's image
-is attached to the prompt box the cursor is in."
-  (interactive)
-  (ghostherd-memory-page--js
-   "paste" (list :text (or (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING)) ""))))
-
-(defvar-keymap ghostherd-memory-page-keys-mode-map
-  :doc "Keys the herd page takes before Emacs does."
-  "s-v" #'ghostherd-memory-page-paste)
-
-(define-minor-mode ghostherd-memory-page-keys-mode
-  "Cmd-V pastes into the herd page, an image included."
-  :keymap ghostherd-memory-page-keys-mode-map)
-
 (defun ghostherd-memory-page--open (view &optional query project)
   "Show the page on VIEW, with QUERY and PROJECT as the first search."
   ;; Here, not in the page's ready: a missing `uv' or a stale sidecar
@@ -4021,10 +4001,7 @@ is attached to the prompt box the cursor is in."
         ghostherd-memory-page--pending (list :view view :query query :project project))
   (setf (xwapp-poll-interval ghostherd-memory-page--app)
         ghostherd-memory-page-poll-interval)
-  (xwapp-open ghostherd-memory-page--app)
-  (when-let* ((buf (xwapp-buffer ghostherd-memory-page--app)))
-    (with-current-buffer buf
-      (ghostherd-memory-page-keys-mode 1))))
+  (xwapp-open ghostherd-memory-page--app))
 
 ;;;###autoload
 (defun ghostherd-memory-page-reopen ()

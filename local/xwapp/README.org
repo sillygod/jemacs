@@ -78,6 +78,45 @@ another site's page, gets nothing.
 - The tab tells Emacs whether it is visible and focused, for
   =xwapp-seen-p=.  An intent arrives on the next turn, from a timer, as
   the title's does.
+- *The page's own files are kept, and asked after.*  Each of its files
+  and the kit's goes with an ETag --- its path, size and time, those of
+  the file a symlink points at (straight's build is made of them) ---
+  and =no-cache=: the browser keeps it, and asks on each load whether
+  it is still the one, answered 304 with no body while it is.  A ui/
+  file edited has another ETag, and loads at once.  What changes ---
+  hello, =next=, intents --- is never kept (=no-store=).  (WebKit asks
+  for the page itself whole on a reload, never with its ETag: measured,
+  2026-10-31; its 2--4 KB.)
+
+** A big answer goes from a thread
+
+=process-send-string= returns only once the last byte is in the
+socket, and a phone on a slow link reads slowly: an 8 MB file to a
+reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
+waiting 4.3 of them; from a thread, which waits on the socket with
+Emacs free, the key was taken in 4 ms.  So any answer past 256 KB
+(=xwapp--send-aside=) goes from a Lisp thread of its own: a file the
+app serves, the page's own (the herd's app.js is 313 KB), and a =next=
+with a herd in it.
+
+- *In order.*  Each request is a connection of its own, answered once,
+  and the page asks its next =next= only once it has read the last.
+- *Not a page gone.*  A page still reading cannot ask again, so its ten
+  seconds start once the answer is out.
+- *Not forever.*  A reader that stops for good --- the phone slept
+  mid-answer, the proxy holding its side open --- has its connection
+  closed after =xwapp--send-patience= (60 s); the page then is gone
+  unless it asks again.
+- *Not a crash.*  Emacs's main thread waits in select() on every
+  connection here, and a socket closed under it by another thread makes
+  select fail, which Emacs aborts on.  The thread used to close the
+  connection once it had sent; Emacs died at once in a test
+  (2026-10-31).  So the thread never closes one: it shuts its sending
+  side, the reader hangs up, and the main thread deletes it.  And while
+  it waits the thread runs no timer --- any of Emacs's would run in it,
+  27 of 40 in a test, one closing a process as bad --- binding the
+  timer lists to nil, for itself alone (measured: all 40 then ran in
+  the main thread, and the sentinels of its processes always do).
 
 
 ** Files an app serves by name
@@ -101,13 +140,8 @@ not a symlink.  The page has each as =XW.file(NAME)=:
 Anyone the page is served to can ask for any name: make the names ones
 nobody guesses.  Nothing here takes a path.
 
-A file of more than 256 KB (=xwapp--send-aside=) goes from a Lisp
-thread of its own.  =process-send-string= returns once the last byte is
-in the socket, and a phone on a slow link reads slowly: an 8 MB file to
-a reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
-waiting 4.3 of them; from a thread, which waits on the socket with
-Emacs free, the key was taken in 4 ms.  The page itself and its calls
-are still sent as before.
+A file of more than 256 KB goes from a Lisp thread of its own, as any
+answer that big does: see "A big answer goes from a thread".
 
 *** Sets of their own: documents, read and never run
 
@@ -172,7 +206,37 @@ open.  Two tabs come back that way:
 
 The tab comes back with a /soft/ hello: one that takes nothing another
 page has meanwhile.  A tab that was taken from stays where it is, even
-once the app is free --- it was left on purpose.  An app without
+once the app is free --- it was left on purpose.
+
+*** A page that comes back where it is
+
+A phone's tab asleep past ten seconds is let go, and wakes to a 410
+free.  Loading again cost the herd page some 490 KB over the tailnet,
+a white flash, and where it was scrolled to and what it had open.  A
+page that can --- =XW.bridge(prefix, app, {back: fn})= --- says its soft
+hello where it is instead, and BACK asks Emacs again for what the page
+shows, as its load did: Emacs closed what it was doing for it.  The
+herd page does.  Measured in WebKit through the proxy (=e2e/wake.js=,
+loopback, so the bytes are what counts):
+
+| A wake                         | Bytes   | Files sent | Usable  |
+|--------------------------------+---------+------------+---------|
+| herd page, before (a reload)   | 491,031 | 6          | 1398 ms |
+| herd page, in place            | 15,176  | 0          | 104 ms  |
+| herd page, a ui/ file changed  | 333,255 | 2 (4: 304) | 1396 ms |
+| pr-view, before (a reload)     | 268,432 | 7          | 1756 ms |
+| pr-view, a reload, with 304s   | 3,786   | 1 (6: 304) | 1147 ms |
+
+- Only while it is made of the files Emacs serves now: one loaded
+  before a ui/ file changed --- Emacs restarted on new code, say ---
+  loads again.  Emacs names its files and the kit's, each one's path,
+  size and time, in a fingerprint (=xwapp--ui=), in answer to the
+  page's hello (the header =Xwapp-Ui=) and with a 410 free (="ui"=); the
+  page comes back in place only when the two are one.
+- Whether you look is said again, and BACK's intents go before those
+  that waited; an intent under way when it was let go goes again.
+- Taken by another device meanwhile, it stops, as any page does; a
+  page with no BACK loads again, as before.  An app without
 =:reopen= keeps no address: after a restart its tab says to open it
 again from Emacs.
 
@@ -283,7 +347,8 @@ What the pages share on the browser side, so it is fixed once:
 
 | File                   | Gives                                                |
 |------------------------+------------------------------------------------------|
-| =xwapp.js=             | =XW.esc=, =XW.bridge(prefix)=, =XW.sanitizer(opts)=, |
+| =xwapp.js=             | =XW.esc=, =XW.bridge(prefix[, app[, opts]])=,        |
+|                        | =XW.sanitizer(opts)=,                                |
 |                        | =XW.browser=, =XW.elsewhere=, =XW.copy(text)=,       |
 |                        | =XW.open(url, name)=, =XW.file(name[, set])=; the QR |
 |                        | code                                                 |
@@ -336,6 +401,20 @@ target; it needs =ui= in xwapp's own =:files=.
   =lost= returns, if a function, is called should Emacs say after all
   that it had the intent.  The herd page gives a lost prompt back to
   its box, and takes it out again then.
+- *⌘V in Emacs.*  WebKit under Emacs never makes ⌘V a paste: the
+  paste is the menu's to send, and Emacs's menu does not send it to the
+  web view, so the page sees the keydown and nothing after.  So on that
+  key, in a field of the page's --- an input, a textarea, an editable
+  element --- the kit asks Emacs (=xwapp-paste=, the kit's own), which
+  answers with the clipboard's text (=gui-get-selection=).  The field
+  hears it first, =xw-paste=, cancelable, its =detail.text=; then the
+  text goes in at the caret through =execCommand("insertText")=, as
+  typing would: the page's own =input= events fire, and its undo keeps
+  it (checked in a GUI Emacs's WKWebView, 2026-10-31).  With no text on
+  the clipboard --- an image, say --- nothing goes in, and the page may
+  take what else there is: the herd page asks Emacs for the image.
+  Only on your own key, and only in Emacs: in a browser ⌘V is a paste
+  of its own, and Emacs's clipboard is not asked.
 - =XW.sanitizer(opts)= returns a =sanitize(html)=: an inert
   =DOMParser= document, a whitelist of tags and attributes, the rest
   unwrapped, links only http(s) and mailto.  Options per page: =images=
@@ -492,6 +571,17 @@ it would on the phone.
 |                | tables, a commit row's cells meet                               |
 | =cu-edit=      | clickup-view's assignees and dates, on a phone and at the       |
 |                | desk: what goes to ClickUp, the keys, the menus fitting         |
+| =paste=        | ⌘V in the xwidget's page, Emacs played as xwapp.el plays it:    |
+|                | pr-view's and clickup-view's fields, at the caret, their input  |
+|                | events and undo; the herd's image from a clipboard with no      |
+|                | text; in a browser, the browser's own                           |
+| =wake=         | a phone that slept past the gone, through a proxy that sleeps:  |
+|                | the herd page back in place (scroll, state, its intents again), |
+|                | taken meanwhile it stops, a ui/ file changed it loads again;    |
+|                | pr-view loads again, its files 304; each wake's bytes and time  |
+|                | (MEASURE lines; =LOCAL= another checkout's, to compare)         |
+| =jwebkit=      | jwebkit's scripts, run: a hint onto a field says so, ⌘V's text  |
+|                | in at the caret, Esc lets the field go                          |
 
 Screenshots land in =e2e/shots/=.  =EMACS= picks an Emacs other than
 the one on =PATH=; =KEEP=1= keeps a run's state, log and addresses.

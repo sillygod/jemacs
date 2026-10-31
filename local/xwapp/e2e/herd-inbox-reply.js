@@ -161,8 +161,10 @@ const sent = (intents, op) => intents.filter((i) => i.op === op);
         await sleep(60);
         check(W("pasting an image asks for it, for the question's agent"),
           (sent(intents, "agent-image").pop() || {}).name === "claude-godzilla");
-        // Emacs's own Cmd-V: it answers with the clipboard, no text in it.
-        await page.evaluate(() => GM.paste({ text: "" }));
+        // Cmd-V in Emacs: the page kit says the clipboard had no text in
+        // it (paste.js has it from the key on).
+        await page.$eval('.ibreplybox[data-id="' + Q + '"]', (ta) =>
+          ta.dispatchEvent(new CustomEvent("xw-paste", { bubbles: true, cancelable: true, detail: { text: "" } })));
         await sleep(60);
         check(W("Emacs's paste with no text asks for the image too"),
           sent(intents, "agent-image").filter((i) => i.name === "claude-godzilla").length === 2);

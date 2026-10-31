@@ -913,6 +913,48 @@ intent is the app's."
                                   (alist-get 'error (car (funcall poll "{\"op\":\"xwapp-qr\",\"n\":6}"))))))
         (should-not intents)))))
 
+(ert-deftest xwapp-test-paste-in-the-xwidget ()
+  "⌘V in a field of the page, in the xwidget: the kit asks, and Emacs
+answers with the clipboard's text -- \"\" when it holds none -- scrubbed
+as any script is.  The intent is the kit's, never the app's.  A page in a
+browser has a paste of its own: its ask is not answered, and Emacs's
+clipboard is not read.  The text is made up."
+  (xwapp-test--with-browser
+    (let* ((title nil) (scripts nil) (read 0) (clip nil)
+           (poll (lambda (intent)
+                   (setq title (concat "t:" intent) scripts nil)
+                   (xwapp--poll app)
+                   (seq-keep (lambda (s) (and (string-match "\\`window\\.XW && XW\\.kit(\\(.*\\));\\'" s)
+                                              (xwapp-test--json (match-string 1 s))))
+                             scripts))))
+      (cl-letf (((symbol-function 'xwapp-session) (lambda (_) 'xw))
+                ((symbol-function 'xwidget-webkit-title) (lambda (_) title))
+                ((symbol-function 'xwidget-webkit-execute-script) (lambda (_xw s) (push s scripts)))
+                ((symbol-function 'gui-get-selection)
+                 (lambda (sel type) (should (equal (list sel type) '(CLIPBOARD STRING))) (cl-incf read) clip)))
+        (setq clip (propertize "line one\n\"two\" 你好 😀" 'face 'bold))
+        (should (equal (funcall poll "{\"op\":\"xwapp-paste\",\"n\":1}")
+                       '(((xwapp . "paste") (text . "line one\n\"two\" 你好 😀")))))
+        (setq clip nil)
+        (should (equal (funcall poll "{\"op\":\"xwapp-paste\",\"n\":2}")
+                       '(((xwapp . "paste") (text . "")))))
+        ;; A clipboard Emacs cannot read is one with no text.
+        (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) (error "No selection"))))
+          (should (equal (funcall poll "{\"op\":\"xwapp-paste\",\"n\":3}")
+                         '(((xwapp . "paste") (text . ""))))))
+        ;; A raw byte goes as U+FFFD, as in any script.
+        (setq clip (concat "a" (string (unibyte-char-to-multibyte #xff)) "b"))
+        (should (equal (funcall poll "{\"op\":\"xwapp-paste\",\"n\":4}")
+                       '(((xwapp . "paste") (text . "a�b")))))
+        (should (= read 3))
+        (should-not intents)
+        ;; In a browser.
+        (xwapp--put app :page "p1")
+        (xwapp--dispatch app '((op . "xwapp-paste")))
+        (should (= read 3))
+        (should-not (xwapp--get app :outbox))
+        (should-not intents)))))
+
 (ert-deftest xwapp-test-browser-phone ()
   "In a browser, the answer to the page's hello is the first call it
 gets; its ask for the QR code is answered with the next."
@@ -1318,6 +1360,16 @@ before are forgotten, timers and all."
         (accept-process-output nil 0.02)))
     out))
 
+(defun xwapp-test--raw-post (app path)
+  "The whole response to POST PATH under APP's secret, with {}."
+  (let ((cell (xwapp-test--ask "POST" (xwapp-test--at app path) "{}"))
+        (out ""))
+    (set-process-filter (cdr cell) (lambda (_p s) (setq out (concat out s))))
+    (with-timeout (10 (error "No answer"))
+      (while (process-live-p (cdr cell))
+        (accept-process-output nil 0.02)))
+    out))
+
 (defmacro xwapp-test--serving (&rest body)
   "BODY in `xwapp-test--with-browser', its app serving the files of
 `dir' named an id and .png (`xwapp-serve-files'); `file' is the one
@@ -1388,23 +1440,137 @@ a directory; not without the secret, nor to another host."
       ;; The proxy's headers on loopback are no proof.
       (should (equal (car (xwapp-test--do "GET" path nil (xwapp-test--from-box "me@example.com"))) 404)))))
 
+(defun xwapp-test--touch (file text secs)
+  "Write TEXT to FILE, dated SECS seconds from now."
+  (with-temp-file file (insert text))
+  (set-file-times file (time-add nil secs)))
+
+(ert-deftest xwapp-test-browser-own-files-revalidate ()
+  "The page's own files, and the kit's, go with an ETag and no-cache: a
+browser that has one asks again with it, and is answered 304 -- no body
+-- while it is still the one.  Edited, a file has another, and comes
+whole.  Its ETag follows a symlink, as straight's build is made of, to
+the file itself.  What changes -- the page's calls -- is still never kept."
+  (xwapp-test--with-browser
+    (let* ((path (xwapp-test--at app "app/ui/app.js"))
+           (raw (xwapp-test--raw path))
+           (etag (xwapp-test--header raw "ETag")))
+      (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+      (should (string-match-p "\\`\"[0-9a-f]\\{20\\}\"\\'" etag))
+      (should (equal (xwapp-test--header raw "Cache-Control") "no-cache"))
+      (should-not (string-match-p "no-store" raw))
+      (should (string-suffix-p "\r\n\r\n<app/ui/app.js>" raw))
+      ;; Asked again with it: 304, no body, no length -- whichever way
+      ;; the browser says it.
+      (dolist (asked (list etag (concat "W/" etag) (concat "\"other\", " etag) "*"))
+        (let ((again (xwapp-test--raw path `(("If-None-Match" . ,asked)))))
+          (should (string-prefix-p "HTTP/1.1 304 Not Modified\r\n" again))
+          (should (string-suffix-p "\r\n\r\n" again))
+          (should-not (xwapp-test--header again "Content-Length"))
+          (should (equal (xwapp-test--header again "ETag") etag))
+          (should (equal (xwapp-test--header again "Cache-Control") "no-cache"))))
+      (should (string-prefix-p "HTTP/1.1 200 OK\r\n"
+                               (xwapp-test--raw path '(("If-None-Match" . "\"other\"")))))
+      ;; The kit's own, the same.
+      (should (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "xwapp/ui/xwapp.js")) "ETag"))
+      ;; Edited.
+      (xwapp-test--touch (expand-file-name "app/ui/app.js" root) "<new>" 5)
+      (let ((fresh (xwapp-test--raw path `(("If-None-Match" . ,etag)))))
+        (should (string-prefix-p "HTTP/1.1 200 OK\r\n" fresh))
+        (should (string-suffix-p "\r\n\r\n<new>" fresh))
+        (should-not (equal (xwapp-test--header fresh "ETag") etag))))
+    ;; A symlink: the file it points at is what changes.
+    (let ((real (expand-file-name "real.js" root))
+          (link (xwapp-test--at app "app/ui/link.js")))
+      (xwapp-test--touch real "one" 0)
+      (make-symbolic-link real (expand-file-name "app/ui/link.js" root))
+      (let ((etag (xwapp-test--header (xwapp-test--raw link) "ETag")))
+        (should (string-prefix-p "HTTP/1.1 304" (xwapp-test--raw link `(("If-None-Match" . ,etag)))))
+        (xwapp-test--touch real "two" 5)
+        (should (string-suffix-p "\r\n\r\ntwo" (xwapp-test--raw link `(("If-None-Match" . ,etag)))))))
+    ;; What changes.
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let ((xwapp--hold 0.1))
+      (should (equal (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "next?page=p1")) "Cache-Control")
+                     "no-store")))))
+
+(ert-deftest xwapp-test-browser-a-free-page-is-told-what-it-is-made-of ()
+  "A page's hello is answered with what it is made of -- its directory's
+files and the kit's -- and a page let go that can come back (free) is
+told it again, to come back where it is only while the two are one: a
+ui/ file edited meanwhile makes another.  Taken, or closed, it is told
+nothing of it."
+  (xwapp-test--with-browser
+    (let* ((xwapp--gone-after 0.2)
+           (hello (xwapp-test--raw-post app "hello?page=p1"))
+           (ui (xwapp-test--header hello "Xwapp-Ui"))
+           (said (lambda (page)
+                   (xwapp-test--json (cdr (xwapp-test--do "GET" (xwapp-test--at app (concat "next?page=" page))))))))
+      (should (string-prefix-p "HTTP/1.1 204" hello))
+      (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" ui))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (should (equal (funcall said "p1") '((why . "taken"))))
+      (xwapp-test--turn 0.4)
+      (should (= closed 1))
+      (should (equal (funcall said "p2") '((why . "closed"))))
+      (xwapp-test--reopens app)
+      (should (equal (funcall said "p2") `((why . "free") (ui . ,ui))))
+      (should (equal (alist-get 'ui (xwapp-test--json
+                                     (cdr (xwapp-test--do "POST" (xwapp-test--at app "intent?page=p2") "{}"))))
+                     ui))
+      ;; The kit's file edited: another.
+      (xwapp-test--touch (expand-file-name "xwapp/ui/xwapp.js" root) "<new kit>" 5)
+      (let ((now (alist-get 'ui (funcall said "p2"))))
+        (should (stringp now))
+        (should-not (equal now ui))
+        ;; Asked the same again, the same.
+        (should (equal (alist-get 'ui (funcall said "p2")) now)))
+      ;; A file added to the page's directory: another again.
+      (let ((before (alist-get 'ui (funcall said "p2"))))
+        (with-temp-file (expand-file-name "app/ui/more.css" root) (insert "x"))
+        (should-not (equal (alist-get 'ui (funcall said "p2")) before))))))
+
+(ert-deftest xwapp-test-ui-names-a-page-directory-only ()
+  "A directory of more files than a page is made of is not looked through:
+no fingerprint, and a page let go loads again, as it always did."
+  (let* ((root (file-name-as-directory (make-temp-file "xwapp-ui" t)))
+         (app (xwapp-test--app :index (expand-file-name "pkg/ui/index.html" root))))
+    (unwind-protect
+        (progn
+          (make-directory (expand-file-name "pkg/ui" root) t)
+          (make-directory (expand-file-name "xwapp/ui" root) t)
+          (with-temp-file (expand-file-name "pkg/ui/index.html" root) (insert "x"))
+          (should (xwapp--ui app))
+          (dotimes (i (1+ xwapp--ui-max))
+            (with-temp-file (expand-file-name (format "pkg/ui/f%d.js" i) root) (insert "x")))
+          (should-not (xwapp--ui app)))
+      (delete-directory root t))))
+
+(defmacro xwapp-test--counting-threads (&rest body)
+  "Run BODY with `made' gathering the name of each thread made."
+  (declare (indent 0))
+  `(let ((made nil)
+         (make (symbol-function 'make-thread)))
+     (cl-letf (((symbol-function 'make-thread)
+                (lambda (fn &optional tname &rest more)
+                  (push tname made)
+                  (apply make fn tname more))))
+       ,@body)))
+
 (ert-deftest xwapp-test-browser-a-big-file-goes-from-a-thread ()
-  "A file an app serves past `xwapp--send-aside' is sent from a thread
-of its own, whole, so a slow reader cannot hold Emacs; a small one as
-before, and the page's own files as before, whatever their size."
+  "Any answer past `xwapp--send-aside' is sent from a thread of its own,
+whole, so a slow reader cannot hold Emacs: a file an app serves, and the
+page's own -- the herd's app.js is past it.  A small one as before."
   (skip-unless (fboundp 'make-thread))
   (xwapp-test--serving
     (let* ((big (concat (make-string (* 3 1024 1024) ?x) "end"))
-           (name (concat (make-string 32 ?c) ".png"))
-           (made nil)
-           (make (symbol-function 'make-thread)))
+           (name (concat (make-string 32 ?c) ".png")))
       (with-temp-file (expand-file-name name dir) (insert big))
-      (cl-letf (((symbol-function 'make-thread)
-                 (lambda (fn &optional tname &rest more)
-                   (push tname made)
-                   (apply make fn tname more))))
+      (xwapp-test--counting-threads
         (should (equal (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" file)))
                        '(200 . "PNGDATA")))
+        (should (equal (xwapp-test--do "GET" (xwapp-test--at app "app/ui/app.js"))
+                       '(200 . "<app/ui/app.js>")))
         (should-not made)
         (let ((answer (xwapp-test--do "GET" (xwapp-test--at app (concat ".files/" name)))))
           (should (equal (car answer) 200))
@@ -1412,8 +1578,137 @@ before, and the page's own files as before, whatever their size."
           (should (string-suffix-p "end" (cdr answer))))
         (should (equal made '("xwapp-send")))
         (with-temp-file (expand-file-name "app/ui/big.js" root) (insert big))
-        (should (= (length (cdr (xwapp-test--do "GET" (xwapp-test--at app "app/ui/big.js")))) (length big)))
-        (should (equal made '("xwapp-send")))))))
+        (let ((answer (xwapp-test--do "GET" (xwapp-test--at app "app/ui/big.js"))))
+          (should (= (length (cdr answer)) (length big)))
+          (should (string-suffix-p "end" (cdr answer))))
+        (should (equal made '("xwapp-send" "xwapp-send")))))))
+
+(ert-deftest xwapp-test-browser-a-big-next-goes-from-a-thread ()
+  "The page's calls, past `xwapp--send-aside' -- a herd -- go from a
+thread too, whole and in order; a small answer as before.  The text is
+made up."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--with-browser
+    (xwapp-test--counting-threads
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1"))))
+        (xwapp-test--turn)
+        (xwapp-js app "flash" "small")
+        (should (equal (xwapp-test--answer next) '(200 . "[{\"ns\":\"T\",\"fn\":\"flash\",\"arg\":\"small\"}]"))))
+      (should-not made)
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1")))
+            (herd (apply #'concat (make-list 20000 "長い中文 agent "))))
+        (xwapp-test--turn)
+        (xwapp-js app "render" herd)
+        (xwapp-js app "flash" "after")
+        (let ((answer (xwapp-test--answer next)))
+          (should (equal (car answer) 200))
+          (should (equal (mapcar (lambda (c) (alist-get 'arg c)) (xwapp-test--json (cdr answer)))
+                         (list herd "after")))))
+      (should (equal made '("xwapp-send")))
+      (xwapp-test--turn)
+      (should-not (xwapp--get app :sending)))))
+
+(defun xwapp-test--slow-next (app page)
+  "Ask APP's `next' for PAGE as a reader that does not read until told:
+a plist whose :proc is the client, :bytes what it has read, :done t once
+the server hung up.  Counted, not kept: an answer may be megabytes."
+  (let* ((state (list :bytes 0 :done nil))
+         (proc (make-network-process
+                :name "xwapp-test-slow" :host "127.0.0.1"
+                :service (process-contact xwapp--server :service)
+                :coding 'binary :noquery t
+                :filter (lambda (_p s) (plist-put state :bytes (+ (plist-get state :bytes) (length s))))
+                :sentinel (lambda (_p _e) (plist-put state :done t)))))
+    (plist-put state :proc proc)
+    (process-send-string proc (format "GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 0\r\n\r\n"
+                                      (xwapp-test--at app (concat "next?page=" page))
+                                      (process-contact xwapp--server :service)))
+    (stop-process proc)
+    state))
+
+(defun xwapp-test--herd-calls (app n)
+  "Send APP's page N calls of 3 MB each: more than a socket holds."
+  (let ((chunk (make-string (* 3 1024 1024) ?h)))
+    (dotimes (_ n) (xwapp-js app "render" chunk))))
+
+(ert-deftest xwapp-test-browser-a-slow-answer-is-not-a-page-gone ()
+  "A page still reading a big answer -- a phone on a slow link -- cannot
+ask again, so it is not taken for gone meanwhile: its ten seconds start
+once the answer is out.  Emacs is free all the while.  Then, not asking
+again, it is gone."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.3))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((slow (xwapp-test--slow-next app "p1"))
+            (ticks 0))
+        (xwapp-test--turn)
+        (xwapp-test--herd-calls app 8)
+        ;; Emacs keeps running timers while the answer waits on the reader.
+        (let ((tick (run-at-time 0 0.05 (lambda () (cl-incf ticks)))))
+          (xwapp-test--turn 1.0)
+          (cancel-timer tick))
+        (should (> ticks 10))
+        (should (process-live-p (xwapp--get app :sending)))
+        (should (xwapp-live-p app))
+        (should (= closed 0))
+        ;; The phone reads it all; and asks no more.
+        (continue-process (plist-get slow :proc))
+        (with-timeout (20 (error "Not read"))
+          (while (not (plist-get slow :done)) (accept-process-output nil 0.05)))
+        (should (> (plist-get slow :bytes) (* 24 1024 1024)))
+        (xwapp-test--turn 0.1)
+        (should-not (xwapp--get app :sending))
+        (should (xwapp-live-p app))
+        (xwapp-test--turn 0.5)
+        (should (= closed 1))
+        (should-not (xwapp-live-p app))))))
+
+(ert-deftest xwapp-test-browser-an-answer-not-read-is-given-up ()
+  "A reader that stops for good -- the phone slept mid-answer, and the
+proxy holds its side open -- does not hold the page, nor a thread,
+forever: after `xwapp--send-patience' its connection is closed, and the
+page, not asking again, is gone."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.3)
+          (xwapp--send-patience 0.6))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((slow (xwapp-test--slow-next app "p1")))
+        (xwapp-test--turn)
+        (xwapp-test--herd-calls app 8)
+        (xwapp-test--turn 0.4)
+        (should (xwapp-live-p app))
+        (xwapp-test--turn 1.0)
+        (should-not (process-live-p (xwapp--get app :sending)))
+        (should-not (seq-some (lambda (th) (equal (thread-name th) "xwapp-send")) (all-threads)))
+        (should (= closed 1))
+        (should-not (xwapp-live-p app))
+        (delete-process (plist-get slow :proc))))))
+
+(ert-deftest xwapp-test-browser-a-page-taken-while-answered ()
+  "A page let go while a big answer to it still goes -- another tab
+took the app -- has the answer, and its time to ask again no more: the
+new page is not let go for it."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--with-browser
+    (let ((xwapp--gone-after 0.3))
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+      (let ((slow (xwapp-test--slow-next app "p1")))
+        (xwapp-test--turn)
+        (xwapp-test--herd-calls app 8)
+        (xwapp-test--turn 0.2)
+        (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")) 204))
+        (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p2"))))
+          (continue-process (plist-get slow :proc))
+          (with-timeout (20 (error "Not read"))
+            (while (not (plist-get slow :done)) (accept-process-output nil 0.05)))
+          (xwapp-test--turn 0.6)
+          (should (xwapp--current-p app "p2"))
+          (should (= closed 0))
+          (should-not (car next))
+          (delete-process (cdr next)))))))
 
 (ert-deftest xwapp-test-files-in-the-xwidget ()
   "In the xwidget, a page of file:, the page is told where its files are
