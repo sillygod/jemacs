@@ -695,6 +695,217 @@ def test_what_html_is_refused(store, tmp_path, monkeypatch):
     assert store.capture(f"Theirs {theirs}") == []
 
 
+# ---- A page that is source, not a report ------------------------------------
+
+# A page that loads its own files: jwebkit's md-viewer/viewer.html, as a
+# review named it (2026-10-31) -- alone, it shows "Loading…".
+VIEWER = ("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Markdown</title>\n"
+          "<link rel=\"stylesheet\" href=\"/md/libs/github-markdown.css\">\n"
+          "<link rel=\"stylesheet\" href=\"viewer.css\"></head>\n"
+          "<body><p class=\"jw-status\">Loading…</p>\n<script src=\"viewer.js\"></script></body></html>\n")
+# One whole in itself, or loading only from the web: a report.
+CDN = ("<!doctype html><html><head><title>Bench</title>"
+       "<link rel=stylesheet href=\"https://cdn.jsdelivr.net/npm/water.css@2/out/water.css\">"
+       "<link rel=\"icon\" href=\"favicon.ico\"><style>body{margin:0}</style>"
+       "<script src=\"//cdn.jsdelivr.net/npm/chart.js@4\"></script>"
+       "<script src=\"data:text/javascript,void 0\"></script></head>"
+       "<body><img src=\"shot.png\"><pre>&lt;script src=\"x.js\"&gt;</pre>"
+       "<!-- <script src=\"draft.js\"></script> --><script>new Chart(1, \"from 'a'\")</script></body></html>")
+
+
+@pytest.mark.parametrize("head", [
+    '<script src="viewer.js"></script>',
+    "<SCRIPT SRC='./js/app.js' defer></SCRIPT>",
+    '<script src="/md/libs/marked.min.js"></script>',              # from the root: not in a copy either
+    '<script src="file:///Users/me/x.js"></script>',
+    '<link rel="stylesheet" href="viewer.css">',
+    '<LINK HREF=viewer.css REL="Alternate StyleSheet">',
+    '<link rel="modulepreload" href="m.js">',
+    '<link rel="preload" as="style" href="a.css">',
+    '<style>@import url("theme.css");</style>',
+    "<style>@import 'theme.css';</style>",
+    '<script type="module">import { x } from "./m.js";</script>',
+    '<script type="module">\nexport * from "./m.js"</script>',
+    '<script type="module">import {\n  a,\n  b,\n} from "./m.js";</script>',      # over lines
+    '<script>import("./lazy.js")</script>',
+    '<script data-x=">" src="a.js"></script>',                      # a ">" in a quoted attribute
+])
+def test_a_page_that_loads_its_own_files_needs_them(head):
+    assert images.needs_files(f"<!doctype html><html><head>{head}</head><body>x</body></html>")
+
+
+@pytest.mark.parametrize("head", [
+    "",
+    '<script src="https://cdn.example/a.js"></script><script src="HTTP://x/b.js"></script>',
+    '<link rel="stylesheet" href="//fonts.example/css">',
+    '<link rel="icon" href="favicon.ico"><link rel="preload" as="image" href="a.png">',
+    '<script src=""></script><script src="#"></script>',
+    '<style>@import url("https://x/a.css"); body { background: url(bg.png) }</style>',
+    '<script type="module">export const label = "x";\nimport m from "https://cdn/m.js";</script>',
+    '<script>const s = "data from \'api\'";</script>',
+    '<script type="module">export const fromage = "x";\nimportant from "y"</script>',
+    "<!-- <link rel=stylesheet href=old.css> -->",
+    '<base href="https://example.org/docs/"><script src="a.js"></script>',
+    '<a href="viewer.js">viewer.js</a><img src="x.png"><iframe src="y.html"></iframe>',
+])
+def test_a_page_whole_in_itself_or_from_the_web_needs_none(head):
+    assert not images.needs_files(f"<!doctype html><html><head>{head}</head><body>x</body></html>")
+
+
+@pytest.mark.parametrize("body", [
+    '<script a="x' * 600_000,                      # a tag never closed, again and again
+    '<link a="x>' * 600_000,
+    "<!--" * 2_000_000,
+    "<script type=module>import" + " " * 2_000_000 + "x</script>",
+    "<script type=module>import a" + " from" * 400_000 + "</script>",
+    "<style>" + '@import url("' * 500_000 + "</style>",
+])
+def test_an_agents_page_is_read_in_linear_time(body):
+    "A page of 8 MB at most, as an agent made it to be slow: read in a moment."
+    start = time.monotonic()
+    images.needs_files("<!doctype html><html>" + body)
+    assert time.monotonic() - start < 5
+
+
+def test_a_page_that_loads_its_own_files_is_no_report(store, tmp_path):
+    s = tmp_path / "jwebkit" / "md-viewer"
+    viewer = page(s / "viewer.html", VIEWER)
+    rooted = page(s / "rooted.html", PAGE.replace("</head>", "<script src=\"/md/x.js\"></script></head>"))
+    whole, cdn = page(tmp_path / "out" / "whole.html"), page(tmp_path / "out" / "cdn.html", CDN)
+    got = store.capture(f"Reviewed {viewer} and {rooted}; the reports: {whole}, {cdn}")
+    assert [(r["name"], r["title"]) for r in got] == [("whole.html", "The viewer & its theme"), ("cdn.html", "Bench")]
+    assert {p.name for p in store.root.glob("*.html")} == {r["id"] + ".html" for r in got}
+    # Both copied at once: in no order.
+    assert {r["name"] for r in store.reports()["reports"]} == {"cdn.html", "whole.html"}
+
+
+def _git(repo: Path, *args: str) -> None:
+    import subprocess
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def _repo(tmp_path: Path) -> Path:
+    "A scratch checkout: a page and a screenshot in it tracked, a report beside them not."
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    page(repo / "docs" / "tracked.html")
+    png(repo / "docs" / "shot.png")
+    page(repo / "docs" / "a1.html", PAGE.replace("Report", "a1"))
+    _git(repo, "add", "docs/tracked.html", "docs/shot.png", "docs/a1.html")
+    page(repo / "docs" / "report.html", PAGE.replace("Report", "Written now"))
+    page(repo / "docs" / "a[1].html", PAGE.replace("Report", "a[1]"))
+    return repo / "docs"
+
+
+def test_a_page_git_tracks_is_no_report_an_image_still_is(store, tmp_path, monkeypatch):
+    docs = _repo(tmp_path)
+    asked = []
+    real = images._tracked
+    monkeypatch.setattr(images, "_tracked", lambda p: asked.append(p) or real(p))
+    (docs / "notes.html").write_text("not a page")
+    page(docs / "viewer.html", VIEWER)
+    got = store.capture(f"In {docs}/tracked.html, see {docs}/shot.png, {docs}/report.html, {docs}/notes.html,"
+                        f" {docs}/viewer.html, `{docs}/a[1].html`")
+    # The tracked page is source; the screenshot beside it shows; the report
+    # not committed is one -- and a[1].html is not taken for a1.html.
+    assert [(r["name"], r["ext"]) for r in got] == [("shot.png", "png"), ("report.html", "html"),
+                                                    ("a[1].html", "html")]
+    # git asked only of the pages that passed every other check, once each.
+    assert asked == [f"{docs}/tracked.html", f"{docs}/report.html", f"{docs}/a[1].html"]
+
+
+def test_git_is_asked_a_few_times_a_message(store, tmp_path, monkeypatch):
+    asked = []
+    monkeypatch.setattr(images, "_tracked", lambda p: asked.append(p) or False)
+    pages = [page(tmp_path / "out" / f"r{i}.html", PAGE.replace("Report", f"r{i}")) for i in range(6)]
+    got = store.capture("Reports: " + ", ".join(pages))
+    # Past the looks, not tracked: kept.
+    assert len(asked) == images.GIT_LOOKS and len(got) == 6
+
+
+def test_no_git_or_git_failing_keeps_the_report(store, tmp_path, monkeypatch):
+    docs = _repo(tmp_path)
+    assert images._tracked(f"{docs}/tracked.html") and not images._tracked(f"{docs}/report.html")
+    assert not images._tracked(f"{tmp_path}/nowhere/x.html")                      # no checkout there
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    path = os.environ["PATH"]
+    monkeypatch.setenv("PATH", str(empty))                                         # no git
+    assert not images._tracked(f"{docs}/tracked.html")
+    assert [r["name"] for r in store.capture(f"See {docs}/tracked.html")] == ["tracked.html"]
+    monkeypatch.setenv("PATH", path)
+    import subprocess
+
+    def slow(*a, **k):
+        raise subprocess.TimeoutExpired("git", images.GIT_SECONDS)
+    monkeypatch.setattr(images.subprocess, "run", slow)
+    assert not images._tracked(f"{docs}/tracked.html")
+
+
+def test_git_runs_no_command_a_checkout_names(tmp_path, monkeypatch):
+    """A folder an agent made can name a command for git to run -- its
+    fsmonitor -- which a plain `git ls-files' runs: never this one.  Nor
+    does it take the herd's GIT_ settings for where the checkout is."""
+    docs = _repo(tmp_path)
+    marker = tmp_path / "ran"
+    hook = tmp_path / "hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    _git(docs.parent, "config", "core.fsmonitor", str(hook))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere"))
+    assert images._tracked(f"{docs}/tracked.html")
+    assert not marker.exists()
+
+
+def test_pages_copied_before_that_need_their_files_are_dropped_once(tmp_path, monkeypatch):
+    import sqlite3
+    root = tmp_path / "kept"
+    # Copied by the build before: a page that loads its own files was a report.
+    needs = images.needs_files
+    monkeypatch.setattr(images, "needs_files", lambda text: False)
+    old = images.ImageStore(root)
+    viewer, whole = page(tmp_path / "s" / "viewer.html", VIEWER), page(tmp_path / "s" / "whole.html")
+    shot = png(tmp_path / "s" / "shot.png")
+    said = f"Reviewed {viewer}; the report {whole}, the screenshot {shot}"
+    got = old.capture(said)
+    assert [r["name"] for r in got] == ["viewer.html", "whole.html", "shot.png"]
+    ids = {r["name"]: r["id"] for r in got}
+    old._db().execute("DELETE FROM meta")                       # an index from before this build
+    old._db().commit()
+    old.close()
+    monkeypatch.setattr(images, "needs_files", needs)
+    new = images.ImageStore(root)
+    db = new._db()
+    # The page that needs its files: gone, with its refs; the rest kept.
+    assert {r[0] for r in db.execute("SELECT id FROM images")} == {ids["whole.html"], ids["shot.png"]}
+    assert {r[0] for r in db.execute("SELECT id FROM refs")} == {ids["whole.html"], ids["shot.png"]}
+    assert [r["name"] for r in new.lookup(said)] == ["whole.html", "shot.png"]
+    assert [r["name"] for r in new.reports()["reports"]] == ["whole.html"]
+    assert not (root / f"{ids['viewer.html']}.html").exists()
+    # Backed up first: the index as it was, and the copy, beside it.
+    done = json.loads(db.execute("SELECT v FROM meta WHERE k = ?", (images.ImageStore.DROP_PAGES,)).fetchone()[0])
+    assert done["dropped"] == 1
+    backup = Path(done["backup"])
+    assert backup.parent == root / "backups" and stat.S_IMODE(backup.stat().st_mode) == 0o700
+    was = sqlite3.connect(backup / "index.sqlite")
+    assert {r[0] for r in was.execute("SELECT id FROM images")} == set(ids.values())
+    was.close()
+    assert (backup / f"{ids['viewer.html']}.html").read_text() == VIEWER
+    # Once: opened again, nothing more, and no second backup.
+    new.close()
+    again = images.ImageStore(root)
+    assert again._drop_pages_needing_files(again._db()) is None
+    assert len(list((root / "backups").iterdir())) == 1
+    again.close()
+    # None to drop: no backup made, and marked done all the same.
+    clean = images.ImageStore(tmp_path / "clean")
+    clean.capture(f"The report {whole}")
+    assert not (tmp_path / "clean" / "backups").exists()
+    assert json.loads(clean._db().execute("SELECT v FROM meta").fetchone()[0])["dropped"] == 0
+    clean.close()
+
+
 def test_a_report_read_later_is_the_one_it_meant(store, tmp_path):
     src = page(tmp_path / "s" / "r.html")
     os.utime(src, (1_700_000_000, 1_700_000_000))
