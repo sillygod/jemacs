@@ -473,6 +473,29 @@ def test_herd_tick_takes_pushes_over_rpc(tmp_path: Path, monkeypatch):
     reset_herd()
 
 
+def test_herd_tick_takes_the_guard_requests_told_over_rpc(tmp_path: Path, monkeypatch):
+    "The guard's requests Emacs told the user of come in its herd_tick, a list or refused."
+    reset_engine()
+    reset_herd()
+    monkeypatch.setenv("GHOSTHERD_MEMORY_DIR", str(tmp_path / "mem"))
+    monkeypatch.setenv("GHOSTHERD_MEMORY_FAKE_EMBED", "1")
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("GHOSTHERD_TELEGRAM_CHAT_IDS", raising=False)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        from herd import get_herd
+        req = get_herd().guard_denied("agy-x", "", "run_command", "run_command: make", "needs approval",
+                                      "r", "k", True, "fp1", "{}")
+        told = lambda guard: {r["id"]: r["told"] for r in guard}[req["id"]]  # noqa: E731
+        assert told(_rpc(client, "herd_tick", {"sessions": []})["guard"]) is False
+        _rpc(client, "herd_tick", {"sessions": [], "guard_told": [req["id"]]})
+        assert told(_rpc(client, "herd_tick", {"sessions": []})["guard"]) is True
+        resp = client.post("/jsonrpc/" + client.app.state.token, json={
+            "jsonrpc": "2.0", "id": 2, "method": "herd_tick", "params": {"sessions": [], "guard_told": "x"}})
+        assert "guard_told must be a list" in resp.json()["error"]["message"]
+    reset_engine()
+    reset_herd()
+
+
 def test_list_sessions_orders_by_state_rank_then_recency(tmp_path: Path):
     """list_sessions matches the web page's order: state rank (blocked,
     working, starting, waiting, done, idle, dead), then most recently

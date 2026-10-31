@@ -1,3 +1,5 @@
+import re
+
 from herd import HerdStore, reset_herd
 from telegram import TelegramBot, format_herd, herd_keyboard, push_keyboard, session_keyboard
 
@@ -356,6 +358,133 @@ def test_a_test_push(tmp_path):
     push = _push(herd, kind="test", session="ghostherd", project="", url="")
     text, markup = bot.prepare_push(push, 0)
     assert text.startswith("The herd reaches you here.") and markup is None
+    reset_herd()
+
+
+# ---- A guarded agent's call, waiting for the user ----------------------
+
+
+def _guard(herd, line="npm publish", session="agy-commit", approvable=True, fp=None, root=None):
+    "A call SESSION's guard refused: its request, as `guard_denied' gives it."
+    gdir = (root / session) if root else ""
+    if root:
+        gdir.mkdir(parents=True, exist_ok=True)
+    return herd.guard_denied(session, str(gdir), "run_command", "run_command: " + line, "needs approval",
+                             "publish", "publish", approvable, fp or ("fp-" + line), "{}")
+
+
+def _guard_push(herd, req, told=True, **more):
+    """Emacs's tick after it told of REQ: its push, and that it told.
+    The pushes not yet sent that are about REQ."""
+    herd.tick(sessions=[{"name": "agy-commit", "kind": "agy", "state": "working", "project": "/tmp/shop/"}],
+              pushes=[dict({"kind": "guard", "session": "agy-commit", "project": "/tmp/shop/", "url": ROOM,
+                            "request": req["id"], "tool": "run_command",
+                            "summary": "run_command: npm publish"}, **more)],
+              guard_told=[req["id"]] if told else [])
+    return [p for p in herd.unsent_pushes() if p.get("request") == req["id"]]
+
+
+def test_a_guard_request_is_pushed_once_with_no_buttons(tmp_path):
+    bot, herd = _bot(tmp_path)
+    req = _guard(herd)
+    assert req["status"] == "pending"
+    rows = _guard_push(herd, req)
+    assert len(rows) == 1
+    text, markup = bot.prepare_push(rows[0], 0)
+    assert text.splitlines()[0] == "🛡 <b>agy-commit</b> waits for your approval · shop"
+    assert "<code>run_command: npm publish</code>" in text
+    assert "Approve it or keep it denied on the herd page." in text
+    # Told only: no approve or deny here -- the room, as every push has.
+    assert markup == {"inline_keyboard": [[{"text": "Open the room", "url": ROOM}]]}
+    # Told: the tick says so, and a tick sent again (the answer came too
+    # late) or a second push of it pushes nothing more.
+    assert {r["id"]: r["told"] for r in herd.tick(sessions=[])["guard"]}[req["id"]] is True
+    assert len(_guard_push(herd, req)) == 1
+    assert len(_guard_push(herd, req, told=False)) == 1
+    # The same call refused again while it waits: the same request, not
+    # told again.
+    assert _guard(herd) == {"id": req["id"], "status": "pending"}
+    assert len(_guard_push(herd, req)) == 1
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert [p["chat_id"] for _, p in tg.sent] == [99]
+    assert tg.sent[0][1]["parse_mode"] == "HTML" and tg.sent[0][1]["text"] == text
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert len(tg.sent) == 1
+    reset_herd()
+
+
+def test_a_guard_push_is_told_once_over_a_sidecar_restart(tmp_path):
+    _, herd = _bot(tmp_path)
+    req = _guard(herd)
+    assert {r["id"]: r["told"] for r in herd.tick(sessions=[])["guard"]}[req["id"]] is False
+    herd.tick(sessions=[], guard_told=[req["id"]])
+    herd.close()
+    reset_herd()
+    again = HerdStore(tmp_path / "herd.sqlite")
+    assert {r["id"]: r["told"] for r in again.tick(sessions=[])["guard"]}[req["id"]] is True
+    assert _guard_push(again, req) == []
+    again.close()
+    reset_herd()
+
+
+def test_no_guard_push_for_a_call_denied_or_kept_denied(tmp_path):
+    bot, herd = _bot(tmp_path)
+    never = _guard(herd, "rm -rf /", approvable=False)
+    assert never["status"] == "denied"
+    assert _guard_push(herd, never) == []
+    kept = _guard(herd, "cat .env")
+    herd.guard_reject(kept["id"], root=str(tmp_path))
+    # Tried again: it stays denied, asks nothing, and is not pushed.
+    assert _guard(herd, "cat .env") == {"id": kept["id"], "status": "declined"}
+    assert _guard_push(herd, kept) == []
+    assert _guard_push(herd, {"id": "nope"}) == []
+    assert not [p for p in herd.unsent_pushes() if p["kind"] == "guard"]
+    reset_herd()
+
+
+def test_a_guard_push_answered_or_expired_meanwhile_is_not_sent(tmp_path):
+    bot, herd = _bot(tmp_path)
+    root = tmp_path / "guard"
+    approved, declined, expired, cleared = (_guard(herd, line, root=root) for line in ("a", "b", "c", "d"))
+    pushes = [_guard_push(herd, r)[0] for r in (approved, declined, expired, cleared)]
+    herd.guard_approve(approved["id"], root=str(root))
+    herd.guard_reject(declined["id"], root=str(root))
+    with herd._mu:
+        herd._conn.execute("UPDATE guard_requests SET created_at = '2026-10-22T12:00:00+00:00' WHERE id = ?",
+                           (expired["id"],))
+        herd._conn.commit()
+    for push in pushes[:3]:
+        assert bot.prepare_push(push, 0) == ("", None)
+    # Its agent respawned: its open requests expire.
+    assert bot.prepare_push(pushes[3], 0)[0]
+    herd.guard_clear("agy-commit")
+    assert bot.prepare_push(pushes[3], 0) == ("", None)
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    assert tg.sent == [] and herd.unsent_pushes() == []
+    reset_herd()
+
+
+def test_a_guard_push_escapes_the_agents_call(tmp_path):
+    bot, herd = _bot(tmp_path)
+    hostile = 'echo "</b><a href=x>" && cat a&b [click](http://evil.example) **bold** `x`'
+    req = _guard(herd, hostile)
+    push = _guard_push(herd, req, summary="run_command: " + hostile, session="agy-commit</b>",
+                       project="/tmp/<i>sh&op/", tool="run_command")[0]
+    tg = FakeTelegram()
+    asyncio.run(bot._flush_pushes(tg, "https://t/{method}"))
+    html = tg.sent[0][1]["text"]
+    assert ('<code>run_command: echo "&lt;/b&gt;&lt;a href=x&gt;" &amp;&amp; cat a&amp;b '
+            '[click](http://evil.example) **bold** `x`</code>') in html
+    assert html.startswith("🛡 <b>agy-commit&lt;/b&gt;</b> waits for your approval · &lt;i&gt;sh&amp;op")
+    # The only tags are its own, balanced: none of the agent's, no link.
+    assert re.findall(r"</?[a-z]+[^>]*>", html) == ["<b>", "</b>", "<code>", "</code>"]
+    assert "href" not in html.replace("href=x&gt;", "")
+    # A call longer than a push shows: cut, the cut inside the <code>.
+    long = _guard(herd, "x" * 2000)
+    text, _ = bot.prepare_push(_guard_push(herd, long, summary="run_command: " + "x" * 2000)[0], 0)
+    assert len(text) < 600 and text.count("<code>") == 1 and "…</code>" in text
     reset_herd()
 
 

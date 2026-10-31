@@ -359,6 +359,9 @@ class JsonRpcHandler:
         pushes = params.get("pushes") or []
         if not isinstance(pushes, list):
             raise ValueError("pushes must be a list")
+        guard_told = params.get("guard_told") or []
+        if not isinstance(guard_told, list):
+            raise ValueError("guard_told must be a list")
         return get_herd().tick(
             sessions=sessions,
             ack_ids=[str(i) for i in ack_ids],
@@ -367,6 +370,7 @@ class JsonRpcHandler:
             page_url=params.get("page_url"),
             restored=params.get("restored"),
             guard_ttl=params.get("guard_ttl"),
+            guard_told=[str(i) for i in guard_told],
         )
 
     def _herd_ask(self, params: dict) -> dict:

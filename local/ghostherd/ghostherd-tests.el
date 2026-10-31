@@ -84,6 +84,9 @@ BINDINGS are extra `let' bindings evaluated inside the clean registry."
          (ghostherd-tmux--pane-pids (make-hash-table :test 'equal))
          (ghostherd-tmux--pane-pids-at 1.0e+INF)
          (ghostherd--guard-seen (make-hash-table :test 'equal))
+         ;; The guard's requests one test told of are not the next's.
+         (ghostherd--guard-told (make-hash-table :test 'equal))
+         (ghostherd--guard-told-ids nil)
          ;; Every logged transition now appends to a file, and the default
          ;; is the user's real one.  Persistence gets tested deliberately,
          ;; with a temporary file, and nowhere else.
@@ -11482,6 +11485,124 @@ fails keeps them, ahead of none queued meanwhile."
           (funcall fail "down")
           (should (equal (mapcar (lambda (p) (plist-get p :session)) ghostherd--herd-pushes) '("c" "b" "a"))))))))
 
+;;; A guard's request, told of once
+
+(defmacro ghostherd-test--guard-telling (&rest body)
+  "BODY with pushes on (`ghostherd-test--pushing'), guard pushes too, the
+log and the guard's state fresh, and `notes' the desktop notifications
+\(TITLE BODY), newest first; agy-shop is up in /p/shop/."
+  (declare (indent 0))
+  `(ghostherd-test--pushing
+     (let ((ghostherd-push '(blocked guard))
+           (ghostherd-notify-on-guard t)
+           (ghostherd--guard-told (make-hash-table :test 'equal))
+           (ghostherd--guard-told-ids nil)
+           (ghostherd--guard-seen (make-hash-table :test 'equal))
+           (ghostherd--guard-requests nil)
+           (ghostherd--log nil)
+           (notes nil))
+       (cl-letf (((symbol-function 'ghostherd--notify) (lambda (title body) (push (list title body) notes))))
+         (ghostherd-tests--session :name "agy-shop" :kind 'agy :state 'working :project "/p/shop/")
+         ,@body))))
+
+(defun ghostherd-test--guard-request (id status &rest more)
+  "A guard request ID of agy-shop's, as a `herd_tick' gives it."
+  (append more (list :id id :session "agy-shop" :tool "run_command" :summary "run_command: npm publish"
+                     :status status :told :json-false)))
+
+(ert-deftest ghostherd-test-guard-request-told-once ()
+  "A new request waiting for the user notifies once -- the agent and the
+call -- and is pushed, both said to the sidecar in the next tick; the
+same request in later ticks (the same call refused again while it
+waits) does not, nor one never approvable, kept denied or expired."
+  (ghostherd-test--guard-telling
+    (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g1" "pending")
+                                      (ghostherd-test--guard-request "g2" "denied")
+                                      (ghostherd-test--guard-request "g3" "declined")
+                                      (ghostherd-test--guard-request "g4" "expired")
+                                      (ghostherd-test--guard-request "g5" "approved")))
+    (should (equal notes '(("ghostherd · agy-shop needs your approval"
+                            "run_command: npm publish -- approve it or keep it denied on the herd page"))))
+    (let ((project (ghostherd--project-name "/p/shop/")))
+      (should (equal ghostherd--herd-pushes
+                     `((:kind "guard" :session "agy-shop" :project ,project :url ,(concat "room:" project)
+                              :images t :reports t
+                              :request "g1" :tool "run_command" :summary "run_command: npm publish")))))
+    (should (equal ghostherd--guard-told-ids '("g1")))
+    ;; The next tick, and the one after: the same request, refused again.
+    (dotimes (_ 2)
+      (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g1" "pending"))))
+    (should (= (length notes) 1))
+    (should (= (length ghostherd--herd-pushes) 1))
+    (should (equal ghostherd--guard-told-ids '("g1")))
+    ;; Logged as ever.
+    (should (cl-some (lambda (e) (string-match-p "guard needs approval g1: run_command: npm publish"
+                                                 (format "%s" e)))
+                     ghostherd--log))))
+
+(ert-deftest ghostherd-test-guard-request-not-told-again-after-a-restart ()
+  "A restarted Emacs, its own memory gone, tells of none the sidecar says
+it told of; a request never told of -- the Emacs gone before its tick
+-- it tells of then."
+  (ghostherd-test--guard-telling
+    (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g1" "pending" :told t)
+                                      (ghostherd-test--guard-request "g2" "pending")))
+    (should (equal (mapcar #'car notes) '("ghostherd · agy-shop needs your approval")))
+    (should (equal (mapcar (lambda (p) (plist-get p :request)) ghostherd--herd-pushes) '("g2")))
+    (should (equal ghostherd--guard-told-ids '("g2")))))
+
+(ert-deftest ghostherd-test-guard-request-told-as-its-switches-say ()
+  "`ghostherd-notify-on-guard' nil: no notification, the push still;
+`guard' not in `ghostherd-push', or you at the desk: no push, the
+notification still.  Told either way -- and of a gone agent, notified.
+The call is cut short, on one line."
+  (ghostherd-test--guard-telling
+    (let ((ghostherd-notify-on-guard nil))
+      (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g1" "pending"))))
+    (should-not notes)
+    (should (= (length ghostherd--herd-pushes) 1))
+    (let ((ghostherd-push '(blocked)))
+      (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g2" "pending"))))
+    (setq idle 0)
+    (ghostherd--herd-take-guard (list (ghostherd-test--guard-request "g3" "pending")))
+    (should (= (length notes) 2))
+    (should (= (length ghostherd--herd-pushes) 1))
+    (ghostherd--herd-take-guard
+     (list (ghostherd-test--guard-request "g4" "pending" :session "agy-gone" :tool "write_to_file"
+                                          :summary (concat "/w/a.txt\n" (make-string 300 ?x)))))
+    (should (equal (car (car notes)) "ghostherd · agy-gone needs your approval"))
+    (should (string-prefix-p "write_to_file: /w/a.txt xxx" (cadr (car notes))))
+    (should (string-match-p "… -- approve it" (cadr (car notes))))
+    (should (< (length (cadr (car notes))) 170))
+    (should (= (length ghostherd--herd-pushes) 1))
+    (should (equal ghostherd--guard-told-ids '("g4" "g3" "g2" "g1")))))
+
+(ert-deftest ghostherd-test-herd-tick-carries-the-guard-told ()
+  "The requests told of go to the sidecar in the next tick, oldest first;
+a tick that fails keeps them, ahead of none told of meanwhile."
+  (ghostherd-test--pushing
+    (let (params fail)
+      (cl-letf (((symbol-function 'ghostherd-memory-rpc-url) (lambda () "http://x"))
+                ((symbol-function 'ghostherd--herd-snapshot) (lambda () nil))
+                ((symbol-function 'ghostherd-memory-request-async)
+                 (lambda (_m _ok p err) (setq params p fail err))))
+        (let ((ghostherd--herd-tick-inflight nil)
+              (ghostherd--herd-replies nil)
+              (ghostherd--herd-ack-ids nil)
+              (ghostherd--guard-told-ids (list "g2" "g1")))
+          (ghostherd--herd-tick-async)
+          (should (equal (plist-get params :guard_told) ["g1" "g2"]))
+          (should-not ghostherd--guard-told-ids)
+          (push "g3" ghostherd--guard-told-ids)
+          (funcall fail "down")
+          (should (equal ghostherd--guard-told-ids '("g3" "g2" "g1")))
+          (setq ghostherd--herd-tick-inflight nil)
+          (ghostherd--herd-tick-async)
+          (should (equal (plist-get params :guard_told) ["g1" "g2" "g3"]))
+          (setq ghostherd--herd-tick-inflight nil ghostherd--guard-told-ids nil)
+          (ghostherd--herd-tick-async)
+          (should (equal (plist-get params :guard_told) [])))))))
+
 (ert-deftest ghostherd-test-push-test ()
   "A test push goes whether you are away or not -- not without the bot."
   (ghostherd-test--pushing
@@ -15178,17 +15299,18 @@ with a password in it is dropped.  A project adds names of its own."
 (ert-deftest ghostherd-test-the-guards-requests-are-logged-once ()
   "Each refusal, approval and use is a log line, once."
   (ghostherd-tests--with-herd ((ghostherd--log nil))
-    (let ((r (lambda (status) (list (list :id "g1" :session "agy-p" :status status
-                                         :summary "run_command: cat .env" :rule "secret-file")))))
-      (ghostherd--herd-take-guard (funcall r "pending"))
-      (ghostherd--herd-take-guard (funcall r "pending"))
-      (ghostherd--herd-take-guard (funcall r "approved"))
-      (ghostherd--herd-take-guard (funcall r "used"))
-      (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
-                     '("guard needs approval g1: run_command: cat .env -- secret-file"
-                       "guard g1 approved once: run_command: cat .env"
-                       "guard g1 ran, approved: run_command: cat .env")))
-      (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'guard)))))
+    (cl-letf (((symbol-function 'ghostherd--notify) #'ignore))
+      (let ((r (lambda (status) (list (list :id "g1" :session "agy-p" :status status
+                                           :summary "run_command: cat .env" :rule "secret-file")))))
+        (ghostherd--herd-take-guard (funcall r "pending"))
+        (ghostherd--herd-take-guard (funcall r "pending"))
+        (ghostherd--herd-take-guard (funcall r "approved"))
+        (ghostherd--herd-take-guard (funcall r "used"))
+        (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
+                       '("guard needs approval g1: run_command: cat .env -- secret-file"
+                         "guard g1 approved once: run_command: cat .env"
+                         "guard g1 ran, approved: run_command: cat .env")))
+        (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'guard))))))
 
 (ert-deftest ghostherd-test-the-cards-approve-once-reaches-the-herd ()
   "Approve once on the card asks the sidecar to approve that request, by
