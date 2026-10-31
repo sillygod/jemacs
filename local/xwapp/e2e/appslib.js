@@ -50,17 +50,37 @@ async function start(opts) {
   // the tailnet host -- so the page's own calls carry it.
   const sock = path.join(E, "remote.sock");
   const away = [];
-  const proxy = http.createServer((req, res) => {
-    const u = new URL(req.url);
-    if (u.host !== "box.tail0.ts.net") { away.push(req.url); res.writeHead(200, { "content-type": "text/plain" }); return res.end("away"); }
+  // The phone asleep (sleep()): what it had under way is cut off, and
+  // nothing it asks reaches Emacs until it wakes (wake()), when what it
+  // asked meanwhile goes on.  Each answer that came through is noted in
+  // TRAFFIC: when, what, its code, the bytes of its body, and the ETag
+  // the browser asked with, if it had the file.
+  let asleep = false;
+  const held = [], open = new Set(), traffic = [];
+  const forward = (req, res, u) => {
     const headers = Object.assign({}, req.headers, { host: "localhost", "tailscale-user-login": "me@example.com" });
     delete headers["proxy-connection"];
+    const seen = { at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
+      status: 0, bytes: 0, asked: req.headers["if-none-match"] || "" };
+    traffic.push(seen);
+    open.add(res);
+    res.on("close", () => open.delete(res));
+    res.on("error", () => {});
     const up = http.request({ socketPath: sock, path: u.pathname + u.search, method: req.method, headers }, (r) => {
+      seen.status = r.statusCode;
+      r.on("data", (c) => { seen.bytes += c.length; });
+      if (res.destroyed) return r.resume();
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
     });
-    up.on("error", () => { res.writeHead(502); res.end(); });
+    up.on("error", () => { if (!res.destroyed && !res.headersSent) { res.writeHead(502); res.end(); } });
     req.pipe(up);
+  };
+  const proxy = http.createServer((req, res) => {
+    const u = new URL(req.url);
+    if (u.host !== "box.tail0.ts.net") { away.push(req.url); res.writeHead(200, { "content-type": "text/plain" }); return res.end("away"); }
+    if (asleep) held.push(() => forward(req, res, u));
+    else forward(req, res, u);
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
   // No browser -- not installed, say -- and nothing is left running.
@@ -78,7 +98,9 @@ async function start(opts) {
     if (process.env.KEEP) console.log("kept " + run);
     else fs.rmSync(run, { recursive: true, force: true });
   };
-  return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3] };
+  return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3], traffic,
+    sleep: () => { asleep = true; open.forEach((res) => res.destroy()); },
+    wake: () => { asleep = false; held.splice(0).forEach((go) => go()); } };
 }
 
 function watch(page, errors) {

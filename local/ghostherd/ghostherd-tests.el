@@ -11318,28 +11318,28 @@ itself when small.  Nothing that is not a PNG becomes one."
             (should-not (ghostherd-memory-page--thumb big))))
       (delete-directory dir t))))
 
-(ert-deftest ghostherd-test-cmd-v-pastes-into-the-page ()
-  "Cmd-V never becomes a paste in the web view: the page asks, or Emacs
-gets the key, and Emacs hands the page the clipboard's text, or nothing
--- the page then asks for an image."
+(ert-deftest ghostherd-test-cmd-v-is-the-kits ()
+  "Cmd-V in the herd page is the page kit's, as in every xwapp page: the
+kit asks xwapp for the clipboard (xwapp-tests.el).  The page's own
+paste, and the s-v keys that never fired under Cmd as Meta, are gone; a
+paste intent from an old page does nothing, the clipboard unread.  The
+page opens as before."
+  (should-not (fboundp 'ghostherd-memory-page-paste))
+  (should-not (boundp 'ghostherd-memory-page-keys-mode-map))
   (ghostherd-test--with-page
-    (dolist (clip '("some text" nil))
-      (setq calls nil)
-      (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) clip)))
+    (let ((read nil))
+      (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) (setq read t) "some text")))
         (ghostherd-memory-page--handle '((op . "paste"))))
-      (should (equal (ghostherd-test--call calls "paste") (list :text (or clip ""))))))
-  (should (eq (lookup-key ghostherd-memory-page-keys-mode-map (kbd "s-v")) #'ghostherd-memory-page-paste))
+      (should-not read)
+      (should-not calls)))
   (let ((ghostherd-memory-page--project nil)
-        (ghostherd-memory-page--pending nil))
+        (ghostherd-memory-page--pending nil)
+        (opened nil))
     (cl-letf (((symbol-function 'ghostherd-memory-ensure) #'ignore)
-              ((symbol-function 'xwapp-open) (lambda (app) (get-buffer-create (xwapp-buffer-name app)))))
-      (unwind-protect
-          (progn
-            (ghostherd-memory-page--open "agents")
-            (with-current-buffer "*herd*"
-              (should ghostherd-memory-page-keys-mode)
-              (should (eq (key-binding (kbd "s-v")) #'ghostherd-memory-page-paste))))
-        (kill-buffer "*herd*")))))
+              ((symbol-function 'xwapp-open) (lambda (app) (setq opened app))))
+      (ghostherd-memory-page--open "agents")
+      (should (eq opened ghostherd-memory-page--app))
+      (should (equal (plist-get ghostherd-memory-page--pending :view) "agents")))))
 
 (ert-deftest ghostherd-test-a-browser-tab-reopens-the-page ()
   "A tab that comes back to the herd page -- after a restart, say -- finds

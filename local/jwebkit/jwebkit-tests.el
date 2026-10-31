@@ -126,6 +126,96 @@ init reaches xwidget, which with evil on `:defer 0' is after
   (should (string-match-p "window\\.__jwAce" jwebkit--ace-js))
   (should (string-match-p "function lab" jwebkit--ace-js)))
 
+;; The JS itself is run in WebKit by xwapp/e2e/jwebkit.js: a hint onto
+;; a field says so, and the paste goes in with the page's input events.
+
+(ert-deftest jwebkit-test-ace-into-a-field-edits ()
+  "A hint that put the focus in a field sends the keys to the page from
+its buffer, as `gi' does -- else typing there would run Evil's commands.
+A hint onto anything else does not; with a new session, a link opens
+there."
+  (let ((edited nil) (browsed nil))
+    (cl-letf (((symbol-function 'jwebkit-edit) (lambda () (push (current-buffer) edited)))
+              ((symbol-function 'xwidget-webkit-browse-url)
+               (lambda (url new) (push (list url new) browsed))))
+      (with-temp-buffer
+        (let ((buf (current-buffer)))
+          (with-temp-buffer
+            (jwebkit--acted buf nil "{\"href\":\"\",\"edit\":true}")
+            (should (equal edited (list buf)))
+            (jwebkit--acted buf nil "{\"href\":\"https://ex.com/\",\"edit\":false}")
+            (jwebkit--acted buf nil "{\"href\":\"\"}")
+            (jwebkit--acted buf nil nil)
+            (should (equal edited (list buf)))
+            (should-not browsed)
+            (jwebkit--acted buf t "{\"href\":\"https://ex.com/\"}")
+            (should (equal browsed '(("https://ex.com/" t))))
+            (should (equal edited (list buf)))))
+        ;; Its buffer gone meanwhile: nothing.
+        (let ((gone (generate-new-buffer " gone")))
+          (kill-buffer gone)
+          (jwebkit--acted gone nil "{\"href\":\"\",\"edit\":true}")
+          (should (= (length edited) 1)))))
+    ;; The page says it, of the target it focused.
+    (should (string-match-p "edit: typable(el) && document.activeElement === el" jwebkit--ace-js))
+    (should (string-match-p "contenteditable" jwebkit--ace-js))))
+
+(ert-deftest jwebkit-test-stop-edit-blurs-and-gives-focus-back-safely ()
+  "Esc / C-g after typing in the page takes the page's focus off its
+field, and hands the keyboard back to Emacs only as killing a page does
+-- xwidget's own C-g message, and only when the page has a live view in
+the selected window alone."
+  (let ((scripts nil) (ns 'ns) (normal 0)
+        (xwidget-webkit-edit-mode t))
+    (cl-letf (((symbol-function 'framep) (lambda (_) ns))
+              ((symbol-function 'derived-mode-p) (lambda (&rest _) t))
+              ((symbol-function 'xwidget-webkit-edit-mode) (lambda (arg) (setq xwidget-webkit-edit-mode (> arg 0))))
+              ((symbol-function 'evil-normal-state) (lambda () (setq normal (1+ normal))))
+              ((symbol-function 'xwidget-webkit-current-session) (lambda () 'xw))
+              ((symbol-function 'window-buffer) (lambda (&rest _) (current-buffer)))
+              ((symbol-function 'get-buffer-window-list) (lambda (&rest _) '(w)))
+              ((symbol-function 'get-buffer-xwidgets) (lambda (_) '(xw)))
+              ((symbol-function 'xwidget-live-p) (lambda (_) t))
+              ((symbol-function 'xwidget-view-lookup) (lambda (&rest _) t))
+              ((symbol-function 'xwidget-webkit-execute-script) (lambda (_xw js &rest _) (push js scripts)))
+              ((symbol-function 'accept-process-output) #'ignore))
+      (with-temp-buffer
+        (jwebkit-stop-edit)
+        (should-not xwidget-webkit-edit-mode)
+        (should (= normal 1))
+        (should (equal (reverse scripts) (list jwebkit--blur-js jwebkit--give-focus-back-js)))
+        ;; Where the hand-back may not be done, the field still lets go.
+        (setq scripts nil ns 'x)
+        (jwebkit-stop-edit)
+        (should (equal scripts (list jwebkit--blur-js)))))))
+
+(ert-deftest jwebkit-test-paste-in-edit-mode ()
+  "⌘V (M-v) while keys go to the page puts the clipboard's text in the
+focused field, through the page -- read on the key press only: called
+from Lisp, nothing is read and nothing sent."
+  (let ((xwidget-webkit-edit-mode-map (make-sparse-keymap)))
+    ;; Evil's per-state maps are not loaded here.
+    (cl-letf (((symbol-function 'jwebkit--bind) #'ignore))
+      (jwebkit--bind-keys))
+    (should (eq (lookup-key xwidget-webkit-edit-mode-map (kbd "M-v")) #'jwebkit-paste)))
+  (let ((scripts nil) (read 0) (clip "line one\n\"two\" 你好 😀"))
+    (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) (setq read (1+ read)) clip))
+              ((symbol-function 'xwidget-webkit-current-session) (lambda () 'xw))
+              ((symbol-function 'xwidget-webkit-execute-script) (lambda (_xw js &rest _) (push js scripts))))
+      (jwebkit-paste)
+      (should (= read 0))
+      (should-not scripts)
+      (call-interactively #'jwebkit-paste)
+      (should (= read 1))
+      (should (equal scripts (list (jwebkit--paste-js clip))))
+      (should (string-suffix-p (concat "})(" (json-encode clip) ");") (car scripts)))
+      (should (string-match-p "new CustomEvent('xw-paste'" (car scripts)))
+      (should (string-match-p "execCommand('insertText', false, t)" (car scripts)))
+      ;; No text on the clipboard: the page still hears it, with "".
+      (setq clip nil scripts nil)
+      (call-interactively #'jwebkit-paste)
+      (should (equal scripts (list (jwebkit--paste-js "")))))))
+
 
 ;;; PDF
 

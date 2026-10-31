@@ -10,9 +10,11 @@
 
   // ---- Intents ---------------------------------------------------------
   //
-  // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).
+  // Queued and counted by xwapp's page kit (../../xwapp/ui/xwapp.js).  A
+  // page in a browser that Emacs let go -- a phone asleep -- comes back
+  // where it is (`comeBack'), rather than loading again.
 
-  const emit = XW.bridge(PREFIX);
+  const emit = XW.bridge(PREFIX, null, { back: comeBack });
 
   // ---- A phone ---------------------------------------------------------
   //
@@ -765,6 +767,26 @@
     else if (where === "docs") showDocs();
     // Home: the page opens on the Inbox when nothing else is asked for.
     else showInbox();
+  }
+
+  // Emacs let the page go while the phone slept, and has it again: the
+  // page is as it was -- scrolled where it was, what it had open still
+  // open -- and asks again for what it shows, as its load did.  Emacs
+  // closed what it was sending when it let go.
+  function comeBack() {
+    emit("ready");
+    if (watching) emit("herd-watch");
+    if (herdNow.room) watchRoom(true);
+    if (herdNow.room && herdNow.subView) {
+      const sv = herdNow.subView, conv = herdNow.convs[sv.name];
+      emit("sub-watch", { name: sv.name, path: (conv && conv.path) || "", sub: sv.sub });
+    }
+    if (memWatching) emit("memory-watch", mem.key ? { key: mem.key } : { key: "user" });
+    if (inboxWatching) emit("inbox-watch");
+    if (threadsWatching) emit("threads-watch", { project: threads.project, sort: threads.sort });
+    if (view === "log") emit("log");
+    if (view === "docs") emit("docs");
+    emit("threads-peek");
   }
 
   function filtersHtml() {
@@ -3732,19 +3754,18 @@
     const strip = app.querySelector('[data-name="' + cssName(name) + '"] .attach');
     if (strip) strip.innerHTML = attachHtml(name);
   }
-  // In Emacs, Cmd-V never becomes a paste: the paste is the menu's to
-  // send, and Emacs's menu does not send it to the web view, so the page
-  // sees the keydown and nothing after -- not for text either.  Emacs
-  // reads the clipboard instead, and answers with `paste' below.  In a
-  // web browser Cmd-V is a paste, and an image in it is asked for below.
-  document.addEventListener("keydown", (ev) => {
-    if (XW.browser) return;
-    if (!ev.metaKey || ev.ctrlKey || ev.altKey || ev.key.toLowerCase() !== "v") return;
-    const el = document.activeElement;
-    if (!el || (el.tagName !== "TEXTAREA" && el.tagName !== "INPUT")) return;
+  // In Emacs, Cmd-V never becomes a paste: the page kit asks Emacs for
+  // its clipboard, and puts the text in at the cursor (xwapp.js, "⌘V in
+  // Emacs").  With no text there, the clipboard's image goes to the
+  // prompt box the cursor is in.  In a web browser Cmd-V is a paste, and
+  // an image in it is asked for below.
+  document.addEventListener("xw-paste", (ev) => {
+    if (ev.detail && ev.detail.text) return;
+    const t = ev.target;
     ev.preventDefault();
-    emit("paste");
-  }, true);
+    if (t.matches && t.matches(PROMPT_BOX)) askImage(t);
+    else setStatus("To attach an image, click into a prompt box first");
+  });
 
   // Inbox desk keys: j/k move, 1-4 answer a menu, a approve, e done.
   document.addEventListener("keydown", (ev) => {
@@ -6025,19 +6046,6 @@
       ta.focus();
     },
 
-    // The clipboard, for Cmd-V: text goes in at the cursor; with none,
-    // the clipboard's image goes to the prompt box the cursor is in.
-    paste: (p) => {
-      const el = document.activeElement;
-      const text = (p && p.text) || "";
-      if (text) {
-        if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) document.execCommand("insertText", false, text);
-        return;
-      }
-      if (el && el.matches && el.matches(PROMPT_BOX)) askImage(el);
-      else setStatus("To attach an image, click into a prompt box first");
-    },
-
     // The sidecar's import, read every few seconds; null once it ends.
     importProgress: (p) => {
       $("btn-import").disabled = !!p;
@@ -6091,8 +6099,10 @@
       if (p && p.view === "sessions") showSessions();
       else if (p && p.view === "search") showSearch();
       else if (view === "sessions") showSessions();
-      else if (view === "source" || view === "log" || view === "agents") chrome();
-      else showSearch();
+      // A page on a view of its own stays there: the sessions come after
+      // its load has shown where it was (restore), and after it came back.
+      else if (view === "boot" || view === "search") showSearch();
+      else chrome();
       if (p && p.query) search(true);
     },
 

@@ -2549,7 +2549,10 @@ are the other tabs (below, and "What happened while you were away").
   Sending puts each file's name on a line after your text.  Every CLI
   can read a file; the transcript keeps the name, so images are kept
   =ghostherd-image-keep-days= (30) and then go.  ⌘V with text on the
-  clipboard pastes the text, there and in any box on the page.
+  clipboard pastes the text, there and in any box on the page: in
+  Emacs WebKit never makes ⌘V a paste, so xwapp's page kit asks Emacs
+  for the clipboard, as on every xwapp page; with no text on it, the
+  kit says so (=xw-paste=), and the page asks for the image.
 - What the overlay can do: open (the name), prompt (⌘↩ / C-↩ sends),
   Esc, the screen; on a blocked agent, what its menu asks and a button
   per choice in its words (none where its menu cannot be read off its
@@ -2587,6 +2590,12 @@ are the other tabs (below, and "What happened while you were away").
   - The page keeps where it is in its URL --- the tab, a room and its
     view --- and goes back there when it is loaded again, in a tab or
     in Emacs.
+  - A phone asleep past ten seconds is let go; woken, the page comes
+    back where it is (xwapp's "A page that comes back where it is"):
+    nothing loaded again, its scroll and what it has open kept, and it
+    asks Emacs again for what it shows --- the sessions, and what its
+    tab, room and open view watch.  A ui/ file changed meanwhile loads
+    it again; another device that took the page meanwhile keeps it.
 
 *** Threads: who is talking to whom
 

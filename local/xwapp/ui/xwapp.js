@@ -10,11 +10,18 @@
  * the symlink's target.
  *
  *   XW.esc(s)            text for HTML, quotes included
- *   XW.bridge(prefix)    an emit(op, extra, lost) that queues intents for
+ *   XW.bridge(prefix[, app[, opts]])
+ *                        an emit(op, extra, lost) that queues intents for
  *                        Emacs: false for one too long to send, and LOST
  *                        called if one sent does not reach Emacs; what
  *                        LOST returns, if a function, is called should
- *                        Emacs turn out to have had it after all
+ *                        Emacs turn out to have had it after all.  APP
+ *                        names the page among the browser's tabs (openApp);
+ *                        OPTS.back, a function, makes a page in a browser
+ *                        come back where it is when Emacs let it go and
+ *                        can have it again, rather than load again: it is
+ *                        called then, to ask Emacs again for what the page
+ *                        shows (see "In a web browser")
  *   XW.sanitizer(opts)   a sanitize(html) keeping a whitelist only
  *   XW.browser           true in a web browser, false in Emacs's xwidget
  *   XW.elsewhere         true on another device, through the proxy
@@ -30,6 +37,11 @@
  * An element with data-xw-phone is the page's button for "open it on
  * your phone": shown once Emacs says the page can be reached there,
  * and pressed, the page's address as a QR code.
+ *
+ * In Emacs's xwidget, ⌘V in a field of the page's pastes the text on
+ * Emacs's clipboard (see "⌘V in Emacs" below).  The field hears it first:
+ * "xw-paste", cancelable, its detail {text}, "" when the clipboard holds
+ * no text -- an image, say, which the page may then ask Emacs for.
  */
 (function () {
   "use strict";
@@ -266,9 +278,15 @@
   // A 410 means this page is not the app's, and says why:
   //   taken   another page is: this one stops; reloading takes it back
   //   free    none is, and Emacs can open the app again -- it restarted,
-  //           or let this page go while the browser had it frozen.  The
-  //           page loads again, and comes back with a soft hello, which
-  //           takes nothing another page has meanwhile
+  //           or let this page go while the browser had it frozen (a
+  //           phone asleep).  The page loads again, and comes back with a
+  //           soft hello, which takes nothing another page has meanwhile.
+  //           A page with a BACK comes back where it is instead -- its
+  //           scroll, what it has open, nothing loaded again -- and BACK
+  //           asks Emacs again for what it shows, as its load did; only
+  //           while it is made of the files Emacs serves now (Emacs names
+  //           them, "ui", with the hello and with the 410): one loaded
+  //           before they changed loads again
   //   closed  none is, and Emacs cannot open the app again by itself
   // When Emacs does not answer at all -- restarting -- the page asks
   // again, less often each time, until it does.
@@ -314,14 +332,18 @@
   }
 
   let served = null;
-  function servedBridge() {
+  function servedBridge(opts) {
     if (served) return served;
     const page = Array.from(crypto.getRandomValues(new Uint8Array(8)),
       (b) => b.toString(16).padStart(2, "0")).join("");
-    const soft = comingBack();
+    const back = opts && typeof opts.back === "function" ? opts.back : null;
+    let soft = comingBack();
     const outbox = [];
-    let hello = false, sending = false, polling = false, over = false;
+    let hello = false, greeting = false, sending = false, polling = false, over = false;
     let retry = null, delay = 0;
+    // What the page is made of, as Emacs said in answer to its first
+    // hello; and whether the hello under way is the page coming back.
+    let ui = null, returning = false;
 
     function ask(path, body) {
       const opts = body === undefined ? {} : {
@@ -336,6 +358,7 @@
           const e = new Error("HTTP " + r.status);
           e.status = r.status;
           e.why = said && said.why;
+          e.ui = said && said.ui;
           throw e;
         });
       });
@@ -349,7 +372,9 @@
     // A request failed: do what Emacs said, or ask again later.
     function trouble(e) {
       if (over || retry) return;
-      if (e.status === 410 && e.why === "free") {
+      if (e.status === 410 && e.why === "free" && back && ui && e.ui === ui) {
+        comeBack();
+      } else if (e.status === 410 && e.why === "free") {
         over = true;
         try {
           sessionStorage.setItem(SOFT, "1");
@@ -381,12 +406,46 @@
         pump();
         return;
       }
-      ask("hello", {}).then(() => {
+      if (greeting) return;
+      greeting = true;
+      ask("hello", {}).then((r) => {
+        greeting = false;
         hello = true;
+        if (!ui) ui = r.headers.get("Xwapp-Ui");
         answered();
+        if (returning) welcomeBack();
         next();
         pump();
-      }, trouble);
+      }, (e) => {
+        greeting = false;
+        trouble(e);
+      });
+    }
+    // Emacs let the page go, and can have it again: a soft hello from
+    // where it is, taking nothing another page has meanwhile.  What was
+    // under way when it was let go -- its next, an intent not taken --
+    // goes again once it is the app's.
+    function comeBack() {
+      if (returning) return;
+      returning = true;
+      hello = false;
+      soft = true;
+      connect();
+    }
+    // The app's page again: Emacs, which closed what it was doing for it,
+    // is told again what it asked on its load -- whether you look, and
+    // BACK's -- before the intents that waited.
+    function welcomeBack() {
+      returning = false;
+      const waited = outbox.splice(0);
+      seen = null;
+      look();
+      try {
+        back();
+      } catch (e) {
+        console.error(e);
+      }
+      outbox.push(...waited);
     }
     // An intent Emacs answers it cannot take -- unreadable (400), too big
     // (413) -- is lost, not asked again: asked again, it would be refused
@@ -583,8 +642,8 @@
     return true;
   }
 
-  function bridge(prefix, app) {
-    if (BROWSER) { navSetup(app); return (kitEmit = servedBridge()); }
+  function bridge(prefix, app, opts) {
+    if (BROWSER) { navSetup(app); return (kitEmit = servedBridge(opts)); }
     kitEmit = titleBridge(prefix);
     // In a browser the hello is the request that makes the page the
     // app's; in the xwidget it is the page's first intent.
@@ -617,11 +676,67 @@
     return filesBase ? filesBase + encodeURIComponent(String(name)) : "";
   }
 
+  // ---- ⌘V in Emacs -----------------------------------------------------
+  //
+  // In WebKit under Emacs, ⌘V never becomes a paste: the paste is the
+  // menu's to send, and Emacs's menu does not send it to the web view, so
+  // the page sees the keydown and nothing after -- not for text either.
+  // So on that key in a field of the page's the kit asks Emacs for its
+  // clipboard, and Emacs answers XW.kit({xwapp: "paste", text}).  The
+  // field focused then hears it first -- "xw-paste", cancelable, its
+  // detail {text} -- and then the text goes in at the caret as typing
+  // would: through execCommand, so the page's own input events fire and
+  // the undo stack keeps it (checked in WKWebView).  "" is a clipboard
+  // with no text: an image, say, which the page may ask Emacs for.
+  // Only on your own key, and only in Emacs: in a browser ⌘V is a paste
+  // of its own, from that device's clipboard.
+
+  const TEXT_INPUT = /^(text|search|url|tel|email|password)$/i;
+  function typable(el) {
+    if (!el || el.disabled || el.readOnly) return false;
+    if (el.isContentEditable || el.tagName === "TEXTAREA") return true;
+    return el.tagName === "INPUT" && TEXT_INPUT.test(el.type || "text");
+  }
+
+  // Pastes asked for and not answered yet: an answer for none is dropped.
+  let pasting = 0;
+  if (!BROWSER) {
+    document.addEventListener("keydown", (ev) => {
+      if (!ev.isTrusted || !ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (String(ev.key).toLowerCase() !== "v" || !kitEmit || !typable(document.activeElement)) return;
+      ev.preventDefault();
+      pasting++;
+      kitEmit("xwapp-paste", null, () => {
+        pasting = Math.max(0, pasting - 1);
+        return () => pasting++;
+      });
+    }, true);
+  }
+
+  function paste(call) {
+    if (BROWSER || pasting <= 0) return;
+    pasting--;
+    const el = document.activeElement;
+    if (!typable(el)) return;
+    const text = typeof call.text === "string" ? call.text : "";
+    const heard = el.dispatchEvent(new CustomEvent("xw-paste",
+      { bubbles: true, cancelable: true, detail: { text: text } }));
+    if (!heard || !text) return;
+    if (document.execCommand("insertText", false, text)) return;
+    // A WebKit without it: the same text, and an input event.
+    if (typeof el.setRangeText === "function") {
+      el.setRangeText(text, el.selectionStart, el.selectionEnd, "end");
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste", data: text }));
+    }
+  }
+
   // Emacs's calls to the kit itself: in a browser through next, in the
   // xwidget as XW.kit(call).
   function kit(call) {
     if (call.xwapp === "read" || call.xwapp === "unread") {
       return answer(call);
+    } else if (call.xwapp === "paste") {
+      paste(call);
     } else if (call.xwapp === "phone") {
       document.documentElement.classList.toggle("xw-phone", !ELSEWHERE);
     } else if (call.xwapp === "qr") {

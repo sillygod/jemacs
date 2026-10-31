@@ -727,7 +727,7 @@ Above the page's longest intent (INTENT_MAX in ui/xwapp.js): 2M UTF-16
 units of JSON, 6 MB at most as UTF-8.")
 
 (defconst xwapp--reasons
-  '((200 . "OK") (204 . "No Content") (302 . "Found") (400 . "Bad Request")
+  '((200 . "OK") (204 . "No Content") (302 . "Found") (304 . "Not Modified") (400 . "Bad Request")
     (404 . "Not Found") (410 . "Gone") (413 . "Content Too Large")
     (500 . "Internal Server Error")))
 
@@ -756,6 +756,8 @@ A request on it came through the proxy; one on `xwapp--server' did not.")
 :secret   the first segment of its URLs
 :page     the id of the page that said hello last, or nil
 :waiting  that page's `next', held, or nil
+:sending  that page's `next' while its answer is still going out, from
+          a thread (`xwapp--flush'), or nil
 :outbox   calls not yet sent to it, newest first
 :seen     non-nil when it last said you could be looking at it
 :asked    non-nil from `xwapp-browse' until a tab says hello: that tab
@@ -956,12 +958,14 @@ and a page open in a tab says to open it again."
 ;; pressed, the address as a QR code for the phone's camera.
 
 (defun xwapp--kit (app call)
-  "Send CALL, an alist, to the page kit of APP's page."
+  "Send CALL, an alist, to the page kit of APP's page.
+Scrubbed and size-capped as any script is (`xwapp--exec'): a call may
+carry text from elsewhere -- the clipboard's."
   (let ((json (json-encode call)))
     (if (xwapp--get app :page)
         (xwapp--call app json)
       (when-let* ((xw (xwapp-session app)))
-        (xwidget-webkit-execute-script xw (format "window.XW && XW.kit(%s);" json))))))
+        (xwapp--exec app xw (format "window.XW && XW.kit(%s);" json))))))
 
 (defun xwapp--greet (app)
   "Tell APP's page, which has just loaded, that your other devices can
@@ -979,11 +983,37 @@ a page of file: reaches them as files."
                         (host . ,(car xwapp-remote-hosts)))
                     (user-error `((xwapp . "qr") (error . ,(error-message-string err)))))))
 
+;; ⌘V in the xwidget.
+;;
+;; In WebKit under Emacs, ⌘V never becomes a paste: the paste is the
+;; menu's to send, and Emacs's menu does not send it to the web view, so
+;; the page sees the keydown and nothing after -- not for text either.
+;; So the kit, on that key in a field of the page's, asks Emacs for the
+;; clipboard (the intent xwapp-paste), and puts the text in at the caret
+;; as typing would; with none -- an image on the clipboard, say -- the
+;; page is told, and may take what else there is.  In a browser ⌘V is a
+;; paste of its own, from that device's clipboard: Emacs's is not asked.
+
+(defun xwapp--clipboard-text ()
+  "The text on the clipboard, or \"\" when it holds none.  A char no
+Unicode text has is U+FFFD, as in any script (`xwapp--scrub'): JSON
+would write a raw byte out as its octal escape, text of its own."
+  (let ((text (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING))))
+    (if (stringp text) (xwapp--scrub (substring-no-properties text)) "")))
+
+(defun xwapp--paste (app)
+  "Answer APP's page, which asks on ⌘V in a field of its own, with the
+clipboard's text -- \"\" when it holds none.  Only to the page in the
+xwidget: the kit asks there alone, on the key you pressed."
+  (unless (xwapp--get app :page)
+    (xwapp--kit app `((xwapp . "paste") (text . ,(xwapp--clipboard-text))))))
+
 (defun xwapp--dispatch (app intent)
   "Hand INTENT, from APP's page, to the kit when it is the kit's, else to APP."
   (pcase (alist-get 'op intent)
     ("xwapp-hello" (xwapp--greet app))
     ("xwapp-qr" (xwapp--show-qr app))
+    ("xwapp-paste" (xwapp--paste app))
     (_ (funcall (xwapp-handler app) intent))))
 
 ;; Over a restart
@@ -1203,22 +1233,66 @@ this machine, where any page in the browser could ask."
       (xwapp--intent app proc page body))
      ((and (equal method "GET") (string-prefix-p "." (or (car rest) "")))
       (xwapp--served-file app proc (cdr rest) (substring (car rest) 1)))
-     ((equal method "GET") (xwapp--file app proc rest))
+     ((equal method "GET") (xwapp--file app proc rest headers))
      (t (xwapp--respond proc 404)))))
 
-(defconst xwapp--send-aside (* 256 1024)
-  "Bytes past which a file an app serves is sent from a thread of its own.
-`process-send-string' returns only once the last byte is in the
-socket, and a phone on a slow link reads slowly: an 8 MB image to a
-reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
-waiting it out.  Sent from a thread, the key was taken in 4 ms.")
+;; A big answer goes from a thread.
+;;
+;; `process-send-string' returns only once the last byte is in the
+;; socket, and a phone on a slow link reads slowly: an 8 MB image to a
+;; reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
+;; waiting it out.  Sent from a thread, which waits on the socket with
+;; Emacs free, the key was taken in 4 ms.  So any answer past
+;; `xwapp--send-aside' goes from a thread of its own: an app's file, the
+;; page's own (the herd's app.js is past it), and a `next' with a herd
+;; in it.  Safe for the long-poll:
+;;
+;;   - In order.  Every request is a connection of its own, answered
+;;     once; the page asks its next `next' only once it has read the
+;;     last whole, so two answers to it are never sent at once.
+;;   - Not taken for a page gone.  The page cannot ask again while it
+;;     is still reading, so the ten seconds it has to (`xwapp--gone')
+;;     start once the answer is out, not when it starts going.
+;;   - Not forever.  A reader that stops reading for good -- the phone
+;;     slept mid-answer, and the proxy holds its side open -- would keep
+;;     the thread waiting until TCP gives up, minutes on, the page
+;;     counted as there.  After `xwapp--send-patience' its connection is
+;;     closed: the thread's send fails, and the page is gone unless it
+;;     asks again.
+;;   - A connection closed meanwhile, from either end, fails the send in
+;;     the thread, which is caught: the thread ends, and the page has its
+;;     ten seconds to ask again as after any answer.
+;;
+;; And safe for Emacs.  Its main thread waits in select() on the sockets
+;; of the processes it owns -- every connection here -- and a socket
+;; closed under it by another thread makes select fail, which Emacs
+;; takes for a bug and aborts on (wait_reading_process_output: EBADF).
+;; The thread used to close the connection once it had sent: Emacs died
+;; at once in a test (2026-10-31).  So the thread never closes one: it
+;; shuts its sending side (`process-send-eof'), the reader hangs up, and
+;; the main thread, told so (`xwapp--sentinel'), deletes the process.
+;; And while it waits on the socket the thread runs no timers, which it
+;; otherwise would -- any of Emacs's, measured 27 of 40 -- and one that
+;; closed a process would do the same: it binds the timer lists to nil,
+;; its own binding alone.  The connection left open past
+;; `xwapp--send-patience' is closed from the main thread.
 
-(defun xwapp--respond (proc code &optional type body headers aside)
+(defconst xwapp--send-aside (* 256 1024)
+  "Bytes past which an answer is sent from a thread of its own.")
+
+(defvar xwapp--send-patience 60
+  "Seconds an answer sent from a thread may take before its connection
+is closed: the reader has stopped reading.")
+
+(defun xwapp--respond (proc code &optional type body headers done)
   "Answer PROC with CODE, and BODY (bytes) of TYPE, then close it.
 HEADERS, an alist, go along; a Cache-Control among them replaces
 no-store.  An error with nothing to say says its name: answered empty,
-a browser takes it for a file to download.  ASIDE: a response past
-`xwapp--send-aside' goes from a thread of its own."
+a browser takes it for a file to download.  A 304 has no body, nor
+says one's length.  A response past `xwapp--send-aside' goes from a
+thread of its own.  DONE, a function, is called once the response is
+out, or has failed to go -- in the main thread, from a timer, for one
+sent from a thread."
   (when (and (>= code 400) (null type))
     (setq type "text/plain; charset=utf-8"
           body (alist-get code xwapp--reasons "")))
@@ -1226,20 +1300,52 @@ a browser takes it for a file to download.  ASIDE: a response past
          (concat (format "HTTP/1.1 %d %s\r\n" code (alist-get code xwapp--reasons ""))
                  (if type (format "Content-Type: %s\r\n" type) "")
                  (mapconcat (lambda (h) (format "%s: %s\r\n" (car h) (cdr h))) headers "")
-                 (format "Content-Length: %d\r\n" (length body))
+                 (if (= code 304) "" (format "Content-Length: %d\r\n" (length body)))
                  (if (assoc "Cache-Control" headers) "" "Cache-Control: no-store\r\n")
                  "Referrer-Policy: no-referrer\r\n"
                  "X-Content-Type-Options: nosniff\r\n"
                  "Connection: close\r\n\r\n"
-                 body)))
-    (if (and aside (> (length response) xwapp--send-aside) (fboundp 'make-thread))
-        (make-thread (lambda () (xwapp--send proc response)) "xwapp-send")
-      (xwapp--send proc response))))
+                 (if (= code 304) "" body))))
+    (if (and (> (length response) xwapp--send-aside) (fboundp 'make-thread))
+        (progn
+          (run-at-time xwapp--send-patience nil #'xwapp--close proc)
+          (make-thread (lambda ()
+                         (xwapp--send-from-thread proc response)
+                         ;; In the main thread: a thread sees none of its
+                         ;; bindings, nor touches what it waits on.
+                         (when done (run-at-time 0 nil #'xwapp--done done)))
+                       "xwapp-send"))
+      (xwapp--send proc response)
+      (xwapp--done done))))
 
 (defun xwapp--send (proc response)
-  "Send PROC RESPONSE whole, then close it."
+  "Send PROC RESPONSE whole, then close it.  In the main thread."
   (ignore-errors (process-send-string proc response))
   (ignore-errors (delete-process proc)))
+
+(defun xwapp--send-from-thread (proc response)
+  "Send PROC RESPONSE whole, from a thread of its own, then shut the
+sending side: the reader hangs up, and the main thread deletes PROC.
+See \"A big answer goes from a thread\" for why it closes nothing, and
+runs no timer while it waits."
+  (let ((timer-list nil)
+        (timer-idle-list nil))
+    (ignore-errors (process-send-string proc response)))
+  (ignore-errors (process-send-eof proc)))
+
+(defun xwapp--close (proc)
+  "Delete PROC, a connection, if it is still there: from the main thread
+alone, which closing a socket from another may abort."
+  (if (eq (current-thread) main-thread)
+      (ignore-errors (delete-process proc))
+    (run-at-time 0.1 nil #'xwapp--close proc)))
+
+(defun xwapp--done (done)
+  "Call DONE, if a function, saying what it signals rather than raising
+it: what it signals is no fault of the answer's."
+  (when done
+    (condition-case err (funcall done)
+      (error (message "xwapp: %s" (error-message-string err))))))
 
 (defun xwapp--type (file)
   "The Content-Type to serve FILE as, by its extension."
@@ -1261,8 +1367,43 @@ a browser takes it for a file to download.  ASIDE: a response past
     (insert-file-contents-literally file)
     (buffer-string)))
 
-(defun xwapp--file (app proc parts)
-  "Answer PROC with the file PARTS name: of APP's page, or of xwapp's kit."
+;; The page's own files are asked for again on every load -- a phone's
+;; tab coming back after Emacs let it go reloads -- and the herd's are
+;; some 475 KB, over the tailnet.  So each goes with a validator, its
+;; ETag, and `no-cache': the browser keeps it, and asks each load
+;; whether it is still the one, which a 304 answers with no body.  A
+;; ui/ file edited has another ETag, and loads at once.  The ETag is
+;; made of the file's path, size and time, as the file system has them
+;; for the file itself: in straight's build the file is a symlink into
+;; the repository, whose own time never changes.
+
+(defun xwapp--stamp (file)
+  "FILE's path, size and modification time, as one string, or nil:
+those of the file it is a symlink to, if it is one."
+  (let ((true (file-truename file)))
+    (when-let* ((attrs (file-attributes true)))
+      (format "%s\0%d\0%s" true (file-attribute-size attrs)
+              (format-time-string "%s%N" (file-attribute-modification-time attrs))))))
+
+(defun xwapp--etag (file)
+  "FILE's validator, from its path, size and modification time, or nil."
+  (when-let* ((stamp (xwapp--stamp file)))
+    (format "\"%s\"" (substring (secure-hash 'sha1 stamp) 0 20))))
+
+(defun xwapp--fresh-p (etag headers)
+  "Non-nil when HEADERS' If-None-Match names ETAG, or any (*)."
+  (when-let* ((etag)
+              (match (cdr (assoc "if-none-match" headers))))
+    (seq-some (lambda (tag)
+                (let ((tag (string-trim tag)))
+                  (or (equal tag "*")
+                      (equal (string-remove-prefix "W/" tag) etag))))
+              (split-string match ","))))
+
+(defun xwapp--file (app proc parts &optional headers)
+  "Answer PROC with the file PARTS name: of APP's page, or of xwapp's kit.
+A browser that has it already, as its If-None-Match among HEADERS says,
+is told so (304) rather than sent it again."
   (let* ((root (xwapp--root app))
          (file (expand-file-name (string-join parts "/") root)))
     (if (and parts
@@ -1271,7 +1412,12 @@ a browser takes it for a file to download.  ASIDE: a response past
                        (list (file-name-directory (xwapp-index app))
                              (expand-file-name "xwapp/ui/" root)))
              (file-regular-p file))
-        (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file))
+        (let* ((etag (xwapp--etag file))
+               (keep `(("Cache-Control" . "no-cache")
+                       ,@(when etag `(("ETag" . ,etag))))))
+          (if (xwapp--fresh-p etag headers)
+              (xwapp--respond proc 304 nil nil keep)
+            (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file) keep)))
       (xwapp--respond proc 404))))
 
 ;; Files an app serves besides its page: images an agent named, say, or
@@ -1398,8 +1544,7 @@ the set is :fresh."
                        (unless (plist-get spec :fresh)
                          '(("Cache-Control" . "private, max-age=604800, immutable")))
                        (when (plist-get spec :sandbox)
-                         `(("Content-Security-Policy" . ,xwapp-sandbox-policy))))
-                      t)
+                         `(("Content-Security-Policy" . ,xwapp-sandbox-policy)))))
     (xwapp--respond proc 404)))
 
 (defun xwapp-file-url (app name &optional set)
@@ -1454,18 +1599,63 @@ See \"In a web browser\" above."
         ((xwapp-reopen app) "free")
         (t "closed")))
 
-(defun xwapp--refuse (proc why)
-  "Answer PROC that its page is not the app's, and WHY."
-  (xwapp--respond proc 410 "application/json" (format "{\"why\":\"%s\"}" why)))
+;; A page that comes back where it is.
+;;
+;; A phone's tab asleep past `xwapp--gone-after' is let go, and wakes to
+;; a 410 free.  It used to load again, which costs the herd page some
+;; 475 KB over the tailnet, a white flash, and where it was scrolled to
+;; and what it had open.  A page that can (XW.bridge's `back') now says
+;; a soft hello where it is instead, and asks again for what it shows.
+;; Only while it is made of the files Emacs serves now: one loaded
+;; before a ui/ file changed -- Emacs restarted on new code, say -- loads
+;; again.  So Emacs names the files in a fingerprint, given in answer to
+;; the page's hello (the header Xwapp-Ui) and with a 410 free (its
+;; "ui"): the page comes back in place only when the two are one.
+
+(defconst xwapp--ui-max 200
+  "Most files `xwapp--ui' looks at: a page's directory and the kit's
+have a few dozen.")
+
+(defun xwapp--ui (app)
+  "What APP's page is made of, as a short fingerprint: each file of its
+directory and of the kit's, by path, size and time.  A page loaded
+before one of them changed is not made of these.  Nil when there are
+none, or more than `xwapp--ui-max' -- then it is not a page's directory."
+  (let ((stamps nil) (left xwapp--ui-max))
+    (cl-labels ((walk (dir)
+                  (dolist (file (ignore-errors
+                                  (directory-files dir t directory-files-no-dot-files-regexp t (1+ left))))
+                    (when (< (cl-decf left) 0) (throw 'many nil))
+                    (if (file-directory-p file)
+                        (walk file)
+                      (when-let* ((stamp (xwapp--stamp file))) (push stamp stamps))))))
+      (catch 'many
+        (dolist (dir (list (file-name-directory (xwapp-index app))
+                           (expand-file-name "xwapp/ui/" (xwapp--root app))))
+          (walk dir))
+        (and stamps
+             (substring (secure-hash 'sha1 (string-join (sort stamps #'string<) "\n")) 0 16))))))
+
+(defun xwapp--refuse (proc why &optional app)
+  "Answer PROC that its page is not the app's, and WHY.  A page APP has
+let go, and can open again (free), is told what APP's page is made of
+now, to come back where it is if it is made of that."
+  (xwapp--respond proc 410 "application/json"
+                  (json-encode `((why . ,why)
+                                 ,@(when-let* (((equal why "free"))
+                                               (app)
+                                               (ui (xwapp--ui app)))
+                                     `((ui . ,ui)))))))
 
 (defun xwapp--hello (app proc page soft)
   "PAGE has loaded in a browser tab: it is APP's page now.
 A SOFT hello is a page coming back on its own: it takes APP only when
-APP is free."
+APP is free.  It is told what it is made of (`xwapp--ui'), to know
+itself when told again."
   (let ((why (xwapp--why app))
         (asked (xwapp--get app :asked)))
     (if (and soft (not (equal why "free")))
-        (xwapp--refuse proc why)
+        (xwapp--refuse proc why app)
       (xwapp--put app :asked nil)
       (xwapp--let-go app)
       (xwapp--put app :page page)
@@ -1475,7 +1665,7 @@ APP is free."
       (when-let* ((buf (xwapp-buffer app)))
         (let ((kill-buffer-query-functions nil))
           (kill-buffer buf)))
-      (xwapp--respond proc 204)
+      (xwapp--respond proc 204 nil nil (when-let* ((ui (xwapp--ui app))) `(("Xwapp-Ui" . ,ui))))
       (xwapp--save)
       ;; Open nowhere until now, and not by Emacs: made ready as its
       ;; command would have.
@@ -1485,7 +1675,7 @@ APP is free."
 (defun xwapp--next (app proc page)
   "Hold PROC, PAGE's request for calls, until there are some."
   (if (not (xwapp--current-p app page))
-      (xwapp--refuse proc (xwapp--why app))
+      (xwapp--refuse proc (xwapp--why app) app)
     (xwapp--untimer app :gone)
     (when-let* ((old (xwapp--get app :waiting)))
       (xwapp--put app :waiting nil)
@@ -1514,10 +1704,22 @@ payload is dropped rather than queued."
     (let ((calls (reverse (xwapp--get app :outbox))))
       (xwapp--put app :waiting nil)
       (xwapp--put app :outbox nil)
+      (xwapp--put app :sending proc)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
       (xwapp--respond proc 200 "application/json"
                       (encode-coding-string (concat "[" (string-join calls ",") "]")
-                                            'utf-8)))))
+                                            'utf-8)
+                      nil
+                      (lambda () (xwapp--sent app proc))))))
+
+(defun xwapp--sent (app proc)
+  "PROC, the answer to APP's page's `next', is out, or failed to go: the
+page has `xwapp--gone-after' from now to ask again -- unless it has, or
+is APP's page no more."
+  (when (eq (xwapp--get app :sending) proc)
+    (xwapp--put app :sending nil)
+    (when (and (xwapp--get app :page) (not (xwapp--get app :waiting)))
+      (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone))))
 
 (defun xwapp--intent (app proc page body)
   "Take PAGE's intent BODY: xwapp's own now, the app's on the next turn."
@@ -1525,7 +1727,7 @@ payload is dropped rather than queued."
                   (json-parse-string (decode-coding-string body 'utf-8)
                                      :object-type 'alist :array-type 'list))))
     (cond
-     ((not (xwapp--current-p app page)) (xwapp--refuse proc (xwapp--why app)))
+     ((not (xwapp--current-p app page)) (xwapp--refuse proc (xwapp--why app) app))
      ((not (consp intent)) (xwapp--respond proc 400))
      (t
       (xwapp--respond proc 204)
@@ -1541,7 +1743,11 @@ opens there too."
     (xwapp--dispatch app intent)))
 
 (defun xwapp--sentinel (proc _event)
-  "A held `next' whose tab hung up: the page may be gone."
+  "A connection whose reader hung up: deleted, in the main thread, which
+waits on it -- one a thread sent a big answer on, say.  A held `next':
+the page may be gone."
+  (unless (or (process-live-p proc) (eq proc xwapp--server) (eq proc xwapp--unix-server))
+    (xwapp--close proc))
   (when-let* ((app (process-get proc 'xwapp-app)))
     (when (and (not (process-live-p proc))
                (eq proc (xwapp--get app :waiting)))
@@ -1557,15 +1763,24 @@ Only another page, in a tab or in Emacs, takes it from one that waits."
     (xwapp--untimer app key))
   (let ((proc (xwapp--get app :waiting)))
     ;; Before answering: the sentinel must not take the hang-up for a
-    ;; page that went.
-    (dolist (key '(:waiting :page :outbox :seen :restored))
+    ;; page that went.  An answer still going out to it goes on, to a
+    ;; page that is not the app's.
+    (dolist (key '(:waiting :page :outbox :seen :restored :sending))
       (xwapp--put app key nil))
     (when proc
       (xwapp--refuse proc "taken"))))
 
 (defun xwapp--gone (app)
   "APP's browser page has stopped asking: it was closed.  What Emacs
-made ready for a tab it opened is undone with it."
+made ready for a tab it opened is undone with it.  Not while an answer
+to it is still going out: it cannot ask again before it has that, and
+`xwapp--sent' gives it its time once it has."
+  (if (process-live-p (xwapp--get app :sending))
+      (xwapp--put app :gone nil)
+    (xwapp--gone-now app)))
+
+(defun xwapp--gone-now (app)
+  "APP's browser page was closed: see `xwapp--gone'."
   (xwapp--let-go app)
   (xwapp--put app :asked nil)
   (xwapp--save)
