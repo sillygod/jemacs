@@ -289,7 +289,17 @@
   //           before they changed loads again
   //   closed  none is, and Emacs cannot open the app again by itself
   // When Emacs does not answer at all -- restarting -- the page asks
-  // again, less often each time, until it does.
+  // again, less often each time, until it does; "not answering" is said
+  // once a second try has failed too, not on the first.
+  //
+  // A phone that wakes: what the page had under way when it slept --
+  // its next, held -- died with the connection, and fails, or hangs,
+  // once it wakes.  So when the page comes back -- shown again after a
+  // while hidden, from the back-forward cache, the network back -- a try
+  // that waits runs at once, and a next asked before it slept is asked
+  // again at once, the old one given up: one is ever asking.  A wake is
+  // no outage: the failure of what slept is said nothing of, and a try
+  // that waits for a later one is not held back by the page's backoff.
 
   // Served by Emacs: here, or to another device through a proxy (https).
   const BROWSER = location.protocol !== "file:";
@@ -297,6 +307,8 @@
   const ELSEWHERE = BROWSER && !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
   const ROOT = "/" + location.pathname.split("/")[1] + "/";
   const SOFT = "xwapp-soft"; // sessionStorage: this load is the page coming back
+  // Hidden this long, the page may have slept: what it had asking, asks again.
+  const WAKE_AWAY = 1000;
 
   const SAY = {
     taken: "This page is open elsewhere now. Reload to use it here.",
@@ -340,17 +352,21 @@
     let soft = comingBack();
     const outbox = [];
     let hello = false, greeting = false, sending = false, polling = false, over = false;
-    let retry = null, delay = 0;
+    let retry = null, delay = 0, failed = 0;
+    // The next asking now, as its AbortController, and since when; and
+    // since when the page has been hidden, if it is.
+    let poll = null, polledAt = 0, hiddenAt = 0;
     // What the page is made of, as Emacs said in answer to its first
     // hello; and whether the hello under way is the page coming back.
     let ui = null, returning = false;
 
-    function ask(path, body) {
+    function ask(path, body, signal) {
       const opts = body === undefined ? {} : {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       };
+      if (signal) opts.signal = signal;
       const also = path === "hello" && soft ? "&soft=1" : "";
       return fetch(ROOT + path + "?page=" + page + also, opts).then((r) => {
         if (r.ok) return r;
@@ -387,7 +403,8 @@
       } else if (e.status === 404) {
         stop(SAY.unknown);
       } else {
-        notice(SAY.waiting);
+        failed++;
+        if (failed > 1) notice(SAY.waiting);
         delay = Math.min(10000, delay * 2 || 1000);
         retry = setTimeout(() => {
           retry = null;
@@ -396,10 +413,39 @@
       }
     }
     function answered() {
+      failed = 0;
       if (!delay) return;
       delay = 0;
       notice(null);
     }
+    // The page is back -- shown again, restored, online.  STALE: the next
+    // asking now was asked before it slept, and is asked again.
+    function wake(stale) {
+      if (over) return;
+      if (stale && poll) {
+        const old = poll;
+        poll = null;
+        polling = false;
+        old.abort();
+      }
+      if (retry) {
+        clearTimeout(retry);
+        retry = null;
+        delay = 0;
+      }
+      connect();
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        return;
+      }
+      const away = hiddenAt;
+      hiddenAt = 0;
+      wake(!!away && Date.now() - away >= WAKE_AWAY && polledAt <= away);
+    });
+    window.addEventListener("pageshow", (e) => { if (e.persisted) wake(true); });
+    window.addEventListener("online", () => wake(true));
     function connect() {
       if (hello) {
         next();
@@ -490,15 +536,27 @@
       }
     }
     // A chain of promises, no timer: a background tab throttles timers.
+    // One that was given up for another (wake) is done with: its calls,
+    // if they came after all, run -- Emacs sent them before it had the
+    // other -- and nothing else.
     function next() {
       if (over || polling || retry) return;
       polling = true;
-      ask("next").then((r) => r.json()).then((calls) => {
+      const mine = (poll = new AbortController());
+      polledAt = Date.now();
+      ask("next", undefined, mine.signal).then((r) => r.json()).then((calls) => {
+        if (mine !== poll) {
+          calls.forEach(run);
+          return;
+        }
+        poll = null;
         polling = false;
         answered();
         calls.forEach(run);
         next();
       }, (e) => {
+        if (mine !== poll) return;
+        poll = null;
         polling = false;
         trouble(e);
       });

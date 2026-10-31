@@ -87,6 +87,24 @@ another site's page, gets nothing.
   hello, =next=, intents --- is never kept (=no-store=).  (WebKit asks
   for the page itself whole on a reload, never with its ETag: measured,
   2026-10-31; its 2--4 KB.)
+- *Gzip'd,* to a browser that takes it (=Accept-Encoding=), with =Vary:
+  Accept-Encoding=: a file of text of 1 KB or more --- the herd's
+  app.js 314 KB → 88 KB.  The gzip'd bytes are other bytes, so they have
+  an ETag of their own, the file's with =-gz=, strong: a browser is
+  answered 304 for the one it has.  Each version of a file is gzip'd
+  once, by =gzip= in a process of its own --- Emacs has zlib to inflate,
+  not to deflate --- and kept by its ETag, 4 MB of them at most
+  (=xwapp--gzip-keep=), the least lately used going first.  On app.js
+  (2026-10-31): =call-process= 8.4 ms, Emacs blocked throughout;
+  =make-process= 12.8 ms to the answer, at most 24.8 in 20, Emacs busy
+  1.4 ms of them --- the request waits, Emacs does not.  A gzip that
+  fails or takes past 3 s (=xwapp--gzip-wait=): the file goes plain.
+  =(setq xwapp--gzip-program nil)= turns it off.
+- *What changes goes plain.*  A =next= mixes what Emacs keeps secret ---
+  the page's address, in its QR code --- with text others write (an
+  agent's, a pull request's, a task's): compressed, its length could
+  tell a watcher on the path the secret, a guess at a time (BREACH).
+  And it is small: a wake's answers are 15 KB together.
 
 ** A big answer goes from a thread
 
@@ -227,6 +245,18 @@ loopback, so the bytes are what counts):
 | pr-view, before (a reload)     | 268,432 | 7          | 1756 ms |
 | pr-view, a reload, with 304s   | 3,786   | 1 (6: 304) | 1147 ms |
 
+And over a phone's slow link, 1.6 Mbit/s down and 150 ms there and
+back (=e2e/link.js=), before the files went gzip'd and the page woke at
+once, and after (2026-10-31):
+
+| The herd page                    | Before                    | After             |
+|----------------------------------+---------------------------+-------------------|
+| first load                       | 496,835 B, 3.9 s          | 149,993 B, 2.1 s  |
+| wake, its next hanging, dead     | not usable in 15 s        | 15,225 B, 0.87 s  |
+| wake, its next failing first     | 15,265 B, 1.9 s, "not     | 15,227 B, 0.86 s, |
+|                                  | answering" shown          | nothing said      |
+| wake, a ui/ file changed         | 333,255 B, 3.1 s          | 104,374 B, 1.6 s  |
+
 - Only while it is made of the files Emacs serves now: one loaded
   before a ui/ file changed --- Emacs restarted on new code, say ---
   loads again.  Emacs names its files and the kit's, each one's path,
@@ -235,6 +265,16 @@ loopback, so the bytes are what counts):
   page comes back in place only when the two are one.
 - Whether you look is said again, and BACK's intents go before those
   that waited; an intent under way when it was let go goes again.
+- *At once.*  What the page had asking when the phone slept --- its
+  =next=, held --- hangs, a dead connection, or fails once it wakes.  So
+  when the page is shown again after a second hidden, comes back from
+  the back-forward cache, or is back online, a try that waits for the
+  page's backoff runs at once, and a =next= asked before it hid is given
+  up and asked again --- one =next= asking at most.  "Emacs is not
+  answering" is said once a second try in a row has failed, never at
+  the first: what failed with the sleep is no outage.  Emacs truly gone,
+  the page still backs off, 1 s, 2 s, 4 s, to 10 s; woken meanwhile, it
+  tries once at once, then backs off again.
 - Taken by another device meanwhile, it stops, as any page does; a
   page with no BACK loads again, as before.  An app without
 =:reopen= keeps no address: after a restart its tab says to open it
@@ -580,6 +620,12 @@ it would on the phone.
 |                | taken meanwhile it stops, a ui/ file changed it loads again;    |
 |                | pr-view loads again, its files 304; each wake's bytes and time  |
 |                | (MEASURE lines; =LOCAL= another checkout's, to compare)         |
+| =wake-retry=   | a phone that wakes, its next hanging or failing first: asked    |
+|                | again at once, nothing said, one next at most; Emacs gone, it   |
+|                | backs off and says so after a second try; taken, it stops       |
+| =link=         | the herd page over a slow link (1.6 Mbit/s, 150 ms): first      |
+|                | load, wakes, a ui/ file changed, measured; its files gzip'd,    |
+|                | on the phone and at the desk; its nexts plain                   |
 | =jwebkit=      | jwebkit's scripts, run: a hint onto a field says so, ⌘V's text  |
 |                | in at the caret, Esc lets the field go                          |
 

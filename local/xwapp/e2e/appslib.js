@@ -26,7 +26,10 @@ async function until(pred, ms = 8000) {
 const log = () => { try { return fs.readFileSync(path.join(E, "log.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse).map((e) => e.what); } catch (_) { return []; } };
 
 // OPTS.el: the Emacs to start, apps.el by default; OPTS.desk: this
-// machine's browser reaches Emacs's loopback port straight, as it does.
+// machine's browser reaches Emacs's loopback port straight, as it does;
+// OPTS.link, {kbps, rtt}: the phone's link, slow -- each way half of RTT
+// ms, and the answers' bytes through KBPS kilobits a second, one after
+// another.
 async function start(opts) {
   opts = opts || {};
   const run = E = fs.mkdtempSync(path.join(os.tmpdir(), "xwapp-e2e-"));
@@ -52,26 +55,65 @@ async function start(opts) {
   const away = [];
   // The phone asleep (sleep()): what it had under way is cut off, and
   // nothing it asks reaches Emacs until it wakes (wake()), when what it
-  // asked meanwhile goes on.  Each answer that came through is noted in
-  // TRAFFIC: when, what, its code, the bytes of its body, and the ETag
-  // the browser asked with, if it had the file.
-  let asleep = false;
-  const held = [], open = new Set(), traffic = [];
+  // asked meanwhile goes on.  Or, as a phone does, asleep with what it
+  // had under way hanging (nap()): no answer reaches it, and it learns
+  // only once it wakes that those connections are dead (wake(), which
+  // says how).  Each answer that came through is noted in TRAFFIC: when,
+  // what, its code, the bytes of its body, how they were encoded, and the
+  // ETag the browser asked with, if it had the file.  down(true): Emacs
+  // is not there -- every request answered 502, as serve does then.
+  let asleep = false, gone = false;
+  const held = [], open = new Set(), dozing = new Set(), dead = new Set(), traffic = [];
+  const link = opts.link;
+  let linkFree = 0;
+  const half = () => (link ? link.rtt / 2 : 0);
+  // Down the link: each chunk once the link is free for it, and the end
+  // once the last is written -- Node may say the end before then.
+  const drip = (r, res) => {
+    let writing = 0, ended = false;
+    const finish = () => { if (ended && !writing && !res.destroyed) res.end(); };
+    r.on("data", (c) => {
+      if (res.destroyed) return;
+      r.pause();
+      writing++;
+      const now = Date.now();
+      linkFree = Math.max(now, linkFree) + (c.length * 8) / link.kbps;
+      setTimeout(() => {
+        if (!res.destroyed) res.write(c);
+        writing--;
+        r.resume();
+        finish();
+      }, linkFree - now);
+    });
+    const done = () => { ended = true; finish(); };
+    // One with no body may have ended already, while it waited.
+    if (r.readableEnded) done();
+    else r.on("end", done);
+  };
   const forward = (req, res, u) => {
     const headers = Object.assign({}, req.headers, { host: "localhost", "tailscale-user-login": "me@example.com" });
     delete headers["proxy-connection"];
     const seen = { at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
-      status: 0, bytes: 0, asked: req.headers["if-none-match"] || "" };
+      status: 0, bytes: 0, enc: "", asked: req.headers["if-none-match"] || "" };
     traffic.push(seen);
     open.add(res);
     res.on("close", () => open.delete(res));
     res.on("error", () => {});
     const up = http.request({ socketPath: sock, path: u.pathname + u.search, method: req.method, headers }, (r) => {
       seen.status = r.statusCode;
+      seen.enc = r.headers["content-encoding"] || "";
       r.on("data", (c) => { seen.bytes += c.length; });
-      if (res.destroyed) return r.resume();
-      res.writeHead(r.statusCode, r.headers);
-      r.pipe(res);
+      // Asleep: the answer never reaches the phone.
+      if (res.destroyed || dozing.has(res) || dead.has(res)) return r.resume();
+      const answer = () => {
+        if (res.destroyed) return r.resume();
+        res.writeHead(r.statusCode, r.headers);
+        if (link) { drip(r, res); r.resume(); }
+        else r.pipe(res);
+      };
+      // Held until the link has it: the counter above would let it flow.
+      if (link) { r.pause(); setTimeout(answer, half()); }
+      else answer();
     });
     up.on("error", () => { if (!res.destroyed && !res.headersSent) { res.writeHead(502); res.end(); } });
     req.pipe(up);
@@ -79,8 +121,18 @@ async function start(opts) {
   const proxy = http.createServer((req, res) => {
     const u = new URL(req.url);
     if (u.host !== "box.tail0.ts.net") { away.push(req.url); res.writeHead(200, { "content-type": "text/plain" }); return res.end("away"); }
-    if (asleep) held.push(() => forward(req, res, u));
-    else forward(req, res, u);
+    const go = () => {
+      if (gone) {
+        traffic.push({ at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
+          status: 502, bytes: 0, enc: "", asked: "" });
+        res.writeHead(502, { "content-type": "text/plain" });
+        return res.end("Bad Gateway");
+      }
+      if (asleep) held.push(() => forward(req, res, u));
+      else forward(req, res, u);
+    };
+    if (link) setTimeout(go, half());
+    else go();
   });
   await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
   // No browser -- not installed, say -- and nothing is left running.
@@ -100,7 +152,59 @@ async function start(opts) {
   };
   return { browser, urls, away, stop, dir: run, port, secretOf: (app) => urls[app].split("/")[3], traffic,
     sleep: () => { asleep = true; open.forEach((res) => res.destroy()); },
-    wake: () => { asleep = false; held.splice(0).forEach((go) => go()); } };
+    nap: () => { asleep = true; open.forEach((res) => dozing.add(res)); },
+    // What slept with the phone, as it wakes: "cut", its connections
+    // closed -- WebKit asks a GET again by itself then, unseen by the
+    // page; "fail", each answered 502, which the page sees fail; "hang",
+    // left as a dead connection is, no answer ever coming.
+    wake: (stale) => {
+      asleep = false;
+      dozing.forEach((res) => {
+        if (res.destroyed) return;
+        if (stale === "hang") return dead.add(res);
+        if (stale === "fail" && !res.headersSent) {
+          res.writeHead(502, { "content-type": "text/plain" });
+          return res.end("Bad Gateway");
+        }
+        res.destroy();
+      });
+      dozing.clear();
+      held.splice(0).forEach((go) => go());
+    },
+    down: (on) => { gone = on; },
+    cut: () => open.forEach((res) => res.destroy()) };
+}
+
+// What a test needs to see of a phone's page, before it loads: its
+// visibility, which the test sets (__vis("hidden"), __vis("visible"),
+// as a phone locked and unlocked); every notice the kit showed, in
+// __said; and its nexts, in __nexts -- how many ask at once now, the
+// most ever, and when each was asked.
+async function phoneEyes(ctx) {
+  await ctx.addInitScript(() => {
+    let vis = "visible";
+    Object.defineProperty(document, "visibilityState", { get: () => vis, configurable: true });
+    Object.defineProperty(document, "hidden", { get: () => vis === "hidden", configurable: true });
+    window.__vis = (v) => { vis = v; document.dispatchEvent(new Event("visibilitychange")); };
+    window.__said = [];
+    new MutationObserver(() => {
+      const n = document.getElementById("xw-notice");
+      if (n && n.textContent && __said[__said.length - 1] !== n.textContent) __said.push(n.textContent);
+    }).observe(document, { subtree: true, childList: true, characterData: true });
+    const real = window.fetch.bind(window);
+    window.__nexts = { now: 0, most: 0, at: [] };
+    window.fetch = (url, opts) => {
+      if (!/\/next\?/.test(String(url))) return real(url, opts);
+      const n = window.__nexts;
+      n.now++;
+      n.most = Math.max(n.most, n.now);
+      n.at.push(Date.now());
+      let done = false;
+      const end = () => { if (!done) { done = true; n.now--; } };
+      if (opts && opts.signal) opts.signal.addEventListener("abort", end);
+      return real(url, opts).then((r) => { r.clone().text().then(end, end); return r; }, (e) => { end(); throw e; });
+    };
+  });
 }
 
 function watch(page, errors) {
@@ -162,4 +266,4 @@ async function sideways(page) {
   });
 }
 
-module.exports = { start, watch, measure, sideways, until, sleep, log, BOX, PHONE };
+module.exports = { start, watch, phoneEyes, measure, sideways, until, sleep, log, BOX, PHONE };

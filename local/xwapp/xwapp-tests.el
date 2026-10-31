@@ -1494,6 +1494,180 @@ the file itself.  What changes -- the page's calls -- is still never kept."
       (should (equal (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "next?page=p1")) "Cache-Control")
                      "no-store")))))
 
+;; Gzip'd files.  The text is made up.
+
+(defun xwapp-test--body (raw)
+  "The body of RAW, a whole response, as bytes."
+  (substring raw (+ 4 (string-search "\r\n\r\n" raw))))
+
+(defun xwapp-test--gunzip (bytes)
+  "BYTES gunzip'd."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert bytes)
+    (zlib-decompress-region (point-min) (point-max))
+    (buffer-string)))
+
+(defconst xwapp-test--js
+  (apply #'concat (make-list 300 "function render(herd) { return herd.agents.map(row).join(''); }\n"))
+  "Some 20 KB of a page's script, made up.")
+
+(defmacro xwapp-test--gzipping (&rest body)
+  "BODY in `xwapp-test--with-browser', its app.js `xwapp-test--js', the
+gzip'd files kept afresh; `gzips' counts the gzip processes started."
+  (declare (indent 0))
+  `(xwapp-test--with-browser
+     (let ((xwapp--gzipped (make-hash-table :test 'equal))
+           (xwapp--gzipped-order nil)
+           (xwapp--gzipping (make-hash-table :test 'equal))
+           (gzips 0)
+           (start (symbol-function 'xwapp--gzip-start)))
+       (ignore gzips)
+       (with-temp-file (expand-file-name "app/ui/app.js" root) (insert xwapp-test--js))
+       (cl-letf (((symbol-function 'xwapp--gzip-start)
+                  (lambda (&rest args) (cl-incf gzips) (apply start args))))
+         ,@body))))
+
+(ert-deftest xwapp-test-browser-files-go-gzipd ()
+  "A file of the page's, text of 1 KB or more, goes gzip'd to a browser
+whose Accept-Encoding takes gzip -- its bytes the file's, inflated --
+and plain to one that does not; either way Vary: Accept-Encoding.  The
+kit's too.  A file under 1 KB, or one not text, goes plain, with no Vary."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--gzipping
+    (let ((path (xwapp-test--at app "app/ui/app.js")))
+      (dolist (accept '("gzip, deflate" "gzip" "deflate, gzip;q=0.5" "*" "br, *;q=0.1" "x-gzip"))
+        (let ((raw (xwapp-test--raw path `(("Accept-Encoding" . ,accept)))))
+          (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+          (should (equal (xwapp-test--header raw "Content-Encoding") "gzip"))
+          (should (equal (xwapp-test--header raw "Vary") "Accept-Encoding"))
+          (should (< (length (xwapp-test--body raw)) (/ (length xwapp-test--js) 4)))
+          (should (equal (string-to-number (xwapp-test--header raw "Content-Length"))
+                         (length (xwapp-test--body raw))))
+          (should (equal (xwapp-test--gunzip (xwapp-test--body raw)) xwapp-test--js))))
+      (dolist (accept '(nil "identity" "br" "gzip;q=0" "*;q=0" "deflate, gzip;q=0, *"))
+        (let ((raw (xwapp-test--raw path (and accept `(("Accept-Encoding" . ,accept))))))
+          (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+          (should-not (xwapp-test--header raw "Content-Encoding"))
+          (should (equal (xwapp-test--header raw "Vary") "Accept-Encoding"))
+          (should (equal (xwapp-test--body raw) xwapp-test--js)))))
+    ;; The kit's.
+    (with-temp-file (expand-file-name "xwapp/ui/xwapp.js" root) (insert xwapp-test--js))
+    (should (equal (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "xwapp/ui/xwapp.js")
+                                                        '(("Accept-Encoding" . "gzip")))
+                                       "Content-Encoding")
+                   "gzip"))
+    ;; Small, or not text: plain, and no Vary.
+    (with-temp-file (expand-file-name "app/ui/small.css" root) (insert (make-string 1023 ?x)))
+    (with-temp-file (expand-file-name "app/ui/pic.png" root) (insert (make-string 4000 ?x)))
+    (dolist (name '("small.css" "pic.png"))
+      (let ((raw (xwapp-test--raw (xwapp-test--at app (concat "app/ui/" name)) '(("Accept-Encoding" . "gzip")))))
+        (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+        (should-not (xwapp-test--header raw "Content-Encoding"))
+        (should-not (xwapp-test--header raw "Vary"))))
+    ;; What changes, never.
+    (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
+    (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil '(("Accept-Encoding" . "gzip")))))
+      (xwapp-test--turn)
+      (xwapp-js app "render" xwapp-test--js)
+      (should (equal (car (xwapp-test--answer next)) 200)))
+    (let ((xwapp--hold 0.1))
+      (should-not (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "next?page=p1") '(("Accept-Encoding" . "gzip")))
+                                      "Content-Encoding")))))
+
+(ert-deftest xwapp-test-browser-gzipd-files-have-their-own-etag ()
+  "The gzip'd bytes and the plain ones are other bytes, so each has an
+ETag of its own, strong: a browser that has one is answered 304 for it,
+and sent the other whole when it now takes the other.  Edited, the file
+has two new ones."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--gzipping
+    (let* ((path (xwapp-test--at app "app/ui/app.js"))
+           (gz '(("Accept-Encoding" . "gzip, deflate")))
+           (zipped (xwapp-test--header (xwapp-test--raw path gz) "ETag"))
+           (plain (xwapp-test--header (xwapp-test--raw path) "ETag")))
+      (should (string-match-p "\\`\"[0-9a-f]\\{20\\}\"\\'" plain))
+      (should (equal zipped (concat (substring plain 0 -1) "-gz\"")))
+      (should-not (string-prefix-p "W/" zipped))
+      ;; Each answered 304 for its own, the other's no match.
+      (pcase-dolist (`(,accept ,has ,code)
+                     `((,gz ,zipped 304) (nil ,plain 304) (,gz ,(concat "W/" zipped) 304)
+                       (,gz ,plain 200) (nil ,zipped 200)))
+        (let ((raw (xwapp-test--raw path (cons (cons "If-None-Match" has) accept))))
+          (should (string-prefix-p (format "HTTP/1.1 %d" code) raw))
+          (when (= code 304)
+            (should (equal (xwapp-test--header raw "ETag") (string-remove-prefix "W/" has)))
+            (should (equal (xwapp-test--header raw "Vary") "Accept-Encoding"))
+            (should-not (xwapp-test--header raw "Content-Encoding"))
+            (should (string-suffix-p "\r\n\r\n" raw)))))
+      ;; Edited: both anew.
+      (xwapp-test--touch (expand-file-name "app/ui/app.js" root) (concat xwapp-test--js "// more\n") 5)
+      (let ((raw (xwapp-test--raw path (cons (cons "If-None-Match" zipped) gz))))
+        (should (string-prefix-p "HTTP/1.1 200" raw))
+        (should-not (member (xwapp-test--header raw "ETag") (list zipped plain)))
+        (should (string-suffix-p "// more\n" (xwapp-test--gunzip (xwapp-test--body raw))))))))
+
+(ert-deftest xwapp-test-gzip-once-per-version-kept-within-bounds ()
+  "A file is gzip'd once per version -- not per request, nor for each of
+the requests that came while it was -- and what is kept stays within
+`xwapp--gzip-keep', the least lately used going first."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--gzipping
+    (let ((path (xwapp-test--at app "app/ui/app.js"))
+          (gz '(("Accept-Encoding" . "gzip"))))
+      ;; Three at once, then three more: one gzip.
+      (let ((asked (list (xwapp-test--ask "GET" path nil gz) (xwapp-test--ask "GET" path nil gz)
+                         (xwapp-test--ask "GET" path nil gz))))
+        (dolist (cell asked) (should (equal (car (xwapp-test--answer cell)) 200))))
+      (dotimes (_ 3) (xwapp-test--raw path gz))
+      (should (= gzips 1))
+      (should (= (hash-table-count xwapp--gzipped) 1))
+      ;; Other files, and a bound that holds two of them.
+      (let* ((one (length (gethash (car xwapp--gzipped-order) xwapp--gzipped)))
+             (xwapp--gzip-keep (+ (* 2 one) (/ one 2))))
+        (dolist (name '("a.js" "b.js" "c.js"))
+          (with-temp-file (expand-file-name (concat "app/ui/" name) root)
+            (insert xwapp-test--js "// " name "\n"))
+          (xwapp-test--raw (xwapp-test--at app (concat "app/ui/" name)) gz))
+        (should (= gzips 4))
+        (should (= (hash-table-count xwapp--gzipped) 2))
+        (should (<= (apply #'+ (mapcar (lambda (k) (length (gethash k xwapp--gzipped))) xwapp--gzipped-order))
+                    xwapp--gzip-keep))
+        ;; app.js went first: asked again, gzip'd again; c.js, kept, not.
+        (xwapp-test--raw path gz)
+        (should (= gzips 5))
+        (xwapp-test--raw (xwapp-test--at app "app/ui/c.js") gz)
+        (should (= gzips 5))))))
+
+(ert-deftest xwapp-test-gzip-that-fails-sends-plain ()
+  "No gzip, or one that fails or hangs: the file goes plain, under its
+own ETag, and nothing is kept."
+  (skip-unless (executable-find "sleep"))
+  (xwapp-test--gzipping
+    (let ((path (xwapp-test--at app "app/ui/app.js"))
+          (gz '(("Accept-Encoding" . "gzip"))))
+      (dolist (how '("/nonexistent/gzip" "false"))
+        (let* ((xwapp--gzip-program how)
+               (raw (xwapp-test--raw path gz)))
+          (should (string-prefix-p "HTTP/1.1 200" raw))
+          (should-not (xwapp-test--header raw "Content-Encoding"))
+          (should-not (string-suffix-p "-gz\"" (xwapp-test--header raw "ETag")))
+          (should (equal (xwapp-test--body raw) xwapp-test--js))))
+      ;; One that hangs: plain after `xwapp--gzip-wait'.
+      (let ((sleeper (expand-file-name "slow-gzip" root)))
+        (with-temp-file sleeper (insert "#!/bin/sh\nexec sleep 30\n"))
+        (set-file-modes sleeper #o755)
+        (let* ((xwapp--gzip-program sleeper)
+               (xwapp--gzip-wait 0.3)
+               (raw (xwapp-test--raw path gz)))
+          (should (string-prefix-p "HTTP/1.1 200" raw))
+          (should (equal (xwapp-test--body raw) xwapp-test--js))))
+      (should (= (hash-table-count xwapp--gzipped) 0))
+      (should-not (seq-some (lambda (p) (string-prefix-p "xwapp-gzip" (process-name p))) (process-list)))
+      ;; Off: plain, and no Vary.
+      (let ((xwapp--gzip-program nil))
+        (should-not (xwapp-test--header (xwapp-test--raw path gz) "Vary"))))))
+
 (ert-deftest xwapp-test-browser-a-free-page-is-told-what-it-is-made-of ()
   "A page's hello is answered with what it is made of -- its directory's
 files and the kit's -- and a page let go that can come back (free) is

@@ -1400,10 +1400,161 @@ those of the file it is a symlink to, if it is one."
                       (equal (string-remove-prefix "W/" tag) etag))))
               (split-string match ","))))
 
+;; The page's own files go gzip'd.
+;;
+;; Text compresses some fourfold -- the herd's app.js from 314 KB to 88
+;; KB -- and the phone's link is the slow part.  So a file of the page's
+;; or the kit's, text of 1 KB or more, goes gzip'd to a browser that
+;; takes it (Accept-Encoding), with Vary: Accept-Encoding.
+;;
+;; - Its own ETag.  A strong ETag says "these bytes", and a gzip'd body
+;;   is other bytes than the file's: the two must not share one, or a
+;;   cache could take one for the other.  So the gzip'd one is the
+;;   file's with -gz in it, strong too -- exact, so a 304 can be: the
+;;   browser asks with the ETag of what it has, and is told 304 when that
+;;   is what it would be sent now.  (A weak ETag shared by both would do,
+;;   but says less than is so.)
+;; - Once per version of a file, not per request: the gzip'd bytes are
+;;   kept by the file's ETag, `xwapp--gzip-keep' bytes of them at most,
+;;   the least lately used going first.
+;; - Off the main thread.  Emacs has zlib to inflate, not to deflate, so
+;;   it is gzip, as a process of its own: the request waits for it,
+;;   Emacs does not.  Measured on app.js (2026-10-31, an M-series Mac):
+;;   `call-process' 8.4 ms, Emacs blocked throughout; `make-process' 12.8
+;;   ms to the answer (at most 24.8 in 20), Emacs busy 1.4 ms of them.
+;;   gzip -6: -9 saves 0.4% more for more time.  If gzip fails, or takes
+;;   past `xwapp--gzip-wait', the file goes plain, under its own ETag.
+;; - Not what changes.  A `next' mixes what Emacs keeps secret -- the
+;;   page's own address, in its QR code -- with text others write (an
+;;   agent's, a pull request's, a task's): compressed, its length could
+;;   tell a watcher on the path what the secret is, a guess at a time
+;;   (BREACH).  And it is small: a wake's answers are 15 KB together.
+;;   So it goes plain.
+
+(defvar xwapp--gzip-program "gzip"
+  "The gzip that compresses the page's files, or nil to send them plain.")
+
+(defconst xwapp--gzip-min 1024
+  "Bytes below which a file goes plain: gzip would gain little.")
+
+(defvar xwapp--gzip-keep (* 4 1024 1024)
+  "Bytes of gzip'd files kept, at most.  All the pages' files, gzip'd,
+are some 300 KB: this holds a dozen versions of them.")
+
+(defvar xwapp--gzip-wait 3
+  "Seconds a file may take to gzip before it goes plain.")
+
+(defvar xwapp--gzipped (make-hash-table :test 'equal)
+  "A file's ETag -> its gzip'd bytes.")
+
+(defvar xwapp--gzipped-order nil
+  "The ETags in `xwapp--gzipped', the most lately used first.")
+
+(defvar xwapp--gzipping (make-hash-table :test 'equal)
+  "A file's ETag -> the functions waiting for it to be gzip'd.")
+
+(defun xwapp--gzip-type-p (type size)
+  "Non-nil when a file of TYPE and SIZE goes gzip'd to who takes it."
+  (and xwapp--gzip-program
+       (>= size xwapp--gzip-min)
+       (string-match-p "\\`\\(?:text/\\|image/svg\\+xml\\)" type)))
+
+(defun xwapp--takes-gzip-p (headers)
+  "Non-nil when HEADERS' Accept-Encoding takes gzip: named, or *, and
+not with q=0."
+  (when-let* ((accept (cdr (assoc "accept-encoding" headers))))
+    (let (gzip any)
+      (dolist (part (split-string accept "," t "[ \t]+"))
+        (let* ((bits (split-string part ";" t "[ \t]+"))
+               (q (if-let* ((p (seq-find (lambda (b) (string-prefix-p "q=" b)) (cdr bits))))
+                      (string-to-number (substring p 2))
+                    1)))
+          (pcase (downcase (car bits))
+            ((or "gzip" "x-gzip") (setq gzip q))
+            ("*" (setq any q)))))
+      (> (or gzip any 0) 0))))
+
+(defun xwapp--gz-etag (etag)
+  "The ETag of a file's gzip'd bytes, the file's being ETAG."
+  (concat (substring etag 0 -1) "-gz\""))
+
+(defun xwapp--gzip-kept (etag)
+  "The gzip'd bytes kept for the file of ETAG, or nil; now the latest used."
+  (when-let* ((bytes (gethash etag xwapp--gzipped)))
+    (setq xwapp--gzipped-order (cons etag (delete etag xwapp--gzipped-order)))
+    bytes))
+
+(defun xwapp--gzip-keep (etag bytes)
+  "Keep BYTES as the gzip'd file of ETAG, letting the least lately used
+go past `xwapp--gzip-keep'."
+  (puthash etag bytes xwapp--gzipped)
+  (setq xwapp--gzipped-order (cons etag (delete etag xwapp--gzipped-order)))
+  (let ((total 0) (kept nil))
+    (dolist (tag xwapp--gzipped-order)
+      (let ((size (length (gethash tag xwapp--gzipped))))
+        (if (and kept (> (+ total size) xwapp--gzip-keep))
+            (remhash tag xwapp--gzipped)
+          (setq total (+ total size))
+          (push tag kept))))
+    (setq xwapp--gzipped-order (nreverse kept))))
+
+(defun xwapp--gzip (file etag then)
+  "Call THEN with FILE gzip'd, its ETag being ETAG -- or with nil, when
+it could not be.  At once when kept; else when gzip, a process of its
+own, is done: one for all who ask for it meanwhile."
+  (if-let* ((bytes (xwapp--gzip-kept etag)))
+      (funcall then bytes)
+    (let ((waiting (gethash etag xwapp--gzipping)))
+      (puthash etag (cons then waiting) xwapp--gzipping)
+      (unless waiting
+        (xwapp--gzip-start file etag)))))
+
+(defun xwapp--gzip-start (file etag)
+  "Gzip FILE, of ETAG, in a process; hand the bytes to who waits for them."
+  (let* ((chunks nil)
+         (finish
+          (lambda (bytes)
+            (let ((waiting (gethash etag xwapp--gzipping)))
+              (remhash etag xwapp--gzipping)
+              ;; Kept only when still of this version of the file.
+              (when (and bytes (equal (xwapp--etag file) etag))
+                (xwapp--gzip-keep etag bytes))
+              (dolist (then (nreverse waiting))
+                (xwapp--done (lambda () (funcall then bytes)))))))
+         ;; Its own, not one Emacs makes for a buffer: that one outlives
+         ;; a gzip killed.
+         (err (make-pipe-process :name "xwapp-gzip stderr" :noquery t :coding 'binary
+                                 :filter #'ignore :sentinel #'ignore))
+         (proc
+          (condition-case nil
+              (make-process
+               :name "xwapp-gzip" :noquery t :connection-type 'pipe :coding 'binary
+               :command (list xwapp--gzip-program "-c" "-n" "-6" "--" (file-truename file))
+               :stderr err
+               :filter (lambda (_p s) (push s chunks))
+               :sentinel
+               (lambda (p _e)
+                 (unless (process-live-p p)
+                   (when-let* ((timer (process-get p 'xwapp-timer))) (cancel-timer timer))
+                   (process-put p 'xwapp-timer nil)
+                   (ignore-errors (delete-process err))
+                   (unless (process-get p 'xwapp-done)
+                     (process-put p 'xwapp-done t)
+                     (funcall finish (and (eq (process-status p) 'exit) (zerop (process-exit-status p))
+                                          (apply #'concat (nreverse chunks))))))))
+            (error nil))))
+    (if (not proc)
+        (progn (ignore-errors (delete-process err))
+               (funcall finish nil))
+      (process-put proc 'xwapp-timer
+                   (run-at-time xwapp--gzip-wait nil
+                                (lambda () (when (process-live-p proc) (delete-process proc))))))))
+
 (defun xwapp--file (app proc parts &optional headers)
   "Answer PROC with the file PARTS name: of APP's page, or of xwapp's kit.
 A browser that has it already, as its If-None-Match among HEADERS says,
-is told so (304) rather than sent it again."
+is told so (304) rather than sent it again.  Gzip'd to one that takes
+it: see \"The page's own files go gzip'd\"."
   (let* ((root (xwapp--root app))
          (file (expand-file-name (string-join parts "/") root)))
     (if (and parts
@@ -1413,11 +1564,27 @@ is told so (304) rather than sent it again."
                              (expand-file-name "xwapp/ui/" root)))
              (file-regular-p file))
         (let* ((etag (xwapp--etag file))
-               (keep `(("Cache-Control" . "no-cache")
-                       ,@(when etag `(("ETag" . ,etag))))))
-          (if (xwapp--fresh-p etag headers)
-              (xwapp--respond proc 304 nil nil keep)
-            (xwapp--respond proc 200 (xwapp--type file) (xwapp--bytes file) keep)))
+               (type (xwapp--type file))
+               (size (file-attribute-size (file-attributes (file-truename file))))
+               (varies (and etag size (xwapp--gzip-type-p type size)))
+               (gzip (and varies (xwapp--takes-gzip-p headers)))
+               (keep (lambda (tag)
+                       `(("Cache-Control" . "no-cache")
+                         ,@(when tag `(("ETag" . ,tag)))
+                         ,@(when varies '(("Vary" . "Accept-Encoding"))))))
+               (tag (if gzip (xwapp--gz-etag etag) etag)))
+          (cond
+           ((xwapp--fresh-p tag headers)
+            (xwapp--respond proc 304 nil nil (funcall keep tag)))
+           (gzip
+            (xwapp--gzip file etag
+                         (lambda (bytes)
+                           (if bytes
+                               (xwapp--respond proc 200 type bytes
+                                               (cons '("Content-Encoding" . "gzip") (funcall keep tag)))
+                             (xwapp--respond proc 200 type (xwapp--bytes file) (funcall keep etag))))))
+           (t
+            (xwapp--respond proc 200 type (xwapp--bytes file) (funcall keep etag)))))
       (xwapp--respond proc 404))))
 
 ;; Files an app serves besides its page: images an agent named, say, or
