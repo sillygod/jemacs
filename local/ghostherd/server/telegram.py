@@ -413,6 +413,15 @@ def _leaf(project: str | None) -> str:
     return os.path.basename((project or "").rstrip("/")) or (project or "")
 
 
+# Pushes `format_push' words as Telegram HTML itself, not as Markdown for
+# `to_html': what an agent wrote goes in them escaped, never through the
+# Markdown converter -- where [x](url) in a guard's call would be a link.
+HTML_PUSHES = {"guard"}
+
+# How much of a guard's call a push shows.
+GUARD_CALL = 300
+
+
 def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] | None = None) -> str:
     """PUSH as a message.  WORDS, for a lead's report, are the lead's own
     last message; SESSION, for a blocked agent, is it as last seen, its
@@ -421,6 +430,18 @@ def format_push(push: dict[str, Any], words: str = "", session: dict[str, Any] |
     name = push.get("session") or "?"
     where = _leaf(push.get("project"))
     head = f" · {where}" if where else ""
+    if kind == "guard":
+        # A guarded agent's call its guard refused, waiting for the user.
+        # Told, not answered here: the guard is a security gate, approved
+        # on the herd page alone.  The call is the agent's own text --
+        # escaped, and in <code>, where Telegram finds no link either.
+        tool = _cut(str(push.get("tool") or ""), 80)
+        call = str(push.get("summary") or "")
+        if tool and not call.startswith(tool + ":"):
+            call = f"{tool}: {call}" if call else tool
+        return (f"🛡 <b>{_esc(_cut(name, 80))}</b> waits for your approval{_esc(_cut(head, 80))}\n\n"
+                f"<code>{_esc(_cut(' '.join(call.split()) or '?', GUARD_CALL))}</code>\n\n"
+                "Its guard refused this call.  Approve it or keep it denied on the herd page.")
     if kind == "blocked":
         return f"⚠ {name} is blocked{head}\n\n{menu_text(session, push.get('reason') or '')}".rstrip()
     if kind == "report":
@@ -768,6 +789,9 @@ class TelegramBot:
         session = self.herd.session(push.get("session") or "")
         if kind == "blocked" and not (session and session.get("state") == "blocked"):
             return "", None, []
+        # Answered at the desk meanwhile, or expired: nothing waits.
+        if kind == "guard" and not self.herd.guard_waiting(push.get("request")):
+            return "", None, []
         # Relayed meanwhile, or gone: nothing to offer.
         if kind == "used-up" and not (session and session.get("kind") == push.get("from")):
             return "", None, []
@@ -805,7 +829,7 @@ class TelegramBot:
             if ready is None:
                 continue
             text, markup, pics = ready
-            html = to_html(text) if text else ""
+            html = (text if push.get("kind") in HTML_PUSHES else to_html(text)) if text else ""
             for chat_id in sorted(self.chat_ids) if text else []:
                 payload = {"chat_id": chat_id, "text": html, "parse_mode": "HTML"}
                 if markup:

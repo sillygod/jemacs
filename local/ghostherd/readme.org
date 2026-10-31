@@ -655,6 +655,14 @@ what wants you while you do not (=ghostherd-push=):
 | =ask-failed=   | an agent's ask failed: whom it asked, why, what it asked                             |
 | =used-up=      | an agent stopped with its CLI's usage used up: a button relays it                    |
 | =lead-started= | the herd started a lead in a project for a handoff: for whom, the brief's first line |
+| =guard=        | a guarded agent's call waits for your approval: the agent, the call; no answers here |
+
+A =guard= push only tells: the guard is a security gate, so the call
+is approved or kept denied on the herd page alone (/The guard/, below).
+The call is the agent's own text, sent escaped --- never through the
+Markdown converter --- so it can neither break the message nor add a
+link; it goes once a request, and not at all when it was answered or
+expired before the push went out.
 
 Each carries Open the room, to the project's room as its chat on the
 herd page (=xwapp-remote-hosts=, From your phone above).  Reply to one
@@ -1612,6 +1620,18 @@ requests expire and its guard directory keeps none of the old
 allowances --- an old call's fingerprint means nothing to a new process.
 The log says =kept denied by the user= and =expired, never answered=.
 
+*Told once.*  A request leaves its agent =working= --- the guard refused
+the call and the agent goes on --- so no =blocked= tells you of it.  A
+new one tells you on its own: a desktop notification, "ghostherd ·
+<agent> needs your approval" with the call cut short
+(=ghostherd-notify-on-guard=), and a =guard= push to Telegram while you
+are away (=ghostherd-push=).  Once a request: not when the same call is
+refused again while it waits (the same request), never for one kept
+denied or never approvable, and not again after Emacs or the sidecar
+restarts --- Emacs tells the sidecar in its next tick that it told, and
+the sidecar keeps it.  An Emacs gone before that tick tells once more
+after its restart: twice, rather than never.
+
 *Where it runs.*  The guard lives in =~/.ghostherd/guard/<agent>/=
 (=ghostherd-guard-root=): its =policy.json=, its =approved.json=, and the
 =.agents/hooks.json= agy loads through =--add-dir=, merged with
@@ -1696,7 +1716,7 @@ parallel notifier:
 | OSC 9;4 progress             | =ghostel-progress-function=   | → =working= (+ %)      |
 | OSC 2 title                  | =ghostel--title=              | sidebar Title column   |
 | Screen rules (poll)          | timer                         | working/blocked/idle   |
-| Desktop notify               | =alert= / =osx-notifier=      | blocked / done / dead  |
+| Desktop notify               | =alert= / =osx-notifier=      | blocked / done / dead / guard |
 
 Everything in that table except the last two rows needs an attached
 ghostel buffer, so on the tmux backend a detached session gets neither
@@ -1972,12 +1992,13 @@ these screens draws braille.
 
 * When you get told
 
-=blocked= and =dead= always notify.  =done= is different: it means
-*finished while you were not looking*, so it fires only when the agent
-was not on your screen at the time --- a window on a visible, focused
-frame counts as watched, and being merely displayed does not, since a
-frame that is iconified or on another desktop is exactly when a banner
-earns its place.
+=blocked= and =dead= always notify, and so does a guarded agent's call
+waiting for your approval, once (/Told once/, under the guard).  =done=
+is different: it means *finished while you were not looking*, so it
+fires only when the agent was not on your screen at the time --- a
+window on a visible, focused frame counts as watched, and being merely
+displayed does not, since a frame that is iconified or on another
+desktop is exactly when a banner earns its place.
 
 The herd page's room counts too, on the same terms: the page in front
 of you on a project's room watches its agents --- each in the columns,
@@ -3128,6 +3149,8 @@ its cache; watch =*ghostherd-memory*= if that seems stuck.
         ghostherd-poll-interval 1.5
         ghostherd-spawn-delay 0.8
         ghostherd-notify-on-blocked t
+        ;; A guarded agent's call waiting for your approval, once.
+        ghostherd-notify-on-guard t
         ghostherd-sidebar-side 'left
         ghostherd-sidebar-use-posframe t
         ghostherd-sidebar-posframe-width 72

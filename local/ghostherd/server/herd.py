@@ -638,9 +638,14 @@ class HerdStore:
             """
         )
         # When a request was closed without running: kept denied by the
-        # user, or expired (its time out, its agent respawned).
-        if "closed_at" not in {r[1] for r in self._conn.execute("PRAGMA table_info(guard_requests)")}:
+        # user, or expired (its time out, its agent respawned).  And when
+        # Emacs told the user a request waits -- a desktop notification, a
+        # push -- so that is once a request, over restarts of either.
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(guard_requests)")}
+        if "closed_at" not in cols:
             self._conn.execute("ALTER TABLE guard_requests ADD COLUMN closed_at TEXT")
+        if "told_at" not in cols:
+            self._conn.execute("ALTER TABLE guard_requests ADD COLUMN told_at TEXT")
         # The run of asks an agent nobody asked is on: the first ask's id.
         self._conn.execute(
             """
@@ -3864,7 +3869,7 @@ class HerdStore:
         for r in self._conn.execute(
             """
             SELECT id, session, tool, summary, reason, rule, kind, approvable, status,
-                   created_at, approved_at, used_at, closed_at
+                   created_at, approved_at, used_at, closed_at, told_at
             FROM guard_requests ORDER BY created_at DESC LIMIT 200
             """
         ).fetchall():
@@ -3882,7 +3887,8 @@ class HerdStore:
                 continue
             out.append({"id": r[0], "session": r[1], "tool": r[2], "summary": r[3], "reason": r[4],
                         "rule": r[5], "kind": r[6], "approvable": bool(r[7]), "status": status,
-                        "created_ms": _ms(r[9]), "approved_ms": _ms(r[10]), "used_ms": _ms(r[11])})
+                        "created_ms": _ms(r[9]), "approved_ms": _ms(r[10]), "used_ms": _ms(r[11]),
+                        "told": bool(r[13])})
             if len(out) >= 50:
                 break
         return out
@@ -3892,6 +3898,20 @@ class HerdStore:
             out = self._guard_recent()
             self._conn.commit()
         return {"requests": out}
+
+    def _guard_waiting(self, gid: Any) -> bool:
+        """Whether guard request GID still waits for the user: neither
+        answered nor closed, nor past `guard_ttl'.  Caller holds `_mu`."""
+        row = self._conn.execute(
+            "SELECT status, created_at FROM guard_requests WHERE id = ?", (str(gid or ""),)).fetchone()
+        return bool(row) and row[0] == "pending" and (
+            datetime.now(timezone.utc).timestamp() - datetime.fromisoformat(row[1]).timestamp()
+            <= self.guard_ttl)
+
+    def guard_waiting(self, gid: Any) -> bool:
+        "Whether guard request GID still waits for the user, for a push about to go."
+        with self._mu:
+            return self._guard_waiting(gid)
 
     # ---- Inbox item state (read / done / override), shared desk + phone -----
 
@@ -4309,6 +4329,7 @@ class HerdStore:
         page_url: str | None = None,
         restored: bool | None = None,
         guard_ttl: int | float | None = None,
+        guard_told: list[str] | None = None,
     ) -> dict[str, Any]:
         """PAGE_URL is the herd page's address from your phone, without its
         secret, as Emacs says it each tick; none, it is not linked.
@@ -4318,7 +4339,10 @@ class HerdStore:
         herd not yet picked up -- not agents that died -- so an open ask for
         a taker missing from it is held, not failed.  None (an Emacs too old
         to say) is read as restored, keeping the old behaviour.
-        GUARD_TTL is how long a guard request waits before it expires."""
+        GUARD_TTL is how long a guard request waits before it expires.
+        GUARD_TOLD are the guard requests Emacs has told the user of since
+        the last tick: told, the tick's `guard' says so, and a restarted
+        Emacs does not tell of them again."""
         restored_flag = True if restored is None else bool(restored)
         if isinstance(guard_ttl, (int, float)) and not isinstance(guard_ttl, bool) and guard_ttl > 0:
             self.guard_ttl = guard_ttl
@@ -4326,6 +4350,7 @@ class HerdStore:
         pushes = [p for p in (pushes or []) if isinstance(p, dict) and p.get("kind") and p.get("session")]
         ack_ids = [i for i in (ack_ids or []) if i]
         ack_cmd_ids = [i for i in (ack_cmd_ids or []) if i]
+        guard_told = [str(i) for i in (guard_told or []) if i]
         replies = replies or []
         now = datetime.now(timezone.utc).isoformat()
         with self._mu:
@@ -4386,10 +4411,29 @@ class HerdStore:
                     "UPDATE commands SET status = 'done' WHERE id = ?",
                     (rid,),
                 )
+            pushed: set[str] = set()
             for push in pushes:
+                # A guard's request is pushed once, while it waits.  Its push
+                # comes in the tick that says it told (`guard_told'), so a
+                # tick Emacs sends again -- the sidecar answered too late --
+                # finds it told, and pushes nothing twice.
+                if push.get("kind") == "guard":
+                    gid = str(push.get("request") or "")
+                    told = self._conn.execute(
+                        "SELECT told_at FROM guard_requests WHERE id = ?", (gid,)).fetchone()
+                    if not told or told[0] or gid in pushed or not self._guard_waiting(gid):
+                        continue
+                    pushed.add(gid)
+                    guard_told.append(gid)
                 self._conn.execute(
                     "INSERT INTO pushes (push, created_at) VALUES (?, ?)",
                     (json.dumps(push), now),
+                )
+            if guard_told:
+                placeholders = ",".join("?" * len(guard_told))
+                self._conn.execute(
+                    f"UPDATE guard_requests SET told_at = ? WHERE id IN ({placeholders}) AND told_at IS NULL",
+                    [now, *guard_told],
                 )
             was = dict(self._conn.execute("SELECT name, state FROM snapshot").fetchall())
             self._conn.execute("DELETE FROM snapshot")

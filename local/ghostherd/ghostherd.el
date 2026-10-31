@@ -431,6 +431,12 @@ only needs to outlast the gap between two updates of a live task."
   :type 'boolean
   :group 'ghostherd)
 
+(defcustom ghostherd-notify-on-guard t
+  "Notify when a guarded agent's guard refuses a call you may approve: a
+new request waits on the herd page.  Once a request, over restarts."
+  :type 'boolean
+  :group 'ghostherd)
+
 (defcustom ghostherd-sidebar-side 'left
   "Side window side for `ghostherd-sidebar' when not using posframe."
   :type '(choice (const left) (const right))
@@ -9826,12 +9832,51 @@ DIRECTORY's project's -- in its environment."
 (defvar ghostherd--guard-seen (make-hash-table :test 'equal)
   "Guard request id -> the status the log last told of it.")
 
+;; A request waiting for the user stays `working' to the agent's state --
+;; the guard refused the call and the agent goes on -- so no `blocked'
+;; tells you of it.  It is told on its own, once: a desktop notification,
+;; and a push while you are away.  The sidecar keeps that it was told
+;; (`guard_told' in the next tick), so a restarted Emacs, or sidecar, does
+;; not tell of it again.  An Emacs gone before that tick tells again
+;; after its restart: twice, rather than never.
+
+(defvar ghostherd--guard-told (make-hash-table :test 'equal)
+  "Guard request id -> t: told of by this Emacs.")
+
+(defvar ghostherd--guard-told-ids nil
+  "Guard requests told of, for the sidecar in the next tick.")
+
+(defun ghostherd--guard-tell (r)
+  "Tell the user guard request R waits for them: a desktop notification,
+and a push while away -- each when it is on."
+  (let* ((name (or (plist-get r :session) "?"))
+         (tool (or (plist-get r :tool) ""))
+         (summary (or (plist-get r :summary) ""))
+         (call (truncate-string-to-width
+                (replace-regexp-in-string
+                 "[\n\t ]+" " " (if (or (equal tool "") (string-prefix-p (concat tool ":") summary))
+                                     summary
+                                   (concat tool ": " summary)))
+                120 nil nil "…")))
+    (when ghostherd-notify-on-guard
+      (ghostherd--notify (format "ghostherd · %s needs your approval" name)
+                         (format "%s -- approve it or keep it denied on the herd page" call)))
+    (when-let* ((session (ghostherd-get name)))
+      (ghostherd--push 'guard session :request (plist-get r :id) :tool tool :summary summary))))
+
 (defun ghostherd--herd-take-guard (requests)
   "Keep REQUESTS from a `herd_tick', and log each refusal, approval and
-use once."
+use once.  A new one waiting for the user is told of, once."
   (dolist (r requests)
     (let ((id (plist-get r :id))
           (status (plist-get r :status)))
+      (when (and (equal status "pending")
+                 (not (eq (plist-get r :told) t))
+                 (not (gethash id ghostherd--guard-told)))
+        (puthash id t ghostherd--guard-told)
+        (push id ghostherd--guard-told-ids)
+        (with-demoted-errors "ghostherd: telling of a guard request: %S"
+          (ghostherd--guard-tell r)))
       (unless (equal (gethash id ghostherd--guard-seen) status)
         (puthash id status ghostherd--guard-seen)
         (ghostherd--log-add
@@ -10514,16 +10559,18 @@ rather than being taken for the one already sent."
 ;; agent nor the herd page, and have left this machine -- and the bot
 ;; words it: it has the lead's last message, and the buttons to answer.
 
-(defcustom ghostherd-push '(blocked report ask-failed used-up lead-started)
+(defcustom ghostherd-push '(blocked report ask-failed used-up lead-started guard)
   "What the herd pushes to Telegram while you are away: an agent
 `blocked', a lead's `report' at the end of its turn, an `ask-failed',
 an agent stopped with its CLI's usage `used-up' -- with a button that
-relays it -- and a lead the herd started in a project for a handoff
-from another, `lead-started'.  Nil pushes nothing.  The sidecar's bot
-sends them to the chats of GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one
-goes to that project's lead."
+relays it -- a lead the herd started in a project for a handoff
+from another, `lead-started', and a call a guarded agent's `guard'
+refused, waiting for your approval -- told only: it is approved on the
+herd page.  Nil pushes nothing.  The sidecar's bot sends them to the
+chats of GHOSTHERD_TELEGRAM_CHAT_IDS; a reply to one goes to that
+project's lead."
   :type '(set (const blocked) (const report) (const ask-failed) (const used-up)
-              (const lead-started))
+              (const lead-started) (const guard))
   :group 'ghostherd)
 
 (defcustom ghostherd-push-images t
@@ -10651,10 +10698,12 @@ reaches you there."
              (fboundp 'ghostherd-memory-request-async))
     (let ((acks (or ghostherd--herd-ack-ids []))
           (replies ghostherd--herd-replies)
-          (pushes ghostherd--herd-pushes))
+          (pushes ghostherd--herd-pushes)
+          (told ghostherd--guard-told-ids))
       (setq ghostherd--herd-tick-inflight t
             ghostherd--herd-replies nil
-            ghostherd--herd-pushes nil)
+            ghostherd--herd-pushes nil
+            ghostherd--guard-told-ids nil)
       (ghostherd-memory-request-async
        "herd_tick"
        (lambda (result)
@@ -10679,13 +10728,17 @@ reaches you there."
              :replies (vconcat (or replies []))
              :pushes (vconcat (reverse pushes))
              ;; How long a guarded agent's refused call waits for the user.
-             :guard_ttl ghostherd-guard-request-ttl)
+             :guard_ttl ghostherd-guard-request-ttl
+             ;; The guard's requests told of since: not again.
+             :guard_told (vconcat (reverse told)))
        (lambda (_err)
          (setq ghostherd--herd-tick-inflight nil
                ghostherd--herd-replies
                (append replies ghostherd--herd-replies)
                ghostherd--herd-pushes
-               (append ghostherd--herd-pushes pushes)))))))
+               (append ghostherd--herd-pushes pushes)
+               ghostherd--guard-told-ids
+               (append ghostherd--guard-told-ids told)))))))
 
 (defun ghostherd-sidebar-refresh ()
   "Interactive sidebar refresh."
