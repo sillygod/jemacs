@@ -21,10 +21,10 @@ This package fills the TODOs it left: find, =f=, edit-mode.
 |-----+---------|
 | =/= =n= =N= | in-page search (=window.find=; NS =xwidget-webkit-search= is a stub) |
 | =*= | search for the current selection |
-| =f= | ace hints, click |
+| =f= | ace hints, click; onto a field, then edit |
 | =F= | ace hints, open =<a>= in a new session |
 | =gf= | pick a visible link with completion |
-| =i= | send keys to the page (forms, PR comments). ESC / C-g back |
+| =i= | send keys to the page (forms, PR comments). ESC / C-g back; ⌘V pastes |
 | =gi= | focus first input, then edit |
 | =Y= | yank the page selection |
 | =&= | open current URL in the system browser (a PDF opens its source) |
@@ -33,6 +33,29 @@ This package fills the TODOs it left: find, =f=, edit-mode.
 | =gr= | Markdown: reload the current preview |
 
 Existing collection bindings stay: =j k gg G d u H L r yy o t x= …
+
+* Typing into the page
+
+=i=, =gi=, and =f= onto a field --- a text input, a textarea, a select,
+an editable element --- send the keys to the page
+(=xwidget-webkit-edit-mode=, Evil's emacs state): typing there would
+otherwise run Evil's commands.  =f= asks the page whether the hint left
+the focus in such a field; on a link, a button, a checkbox it does not.
+
+- *⌘V* (M-v, ⌘ being Meta) while keys go to the page pastes the
+  clipboard's text into the focused field, at the caret: WebKit under
+  Emacs never makes ⌘V a paste of its own.  It goes in as typing
+  would (=execCommand("insertText")=): the page's own input events
+  fire, and its undo keeps it.  The field hears it first, as the xwapp
+  page kit's do: =xw-paste=, cancelable, =detail.text= ="" for a
+  clipboard with no text (an xwapp page then asks for the image).  The
+  clipboard is read on your key press only: =jwebkit-paste= called from
+  Lisp reads nothing, and nothing a page does reads it.  A field a
+  click put the keys in is WebKit's own: its ⌘V never reaches Emacs.
+- *Esc / C-g* stop that, and take the page's focus off the field: a
+  focused field is where WebKit keeps the keys once a click made its
+  view the window's first responder.  The keyboard goes back to Emacs
+  only as below, under the same rules.
 
 * Keyboard focus after killing a page (macOS)
 

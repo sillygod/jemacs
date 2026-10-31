@@ -13,9 +13,9 @@
 ;; Does not use document.title (pr-view owns that bridge).
 ;;
 ;;   / n N   search via window.find (NS xwidget-webkit-search is a stub)
-;;   f / F   ace hints (current / new session)
+;;   f / F   ace hints (current / new session); onto a field, then edit
 ;;   gf      follow link via completing-read
-;;   i       pass keys through to the page
+;;   i       pass keys through to the page; ⌘V (M-v) there pastes
 ;;   gi      focus first input, then edit
 ;;   *       search for the current selection
 ;;   Y       yank page selection
@@ -175,13 +175,79 @@ window.find only sees pages whose text layer has been rendered."
   (when (fboundp 'evil-emacs-state)
     (evil-emacs-state)))
 
+(defconst jwebkit--blur-js
+  "(function(){
+  var a = document.activeElement;
+  if (a && a !== document.body && a.blur) a.blur();
+})();"
+  "Take the page's focus off the field it is in.")
+
 (defun jwebkit-stop-edit ()
-  "Stop sending keys to the page."
+  "Stop sending keys to the page.
+The field you were typing in lets go of the focus too: a field focused
+is where WebKit keeps the keys -- a click had made its view the window's
+first responder -- and Emacs would see none.  The view hands the
+keyboard back only as `jwebkit--give-focus-back' does it, and when it
+may."
   (interactive)
   (when (bound-and-true-p xwidget-webkit-edit-mode)
     (xwidget-webkit-edit-mode -1))
   (when (fboundp 'evil-normal-state)
-    (evil-normal-state)))
+    (evil-normal-state))
+  (when-let* (((derived-mode-p 'xwidget-webkit-mode))
+              (xw (xwidget-webkit-current-session)))
+    (ignore-errors (xwidget-webkit-execute-script xw jwebkit--blur-js))
+    (jwebkit--give-focus-back)))
+
+;; ⌘V while keys go to the page.
+;;
+;; WebKit under Emacs never sees ⌘V as a paste: the paste is the menu's
+;; to send, and Emacs's menu does not send it to the web view.  While
+;; keys go to the page, ⌘V (M-v, ⌘ being Meta) is Emacs's, so Emacs puts
+;; the clipboard's text in the focused field, at the caret, as typing
+;; would: the page's own input events fire, and its undo keeps it.  The
+;; field hears it first, as the xwapp page kit's do: "xw-paste", its
+;; detail {text}, cancelable -- "" for a clipboard with no text, which
+;; an xwapp page may take for an image to ask for.  The clipboard is read
+;; on your key press only: nothing a page does reads it.  A field a click
+;; put the keys in is WebKit's, and its ⌘V never reaches Emacs.
+
+(defun jwebkit--paste-js (text)
+  "JS putting TEXT in the page's focused field, saying what it did:
+\"pasted\", \"taken\" (the page took it), \"empty\" (no text) or
+\"nofield\"."
+  (format "(function(t){
+  var el = document.activeElement;
+  while (el && el.tagName === 'IFRAME') {
+    try { el = el.contentDocument.activeElement; } catch (e) { return 'nofield'; }
+  }
+  var ok = el && !el.disabled && !el.readOnly && (el.isContentEditable || el.tagName === 'TEXTAREA' ||
+    (el.tagName === 'INPUT' && /^(text|search|url|tel|email|password)$/i.test(el.type || 'text')));
+  if (!ok) return 'nofield';
+  var ev = new CustomEvent('xw-paste', {bubbles: true, cancelable: true, detail: {text: t}});
+  if (!el.dispatchEvent(ev)) return 'taken';
+  if (!t) return 'empty';
+  if (!el.ownerDocument.execCommand('insertText', false, t) && typeof el.setRangeText === 'function') {
+    el.setRangeText(t, el.selectionStart, el.selectionEnd, 'end');
+    el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertFromPaste', data: t}));
+  }
+  return 'pasted';
+})(%s);"
+          (json-encode text)))
+
+(defun jwebkit-paste ()
+  "Paste the clipboard's text into the page's focused field, at the caret.
+On your own key press only (⌘V while keys go to the page): called from
+Lisp, it reads nothing."
+  (interactive)
+  (when (called-interactively-p 'any)
+    (let ((text (or (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING)) "")))
+      (xwidget-webkit-execute-script
+       (jwebkit--session) (jwebkit--paste-js (if (stringp text) (substring-no-properties text) ""))
+       (lambda (said)
+         (pcase said
+           ("nofield" (message "No text field has focus in the page"))
+           ("empty" (message "No text on the clipboard"))))))))
 
 (defconst jwebkit--focus-first-js
   "(function(){
@@ -273,7 +339,12 @@ With NEW-SESSION (or prefix), open in a new xwidget session."
       && r.right>0 && r.left<innerWidth
       && s.visibility!=='hidden' && s.display!=='none' && s.opacity!=='0';
   }
-  var sel = 'a[href],button,[role=button],input:not([type=hidden]),textarea,select,summary,[onclick],[data-act],[data-id]';
+  var sel = 'a[href],button,[role=button],input:not([type=hidden]),textarea,select,summary,[onclick],[data-act],[data-id],[contenteditable]:not([contenteditable=false])';
+  function typable(el){
+    if (el.disabled || el.readOnly) return false;
+    if (el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') return true;
+    return el.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|file|image|color|range)$/i.test(el.type);
+  }
   var els = Array.from(document.querySelectorAll(sel)).filter(vis);
   var k = keys.length;
   var n = Math.min(els.length, k*k);
@@ -307,11 +378,11 @@ With NEW-SESSION (or prefix), open in a new xwidget session."
       var el = document.querySelector('[data-jw-ace=\"'+L+'\"]');
       var href = el && el.href ? el.href : '';
       window.__jwAce.remove();
-      if (!el) return '';
-      if (news && href) return href;
+      if (!el) return JSON.stringify({href: ''});
+      if (news && href) return JSON.stringify({href: href});
       el.focus();
       el.click();
-      return href;
+      return JSON.stringify({href: href, edit: typable(el) && document.activeElement === el});
     }
   };
   return JSON.stringify(Object.keys(map));
@@ -344,11 +415,27 @@ With NEW-SESSION (or prefix), open in a new xwidget session."
             (message "No hint %s" sofar)
             (throw 'done nil))))))))
 
+(defun jwebkit--acted (buf new-session raw)
+  "What `jwebkit-ace' does once the page acted on a hint, RAW saying
+what: open its link in a new session (NEW-SESSION), or, the hint having
+put the focus in a field, send the keys to the page from BUF -- else
+typing there would run Evil's commands."
+  (let* ((got (jwebkit--parse-json raw))
+         (href (alist-get 'href got)))
+    (cond
+     ((and new-session (stringp href) (not (string-empty-p href)))
+      (xwidget-webkit-browse-url href t))
+     ((and (alist-get 'edit got) (buffer-live-p buf))
+      (with-current-buffer buf (jwebkit-edit))))))
+
 (defun jwebkit-ace (&optional new-session)
   "Hint visible clickable elements, then click.
-With NEW-SESSION (or prefix), open an `<a href>` in a new session."
+With NEW-SESSION (or prefix), open an `<a href>` in a new session.
+A field -- a text input, a textarea, a select, an editable element --
+is focused, and keys go to the page, as after `gi'."
   (interactive "P")
-  (let ((xw (jwebkit--session)))
+  (let ((xw (jwebkit--session))
+        (buf (current-buffer)))
     (xwidget-webkit-execute-script
      xw
      (jwebkit--ace-inject-js)
@@ -366,10 +453,7 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
                   (format "window.__jwAce && window.__jwAce.act(%s,%s);"
                           (json-encode lab)
                           (if new-session "true" "false"))
-                  (lambda (href)
-                    (when (and new-session href (stringp href)
-                               (not (string-empty-p href)))
-                      (xwidget-webkit-browse-url href t))))))
+                  (lambda (said) (jwebkit--acted buf new-session said)))))
            (unless acted
              (xwidget-webkit-execute-script
               xw "window.__jwAce && window.__jwAce.remove();"))))))))
@@ -419,7 +503,8 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
   "What xwidget's own script sends on C-g in a page.")
 
 (defun jwebkit--give-focus-back ()
-  "Before a page's buffer dies, hand keyboard focus back to Emacs."
+  "Hand keyboard focus back to Emacs from this buffer's page, when it may:
+before the buffer dies, and as you stop typing in it (`jwebkit-stop-edit')."
   (when (and (eq (framep (selected-frame)) 'ns)
              (derived-mode-p 'xwidget-webkit-mode)
              (eq (window-buffer (selected-window)) (current-buffer))
@@ -469,7 +554,9 @@ With NEW-SESSION (or prefix), open an `<a href>` in a new session."
   (jwebkit--bind 'emacs (kbd "<escape>") #'jwebkit-stop-edit)
   (jwebkit--bind 'emacs (kbd "C-g") #'jwebkit-stop-edit)
   (define-key xwidget-webkit-edit-mode-map (kbd "<escape>") #'jwebkit-stop-edit)
-  (define-key xwidget-webkit-edit-mode-map (kbd "C-g") #'jwebkit-stop-edit))
+  (define-key xwidget-webkit-edit-mode-map (kbd "C-g") #'jwebkit-stop-edit)
+  ;; ⌘V, while keys go to the page: see "⌘V while keys go to the page".
+  (define-key xwidget-webkit-edit-mode-map (kbd "M-v") #'jwebkit-paste))
 
 (defun jwebkit--after-evil-collection (mode _keymaps)
   "Bind again once evil-collection has set MODE up, if MODE is xwidget."
