@@ -20,7 +20,7 @@
 (declare-function ghostherd--herd-tick-async "ghostherd" ())
 (declare-function ghostherd--hooked-p "ghostherd" (session))
 (declare-function ghostherd--push "ghostherd" (kind session &rest fields))
-(declare-function ghostherd--role-take "ghostherd" (session))
+(declare-function ghostherd--role-take "ghostherd-lead" (session))
 (declare-function ghostherd--room-url "ghostherd" (&optional project))
 (declare-function ghostherd--session-guarded-p "ghostherd" (session))
 
