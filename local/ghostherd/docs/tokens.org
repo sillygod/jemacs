@@ -68,7 +68,7 @@ token 不是放在 header，而是放在「URL 路徑」裡：
 
 這份名單不是憑印象列的。=server/tests/test_auth.py= 裡的
 =test_every_method_an_agent_calls_is_an_agents= 會「從程式碼反推」：用正
-規式掃 =bin/herd= 裡的 =rpc("…")= 呼叫，再掃 =ghostherd.el= 裡
+規式掃 =bin/herd= 裡的 =rpc("…")= 呼叫，再掃 =ghostherd-mail.el= 裡
 =ghostherd--herd-protocol= 那段（就是寫給 agent 的 =PROTOCOL.md=），把它
 們兜起來，斷言「agent 真正會叫的，扣掉 =AGENT_METHODS=，只剩
 =memory_migrate= 與 =memory_unmigrate=」—— 那兩個是「你」用 herd 的 URL
@@ -133,7 +133,7 @@ admin method 夾在合法呼叫裡就放行。
 ** 細節
 
 - spawn 時環境帶 =GHOSTHERD_RPC=，URL 裡是 *agent* token
-  （=ghostherd.el= 的 =ghostherd-agent-env-allow= 註解即寫明
+  （=ghostherd-hooks.el= 的 =ghostherd-agent-env-allow= 註解即寫明
   「=GHOSTHERD_RPC= holds the agents' token, not the herd's」）。
 - 退路是 =GHOSTHERD_RPC_FILE=，指向 =rpc.url=。=bin/herd= 的 =rpc()=
   先試 =GHOSTHERD_RPC=，再試 =rpc.url=；碰到 401 或連不上就換下一個。
@@ -160,7 +160,7 @@ guard 的 agy，環境照舊（才留得住它們自己的 API key）。
 
 ** 環境變數白名單（allowlist）
 
-=ghostherd.el= 的 =ghostherd-agent-env-allow= 是一份「白名單」：受 guard
+=ghostherd-hooks.el= 的 =ghostherd-agent-env-allow= 是一份「白名單」：受 guard
 的 agy 只帶這些名字進環境，其他一律留在門外 —— 所以 =DATABASE_URL=、
 =SENTRY_DSN=、某個 =*_PAT=、webhook URL，不管叫什麼名字都進不去。白名
 單依用途分組（名字可用萬用字元，如 =LC_*=）：
@@ -180,7 +180,7 @@ guard 的 agy，環境照舊（才留得住它們自己的 API key）。
 套用方式：=ghostherd--scrub-wrapper= 會在 agy 的 CLI 前面接一段
 =herd scrub-exec --allow <名字> --allow <名字> … --=，由 =bin/herd= 的
 =cmd_scrub_exec= 把環境砍到只剩這些名字。而且這整段 wrapper 只在
-=guard= 成立時才接上（=ghostherd.el=：
+=guard= 成立時才接上（=ghostherd-spawn.el=：
 =:wrapper (and guard (ghostherd--scrub-wrapper directory))=）。
 
 *URL 裡夾帶憑證會被丟掉*：就算名字在白名單上，只要值長得像
@@ -195,7 +195,7 @@ guard 的 agy，環境照舊（才留得住它們自己的 API key）。
 過你*，因為「一個專案可能在這裡塞一個 secret 的名字」。
 
 這是刻意的：=ghostherd-agent-env-allow-extra= 「沒有」註冊
-=safe-local-variable=（=ghostherd.el= 裡只有 =ghostherd-agy-guard=、
+=safe-local-variable=（=ghostherd-hooks.el= 裡只有 =ghostherd-agy-guard=、
 =ghostherd-guard-allow-commands= 這些有 =(put … 'safe-local-variable …)=，
 =-extra= 故意沒有）。所以一個惡意的 =.dir-locals.el= 沒辦法「悄悄」把
 一個 secret 變數的名字加進白名單 —— Emacs 會把它當不安全、先問你
@@ -209,7 +209,7 @@ approvable 的判斷「更早」就擋下，回一個 =_never= 判決；而「�
 （=approvable=）只對 =ask= 與 =secret= 兩類成立，=never= 不在其中。所以
 沒有任何一張卡片上的核准能把 =rpc.token= 交到 agy 手上。
 
-這份 =never_files= 由 Emacs 填入 admin token 檔：=ghostherd.el=
+這份 =never_files= 由 Emacs 填入 admin token 檔：=ghostherd-hooks.el=
 =:never_files (vconcat … (ghostherd-memory--token-file))=。
 
 ** guard 拒絕 =$= 展開與「倒環境變數」
@@ -337,11 +337,11 @@ agent URL 上、照樣拿到答案，不會卡死。
   =allowed_env= 與 =_URL_CREDENTIAL=、=cmd_scrub_exec=。
 - =bin/herd_guard.py= —— =never_files= 與 =rpc.token= 的 =_never= 判決、
   =approvable= 屬性、=secret= 類（env / =$= 展開 / secret 檔）的規則。
-- =ghostherd.el= —— =ghostherd-agent-env-allow= 與
+- =ghostherd-hooks.el= —— =ghostherd-agent-env-allow= 與
   =ghostherd-agent-env-allow-extra=（後者「沒有」=safe-local-variable=）、
-  =ghostherd--scrub-wrapper=、spawn 路徑的
-  =:wrapper (and guard …)= 與 =:never_files (… ghostherd-memory--token-file)=、
-  以及寫給 agent 的 =ghostherd--herd-protocol=（=PROTOCOL.md=）。
+  =ghostherd--scrub-wrapper=、=:never_files (… ghostherd-memory--token-file)=；
+  =ghostherd-spawn.el= —— spawn 路徑的 =:wrapper (and guard …)=；
+  =ghostherd-mail.el= —— 寫給 agent 的 =ghostherd--herd-protocol=（=PROTOCOL.md=）。
 - =ghostherd-memory.el= —— =ghostherd-memory--token-file= /
   =ghostherd-memory--agent-token-file=、=ghostherd-memory-rpc-url=（admin）
   與 =ghostherd-memory-agent-rpc-url=（agent）、

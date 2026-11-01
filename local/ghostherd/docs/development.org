@@ -59,26 +59,59 @@ its page's updates several times (one that cannot be compiled is named,
 and runs interpreted).  Byte-code is not the native code a restart
 loads, though: measure after a restart.
 
+* Where code goes: the parts
+
+=ghostherd.el= is the entry; the code is in the parts it requires,
+=ghostherd-core.el= to =ghostherd-push.el= (listed in its Commentary and
+in [[file:design.org][design.org]]), which were one file until ask bd6f1e97.  They load as
+that one file did as long as these hold:
+
+- A part requires only parts above it in =ghostherd.el='s list, the
+  order the code stood in -- never =ghostherd= itself.  Then loading
+  =ghostherd.el= runs every =add-hook= and =defcustom= in that order.
+- A function a part calls from a later part is declared there with
+  =declare-function=; the compiler names them ("not known to be
+  defined").
+- A variable a part /binds/ (=let=, an argument) has to be special
+  there when it is compiled: defined in a part it requires, or declared
+  with =(defvar X)=.  Otherwise the binding is lexical once compiled and
+  the code it calls never sees it --- and the compiler says nothing.
+  =ghostherd-spawn.el='s =(defvar ghostel-query-before-killing)= is for
+  that.  A macro, likewise, has to be in the part or one it requires.
+- A new part ends with the local variable =generated-autoload-load-name:
+  "ghostherd"=, so its autoload cookies load the whole package; goes into
+  =ghostherd.el='s requires in its place; and reaches the build only
+  through a rebuild (below).
+
+Its tests go in =ghostherd-PART-tests.el=; what two test files share, in
+=ghostherd-test-helpers.el=.
+
 * The build
 
 ghostherd is a straight package built from this directory: straight
 links the =.el= files into =emacs-home/straight/build/ghostherd/= and
-byte-compiles them there, at startup, when one changed.  A restart is
-therefore always the whole, compiled change.
+byte-compiles them there when it builds the package --- which this
+config never does on its own (=straight-check-for-modifications= is
+nil).  A restart loads the build as it was: after a change, run =M-x
+straight-rebuild-package RET ghostherd= before it.
 
-Three things about that build bite:
+Four things about that build bite:
 
+- A new file is linked into the build only by that rebuild.  Until
+  then a restart loads the build's old =.elc= files, and =bin/reload=
+  cannot tell the live checkout's copy of the new file from a
+  worktree's: its guard finds no such library, and steps aside.
 - It compiles in a separate Emacs that has only the packages in
   =Package-Requires= (=ghostherd.el='s header) on its load path.  A file
   that requires anything else --- =xwapp=, say --- fails to compile, and
   runs interpreted from its =.el=, with nothing said.  A new =require= of
   a package outside Emacs goes into =Package-Requires= too.
-- A package is rebuilt only when its own files change.  What it
-  compiled in from another package stays as that package was: a
-  =cl-defstruct='s constructor and accessors are inlined by slot
-  position, so a slot added to =xwapp= would shift every slot after it
-  under a pr-view built before.  xwapp's struct gains no slot for that
-  reason; change what others compile in only with them rebuilt.
+- A package is rebuilt alone.  What it compiled in from another
+  package stays as that package was: a =cl-defstruct='s constructor
+  and accessors are inlined by slot position, so a slot added to
+  =xwapp= would shift every slot after it under a pr-view built
+  before.  xwapp's struct gains no slot for that reason; change what
+  others compile in only with them rebuilt.
 - Never byte-compile into this directory: =load-prefer-newer= is nil,
   so an =.elc= next to its =.el= is loaded instead of it, stale or not.
   To see the compiler's warnings, compile a copy:
