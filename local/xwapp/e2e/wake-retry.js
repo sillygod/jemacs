@@ -5,7 +5,8 @@
 // does; or that next failing first, and told after.  Either way the
 // page asks again at once, says nothing of Emacs not answering, and has
 // one next asking at most.  Emacs truly gone, it
-// still backs off, and says so once a second try has failed.  Taken by
+// still backs off, and says so once a second try has failed; an intent
+// it was sending as Emacs went is sent again once Emacs is back.  Taken by
 // another device meanwhile, it stops.  The herd page, served by a real
 // Emacs (wake.el) through a proxy that plays `tailscale serve' and
 // sleeps (appslib.js); the page's eyes, phoneEyes.
@@ -19,6 +20,8 @@ const { measure, pageOf, copyTree, herdFile, shows, settled } = require("./wakel
 const results = [];
 const check = (n, ok, d) => { results.push(!!ok); console.log((ok ? "PASS " : "FAIL ") + n + (ok || d === undefined ? "" : "  — " + JSON.stringify(d))); };
 const said = (tab) => tab.evaluate(() => window.__said.slice());
+// WebKit's word for a load it lost: its connection closed under it.
+const LOST = /^Failed to load resource: The network connection was lost\.$/;
 const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: window.__nexts.most, at: window.__nexts.at.slice() }));
 
 (async () => {
@@ -26,9 +29,11 @@ const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: wind
   try {
     const ctx = await s.browser.newContext(PHONE);
     await phoneEyes(ctx);
-    const errors = [];
+    // What the page's console says is wrong, and when: what a cut says
+    // is told from the page's own by when (cuts, below).
+    const errors = [], cuts = [];
     const tab = await ctx.newPage();
-    watch(tab, errors);
+    watch(tab, { push: (e) => errors.push({ e, at: Date.now() }) });
     await tab.goto(BOX + "/open/ghostherd#agents");
     check("the herd page opens on the phone", await until(shows(tab, "first"), 10000));
     await tab.evaluate(() => { window.KEPT = "this page's own"; });
@@ -78,9 +83,25 @@ const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: wind
     check("one next asking at most, all along", (await nexts(tab)).most === 1, await nexts(tab));
 
     // ---- Emacs gone: it backs off, and says so once a retry failed ----
-    s.down(true);
-    s.cut();
-    const tg = Date.now(), fromOut = s.traffic.length;
+    // Gone as an intent (Refresh) reached it, before Emacs had it: that
+    // and the next it held cut.  WebKit asks the next again by itself,
+    // unseen (502 now); the intent, a POST, it does not -- the page's
+    // fetch fails, and WebKit says it lost it.  The kit keeps it, and asks
+    // again (ask 8c667aa6).
+    await settled(tab);
+    const fromOut = s.traffic.length;
+    const going = s.goneAt((r) => r.method === "POST" && /\/intent$/.test(r.path));
+    await tab.evaluate(() => document.getElementById("btn-refresh").click());
+    let tg = await Promise.race([going, sleep(3000).then(() => null)]);
+    check("Emacs goes as an intent reaches it", tg !== null);
+    if (tg === null) {
+      s.down(true);
+      s.cut();
+      tg = Date.now();
+    }
+    cuts.push(tg);
+    check("and WebKit says the intent's load was lost, at once", await until(() =>
+      errors.some(({ e, at }) => LOST.test(e) && at - tg < 1000), 2000), errors);
     const sayAt = await (async () => {
       const end = Date.now() + 5000;
       while (Date.now() < end) {
@@ -114,11 +135,15 @@ const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: wind
       !(await tab.$("#xw-notice")) && pageOf(s.dir) !== "nil", 11000), await said(tab));
     check("and not before it: the wake kept the backoff", Date.now() - tb > 3000, Date.now() - tb);
     check("one next asking at most, through it all", (await nexts(tab)).most === 1, await nexts(tab));
+    const refreshes = () => log().filter((w) => w && w.intent && w.intent.op === "usage-refresh").length;
+    check("the intent under way as Emacs went, asked again: Emacs has it, once",
+      (await until(() => refreshes() > 0, 3000)) && (await sleep(500), refreshes()) === 1, refreshes());
 
     // ---- Not answering said, the network back before the page wakes:
     // woken, it is unsaid at once, not on a try that waits (ask c3733d70) ----
     await settled(tab);
     s.down(true);
+    cuts.push(Date.now());
     s.cut();
     const tn0 = Date.now(), fromN = s.traffic.length;
     // Said, and a third try failed: the one after waits 4 s.
@@ -157,7 +182,11 @@ const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: wind
       s.traffic.length === quiet && pageOf(s.dir) === taken, s.traffic.slice(quiet).map((t) => t.path));
     await desk.close();
     // The browser says each 502 of Emacs gone: those are not the page's.
-    const own = errors.filter((e) => !/status of 502/.test(e));
+    // Nor that a load was lost, within a moment of a cut: a POST under
+    // way, or an answer begun, cut -- WebKit does not ask those again by
+    // itself; the kit does.  Anything else, or that at any other time, is.
+    const own = errors.filter(({ e, at }) => !/status of 502/.test(e) &&
+      !(LOST.test(e) && cuts.some((t) => at >= t && at - t < 2000))).map(({ e }) => e);
     check("no page errors", own.length === 0, own);
     await ctx.close();
   } finally {
