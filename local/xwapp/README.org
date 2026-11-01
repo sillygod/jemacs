@@ -644,10 +644,13 @@ it would on the phone.
 |                | pr-view loads again, its files 304; each wake's bytes and time  |
 |                | (MEASURE lines; =LOCAL= another checkout's, to compare)         |
 | =wake-retry=   | a phone that wakes, its next hanging or failing first: asked    |
-|                | again at once, nothing said, one next at most; Emacs gone, it   |
-|                | backs off and says so after a second try, a wake keeping the    |
-|                | backoff; said, the network back, woken: unsaid at once; taken,  |
-|                | it stops                                                        |
+|                | again at once, nothing said, one next at most; Emacs gone as an |
+|                | intent reached it, it backs off and says so after a second try, |
+|                | a wake keeping the backoff, and the intent is taken once it is  |
+|                | back; said, the network back, woken: unsaid at once; taken, it  |
+|                | stops.  WebKit's "network connection was lost" is let pass only |
+|                | just after a cut: a POST or a begun answer cut, which WebKit    |
+|                | does not ask again by itself (a GET not yet answered it does)   |
 | =served=       | the kit against an Emacs played request by request: an intent   |
 |                | under way as the page comes back sent and taken once, its 410   |
 |                | no second coming back; "not answering" unsaid on a wake (shown  |

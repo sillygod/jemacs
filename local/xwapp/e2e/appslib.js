@@ -62,7 +62,10 @@ async function start(opts) {
   // what, its code, the bytes of its body, how they were encoded, and the
   // ETag the browser asked with, if it had the file.  down(true): Emacs
   // is not there -- every request answered 502, as serve does then.
-  let asleep = false, gone = false;
+  // goneAt(PRED): Emacs goes the moment a request PRED takes ({method,
+  // path}) reaches it, before Emacs has it -- that one and all under way
+  // cut, as Emacs killed then would cut them; it says when.
+  let asleep = false, gone = false, going = null;
   const held = [], open = new Set(), dozing = new Set(), dead = new Set(), traffic = [];
   const link = opts.link;
   let linkFree = 0;
@@ -122,6 +125,16 @@ async function start(opts) {
     const u = new URL(req.url);
     if (u.host !== "box.tail0.ts.net") { away.push(req.url); res.writeHead(200, { "content-type": "text/plain" }); return res.end("away"); }
     const go = () => {
+      if (going && going.pred({ method: req.method, path: u.pathname })) {
+        const g = going;
+        going = null;
+        gone = true;
+        traffic.push({ at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
+          status: 0, bytes: 0, enc: "", asked: "" });
+        open.forEach((r) => r.destroy());
+        res.destroy();
+        return g.went(Date.now());
+      }
       if (gone) {
         traffic.push({ at: Date.now(), method: req.method, path: u.pathname.replace(/^\/[0-9a-f]{32}\//, "/SECRET/") + u.search,
           status: 502, bytes: 0, enc: "", asked: "" });
@@ -172,6 +185,7 @@ async function start(opts) {
       held.splice(0).forEach((go) => go());
     },
     down: (on) => { gone = on; },
+    goneAt: (pred) => new Promise((went) => { going = { pred, went }; }),
     cut: () => open.forEach((res) => res.destroy()) };
 }
 
