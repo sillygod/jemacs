@@ -20,7 +20,7 @@
 (require 'ghostherd-lead)
 (require 'ghostherd-hooks)
 
-(declare-function ghostherd--push "ghostherd" (kind session &rest fields))
+(declare-function ghostherd--push "ghostherd-push" (kind session &rest fields))
 
 ;;; Primary: the herd-wide lead
 ;;

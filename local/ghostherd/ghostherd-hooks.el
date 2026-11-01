@@ -17,7 +17,7 @@
 (require 'ghostherd-mail)
 
 (declare-function ghostherd--primary-remember "ghostherd-primary" ())
-(declare-function ghostherd--push "ghostherd" (kind session &rest fields))
+(declare-function ghostherd--push "ghostherd-push" (kind session &rest fields))
 (declare-function ghostherd--relay-kinds "ghostherd-primary" ())
 (declare-function ghostherd-relay "ghostherd-primary" (session kind &optional reason))
 (declare-function ghostherd-relay-default-kind "ghostherd-primary" (session))

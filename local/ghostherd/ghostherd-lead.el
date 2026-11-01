@@ -20,7 +20,7 @@
 (require 'ghostherd-mail)
 
 (declare-function ghostherd--primary-dir-p "ghostherd-primary" (dir))
-(declare-function ghostherd--push "ghostherd" (kind session &rest fields))
+(declare-function ghostherd--push "ghostherd-push" (kind session &rest fields))
 (declare-function ghostherd-primary-say "ghostherd-primary" (text))
 
 ;;; A project's lead
