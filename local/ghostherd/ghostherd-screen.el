@@ -15,10 +15,10 @@
 (require 'ghostherd-core)
 (require 'ghostherd-log)
 
-(declare-function ghostherd--maybe-restore "ghostherd" ())
-(declare-function ghostherd--model-picker "ghostherd" (text))
+(declare-function ghostherd--maybe-restore "ghostherd-spawn" ())
+(declare-function ghostherd--model-picker "ghostherd-spawn" (text))
 (declare-function ghostherd--poll-tick "ghostherd" ())
-(declare-function ghostherd--read-session "ghostherd" (&optional prompt predicate))
+(declare-function ghostherd--read-session "ghostherd-spawn" (&optional prompt predicate))
 (declare-function ghostherd--sidebar-refresh "ghostherd" ())
 (declare-function ghostherd-send "ghostherd" (session text &optional submit))
 (declare-function ghostherd-session-transcript "ghostherd" (session))
