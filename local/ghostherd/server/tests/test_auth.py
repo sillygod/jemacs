@@ -246,13 +246,14 @@ def test_the_agents_token_does_what_an_agent_does(tmp_path: Path, monkeypatch):
 
 def test_every_method_an_agent_calls_is_an_agents(tmp_path: Path):
     """What agents really call, found where they call it -- bin/herd, and the
-    protocol Emacs writes for them (ghostherd.el) -- is what the agents'
+    protocol Emacs writes for them (ghostherd's Elisp) -- is what the agents'
     token reaches: a method added there and not here would fail them.
     `herd memory migrate' is the user's, run with the herd's URL."""
     import re
     root = Path(__file__).resolve().parents[2]
     used = set(re.findall(r'rpc\("([a-z_]+)"', (root / "bin" / "herd").read_text()))
-    proto = (root / "ghostherd.el").read_text()
+    proto = "".join(p.read_text() for p in sorted(root.glob("ghostherd*.el"))
+                    if not p.stem.endswith(("-tests", "-test-helpers")))
     proto = proto[proto.index("(defconst ghostherd--herd-protocol"):]
     proto = proto[:proto.index("\n(")]
     used |= set(re.findall(r"\b((?:herd|memory)_[a-z_]+)\b", proto))

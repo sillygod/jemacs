@@ -632,10 +632,16 @@ def test_chat_rpc(home):
 # ---- What ghostherd writes, read back -------------------------------------
 #
 # The room tells the herd's traffic from yours by its framing, which
-# ghostherd.el writes and herd.py mails.  Read the framing from those
+# ghostherd's Elisp writes and herd.py mails.  Read the framing from those
 # sources, so a change to it fails here, not silently in the room.
 
 GHOSTHERD_EL = Path(__file__).resolve().parents[2] / "ghostherd.el"
+
+
+def ghostherd_elisp() -> str:
+    "The package's Elisp, all of it -- ghostherd.el and the parts it requires -- but its tests."
+    return "".join(p.read_text() for p in sorted(GHOSTHERD_EL.parent.glob("ghostherd*.el"))
+                   if not p.stem.endswith(("-tests", "-test-helpers")))
 
 
 def _elisp_string(source: str, *after: str) -> str:
@@ -661,7 +667,7 @@ def _elisp_string(source: str, *after: str) -> str:
 def test_the_room_reads_what_ghostherd_writes(tmp_path):
     from tests.test_ask import SNAP, _deliver, _mail_to, _store
 
-    el = GHOSTHERD_EL.read_text()
+    el = ghostherd_elisp()
     framed = _elisp_string(el, "(defcustom ghostherd-message-template")
     ask_text = _elisp_string(el, "(defun ghostherd--ask-text", "(format ")
     message = lambda frm, to, body: framed % (frm, to, body)  # noqa: E731
