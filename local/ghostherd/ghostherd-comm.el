@@ -16,7 +16,7 @@
 (require 'ghostherd-screen)
 (require 'ghostherd-spawn)
 
-(declare-function ghostherd--age-string "ghostherd" (time))
+(declare-function ghostherd--age-string "ghostherd-sidebar" (time))
 (declare-function ghostherd--ask-in "ghostherd" (session text))
 (declare-function ghostherd--ask-on-state "ghostherd" (session _old new))
 (declare-function ghostherd--ask-settle "ghostherd" (id session dead &optional error))

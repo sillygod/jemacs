@@ -17,9 +17,9 @@
 
 (declare-function ghostherd--maybe-restore "ghostherd-spawn" ())
 (declare-function ghostherd--model-picker "ghostherd-spawn" (text))
-(declare-function ghostherd--poll-tick "ghostherd" ())
+(declare-function ghostherd--poll-tick "ghostherd-sidebar" ())
 (declare-function ghostherd--read-session "ghostherd-spawn" (&optional prompt predicate))
-(declare-function ghostherd--sidebar-refresh "ghostherd" ())
+(declare-function ghostherd--sidebar-refresh "ghostherd-sidebar" ())
 (declare-function ghostherd-send "ghostherd-comm" (session text &optional submit))
 (declare-function ghostherd-session-transcript "ghostherd" (session))
 
