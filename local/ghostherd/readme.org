@@ -9,10 +9,10 @@ control plane bound to the Emacs session.
 |-------------+-------------------------------------------------------------|
 | Phase       | *3.33* — shared memory, lead start/stop, relay, phone access, rooms & asks |
 | Lifetime    | Emacs (=ghostel= backend) or beyond it (=tmux= backend)      |
-| Tests       | =ghostherd-tests.el= ERT + =server/tests= pytest + =xwapp/e2e= WebKit |
+| Tests       | =ghostherd-tests.el= ERT (a =ghostherd-PART-tests.el= per part) + =server/tests= pytest + =xwapp/e2e= WebKit |
 | Branch      | =master=                                                    |
 | Package     | =local/ghostherd/= (straight =:local-repo=)                 |
-| Files       | =ghostherd.el= · =ghostherd-backend.el= · =ghostherd-tmux.el= · =ghostherd-memory.el= · =ghostherd-memory-page.el= · =ghostherd-usage.el= · =ghostherd-push.el= · =ui/= · =bin/= · =server/= |
+| Files       | =ghostherd.el= and the parts it requires: =ghostherd-core.el= · =ghostherd-worktree.el= · =ghostherd-log.el= · =ghostherd-screen.el= · =ghostherd-spawn.el= · =ghostherd-comm.el= · =ghostherd-sidebar.el= · =ghostherd-mail.el= · =ghostherd-lead.el= · =ghostherd-hooks.el= · =ghostherd-primary.el= · =ghostherd-push.el= (see [[file:docs/design.org][design.org]]); =ghostherd-backend.el= · =ghostherd-tmux.el= · =ghostherd-memory.el= · =ghostherd-memory-page.el= · =ghostherd-usage.el= · =ui/= · =bin/= · =server/= |
 | Wired in    | =jemacs-ai= + leader =SPC a h=                              |
 
 This file is the manual: what it does, how to drive it, what to do when

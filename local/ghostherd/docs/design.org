@@ -32,13 +32,36 @@ registry — a *view*, since on the tmux backend a session may have none.
 
 Files:
 
-| File                  | Holds                                                 |
-|-----------------------+-------------------------------------------------------|
-| =ghostherd-backend.el= | session struct, registry, the slot, ghostel implementor |
-| =ghostherd-tmux.el=    | tmux implementor, naming, recipe stash, restore       |
-| =ghostherd.el=         | everything else — detection, UI, messaging, commands  |
-| =ghostherd-memory.el=  | sidecar process + JSON-RPC client (=url.el=)            |
-| =server/=              | FastAPI JSON-RPC, importers, Qdrant, FastEmbed          |
+| File                      | Holds                                                         |
+|---------------------------+---------------------------------------------------------------|
+| =ghostherd-backend.el=     | session struct, registry, the slot, ghostel implementor       |
+| =ghostherd-tmux.el=        | tmux implementor, naming, recipe stash, restore               |
+| =ghostherd.el=             | the entry: requires the parts below; ghostel hooks, the global mode and its mode line, the quick menu |
+| =ghostherd-core.el=        | settings, the session model's hooks, helpers, the registry's sessions, notifications |
+| =ghostherd-worktree.el=    | git worktrees, the CLIs' trust for them, their deps, a directory gone |
+| =ghostherd-log.el=         | the herd log and its buffer, auto-capture, =ghostherd-report=  |
+| =ghostherd-screen.el=      | state off the screen, menu prompts, CLI errors and turn ends, carry-on, the poll |
+| =ghostherd-spawn.el=       | spawn / restore / kill / rename, where a new agent goes, resume, its model |
+| =ghostherd-comm.el=        | send and confirm a submit, answer, wait, images, handoff, =ghostel_cmd= |
+| =ghostherd-sidebar.el=     | display helpers, the terminal mode, the sidebar               |
+| =ghostherd-mail.el=        | the sidecar's herd mail, asks, how a turn began                |
+| =ghostherd-lead.el=        | a project's lead, what it starts and stops, handoffs           |
+| =ghostherd-hooks.el=       | what agents say through their CLI's hooks, the agy guard       |
+| =ghostherd-primary.el=     | primary, the herd-wide lead; relay                             |
+| =ghostherd-push.el=        | pushes to your phone, the herd tick                            |
+| =ghostherd-memory.el=      | sidecar process + JSON-RPC client (=url.el=)                    |
+| =ghostherd-memory-page.el= | the herd page (an =xwapp= app)                                 |
+| =ghostherd-usage.el=       | account usage                                                  |
+| =server/=                  | FastAPI JSON-RPC, importers, Qdrant, FastEmbed                  |
+
+The parts from =ghostherd-core.el= to =ghostherd-push.el= were one file
+until ask bd6f1e97.  Each requires only parts above it in that list --
+the order their code stood in then -- and =ghostherd.el= requires them
+all, so loading it runs every top-level form in the old order: each
+=add-hook= (the order a hook's functions run in), each =defcustom= (the
+order Customize shows them).  A part's autoload cookies still name
+=ghostherd= (its =generated-autoload-load-name=), so an autoloaded
+command loads the whole package, as it always did.
 
 ** Why a sidecar, and why this sidecar
 
