@@ -106,11 +106,34 @@ const nexts = (tab) => tab.evaluate(() => ({ now: window.__nexts.now, most: wind
     const burst = s.traffic.slice(fromW).filter((t) => t.status === 502 && /\/(next|hello)\?/.test(t.path)).map((t) => t.at - tw);
     check("woken while Emacs is gone: one try at once, then the backoff again", burst.length === 1 && burst[0] < 200,
       s.traffic.slice(fromW).map((t) => [t.path.replace(/\?.*/, ""), t.status, t.at - tw]));
-    // Back.
+    // Back.  The wake kept the backoff (ask c3733d70): its next try is
+    // up to 10 s off, Emacs gone for a while.
     s.down(false);
-    check("Emacs back: the page goes on, the notice gone", await until(async () =>
-      !(await tab.$("#xw-notice")) && pageOf(s.dir) !== "nil", 6000), await said(tab));
+    const tb = Date.now();
+    check("Emacs back: the page goes on, the notice gone, by its next try (10 s at most)", await until(async () =>
+      !(await tab.$("#xw-notice")) && pageOf(s.dir) !== "nil", 11000), await said(tab));
+    check("and not before it: the wake kept the backoff", Date.now() - tb > 3000, Date.now() - tb);
     check("one next asking at most, through it all", (await nexts(tab)).most === 1, await nexts(tab));
+
+    // ---- Not answering said, the network back before the page wakes:
+    // woken, it is unsaid at once, not on a try that waits (ask c3733d70) ----
+    await settled(tab);
+    s.down(true);
+    s.cut();
+    const tn0 = Date.now(), fromN = s.traffic.length;
+    // Said, and a third try failed: the one after waits 4 s.
+    await until(async () => (await said(tab)).filter((t) => /not answering/.test(t)).length >= 2 &&
+      s.traffic.slice(fromN).filter((t) => t.status === 502 && /\/(next|hello)\?/.test(t.path)).length >= 3, 8000);
+    const shownN = !!(await tab.$("#xw-notice"));
+    await tab.evaluate(() => __vis("hidden"));
+    s.down(false);
+    await sleep(1100);
+    const tn = Date.now();
+    await tab.evaluate(() => __vis("visible"));
+    const unsaid = await until(async () => !(await tab.$("#xw-notice")), 3000);
+    check("not answering said, the network back, then woken: unsaid at once", shownN && unsaid && Date.now() - tn < 900,
+      { shownN, ms: Date.now() - tn, since: tn - tn0 });
+    check("and it goes on", await until(async () => pageOf(s.dir) !== "nil", 3000));
 
     // ---- Taken by another device while it slept: it stops ----
     await settled(tab);

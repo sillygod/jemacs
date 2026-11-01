@@ -212,6 +212,25 @@ may."
 ;; on your key press only: nothing a page does reads it.  A field a click
 ;; put the keys in is WebKit's, and its ⌘V never reaches Emacs.
 
+(defconst jwebkit--surrogate-re (format "[%c-%c]" #xD800 #xDFFF)
+  "A lone surrogate.")
+(defconst jwebkit--past-unicode-re (format "[^%c-%c]" 0 #x10FFFF)
+  "A char past Unicode: a raw byte, or one of Emacs's own beyond it.")
+
+(defun jwebkit--scrub (s)
+  "S with any char that is not a valid Unicode scalar made U+FFFD.
+A raw eight-bit byte (> #x10FFFF in Emacs) or a lone surrogate is no
+text: JSON writes a raw byte out as its octal escape, and either encodes
+to invalid UTF-8, which the WebKit IPC guard can abort on.  S itself
+when it is clean, as text almost always is: two regexps ask, in C.  As
+xwapp's `xwapp--scrub' does; jwebkit does not need xwapp."
+  (if (and (multibyte-string-p s)
+           (let ((case-fold-search nil))
+             (or (string-match-p jwebkit--surrogate-re s)
+                 (string-match-p jwebkit--past-unicode-re s))))
+      (concat (mapcar (lambda (c) (if (or (> c #x10FFFF) (<= #xD800 c #xDFFF)) #xFFFD c)) s))
+    s))
+
 (defun jwebkit--paste-js (text)
   "JS putting TEXT in the page's focused field, saying what it did:
 \"pasted\", \"taken\" (the page took it), \"empty\" (no text) or
@@ -241,9 +260,10 @@ On your own key press only (⌘V while keys go to the page): called from
 Lisp, it reads nothing."
   (interactive)
   (when (called-interactively-p 'any)
-    (let ((text (or (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING)) "")))
+    (let ((text (ignore-errors (gui-get-selection 'CLIPBOARD 'STRING))))
       (xwidget-webkit-execute-script
-       (jwebkit--session) (jwebkit--paste-js (if (stringp text) (substring-no-properties text) ""))
+       (jwebkit--session)
+       (jwebkit--paste-js (if (stringp text) (jwebkit--scrub (substring-no-properties text)) ""))
        (lambda (said)
          (pcase said
            ("nofield" (message "No text field has focus in the page"))

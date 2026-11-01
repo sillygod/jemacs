@@ -204,7 +204,7 @@ when a page there asked.
 
 A page that is not the app's is answered 410, with why:
 
-| =taken=  | another page is, in a tab or in Emacs: the tab says so, and reloading it takes the app back |
+| =taken=  | another page is, in a tab or in Emacs: the tab says so, and its Use it here takes the app back |
 | =free=   | none is, and the app can open again: the tab loads again on its own, and takes it          |
 | =closed= | none is, and the app cannot: reloading the tab opens it, or Emacs does                     |
 
@@ -264,7 +264,11 @@ once, and after (2026-10-31):
   page's hello (the header =Xwapp-Ui=) and with a 410 free (="ui"=); the
   page comes back in place only when the two are one.
 - Whether you look is said again, and BACK's intents go before those
-  that waited; an intent under way when it was let go goes again.
+  that waited; an intent under way when it was let go goes again ---
+  unless Emacs took it, which its answer, come after, says.  What the
+  page asked before it was the app's again is of the page as it was:
+  a 410 for it says nothing of the page as it is, nor takes it back a
+  second time.
 - *At once.*  What the page had asking when the phone slept --- its
   =next=, held --- hangs, a dead connection, or fails once it wakes.  So
   when the page is shown again after a second hidden, comes back from
@@ -272,13 +276,32 @@ once, and after (2026-10-31):
   page's backoff runs at once, and a =next= asked before it hid is given
   up and asked again --- one =next= asking at most.  "Emacs is not
   answering" is said once a second try in a row has failed, never at
-  the first: what failed with the sleep is no outage.  Emacs truly gone,
-  the page still backs off, 1 s, 2 s, 4 s, to 10 s; woken meanwhile, it
-  tries once at once, then backs off again.
-- Taken by another device meanwhile, it stops, as any page does; a
-  page with no BACK loads again, as before.  An app without
-=:reopen= keeps no address: after a restart its tab says to open it
-again from Emacs.
+  the first: what failed with the sleep is no outage --- and unsaid as
+  soon as anything is answered, on a wake too.  A =next= is held until
+  Emacs has calls, so a try made while it is said goes with whether you
+  look, which Emacs answers at once.  Emacs truly gone, the page still
+  backs off, 1 s, 2 s, 4 s, to 10 s; woken meanwhile, it tries once at
+  once, and the tries after it wait as long as they would have: a wake
+  keeps the backoff.
+- A 410 or 404 is acted on when it comes, a try waiting or not.
+- Taken by another device meanwhile, it stops, as any page does (see
+  below); a page with no BACK loads again, as before.
+
+An app without =:reopen= keeps no address: after a restart its tab says
+to open it again from Emacs.
+
+*** Taken, and used here again
+
+A page another has taken --- the desk's, while the phone was in your
+pocket --- says so, "This page is open elsewhere now.", with a button,
+/Use it here/.  Pressed, the page says a hello that takes the app, as a
+load's does, and the other page is told it is taken, with the same
+button: two pages take it from each other only when you press it.  A
+page with a BACK goes on where it is, as one that comes back: its
+scroll, a draft, what it has open, nothing loaded again; one without,
+or loaded before its files changed (its hello's =Xwapp-Ui= not its
+own), loads again, which takes it as well.  A page Emacs closed has no
+button: reloading it opens the app.
 
 ** From your other devices
 
@@ -622,7 +645,17 @@ it would on the phone.
 |                | (MEASURE lines; =LOCAL= another checkout's, to compare)         |
 | =wake-retry=   | a phone that wakes, its next hanging or failing first: asked    |
 |                | again at once, nothing said, one next at most; Emacs gone, it   |
-|                | backs off and says so after a second try; taken, it stops       |
+|                | backs off and says so after a second try, a wake keeping the    |
+|                | backoff; said, the network back, woken: unsaid at once; taken,  |
+|                | it stops                                                        |
+| =served=       | the kit against an Emacs played request by request: an intent   |
+|                | under way as the page comes back sent and taken once, its 410   |
+|                | no second coming back; "not answering" unsaid on a wake (shown  |
+|                | again, online); a 410 or 404 while a try waits said at once;    |
+|                | Use it here, where it is or loaded again; closed, no button     |
+| =take-here=    | the herd page taken by the desk, used here again on the phone:  |
+|                | its draft, "more", scroll kept, nothing loaded; the desk told,  |
+|                | and taking it back by hand; files changed meanwhile, loads      |
 | =link=         | the herd page over a slow link (1.6 Mbit/s, 150 ms): first      |
 |                | load, wakes, a ui/ file changed, measured; its files gzip'd,    |
 |                | on the phone and at the desk; its nexts plain                   |
