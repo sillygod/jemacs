@@ -17,13 +17,13 @@
 (require 'ghostherd-spawn)
 
 (declare-function ghostherd--age-string "ghostherd-sidebar" (time))
-(declare-function ghostherd--ask-in "ghostherd" (session text))
-(declare-function ghostherd--ask-on-state "ghostherd" (session _old new))
-(declare-function ghostherd--ask-settle "ghostherd" (id session dead &optional error))
+(declare-function ghostherd--ask-in "ghostherd-mail" (session text))
+(declare-function ghostherd--ask-on-state "ghostherd-mail" (session _old new))
+(declare-function ghostherd--ask-settle "ghostherd-mail" (id session dead &optional error))
 (declare-function ghostherd--hooked-p "ghostherd" (session))
 (declare-function ghostherd--role-give-back "ghostherd" (session text))
 (declare-function ghostherd--turn-began-since "ghostherd" (session at))
-(declare-function ghostherd--turn-submitted "ghostherd" (session))
+(declare-function ghostherd--turn-submitted "ghostherd-mail" (session))
 
 ;;; Inter-agent communication
 
