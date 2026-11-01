@@ -22,7 +22,7 @@
 (require 'ghostherd-usage)
 
 (declare-function alert "alert" (message &rest kwargs))
-(declare-function ghostherd--log-add "ghostherd" (session kind text &optional screen why pinned note))
+(declare-function ghostherd--log-add "ghostherd-log" (session kind text &optional screen why pinned note))
 (declare-function ghostherd--worktree-cleanup "ghostherd-worktree" (session))
 
 ;;; Customization

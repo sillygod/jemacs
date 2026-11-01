@@ -13,7 +13,7 @@
 
 (require 'ghostherd-core)
 
-(declare-function ghostherd--log-add "ghostherd" (session kind text &optional screen why pinned note))
+(declare-function ghostherd--log-add "ghostherd-log" (session kind text &optional screen why pinned note))
 (declare-function ghostherd--sidebar-refresh "ghostherd" ())
 
 ;;; Git worktrees
