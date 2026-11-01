@@ -276,7 +276,12 @@
   // the app's secret, the first segment of the page's own.
   //
   // A 410 means this page is not the app's, and says why:
-  //   taken   another page is: this one stops; reloading takes it back
+  //   taken   another page is: this one stops, and says so, with a
+  //           button to use it here again -- a hello that takes it, as
+  //           a load's does; the other page is told it is taken.  A page
+  //           with a BACK goes on where it is, as when it comes back
+  //           (below); one without, or loaded before its files changed,
+  //           loads again
   //   free    none is, and Emacs can open the app again -- it restarted,
   //           or let this page go while the browser had it frozen (a
   //           phone asleep).  The page loads again, and comes back with a
@@ -290,7 +295,15 @@
   //   closed  none is, and Emacs cannot open the app again by itself
   // When Emacs does not answer at all -- restarting -- the page asks
   // again, less often each time, until it does; "not answering" is said
-  // once a second try has failed too, not on the first.
+  // once a second try has failed too, not on the first, and unsaid once
+  // anything is answered.  A next is held until Emacs has calls, so a
+  // try made while that is said goes with whether you look, which Emacs
+  // answers at once.
+  //
+  // What the page asked before it was the app's again -- an intent under
+  // way when it was let go, or taken -- is of the page as it was: its
+  // answer is no word on the page as it is.  An intent so answered as
+  // not taken goes again; one taken is done with.
   //
   // A phone that wakes: what the page had under way when it slept --
   // its next, held -- died with the connection, and fails, or hangs,
@@ -299,7 +312,9 @@
   // that waits runs at once, and a next asked before it slept is asked
   // again at once, the old one given up: one is ever asking.  A wake is
   // no outage: the failure of what slept is said nothing of, and a try
-  // that waits for a later one is not held back by the page's backoff.
+  // that waits for a later one is not held back by the page's backoff --
+  // which is kept: Emacs gone indeed, the tries after that one wait as
+  // long as they would have.
 
   // Served by Emacs: here, or to another device through a proxy (https).
   const BROWSER = location.protocol !== "file:";
@@ -311,13 +326,16 @@
   const WAKE_AWAY = 1000;
 
   const SAY = {
-    taken: "This page is open elsewhere now. Reload to use it here.",
+    taken: "This page is open elsewhere now.",
+    useHere: "Use it here",
     closed: "Emacs closed this page. Reload to use it here.",
     unknown: "Emacs does not know this page any more. Open it again from Emacs.",
     waiting: "Emacs is not answering. Trying again\u2026 (or open the page again from Emacs)",
   };
 
-  function notice(msg) {
+  // MSG said across the top of the page, or nothing; ACT, {label, run},
+  // a button after it.
+  function notice(msg, act) {
     let el = document.getElementById("xw-notice");
     if (!msg) {
       if (el) el.remove();
@@ -331,6 +349,14 @@
       document.body.appendChild(el);
     }
     el.textContent = msg;
+    if (act) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "xw-notice-act";
+      b.textContent = act.label;
+      b.addEventListener("click", act.run, { once: true });
+      el.append(" ", b);
+    }
   }
 
   function comingBack() {
@@ -351,14 +377,20 @@
     const back = opts && typeof opts.back === "function" ? opts.back : null;
     let soft = comingBack();
     const outbox = [];
-    let hello = false, greeting = false, sending = false, polling = false, over = false;
-    let retry = null, delay = 0, failed = 0;
+    let hello = false, greeting = false, polling = false, over = false;
+    // The intent going now, of OUTBOX: it leaves it once Emacs has it.
+    let sending = null;
+    // WAITING: "not answering" is said.
+    let retry = null, delay = 0, failed = 0, waiting = false;
     // The next asking now, as its AbortController, and since when; and
     // since when the page has been hidden, if it is.
     let poll = null, polledAt = 0, hiddenAt = 0;
     // What the page is made of, as Emacs said in answer to its first
     // hello; and whether the hello under way is the page coming back.
     let ui = null, returning = false;
+    // One more each time the page sets out to be the app's again: what
+    // it asked before is of the page as it was.
+    let era = 0;
 
     function ask(path, body, signal) {
       const opts = body === undefined ? {} : {
@@ -379,59 +411,84 @@
         });
       });
     }
-    function stop(msg) {
+    // The next asking now given up: what it brings, if it comes, is of
+    // the page as it was (next).
+    function letPollGo() {
+      if (!poll) return;
+      const old = poll;
+      poll = null;
+      polling = false;
+      old.abort();
+    }
+    function stop(msg, act) {
       over = true;
-      closeQr();
-      notice(msg);
-      outbox.splice(0).forEach(giveUp);
-    }
-    // A request failed: do what Emacs said, or ask again later.
-    function trouble(e) {
-      if (over || retry) return;
-      if (e.status === 410 && e.why === "free" && back && ui && e.ui === ui) {
-        comeBack();
-      } else if (e.status === 410 && e.why === "free") {
-        over = true;
-        try {
-          sessionStorage.setItem(SOFT, "1");
-        } catch (_) {
-          // Without it the page comes back as a fresh load, taking the app.
-        }
-        location.reload();
-      } else if (e.status === 410) {
-        stop(e.why === "closed" ? SAY.closed : SAY.taken);
-      } else if (e.status === 404) {
-        stop(SAY.unknown);
-      } else {
-        failed++;
-        if (failed > 1) notice(SAY.waiting);
-        delay = Math.min(10000, delay * 2 || 1000);
-        retry = setTimeout(() => {
-          retry = null;
-          connect();
-        }, delay);
-      }
-    }
-    function answered() {
-      failed = 0;
-      if (!delay) return;
-      delay = 0;
-      notice(null);
-    }
-    // The page is back -- shown again, restored, online.  STALE: the next
-    // asking now was asked before it slept, and is asked again.
-    function wake(stale) {
-      if (over) return;
-      if (stale && poll) {
-        const old = poll;
-        poll = null;
-        polling = false;
-        old.abort();
-      }
+      waiting = false;
       if (retry) {
         clearTimeout(retry);
         retry = null;
-        delay = 0;
+      }
+      letPollGo();
+      closeQr();
+      notice(msg, act);
+      outbox.splice(0).forEach(giveUp);
+    }
+    // A request failed: do what Emacs said, or ask again later.  What
+    // Emacs said goes before a try that waits: it is the page's word now.
+    function trouble(e) {
+      if (over) return;
+      if (e.status === 410 || e.status === 404) {
+        if (retry) {
+          clearTimeout(retry);
+          retry = null;
+        }
+        if (e.status === 410 && e.why === "free" && back && ui && e.ui === ui) {
+          comeBack();
+        } else if (e.status === 410 && e.why === "free") {
+          over = true;
+          try {
+            sessionStorage.setItem(SOFT, "1");
+          } catch (_) {
+            // Without it the page comes back as a fresh load, taking the app.
+          }
+          location.reload();
+        } else if (e.status === 410 && e.why === "closed") {
+          stop(SAY.closed);
+        } else if (e.status === 410) {
+          stop(SAY.taken, { label: SAY.useHere, run: useHere });
+        } else {
+          stop(SAY.unknown);
+        }
+        return;
+      }
+      if (retry) return;
+      failed++;
+      if (failed > 1) {
+        waiting = true;
+        notice(SAY.waiting);
+      }
+      delay = Math.min(10000, delay * 2 || 1000);
+      retry = setTimeout(() => {
+        retry = null;
+        connect();
+      }, delay);
+    }
+    function answered() {
+      failed = 0;
+      delay = 0;
+      if (!waiting) return;
+      waiting = false;
+      notice(null);
+    }
+    // The page is back -- shown again, restored, online.  STALE: the next
+    // asking now was asked before it slept, and is asked again.  A try
+    // that waits goes now; the backoff stays as it is, for the tries
+    // after it, should this one fail too.
+    function wake(stale) {
+      if (over) return;
+      if (stale) letPollGo();
+      if (retry) {
+        clearTimeout(retry);
+        retry = null;
       }
       connect();
     }
@@ -448,6 +505,10 @@
     window.addEventListener("online", () => wake(true));
     function connect() {
       if (hello) {
+        if (waiting) {
+          seen = null;
+          look();
+        }
         next();
         pump();
         return;
@@ -456,8 +517,16 @@
       greeting = true;
       ask("hello", {}).then((r) => {
         greeting = false;
+        const made = r.headers.get("Xwapp-Ui");
+        // Back, but loaded before the files Emacs serves now: loads again,
+        // as the app's page, which it is.
+        if (returning && !(ui && made === ui)) {
+          over = true;
+          location.reload();
+          return;
+        }
         hello = true;
-        if (!ui) ui = r.headers.get("Xwapp-Ui");
+        if (!ui) ui = made;
         answered();
         if (returning) welcomeBack();
         next();
@@ -474,16 +543,36 @@
     function comeBack() {
       if (returning) return;
       returning = true;
+      era++;
       hello = false;
       soft = true;
+      letPollGo();
+      connect();
+    }
+    // Taken by another page, and you would have it here: a hello that
+    // takes it, and the page goes on where it is, as one that comes back.
+    // One that cannot -- no BACK -- loads again, which takes it as well.
+    function useHere() {
+      if (!over) return;
+      if (!back) {
+        location.reload();
+        return;
+      }
+      over = false;
+      notice(null);
+      returning = true;
+      era++;
+      hello = false;
+      soft = false;
       connect();
     }
     // The app's page again: Emacs, which closed what it was doing for it,
     // is told again what it asked on its load -- whether you look, and
-    // BACK's -- before the intents that waited.
+    // BACK's -- before the intents that waited, less any word of whether
+    // you looked, which look() has just said as it is now.
     function welcomeBack() {
       returning = false;
-      const waited = outbox.splice(0);
+      const waited = outbox.splice(0).filter((rec) => rec.intent.op !== "xwapp-seen");
       seen = null;
       look();
       try {
@@ -493,22 +582,33 @@
       }
       outbox.push(...waited);
     }
+    // REC, which Emacs has, out of the outbox, wherever it is now.
+    function sent(rec) {
+      const i = outbox.indexOf(rec);
+      if (i >= 0) outbox.splice(i, 1);
+    }
     // An intent Emacs answers it cannot take -- unreadable (400), too big
     // (413) -- is lost, not asked again: asked again, it would be refused
-    // again, and hold up every intent after it.
+    // again, and hold up every intent after it.  One asked of the page as
+    // it was, and not taken, goes again, now.
     function pump() {
       if (!hello || sending || over || retry || !outbox.length) return;
-      sending = true;
-      ask("intent", outbox[0].intent).then(() => {
-        outbox.shift();
-        sending = false;
+      const rec = (sending = outbox[0]), mine = era;
+      ask("intent", rec.intent).then(() => {
+        sending = null;
+        sent(rec);
         answered();
         pump();
       }, (e) => {
-        sending = false;
+        sending = null;
         if (e.status === 400 || e.status === 413) {
-          giveUp(outbox.shift());
+          sent(rec);
+          giveUp(rec);
           answered();
+          pump();
+          return;
+        }
+        if (mine !== era) {
           pump();
           return;
         }
@@ -536,9 +636,9 @@
       }
     }
     // A chain of promises, no timer: a background tab throttles timers.
-    // One that was given up for another (wake) is done with: its calls,
-    // if they came after all, run -- Emacs sent them before it had the
-    // other -- and nothing else.
+    // One that was given up for another (wake, the page the app's again)
+    // is done with: its calls, if they came after all, run -- Emacs sent
+    // them before it had the other -- and nothing else.
     function next() {
       if (over || polling || retry) return;
       polling = true;
@@ -563,11 +663,16 @@
     }
 
     // Whether you could be looking, for Emacs to ask with xwapp-seen-p.
+    // Said anew, it is all Emacs needs of it: an older word not yet sent
+    // is dropped.
     let seen = null;
     function look() {
       const now = document.visibilityState === "visible" && document.hasFocus();
       if (now === seen) return;
       seen = now;
+      for (let i = outbox.length - 1; i >= 0; i--) {
+        if (outbox[i] !== sending && outbox[i].intent.op === "xwapp-seen") outbox.splice(i, 1);
+      }
       outbox.push({ intent: { op: "xwapp-seen", seen: now } });
       pump();
     }

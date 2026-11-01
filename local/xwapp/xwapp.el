@@ -703,7 +703,8 @@ a page open in a browser tab is let go: an app has one page at a time."
 ;; A page that is not the app's is answered 410, with why:
 ;;
 ;;   taken    another page is the app's, in a tab or in Emacs.  The tab
-;;            says so; reloading it takes the app back.
+;;            says so, with a button that takes the app back (a
+;;            hello, not soft), as reloading it does.
 ;;   free     no page is, and the app can open again (`xwapp-create's
 ;;            :reopen).  The tab loads again on its own, and comes back
 ;;            with a soft hello, which takes nothing another page has.

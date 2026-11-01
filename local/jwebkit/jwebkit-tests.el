@@ -217,6 +217,27 @@ from Lisp, nothing is read and nothing sent."
       (should (equal scripts (list (jwebkit--paste-js "")))))))
 
 
+(ert-deftest jwebkit-test-paste-scrubs-what-is-no-text ()
+  "A clipboard holding what no text has -- a raw byte, a lone surrogate --
+pastes U+FFFD in its place: no octal escape of a byte in the script, and
+nothing WebKit's IPC guard could abort on.  Clean text goes as it is,
+the same string, not a copy."
+  (dolist (clean (list "plain 你好 😀" "ascii" ""))
+    (should (eq (jwebkit--scrub clean) clean)))
+  (should (equal (jwebkit--scrub (string ?a (unibyte-char-to-multibyte #xFF) ?b)) "a\uFFFDb"))
+  (should (equal (jwebkit--scrub (string ?a #xD800 ?b #xDFFF)) "a\uFFFDb\uFFFD"))
+  (should (equal (jwebkit--scrub (string ?x (max-char) ?y)) "x\uFFFDy"))
+  (let ((scripts nil)
+        (clip (concat "one " (string (unibyte-char-to-multibyte #xC3) #xDC00) " two")))
+    (cl-letf (((symbol-function 'gui-get-selection) (lambda (&rest _) clip))
+              ((symbol-function 'xwidget-webkit-current-session) (lambda () 'xw))
+              ((symbol-function 'xwidget-webkit-execute-script) (lambda (_xw js &rest _) (push js scripts))))
+      (call-interactively #'jwebkit-paste)
+      (should (equal scripts (list (jwebkit--paste-js "one \uFFFD\uFFFD two"))))
+      (should-not (string-match-p "\\\\[0-7]\\{3\\}" (car scripts)))
+      (should (string-search "one \uFFFD\uFFFD two" (car scripts)))
+      (should-not (cl-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) (car scripts))))))
+
 ;;; PDF
 
 (defmacro jwebkit-tests--with-pdfjs (&rest body)
