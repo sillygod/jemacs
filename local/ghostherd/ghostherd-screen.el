@@ -20,7 +20,7 @@
 (declare-function ghostherd--poll-tick "ghostherd" ())
 (declare-function ghostherd--read-session "ghostherd-spawn" (&optional prompt predicate))
 (declare-function ghostherd--sidebar-refresh "ghostherd" ())
-(declare-function ghostherd-send "ghostherd" (session text &optional submit))
+(declare-function ghostherd-send "ghostherd-comm" (session text &optional submit))
 (declare-function ghostherd-session-transcript "ghostherd" (session))
 
 ;;; State detection

@@ -22,7 +22,7 @@
 (declare-function ghostherd--rule-reason "ghostherd-screen" (text hit))
 (declare-function ghostherd--scrolled-back-p "ghostherd-screen" (text scrolled))
 (declare-function ghostherd--sidebar-leave-overlay "ghostherd" ())
-(declare-function ghostherd--submit-reported "ghostherd" (session))
+(declare-function ghostherd--submit-reported "ghostherd-comm" (session))
 (declare-function ghostherd-poll-session "ghostherd-screen" (session &optional screen))
 
 ;;; Herd log

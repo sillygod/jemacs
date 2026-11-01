@@ -41,7 +41,7 @@
 (declare-function ghostherd--with-lead-role "ghostherd" (kind args))
 (declare-function ghostherd--without-resume "ghostherd" (kind args))
 (declare-function ghostherd-primary-start "ghostherd" (&optional display))
-(declare-function ghostherd-prompt "ghostherd" (session prompt &optional wait timeout))
+(declare-function ghostherd-prompt "ghostherd-comm" (session prompt &optional wait timeout))
 (declare-function ghostherd-session-conversation "ghostherd" (session))
 
 ;;; Spawn / kill / rename
