@@ -28,7 +28,7 @@
 (declare-function ghostel-copy-mode "ghostel")
 (declare-function ghostel-readonly-exit "ghostel")
 (declare-function evil-define-key* "evil")
-(declare-function ghostherd-relay "ghostherd" (session kind &optional reason))
+(declare-function ghostherd-relay "ghostherd-primary" (session kind &optional reason))
 
 ;;; Display helpers
 

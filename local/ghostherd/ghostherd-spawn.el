@@ -28,7 +28,7 @@
 (declare-function ghostherd--lead-args "ghostherd-lead" (kind))
 (declare-function ghostherd--link "ghostherd-hooks" (session))
 (declare-function ghostherd--memory-opening "ghostherd-lead" (project &optional agent))
-(declare-function ghostherd--primary-forget "ghostherd" ())
+(declare-function ghostherd--primary-forget "ghostherd-primary" ())
 (declare-function ghostherd--register-eval-cmds "ghostherd" ())
 (declare-function ghostherd--scrub-wrapper "ghostherd-hooks" (&optional directory))
 (declare-function ghostherd--session-completion-table "ghostherd-sidebar" (candidates))
@@ -40,7 +40,7 @@
 (declare-function ghostherd--with-agy-guard "ghostherd-hooks" (args dir))
 (declare-function ghostherd--with-lead-role "ghostherd-lead" (kind args))
 (declare-function ghostherd--without-resume "ghostherd-hooks" (kind args))
-(declare-function ghostherd-primary-start "ghostherd" (&optional display))
+(declare-function ghostherd-primary-start "ghostherd-primary" (&optional display))
 (declare-function ghostherd-prompt "ghostherd-comm" (session prompt &optional wait timeout))
 (declare-function ghostherd-session-conversation "ghostherd-hooks" (session))
 

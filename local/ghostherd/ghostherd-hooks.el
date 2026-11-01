@@ -16,11 +16,11 @@
 (require 'ghostherd-sidebar)
 (require 'ghostherd-mail)
 
-(declare-function ghostherd--primary-remember "ghostherd" ())
+(declare-function ghostherd--primary-remember "ghostherd-primary" ())
 (declare-function ghostherd--push "ghostherd" (kind session &rest fields))
-(declare-function ghostherd--relay-kinds "ghostherd" ())
-(declare-function ghostherd-relay "ghostherd" (session kind &optional reason))
-(declare-function ghostherd-relay-default-kind "ghostherd" (session))
+(declare-function ghostherd--relay-kinds "ghostherd-primary" ())
+(declare-function ghostherd-relay "ghostherd-primary" (session kind &optional reason))
+(declare-function ghostherd-relay-default-kind "ghostherd-primary" (session))
 
 ;;; What agents say about themselves, through their CLI's hooks
 ;;
