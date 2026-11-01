@@ -13,17 +13,17 @@
 
 (require 'ghostherd-core)
 
-(declare-function ghostherd--box-top "ghostherd" (lines))
-(declare-function ghostherd--input-at-foot-p "ghostherd" (text))
-(declare-function ghostherd--match-rules "ghostherd" (text rules &optional replaces-input spinner))
+(declare-function ghostherd--box-top "ghostherd-screen" (lines))
+(declare-function ghostherd--input-at-foot-p "ghostherd-screen" (text))
+(declare-function ghostherd--match-rules "ghostherd-screen" (text rules &optional replaces-input spinner))
 (declare-function ghostherd--model-picker "ghostherd" (text))
-(declare-function ghostherd--prompt "ghostherd" (screen))
+(declare-function ghostherd--prompt "ghostherd-screen" (screen))
 (declare-function ghostherd--read-session "ghostherd" (&optional prompt predicate))
-(declare-function ghostherd--rule-reason "ghostherd" (text hit))
-(declare-function ghostherd--scrolled-back-p "ghostherd" (text scrolled))
+(declare-function ghostherd--rule-reason "ghostherd-screen" (text hit))
+(declare-function ghostherd--scrolled-back-p "ghostherd-screen" (text scrolled))
 (declare-function ghostherd--sidebar-leave-overlay "ghostherd" ())
 (declare-function ghostherd--submit-reported "ghostherd" (session))
-(declare-function ghostherd-poll-session "ghostherd" (session &optional screen))
+(declare-function ghostherd-poll-session "ghostherd-screen" (session &optional screen))
 
 ;;; Herd log
 ;;
