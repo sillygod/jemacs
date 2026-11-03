@@ -3899,10 +3899,12 @@
   // issue-p'): a look back, where the Inbox is what needs you now.
   // `zoom' is a moment zoomed to, or null: {t, id, back}, the entry's time
   // and id, and the filters set aside while in it, given back on leaving.
+  // `listed' and `drawn' are the list's rows and those drawn, as last drawn.
   const LOGCAP = 300;
   const ZOOM = 15 * 60e3;
   let herd = { entries: null, range: 24 * HOUR, session: "", issues: false,
-               screensOnly: false, filter: "", open: new Set(), shown: LOGCAP, zoom: null };
+               screensOnly: false, filter: "", open: new Set(), shown: LOGCAP, zoom: null,
+               listed: 0, drawn: 0 };
 
   function sessionColor(name) {
     let h = 0;
@@ -3960,7 +3962,9 @@
       const segs = [];
       const marks = [];
       for (const e of list) {
-        if (e.t > end) break;
+        // Past a moment's end; not past a live range's: "now" is this
+        // device's clock, and a line the Mac timed may be a moment ahead.
+        if (herd.zoom && e.t > end) break;
         if (e.kind === "state" && e.new) {
           if (e.t >= start && state) segs.push({ state, a: since, b: e.t, reason, id: from });
           state = e.new;
@@ -4024,25 +4028,41 @@
     return (day === "Today" ? "" : day + " ") + clock(t - ZOOM).slice(0, 5) + "–" + clock(t + ZOOM).slice(0, 5);
   }
 
+  // In the window: past its start, and before its end only in a moment's --
+  // a live range ends at now on this device's clock, which may run a
+  // moment behind the Mac's that timed the entry.
+  function inLogWindow(t, w) {
+    return t >= w.start && (!herd.zoom || t <= w.end);
+  }
+
   function issueCount() {
-    const { start, end } = logWindow();
+    const w = logWindow();
     let n = 0;
     for (const e of herd.entries || []) {
-      if (e.issue && e.t >= start && e.t <= end && (!herd.session || e.session === herd.session)) n++;
+      if (e.issue && inLogWindow(e.t, w) && (!herd.session || e.session === herd.session)) n++;
     }
     return n;
+  }
+
+  function issuesLabel(n) {
+    return "Issues" + (n ? ' <span class="count">' + n + "</span>" : "");
+  }
+
+  // The agent picker's options: each agent with how many lines it has.
+  function sessionOptions() {
+    const counts = {};
+    (herd.entries || []).forEach((e) => { if (e.session !== "herd") counts[e.session] = (counts[e.session] || 0) + 1; });
+    return ['<option value="">All agents</option>']
+      .concat(Object.keys(counts).sort().map((s) =>
+        '<option value="' + esc(s) + '"' + (herd.session === s ? " selected" : "") + ">" + esc(s) + " (" + counts[s] + ")</option>"))
+      .join("");
   }
 
   function showLog() {
     view = tab = "log";
     src = null;
     chrome();
-    const counts = {};
-    (herd.entries || []).forEach((e) => { if (e.session !== "herd") counts[e.session] = (counts[e.session] || 0) + 1; });
-    const opts = ['<option value="">All agents</option>']
-      .concat(Object.keys(counts).sort().map((s) =>
-        '<option value="' + esc(s) + '"' + (herd.session === s ? " selected" : "") + ">" + esc(s) + " (" + counts[s] + ")</option>"))
-      .join("");
+    const opts = sessionOptions();
     const z = herd.zoom;
     const issues = herd.entries ? issueCount() : 0;
     app.innerHTML =
@@ -4055,7 +4075,7 @@
       '<button type="button" class="chip' + (herd.issues ? " on" : "") + '" data-act="issues-only" title="' +
         esc("What went wrong, looking back: blocks, input that did not go in, asks unanswered or failed, " +
             "guard holds, denied checks, quotas and screens no rule knew.  What needs you now is the Inbox.") +
-        '">Issues' + (issues ? ' <span class="count">' + issues + "</span>" : "") + "</button>" +
+        '">' + issuesLabel(issues) + "</button>" +
       '<button type="button" class="chip' + (herd.screensOnly ? " on" : "") + '" data-act="screens-only">Screens</button>' +
       "</div>" +
       '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' + SLASH + '" value="' + esc(herd.filter) + '">' +
@@ -4133,23 +4153,28 @@
                   (e.note || "") + " " + (e.screen || "")).toLowerCase().includes(f);
   }
 
+  // Whether the list's filters let E through (F, the text filter, lowercased).
+  function logPasses(e, f) {
+    return !(herd.screensOnly && !e.screen) && !(herd.session && e.session !== herd.session) &&
+      !(herd.issues && !e.issue) && logMatches(e, f);
+  }
+
   // The entries the list shows, newest first: in the window, past the filters.
   function logRows() {
-    const { start, end } = logWindow();
+    const w = logWindow();
     const f = herd.filter.trim().toLowerCase();
     const rows = [];
     const entries = herd.entries || [];
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
-      if (e.t < start) break;
-      if (e.t > end) continue;
-      if (herd.screensOnly && !e.screen) continue;
-      if (herd.session && e.session !== herd.session) continue;
-      if (herd.issues && !e.issue) continue;
-      if (!logMatches(e, f)) continue;
-      rows.push(e);
+      if (e.t < w.start) break;
+      if (inLogWindow(e.t, w) && logPasses(e, f)) rows.push(e);
     }
     return rows;
+  }
+
+  function logSum(listed, drawn) {
+    return listed + (listed === 1 ? " entry" : " entries") + (listed > drawn ? ", showing " + drawn : "");
   }
 
   function renderLogList() {
@@ -4161,13 +4186,16 @@
     // Draw the most recent `shown' at once; the rest wait behind a button.
     const shown = rows.slice(0, herd.shown);
     const more = rows.length - shown.length;
+    // What it drew, for a new line to be put on top of (logAddInPlace).
+    herd.listed = rows.length;
+    herd.drawn = shown.length;
     let day = "";
     box.innerHTML = rows.length
-      ? '<div class="sum">' + rows.length + (rows.length === 1 ? " entry" : " entries") +
-          (more > 0 ? ", showing " + shown.length : "") + "</div>" +
+      ? '<div class="sum">' + logSum(rows.length, shown.length) + "</div>" +
         shown.map((e) => {
           const d = dayLabel(e.t);
-          const head = d !== day ? '<h2 class="section">' + esc(d) + "</h2>" : "";
+          const head = d !== day ? '<h2 class="section" data-day="' + esc(new Date(e.t).toDateString()) + '">' +
+            esc(d) + "</h2>" : "";
           day = d;
           return head + entryRow(e, re);
         }).join("") +
@@ -4248,6 +4276,44 @@
     if (e) drawUpTo(e);
     renderLog();
     if (!flashRow(z.id)) app.scrollTop = 0;
+  }
+
+  // A new line, as it is logged: its row put on top, the counts and the
+  // lanes brought up to date -- the list not rebuilt.  With a week of rows
+  // drawn (a deep click, Show earlier) a rebuild cost each new line a
+  // quarter of a second on a phone, and the herd logs hundreds a day.  The
+  // toolbar is touched in place too, so a filter being typed keeps its
+  // focus.  False when it cannot be done here and the whole Log is drawn
+  // instead: not drawn yet, a line older than the one before it, a list
+  // that was empty, a new day (its Today and Yesterday move up).
+  function logAddInPlace(e, prev) {
+    const box = $("log-list"), sel = $("log-session");
+    const chip = app.querySelector('.log-tools [data-act="issues-only"]');
+    if (!box || !sel || !chip || !$("lanes")) return false;
+    if (prev && e.t < prev.t) return false;
+    const w = logWindow();
+    const f = herd.filter.trim().toLowerCase();
+    const shows = inLogWindow(e.t, w) && logPasses(e, f);
+    const head = box.querySelector("h2.section");
+    const sum = box.querySelector(".sum");
+    if (shows && (!head || !sum || head.getAttribute("data-day") !== new Date(e.t).toDateString())) return false;
+    if (e.session !== "herd") {
+      const opt = Array.from(sel.options).find((o) => o.value === e.session);
+      if (!opt) sel.innerHTML = sessionOptions();
+      else opt.textContent = e.session + " (" + herd.entries.filter((x) => x.session === e.session).length + ")";
+    }
+    // Its own, and those a live range has since left behind.
+    const issues = issuesLabel(issueCount());
+    if (chip.innerHTML !== issues) chip.innerHTML = issues;
+    renderLanes();
+    if (!shows) return true;
+    head.insertAdjacentHTML("afterend", entryRow(e, termRe(herd.filter)));
+    // Nothing falls off the foot: the rows drawn grow by this one.
+    herd.listed++;
+    herd.drawn++;
+    if (herd.drawn > herd.shown) herd.shown = herd.drawn;
+    sum.textContent = logSum(herd.listed, herd.drawn);
+    return true;
   }
 
   // "now" moves: redraw the open segments now and then.  A moment's window
@@ -6406,12 +6472,17 @@
 
     logAdd: (e) => {
       if (!herd.entries || !e) return;
-      herd.entries.push(e);
+      const prev = herd.entries[herd.entries.length - 1];
+      // In time order, as the list and the lanes read them: a line timed
+      // before the last (two Emacsen, a clock set back) goes where it falls.
+      let at = herd.entries.length;
+      while (at > 0 && herd.entries[at - 1].t > e.t) at--;
+      herd.entries.splice(at, 0, e);
       if (view !== "log") return;
       // New entries go on top: keep what is being read where it is.
       const before = app.scrollHeight;
       const top = app.scrollTop;
-      renderLog();
+      if (!logAddInPlace(e, prev)) renderLog();
       if (top > 0) app.scrollTop = top + (app.scrollHeight - before);
     },
 

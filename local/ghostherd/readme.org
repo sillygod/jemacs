@@ -2162,8 +2162,10 @@ it fails is set aside, a range too short widens to the least that holds
 it, and rows not yet drawn are.  Entries are newest first by day,
 filterable by agent, text, Screens, or Issues, and a kept screen opens
 in place.  New entries arrive as they are logged
-(=ghostherd-log-functions=), and the page needs no sidecar for any of
-it.
+(=ghostherd-log-functions=), each put on top of the list where it is
+drawn --- not the list redrawn, which with a week of rows on a phone
+took a quarter of a second a line --- and the page needs no sidecar for
+any of it.
 
 Issues are the entries worth a look after the fact, as Emacs marks them
 (=ghostherd-log-issue-p=, by the exact lines the herd writes): a
