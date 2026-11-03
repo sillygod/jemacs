@@ -302,6 +302,7 @@ METHOD and PARAMS, answers them.  `calls' holds (FN . OBJ) oldest first."
   `(progn
      (skip-unless (require 'ghostherd-memory-page nil t))
      (let ((requests nil) (calls nil) (reply (lambda (_m _p) nil)) (fail nil) (watched 0)
+           (ghostherd-memory-page--lazy nil)
            (ghostherd-memory-page--importing nil)
            (ghostherd-memory-page--progress-shown nil)
            (ghostherd-memory-page--progress-inflight nil)

@@ -72,6 +72,58 @@ reach the page as an array of objects."
       (should (equal (mapcar (lambda (s) (alist-get 'source_path s)) (alist-get 'sources back))
                      '("/a" "/b"))))))
 
+(ert-deftest ghostherd-test-memory-page-sessions-to-who-shows-them ()
+  "A page that asks for the sessions as it needs them (its ready says
+`lazy') is sent their count alone -- unless it asks, or Emacs opens it
+on a view that lists them; a page loaded before, which does not say
+it, is sent them all, as it was."
+  (ghostherd-test--with-page
+    (setq reply (lambda (_m p) (list :total 928 :sources (if (equal (plist-get p :limit) 1)
+                                                            '((:source_path "/a"))
+                                                          '((:source_path "/a") (:source_path "/b"))))))
+    (let ((ghostherd-memory-page--pending nil)
+          (count-only (lambda ()
+                        (let ((ctx (ghostherd-test--call calls "setContext")))
+                          (and (not (plist-member ctx :sources))
+                               (equal (plist-get ctx :total) 928))))))
+      ;; Its load: the count, by a list of one.
+      (ghostherd-memory-page--handle '((op . "ready") (lazy . t)))
+      (should (equal requests '(("memory_list" (:limit 1)))))
+      (should (funcall count-only))
+      (should-not (plist-member (ghostherd-test--call calls "setContext") :changed))
+      ;; Sessions shows, and asks.
+      (setq requests nil)
+      (ghostherd-memory-page--handle '((op . "refresh") (lazy . t) (sessions . t)))
+      (should (equal requests '(("memory_list" (:limit 5000)))))
+      (should (equal (length (plist-get (ghostherd-test--call calls "setContext") :sources)) 2))
+      ;; Refresh on a view that does not list them: the count.
+      (setq requests nil)
+      (ghostherd-memory-page--handle '((op . "refresh") (lazy . t) (sessions . :false)))
+      (should (equal requests '(("memory_list" (:limit 1)))))
+      (should (funcall count-only))
+      ;; An import ends: the count, and word that they changed -- the
+      ;; page asks again for the list it has.
+      (setq requests nil)
+      (ghostherd-memory-page--send-context nil t)
+      (should (equal requests '(("memory_list" (:limit 1)))))
+      (should (eq (plist-get (ghostherd-test--call calls "setContext") :changed) t))
+      ;; Opened by Emacs on Sessions: the list at once.
+      (setq requests nil)
+      (setq ghostherd-memory-page--pending '(:view "sessions" :query nil :project nil))
+      (ghostherd-memory-page--handle '((op . "ready") (lazy . t)))
+      (should (equal requests '(("memory_list" (:limit 5000)))))
+      (should (equal (plist-get (ghostherd-test--call calls "setContext") :view) "sessions"))
+      (should (plist-get (ghostherd-test--call calls "setContext") :sources))
+      ;; A page loaded before: all of them, on its ready, its refresh,
+      ;; and an import's end.
+      (setq requests nil)
+      (ghostherd-memory-page--handle '((op . "ready")))
+      (ghostherd-memory-page--handle '((op . "refresh")))
+      (ghostherd-memory-page--send-context nil t)
+      (should (equal requests '(("memory_list" (:limit 5000)) ("memory_list" (:limit 5000))
+                                ("memory_list" (:limit 5000)))))
+      (should (plist-get (ghostherd-test--call calls "setContext") :sources)))))
+
 (ert-deftest ghostherd-test-memory-page-links-and-copy ()
   (ghostherd-test--with-page
     (let (browsed copied)
