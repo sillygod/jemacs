@@ -1668,6 +1668,23 @@ own ETag, and nothing is kept."
       (let ((xwapp--gzip-program nil))
         (should-not (xwapp-test--header (xwapp-test--raw path gz) "Vary"))))))
 
+(ert-deftest xwapp-test-an-answer-past-the-socket-goes-from-a-thread ()
+  "An answer past `xwapp--send-aside' -- what the proxy's socket takes
+at once -- goes from a thread, whole: Emacs, finding that socket full,
+would wait 20 ms at a time with no key read.  One within it, at once."
+  (skip-unless (fboundp 'make-thread))
+  (xwapp-test--with-browser
+    (let ((past (concat (make-string (1+ xwapp--send-aside) ?x) "end")))
+      (with-temp-file (expand-file-name "app/ui/past.js" root) (insert past))
+      (with-temp-file (expand-file-name "app/ui/within.js" root)
+        (insert (make-string (- xwapp--send-aside 1024) ?x)))
+      (xwapp-test--counting-threads
+        (should (equal (cdr (xwapp-test--do "GET" (xwapp-test--at app "app/ui/within.js")))
+                       (make-string (- xwapp--send-aside 1024) ?x)))
+        (should-not made)
+        (should (equal (cdr (xwapp-test--do "GET" (xwapp-test--at app "app/ui/past.js"))) past))
+        (should (equal made '("xwapp-send")))))))
+
 (ert-deftest xwapp-test-browser-a-free-page-is-told-what-it-is-made-of ()
   "A page's hello is answered with what it is made of -- its directory's
 files and the kit's -- and a page let go that can come back (free) is

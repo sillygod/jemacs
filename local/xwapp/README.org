@@ -112,10 +112,20 @@ another site's page, gets nothing.
 socket, and a phone on a slow link reads slowly: an 8 MB file to a
 reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
 waiting 4.3 of them; from a thread, which waits on the socket with
-Emacs free, the key was taken in 4 ms.  So any answer past 256 KB
-(=xwapp--send-aside=) goes from a Lisp thread of its own: a file the
-app serves, the page's own (the herd's app.js is 313 KB), and a =next=
-with a herd in it.
+Emacs free, the key was taken in 4 ms.
+
+Nor need the reader be slow.  The proxy reaches Emacs over a unix
+socket, which holds 8 KB on macOS (=net.local.stream.sendspace=), and
+Emacs, finding it full, sleeps 20 ms before trying again (=send_process=
+in src/process.c), no key read meanwhile: some 340 KB a second, whoever
+reads.  The herd's app.js, 90 KB gzip'd, held Emacs 0.26 s; its Inbox,
+44 KB, 0.13 s.  So any answer past 8 KB (=xwapp--send-aside=), what
+that socket takes at once, goes from a Lisp thread of its own: a file
+of the page's or the app's, a =next=.  The thread sends no faster; it
+lets Emacs read keys meanwhile.  Measured (=e2e/herd-open.js= with
+=BLOCK=1=, a key pressed every 20 ms while a phone on 5 Mbit/s opens the
+herd page cold): read 275--298 ms late at worst with 256 KB the mark,
+25--42 ms with 8 KB.
 
 - *In order.*  Each request is a connection of its own, answered once,
   and the page asks its next =next= only once it has read the last.
@@ -158,7 +168,7 @@ not a symlink.  The page has each as =XW.file(NAME)=:
 Anyone the page is served to can ask for any name: make the names ones
 nobody guesses.  Nothing here takes a path.
 
-A file of more than 256 KB goes from a Lisp thread of its own, as any
+A file of more than 8 KB goes from a Lisp thread of its own, as any
 answer that big does: see "A big answer goes from a thread".
 
 *** Sets of their own: documents, read and never run

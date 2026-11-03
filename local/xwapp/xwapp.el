@@ -1243,10 +1243,19 @@ this machine, where any page in the browser could ask."
 ;; socket, and a phone on a slow link reads slowly: an 8 MB image to a
 ;; reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
 ;; waiting it out.  Sent from a thread, which waits on the socket with
-;; Emacs free, the key was taken in 4 ms.  So any answer past
-;; `xwapp--send-aside' goes from a thread of its own: an app's file, the
-;; page's own (the herd's app.js is past it), and a `next' with a herd
-;; in it.  Safe for the long-poll:
+;; Emacs free, the key was taken in 4 ms.
+;;
+;; Nor need the reader be slow.  The proxy reaches Emacs over a unix
+;; socket, which holds 8 KB on macOS (net.local.stream.sendspace), and
+;; Emacs, finding it full, sleeps 20 ms before it tries again
+;; (send_process, src/process.c) -- a key unread all the while.  So Emacs
+;; sends the proxy some 340 KB a second at most, whoever reads: the
+;; herd's app.js, 90 KB gzip'd, held it 0.26 s; its Inbox, 44 KB, 0.13
+;; s.  Hence `xwapp--send-aside' is what that socket takes at once: an
+;; answer past it -- a file of the page's, an app's, a `next' -- goes from
+;; a thread of its own, and one within it is in the socket before
+;; `process-send-string' returns.  The thread does not send faster; it
+;; lets Emacs do the rest meanwhile.  Safe for the long-poll:
 ;;
 ;;   - In order.  Every request is a connection of its own, answered
 ;;     once; the page asks its next `next' only once it has read the
@@ -1278,8 +1287,9 @@ this machine, where any page in the browser could ask."
 ;; its own binding alone.  The connection left open past
 ;; `xwapp--send-patience' is closed from the main thread.
 
-(defconst xwapp--send-aside (* 256 1024)
-  "Bytes past which an answer is sent from a thread of its own.")
+(defconst xwapp--send-aside (* 8 1024)
+  "Bytes past which an answer is sent from a thread of its own: what the
+proxy's socket takes at once.  See \"A big answer goes from a thread\".")
 
 (defvar xwapp--send-patience 60
   "Seconds an answer sent from a thread may take before its connection
