@@ -1565,7 +1565,7 @@ kit's too.  A file under 1 KB, or one not text, goes plain, with no Vary."
         (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
         (should-not (xwapp-test--header raw "Content-Encoding"))
         (should-not (xwapp-test--header raw "Vary"))))
-    ;; What changes, never.
+    ;; The page's calls, on loopback: never (`xwapp-test-next-gzipd-through-the-proxy').
     (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}")
     (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil '(("Accept-Encoding" . "gzip")))))
       (xwapp-test--turn)
@@ -1667,6 +1667,158 @@ own ETag, and nothing is kept."
       ;; Off: plain, and no Vary.
       (let ((xwapp--gzip-program nil))
         (should-not (xwapp-test--header (xwapp-test--raw path gz) "Vary"))))))
+
+;; The page's calls gzip'd, through the proxy; and never a secret.
+
+(defconst xwapp-test--said
+  (apply #'concat (make-list 400 "An agent said this, and then that. "))
+  "Some 14 KB of what the page is told, made up: past `xwapp--gzip-next-min'.")
+
+(defmacro xwapp-test--through-proxy (&rest body)
+  "BODY in `xwapp-test--gzipping', the page served to your other devices
+through the proxy, its page `p1' there; `ask' (HEADERS THUNK) asks its
+`next' through the proxy with HEADERS (the proxy's own besides), calls
+THUNK once it is held, and gives the whole answer.  Every answer whose
+body goes gzip'd is inflated: those that hold a secret xwapp keeps
+gather in `leaked', the count of all in `gzipped'."
+  (declare (indent 0))
+  `(xwapp-test--gzipping
+     (let ((xwapp-remote-hosts (list xwapp-test--box))
+           (xwapp-remote-users (list "me@example.com"))
+           (leaked nil)
+           (gzipped 0)
+           (respond (symbol-function 'xwapp--respond)))
+       (ignore leaked gzipped)
+       (xwapp--put app :reopen #'xwapp-test--keep-reopen)
+       (xwapp-test--proxy-up)
+       (cl-letf (((symbol-function 'xwapp--respond)
+                  (lambda (proc code &optional type body headers done)
+                    (when (equal (cdr (assoc "Content-Encoding" headers)) "gzip")
+                      (cl-incf gzipped)
+                      (let ((plain (xwapp-test--gunzip body)))
+                        (when (xwapp--holds-secret-p plain) (push plain leaked))))
+                    (funcall respond proc code type body headers done))))
+         (let ((box (xwapp-test--from-box "me@example.com"))
+               (ask nil))
+           (setq ask (lambda (headers thunk)
+                       (let ((cell (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p1") nil
+                                                    (append box headers) 'proxy))
+                             (out ""))
+                         (set-process-filter (cdr cell) (lambda (_p s) (setq out (concat out s))))
+                         (xwapp-test--turn)
+                         (funcall thunk)
+                         (with-timeout (10 (error "No answer"))
+                           (while (process-live-p (cdr cell))
+                             (accept-process-output nil 0.02)))
+                         out)))
+           (should (equal (car (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p1") "{}" box 'proxy)) 204))
+           ;; Its greeting, the phone's button: out of the way.
+           (funcall ask nil #'ignore)
+           ,@body)))))
+
+(defun xwapp-test--calls (raw)
+  "The calls RAW, a whole answer to a `next', carries: inflated first
+when it went gzip'd."
+  (let ((body (xwapp-test--body raw)))
+    (xwapp-test--json (decode-coding-string
+                       (if (xwapp-test--header raw "Content-Encoding") (xwapp-test--gunzip body) body)
+                       'utf-8))))
+
+(ert-deftest xwapp-test-next-gzipd-through-the-proxy ()
+  "The page's calls, asked through the proxy by a browser that takes
+gzip, go gzip'd from `xwapp--gzip-next-min' on -- the same calls,
+inflated, with Vary: Accept-Encoding and never kept.  Fewer bytes go
+plain, as do the calls to a browser that takes no gzip, and to this
+machine's on loopback, which is fast."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--through-proxy
+    (let ((gz '(("Accept-Encoding" . "gzip, deflate, br"))))
+      (let ((raw (funcall ask gz (lambda () (xwapp-js app "render" xwapp-test--said) (xwapp-js app "flash" "after")))))
+        (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+        (should (equal (xwapp-test--header raw "Content-Encoding") "gzip"))
+        (should (equal (xwapp-test--header raw "Vary") "Accept-Encoding"))
+        (should (equal (xwapp-test--header raw "Cache-Control") "no-store"))
+        (should (< (length (xwapp-test--body raw)) (/ (length xwapp-test--said) 6)))
+        (should (equal (mapcar (lambda (c) (alist-get 'arg c)) (xwapp-test--calls raw))
+                       (list xwapp-test--said "after"))))
+      (should (= gzipped 1))
+      ;; Small: plain.
+      (let ((raw (funcall ask gz (lambda () (xwapp-js app "flash" "small")))))
+        (should-not (xwapp-test--header raw "Content-Encoding"))
+        (should (equal (alist-get 'arg (car (xwapp-test--calls raw))) "small")))
+      ;; A browser that takes no gzip: plain.
+      (dolist (accept '(nil (("Accept-Encoding" . "identity")) (("Accept-Encoding" . "gzip;q=0"))))
+        (let ((raw (funcall ask accept (lambda () (xwapp-js app "render" xwapp-test--said)))))
+          (should-not (xwapp-test--header raw "Content-Encoding"))
+          (should (equal (alist-get 'arg (car (xwapp-test--calls raw))) xwapp-test--said))))
+      (should (= gzipped 1))
+      ;; This machine's browser, on loopback: plain.
+      (xwapp-test--do "POST" (xwapp-test--at app "hello?page=p2") "{}")
+      (let ((next (xwapp-test--ask "GET" (xwapp-test--at app "next?page=p2") nil gz))
+            (out ""))
+        (set-process-filter (cdr next) (lambda (_p s) (setq out (concat out s))))
+        (xwapp-test--turn)
+        (xwapp-js app "render" xwapp-test--said)
+        (with-timeout (10 (error "No answer"))
+          (while (process-live-p (cdr next)) (accept-process-output nil 0.02)))
+        (should (string-prefix-p "HTTP/1.1 200 OK\r\n" out))
+        (should-not (xwapp-test--header out "Content-Encoding")))
+      (should (= gzipped 1))
+      (should-not leaked))))
+
+(ert-deftest xwapp-test-a-secret-never-goes-gzipd ()
+  "Nothing that holds a secret xwapp keeps goes gzip'd (BREACH), however
+it came to be there: the page's address in its QR code, text that
+quotes it -- in any case -- another page's, one kept over a restart, a
+file of the page's.  The same bytes without it go gzip'd.  Everything
+gzip'd is gzip'd by `xwapp--deflate', which looks: every answer that
+went gzip'd here is inflated and looked in again."
+  (skip-unless (and (executable-find "gzip") (zlib-available-p)))
+  (xwapp-test--through-proxy
+    (let* ((gz '(("Accept-Encoding" . "gzip")))
+           (url (xwapp-remote-url app))
+           (other (xwapp-test--app :index (expand-file-name "other/ui/index.html" root)))
+           (plain-with (lambda (thunk what)
+                         (let ((raw (funcall ask gz thunk)))
+                           (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+                           (should-not (xwapp-test--header raw "Content-Encoding"))
+                           (should (string-search what (xwapp-test--body raw)))))))
+      ;; Without a secret: gzip'd.
+      (should (xwapp-test--header (funcall ask gz (lambda () (xwapp-js app "render" xwapp-test--said)))
+                                  "Content-Encoding"))
+      ;; The QR code, the address in it, beside text from elsewhere.
+      (funcall plain-with (lambda () (xwapp-js app "render" xwapp-test--said) (xwapp--show-qr app)) url)
+      ;; Text that quotes it -- as written, and in capitals.
+      (funcall plain-with (lambda () (xwapp-js app "render" (concat xwapp-test--said "see " url))) url)
+      (funcall plain-with (lambda () (xwapp-js app "render" (concat xwapp-test--said (upcase url))))
+               (upcase (xwapp--secret app)))
+      ;; Another page's secret.
+      (funcall plain-with (lambda () (xwapp-js app "render" (concat xwapp-test--said (xwapp--secret other))))
+               (xwapp--secret other))
+      ;; A file of the page's that holds it: plain, and so each time.
+      (with-temp-file (expand-file-name "app/ui/told.js" root)
+        (insert xwapp-test--js "const here = \"" url "\";\n"))
+      (dotimes (_ 2)
+        (let ((raw (xwapp-test--raw (xwapp-test--at app "app/ui/told.js") gz)))
+          (should (string-prefix-p "HTTP/1.1 200 OK\r\n" raw))
+          (should-not (xwapp-test--header raw "Content-Encoding"))
+          (should (string-search url (xwapp-test--body raw)))))
+      (should (xwapp-test--header (xwapp-test--raw (xwapp-test--at app "app/ui/app.js") gz) "Content-Encoding"))
+      ;; Straight to the one that gzips: the same.
+      (let ((got 'none))
+        (xwapp--deflate (concat xwapp-test--said url) (lambda (b) (setq got b)))
+        (should-not got))
+      ;; A secret kept over a restart, its app not loaded yet.
+      (let ((xwapp--keep t)
+            (kept "fedcba9876543210fedcba9876543210"))
+        (with-temp-file xwapp-state-file
+          (prin1 `(:port 1 :pages (("*later*" ,kept nil))) (current-buffer)))
+        (should (xwapp--holds-secret-p (concat "x" kept "x")))
+        (delete-file xwapp-state-file))
+      (should-not (xwapp--holds-secret-p xwapp-test--said))
+      ;; The calls without a secret, and app.js.
+      (should (= gzipped 2))
+      (should-not leaked))))
 
 (ert-deftest xwapp-test-an-answer-past-the-socket-goes-from-a-thread ()
   "An answer past `xwapp--send-aside' -- what the proxy's socket takes

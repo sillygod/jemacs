@@ -5,7 +5,8 @@
 // down and 150 ms there and back (appslib.js OPTS.link), the phone
 // sleeping as a phone does.  The page's files and the kit's go gzip'd,
 // and the page loads and works so, on the phone and at the desk; what
-// changes, its nexts, goes plain.  Real Emacs: wake.el.
+// changes, its nexts, too once past 8 KB, and plain within.  Real
+// Emacs: wake.el.
 //
 // MEASURE lines; with LOCAL another checkout's, the same of it (its
 // checks of gzip fail: a kit and an Emacs before this one send plain).
@@ -41,7 +42,13 @@ const files = (traffic) => traffic.filter((t) => /\/ui\//.test(t.path));
     check("app.js some 88 KB, not 314", app && app.bytes < 120000, app && app.bytes);
     check("and it works: its agents shown, its intents going", await tab.$$eval(".arow", (r) => r.length) > 30 &&
       (await tab.evaluate(() => typeof GM.renderHerd === "function")));
-    check("what changes, its nexts, plain", first.filter((t) => /\/next\?/.test(t.path) && t.status === 200).every((t) => !t.enc));
+    // What changes, its nexts: gzip'd once past what the proxy's socket
+    // takes at once (xwapp--gzip-next-min), plain within it.
+    const nexts = first.filter((t) => /\/next\?/.test(t.path) && t.status === 200);
+    check("what changes, its nexts: gzip'd past 8 KB, plain within",
+      nexts.length > 0 && nexts.every((t) => t.enc === "gzip" || (!t.enc && t.bytes < 8 * 1024)),
+      nexts.map((t) => (t.enc || "plain") + " " + t.bytes));
+    console.log("     nexts of the first load: " + nexts.map((t) => (t.enc || "plain") + " " + t.bytes).join(", "));
 
     // ---- A wake, each way: told first, or what slept fails first ----
     for (const order of ["told first", "failed first"]) {

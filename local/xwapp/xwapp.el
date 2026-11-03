@@ -1229,7 +1229,7 @@ this machine, where any page in the browser could ask."
      ((and (equal method "POST") (equal rest '("hello")) page)
       (xwapp--hello app proc page (equal (cadr (assoc "soft" args)) "1")))
      ((and (equal method "GET") (equal rest '("next")))
-      (xwapp--next app proc page))
+      (xwapp--next app proc page (and (eq transport 'proxy) (xwapp--takes-gzip-p headers))))
      ((and (equal method "POST") (equal rest '("intent")))
       (xwapp--intent app proc page body))
      ((and (equal method "GET") (string-prefix-p "." (or (car rest) "")))
@@ -1435,18 +1435,45 @@ those of the file it is a symlink to, if it is one."
 ;;   ms to the answer (at most 24.8 in 20), Emacs busy 1.4 ms of them.
 ;;   gzip -6: -9 saves 0.4% more for more time.  If gzip fails, or takes
 ;;   past `xwapp--gzip-wait', the file goes plain, under its own ETag.
-;; - Not what changes.  A `next' mixes what Emacs keeps secret -- the
-;;   page's own address, in its QR code -- with text others write (an
-;;   agent's, a pull request's, a task's): compressed, its length could
-;;   tell a watcher on the path what the secret is, a guess at a time
-;;   (BREACH).  And it is small: a wake's answers are 15 KB together.
-;;   So it goes plain.
+;;   gzip reads a file, not a pipe from Emacs: writing to a pipe, Emacs
+;;   waits as it does on the proxy's socket (\"A big answer goes from a
+;;   thread\") -- 72 ms for 210 KB, 190 for 540 -- while a file of them is
+;;   written in 1 or 2 ms (2026-11-03).
+;;
+;; And the page's calls, its `next', go gzip'd through the proxy.  They
+;; carry what the page shows -- the herd's Inbox 44 KB, its sessions 389
+;; KB -- over the socket that holds Emacs to some 340 KB a second, then
+;; the phone's link; gzip'd, they are six to nine times smaller.  So a
+;; `next' of `xwapp--gzip-next-min' or more goes gzip'd when it was asked
+;; through the proxy by a browser that takes it.  Not on loopback, where
+;; 389 KB take 2 ms and gzip would add 3 to 12; nor a smaller one, which
+;; the socket takes at once.
+;;
+;; Nothing that holds a secret goes gzip'd.  Compressed, a body is as
+;; long as what in it does not repeat: one that holds a secret beside
+;; text someone else can put in it -- an agent's, a pull request's, a
+;; task's -- tells a watcher on the path, who sees the lengths alone,
+;; whether a guess at the secret matched, a guess at a time (BREACH).
+;; xwapp's secrets are its pages': an address opens its page as you.
+;; Emacs puts one in a body for the QR code (`xwapp--show-qr'), and any
+;; text that quotes an address carries one too -- a note you pasted, an
+;; agent's reply that names it.  So the rule is no list of who sends
+;; what: everything gzip'd here, a `next' or a file, is gzip'd by
+;; `xwapp--deflate' alone, which looks in the bytes for every secret
+;; xwapp keeps (`xwapp--holds-secret-p') and gives them back plain when
+;; one is there.  The length of what goes plain says nothing of what is
+;; in it but its own length.
 
 (defvar xwapp--gzip-program "gzip"
   "The gzip that compresses the page's files, or nil to send them plain.")
 
 (defconst xwapp--gzip-min 1024
   "Bytes below which a file goes plain: gzip would gain little.")
+
+(defconst xwapp--gzip-next-min (* 8 1024)
+  "Bytes from which the page's calls go gzip'd through the proxy.
+Fewer, the proxy's socket takes at once (`xwapp--send-aside'), and gzip
+would add more time than it saves.")
 
 (defvar xwapp--gzip-keep (* 4 1024 1024)
   "Bytes of gzip'd files kept, at most.  All the pages' files, gzip'd,
@@ -1521,17 +1548,58 @@ own, is done: one for all who ask for it meanwhile."
         (xwapp--gzip-start file etag)))))
 
 (defun xwapp--gzip-start (file etag)
-  "Gzip FILE, of ETAG, in a process; hand the bytes to who waits for them."
+  "Gzip FILE, of ETAG; hand the bytes to who waits for them."
+  (xwapp--deflate
+   (condition-case nil (xwapp--bytes (file-truename file)) (error nil))
+   (lambda (bytes)
+     (let ((waiting (gethash etag xwapp--gzipping)))
+       (remhash etag xwapp--gzipping)
+       ;; Kept only when still of this version of the file.
+       (when (and bytes (equal (xwapp--etag file) etag))
+         (xwapp--gzip-keep etag bytes))
+       (dolist (then (nreverse waiting))
+         (xwapp--done (lambda () (funcall then bytes))))))))
+
+(defun xwapp--secrets ()
+  "Every secret xwapp keeps: of each page it serves, and each kept over
+a restart (`xwapp-state-file') for an app not loaded yet."
+  (let (secrets)
+    (maphash (lambda (_app plist)
+               (when-let* ((secret (plist-get plist :secret))) (push secret secrets)))
+             xwapp--served)
+    (dolist (page (plist-get (xwapp--state) :pages))
+      (push (nth 1 page) secrets))
+    (delete-dups secrets)))
+
+(defun xwapp--holds-secret-p (bytes)
+  "Non-nil when BYTES hold a secret xwapp keeps (`xwapp--secrets'), in
+either case.  Some 1 ms for 540 KB."
+  (let ((case-fold-search t))
+    (seq-some (lambda (secret) (string-match-p (regexp-quote secret) bytes))
+              (xwapp--secrets))))
+
+(defun xwapp--deflate (bytes then)
+  "Call THEN with BYTES gzip'd -- or with nil, for them to go plain: when
+they hold a secret (`xwapp--holds-secret-p'), and when gzip is not
+there, fails, or takes past `xwapp--gzip-wait'.  The one way anything
+goes gzip'd here: see \"The page's own files go gzip'd\".  At once when
+plain; else when gzip, a process of its own, is done."
+  (let ((file (and bytes xwapp--gzip-program (not (xwapp--holds-secret-p bytes))
+                   (condition-case nil
+                       (with-file-modes #o600
+                         (let ((coding-system-for-write 'no-conversion))
+                           (make-temp-file "xwapp-gz" nil nil bytes)))
+                     (error nil)))))
+    (if (not file)
+        (funcall then nil)
+      (xwapp--gzip-run file (lambda (gz)
+                              (ignore-errors (delete-file file))
+                              (funcall then gz))))))
+
+(defun xwapp--gzip-run (file then)
+  "Gzip FILE in a process; call THEN with the bytes, or nil when gzip is
+not there, fails, or takes past `xwapp--gzip-wait'."
   (let* ((chunks nil)
-         (finish
-          (lambda (bytes)
-            (let ((waiting (gethash etag xwapp--gzipping)))
-              (remhash etag xwapp--gzipping)
-              ;; Kept only when still of this version of the file.
-              (when (and bytes (equal (xwapp--etag file) etag))
-                (xwapp--gzip-keep etag bytes))
-              (dolist (then (nreverse waiting))
-                (xwapp--done (lambda () (funcall then bytes)))))))
          ;; Its own, not one Emacs makes for a buffer: that one outlives
          ;; a gzip killed.
          (err (make-pipe-process :name "xwapp-gzip stderr" :noquery t :coding 'binary
@@ -1540,7 +1608,7 @@ own, is done: one for all who ask for it meanwhile."
           (condition-case nil
               (make-process
                :name "xwapp-gzip" :noquery t :connection-type 'pipe :coding 'binary
-               :command (list xwapp--gzip-program "-c" "-n" "-6" "--" (file-truename file))
+               :command (list xwapp--gzip-program "-c" "-n" "-6" "--" file)
                :stderr err
                :filter (lambda (_p s) (push s chunks))
                :sentinel
@@ -1551,12 +1619,12 @@ own, is done: one for all who ask for it meanwhile."
                    (ignore-errors (delete-process err))
                    (unless (process-get p 'xwapp-done)
                      (process-put p 'xwapp-done t)
-                     (funcall finish (and (eq (process-status p) 'exit) (zerop (process-exit-status p))
-                                          (apply #'concat (nreverse chunks))))))))
+                     (funcall then (and (eq (process-status p) 'exit) (zerop (process-exit-status p))
+                                        (apply #'concat (nreverse chunks))))))))
             (error nil))))
     (if (not proc)
         (progn (ignore-errors (delete-process err))
-               (funcall finish nil))
+               (funcall then nil))
       (process-put proc 'xwapp-timer
                    (run-at-time xwapp--gzip-wait nil
                                 (lambda () (when (process-live-p proc) (delete-process proc))))))))
@@ -1850,8 +1918,10 @@ itself when told again."
       (when (and (equal why "free") (not asked))
         (run-at-time 0 nil (xwapp-reopen app))))))
 
-(defun xwapp--next (app proc page)
-  "Hold PROC, PAGE's request for calls, until there are some."
+(defun xwapp--next (app proc page &optional gzip)
+  "Hold PROC, PAGE's request for calls, until there are some.
+GZIP non-nil: it came through the proxy from a browser that takes gzip,
+and is answered so when big (\"The page's own files go gzip'd\")."
   (if (not (xwapp--current-p app page))
       (xwapp--refuse proc (xwapp--why app) app)
     (xwapp--untimer app :gone)
@@ -1859,6 +1929,7 @@ itself when told again."
       (xwapp--put app :waiting nil)
       (xwapp--respond old 200 "application/json" "[]"))
     (process-put proc 'xwapp-app app)
+    (process-put proc 'xwapp-gzip gzip)
     (xwapp--put app :waiting proc)
     (if (xwapp--get app :outbox)
         (xwapp--timer app :flush 0 #'xwapp--flush)
@@ -1884,11 +1955,17 @@ payload is dropped rather than queued."
       (xwapp--put app :outbox nil)
       (xwapp--put app :sending proc)
       (xwapp--timer app :gone xwapp--gone-after #'xwapp--gone)
-      (xwapp--respond proc 200 "application/json"
-                      (encode-coding-string (concat "[" (string-join calls ",") "]")
-                                            'utf-8)
-                      nil
-                      (lambda () (xwapp--sent app proc))))))
+      (let ((body (encode-coding-string (concat "[" (string-join calls ",") "]") 'utf-8))
+            (sent (lambda () (xwapp--sent app proc))))
+        (if (and (process-get proc 'xwapp-gzip) (>= (length body) xwapp--gzip-next-min))
+            (xwapp--deflate body
+                            (lambda (gz)
+                              (if gz
+                                  (xwapp--respond proc 200 "application/json" gz
+                                                  '(("Content-Encoding" . "gzip") ("Vary" . "Accept-Encoding"))
+                                                  sent)
+                                (xwapp--respond proc 200 "application/json" body nil sent))))
+          (xwapp--respond proc 200 "application/json" body nil sent))))))
 
 (defun xwapp--sent (app proc)
   "PROC, the answer to APP's page's `next', is out, or failed to go: the
