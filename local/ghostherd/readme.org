@@ -2157,11 +2157,34 @@ above the entries: its states as coloured segments across the range
 grey, done green, dead red --- rebuilt from the transitions, with a count of how
 often and how long it sat blocked.  Back from an absence, who was stuck
 and since when is one look.  A segment's tooltip has its span and
-reason, and a click goes to its entry.  Entries are newest first by
-day, filterable by agent, text, or blocked only, and a kept screen
-opens in place.  New entries arrive as they are logged
-(=ghostherd-log-functions=), and the page needs no sidecar for any of
-it.
+reason, and a click goes to its entry's row, whatever hid it: a filter
+it fails is set aside, a range too short widens to the least that holds
+it, and rows not yet drawn are.  Entries are newest first by day,
+filterable by agent, text, Screens, or Issues, and a kept screen opens
+in place.  New entries arrive as they are logged
+(=ghostherd-log-functions=), each put on top of the list where it is
+drawn --- not the list redrawn, which with a week of rows on a phone
+took a quarter of a second a line --- and the page needs no sidecar for
+any of it.
+
+Issues are the entries worth a look after the fact, as Emacs marks them
+(=ghostherd-log-issue-p=, by the exact lines the herd writes): a
+transition into =blocked= or =dead=; input that did not go in; an ask
+failed, stopped without an answer, or not taken; a guard holding a call
+for you, denying one, or left unanswered; a check that denied a call; a
+turn cut short; an agent lost, used up, unrelayed, untrusted, or whose
+directory went; a quota, an unknown menu, a screen the hook disagreed
+with, or a capture of your own.  Not your own acts (a kill, a cancel),
+holds that settle by themselves, nor a =/compact='s capture.  It looks
+back; what needs you now is the Inbox.
+
+An entry's time zooms to its moment: the half hour around it, in the
+lanes (a dashed line marks it) and the list, all of it --- the Issues,
+Screens and text filters are set aside until you leave, so you see what
+led to it and what came after.  The chip naming that half hour (or
+=Esc=, or a range) leaves it, the filters as they were.  Zoomed, a
+segment that began before the half hour moves the moment to where it
+began.
 
 =SPC a h l=, or =L= in the sidebar. Every state transition and every
 prompt sent, oldest first, with a timestamp:

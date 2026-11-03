@@ -143,7 +143,16 @@ one whose hooks name another conversation is not found by stale args."
                  "stopped without answering ask a1; claude-main got its last message"))
   (should (equal (ghostherd--ask-outcome
                   '(:id "a1" :from "claude-main" :status "answered" :auto t :auto_source "screen"))
-                 "stopped without answering ask a1; claude-main got the screen")))
+                 "stopped without answering ask a1; claude-main got the screen"))
+  ;; An issue for the Log tab: answered for it, not by it.  An answer is not.
+  (dolist (o (list (list :status "answered" :auto t :auto_source "screen" :issue t)
+                   (list :status "answered" :reply_head "done: it failed: twice")
+                   (list :status "failed" :error "agy-a is gone" :issue t)
+                   (list :status "cancelled")))
+    (should (eq (plist-get o :issue)
+                (ghostherd-log-issue-p
+                 (ghostherd-log-entry--create
+                  :kind 'ask :text (ghostherd--ask-outcome (append (list :id "a1" :from "claude-main") o))))))))
 
 (ert-deftest ghostherd-test-install-hooks-shows-then-asks ()
   "Nothing is written unless the plan shown is accepted."
@@ -461,7 +470,11 @@ with a password in it is dropped.  A project adds names of its own."
                        '("guard needs approval g1: run_command: cat .env -- secret-file"
                          "guard g1 approved once: run_command: cat .env"
                          "guard g1 ran, approved: run_command: cat .env")))
-        (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'guard))))))
+        (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'guard))
+        ;; Held for the user is an issue; the user's yes, and the run, are not.
+        (should (ghostherd-tests--issue-p "needs approval"))
+        (should-not (ghostherd-tests--issue-p "approved once"))
+        (should-not (ghostherd-tests--issue-p "ran, approved"))))))
 
 (ert-deftest ghostherd-test-the-cards-approve-once-reaches-the-herd ()
   "Approve once on the card asks the sidecar to approve that request, by
@@ -566,7 +579,9 @@ expire, and its rebuilt guard keeps none of the old allowances."
                                       (list :id "g2" :session "agy-p" :status "expired" :summary "run_command: git -C x grep holy")))
     (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
                    '("guard g1 kept denied by the user: run_command: cat .env"
-                     "guard g2 expired, never answered: run_command: git -C x grep holy")))))
+                     "guard g2 expired, never answered: run_command: git -C x grep holy")))
+    (should (ghostherd-tests--issue-p "expired, never answered"))
+    (should-not (ghostherd-tests--issue-p "kept denied by the user"))))
 
 (ert-deftest ghostherd-test-the-cards-keep-denied-reaches-the-herd ()
   "Keep denied on the card (or the Inbox) asks the sidecar to reject that

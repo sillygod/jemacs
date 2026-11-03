@@ -312,6 +312,7 @@ sent; one gone is let be."
         (should (= ran 0))
         (should-not later)
         (should (string-match-p "never came to its prompt" (ghostherd-log-entry-text (car ghostherd--log))))
+        (should (ghostherd-tests--issue-p "never came to its prompt"))
         (remhash "a" ghostherd--sessions)
         (setf (ghostherd-session-state s) 'idle)
         (ghostherd--when-ready s (lambda () (cl-incf ran)))

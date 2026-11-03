@@ -134,7 +134,8 @@ the agent asks as it would have.  A record not there yet is made."
         (should-not (plist-get (ghostherd--worktree-create repo "g1" nil 'grok) :trusted))
         (should (equal (ghostherd-tests--file grok-store) before))
         (should (string-match-p "not trusted for grok"
-                                (ghostherd-log-entry-text (car ghostherd--log)))))
+                                (ghostherd-log-entry-text (car ghostherd--log))))
+        (should (ghostherd-tests--issue-p "not trusted for grok")))
       (let ((ghostherd-pretrust-file (concat base "new/dir/pretrust.eld")))
         (ghostherd--worktree-create repo "g2" nil 'grok)
         (should (= (length (ghostherd--pretrusted)) 1))))))
@@ -896,6 +897,7 @@ agent that leaves the herd takes its mark with it."
         (should (eq (plist-get g :worktree) t)))
       (should-not (gethash "here" ghostherd--dir-gone))
       (should (ghostherd-tests--logged-p "its worktree .*rd-tabs/ is gone"))
+      (should (ghostherd-tests--issue-p "its worktree .*rd-tabs/ is gone"))
       (ghostherd-tests--gone-read-wait)
       (should (eq (plist-get (gethash "rd-tabs" ghostherd--dir-gone) :state) 'merged))
       ;; A minute on, the poll looks by itself; still gone is no change.
@@ -1030,6 +1032,7 @@ the user to stop."
                 (ghostherd-session-started-at s) (current-time))
           (ghostherd--resume-backstop s 'starting 'dead)
           (should (ghostherd-tests--logged-p "not started fresh: its directory is gone"))
+          (should (ghostherd-tests--issue-p "not started fresh"))
           (should (string-match-p "is gone: not relaying it"
                                   (cadr (should-error (ghostherd-relay s 'grok) :type 'user-error))))
           (should-not (member "herd_relay_brief" asked))
@@ -1037,6 +1040,7 @@ the user to stop."
           ;; The brief came back after it went: no heir.
           (should-not (ghostherd--relay-hand s 'grok "BRIEF" nil))
           (should (ghostherd-tests--logged-p "not relayed to grok: its directory is gone"))
+          (should (ghostherd-tests--issue-p "not relayed to grok"))
           ;; Asked over the wire, by its lead.
           (ghostherd-tests--session :name "lead-p" :kind 'claude :backend 'fake :project repo)
           (puthash "lead-p" "lead" ghostherd--roles)

@@ -912,6 +912,17 @@ button.small { padding: 2px 10px; font-size: 12px; }
 }
 .lane.axis .lane-bar span:first-child { transform: none; }
 .lane.axis .lane-bar span:last-child { transform: translateX(-100%); }
+/* The moment zoomed to: a line down every lane, under the pointer's way. */
+.lane-bar .moment {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px dashed var(--accent);
+  pointer-events: none;
+  z-index: 3;
+}
 
 .lrow {
   display: flex;
@@ -925,6 +936,10 @@ button.small { padding: 2px 10px; font-size: 12px; }
 .lrow.flash { animation: flash 1.6s ease-out; }
 @keyframes flash { 0% { background: rgba(121, 192, 255, 0.35); } 100% { background: transparent; } }
 .lt { font-family: var(--mono); font-size: 11.5px; color: var(--muted); flex-shrink: 0; }
+/* An entry's time is the way into its moment: plain text that takes a click. */
+button.lt { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+button.lt:hover, button.lt:focus-visible { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 2px; }
+.lrow.moment { box-shadow: inset 2px 0 0 var(--accent); background: rgba(121, 192, 255, 0.08); }
 .ls {
   background: none;
   border: 0;
@@ -1347,6 +1362,10 @@ html { -webkit-text-size-adjust: 100%; }
      screen. */
   .lrow { flex-wrap: wrap; row-gap: 0; }
   .lrow .linkish { order: 1; margin-left: auto; }
+  /* A finger's worth: the chips, and round the time that zooms -- the
+     padding taken back by the margin, so the row's lines do not move. */
+  .log-tools .chip { min-height: 32px; }
+  button.lt { padding: 8px 6px; margin: -8px -6px; }
   .lx { order: 2; flex-basis: 100%; padding-left: 4px; }
 }
 

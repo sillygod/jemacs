@@ -824,6 +824,7 @@ prompt (a sign-in step, a menu), or its host gone.  From the page too."
             (should (string-match-p "\\`↻ continuing a turn an expired login cut short, as asked"
                                     (ghostherd-log-entry-text (car ghostherd--log))))
             (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'continue))
+            (should (ghostherd-tests--issue-p "continuing a turn"))
             ;; Through the page: the same.
             (setq sends nil)
             (ghostherd-memory-page--handle '((op . "agent-carry-on") (name . "c")))
@@ -2631,7 +2632,8 @@ turn ended -- and Emacs watches it again, saying why."
       (should (equal (mapcar #'car requests) '("herd_settle")))
       (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
       (should (string-match-p "a1 left open: rd's turn has not ended by its hook or transcript"
-                              (ghostherd-log-entry-text (car ghostherd--log)))))))
+                              (ghostherd-log-entry-text (car ghostherd--log))))
+      (should-not (ghostherd-tests--issue-p "a1 left open")))))
 
 (provide 'ghostherd-screen-tests)
 ;;; ghostherd-screen-tests.el ends here

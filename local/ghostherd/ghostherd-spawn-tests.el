@@ -303,7 +303,8 @@ effort is switched all the same: what it set is what it says."
     (should (equal (ghostherd-tests--picker-get :sent) '((:submit "/model") "esc")))
     (should-not (ghostherd-tests--picker-get :open))
     (should (equal (ghostherd-log-entry-text (car ghostherd--log))
-                   "model not switched: its picker has no Fable"))))
+                   "model not switched: its picker has no Fable"))
+    (should (ghostherd-tests--issue-p "model not switched"))))
 
 (ert-deftest ghostherd-test-switch-model-gives-up-on-a-picker-that-does-not-open ()
   (ghostherd-tests--with-picker
@@ -841,7 +842,8 @@ the kept id, logs why, and comes up fresh rather than exiting on it."
       (should-not (member "-r" (plist-get ghostherd-tests--fake-spawned :args))) ; fresh
       (should (seq-find (lambda (e) (string-match-p "kept conversation c-gone is gone"
                                                     (ghostherd-log-entry-text e)))
-                        ghostherd--log)))))
+                        ghostherd--log))
+      (should (ghostherd-tests--issue-p "kept conversation c-gone is gone")))))
 
 (ert-deftest ghostherd-test-resume-spawns-in-the-directory ()
   (let ((ghostherd--sessions (make-hash-table :test #'equal))

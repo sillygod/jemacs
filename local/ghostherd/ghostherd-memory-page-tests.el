@@ -195,7 +195,11 @@ watch must not end before the answer comes."
     (should (equal (plist-get plain :reason) ""))
     (should-not (plist-member plain :screen))
     (should (equal (plist-get input :kind) "input"))
-    (should-not (plist-member input :new))))
+    (should-not (plist-member input :new))
+    ;; Whether it is an issue, said by Emacs: the page's Issues chip.
+    (should (eq (plist-get blocked :issue) t))
+    (should-not (plist-member plain :issue))
+    (should-not (plist-member input :issue))))
 
 (ert-deftest ghostherd-test-memory-page-log-flow ()
   "The log is sent oldest first, read from the file if need be; new
@@ -2375,6 +2379,7 @@ fact and the command -- on one line, cut short."
         (should (string-prefix-p "check grep-cli-binaries-cheaply denied (claude): grep -a -o '.{0,60}x' ~/.local/bin/claude"
                                  first))
         (should-not (string-match-p "\n" first))
+        (should (ghostherd-tests--issue-p "check grep-cli-binaries-cheaply denied"))
         (should (< (length first) 230)))
       (should (eq (ghostherd-log-entry-kind (car ghostherd--log)) 'lint)))))
 

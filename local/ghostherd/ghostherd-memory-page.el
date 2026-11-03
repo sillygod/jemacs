@@ -354,7 +354,9 @@ While the sidecar brings an index of an older build up to date
 (defun ghostherd-memory-page--log-entry (entry)
   "ENTRY, a `ghostherd-log-entry', as the page wants it.
 A state entry comes apart into old, new and reason here, so the page
-draws lanes from fields rather than parsing prose."
+draws lanes from fields rather than parsing prose; and whether it is
+an issue (`ghostherd-log-issue-p') is said here, next to the code that
+writes the lines, so the Issues chip does not parse prose either."
   (let* ((kind (ghostherd-log-entry-kind entry))
          (text (or (ghostherd-log-entry-text entry) ""))
          (screen (ghostherd-log-entry-screen entry))
@@ -366,6 +368,7 @@ draws lanes from fields rather than parsing prose."
                   :text text
                   :pinned (if (ghostherd-log-entry-pinned entry) t :json-false))
             (and why (list :why (format "%s" why)))
+            (and (ghostherd-log-issue-p entry) (list :issue t))
             (and (ghostherd-log-entry-note entry)
                  (list :note (ghostherd-log-entry-note entry)))
             (and (eq kind 'state)
