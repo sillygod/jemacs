@@ -29,16 +29,19 @@ const log = () => { try { return fs.readFileSync(path.join(E, "log.jsonl"), "utf
 // machine's browser reaches Emacs's loopback port straight, as it does;
 // OPTS.link, {kbps, rtt}: the phone's link, slow -- each way half of RTT
 // ms, and the answers' bytes through KBPS kilobits a second, one after
-// another.
+// another.  OPTS.spawn(ENV, EL): start that Emacs another way -- in a
+// terminal, say -- returning what has a kill().
 async function start(opts) {
   opts = opts || {};
   const run = E = fs.mkdtempSync(path.join(os.tmpdir(), "xwapp-e2e-"));
   if (opts.setup) opts.setup(run);
   const port = await freePort();
-  const emacs = spawn(EMACS, ["-Q", "--batch", "-l", path.join(__dirname, opts.el || "apps.el")],
-    { env: Object.assign({}, process.env, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL }), stdio: ["ignore", "ignore", "pipe"] });
+  const env = Object.assign({}, process.env, { E2E_DIR: E, E2E_PORT: String(port), E2E_LOCAL: LOCAL });
+  const el = path.join(__dirname, opts.el || "apps.el");
+  const emacs = opts.spawn ? opts.spawn(env, el)
+    : spawn(EMACS, ["-Q", "--batch", "-l", el], { env, stdio: ["ignore", "ignore", "pipe"] });
   let err = "";
-  emacs.stderr.on("data", (d) => { err += d; });
+  if (emacs.stderr) emacs.stderr.on("data", (d) => { err += d; });
   if (!(await until(() => fs.existsSync(path.join(E, "urls.json")), 15000))) {
     emacs.kill();
     throw new Error("Emacs did not start: " + err.slice(-800));
@@ -60,7 +63,8 @@ async function start(opts) {
   // only once it wakes that those connections are dead (wake(), which
   // says how).  Each answer that came through is noted in TRAFFIC: when,
   // what, its code, the bytes of its body, how they were encoded, and the
-  // ETag the browser asked with, if it had the file.  down(true): Emacs
+  // ETag the browser asked with, if it had the file -- and when Emacs's
+  // answer had all come to the proxy (end).  down(true): Emacs
   // is not there -- every request answered 502, as serve does then.
   // goneAt(PRED): Emacs goes the moment a request PRED takes ({method,
   // path}) reaches it, before Emacs has it -- that one and all under way
@@ -106,6 +110,7 @@ async function start(opts) {
       seen.status = r.statusCode;
       seen.enc = r.headers["content-encoding"] || "";
       r.on("data", (c) => { seen.bytes += c.length; });
+      r.on("end", () => { seen.end = Date.now(); });
       // Asleep: the answer never reaches the phone.
       if (res.destroyed || dozing.has(res) || dead.has(res)) return r.resume();
       const answer = () => {
