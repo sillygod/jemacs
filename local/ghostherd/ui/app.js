@@ -3894,10 +3894,15 @@
   // Rows drawn at once; the rest wait behind a "show earlier", so a week of
   // entries does not build thousands of nodes in one pass.  `open' holds the
   // ids of the entries whose screen is expanded -- ids, not indices, so a
-  // delete or a reload does not shift which screen is open.
+  // delete or a reload does not shift which screen is open.  `issues' keeps
+  // the entries Emacs marks worth a look after the fact (`ghostherd-log-
+  // issue-p'): a look back, where the Inbox is what needs you now.
+  // `zoom' is a moment zoomed to, or null: {t, id, back}, the entry's time
+  // and id, and the filters set aside while in it, given back on leaving.
   const LOGCAP = 300;
-  let herd = { entries: null, range: 24 * HOUR, session: "", blocked: false,
-               screensOnly: false, filter: "", open: new Set(), shown: LOGCAP };
+  const ZOOM = 15 * 60e3;
+  let herd = { entries: null, range: 24 * HOUR, session: "", issues: false,
+               screensOnly: false, filter: "", open: new Set(), shown: LOGCAP, zoom: null };
 
   function sessionColor(name) {
     let h = 0;
@@ -3927,21 +3932,26 @@
     return h < 48 ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : Math.round(h / 24) + "d";
   }
 
+  // What the lanes and the list show: the range back to now, or the half
+  // hour around a moment -- fixed, so the minute's redraw moves only what
+  // is still going on in it.
   function logWindow() {
     const now = Date.now();
+    if (herd.zoom) return { start: herd.zoom.t - ZOOM, end: herd.zoom.t + ZOOM, now };
     const entries = herd.entries || [];
     const first = entries.length ? entries[0].t : now - HOUR;
-    return { start: herd.range ? now - herd.range : first, end: now };
+    return { start: herd.range ? now - herd.range : first, end: now, now };
   }
 
   // Segments per session from the state transitions; the state a range
-  // opens in is whatever the last transition before it left.
-  function lanes(start, end) {
+  // opens in is whatever the last transition before it left.  Each names
+  // the entry it began with by id, as the list's rows do.
+  function lanes(start, end, now) {
     const by = new Map();
-    (herd.entries || []).forEach((e, i) => {
+    (herd.entries || []).forEach((e) => {
       if (e.session === "herd") return; // the seam between Emacsen
       if (!by.has(e.session)) by.set(e.session, []);
-      by.get(e.session).push(Object.assign({ i: i }, e));
+      by.get(e.session).push(e);
     });
     const out = [];
     by.forEach((list, name) => {
@@ -3952,20 +3962,21 @@
       for (const e of list) {
         if (e.t > end) break;
         if (e.kind === "state" && e.new) {
-          if (e.t >= start && state) segs.push({ state, a: since, b: e.t, reason, i: from });
+          if (e.t >= start && state) segs.push({ state, a: since, b: e.t, reason, id: from });
           state = e.new;
           since = Math.max(e.t, start);
           reason = e.reason || "";
-          from = e.i;
+          from = e.id;
         } else if (e.kind === "life") {
-          if (e.t >= start) marks.push({ t: e.t, text: e.text, i: e.i });
+          if (e.t >= start) marks.push({ t: e.t, text: e.text, id: e.id });
           if (/^(killed|released)/.test(e.text)) {
-            if (state && e.t >= start) segs.push({ state, a: since, b: e.t, reason, i: from });
+            if (state && e.t >= start) segs.push({ state, a: since, b: e.t, reason, id: from });
             state = null;
           }
         }
       }
-      if (state) segs.push({ state, a: since, b: end, reason, i: from, open: true });
+      // Still in it: to now, or to the window's end when that is past.
+      if (state) segs.push({ state, a: since, b: Math.max(since, Math.min(end, now)), reason, id: from, open: end >= now });
       if (segs.length || marks.length) out.push({ name, segs, marks, last: list[list.length - 1].t });
     });
     return out.sort((a, b) => b.last - a.last);
@@ -3978,30 +3989,48 @@
       .map((s) => {
         const tip = s.state + " · " + clock(s.a) + (s.open ? " – now" : " – " + clock(s.b)) +
           " (" + span(s.b - s.a) + ")" + (s.reason ? "\n" + s.reason : "");
-        return '<span class="seg st-' + esc(s.state) + '" data-act="seg" data-i="' + s.i + '" style="left:' +
+        return '<span class="seg st-' + esc(s.state) + '" data-act="seg" data-id="' + s.id + '" style="left:' +
           pct(s.a).toFixed(3) + "%;width:" + Math.max(0, pct(s.b) - pct(s.a)).toFixed(3) + '%" title="' + esc(tip) + '"></span>';
       })
       .join("");
     const marks = l.marks
-      .map((m) => '<span class="life" data-act="seg" data-i="' + m.i + '" style="left:' + pct(m.t).toFixed(3) +
+      .map((m) => '<span class="life" data-act="seg" data-id="' + m.id + '" style="left:' + pct(m.t).toFixed(3) +
         '%" title="' + esc(clock(m.t) + " · " + m.text) + '"></span>')
       .join("");
+    // The moment zoomed to, a line down every lane.
+    const moment = herd.zoom ? '<span class="moment" style="left:' + pct(herd.zoom.t).toFixed(3) + '%"></span>' : "";
     const blocked = l.segs.filter((s) => s.state === "blocked");
     const note = blocked.length
       ? '<span class="lane-note">' + blocked.length + "× blocked · " + span(blocked.reduce((n, s) => n + s.b - s.a, 0)) + "</span>"
       : "";
     return '<div class="lane"><button type="button" class="lane-name" data-act="log-session" data-session="' +
       esc(l.name) + '" title="Show only ' + esc(l.name) + '"><span class="dot" style="background:' + sessionColor(l.name) +
-      '"></span>' + esc(l.name) + "</button>" + '<div class="lane-bar">' + segs + marks + "</div>" + note + "</div>";
+      '"></span>' + esc(l.name) + "</button>" + '<div class="lane-bar">' + segs + marks + moment + "</div>" + note + "</div>";
   }
 
-  function axisHtml(start, end) {
+  function axisHtml(start, end, now) {
     const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => {
       const t = start + f * (end - start);
-      const label = f === 1 ? "now" : end - start > 2 * 24 * HOUR ? dayLabel(t) : clock(t).slice(0, 5);
+      // "now" only where the window ends now: a moment's may end later.
+      const label = f === 1 && end === now ? "now" : end - start > 2 * 24 * HOUR ? dayLabel(t) : clock(t).slice(0, 5);
       return '<span style="left:' + f * 100 + '%">' + esc(label) + "</span>";
     });
     return '<div class="lane axis"><span class="lane-name"></span><div class="lane-bar">' + ticks.join("") + "</div><span class=\"lane-note\"></span></div>";
+  }
+
+  // The zoom's chip: the half hour it shows, and the way out of it.
+  function zoomLabel(t) {
+    const day = dayLabel(t);
+    return (day === "Today" ? "" : day + " ") + clock(t - ZOOM).slice(0, 5) + "–" + clock(t + ZOOM).slice(0, 5);
+  }
+
+  function issueCount() {
+    const { start, end } = logWindow();
+    let n = 0;
+    for (const e of herd.entries || []) {
+      if (e.issue && e.t >= start && e.t <= end && (!herd.session || e.session === herd.session)) n++;
+    }
+    return n;
   }
 
   function showLog() {
@@ -4014,12 +4043,19 @@
       .concat(Object.keys(counts).sort().map((s) =>
         '<option value="' + esc(s) + '"' + (herd.session === s ? " selected" : "") + ">" + esc(s) + " (" + counts[s] + ")</option>"))
       .join("");
+    const z = herd.zoom;
+    const issues = herd.entries ? issueCount() : 0;
     app.innerHTML =
       '<div class="page wide">' +
       '<div class="filters log-tools"><div class="chips">' +
-      RANGES.map(([ms, label]) => '<button type="button" class="chip' + (herd.range === ms ? " on" : "") +
+      (z ? '<button type="button" class="chip on zoomed" data-act="log-unzoom" title="Leave this half hour (Esc)">' +
+           esc(zoomLabel(z.t)) + '<span class="unzoom" aria-hidden="true">✕</span></button>' : "") +
+      RANGES.map(([ms, label]) => '<button type="button" class="chip' + (!z && herd.range === ms ? " on" : "") +
         '" data-act="range" data-range="' + ms + '">' + label + "</button>").join("") +
-      '<button type="button" class="chip' + (herd.blocked ? " on" : "") + '" data-act="blocked-only">Blocked only</button>' +
+      '<button type="button" class="chip' + (herd.issues ? " on" : "") + '" data-act="issues-only" title="' +
+        esc("What went wrong, looking back: blocks, input that did not go in, asks unanswered or failed, " +
+            "guard holds, denied checks, quotas and screens no rule knew.  What needs you now is the Inbox.") +
+        '">Issues' + (issues ? ' <span class="count">' + issues + "</span>" : "") + "</button>" +
       '<button type="button" class="chip' + (herd.screensOnly ? " on" : "") + '" data-act="screens-only">Screens</button>' +
       "</div>" +
       '<input id="log-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter' + SLASH + '" value="' + esc(herd.filter) + '">' +
@@ -4046,18 +4082,18 @@
   function renderLanes() {
     const box = $("lanes");
     if (!box) return;
-    const { start, end } = logWindow();
-    const ls = lanes(start, end);
+    const { start, end, now } = logWindow();
+    const ls = lanes(start, end, now);
     box.innerHTML = ls.length
-      ? axisHtml(start, end) + ls.map((l) => laneHtml(l, start, end)).join("")
-      : '<p class="empty">No agent did anything in this range.</p>';
+      ? axisHtml(start, end, now) + ls.map((l) => laneHtml(l, start, end)).join("")
+      : '<p class="empty">No agent did anything in this ' + (herd.zoom ? "half hour" : "range") + ".</p>";
   }
 
   function stateBadge(s) {
     return '<span class="st st-' + esc(s) + '">' + esc(s) + "</span>";
   }
 
-  function entryRow(e, i, re) {
+  function entryRow(e, re) {
     let body;
     if (e.kind === "state" && e.new) {
       body = stateBadge(e.old) + '<span class="arrow">→</span>' + stateBadge(e.new) +
@@ -4079,9 +4115,12 @@
         '" data-id="' + e.id + '">' + (e.pinned ? "Unpin" : "Pin") + "</button>" +
         '<button type="button" class="linkish danger" data-act="log-delete" data-id="' + e.id + '" title="Delete this entry">Delete</button>'
       : "";
+    const moment = herd.zoom && herd.zoom.id === e.id;
+    // Its time is the way into its moment: the half hour around it.
     return (
-      '<div class="lrow' + (e.pinned ? " pinned" : "") + '" data-i="' + i + '" data-id="' + e.id + '">' +
-      '<span class="lt" title="' + esc(new Date(e.t).toLocaleString()) + '">' + esc(clock(e.t)) + "</span>" +
+      '<div class="lrow' + (e.pinned ? " pinned" : "") + (moment ? " moment" : "") + '" data-id="' + e.id + '">' +
+      '<button type="button" class="lt" data-act="log-zoom" data-id="' + e.id + '" title="' +
+        esc(new Date(e.t).toLocaleString() + " · show the half hour around it") + '">' + esc(clock(e.t)) + "</button>" +
       '<button type="button" class="ls" data-act="log-session" data-session="' + esc(e.session) + '">' +
       '<span class="dot" style="background:' + sessionColor(e.session) + '"></span>' + esc(e.session) + "</button>" +
       '<span class="lx">' + pin + why + body + note + "</span>" + screen + ops + "</div>" +
@@ -4089,24 +4128,36 @@
     );
   }
 
-  function renderLogList() {
-    const box = $("log-list");
-    if (!box) return;
-    const { start } = logWindow();
-    const re = termRe(herd.filter);
+  function logMatches(e, f) {
+    return !f || (e.text + " " + e.session + " " + (e.why || "") + " " +
+                  (e.note || "") + " " + (e.screen || "")).toLowerCase().includes(f);
+  }
+
+  // The entries the list shows, newest first: in the window, past the filters.
+  function logRows() {
+    const { start, end } = logWindow();
     const f = herd.filter.trim().toLowerCase();
     const rows = [];
     const entries = herd.entries || [];
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
       if (e.t < start) break;
+      if (e.t > end) continue;
       if (herd.screensOnly && !e.screen) continue;
       if (herd.session && e.session !== herd.session) continue;
-      if (herd.blocked && !(e.kind === "state" && e.new === "blocked")) continue;
-      if (f && !(e.text + " " + e.session + " " + (e.why || "") + " " +
-                 (e.note || "") + " " + (e.screen || "")).toLowerCase().includes(f)) continue;
-      rows.push([e, i]);
+      if (herd.issues && !e.issue) continue;
+      if (!logMatches(e, f)) continue;
+      rows.push(e);
     }
+    return rows;
+  }
+
+  function renderLogList() {
+    const box = $("log-list");
+    if (!box) return;
+    const re = termRe(herd.filter);
+    const rows = logRows();
+    const entries = herd.entries || [];
     // Draw the most recent `shown' at once; the rest wait behind a button.
     const shown = rows.slice(0, herd.shown);
     const more = rows.length - shown.length;
@@ -4114,35 +4165,93 @@
     box.innerHTML = rows.length
       ? '<div class="sum">' + rows.length + (rows.length === 1 ? " entry" : " entries") +
           (more > 0 ? ", showing " + shown.length : "") + "</div>" +
-        shown.map(([e, i]) => {
+        shown.map((e) => {
           const d = dayLabel(e.t);
           const head = d !== day ? '<h2 class="section">' + esc(d) + "</h2>" : "";
           day = d;
-          return head + entryRow(e, i, re);
+          return head + entryRow(e, re);
         }).join("") +
         (more > 0 ? '<button type="button" class="ghost more-log" data-act="log-more">Show earlier (' +
           more + " more)</button>" : "")
-      : '<p class="empty">' + (entries.length ? "Nothing matches in this range." : "Nothing logged yet.") + "</p>";
+      : '<p class="empty">' + (!entries.length ? "Nothing logged yet." :
+          herd.zoom ? "Nothing matches in this half hour." : "Nothing matches in this range.") + "</p>";
   }
 
-  function goToEntry(i) {
-    if (i < 0 || !herd.entries || !herd.entries[i]) return;
-    let row = app.querySelector('.lrow[data-i="' + i + '"]');
-    if (!row) {
-      herd.blocked = false;
-      herd.filter = "";
-      if (herd.range && herd.entries[i].t < Date.now() - herd.range) herd.range = 0;
-      renderLog();
-      row = app.querySelector('.lrow[data-i="' + i + '"]');
-    }
-    if (!row) return;
+  function logEntry(id) {
+    return (herd.entries || []).find((x) => x.id === id);
+  }
+
+  // Draw enough rows that E's is among them, when the list has it at all.
+  function drawUpTo(e) {
+    const at = logRows().indexOf(e);
+    if (at >= herd.shown) herd.shown = (Math.floor(at / LOGCAP) + 1) * LOGCAP;
+  }
+
+  function flashRow(id) {
+    const row = app.querySelector('.lrow[data-id="' + id + '"]');
+    if (!row) return false;
     row.scrollIntoView({ block: "center" });
     row.classList.remove("flash");
     void row.offsetWidth;
     row.classList.add("flash");
+    return true;
   }
 
-  // "now" moves: redraw the open segments now and then.
+  // A lane's segment or mark: its entry's row, always -- what hides it set
+  // aside: a filter it does not pass, a window it is outside (a range
+  // widened to hold it; a moment moved to it), the rows not drawn yet.
+  function goToEntry(id) {
+    const e = logEntry(id);
+    if (!e) return;
+    if (!app.querySelector('.lrow[data-id="' + id + '"]')) {
+      const { start, end, now } = logWindow();
+      if (e.t < start || e.t > end) {
+        if (herd.zoom) herd.zoom = Object.assign({}, herd.zoom, { t: e.t, id: e.id });
+        else herd.range = RANGES.map((r) => r[0]).find((ms) => ms === 0 || now - ms <= e.t);
+      }
+      if (herd.session && e.session !== herd.session) herd.session = "";
+      if (herd.issues && !e.issue) herd.issues = false;
+      if (herd.screensOnly && !e.screen) herd.screensOnly = false;
+      if (!logMatches(e, herd.filter.trim().toLowerCase())) herd.filter = "";
+      drawUpTo(e);
+      renderLog();
+    }
+    flashRow(id);
+  }
+
+  // A moment: the half hour around one entry, lanes and list, all of it --
+  // the filters that narrowed the list set aside until you leave, so from
+  // an issue you see what led to it and what came after.
+  function zoomTo(id) {
+    const e = logEntry(id);
+    if (!e) return;
+    const back = herd.zoom ? herd.zoom.back
+      : { issues: herd.issues, screensOnly: herd.screensOnly, filter: herd.filter };
+    herd.zoom = { t: e.t, id: e.id, back };
+    herd.issues = herd.screensOnly = false;
+    herd.filter = "";
+    herd.shown = LOGCAP;
+    renderLog();
+    flashRow(id);
+  }
+
+  // Back to the range (RANGE, when one was picked), the filters as they
+  // were, and the row the moment was zoomed to.
+  function unzoom(range) {
+    const z = herd.zoom;
+    if (!z) return;
+    herd.zoom = null;
+    Object.assign(herd, z.back);
+    if (range !== undefined) herd.range = range;
+    herd.shown = LOGCAP;
+    const e = logEntry(z.id);
+    if (e) drawUpTo(e);
+    renderLog();
+    if (!flashRow(z.id)) app.scrollTop = 0;
+  }
+
+  // "now" moves: redraw the open segments now and then.  A moment's window
+  // is fixed, so this only stretches what is still going on in it.
   setInterval(() => { if (view === "log") renderLanes(); }, 60000);
 
   // ---- Focus -----------------------------------------------------------
@@ -4686,10 +4795,14 @@
     } else if (act === "visit-agent") {
       if (src) emit("visit-agent", { source_path: src.path });
     } else if (act === "range") {
-      herd.range = +el.getAttribute("data-range");
-      renderLog();
-    } else if (act === "blocked-only") {
-      herd.blocked = !herd.blocked;
+      const ms = +el.getAttribute("data-range");
+      if (herd.zoom) unzoom(ms);
+      else {
+        herd.range = ms;
+        renderLog();
+      }
+    } else if (act === "issues-only") {
+      herd.issues = !herd.issues;
       herd.shown = LOGCAP;
       renderLog();
     } else if (act === "screens-only") {
@@ -4713,7 +4826,11 @@
     } else if (act === "log-delete") {
       emit("log-delete", { id: +el.getAttribute("data-id") });
     } else if (act === "seg") {
-      goToEntry(+el.getAttribute("data-i"));
+      goToEntry(+el.getAttribute("data-id"));
+    } else if (act === "log-zoom") {
+      zoomTo(+el.getAttribute("data-id"));
+    } else if (act === "log-unzoom") {
+      unzoom();
     } else if (act === "room-memory") {
       lastOpened = null;
       showMemory({ project: herdNow.room });
@@ -4897,6 +5014,9 @@
       }
     } else if (ev.key === "Escape" && (view === "source" || (view === "agents" && herdNow.room))) {
       back();
+      ev.preventDefault();
+    } else if (ev.key === "Escape" && view === "log" && herd.zoom) {
+      unzoom();
       ev.preventDefault();
     } else if ((ev.key === "n" || ev.key === "N") && view === "source") {
       jumpMatch(ev.key === "n" ? 1 : -1);
@@ -6306,7 +6426,8 @@
       if (!herd.entries || !p) return;
       herd.entries = herd.entries.filter((x) => x.id !== p.id);
       herd.open.delete(p.id);
-      if (view === "log") renderLogList();
+      // A state line gone changes its lane too.
+      if (view === "log") renderLog();
     },
 
     renderHits: (p) => {

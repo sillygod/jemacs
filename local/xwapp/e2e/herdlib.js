@@ -20,6 +20,10 @@ async function phonePage(browser, opts) {
   // Served as Emacs's own WebKit has it, with host 127.0.0.1: the desk.
   const BOX = scheme + "://" + (opts.host || "box.tail0.ts.net");
   const ctx = await browser.newContext(Object.assign({}, PHONE, opts.context || {}));
+  // OPTS.clock: Playwright's clock, installed before the page loads so its
+  // own timers are the ones moved (ctx.clock.fastForward); it runs as time
+  // does until moved.
+  if (opts.clock) await ctx.clock.install(opts.clock === true ? {} : opts.clock);
   await ctx.route("**/*", async (route) => {
     const req = route.request();
     const url = new URL(req.url());
