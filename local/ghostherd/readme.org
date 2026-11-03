@@ -2882,7 +2882,7 @@ directory (=xwapp-serve-files=).  In a browser that is
 your phone over Tailscale gets it as it gets the page and nobody else
 does; with the page reachable from a phone, a route that served any
 path would serve the disk.  In Emacs's xwidget the page, a file
-itself, reads the copies as files.  A copy over 256 KB goes from a
+itself, reads the copies as files.  A copy over 8 KB goes from a
 thread of its own: a phone reading it slowly does not hold
 Emacs (an 8 MB image to a reader of 2 MB/s held a key pressed meanwhile
 for 4.3 seconds; sent so, it was taken in 4 ms).

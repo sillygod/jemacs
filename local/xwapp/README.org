@@ -100,11 +100,29 @@ another site's page, gets nothing.
   1.4 ms of them --- the request waits, Emacs does not.  A gzip that
   fails or takes past 3 s (=xwapp--gzip-wait=): the file goes plain.
   =(setq xwapp--gzip-program nil)= turns it off.
-- *What changes goes plain.*  A =next= mixes what Emacs keeps secret ---
-  the page's address, in its QR code --- with text others write (an
-  agent's, a pull request's, a task's): compressed, its length could
-  tell a watcher on the path the secret, a guess at a time (BREACH).
-  And it is small: a wake's answers are 15 KB together.
+- *What changes, too, through the proxy.*  A =next= carries what the
+  page shows --- the herd's Inbox 44 KB, its sessions 389 KB --- over
+  the socket that holds Emacs to some 340 KB a second (see "A big
+  answer goes from a thread"), then the phone's link.  So a =next= of
+  8 KB or more (=xwapp--gzip-next-min=), asked through the proxy by a
+  browser that takes gzip, goes gzip'd: six to nine times smaller.
+  Not on loopback, where 389 KB take 2 ms and gzip would add 3--12; nor
+  a smaller one, which the socket takes at once.  From memory, gzip
+  reads a file of its own (mode 600, removed once read), not a pipe:
+  Emacs writing to a pipe waits as on the socket, 72 ms for 210 KB.
+- *Never a secret.*  Compressed, a body is as long as what in it does
+  not repeat: one holding a secret beside text someone else can put in
+  it --- an agent's, a pull request's --- tells a watcher on the path,
+  who sees lengths alone, whether a guess at the secret matched, a
+  guess at a time (BREACH).  xwapp's secrets are its pages': an address
+  opens its page as you.  Emacs puts one in a body for the QR code, and
+  any text that quotes an address carries one too.  So it is no list of
+  senders: everything gzip'd, a =next= or a file, is gzip'd by
+  =xwapp--deflate= alone, which looks in the bytes for every secret
+  xwapp keeps --- each page's, and each kept over a restart for an app
+  not loaded yet --- in either case, and sends them plain when one is
+  there (some 1 ms for 540 KB).  =xwapp-test-a-secret-never-goes-gzipd=
+  inflates every answer that went gzip'd and looks again.
 
 ** A big answer goes from a thread
 
@@ -112,10 +130,20 @@ another site's page, gets nothing.
 socket, and a phone on a slow link reads slowly: an 8 MB file to a
 reader of 2 MB/s held Emacs 5.4 seconds, a key pressed meanwhile
 waiting 4.3 of them; from a thread, which waits on the socket with
-Emacs free, the key was taken in 4 ms.  So any answer past 256 KB
-(=xwapp--send-aside=) goes from a Lisp thread of its own: a file the
-app serves, the page's own (the herd's app.js is 313 KB), and a =next=
-with a herd in it.
+Emacs free, the key was taken in 4 ms.
+
+Nor need the reader be slow.  The proxy reaches Emacs over a unix
+socket, which holds 8 KB on macOS (=net.local.stream.sendspace=), and
+Emacs, finding it full, sleeps 20 ms before trying again (=send_process=
+in src/process.c), no key read meanwhile: some 340 KB a second, whoever
+reads.  The herd's app.js, 90 KB gzip'd, held Emacs 0.26 s; its Inbox,
+44 KB, 0.13 s.  So any answer past 8 KB (=xwapp--send-aside=), what
+that socket takes at once, goes from a Lisp thread of its own: a file
+of the page's or the app's, a =next=.  The thread sends no faster; it
+lets Emacs read keys meanwhile.  Measured (=e2e/herd-open.js= with
+=BLOCK=1=, a key pressed every 20 ms while a phone on 5 Mbit/s opens the
+herd page cold): read 275--298 ms late at worst with 256 KB the mark,
+25--42 ms with 8 KB.
 
 - *In order.*  Each request is a connection of its own, answered once,
   and the page asks its next =next= only once it has read the last.
@@ -158,7 +186,7 @@ not a symlink.  The page has each as =XW.file(NAME)=:
 Anyone the page is served to can ask for any name: make the names ones
 nobody guesses.  Nothing here takes a path.
 
-A file of more than 256 KB goes from a Lisp thread of its own, as any
+A file of more than 8 KB goes from a Lisp thread of its own, as any
 answer that big does: see "A big answer goes from a thread".
 
 *** Sets of their own: documents, read and never run
@@ -661,12 +689,14 @@ it would on the phone.
 |                | and taking it back by hand; files changed meanwhile, loads      |
 | =link=         | the herd page over a slow link (1.6 Mbit/s, 150 ms): first      |
 |                | load, wakes, a ui/ file changed, measured; its files gzip'd,    |
-|                | on the phone and at the desk; its nexts plain                   |
+|                | on the phone and at the desk; its nexts gzip'd past 8 KB        |
 | =herd-open=    | the herd page opened on a phone (5 Mbit/s, 120 ms), served by   |
 |                | ghostherd's own Elisp, with a herd of 928 sessions: the Inbox   |
 |                | asked for first, no session list before it, "Asking Emacs…" not |
-|                | "Inbox zero"; Sessions asks for the list as it shows, once.     |
-|                | Timed, cold and again (=LINKS=wifi,cell,poor=, =TIMES=1=)       |
+|                | "Inbox zero"; Sessions asks for the list as it shows, once, and |
+|                | it comes gzip'd, as every next past 8 KB.  Timed, cold and      |
+|                | again (=LINKS=wifi,cell,poor=, =TIMES=1=); =BLOCK=1=: Emacs in  |
+|                | tmux, how late it reads a key while the phone loads             |
 | =jwebkit=      | jwebkit's scripts, run: a hint onto a field says so, ⌘V's text  |
 |                | in at the caret, Esc lets the field go                          |
 

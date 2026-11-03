@@ -37,12 +37,28 @@
 ;; The sidecar, played: no process, no port.
 (advice-add 'ghostherd-memory-ensure :override #'always)
 
+;; Made up, but as varied as the real thing -- ids at random, titles and
+;; reports of words -- so that it gzips as much as a real one does
+;; (Jing's 389 KB list, 59 KB gzip'd): the same each run.
+(random "herd-open")
+(defconst e2e-words
+  (split-string "the agent page herd phone emacs inbox session list reply ask lead branch merge test commit fix
+  socket thread gzip proxy secret file report question answer reload cold open draw wait time byte link cell
+  wifi slow fast main block key read send write memory index sidecar json request response header body cache
+  tag version build check suite run pass fail error warn note view tab sort filter search project worktree
+  review diff patch rebase status log trace cost token tally count badge chip card row column width height
+  scroll click tap swipe touch screen window frame buffer mode hook timer process network port host user"))
+(defun e2e-said (n)
+  "N words, at random."
+  (mapconcat (lambda (_) (nth (random (length e2e-words)) e2e-words)) (make-list n nil) " "))
+
 (defun e2e-sources (n)
   "N sessions as the sidecar lists them, at the lengths a real index has."
   (let ((agents ["claude" "claude" "agy" "grok"]) out)
     (dotimes (i n)
       (let* ((project (format "/Users/someone/src/project-%02d-%s" (% i 109) (make-string 24 ?p)))
-             (sid (format "%08x-%04x-%04x-%04x-%012x" (* i 7919) i (* 3 i) (* 5 i) (* 11 i)))
+             (sid (format "%08x-%04x-%04x-%04x-%012x" (random #x100000000) (random #x10000)
+                          (random #x10000) (random #x10000) (random #x1000000000000)))
              (memory (zerop (% i 3))))
         (push (list :source_path (format "/Users/someone/.claude/projects/%s/%s.jsonl"
                                          (replace-regexp-in-string "/" "-" project) sid)
@@ -54,7 +70,7 @@
                     :kind (if memory "memory" "transcript")
                     :chunks (1+ (% i 40))
                     :imported_at "2026-11-03T11:05:30.741464+00:00"
-                    :title (format "Session %d" i))
+                    :title (e2e-said (+ 4 (random 8))))
               out)))
     (vconcat (nreverse out))))
 
@@ -78,13 +94,16 @@
       nil)))
 (advice-add 'ghostherd-memory-request-async :override #'e2e-sidecar)
 
-;; The Inbox: reports and questions with their whole text, and asks.
+;; The Inbox: reports and questions with their whole text, and asks --
+;; the same each time it is asked.
+(defvar e2e-inbox nil)
 (defun e2e-inbox-items ()
+  (or e2e-inbox (setq e2e-inbox (e2e-inbox-make))))
+(defun e2e-inbox-make ()
   (let (items)
     (dotimes (i 25)
       (let* ((kind (if (< i 15) 'report (if (< i 20) 'question 'answered)))
-             (said (concat (format "Item %d. " i)
-                           (mapconcat #'identity (make-list 30 "The herd did this and that, and here is why.") " "))))
+             (said (concat (format "Item %d. " i) (e2e-said 220))))
         (push (ghostherd-inbox--item (format "%s:agent-%d:%d" kind i (* 1000 i)) kind
                                      (format "agent-%d" i) "claude" (format "~/src/project-%02d/" i)
                                      (format "Title of item %d" i) (- (float-time) (* i 60))
@@ -116,7 +135,17 @@
                                                           :bytes (string-bytes c)))
                                                   calls))))))))
 
+;; In a terminal (herd-open.js's BLOCK), a key: when each C-t was read,
+;; to time how long Emacs went without reading one.  Not F5: tmux sends it
+;; as an escape sequence this terminal's Emacs reads as keys of their own.
+(unless noninteractive
+  (global-set-key (kbd "C-t")
+                  (lambda () (interactive)
+                    (write-region (format "%.4f\n" (float-time)) nil
+                                  (expand-file-name "keys.log" e2e-dir) t 'silent))))
+
 (write-region (json-encode (list (cons "herd" (xwapp-url ghostherd-memory-page--app))
                                  (cons "secret" (xwapp--secret ghostherd-memory-page--app))))
               nil (expand-file-name "urls.json" e2e-dir) nil 'silent)
-(while t (accept-process-output nil 1))
+(when noninteractive
+  (while t (accept-process-output nil 1)))
