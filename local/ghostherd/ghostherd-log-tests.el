@@ -30,6 +30,47 @@
         (ghostherd--set-state s 'working "again")
         (should (= (length ghostherd--log) 1))))))
 
+(ert-deftest ghostherd-test-log-issues-are-the-lines-worth-a-look ()
+  "The Log tab's Issues: a block, a death, a screen kept for a fault --
+by what the writers put in the log, not by a loose word in a line.  The
+other writers' lines are asked beside their own tests
+\(`ghostherd-tests--issue-p')."
+  (ghostherd-tests--with-herd ()
+    (ghostherd-tests--with-log
+      (let ((s (ghostherd-tests--session :name "rev" :kind 'agy :state 'idle)))
+        (ghostherd--set-state s 'working "input sent")
+        (should-not (ghostherd-tests--issue-p "idle → working"))
+        (ghostherd--set-state s 'blocked "Approve? blocked on you")
+        (should (ghostherd-tests--issue-p "working → blocked"))
+        (ghostherd--set-state s 'done "blocked earlier, now done")
+        (should-not (ghostherd-tests--issue-p "blocked → done"))
+        (ghostherd--set-state s 'dead "exited")
+        (should (ghostherd-tests--issue-p "→ dead")))))
+  (let ((line (lambda (kind text &optional why)
+                (ghostherd-log-entry--create :session "a" :kind kind :text text :why why))))
+    (dolist (why '(limit menu mismatch manual))
+      (should (ghostherd-log-issue-p
+               (funcall line 'screen (ghostherd--capture-text "a" why nil) why))))
+    ;; A /compact's capture is a sample for the screen rules, not a fault.
+    (should-not (ghostherd-log-issue-p
+                 (funcall line 'screen (ghostherd--capture-text "a" 'compaction nil) 'compaction)))
+    ;; The same words, in lines that are no issue: the user's own acts,
+    ;; a retry that went in, an ask's head, a report.
+    (dolist (ok '((input "← commit  (not submitted)")
+                  (input "↵ again: it was still in the input box")
+                  (input "← tell me why it failed: twice")
+                  (ask "ask a1b2c3d4 from lead-x: why was it blocked? it failed: twice")
+                  (ask "ask a1b2c3d4 from lead-x cancelled")
+                  (ask "ask a1b2c3d4 left open: rd was only just handed it")
+                  (life "killed")
+                  (life "released from the herd")
+                  (life "its directory is back")
+                  (life "stopped by the user: its directory was gone")
+                  (life "relaying to grok: reading where its work stands")
+                  (guard "guard g1 kept denied by the user: run_command: cat .env")
+                  (report "reports blocked")))
+      (should-not (ghostherd-log-issue-p (apply line ok))))))
+
 (ert-deftest ghostherd-test-log-keeps-the-screen-behind-a-block ()
   "The reason the log keeps screens at all: `ghostherd-explain' can only
 answer while the agent is still sitting on the prompt, so a rule that

@@ -369,7 +369,8 @@ screen, and a look once more -- one try fewer each time, then a warning."
       (setq keys nil later nil)
       (ghostherd--confirm-submit s msg 0)
       (should-not (or keys later))
-      (should (string-match-p "not submitted" (ghostherd-log-entry-text (car ghostherd--log)))))))
+      (should (string-match-p "not submitted" (ghostherd-log-entry-text (car ghostherd--log))))
+      (should (ghostherd-tests--issue-p "not submitted")))))
 
 (ert-deftest ghostherd-test-return-is-not-pressed-unless-it-submits ()
   "Return on a menu is an answer and on a working agent a second prompt;
@@ -845,6 +846,7 @@ agent with no hook to say, or a slash command, keeps the box's word."
           (should-not (or keys later))
           (should (eq (plist-get (ghostherd--submit-of s) :state) 'lost))
           (should (string-match-p "never taken" (ghostherd-log-entry-text (car ghostherd--log))))
+          (should (ghostherd-tests--issue-p "never taken"))
           (should (equal (caar settled) "c644aebc"))
           (should (string-match-p "not taken: qa's CLI started no turn on it" (cadar settled)))
           (should-not (ghostherd--unsent-head s))
@@ -895,6 +897,7 @@ that never read it -- and settled at its turn's end once taken."
         (should (gethash "a1" ghostherd--asks-open))
         (should (string-match-p "a1 left open: qa has begun no turn on it"
                                 (ghostherd-log-entry-text (car ghostherd--log))))
+        (should (ghostherd-tests--issue-p "a1 left open"))
         ;; Its hook: the turn began on it; its end settles the ask.
         (ghostherd-report taker 'working)
         (ghostherd--set-state taker 'working)
@@ -1126,6 +1129,7 @@ agent gone from the herd is let be."
     (should (= (plist-get got :looks) (+ 2 ghostherd--answer-looks)))
     (should (equal (ghostherd-log-entry-text (plist-get got :entry))
                    "2 not answered: the highlight stayed on 1"))
+    (should (ghostherd-log-issue-p (plist-get got :entry)))
     (should (string-match-p "> 1\\. Yes" (ghostherd-log-entry-screen (plist-get got :entry)))))
   (let ((got (ghostherd-test--answer 2 :went t)))
     (should-not (plist-get got :pressed))

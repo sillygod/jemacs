@@ -170,7 +170,8 @@ on the same CLI, its own flags kept, less what picked its conversation."
     (should-not spawned)
     (should (eq (ghostherd-session-kind (ghostherd-get "rd")) 'claude))
     (should-not (gethash "rd" ghostherd--relaying))
-    (should (string-match-p "relay to grok failed: no such transcript" (ghostherd-log-entry-text (car ghostherd--log))))))
+    (should (string-match-p "relay to grok failed: no such transcript" (ghostherd-log-entry-text (car ghostherd--log))))
+    (should (ghostherd-tests--issue-p "relay to grok failed"))))
 
 (ert-deftest ghostherd-test-relay-of-one-that-left-meanwhile ()
   (ghostherd-tests--relaying
@@ -358,6 +359,7 @@ once for that window: in the log, the echo area and a push."
           (should (equal (plist-get fields :to) "grok"))
           (should (string-match-p "its claude usage (5h) is used up" (plist-get fields :reason))))
         (should (string-match-p "A relay hands its work to grok" (ghostherd-log-entry-text (car ghostherd--log))))
+        (should (ghostherd-tests--issue-p "A relay hands its work"))
         (ghostherd--set-state rd 'working)
         (ghostherd--set-state rd 'blocked)
         (should (= (length pushed) 1))

@@ -242,6 +242,16 @@ a ❯-marked numbered list that replaced the input box, no rule per menu.")
      (cl-letf (((symbol-function 'ghostherd--notify) (lambda (&rest _) nil)))
        ,@body)))
 
+(defun ghostherd-tests--issue-p (re)
+  "Whether the newest log line matching RE is an issue for the Log tab.
+With no line matching, the test fails: a `should-not' must not pass on
+nothing.  Asked beside the tests that drive each writer, so a reworded
+line that `ghostherd--log-issue-res' no longer matches fails there."
+  (if-let* ((e (seq-find (lambda (e) (string-match-p re (or (ghostherd-log-entry-text e) "")))
+                         ghostherd--log)))
+      (and (ghostherd-log-issue-p e) t)
+    (ert-fail (list "No log line matches" re))))
+
 (defmacro ghostherd-tests--with-dir-locals (contents &rest body)
   "Run BODY with `dir' bound to a temp directory holding CONTENTS.
 CONTENTS is written verbatim as .dir-locals.el, or nil for none."

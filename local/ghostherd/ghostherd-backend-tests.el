@@ -250,7 +250,8 @@ the whole herd, its panes still running, without a word."
           (ghostherd--ensure-sessions))
         (should-not (ghostherd-get "rev"))
         (should (equal (mapcar #'ghostherd-log-entry-text ghostherd--log)
-                       '("dropped from the herd: its host is gone")))))))
+                       '("dropped from the herd: its host is gone")))
+        (should (ghostherd-tests--issue-p "dropped from the herd"))))))
 
 (ert-deftest ghostherd-test-a-readopted-agent-takes-back-its-view ()
   "An agent dropped and re-adopted in the same Emacs is still shown in

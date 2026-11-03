@@ -405,6 +405,89 @@ the entry id; signals when there is no screen to read."
   (and id (seq-find (lambda (e) (eql (ghostherd-log-entry-id e) id))
                     ghostherd--log)))
 
+;;; Issues: the entries worth a look after the fact
+;;
+;; The Log tab's Issues chip.  A look back -- what went wrong while you
+;; were away -- not what needs you now, which is the Inbox's.  Each
+;; pattern is the text one writer puts in the log, anchored, so a loose
+;; word in an ordinary line (a reason, an ask's head) never makes it one.
+;; Left out on purpose: the user's own acts (killed, released, a guard
+;; kept denied, an ask cancelled, a relay asked for), a hold that settles
+;; by itself (an ask "left open" as its taker waits on asks of its own,
+;; was only just handed it, or its turn or the herd's restore has not
+;; ended), a retry that went in (`↵ again'), a report (its state line is
+;; the one), and a /compact's capture (a sample for the screen rules, not
+;; a fault).
+
+(defconst ghostherd--log-issue-res
+  (let ((word '(+ (not (any " ")))))
+    `((state
+       ;; `ghostherd--log-transition'
+       . ,(rx-to-string `(seq bos ,word " → " (or "blocked" "dead") (or eos "  ")) t))
+      (input
+       . ,(rx bos (or
+                   ;; ghostherd-comm.el: `ghostherd--submit-unsent', `ghostherd--submit-lost'
+                   "← still in its input box: not submitted"
+                   "← never taken: no turn began on it"
+                   ;; ghostherd-comm.el: a menu choice that did not take
+                   (seq (+ digit) " not answered: "))))
+      (ask
+       . ,(rx-to-string
+           `(seq bos (or
+                      ;; ghostherd-mail.el: `ghostherd--ask-outcome'
+                      (seq "ask " ,word " from " (+ (not (any " :"))) " failed: ")
+                      "stopped without answering ask "
+                      ;; ghostherd-mail.el: `ghostherd--ask-on-state'
+                      (seq "ask " ,word " left open: " (+ nonl) " has begun no turn on it yet" eos)
+                      (seq "ask " (+ nonl) " is still in its input box: left open" eos)))
+           t))
+      (life
+       . ,(rx-to-string
+           `(seq bos (or
+                      ;; ghostherd-core.el: the sweep
+                      "dropped from the herd: its host is gone"
+                      ;; ghostherd-lead.el: `ghostherd--when-ready'
+                      "never came to its prompt: "
+                      ;; ghostherd-spawn.el: the resume backstop, the model switch
+                      "resume failed ("
+                      "not started fresh: its directory is gone"
+                      "model not switched: "
+                      ;; ghostherd-primary.el
+                      (seq "kept conversation " (+ nonl) " is gone; starting fresh")
+                      (seq "stopped: " (+ nonl) ".  A relay hands its work to ")
+                      (seq "relay to " ,word " failed: ")
+                      "not relayed to "
+                      ;; ghostherd-worktree.el: the directory watch, the pretrust
+                      (seq "its " (or "worktree" "directory") " " (+ nonl) " is gone" eos)
+                      "not trusted for "))
+           t))
+      (guard
+       ;; ghostherd-hooks.el: `ghostherd--herd-take-guard' -- held for you,
+       ;; refused, or left unanswered
+       . ,(rx-to-string
+           `(seq bos "guard " (or "needs approval " "denied "
+                                  (seq ,word " expired, never answered: ")))
+           t))
+      ;; ghostherd-hooks.el: `ghostherd--herd-take-lint' -- every line a denial
+      (lint . ,(rx-to-string `(seq bos "check " ,word " denied (") t))
+      ;; ghostherd-screen.el: `ghostherd--continue-send' -- a turn cut short
+      (continue . ,(rx bos "↻ continuing a turn "))))
+  "Per log kind, what a line of that kind reads as when it is an issue.")
+
+(defconst ghostherd--log-issue-whys '(limit menu mismatch manual)
+  "The screens kept as issues, by why: a quota, a menu no rule knew, a
+screen and hook that disagreed, and one you captured yourself.  A
+blocked one is its state line's; a /compact's is not one.")
+
+(defun ghostherd-log-issue-p (entry)
+  "Non-nil when log ENTRY is worth a look after the fact.
+See `ghostherd--log-issue-res'."
+  (let ((kind (ghostherd-log-entry-kind entry)))
+    (if (eq kind 'screen)
+        (and (memq (ghostherd-log-entry-why entry) ghostherd--log-issue-whys) t)
+      (when-let* ((re (alist-get kind ghostherd--log-issue-res)))
+        (and (string-match-p re (or (ghostherd-log-entry-text entry) "")) t)))))
+
 (defun ghostherd--log-refresh ()
   "Redraw the log buffer after the log changed in place."
   (when-let* ((buf (get-buffer "*ghostherd-log*")))

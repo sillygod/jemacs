@@ -227,7 +227,9 @@ open, and Emacs watches it again for the next time rd stops."
       (should (equal (gethash "a1" ghostherd--asks-open) "rd"))
       (should-not (gethash "a1" ghostherd--asks-settled))
       (should (string-match-p "a1 left open: rd waits on b2"
-                              (ghostherd-log-entry-text (car ghostherd--log)))))))
+                              (ghostherd-log-entry-text (car ghostherd--log))))
+      ;; Waiting on its own asks settles by itself: no issue.
+      (should-not (ghostherd-tests--issue-p "a1 left open")))))
 
 (ert-deftest ghostherd-test-ask-fails-when-the-taker-dies ()
   (ghostherd-tests--with-asks
@@ -256,6 +258,8 @@ open, and Emacs watches it again for the next time rd stops."
     (should (equal (mapcar #'ghostherd-log-entry-text (reverse ghostherd--log))
                    '("answered ask a1 for claude-main: the docs say X"
                      "ask a2 from claude-main failed: agy-a is gone")))
+    (should (ghostherd-tests--issue-p "a2 from claude-main failed"))
+    (should-not (ghostherd-tests--issue-p "answered ask a1"))
     (should-not (gethash "a1" ghostherd--asks-open))
     (should (= (length ghostherd--herd-asks) 2))))
 
