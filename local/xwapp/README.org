@@ -662,6 +662,11 @@ it would on the phone.
 | =link=         | the herd page over a slow link (1.6 Mbit/s, 150 ms): first      |
 |                | load, wakes, a ui/ file changed, measured; its files gzip'd,    |
 |                | on the phone and at the desk; its nexts plain                   |
+| =herd-open=    | the herd page opened on a phone (5 Mbit/s, 120 ms), served by   |
+|                | ghostherd's own Elisp, with a herd of 928 sessions: the Inbox   |
+|                | asked for first, no session list before it, "Asking Emacs…" not |
+|                | "Inbox zero"; Sessions asks for the list as it shows, once.     |
+|                | Timed, cold and again (=LINKS=wifi,cell,poor=, =TIMES=1=)       |
 | =jwebkit=      | jwebkit's scripts, run: a hint onto a field says so, ⌘V's text  |
 |                | in at the caret, Esc lets the field go                          |
 

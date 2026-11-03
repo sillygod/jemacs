@@ -67,6 +67,11 @@
 (defvar ghostherd-memory-page--project nil
   "The project the page was opened from, offered as a filter.")
 
+(defvar ghostherd-memory-page--lazy nil
+  "Non-nil when the page asks for the sessions as it needs them, as its
+last ready said: it is sent their count alone until then.  See
+`ghostherd-memory-page--send-context'.")
+
 (defconst ghostherd-memory-page--progress-every 5
   "Seconds between reads of the sidecar's import progress.")
 
@@ -340,7 +345,7 @@ While the sidecar brings an index of an older build up to date
                                                     "Search index updated"
                                                   "Import finished"))
              (setq ghostherd-memory-page--progress-shown nil)
-             (ghostherd-memory-page--send-context))))))
+             (ghostherd-memory-page--send-context nil t))))))
      nil
      (lambda (_err) (setq ghostherd-memory-page--progress-inflight nil))))))
 
@@ -3331,33 +3336,68 @@ is its room's."
 
 ;;; Intents
 
-(defun ghostherd-memory-page--ready ()
-  "The page has loaded: show the log or the agents at once if asked,
-then the sessions.  Neither needs the sidecar, so neither waits for it."
+(defun ghostherd-memory-page--ready (&optional intent)
+  "The page has loaded, or come back (INTENT, its ready): show the log
+or the agents at once if asked, then the sessions.  Neither needs the
+sidecar, so neither waits for it."
+  (setq ghostherd-memory-page--lazy
+        (ghostherd-memory-page--truthy (alist-get 'lazy intent)))
   (let ((view (plist-get ghostherd-memory-page--pending :view)))
     (when (member view '("log" "agents"))
       (setq ghostherd-memory-page--pending nil)
       (ghostherd-memory-page--js "showView" view)))
-  (ghostherd-memory-page--send-context))
+  (ghostherd-memory-page--send-context
+   (ghostherd-memory-page--sessions-asked-p intent)))
 
-(defun ghostherd-memory-page--send-context ()
-  "Send the sessions the index holds, and what to show first."
+(defun ghostherd-memory-page--sessions-asked-p (intent)
+  "Non-nil when the page's INTENT, its ready or a refresh, asks for the
+sessions themselves: it says so, or it is a page that does not ask for
+them as it needs them -- loaded before they went apart from their count."
+  (or (ghostherd-memory-page--truthy (alist-get 'sessions intent))
+      (not (ghostherd-memory-page--truthy (alist-get 'lazy intent)))))
+
+;; The sessions go to the page that shows them, not to every page.
+;;
+;; They are some 440 bytes each -- 389 KB for the 928 of a herd of
+;; months (2026-11-03) -- and a page's `next' leaves Emacs over tailscale
+;; serve's socket at some 340 KB/s (Emacs waits 20 ms each time the
+;; socket's 8 KB buffer is full).  Sent on every load, they cost a phone
+;; opening on the Inbox over a second, and the Inbox, asked for after
+;; them, waited for them.  Only Search and Sessions list them; the rest of
+;; the page needs their count, for the tab's badge.  So a page that says
+;; `lazy' is sent the count alone (`memory_list' of one, which still
+;; counts them all), and asks for the sessions when it shows a view that
+;; lists them -- or when Emacs opens it on one.  A page that does not say
+;; it -- loaded before -- is sent them all, as it was.
+
+(defun ghostherd-memory-page--send-context (&optional sessions changed)
+  "Send what to show first, and the sessions the index holds: their
+count alone to a page that asks for them as it needs them, unless
+SESSIONS -- it asked -- or the page opens on a view that lists them.
+CHANGED, an import changed them: the page asks again for those it has.
+See \"The sessions go to the page that shows them\"."
   (ghostherd-memory-page--watch-import)
-  (ghostherd-memory-request-async
-   "memory_list"
-   (lambda (result)
-     (let ((pending ghostherd-memory-page--pending))
-       (setq ghostherd-memory-page--pending nil)
-       (ghostherd-memory-page--js
-        "setContext"
-        (list :sources (ghostherd-memory-page--vec (plist-get result :sources))
-              :total (or (plist-get result :total) 0)
-              :current_project (or ghostherd-memory-page--project "")
-              :view (or (plist-get pending :view) "")
-              :query (or (plist-get pending :query) "")
-              :project (or (plist-get pending :project) "")))))
-   (list :limit 5000)
-   (ghostherd-memory-page--fail "Listing sessions")))
+  (let ((all (or sessions
+                 (not ghostherd-memory-page--lazy)
+                 (member (plist-get ghostherd-memory-page--pending :view) '("sessions" "search")))))
+    (ghostherd-memory-request-async
+     "memory_list"
+     (lambda (result)
+       (let ((pending ghostherd-memory-page--pending))
+         (setq ghostherd-memory-page--pending nil)
+         (ghostherd-memory-page--js
+          "setContext"
+          (append
+           (if all
+               (list :sources (ghostherd-memory-page--vec (plist-get result :sources)))
+             (when changed (list :changed t)))
+           (list :total (or (plist-get result :total) 0)
+                 :current_project (or ghostherd-memory-page--project "")
+                 :view (or (plist-get pending :view) "")
+                 :query (or (plist-get pending :query) "")
+                 :project (or (plist-get pending :project) ""))))))
+     (list :limit (if all 5000 1))
+     (ghostherd-memory-page--fail "Listing sessions"))))
 
 (defun ghostherd-memory-page--search (intent)
   "Run INTENT's search: seq, q, agent, project, limit.
@@ -3435,7 +3475,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
                   (or (plist-get result :imported) 0)
                   (or (plist-get result :sessions) 0))))
        ;; Watches again: a busy answer means the other import goes on.
-       (ghostherd-memory-page--send-context))
+       (ghostherd-memory-page--send-context nil t))
      nil
      (lambda (err)
        (funcall done)
@@ -3908,11 +3948,15 @@ user's state (or none) and push."
   (ghostherd-memory-page--serve-files)
   (condition-case e
       (pcase (alist-get 'op intent)
-        ("ready" (ghostherd-memory-page--ready))
+        ("ready" (ghostherd-memory-page--ready intent))
         ("log" (ghostherd-memory-page--send-log))
         ("log-pin" (ghostherd-memory-page--log-pin intent))
         ("log-delete" (ghostherd-memory-page--log-delete intent))
-        ("refresh" (ghostherd-memory-page--send-context))
+        ("refresh"
+         (setq ghostherd-memory-page--lazy
+               (ghostherd-memory-page--truthy (alist-get 'lazy intent)))
+         (ghostherd-memory-page--send-context
+          (ghostherd-memory-page--sessions-asked-p intent)))
         ("search" (ghostherd-memory-page--search intent))
         ("open-source" (ghostherd-memory-page--open-source intent))
         ("import" (ghostherd-memory-page--import))

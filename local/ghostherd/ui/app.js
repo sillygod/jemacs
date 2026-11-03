@@ -646,7 +646,12 @@
 
   // ---- State -----------------------------------------------------------
 
-  let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [] };
+  // The sessions the index holds -- SOURCES only once Emacs sent them
+  // (LOADED), when a view that lists them asked (ASKED, not answered
+  // yet); STALE when Emacs has said since that they changed.  Until
+  // then, their count alone (TOTAL).  See `needSessions'.
+  let ctx = { sources: [], byPath: {}, total: 0, currentProject: "", projects: [],
+              loaded: false, asked: false, stale: false };
   let filters = { agent: "", project: "" };
   let view = "boot"; // agents | search | sessions | source | log | docs | ...
   let watching = false; // Emacs is sending the herd every few seconds
@@ -694,6 +699,30 @@
     return ctx.byPath[path] || { source_path: path, agent: "", project: "", kind: "", chunks: 0 };
   }
 
+  // The sessions themselves are some 400 KB for a herd of months, and a
+  // reply leaves Emacs over tailscale serve's socket at some 340 KB/s: a
+  // phone opening on the Inbox waited over a second for a list it does
+  // not show.  So the page says it asks for them as it needs them (its
+  // ready, `lazy'), is told their count, and asks for them (a refresh
+  // with `sessions') when a view that lists them shows -- once, and again
+  // only once Emacs has said they changed (an import, a page come back).
+  function listsSessions() {
+    return view === "sessions" || view === "search";
+  }
+
+  function askSessions() {
+    ctx.asked = true;
+    emit("refresh", { lazy: true, sessions: true });
+  }
+
+  function needSessions() {
+    if (ctx.asked || (ctx.loaded && !ctx.stale)) return;
+    askSessions();
+  }
+
+  // Said in place of the list while it is on its way.
+  const SESSIONS_COMING = '<p class="empty">Listing the sessions…</p>';
+
   // ---- Chrome ----------------------------------------------------------
 
   function chrome() {
@@ -722,7 +751,8 @@
     });
     tabInView();
     btnBack.hidden = !(view === "source" || (view === "agents" && herdNow.room));
-    $("sessions-n").textContent = ctx.sources.length ? String(ctx.sources.length) : "";
+    const sessionsN = ctx.loaded ? ctx.sources.length : ctx.total;
+    $("sessions-n").textContent = sessionsN ? String(sessionsN) : "";
     app.setAttribute("data-view", view);
     // A room scrolls in its columns, not as a page.
     app.classList.toggle("in-room", view === "agents" && !!herdNow.room);
@@ -772,9 +802,13 @@
   // Emacs let the page go while the phone slept, and has it again: the
   // page is as it was -- scrolled where it was, what it had open still
   // open -- and asks again for what it shows, as its load did.  Emacs
-  // closed what it was sending when it let go.
+  // closed what it was sending when it let go -- the sessions too, if it
+  // was sending them, and they may have changed meanwhile.  What the page
+  // shows is asked for first, the rest (ready) after.
   function comeBack() {
-    emit("ready");
+    ctx.asked = false;
+    if (ctx.loaded) ctx.stale = true;
+    if (listsSessions()) askSessions();
     if (watching) emit("herd-watch");
     if (herdNow.room) watchRoom(true);
     if (herdNow.room && herdNow.subView) {
@@ -786,6 +820,7 @@
     if (threadsWatching) emit("threads-watch", { project: threads.project, sort: threads.sort });
     if (view === "log") emit("log");
     if (view === "docs") emit("docs");
+    emit("ready", { lazy: true });
     emit("threads-peek");
   }
 
@@ -816,6 +851,7 @@
 
   function showSearch() {
     view = tab = "search";
+    needSessions();
     chrome();
     app.innerHTML =
       '<div class="page">' +
@@ -848,6 +884,10 @@
     const box = $("results");
     if (!box) return;
     if (!query.trim()) {
+      if (!ctx.loaded) {
+        box.innerHTML = '<h2 class="section">Recent sessions</h2>' + SESSIONS_COMING;
+        return;
+      }
       const recent = ctx.sources.filter(matchesFilters).slice(0, 12);
       box.innerHTML =
         '<h2 class="section">Recent sessions</h2>' +
@@ -916,6 +956,7 @@
 
   function showSessions() {
     view = tab = "sessions";
+    needSessions();
     chrome();
     app.innerHTML =
       '<div class="page">' +
@@ -930,6 +971,10 @@
   function renderSessionList() {
     const box = $("sess-list");
     if (!box) return;
+    if (!ctx.loaded) {
+      box.innerHTML = SESSIONS_COMING;
+      return;
+    }
     const f = sessionsFilter.trim().toLowerCase();
     const rows = ctx.sources.filter((s) =>
       matchesFilters(s) &&
@@ -5006,7 +5051,8 @@
     if (view === "log") emit("log");
     else if (view === "agents") emit("usage-refresh");
     else if (view === "docs") emit("docs");
-    else emit("refresh");
+    else if (listsSessions()) askSessions();
+    else emit("refresh", { lazy: true });
   });
   $("btn-new").addEventListener("click", newAgentAnywhere);
   $("btn-import").addEventListener("click", () => {
@@ -5118,7 +5164,8 @@
   // until Reply is pressed.  BACK, by item, a reply that did not reach
   // Emacs, given back to its box until sent or cancelled; HELD, by item,
   // one given back, kept in the list a while ({it, until}).
-  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
+  // GOT: Emacs has sent the Inbox once; until then it is on its way, not empty.
+  let inbox = { got: false, items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
                 back: new Map(), held: new Map() };
   let inboxWatching = false;
 
@@ -5250,6 +5297,10 @@
       "</button>";
   }
 
+  // Said where the items go until Emacs has sent them: "Inbox zero" before
+  // then says what is not so, until it is taken back a second later.
+  const INBOX_COMING = '<p class="ibempty ibcoming">Asking Emacs…</p>';
+
   function inboxList() {
     const live = inbox.items.filter(inboxPass);
     const need = live.filter(inboxNeed);
@@ -5261,7 +5312,7 @@
       '<div class="ibsec"><h2 class="ibneed">Needs you</h2><span class="ibsub">' +
       count + " waiting · most urgent first</span></div>" +
       (need.length ? need.map(inboxRow).join("")
-        : '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>') +
+        : inbox.got ? '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>' : INBOX_COMING) +
       '<div class="ibsec fyi"><h2>Updates</h2><span class="ibsub">reports and handoffs, nothing to decide</span></div>' +
       fyi.map(inboxRow).join("") +
       '<p class="ibhint">j / k move · 1–4 answer · a approve · e done</p>';
@@ -5419,7 +5470,8 @@
             (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
       '<div class="ibfilters">' + filters + "</div>" +
       '<div class="ibsec"><h2 class="ibneed">Needs you</h2></div>' +
-      (need.length ? need.map(card).join("") : '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>') +
+      (need.length ? need.map(card).join("")
+        : inbox.got ? '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>' : INBOX_COMING) +
       (fyi.length ? '<div class="ibsec fyi"><h2>Updates · ' + fyi.length + "</h2></div>" + fyi.map(card).join("") : "");
   }
 
@@ -6181,6 +6233,7 @@
     // The Inbox items and the Needs-you count, pushed by Emacs every few
     // seconds (and after an action).  The badge updates whatever the view.
     renderInbox: (p) => {
+      inbox.got = true;
       inbox.items = (p && p.items) || [];
       inboxKeepHeld();
       inbox.count = (p && p.count) || 0;
@@ -6261,35 +6314,48 @@
       setStatus(String(msg || "Something went wrong"), "error");
     },
 
+    // The sessions, or -- no SOURCES -- their count alone (`needSessions'):
+    // CHANGED, they changed since the page was sent them (an import).
     setContext: (p) => {
-      const sources = (p && p.sources) || [];
-      sources.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
-      const byPath = {};
-      const counts = {};
-      sources.forEach((s) => {
-        byPath[s.source_path] = s;
-        if (s.project) counts[s.project] = (counts[s.project] || 0) + 1;
-      });
-      ctx = {
-        sources: sources,
-        byPath: byPath,
-        total: (p && p.total) || sources.length,
-        currentProject: (p && p.current_project) || "",
-        projects: Object.keys(counts)
-          .map((k) => ({ project: k, leaf: leaf(k), n: counts[k] }))
-          .sort((a, b) => b.n - a.n || a.leaf.localeCompare(b.leaf)),
-      };
-      if (p && p.project) filters.project = p.project;
-      if (filters.project && !counts[filters.project]) filters.project = "";
-      if (p && p.query) query = p.query;
-      if (p && p.view === "sessions") showSessions();
-      else if (p && p.view === "search") showSearch();
+      p = p || {};
+      let counts = null;
+      if (Array.isArray(p.sources)) {
+        const sources = p.sources;
+        sources.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        const byPath = {};
+        counts = {};
+        sources.forEach((s) => {
+          byPath[s.source_path] = s;
+          if (s.project) counts[s.project] = (counts[s.project] || 0) + 1;
+        });
+        ctx = {
+          sources: sources,
+          byPath: byPath,
+          total: p.total || sources.length,
+          currentProject: p.current_project || "",
+          projects: Object.keys(counts)
+            .map((k) => ({ project: k, leaf: leaf(k), n: counts[k] }))
+            .sort((a, b) => b.n - a.n || a.leaf.localeCompare(b.leaf)),
+          loaded: true,
+          asked: false,
+          stale: false,
+        };
+      } else {
+        ctx.total = p.total || 0;
+        ctx.currentProject = p.current_project || "";
+        if (p.changed && ctx.loaded) ctx.stale = true;
+      }
+      if (p.project) filters.project = p.project;
+      if (counts && filters.project && !counts[filters.project]) filters.project = "";
+      if (p.query) query = p.query;
+      if (p.view === "sessions") showSessions();
+      else if (p.view === "search") showSearch();
       else if (view === "sessions") showSessions();
       // A page on a view of its own stays there: the sessions come after
       // its load has shown where it was (restore), and after it came back.
       else if (view === "boot" || view === "search") showSearch();
       else chrome();
-      if (p && p.query) search(true);
+      if (p.query) search(true);
     },
 
     setResume: (p) => {
@@ -6575,8 +6641,11 @@
   window.addEventListener("orientationchange", fitViewport);
   fitViewport();
 
-  emit("ready");
+  // Where it was first, so what it shows -- the Inbox, say -- is the
+  // first thing asked of Emacs; then the rest (ready), which no longer
+  // brings the sessions with it (`needSessions').
   restore();
+  emit("ready", { lazy: true });
   // The Threads tab's badge, before the tab is opened.
   emit("threads-peek");
 })();
