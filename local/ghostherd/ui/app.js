@@ -5164,7 +5164,8 @@
   // until Reply is pressed.  BACK, by item, a reply that did not reach
   // Emacs, given back to its box until sent or cancelled; HELD, by item,
   // one given back, kept in the list a while ({it, until}).
-  let inbox = { items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
+  // GOT: Emacs has sent the Inbox once; until then it is on its way, not empty.
+  let inbox = { got: false, items: [], count: 0, sel: "", filter: "all", toast: "", reply: "", replying: "", undo: null, detail: null, thOpen: {},
                 back: new Map(), held: new Map() };
   let inboxWatching = false;
 
@@ -5296,6 +5297,10 @@
       "</button>";
   }
 
+  // Said where the items go until Emacs has sent them: "Inbox zero" before
+  // then says what is not so, until it is taken back a second later.
+  const INBOX_COMING = '<p class="ibempty ibcoming">Asking Emacs…</p>';
+
   function inboxList() {
     const live = inbox.items.filter(inboxPass);
     const need = live.filter(inboxNeed);
@@ -5307,7 +5312,7 @@
       '<div class="ibsec"><h2 class="ibneed">Needs you</h2><span class="ibsub">' +
       count + " waiting · most urgent first</span></div>" +
       (need.length ? need.map(inboxRow).join("")
-        : '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>') +
+        : inbox.got ? '<p class="ibempty">Nothing needs you here. The herd is moving on its own.</p>' : INBOX_COMING) +
       '<div class="ibsec fyi"><h2>Updates</h2><span class="ibsub">reports and handoffs, nothing to decide</span></div>' +
       fyi.map(inboxRow).join("") +
       '<p class="ibhint">j / k move · 1–4 answer · a approve · e done</p>';
@@ -5465,7 +5470,8 @@
             (inbox.undo ? ' <button type="button" class="iblink" data-act="ib:undo">Undo</button>' : "") + "</div>" : "") +
       '<div class="ibfilters">' + filters + "</div>" +
       '<div class="ibsec"><h2 class="ibneed">Needs you</h2></div>' +
-      (need.length ? need.map(card).join("") : '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>') +
+      (need.length ? need.map(card).join("")
+        : inbox.got ? '<p class="ibempty">Inbox zero. The herd is moving on its own.</p>' : INBOX_COMING) +
       (fyi.length ? '<div class="ibsec fyi"><h2>Updates · ' + fyi.length + "</h2></div>" + fyi.map(card).join("") : "");
   }
 
@@ -6227,6 +6233,7 @@
     // The Inbox items and the Needs-you count, pushed by Emacs every few
     // seconds (and after an action).  The badge updates whatever the view.
     renderInbox: (p) => {
+      inbox.got = true;
       inbox.items = (p && p.items) || [];
       inboxKeepHeld();
       inbox.count = (p && p.count) || 0;
