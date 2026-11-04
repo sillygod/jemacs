@@ -23,6 +23,7 @@
 (declare-function ghostherd--role-take "ghostherd-lead" (session))
 (declare-function ghostherd--room-url "ghostherd-push" (&optional project))
 (declare-function ghostherd--session-guarded-p "ghostherd-hooks" (session))
+(declare-function ghostherd--handoff-held "ghostherd-lead" (session))
 
 ;;; Sidecar herd mail (agents POST /jsonrpc; Emacs delivers to PTYs)
 
@@ -113,7 +114,9 @@ timeout}, herd_cancel {id}, herd_asks.
 
 A handoff is an ask of another project's lead, PROJECT by path, name or
 store slug; the herd frames it, and starts a lead there when it has
-none.  A lead hands off, or an agent in a project with no lead; one
+none -- or, its leads for handoffs at their cap, queues it for a slot
+(`waiting', `ahead'): queued, not refused, so do not send it again.
+A lead hands off, or an agent in a project with no lead; one
 under a lead is refused and tells its lead.  Method: herd_handoff
 {project, body, from, wait, rounds}.
 
@@ -233,6 +236,13 @@ address of each one's room from your phone, for the bot to link to."
            :hostPid (or (ghostherd--host-pid s) 0)
            ;; Behind the herd's guard: what it asks of others is marked so.
            :guarded (if (ghostherd--session-guarded-p s) t :json-false)
+           ;; A lead the herd started for a handoff: whom for -- its caps
+           ;; count it -- and why it must not be stopped to make room, by
+           ;; what only Emacs sees (`ghostherd--handoff-held').
+           :handoffBy (or (gethash (ghostherd-session-id s) ghostherd--handoff-leads) "")
+           :held (or (and (gethash (ghostherd-session-id s) ghostherd--handoff-leads)
+                          (ghostherd--handoff-held s))
+                     "")
            :screen (or (gethash (ghostherd-session-id s) ghostherd--screens)
                        ""))))
    (hash-table-values ghostherd--sessions)))

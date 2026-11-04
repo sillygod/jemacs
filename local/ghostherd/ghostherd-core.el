@@ -736,6 +736,12 @@ A table rather than a slot, for the reason `ghostherd--input-at' gives;
 written onto the host with the recipe, so a lead is still one after a
 restart.")
 
+(defvar ghostherd--handoff-leads (make-hash-table :test 'equal)
+  "Session id -> the agent it was started for: the leads the herd started
+for a handoff, which its caps count (ghostherd-lead.el).  Written onto
+the host with the recipe (`:handoff-by'), so they are still the herd's
+after a restart.")
+
 (defun ghostherd-session-role (session)
   "SESSION's role in the herd, or nil."
   (gethash (ghostherd-session-id session) ghostherd--roles))

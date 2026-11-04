@@ -48,7 +48,11 @@ what is needed, when it is done, and who waits on it.  It is an ask --
 the answer, --wait, --rounds and the loop rules are an ask's -- and the
 herd frames it for that lead: from which project and agent, that you
 wait on it, what to do with it.  A project with no lead gets one started
-there, if the herd is set to and it is a git checkout.  A project's lead
+there, if the herd is set to and it is a git checkout -- or, while the
+leads the herd started for handoffs are at their cap, the handoff is
+queued for a slot, first come first served, and starts that lead once one
+frees: queued is not refused, so never hand the same work off again
+(`herd cancel ID' withdraws it).  A project's lead
 may hand off, and so may an agent in a project with no lead; an agent
 working under a lead is refused -- it puts what the other project needs
 in its answer to its lead, which hands it off.
@@ -323,15 +327,21 @@ def wait_for(ask_id, to, timeout):
                         "you as a message" % ask_id)
                     return 3
                 return show_answer(ask)
-            now = (ask.get("status"), ask.get("taker_state"), ask.get("taker_reason"))
+            now = (ask.get("status"), ask.get("to"), ask.get("taker_state"), ask.get("taker_reason"),
+                   ask.get("waiting"), ask.get("ahead"), ask.get("starting"))
             if now != seen:
                 seen = now
                 state = ask.get("taker_state") or "?"
                 reason = ask.get("taker_reason") or ""
-                if ask["status"] == "queued":
-                    say("%s is %s; the ask waits until it is free" % (to, state))
+                if ask.get("waiting"):
+                    # A handoff waiting its turn for a lead: queued, not refused.
+                    say("queued for a lead slot, %d ahead of it: %s" % (ask.get("ahead") or 0, ask.get("why") or ""))
+                elif ask["status"] == "queued" and not ask.get("to") and ask.get("project"):
+                    say("%s's lead is starting; the handoff waits for it" % _leaf(ask["project"]))
+                elif ask["status"] == "queued":
+                    say("%s is %s; the ask waits until it is free" % (ask.get("to") or to, state))
                 else:
-                    say("%s has it: %s%s" % (to, state, ("  " + reason) if reason else ""))
+                    say("%s has it: %s%s" % (ask.get("to") or to, state, ("  " + reason) if reason else ""))
             if time.monotonic() >= deadline:
                 break
     except KeyboardInterrupt:
@@ -379,18 +389,32 @@ def _project_arg(arg):
     return arg
 
 
+def _leaf(project):
+    return os.path.basename((project or "").rstrip("/")) or project
+
+
 def _await_taker(ask_id, seconds):
     """Wait up to SECONDS for the herd to start the lead a handoff goes to.
     The ask once it has its taker, or once it closed (refused); None while
-    the lead is still starting."""
+    the lead is still starting -- or once the handoff waits for a slot:
+    then nothing is to be had by waiting here."""
     deadline = time.monotonic() + seconds
     while True:
         ask = rpc("herd_await", {"id": ask_id, "timeout": 0, "from": me()})
         if ask["status"] in ("answered", "failed", "cancelled") or ask.get("to"):
             return ask
-        if time.monotonic() >= deadline:
+        if ask.get("waiting") or time.monotonic() >= deadline:
             return None
         time.sleep(0.5)
+
+
+def _queued_words(where, out):
+    "What the sender of a handoff waiting for a slot is told: queued, not refused."
+    return ("%s has no lead, and %s: this handoff is queued for a slot, %d ahead of it "
+            "(handoff %s).  It is not refused -- do not hand it off again: the herd starts "
+            "%s's lead when a slot frees, and it goes to that lead."
+            % (where, out.get("why") or "the herd's leads for handoffs are at their cap",
+               out.get("ahead") or 0, out["id"], where))
 
 
 def cmd_handoff(args):
@@ -406,7 +430,9 @@ def cmd_handoff(args):
     where = os.path.basename(out["project"].rstrip("/")) or out["project"]
     to = out["to"]
     rounds = ", round %d of %d" % (out["round"], out["of"]) if out.get("round") else ""
-    if out.get("starting"):
+    if out.get("waiting"):
+        say(_queued_words(where, out))
+    elif out.get("starting"):
         say("%s has no lead: the herd starts one there (handoff %s)" % (where, out["id"]))
         ask = _await_taker(out["id"], HANDOFF_START_WAIT)
         if ask is None:

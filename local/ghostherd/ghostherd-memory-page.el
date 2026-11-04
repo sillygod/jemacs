@@ -959,7 +959,10 @@ many meters came back together."
         :project (ghostherd-memory-page--str (plist-get a :project))
         :fromProject (ghostherd-memory-page--str (plist-get a :from_project))
         ;; Its asker runs behind the herd's guard.
-        :guarded (if (eq (plist-get a :guarded) t) t :json-false)))
+        :guarded (if (eq (plist-get a :guarded) t) t :json-false)
+        ;; A handoff with no lead yet, waiting for a slot -- not for its
+        ;; lead to start.
+        :waiting (if (eq (plist-get a :waiting) t) t :json-false)))
 
 ;;; The hooks each CLI runs
 
@@ -2214,6 +2217,9 @@ minutes ago, how long until a reset -- still moves on."
                          :state (if (ghostherd--primary-up s)
                                     (symbol-name (ghostherd-session-state s))
                                   "")))
+        ;; The leads the herd starts for handoffs: its two caps, which the
+        ;; page sets, and where they and the handoffs waiting stand.
+        :handoffSlots (ghostherd-memory-page--handoff-slots)
         ;; Where an agent's work can be relayed, the herd's choice first,
         ;; and which of them have no usage left.
         :relayKinds (ghostherd-memory-page--vec
@@ -2221,6 +2227,64 @@ minutes ago, how long until a reset -- still moves on."
                                (list :kind (symbol-name k)
                                      :usedUp (or (ghostherd-usage-used-up-text k) "")))
                              (ghostherd--relay-kinds)))))
+
+(defun ghostherd-memory-page--handoff-slots ()
+  "The handoff caps and what is in use now, for the Agents tab: at work
+N of its cap, up M of its cap, each cap's range, and the handoffs
+waiting -- from whom to which project, since when, how many ahead.
+The counts are the sidecar's, which keeps the queue by them; the caps
+are this Emacs's own, which the page sets."
+  (let* ((slots ghostherd--handoff-slots)
+         (range (lambda (var) (let ((r (alist-get var ghostherd--handoff-cap-ranges)))
+                                (vector (nth 0 r) (nth 1 r))))))
+    (list :working (or (plist-get slots :working) 0)
+          :workingCap ghostherd-handoff-lead-max
+          :workingRange (funcall range 'ghostherd-handoff-lead-max)
+          :alive (or (plist-get slots :alive) 0)
+          :aliveCap ghostherd-handoff-lead-alive-max
+          :aliveRange (funcall range 'ghostherd-handoff-lead-alive-max)
+          :known (if slots t :json-false)
+          :leads (ghostherd-memory-page--vec
+                  (mapcar (lambda (l)
+                            (list :name (or (plist-get l :name) "")
+                                  :project (or (plist-get l :project) "")
+                                  :state (or (plist-get l :state) "")
+                                  :working (if (eq (plist-get l :working) t) t :json-false)))
+                          (plist-get slots :leads)))
+          :queue (ghostherd-memory-page--vec
+                  (mapcar (lambda (q)
+                            (list :project (or (plist-get q :project) "")
+                                  :from (or (plist-get q :from) "")
+                                  :fromProject (or (plist-get q :from_project) "")
+                                  :since (or (plist-get q :since_ms) 0)
+                                  :asks (or (plist-get q :asks) 1)
+                                  :ahead (or (plist-get q :ahead) 0)
+                                  :starting (if (eq (plist-get q :starting) t) t :json-false)
+                                  :stop (or (plist-get q :stop) "")
+                                  :head (or (plist-get q :head) "")))
+                          (plist-get slots :queue))))))
+
+(defun ghostherd-memory-page--handoff-caps (intent)
+  "The Agents tab set a handoff cap: INTENT's `working' or `alive', as the
+user typed it.  Taken only when sane (`ghostherd-handoff-set-cap'); else
+the page is told why and shows the cap as it is.  Only the page reaches
+this -- no agent: the herd's RPC has no way to it."
+  (let* ((field (alist-get 'field intent))
+         (var (pcase field
+                ("working" 'ghostherd-handoff-lead-max)
+                ("alive" 'ghostherd-handoff-lead-alive-max)))
+         (value (alist-get 'value intent)))
+    (condition-case err
+        (progn
+          (unless var (user-error "No handoff cap %s" field))
+          (let ((n (ghostherd-handoff-set-cap var value)))
+            (ghostherd-memory-page--js
+             "flash" (format "Leads for handoffs: at most %d %s" n
+                             (if (eq var 'ghostherd-handoff-lead-max) "at work" "up")))))
+      (user-error
+       (ghostherd-memory-page--js
+        "slotsRefused" (list :field (or field "") :why (error-message-string err)))))
+    (ghostherd-memory-page--send-herd)))
 
 (defun ghostherd-memory-page--herd-tick ()
   "One snapshot; usage too when it is due and the page can be seen."
@@ -3719,6 +3783,7 @@ Not `ghostherd-memory-import': that pops up the log beside the page."
     (report     "fyi"  "Report"     "green")
     (handoff    "fyi"  "Handoff"    "purple")
     (lead-started "fyi" "Lead"      "muted")
+    (lead-stopped "fyi" "Lead"      "muted")
     (continue   "fyi"  "Continuing" "muted"))
   "Each Inbox item kind: (KIND GROUP TAG TONE).  GROUP is where it sits by
 default; the user may override it.")
@@ -4047,9 +4112,32 @@ cross-project handoff (fyi)."
                 :preview (ghostherd-inbox--clip (or (plist-get k :replyHead) (plist-get k :head) "") 90))))))
          asks)))
 
+(defun ghostherd-inbox--stop-items (stops)
+  "Inbox items from STOPS, the leads the herd stopped lately to make room
+for another (`ghostherd--handoff-stops'): an Update each, saying why."
+  (mapcar
+   (lambda (s)
+     (let* ((name (plist-get s :name))
+            (for (file-name-nondirectory (directory-file-name (or (plist-get s :for) ""))))
+            (project (or (plist-get s :project) ""))
+            (at (plist-get s :at)))
+       (ghostherd-inbox--item
+        (format "lead-stopped:%s:%d" name (round (* 1000 (or at 0)))) 'lead-stopped
+        name "" project (format "Stopped %s to make room" name) (and at (* 1000.0 at))
+        :whyLabel "The herd stopped a lead it started for a handoff"
+        :body (concat (capitalize (substring (plist-get s :why) 0 1)) (substring (plist-get s :why) 1) "."
+                      (if (plist-get s :resume)
+                          (format "  Its conversation is kept: the next lead the herd starts in %s resumes it."
+                                  (if (string-empty-p project) "its project"
+                                    (file-name-nondirectory (directory-file-name project))))
+                        ""))
+        :preview (ghostherd-inbox--clip (format "Idle and owing nothing; made room for %s's lead" for) 90))))
+   stops))
+
 (defun ghostherd-inbox--all (proposals)
   "Every live Inbox item, from the sessions, guard, PROPOSALS and asks."
   (append
+   (ghostherd-inbox--stop-items (ghostherd--handoff-stops))
    (mapcan #'ghostherd-inbox--agent-items
            (mapcar #'ghostherd-memory-page--agent (ghostherd-sessions)))
    (ghostherd-inbox--guard-items
@@ -4223,6 +4311,7 @@ user's state (or none) and push."
         ("agent-image" (ghostherd-memory-page--agent-image intent))
         ("agent-image-upload" (ghostherd-memory-page--agent-image-upload intent))
         ("lead-say" (ghostherd-memory-page--lead-say intent))
+        ("handoff-caps" (ghostherd-memory-page--handoff-caps intent))
         ("primary-say" (ghostherd-memory-page--primary-say intent))
         ("guard-approve" (ghostherd-memory-page--guard-approve intent))
         ("guard-reject" (ghostherd-memory-page--guard-reject intent))

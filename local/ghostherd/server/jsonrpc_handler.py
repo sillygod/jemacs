@@ -363,6 +363,10 @@ class JsonRpcHandler:
         guard_told = params.get("guard_told") or []
         if not isinstance(guard_told, list):
             raise ValueError("guard_told must be a list")
+        # The user's caps on the leads the herd starts for handoffs: said by
+        # Emacs here alone -- the tick is the herd's own, no agent's token
+        # reaches it -- and each taken only when sane (HerdStore._cap).
+        caps = params.get("handoff_caps")
         return get_herd().tick(
             sessions=sessions,
             ack_ids=[str(i) for i in ack_ids],
@@ -372,6 +376,7 @@ class JsonRpcHandler:
             restored=params.get("restored"),
             guard_ttl=params.get("guard_ttl"),
             guard_told=[str(i) for i in guard_told],
+            handoff_caps=caps if isinstance(caps, dict) else None,
         )
 
     def _herd_ask(self, params: dict) -> dict:
@@ -512,8 +517,17 @@ class JsonRpcHandler:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         herd = get_herd()
+        first = None
         while True:
             ask = await asyncio.to_thread(herd.get_ask, ask_id)
+            # A handoff with no lead yet comes back as soon as its place
+            # changes -- next in line, its lead starting, its lead has it --
+            # for the asker's status line, rather than once a step.
+            place = (ask["to"], ask.get("waiting"), ask.get("ahead"), ask.get("starting"))
+            if first is None:
+                first = place
+            elif ask["project"] and not first[0] and place != first and ask["status"] not in ASK_CLOSED:
+                return ask
             if ask["status"] in ASK_CLOSED:
                 # An answer goes with how its work went: made just after the
                 # reply, waited for a moment here -- never the reply itself,

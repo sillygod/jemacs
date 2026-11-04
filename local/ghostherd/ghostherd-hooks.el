@@ -17,6 +17,7 @@
 (require 'ghostherd-mail)
 
 (declare-function ghostherd--primary-remember "ghostherd-primary" ())
+(declare-function ghostherd--handoff-remember "ghostherd-lead" (&optional session))
 (declare-function ghostherd--push "ghostherd-push" (kind session &rest fields))
 (declare-function ghostherd--relay-kinds "ghostherd-primary" ())
 (declare-function ghostherd-relay "ghostherd-primary" (session kind &optional reason))
@@ -59,7 +60,8 @@ agent's environment carries.")
     (dolist (l links)
       (puthash (plist-get l :session) l table))
     (setq ghostherd--herd-links table))
-  (ignore-errors (ghostherd--primary-remember)))
+  (ignore-errors (ghostherd--primary-remember))
+  (ignore-errors (ghostherd--handoff-remember)))
 
 (defun ghostherd--link (session)
   "What SESSION's hooks last said, or nil.

@@ -103,6 +103,13 @@ const handoff = (extra) => Object.assign({
       const srun = await runs();
       check(W("its run: unnoiac's lead, starting"), srun.length === 1 && srun[0].includes(LEAD + " → unnoiac's lead, starting") &&
         srun[0].includes("waiting on unnoiac's lead, starting"), srun);
+      // Past the herd's cap on its leads at work: queued for a slot, not starting.
+      await show([handoff({ id: "h3", run: "h3", to: "", status: "queued", project: UN, waiting: true })]);
+      await sleep(100);
+      const slot = await line(row(LEAD));
+      check(W("waiting for a slot: queued, not starting"),
+        slot && slot.what === "⇢ waiting on unnoiac (handoff) · queued for a lead slot" &&
+        slot.title.includes("to the lead it waits a slot for in " + UN), slot);
 
       // ---- Queued behind the lead's own work ----
       await show([handoff({ status: "queued" })]);
