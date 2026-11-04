@@ -2208,9 +2208,23 @@ failed, stopped without an answer, or not taken; a guard holding a call
 for you, denying one, or left unanswered; a check that denied a call; a
 turn cut short; an agent lost, used up, unrelayed, untrusted, or whose
 directory went; a quota, an unknown menu, a screen the hook disagreed
-with, or a capture of your own.  Not your own acts (a kill, a cancel),
-holds that settle by themselves, nor a =/compact='s capture.  It looks
-back; what needs you now is the Inbox.
+with, or a capture of your own; a slow load or wake of this page.  Not
+your own acts (a kill, a cancel), holds that settle by themselves, nor a
+=/compact='s capture.  It looks back; what needs you now is the Inbox.
+
+A slow page is a line of its own, kind =timing=: xwapp times each load
+and wake of the page in a browser --- the phone's --- and one past
+=xwapp-timing-slow= (1.5 s) is logged as =slow open 3.4 s: network 2.1 s
+· Emacs busy 0.6 s · page 0.5 s · relay hkg · sidecar 190% CPU=: what it
+waited on, longest first, how tailscale reaches the device now, and the
+sidecar's CPU then (=ps=, its process tree).  Its agent is the device
+(tailscale's name for it, else =phone= or =desk=); under it a bar of the
+same, and =Phases= opens its breakdown request by request, as =Screen=
+opens a screen --- kept beside it, but no screen: not counted among
+them, nor in =herd screens=.  It is an Issue: a page you waited on is a
+fault you felt, and only slow ones are logged.  All of them, the quick
+ones too, are in =M-x xwapp-timings= (xwapp's README, "How long the page
+took").
 
 An entry's time zooms to its moment: the half hour around it, in the
 lanes (a dashed line marks it) and the list, all of it --- the Issues,

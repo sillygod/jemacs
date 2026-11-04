@@ -1012,6 +1012,18 @@ button.lt:hover, button.lt:focus-visible { color: var(--accent); text-decoration
 .k-life, .k-report { color: var(--muted); font-style: italic; }
 .k-ask { color: var(--accent); }
 .k-screen { color: #d2a8ff; }
+/* A slow load or wake of the page: its line, and under it a bar of what it
+   waited on -- the network, Emacs busy, Emacs answering or preparing, the
+   page's own work. */
+.k-timing { color: #f9a03f; }
+.tbar { display: flex; height: 6px; max-width: 280px; margin-top: 4px; border-radius: 3px; overflow: hidden;
+        background: rgba(127,127,127,.18); }
+.tseg { display: block; height: 100%; min-width: 2px; }
+.ts-net { background: #58a6ff; }
+.ts-busy { background: #f85149; }
+.ts-emacs { background: #d29922; }
+.ts-prep { background: #a371f7; }
+.ts-page { background: #3fb950; }
 .lrow .linkish { font-size: 12px; flex-shrink: 0; }
 .lrow.pinned { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .pinmark { margin-right: 5px; font-size: 11px; }
